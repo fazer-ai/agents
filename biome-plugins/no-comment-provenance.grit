@@ -1,0 +1,100 @@
+// Refuses a comment that says where the code came from instead of what is true of it now: an issue,
+// a PR or a review round cited (`#123`, `PR 9`, a github.com issue or pull link, `round 3`), or
+// history told in words (`review found`, `this used to`, `before the fix`, `the first version of
+// this`, `measured on a real …`). That belongs to the commit, the PR and the issue. A `TODO:` or
+// `FIXME:` line may name the issue that tracks the work it owes. A block that has a reason says so in
+// its own text: `comment-waiver: <reason>`.
+//
+// Blocks are what a reader sees: consecutive `//` lines are one block (a directive line ends it), and
+// a `/* … */` is a block of its own. A citation is matched per line; history is matched on the
+// block's lines joined, so a phrase wrapped across two lines is still one phrase.
+//
+// What this rule cannot read: Biome gives a plugin the program from its first token to its last, so a
+// comment above the first token (a file header) or below the last is outside every node. Those, and
+// workers/, which Biome does not lint, stay with tests/lib/comment-sweep.test.ts. The rule walks the
+// program's text with recursive patterns, so a comment-shaped line inside a multi-line template
+// literal, or a ` //` inside a string, is read as a comment: build such a string from parts.
+language js;
+
+// The same two searches without capture groups, which run on the fast path of the regex engine: a
+// file with no candidate is answered without walking it.
+pattern has_line_run() { r"[\s\S]*?(?:\n[ \t]*|[ \t])(?:(?://[^\n]*\n[ \t]*)*//[^\n]*?(?:(?i:(?://|[^0-9A-Za-z_&/#])#[0-9]+(?-u:\b)|(?-u:\b)PR[ \t]*#?[0-9]+(?-u:\b)|(?-u:\b)issues?[ \t]+#[0-9]+(?-u:\b)|(?-u:\b)review,?[ \t]+round(?-u:\b)|(?-u:\b)round[ \t]+[0-9]+(?-u:\b)|(?-u:\b)rodada[ \t]+[0-9]+(?-u:\b)|github\.com/[0-9A-Za-z_.-]+/[0-9A-Za-z_.-]+/(?:issues|pull)/[0-9]+|(?-u:\b)(?:review|codex|copilot)(?:[ \t]|\n[ \t]*//+)+(?:found|flagged|caught|asked)(?-u:\b)|(?-u:\b)(?:found|flagged|caught)(?:[ \t]|\n[ \t]*//+)+by(?:[ \t]|\n[ \t]*//+)+(?:the(?:[ \t]|\n[ \t]*//+)+)?(?:review|codex|copilot)(?-u:\b)|(?-u:\b)review(?:[ \t]|\n[ \t]*//+)+r[0-9]+(?-u:\b)|\(r[0-9]+\)|(?-u:\b)round-[0-9]+(?-u:\b)|(?-u:\b)(?:before|after|until)(?:[ \t]|\n[ \t]*//+)+(?:the|this)(?:[ \t]|\n[ \t]*//+)+(?:fix|refactor|PR)(?-u:\b)|(?-u:\b)(?:the|a)(?:[ \t]|\n[ \t]*//+)+(?:first|earlier|previous|old)(?:[ \t]|\n[ \t]*//+)+(?:version|revision|implementation|spelling)(?:[ \t]|\n[ \t]*//+)+of(?:[ \t]|\n[ \t]*//+)+this(?-u:\b)|(?-u:\b)(?:this|that|it|which|they)(?:[ \t]|\n[ \t]*//+)+used(?:[ \t]|\n[ \t]*//+)+to(?-u:\b)|(?-u:\b)used(?:[ \t]|\n[ \t]*//+)+to(?:[ \t]|\n[ \t]*//+)+be(?-u:\b)|(?-u:\b)measured(?:[ \t]|\n[ \t]*//+)+on(?:[ \t]|\n[ \t]*//+)+(?:a(?:[ \t]|\n[ \t]*//+)+real|a(?:[ \t]|\n[ \t]*//+)+live|a(?:[ \t]|\n[ \t]*//+)+production|production)(?-u:\b)|(?-u:\b)this(?:[ \t]|\n[ \t]*//+)+(?:PR|pull(?:[ \t]|\n[ \t]*//+)+request)(?-u:\b)|(?-u:\b)(?:esta|nesta|desta)(?:[ \t]|\n[ \t]*//+)+PR(?-u:\b)|(?-u:\b)caso(?:[ \t]|\n[ \t]*//+)+real(?:[ \t]|\n[ \t]*(?://+|\*+)?)*:))[^\n]*(?:\n[ \t]*//[^\n]*)*)[\s\S]*" }
+pattern has_block_comment() { r"[\s\S]*?(?:\n[ \t]*|[ \t{(,])(?:/\*(?:[^*]|\*+[^*/])*?(?:(?i:(?://|[^0-9A-Za-z_&/#])#[0-9]+(?-u:\b)|(?-u:\b)PR[ \t]*#?[0-9]+(?-u:\b)|(?-u:\b)issues?[ \t]+#[0-9]+(?-u:\b)|(?-u:\b)review,?[ \t]+round(?-u:\b)|(?-u:\b)round[ \t]+[0-9]+(?-u:\b)|(?-u:\b)rodada[ \t]+[0-9]+(?-u:\b)|github\.com/[0-9A-Za-z_.-]+/[0-9A-Za-z_.-]+/(?:issues|pull)/[0-9]+|(?-u:\b)(?:review|codex|copilot)(?:[ \t]|\n[ \t]*(?://+|\*+)?)+(?:found|flagged|caught|asked)(?-u:\b)|(?-u:\b)(?:found|flagged|caught)(?:[ \t]|\n[ \t]*(?://+|\*+)?)+by(?:[ \t]|\n[ \t]*(?://+|\*+)?)+(?:the(?:[ \t]|\n[ \t]*(?://+|\*+)?)+)?(?:review|codex|copilot)(?-u:\b)|(?-u:\b)review(?:[ \t]|\n[ \t]*(?://+|\*+)?)+r[0-9]+(?-u:\b)|\(r[0-9]+\)|(?-u:\b)round-[0-9]+(?-u:\b)|(?-u:\b)(?:before|after|until)(?:[ \t]|\n[ \t]*(?://+|\*+)?)+(?:the|this)(?:[ \t]|\n[ \t]*(?://+|\*+)?)+(?:fix|refactor|PR)(?-u:\b)|(?-u:\b)(?:the|a)(?:[ \t]|\n[ \t]*(?://+|\*+)?)+(?:first|earlier|previous|old)(?:[ \t]|\n[ \t]*(?://+|\*+)?)+(?:version|revision|implementation|spelling)(?:[ \t]|\n[ \t]*(?://+|\*+)?)+of(?:[ \t]|\n[ \t]*(?://+|\*+)?)+this(?-u:\b)|(?-u:\b)(?:this|that|it|which|they)(?:[ \t]|\n[ \t]*(?://+|\*+)?)+used(?:[ \t]|\n[ \t]*(?://+|\*+)?)+to(?-u:\b)|(?-u:\b)used(?:[ \t]|\n[ \t]*(?://+|\*+)?)+to(?:[ \t]|\n[ \t]*(?://+|\*+)?)+be(?-u:\b)|(?-u:\b)measured(?:[ \t]|\n[ \t]*(?://+|\*+)?)+on(?:[ \t]|\n[ \t]*(?://+|\*+)?)+(?:a(?:[ \t]|\n[ \t]*(?://+|\*+)?)+real|a(?:[ \t]|\n[ \t]*(?://+|\*+)?)+live|a(?:[ \t]|\n[ \t]*(?://+|\*+)?)+production|production)(?-u:\b)|(?-u:\b)this(?:[ \t]|\n[ \t]*(?://+|\*+)?)+(?:PR|pull(?:[ \t]|\n[ \t]*(?://+|\*+)?)+request)(?-u:\b)|(?-u:\b)(?:esta|nesta|desta)(?:[ \t]|\n[ \t]*(?://+|\*+)?)+PR(?-u:\b)|(?-u:\b)caso(?:[ \t]|\n[ \t]*(?://+|\*+)?)+real(?:[ \t]|\n[ \t]*(?://+|\*+)?)*:))[\s\S]*?\*/)[\s\S]*" }
+
+// The `//` runs of the program that could break the rule, one at a time: the first, then the same
+// question of the text after it. Only candidates are visited, so the recursion stays shallow.
+pattern each_line_run() {
+    r"[\s\S]*?(?:\n[ \t]*|[ \t])((?://[^\n]*\n[ \t]*)*//[^\n]*?(?:(?i:(?://|[^0-9A-Za-z_&/#])#[0-9]+(?-u:\b)|(?-u:\b)PR[ \t]*#?[0-9]+(?-u:\b)|(?-u:\b)issues?[ \t]+#[0-9]+(?-u:\b)|(?-u:\b)review,?[ \t]+round(?-u:\b)|(?-u:\b)round[ \t]+[0-9]+(?-u:\b)|(?-u:\b)rodada[ \t]+[0-9]+(?-u:\b)|github\.com/[0-9A-Za-z_.-]+/[0-9A-Za-z_.-]+/(?:issues|pull)/[0-9]+|(?-u:\b)(?:review|codex|copilot)(?:[ \t]|\n[ \t]*//+)+(?:found|flagged|caught|asked)(?-u:\b)|(?-u:\b)(?:found|flagged|caught)(?:[ \t]|\n[ \t]*//+)+by(?:[ \t]|\n[ \t]*//+)+(?:the(?:[ \t]|\n[ \t]*//+)+)?(?:review|codex|copilot)(?-u:\b)|(?-u:\b)review(?:[ \t]|\n[ \t]*//+)+r[0-9]+(?-u:\b)|\(r[0-9]+\)|(?-u:\b)round-[0-9]+(?-u:\b)|(?-u:\b)(?:before|after|until)(?:[ \t]|\n[ \t]*//+)+(?:the|this)(?:[ \t]|\n[ \t]*//+)+(?:fix|refactor|PR)(?-u:\b)|(?-u:\b)(?:the|a)(?:[ \t]|\n[ \t]*//+)+(?:first|earlier|previous|old)(?:[ \t]|\n[ \t]*//+)+(?:version|revision|implementation|spelling)(?:[ \t]|\n[ \t]*//+)+of(?:[ \t]|\n[ \t]*//+)+this(?-u:\b)|(?-u:\b)(?:this|that|it|which|they)(?:[ \t]|\n[ \t]*//+)+used(?:[ \t]|\n[ \t]*//+)+to(?-u:\b)|(?-u:\b)used(?:[ \t]|\n[ \t]*//+)+to(?:[ \t]|\n[ \t]*//+)+be(?-u:\b)|(?-u:\b)measured(?:[ \t]|\n[ \t]*//+)+on(?:[ \t]|\n[ \t]*//+)+(?:a(?:[ \t]|\n[ \t]*//+)+real|a(?:[ \t]|\n[ \t]*//+)+live|a(?:[ \t]|\n[ \t]*//+)+production|production)(?-u:\b)|(?-u:\b)this(?:[ \t]|\n[ \t]*//+)+(?:PR|pull(?:[ \t]|\n[ \t]*//+)+request)(?-u:\b)|(?-u:\b)(?:esta|nesta|desta)(?:[ \t]|\n[ \t]*//+)+PR(?-u:\b)|(?-u:\b)caso(?:[ \t]|\n[ \t]*//+)+real(?:[ \t]|\n[ \t]*(?://+|\*+)?)*:))[^\n]*(?:\n[ \t]*//[^\n]*)*)([\s\S]*)"($run, $rest) where {
+        or { $run <: each_block(), $rest <: each_line_run() }
+    }
+}
+
+// A directive line (`biome-ignore`, `@ts-`, an i18n anchor, an edition marker, `/// <reference`,
+// `eslint`) is not prose: it ends the block above it and starts none.
+pattern each_block() {
+    or {
+        r"([\s\S]*?)(?:\A|\n)[ \t]*//[ \t]*(?:biome-ignore|@ts-|t\(|translate\(|@(?:full|free|master)-only|/ <reference|eslint)[^\n]*([\s\S]*)"($block, $after) where {
+            or {
+                and { $block <: r"[\s\S]*//[\s\S]*", $block <: provenance() },
+                $after <: each_block()
+            }
+        },
+        and {
+            not r"(?:[\s\S]*\n)?[ \t]*//[ \t]*(?:biome-ignore|@ts-|t\(|translate\(|@(?:full|free|master)-only|/ <reference|eslint)[\s\S]*",
+            provenance()
+        }
+    }
+}
+
+// The block comments of the program that could break the rule, one at a time. A directive (`/* biome-ignore … */`) is none.
+pattern each_block_comment() {
+    r"[\s\S]*?(?:\n[ \t]*|[ \t{(,])(/\*(?:[^*]|\*+[^*/])*?(?:(?i:(?://|[^0-9A-Za-z_&/#])#[0-9]+(?-u:\b)|(?-u:\b)PR[ \t]*#?[0-9]+(?-u:\b)|(?-u:\b)issues?[ \t]+#[0-9]+(?-u:\b)|(?-u:\b)review,?[ \t]+round(?-u:\b)|(?-u:\b)round[ \t]+[0-9]+(?-u:\b)|(?-u:\b)rodada[ \t]+[0-9]+(?-u:\b)|github\.com/[0-9A-Za-z_.-]+/[0-9A-Za-z_.-]+/(?:issues|pull)/[0-9]+|(?-u:\b)(?:review|codex|copilot)(?:[ \t]|\n[ \t]*(?://+|\*+)?)+(?:found|flagged|caught|asked)(?-u:\b)|(?-u:\b)(?:found|flagged|caught)(?:[ \t]|\n[ \t]*(?://+|\*+)?)+by(?:[ \t]|\n[ \t]*(?://+|\*+)?)+(?:the(?:[ \t]|\n[ \t]*(?://+|\*+)?)+)?(?:review|codex|copilot)(?-u:\b)|(?-u:\b)review(?:[ \t]|\n[ \t]*(?://+|\*+)?)+r[0-9]+(?-u:\b)|\(r[0-9]+\)|(?-u:\b)round-[0-9]+(?-u:\b)|(?-u:\b)(?:before|after|until)(?:[ \t]|\n[ \t]*(?://+|\*+)?)+(?:the|this)(?:[ \t]|\n[ \t]*(?://+|\*+)?)+(?:fix|refactor|PR)(?-u:\b)|(?-u:\b)(?:the|a)(?:[ \t]|\n[ \t]*(?://+|\*+)?)+(?:first|earlier|previous|old)(?:[ \t]|\n[ \t]*(?://+|\*+)?)+(?:version|revision|implementation|spelling)(?:[ \t]|\n[ \t]*(?://+|\*+)?)+of(?:[ \t]|\n[ \t]*(?://+|\*+)?)+this(?-u:\b)|(?-u:\b)(?:this|that|it|which|they)(?:[ \t]|\n[ \t]*(?://+|\*+)?)+used(?:[ \t]|\n[ \t]*(?://+|\*+)?)+to(?-u:\b)|(?-u:\b)used(?:[ \t]|\n[ \t]*(?://+|\*+)?)+to(?:[ \t]|\n[ \t]*(?://+|\*+)?)+be(?-u:\b)|(?-u:\b)measured(?:[ \t]|\n[ \t]*(?://+|\*+)?)+on(?:[ \t]|\n[ \t]*(?://+|\*+)?)+(?:a(?:[ \t]|\n[ \t]*(?://+|\*+)?)+real|a(?:[ \t]|\n[ \t]*(?://+|\*+)?)+live|a(?:[ \t]|\n[ \t]*(?://+|\*+)?)+production|production)(?-u:\b)|(?-u:\b)this(?:[ \t]|\n[ \t]*(?://+|\*+)?)+(?:PR|pull(?:[ \t]|\n[ \t]*(?://+|\*+)?)+request)(?-u:\b)|(?-u:\b)(?:esta|nesta|desta)(?:[ \t]|\n[ \t]*(?://+|\*+)?)+PR(?-u:\b)|(?-u:\b)caso(?:[ \t]|\n[ \t]*(?://+|\*+)?)+real(?:[ \t]|\n[ \t]*(?://+|\*+)?)*:))[\s\S]*?\*/)([\s\S]*)"($comment, $rest) where {
+        or {
+            and {
+                not $comment <: r"/\*[ \t\n]*(?:biome-ignore|@ts-|t\(|translate\(|@(?:full|free|master)-only|/ <reference|eslint)[\s\S]*",
+                $comment <: provenance()
+            },
+            $rest <: each_block_comment()
+        }
+    }
+}
+
+// A block with a reason to break the rule says so in its own text, after `comment-waiver:`.
+pattern waived() {
+    r"[\s\S]*(?-u:\b)comment-waiver:[ \t]*(?:[^\s*]|\*+[^\s*/])[\s\S]*"
+}
+
+// A line, outside a `TODO:` or `FIXME:` line, that cites an issue, a PR or a review round.
+pattern cites() {
+    r"[\s\S]*?([^\n]*(?i:(?://|[^0-9A-Za-z_&/#])#[0-9]+(?-u:\b)|(?-u:\b)PR[ \t]*#?[0-9]+(?-u:\b)|(?-u:\b)issues?[ \t]+#[0-9]+(?-u:\b)|(?-u:\b)review,?[ \t]+round(?-u:\b)|(?-u:\b)round[ \t]+[0-9]+(?-u:\b)|(?-u:\b)rodada[ \t]+[0-9]+(?-u:\b)|github\.com/[0-9A-Za-z_.-]+/[0-9A-Za-z_.-]+/(?:issues|pull)/[0-9]+)[^\n]*)([\s\S]*)"($line, $rest) where {
+        or {
+            not $line <: r"[\s\S]*(?-u:\b)(?:TODO|FIXME):[\s\S]*",
+            $rest <: cites()
+        }
+    }
+}
+
+// History told in words, read on the lines between `TODO:`/`FIXME:` lines.
+pattern narrates() {
+    or {
+        and {
+            not r"[\s\S]*(?-u:\b)(?:TODO|FIXME):[\s\S]*",
+            r"[\s\S]*(?i:(?-u:\b)(?:review|codex|copilot)(?:[ \t]|\n[ \t]*(?://+|\*+)?)+(?:found|flagged|caught|asked)(?-u:\b)|(?-u:\b)(?:found|flagged|caught)(?:[ \t]|\n[ \t]*(?://+|\*+)?)+by(?:[ \t]|\n[ \t]*(?://+|\*+)?)+(?:the(?:[ \t]|\n[ \t]*(?://+|\*+)?)+)?(?:review|codex|copilot)(?-u:\b)|(?-u:\b)review(?:[ \t]|\n[ \t]*(?://+|\*+)?)+r[0-9]+(?-u:\b)|\(r[0-9]+\)|(?-u:\b)round-[0-9]+(?-u:\b)|(?-u:\b)(?:before|after|until)(?:[ \t]|\n[ \t]*(?://+|\*+)?)+(?:the|this)(?:[ \t]|\n[ \t]*(?://+|\*+)?)+(?:fix|refactor|PR)(?-u:\b)|(?-u:\b)(?:the|a)(?:[ \t]|\n[ \t]*(?://+|\*+)?)+(?:first|earlier|previous|old)(?:[ \t]|\n[ \t]*(?://+|\*+)?)+(?:version|revision|implementation|spelling)(?:[ \t]|\n[ \t]*(?://+|\*+)?)+of(?:[ \t]|\n[ \t]*(?://+|\*+)?)+this(?-u:\b)|(?-u:\b)(?:this|that|it|which|they)(?:[ \t]|\n[ \t]*(?://+|\*+)?)+used(?:[ \t]|\n[ \t]*(?://+|\*+)?)+to(?-u:\b)|(?-u:\b)used(?:[ \t]|\n[ \t]*(?://+|\*+)?)+to(?:[ \t]|\n[ \t]*(?://+|\*+)?)+be(?-u:\b)|(?-u:\b)measured(?:[ \t]|\n[ \t]*(?://+|\*+)?)+on(?:[ \t]|\n[ \t]*(?://+|\*+)?)+(?:a(?:[ \t]|\n[ \t]*(?://+|\*+)?)+real|a(?:[ \t]|\n[ \t]*(?://+|\*+)?)+live|a(?:[ \t]|\n[ \t]*(?://+|\*+)?)+production|production)(?-u:\b)|(?-u:\b)this(?:[ \t]|\n[ \t]*(?://+|\*+)?)+(?:PR|pull(?:[ \t]|\n[ \t]*(?://+|\*+)?)+request)(?-u:\b)|(?-u:\b)(?:esta|nesta|desta)(?:[ \t]|\n[ \t]*(?://+|\*+)?)+PR(?-u:\b)|(?-u:\b)caso(?:[ \t]|\n[ \t]*(?://+|\*+)?)+real(?:[ \t]|\n[ \t]*(?://+|\*+)?)*:)[\s\S]*"
+        },
+        r"([\s\S]*?)[^\n]*(?-u:\b)(?:TODO|FIXME):[^\n]*([\s\S]*)"($before, $after) where {
+            or { $before <: narrates(), $after <: narrates() }
+        }
+    }
+}
+
+pattern provenance() {
+    and { not waived(), or { cites(), narrates() } }
+}
+
+$program where {
+    or {
+        and { $program <: has_line_run(), $program <: each_line_run() },
+        and { $program <: has_block_comment(), $program <: each_block_comment() }
+    },
+    register_diagnostic(span = $program, message = "A comment in this file says where the code came from (an issue, a PR, a review, what it used to do). State what is true of the code now; the history belongs to the commit and the PR. A block with a reason carries `comment-waiver: <reason>`.")
+}

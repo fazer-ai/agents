@@ -1,0 +1,30 @@
+// Refuses `NOTE:` opening a comment that sits directly above a declaration (a `function`, `class`,
+// `interface`, `enum`, `namespace`, `type` or a `const`/`let`/`var` binding, exported or not). The
+// comment documents the name below it, the docstring position, so it carries no tag (CLAUDE.md,
+// "Where the tag goes"); the tag is for an aside about a statement. A directive between the comment
+// and the declaration does not change that. `TODO:` stays allowed, and a comment with a reason says
+// so in its own text: `comment-waiver: <reason>`.
+//
+// What this rule cannot read: Biome gives a plugin the program from its first token to its last, so a
+// comment above the first token is outside every node, and the docstring of a file's first
+// declaration is exactly that. It, and workers/, which Biome does not lint, stay with
+// tests/lib/comment-sweep.test.ts.
+language js;
+
+// The same search without capture groups, on the fast path of the regex engine.
+pattern has_tagged_docstring() { r"(?:[\s\S]*?\n)?[ \t]*(?:[^ \t\n/*][^\n]*|/[^/*\n][^\n]*)?\n[ \t]*(?://+[ \t]*NOTE:[^\n]*|/\*+[ \t]*NOTE:[\s\S]*?\*/[^\n]*)(?:\n[ \t]*(?://[^\n]*|/\*[\s\S]*?\*/[^\n]*|\*[^\n]*))*\n[ \t]*(?:export[ \t]+)?(?:default[ \t]+)?(?:declare[ \t]+)?(?:abstract[ \t]+)?(?:async[ \t]+)?(?:function(?-u:\b)|class[ \t]|interface[ \t]|enum[ \t]|namespace[ \t]|(?:const|let|var)[ \t]+[0-9A-Za-z_$\[{]|type[ \t]+[0-9A-Za-z_$]+[ \t]*[<=])[\s\S]*" }
+
+pattern tagged_docstring() {
+    r"(?:[\s\S]*?\n)?[ \t]*(?:[^ \t\n/*][^\n]*|/[^/*\n][^\n]*)?\n([ \t]*(?://+[ \t]*NOTE:[^\n]*|/\*+[ \t]*NOTE:[\s\S]*?\*/[^\n]*)(?:\n[ \t]*(?://[^\n]*|/\*[\s\S]*?\*/[^\n]*|\*[^\n]*))*)\n([ \t]*(?:export[ \t]+)?(?:default[ \t]+)?(?:declare[ \t]+)?(?:abstract[ \t]+)?(?:async[ \t]+)?(?:function(?-u:\b)|class[ \t]|interface[ \t]|enum[ \t]|namespace[ \t]|(?:const|let|var)[ \t]+[0-9A-Za-z_$\[{]|type[ \t]+[0-9A-Za-z_$]+[ \t]*[<=])[\s\S]*)"($run, $rest) where {
+        or {
+            not $run <: r"[\s\S]*(?-u:\b)comment-waiver:[ \t]*\S[\s\S]*",
+            $rest <: tagged_docstring()
+        }
+    }
+}
+
+$program where {
+    $program <: has_tagged_docstring(),
+    $program <: tagged_docstring(),
+    register_diagnostic(span = $program, message = "A comment directly above a declaration in this file opens with `NOTE:`. It documents the name below it and carries no tag (CLAUDE.md, \"Where the tag goes\").")
+}

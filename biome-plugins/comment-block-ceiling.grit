@@ -1,0 +1,73 @@
+// Refuses a comment block over 8 lines: a long explanation belongs to the module's doc, and a comment
+// states what is true of the code it sits on. Consecutive `//` lines are one block (a directive line,
+// such as `biome-ignore` or an i18n anchor, ends it and is not counted), and a `/* … */` is a block of
+// its own, counted by its own lines. A block that has a reason says so in its own text:
+// `comment-waiver: <reason>`.
+//
+// What this rule cannot read: Biome gives a plugin the program from its first token to its last, so a
+// comment above the first token (a file header) or below the last is outside every node. Those, and
+// workers/, which Biome does not lint, stay with tests/lib/comment-sweep.test.ts.
+language js;
+
+// The same two searches without capture groups, which run on the fast path of the regex engine: a
+// file with no candidate is answered without walking it.
+pattern has_line_run() { r"[\s\S]*?(?:\n[ \t]*|[ \t])(?:(?://[^\n]*\n[ \t]*)*//[^\n]*?(?:[^\n]*(?:\n[ \t]*//[^\n]*){8})[^\n]*(?:\n[ \t]*//[^\n]*)*)[\s\S]*" }
+pattern has_block_comment() { r"[\s\S]*?(?:\n[ \t]*|[ \t{(,])(?:/\*(?:[^*]|\*+[^*/])*?(?:(?:\n(?:[^*]|\*+[^*/])*?){8})[\s\S]*?\*/)[\s\S]*" }
+
+// The `//` runs of the program that could break the rule, one at a time: the first, then the same
+// question of the text after it. Only candidates are visited, so the recursion stays shallow.
+pattern each_line_run() {
+    r"[\s\S]*?(?:\n[ \t]*|[ \t])((?://[^\n]*\n[ \t]*)*//[^\n]*?(?:[^\n]*(?:\n[ \t]*//[^\n]*){8})[^\n]*(?:\n[ \t]*//[^\n]*)*)([\s\S]*)"($run, $rest) where {
+        or { $run <: each_block(), $rest <: each_line_run() }
+    }
+}
+
+// A directive line (`biome-ignore`, `@ts-`, an i18n anchor, an edition marker, `/// <reference`,
+// `eslint`) is not prose: it ends the block above it and starts none.
+pattern each_block() {
+    or {
+        r"([\s\S]*?)(?:\A|\n)[ \t]*//[ \t]*(?:biome-ignore|@ts-|t\(|translate\(|@(?:full|free|master)-only|/ <reference|eslint)[^\n]*([\s\S]*)"($block, $after) where {
+            or {
+                and { $block <: r"[\s\S]*//[\s\S]*", $block <: over_ceiling() },
+                $after <: each_block()
+            }
+        },
+        and {
+            not r"(?:[\s\S]*\n)?[ \t]*//[ \t]*(?:biome-ignore|@ts-|t\(|translate\(|@(?:full|free|master)-only|/ <reference|eslint)[\s\S]*",
+            over_ceiling()
+        }
+    }
+}
+
+// The block comments of the program that could break the rule, one at a time. A directive (`/* biome-ignore … */`) is none.
+pattern each_block_comment() {
+    r"[\s\S]*?(?:\n[ \t]*|[ \t{(,])(/\*(?:[^*]|\*+[^*/])*?(?:(?:\n(?:[^*]|\*+[^*/])*?){8})[\s\S]*?\*/)([\s\S]*)"($comment, $rest) where {
+        or {
+            and {
+                not $comment <: r"/\*[ \t\n]*(?:biome-ignore|@ts-|t\(|translate\(|@(?:full|free|master)-only|/ <reference|eslint)[\s\S]*",
+                $comment <: over_ceiling()
+            },
+            $rest <: each_block_comment()
+        }
+    }
+}
+
+// A block with a reason to break the rule says so in its own text, after `comment-waiver:`.
+pattern waived() {
+    r"[\s\S]*(?-u:\b)comment-waiver:[ \t]*(?:[^\s*]|\*+[^\s*/])[\s\S]*"
+}
+
+pattern over_ceiling() {
+    and {
+        not waived(),
+        r"(?:[^\n]*\n){8}[^\n]*\S[\s\S]*"
+    }
+}
+
+$program where {
+    or {
+        and { $program <: has_line_run(), $program <: each_line_run() },
+        and { $program <: has_block_comment(), $program <: each_block_comment() }
+    },
+    register_diagnostic(span = $program, message = "A comment block in this file runs over 8 lines. Keep the comment to what is true of the code here and move the long explanation to the module's doc. A block with a reason carries `comment-waiver: <reason>`.")
+}

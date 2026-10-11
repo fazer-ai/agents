@@ -1,14 +1,13 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { LINT_BLIND_FILES } from "@/tests/utils/comment-blocks";
 
-// The repo-wide source rules in biome-plugins/ (no-jsx-comment-note, no-bigint-cast,
-// no-env-read-outside-config, require-model-call-deadline, no-scrub-around-cut) and the module-stub
-// rules for tests (no-package-module-mock, no-module-mock-live-namespace, no-raw-auth-context-mock),
-// run through the real Biome over probe files. biome.jsonc applies the source rules under
-// tests/lint/.probe-src-*, and the test rules apply to every file under tests/. The probes end in
-// `.ts` or `.tsx`, never `.test.ts`, so `bun test` never collects them, and each run writes under its
-// own pid. One Biome process lints every probe.
+// The repo-wide rules in biome-plugins/ that replaced sweeps under tests/lib (the source rules, the
+// comment rules and the rules for tests), run through the real Biome over probe files. biome.jsonc
+// applies the source rules under tests/lint/.probe-src-*, and the test rules apply to every file under
+// tests/. The probes end in `.ts` or `.tsx`, never `.test.ts`, so `bun test` never collects them, and
+// each run writes under its own pid. One Biome process lints every probe.
 
 const ROOT = join(import.meta.dir, "../..");
 const PROBE = `tests/lint/.probe-src-${process.pid}`;
@@ -22,11 +21,214 @@ const ENV_WAIVED = [
 const JOSE_WAIVED = "tests/api/features/auth/google.service.test.ts";
 
 const P = (name: string) => `${PROBE}/${name}`;
+// A listed file of both error ledgers, copied under the probe at its own path (the ledgers match the
+// path's tail) and at an unlisted one.
+const LEDGERED = `${SRC}/modules/flowlog/service.ts`;
+const LEDGERED_TEXT = readFileSync(join(ROOT, LEDGERED), "utf8");
+// A listed file of the bare-cut ledger, the same way.
+const CUT_LISTED = `${SRC}/api/lib/auth.ts`;
+const CUT_LISTED_TEXT = readFileSync(join(ROOT, CUT_LISTED), "utf8");
+// Biome hands a plugin the program from its first token to its last, so every comment probe starts
+// and ends with code.
+const C = (body: string) =>
+  `export const p = 0;\n${body}\nexport const q = 1;\n`;
 const CLIENT_STUBBED = [
   "@/client/contexts/AuthContext",
   "@/client/contexts/ThemeContext",
   "@/client/hooks/useTenantEvents",
 ];
+
+// The comment sweep's own fixtures (tests/lib/comment-sweep.test.ts), each as a probe with the hits it
+// draws: [provenance, over the line ceiling, tagged docstring].
+type CommentHits = [number, number, number];
+const lines = (n: number) =>
+  Array.from({ length: n }, (_, i) => `// line ${i + 1}`).join("\n");
+const anchors = (n: number) =>
+  Array.from(
+    { length: n },
+    (_, i) => `// translate('errors.k${i}', 'Default ${i}.')`,
+  ).join("\n");
+const COMMENT_FIXTURES: Record<string, [string, ...CommentHits]> = {
+  ...Object.fromEntries(
+    [
+      "// Closed in #123.",
+      "// See issue #45 for the case.",
+      "// PR #9 moved it here.",
+      "/* review round 2 asked for this */",
+      "// The fix from round 3.",
+      "// Fixed in https://github.com/acme/app/pull/123",
+      "/* see https://github.com/acme/app/issues/9#issuecomment-1 */",
+      "// Review found both halves of that.",
+      "// Flagged by Codex on the last pass.",
+      "// Kept after review r6.",
+      "// The branch that was dropped (r3).",
+      "// Before the fix they were identical.",
+      "// The first version of this check looked only at the product.",
+      "// This used to vanish silently.",
+      "// The order used to be the reverse.",
+      "// Measured on a real socket, the server reads the path.",
+      "// This PR moves the check to the boundary.",
+      "// Nesta PR a regra mudou.",
+      "// Caso real: o turno travou.",
+      "// The flag this\n// used to carry.",
+      "// Found during a pass, and flagged\n// by Codex.",
+      "// TODO: drop it (#149).\n// Came from #120.",
+      "// comment-waiver:\n// #77",
+      "// intro\n/* fixed in #123 */",
+      "/* biome-ignore lint/x: reason */\n// fixed in #12",
+      "// comment-waiver: upstream id\n// biome-ignore lint/x: reason\n// fixed in #12",
+      "/* Fixed in #123. comment-waiver: */",
+    ].map((body, i) => [`cited-${i}`, [C(body), 1, 0, 0]]),
+  ),
+  ...Object.fromEntries(
+    [
+      "// A read that started before the change is still on the wire.",
+      "// Used to name the downloaded graph image.",
+      "// Measured on the repaired text, not on the value.",
+      "// The first attempt fails fast.",
+      "// A token that no longer matches is refused.",
+      "// Uma correção apoiada no id erraria calada o caso real.",
+      "// TODO: drop the column (#149).",
+      "// Color is &#123; in the entity.",
+      "// Five rounds of retries.",
+      'export const url = "https://x.test/issues/123#456";',
+      'export const pr = "https://github.com/acme/app/pull/123";',
+      "// Docs: https://github.com/acme/app/blob/main/x.md",
+      "// comment-waiver: the upstream bug id is the fix.\n// #77",
+      "/* Fixed in #123. comment-waiver: upstream id */",
+      "// biome-ignore lint/x: reason #12",
+    ].map((body, i) => [`prose-${i}`, [C(body), 0, 0, 0]]),
+  ),
+  "ceiling-at": [C(lines(8)), 0, 0, 0],
+  "ceiling-over": [C(lines(9)), 0, 1, 0],
+  "ceiling-blank-between": [C(`${lines(5)}\n\n${lines(5)}`), 0, 0, 0],
+  "ceiling-code-between": [
+    C(`${lines(5)}\nexport const a = 1;\n${lines(5)}`),
+    0,
+    0,
+    0,
+  ],
+  "ceiling-block-comment": [
+    C(`/*\n${Array.from({ length: 8 }, () => " * x").join("\n")}\n */`),
+    0,
+    1,
+    0,
+  ],
+  "ceiling-two-block-comments": [
+    C(`/*\n${" * x\n".repeat(4)} */\n/*\n${" * x\n".repeat(4)} */`),
+    0,
+    0,
+    0,
+  ],
+  "ceiling-directive-between": [
+    C(`${lines(5)}\n// biome-ignore lint/x: reason\n${lines(5)}`),
+    0,
+    0,
+    0,
+  ],
+  "ceiling-anchors": [C(anchors(10)), 0, 0, 0],
+  "ceiling-prose-above-anchors": [
+    C(`// Declared here for the extractor.\n${anchors(10)}`),
+    0,
+    0,
+    0,
+  ],
+  ...Object.fromEntries(
+    [
+      "const LIMIT = 3;",
+      "  let pending = 0;",
+      "export function run() {}",
+      "export default async function main() {}",
+      "export async function* rows() {}",
+      "class Queue {}",
+      "export abstract class Base {}",
+      "interface Row { id: number }",
+      "export type Id = string;",
+      "type Pair<T> = [T, T];",
+      "enum Mode { A }",
+      "declare const VERSION: string;",
+      "  const { a, b } = pick();",
+      "  const [first] = rows;",
+    ].map((decl, i) => [
+      `tagged-${i}`,
+      [C(`// NOTE: why it exists.\n${decl}`), 0, 0, 1],
+    ]),
+  ),
+  "tagged-block": [
+    C("/* NOTE: a block comment\n   over two lines */\nconst x = 1;"),
+    0,
+    0,
+    1,
+  ],
+  "tagged-two-lines": [
+    C(
+      "// NOTE: the first line carries the tag,\n// and the block ends here.\nconst x = 1;",
+    ),
+    0,
+    0,
+    1,
+  ],
+  "tagged-directive-between": [
+    C("// NOTE: why it exists.\n// biome-ignore lint/x: reason\nconst x = 1;"),
+    0,
+    0,
+    1,
+  ],
+  "tagged-anchor-between": [
+    C("// NOTE: the keys below.\n// t('a.b', 'A')\nconst x = 1;"),
+    0,
+    0,
+    1,
+  ],
+  "tagged-after-trailing": [
+    C("run(); // the call\n// NOTE: why it exists.\nconst x = 1;"),
+    0,
+    0,
+    1,
+  ],
+  "tagged-in-string": [
+    C("const a = `\n// NOTE: text\n`;\nconst x = 1;"),
+    0,
+    0,
+    0,
+  ],
+  ...Object.fromEntries(
+    [
+      "  await flush();",
+      "  return rows;",
+      "  for (const row of rows) {}",
+      "  if (done) return;",
+      "  type = next;",
+      "  constant = 1;",
+      "  letters.push(x);",
+      "  classify(row);",
+    ].map((stmt, i) => [
+      `aside-${i}`,
+      [C(`export async function f() {\n// NOTE: why.\n${stmt}\n}`), 0, 0, 0],
+    ]),
+  ),
+  "untagged-docstring": [C("// Why it exists.\nconst x = 1;"), 0, 0, 0],
+  "trailing-note": [C("run(); // NOTE: aside\nconst x = 1;"), 0, 0, 0],
+  "note-then-gap": [
+    C("// NOTE: about the call above.\n\nconst x = 1;"),
+    0,
+    0,
+    0,
+  ],
+  "note-waived": [
+    C(
+      "// NOTE: kept on purpose. comment-waiver: quoted by a test\nconst x = 1;",
+    ),
+    0,
+    0,
+    0,
+  ],
+  "todo-docstring": [C("// TODO: split it.\nconst x = 1;"), 0, 0, 0],
+  // What a plugin cannot read, and the sweep does: a comment above the first token or below the last.
+  "header-cited": ["// Fixed in #1234.\nexport const a = 1;\n", 0, 0, 0],
+  "header-tagged": ["// NOTE: why it exists.\nexport const a = 1;\n", 0, 0, 0],
+  "footer-cited": ["export const a = 1;\n// Fixed in #1234.\n", 0, 0, 0],
+};
 
 const PROBES: Record<string, string> = {
   // no-jsx-comment-note
@@ -146,6 +348,78 @@ const PROBES: Record<string, string> = {
   [P("client-mock-other-hook.ts")]:
     'import { mock } from "bun:test";\nmock.module("@/client/hooks/useTenantEventsSoon", () => ({}));\n',
 
+  // no-jsx-comment-note: a spelling of the shape that is not markup
+  [P("jsx-spelled-in-template.tsx")]: "export const t = `a {/* fine */} b`;\n",
+  [P("jsx-spelled-in-attribute.tsx")]:
+    'export const e = <i title="{/* NOTE: y */}" />;\n',
+  [P("jsx-spelled-in-line-comment.tsx")]:
+    "export const a = 1;\n// writes {/* x */} here\nexport const b = 2;\n",
+  [P("jsx-spelled-from-parts.tsx")]:
+    'export const ok = "{/" + "* NOTE: x *" + "/}";\n',
+
+  // pin-error-column-lines and pin-error-message-guard
+  [P(LEDGERED)]: LEDGERED_TEXT,
+  [P(`unlisted/${LEDGERED}`.replace(`/${SRC}/`, "/elsewhere/"))]: LEDGERED_TEXT,
+  [P(`guard-removed/${LEDGERED}`)]: LEDGERED_TEXT.replace(
+    "sanitizeErrorMessage(",
+    "String(",
+  ),
+  [P(`guard-into-prose/${LEDGERED}`)]: `${LEDGERED_TEXT.replace(
+    "sanitizeErrorMessage(",
+    "String(",
+  )}\n// sanitizeErrorMessage(x) in prose\n`,
+  [P(`key-added/${LEDGERED}`)]:
+    `${LEDGERED_TEXT}\nexport const extra = { lastError: "x" };\n`,
+  [P("guard-unlisted.ts")]:
+    "declare function sanitizeErrorMessage(e: unknown): string;\nexport const a = sanitizeErrorMessage(1);\n",
+  [P("key-unlisted.ts")]: 'export const a = { errorMessage: "x" };\n',
+  [P("ledger-prose.ts")]:
+    'export const a = 1;\n// sanitizeErrorMessage(x) and lastError: in prose\n/**\n * lastError: too\n */\nexport const b = "x";\n',
+
+  // pin-bare-slices
+  [P(CUT_LISTED)]: CUT_LISTED_TEXT,
+  [P(`cut-added/${CUT_LISTED}`)]:
+    `${CUT_LISTED_TEXT}\nexport const plantCut = (s: string) => s.slice(0, 5);\n`,
+  [P(`cut-into-prose/${CUT_LISTED}`)]: `${CUT_LISTED_TEXT.replace(
+    ".slice(0",
+    ".substring(0",
+  )}\n// s.slice(0, 5) in prose\n`,
+  [P("cut-unlisted-tail.ts")]:
+    "export const plantCut = (s: string) => s.slice(-5);\n",
+  [P("cut-unlisted-length.ts")]:
+    "export const plantCut = (s: string) => s.slice(s.length - 5);\n",
+  [P("cut-unlisted-head-wrapped.ts")]:
+    "export const plantCut = (s: string) =>\n  s.slice(\n    0,\n    5,\n  );\n",
+  [P("cut-unlisted-position.ts")]:
+    'export const plantCut = (s: string) => s.slice(s.indexOf(":") + 1);\n',
+  [P("cut-unlisted-prose.ts")]:
+    'export const a = 1;\n// s.slice(0, 5) in prose\n/**\n * s.slice(-5) too\n */\nexport const b = "x";\n',
+
+  // no-raw-read-of-globbed-source
+  [P("glob-raw.ts")]:
+    `const { Glob } = await import("bun");\nlet n = 0;\nfor await (const rel of new Glob("**/*.ts").scan("${SRC}")) {\n  n += (await Bun.file(\`${SRC}/\${rel}\`).text()).length;\n}\nexport { n };\n`,
+  [P("glob-raw-from-root.ts")]:
+    `let n = 0;\nfor await (const f of new Bun.Glob("${SRC}/**/*.ts").scan(".")) {\n  n += (await Bun.file(f).text()).length;\n}\nexport { n };\n`,
+  [P("glob-imports-only.ts")]:
+    `const { Glob } = await import("bun");\nfor await (const rel of new Glob("**/*.ts").scan("${SRC}")) {\n  await import(\`../../${SRC}/\${rel}\`);\n}\nexport const t = await Bun.file("package.json").text();\n`,
+  [P("glob-scanned.ts")]:
+    `import { codeOnly } from "@/tests/utils/source-text";\nconst { Glob } = await import("bun");\nlet n = 0;\nfor await (const rel of new Glob("**/*.ts").scan("${SRC}")) {\n  n += codeOnly(await Bun.file(\`${SRC}/\${rel}\`).text()).length;\n}\nexport { n };\n`,
+  [P("glob-none.ts")]:
+    'export const t = await Bun.file("package.json").text();\n',
+
+  // no-comment-provenance, comment-block-ceiling, no-tagged-docstring: the comment sweep's fixtures
+  ...Object.fromEntries(
+    Object.entries(COMMENT_FIXTURES).map(([name, [body]]) => [
+      P(`comment-${name}.ts`),
+      body,
+    ]),
+  ),
+  ...Object.fromEntries(
+    [...LINT_BLIND_FILES].map((path, i) => [
+      P(`lint-blind-copy-${i}.ts`),
+      readFileSync(join(ROOT, path), "utf8"),
+    ]),
+  ),
   ...Object.fromEntries(
     ENV_WAIVED.map((path, i) => [
       P(`env-waived-copy-${i}.ts`),
@@ -164,6 +438,14 @@ const RULES = {
   undo: "rewrote this namespace in place",
   auth: "Stub this client context or hook per file with `stubExports`",
   unused: "Suppression comment has no effect",
+  jsxText: "spells a JSX comment",
+  column: "count of `lastError:`",
+  guard: "count of `sanitizeErrorMessage(`",
+  glob: "A test that globs src/ reads each file",
+  cut: "count of bare cuts",
+  cited: "says where the code came from",
+  long: "runs over 8 lines",
+  tagged: "opens with `NOTE:`",
 } as const;
 type Rule = keyof typeof RULES;
 
@@ -184,6 +466,7 @@ beforeAll(() => {
       ...Object.keys(PROBES),
       ...ENV_WAIVED,
       JOSE_WAIVED,
+      ...LINT_BLIND_FILES,
     ],
     cwd: ROOT,
   });
@@ -221,15 +504,32 @@ describe("no-jsx-comment-note", () => {
   test.each([
     ["jsx-untagged.tsx"],
     ["jsx-todo.tsx"],
-    ["jsx-note-in-string.tsx"],
     ["jsx-note-in-code.tsx"],
     ["jsx-note-beside-expression.tsx"],
   ])(
     "an untagged or TODO: JSX comment, and a NOTE: that is not one, pass (%s)",
     (name) => {
       expect(of(P(name), "jsx")).toBe(0);
+      expect(of(P(name), "jsxText")).toBe(0);
     },
   );
+
+  // The sweep this replaces counted `{/* … */}` in the raw text against the comments its scan found,
+  // and refused a file where they differed: a string, an attribute, a template or a `//` line that
+  // spells the shape, tagged or not.
+  test.each([
+    ["jsx-note-in-string.tsx"],
+    ["jsx-spelled-in-template.tsx"],
+    ["jsx-spelled-in-attribute.tsx"],
+    ["jsx-spelled-in-line-comment.tsx"],
+  ])("text that spells a JSX comment is refused (%s)", (name) => {
+    expect(of(P(name), "jsxText")).toBe(1);
+    expect(of(P(name), "jsx")).toBe(0);
+  });
+
+  test("the same text built from parts passes", () => {
+    expect(of(P("jsx-spelled-from-parts.tsx"), "jsxText")).toBe(0);
+  });
 });
 
 describe("no-bigint-cast", () => {
@@ -350,5 +650,107 @@ describe("no-raw-auth-context-mock", () => {
   test("a mock of another client module passes", () => {
     expect(of(P("client-mock-other.ts"), "auth")).toBe(0);
     expect(of(P("client-mock-other-hook.ts"), "auth")).toBe(0);
+  });
+});
+
+describe("pin-error-column-lines and pin-error-message-guard", () => {
+  test("a listed file at its count passes, and the same text at an unlisted path is refused", () => {
+    expect(of(P(LEDGERED), "column")).toBe(0);
+    expect(of(P(LEDGERED), "guard")).toBe(0);
+    const elsewhere = P(
+      `unlisted/${LEDGERED}`.replace(`/${SRC}/`, "/elsewhere/"),
+    );
+    expect(of(elsewhere, "column")).toBe(1);
+    expect(of(elsewhere, "guard")).toBe(1);
+  });
+
+  test("a guard call removed from a listed file is refused, even with its name left in a comment", () => {
+    expect(of(P(`guard-removed/${LEDGERED}`), "guard")).toBe(1);
+    expect(of(P(`guard-into-prose/${LEDGERED}`), "guard")).toBe(1);
+    expect(of(P(`guard-removed/${LEDGERED}`), "column")).toBe(0);
+  });
+
+  test("a new error-column line in a listed file is refused", () => {
+    expect(of(P(`key-added/${LEDGERED}`), "column")).toBe(1);
+    expect(of(P(`key-added/${LEDGERED}`), "guard")).toBe(0);
+  });
+
+  test("a guard call or an error-column line in an unlisted file is refused, and prose naming them passes", () => {
+    expect(of(P("guard-unlisted.ts"), "guard")).toBe(1);
+    expect(of(P("key-unlisted.ts"), "column")).toBe(1);
+    expect(of(P("ledger-prose.ts"), "guard")).toBe(0);
+    expect(of(P("ledger-prose.ts"), "column")).toBe(0);
+  });
+});
+
+describe("pin-bare-slices", () => {
+  test("a listed file at its count passes", () => {
+    expect(of(P(CUT_LISTED), "cut")).toBe(0);
+  });
+
+  test("a cut added to a listed file, or one removed with its spelling left in a comment, is refused", () => {
+    expect(of(P(`cut-added/${CUT_LISTED}`), "cut")).toBe(1);
+    expect(of(P(`cut-into-prose/${CUT_LISTED}`), "cut")).toBe(1);
+  });
+
+  test.each([
+    ["cut-unlisted-tail.ts"],
+    ["cut-unlisted-length.ts"],
+    ["cut-unlisted-head-wrapped.ts"],
+  ])("a bare cut in an unlisted file is refused (%s)", (name) => {
+    expect(of(P(name), "cut")).toBe(1);
+  });
+
+  test("a slice at a computed position, and prose naming a cut, pass", () => {
+    expect(of(P("cut-unlisted-position.ts"), "cut")).toBe(0);
+    expect(of(P("cut-unlisted-prose.ts"), "cut")).toBe(0);
+  });
+});
+
+describe("no-raw-read-of-globbed-source", () => {
+  test.each([
+    ["glob-raw.ts"],
+    ["glob-raw-from-root.ts"],
+    ["glob-imports-only.ts"],
+  ])(
+    "a raw read in a test that globs the source tree is refused (%s)",
+    (name) => {
+      expect(of(P(name), "glob")).toBe(1);
+    },
+  );
+
+  test("a read through the scan, and a raw read in a test that globs nothing, pass", () => {
+    expect(of(P("glob-scanned.ts"), "glob")).toBe(0);
+    expect(of(P("glob-none.ts"), "glob")).toBe(0);
+  });
+});
+
+describe("the comment rules", () => {
+  test.each(Object.entries(COMMENT_FIXTURES).map(([name, f]) => [name, ...f]))(
+    "%s",
+    (name, _body, cited, long, tagged) => {
+      const path = P(`comment-${name}.ts`);
+      expect([of(path, "cited"), of(path, "long"), of(path, "tagged")]).toEqual(
+        [cited, long, tagged],
+      );
+    },
+  );
+
+  test("each file biome.jsonc keeps from them is skipped there and drawn by a copy elsewhere", () => {
+    [...LINT_BLIND_FILES].forEach((path, i) => {
+      expect(of(path, "cited") + of(path, "long")).toBe(0);
+      const copy = P(`lint-blind-copy-${i}.ts`);
+      expect(of(copy, "cited") + of(copy, "long")).toBeGreaterThan(0);
+    });
+  });
+
+  test("biome.jsonc skips exactly the files the comment sweep reads whole", () => {
+    const config = readFileSync(join(ROOT, "biome.jsonc"), "utf8");
+    const override = config.slice(
+      config.lastIndexOf("{", config.indexOf("no-comment-provenance.grit")),
+      config.indexOf("no-comment-provenance.grit"),
+    );
+    const skipped = [...override.matchAll(/"!([^"]+)"/g)].map((m) => m[1]);
+    expect(skipped.sort()).toEqual([...LINT_BLIND_FILES].sort());
   });
 });

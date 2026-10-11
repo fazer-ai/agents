@@ -98,7 +98,29 @@
       ],
       "plugins": [
         "./biome-plugins/no-bigint-cast.grit",
-        "./biome-plugins/no-scrub-around-cut.grit"
+        "./biome-plugins/no-scrub-around-cut.grit",
+        "./biome-plugins/pin-error-column-lines.grit",
+        "./biome-plugins/pin-error-message-guard.grit",
+        "./biome-plugins/pin-bare-slices.grit"
+      ]
+    },
+    // The comment rules read every file the comment sweep reads, except workers/, which Biome does not
+    // lint. The rules walk the program's text, so a multi-line template literal that holds JavaScript
+    // with comments in it reads as comments; the two files below hold such a template (the code QuickJS
+    // runs) and are read whole by tests/lib/comment-sweep.test.ts instead, which tells a template from a
+    // comment. That list is LINT_BLIND_FILES in tests/utils/comment-blocks.ts.
+    {
+      "includes": [
+        "src/**/*.{ts,tsx}",
+        "scripts/**/*.ts",
+        "tests/**/*.{ts,tsx}",
+        "!src/graph/tools/code-sandbox.worker.ts",
+        "!tests/graph/code-sandbox.test.ts"
+      ],
+      "plugins": [
+        "./biome-plugins/no-comment-provenance.grit",
+        "./biome-plugins/comment-block-ceiling.grit",
+        "./biome-plugins/no-tagged-docstring.grit"
       ]
     },
     // A file below reads the environment for a reason config cannot serve. src/lib/instance.ts:
@@ -127,6 +149,10 @@
         "tests/lint/.probe-src-*/**/*.ts"
       ],
       "plugins": ["./biome-plugins/require-model-call-deadline.grit"]
+    },
+    {
+      "includes": ["tests/**/*.{ts,tsx}", "!tests/utils/source-text.ts"],
+      "plugins": ["./biome-plugins/no-raw-read-of-globbed-source.grit"]
     },
     // Module stubs in every file under tests/, support files included: a stub installed by a helper is
     // as process-wide as one in a test file.

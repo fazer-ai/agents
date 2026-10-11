@@ -1,0 +1,105 @@
+// The ledger of every file under src/ that names an error column by a key unambiguous enough to
+// count (`lastError:`, `errorMessage:`), with how many times, so a NEW line in a listed file and a
+// line in an unlisted one both stop the lint. Each line is one of: flow-event (handed to
+// emitFlowEvent, sanitized at the chokepoint in flowlog/service.ts, the one shape that may pass a raw
+// message along), guarded (`sanitizeErrorMessage` at the write), cleared (writes null), read (a
+// select, a filter, a DTO field), unrelated (a client-side field that shares the name, listed rather
+// than filtered by path, since a path rule would also hide a real one). A changed count is a reason
+// to look at the line, then to change the number here with its reason. Error columns only (scope:
+// docs/logs.md, Model); `sanitizeErrorMessage` and why it exists: tests/lib/storable-write-sweep.test.ts.
+//
+// Counted on the file's text, one per occurrence, skipping a line that opens with `//`, `/*` or `*`
+// and whatever follows a `//` on a line. A regex with no capture group, because a group would become
+// a variable and the rule would fail silently. Each `keys_at_least_N` repeats the same occurrence N
+// times, so a count above the highest one here needs one more pattern.
+language js;
+
+pattern keys_at_least_1() { r"(?:(?:[\s\S]*?\n[ \t]*(?:[^ \t\n/*](?:[^\n/]|/[^/\n])*?|/[^/*\n](?:[^\n/]|/[^/\n])*?)?\b(?:lastError|errorMessage)\s*:|(?:[^\n/]|/[^/\n])*?\b(?:lastError|errorMessage)\s*:)){1}[\s\S]*" }
+pattern keys_at_least_2() { r"(?:(?:[\s\S]*?\n[ \t]*(?:[^ \t\n/*](?:[^\n/]|/[^/\n])*?|/[^/*\n](?:[^\n/]|/[^/\n])*?)?\b(?:lastError|errorMessage)\s*:|(?:[^\n/]|/[^/\n])*?\b(?:lastError|errorMessage)\s*:)){2}[\s\S]*" }
+pattern keys_at_least_3() { r"(?:(?:[\s\S]*?\n[ \t]*(?:[^ \t\n/*](?:[^\n/]|/[^/\n])*?|/[^/*\n](?:[^\n/]|/[^/\n])*?)?\b(?:lastError|errorMessage)\s*:|(?:[^\n/]|/[^/\n])*?\b(?:lastError|errorMessage)\s*:)){3}[\s\S]*" }
+pattern keys_at_least_4() { r"(?:(?:[\s\S]*?\n[ \t]*(?:[^ \t\n/*](?:[^\n/]|/[^/\n])*?|/[^/*\n](?:[^\n/]|/[^/\n])*?)?\b(?:lastError|errorMessage)\s*:|(?:[^\n/]|/[^/\n])*?\b(?:lastError|errorMessage)\s*:)){4}[\s\S]*" }
+pattern keys_at_least_5() { r"(?:(?:[\s\S]*?\n[ \t]*(?:[^ \t\n/*](?:[^\n/]|/[^/\n])*?|/[^/*\n](?:[^\n/]|/[^/\n])*?)?\b(?:lastError|errorMessage)\s*:|(?:[^\n/]|/[^/\n])*?\b(?:lastError|errorMessage)\s*:)){5}[\s\S]*" }
+pattern keys_at_least_6() { r"(?:(?:[\s\S]*?\n[ \t]*(?:[^ \t\n/*](?:[^\n/]|/[^/\n])*?|/[^/*\n](?:[^\n/]|/[^/\n])*?)?\b(?:lastError|errorMessage)\s*:|(?:[^\n/]|/[^/\n])*?\b(?:lastError|errorMessage)\s*:)){6}[\s\S]*" }
+pattern keys_at_least_7() { r"(?:(?:[\s\S]*?\n[ \t]*(?:[^ \t\n/*](?:[^\n/]|/[^/\n])*?|/[^/*\n](?:[^\n/]|/[^/\n])*?)?\b(?:lastError|errorMessage)\s*:|(?:[^\n/]|/[^/\n])*?\b(?:lastError|errorMessage)\s*:)){7}[\s\S]*" }
+pattern keys_at_least_8() { r"(?:(?:[\s\S]*?\n[ \t]*(?:[^ \t\n/*](?:[^\n/]|/[^/\n])*?|/[^/*\n](?:[^\n/]|/[^/\n])*?)?\b(?:lastError|errorMessage)\s*:|(?:[^\n/]|/[^/\n])*?\b(?:lastError|errorMessage)\s*:)){8}[\s\S]*" }
+pattern keys_at_least_9() { r"(?:(?:[\s\S]*?\n[ \t]*(?:[^ \t\n/*](?:[^\n/]|/[^/\n])*?|/[^/*\n](?:[^\n/]|/[^/\n])*?)?\b(?:lastError|errorMessage)\s*:|(?:[^\n/]|/[^/\n])*?\b(?:lastError|errorMessage)\s*:)){9}[\s\S]*" }
+pattern keys_at_least_10() { r"(?:(?:[\s\S]*?\n[ \t]*(?:[^ \t\n/*](?:[^\n/]|/[^/\n])*?|/[^/*\n](?:[^\n/]|/[^/\n])*?)?\b(?:lastError|errorMessage)\s*:|(?:[^\n/]|/[^/\n])*?\b(?:lastError|errorMessage)\s*:)){10}[\s\S]*" }
+pattern keys_at_least_11() { r"(?:(?:[\s\S]*?\n[ \t]*(?:[^ \t\n/*](?:[^\n/]|/[^/\n])*?|/[^/*\n](?:[^\n/]|/[^/\n])*?)?\b(?:lastError|errorMessage)\s*:|(?:[^\n/]|/[^/\n])*?\b(?:lastError|errorMessage)\s*:)){11}[\s\S]*" }
+pattern keys_at_least_12() { r"(?:(?:[\s\S]*?\n[ \t]*(?:[^ \t\n/*](?:[^\n/]|/[^/\n])*?|/[^/*\n](?:[^\n/]|/[^/\n])*?)?\b(?:lastError|errorMessage)\s*:|(?:[^\n/]|/[^/\n])*?\b(?:lastError|errorMessage)\s*:)){12}[\s\S]*" }
+pattern keys_at_least_13() { r"(?:(?:[\s\S]*?\n[ \t]*(?:[^ \t\n/*](?:[^\n/]|/[^/\n])*?|/[^/*\n](?:[^\n/]|/[^/\n])*?)?\b(?:lastError|errorMessage)\s*:|(?:[^\n/]|/[^/\n])*?\b(?:lastError|errorMessage)\s*:)){13}[\s\S]*" }
+
+$program where {
+    or {
+        // flow-event
+        and { $filename <: r"(?:[\s\S]*/)?src/graph/nudge\.ts", or { not $program <: keys_at_least_2(), $program <: keys_at_least_3() } },
+        // flow-event
+        and { $filename <: r"(?:[\s\S]*/)?src/graph/prepare\.ts", or { not $program <: keys_at_least_2(), $program <: keys_at_least_3() } },
+        // flow-event
+        and { $filename <: r"(?:[\s\S]*/)?src/graph/runtime\.ts", or { not $program <: keys_at_least_7(), $program <: keys_at_least_8() } },
+        // flow-event
+        and { $filename <: r"(?:[\s\S]*/)?src/graph/tool-flowlog\.ts", or { not $program <: keys_at_least_3(), $program <: keys_at_least_4() } },
+        // flow-event: a playground turn that failed unhandled, a fixed sentence and never the error's text; and the two fallback-failed lines, the redacted reason.
+        and { $filename <: r"(?:[\s\S]*/)?src/modules/playground/service\.ts", or { not $program <: keys_at_least_3(), $program <: keys_at_least_4() } },
+        // unrelated: an upload row's own failure in the console, which never reaches a column.
+        and { $filename <: r"(?:[\s\S]*/)?src/client/pages/resources/useKnowledgeManager\.tsx", or { not $program <: keys_at_least_1(), $program <: keys_at_least_2() } },
+        // flow-event: the line a recovery writes when it ends with the delivery still DEAD, a fixed sentence.
+        and { $filename <: r"(?:[\s\S]*/)?src/modules/chatwoot/recover-delivery\.ts", or { not $program <: keys_at_least_1(), $program <: keys_at_least_2() } },
+        // cleared
+        and { $filename <: r"(?:[\s\S]*/)?src/modules/chatwoot/webhook\.ts", or { not $program <: keys_at_least_1(), $program <: keys_at_least_2() } },
+        // flow-event
+        and { $filename <: r"(?:[\s\S]*/)?src/modules/contact-auth/service\.ts", or { not $program <: keys_at_least_1(), $program <: keys_at_least_2() } },
+        // guarded + cleared
+        and { $filename <: r"(?:[\s\S]*/)?src/modules/conversations/error\.ts", or { not $program <: keys_at_least_3(), $program <: keys_at_least_4() } },
+        // read
+        and { $filename <: r"(?:[\s\S]*/)?src/modules/conversations/service\.ts", or { not $program <: keys_at_least_12(), $program <: keys_at_least_13() } },
+        // flow-event: the line a dead debounce flush writes, a fixed sentence and a count, never the job's error.
+        and { $filename <: r"(?:[\s\S]*/)?src/modules/debounce/handler\.ts", or { not $program <: keys_at_least_1(), $program <: keys_at_least_2() } },
+        // guarded + cleared: both roads to DEAD write through one `finalizeDead`.
+        and { $filename <: r"(?:[\s\S]*/)?src/modules/flowlog/alert-worker\.ts", or { not $program <: keys_at_least_3(), $program <: keys_at_least_4() } },
+        // read + flow-event: the follow-up sweep's reading of the failure backoff (the type of the row it is handed), and the line a lost follow-up sequence writes, a fixed English sentence.
+        and { $filename <: r"(?:[\s\S]*/)?src/modules/followups/handlers\.ts", or { not $program <: keys_at_least_2(), $program <: keys_at_least_3() } },
+        // flow-event
+        and { $filename <: r"(?:[\s\S]*/)?src/modules/flowlog/dead-letter\.ts", or { not $program <: keys_at_least_1(), $program <: keys_at_least_2() } },
+        // read
+        and { $filename <: r"(?:[\s\S]*/)?src/modules/flowlog/read\.ts", or { not $program <: keys_at_least_4(), $program <: keys_at_least_5() } },
+        // guarded
+        and { $filename <: r"(?:[\s\S]*/)?src/modules/flowlog/service\.ts", or { not $program <: keys_at_least_2(), $program <: keys_at_least_3() } },
+        // flow-event
+        and { $filename <: r"(?:[\s\S]*/)?src/modules/flowlog/webhook\.ts", or { not $program <: keys_at_least_1(), $program <: keys_at_least_2() } },
+        // flow-event
+        and { $filename <: r"(?:[\s\S]*/)?src/modules/guardrails/gate\.ts", or { not $program <: keys_at_least_2(), $program <: keys_at_least_3() } },
+        // flow-event: the guardrail's own transfer, when the status change is refused.
+        and { $filename <: r"(?:[\s\S]*/)?src/modules/guardrails/handoff\.ts", or { not $program <: keys_at_least_1(), $program <: keys_at_least_2() } },
+        // read
+        and { $filename <: r"(?:[\s\S]*/)?src/modules/guardrails/health\.ts", or { not $program <: keys_at_least_4(), $program <: keys_at_least_5() } },
+        // flow-event
+        and { $filename <: r"(?:[\s\S]*/)?src/modules/memory/compact\.ts", or { not $program <: keys_at_least_1(), $program <: keys_at_least_2() } },
+        // flow-event
+        and { $filename <: r"(?:[\s\S]*/)?src/modules/observe/job\.ts", or { not $program <: keys_at_least_2(), $program <: keys_at_least_3() } },
+        // guarded + cleared + read: the follow-up sweep's re-arm reads the column to tell the scheduler's failure backoff from a row that stood down, a select and the type it is handed as.
+        and { $filename <: r"(?:[\s\S]*/)?src/modules/scheduler/service\.ts", or { not $program <: keys_at_least_6(), $program <: keys_at_least_7() } },
+        // flow-event: the model a captured call could not be priced for.
+        and { $filename <: r"(?:[\s\S]*/)?src/modules/pricing/unpriced-alert\.ts", or { not $program <: keys_at_least_1(), $program <: keys_at_least_2() } },
+        // flow-event
+        and { $filename <: r"(?:[\s\S]*/)?src/modules/proactive-limit/service\.ts", or { not $program <: keys_at_least_2(), $program <: keys_at_least_3() } },
+        // flow-event: the poll's failure line (the ledger read's error text).
+        and { $filename <: r"(?:[\s\S]*/)?src/modules/spend-ceiling/poll\.ts", or { not $program <: keys_at_least_1(), $program <: keys_at_least_2() } },
+        // flow-event: the balloon send reports its failure without throwing, and the flow line is the only place an operator sees that part of a reply went missing.
+        and { $filename <: r"(?:[\s\S]*/)?src/modules/split/service\.ts", or { not $program <: keys_at_least_1(), $program <: keys_at_least_2() } },
+        // flow-event
+        and { $filename <: r"(?:[\s\S]*/)?src/modules/stt/service\.ts", or { not $program <: keys_at_least_2(), $program <: keys_at_least_3() } },
+        // flow-event: the audio check's closed `audio check unavailable (<code>)` line.
+        and { $filename <: r"(?:[\s\S]*/)?src/modules/tts/service\.ts", or { not $program <: keys_at_least_1(), $program <: keys_at_least_2() } },
+        // flow-event: the turn limit's failed hand-over.
+        and { $filename <: r"(?:[\s\S]*/)?src/modules/turn-limit/handoff\.ts", or { not $program <: keys_at_least_1(), $program <: keys_at_least_2() } },
+        // flow-event
+        and { $filename <: r"(?:[\s\S]*/)?src/modules/vision/service\.ts", or { not $program <: keys_at_least_3(), $program <: keys_at_least_4() } },
+        // read: the DTO field, the projection that feeds it and the type; the value was sanitized where the worker stored it.
+        and { $filename <: r"(?:[\s\S]*/)?src/modules/webhooks/outbound/deliveries\.ts", or { not $program <: keys_at_least_3(), $program <: keys_at_least_4() } },
+        // guarded + cleared
+        and { $filename <: r"(?:[\s\S]*/)?src/modules/webhooks/outbound/worker\.ts", or { not $program <: keys_at_least_3(), $program <: keys_at_least_4() } },
+        // Any other file names none.
+        and { not $filename <: or { r"(?:[\s\S]*/)?src/graph/nudge\.ts", r"(?:[\s\S]*/)?src/graph/prepare\.ts", r"(?:[\s\S]*/)?src/graph/runtime\.ts", r"(?:[\s\S]*/)?src/graph/tool-flowlog\.ts", r"(?:[\s\S]*/)?src/modules/playground/service\.ts", r"(?:[\s\S]*/)?src/client/pages/resources/useKnowledgeManager\.tsx", r"(?:[\s\S]*/)?src/modules/chatwoot/recover-delivery\.ts", r"(?:[\s\S]*/)?src/modules/chatwoot/webhook\.ts", r"(?:[\s\S]*/)?src/modules/contact-auth/service\.ts", r"(?:[\s\S]*/)?src/modules/conversations/error\.ts", r"(?:[\s\S]*/)?src/modules/conversations/service\.ts", r"(?:[\s\S]*/)?src/modules/debounce/handler\.ts", r"(?:[\s\S]*/)?src/modules/flowlog/alert-worker\.ts", r"(?:[\s\S]*/)?src/modules/followups/handlers\.ts", r"(?:[\s\S]*/)?src/modules/flowlog/dead-letter\.ts", r"(?:[\s\S]*/)?src/modules/flowlog/read\.ts", r"(?:[\s\S]*/)?src/modules/flowlog/service\.ts", r"(?:[\s\S]*/)?src/modules/flowlog/webhook\.ts", r"(?:[\s\S]*/)?src/modules/guardrails/gate\.ts", r"(?:[\s\S]*/)?src/modules/guardrails/handoff\.ts", r"(?:[\s\S]*/)?src/modules/guardrails/health\.ts", r"(?:[\s\S]*/)?src/modules/memory/compact\.ts", r"(?:[\s\S]*/)?src/modules/observe/job\.ts", r"(?:[\s\S]*/)?src/modules/scheduler/service\.ts", r"(?:[\s\S]*/)?src/modules/pricing/unpriced-alert\.ts", r"(?:[\s\S]*/)?src/modules/proactive-limit/service\.ts", r"(?:[\s\S]*/)?src/modules/spend-ceiling/poll\.ts", r"(?:[\s\S]*/)?src/modules/split/service\.ts", r"(?:[\s\S]*/)?src/modules/stt/service\.ts", r"(?:[\s\S]*/)?src/modules/tts/service\.ts", r"(?:[\s\S]*/)?src/modules/turn-limit/handoff\.ts", r"(?:[\s\S]*/)?src/modules/vision/service\.ts", r"(?:[\s\S]*/)?src/modules/webhooks/outbound/deliveries\.ts", r"(?:[\s\S]*/)?src/modules/webhooks/outbound/worker\.ts" }, $program <: keys_at_least_1() }
+    },
+    register_diagnostic(span = $program, message = "This file's count of `lastError:` / `errorMessage:` lines is not the one biome-plugins/pin-error-column-lines.grit lists for it (none, for a file it does not list). Say what the line is (guarded, cleared, read, flow-event) and change the count there with the reason.")
+}

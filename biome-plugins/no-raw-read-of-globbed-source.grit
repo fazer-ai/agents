@@ -1,0 +1,26 @@
+// Refuses `Bun.file(...).text()` in a test file that globs `src/` (`.scan("src…")`, or a `Glob` or `Bun.Glob`
+// whose pattern starts with `src/`) unless the file imports tests/utils/source-text. A sweep that counts a
+// shape over the tree reads it through that scan, so prose and strings that spell the shape are not
+// counted as code: a phantom site is a false waiver in a per-file ledger. A file that globs `src/` to
+// import each module and never reads its text is not matched. tests/utils/source-text.ts, the scan
+// itself, is out of scope in biome.jsonc.
+language js;
+
+`$recv.text()` as $read where {
+    $recv <: r"[\s\S]*Bun\.file\([\s\S]*",
+    $program <: contains or {
+        `$_.scan($dir)` where { $dir <: r"\"src[\s\S]*" },
+        `new $glob($pattern, $...)` where {
+            $glob <: r"(?:[\s\S]*\.)?Glob",
+            $pattern <: r"[\"'`]src/[\s\S]*"
+        },
+        `$glob($pattern, $...)` where {
+            $glob <: r"(?:[\s\S]*\.)?Glob",
+            $pattern <: r"[\"'`]src/[\s\S]*"
+        }
+    },
+    not $program <: contains JsImport() as $import where {
+        $import <: r"[\s\S]*from\s*\"@/tests/utils/source-text\"[\s\S]*"
+    },
+    register_diagnostic(span = $read, message = "A test that globs src/ reads each file through tests/utils/source-text (`countInSrc`, `codeOnly`), so prose and strings that spell the shape are not counted as code.")
+}

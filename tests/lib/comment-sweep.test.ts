@@ -4,6 +4,7 @@ import {
   BLOCK_LINE_CEILING,
   citesProvenance,
   commentBlocks,
+  lintBlindText,
   narratesHistory,
   overCeiling,
   overLedger,
@@ -18,7 +19,13 @@ import { COMMENT_LEDGER } from "./comment-ledger";
 // A comment states what is true of the code now. Where the code came from belongs to the commit, the
 // PR and the issue; a long explanation belongs to the module's doc. Files the ledger lists may keep
 // what they had and no more, and the ledger only goes down: `bun run comments:ledger` rewrites it.
-//
+
+// The three rules run as Biome plugins (no-comment-provenance, comment-block-ceiling,
+// no-tagged-docstring), probed in tests/lint/source-rules.test.ts. The tree tests below read only what
+// a plugin cannot (`lintBlindText`): a file's header above its first token, its footer below its
+// last, workers/, and the files whose template literals hold JavaScript. The predicates are tested
+// here because that reading still runs through them.
+
 // Only the master tree holds the ledger to the exact count, since an edition strips blocks and files.
 const MASTER = existsSync("tooling/derivation");
 
@@ -294,18 +301,18 @@ describe("a comment above a declaration documents it, and takes no NOTE:", () =>
     expect(taggedDocstrings("// TODO: split it.\nconst x = 1;\n")).toEqual([]);
   });
 
-  test("no file in the tree tags a docstring", async () => {
+  test("no file tags a docstring where the plugin cannot read", async () => {
     const hits: string[] = [];
     let scanned = 0;
     for (const path of await sweptFiles()) {
-      const src = await Bun.file(path).text();
-      scanned += src.includes("NOTE:") ? 1 : 0;
+      const src = lintBlindText(path, await Bun.file(path).text());
+      scanned++;
       for (const line of taggedDocstrings(src)) hits.push(`${path}:${line}`);
     }
     expect(hits).toEqual([]);
     // NOTE: a scan that stopped finding files would pass the same way.
-    expect(scanned).toBeGreaterThan(500);
-  });
+    expect(scanned).toBeGreaterThan(1000);
+  }, 20_000);
 });
 
 describe("history narration is reported, not enforced", () => {
@@ -389,13 +396,47 @@ describe("the ledger", () => {
   });
 });
 
+describe("what the sweep reads is what a plugin cannot", () => {
+  const src = [
+    "// Fixed in #1.",
+    "// NOTE: why.",
+    "const x = 1; // aside",
+    "run();",
+    "// fixed in #2",
+    "run();",
+    "// tail #3",
+    "",
+  ].join("\n");
+
+  test("the header, the first code line and the footer stay, and the body is blanked in place", () => {
+    const blind = lintBlindText("lib/a.ts", src);
+    expect(blind.length).toBe(src.length);
+    expect(blind.split("\n").length).toBe(src.split("\n").length);
+    expect(commentBlocks(blind).map((b) => b.text)).toEqual([
+      "// Fixed in #1.\n// NOTE: why.",
+      "// tail #3",
+    ]);
+    expect(taggedDocstrings(blind)).toEqual([]);
+    expect(
+      taggedDocstrings(
+        lintBlindText("lib/a.ts", "// NOTE: why.\nconst x = 1;\nrun();\n"),
+      ),
+    ).toEqual([1]);
+  });
+
+  test("workers/ and the files biome.jsonc keeps from the plugins come back whole", () => {
+    expect(lintBlindText("workers/cdn/src/index.ts", src)).toBe(src);
+    expect(lintBlindText("tests/graph/code-sandbox.test.ts", src)).toBe(src);
+  });
+});
+
 describe("the tree against its ledger", () => {
   const tree = async () =>
     Promise.all(
       (await sweptFiles()).map(
         async (path): Promise<[string, string]> => [
           path,
-          await Bun.file(path).text(),
+          lintBlindText(path, await Bun.file(path).text()),
         ],
       ),
     );
@@ -403,12 +444,13 @@ describe("the tree against its ledger", () => {
   test("no file carries more offending comments than the ledger allows", async () => {
     const files = await tree();
     expect(overLedger(files, COMMENT_LEDGER)).toEqual([]);
-    // A scan that stopped reading comments would report a clean tree.
+    // A scan that stopped reading comments would report a clean tree. The floor sits below today's
+    // count of headers, footers and whole files the plugins leave to this sweep.
     const blocks = files.reduce(
       (n, [, src]) => n + commentBlocks(src).length,
       0,
     );
-    expect(blocks).toBeGreaterThan(10_000);
+    expect(blocks).toBeGreaterThan(250);
   });
 
   test.skipIf(!MASTER)(

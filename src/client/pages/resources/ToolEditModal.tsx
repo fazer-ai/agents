@@ -1160,7 +1160,7 @@ function insertToken(
 }
 
 // The one cut both inserts make: a selection is a boundary the browser chose, never the inside of
-// a surrogate pair, which is why `tests/lib/astral-cap-sweep.test.ts` lists this file under
+// a surrogate pair, which is why `biome-plugins/pin-bare-slices.grit` lists this file under
 // "index". `insert` sees what is on either side, so an insert that wants a line of its own can
 // decide whether it needs a line break first.
 function spliceSelection(

@@ -182,7 +182,7 @@ export function redactSecretsDeep(
 //
 // Also the ONE place error text is made storable, since every error-message column is written through
 // here: a `text` column refuses a NUL, and a refused `failJob` write is a job that stops moving.
-// tests/lib/storable-write-sweep.test.ts is the ledger of these columns. The order is the one
+// biome-plugins/pin-error-column-lines.grit is the ledger of these columns. The order is the one
 // `scrubbedClip` documents: repair, scrub, cut.
 export function sanitizeErrorMessage(err: unknown, max = 500): string {
   const raw = err instanceof Error ? err.message : String(err);

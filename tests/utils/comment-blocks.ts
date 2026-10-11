@@ -1,6 +1,9 @@
-import { commentSpans } from "@/tests/utils/source-text";
+import { codeOnly, commentSpans } from "@/tests/utils/source-text";
 
-// What the comment sweep counts, shared by the sweep and by the script that rewrites its ledger.
+// What the comment sweep counts, shared by the sweep and by the script that rewrites its ledger. The
+// rules themselves run as Biome plugins (biome-plugins/no-comment-provenance.grit,
+// comment-block-ceiling.grit, no-tagged-docstring.grit) wherever a plugin can read; the sweep reads
+// what they cannot, which `lintBlindText` cuts out of each file.
 
 export const SWEPT_ROOTS = ["src", "tests", "workers", "scripts"] as const;
 
@@ -8,6 +11,40 @@ export const SWEPT_ROOTS = ["src", "tests", "workers", "scripts"] as const;
 const GENERATED = new Set(["workers/cdn/worker-configuration.d.ts"]);
 
 export const BLOCK_LINE_CEILING = 8;
+
+// Files the comment plugins skip, listed with the reason in biome.jsonc: each holds a multi-line
+// template literal of JavaScript with comments in it, which a plugin reading the program's text takes
+// for comments. The sweep reads them whole.
+export const LINT_BLIND_FILES = new Set([
+  "src/graph/tools/code-sandbox.worker.ts",
+  "tests/graph/code-sandbox.test.ts",
+]);
+
+// The part of a file no comment plugin reads. Biome hands a plugin the program from its first token to
+// its last, so a comment above the first token (the file's header) or below the last is in no node.
+// Kept: that header, the first code line up to its first quote, slash or backtick (so a docstring above
+// the first declaration still has its declaration below it), and the footer, with every other
+// character blanked so a line number still names its line. workers/, which Biome does not lint, and
+// LINT_BLIND_FILES come back whole.
+export function lintBlindText(path: string, src: string): string {
+  if (path.startsWith("workers/") || LINT_BLIND_FILES.has(path)) return src;
+  const code = codeOnly(src);
+  const first = code.search(/\S/);
+  if (first === -1) return src;
+  const last = code.trimEnd().length;
+  const lineEnd = src.indexOf("\n", first);
+  const firstLine = src.slice(
+    first,
+    lineEnd === -1 ? last : Math.min(lineEnd, last),
+  );
+  const cut = firstLine.search(/["'`/]/);
+  const kept = first + (cut === -1 ? firstLine.length : cut);
+  return (
+    src.slice(0, kept) +
+    src.slice(kept, last).replace(/[^\n]/g, " ") +
+    src.slice(last)
+  );
+}
 
 // A block that has a reason to break a rule says so in its own text, with the reason after the colon.
 export const WAIVER = /\bcomment-waiver:[ \t]*\S/;

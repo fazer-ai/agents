@@ -23,14 +23,19 @@ const FORMAT = new Set(["unsupported_mime", "document_not_supported"]);
 
 export function unreadCauseOf(reason: string): UnreadCause {
   if (FORMAT.has(reason)) return "format";
-  if (reason === "over_pixel_cap") return "too_large";
+  if (reason === "over_pixel_cap" || reason === "over_provider_limit")
+    return "too_large";
   return "failed";
 }
 
 // The customer's file meeting a known limit, which the model already answers: nothing for an
 // operator to do, so it must not page. Everything else (a provider, a credential, a decoder that
 // broke) is ours and stays a warning.
-const CUSTOMER_SIDE = new Set(["unsupported_mime", "over_pixel_cap"]);
+const CUSTOMER_SIDE = new Set([
+  "unsupported_mime",
+  "over_pixel_cap",
+  "over_provider_limit",
+]);
 
 export function skipLevel(reason: string): "info" | "warn" {
   return CUSTOMER_SIDE.has(reason) ? "info" : "warn";

@@ -33,7 +33,7 @@ import { readImageDimensions } from "./convert/dimensions";
 import { isDecorativeImage } from "./decorative";
 import { visionAcceptsDocuments } from "./document-support";
 import {
-  MAX_IMAGE_EDGE,
+  imageLimitsFor,
   normalizeMediaType,
   planImageConversion,
 } from "./media-conversion";
@@ -307,18 +307,28 @@ async function convertForProvider(args: {
   | { ok: true; bytes: ArrayBuffer; mimeType: string | null }
   | { ok: false; reason: string }
 > {
+  const limits = imageLimitsFor(args.provider);
   const plan = planImageConversion({
     mimeType: args.mimeType,
     provider: args.provider,
-    // Read only where a limit exists to compare against; a header walk is cheap but not free.
+    // Read only where a limit on size exists to compare against; a header walk is cheap but not free.
     dimensions:
-      MAX_IMAGE_EDGE[args.provider] === undefined
+      limits.maxEdge === null && limits.maxPatches === null
         ? null
         : readImageDimensions(args.bytes),
     byteLength: args.bytes.byteLength,
   });
   if (plan.action === "as-is")
     return { ok: true, bytes: args.bytes, mimeType: args.mimeType };
+  // NOTE: Application log only; the Logs page gets the caller's skip line with the reason.
+  if (plan.action === "over-limit") {
+    logger.info(
+      "vision: %s over the provider's documented limit and no converter fits it, the attachment was not read (provider=%s)",
+      normalizeMediaType(args.mimeType),
+      args.provider,
+    );
+    return { ok: false, reason: "over_provider_limit" };
+  }
   const startedAt = performance.now();
   try {
     const bytes = await runMediaConverter(plan.converter, args.bytes);

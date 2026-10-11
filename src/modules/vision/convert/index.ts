@@ -286,7 +286,7 @@ async function heicToJpeg(
 }
 
 // THE FIT CONVERTERS: a type the provider reads, at a size it refuses (../media-conversion,
-// MAX_IMAGE_EDGE). Same tail as the HEIC path, fitted to MAX_OUTPUT_EDGE, and the same pixel cap,
+// IMAGE_LIMITS). Same tail as the HEIC path, fitted to MAX_OUTPUT_EDGE, and the same pixel cap,
 // applied to the size the HEADER declares before a byte is decoded: a JPEG that claims 60000x60000
 // is refused here instead of asking jpeg-js for 14 GB.
 function headerPixels(bytes: ArrayBuffer, mime: string, cap: number): number {

@@ -10,7 +10,8 @@ import {
 } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router";
-import { mockAuthContext } from "@/tests/utils/auth-mock";
+import * as AuthModule from "@/client/contexts/AuthContext";
+import { stubExports } from "@/tests/utils/module-stub";
 
 // While the account's proactive breaker is tripped the shell shows one banner, on every page, with the
 // sentence the operator acts on and the two ways out; a resume from it clears it without a reload.
@@ -20,7 +21,9 @@ import { mockAuthContext } from "@/tests/utils/auth-mock";
 // DOM node serializes a cyclic happy-dom tree and stalls the runner.
 
 let role = "TENANT_ADMIN";
-await mockAuthContext({
+// Only `useAuth`, and only for this file: `stubExports` restores it after the last test, so a file
+// that runs after this one in the same process renders the real AuthProvider.
+stubExports(AuthModule, {
   useAuth: () => ({ user: { id: 1, role } }),
 });
 

@@ -16,6 +16,8 @@ afterEach(() => {
 const switches = () => screen.queryAllByRole("switch");
 
 describe("the Behavior tab's dirty snapshot", () => {
+  // One full editor render per switch (15 today): close to the default 5s on a quiet machine, so the
+  // timeout below keeps a loaded machine from failing it with nothing wrong.
   test("every switch the Behavior tab draws marks the page unsaved", async () => {
     await renderEditor(stubEditorApi({}), "behavior");
     const names = switches().map((s) => s.parentElement?.textContent ?? "");
@@ -35,5 +37,5 @@ describe("the Behavior tab's dirty snapshot", () => {
       );
       cleanup();
     }
-  });
+  }, 60_000);
 });

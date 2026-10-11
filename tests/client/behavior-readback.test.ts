@@ -102,6 +102,22 @@ const STORED: Record<string, unknown> = {
     pauseWhileAppointment: true,
     steps: [{ delayValue: 45, delayUnit: "minutes", instructions: "" }],
   },
+  snoozedFollowUp: {
+    enabled: true,
+    signature: true,
+    cadences: [
+      {
+        label: null,
+        steps: [
+          {
+            delayValue: 2,
+            delayUnit: "hours",
+            instructions: "Pergunte se o comprovante já saiu.",
+          },
+        ],
+      },
+    ],
+  },
   vision: {
     enabled: false,
     provider: "openai",
@@ -224,6 +240,7 @@ const DEFAULTS: Record<string, unknown> = {
     pauseWhileAppointment: true,
     steps: [{ delayValue: 30, delayUnit: "minutes", instructions: "" }],
   },
+  snoozedFollowUp: { enabled: false, signature: false, cadences: [] },
   vision: {
     enabled: false,
     provider: "openai",
@@ -311,8 +328,11 @@ function otherOption(select: HTMLSelectElement): string {
   return other.value;
 }
 
+// The follow-up's schedule is drawn twice when the snoozed follow-up is on (both ladders share it), so
+// the first picker of that name is the one edited.
 async function pickSchedule(picker: string, name: string) {
-  const trigger = screen.getByRole("button", { name: picker });
+  const trigger = screen.getAllByRole("button", { name: picker })[0];
+  if (!trigger) throw new Error(`no ${picker} picker on screen`);
   // Radix opens its menu on pointerdown, not on a synthesized click.
   fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false });
   fireEvent.click(
@@ -339,6 +359,11 @@ async function editEveryBlock() {
     screen.getByLabelText("Max tool calls / turn") as HTMLInputElement,
     "3",
   );
+  // The snoozed default cadence's first step: its delay, a field of the ladder the switches below hide.
+  const snoozedDelay = screen
+    .getByRole("group", { name: "Wait after the person's message" })
+    .querySelector('input[type="number"]') as HTMLInputElement;
+  changeTo(snoozedDelay, "5");
   const fallback = screen
     .getAllByLabelText("Provider")
     .find((el) => el.textContent?.includes("No fallback")) as HTMLSelectElement;

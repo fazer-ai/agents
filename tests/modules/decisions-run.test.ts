@@ -668,6 +668,90 @@ describe("applyDecisions and the trigger state", () => {
     void run.catch(() => {});
   });
 
+  test("a whole refusal said after the call was given up on undoes the latch too", async () => {
+    let say: () => void = () => {};
+    const progress: DecisionProgress = {};
+    const run = applyDecisions(
+      {
+        rules: [
+          {
+            when,
+            action: { tool: "set_labels" as const, args: {} },
+            trigger: "once" as const,
+          },
+        ],
+      },
+      answers,
+      [
+        reporting(
+          "set_labels",
+          (report) =>
+            new Promise<string>(() => {
+              say = () =>
+                report?.({ fence: "protected_label", partial: false });
+            }),
+        ),
+      ],
+      [],
+      new AbortController().signal,
+      async () => true,
+      10,
+      () => null,
+      false,
+      new Set(),
+      progress,
+    );
+    await Bun.sleep(5);
+    say();
+    expect(progress.undo).toEqual([
+      ruleStateKey({
+        when,
+        action: { tool: "set_labels", args: {} },
+        trigger: "once",
+      }),
+    ]);
+    void run.catch(() => {});
+  });
+
+  test("a group after the deadline writes no latch", async () => {
+    const controller = new AbortController();
+    const latchedAhead: string[][] = [];
+    await expect(
+      applyDecisions(
+        {
+          rules: [
+            { when, action: { tool: "private_note" as const, args: {} } },
+            {
+              when,
+              action: { tool: "set_labels" as const, args: {} },
+              trigger: "once" as const,
+            },
+          ],
+        },
+        answers,
+        [
+          reporting("private_note", async () => {
+            controller.abort(new Error("deadline"));
+            return "ok";
+          }),
+          reporting("set_labels", async () => "ok"),
+        ],
+        [],
+        controller.signal,
+        async () => true,
+        10,
+        () => null,
+        false,
+        new Set(),
+        {},
+        async (keys) => {
+          latchedAhead.push(keys);
+        },
+      ),
+    ).rejects.toThrow();
+    expect(latchedAhead).toEqual([[noteKey]]);
+  });
+
   test("an on_start rule that did not hold is released even when another action ends the tick", async () => {
     const controller = new AbortController();
     const progress: DecisionProgress = {};

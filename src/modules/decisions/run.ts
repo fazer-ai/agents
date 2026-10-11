@@ -177,7 +177,7 @@ export async function applyDecisions(
     }),
     ...dropped,
   ];
-  // The fired actions whose tool said it wrote nothing.
+  // The fired actions whose tool said it wrote nothing (a whole refusal included).
   const quiet = new Set<number>();
   const missedReleases = (): string[] =>
     missed.flatMap(({ rule }) =>
@@ -292,6 +292,8 @@ export async function applyDecisions(
     if (!dryRun) {
       const due = group.map((m) => [m.at, latchKeys(m.at)] as const);
       try {
+        // A tick whose deadline has passed starts nothing more, its latches included.
+        signal.throwIfAborted();
         const all = due.flatMap(([, k]) => k);
         if (all.length > 0) await latchAhead(all);
         for (const [at, k] of due) {
@@ -354,7 +356,8 @@ export async function applyDecisions(
               withFenceReporter({ callbacks, signal }, (r) => {
                 reports.push(r);
                 if ("committed" in r) committed.add(member.at);
-                if ("noEffect" in r) {
+                // Wrote nothing: said no to, whole, by a fence, or nothing it could write.
+                if ("noEffect" in r || ("fence" in r && !r.partial)) {
                   quiet.add(member.at);
                   settled();
                 }

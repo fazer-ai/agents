@@ -17,6 +17,7 @@ import {
   AppError,
   NotFoundError,
   TenantTargetRequiredError,
+  type TranslatedParam,
 } from "@/lib/errors";
 import { parseInput } from "@/lib/parse-input";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
@@ -674,14 +675,15 @@ export function assertSettingsProtectedLabels(
 // A closed settings value the reader would throw away, refused on REST by asking the schema MCP uses
 // (`BEHAVIOR_PATCH_SHAPE`), so REST and MCP share one list of domains.
 export class InvalidSettingsValueError extends AppError {
-  constructor(path: string, expected: string, got: string) {
+  constructor(path: string, expected: Expected, got: string) {
     super(
-      `settings.${path} expects ${expected}, got ${got}`,
+      `settings.${path} expects ${expected.message}, got ${got}`,
       400,
       "errors.invalidSettingsValue",
-      { field: path, expected, got },
+      { field: path, expected: expected.message, got },
       path,
     );
+    this.translatedParams = { expected };
   }
 }
 
@@ -708,15 +710,51 @@ function describeGot(v: unknown): string {
   return typeof v;
 }
 
-function describeExpected(issue: z.core.$ZodIssue): string {
-  if (issue.code === "invalid_value")
-    return `one of ${issue.values.map((v) => JSON.stringify(v)).join(", ")}`;
-  if (issue.code === "invalid_type") return issue.expected;
-  if (issue.code === "too_small" && issue.origin === "number")
-    return `a number ${issue.inclusive ? "of at least" : "greater than"} ${String(issue.minimum)}`;
-  if (issue.code === "invalid_format" && "pattern" in issue && issue.pattern)
-    return `a value matching ${issue.pattern}`;
-  return "a valid value";
+// What a closed value expects, as a phrase of its own so the refusal quotes it in the caller's
+// language rather than in English inside a translated sentence.
+type Expected = TranslatedParam;
+
+function expectedType(type: string): Expected {
+  return {
+    message: `a value of type ${type}`,
+    key: "errors.settingsExpectedType",
+    params: { type },
+  };
+}
+
+function describeExpected(issue: z.core.$ZodIssue): Expected {
+  if (issue.code === "invalid_value") {
+    const values = issue.values.map((v) => JSON.stringify(v)).join(", ");
+    return {
+      message: `one of ${values}`,
+      key: "errors.settingsExpectedOneOf",
+      params: { values },
+    };
+  }
+  if (issue.code === "invalid_type") return expectedType(issue.expected);
+  if (issue.code === "too_small" && issue.origin === "number") {
+    const min = String(issue.minimum);
+    return issue.inclusive
+      ? {
+          message: `a number of at least ${min}`,
+          key: "errors.settingsExpectedAtLeast",
+          params: { min },
+        }
+      : {
+          message: `a number greater than ${min}`,
+          key: "errors.settingsExpectedGreaterThan",
+          params: { min },
+        };
+  }
+  if (issue.code === "invalid_format" && "pattern" in issue && issue.pattern) {
+    const pattern = String(issue.pattern);
+    return {
+      message: `a value matching ${pattern}`,
+      key: "errors.settingsExpectedPattern",
+      params: { pattern },
+    };
+  }
+  return { message: "a valid value", key: "errors.settingsExpectedValid" };
 }
 
 // One closed value a block's schema refuses, with the path it sits at and what the reader reads there.
@@ -724,7 +762,7 @@ interface ClosedValueIssue {
   block: string;
   path: PropertyKey[];
   next: unknown;
-  expected: string;
+  expected: Expected;
   // What was sent, when its type alone would not say why it was refused: a number below a minimum
   // is "a number" either way, so the refusal quotes the value.
   got?: string;
@@ -751,7 +789,7 @@ function closedValueIssues(bag: Record<string, unknown>): ClosedValueIssue[] {
       // `never` marks a key the runtime does not read here (reply-only checks under `input`).
       // REST cannot refuse it outright, since the console's Guardrails save materialises it, so the
       // reader's TYPE passes and anything else is refused like any other thrown-away value.
-      let expected: string | undefined;
+      let expected: Expected | undefined;
       if (issue.code === "invalid_type" && issue.expected === "never") {
         const read = valueAt(
           (
@@ -763,7 +801,7 @@ function closedValueIssues(bag: Record<string, unknown>): ClosedValueIssue[] {
           issue.path,
         );
         if (typeof next === typeof read) continue;
-        expected = typeof read;
+        expected = expectedType(typeof read);
       }
       const whole =
         issue.code === "custom" ? issue.params?.wholeBlock : undefined;

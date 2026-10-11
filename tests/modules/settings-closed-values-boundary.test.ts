@@ -228,7 +228,7 @@ describe("assertSettingsClosedValues", () => {
       undefined,
     );
     expect(err?.field).toBe("guardrails.input.checks.promptAdherence");
-    expect(err?.translationParams?.expected).toBe("boolean");
+    expect(err?.translationParams?.expected).toBe("a value of type boolean");
     expect(err?.translationParams?.got).toBe('"sim"');
     expect(
       caught(

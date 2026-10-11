@@ -25,13 +25,20 @@ export function refusalBody(
   error: AppError,
   acceptLanguage: string | null,
 ): RefusalBody {
+  const locale = getLocaleFromHeader(acceptLanguage);
+  const params = error.translatedParams
+    ? {
+        ...error.translationParams,
+        ...Object.fromEntries(
+          Object.entries(error.translatedParams).map(([name, p]) => [
+            name,
+            translateWithLocale(locale, p.key, p.message, p.params),
+          ]),
+        ),
+      }
+    : error.translationParams;
   const message = error.translationKey
-    ? translateWithLocale(
-        getLocaleFromHeader(acceptLanguage),
-        error.translationKey,
-        error.message,
-        error.translationParams,
-      )
+    ? translateWithLocale(locale, error.translationKey, error.message, params)
     : error.message;
   // A blank name is not a name: it would put the key on the wire for a client to match against
   // nothing, which is worse than the honest silence of not naming a field at all.

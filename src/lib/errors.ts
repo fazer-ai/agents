@@ -11,6 +11,13 @@ type ApiLocale = typeof import("@/api/locales/en.json");
 export type ErrorTranslationKey =
   `errors.${keyof ApiLocale["errors"] & string}`;
 
+// A phrase interpolated into a refusal: its English text, its own key and its own params.
+export interface TranslatedParam {
+  message: string;
+  key: ErrorTranslationKey;
+  params?: Record<string, string | number>;
+}
+
 export class AppError extends Error {
   readonly statusCode: number;
   // NOTE: optional i18n key. When set, `onError` translates it (per the request's
@@ -21,6 +28,11 @@ export class AppError extends Error {
   // NOTE: interpolation values for translationKey ({{placeholders}} in the locale entry).
   // `message` must arrive pre-interpolated: it is the log line and the untranslated fallback.
   readonly translationParams?: Record<string, string | number>;
+  // NOTE: interpolation values that are themselves PHRASES (`a number of at least 0`), translated in
+  // the same locale as the sentence before it is rendered, so a translated sentence never quotes an
+  // English phrase. They override the same names in `translationParams`, which keep the English
+  // phrase for `message` and for code that reads the params.
+  translatedParams?: Record<string, TranslatedParam>;
   // Optional. The value this refusal is ABOUT, by the name the SERVER uses for it: a column
   // (`systemPrompt`), a key of a patch (`document`), or a dotted path into a bag the server owns
   // (`guardrails.output.templateMessage`). Never a form path and never localized: it is a key the

@@ -336,6 +336,7 @@ const ERROR_COLUMN_LINES: Record<string, [number, ErrorSite | string]> = {
   "src/modules/guardrails/health.ts": [4, "read"],
   "src/modules/memory/compact.ts": [1, "flow-event"],
   "src/modules/observe/job.ts": [2, "flow-event"],
+  "src/modules/other-inboxes/context.ts": [1, "flow-event"],
   // The follow-up sweep's re-arm reads the column to tell the scheduler's failure backoff from a row
   // that stood down: a select and the type it is handed as.
   "src/modules/scheduler/service.ts": [6, "guarded + cleared + read"],

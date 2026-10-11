@@ -18,6 +18,7 @@ import {
 } from "@/modules/business-hours/hours";
 import { readMemoryConfig } from "@/modules/memory/settings";
 import { readMonitoringConfig } from "@/modules/observe/settings";
+import { readOtherInboxesConfig } from "@/modules/other-inboxes/settings";
 import { readKnowledgeConfig } from "@/modules/rag/review-settings";
 import { resolveNormalizeModel } from "@/modules/tts/normalize-model";
 import {
@@ -558,9 +559,12 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
   // model that cannot run is the "model" issue above. Raising a second line for it would tell the
   // operator to fix the summariser when the thing to fix is the agent.
   // Not for a decisions observer either: the compaction job stands down for it (no chat model
-  // to summarise with), and the editor hides the Memory section there.
+  // to summarise with), and the editor hides the Memory section there. The summaries of the
+  // contact's other inboxes run on this same model, so it is checked while either summariser is on.
   const compactionResolution =
-    chatModelUsed && compaction.enabled && compactionOverridden
+    chatModelUsed &&
+    (compaction.enabled || readOtherInboxesConfig(input.settings).enabled) &&
+    compactionOverridden
       ? resolveModelOverride(
           {
             provider: compaction.provider,

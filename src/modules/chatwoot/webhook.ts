@@ -160,6 +160,7 @@ import { clearContactMemory } from "@/modules/memory/reset";
 import { readMemoryConfig } from "@/modules/memory/settings";
 import { armObserve, observeKeyPrefix } from "@/modules/observe/job";
 import { readMonitoringConfig } from "@/modules/observe/settings";
+import { summaryDedupeKey } from "@/modules/other-inboxes/settings";
 import {
   announceErasedDeaths,
   cancelPendingJob,
@@ -3105,6 +3106,16 @@ async function maybeConsumeCommandOrGate(params: {
         base,
       ),
     );
+    // What another inbox reads of this conversation: a claimed run would write the withdrawn episode
+    // back into a stored summary. Its row goes with the boundary, in the watermarks step below.
+    await step("cancel other-inbox summary", "resumo para outras caixas", () =>
+      retireJobsByDedupeKey(
+        tenantId,
+        "OTHER_INBOX_SUMMARY",
+        summaryDedupeKey(instanceId, conversationId),
+        base,
+      ),
+    );
     await step(
       "cancel redirect follow-up",
       "follow-up de redirecionamento",
@@ -3183,6 +3194,16 @@ async function maybeConsumeCommandOrGate(params: {
                    reset_at_message_id = GREATEST(reset_at_message_id, ${commandMessageId})
              WHERE id = ${ctx.conv.id}`;
         }
+        // NOTE: the summary another inbox reads goes in the boundary's own transaction, behind its row
+        // lock: a summary run checks the boundary under that lock before it writes, so it either wrote
+        // before this (and is deleted here) or sees the new boundary and drops its write.
+        await db.otherInboxSummary.deleteMany({
+          where: {
+            tenantId,
+            chatwootInstanceId: instanceId,
+            chatwootConversationId: conversationId,
+          },
+        });
         return db.conversation.update({
           where: { id: ctx.conv.id },
           data: {

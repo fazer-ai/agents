@@ -1,5 +1,6 @@
 import type { BehaviorTab } from "@/client/pages/agents/BehaviorTab";
 import { EMPTY_CONTACT_AUTH_RULE_FORM } from "@/client/pages/agents/contactAuthRuleForm";
+import { readOtherInboxesState } from "@/client/pages/agents/OtherInboxesFields";
 import { observationToForm } from "@/client/pages/agents/observationFormState";
 import { readTtsFormState } from "@/client/pages/agents/ttsFormState";
 
@@ -160,6 +161,8 @@ export function behaviorTabProps(
     langfuseSendContent: false,
     setObservability: noop,
     takeover: { onHumanReply: true },
+    otherInboxes: readOtherInboxesState({}),
+    setOtherInboxes: () => {},
     setTakeover: () => {},
     attributeContext: { conversation: [], contact: [], task: [] },
     contactFields: { context: [], writable: [] },

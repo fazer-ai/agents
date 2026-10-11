@@ -1,4 +1,3 @@
-import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { type BaseMessage, RemoveMessage } from "@langchain/core/messages";
 import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 import type { PrismaClient } from "@/../generated/prisma/client";
@@ -12,9 +11,7 @@ import { owesHandbackNote } from "@/graph/handback";
 import { drainPendingIngest } from "@/graph/ingest-drain";
 import { memoryHeadMessage, stampedConversationId } from "@/graph/markers";
 import { contentToText } from "@/graph/message-text";
-import type { ModelConfig } from "@/graph/model-config";
-import { resolveModelOverride } from "@/graph/model-override";
-import { createChatModel, type ResolvedModelConfig } from "@/graph/models";
+import { createChatModel } from "@/graph/models";
 import { buildCallbacks, loadAgentConfig } from "@/graph/prepare";
 import { turnOwnsThread } from "@/graph/thread-claim";
 import { buildThreadStateGraph, THREAD_STATE_NODE } from "@/graph/thread-state";
@@ -37,6 +34,7 @@ import {
 } from "./cut";
 import { readMemoryConfig } from "./settings";
 import { summarizeAttendance } from "./summarize";
+import { buildSummaryModel } from "./summary-model";
 
 // Memory compaction: when an attendance ends, its raw turns on the contact's thread are replaced by
 // one summary of it, so the thread becomes "N summarized attendances + the current one, raw". Runs
@@ -414,71 +412,16 @@ export async function runCompaction(
   if (existing) {
     summary = existing.summary;
   } else {
-    // Everything inherited from the agent comes back through the resolver BY NAME, never a
-    // spread of `cfg.mc`, which would carry unknown fields (a credentialRef) across a provider switch.
-    const resolved = resolveModelOverride(
-      cfg.memoryCompactionOverride,
-      {
-        provider: cfg.mc.provider,
-        model: cfg.mc.model,
-        baseURL: cfg.credentialBaseUrl ?? cfg.mc.baseURL,
-      },
-      { ownCredentialBaseURL: cfg.memoryCompactionCredentialBaseUrl },
+    const built = buildSummaryModel(
+      cfg,
+      "memory compaction",
+      deps.makeModel ?? createChatModel,
     );
     // NOTE: FAIL, where the speech rewrite skips: skipping would leave the thread raw while reporting
     // success. It reaches DEAD with the reason on the line; the next attendance re-arms, so a
     // corrected configuration recovers on its own.
-    if (!resolved.runnable) {
-      return {
-        outcome: "fail",
-        error: `memory compaction model not runnable: ${resolved.reason ?? "unknown"}`,
-      };
-    }
-    // NOTE: its own credential did not resolve; the AGENT's key would be a silent substitution.
-    if (resolved.credential === "own" && !cfg.memoryCompactionApiKey) {
-      return {
-        outcome: "fail",
-        error: "memory compaction model: credential_not_found",
-      };
-    }
-    // Same VENDOR is not enough to carry the agent's sampling: `reasoningEffort` is picked for
-    // one model id and turns into a /v1/responses call another model can refuse.
-    const sameModel =
-      resolved.provider === cfg.mc.provider && resolved.model === cfg.mc.model;
-    const mc: ResolvedModelConfig = {
-      provider: resolved.provider as ModelConfig["provider"],
-      model: resolved.model,
-      apiKey:
-        resolved.credential === "own"
-          ? cfg.memoryCompactionApiKey
-          : resolved.credential === "agent"
-            ? cfg.apiKey
-            : "",
-      baseURL: resolved.baseURL ?? undefined,
-      // NOTE: carried only on the SAME model: it keeps the summaries identical to what the install
-      // already produced (the prompt was chosen at the agent's settings), and a different model need
-      // not accept those knobs.
-      ...(sameModel
-        ? {
-            temperature: cfg.mc.temperature,
-            reasoningEffort: cfg.mc.reasoningEffort,
-          }
-        : {}),
-    };
-    const makeModel = deps.makeModel ?? createChatModel;
-    // createChatModel throws synchronously on some configurations (openai-compatible with no
-    // base URL); this one is separately editable, so the throw becomes a named failure.
-    let model: BaseChatModel;
-    try {
-      model = makeModel(mc);
-    } catch (err) {
-      return {
-        outcome: "fail",
-        error: `memory compaction model could not be built: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      };
-    }
+    if (!built.ok) return { outcome: "fail", error: built.error };
+    const { model, mc } = built;
     // Outside every lock: holding one across a provider round-trip would block ingestion.
     // Carries the turn's usage/trace handlers under its own node, since the call is billed.
     const result = await summarizeAttendance(

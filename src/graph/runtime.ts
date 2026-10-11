@@ -76,6 +76,10 @@ import {
 } from "@/modules/guardrails/handoff";
 import type { ImageFetchDeps } from "@/modules/images/fetch";
 import { armCompaction } from "@/modules/memory/compact";
+import {
+  otherInboxesFlowEvent,
+  withOtherInboxesContext,
+} from "@/modules/other-inboxes/context";
 import { signatureFor } from "@/modules/signature/service";
 import { deliverReply, type ReplyDelivery } from "@/modules/split/service";
 import type { TtsCheckConfig } from "@/modules/tts/check";
@@ -848,10 +852,39 @@ async function runTurnBody(
   };
   // Applied before anything reads the config, so the model, the output guardrail and the
   // audited row all see the same prompt.
-  const loaded = withAuthContextSection(params.loaded, params.authContext);
   const { tenantId, instanceId, conversationId, agentBotId, threadId, text } =
     params;
   const base = params.base ?? basePrisma;
+  const withAuth = withAuthContextSection(params.loaded, params.authContext);
+  // The other-inbox block reads Chatwoot and can arm billed summaries, so a turn the turn limit is about
+  // to refuse does not build it. The gate below still decides; this only reads the same verdict early,
+  // and a verdict that cannot be read builds the block as before.
+  const turnLimitAhead =
+    withAuth.otherInboxesConfig.enabled &&
+    withAuth.maxTurnsPerHour > 0 &&
+    withAuth.conversationDbId !== null
+      ? await turnLimitVerdict({
+          tenantId,
+          conversationDbId: withAuth.conversationDbId,
+          limit: withAuth.maxTurnsPerHour,
+          base,
+        }).catch(() => null)
+      : null;
+  const loaded =
+    turnLimitAhead?.over || turnLimitAhead?.handoverPending
+      ? withAuth
+      : await withOtherInboxesContext(
+          withAuth,
+          { tenantId, instanceId, conversationId },
+          {
+            base,
+            loadClient: (t, i) =>
+              loadChatwootClient(t, i, {
+                base,
+                makeClient: params.deps?.makeClient,
+              }),
+          },
+        );
 
   // One turnId correlates every stage; source "inbox" means warn/error may page an alert.
   const flow: FlowContext = {
@@ -865,6 +898,9 @@ async function runTurnBody(
     base,
     fullDetail: loaded.fullDetail,
   };
+  if (loaded.otherInboxesReport) {
+    emitFlowEvent(flow, otherInboxesFlowEvent(loaded.otherInboxesReport));
+  }
 
   // The bot token is the persona's, so replies are attributed to its Agent Bot. Wrapped so the
   // turn knows which messages it created, whoever sent them.

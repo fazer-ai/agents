@@ -5,13 +5,15 @@ import {
 } from "@/modules/chatwoot/label-activity";
 import type { ChatwootMessageRow } from "@/modules/chatwoot/messages";
 import {
+  renderTranscript,
+  transcriptFromRows,
+} from "@/modules/chatwoot/transcript";
+import {
   afterResetNarration,
   labelHistoryFromRows,
   notesFromRows,
   observeTurnText,
-  renderTranscript,
   stringArrayOrNull,
-  transcriptFromRows,
 } from "@/modules/observe/job";
 import {
   MONITORING_DEFAULTS,
@@ -127,6 +129,22 @@ describe("what the observer reads", () => {
     const tail = 40 - "\nCliente: ok".length - prefix.length;
     expect(out).toBe(`${prefix}${lines[0]?.text.slice(-tail)}\nCliente: ok`);
     expect(out.length).toBeLessThanOrEqual(40);
+  });
+
+  // The other-inbox block dates its lines: the line the budget cuts keeps its date as well as its label.
+  test("a dated line the budget cuts keeps its date and its label", () => {
+    const at = new Date("2026-10-01T15:30:00Z");
+    const out = renderTranscript(
+      [
+        { role: "customer", text: `pedido ${"a".repeat(100)}`, at },
+        { role: "customer", text: "ok", at },
+      ],
+      70,
+      "America/Sao_Paulo",
+    );
+    expect(out.startsWith("[01/10/2026 12:30] Cliente: […] ")).toBe(true);
+    expect(out.endsWith("\n[01/10/2026 12:30] Cliente: ok")).toBe(true);
+    expect(out.length).toBeLessThanOrEqual(70);
   });
 
   test("a multi-line message cut in the middle opens with its label, not with a bare line", () => {

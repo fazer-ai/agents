@@ -81,7 +81,8 @@ export type SchedulerJobKind =
   | "DOCUMENT_APPROVAL_EXPIRY"
   | "DOCUMENT_APPROVAL_OUTCOME"
   | "SNOOZED_FOLLOWUP"
-  | "INGEST_FALLBACK";
+  | "INGEST_FALLBACK"
+  | "OTHER_INBOX_SUMMARY";
 
 export interface ClaimedJob {
   id: bigint;

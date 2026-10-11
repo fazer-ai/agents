@@ -7,6 +7,7 @@ import {
   Eye,
   Gauge,
   Image,
+  Inbox,
   Layers,
   LifeBuoy,
   ListChecks,
@@ -120,6 +121,11 @@ import {
   overrideProviderChanged,
 } from "./modelOverrideForm";
 import { ObservationSection } from "./ObservationSection";
+import {
+  OtherInboxesFields,
+  type OtherInboxesState,
+  otherInboxesBlocksSave,
+} from "./OtherInboxesFields";
 import type { ObservationState } from "./observationFormState";
 import { Section, SectionNav } from "./SectionNav";
 import { signatureOnToggle } from "./signatureFormState";
@@ -459,6 +465,8 @@ interface BehaviorTabProps {
   setAttributeContext: React.Dispatch<
     React.SetStateAction<AttributeContextState>
   >;
+  otherInboxes: OtherInboxesState;
+  setOtherInboxes: React.Dispatch<React.SetStateAction<OtherInboxesState>>;
   contactFields: ContactFieldsConfig;
   setContactFields: React.Dispatch<React.SetStateAction<ContactFieldsConfig>>;
   serviceWindow: ServiceWindowState;
@@ -1609,6 +1617,8 @@ export function BehaviorTab({
   setTakeover,
   attributeContext,
   setAttributeContext,
+  otherInboxes,
+  setOtherInboxes,
   contactFields,
   setContactFields,
   serviceWindow,
@@ -1860,17 +1870,19 @@ export function BehaviorTab({
   // field: the summariser is the second override in this tab, and the first one already blocks the
   // save on both of these. A section that renders the picker without them saves a configuration the
   // runtime refuses, and the operator's only signal is attendances quietly staying raw.
+  // The summary model serves both summarisers: the attendance's and the contact's other inboxes'.
+  const summaryModelInUse = memory.compactionEnabled || otherInboxes.enabled;
   const memoryBaseUrlInvalid = overrideBaseUrlInvalid(
     memoryOverride,
     agentModel,
     memoryCredBaseUrl,
-    memory.compactionEnabled,
+    summaryModelInUse,
   );
   const memoryBaseUrlUnsupported = overrideBaseUrlUnsupported(
     memoryOverride,
     agentModel,
     memoryCredBaseUrl,
-    memory.compactionEnabled,
+    summaryModelInUse,
   );
   const fallbackOverride = {
     provider: modelFallback.provider,
@@ -1993,6 +2005,11 @@ export function BehaviorTab({
       id: "attributeContext",
       icon: ListChecks,
       label: t("editor.attributeContext", "Data in context"),
+    },
+    {
+      id: "otherInboxes",
+      icon: Inbox,
+      label: t("editor.otherInboxes.title", "Other inboxes of the contact"),
     },
     // Last of the behaviour sections and before the operational ones: most agents never turn this
     // on, so it does not belong above the grouping/audio/memory settings every agent uses — but it
@@ -3524,6 +3541,25 @@ export function BehaviorTab({
           </Section>
 
           <Section
+            id="otherInboxes"
+            hidden={watcher}
+            icon={Inbox}
+            title={t(
+              "editor.otherInboxes.title",
+              "Other inboxes of the contact",
+            )}
+            help={t(
+              "editor.otherInboxes.help",
+              "When the team merges two Chatwoot contacts, the same person can have conversations in more than one inbox. With this on, every reply also carries that person's conversations in the inboxes picked here: whole when short, as a summary when long.\n\nThe summary is written in the background with the memory summary's model and is billed like it. While it is not ready, the agent only sees that the conversation exists.\n\nPick only inboxes this agent may see. Private notes are never read.",
+            )}
+          >
+            <OtherInboxesFields
+              value={otherInboxes}
+              onChange={setOtherInboxes}
+            />
+          </Section>
+
+          <Section
             id="contactAuth"
             icon={ShieldCheck}
             title={t("editor.contactAuth", "Who this agent serves")}
@@ -4054,7 +4090,7 @@ export function BehaviorTab({
                 "Summarize attendances that have ended",
               )}
             />
-            {memory.compactionEnabled && (
+            {summaryModelInUse && (
               <div className="flex flex-col gap-3">
                 <p className="flex items-center gap-1.5 font-medium text-sm">
                   {t("editor.memoryModel", "Summary model")}
@@ -4066,6 +4102,14 @@ export function BehaviorTab({
                     label={t("editor.memoryModel", "Summary model")}
                   />
                 </p>
+                {otherInboxes.enabled && (
+                  <p className="text-text-secondary text-xs">
+                    {t(
+                      "editor.memoryModelOtherInboxes",
+                      "Also writes the summaries of this contact's conversations in other inboxes.",
+                    )}
+                  </p>
+                )}
                 <FormField label={t("editor.provider", "Provider")}>
                   <Select
                     value={memory.provider}
@@ -4710,6 +4754,7 @@ export function BehaviorTab({
               fallbackModelMissing)) ||
           // NOTE: Asked only where the section is drawn and switched on (see its declaration).
           snoozedFollowUpInvalid ||
+          otherInboxesBlocksSave(otherInboxes, mode) ||
           // NOTE: A watcher draws the gate's conditions and its endpoint's fields, so a rule or a url
           // it cannot use is said there.
           contactAuthRuleBad ||

@@ -6,6 +6,7 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { type AgentNudge, runAgentNudge } from "@/graph/nudge";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
+import { resetOtherInboxesCaches } from "@/modules/other-inboxes/context";
 import {
   confirmProactiveReservation,
   PROACTIVE_LIMIT_WINDOW_MS,
@@ -152,9 +153,13 @@ function nudge(
     stillWanted?: () => Promise<boolean>;
     requireLiveBotOwnership?: boolean;
     getConversation?: (c: number) => Promise<unknown>;
+    listContactConversations?: (contactId: number) => Promise<unknown>;
   } = {},
 ) {
   const r = recorder();
+  if (opts.listContactConversations)
+    (r.client as unknown as Record<string, unknown>).listContactConversations =
+      opts.listContactConversations;
   if (opts.getConversation)
     (r.client as unknown as Record<string, unknown>).getConversation =
       opts.getConversation;
@@ -269,6 +274,7 @@ describe.skipIf(!dbUp)("proactive limit", () => {
         "agent_threads",
         "agent_turn_deliveries",
         "conversations",
+        "contacts",
         "integration_instances",
         "inboxes",
         "chatwoot_agent_bots",
@@ -326,6 +332,48 @@ describe.skipIf(!dbUp)("proactive limit", () => {
       select: { status: true, assigneeType: true },
     });
     expect(row).toEqual({ status: "pending", assigneeType: null });
+  });
+
+  test("the contact's other inboxes are read under the limit and not at all past it", async () => {
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: {
+        settings: {
+          limits: { maxProactivePerDay: 1 },
+          otherInboxes: {
+            enabled: true,
+            inboxes: [{ instanceId: Number(instanceId), inboxId: 99 }],
+          },
+        },
+      },
+    });
+    const conv = await seedConv(5120);
+    const contact = await suDb.contact.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootContactId: 512,
+      },
+    });
+    await suDb.conversation.update({
+      where: { id: conv },
+      data: { contactId: contact.id },
+    });
+    const listed: number[] = [];
+    const listContactConversations = async (contactId: number) => {
+      listed.push(contactId);
+      return [];
+    };
+
+    resetOtherInboxesCaches();
+    const first = nudge(5120, { listContactConversations });
+    expect(await first.run).toBe("messaged");
+    expect(listed).toEqual([512]);
+
+    resetOtherInboxesCaches();
+    const refused = nudge(5120, { listContactConversations });
+    expect(await refused.run).toBe("silent");
+    expect(listed).toEqual([512]);
   });
 
   test("a refusal a day after the last alert is an error again", async () => {

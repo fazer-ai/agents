@@ -2158,6 +2158,39 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     await suDb.agent.deleteMany({ where: { id: BigInt(agent.id) } });
   });
 
+  // The selection names Chatwoot instances and inboxes by the source deployment's ids: carried as is,
+  // it would read whatever those ids mean where the bundle lands.
+  test("a bundle's other-inbox selection is cleared on import and the block turned off, and says so", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const bundle = structuredClone(exp);
+    bundle.agent.name = "Restaurada com outras caixas";
+    (bundle.agent.settings as Record<string, unknown>).otherInboxes = {
+      enabled: true,
+      inboxes: [{ instanceId: 3, inboxId: 12 }],
+      maxConversations: 3,
+      lookbackDays: 30,
+      fullTranscriptMaxChars: 1500,
+    };
+    const { agent, warnings } = await importAgent(dstCtx(), bundle, appDb);
+    const row = await suDb.agent.findFirstOrThrow({
+      where: { id: BigInt(agent.id) },
+      select: { settings: true },
+    });
+    expect(
+      (row.settings as Record<string, Record<string, unknown>>).otherInboxes,
+    ).toEqual({
+      enabled: false,
+      inboxes: [],
+      maxConversations: 3,
+      lookbackDays: 30,
+      fullTranscriptMaxChars: 1500,
+    });
+    expect(warnings.some((x) => x.code === "otherInboxesCleared")).toBe(true);
+    await suDb.agent.deleteMany({ where: { id: BigInt(agent.id) } });
+  });
+
   // A BUNDLE IS A FILE, and one exported before the rename instructs the model to call a tool the
   // catalog does not have. The keys around it move, and so does the prose.
   test("a bundle whose PROMPT names the old tool has it moved, and says so", async () => {

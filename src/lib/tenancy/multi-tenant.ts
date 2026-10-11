@@ -64,6 +64,7 @@ const TENANT_SCOPED_MODELS = new Set<string>([
   "AlertDelivery",
   "ApiKey",
   "AttendanceSummary",
+  "OtherInboxSummary",
   "PlaygroundTurnNote",
 ]);
 

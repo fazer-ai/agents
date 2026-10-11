@@ -78,6 +78,7 @@ const EXPECTED_LANE: Record<SchedulerJobKind, SchedulerLane> = {
   REDIRECT_FOLLOWUP: "shared",
   DEBOUNCE: "debounce",
   MEMORY_COMPACT: "compaction",
+  OTHER_INBOX_SUMMARY: "compaction",
   // Shared: the turn drains its own thread before invoking, so the tick cadence does not decide
   // correctness, and the debounce lane can be switched off entirely, which would have
   // stranded every queued message on an install that does not use debounce.
@@ -125,6 +126,7 @@ const EXPECTED_SPENDS_PROVIDER: Record<SchedulerJobKind, boolean> = {
   FLOWLOG_SWEEP: false,
   DEBOUNCE: false,
   MEMORY_COMPACT: false,
+  OTHER_INBOX_SUMMARY: false,
   INGEST_MESSAGE: false,
   INGEST_FALLBACK: false,
   // Reads and writes rows, emits log lines, invokes nothing: the sweep reports a stranded delivery
@@ -174,6 +176,7 @@ const EXPECTED_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
   APPOINTMENT_REMINDER: false,
   REDIRECT_FOLLOWUP: false,
   MEMORY_COMPACT: false,
+  OTHER_INBOX_SUMMARY: false,
   DELIVERY_SWEEP: false,
   RECONCILE_SWEEP: false,
   // One row per stranded DELIVERY, and one sweep pass can declare a whole batch lost at once — the
@@ -217,6 +220,7 @@ const EXPECTED_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
   APPOINTMENT_REMINDER: false,
   REDIRECT_FOLLOWUP: false,
   MEMORY_COMPACT: false,
+  OTHER_INBOX_SUMMARY: false,
   DELIVERY_SWEEP: false,
   RECONCILE_SWEEP: false,
   // The key names ONE ledger row — it has to, or a second stranded delivery would overwrite the
@@ -258,6 +262,7 @@ const EXPECTED_DEATH_LEVEL: Record<
   APPOINTMENT_REMINDER: "error",
   REDIRECT_FOLLOWUP: "error",
   MEMORY_COMPACT: "error",
+  OTHER_INBOX_SUMMARY: "warn",
   INGEST_MESSAGE: "error",
   INGEST_FALLBACK: "error",
   DELIVERY_SWEEP: "error",

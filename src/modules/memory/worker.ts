@@ -2,6 +2,7 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
+import { kindsInLane } from "@/modules/scheduler/lanes";
 import {
   claimDueCompactionJobs,
   reapStaleJobs,
@@ -12,7 +13,7 @@ import {
   runClaimed,
 } from "@/modules/scheduler/worker";
 
-// Dedicated drain for MEMORY_COMPACT jobs only, in the shape of src/modules/debounce/worker.ts: a
+// Dedicated drain for the compaction lane's jobs, in the shape of src/modules/debounce/worker.ts: a
 // summary is a model call with a 60s ceiling, and on the shared scheduler lane a batch of them would
 // delay follow-ups and reminders (docs/graph.md, Its own claim lane). The batch drains concurrently,
 // throttled only by the process-wide model semaphore.
@@ -57,13 +58,13 @@ export async function runCompactionTick(
   const run = deps.run ?? runClaimed;
   const reap = deps.reap ?? reapStaleJobs;
   // The reap runs even with nothing to claim: this lane is the only reaper of its own kind.
-  const reaped = await reap(
-    staleMs,
-    base,
-    new Date(),
-    undefined,
-    "MEMORY_COMPACT",
-  );
+  const reaped = (
+    await Promise.all(
+      kindsInLane("compaction").map((kind) =>
+        reap(staleMs, base, new Date(), undefined, kind),
+      ),
+    )
+  ).flat();
   // NOTE: a hung summary is this lane's ordinary road to DEAD, and it never passes through failJob.
   await announceReaped(reaped, base);
   if (batchSize <= 0) return { claimed: 0, reaped: reaped.length };

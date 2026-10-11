@@ -53,6 +53,7 @@ import {
   stopCompactionWorker,
 } from "@/modules/memory/worker";
 import { registerObserveHandler } from "@/modules/observe/job";
+import { registerOtherInboxSummaryHandler } from "@/modules/other-inboxes/summary-job";
 import { registerRagIngestHandler } from "@/modules/rag/documents";
 import {
   ensureAllKnowledgeSourceSyncs,
@@ -194,6 +195,7 @@ if (config.schedulerWorker.enabled) {
   registerAppointmentReminderHandler();
   registerRedirectFollowUpHandlers();
   registerMemoryHandlers();
+  registerOtherInboxSummaryHandler();
   registerObserveHandler();
   registerSuggestionReviewHandler();
   registerDocumentApprovalExpiryHandler();
@@ -257,7 +259,7 @@ if (config.debounceWorker.enabled) {
   startDebounceWorker();
 }
 
-// NOTE: Dedicated worker for MEMORY_COMPACT jobs (attendance compaction). The mirror image of the
+// NOTE: Dedicated worker for MEMORY_COMPACT and OTHER_INBOX_SUMMARY jobs (summaries). The mirror image of the
 // debounce lane: not fast, but long — a summary is a model call with a 60s ceiling, and compaction
 // fires for every agent on every closed attendance, so on the scheduler's serial lane a batch of
 // them would delay the jobs a customer feels. `registerMemoryHandlers` is idempotent, so registering
@@ -265,6 +267,7 @@ if (config.debounceWorker.enabled) {
 // itself is disabled.
 if (config.compactionWorker.enabled) {
   registerMemoryHandlers();
+  registerOtherInboxSummaryHandler();
   startCompactionWorker();
 }
 

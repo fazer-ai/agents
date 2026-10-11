@@ -44,7 +44,7 @@ const TRANSCRIPT_MAX_CHARS = 60_000;
 // estimate does not fall is a bug, not a reason to loop.
 const CLIP_PASSES = 6;
 
-function clipTranscript(
+export function clipTranscript(
   joined: string,
   maxHistoryTokens: number | null,
 ): string {
@@ -155,7 +155,35 @@ export async function summarizeAttendance(
   // The agent's declared history ceiling (null = none). See TRANSCRIPT_MAX_CHARS.
   maxHistoryTokens: number | null = null,
 ): Promise<AttendanceSummaryResult> {
-  const transcript = renderTranscript(messages, maxHistoryTokens);
+  return summarizeTranscript(
+    model,
+    SYSTEM_PROMPT,
+    renderTranscript(messages, maxHistoryTokens),
+    ATTENDANCE_SUMMARY_MAX,
+    callbacks,
+  );
+}
+
+// A transcript the caller rendered, wrapped in the transcription fence the system prompt names. The
+// text inside is written by the customer, so anything reading as the fence's own tag is taken out
+// first: the summarizer must never be addressed from inside it.
+export function stripTranscriptFence(text: string): string {
+  return text.replace(FENCE_TAG, "");
+}
+
+// One summarizer call over an already-rendered transcript, with the timeout and the explicit
+// "could not be produced" state every summary needs.
+export async function summarizeTranscript(
+  model: BaseChatModel,
+  systemPrompt: string,
+  transcript: string,
+  maxChars: number,
+  callbacks?: BaseCallbackHandler[],
+  // One attempt's budget. A caller off every turn's path may give a slow provider longer.
+  deadlineMs: number = SUMMARIZE_TIMEOUT_MS,
+  // The caller's own cancellation (a scheduler run past its deadline), joined to each attempt's.
+  abort?: AbortSignal,
+): Promise<AttendanceSummaryResult> {
   // NOTE: An attendance whose messages carry no text at all (only tool traffic) has nothing to
   // remember. That is a legitimate empty summary, not a failure, so it must not carry `error`.
   if (!transcript.trim()) return { summary: "" };
@@ -167,16 +195,17 @@ export async function summarizeAttendance(
   let attemptSignal: AbortSignal | undefined;
   try {
     const res = await runModelCall(
-      (signal) => {
-        attemptSignal = signal;
+      (attempt) => {
+        const signal = abort ? AbortSignal.any([attempt, abort]) : attempt;
+        attemptSignal = attempt;
         return model.invoke(
           [
-            new SystemMessage(SYSTEM_PROMPT),
+            new SystemMessage(systemPrompt),
             // NOTE: The transcript is never interpolated into the system prompt. Everything in a
             // system message reads to the model as an instruction from the operator, and this text was
             // written by the customer.
             new HumanMessage(
-              `${TRANSCRIPT_TAG}\n${transcript}\n${TRANSCRIPT_CLOSE}`,
+              `${TRANSCRIPT_TAG}\n${stripTranscriptFence(transcript)}\n${TRANSCRIPT_CLOSE}`,
             ),
           ],
           {
@@ -185,13 +214,15 @@ export async function summarizeAttendance(
           },
         );
       },
-      { deadlineMs: SUMMARIZE_TIMEOUT_MS },
+      // The abort also ends the wait for a permit: a run past its deadline leaves the queue instead
+      // of calling once capacity frees, which some adapters would not stop mid-call.
+      { deadlineMs, signal: abort },
     );
     const text = contentToText(res.content).trim();
     if (!text) return { summary: "", error: "empty completion" };
-    return { summary: clipText(text, ATTENDANCE_SUMMARY_MAX) };
+    return { summary: clipText(text, maxChars) };
   } catch (err) {
-    logger.warn({ err }, "memory: attendance summary failed, thread untouched");
+    logger.warn({ err }, "memory: summary failed, nothing written");
     return {
       summary: "",
       error: providerFailure(err, attemptSignal?.aborted === true),

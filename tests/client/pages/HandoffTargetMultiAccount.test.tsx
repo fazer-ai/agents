@@ -15,6 +15,7 @@ import { AuthProvider } from "@/client/contexts/AuthContext";
 import { ThemeProvider } from "@/client/contexts/ThemeContext";
 import { BehaviorTab } from "@/client/pages/agents/BehaviorTab";
 import { EMPTY_CONTACT_AUTH_RULE_FORM } from "@/client/pages/agents/contactAuthRuleForm";
+import { readOtherInboxesState } from "@/client/pages/agents/OtherInboxesFields";
 import { observationToForm } from "@/client/pages/agents/observationFormState";
 import { ToolGrantsEditor } from "@/client/pages/agents/ToolGrantsEditor";
 import { readTtsFormState } from "@/client/pages/agents/ttsFormState";
@@ -241,6 +242,8 @@ function renderContactAuth(
       setObservability: noop,
       sendImage: { allowedHosts: "" },
       takeover: { onHumanReply: true },
+      otherInboxes: readOtherInboxesState({}),
+      setOtherInboxes: noop,
       setTakeover: noop,
       setSendImage: noop,
       resolveConversation: { assignLabels: [] },

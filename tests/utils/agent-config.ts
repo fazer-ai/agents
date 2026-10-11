@@ -5,6 +5,7 @@ import { GUARDRAILS_DEFAULTS } from "@/modules/guardrails/settings";
 import { HANDOFF_DEFAULTS } from "@/modules/handoff/settings";
 import { SEND_IMAGE_DEFAULTS } from "@/modules/images/settings";
 import { KANBAN_DEFAULTS } from "@/modules/kanban/settings";
+import { OTHER_INBOXES_DEFAULTS } from "@/modules/other-inboxes/settings";
 import { SERVICE_WINDOW_DEFAULTS } from "@/modules/service-window/service";
 import { SIGNATURE_DEFAULTS } from "@/modules/signature/service";
 import { SPLIT_DEFAULTS } from "@/modules/split/service";
@@ -91,6 +92,8 @@ export function makeConfig(
     handoffConfig: HANDOFF_DEFAULTS,
     sendImageConfig: SEND_IMAGE_DEFAULTS,
     crossInboxCaseConfig: { ...CROSS_INBOX_CASE_DEFAULTS },
+    otherInboxesConfig: { ...OTHER_INBOXES_DEFAULTS, inboxes: [] },
+    chatwootInboxId: null,
     contactFieldsConfig: { context: [], writable: [] },
     chatwootContactId: null,
     kanbanConfig: KANBAN_DEFAULTS,

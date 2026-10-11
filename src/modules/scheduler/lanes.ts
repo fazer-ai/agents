@@ -26,6 +26,8 @@ export const JOB_LANE: Record<SchedulerJobKind, SchedulerLane> = {
   // Budget: fires for every agent on every closed attendance, against the model semaphore a
   // customer's turn queues on, so its batch is sized to a fraction of that budget.
   MEMORY_COMPACT: "compaction",
+  // Budget: a summary of another inbox's conversation, on the same model semaphore as compaction.
+  OTHER_INBOX_SUMMARY: "compaction",
   // Shared: a turn drains the ingestion it needs before invoking (../../graph/ingest-job.ts,
   // drainPendingIngest), so cadence does not matter, and the debounce worker can be switched off
   // (DEBOUNCE_WORKER_ENABLED), which would leave a kind parked in that lane never drained.
@@ -132,6 +134,8 @@ export const JOB_POOL: Record<SchedulerJobKind, PoolClass> = {
   HEARTBEAT: "background",
   FLOWLOG_SWEEP: "background",
   MEMORY_COMPACT: "background",
+  // A summary no turn waits on: the turn lists the conversation as pending until it lands.
+  OTHER_INBOX_SUMMARY: "background",
   // The sweep itself; the stored deliveries it admits run on main (src/modules/chatwoot/delivery-queue.ts).
   DELIVERY_SWEEP: "background",
   RECONCILE_SWEEP: "background",
@@ -165,6 +169,7 @@ export const JOB_SPENDS_PROVIDER: Record<SchedulerJobKind, boolean> = {
   FLOWLOG_SWEEP: false,
   DEBOUNCE: false,
   MEMORY_COMPACT: false,
+  OTHER_INBOX_SUMMARY: false,
   // No model, no embedding: it appends to a checkpointer channel and writes one row.
   INGEST_MESSAGE: false,
   INGEST_FALLBACK: false,
@@ -247,6 +252,7 @@ export const JOB_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
   REDIRECT_FOLLOWUP: false,
   DEBOUNCE: false,
   MEMORY_COMPACT: false,
+  OTHER_INBOX_SUMMARY: false,
   INGEST_MESSAGE: true,
   // Its key names one message too. A redelivery after it ran arms it again, which only arms an append
   // the ingest dedupe refuses.
@@ -314,6 +320,7 @@ export const JOB_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
   APPOINTMENT_REMINDER: false,
   REDIRECT_FOLLOWUP: false,
   MEMORY_COMPACT: false,
+  OTHER_INBOX_SUMMARY: false,
   INGEST_MESSAGE: true,
   INGEST_FALLBACK: true,
   // One row per tenant, re-armed forever. Bounded by the install's tenant count, not by traffic.
@@ -397,6 +404,7 @@ export const JOB_TRAFFIC_RANK: Record<SchedulerJobKind, number> = {
   APPOINTMENT_REMINDER: 1,
   REDIRECT_FOLLOWUP: 1,
   MEMORY_COMPACT: 1,
+  OTHER_INBOX_SUMMARY: 1,
   DELIVERY_SWEEP: 1,
   RECONCILE_SWEEP: 1,
   SPEND_CEILING_POLL: 1,
@@ -440,6 +448,8 @@ export const JOB_DEATH_LEVEL: Record<SchedulerJobKind, FlowLevel> = {
   // attendance, and the one this job was carrying is gone. The stand-in must not undercut the line
   // it stands in for.
   MEMORY_COMPACT: "error",
+  // A summary the next turn arms again; until then the conversation is listed without content.
+  OTHER_INBOX_SUMMARY: "warn",
   // A message the turn will never see. The customer wrote and is waiting.
   INGEST_MESSAGE: "error",
   INGEST_FALLBACK: "error",
@@ -515,6 +525,7 @@ export const JOB_RETRY_BASE_MS: Record<SchedulerJobKind, number> = {
   APPOINTMENT_REMINDER: 2_000,
   REDIRECT_FOLLOWUP: 2_000,
   MEMORY_COMPACT: 2_000,
+  OTHER_INBOX_SUMMARY: 2_000,
   INGEST_MESSAGE: 2_000,
   INGEST_FALLBACK: 2_000,
   DELIVERY_SWEEP: 2_000,

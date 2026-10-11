@@ -210,6 +210,7 @@ red test.
 | `memory_compact` | **ungated, by decision** — see below |
 | `observer` | the `OBSERVE` job (`observe/job.ts`), asked after the agent is known to still want the tick and immediately before the turn's first model call; a refusal is a `skipped` line and a tick that writes nothing |
 | `suggestion_review` | the `SUGGESTION_REVIEW` job (`rag/suggestion-review.ts`), asked after the proposal is embedded and has candidates, immediately before the reviewer's model call; a refusal queues the proposal unreviewed |
+| `other_inbox_summary` | the `OTHER_INBOX_SUMMARY` job (`other-inboxes/summary-job.ts`), asked after the conversation is known to have public messages the stored summary does not cover, immediately before the summariser's model call; a refusal leaves the conversation listed without content until a later turn arms the job again |
 
 A refusal says that **spend** was what stood in the way, so it is asked only where spend was
 actually next: after everything that would have stopped the call anyway, and immediately before the

@@ -185,6 +185,11 @@ import {
   modelFallbackToStored,
 } from "./modelFallbackFormState";
 import {
+  type OtherInboxesState,
+  otherInboxesPatch,
+  readOtherInboxesState,
+} from "./OtherInboxesFields";
+import {
   observabilityToForm,
   observabilityToStored,
 } from "./observabilityFormState";
@@ -609,6 +614,7 @@ function readBehaviorState(a: Agent) {
     sendImage: readSendImageState(s.sendImage),
     resolveConversation: readResolveConversationState(s.resolveConversation),
     crossInboxCase: readCrossInboxCaseState(s.crossInboxCase),
+    otherInboxes: readOtherInboxesState(s),
     // NOTE: ON unless the stored bag says otherwise, mirroring readTakeoverConfig. A bag written
     // before this block existed has no key and must read as on, or loading an old agent would show
     // the switch off while the runtime has it on.
@@ -1041,6 +1047,9 @@ function AgentEditor() {
   const [takeover, setTakeover] = useState<TakeoverState>({
     onHumanReply: true,
   });
+  const [otherInboxes, setOtherInboxes] = useState<OtherInboxesState>(() =>
+    readOtherInboxesState({}),
+  );
   // Hosts the send_image tool may fetch from. Mirrors agent.settings.sendImage
   // (modules/images/settings), edited as one host per line on the tool's card.
   const [sendImage, setSendImage] = useState<SendImageState>({
@@ -1584,6 +1593,7 @@ function AgentEditor() {
     setObservation(b.observation);
     setModelFallback(b.modelFallback);
     setTakeover(b.takeover);
+    setOtherInboxes(b.otherInboxes);
     setAttributeContext(b.attributeContext);
     setContactFields(b.contactFields);
     setChannelRedirect(readChannelRedirectState(a));
@@ -1635,6 +1645,7 @@ function AgentEditor() {
     setObservation((prev) => withDecisionsOf(b.observation, prev));
     if (chat) setModelFallback(b.modelFallback);
     setTakeover(b.takeover);
+    setOtherInboxes(b.otherInboxes);
     setAttributeContext(b.attributeContext);
     setContactFields(b.contactFields);
   }, []);
@@ -2035,6 +2046,7 @@ function AgentEditor() {
         writable: contactFields.writable,
       },
       takeover: { onHumanReply: takeover.onHumanReply },
+      ...otherInboxesPatch(otherInboxes, agentMode === "monitoring"),
     };
   }
 
@@ -2126,6 +2138,7 @@ function AgentEditor() {
     attributeContext: typeof attributeContext;
     contactFields: typeof contactFields;
     takeover: typeof takeover;
+    otherInboxes: typeof otherInboxes;
     observability: typeof observability;
     memory: MemoryState;
     modelFallback: ModelFallbackState;
@@ -2165,6 +2178,7 @@ function AgentEditor() {
     attributeContext,
     contactFields,
     takeover,
+    otherInboxes,
     observability,
     memory,
     modelFallback,
@@ -2210,6 +2224,7 @@ function AgentEditor() {
       attributeContext: b.attributeContext,
       contactFields: b.contactFields,
       takeover: b.takeover,
+      otherInboxes: b.otherInboxes,
       observability: b.observability,
       memory: b.memory,
       modelFallback: b.modelFallback,
@@ -2289,6 +2304,7 @@ function AgentEditor() {
         attributeContext: f.attributeContext,
         contactFields: f.contactFields,
         takeover: f.takeover,
+        otherInboxes: f.otherInboxes,
         observability: {
           logToolValues: f.observability.logToolValues,
           fullDetailUntil: isFullDetailWindowOpen(
@@ -2862,6 +2878,11 @@ function AgentEditor() {
           "The bundle carried more than {{max}} labels the agent may add, so {{count}} of them were dropped on import.",
           { ...p, count: importWarningCount(p) },
         );
+      case "otherInboxesCleared":
+        return t(
+          "editor.importWarning.otherInboxesCleared",
+          "The inboxes this agent read for a contact's other conversations belong to the installation the bundle came from, so the selection was cleared and the feature turned off. Pick the inboxes here to turn it back on.",
+        );
       case "credentialNotFound":
         return t(
           "editor.importWarning.credentialNotFound",
@@ -3380,6 +3401,7 @@ function AgentEditor() {
     setObservation((prev) => withDecisionsOf(b.observation, prev));
     setModelFallback(b.modelFallback);
     setTakeover(b.takeover);
+    setOtherInboxes(b.otherInboxes);
     setAttributeContext(b.attributeContext);
     setContactFields(b.contactFields);
   };
@@ -4941,6 +4963,8 @@ function AgentEditor() {
                 setObservability={setObservability}
                 takeover={takeover}
                 setTakeover={setTakeover}
+                otherInboxes={otherInboxes}
+                setOtherInboxes={setOtherInboxes}
                 attributeContext={attributeContext}
                 setAttributeContext={setAttributeContext}
                 contactFields={contactFields}

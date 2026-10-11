@@ -453,6 +453,9 @@ const BARE_SLICES: Record<
   // NOTE: the first few offending account ids for the refusal message. A slice over an array of
   // NUMBERS cannot land inside a surrogate pair; the join that renders it happens after the cut.
   "src/modules/chatwoot/management.ts": [1, "array"],
+  // The transcript window and the page walk, moved here from the monitoring job: both slice ARRAYS of
+  // message rows.
+  "src/modules/chatwoot/transcript.ts": [2, "array"],
   "src/modules/conversations/service.ts": [1, "array"],
   // The newest turns' lines kept off an ARRAY of turns, never a string.
   "src/modules/conversations/usage.ts": [1, "array"],
@@ -494,9 +497,12 @@ const BARE_SLICES: Record<
   "src/modules/integrations/mappers.ts": [1, "ascii"],
   "src/modules/mcp/write-agents.ts": [1, "array"],
   "src/modules/memory/cut.ts": [2, "index + array"],
-  // Four: the transcript window, the notes window, the label-change window and the page walk. Every
-  // one is a slice of an ARRAY of rows, so none can land inside a surrogate pair.
-  "src/modules/observe/job.ts": [4, "array"],
+  // Two: the notes window and the label-change window. Both slice an ARRAY of rows, so neither can
+  // land inside a surrogate pair.
+  "src/modules/observe/job.ts": [2, "array"],
+  // The conversations kept for the block: an array of conversation refs.
+  "src/modules/other-inboxes/context.ts": [1, "array"],
+  "src/modules/other-inboxes/read.ts": [1, "array"],
   "src/modules/playground/service.ts": [1, "array"],
   // The page of a document list: `rows.slice(0, take)` keeps the first `take` rows.
   "src/modules/rag/documents.ts": [1, "array"],

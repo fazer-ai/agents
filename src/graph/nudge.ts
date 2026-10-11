@@ -53,6 +53,10 @@ import { applyGuardrailHandoff } from "@/modules/guardrails/handoff";
 import { GENERIC_TEXT_MAX_CHARS } from "@/modules/integrations/types";
 import { armCompaction } from "@/modules/memory/compact";
 import {
+  otherInboxesFlowEvent,
+  withOtherInboxesContext,
+} from "@/modules/other-inboxes/context";
+import {
   claimProactiveAlert,
   confirmProactiveReservation,
   emitProactiveBreakerRefusal,
@@ -1554,7 +1558,6 @@ async function runAgentNudgeBody(
     // the one that just allowed this send.
     cfg = withAuthContextSection(cfg, auth.context ?? null);
   }
-
   const integrationNameOf = async (raw: string): Promise<string | null> => {
     const id = parseDbId(raw);
     if (id === null) return null;
@@ -1672,6 +1675,22 @@ async function runAgentNudgeBody(
       if (operatorEvent && stillOurs === "not-ours") return noteOperatorEvent();
       return windowNoteOnly ? "noted-window" : "silent";
     }
+  }
+
+  // The contact's conversations in other inboxes, read past every gate that could still stop the
+  // follow-up, the proactive limit included, so a refused one reads nothing from Chatwoot. It never
+  // throws, so the reservation above always reaches the model.
+  cfg = await withOtherInboxesContext(
+    cfg,
+    { tenantId, instanceId, conversationId },
+    {
+      base,
+      loadClient: (t, i) =>
+        loadChatwootClient(t, i, { base, makeClient: params.deps?.makeClient }),
+    },
+  );
+  if (cfg.otherInboxesReport) {
+    emitFlowEvent(flow, otherInboxesFlowEvent(cfg.otherInboxesReport));
   }
 
   // A follow-up must ALWAYS have a way to say nothing, so `skip_reply` is not operator-revocable

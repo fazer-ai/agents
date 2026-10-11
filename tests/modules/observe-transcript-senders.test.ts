@@ -4,7 +4,10 @@ import {
   type ChatwootMessageRow,
   parseChatwootMessages,
 } from "@/modules/chatwoot/messages";
-import { renderTranscript, transcriptFromRows } from "@/modules/observe/job";
+import {
+  renderTranscript,
+  transcriptFromRows,
+} from "@/modules/chatwoot/transcript";
 
 // The observer cannot judge "a person already answered here" if the AI agent's own words read as a
 // person's. Bot replies carry the bot as sender; the case opening goes out on the admin token and

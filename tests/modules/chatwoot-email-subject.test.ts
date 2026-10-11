@@ -11,7 +11,7 @@ import {
   normalizeChatwootEvent,
 } from "@/modules/chatwoot/normalize";
 import { renderInboundMessage } from "@/modules/chatwoot/render";
-import { transcriptFromRows } from "@/modules/observe/job";
+import { transcriptFromRows } from "@/modules/chatwoot/transcript";
 
 // On an email inbox the request is often in the subject line and nowhere else (the body is empty,
 // or a client footer like "Enviado do meu iPhone"), so a message built from `content` alone reaches

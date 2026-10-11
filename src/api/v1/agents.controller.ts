@@ -90,6 +90,8 @@ import { listTtsOptions } from "@/modules/tts/listing";
 // translate('errors.settingsExpectedType', 'a value of type {{type}}')
 // translate('errors.settingsExpectedAtLeast', 'a number of at least {{min}}')
 // translate('errors.settingsExpectedGreaterThan', 'a number greater than {{min}}')
+// translate('errors.settingsExpectedAtMost', 'a number of at most {{max}}')
+// translate('errors.settingsExpectedLessThan', 'a number less than {{max}}')
 // translate('errors.settingsExpectedPattern', 'a value matching {{pattern}}')
 // translate('errors.settingsExpectedValid', 'a valid value')
 // translate('errors.unknownSettingsField', 'Unknown field `{{field}}`: it no longer exists, so it is not stored. Remove it from the request.')

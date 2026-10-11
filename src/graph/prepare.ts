@@ -116,6 +116,11 @@ import {
 import { type KanbanConfig, readKanbanConfig } from "@/modules/kanban/settings";
 import { attendanceStartedAt } from "@/modules/memory/attendance-start";
 import { readMemoryConfig } from "@/modules/memory/settings";
+import type { OtherInboxesReport } from "@/modules/other-inboxes/context";
+import {
+  type OtherInboxesConfig,
+  readOtherInboxesConfig,
+} from "@/modules/other-inboxes/settings";
 import { readKnowledgeConfig } from "@/modules/rag/review-settings";
 import {
   readServiceWindowConfig,
@@ -317,6 +322,13 @@ export interface AgentConfig {
   sendImageConfig: SendImageConfig;
   // Where `open_case_in_inbox` opens the case (operator-set; no inbox = the tool is not built).
   crossInboxCaseConfig: CrossInboxCaseConfig;
+  // Which of the contact's conversations in other inboxes a turn may read
+  // (src/modules/other-inboxes/context.ts appends them after the load, outside its transaction).
+  otherInboxesConfig: OtherInboxesConfig;
+  // The Chatwoot inbox id of this conversation, null on the playground.
+  chatwootInboxId: number | null;
+  // What `withOtherInboxesContext` read, for the turn's flow line. Absent when it did not run.
+  otherInboxesReport?: OtherInboxesReport | null;
   // When the coalesced burst behind this turn started (its oldest message), stamped on the turn's
   // input next to the newest. Absent on a turn of one message.
   burstStartedAt?: Date | null;
@@ -622,7 +634,12 @@ export async function loadAgentConfig(
   const memoryCfg = memoryRead.compaction;
   let memoryCompactionApiKey = "";
   let memoryCompactionCredentialBaseUrl: string | null = null;
-  if (memoryCfg.enabled && memoryCfg.credentialRef) {
+  // NOTE: the summaries of the contact's other inboxes run on the same override, so its credential is
+  // needed whenever either summariser is on.
+  if (
+    (memoryCfg.enabled || readOtherInboxesConfig(effSettings).enabled) &&
+    memoryCfg.credentialRef
+  ) {
     const mEntry = await tryResolveApiKeyEntry(db, memoryCfg.credentialRef);
     if (mEntry.state === "ok") {
       memoryCompactionApiKey = mEntry.secret;
@@ -630,8 +647,8 @@ export async function loadAgentConfig(
     } else {
       logger.warn(
         mEntry.state === "unusable"
-          ? "agent %s: memory compaction credentialRef %s resolves to a %s credential, which cannot be used as an API key, so the attendance summary is not written"
-          : "agent %s: memory compaction credentialRef %s did not resolve, so the attendance summary is not written",
+          ? "agent %s: memory compaction credentialRef %s resolves to a %s credential, which cannot be used as an API key, so no summary is written on it"
+          : "agent %s: memory compaction credentialRef %s did not resolve, so no summary is written on it",
         String(args.agentId),
         memoryCfg.credentialRef,
         mEntry.state === "unusable" ? mEntry.kind : "",
@@ -1005,6 +1022,8 @@ export async function loadAgentConfig(
     contactAuthConfig: readContactAuthConfig(effSettings),
     sendImageConfig: readSendImageConfig(effSettings),
     crossInboxCaseConfig,
+    otherInboxesConfig: readOtherInboxesConfig(effSettings),
+    chatwootInboxId: conv?.inbox?.chatwootInboxId ?? null,
     contactFieldsConfig,
     chatwootContactId: conv?.contact?.chatwootContactId ?? null,
     kanbanConfig: readKanbanConfig(effSettings),

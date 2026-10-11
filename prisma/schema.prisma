@@ -83,6 +83,7 @@ enum SchedulerJobKind {
   SNOOZED_FOLLOWUP
   RECONCILE_SWEEP
   INGEST_FALLBACK
+  OTHER_INBOX_SUMMARY
 }
 
 enum SchedulerJobStatus {
@@ -143,6 +144,7 @@ model Tenant {
   replyDispensals               ReplyDispensal[]
   agentThreads                  AgentThread[]
   attendanceSummaries           AttendanceSummary[]
+  otherInboxSummaries           OtherInboxSummary[]
   agents                        Agent[]
   businessHours                 BusinessHours[]
   knowledgeBases                KnowledgeBase[]
@@ -368,6 +370,7 @@ model ChatwootInstance {
   agentBots           ChatwootAgentBot[]
   agentThreads        AgentThread[]
   attendanceSummaries AttendanceSummary[]
+  otherInboxSummaries OtherInboxSummary[]
 
   @@unique([tenantId, accountId])
   // Global (no tenantId): one Chatwoot account belongs to a single tenant across the whole fleet.
@@ -1439,6 +1442,33 @@ model AttendanceSummary {
   @@unique([tenantId, chatwootInstanceId, contactInboxId, conversationId, lastMessageId])
   @@index([tenantId, chatwootInstanceId, contactInboxId])
   @@map("attendance_summaries")
+}
+
+// The summary of a conversation in another inbox, for the turns of the same contact elsewhere
+// (src/modules/other-inboxes/). Keyed on the conversation, not on the agent: what the conversation
+// says does not depend on who reads it. `coveredMessageId` is the newest PUBLIC message the summary
+// covers, so a private note or an activity row never makes it stale.
+model OtherInboxSummary {
+  id                     BigInt   @id @default(autoincrement())
+  tenantId               BigInt   @map("tenant_id")
+  chatwootInstanceId     BigInt   @map("chatwoot_instance_id")
+  // Chatwoot display_id of the summarized conversation.
+  chatwootConversationId Int      @map("chatwoot_conversation_id")
+  summary                String
+  coveredMessageId       Int      @map("covered_message_id")
+  // The newest public messages' fingerprint when the summary was written (other-inboxes/read.ts): an edit or a
+  // late transcription changes it without a new message id.
+  coveredFingerprint     String   @map("covered_fingerprint")
+  // When the summary was produced, which is what the minimum interval between two runs counts from.
+  generatedAt            DateTime @map("generated_at")
+  createdAt              DateTime @default(now()) @map("created_at")
+  updatedAt              DateTime @updatedAt @map("updated_at")
+
+  tenant   Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  instance ChatwootInstance @relation(fields: [chatwootInstanceId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, chatwootInstanceId, chatwootConversationId])
+  @@map("other_inbox_summaries")
 }
 
 // ──────────────────────────────────────────────── agent config ──

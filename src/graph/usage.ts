@@ -297,6 +297,9 @@ export const USAGE_NODE_IS_AGENT_TURN: Readonly<Record<string, boolean>> =
     decision: false,
     // The SUGGESTION_REVIEW job judging a proposed knowledge entry: nothing the agent said.
     suggestion_review: false,
+    // The OTHER_INBOX_SUMMARY job summarizing the contact's conversation in another inbox: a
+    // conversation this turn did not take, read as context.
+    other_inbox_summary: false,
   });
 
 // Consumed as an EXCLUSION, with `node: null` kept beside it: a row with no node is an agent turn,

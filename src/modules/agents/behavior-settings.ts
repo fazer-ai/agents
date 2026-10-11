@@ -30,6 +30,7 @@ import { readSendImageConfig } from "@/modules/images/settings";
 import { readKanbanConfig } from "@/modules/kanban/settings";
 import { readMemoryConfig } from "@/modules/memory/settings";
 import { readMonitoringConfig } from "@/modules/observe/settings";
+import { readOtherInboxesConfig } from "@/modules/other-inboxes/settings";
 import { readKnowledgeConfig } from "@/modules/rag/review-settings";
 import { readServiceWindowConfig } from "@/modules/service-window/service";
 import { readSignatureConfig } from "@/modules/signature/service";
@@ -78,6 +79,8 @@ export interface BehaviorSettings {
   // NOTE: The labels resolve_conversation writes itself, before the close.
   resolveConversation: ReturnType<typeof readResolveConversationConfig>;
   crossInboxCase: ReturnType<typeof readCrossInboxCaseConfig>;
+  // NOTE: The contact's conversations in other inboxes the operator picked, read into the prompt.
+  otherInboxes: ReturnType<typeof readOtherInboxesConfig>;
   limits: ReturnType<typeof readLimitsConfig>;
   availability: ReturnType<typeof readAvailabilityConfig>;
   contactAuth: ReturnType<typeof readContactAuthConfig>;
@@ -125,6 +128,7 @@ export const BEHAVIOR_SETTINGS_KEYS = [
   "sendImage",
   "resolveConversation",
   "crossInboxCase",
+  "otherInboxes",
   "limits",
   "availability",
   "contactAuth",
@@ -167,6 +171,7 @@ export function readBehaviorSettings(
     sendImage: readSendImageConfig(settings),
     resolveConversation: readResolveConversationConfig(settings),
     crossInboxCase: readCrossInboxCaseConfig(settings),
+    otherInboxes: readOtherInboxesConfig(settings),
     limits: readLimitsConfig(settings),
     availability: readAvailabilityConfig(settings),
     contactAuth: readContactAuthConfig(settings),
@@ -208,6 +213,7 @@ export interface BehaviorSettingsPatch {
   sendImage?: Record<string, unknown>;
   resolveConversation?: Record<string, unknown>;
   crossInboxCase?: Record<string, unknown>;
+  otherInboxes?: Record<string, unknown>;
   limits?: Record<string, unknown>;
   availability?: Record<string, unknown>;
   contactAuth?: Record<string, unknown>;

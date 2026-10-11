@@ -1376,6 +1376,12 @@ export async function importAgent(
         params: { count: droppedAllowed, max: ALLOWED_LABELS_MAX },
       });
     }
+    // The other-inbox selection names Chatwoot instances and inboxes by this deployment's ids, which
+    // mean something else (or nothing) wherever the bundle lands: it is cleared and the block turned
+    // off, so the operator picks the inboxes there instead of the agent reading unrelated ones.
+    if (clearOtherInboxesInPlace(settings)) {
+      warnings.push({ code: "otherInboxesCleared" });
+    }
 
     // The names this bundle grants as its OWN tools, HTTP or code. Read straight off the parsed
     // bundle (no database), because it decides what a settings key MEANS: a rule keyed
@@ -3197,4 +3203,16 @@ async function buildGrantRows(
     }
   }
   return rows;
+}
+
+// True when there was a selection to clear.
+function clearOtherInboxesInPlace(settings: Record<string, unknown>): boolean {
+  const block = settings.otherInboxes;
+  if (!block || typeof block !== "object" || Array.isArray(block)) return false;
+  const b = block as Record<string, unknown>;
+  const had =
+    b.enabled === true || (Array.isArray(b.inboxes) && b.inboxes.length > 0);
+  if (!had) return false;
+  settings.otherInboxes = { ...b, enabled: false, inboxes: [] };
+  return true;
 }

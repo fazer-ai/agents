@@ -680,6 +680,7 @@ describe("every node the ledger writes is classified for the involvement KPI", (
     expect([...NON_AGENT_TURN_NODES].sort()).toEqual([
       "decision",
       "observer",
+      "other_inbox_summary",
       "suggestion_review",
       "vision",
     ]);

@@ -154,6 +154,13 @@ const STORED: Record<string, unknown> = {
   attributeContext: { conversation: ["plano"], contact: [], task: [] },
   contactFields: { context: ["email"], writable: [] },
   takeover: { onHumanReply: false },
+  otherInboxes: {
+    enabled: true,
+    inboxes: [{ instanceId: 3, inboxId: 12 }],
+    maxConversations: 3,
+    lookbackDays: 30,
+    fullTranscriptMaxChars: 1500,
+  },
 };
 
 // What the save writes for an agent with no settings at all.
@@ -277,6 +284,13 @@ const DEFAULTS: Record<string, unknown> = {
   attributeContext: { conversation: [], contact: [], task: [] },
   contactFields: { context: [], writable: [] },
   takeover: { onHumanReply: true },
+  otherInboxes: {
+    enabled: false,
+    inboxes: [],
+    maxConversations: 5,
+    lookbackDays: 90,
+    fullTranscriptMaxChars: 2000,
+  },
 };
 
 // Two schedules to pick between; the agent is bound to the first one for both pickers.
@@ -363,7 +377,11 @@ async function editEveryBlock() {
     .getAllByLabelText("Provider")
     .find((el) => el.textContent?.includes("No fallback")) as HTMLSelectElement;
   changeTo(fallback, "");
-  fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+  // The selected other inbox's chip has a Remove of its own: this one is the context document's.
+  const removeDoc = screen
+    .getAllByRole("button", { name: "Remove" })
+    .find((b) => b.parentElement?.textContent?.includes("plano"));
+  fireEvent.click(removeDoc as HTMLElement);
   expect(screen.queryByText("plano")).toBeNull();
   const inContext = screen.getAllByRole("checkbox")[0] as HTMLInputElement;
   const was = inContext.checked;

@@ -71,6 +71,10 @@ export function useNodeLabel() {
       "dashboard.node.suggestionReview",
       "Knowledge suggestion review",
     ),
+    other_inbox_summary: t(
+      "dashboard.node.otherInboxSummary",
+      "Summary of another inbox",
+    ),
   };
   return (node: string) => labels[node] ?? node;
 }

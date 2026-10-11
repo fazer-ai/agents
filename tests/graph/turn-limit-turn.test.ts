@@ -69,6 +69,8 @@ interface Calls {
   sent: string[];
   notes: string[];
   status: string[];
+  // Every method the turn called, in order, when the test asks for it.
+  methods?: string[];
 }
 
 // Every method the turn may call answers like Chatwoot would, and the three that matter here are
@@ -86,6 +88,7 @@ function chatwootDouble(
         // NOTE: Not a method: a muted transport sends no ack, and a function here would read as true.
         if (prop === "then" || prop === "muted") return undefined;
         return async (...args: unknown[]) => {
+          calls.methods?.push(String(prop));
           if (prop === "sendMessage") calls.sent.push(String(args[1]));
           if (prop === "sendPrivateNote") calls.notes.push(String(args[1]));
           if (prop === "toggleStatus") {
@@ -575,6 +578,64 @@ describe.skipIf(!dbUp)("the per-conversation turn limit", () => {
     const calls = newCalls();
     expect(await turn(convId, calls)).toBe("blocked");
     expect(calls.sent).toEqual([]);
+  });
+
+  // The other-inbox block reads Chatwoot and can arm billed summaries; a turn the limit refuses never
+  // uses it, so it is not built.
+  test("a turn the limit refuses does not read the contact's other inboxes", async () => {
+    const agent = await suDb.agent.findUniqueOrThrow({
+      where: { id: limitedAgentId },
+      select: { settings: true },
+    });
+    const contact = await suDb.contact.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootContactId: 555,
+      },
+    });
+    await suDb.agent.update({
+      where: { id: limitedAgentId },
+      data: {
+        settings: {
+          ...(agent.settings as object),
+          otherInboxes: {
+            enabled: true,
+            inboxes: [{ instanceId: Number(instanceId), inboxId: 99 }],
+          },
+        },
+      },
+    });
+    try {
+      const over = await seedConversation(8290);
+      await suDb.conversation.update({
+        where: { id: over },
+        data: { contactId: contact.id },
+      });
+      await seedDeliveries(over, [
+        minutesAgo(30),
+        minutesAgo(20),
+        minutesAgo(10),
+      ]);
+      const refused = { ...newCalls(), methods: [] as string[] };
+      expect(await turn(8290, refused)).toBe("blocked");
+      expect(refused.methods).not.toContain("listContactConversations");
+
+      // The same agent and contact under the limit does read them: the assertion above is the gate's.
+      const under = await seedConversation(8291);
+      await suDb.conversation.update({
+        where: { id: under },
+        data: { contactId: contact.id },
+      });
+      const answered = { ...newCalls(), methods: [] as string[] };
+      expect(await turn(8291, answered)).toBe("posted");
+      expect(answered.methods).toContain("listContactConversations");
+    } finally {
+      await suDb.agent.update({
+        where: { id: limitedAgentId },
+        data: { settings: agent.settings as object },
+      });
+    }
   });
 
   test("a conversation handed back after a trip counts from zero", async () => {

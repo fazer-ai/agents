@@ -112,9 +112,9 @@ const SETTINGS_DESC_CEILING = 2_000;
 // learn by trying, re-measure instead of summing) is in docs/mcp.md, "Full admin surface".
 // Includes `monitoring.engine` and the `decisions` block (questions, rules): they are configured only
 // through REST and MCP until the console has a screen for them, so their shape has to be in
-// tools/list, and `snoozedFollowUp` too (the step shape it shares with `followUp`). Measured at 34_032
-// with `limits.maxTurnsPerHour`, the conversation-type and label conditions and the vision ceiling.
-const SETTINGS_SCHEMA_CEILING = 34_120;
+// tools/list, and `snoozedFollowUp` too (the step shape it shares with `followUp`). Measured at 34_713
+// with `limits.maxTurnsPerHour`, the conditions, the vision ceiling and the `otherInboxes` ranges.
+const SETTINGS_SCHEMA_CEILING = 34_800;
 
 describe("MCP tool descriptions", () => {
   test("agent_settings_set stays under its ceiling", async () => {
@@ -215,11 +215,11 @@ describe("MCP tool descriptions", () => {
     }
     // Measured at 32_325, with the three proactive_breaker tools.
     expect(desc).toBeLessThanOrEqual(32_400);
-    // Measured at 71_765, with `limits.maxProactivePerDay` and the `snoozedFollowUp` block on
-    // agent_settings_set, the approval switch and validity on the document template writes, the
-    // next number on them, the search and cursor on issued_document_list, and the three
-    // proactive_breaker tools.
-    expect(schema).toBeLessThanOrEqual(71_850);
+    // Measured at 72_446, with `limits.maxProactivePerDay` and the `snoozedFollowUp` and
+    // `otherInboxes` blocks on agent_settings_set, the approval switch and validity on the document
+    // template writes, the next number on them, the search and cursor on issued_document_list, and the
+    // three proactive_breaker tools.
+    expect(schema).toBeLessThanOrEqual(72_530);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

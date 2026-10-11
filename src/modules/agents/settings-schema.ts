@@ -40,6 +40,10 @@ import { FOLLOW_UP_DELAY_UNITS } from "@/modules/followups/settings";
 import { GUARDRAIL_ACTIONS } from "@/modules/guardrails/settings";
 import { HANDOFF_MODES } from "@/modules/handoff/settings";
 import {
+  OTHER_INBOXES_LIMITS,
+  OTHER_INBOXES_MAX_INBOXES,
+} from "@/modules/other-inboxes/settings";
+import {
   SIGNATURE_FREQUENCIES,
   SIGNATURE_POSITIONS,
   SIGNATURE_SEPARATORS,
@@ -532,6 +536,28 @@ const contactFields = z.looseObject({
     .describe("⊆ context, else refused; empty = no update_contact"),
 });
 
+const otherInboxInt = (b: { min: number; max: number }) =>
+  z.number().int().min(b.min).max(b.max).optional();
+
+const otherInboxes = z.looseObject({
+  enabled: z.boolean().optional(),
+  inboxes: z
+    .array(
+      z.object({
+        instanceId: z.number().int().positive(),
+        inboxId: z.number().int().positive(),
+      }),
+    )
+    .max(OTHER_INBOXES_MAX_INBOXES)
+    .optional()
+    .describe("chatwootInboxId + our instance id; empty = none read"),
+  maxConversations: otherInboxInt(OTHER_INBOXES_LIMITS.maxConversations),
+  lookbackDays: otherInboxInt(OTHER_INBOXES_LIMITS.lookbackDays),
+  fullTranscriptMaxChars: otherInboxInt(
+    OTHER_INBOXES_LIMITS.fullTranscriptMaxChars,
+  ),
+});
+
 const crossInboxCase = z.looseObject({
   targetInboxId: chatwootId().describe(
     "chatwootInboxId the case opens in; unset = tool not offered",
@@ -1006,6 +1032,7 @@ export const BEHAVIOR_PATCH_SHAPE = {
   sendImage: sendImage.optional(),
   resolveConversation: resolveConversation.optional(),
   crossInboxCase: crossInboxCase.optional(),
+  otherInboxes: otherInboxes.optional(),
   observability: observability.optional(),
   memory: memory.optional(),
   knowledge: knowledge.optional(),

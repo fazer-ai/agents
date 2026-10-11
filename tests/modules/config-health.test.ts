@@ -387,6 +387,25 @@ describe("computeConfigIssues — redirect enabled but incomplete", () => {
       expect(computeConfigIssues({ ...base, settings: {} })).toEqual([]);
     });
 
+    // The other-inbox summaries run on this override too: with attendance compaction off and them on,
+    // a broken override still fails every long conversation's summary.
+    test("a broken override is flagged while only the other-inbox summaries use it", () => {
+      const only = (otherOn: boolean) => ({
+        ...base,
+        settings: {
+          memory: { compaction: { enabled: false, provider: "anthropic" } },
+          otherInboxes: {
+            enabled: otherOn,
+            inboxes: [{ instanceId: 3, inboxId: 12 }],
+          },
+        },
+      });
+      expect(computeConfigIssues(only(true))).toEqual([
+        { key: "memoryModel", tab: "behavior", sectionId: "memory" },
+      ]);
+      expect(computeConfigIssues(only(false))).toEqual([]);
+    });
+
     test("the agent's own provider, picked explicitly, needs no credential of its own", () => {
       expect(computeConfigIssues(mem({ provider: "openai" }))).toEqual([]);
     });

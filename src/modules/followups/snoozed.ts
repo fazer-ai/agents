@@ -34,12 +34,15 @@ import {
   SESSION_SENDER_NAME,
 } from "@/modules/chatwoot/normalize";
 import { renderAttendantMessage } from "@/modules/chatwoot/render";
+import {
+  renderTranscript,
+  transcriptFromRows,
+} from "@/modules/chatwoot/transcript";
 import { readContactAuthConfig } from "@/modules/contact-auth/settings";
 import {
   fillMissingAudio,
   fillMissingVisuals,
 } from "@/modules/debounce/handler";
-import { renderTranscript, transcriptFromRows } from "@/modules/observe/job";
 import {
   type ClaimedJob,
   enqueueJobUnlessClaimed,

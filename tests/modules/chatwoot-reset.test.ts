@@ -535,6 +535,47 @@ describe.skipIf(!dbUp)(
       expect(job?.status).toBe("DONE");
     });
 
+    test("what another inbox reads of this conversation is withdrawn with it", async () => {
+      await suDb.otherInboxSummary.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootConversationId: CONV_ID,
+          summary: "cliente pediu troca do pedido 4471",
+          coveredMessageId: 1,
+          coveredFingerprint: "x:x",
+          generatedAt: new Date(),
+        },
+      });
+      await suDb.schedulerJob.create({
+        data: {
+          tenantId,
+          kind: "OTHER_INBOX_SUMMARY",
+          dedupeKey: `${instanceId}:${CONV_ID}`,
+          runAt: new Date(Date.now() + 600_000),
+          status: "PENDING",
+          payload: {},
+        },
+      });
+      const cw = fakeChatwoot();
+      globalThis.fetch = cw.impl;
+      await sendReset();
+
+      expect(
+        await suDb.otherInboxSummary.count({
+          where: { tenantId, chatwootConversationId: CONV_ID },
+        }),
+      ).toBe(0);
+      const job = await suDb.schedulerJob.findFirst({
+        where: {
+          tenantId,
+          kind: "OTHER_INBOX_SUMMARY",
+          dedupeKey: `${instanceId}:${CONV_ID}`,
+        },
+      });
+      expect(job === null || job.status !== "PENDING").toBe(true);
+    });
+
     // O carimbo é escrito ANTES da limpeza. `clearContactMemory` apaga o checkpoint por último, e
     // ele vive em outro pool que nenhum rollback nosso alcança: um carimbo depois dele, falhando,
     // restauraria a thread e os resumos ao lado de um checkpoint que já foi. Aqui o carimbo é recusado

@@ -362,6 +362,8 @@ export interface ChatwootConversationRef {
   canReply: boolean | null;
   // The conversation's `custom_attributes`, null when the payload carries none.
   customAttributes?: Record<string, unknown> | null;
+  // Chatwoot's `last_activity_at` (epoch seconds on the wire), null when the payload carries none.
+  lastActivityAt?: Date | null;
 }
 
 // One conversation of an inbox listing, as the reconciliation sweep reads it: who holds it and when
@@ -413,6 +415,13 @@ function parseContact(raw: unknown): ChatwootContact | null {
   };
 }
 
+function epochSecondsToDate(v: unknown): Date | null {
+  const n = typeof v === "string" && v.trim() !== "" ? Number(v) : v;
+  return typeof n === "number" && Number.isFinite(n) && n > 0
+    ? new Date(n * 1000)
+    : null;
+}
+
 function parseConversationRef(raw: unknown): ChatwootConversationRef | null {
   if (!raw || typeof raw !== "object") return null;
   const o = raw as Record<string, unknown>;
@@ -424,6 +433,7 @@ function parseConversationRef(raw: unknown): ChatwootConversationRef | null {
     inboxId: Number.isInteger(inboxId) && inboxId > 0 ? inboxId : null,
     status: typeof o.status === "string" ? o.status : null,
     canReply: typeof o.can_reply === "boolean" ? o.can_reply : null,
+    lastActivityAt: epochSecondsToDate(o.last_activity_at),
     customAttributes:
       o.custom_attributes && typeof o.custom_attributes === "object"
         ? (o.custom_attributes as Record<string, unknown>)

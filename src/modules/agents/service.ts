@@ -767,6 +767,20 @@ function describeExpected(issue: z.core.$ZodIssue): Expected {
           params: { min },
         };
   }
+  if (issue.code === "too_big" && issue.origin === "number") {
+    const max = String(issue.maximum);
+    return issue.inclusive
+      ? {
+          message: `a number of at most ${max}`,
+          key: "errors.settingsExpectedAtMost",
+          params: { max },
+        }
+      : {
+          message: `a number less than ${max}`,
+          key: "errors.settingsExpectedLessThan",
+          params: { max },
+        };
+  }
   if (issue.code === "invalid_format" && "pattern" in issue && issue.pattern) {
     const pattern = String(issue.pattern);
     return {
@@ -784,7 +798,7 @@ interface ClosedValueIssue {
   path: PropertyKey[];
   next: unknown;
   expected: Expected;
-  // What was sent, when its type alone would not say why it was refused: a number below a minimum
+  // What was sent, when its type alone would not say why it was refused: a number outside its range
   // is "a number" either way, so the refusal quotes the value.
   got?: string;
   // Where the write boundary asks "did this write change it?" when that is not `path` itself: a
@@ -833,7 +847,8 @@ function closedValueIssues(bag: Record<string, unknown>): ClosedValueIssue[] {
         path: issue.path,
         next,
         expected: expected ?? describeExpected(issue),
-        ...(issue.code === "too_small" && typeof next === "number"
+        ...((issue.code === "too_small" || issue.code === "too_big") &&
+        typeof next === "number"
           ? { got: String(next) }
           : {}),
         ...(issue.code === "custom" && issue.params?.problem === "unknown_field"

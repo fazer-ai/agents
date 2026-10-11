@@ -4,7 +4,7 @@ import {
   type RenderableMessage,
   renderInboundMessage,
 } from "@/modules/chatwoot/render";
-import { transcriptFromRows } from "@/modules/observe/job";
+import { transcriptFromRows } from "@/modules/chatwoot/transcript";
 
 // The observer reads the conversation to judge it, it never answers the customer, so an instruction
 // meant for the responder ("peça que o cliente reenvie") is noise there and can bias the verdict.

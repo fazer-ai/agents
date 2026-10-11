@@ -43,6 +43,10 @@ afterAll(() => {
 
 const server = (await import("@/app")).default;
 const { authPlugin, passwordFingerprint } = await import("@/api/lib/auth");
+const { trackSocket, untrackSocket } = await import(
+  "@/api/features/realtime/realtime.service"
+);
+const { WS_CLOSE } = await import("@/api/lib/realtime");
 
 const tag = `lo1275-${process.pid}`;
 let tenantId = 0n;
@@ -202,6 +206,64 @@ describe.skipIf(!dbUp)("logging out", () => {
     const stale = await suDb.$queryRaw<{ n: bigint }[]>`
       SELECT count(*)::bigint AS n FROM ended_sessions WHERE jti = ${`${tag}-stale`}`;
     expect(Number(stale[0]?.n)).toBe(0);
+  });
+
+  test("closes the sockets that session opened, and only those", async () => {
+    const laptop = await signIn();
+    const phone = await signIn();
+    const closes: Record<string, number[]> = { laptop: [], phone: [] };
+    trackSocket(
+      userId,
+      `${tag}-laptop`,
+      { close: (c) => closes.laptop?.push(c ?? 0) },
+      jtiOf(laptop),
+    );
+    trackSocket(
+      userId,
+      `${tag}-phone`,
+      { close: (c) => closes.phone?.push(c ?? 0) },
+      jtiOf(phone),
+    );
+    try {
+      await logout(session(laptop));
+      expect(closes).toEqual({ laptop: [WS_CLOSE.UNAUTHORIZED], phone: [] });
+    } finally {
+      untrackSocket(userId, `${tag}-laptop`);
+      untrackSocket(userId, `${tag}-phone`);
+    }
+  });
+
+  // An account deleted while one of its cookies is still out: that session can no longer sign in,
+  // so its logout is already done rather than a failure to retry forever.
+  test("of an account that was deleted, succeeds", async () => {
+    const goneId = (
+      await suDb.user.create({
+        data: { email: `${tag}-gone@x.test`, passwordHash },
+        select: { id: true },
+      })
+    ).id;
+    const gone = new Elysia()
+      .use(authPlugin)
+      .post("/mint", async ({ setAuthCookie }) => ({
+        token: await setAuthCookie(
+          {
+            id: goneId,
+            email: `${tag}-gone@x.test`,
+            name: null,
+            googleId: null,
+            role: "AGENT",
+            tenantId,
+          },
+          passwordHash,
+        ),
+      }));
+    const { token } = (await (
+      await gone.handle(
+        new Request("http://localhost/mint", { method: "POST" }),
+      )
+    ).json()) as { token: string };
+    await suDb.$executeRawUnsafe(`DELETE FROM users WHERE id = ${goneId}`);
+    expect((await logout(session(token))).status).toBe(200);
   });
 
   // Accepting an invitation takes a signed-in session as proof of the account; an ended one is not.

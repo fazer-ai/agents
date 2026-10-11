@@ -103,6 +103,15 @@ export interface AuthUser {
   // For a key: when its minter answered the password step-up, or null for a key that predates the
   // rule. Absent for a session, which answers the step-up per request. Read by `confirmStepUp`.
   stepUpAt?: Date | null;
+  // The `jti` of the cookie session, so a logout can close the sockets it opened. Absent on an API
+  // key and on a token issued before sessions carried one.
+  sessionId?: string;
+}
+
+// The session a logout ended: whose it was, and its `jti`.
+export interface EndedSessionRef {
+  userId: bigint;
+  sessionId: string;
 }
 
 // Resolves a Bearer API key from the Authorization header to an AuthUser, or null. The synthetic
@@ -211,21 +220,22 @@ export const authPlugin = new Elysia({ name: "auth" })
     // NOTE: ends the session the cookie names, so a copy of it is refused from here on. A cookie that
     // does not verify, or a token with no `jti`, ends nothing. Expired rows are dropped on the way:
     // past its expiry the token is refused by its signature alone.
-    async endSession(): Promise<void> {
+    async endSession(): Promise<EndedSessionRef | null> {
       const token =
         cookie[COOKIE_NAME]?.value ?? cookie[LEGACY_COOKIE_NAME]?.value;
-      if (!token || typeof token !== "string") return;
+      if (!token || typeof token !== "string") return null;
       let payload: JWTPayload | false;
       try {
         payload = (await jwt.verify(token)) as JWTPayload | false;
       } catch {
-        return;
+        return null;
       }
-      if (payload === false) return;
-      if (!payload.jti || typeof payload.exp !== "number") return;
+      if (payload === false) return null;
+      if (!payload.jti || typeof payload.exp !== "number") return null;
       const userId =
         typeof payload.userId === "string" ? parseDbId(payload.userId) : null;
-      if (userId === null) return;
+      if (userId === null) return null;
+      const ended = { userId, sessionId: payload.jti };
       try {
         await prisma.$transaction([
           prisma.endedSession.deleteMany({
@@ -243,12 +253,16 @@ export const authPlugin = new Elysia({ name: "auth" })
           }),
         ]);
       } catch (error) {
+        // NOTE: the account is gone (foreign key), so the session cannot authenticate any more:
+        // already ended, nothing to record, and the cookie can go.
+        if ((error as { code?: string }).code === "P2003") return ended;
         logger.warn(
           { error },
           "Ending the session failed; treating as transient",
         );
         throw new ServiceUnavailableError();
       }
+      return ended;
     },
     // NOTE: WHICH PERSON the session cookie names, and the password hash it was verified against,
     // and nothing else: no tenant selector, no membership, no API key. For the one operation where
@@ -386,7 +400,13 @@ export const authPlugin = new Elysia({ name: "auth" })
       if (sessionEnded({ endedSessions })) return null;
 
       if (isSuperAdmin) {
-        return { ...person, tenantId: null, role: "SUPER_ADMIN", memberships };
+        return {
+          ...person,
+          tenantId: null,
+          role: "SUPER_ADMIN",
+          memberships,
+          ...(payload.jti ? { sessionId: payload.jti } : {}),
+        };
       }
 
       // Fail-closed. A person with no membership has no tenant to run under, and is treated as
@@ -397,7 +417,12 @@ export const authPlugin = new Elysia({ name: "auth" })
       if ("rejected" in current) {
         throw new TenantSelectorRefusedError(current.rejected);
       }
-      return { ...person, ...current, memberships };
+      return {
+        ...person,
+        ...current,
+        memberships,
+        ...(payload.jti ? { sessionId: payload.jti } : {}),
+      };
     },
   }))
   .derive({ as: "global" }, ({ request, getAuthUser }) => ({

@@ -52,9 +52,9 @@ async function registerAndRecheck(
     close(code?: number, reason?: string): void;
     data: { getAuthUser(): Promise<unknown> };
   },
-  userId: bigint,
+  user: { id: bigint; sessionId?: string },
 ): Promise<boolean> {
-  trackSocket(userId, String(ws.id), ws.raw);
+  trackSocket(user.id, String(ws.id), ws.raw, user.sessionId);
   let current: unknown;
   try {
     current = await ws.data.getAuthUser();
@@ -150,7 +150,7 @@ export const realtimeController = new Elysia({
           settle = resolve;
         }),
       );
-      if (!(await registerAndRecheck(ws, user.id)) || !attached.has(id)) {
+      if (!(await registerAndRecheck(ws, user)) || !attached.has(id)) {
         settle(false);
         return;
       }
@@ -298,7 +298,7 @@ export const realtimeController = new Elysia({
       }
       const id = String(ws.id);
       eventsLive.add(id);
-      if (!(await registerAndRecheck(ws, user.id)) || !eventsLive.has(id)) {
+      if (!(await registerAndRecheck(ws, user)) || !eventsLive.has(id)) {
         return;
       }
       const resolution = resolveEventsTenant(user, ws.data.query.tenantId);

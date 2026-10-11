@@ -46,7 +46,10 @@ import {
   InviteInvalidError,
   InvitePasswordRequiredError,
 } from "@/api/features/invitations/invitation.service";
-import { closeUserSockets } from "@/api/features/realtime/realtime.service";
+import {
+  closeSessionSockets,
+  closeUserSockets,
+} from "@/api/features/realtime/realtime.service";
 import { authPlugin } from "@/api/lib/auth";
 import { translate } from "@/api/lib/i18n";
 import logger from "@/api/lib/logger";
@@ -698,7 +701,16 @@ const baseAuthController = new Elysia({
   .post(
     "/logout",
     async ({ clearAuthCookie, endSession }) => {
-      await endSession();
+      const ended = await endSession();
+      // NOTE: a socket only checks its session when it opens, so the ones this session already
+      // opened are closed here; one opening right now re-reads the session and finds it ended.
+      if (ended) {
+        closeSessionSockets(
+          ended.userId,
+          ended.sessionId,
+          WS_CLOSE.UNAUTHORIZED,
+        );
+      }
       clearAuthCookie();
       return { success: true };
     },

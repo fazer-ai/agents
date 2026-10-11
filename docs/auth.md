@@ -31,7 +31,8 @@ The session JWT carries `pwd`, an HMAC of the account's current password hash ke
 
 Every session token carries a `jti`, and `POST /api/auth/logout` records it in `ended_sessions` with the token's own expiry before clearing the cookie. `getAuthUser` and `getSessionIdentity` read that row in the same query that reads the user, and refuse a token named there, so a copy of the cookie taken before the logout (another tab, a stolen value, the legacy cookie name) stops working at once, the WebSocket upgrade included.
 
-- **Only that session ends.** Other devices of the same account stay signed in; ending them all is what a password change does (above).
+- **Only that session ends.** Other devices of the same account stay signed in; ending them all is what a password change does (above). The sockets the session already opened are closed with `4401` (`closeSessionSockets`), since a socket checks its session only when it opens.
+- **The account was deleted**: its session can no longer sign in, so the logout succeeds and clears the cookie without recording anything.
 - **The table only holds tokens that could still verify.** Each logout deletes the rows whose expiry has passed, since past it the signature check refuses the token anyway. No job is needed.
 - **A logout that cannot be recorded answers 503 and keeps the cookie**, so it can be retried instead of looking done while the session lives on. A cookie that does not verify, or no cookie, ends nothing and still answers 200.
 - **Tokens issued before the `jti` existed cannot be named**, so a logout leaves them working until they expire, at most 7 days after the deploy.

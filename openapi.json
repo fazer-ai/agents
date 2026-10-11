@@ -8021,7 +8021,7 @@
           "Agents"
         ],
         "summary": "Get agent",
-        "description": "Returns a single agent by id.",
+        "description": "Returns a single agent by id. `agent.settings` is the bag as stored, which is what a PATCH sends back. `effective.limits` is what the runtime enforces: the stored execution limits with every absent or `null` field read as its default (`maxToolCalls` 10, `maxHistoryTokens` null = no ceiling, `retrySilence` true, `maxTurnsPerHour` 60, `maxProactivePerDay` 10; a stored `0` on the last two means no limit). It is read-only: do not send it back.",
         "parameters": [
           {
             "name": "id",

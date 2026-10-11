@@ -141,12 +141,18 @@ async function setStt(enabled: boolean) {
   });
 }
 
-async function seedConversation(convId: number): Promise<bigint> {
+async function seedConversation(
+  convId: number,
+  over: { contactInboxId?: number } = {},
+): Promise<bigint> {
   const c = await suDb.conversation.create({
     data: {
       tenantId,
       chatwootInstanceId: instanceId,
       chatwootConversationId: convId,
+      ...(over.contactInboxId !== undefined
+        ? { contactInboxId: over.contactInboxId }
+        : {}),
       status: "pending",
       inboxId: inboxDbId,
       threadId: `${tenantId}:${instanceId}:${convId}`,
@@ -160,6 +166,11 @@ async function reengage(
   convDbId: bigint,
   payload: unknown[],
   fetchImpl: typeof fetch,
+  extra: {
+    ownershipRead?: () => Promise<
+      { ours: true } | { ours: false; closed: null }
+    >;
+  } = {},
 ) {
   const model = new TurnCapturingModel(REPLY);
   const res = await reengageConversation(
@@ -170,10 +181,11 @@ async function reengage(
       makeClient: makeStub(payload),
       checkpointer: new MemorySaver(),
       sttFetch: fetchImpl,
+      ...extra,
     },
     appDb,
   );
-  return { res, seen: model.humanTexts.join("\n") };
+  return { res, seen: model.humanTexts.join("\n"), model };
 }
 
 describe.skipIf(!dbUp)("reengage: the voice note nobody transcribed", () => {
@@ -314,5 +326,28 @@ describe.skipIf(!dbUp)("reengage: the voice note nobody transcribed", () => {
     );
     expect(provider.calls.n).toBe(1);
     expect(seen).toContain("só a segunda");
+  });
+
+  test("a person who takes the conversation while a note is transcribed is not answered over", async () => {
+    await setStt(true);
+    const id = await seedConversation(1244, { contactInboxId: 78 });
+    let taken = false;
+    const provider = stt("pode cancelar");
+    const slow = (async (...args: unknown[]) => {
+      const r = await (
+        provider.fetchImpl as (...a: unknown[]) => Promise<Response>
+      )(...args);
+      taken = true;
+      return r;
+    }) as unknown as typeof fetch;
+    const { res, model } = await reengage(id, [voice(1, 51)], slow, {
+      ownershipRead: async () =>
+        taken
+          ? ({ ours: false, closed: null } as const)
+          : ({ ours: true } as const),
+    });
+    expect(provider.calls.n).toBe(1);
+    expect(res.outcome).not.toBe("posted");
+    expect(model.humanTexts).toEqual([]);
   });
 });

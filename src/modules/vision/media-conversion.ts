@@ -49,65 +49,80 @@ export const MEDIA_CONVERTERS: readonly MediaConverterSpec[] = [
 // THE SECOND REASON TO CONVERT: a type the provider reads, at a size it refuses. Every limit a
 // provider documents for one image lives in this table, and a provider absent from it
 // (`openrouter`, `openai-compatible`) is one whose endpoint we cannot speak for, so it gets
-// NO_IMAGE_LIMITS and the plan sends as received. Each field is a value or an explicit null.
+// NO_IMAGE_LIMITS and the plan sends as received. Each limit is a value or an explicit null.
+//
+// A limit is HARD when no model of the provider accepts an image over it: on the vendor's own
+// endpoint it makes the fit required, and refuses a type nothing here can fit. It is SOFT when
+// fitting is prudent but the original may still be read: the fit runs, and the original goes when
+// it cannot. Off the vendor's endpoint every limit is soft (see planImageConversion).
+export type LimitKind = "hard" | "soft";
+
+export type ImageLimit<T> = { readonly value: T; readonly kind: LimitKind };
+
 export type ImageLimits = {
-  // Longest side, in px.
-  readonly maxEdge: number | null;
-  // The image as SENT, base64 included: over it the request cannot succeed.
-  readonly maxBase64Bytes: number | null;
-  // Where fitting starts, below the ceiling when the ceiling is the whole request's and the prompt
-  // needs room. Null: at the ceiling.
-  readonly fitBase64Bytes: number | null;
-  // The total area, counted the way the vendor counts it: `edge`-px patches per image.
-  readonly maxPatches: { readonly edge: number; readonly count: number } | null;
-  // The vendor's own API host. A base URL elsewhere is an endpoint we cannot speak for, so its
-  // limits never REFUSE a file there; fitting one still applies, since a fitted JPEG is read anywhere.
+  // Where the numbers come from: the vendor's documentation for image input.
+  readonly source: string | null;
+  // The vendor's own API host. A base URL elsewhere is an endpoint we cannot speak for.
   readonly host: string | null;
+  // Longest side, in px.
+  readonly maxEdge: ImageLimit<number> | null;
+  // The image as SENT, base64 included.
+  readonly maxBase64Bytes: ImageLimit<number> | null;
+  // Where fitting starts below the byte ceiling, when the ceiling is the whole request's and the
+  // prompt needs room.
+  readonly fitBase64Bytes: ImageLimit<number> | null;
+  // The total area, counted the way the vendor counts it: `edge`-px patches per image.
+  readonly maxPatches: ImageLimit<{
+    readonly edge: number;
+    readonly count: number;
+  }> | null;
 };
 
 export const NO_IMAGE_LIMITS: ImageLimits = {
+  source: null,
+  host: null,
   maxEdge: null,
   maxBase64Bytes: null,
   fitBase64Bytes: null,
   maxPatches: null,
-  host: null,
 };
 
 export const IMAGE_LIMITS: Readonly<Record<string, ImageLimits>> = {
-  // platform.claude.com/docs/en/build-with-claude/vision: 8000x8000 px and 10 MB base64 per image
-  // on the Claude API, both measured as 400s ("At least one of the image dimensions exceed max
-  // allowed size: 8000 pixels", "image exceeds 10 MB maximum" over 10,485,760 base64 bytes).
+  // 8000x8000 px and 10 MB base64 per image on the Claude API, both measured as 400s ("At least one
+  // of the image dimensions exceed max allowed size: 8000 pixels", "image exceeds 10 MB maximum" over
+  // 10,485,760 base64 bytes).
   anthropic: {
-    maxEdge: 8000,
-    maxBase64Bytes: 10 * 1024 * 1024,
+    source: "https://platform.claude.com/docs/en/build-with-claude/vision",
+    host: "api.anthropic.com",
+    maxEdge: { value: 8000, kind: "hard" },
+    maxBase64Bytes: { value: 10 * 1024 * 1024, kind: "hard" },
     fitBase64Bytes: null,
     maxPatches: null,
-    host: "api.anthropic.com",
   },
-  // developers.openai.com/api/docs/guides/images-vision: 32x32 px patches, at most 30,000 per image
-  // after the model's own resizing, and an image over that is "rejected, not automatically resized".
-  // Counted on the original, because the models whose `auto` detail is `original` do not resize
-  // below 65,535 px: gpt-6.1-sol answered 400 "requires 35784 patches after processing, exceeding
-  // the limit of 30000" to a 4536x8064 photo (measured). No per-image byte limit is documented.
-  // Counting on the original over-counts the models that resize first (gpt-4o fits 2048 px), so the
-  // patch limit FITS what it can and never refuses: a type nothing here can fit goes as received.
+  // 32x32 px patches, at most 30,000 per image after the model's own resizing, and an image over that
+  // is "rejected, not automatically resized". Counted on the original, because the models whose
+  // `auto` detail is `original` do not resize below 65,535 px: gpt-6.1-sol answered 400 "requires
+  // 35784 patches after processing, exceeding the limit of 30000" to a 4536x8064 photo (measured).
+  // Soft, because the models that resize first (gpt-4o fits 2048 px) read the same photo. No
+  // per-image byte limit is documented.
   openai: {
+    source: "https://developers.openai.com/api/docs/guides/images-vision",
+    host: "api.openai.com",
     maxEdge: null,
     maxBase64Bytes: null,
     fitBase64Bytes: null,
-    maxPatches: { edge: 32, count: 30_000 },
-    host: "api.openai.com",
+    maxPatches: { value: { edge: 32, count: 30_000 }, kind: "soft" },
   },
-  // ai.google.dev/gemini-api/docs/image-understanding: inline data caps the WHOLE request at 20 MB,
-  // prompt included. An image over 20 MiB alone cannot fit under either reading of "MB"; one over
-  // 19 MB is fitted, leaving the prompt its room. No dimension limit is documented; larger images
-  // are tiled on the vendor's side.
+  // Inline data caps the WHOLE request at 20 MB, prompt included. An image over 20 MiB alone cannot
+  // fit under either reading of "MB"; one over 19 MB is fitted, leaving the prompt its room. No
+  // dimension limit is documented; larger images are tiled on the vendor's side. Not measured live.
   gemini: {
-    maxEdge: null,
-    maxBase64Bytes: 20 * 1024 * 1024,
-    fitBase64Bytes: 19 * 1000 * 1000,
-    maxPatches: null,
+    source: "https://ai.google.dev/gemini-api/docs/image-understanding",
     host: "generativelanguage.googleapis.com",
+    maxEdge: null,
+    maxBase64Bytes: { value: 20 * 1024 * 1024, kind: "hard" },
+    fitBase64Bytes: { value: 19 * 1000 * 1000, kind: "soft" },
+    maxPatches: null,
   },
 };
 
@@ -119,34 +134,37 @@ function base64Length(byteLength: number): number {
   return Math.ceil(byteLength / 3) * 4;
 }
 
-// The limits an image of this size and weight is over: `hard` means the call cannot succeed on any
-// model (the side, the byte ceiling), `soft` that fitting is wise but the original may still be read
-// (a patch count that depends on the model, the room kept for the prompt). Unknown dimensions or
-// bytes count as within: the provider's answer is the fallback, never a guess here.
+// Which kinds of limit an image of this size and weight is over. Unknown dimensions or bytes count as
+// within: the provider's answer is the fallback, never a guess here.
 function overLimits(
   limits: ImageLimits,
   dimensions: { width: number; height: number } | null | undefined,
   byteLength: number | undefined,
 ): { hard: boolean; soft: boolean } {
   const d = dimensions;
-  const wide =
-    !!d &&
-    limits.maxEdge !== null &&
-    Math.max(d.width, d.height) > limits.maxEdge;
   const sent = byteLength === undefined ? null : base64Length(byteLength);
-  const heavy =
-    limits.maxBase64Bytes !== null &&
-    sent !== null &&
-    sent > limits.maxBase64Bytes;
-  const fitFrom = limits.fitBase64Bytes ?? limits.maxBase64Bytes;
-  const nearHeavy = fitFrom !== null && sent !== null && sent > fitFrom;
-  const patches =
-    !!d &&
-    limits.maxPatches !== null &&
-    Math.ceil(d.width / limits.maxPatches.edge) *
-      Math.ceil(d.height / limits.maxPatches.edge) >
-      limits.maxPatches.count;
-  return { hard: wide || heavy, soft: nearHeavy || patches };
+  const crossed: Array<ImageLimit<unknown> | null> = [
+    d && limits.maxEdge && Math.max(d.width, d.height) > limits.maxEdge.value
+      ? limits.maxEdge
+      : null,
+    sent !== null && limits.maxBase64Bytes && sent > limits.maxBase64Bytes.value
+      ? limits.maxBase64Bytes
+      : null,
+    sent !== null && limits.fitBase64Bytes && sent > limits.fitBase64Bytes.value
+      ? limits.fitBase64Bytes
+      : null,
+    d &&
+    limits.maxPatches &&
+    Math.ceil(d.width / limits.maxPatches.value.edge) *
+      Math.ceil(d.height / limits.maxPatches.value.edge) >
+      limits.maxPatches.value.count
+      ? limits.maxPatches
+      : null,
+  ];
+  return {
+    hard: crossed.some((l) => l?.kind === "hard"),
+    soft: crossed.some((l) => l?.kind === "soft"),
+  };
 }
 
 // A blank base URL is the adapter's own default, the vendor's endpoint. Anything else must be https

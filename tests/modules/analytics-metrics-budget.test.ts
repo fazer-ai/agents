@@ -115,6 +115,12 @@ describe.skipIf(!dbUp)("metrics time budget", () => {
       );
       expect((result as { statusCode?: number }).statusCode).toBe(503);
       expect(elapsed).toBeLessThan(2_000);
+      // The sentence states the time the read ran (about 0.3 s), not the 10 s budget it never reached.
+      const seconds = (result as { translationParams?: { seconds?: number } })
+        .translationParams?.seconds;
+      expect(seconds).toBeGreaterThanOrEqual(0.2);
+      expect(seconds).toBeLessThan(2);
+      expect((result as Error).message).not.toContain("10s");
     } finally {
       await locking.$disconnect();
     }

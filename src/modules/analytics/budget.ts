@@ -69,6 +69,7 @@ export async function runMetricsScoped<T>(
   fn: (db: ScopedDb) => Promise<T>,
 ): Promise<T> {
   const budget = metricsBudget();
+  const started = Date.now();
   try {
     // The deadline starts with the transaction, so the scope's own statements (a SUPER_ADMIN's
     // tenant check) spend the same budget the aggregates do.
@@ -84,7 +85,7 @@ export async function runMetricsScoped<T>(
     );
   } catch (error) {
     if (isOverMetricsBudget(error))
-      throw new MetricsTooSlowError(budget.timeout);
+      throw new MetricsTooSlowError(Date.now() - started);
     throw error;
   }
 }

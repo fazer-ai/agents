@@ -987,6 +987,45 @@ describe.skipIf(!dbUp)("reconciling from Chatwoot", () => {
     expect(await ledgerFor(516)).toHaveLength(1);
   });
 
+  test("two identical reads whose pages overlap do not prove the window covered", async () => {
+    const all = Array.from({ length: 50 }, (_, i) =>
+      conv(950 + i, minutesAgo(20)),
+    );
+    const messages = new Map<number, unknown[]>();
+    for (const c of all)
+      messages.set(c.id, [
+        incoming(c.id * 10, minutesAgo(21)),
+        outgoing(c.id * 10 + 1, minutesAgo(20)),
+      ]);
+    messages.set(975, [incoming(9750, minutesAgo(20))]);
+    // Ties ordered differently per request: page two repeats 974 and never names 975, every time.
+    const overlapping = [all.slice(0, 25), [all[24], ...all.slice(26, 50)], []];
+    const s: Scripted = {
+      conversations: new Map(),
+      calls: [
+        ...overlapping,
+        ...overlapping,
+        ...overlapping,
+        ...overlapping,
+        ...overlapping,
+      ] as ChatwootInboxConversation[][],
+      messages,
+      listed: [],
+    };
+    const counts = await reconcileFromChatwoot({
+      tenantId,
+      base: appDb,
+      now: NOW,
+      makeClient: chatwoot(s),
+    });
+    expect(counts.inboxesFailed).toBe(1);
+    const kept = await suDb.chatwootInstance.findUniqueOrThrow({
+      where: { id: instanceId },
+      select: { reconciledUntil: true },
+    });
+    expect(kept.reconciledUntil?.getTime()).toBe(minutesAgo(40).getTime());
+  });
+
   test("a conversation with no activity time fails the inbox and keeps the cursor", async () => {
     const s: Scripted = {
       conversations: new Map([

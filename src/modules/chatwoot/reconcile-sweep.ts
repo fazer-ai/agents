@@ -263,10 +263,11 @@ async function reconcileInbox(p: InboxRead): Promise<void> {
   let previous: Set<number> | null = null;
   for (let listing = 0; listing < MAX_LISTINGS_PER_INBOX; listing++) {
     const pinned = await p.client.listPinnedConversationIds();
-    const named = await readListing(p, pinned, read);
+    const { named, overlapped } = await readListing(p, pinned, read);
     const pinnedAfter = await p.client.listPinnedConversationIds();
     if (
       previous !== null &&
+      !overlapped &&
       sameIds(previous, named) &&
       sameIds(pinned, pinnedAfter)
     )
@@ -289,10 +290,15 @@ async function readListing(
   p: InboxRead,
   pinned: Set<number>,
   read: Set<number>,
-): Promise<Set<number>> {
+): Promise<{ named: Set<number>; overlapped: boolean }> {
   const { base, tenantId, instanceId, client, inbox, since, settledBefore } = p;
   const { counts } = p;
   const named = new Set<number>();
+  // Every row of this read, to see two pages overlap: the listing has a fixed length, so a row named
+  // twice means another was named on no page (conversations sharing a last activity have no stable
+  // order across offset pages), and such a read cannot prove the window was covered.
+  const listed = new Set<number>();
+  let overlapped = false;
   // No page cap: the read ends at the first unpinned row older than the window, so its length is the
   // number of conversations that moved inside it, and a cap would freeze the cursor on a busy inbox.
   // A server that ignores `page` would never end it, which is what the repeated first id catches.
@@ -303,7 +309,7 @@ async function readListing(
       "pending",
       page,
     );
-    if (rows.length === 0) return named;
+    if (rows.length === 0) return { named, overlapped };
     const first = (rows[0] as ChatwootInboxConversation).id;
     if (first === previousFirst)
       throw new Error(
@@ -312,6 +318,8 @@ async function readListing(
     previousFirst = first;
     let reachedOld = false;
     for (const c of rows) {
+      if (listed.has(c.id)) overlapped = true;
+      listed.add(c.id);
       // An unreadable clock says nothing about where the activity order is.
       if (c.lastActivityAt === null)
         throw new Error(
@@ -341,7 +349,7 @@ async function readListing(
     }
     // Past the pinned prefix the listing is newest activity first, so an unpinned row older than the
     // window means every later page is older too.
-    if (reachedOld) return named;
+    if (reachedOld) return { named, overlapped };
   }
 }
 

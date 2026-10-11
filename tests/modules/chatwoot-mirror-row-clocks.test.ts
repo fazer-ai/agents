@@ -2,6 +2,9 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import type { TenantContext } from "@/lib/tenancy";
+import type { ChatwootClient } from "@/modules/chatwoot/client";
+import { syncInboxes } from "@/modules/chatwoot/management";
 import { mirrorChatwootEvent } from "@/modules/chatwoot/mirror";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import contactA from "../fixtures/chatwoot-row-clocks/001-message_created.json";
@@ -360,20 +363,70 @@ describe.skipIf(!dbUp)(
       expect((await inboxOf(302)).name).toBe("Comercial");
     });
 
-    test("a delivery at the stored inbox clock does not undo a rename the inbox-list sync wrote", async () => {
-      // The sync reads the live inbox and writes its name without a clock, so the stored clock is older
-      // than the name stored; a receipt at that clock is older than the name too.
-      const b = onRows(inboxN2, { contact: 210, conv: 2210, inbox: 305 });
-      await mirror(b);
-      await suDb.inbox.updateMany({
-        where: { tenantId, chatwootInboxId: 305 },
-        data: { name: "Renomeada" },
-      });
-      const receipt = clone(b);
-      receipt.event = "message_updated";
-      at(receipt, 1791685900, 1791685900.5);
-      await mirror(receipt);
+    test("an inbox-list sync that renames the inbox keeps a delivery older than its read from writing the old name back", async () => {
+      // The list carries no inbox clock; the clock stored described the name the sync replaced.
+      const ids = { contact: 210, conv: 2210, inbox: 305 };
+      await mirror(
+        at(withInbox(onRows(inboxN2, ids), "Suporte", 100), 500, 500.1),
+      );
+      await syncInboxes(
+        { tenantId, userId: null, role: "TENANT_ADMIN" } as TenantContext,
+        instanceId,
+        {
+          makeClient: async () =>
+            ({
+              listInboxes: async () => [
+                { id: 305, name: "Renomeada", channel_type: "Channel::Api" },
+              ],
+            }) as unknown as ChatwootClient,
+        },
+        appDb,
+      );
+      // Serialized before the rename the sync read (clock 600 < the live one), delivered after it.
+      await mirror(
+        at(withInbox(onRows(inboxN2, ids), "Suporte 2", 600), 200, 200.1),
+      );
       expect((await inboxOf(305)).name).toBe("Renomeada");
+    });
+
+    test("a write without a clock that replaces the values clears the clock that described the old ones", async () => {
+      // Contact: clock 100 at position 500, then a clockless bag at 700, then a clocked snapshot
+      // (600, newer than the stored clock) serialized before the clockless one, at 550.
+      const c = { contact: 211, conv: 2211 };
+      await mirror(
+        at(
+          withContact(onRows(contactA, c), { plano: "ouro" }, 100),
+          500,
+          500.1,
+        ),
+      );
+      await mirror(
+        at(
+          withContact(onRows(contactA, c), { plano: "cobre" }, undefined),
+          700,
+          700.1,
+        ),
+      );
+      await mirror(
+        at(
+          withContact(onRows(contactB, c), { plano: "prata" }, 600),
+          550,
+          550.1,
+        ),
+      );
+      expect(await attrsOf(211)).toEqual({ plano: "cobre" });
+      // Inbox: the same sequence with names.
+      const i = { contact: 212, conv: 2212, inbox: 307 };
+      await mirror(
+        at(withInbox(onRows(inboxN2, i), "Suporte", 100), 500, 500.1),
+      );
+      await mirror(
+        at(withInbox(onRows(inboxN2, i), "Vendas", undefined), 700, 700.1),
+      );
+      await mirror(
+        at(withInbox(onRows(inboxN2, i), "Comercial", 600), 550, 550.1),
+      );
+      expect((await inboxOf(307)).name).toBe("Vendas");
     });
 
     test("a conversation event, which carries no inbox clock, does not hold back a later rename", async () => {

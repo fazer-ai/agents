@@ -55,8 +55,13 @@ function threadOf(convId: number) {
 }
 
 // A model that answers after `delayMs`. `listens` decides whether it honors the signal it is handed;
-// `saw` records whether that signal aborted while it waited.
-function slowModel(delayMs: number, listens: boolean, saw: { abort: boolean }) {
+// `saw` records whether that signal aborted while it waited, and `onWait` runs once it is waiting.
+function slowModel(
+  delayMs: number,
+  listens: boolean,
+  saw: { abort: boolean },
+  onWait: () => void = () => {},
+) {
   const model = {
     bindTools() {
       return model;
@@ -74,6 +79,7 @@ function slowModel(delayMs: number, listens: boolean, saw: { abort: boolean }) {
           clearTimeout(timer);
           reject(signal.reason);
         });
+        onWait();
       }).finally(() => {
         waiting = false;
       });
@@ -156,24 +162,28 @@ function jobFor(convId: number): ClaimedJob {
 }
 
 // The flush under a signal that aborts after `abortAfterMs`, as the job's deadline would, or on the
-// read of the messages named by `abortOnRead`.
+// read of the messages named by `abortOnRead`. `model` takes the abort, so a model can fire the
+// deadline while it waits (`abortAfterMs` null, no timer): a deadline on a timer reaches the model
+// call only on a machine fast enough to get there first.
 async function flushUnderDeadline(
   convId: number,
-  model: BaseChatModel,
-  abortAfterMs: number,
+  model: BaseChatModel | ((abort: () => void) => BaseChatModel),
+  abortAfterMs: number | null,
   abortOnRead?: number,
 ) {
   const sent: string[] = [];
   const controller = new AbortController();
   const abort = () => controller.abort(new Error("deadline exceeded"));
-  const timer = setTimeout(abort, abortAfterMs);
+  const timer =
+    abortAfterMs === null ? undefined : setTimeout(abort, abortAfterMs);
+  const called = typeof model === "function" ? model(abort) : model;
   try {
     await flushDebounceJob({
       job: jobFor(convId),
       base: appDb,
       signal: controller.signal,
       deps: {
-        makeModel: () => model,
+        makeModel: () => called,
         makeClient: stub(sent, (n) => {
           if (n === abortOnRead) abort();
         }),
@@ -278,8 +288,8 @@ describe.skipIf(!dbUp)(
       const t = performance.now();
       const sent = await flushUnderDeadline(
         2001,
-        slowModel(5_000, true, saw),
-        300,
+        (abort) => slowModel(5_000, true, saw, abort),
+        null,
       );
       expect(saw.abort).toBe(true);
       expect(performance.now() - t).toBeLessThan(4_000);
@@ -315,7 +325,11 @@ describe.skipIf(!dbUp)(
     test("the conversation shows the turn failed on its deadline", async () => {
       await seedConversation(2005);
       const saw = { abort: false };
-      await flushUnderDeadline(2005, slowModel(5_000, true, saw), 300);
+      await flushUnderDeadline(
+        2005,
+        (abort) => slowModel(5_000, true, saw, abort),
+        null,
+      );
       const conv = await suDb.conversation.findFirstOrThrow({
         where: { tenantId, chatwootConversationId: 2005 },
         select: { lastError: true },

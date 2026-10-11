@@ -84,6 +84,7 @@ const EXPECTED_LANE: Record<SchedulerJobKind, SchedulerLane> = {
   INGEST_MESSAGE: "shared",
   // Shared: a sweep with a cadence of minutes and one indexed query per tenant.
   DELIVERY_SWEEP: "shared",
+  RECONCILE_SWEEP: "shared",
   // Shared: the message it answers has already waited out the sweep's staleness window, so a tick's
   // wait is not what the customer feels, and the cap it needs is the shared lane's provider
   // concurrency rather than a budget independent of the turns live customers are queueing for.
@@ -127,6 +128,7 @@ const EXPECTED_SPENDS_PROVIDER: Record<SchedulerJobKind, boolean> = {
   // Reads and writes rows, emits log lines, invokes nothing: the sweep reports a stranded delivery
   // and arms the recovery, rather than answering it itself.
   DELIVERY_SWEEP: false,
+  RECONCILE_SWEEP: false,
   // It runs the delivery path, which runs a real turn: a model call plus whatever tools it decides
   // to use. This is the reason the recovery is a kind of its own instead of work the sweep does.
   DELIVERY_RECOVERY: true,
@@ -170,6 +172,7 @@ const EXPECTED_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
   REDIRECT_FOLLOWUP: false,
   MEMORY_COMPACT: false,
   DELIVERY_SWEEP: false,
+  RECONCILE_SWEEP: false,
   // One row per stranded DELIVERY, and one sweep pass can declare a whole batch lost at once — the
   // deploy that stranded them stranded every delivery in flight. Armed for `now`, they are the
   // oldest rows too, which is the shape that fills the batch and starves a fixed-rate kind.
@@ -211,6 +214,7 @@ const EXPECTED_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
   REDIRECT_FOLLOWUP: false,
   MEMORY_COMPACT: false,
   DELIVERY_SWEEP: false,
+  RECONCILE_SWEEP: false,
   // The key names ONE ledger row — it has to, or a second stranded delivery would overwrite the
   // first — so nothing reuses the row and the count grows with every delivery ever stranded. The
   // record that the work happened is the ledger row, which is terminal either way.
@@ -252,6 +256,7 @@ const EXPECTED_DEATH_LEVEL: Record<
   MEMORY_COMPACT: "error",
   INGEST_MESSAGE: "error",
   DELIVERY_SWEEP: "error",
+  RECONCILE_SWEEP: "error",
   // The only kind whose death is not an `error` for the customer's sake, which is why writing it out
   // matters: the delivery's own line (`announceDeadRecovery`) is the `error` that says the message went
   // unanswered, and what died here is the automatic second attempt.

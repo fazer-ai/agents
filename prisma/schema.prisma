@@ -81,6 +81,7 @@ enum SchedulerJobKind {
   DOCUMENT_APPROVAL_EXPIRY
   DOCUMENT_APPROVAL_OUTCOME
   SNOOZED_FOLLOWUP
+  RECONCILE_SWEEP
 }
 
 enum SchedulerJobStatus {
@@ -348,6 +349,10 @@ model ChatwootInstance {
   // Soft-disconnect: "remove account" keeps the rows (conversations/inboxes/contacts) for history +
   // analytics but unbinds agents and makes the webhook/runtime ignore the account. Null = active.
   disconnectedAt DateTime? @map("disconnected_at")
+  // How far the Chatwoot reconciliation sweep has read this account: the start of its last pass that
+  // finished. The next pass reads from here (minus a margin), so an outage of any length is read on
+  // the way back. Null until the first pass, which then reads one recovery ceiling back.
+  reconciledUntil DateTime? @map("reconciled_until")
   createdAt      DateTime  @default(now()) @map("created_at")
   updatedAt      DateTime  @updatedAt @map("updated_at")
 

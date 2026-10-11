@@ -24,6 +24,7 @@ import { ensureDeliverySweep } from "./delivery-sweep";
 import { type LoadChatwootClientDeps, loadChatwootClient } from "./instance";
 import { chatwootAutoRepliesOutOfHours } from "./out-of-office";
 import { type EnsuredAgentBot, ensureAgentBot } from "./provisioning";
+import { ensureReconcileSweep } from "./reconcile-sweep";
 import { invalidateRouteTokenCache } from "./route-token-cache";
 
 // Chatwoot deployment + account + inbox management (per-tenant). A DEPLOYMENT (base URL + shared admin
@@ -608,6 +609,15 @@ async function connectAccount(
     logger.warn(
       { tenantId: String(tenantId), err },
       "delivery sweep arm failed on Chatwoot connect; continuing",
+    );
+  }
+  // The reconciliation from Chatwoot, for the same reason and with the same discipline.
+  try {
+    await ensureReconcileSweep(tenantId, base);
+  } catch (err) {
+    logger.warn(
+      { tenantId: String(tenantId), err },
+      "reconcile sweep arm failed on Chatwoot connect; continuing",
     );
   }
   return { id: result.id, changed: result.changed };

@@ -20,6 +20,10 @@ import {
   startDeadClaimSweep,
   stopDeadClaimSweep,
 } from "@/modules/chatwoot/delivery-sweep";
+import {
+  ensureAllReconcileSweeps,
+  registerReconcileSweepHandler,
+} from "@/modules/chatwoot/reconcile-sweep";
 import { registerDeliveryRecoveryHandler } from "@/modules/chatwoot/recover-delivery";
 import { registerHumanReplyRecoveryHandler } from "@/modules/chatwoot/recover-human-reply";
 import { registerTakeoverRecoveryHandler } from "@/modules/chatwoot/recover-takeover";
@@ -195,6 +199,7 @@ if (config.schedulerWorker.enabled) {
   registerDocumentApprovalExpiryHandler();
   registerDocumentApprovalOutcomeHandler();
   registerDeliverySweepHandler();
+  registerReconcileSweepHandler();
   registerDeliveryRecoveryHandler();
   registerTakeoverRecoveryHandler();
   registerHumanReplyRecoveryHandler();
@@ -216,6 +221,11 @@ if (config.schedulerWorker.enabled) {
   // both strands them and runs this, so the boot arm is what reaches the rows the restart created.
   void ensureAllDeliverySweeps().catch((error) =>
     logger.warn({ error }, "Failed to arm Chatwoot delivery sweeps"),
+  );
+  // NOTE: Arm the per-tenant reconciliation from Chatwoot: what an outage kept from reaching the ledger
+  // is found by reading Chatwoot, and a boot is when an outage has just ended.
+  void ensureAllReconcileSweeps().catch((error) =>
+    logger.warn({ error }, "Failed to arm Chatwoot reconcile sweeps"),
   );
   // NOTE: Arm the per-tenant sweep for inbound deliveries stranded between the ack and the dispatch,
   // for every tenant with an inbound surface: a deploy strands them too.

@@ -92,6 +92,11 @@ const CENSUS: Record<string, string> = {
   // only caller: `record` decided the verdict, and reports it once this returns "won".
   "src/modules/chatwoot/delivery-sweep.ts:finishDead":
     "ANNOUNCES ELSEWHERE: ./delivery-sweep.ts record, its only caller (#282)",
+  // Creates the DEAD row a lost message never got, together with its recovery, and leaves the line to
+  // its caller, which writes it only when this returns true: a message already in the ledger was
+  // announced by whoever wrote that row.
+  "src/modules/chatwoot/reconcile-sweep.ts:handOver":
+    "ANNOUNCES ELSEWHERE: ./reconcile-sweep.ts reconcileInbox, via lineFor (#1124)",
   "src/modules/chatwoot/webhook.ts:handToRecovery":
     "a live turn the database pool never served, handed to its recovery at once (#1122)",
   // The one entry here that is not a death. It RESTORES the verdict `record` already reached and
@@ -120,6 +125,7 @@ const ANNOUNCES_ELSEWHERE = new Set([
   // question this asks is whether the write reaches an operator, and this one's already did.
   "src/modules/chatwoot/recover-delivery.ts:putRowBack",
   "src/modules/chatwoot/delivery-sweep.ts:finishDead",
+  "src/modules/chatwoot/reconcile-sweep.ts:handOver",
 ]);
 
 async function sweepSrc(): Promise<{ key: string; announces: boolean }[]> {

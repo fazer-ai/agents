@@ -186,6 +186,7 @@ const FLOWLOG_READERS: Record<string, number> = {
   "tests/modules/chatwoot-inbox-remove.test.ts": 1,
   "tests/modules/chatwoot-monitoring-seam.test.ts": 4,
   "tests/modules/chatwoot-observer-route.test.ts": 2,
+  "tests/modules/chatwoot-reconcile-sweep.test.ts": 1,
   "tests/modules/chatwoot-recover-delivery.test.ts": 7,
   "tests/modules/chatwoot-recover-takeover.test.ts": 1,
   "tests/modules/chatwoot-reset.test.ts": 1,

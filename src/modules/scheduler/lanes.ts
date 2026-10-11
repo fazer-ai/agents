@@ -35,6 +35,9 @@ export const JOB_LANE: Record<SchedulerJobKind, SchedulerLane> = {
   // per tenant — the arming it may do costs nothing, and the flush that follows is a DEBOUNCE job
   // that gets claimed on its own lane with its own budget.
   DELIVERY_SWEEP: "shared",
+  // Shared, for the same reasons: a cadence of minutes, a few Chatwoot reads per bound inbox, and the
+  // recoveries it arms are claimed as kinds of their own.
+  RECONCILE_SWEEP: "shared",
   // Shared, and neither reason applies: one HTTP round trip to Langfuse per tenant per period, at
   // a cadence of minutes by design. The ceiling's gate reads the row it writes, so a late poll
   // costs staleness, which the row reports, and never a customer's turn.
@@ -129,6 +132,7 @@ export const JOB_POOL: Record<SchedulerJobKind, PoolClass> = {
   MEMORY_COMPACT: "background",
   // The sweep itself; the stored deliveries it admits run on main (src/modules/chatwoot/delivery-queue.ts).
   DELIVERY_SWEEP: "background",
+  RECONCILE_SWEEP: "background",
   SPEND_CEILING_POLL: "background",
   // Background: it repairs a conversation's status; no reply is sent.
   TAKEOVER_RECOVERY: "background",
@@ -164,6 +168,7 @@ export const JOB_SPENDS_PROVIDER: Record<SchedulerJobKind, boolean> = {
   // It reads and writes rows and emits log lines. Answering the stranded message would make this
   // true, which is why the sweep arms a DELIVERY_RECOVERY per lost row and that kind carries the spend.
   DELIVERY_SWEEP: false,
+  RECONCILE_SWEEP: false,
   // It asks Langfuse, not a model provider: no tokens, no embeddings.
   SPEND_CEILING_POLL: false,
   // It runs the delivery path, which runs a real agent turn: a model call, and whatever tools the
@@ -241,6 +246,7 @@ export const JOB_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
   MEMORY_COMPACT: false,
   INGEST_MESSAGE: true,
   DELIVERY_SWEEP: false,
+  RECONCILE_SWEEP: false,
   SPEND_CEILING_POLL: false,
   // Same reason as INGEST_MESSAGE, and the same shape: the key names ONE ledger row — it has to, or
   // a second stranded delivery would overwrite the first — so nothing ever reuses the row and the
@@ -305,6 +311,7 @@ export const JOB_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
   INGEST_MESSAGE: true,
   // One row per tenant, re-armed forever. Bounded by the install's tenant count, not by traffic.
   DELIVERY_SWEEP: false,
+  RECONCILE_SWEEP: false,
   // One row per tenant with the ceiling on, re-armed forever. Bounded by the install's tenant
   // count, not by traffic.
   SPEND_CEILING_POLL: false,
@@ -383,6 +390,7 @@ export const JOB_TRAFFIC_RANK: Record<SchedulerJobKind, number> = {
   REDIRECT_FOLLOWUP: 1,
   MEMORY_COMPACT: 1,
   DELIVERY_SWEEP: 1,
+  RECONCILE_SWEEP: 1,
   SPEND_CEILING_POLL: 1,
   OBSERVE: 1,
   KNOWLEDGE_SOURCE_SYNC: 1,
@@ -428,6 +436,7 @@ export const JOB_DEATH_LEVEL: Record<SchedulerJobKind, FlowLevel> = {
   INGEST_MESSAGE: "error",
   // Self-rescheduling: its death is stranded deliveries going unreported from then on.
   DELIVERY_SWEEP: "error",
+  RECONCILE_SWEEP: "error",
   // Self-rescheduling, and the handler never throws (a failing Langfuse is written on the row),
   // so a death here is the loop itself gone: the ceiling keeps deciding on a figure frozen at the
   // last poll, under-refusing by everything spent since, and nothing on the console moves.
@@ -499,6 +508,7 @@ export const JOB_RETRY_BASE_MS: Record<SchedulerJobKind, number> = {
   MEMORY_COMPACT: 2_000,
   INGEST_MESSAGE: 2_000,
   DELIVERY_SWEEP: 2_000,
+  RECONCILE_SWEEP: 2_000,
   SPEND_CEILING_POLL: 2_000,
   DELIVERY_RECOVERY: 60_000,
   TAKEOVER_RECOVERY: 60_000,

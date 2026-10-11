@@ -3187,7 +3187,9 @@
   },
   "proactiveBreaker": {
     "autoFloor": "Automático: {{limit}}, o mínimo. O maior volume em 24 horas nos últimos 30 dias foi {{peak}}, e 3x isso fica abaixo do mínimo.",
+    "autoMeasuredAt": "Medido em {{when}}.",
     "autoPeak": "Automático: {{limit}}, 3x o pico de {{day}} ({{peak}} mensagens proativas em 24 horas).",
+    "autoUnmeasured": "Automático: {{limit}}, o mínimo. Ainda não medido: o maior volume em 24 horas dos últimos 30 dias é lido uma vez por dia.",
     "banner": "Mensagens proativas pausadas desde {{since}}: {{sent}} enviadas em 24h, limite {{limit}}.",
     "bannerAskAdmin": "Um admin desta conta pode retomar.",
     "changeLimit": "Mudar limite",

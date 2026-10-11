@@ -154,14 +154,26 @@ export function ProactiveBreakerCard() {
             peak: nf.format(auto.peak ?? 0),
           },
         )
-      : t(
-          "proactiveBreaker.autoFloor",
-          "Automatic: {{limit}}, the minimum. The largest 24-hour volume in the last 30 days was {{peak}}, and 3x that is below it.",
-          {
-            limit: nf.format(auto.limit),
-            peak: nf.format(auto.peak ?? 0),
-          },
-        );
+      : auto.computedAt
+        ? t(
+            "proactiveBreaker.autoFloor",
+            "Automatic: {{limit}}, the minimum. The largest 24-hour volume in the last 30 days was {{peak}}, and 3x that is below it.",
+            {
+              limit: nf.format(auto.limit),
+              peak: nf.format(auto.peak ?? 0),
+            },
+          )
+        : t(
+            "proactiveBreaker.autoUnmeasured",
+            "Automatic: {{limit}}, the minimum. Not measured yet: the largest 24-hour volume of the last 30 days is read once a day.",
+            { limit: nf.format(auto.limit) },
+          );
+  // The figure is read at most once a day, so a burst after the reading is not in it yet.
+  const autoMeasured = auto.computedAt
+    ? t("proactiveBreaker.autoMeasuredAt", "Measured {{when}}.", {
+        when: when(auto.computedAt),
+      })
+    : null;
 
   return (
     <Card className="flex flex-col gap-4">
@@ -219,7 +231,10 @@ export function ProactiveBreakerCard() {
       </FormField>
 
       {mode === "auto" && (
-        <p className="text-sm text-text-secondary">{autoSource}</p>
+        <p className="text-sm text-text-secondary">
+          {autoSource}
+          {autoMeasured && ` ${autoMeasured}`}
+        </p>
       )}
       {mode === "fixed" && (
         <FormField

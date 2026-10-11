@@ -8,6 +8,9 @@ export type Locale = "en" | "pt-BR";
 
 interface RequestContext {
   locale: Locale;
+  // When the request arrived (set by the same hook), for a budget that belongs to the whole request
+  // rather than to one of its steps: the metrics reads' (src/modules/analytics/budget.ts).
+  startedAt?: number;
 }
 
 export const requestContext = new AsyncLocalStorage<RequestContext>();
@@ -39,6 +42,11 @@ i18n.init({
 // not travel through `translate`. Same store, same default, one reader.
 export function currentLocale(): Locale {
   return requestContext.getStore()?.locale ?? "en";
+}
+
+// When the request being served arrived; undefined outside a request.
+export function requestStartedAt(): number | undefined {
+  return requestContext.getStore()?.startedAt;
 }
 
 // The key is typed against the catalog, not `string`. i18next answers an unknown key with

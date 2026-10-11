@@ -391,7 +391,7 @@ const config = {
       METRICS_TIMEOUT_MS,
       "METRICS_TIMEOUT_MS",
       15_000,
-      "It is how long a metrics request may wait for a connection and run before it is refused.",
+      "It is how long a metrics request may take, waiting for a connection and running, before it is refused.",
       MAX_DURATION_MS,
     ),
   },

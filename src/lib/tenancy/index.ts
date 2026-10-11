@@ -15,6 +15,7 @@ export {
   requireTenantContext,
   runWithTenantContext,
 } from "./context";
+export { DeadlinePassedError } from "./deadline";
 export type { TxBudget } from "./multi-tenant";
 export {
   asPrincipalOn,
@@ -22,6 +23,7 @@ export {
   asSuperAdminOn,
   runScoped,
   runScopedOn,
+  runWithinBudgetOn,
 } from "./multi-tenant";
 
 import { parseDbId } from "@/lib/db-id";

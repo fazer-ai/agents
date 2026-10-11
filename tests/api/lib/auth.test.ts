@@ -1,7 +1,15 @@
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import {
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  setSystemTime,
+  test,
+} from "bun:test";
 import { Elysia } from "elysia";
 
 import { authPlugin, authPoolFor } from "@/api/lib/auth";
+import { localeMiddleware } from "@/api/middlewares/locale";
 import config from "@/config";
 
 // happy-dom's Request drops `Cookie` (a forbidden request header), so a cookie built with the
@@ -53,6 +61,21 @@ const mockMetricsPrisma = {
       (): Promise<typeof mockPersonRow | null> => Promise.resolve(null),
     ),
   },
+  // Under the request's deadline the memberships are a read of their own.
+  tenantUser: {
+    findMany: mock(() => Promise.resolve(mockPersonRow.memberships)),
+  },
+  endedSession: {
+    findMany: mock(() => Promise.resolve([] as { jti: string }[])),
+  },
+  // The lookup runs in a transaction bounded by the request's budget.
+  $executeRaw: mock(() => Promise.resolve(0)),
+  $transaction: mock(
+    (
+      fn: (tx: unknown) => Promise<unknown>,
+      _options?: { maxWait: number; timeout: number },
+    ) => fn(mockMetricsPrisma),
+  ),
 };
 
 mock.module("@/api/lib/prisma-metrics", () => ({
@@ -235,22 +258,85 @@ describe("authPlugin", () => {
             }),
           );
         mockMetricsPrisma.user.findUnique.mockResolvedValueOnce(mockPersonRow);
+        mockMetricsPrisma.$transaction.mockClear();
+        mockMetricsPrisma.tenantUser.findMany.mockClear();
         expect((await (await ask("/api/v1/metrics/costs")).json()).id).toBe(
           mockUser.id.toString(),
         );
+        // Inside a transaction whose wait and run are what is left of the request's metrics budget.
+        const options = mockMetricsPrisma.$transaction.mock.calls[0]?.[1];
+        expect(options?.maxWait).toBeLessThanOrEqual(config.metrics.timeoutMs);
+        expect(options?.timeout).toBeLessThanOrEqual(config.metrics.timeoutMs);
+        // The memberships are a read of their own, so the deadline is set before each one.
+        expect(mockMetricsPrisma.tenantUser.findMany).toHaveBeenCalledTimes(1);
         mockMetricsPrisma.user.findUnique.mockResolvedValueOnce(mockPersonRow);
         expect((await (await ask("/api/v1/agents")).json()).id).toBeNull();
       });
 
-      test("a metrics route's key lookup keeps to the metrics budget, any other to the main one", () => {
-        expect(authPoolFor("/api/v1/metrics/costs").budget?.timeout).toBe(
-          config.metrics.timeoutMs,
-        );
-        expect(authPoolFor("/api/v1/metrics").budget?.maxWait).toBe(
-          config.metrics.timeoutMs,
-        );
+      test("a metrics route's key lookup keeps to what is left of the request's metrics budget, any other to the main one", () => {
+        const metrics = authPoolFor("/api/v1/metrics/costs").budget;
+        expect(metrics?.timeout).toBeLessThanOrEqual(config.metrics.timeoutMs);
+        expect(metrics?.timeout).toBeGreaterThan(0);
+        expect(metrics?.deadline).toBeDefined();
+        expect(authPoolFor("/api/v1/metrics").budget?.maxWait).toBeDefined();
         expect(authPoolFor("/api/v1/metricsx").budget).toBeUndefined();
         expect(authPoolFor("/api/v1/agents").budget).toBeUndefined();
+      });
+
+      test("a metrics route whose session lookup fails after the request's budget is spent answers the metrics refusal", async () => {
+        const token = await mintToken();
+        const app = new Elysia().use(localeMiddleware).group("/api", (api) =>
+          api
+            .use(authPlugin)
+            .get("/v1/metrics/costs", async ({ getAuthUser }) =>
+              getAuthUser().then(
+                () => ({ status: 200 }),
+                (e: { statusCode?: number; field?: string }) => ({
+                  status: e.statusCode ?? 500,
+                  field: e.field ?? null,
+                }),
+              ),
+            ),
+        );
+        const ask = () =>
+          app.handle(
+            new BunRequest("http://localhost/api/v1/metrics/costs", {
+              headers: { Cookie: `fazerai_auth_token=${token}` },
+            }),
+          );
+        const metrics = config.metrics;
+        const saved = metrics.timeoutMs;
+        metrics.timeoutMs = 50;
+        // NOTE: drops a value an earlier test queued and never consumed.
+        mockMetricsPrisma.user.findUnique.mockReset();
+        try {
+          // The pool gave no connection until the budget was gone.
+          mockMetricsPrisma.user.findUnique.mockImplementationOnce(() => {
+            setSystemTime(new Date(Date.now() + 100));
+            return Promise.reject(
+              new Error("timeout exceeded when trying to connect"),
+            );
+          });
+          expect(await (await ask()).json()).toEqual({
+            status: 503,
+            field: "since",
+          });
+          // A lookup that fails inside the budget is the plain transient 503.
+          mockMetricsPrisma.user.findUnique.mockImplementationOnce(() =>
+            Promise.reject(new Error("connection reset")),
+          );
+          metrics.timeoutMs = 10_000;
+          expect(await (await ask()).json()).toEqual({
+            status: 503,
+            field: null,
+          });
+        } finally {
+          metrics.timeoutMs = saved;
+          setSystemTime();
+          mockMetricsPrisma.user.findUnique.mockImplementation(() =>
+            Promise.resolve(null),
+          );
+        }
       });
 
       test("an API key whose lookup fails is a transient 503, not a 500", async () => {

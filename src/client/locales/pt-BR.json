@@ -2124,6 +2124,7 @@
     "snoozedFollowUp": "Lembrete de conversa adiada",
     "snoozedFollowUpAddDefault": "Adicionar cadência padrão",
     "snoozedFollowUpAddLabeled": "Adicionar cadência por etiqueta",
+    "snoozedFollowUpAtLimit": "Até {{max}} cadências por etiqueta.",
     "snoozedFollowUpCadences": "Cadências",
     "snoozedFollowUpCadencesHint": "A conversa segue a primeira cadência abaixo cuja etiqueta ela tem e, se não tiver nenhuma, a cadência padrão.",
     "snoozedFollowUpDefaultCadence": "Cadência padrão",

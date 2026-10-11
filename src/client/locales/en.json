@@ -2065,6 +2065,7 @@
     "snoozedFollowUp": "Snoozed follow-up",
     "snoozedFollowUpAddDefault": "Add default cadence",
     "snoozedFollowUpAddLabeled": "Add cadence by label",
+    "snoozedFollowUpAtLimit": "Up to {{max}} cadences by label.",
     "snoozedFollowUpCadences": "Cadences",
     "snoozedFollowUpCadencesHint": "A conversation follows the first cadence below whose label it carries, and otherwise the default cadence.",
     "snoozedFollowUpDefaultCadence": "Default cadence",

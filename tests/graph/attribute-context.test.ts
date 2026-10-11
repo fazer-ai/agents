@@ -356,4 +356,83 @@ describe.skipIf(!dbUp)("attribute context in the system prompt", () => {
     row = await suDb.contact.findUniqueOrThrow({ where: { id: contact.id } });
     expect(row.customAttributes).toEqual({ plano: "enterprise" });
   });
+
+  test("a pre-write snapshot carrying the contact's own clock cannot erase the write-through either", async () => {
+    // With the fork's contact clock (#1282) a clocked payload is ordered by that clock alone, so the
+    // write-through's position barrier only holds if the stored clock stops describing the bag.
+    const contact = await suDb.contact.create({
+      data: {
+        chatwootInstanceId: instanceId,
+        tenantId,
+        chatwootContactId: 4244,
+        name: "Rita",
+        customAttributes: {},
+      },
+    });
+    const now = Math.floor(Date.now() / 1000);
+    const snapshot = (
+      convId: number,
+      at: number,
+      clock: number,
+      bag: Record<string, unknown>,
+    ): NormalizedChatwootEvent => ({
+      event: "conversation_updated",
+      conversationId: convId,
+      contactInboxId: null,
+      inboxId: null,
+      status: "pending",
+      assigneeType: null,
+      assigneeId: null,
+      assigneeName: null,
+      contact: {
+        id: 4244,
+        name: "Rita",
+        customAttributes: bag,
+        updatedAt: clock,
+      },
+      inboxName: null,
+      channel: null,
+      lastActivityAt: at,
+    });
+    await mirrorChatwootEvent(
+      tenantId,
+      instanceId,
+      snapshot(CONV_ID + 4, now - 120, now - 120.5, { plano: "free" }),
+      appDb,
+    );
+    const client = {
+      setContactCustomAttributes: async () => ({}),
+    } as unknown as ChatwootClient;
+    const tools = buildNativeTools({
+      client,
+      conversationId: CONV_ID,
+      tenantId,
+      base: appDb,
+      contactDbId: contact.id,
+    }) as StructuredToolInterface[];
+    const tool = tools.find((t) => t.name === "set_custom_attribute");
+    if (!tool) throw new Error("set_custom_attribute missing");
+    await tool.invoke({ key: "plano", value: "pro", scope: "contact" });
+
+    // Serialized after the stored one and before the tool's API write, delivered after it.
+    await mirrorChatwootEvent(
+      tenantId,
+      instanceId,
+      snapshot(CONV_ID + 5, now - 60, now - 60.5, { plano: "free" }),
+      appDb,
+    );
+    let row = await suDb.contact.findUniqueOrThrow({
+      where: { id: contact.id },
+    });
+    expect(row.customAttributes).toEqual({ plano: "pro" });
+
+    await mirrorChatwootEvent(
+      tenantId,
+      instanceId,
+      snapshot(CONV_ID + 6, now + 60, now + 59.5, { plano: "enterprise" }),
+      appDb,
+    );
+    row = await suDb.contact.findUniqueOrThrow({ where: { id: contact.id } });
+    expect(row.customAttributes).toEqual({ plano: "enterprise" });
+  });
 });

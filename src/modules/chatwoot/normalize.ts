@@ -67,6 +67,13 @@ function float(v: unknown): number | null {
   return typeof v === "number" && Number.isFinite(v) ? v : null;
 }
 
+// A row's own `updated_at` as the fork ships it (`to_f`): a positive number, or nothing. A string or a
+// zero is not a version to order by, and reading one as such would fence every real payload after it.
+function rowClock(v: unknown): number | null {
+  const n = float(v);
+  return n !== null && n > 0 ? n : null;
+}
+
 // A Chatwoot timestamp, read in both spellings the same producer uses for one field: a message's
 // `created_at` is ISO 8601 on the wire (`Message#webhook_data`) and epoch SECONDS over REST
 // (`_message.json.jbuilder` renders `.to_i`); a conversation's `created_at` is seconds and its
@@ -267,6 +274,11 @@ export function normalizeChatwootEvent(
       ...stated("identifier", sender.identifier),
       ...(contactAttrs ? { customAttributes: contactAttrs } : {}),
       ...additionalContactFields(sender),
+      // The clock of the object the values above came from, never the message author's
+      // (`payload.sender`), which on an outgoing message is a user or a bot.
+      ...(rowClock(sender.updated_at) !== null
+        ? { updatedAt: rowClock(sender.updated_at) }
+        : {}),
     };
   }
   // Conversation + kanban-card custom attributes ride along on every event (push_data.custom_attributes
@@ -318,6 +330,8 @@ export function normalizeChatwootEvent(
       redirectOrigin !== null && redirectOrigin > 0 ? redirectOrigin : null;
   }
   normalized.inboxName = inboxObj ? str(inboxObj.name) : null;
+  const inboxClock = inboxObj ? rowClock(inboxObj.updated_at) : null;
+  if (inboxClock !== null) normalized.inboxUpdatedAt = inboxClock;
   // NOTE: `channel` (channel_type) is exposed by EventDataPresenter on conversation events.
   normalized.channel = conv ? str(conv.channel) : null;
   normalized.lastActivityAt = conv ? num(conv.last_activity_at) : null;

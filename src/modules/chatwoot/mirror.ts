@@ -905,7 +905,31 @@ async function upsertContact(
     `;
   }
 
-  if (c.customAttributes) {
+  // NOTE: The custom attributes are ordered by the CONTACT'S OWN clock when the payload carries it
+  // (`meta.sender.updated_at`, fork #826) and the row already has one: the conversation's position is
+  // not this row's clock (one contact is written by every one of its conversations, and an edit moves
+  // neither of the conversation's clocks), so a strictly newer contact version writes whatever its
+  // position, and an equal or older one writes nothing. The clock moves with the bag it came with, the
+  // same bag included, because the contact's `updated_at` also moves on every incoming message: left
+  // behind, a state from between the two would pass it. A row with no clock yet takes the position
+  // rule below and stamps the clock with the bag. A payload without the clock (Chatwoot without
+  // #826, a recovery's REST read) keeps the position rule exactly, and leaves the clock alone.
+  if (c.customAttributes && c.updatedAt != null) {
+    const bag = JSON.stringify(c.customAttributes);
+    const positioned = eventAt
+      ? Prisma.sql`(custom_attributes_at IS NULL OR custom_attributes_at <= ${eventAt})`
+      : Prisma.sql`custom_attributes_at IS NULL`;
+    await db.$executeRaw`
+      UPDATE contacts
+      SET custom_attributes = ${bag}::jsonb,
+          custom_attributes_clock = ${c.updatedAt},
+          custom_attributes_at = GREATEST(custom_attributes_at, ${eventAt})
+      WHERE id = ${row.id} AND tenant_id = ${tenantId}
+        AND CASE WHEN custom_attributes_clock IS NOT NULL
+              THEN custom_attributes_clock < ${c.updatedAt}
+              ELSE ${positioned} END
+    `;
+  } else if (c.customAttributes) {
     const bag = JSON.stringify(c.customAttributes);
     await (eventAt
       ? db.$executeRaw`
@@ -972,6 +996,7 @@ async function upsertInbox(
         name: n.inboxName ?? placeholder,
         channelType: n.channel ?? null,
         metadataAt: position,
+        metadataClock: n.inboxUpdatedAt ?? null,
       },
       skipDuplicates: true,
     });
@@ -984,9 +1009,23 @@ async function upsertInbox(
   const name = n.inboxName ?? null;
   const channel = n.channel ?? null;
   if (name === null && channel === null) return row.id;
-  const accepts = position
+  const positioned = position
     ? Prisma.sql`(metadata_at IS NULL OR metadata_at <= ${position})`
     : Prisma.sql`(metadata_at IS NULL)`;
+  // NOTE: With the inbox's own clock (`inbox.updated_at`, fork #826, message events only) and a row
+  // that has one, the clock alone decides, as for the contact's attributes: the conversation's
+  // position is no inbox's clock. A row with no clock yet takes the position rule and stamps it; a
+  // payload without one (every `conversation_*` event, which names the inbox by id and channel only)
+  // keeps the position rule and leaves the clock alone, so its position cannot fence a rename.
+  const clock = n.inboxUpdatedAt ?? null;
+  const accepts =
+    clock !== null
+      ? Prisma.sql`(CASE WHEN metadata_clock IS NOT NULL THEN metadata_clock < ${clock} ELSE ${positioned} END)`
+      : positioned;
+  const clockMoves =
+    clock !== null
+      ? Prisma.sql`(${accepts} AND metadata_clock IS DISTINCT FROM ${clock})`
+      : Prisma.sql`FALSE`;
   // One statement, decided against the row as it stands when the UPDATE reaches it (an earlier read
   // may be stale); a WHERE that matches nothing writes nothing. A payload positioned at or after the
   // last change writes every field it states, so a field left out cannot keep an older value under
@@ -1005,6 +1044,7 @@ async function upsertInbox(
         WHEN ${accepts} AND ${channel}::text IS NOT NULL THEN ${channel}::text
         WHEN channel_type IS NULL AND ${channel}::text IS NOT NULL THEN ${channel}::text
         ELSE channel_type END,
+      metadata_clock = CASE WHEN ${clockMoves} THEN ${clock}::float8 ELSE metadata_clock END,
       metadata_at = GREATEST(metadata_at, ${position}),
       updated_at = now()
     WHERE id = ${row.id}
@@ -1012,6 +1052,7 @@ async function upsertInbox(
         (${accepts} AND (
           (${name}::text IS NOT NULL AND name IS DISTINCT FROM ${name}::text)
           OR (${channel}::text IS NOT NULL AND channel_type IS DISTINCT FROM ${channel}::text)))
+        OR ${clockMoves}
         OR (name = ${placeholder} AND ${name}::text IS NOT NULL AND ${name}::text <> ${placeholder})
         OR (channel_type IS NULL AND ${channel}::text IS NOT NULL)
       )`;

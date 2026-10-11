@@ -188,6 +188,14 @@ describe("which message a conversation owes", () => {
     ]);
     expect(owedCustomerMessage(rows)?.id).toBe(1);
   });
+  test("a blank incoming message after the customer's request does not take its place", () => {
+    const rows = parseChatwootMessages([
+      outgoing(1, minutesAgo(40)),
+      incoming(2, minutesAgo(30)),
+      { ...incoming(3, minutesAgo(20)), content: "  " },
+    ]);
+    expect(owedCustomerMessage(rows)?.id).toBe(2);
+  });
   test("a sender-less outgoing message after the customer (an automation, an away message) does not answer them", () => {
     const { sender: _, ...automation } = outgoing(2, minutesAgo(20));
     const rows = parseChatwootMessages([

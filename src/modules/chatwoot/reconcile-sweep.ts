@@ -12,7 +12,11 @@ import {
 } from "@/modules/scheduler/worker";
 import type { ChatwootClient, ChatwootInboxConversation } from "./client";
 import { type LoadChatwootClientDeps, loadChatwootClient } from "./instance";
-import { type ChatwootMessageRow, parseChatwootMessages } from "./messages";
+import {
+  type ChatwootMessageRow,
+  hasAnswerableContent,
+  parseChatwootMessages,
+} from "./messages";
 import { armDeliveryRecoveryOn, MAX_RECOVERY_AGE_MS } from "./recover-delivery";
 
 // Finds the customer messages the delivery ledger never received (the webhook failed for Chatwoot's
@@ -71,7 +75,11 @@ function newestTurn(
   for (let i = rows.length - 1; i >= 0; i--) {
     const m = rows[i] as ChatwootMessageRow;
     if (m.private || m.isReaction || m.imported) continue;
-    if (m.messageType === "incoming") return m;
+    // A blank incoming message runs no turn, so it cannot be the one owed an answer.
+    if (m.messageType === "incoming") {
+      if (hasAnswerableContent(m)) return m;
+      continue;
+    }
     if (
       (m.messageType === "outgoing" || m.messageType === "template") &&
       m.senderType !== null

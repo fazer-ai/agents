@@ -1,9 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { Client } from "pg";
 
-// The eight Langfuse-era columns of `spend_cost_snapshots` (issue #1066). #1061 stopped writing them
-// and kept them for one release behind `@ignore`, so the previous image could still name them during
-// a rolling deploy and a rollback. A release with #1061 is out, so they go.
+// The eight Langfuse-era columns of `spend_cost_snapshots` are gone: nothing writes or reads them, and
+// the snapshot table keeps only what the poll and the console use. History in docs/spend-ceiling.md.
 
 const suUrl = process.env.MIGRATION_DATABASE_URL;
 

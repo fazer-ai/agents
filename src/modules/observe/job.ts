@@ -2005,15 +2005,17 @@ export async function runObserve(
           (k) => (released.get(k) ?? -1) < upTo.getTime(),
         );
         if (triggerScope === null || keys.length === 0) return;
-        for (const k of keys) released.set(k, upTo.getTime());
-        await unlatchRules(base, triggerScope, keys, upTo).catch(
-          (err: unknown) =>
-            logger.warn(
-              { err, agentId: String(agentId) },
-              "observe: the rules' trigger state could not be written (conv=%s)",
-              String(conversationId),
-            ),
-        );
+        try {
+          await unlatchRules(base, triggerScope, keys, upTo);
+          // Counted only once deleted, so a failed release is tried again by the next call.
+          for (const k of keys) released.set(k, upTo.getTime());
+        } catch (err) {
+          logger.warn(
+            { err, agentId: String(agentId) },
+            "observe: the rules' trigger state could not be written (conv=%s)",
+            String(conversationId),
+          );
+        }
       };
       progress.onChange = () => void release();
       await release();

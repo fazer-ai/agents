@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { FakeListChatModel } from "@langchain/core/utils/testing";
 import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
+import pg from "pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { type AgentNudge, runAgentNudge } from "@/graph/nudge";
@@ -40,14 +41,18 @@ const suUrl = process.env.MIGRATION_DATABASE_URL;
 let dbUp = false;
 let su: PrismaClient | undefined;
 let app: PrismaClient | undefined;
+// The app client's pool is built here rather than inside the adapter so a test can open its
+// connections ahead of a burst (see `openAppConnections`).
+let appPool: pg.Pool | undefined;
 if (appUrl && suUrl) {
   try {
     su = new PrismaClient({
       adapter: new PrismaPg({ connectionString: suUrl }),
     });
     await su.$queryRaw`SELECT 1`;
+    appPool = new pg.Pool({ connectionString: appUrl });
     app = new PrismaClient({
-      adapter: new PrismaPg({ connectionString: appUrl }),
+      adapter: new PrismaPg(appPool),
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
@@ -194,6 +199,20 @@ function nudge(
 
 const ctx = () => ({ tenantId, userId: null, role: "TENANT_ADMIN" as const });
 
+// Opens n connections in the app pool and returns them idle, so n transactions started together each
+// find one ready. Each reservation is its own transaction, and Prisma counts opening a NEW connection
+// (TCP, auth, a backend forked) inside the transaction's 2 s `maxWait`: on a loaded machine that
+// alone ran past it, the reservation failed open by design ("could not count the window, the send
+// goes ahead") and a fourth send went out. `pool.connect` has no deadline, so the fixture pays that
+// cost here, outside the product's budget.
+async function openAppConnections(n: number) {
+  const pool = appPool as pg.Pool;
+  const clients = await Promise.all(
+    Array.from({ length: n }, () => pool.connect()),
+  );
+  for (const c of clients) c.release();
+}
+
 // The breaker's lines are the account's, not one turn's, and every test clears the tenant's log first.
 const breakerLines = () =>
   // flowlog-scope: tenant-wide
@@ -322,6 +341,7 @@ describe.skipIf(!dbUp)("proactive breaker", () => {
     }
     await suDb.$disconnect();
     await appDb.$disconnect();
+    await appPool?.end().catch(() => {});
   });
 
   test("the account's limit stops every agent's proactive sends, the trip is one error line with the console link, and later refusals are info", async () => {
@@ -515,6 +535,7 @@ describe.skipIf(!dbUp)("proactive breaker", () => {
     await setBreaker("fixed", 3);
     const convs: bigint[] = [];
     for (let c = 6401; c <= 6408; c++) convs.push(await seedConv(c));
+    await openAppConnections(convs.length);
     const verdicts = await Promise.all(
       convs.map((conversationDbId) =>
         reserveProactiveSend({

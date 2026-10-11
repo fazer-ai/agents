@@ -5,6 +5,7 @@ import type { ChatResult } from "@langchain/core/outputs";
 import config from "@/config";
 import { buildAgentGraph } from "@/graph/graph";
 import { runModelCall } from "@/graph/model-limit";
+import { until } from "../utils/poll";
 
 // The deadline lives in `runModelCall` itself, per attempt, so it holds on an adapter deaf to the
 // abort signal (the Google one) for every call through it: the guardrail, the memory summary, the
@@ -121,11 +122,21 @@ describe("every call through runModelCall ends at its deadline", () => {
   // The permit is what a hung call really holds: every other turn on the instance queues behind it.
   test("a hung call gives its permit back at the deadline, and only once", async () => {
     const cap = config.agent.modelConcurrency;
+    let answerNow: () => void = () => {};
+    const answers = new Promise<void>((r) => {
+      answerNow = r;
+    });
+    let landed = 0;
     const late = Array.from({ length: cap }, () =>
       outcome(
-        runModelCall(() => sleep(DEADLINE_MS * 3).then(() => "late"), {
-          deadlineMs: DEADLINE_MS,
-        }),
+        runModelCall(
+          () =>
+            answers.then(() => {
+              landed += 1;
+              return "late";
+            }),
+          { deadlineMs: DEADLINE_MS },
+        ),
       ),
     );
     const t0 = performance.now();
@@ -138,7 +149,8 @@ describe("every call through runModelCall ends at its deadline", () => {
     expect(waited).toBeLessThan(DEADLINE_MS * 3);
     for (const r of await Promise.all(late)) expect(r.ok).toBe(false);
     // The late answers land now. A permit returned twice would let more than `cap` run at once.
-    await sleep(DEADLINE_MS * 3);
+    answerNow();
+    await until("the late answers landed", () => landed === cap);
     let active = 0;
     let maxActive = 0;
     await Promise.all(

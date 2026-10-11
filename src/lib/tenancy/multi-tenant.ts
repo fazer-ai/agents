@@ -140,6 +140,22 @@ export const SCOPED_TX_OPTIONS = {
   timeout: 5_000,
 } as const;
 
+let maxWaitForTest: number | undefined;
+
+/**
+ * Test-only: shortens `maxWait`, so a test of a drained pool waits out a refusal in milliseconds
+ * rather than two seconds. `undefined` puts SCOPED_TX_OPTIONS back. Production never calls it.
+ */
+export function setScopedTxMaxWaitForTest(ms: number | undefined): void {
+  maxWaitForTest = ms;
+}
+
+function scopedTxOptions(): { maxWait: number; timeout: number } {
+  return maxWaitForTest === undefined
+    ? SCOPED_TX_OPTIONS
+    : { ...SCOPED_TX_OPTIONS, maxWait: maxWaitForTest };
+}
+
 export async function runScopedOn<T>(
   base: TransactionCapable,
   ctx: TenantContext,
@@ -157,7 +173,7 @@ export async function runScopedOn<T>(
     const db = tx as unknown as ScopedDb;
     if (ctx.role === "SUPER_ADMIN") await requireTenantExists(db, tenantId);
     return fn(db);
-  }, SCOPED_TX_OPTIONS);
+  }, scopedTxOptions());
 }
 
 export async function runScoped<T>(
@@ -183,7 +199,7 @@ export async function asSuperAdminOn<T>(
   return base.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT set_config('role', ${Prisma.raw(FLEET_ROLE_FN)}, true)`;
     return fn(tx as unknown as ScopedDb);
-  }, SCOPED_TX_OPTIONS);
+  }, scopedTxOptions());
 }
 
 export async function asSuperAdmin<T>(

@@ -1,8 +1,22 @@
-import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  spyOn,
+  test,
+} from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import logger from "@/api/lib/logger";
 import { clearTurnOwning } from "@/graph/thread-claim";
+import {
+  asSuperAdminOn,
+  runScopedOn,
+  setScopedTxMaxWaitForTest,
+} from "@/lib/tenancy/multi-tenant";
 import * as documents from "@/modules/rag/documents";
 import * as embeddings from "@/modules/rag/embeddings";
 import { EMBEDDING_DIM } from "@/modules/rag/embeddings";
@@ -12,9 +26,10 @@ import { seedChatwootInstance } from "../utils/chatwoot";
 
 // The reads a tool makes before its request, against a pool that really is full. A failed read ends
 // the tool call with an error the model may escalate over, when the same read a moment later would
-// have answered. Here a client of ONE connection is held by another transaction past `maxWait` (2s), so the
-// read's first transaction never starts, exactly as there; the hold then ends and the retry is what
-// gets the answer.
+// have answered. Here a client of ONE connection is held by another transaction past `maxWait`, so
+// the read's first transaction never starts, exactly as there; the hold ends when the retry reports
+// that refusal, and the retry is what gets the answer. `maxWait` is shortened through its test seam,
+// and the shipped value is held by the first test below.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -32,8 +47,57 @@ if (appUrl && suUrl) {
   }
 }
 
-// Longer than `maxWait`, so the first attempt is refused; shorter than the retry deadline.
-const HOLD_MS = 2_400;
+// The wait for a connection a read is refused after, in place of the shipped two seconds.
+const MAX_WAIT_MS = 100;
+
+// The options a transaction is opened with, read off a base that records them. Both openers take
+// the same options: the tenant-scoped one and the fleet one.
+const OPENERS = {
+  runScopedOn: (base: unknown) =>
+    runScopedOn(
+      base as Parameters<typeof runScopedOn>[0],
+      { tenantId: 1n, userId: null, role: "TENANT_ADMIN" },
+      async () => null,
+    ),
+  asSuperAdminOn: (base: unknown) =>
+    asSuperAdminOn(
+      base as Parameters<typeof asSuperAdminOn>[0],
+      async () => null,
+    ),
+};
+
+async function openedWith(opener: keyof typeof OPENERS): Promise<unknown> {
+  let opened: unknown;
+  const $transaction = async (_fn: unknown, options: unknown) => {
+    opened = options;
+  };
+  await OPENERS[opener]({ $transaction, $extends: () => ({ $transaction }) });
+  return opened;
+}
+
+describe.each(Object.keys(OPENERS) as (keyof typeof OPENERS)[])(
+  "%s",
+  (opener) => {
+    test("waits the shipped two seconds for a connection", async () => {
+      expect(await openedWith(opener)).toEqual({
+        maxWait: 2_000,
+        timeout: 5_000,
+      });
+    });
+
+    test("is opened with the shortened wait", async () => {
+      setScopedTxMaxWaitForTest(MAX_WAIT_MS);
+      try {
+        expect(await openedWith(opener)).toEqual({
+          maxWait: MAX_WAIT_MS,
+          timeout: 5_000,
+        });
+      } finally {
+        setScopedTxMaxWaitForTest(undefined);
+      }
+    });
+  },
+);
 
 describe.skipIf(!dbUp)("tool reads on a full pool", () => {
   let tenantId = 0n;
@@ -41,21 +105,28 @@ describe.skipIf(!dbUp)("tool reads on a full pool", () => {
   let vaultRef = "";
   let pool: PrismaClient;
   let embeddingConfig: { mockRestore(): void } | null = null;
+  let warn: { mockRestore(): void } | null = null;
+  let refusals = 0;
+  let onRefusal: () => void = () => {};
 
-  // Takes the pool's only connection for `ms`, and resolves once it has it. The hold comes back in
-  // an object: an async function returning the promise itself would adopt it and wait the hold out.
-  async function holdPool(ms: number): Promise<{ done: Promise<void> }> {
+  // Takes the pool's only connection, resolves once it has it, and keeps it until a read is refused
+  // for want of it. The hold comes back in an object: an async function returning the promise itself
+  // would adopt it and wait the hold out.
+  async function holdPool(): Promise<{ done: Promise<void> }> {
     let taken: () => void = () => {};
     const has = new Promise<void>((r) => {
       taken = r;
+    });
+    const refused = new Promise<void>((r) => {
+      onRefusal = r;
     });
     const held = pool.$transaction(
       async (tx) => {
         await tx.$queryRaw`SELECT 1`;
         taken();
-        await new Promise((r) => setTimeout(r, ms));
+        await refused;
       },
-      { timeout: ms + 5_000 },
+      { timeout: 10_000 },
     );
     await has;
     return { done: held };
@@ -87,9 +158,23 @@ describe.skipIf(!dbUp)("tool reads on a full pool", () => {
     pool = new PrismaClient({
       adapter: new PrismaPg({ connectionString: appUrl as string, max: 1 }),
     });
+    setScopedTxMaxWaitForTest(MAX_WAIT_MS);
+    // The line the retry writes for a transaction that never started is the refusal this file waits on.
+    warn = spyOn(logger, "warn").mockImplementation(((msg: unknown) => {
+      if (String(msg).includes("the database pool had no free connection")) {
+        refusals += 1;
+        onRefusal();
+      }
+    }) as never);
+  });
+
+  beforeEach(() => {
+    refusals = 0;
   });
 
   afterAll(async () => {
+    setScopedTxMaxWaitForTest(undefined);
+    warn?.mockRestore();
     embeddingConfig?.mockRestore();
     await pool?.$disconnect();
     if (su && tenantId) await su.tenant.delete({ where: { id: tenantId } });
@@ -97,7 +182,7 @@ describe.skipIf(!dbUp)("tool reads on a full pool", () => {
   });
 
   test("an HTTP tool's vault credential is read once the pool frees up, not failed", async () => {
-    const held = await holdPool(HOLD_MS);
+    const held = await holdPool();
     const cred = await resolveInjectableCredentialEntry(
       pool,
       tenantId,
@@ -105,6 +190,7 @@ describe.skipIf(!dbUp)("tool reads on a full pool", () => {
     );
     await held.done;
     expect(cred?.value).toBe("s3cret");
+    expect(refusals).toBe(1);
   });
 
   test("search_knowledge's first read survives a full pool", async () => {
@@ -112,7 +198,7 @@ describe.skipIf(!dbUp)("tool reads on a full pool", () => {
       Array.from({ length: EMBEDDING_DIM }, () => 0.01),
     );
     try {
-      const held = await holdPool(HOLD_MS);
+      const held = await holdPool();
       const hits = await searchKnowledge({
         ctx: { tenantId, userId: null, role: "TENANT_ADMIN" },
         query: "horário",
@@ -122,6 +208,7 @@ describe.skipIf(!dbUp)("tool reads on a full pool", () => {
       await held.done;
       expect(hits).toEqual([]);
       expect(embed).toHaveBeenCalledTimes(1);
+      expect(refusals).toBe(1);
     } finally {
       embed.mockRestore();
     }
@@ -132,7 +219,7 @@ describe.skipIf(!dbUp)("tool reads on a full pool", () => {
     const embed = spyOn(embeddings, "embedQuery").mockImplementation(
       async () => {
         // The pool fills between the two reads, which is where the embedding's network call sits.
-        hold = (await holdPool(HOLD_MS)).done;
+        hold = (await holdPool()).done;
         return Array.from({ length: EMBEDDING_DIM }, () => 0.01);
       },
     );
@@ -145,6 +232,7 @@ describe.skipIf(!dbUp)("tool reads on a full pool", () => {
       });
       await hold;
       expect(hits).toEqual([]);
+      expect(refusals).toBe(1);
     } finally {
       embed.mockRestore();
     }
@@ -169,7 +257,7 @@ describe.skipIf(!dbUp)("tool reads on a full pool", () => {
         turnHeldUntil: new Date(Date.now() + 5 * 60_000),
       },
     });
-    const held = await holdPool(HOLD_MS);
+    const held = await holdPool();
     await clearTurnOwning(
       { tenantId, instanceId: inst.id, contactInboxId, graphThreadId },
       pool,
@@ -181,5 +269,6 @@ describe.skipIf(!dbUp)("tool reads on a full pool", () => {
       select: { turnHolders: true, turnHeldUntil: true },
     });
     expect(row).toEqual({ turnHolders: 0, turnHeldUntil: null });
+    expect(refusals).toBe(1);
   });
 });

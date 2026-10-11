@@ -1,13 +1,15 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { encryptJson } from "@/api/lib/crypto";
 import config from "@/config";
 import {
   attachLangfuseDeliveryLogging,
   buildLangfuseHandler,
   environmentForSource,
+  LANGFUSE_DELIVERY_RETRY,
   langfuseKeysSchema,
   makeMask,
   resolveLangfuseConfig,
+  setLangfuseDeliveryRetryForTest,
   shutdownLangfuseClients,
 } from "@/graph/observability";
 import type { ScopedDb } from "@/lib/tenancy";
@@ -15,11 +17,66 @@ import type { ScopedDb } from "@/lib/tenancy";
 // `buildLangfuseHandler` below mints a real trace, whose events the SDK delivers on a
 // BACKGROUND flush through `globalThis.fetch`; an unreachable baseUrl does not keep them in the
 // process, so an unsettled flush would POST through the stub the NEXT test file installs. This file
-// creates the work, so it drains it here. The 15s budget covers ~9s of SDK retries with backoff:
-// under happy-dom's `fetch` even a live local sink reads as a failed delivery.
+// creates the work, so it drains it here. Under happy-dom's `fetch` even a live local sink reads as a
+// failed delivery, so the drain runs every retry: the clients here are built with the retry's pause
+// shortened through its test seam, and the shipped retry is held by the tests below.
+const FAST_RETRY = { fetchRetryCount: 3, fetchRetryDelay: 1 };
+beforeAll(() => setLangfuseDeliveryRetryForTest(FAST_RETRY));
 afterAll(async () => {
   await shutdownLangfuseClients();
+  setLangfuseDeliveryRetryForTest(undefined);
 }, 15000);
+
+// The SDK client behind a handler, as far as these tests read it.
+interface SdkClient {
+  _retryOptions: { retryCount: number; retryDelay: number };
+  pendingEventProcessingPromises: Record<string, Promise<unknown>>;
+  setPersistedProperty(key: string, value: unknown): void;
+}
+
+// The retry the client behind a freshly built handler was given (the SDK keeps it as `_retryOptions`).
+// The trace the handler queued is dropped once it is queued, so the drain in `afterAll` sends nothing
+// on this client's behalf, whatever retry it carries.
+async function retryOfClientFor(tenantId: bigint): Promise<unknown> {
+  const handler = buildLangfuseHandler(
+    {
+      publicKey: "pk-lf-retry",
+      secretKey: "sk-lf-retry",
+      baseUrl: "http://127.0.0.1:9",
+    },
+    { tenantId, threadId: "1:1:1" },
+  ) as unknown as { langfuse: SdkClient };
+  const client = handler.langfuse;
+  await Promise.all(Object.values(client.pendingEventProcessingPromises));
+  client.setPersistedProperty("queue", []);
+  const { retryCount, retryDelay } = client._retryOptions;
+  return { retryCount, retryDelay };
+}
+
+describe("langfuse delivery retry", () => {
+  test("ships as three retries, three seconds apart, and a client is built with it", async () => {
+    expect(LANGFUSE_DELIVERY_RETRY).toEqual({
+      fetchRetryCount: 3,
+      fetchRetryDelay: 3_000,
+    });
+    setLangfuseDeliveryRetryForTest(undefined);
+    try {
+      expect(await retryOfClientFor(9_001n)).toEqual({
+        retryCount: 3,
+        retryDelay: 3_000,
+      });
+    } finally {
+      setLangfuseDeliveryRetryForTest(FAST_RETRY);
+    }
+  });
+
+  test("the shortened retry is the one a client is built with", async () => {
+    expect(await retryOfClientFor(9_002n)).toEqual({
+      retryCount: 3,
+      retryDelay: 1,
+    });
+  });
+});
 
 describe("langfuse key pair", () => {
   test("parses a valid key pair (the vault secret value)", () => {

@@ -1,4 +1,12 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  spyOn,
+  test,
+} from "bun:test";
 import { FakeListChatModel } from "@langchain/core/utils/testing";
 import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
@@ -6,6 +14,7 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { decryptJson, encryptJson } from "@/api/lib/crypto";
 import { contactInboxThreadId } from "@/graph/checkpointer";
 import { clearTurnInFlight, markTurnInFlight } from "@/graph/inflight";
+import * as threadClaim from "@/graph/thread-claim";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import { recoverStrandedDelivery } from "@/modules/chatwoot/recover-delivery";
@@ -61,7 +70,25 @@ let stamp = Math.floor(Date.now() / 1000);
 const realFetch = globalThis.fetch;
 
 describe.skipIf(!dbUp)("a replay that owes memory only", () => {
+  // A turn on a busy thread waits for it in `waitForTurnToClear`, and the takeover the tests below
+  // make has to land during that wait: `turnWaits` settles once the test's turn is in it.
+  const realWaitForTurnToClear = threadClaim.waitForTurnToClear;
+  let turnWaits: Promise<void> = Promise.resolve();
+  let markTurnWaits: () => void = () => {};
+  let waitSpy: { mockRestore(): void } | null = null;
+  beforeEach(() => {
+    turnWaits = new Promise<void>((r) => {
+      markTurnWaits = r;
+    });
+  });
+
   beforeAll(async () => {
+    waitSpy = spyOn(threadClaim, "waitForTurnToClear").mockImplementation(
+      (...args) => {
+        markTurnWaits();
+        return realWaitForTurnToClear(...args);
+      },
+    );
     globalThis.fetch = (async (
       _input: RequestInfo | URL,
       _init?: RequestInit,
@@ -176,6 +203,7 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
   });
 
   afterAll(async () => {
+    waitSpy?.mockRestore();
     globalThis.fetch = realFetch;
     if (!dbUp) return;
     for (const table of [
@@ -530,6 +558,7 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
     // Num objeto e não num `let`: a atribuição mora numa closure, e o TS mantém o `null`
     // estreitado no ponto da asserção (`TS2769`).
     const visto = { desfecho: null as string | null };
+    const pausas: number[] = [];
     const run = processChatwootDelivery({
       tenantId,
       instanceId,
@@ -545,6 +574,10 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
           r.kind === "outcome" ? r.outcome : `error:${String(r.error)}`;
       },
       deps: {
+        // The ingest arm fails on every attempt here; its backoff is recorded, not waited out.
+        sleep: async (ms: number) => {
+          pausas.push(ms);
+        },
         // O turno tem que chegar à parada por POSSE, e não morrer antes dela: o SafeFetch resolve o
         // DNS antes do fetch, então o stub global de `fetch` deste arquivo não cobre um cliente de
         // verdade e o turno falharia com `SsrfError` — outra parada, com outro desfecho.
@@ -561,7 +594,7 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
           new FakeListChatModel({ responses: ["Claro, posso trocar."] }),
       },
     }).catch(() => {});
-    await new Promise((r) => setTimeout(r, 300));
+    await turnWaits;
     const assumiu = await suDb.conversation.updateMany({
       where: { tenantId, chatwootConversationId: convId },
       data: { assigneeType: "User", assigneeId: 5, status: "open" },
@@ -586,6 +619,8 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
     // preparação, então contar construções mediria o passo errado.)
     expect(postado).toEqual([]);
     expect(visto.desfecho).toBe("taken-over-unread");
+    // O arme foi tentado quatro vezes, com o recuo de produção entre elas (300, 600, 1200 ms).
+    expect(pausas).toEqual([300, 600, 1_200]);
     // A linha ficou para a varredura, que é o desfecho certo (a mensagem não está na memória de
     // ninguém, porque o arme falhou)...
     expect(row.status).toBe("PROCESSING");
@@ -663,6 +698,8 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
       normalized: n,
       base: semFila(),
       deps: {
+        // The ingest arm fails on every attempt here; its backoff is not what is measured.
+        sleep: async () => {},
         makeClient: (async () =>
           ({
             sendMessage: async () => ({}),
@@ -673,7 +710,7 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
           new FakeListChatModel({ responses: ["É esse mesmo!"] }),
       },
     }).catch(() => {});
-    await new Promise((r) => setTimeout(r, 300));
+    await turnWaits;
     const assumiu = await suDb.conversation.updateMany({
       where: { tenantId, chatwootConversationId: convId },
       data: { assigneeType: "User", assigneeId: 5, status: "open" },
@@ -784,6 +821,8 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
       normalized: n,
       base: semFila(),
       deps: {
+        // The ingest arm fails on every attempt here; its backoff is not what is measured.
+        sleep: async () => {},
         makeClient: (async () =>
           ({
             sendMessage: async () => ({}),
@@ -793,7 +832,7 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
         makeModel: () => new FakeListChatModel({ responses: ["Funciona!"] }),
       },
     }).catch(() => {});
-    await new Promise((r) => setTimeout(r, 300));
+    await turnWaits;
     const assumiu = await suDb.conversation.updateMany({
       where: { tenantId, chatwootConversationId: convId },
       data: { assigneeType: "User", assigneeId: 5, status: "open" },
@@ -908,6 +947,8 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
       normalized: n,
       base: semFila(),
       deps: {
+        // The ingest arm fails on every attempt here; its backoff is not what is measured.
+        sleep: async () => {},
         makeClient: (async () =>
           ({
             sendMessage: async () => ({}),
@@ -917,7 +958,7 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
         makeModel: () => new FakeListChatModel({ responses: ["Claro!"] }),
       },
     }).catch(() => {});
-    await new Promise((r) => setTimeout(r, 300));
+    await turnWaits;
     expect(
       (
         await suDb.conversation.updateMany({

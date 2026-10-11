@@ -9,6 +9,7 @@ import type { ResolvedModelConfig } from "@/graph/models";
 import { createChatModel } from "@/graph/models";
 import { buildModelAndGraph } from "@/graph/prepare";
 import { makeConfig } from "../utils/agent-config";
+import { until } from "../utils/poll";
 
 // With no fallback configured, the primary model call still has a deadline: without one a provider
 // that accepts the connection and never answers holds the turn for as long as it likes. The deadline
@@ -33,8 +34,8 @@ const preflight = (req: Request) =>
     : null;
 
 // Pinned below the default so a test cannot pass on the default by accident, and short enough to
-// keep the file fast.
-const DEADLINE_MS = 1_500;
+// keep the file fast: every test that reaches the deadline waits it out.
+const DEADLINE_MS = 400;
 let savedDeadline: number | undefined;
 beforeEach(() => {
   savedDeadline = config.agent.modelCallTimeoutMs;
@@ -45,8 +46,17 @@ afterEach(() => {
     config.agent.modelCallTimeoutMs = savedDeadline;
 });
 
-function within<T>(p: Promise<T>, ms: number): Promise<T | "pending"> {
-  return Promise.race([p, sleep(ms).then(() => "pending" as const)]);
+// The bound's timer is cleared once `p` settles, so a passing test leaves nothing to wait out.
+async function within<T>(p: Promise<T>, ms: number): Promise<T | "pending"> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const bound = new Promise<"pending">((r) => {
+    timer = setTimeout(() => r("pending"), ms);
+  });
+  try {
+    return await Promise.race([p, bound]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // Settles the graph invocation into a value, so a test can time it and read the error.
@@ -86,15 +96,21 @@ function hangingEndpoint() {
   };
 }
 
-// A model that answers after `delayMs` and never looks at the abort signal, which is how the Google
-// adapter behaves (neither `timeout` nor `signal` on invoke stops it).
+// A model that answers after `delay` (a duration, or a promise the test settles) and never looks at
+// the abort signal, which is how the Google adapter behaves (neither `timeout` nor `signal` on invoke
+// stops it). `answered` settles once it has returned its answer.
 class DeafModel extends BaseChatModel {
   calls = 0;
+  answered: Promise<void>;
+  private markAnswered: () => void = () => {};
   constructor(
-    private delayMs: number,
+    private delay: number | Promise<void>,
     private text = "resposta",
   ) {
     super({});
+    this.answered = new Promise<void>((r) => {
+      this.markAnswered = r;
+    });
   }
   _llmType() {
     return "deaf";
@@ -104,7 +120,8 @@ class DeafModel extends BaseChatModel {
   }
   async _generate(): Promise<ChatResult> {
     this.calls++;
-    await sleep(this.delayMs);
+    await (typeof this.delay === "number" ? sleep(this.delay) : this.delay);
+    queueMicrotask(this.markAnswered);
     return {
       generations: [{ text: this.text, message: new AIMessage(this.text) }],
     };
@@ -151,7 +168,9 @@ describe("with no fallback, the primary model call has a deadline", () => {
       // A hang is one attempt: nothing comes back to retry on.
       expect(ep.hits()).toBe(1);
       // And it is CANCELLED, not abandoned open: this adapter listens to the signal.
-      await sleep(200);
+      await until("the hung request closed by the client", () =>
+        ep.closedByClient(),
+      );
       expect(ep.closedByClient()).toBe(1);
     } finally {
       ep.stop();
@@ -172,7 +191,7 @@ describe("with no fallback, the primary model call has a deadline", () => {
   });
 
   test("a slow answer inside the deadline is delivered", async () => {
-    const graph = await graphOn(new DeafModel(300, "chegou"));
+    const graph = await graphOn(new DeafModel(DEADLINE_MS / 4, "chegou"));
     const out = await graph.invoke(
       { messages: [new HumanMessage("oi")] },
       THREAD,
@@ -195,16 +214,22 @@ describe("with no fallback, the primary model call has a deadline", () => {
 
   test("an answer that arrives after the deadline never reaches the thread", async () => {
     const checkpointer = new MemorySaver();
-    const graph = await graphOn(
-      new DeafModel(DEADLINE_MS + 500, "resposta-tardia"),
-      {},
-      checkpointer,
+    let answerNow: () => void = () => {};
+    const model = new DeafModel(
+      new Promise<void>((r) => {
+        answerNow = r;
+      }),
+      "resposta-tardia",
     );
+    const graph = await graphOn(model, {}, checkpointer);
     const res = await outcome(
       graph.invoke({ messages: [new HumanMessage("oi")] }, THREAD),
     );
     expect(res.ok).toBe(false);
-    await sleep(1_000);
+    // The answer arrives now, after the turn failed, and everything it could set off is let run.
+    answerNow();
+    await model.answered;
+    for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
     const state = await graph.getState(THREAD);
     const texts = (state.values.messages ?? []).map((m: { content: unknown }) =>
       String(m.content),
@@ -213,6 +238,9 @@ describe("with no fallback, the primary model call has a deadline", () => {
   });
 
   test("a provider that refuses at once fails at once, without waiting for the deadline", async () => {
+    // A deadline far above what a refusal takes, so "at once" has room on a loaded machine; a passing
+    // run never waits it.
+    config.agent.modelCallTimeoutMs = 10_000;
     const srv = Bun.serve({
       port: 0,
       fetch: (req) =>
@@ -241,7 +269,7 @@ describe("with no fallback, the primary model call has a deadline", () => {
         graph.invoke({ messages: [new HumanMessage("oi")] }, THREAD),
       );
       expect(res.ok).toBe(false);
-      expect(res.ms).toBeLessThan(DEADLINE_MS / 2);
+      expect(res.ms).toBeLessThan(5_000);
     } finally {
       srv.stop(true);
     }
@@ -250,7 +278,7 @@ describe("with no fallback, the primary model call has a deadline", () => {
 
 describe("with a fallback, nothing about the primary changes", () => {
   test("the primary is not cut at this deadline: it has its own 45 s ceiling instead", async () => {
-    const primary = new DeafModel(DEADLINE_MS + 1_500, "primario");
+    const primary = new DeafModel(DEADLINE_MS + 200, "primario");
     const seen: ResolvedModelConfig[] = [];
     const graph = await buildModelAndGraph(
       makeConfig({
@@ -304,7 +332,9 @@ describe("callWithDeadline, on its own", () => {
         ),
       );
       expect(res.ok).toBe(false);
-      await sleep(200);
+      await until("the hung request closed by the client", () =>
+        ep.closedByClient(),
+      );
       expect(ep.closedByClient()).toBe(1);
     } finally {
       ep.stop();

@@ -2241,9 +2241,28 @@ function AgentEditor() {
   // edits, or switches the engine, changes the form and not the server, so whatever the request did
   // not write stays unsaved; and a save that wrote nothing of a section leaves its dot alone, since
   // the server's copy of it did not move.
-  const baseline = syncedForChat
-    ? snapshotOf(formOfSynced(syncedForChat, syncedGrantsRef.current))
-    : null;
+  // The server's copy is read once per sync and kept: a reader that derives from the clock (the debug
+  // window closing) would otherwise move the baseline between renders with nothing saved.
+  const syncedFormRef = useRef<{
+    agent: Agent;
+    grants: ToolSelectionView["grants"];
+    form: SnapForm;
+  } | null>(null);
+  if (
+    syncedForChat &&
+    (syncedFormRef.current?.agent !== syncedForChat ||
+      syncedFormRef.current.grants !== syncedGrantsRef.current)
+  ) {
+    syncedFormRef.current = {
+      agent: syncedForChat,
+      grants: syncedGrantsRef.current,
+      form: formOfSynced(syncedForChat, syncedGrantsRef.current),
+    };
+  }
+  const baseline =
+    syncedForChat && syncedFormRef.current
+      ? snapshotOf(syncedFormRef.current.form)
+      : null;
   const [baseHead = "", baseBody = ""] = (baseline?.decisions ?? "").split(
     "\u0000",
   );
@@ -3625,7 +3644,8 @@ function AgentEditor() {
         // NOTE: the case attribute key is checked here, before the grants PUT.
         // Refused by the PATCH, which goes out after that PUT, so a bad key would otherwise leave new
         // grants written beside the old settings.
-        (invalidCaseAttributeKey(savedGuidance.crossInboxCase)
+        // Not on questions and rules, where the case inbox is not drawn and goes back as stored.
+        (!decides && invalidCaseAttributeKey(savedGuidance.crossInboxCase)
           ? t(
               "editor.crossInboxCase.attributeKeyInvalid",
               "Use lowercase letters, digits and _, starting with a letter.",

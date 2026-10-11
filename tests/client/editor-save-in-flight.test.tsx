@@ -1,6 +1,6 @@
 /// <reference lib="dom" />
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, setSystemTime, test } from "bun:test";
 import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { nativeToolAnchor } from "@/client/pages/agents/editorTabs";
 import { focusableIn } from "@/client/pages/agents/saveAttempt";
@@ -239,5 +239,28 @@ describe("an edit made while a save is out stays unsaved", () => {
     test(`${s.name}: nothing edited meanwhile, saved`, async () => {
       expect(await saveWith(s, false)).toBe(false);
     });
+  }
+});
+
+// The server's copy is read once per sync, not again on every render: a value it derives from the
+// clock (the debug window closing) would otherwise move the baseline with no edit and no save.
+test("a debug window that closes while the editor is open does not read as an edit", async () => {
+  setSystemTime(new Date("2026-03-01T12:00:00.000Z"));
+  try {
+    const stub = stubEditorApi({
+      settings: {
+        observability: { fullDetailUntil: "2026-03-01T12:30:00.000Z" },
+      },
+    });
+    await renderEditor(stub, "behavior");
+    expect(dot(/^Behavior/)).toBe(false);
+    setSystemTime(new Date("2026-03-01T13:00:00.000Z"));
+    // Any render: switch tabs and back.
+    fireEvent.click(screen.getByRole("tab", { name: /^General/ }));
+    fireEvent.click(screen.getByRole("tab", { name: /^Behavior/ }));
+    await screen.findByRole("tab", { name: /^Behavior/, selected: true });
+    expect(dot(/^Behavior/)).toBe(false);
+  } finally {
+    setSystemTime();
   }
 });

@@ -746,3 +746,28 @@ test("a second Allow waits while the first grant is written", async () => {
     "true 1",
   );
 });
+
+// The case inbox is not drawn on questions and rules and goes back as stored, so a legacy key the
+// console would refuse today does not stop a Tools save there: nobody on this engine can fix it.
+test("a stored case key the console would refuse does not block a Tools save on questions and rules", async () => {
+  const legacy = {
+    ...DECIDING,
+    settings: {
+      ...DECIDING.settings,
+      crossInboxCase: { caseAttributeKey: "invalid-key" },
+    },
+  };
+  const asked = stubApi(legacy);
+  renderAt("/agents/1/tools");
+  await waitFor(() => expect(Boolean(button("Save tools"))).toBe(true));
+  fireEvent.click(button("Save tools"));
+  const patch = await waitFor(() => {
+    const p = asked.find((a) => a.method === "PATCH");
+    if (!p) throw new Error("no PATCH yet");
+    return p;
+  });
+  const sent = (patch.body as { settings: Record<string, unknown> }).settings;
+  expect(JSON.stringify(sent.crossInboxCase)).toBe(
+    JSON.stringify({ caseAttributeKey: "invalid-key" }),
+  );
+});

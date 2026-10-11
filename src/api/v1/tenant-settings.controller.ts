@@ -57,6 +57,9 @@ function ctxOrThrow(ctx: TenantContext | null): TenantContext {
 }
 
 // translate('errors.invalidPriceOverride', 'Price row {{row}} is not valid: {{reason}}')
+// translate('errors.priceOverrideModelRequired', 'model: a model name is required for this provider')
+// translate('errors.priceOverrideDuplicate', 'model: duplicate provider and model')
+// translate('errors.priceOverrideValidatorSaid', '{{field}}: the validator answered "{{detail}}"')
 function rateField(what: string) {
   return t.Number({
     minimum: 0,

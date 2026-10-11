@@ -19,11 +19,12 @@ export class SsrfError extends AppError {
   // its own sentence reads it in the caller's language when it is one of ours (a phrase).
   readonly reason: string | TranslatedParam;
   constructor(reason: string | TranslatedParam) {
-    super(
-      `Blocked outbound URL: ${typeof reason === "string" ? reason : reason.message}`,
-      400,
-    );
+    const english = typeof reason === "string" ? reason : reason.message;
+    super(`Blocked outbound URL: ${english}`, 400, "errors.ssrfBlocked", {
+      reason: english,
+    });
     this.reason = reason;
+    if (typeof reason !== "string") this.translatedParams = { reason };
   }
 }
 

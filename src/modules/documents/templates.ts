@@ -36,13 +36,14 @@ import { calendarDay } from "./issue";
 import {
   lockNumbering,
   nextNumberFor,
+  nextNumberPhrase,
   nextNumberProblem,
   usedNumberProblem,
 } from "./numbering";
 import { unprintablePhrase } from "./printable";
 import { renderDocumentPdf } from "./render";
 import { sampleValues } from "./sample";
-import { documentToolName, slugifyTemplateName, slugProblem } from "./slug";
+import { documentToolName, slugifyTemplateName, slugPhrase } from "./slug";
 import {
   type AuthoredHalves,
   authoredStyleProblem,
@@ -80,6 +81,8 @@ interface Refusal {
   // unregistered key would reach the wire through here without any throw site spelling it.
   key: ErrorTranslationKey;
   params: Record<string, string>;
+  // The reason the sentence quotes, as a phrase, when it quotes one: rendered in the caller's language.
+  reason?: TranslatedParam;
   // Which of the two inputs the operator has to go and change. This module already decided it before
   // the wire could carry it: `conflictTarget` reads which index fired, and `slugRefusal` re-points a
   // derived-slug problem at the NAME because that is the only field the caller ever saw. Required so
@@ -123,13 +126,14 @@ async function existingClash(
 // The one way a Refusal becomes a thrown error, so message, key and field travel together and the
 // wire contract never depends on the HTTP method. The producer is the only place that decides.
 function refuse(refusal: Refusal, statusCode: number): never {
-  throw new AppError(
+  const error = new AppError(
     refusal.message,
     statusCode,
     refusal.key,
     refusal.params,
     refusal.field,
   );
+  throw refusal.reason ? quotingReason(error, refusal.reason) : error;
 }
 
 // `nameTaken`'s same-name branch, lifted out so it can be produced without a slug to interpolate.
@@ -235,16 +239,17 @@ function writeConflict(
 // derived case is re-pointed at the name, and the built-in collision is the one that has to be,
 // because "Image" is a perfectly good template name whose only fault is where it normalises to.
 function slugRefusal(
-  problem: string,
+  problem: TranslatedParam,
   name: string | undefined,
   explicit: boolean,
   slug: string,
 ): Refusal {
   if (explicit || name === undefined) {
     return {
-      message: `slug: ${problem}.`,
+      message: `slug: ${problem.message}.`,
       key: "errors.invalidDocumentSlug",
-      params: { reason: problem },
+      params: { reason: problem.message },
+      reason: problem,
       field: "slug",
     };
   }
@@ -308,7 +313,7 @@ export async function documentTemplateWriteProblem(
       ? slugifyTemplateName(name)
       : undefined);
   if (slug !== undefined) {
-    const problem = slugProblem(slug);
+    const problem = slugPhrase(slug);
     if (problem) {
       return slugRefusal(problem, name, input.slug !== undefined, slug).message;
     }
@@ -649,11 +654,14 @@ async function nextNumberWriteProblem(
 }
 
 function parseNextNumber(value: unknown): number {
-  const problem = nextNumberProblem(value);
+  const problem = nextNumberPhrase(value);
   if (problem) {
-    throw new AppError(problem, 400, "errors.invalidDocumentNextNumber", {
-      reason: problem,
-    });
+    throw quotingReason(
+      new AppError(problem.message, 400, "errors.invalidDocumentNextNumber", {
+        reason: problem.message,
+      }),
+      problem,
+    );
   }
   return value as number;
 }
@@ -906,7 +914,7 @@ export async function createDocumentTemplate(
       ? undefined
       : parseNextNumber(input.nextNumber);
   const slug = derived ? slugifyTemplateName(name) : (input.slug as string);
-  const problem = slugProblem(slug);
+  const problem = slugPhrase(slug);
   if (problem) {
     const refusal = slugRefusal(problem, name, !derived, slug);
     refuse(refusal, 400);
@@ -1158,7 +1166,7 @@ async function patched(
   const data: Prisma.DocumentTemplateUpdateInput = {};
   if (patch.name !== undefined) data.name = parseTemplateName(patch.name);
   if (patch.slug !== undefined) {
-    const problem = slugProblem(patch.slug);
+    const problem = slugPhrase(patch.slug);
     if (problem) {
       // NOTE: a patch always writes the slug EXPLICITLY, so this is the producer's explicit branch. Calling
       // it rather than restating it is what keeps POST and PATCH answering the same refusal.

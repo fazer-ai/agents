@@ -1,4 +1,4 @@
-import { AppError } from "@/lib/errors";
+import { AppError, phrase, type TranslatedParam } from "@/lib/errors";
 import { formatDocumentNumber } from "./format";
 
 // A printed number (prefix and counter as `formatDocumentNumber` prints them, in a tenant) names one
@@ -92,13 +92,22 @@ function firstFree(from: number, taken: Set<number>): number {
 export const NEXT_NUMBER_MAX = 2_147_483_647;
 
 export function nextNumberProblem(value: unknown): string | null {
+  return nextNumberPhrase(value)?.message ?? null;
+}
+
+// The same reason as a phrase, for a refusal that quotes it inside a translated sentence.
+export function nextNumberPhrase(value: unknown): TranslatedParam | null {
   if (
     typeof value !== "number" ||
     !Number.isInteger(value) ||
     value < 1 ||
     value > NEXT_NUMBER_MAX
   ) {
-    return `nextNumber: must be a whole number from 1 to ${NEXT_NUMBER_MAX}.`;
+    return phrase(
+      "errors.nextNumberRange",
+      `nextNumber: must be a whole number from 1 to ${NEXT_NUMBER_MAX}.`,
+      { max: NEXT_NUMBER_MAX },
+    );
   }
   return null;
 }

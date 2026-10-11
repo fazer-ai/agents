@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { phrase } from "@/lib/errors";
 
 // A tenant's own prices for model calls, read from `tenant.settings.priceOverrides`. The price table
 // holds public list prices, and a tenant may pay otherwise (a discount, Azure or Bedrock, its own
@@ -50,6 +51,12 @@ export const priceOverridesSchema = z
           code: "custom",
           path: [i, "model"],
           message: "a model name is required for this provider",
+          params: {
+            phrase: phrase(
+              "errors.priceOverrideModelRequired",
+              "model: a model name is required for this provider",
+            ),
+          },
         });
       const key = overrideKey(o.provider, o.model);
       if (seen.has(key))
@@ -57,6 +64,12 @@ export const priceOverridesSchema = z
           code: "custom",
           path: [i, "model"],
           message: "duplicate provider and model",
+          params: {
+            phrase: phrase(
+              "errors.priceOverrideDuplicate",
+              "model: duplicate provider and model",
+            ),
+          },
         });
       seen.add(key);
     });

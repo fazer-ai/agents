@@ -6,6 +6,11 @@ import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import type { TenantContext } from "@/lib/tenancy";
 import { validateModelConfigForWrite } from "@/modules/agents/service";
 import {
+  issueDocument,
+  reservedIdempotencyKeyRefusal,
+} from "@/modules/documents/issue";
+import { documentStarter } from "@/modules/documents/starters";
+import {
   callerValues,
   createDocumentTemplate,
   patchedContent,
@@ -14,6 +19,10 @@ import {
 import { parseAuthoredTemplate } from "@/modules/documents/validate";
 import { assertHeadersFit } from "@/modules/mcp-connections/service";
 import { parseSourceInput } from "@/modules/rag/source";
+import {
+  parsePriceOverrides,
+  updateCompanySettings,
+} from "@/modules/tenant-settings/service";
 
 // A refusal that quotes a REASON reads in one language, the caller's: the sentence and the reason it
 // interpolates. Ours are phrases with keys of their own; a third party's words (zod's) are
@@ -68,6 +77,17 @@ function valuesRefusal(fields: unknown, values: unknown): AppError {
     ),
   );
 }
+
+// A template that passes everything but the rule under test.
+const STARTER = (() => {
+  const starter = documentStarter("quote", "pt-BR");
+  if (!starter) throw new Error("no starter");
+  return {
+    blocks: starter.blocks,
+    fields: starter.fields,
+    style: starter.style,
+  };
+})();
 
 // Both refuse before reading anything, so no tenant is ever reached.
 const NO_TENANT = { tenantId: 0n } as unknown as TenantContext;
@@ -258,6 +278,132 @@ const ROWS: Row[] = [
   {
     name: "knowledge source: an address in a blocked range",
     error: () => caughtAsync(() => portal("https://10.0.0.1")),
+    ours: "is in a blocked range",
+    mentions: ["10.0.0.1"],
+  },
+  {
+    name: "document template: a slug that does not start with a letter",
+    error: () =>
+      caughtAsync(() =>
+        createDocumentTemplate(NO_TENANT, {
+          ...STARTER,
+          name: "Orçamento",
+          slug: "9orcamento",
+        } as unknown as Parameters<typeof createDocumentTemplate>[1]),
+      ),
+    ours: "must start with a letter",
+    mentions: [],
+  },
+  {
+    name: "document template: a slug past its length",
+    error: () =>
+      caughtAsync(() =>
+        createDocumentTemplate(NO_TENANT, {
+          ...STARTER,
+          name: "Orçamento",
+          slug: "o".repeat(41),
+        } as unknown as Parameters<typeof createDocumentTemplate>[1]),
+      ),
+    ours: "must be at most",
+    mentions: ["40", "send_"],
+  },
+  {
+    name: "document template: a slug onto a built-in tool",
+    error: () =>
+      caughtAsync(() =>
+        createDocumentTemplate(NO_TENANT, {
+          ...STARTER,
+          name: "Imagem",
+          slug: "image",
+        } as unknown as Parameters<typeof createDocumentTemplate>[1]),
+      ),
+    ours: "which is already a built-in tool",
+    mentions: ["send_image"],
+  },
+  {
+    name: "document template: a next number out of range",
+    error: () =>
+      caughtAsync(() =>
+        createDocumentTemplate(NO_TENANT, {
+          ...STARTER,
+          name: "Orçamento",
+          slug: "orcamento",
+          nextNumber: 0,
+        } as unknown as Parameters<typeof createDocumentTemplate>[1]),
+      ),
+    ours: "must be a whole number from 1 to",
+    mentions: ["nextNumber", "2147483647"],
+  },
+  {
+    name: "company profile: a character the documents cannot print",
+    error: () =>
+      caughtAsync(() => updateCompanySettings(NO_TENANT, { name: "ACME 漢" })),
+    ours: "contains characters this document cannot print",
+    mentions: ["name", "漢"],
+  },
+  {
+    name: "document issue: an idempotency key the database cannot store",
+    error: () =>
+      caughtAsync(() =>
+        issueDocument({
+          ctx: NO_TENANT,
+          templateId: 1n,
+          idempotencyKey: "a\u0000b",
+          values: {},
+        }),
+      ),
+    ours: "contains characters the database cannot store",
+    mentions: ["idempotencyKey", "U+0000"],
+  },
+  {
+    name: "document issue: an idempotency key under the approval prefix",
+    error: () => {
+      const refusal = reservedIdempotencyKeyRefusal("approval:42");
+      if (!refusal) throw new Error("expected a refusal");
+      return refusal;
+    },
+    ours: "is reserved for approved documents",
+    mentions: ["idempotencyKey", "approval:"],
+  },
+  {
+    name: "price row: a model left out",
+    error: () =>
+      caught(() =>
+        parsePriceOverrides([
+          { provider: "openai", model: "", input: 1, output: 1 },
+        ]),
+      ),
+    ours: "a model name is required for this provider",
+    mentions: ["model"],
+  },
+  {
+    name: "price row: the same model twice",
+    error: () =>
+      caught(() =>
+        parsePriceOverrides([
+          { provider: "openai", model: "gpt-x", input: 1, output: 1 },
+          { provider: "openai", model: "gpt-x", input: 2, output: 2 },
+        ]),
+      ),
+    ours: "duplicate provider and model",
+    mentions: ["model"],
+  },
+  {
+    name: "price row: zod's own check, quoted as the validator's",
+    error: () =>
+      caught(() =>
+        parsePriceOverrides([
+          { provider: "openai", model: "gpt-x", input: -1, output: 1 },
+        ]),
+      ),
+    mentions: ["input"],
+  },
+  {
+    name: "an outbound URL refused on its own sentence",
+    error: () =>
+      caughtAsync(() =>
+        assertSafeOutboundUrl("https://10.0.0.1/hook", { allowPrivate: false }),
+      ),
     ours: "is in a blocked range",
     mentions: ["10.0.0.1"],
   },

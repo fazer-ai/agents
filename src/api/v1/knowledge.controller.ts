@@ -65,6 +65,7 @@ import type { ChunkHit } from "@/modules/rag/sql";
 // translate('errors.sourceUrlNotHttp', 'The portal URL must start with https:// or http://.')
 // translate('errors.sourceUrlQuery', 'The portal URL must not carry a query (?) or a fragment (#).')
 // translate('errors.sourceUrlNotAllowed', 'The server does not reach this address ({{reason}}): it only fetches public https addresses that resolve.')
+// translate('errors.ssrfBlocked', 'Blocked outbound URL: {{reason}}')
 // translate('errors.ssrfInvalidUrl', 'invalid URL')
 // translate('errors.ssrfProtocol', 'protocol {{protocol}} not allowed')
 // translate('errors.ssrfInternalTargetPort', '{{host}} is a declared internal target only on port {{declared}}, not {{port}}')

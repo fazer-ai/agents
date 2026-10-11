@@ -1,4 +1,5 @@
 import { NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
+import { phrase, type TranslatedParam } from "@/lib/errors";
 
 // The slug rules, kept free of the database so the CONSOLE can apply them too.
 //
@@ -37,16 +38,31 @@ export function documentToolName(slug: string): string {
 export const SLUG_MAX = 40;
 
 export function slugProblem(slug: string): string | null {
+  return slugPhrase(slug)?.message ?? null;
+}
+
+// The same reason as a phrase, for a refusal that quotes it inside a translated sentence.
+export function slugPhrase(slug: string): TranslatedParam | null {
   if (!/^[a-z][a-z0-9_]*$/.test(slug)) {
-    return "the slug must start with a letter and contain only lowercase letters, digits and underscores";
+    return phrase(
+      "errors.slugShape",
+      "the slug must start with a letter and contain only lowercase letters, digits and underscores",
+    );
   }
   if (slug.length > SLUG_MAX) {
-    return `the slug must be at most ${SLUG_MAX} characters (it becomes the tool name send_${"<slug>"}, and providers cap a tool name)`;
+    return phrase(
+      "errors.slugTooLong",
+      `the slug must be at most ${SLUG_MAX} characters (it becomes the tool name send_<slug>, and providers cap a tool name)`,
+      { max: SLUG_MAX },
+    );
   }
-  if (
-    (NATIVE_TOOL_NAMES as readonly string[]).includes(documentToolName(slug))
-  ) {
-    return `the slug would produce the tool name "${documentToolName(slug)}", which is already a built-in tool`;
+  const tool = documentToolName(slug);
+  if ((NATIVE_TOOL_NAMES as readonly string[]).includes(tool)) {
+    return phrase(
+      "errors.slugBuiltInTool",
+      `the slug would produce the tool name "${tool}", which is already a built-in tool`,
+      { tool },
+    );
   }
   return null;
 }

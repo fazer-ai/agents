@@ -3,10 +3,15 @@ import { z } from "zod";
 import type { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import type { AuditAction } from "@/lib/audit/actions";
-import { AppError } from "@/lib/errors";
+import {
+  AppError,
+  phrase,
+  quotingReason,
+  type TranslatedParam,
+} from "@/lib/errors";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { auditMutation } from "@/modules/audit/service";
-import { unprintableProblem } from "@/modules/documents/printable";
+import { unprintablePhrase } from "@/modules/documents/printable";
 import {
   forgetPriceOverrides,
   type PriceOverride,
@@ -470,15 +475,18 @@ export async function updateCompanySettings(
   // misspelled on every document the tenant ever issues, and nobody would see it happen.
   for (const [field, value] of Object.entries(patch)) {
     if (typeof value !== "string") continue;
-    const problem = unprintableProblem(value, field);
+    const problem = unprintablePhrase(value, field);
     if (problem)
-      throw new AppError(
+      throw quotingReason(
+        new AppError(
+          problem.message,
+          400,
+          "errors.invalidCompanyField",
+          { reason: problem.message },
+          // NOTE: the key of the patch, which is the name the console's company form uses for the input.
+          field,
+        ),
         problem,
-        400,
-        "errors.invalidCompanyField",
-        { reason: problem },
-        // NOTE: the key of the patch, which is the name the console's company form uses for the input.
-        field,
       );
   }
   return patchBlock(
@@ -694,14 +702,28 @@ export function parsePriceOverrides(overrides: unknown): PriceOverride[] {
     const issue = parsed.error.issues[0];
     const row = typeof issue?.path[0] === "number" ? issue.path[0] + 1 : 1;
     // The field too, so a caller that sent several rates learns which one was refused.
-    const field = issue?.path.slice(1).join(".");
-    const reason = `${field ? `${field}: ` : ""}${issue?.message ?? "invalid"}`;
-    throw new AppError(
-      `price row ${row} is not valid: ${reason}`,
-      422,
-      "errors.invalidPriceOverride",
-      { row, reason },
-      "priceOverrides",
+    const field = issue?.path.slice(1).join(".") || "priceOverrides";
+    // Ours carry their own phrase (`priceOverridesSchema`); zod's built-in checks answer in zod's
+    // English, quoted as the validator's words rather than read as part of our sentence.
+    const own = (issue as { params?: { phrase?: TranslatedParam } } | undefined)
+      ?.params?.phrase;
+    const detail = (issue?.message ?? "invalid").replaceAll("`", "'");
+    const reason =
+      own ??
+      phrase(
+        "errors.priceOverrideValidatorSaid",
+        `${field}: the validator answered "${detail}"`,
+        { field, detail },
+      );
+    throw quotingReason(
+      new AppError(
+        `price row ${row} is not valid: ${reason.message}`,
+        422,
+        "errors.invalidPriceOverride",
+        { row, reason: reason.message },
+        "priceOverrides",
+      ),
+      reason,
     );
   }
   return parsed.data;

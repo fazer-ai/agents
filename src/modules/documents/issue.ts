@@ -3,9 +3,15 @@ import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
 import { DEFAULT_TIMEZONE, partsInTimezone } from "@/graph/time";
-import { AppError, NotFoundError } from "@/lib/errors";
+import {
+  AppError,
+  NotFoundError,
+  phrase,
+  quotingReason,
+  type TranslatedParam,
+} from "@/lib/errors";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
-import { unstorableProblem } from "@/lib/text";
+import { unstorablePhrase } from "@/lib/text";
 import type { CompanySettings } from "@/modules/tenant-settings/service";
 import {
   type DocumentBlock,
@@ -126,14 +132,27 @@ export function documentFileName(title: string, number: string | null): string {
 // answers its retry, since older builds accepted the prefix.
 export const APPROVAL_KEY_PREFIX = "approval:";
 
-function reservedKeyProblem(key: string): string | null {
+// The refusal for a key under the approval prefix, or null. Exported so the sentence can be asked
+// without the idempotency lookup that runs before it in `issueDocument`.
+export function reservedIdempotencyKeyRefusal(key: string): AppError | null {
   return key.startsWith(APPROVAL_KEY_PREFIX)
-    ? `idempotencyKey: the prefix "${APPROVAL_KEY_PREFIX}" is reserved for approved documents.`
+    ? invalidKey(
+        phrase(
+          "errors.idempotencyKeyReserved",
+          `idempotencyKey: the prefix "${APPROVAL_KEY_PREFIX}" is reserved for approved documents.`,
+          { prefix: APPROVAL_KEY_PREFIX },
+        ),
+      )
     : null;
 }
 
-function invalidKey(reason: string): AppError {
-  return new AppError(reason, 400, "errors.invalidIdempotencyKey", { reason });
+function invalidKey(reason: TranslatedParam): AppError {
+  return quotingReason(
+    new AppError(reason.message, 400, "errors.invalidIdempotencyKey", {
+      reason: reason.message,
+    }),
+    reason,
+  );
 }
 
 function isUniqueViolation(err: unknown): boolean {
@@ -156,7 +175,7 @@ export async function issueDocument(
   // its length alone produced a 500 from the lookup — before the template, before the render, before
   // anything a caller could be told about. In the core rather than in the controller, because the
   // agent tool and MCP reach this by their own roads.
-  const unstorable = unstorableProblem(params.idempotencyKey, "idempotencyKey");
+  const unstorable = unstorablePhrase(params.idempotencyKey, "idempotencyKey");
   if (unstorable) throw invalidKey(unstorable);
 
   // The idempotency check comes FIRST, before the template is even read. Validating the caller's
@@ -176,8 +195,8 @@ export async function issueDocument(
       withBytes: params.withBytes,
     });
   }
-  const reserved = reservedKeyProblem(params.idempotencyKey);
-  if (reserved) throw invalidKey(reserved);
+  const reserved = reservedIdempotencyKeyRefusal(params.idempotencyKey);
+  if (reserved) throw reserved;
 
   const frozen = await freezeDocumentSnapshot({
     ctx,

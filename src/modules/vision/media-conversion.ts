@@ -50,7 +50,7 @@ export const MEDIA_CONVERTERS: readonly MediaConverterSpec[] = [
 // provider documents for one image lives in this table, and a provider absent from it
 // (`openrouter`, `openai-compatible`) is one whose endpoint we cannot speak for, so it gets
 // NO_IMAGE_LIMITS and the plan sends as received. Each limit is a value or an explicit null.
-//
+
 // A limit is HARD when no model of the provider accepts an image over it: on the vendor's own
 // endpoint it makes the fit required, and refuses a type nothing here can fit. It is SOFT when
 // fitting is prudent but the original may still be read: the fit runs, and the original goes when

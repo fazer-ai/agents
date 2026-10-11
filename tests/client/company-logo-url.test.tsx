@@ -33,21 +33,33 @@ URL.revokeObjectURL = (url: string) => {
 };
 // What the next request answers: "ok", a refusal, or a transport failure.
 let answer: "ok" | "refused" | "throws" = "ok";
-globalThis.fetch = (async () => {
-  if (answer === "throws") throw new Error("offline");
-  return {
-    ok: answer === "ok",
-    // NOTE: present because `mediaFetch` reads them: a refused tenant selector is answered by a
-    // header, and a double that omits it makes the recovery throw inside every media load.
-    headers: new Headers(),
-    blob: async () => {
-      await new Promise<void>((resolve) => {
-        releaseBody = resolve;
-      });
-      return new Blob(["png"]);
-    },
-  };
+// How many requests were made, counted at the call, and each request's answer once it is handed back.
+let requests = 0;
+let answered: Promise<unknown> = Promise.resolve();
+globalThis.fetch = (() => {
+  requests++;
+  answered = (async () => {
+    if (answer === "throws") throw new Error("offline");
+    return {
+      ok: answer === "ok",
+      // NOTE: present because `mediaFetch` reads them: a refused tenant selector is answered by a
+      // header, and a double that omits it makes the recovery throw inside every media load.
+      headers: new Headers(),
+      blob: async () => {
+        await new Promise<void>((resolve) => {
+          releaseBody = resolve;
+        });
+        bodyHandedBack = true;
+        return new Blob(["png"]);
+      },
+    };
+  })();
+  return answered;
 }) as unknown as typeof fetch;
+let bodyHandedBack = false;
+
+// One macrotask: every continuation the hook queued behind an answer that has resolved runs first.
+const drained = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
 afterEach(cleanup);
 afterAll(() => {
@@ -79,11 +91,15 @@ describe("useCompanyLogoUrl", () => {
     });
     // The tenant switches (or the card goes away) while the body is still in flight.
     view.unmount();
+    bodyHandedBack = false;
     (releaseBody as Release)?.();
-    // Nothing to revoke, because nothing was minted: the URL is not created until after the check.
+    // NOTE: the body has reached the hook and its continuation has run before anything is counted.
     await waitFor(() => {
-      expect(minted).toBe(0);
+      expect(bodyHandedBack).toBe(true);
     });
+    await drained();
+    // Nothing to revoke, because nothing was minted: the URL is not created until after the check.
+    expect(minted).toBe(0);
     expect(live.size).toBe(0);
   });
 
@@ -143,12 +159,29 @@ describe("useCompanyLogoUrl", () => {
       minted = 0;
       live = new Set();
       releaseBody = null;
-      answer = outcome;
-      const view = render(<Harness logoKey="1-logo.png" />);
+      answer = "ok";
+      const view = render(<Harness logoKey="1-logo.png" version={1} />);
       await waitFor(() => {
-        expect(view.getByTestId("url").textContent).toBe("none");
+        expect((releaseBody as Release) !== null).toBe(true);
       });
-      expect(minted).toBe(0);
+      (releaseBody as Release)?.();
+      await waitFor(() => {
+        expect(view.getByTestId("url").textContent).toBe("blob:logo-1");
+      });
+      // NOTE: the replacement is the one that fails, so "none" is something the hook did.
+      answer = outcome;
+      const before = requests;
+      view.rerender(<Harness logoKey="1-logo.png" version={2} />);
+      await waitFor(() => {
+        expect(requests).toBe(before + 1);
+      });
+      await answered.catch(() => undefined);
+      await drained();
+      expect(`${outcome}: ${view.getByTestId("url").textContent}`).toBe(
+        `${outcome}: none`,
+      );
+      expect(minted).toBe(1);
+      expect(live.size).toBe(0);
       view.unmount();
     }
   });
@@ -158,8 +191,10 @@ describe("useCompanyLogoUrl", () => {
     minted = 0;
     releaseBody = null;
     answer = "ok";
+    const before = requests;
     const view = render(<Harness logoKey={null} />);
+    await drained();
     expect(view.getByTestId("url").textContent).toBe("none");
-    expect(releaseBody as Release).toBeNull();
+    expect(requests).toBe(before);
   });
 });

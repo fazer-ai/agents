@@ -132,15 +132,21 @@ describe("both buckets exist on the real app", () => {
   });
 
   test("the four paths share one bucket", async () => {
-    const before = Number(await ceilingOf(await post("/api/auth/login")));
-    expect(before).toBe(20);
+    const first = await post("/api/auth/login");
+    expect(await ceilingOf(first)).toBe("20");
+    const left = Number(first.headers.get("ratelimit-remaining"));
+    const after: number[] = [];
     for (const path of [
       "/api/auth/signup",
       "/api/auth/setup",
       "/api/auth/accept-invite",
     ]) {
-      expect(await ceilingOf(await post(path))).toBe("20");
+      const response = await post(path);
+      expect(await ceilingOf(response)).toBe("20");
+      after.push(Number(response.headers.get("ratelimit-remaining")));
     }
+    // NOTE: each path spends from what the previous one left.
+    expect(after).toEqual([left - 1, left - 2, left - 3]);
   });
 
   // A collision would deduplicate one of the two away; both answer, each from its own ceiling.

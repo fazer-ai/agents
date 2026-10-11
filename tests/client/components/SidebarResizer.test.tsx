@@ -119,11 +119,11 @@ describe("SidebarResizer", () => {
 
   test("reports aria-valuetext when collapsed", () => {
     renderResizer();
+    expect(getSeparator().getAttribute("aria-valuetext")).toBeNull();
     act(() => {
       hook?.setCollapsed(true);
     });
-    const sep = getSeparator();
-    expect(sep.getAttribute("aria-valuetext")).toBeTruthy();
+    expect(getSeparator().getAttribute("aria-valuetext")).toBe("Collapsed");
   });
 
   test("event.repeat on ArrowRight is ignored", () => {

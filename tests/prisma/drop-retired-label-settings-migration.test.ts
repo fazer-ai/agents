@@ -288,8 +288,27 @@ describe.if(dbUp)("drop retired label settings", () => {
   });
 
   test("running it a second time changes nothing", async () => {
-    const before = await settingsOf(id("configured"));
+    // xmin moves on any UPDATE, even one that writes identical JSON.
+    const snapshot = async () => ({
+      agents: (
+        await suDb.query(
+          `SELECT id, xmin::text, settings, updated_at FROM "agents"
+            WHERE tenant_id = $1 ORDER BY id`,
+          [String(tenantId)],
+        )
+      ).rows,
+      tools: (
+        await suDb.query(
+          `SELECT agent_id, xmin::text, enabled_tools, updated_at FROM "agent_tool_selections"
+            WHERE tenant_id = $1 ORDER BY agent_id`,
+          [String(tenantId)],
+        )
+      ).rows,
+    });
+    const before = await snapshot();
+    expect(before.agents).toHaveLength(Object.keys(ids).length);
+    expect(before.tools).toHaveLength(2);
     for (const statement of statementsOf(sql)) await suDb.query(statement);
-    expect(await settingsOf(id("configured"))).toEqual(before);
+    expect(await snapshot()).toEqual(before);
   });
 });

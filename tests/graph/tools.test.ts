@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setSystemTime, test } from "bun:test";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import { modelVisibleLabels, SHOWN_LABELS_MAX } from "@/graph/tools/label-view";
@@ -3205,6 +3205,7 @@ describe("the fence rule, over every native tool", () => {
     "getConversationLabels",
     "getContactLabels",
     "getLatestIncomingMessage",
+    "getKanbanTask",
   ];
   const CLIENT_WRITES = [
     "updateContact",
@@ -3230,6 +3231,8 @@ describe("the fence rule, over every native tool", () => {
 
   function tracingCtx() {
     const trace: string[] = [];
+    // Every effect with its arguments, for the rows that assert what was written.
+    const calls: Array<[string, unknown[]]> = [];
     // The fence answers TRUE until something has been awaited, and false from then on: that is the
     // operator acting inside the wait, which is the only window the boundary ask cannot cover.
     let waited = false;
@@ -3255,6 +3258,7 @@ describe("the fence rule, over every native tool", () => {
               : "unknown";
           return async (...args: unknown[]) => {
             trace.push(`client:${kind}:${prop}`);
+            calls.push([prop, args]);
             waited = true;
             if (prop === "getLatestIncomingMessage")
               return { id: 99, isReaction: false };
@@ -3264,6 +3268,7 @@ describe("the fence rule, over every native tool", () => {
               return { name: "E-mail", channel_type: "Channel::Api" };
             if (prop === "getConversationLabels" || prop === "getContactLabels")
               return ["ja-existente"];
+            if (prop === "getKanbanTask") return { labels: ["ja-existente"] };
             return args.length >= 0 ? {} : {};
           };
         },
@@ -3293,17 +3298,27 @@ describe("the fence rule, over every native tool", () => {
           waited = true;
           return { chatwootContactId: 55 };
         },
-        updateMany: async () => {
+        updateMany: async (...args: unknown[]) => {
           trace.push("db:write");
+          calls.push(["db:contact.updateMany", args]);
           waited = true;
           return { count: 1 };
         },
       },
-      outboundEvent: {
-        create: async () => {
-          trace.push("db:write");
+      // The event a move emits: one subscription listens, so a delivery row is written.
+      webhookSubscription: {
+        findMany: async () => {
+          trace.push("db:read");
           waited = true;
-          return {};
+          return [{ id: 9n }];
+        },
+      },
+      outboundWebhookDelivery: {
+        createMany: async (...args: unknown[]) => {
+          trace.push("db:write");
+          calls.push(["db:outboundWebhookDelivery.createMany", args]);
+          waited = true;
+          return { count: 1 };
         },
       },
     };
@@ -3367,8 +3382,9 @@ describe("the fence rule, over every native tool", () => {
       assertSafe: async () => {},
       stillWantedFlip,
     };
-    return { ctx, trace };
+    return { ctx, trace, calls };
   }
+  type Traced = ReturnType<typeof tracingCtx>;
 
   // One entry per native tool, and where a tool takes a scope, one per scope: the arguments that
   // make it actually try to write. A name missing here fails the coverage test below.
@@ -3377,6 +3393,12 @@ describe("the fence rule, over every native tool", () => {
     label: string;
     args: object;
     ctx?: Record<string, unknown>;
+    // Overrides built per run, for a row whose fence lives inside the real client.
+    setup?: (
+      t: Traced,
+    ) => Promise<{ ctx: Record<string, unknown>; state: unknown }>;
+    // What the call must answer and leave behind, beyond "no write after a wait".
+    verify?: (r: Traced & { out: unknown; state: unknown }) => void;
   }> = [
     {
       tool: "handoff_to_human",
@@ -3388,6 +3410,40 @@ describe("the fence rule, over every native tool", () => {
       tool: "set_custom_attribute",
       label: "conversa",
       args: { key: "stage", value: "lead" },
+      setup: async (t) => {
+        const cw = fakeChatwootAttributeStore(5, {
+          conversations: { 7: { stage: "antiga" } },
+        });
+        const client = await createChatwootClient(
+          {
+            baseUrl: "https://chat.example.com",
+            accountId: 5,
+            adminToken: "A",
+            botToken: "B",
+          },
+          {
+            // The read is the wait: the operator acts while it is out.
+            fetchImpl: (async (url: string, init?: RequestInit) => {
+              t.ctx.stillWantedFlip();
+              return cw.fetchImpl(url, init);
+            }) as unknown as typeof fetch,
+            assertSafe: async (u: string) => new URL(u),
+          },
+        );
+        return { ctx: { client }, state: cw };
+      },
+      verify: ({ out, trace, state }) => {
+        const cw = state as ReturnType<typeof fakeChatwootAttributeStore>;
+        expect(out).toBe(
+          "Could not set the attribute (the run was called off while this write waited its turn).",
+        );
+        expect(cw.requests.map((r) => `${r.method} ${r.path}`)).toEqual([
+          "GET /conversations/7",
+        ]);
+        expect(cw.conversations.get(7)).toEqual({ stage: "antiga" });
+        // No mirror write either.
+        expect(trace).toEqual([]);
+      },
     },
     {
       tool: "set_custom_attribute",
@@ -3399,16 +3455,42 @@ describe("the fence rule, over every native tool", () => {
       label: "card",
       args: { key: "stage", value: "lead", scope: "task" },
     },
-    { tool: "set_labels", label: "conversa", args: { labels: ["nova"] } },
+    {
+      tool: "set_labels",
+      label: "conversa",
+      args: { add: ["nova"] },
+      verify: ({ out, trace }) => {
+        expect(trace).toEqual(["client:read:getConversationLabels"]);
+        expect(out).toBe(
+          "Could not set the labels (the run was called off while this write waited its turn).",
+        );
+      },
+    },
     {
       tool: "set_labels",
       label: "contato",
-      args: { labels: ["nova"], scope: "contact" },
+      args: { add: ["nova"], scope: "contact" },
+      verify: ({ out, trace }) => {
+        expect(trace).toEqual([
+          "db:scope",
+          "db:read",
+          "client:read:getContactLabels",
+        ]);
+        expect(out).toBe(
+          "Could not set the contact labels (the run was called off while this write waited).",
+        );
+      },
     },
     {
       tool: "set_labels",
       label: "card",
-      args: { labels: ["nova"], scope: "task" },
+      args: { add: ["nova"], scope: "task" },
+      verify: ({ out, trace }) => {
+        expect(trace).toEqual(["client:read:getKanbanTask"]);
+        expect(out).toBe(
+          "Could not set the card labels (the run was called off while this write waited).",
+        );
+      },
     },
     {
       tool: "resolve_conversation",
@@ -3419,9 +3501,53 @@ describe("the fence rule, over every native tool", () => {
       // be watching a handler that writes nothing.
       ctx: { turnState: undefined },
     },
-    { tool: "kanban_move_card", label: "", args: { targetStep: "Ganho" } },
+    {
+      tool: "kanban_move_card",
+      label: "",
+      args: { targetStep: "Ganho" },
+      // The move is the first effect, covered by the ask at dispatch; the event records a move
+      // that landed, so it follows it even after the wait.
+      verify: ({ out, trace, calls }) => {
+        expect(out).toBe('Moved the card to "Ganho".');
+        expect(trace).toEqual([
+          "client:write:moveKanbanTask",
+          "db:scope",
+          "db:read",
+          "db:write",
+        ]);
+        expect(calls[0]).toEqual(["moveKanbanTask", [11, 22]]);
+        const [kind, [arg]] = calls[1] as [
+          string,
+          [{ data: Array<Record<string, unknown>> }],
+        ];
+        expect(kind).toBe("db:outboundWebhookDelivery.createMany");
+        expect(
+          arg.data.map((d) => [d.subscriptionId, d.event, d.status]),
+        ).toEqual([[9n, "kanban.card_moved", "PENDING"]]);
+        expect(
+          arg.data.map((d) => (d.payload as { data: unknown }).data),
+        ).toEqual([{ card_id: "11", to_step: "22", conversation_id: "7" }]);
+      },
+    },
     { tool: "update_kanban_task", label: "", args: { title: "outro" } },
-    { tool: "set_voice_preference", label: "", args: { preference: "audio" } },
+    {
+      tool: "set_voice_preference",
+      label: "",
+      args: { preference: "audio" },
+      // One database write and no wait before it, so the ask at dispatch is its cover.
+      verify: ({ out, trace, calls }) => {
+        expect(out).toBe(
+          "Voice preference saved: the customer prefers audio replies.",
+        );
+        expect(trace).toEqual(["db:scope", "db:write"]);
+        expect(calls).toEqual([
+          [
+            "db:contact.updateMany",
+            [{ where: { id: 3n }, data: { voiceReply: true } }],
+          ],
+        ]);
+      },
+    },
     {
       tool: "update_contact",
       label: "",
@@ -3433,6 +3559,30 @@ describe("the fence rule, over every native tool", () => {
       tool: "send_image",
       label: "",
       args: { url: "https://imgs.example/x.png" },
+      // Queued, not sent: delivery waits for the turn's gates, which the run being called off fails.
+      verify: ({ out, trace, ctx }) => {
+        expect(out).toBe(
+          "Imagem pronta para envio; ela vai junto com a sua resposta deste turno.",
+        );
+        expect(trace).toEqual(["fetch"]);
+        const ts = ctx.turnState;
+        expect({
+          queued: ts.pendingAttachments.map(
+            (a: {
+              kind: string;
+              mime: string;
+              order: number;
+              tool: string;
+            }) => [a.kind, a.mime, a.order, a.tool],
+          ),
+          imagesInFlight: ts.imagesInFlight,
+          attachmentsSeq: ts.attachmentsSeq,
+        }).toEqual({
+          queued: [["image", "image/png", 0, "send_image"]],
+          imagesInFlight: 0,
+          attachmentsSeq: 1,
+        });
+      },
     },
     {
       tool: "open_case_in_inbox",
@@ -3445,9 +3595,42 @@ describe("the fence rule, over every native tool", () => {
         },
       },
     },
-    { tool: "skip_reply", label: "", args: { reason: "acknowledged" } },
-    { tool: "calculator", label: "", args: { expression: "1+1" } },
-    { tool: "get_current_time", label: "", args: {} },
+    {
+      tool: "skip_reply",
+      label: "",
+      args: { reason: "acknowledged" },
+      verify: ({ out, trace }) => {
+        expect(out).toBe(
+          "Acknowledged: not replying this turn (acknowledged). Produce no message now.",
+        );
+        expect(trace).toEqual([]);
+      },
+    },
+    {
+      tool: "calculator",
+      label: "",
+      args: { expression: "1+1" },
+      verify: ({ out, trace }) => {
+        expect(out).toBe("1+1 = 2");
+        expect(trace).toEqual([]);
+      },
+    },
+    {
+      tool: "get_current_time",
+      label: "",
+      args: {},
+      setup: async () => {
+        setSystemTime(new Date("2026-03-10T15:04:30Z"));
+        return { ctx: {}, state: undefined };
+      },
+      verify: ({ out, trace }) => {
+        setSystemTime();
+        expect(out).toBe(
+          "terça-feira, 10 de março de 2026 às 12:04 (2026-03-10 12:04, America/Sao_Paulo)",
+        );
+        expect(trace).toEqual([]);
+      },
+    },
   ];
 
   test("the table covers every native tool", () => {
@@ -3497,9 +3680,16 @@ describe("the fence rule, over every native tool", () => {
   for (const c of CASES) {
     const name = c.label ? `${c.tool} (${c.label})` : c.tool;
     test(`${name}: no write lands after a wait once the run is called off`, async () => {
-      const { ctx, trace } = tracingCtx();
-      const tools = buildNativeTools({ ...ctx, ...(c.ctx ?? {}) } as never);
-      await byName(tools, c.tool).invoke(c.args as never);
+      const traced = tracingCtx();
+      const { ctx, trace } = traced;
+      const built = c.setup ? await c.setup(traced) : undefined;
+      const tools = buildNativeTools({
+        ...ctx,
+        ...(c.ctx ?? {}),
+        ...(built?.ctx ?? {}),
+      } as never);
+      const out = await byName(tools, c.tool).invoke(c.args as never);
+      c.verify?.({ ...traced, out, state: built?.state });
       const offenders = trace
         .map((e, i) => ({ e, i }))
         .filter(({ e, i }) => i > 0 && e.startsWith("client:write"));

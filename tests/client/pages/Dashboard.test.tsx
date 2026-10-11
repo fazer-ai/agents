@@ -402,12 +402,17 @@ describe("the dimension table", () => {
 
   test("an agent with no input shows no cache share, not 0%", async () => {
     await renderDash("/");
+    // The figure on the agent's own row of the cache list.
+    const shareOf = (name: string) =>
+      Array.from(document.querySelectorAll("li"))
+        .find(
+          (li) => li.firstElementChild?.firstElementChild?.textContent === name,
+        )
+        ?.querySelector(".tabular-nums")?.textContent ?? null;
     await waitFor(() => {
-      expect(has("Cached input by agent")).toBe(true);
-      expect(has("60%")).toBe(true);
+      expect(shareOf("Ana")).toBe("60%");
     });
-    expect(has("NaN")).toBe(false);
-    expect(has("Infinity")).toBe(false);
+    expect(shareOf("Beto")).toBe("\u2014");
   });
 });
 
@@ -647,9 +652,25 @@ describe("first response", () => {
 describe("what the agent does on its own", () => {
   test("follow-ups and knowledge suggestions show their figures", async () => {
     await renderDash("/");
+    const figures = () =>
+      Object.fromEntries(
+        Array.from(document.querySelectorAll("dl > div")).map((d) => [
+          d.querySelector("dt")?.textContent,
+          d.querySelector("dd")?.textContent,
+        ]),
+      );
     await waitFor(() => {
-      expect(has("Steps delivered")).toBe(true);
-      expect(has("Discarded by the reviewer")).toBe(true);
+      expect(figures()).toMatchObject({
+        "Steps delivered": "5",
+        "Conversations reached": "3",
+        "Customer wrote back": "2",
+        "Closed by the last step": "1",
+        Proposed: "4",
+        "Waiting for review": "0",
+        "Discarded by the reviewer": "1",
+        Approved: "2",
+        Rejected: "1",
+      });
     });
   });
 });

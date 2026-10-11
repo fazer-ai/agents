@@ -134,6 +134,13 @@ describe("vault fill deeplink", () => {
       expect(seenSearch).toBe("");
     });
     // Spending it is only correct because it was used: the fill modal is open on that entry.
-    expect(screen.queryAllByText("OpenAI").length).toBeGreaterThan(0);
+    const dialog = screen.queryByRole("dialog", {
+      name: "Fill pending credential",
+    });
+    expect(dialog !== null).toBe(true);
+    const values = Array.from(dialog?.querySelectorAll("input") ?? []).map(
+      (el) => el.value,
+    );
+    expect(values).toContain("OpenAI");
   });
 });

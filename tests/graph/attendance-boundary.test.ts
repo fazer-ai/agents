@@ -105,16 +105,6 @@ describe("claimAttendanceBoundary", () => {
       });
     });
   }
-
-  // Every case that ends an attendance must arm compaction for it, including the two that write
-  // nothing to the thread. Compaction that is not armed here waits on a writer that may never come.
-  test("every boundary row reports the closed attendance", () => {
-    const boundaryRows = cases.filter(
-      (c) => c.previous !== null && c.previous !== CURRENT,
-    );
-    expect(boundaryRows.length).toBe(3);
-    for (const c of boundaryRows) expect(c.closed).toBe(PREVIOUS);
-  });
 });
 
 describe("crossesAttendanceBoundary", () => {

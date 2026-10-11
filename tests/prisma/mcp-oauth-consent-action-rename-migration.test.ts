@@ -200,16 +200,18 @@ describe.skipIf(!dbUp)("migration: rename the MCP consent actions", () => {
   });
 
   test("a re-run rewrites nothing", async () => {
+    // xmin moves on any UPDATE, even one that writes the same action back.
+    const snapshot = async () =>
+      (
+        await suDb.query(
+          `SELECT xmin::text AS xmin, * FROM audit_logs WHERE id = ANY($1::bigint[]) ORDER BY id`,
+          [Object.values(ids).map(String)],
+        )
+      ).rows;
+    const first = await snapshot();
+    expect(first).toHaveLength(6);
     await runMigration(sql);
-    expect([
-      (await stateOf("already-new")).action,
-      (await stateOf("granted-tenant")).action,
-      (await stateOf("neighbour")).action,
-    ]).toEqual([
-      "mcp_oauth_consent.grant",
-      "mcp_oauth_consent.grant",
-      "mcp_client.create",
-    ]);
+    expect(await snapshot()).toEqual(first);
   });
 
   test("FORCE ROW LEVEL SECURITY is back on the table it lifted it from", async () => {

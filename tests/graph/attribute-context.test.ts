@@ -261,23 +261,52 @@ describe.skipIf(!dbUp)("attribute context in the system prompt", () => {
     // Mixing them makes GREATEST resolve through the SESSION TimeZone, which nothing in the deploy
     // pins. Under UTC-3 the stored value reads as 3h in the FUTURE and wins, so the barrier never
     // advances and a pre-write snapshot walks straight through the compare-and-set.
-    const [row] = await suDb.$transaction(async (tx) => {
-      await tx.$executeRawUnsafe("SET LOCAL TIME ZONE 'America/Sao_Paulo'");
-      // NOTE: The ::timestamp cast is not decoration — it is the conversion Postgres performs when
-      // the expression is assigned back to the (zone-less) column, so this models the real UPDATE.
-      return tx.$queryRaw<
-        Array<{ naive_stuck: boolean; pinned_moves: boolean }>
-      >`
-        WITH w(stored) AS (SELECT (NOW() AT TIME ZONE 'UTC') - interval '1 hour')
-        SELECT GREATEST(stored, NOW())::timestamp = stored AS naive_stuck,
-               GREATEST(stored, (NOW() AT TIME ZONE 'UTC')) > stored AS pinned_moves
-        FROM w
-      `;
+    const url = new URL(appUrl as string);
+    url.searchParams.set("options", "-c TimeZone=America/Sao_Paulo");
+    const saoPaulo = new PrismaClient({
+      adapter: new PrismaPg({ connectionString: url.toString() }),
     });
-    if (!row) throw new Error("no row");
-    // Bare NOW() hands the STALE value back, so the barrier silently no-ops; pinned moves forward.
-    expect(row.naive_stuck).toBe(true);
-    expect(row.pinned_moves).toBe(true);
+    try {
+      const contact = await suDb.contact.create({
+        data: {
+          chatwootInstanceId: instanceId,
+          tenantId,
+          chatwootContactId: 4244,
+          name: "Lia",
+          customAttributes: { plano: "free" },
+        },
+      });
+      // A watermark an hour old, in the UTC the column holds.
+      const stored = new Date(Date.now() - 3_600_000);
+      await suDb.contact.update({
+        where: { id: contact.id },
+        data: { customAttributesAt: stored },
+      });
+      const tools = buildNativeTools({
+        client: {
+          setContactCustomAttributes: async () => ({}),
+        } as unknown as ChatwootClient,
+        conversationId: CONV_ID,
+        tenantId,
+        base: saoPaulo,
+        contactDbId: contact.id,
+      }) as StructuredToolInterface[];
+      const tool = tools.find((t) => t.name === "set_custom_attribute");
+      if (!tool) throw new Error("set_custom_attribute missing");
+      await tool.invoke({ key: "plano", value: "pro", scope: "contact" });
+
+      const row = await suDb.contact.findUniqueOrThrow({
+        where: { id: contact.id },
+      });
+      expect(row.customAttributes).toEqual({ plano: "pro" });
+      // The write moved the watermark to now, not past it and not left behind.
+      const movedBy =
+        (row.customAttributesAt?.getTime() ?? 0) - stored.getTime();
+      expect(movedBy).toBeGreaterThan(3_000_000);
+      expect(movedBy).toBeLessThan(4_200_000);
+    } finally {
+      await saoPaulo.$disconnect();
+    }
   });
 
   test("a pre-write snapshot delivered late cannot erase the write-through", async () => {

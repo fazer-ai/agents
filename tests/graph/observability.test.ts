@@ -254,7 +254,8 @@ describe("resolveLangfuseConfig", () => {
       },
     });
     const cfg = await resolveLangfuseConfig(db, 1n);
-    expect(cfg?.baseUrl).toBeUndefined();
+    expect(cfg).toMatchObject({ publicKey: "pk-2", secretKey: "sk-2" });
+    expect(cfg).toHaveProperty("baseUrl", undefined);
   });
 
   test("exposes the tenant slug as tenantSlug (the Langfuse trace userId source)", async () => {

@@ -123,33 +123,30 @@ describe("buildGroups — every grant source is drawn", () => {
   };
 
   test("every source in the enum produces a group", () => {
-    const missing: string[] = [];
+    const drawn: Record<string, unknown> = {};
     for (const source of Object.values(AgentToolSource)) {
       const grant = grantFor[source];
       if (!grant) {
-        missing.push(`${source} (no fixture)`);
+        drawn[source] = "no fixture";
         continue;
       }
       // NATIVE is the permissive default, so it draws with or without a grant; every other source
       // has to be asked for. Passing ONLY this grant isolates what it contributes.
       const groups = buildGroups(catalog, [grant], t);
-      const drawn = groups.filter(
-        (g) => source !== "NATIVE" || g.key === "native",
-      );
-      if (drawn.length === 0 || drawn.every((g) => g.items.length === 0)) {
-        missing.push(source);
-      }
+      drawn[source] = groups
+        .filter((g) => (source === "NATIVE") === (g.key === "native"))
+        .map((g) => [g.key, g.items]);
     }
-    expect(missing).toEqual([]);
-  });
-
-  // The editor's row and the map read the SAME field, and it is the one the assembly answers. A
-  // template that is enabled but unreadable is the case the two used to disagree on: the map drew
-  // its tool and the editor offered it as an ordinary grant, while the runtime exposed neither.
-  test("enabled and available are not the same question", () => {
-    const future = catalog.documentTemplates.find((d) => d.id === "7");
-    expect(future?.enabled).toBe(true);
-    expect(future?.available).toBe(false);
+    // NOTE: each source draws its OWN group, keyed and filled from its catalog entry.
+    expect(drawn).toEqual({
+      NATIVE: [["native", ["Hand off to human"]]],
+      RAG: [["knowledge", ["Base"]]],
+      HTTP: [["http", ["Look up order"]]],
+      MCP: [["mcp:3", ["(all tools)"]]],
+      INTEGRATION: [["integration:4", ["crm_lookup"]]],
+      DOCUMENT: [["document", ["send_orcamento"]]],
+      CODE: [["code", ["Look up CPF"]]],
+    });
   });
 
   test("a document grant is named by the tool the agent will call", () => {

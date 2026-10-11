@@ -841,13 +841,29 @@ describe("a migration whose file no longer matches what ran", () => {
   // written by Prisma and not by this file.
   test.skipIf(process.env[DB_GATE_OPT_OUT] === "1")(
     "the checksum this computes is the one Prisma wrote",
-    () => {
-      const mine = new Map(
+    async () => {
+      const mine = Object.fromEntries(
         localMigrations(ROOT).map((m) => [m.name, m.checksum]),
       );
-      expect(mine.size).toBeGreaterThan(0);
-      // Every migration of this tree hashes to something, and the shape is Prisma's: 64 hex chars.
-      for (const [, sum] of mine) expect(sum).toMatch(/^[0-9a-f]{64}$/);
+      const { Client } = await import("pg");
+      const c = new Client({
+        connectionString: process.env.MIGRATION_DATABASE_URL as string,
+      });
+      await c.connect();
+      try {
+        const { rows } = await c.query<MigrationRow>(
+          `SELECT migration_name, checksum FROM _prisma_migrations
+            WHERE rolled_back_at IS NULL AND finished_at IS NOT NULL`,
+        );
+        const prismas = Object.fromEntries(
+          rows.map((r) => [r.migration_name, r.checksum]),
+        );
+        expect(Object.keys(mine).length).toBeGreaterThan(0);
+        expect(mine).toEqual(prismas);
+      } finally {
+        await c.end();
+      }
     },
+    60_000,
   );
 });

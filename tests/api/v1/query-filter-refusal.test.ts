@@ -198,15 +198,18 @@ describe("an unknown value is not an unusable one", () => {
   // NOTE: `level=bogus` reaches the query and answers zero rows, a correct answer the client can
   // tell apart from a widened one. Refusing it would make the server own a vocabulary it does not
   // (`stage`/`level` are validated Strings on purpose, so a new stage needs no deploy to be queried).
-  for (const q of [
-    "level=bogus",
-    "stage=nosuchstage",
-    "turnId=nope",
-    "search=zzz",
-  ]) {
+  for (const [key, value] of [
+    ["level", "bogus"],
+    ["stage", "nosuchstage"],
+    ["turnId", "nope"],
+    ["search", "zzz"],
+  ] as const) {
+    const q = `${key}=${value}`;
     test(`${q} is accepted and narrows, not refused`, async () => {
+      delete seen.logs;
       const res = await get(`/v1/logs?source=all&${q}`);
       expect(`${q}: ${res.status}`).toBe(`${q}: 200`);
+      expect(seen.logs).toMatchObject({ [key]: value });
     });
   }
 });
@@ -266,8 +269,10 @@ describe("the admin tenant filter, which only a SUPER_ADMIN can send", () => {
   }
 
   test("a usable tenant id still scopes the listing", async () => {
+    getUsers.mockClear();
     const res = await asSuperAdmin("/admin/users?tenantId=7");
     expect(res.status).toBe(200);
+    expect(getUsers.mock.calls.map((c) => c[0])).toEqual([7n]);
   });
 });
 

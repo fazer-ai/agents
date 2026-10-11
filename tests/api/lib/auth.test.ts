@@ -112,24 +112,26 @@ describe("authPlugin", () => {
   });
 
   describe("clearAuthCookie", () => {
-    test("executes without error", async () => {
+    test("expires both session cookies the request carried", async () => {
       const app = new Elysia()
         .use(authPlugin)
-        .post("/test-clear-cookie", ({ clearAuthCookie }) => {
+        .post("/test-clear-cookie", ({ clearAuthCookie, set }) => {
           clearAuthCookie();
-          return { success: true };
+          return structuredClone(set.cookie);
         });
-
       const response = await app.handle(
-        new Request("http://localhost/test-clear-cookie", {
+        new BunRequest("http://localhost/test-clear-cookie", {
           method: "POST",
-          headers: { Cookie: "auth_token=some_token" },
+          headers: {
+            cookie: "fazerai_auth_token=a; secretaria_v4_auth_token=b",
+          },
         }),
       );
 
-      expect(response.status).toBe(200);
-      const data = await response.json();
-      expect(data.success).toBe(true);
+      const jar = await response.json();
+      const expired = { value: "", maxAge: 0 };
+      expect(jar.fazerai_auth_token).toMatchObject(expired);
+      expect(jar.secretaria_v4_auth_token).toMatchObject(expired);
     });
   });
 

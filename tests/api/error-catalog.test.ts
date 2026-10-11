@@ -962,10 +962,10 @@ describe("a registered key still has to say something", () => {
       for (const locale of ["en", "pt-BR"] as const) {
         const out = translateWithLocale(
           locale,
-          k as never,
+          `errors.${k}` as never,
           `fallback for ${k}`,
         );
-        expect(out, `${locale} ${k}`).not.toContain("{{");
+        expect(out, `${locale} ${k}`).toBe(`fallback for ${k}`);
       }
     }
   });

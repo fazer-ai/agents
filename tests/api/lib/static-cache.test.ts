@@ -61,6 +61,10 @@ describe("applyStaticCacheControl", () => {
     .onAfterHandle(applyStaticCacheControl)
     .get("/index-7e0bwj53.js", pluginLike)
     .get("/assets/logo.png", pluginLike)
+    .get(
+      "/assets/icon.png",
+      () => new Response("body", { headers: { "Cache-Control": "no-store" } }),
+    )
     .get("/index-a1b2c3d4e5.js", () => new Response(null, { status: 304 }))
     .get("/index-abcdefgh1234.js", ({ set }) => {
       set.status = 404;
@@ -79,7 +83,8 @@ describe("applyStaticCacheControl", () => {
   });
 
   test("keeps a day for an unhashed file", async () => {
-    const res = await get("/assets/logo.png");
+    // The handler answers `no-store`, so a day here is the hook's stamp.
+    const res = await get("/assets/icon.png");
     expect(res.headers.get("cache-control")).toBe(DAY);
   });
 
@@ -128,13 +133,20 @@ describe("productionIndexHandler", async () => {
     "/users/jane.doe",
     "/admin?tab=users",
   ])("%s gets the shell, revalidated on every load", async (path) => {
-    const res = await get(path);
-    expect(res.status).toBe(200);
-    // NOTE: under happy-dom a Bun.file body reads back as "[object Blob]", so the document itself
-    // is asserted by the production smoke (`bun smoke:prod`); here it is enough that it is not
-    // the missing-file answer.
-    expect(await res.text()).not.toBe("Not Found");
-    expect(res.headers.get("cache-control")).toBe("no-cache");
+    // Happy-dom's Response reads a Bun.file body back as "[object Blob]", so Elysia builds
+    // Bun's own Response for this request.
+    const happyDomResponse = globalThis.Response;
+    globalThis.Response = (
+      globalThis as unknown as { BunResponse: typeof Response }
+    ).BunResponse;
+    try {
+      const res = await get(path);
+      expect(res.status).toBe(200);
+      expect(await res.text()).toBe("<!doctype html><title>shell</title>");
+      expect(res.headers.get("cache-control")).toBe("no-cache");
+    } finally {
+      globalThis.Response = happyDomResponse;
+    }
   });
 
   test.each([

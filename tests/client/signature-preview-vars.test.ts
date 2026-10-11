@@ -59,13 +59,28 @@ function preview(text: string, vars = FALLBACK_VARS): string {
     .join("\n");
 }
 
+// What each name answers for the stand-in contact and OPTS (a Monday at 10:00 in São Paulo, inside
+// the window). A name the field offers and this table lacks fails as `— undefined`.
+const ANSWER: Record<string, string> = {
+  nome_empresa: PROMPT_PREVIEW_COMPANY,
+  nome_agente: PROMPT_PREVIEW_AGENT,
+  nome_contato: PROMPT_PREVIEW_CONTACT.contactName,
+  primeiro_nome: "Maria",
+  email_contato: PROMPT_PREVIEW_CONTACT.contactEmail,
+  telefone_contato: PROMPT_PREVIEW_CONTACT.contactPhone,
+  canal: PROMPT_PREVIEW_CONTACT.inboxName,
+  esta_aberto: "sim",
+  proximo_atendimento: "agora",
+  horario_atendimento: "seg.–ter. 09:00–18:00",
+};
+
 describe("the signature preview answers every variable the field offers", () => {
   for (const name of [
     ...PROMPT_CONTEXT_VARS,
     ...PROMPT_SCHEDULE_VARS_DISPLAY,
   ]) {
     test(`{{${name}}} does not come back literal`, () => {
-      expect(preview(`— {{${name}}}`)).not.toContain(`{{${name}}}`);
+      expect(preview(`— {{${name}}}`).split("\n")[0]).toBe(`— ${ANSWER[name]}`);
     });
   }
 
@@ -284,7 +299,10 @@ describe("the preview shows one bubble per message", () => {
 
   test("an empty signature previews the bodies alone", () => {
     const msgs = signaturePreviewParts(sig({ text: "  " }), t, VARS, OPTS);
-    for (const parts of msgs) expect(parts).toHaveLength(1);
+    expect(msgs).toEqual([
+      ["Hi Maria, all set here."],
+      ["Any questions, just ask."],
+    ]);
   });
 });
 

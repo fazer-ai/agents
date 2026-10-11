@@ -213,10 +213,13 @@ test("a path offer can be narrowed by typing", async () => {
   fireEvent.change(filterOfTheOffer(), { target: { value: "customer" } });
 
   await waitFor(() => {
-    const after = offeredPaths();
-    expect(after.length).toBeLessThan(before);
-    expect(after.every((p) => p.includes("customer"))).toBe(true);
+    expect(offeredPaths().length).toBeLessThan(before);
   });
+  // NOTE: an option's text is its path followed by the sample value.
+  expect(offeredPaths()).toEqual([
+    expect.stringMatching(/^data\.appointment\.customer_name/),
+    expect.stringMatching(/^data\.appointment\.customer_email/),
+  ]);
 });
 
 // THE CARET SURVIVES THE OFFER OPENING. The template's picker inserts AT the cursor, but a popover

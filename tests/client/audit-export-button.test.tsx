@@ -203,7 +203,9 @@ test("a truncated export says so, and says how many it kept", async () => {
   await waitFor(() => expect(toastCount()).toBeGreaterThan(0));
   // The count is IN the sentence: "we cut it" without saying where to is a warning the operator
   // cannot act on.
-  expect(toastText()).toContain("500");
+  expect(toastText()).toContain(
+    "Exported the newest 500 entries; more matched. Narrow the period to take the rest.",
+  );
 });
 
 // A cut that kept nothing is not an empty match. When the newest matching row alone exceeds the

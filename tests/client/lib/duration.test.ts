@@ -49,23 +49,28 @@ describe("readableDuration", () => {
 // median of 5.3 hours and one of 5.30555… hours carry the same `value`. These rows are what makes
 // the precision part of the rule rather than a field nobody reads.
 //
-// Asserted on the DIGITS, with the locale pinned: the separator and the unit abbreviation belong to
-// ICU, and pinning those would make this a test of the runtime's locale data.
+// Asserted against ICU's own rendering of the expected value and unit, with the locale pinned: the
+// separator and the abbreviation belong to ICU, and pinning those would test the runtime's locale data.
 describe("formatDuration precision", () => {
-  const rows: [seconds: number, pattern: RegExp][] = [
+  const rows: [seconds: number, value: number, unit: string][] = [
     // Hours keep one decimal; dropping it turns a 5.3 h wait into "5 h".
-    [19080, /^5[.,]3\D/],
+    [19080, 5.3, "hour"],
     // And only one: the raw quotient is 5.30555…
-    [19100, /^5[.,]3\D/],
+    [19100, 5.3, "hour"],
     // Whole hours do not grow a trailing ".0".
-    [7200, /^2\D/],
+    [7200, 2, "hour"],
     // Seconds and minutes are whole by rule, and stay whole through the formatter.
-    [42.6, /^43\D/],
-    [3599, /^60\D/],
+    [42.6, 43, "second"],
+    [3599, 60, "minute"],
   ];
-  for (const [seconds, pattern] of rows) {
-    test(`${seconds}s formats as ${pattern}`, () => {
-      expect(formatDuration(seconds, "en-US") ?? "").toMatch(pattern);
+  for (const [seconds, value, unit] of rows) {
+    test(`${seconds}s formats as ${value} ${unit}`, () => {
+      const expected = new Intl.NumberFormat("en-US", {
+        style: "unit",
+        unit,
+        unitDisplay: "short",
+      }).format(value);
+      expect(formatDuration(seconds, "en-US")).toBe(expected);
     });
   }
   test("absence formats as absence, not as a zero", () => {

@@ -323,11 +323,20 @@ describe("callWithDeadline, on its own", () => {
   });
 
   test("a run that throws before returning a promise is a rejection, not a throw", async () => {
-    const res = await outcome(
-      callWithDeadline(1_000, () => {
-        throw new Error("sync");
-      }),
+    const sync = new Error("sync");
+    let settled: unknown = "pending";
+    // NOTE: a deadline far past the test, so only the run's own error can settle it.
+    void callWithDeadline(60_000, () => {
+      throw sync;
+    }).then(
+      () => {
+        settled = "resolved";
+      },
+      (e: unknown) => {
+        settled = e;
+      },
     );
-    expect(res.ok).toBe(false);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(settled).toBe(sync);
   });
 });

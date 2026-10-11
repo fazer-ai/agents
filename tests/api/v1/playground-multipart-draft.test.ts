@@ -1,6 +1,14 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, spyOn, test } from "bun:test";
+import { Blob as NativeBlob } from "node:buffer";
 import { Elysia, t } from "elysia";
+import { authPlugin } from "@/api/lib/auth";
 import { playgroundDraftSchema } from "@/api/v1/agents.controller";
+import {
+  type MockUserEntity,
+  mockFindUnique,
+  mockUser,
+  setupPrismaMock,
+} from "@/tests/utils/prisma-mock";
 
 // Elysia's multipart parser auto-parses any form field that starts with `{`/`[` and is valid JSON
 // into an object, so the live-edit `draft` (sent as `JSON.stringify(...)`) arrives as an object and a
@@ -43,6 +51,78 @@ function buildForm(draft?: unknown): FormData {
   return fd;
 }
 
+// The step-2 turns through the REAL routes, with the two services stubbed: what a route hands its
+// service is what the turn acts on, so that is what these assert.
+setupPrismaMock();
+const playground = await import("@/modules/playground/service");
+const turns: Record<string, Record<string, unknown>> = {};
+const capture = (name: string) => async (input: Record<string, unknown>) => {
+  turns[name] = input;
+  return {};
+};
+const audioTurn = spyOn(
+  playground,
+  "runPlaygroundAudioTurn",
+).mockImplementation(
+  capture("audio") as unknown as typeof playground.runPlaygroundAudioTurn,
+);
+const fileTurn = spyOn(playground, "runPlaygroundFileTurn").mockImplementation(
+  capture("file") as unknown as typeof playground.runPlaygroundFileTurn,
+);
+const server = (await import("@/app")).default;
+afterAll(() => {
+  audioTurn.mockRestore();
+  fileTurn.mockRestore();
+});
+
+const admin: MockUserEntity = { ...mockUser, role: "TENANT_ADMIN" };
+mockFindUnique.mockImplementation(() => Promise.resolve(admin));
+const { token } = (await (
+  await new Elysia()
+    .use(authPlugin)
+    .post("/mint", async ({ setAuthCookie }) => ({
+      token: await setAuthCookie(admin, admin.passwordHash),
+    }))
+    .handle(new Request("http://localhost/mint", { method: "POST" }))
+).json()) as { token: string };
+const BunReq = (globalThis as unknown as { BunRequest: typeof Request })
+  .BunRequest;
+
+// Written by hand because happy-dom's Request drops the session cookie and Bun's own
+// Request does not serialize happy-dom's FormData.
+async function postTurn(
+  route: "audio" | "file",
+  fields: Record<string, string>,
+): Promise<Record<string, unknown>> {
+  delete turns[route];
+  const boundary = "----turn-boundary";
+  const parts = Object.entries(fields).map(
+    ([k, v]) =>
+      `--${boundary}\r\nContent-Disposition: form-data; name="${k}"\r\n\r\n${v}\r\n`,
+  );
+  const file = `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="f.bin"\r\nContent-Type: application/octet-stream\r\n\r\nabc\r\n`;
+  // `t.File` checks `instanceof Blob` against the global, which happy-dom replaced; Bun's
+  // parser makes Bun's.
+  const happyDomBlob = globalThis.Blob;
+  globalThis.Blob = NativeBlob as unknown as typeof Blob;
+  try {
+    const res = await server.handle(
+      new BunReq(`http://localhost/api/v1/agents/1/playground/${route}`, {
+        method: "POST",
+        headers: {
+          cookie: `fazerai_auth_token=${token}`,
+          "content-type": `multipart/form-data; boundary=${boundary}`,
+        },
+        body: `${file}${parts.join("")}--${boundary}--\r\n`,
+      }),
+    );
+    expect(res.status).toBe(200);
+  } finally {
+    globalThis.Blob = happyDomBlob;
+  }
+  return turns[route] ?? {};
+}
+
 describe("playground multipart draft schema", () => {
   test("every declared draft field survives normalization", async () => {
     // The failure this guards is silent: Elysia strips a field the schema does not declare, the
@@ -74,14 +154,9 @@ describe("playground multipart draft schema", () => {
   });
 
   test("absent draft still validates (override is optional)", async () => {
-    const res = await app.handle(
-      new Request("http://localhost/upload", {
-        method: "POST",
-        body: buildForm(undefined),
-      }),
-    );
-    expect(res.status).toBe(200);
-    expect((await res.json()).draftType).toBe("undefined");
+    const turn = await postTurn("audio", { threadId: "t" });
+    expect(turn).toHaveProperty("overrides", undefined);
+    expect(turn.threadId).toBe("t");
   });
 });
 
@@ -89,103 +164,31 @@ describe("playground multipart draft schema", () => {
 // transcription is arbitrary speech text that might start with `{`/`[`; sent raw, the multipart
 // parser would auto-parse it into an object and the t.String() field would 422. The client
 // JSON-encodes it (always a quoted string ⇒ never auto-parsed), and the server JSON.parses it back.
-const decode = (raw: unknown): string | undefined => {
-  if (typeof raw !== "string" || !raw) return undefined;
-  try {
-    const v = JSON.parse(raw);
-    return typeof v === "string" ? v : undefined;
-  } catch {
-    return undefined;
-  }
-};
-
-const turnApp = new Elysia().post(
-  "/turn",
-  ({ body }) => ({
-    transcription: decode((body as { transcription?: string }).transcription),
-  }),
-  {
-    body: t.Object({
-      file: t.File(),
-      transcription: t.Optional(t.String()),
-    }),
-  },
-);
-
-function turnForm(transcription?: string): FormData {
-  const fd = new FormData();
-  fd.append(
-    "file",
-    new File([new Uint8Array([1])], "note.webm", { type: "audio/webm" }),
-  );
-  // Mirrors the client: JSON-encode the transcription so a bracket-leading value isn't auto-parsed.
-  if (transcription !== undefined) {
-    fd.append("transcription", JSON.stringify(transcription));
-  }
-  return fd;
-}
-
 describe("playground multipart transcription field", () => {
   test("a bracket-leading transcription round-trips intact (JSON-encoded ⇒ not auto-parsed)", async () => {
     const original = "[música] olá, tudo bem?";
-    const res = await turnApp.handle(
-      new Request("http://localhost/turn", {
-        method: "POST",
-        body: turnForm(original),
-      }),
-    );
-    expect(res.status).toBe(200);
-    expect((await res.json()).transcription).toBe(original);
+    const turn = await postTurn("audio", {
+      transcription: JSON.stringify(original),
+    });
+    expect(turn.transcription).toBe(original);
   });
 
   test("absent transcription decodes to undefined (server then transcribes)", async () => {
-    const res = await turnApp.handle(
-      new Request("http://localhost/turn", {
-        method: "POST",
-        body: turnForm(undefined),
-      }),
-    );
-    expect(res.status).toBe(200);
-    expect((await res.json()).transcription).toBeUndefined();
+    const turn = await postTurn("audio", { threadId: "t" });
+    expect(turn).toHaveProperty("transcription", undefined);
+    expect(turn.threadId).toBe("t");
   });
 });
 
 // The file flow's step-2 turn carries a precomputed extraction: `kind` (a known enum, safe as a
 // plain field) + `extracted` (arbitrary text, JSON-encoded like the transcription).
-const fileTurnApp = new Elysia().post(
-  "/file-turn",
-  ({ body }) => {
-    const b = body as { kind?: string; extracted?: string };
-    const kind =
-      b.kind === "image" || b.kind === "document" || b.kind === "unsupported"
-        ? b.kind
-        : undefined;
-    return { kind, extracted: decode(b.extracted) };
-  },
-  {
-    body: t.Object({
-      file: t.File(),
-      kind: t.Optional(t.String()),
-      extracted: t.Optional(t.String()),
-    }),
-  },
-);
-
 describe("playground multipart file extraction fields", () => {
   test("kind passes through and a bracket-leading extraction round-trips", async () => {
-    const fd = new FormData();
-    fd.append(
-      "file",
-      new File([new Uint8Array([1])], "doc.pdf", { type: "application/pdf" }),
-    );
-    fd.append("kind", "document");
-    fd.append("extracted", JSON.stringify("[tabela] total: 10"));
-    const res = await fileTurnApp.handle(
-      new Request("http://localhost/file-turn", { method: "POST", body: fd }),
-    );
-    expect(res.status).toBe(200);
-    const out = await res.json();
-    expect(out.kind).toBe("document");
-    expect(out.extracted).toBe("[tabela] total: 10");
+    const turn = await postTurn("file", {
+      kind: "document",
+      extracted: JSON.stringify("[tabela] total: 10"),
+    });
+    expect(turn.kind).toBe("document");
+    expect(turn.extracted).toBe("[tabela] total: 10");
   });
 });

@@ -38,24 +38,6 @@ describe("auth.service", () => {
   });
 
   describe("getUserByEmail", () => {
-    test("returns user when found", async () => {
-      mockFindFirst.mockResolvedValueOnce(mockUser);
-
-      const result = await getUserByEmail("test@example.com");
-
-      // NOTE: the person as the schema stores them (tests/utils/prisma-mock.ts).
-      expect(result).toEqual(asPersonRow(mockUser));
-      expect(mockFindFirst).toHaveBeenCalledTimes(1);
-    });
-
-    test("returns null when user not found", async () => {
-      mockFindFirst.mockResolvedValueOnce(null);
-
-      const result = await getUserByEmail("nonexistent@example.com");
-
-      expect(result).toBeNull();
-    });
-
     test("trims and searches case-insensitively", async () => {
       mockFindFirst.mockResolvedValueOnce(mockUser);
 

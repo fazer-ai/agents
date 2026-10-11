@@ -2251,7 +2251,12 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
           },
         });
       });
-      expect(calls.map((c) => c[0])).not.toContain("setConversationLabels");
+      // NOTE: the reply is delivered and the close is attempted (a no-op on a resolved one), but no
+      // label claims the close.
+      expect(calls).toEqual([
+        ["sendMessage", 91906, FINAL],
+        ["toggleStatus", 91906, "resolved"],
+      ]);
     });
 
     // The label write is a wait after the last fence the reply path asked: an operator switching the
@@ -5112,16 +5117,16 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     const tuples = [];
     for await (const t of checkpointer.list({})) tuples.push(t);
     const persisted = JSON.stringify(tuples.map((t) => t.checkpoint));
-    expect(persisted).not.toContain(SILENCE_RETRY_MARK);
-    // And in what the model was sent it is a system message, never a human one.
-    const second = model.seen[1] ?? [];
+    // NOTE: the retry happened: the model was asked twice, the second time carrying the instruction
+    // in a system message and nowhere else.
+    expect(model.seen).toHaveLength(2);
     expect(
-      second.some(
-        (m) =>
-          m.getType() === "human" &&
-          contentToText(m.content).includes(SILENCE_RETRY_MARK),
-      ),
-    ).toBe(false);
+      (model.seen[1] ?? [])
+        .filter((m) => contentToText(m.content).includes(SILENCE_RETRY_MARK))
+        .map((m) => m.getType()),
+    ).toEqual(["system"]);
+    expect(persisted).toContain("Ok!");
+    expect(persisted).not.toContain(SILENCE_RETRY_MARK);
   });
 
   test("an agent that turned it off keeps today's ending", async () => {
@@ -7569,6 +7574,26 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       "verde.png": 15,
       "vermelha.png": 0,
     };
+    // The three files share a name and bytes, so the caption is what tells them apart.
+    const captions: string[] = [];
+    const makeClient = async () => {
+      const client = (await makeImageClient(calls)()) as unknown as {
+        sendFileAttachment: (...a: unknown[]) => Promise<unknown>;
+      };
+      return {
+        ...client,
+        sendFileAttachment: (
+          conversationId: number,
+          bytes: ArrayBuffer,
+          fileName: string,
+          _mime: string,
+          opts: { caption?: string } = {},
+        ) => {
+          captions.push(opts.caption ?? "");
+          return client.sendFileAttachment(conversationId, bytes, fileName);
+        },
+      } as unknown as ChatwootClient;
+    };
     const outcome = await runAgentTurn({
       tenantId,
       instanceId,
@@ -7585,7 +7610,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
               caption: "Vermelha",
             },
           ]) as unknown as BaseChatModel,
-        makeClient: makeImageClient(calls),
+        makeClient,
         checkpointer: new MemorySaver(),
         imageDeps: {
           ...imageDeps,
@@ -7607,6 +7632,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       ["sendFileAttachment", 936, "imagem.png"],
       ["sendMessage", 936, "Essas são as três."],
     ]);
+    expect(captions).toEqual(["Azul", "Verde", "Vermelha"]);
   });
 
   // The other half of that rule: when the attachments were the whole turn and NONE of them got

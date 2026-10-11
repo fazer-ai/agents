@@ -84,10 +84,11 @@ describe("readCappedBody", () => {
   test("the default cap is the module's constant", async () => {
     // A caller that names no cap must not get an unbounded read, which is the defect this module
     // exists to close.
+    const chunks = Math.ceil(MAX_OUTBOUND_BODY_CHARS / 1000) + 2;
     const chunk = enc.encode("z".repeat(1000));
-    const got = await readCappedBody(streamed(Array(3).fill(chunk)));
-    expect(got.text.length).toBe(3_000);
-    expect(MAX_OUTBOUND_BODY_CHARS).toBeGreaterThan(3_000);
+    const got = await readCappedBody(streamed(Array(chunks).fill(chunk)));
+    expect(got.text).toBe("z".repeat(MAX_OUTBOUND_BODY_CHARS));
+    expect(got.chars).toBe(chunks * 1000);
   });
 });
 

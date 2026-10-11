@@ -86,6 +86,8 @@ describe.skipIf(!dbUp)("migration: tts normalize default on", () => {
       );
       ids[name] = BigInt(r.rows[0].id);
     }
+    // No try/catch: a throw on a non-object tts fails every test below.
+    await suDb.query(sql);
   });
 
   afterAll(async () => {
@@ -96,11 +98,6 @@ describe.skipIf(!dbUp)("migration: tts normalize default on", () => {
       await suDb.query("DELETE FROM tenants WHERE id = $1", [String(tenantId)]);
     }
     await suDb.end();
-  });
-
-  test("runs over every settings shape without raising, including a non-object tts", async () => {
-    // No try/catch: a throw here IS the failure being guarded against.
-    await suDb.query(sql);
   });
 
   test("drops the stored flag so the new default reaches the agent", async () => {

@@ -49,8 +49,14 @@ describe("nextCompanyDraft", () => {
       email: "",
       website: "",
     });
-    expect(nextCompanyDraft(emptyCompanyForm(), empty).draft).toEqual(
-      blankCompanyDraft(),
+    const seeded = nextCompanyDraft(emptyCompanyForm(), empty);
+    expect(seeded).toEqual({
+      draft: blankCompanyDraft(),
+      seededFrom: blankCompanyDraft(),
+    });
+    // NOTE: so it is still untouched, and the next copy the server sends lands.
+    expect(nextCompanyDraft(seeded, stored()).draft).toEqual(
+      companyToDraft(stored()),
     );
   });
 

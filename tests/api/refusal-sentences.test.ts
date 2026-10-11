@@ -412,7 +412,12 @@ describe("a refusal reads differently for each thing it refuses", () => {
   test("no two different refusals answer with the same sentence", async () => {
     const byPt = new Map<string, string[]>();
     for (const c of CASES) {
-      byPt.set(c.pt, [...(byPt.get(c.pt) ?? []), c.key]);
+      const err = (await c.produce().then(
+        () => null,
+        (e: unknown) => e,
+      )) as AppError;
+      const pt = refusalBody(err, "pt-BR").error;
+      byPt.set(pt, [...(byPt.get(pt) ?? []), String(err.translationKey)]);
     }
     const shared = [...byPt.entries()]
       .filter(([, keys]) => new Set(keys).size > 1)

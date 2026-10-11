@@ -3,8 +3,9 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 // A FETCH STUB A TEST NEVER TOOK BACK. Bun moves on from a timed-out test without waiting for its
 // body, so a stub restored in that body's `finally` stays installed, and every file the process runs
 // next calls the fake: a cost test then records the token counts of another file's fake answer.
-// The first test below stands for that body: it installs a stub and never restores it. The second
-// reads what the next test gets, which is what the next file would get.
+// The first test below stands for that body: it installs a stub and never restores it, and asserts
+// nothing, since it is the setup. The second reads what the next test gets, which is what the next
+// file would get.
 
 const before = globalThis.fetch;
 const stub = (async () => Response.json({})) as unknown as typeof fetch;
@@ -12,7 +13,6 @@ const stub = (async () => Response.json({})) as unknown as typeof fetch;
 describe("a fetch stub left installed by a test", () => {
   test("a test installs a stub and never takes it back", () => {
     globalThis.fetch = stub;
-    expect(globalThis.fetch).toBe(stub);
   });
 
   test("the next test gets the fetch from before it", () => {

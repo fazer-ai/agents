@@ -1,4 +1,12 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  spyOn,
+  test,
+} from "bun:test";
 import {
   type AdminBroadcast,
   broadcastAdminMessage,
@@ -17,6 +25,7 @@ import {
   tryAttachEvents,
   tryAttachUser,
 } from "@/api/features/realtime/realtime.service";
+import logger from "@/api/lib/logger";
 import { realtimeConfig } from "@/api/lib/realtime";
 
 interface PublishCall {
@@ -343,23 +352,40 @@ describe("realtime.service", () => {
       // partially-bound server, etc.), an in-flight chat broadcast or
       // attach/detach must not propagate the error. The service swallows
       // and relies on Bun to clean up dead subscribers.
-      setPublisher(() => {
+      const attempted: string[] = [];
+      setPublisher((topic) => {
+        attempted.push(topic);
         throw new Error("publish blew up");
       });
+      const warn = spyOn(logger, "warn").mockImplementation(() => logger);
 
-      expect(() => {
-        broadcastChatMessage({
-          type: "message",
-          at: 1,
-          from: { userId: "1", displayName: "x" },
-          payload: "hi",
-        });
-      }).not.toThrow();
-      expect(() =>
-        sendToUser(BigInt(1), { type: "private-ping", at: 2 }),
-      ).not.toThrow();
-      expect(() => tryAttachUser(BigInt(99))).not.toThrow();
-      detachUser(BigInt(99));
+      try {
+        expect(() => {
+          broadcastChatMessage({
+            type: "message",
+            at: 1,
+            from: { userId: "1", displayName: "x" },
+            payload: "hi",
+          });
+        }).not.toThrow();
+        expect(() =>
+          sendToUser(BigInt(1), { type: "private-ping", at: 2 }),
+        ).not.toThrow();
+        expect(() => tryAttachUser(BigInt(99))).not.toThrow();
+        expect(currentUserCount()).toBe(1);
+        // NOTE: each publish was attempted and each dropped event was logged with its topic.
+        expect(attempted).toEqual([
+          TOPICS.CHAT_GLOBAL,
+          TOPICS.user(BigInt(1)),
+          TOPICS.CHAT_GLOBAL,
+        ]);
+        expect(
+          warn.mock.calls.map((c) => (c[0] as { topic: string }).topic),
+        ).toEqual(attempted);
+      } finally {
+        warn.mockRestore();
+        detachUser(BigInt(99));
+      }
     });
   });
 
@@ -463,7 +489,16 @@ describe("realtime.service", () => {
     });
 
     test("detachEvents is a no-op for unknown ids", () => {
-      expect(() => detachEvents(BigInt(999))).not.toThrow();
+      const cap = realtimeConfig.maxConnectionsPerUser;
+      for (let i = 0; i < cap; i++) tryAttachEvents(BigInt(1));
+      detachEvents(BigInt(999));
+      // NOTE: the full user stays full, and the unknown id still has its whole cap.
+      expect(tryAttachEvents(BigInt(1))).toBe(false);
+      for (let i = 0; i < cap; i++) {
+        expect(tryAttachEvents(BigInt(999))).toBe(true);
+      }
+      expect(tryAttachEvents(BigInt(999))).toBe(false);
+      for (let i = 0; i < cap; i++) detachEvents(BigInt(999));
     });
   });
 

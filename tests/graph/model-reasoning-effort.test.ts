@@ -3,6 +3,7 @@ import { tool } from "@langchain/core/tools";
 import type { ChatOpenAI } from "@langchain/openai";
 import { z } from "zod";
 import { parseModelConfig } from "@/graph/model-config";
+import { PROVIDER_DEFAULT_MODEL } from "@/graph/model-defaults";
 import { createChatModel, forgetToolEffortFloorsForTest } from "@/graph/models";
 import {
   planOpenAITransport,
@@ -284,6 +285,34 @@ describe("createChatModel on the gpt-5.6 family", () => {
     const { sent, url } = await turn("openai/gpt-5.6-luna", "openrouter");
     expect(effortOf(sent, url)).toBe("none");
     expectStoreOff(sent, url);
+  });
+
+  // WHAT PICKING A DEFAULT COMMITS US TO: the table is the one place an id is chosen for somebody
+  // who chose nothing, so every default on an OpenAI transport has to reach a tool-bound turn the
+  // API answers, through the real adapter, against the fake's transcription of the live rules.
+  test("every declared default on an OpenAI transport answers a turn with tools", async () => {
+    const answered: Record<string, unknown> = {};
+    for (const provider of ["openai", "openrouter"] as const) {
+      // NOTE: a refused turn is recorded as its message, so a refusal fails on the table below.
+      answered[provider] = await turn(
+        PROVIDER_DEFAULT_MODEL[provider] as string,
+        provider,
+      ).then(
+        ({ reply, sent, url }) => {
+          expectStoreOff(sent, url);
+          return {
+            tool: reply.tool_calls?.[0]?.name,
+            effort: effortOf(sent, url),
+          };
+        },
+        (e: unknown) => String(e),
+      );
+      fake?.restore();
+    }
+    expect(answered).toEqual({
+      openai: { tool: "get_current_time", effort: "none" },
+      openrouter: { tool: "get_current_time", effort: "none" },
+    });
   });
 
   test("binding tools does not contaminate the raw instance behind it", async () => {

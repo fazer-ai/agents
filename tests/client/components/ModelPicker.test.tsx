@@ -46,9 +46,7 @@ describe("ModelPicker placeholder", () => {
   // PROVIDER_DEFAULT_MODEL is a chat table; showing a chat model where a transcription model goes
   // would name something that will never be sent.
   test("promises no chat model for a non-chat capability", () => {
-    expect(shownFor("openai", "transcription").includes("gpt-5.4-mini")).toBe(
-      false,
-    );
+    expect(shownFor("openai", "transcription")).toBe("Provider default");
   });
 
   // The vision and STT tabs pass `X_DEFAULT_MODEL[provider] ?? ""`, and for openai-compatible those

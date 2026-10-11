@@ -699,7 +699,9 @@ describe("text is not code: no completion inside a string or a comment", () => {
   // A slash is division far more often than it is a pattern, and lezer tells the two apart. This is
   // the case the guard must NOT take with it.
   test("but a division is code, and still completes", () => {
-    expect(ask("const x = a / input.")?.options.length).toBeGreaterThan(0);
+    expect(ask("const x = a / input.")?.options.map((o) => o.label)).toEqual([
+      "cpf",
+    ]);
   });
 
   // The hole in a template IS code, and the commonest place a body builds a message from a
@@ -1126,7 +1128,7 @@ describe("what is a root, and what is somebody else's member", () => {
 
   for (const doc of ["return context.", "  context.", "} context."]) {
     test(`${doc} is still a root`, () => {
-      expect(ask(doc)?.options.length).toBeGreaterThan(0);
+      expect(ask(doc)?.options.map((o) => o.label)).toContain("contact_name");
     });
   }
 

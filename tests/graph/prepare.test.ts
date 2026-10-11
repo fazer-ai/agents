@@ -71,7 +71,12 @@ describe("buildModelAndGraph — effective baseURL resolution", () => {
       makeModel,
       checkpointer: new MemorySaver(),
     });
-    expect(getCaptured()?.baseURL).toBeUndefined();
+    const captured = getCaptured();
+    expect(captured).toMatchObject({
+      provider: "openai",
+      model: "gpt-4o-mini",
+    });
+    expect(captured).toHaveProperty("baseURL", undefined);
   });
 });
 

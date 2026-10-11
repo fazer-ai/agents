@@ -292,6 +292,18 @@ const OWNERS = [
 // Each exemption, and the rule it exempts from. The owner is copied to a probe path no exemption
 // covers, where its rule has to fire: an owner that stops doing what it is exempted for, or is gone,
 // makes its exemption stale, and the copy coming back clean is what says so.
+// The plugin behind each rule an owner is exempted from, which the copies' config applies.
+const PLUGIN: Partial<Record<Rule, string>> = {
+  schedulerRow: "no-scheduler-row-outside-service.grit",
+  vault: "no-vault-entry-write-outside-service.grit",
+  secretRef: "no-secret-ref-write-outside-owner.grit",
+  marker: "no-raw-audit-marker.grit",
+  verify: "no-verify-password-outside-login.grit",
+  docTool: "no-document-tool-name-outside-slug.grit",
+  gate: "no-gate-close-outcome-outside-owner.grit",
+  textarea: "require-textarea-cap.grit",
+  clear: "no-raw-flowlog-clear.grit",
+};
 const EXEMPTED: Array<[string, Rule]> = [
   [`${SRC}/modules/scheduler/service.ts`, "schedulerRow"],
   [`${SRC}/modules/vault/service.ts`, "vault"],
@@ -314,7 +326,44 @@ const copyOf = (i: number, path: string) =>
 
 let hits: Map<string, Partial<Record<Rule, number>>>;
 
-beforeAll(() => {
+// The copies go through a second Biome process, beside the first, whose config gives each copy only
+// the plugin of its rule. Biome's time is the lines it reads times the plugins that apply to them,
+// and here biome.jsonc applies every fence and every rule for tests/. A copy proves the owner still
+// holds the shape its rule refuses; where each rule applies is proven by the probes, and each
+// exemption by the owners linted in place, both under biome.jsonc in the first process.
+function copiesConfig(): string {
+  const overrides = EXEMPTED.map(([path, rule], i) => ({
+    includes: [`**/${copyOf(i, path).slice(PROBE.length + 1)}`],
+    plugins: [join(ROOT, "biome-plugins", PLUGIN[rule] as string)],
+  }));
+  return JSON.stringify({
+    root: true,
+    linter: { enabled: true, rules: { recommended: false } },
+    files: { includes: ["**/*.ts", "**/*.tsx"] },
+    overrides,
+  });
+}
+
+async function lint(args: string[]): Promise<string> {
+  const proc = Bun.spawn({
+    cmd: [
+      "bun",
+      "biome",
+      "lint",
+      "--max-diagnostics=none",
+      "--reporter=github",
+      ...args,
+    ],
+    cwd: ROOT,
+    stdout: "pipe",
+    stderr: "ignore",
+  });
+  const out = await new Response(proc.stdout).text();
+  await proc.exited;
+  return out;
+}
+
+beforeAll(async () => {
   for (const [path, body] of Object.entries(PROBES)) {
     mkdirSync(join(ROOT, path, ".."), { recursive: true });
     writeFileSync(join(ROOT, path), body);
@@ -327,23 +376,26 @@ beforeAll(() => {
       );
     }
   });
-  const run = Bun.spawnSync({
-    cmd: [
-      "bun",
-      "biome",
-      "lint",
-      "--max-diagnostics=none",
-      "--reporter=github",
+  mkdirSync(join(ROOT, PROBE, "copies-config"), { recursive: true });
+  writeFileSync(
+    join(ROOT, PROBE, "copies-config", "biome.json"),
+    copiesConfig(),
+  );
+  const outputs = await Promise.all([
+    lint([
       ...Object.keys(PROBES),
+      ...OWNERS.filter((p) => existsSync(join(ROOT, p))),
+    ]),
+    lint([
+      "--only=plugin",
+      `--config-path=${join(ROOT, PROBE, "copies-config")}`,
       ...EXEMPTED.map(([path], i) => copyOf(i, path)).filter((p) =>
         existsSync(join(ROOT, p)),
       ),
-      ...OWNERS.filter((p) => existsSync(join(ROOT, p))),
-    ],
-    cwd: ROOT,
-  });
+    ]),
+  ]);
   hits = new Map();
-  for (const line of run.stdout.toString().split("\n")) {
+  for (const line of outputs.join("\n").split("\n")) {
     const m = line.match(/file=([^,]+),.*::(.*)$/);
     if (!m?.[1] || !m[2]) continue;
     const at = m[1].indexOf("tests/");
@@ -461,6 +513,15 @@ describe("the module a fence exempts is not flagged by it", () => {
   test.each(OWNERS)("%s", (path) => {
     expect(hits.get(path) ?? {}).toEqual({});
   });
+});
+
+test("the copies' config names an existing plugin for every exempted rule", () => {
+  for (const [, rule] of EXEMPTED) {
+    expect(PLUGIN[rule]).toBeDefined();
+    expect(
+      existsSync(join(ROOT, "biome-plugins", PLUGIN[rule] as string)),
+    ).toBe(true);
+  }
 });
 
 describe("each exempted module still does what it is exempted for", () => {

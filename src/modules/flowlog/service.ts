@@ -2,6 +2,7 @@ import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
+import { runInPoolClass } from "@/lib/pool-class";
 import { failureDetail } from "@/lib/provider-failure";
 import {
   MAX_STRING,
@@ -78,9 +79,11 @@ function sysCtx(tenantId: bigint): TenantContext {
 }
 
 // Fire-and-forget: schedules the row write (and, for warn/error on real traffic, alert dispatch)
-// without awaiting. Returns immediately; failures are swallowed (logged at warn).
+// without awaiting. Returns immediately; failures are swallowed (logged at warn). On the background
+// pool (src/lib/pool-class.ts): a turn emits several of these, nothing waits on them, and with the
+// table locked they would otherwise sit on the connections the turns need.
 export function emitFlowEvent(ctx: FlowContext, ev: FlowEvent): void {
-  trackFlowWrite(writeFlowEvent(ctx, ev));
+  trackFlowWrite(runInPoolClass("background", () => writeFlowEvent(ctx, ev)));
 }
 
 // The same write, awaited, for a caller whose line is the only record left: the stranded-delivery

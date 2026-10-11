@@ -2,6 +2,7 @@ import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
+import { runInPoolClass } from "@/lib/pool-class";
 import { sanitizeErrorMessage } from "@/lib/redact";
 import { isDraining } from "@/lib/shutdown";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
@@ -406,7 +407,11 @@ export function startOutboundWorker(opts: OutboundWorkerOptions = {}): void {
   if (state.timer) return; // singleton (survives bun --hot via globalThis)
   const base = opts.base ?? basePrisma;
   const intervalMs = config.webhookWorker.intervalMs;
-  state.timer = setInterval(() => void tick(base, state), intervalMs);
+  // NOTE: background pool: nobody is waiting on a delivery to a third party this second.
+  state.timer = setInterval(
+    () => void runInPoolClass("background", () => tick(base, state)),
+    intervalMs,
+  );
   // NOTE: unref so the tick timer never keeps the process alive at shutdown.
   state.timer.unref?.();
   logger.info("Outbound webhook worker started (interval %dms)", intervalMs);

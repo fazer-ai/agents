@@ -1,3 +1,4 @@
+import type { PoolClass } from "@/lib/pool-class";
 import type { FlowLevel } from "@/modules/flowlog/stages";
 import type { SchedulerJobKind } from "@/modules/scheduler/service";
 
@@ -85,6 +86,58 @@ export const JOB_LANE: Record<SchedulerJobKind, SchedulerLane> = {
   DOCUMENT_APPROVAL_OUTCOME: "shared",
   // The snoozed ladder is the same kind of work as FOLLOWUP: one nudge per row.
   SNOOZED_FOLLOWUP: "shared",
+};
+
+// Which pool each kind's handler draws its connections from (src/lib/pool-class.ts). "main" is the
+// pool of customer turns; "background" is the pool of work nobody is waiting on this second, sized on
+// its own (BACKGROUND_POOL_MAX) so a burst of it, or background transactions stuck behind a lock,
+// cannot take the connections a customer reply needs. The scheduler's own claims and outcome writes
+// stay on the main pool: one short statement per job, and a DEBOUNCE claim must never wait behind a
+// background job. Exhaustive, so a new kind does not compile until it is placed.
+export const JOB_POOL: Record<SchedulerJobKind, PoolClass> = {
+  // Main: the flush IS the customer's turn.
+  DEBOUNCE: "main",
+  // Main: it answers a customer whose message was stranded and who has been waiting at least the
+  // sweep's staleness window; behind a stuck background pool that customer would wait on unbounded.
+  // It cannot flood the main pool: it is provider-spending, so it runs under the shared lane's
+  // provider concurrency, a fraction of the model budget.
+  DELIVERY_RECOVERY: "main",
+  // Main, for the DELIVERY_RECOVERY reasons: a lost inbound event re-dispatched, which may run the
+  // agent's turn for a customer who already waited, under the same provider bound.
+  INBOUND_REDISPATCH: "main",
+  // Main: the text a customer receives in place of an attachment the channel refused; they already
+  // waited out the channel's failure report.
+  MEDIA_TEXT_FALLBACK: "main",
+  // Background: proactive messages at a scheduled time. Nobody is waiting on them this second, and a
+  // sweep can arm many at once, which is the burst that must not take the turns' connections.
+  FOLLOWUP: "background",
+  SNOOZED_FOLLOWUP: "background",
+  REDIRECT_FOLLOWUP: "background",
+  APPOINTMENT_REMINDER: "background",
+  // Background: it tells the customer what a person decided, minutes after the decision.
+  DOCUMENT_APPROVAL_OUTCOME: "background",
+  // Background: a turn drains the ingestion it needs before invoking (../../graph/ingest-job.ts), on
+  // the turn's pool, so the scheduler's run is the backstop.
+  INGEST_MESSAGE: "background",
+  // Background: sweeps, retention, compaction, the observer, syncs and polls. None answers anyone.
+  FOLLOWUP_SWEEP: "background",
+  WEBHOOK_RETRY: "background",
+  RAG_INGEST: "background",
+  HEARTBEAT: "background",
+  FLOWLOG_SWEEP: "background",
+  MEMORY_COMPACT: "background",
+  DELIVERY_SWEEP: "background",
+  SPEND_CEILING_POLL: "background",
+  // Background: it repairs a conversation's status; no reply is sent.
+  TAKEOVER_RECOVERY: "background",
+  // Background: it reads a page of messages and arms an ingest job; no reply is sent.
+  HUMAN_REPLY_RECOVERY: "background",
+  OBSERVE: "background",
+  KNOWLEDGE_SOURCE_SYNC: "background",
+  INBOUND_SWEEP: "background",
+  NOTHING_TO_ANSWER: "background",
+  SUGGESTION_REVIEW: "background",
+  DOCUMENT_APPROVAL_EXPIRY: "background",
 };
 
 // Whether ONE job of this kind spends capacity at an external provider the rest of the product also

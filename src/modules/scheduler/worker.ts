@@ -5,11 +5,13 @@ import type {
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
+import { runInPoolClass } from "@/lib/pool-class";
 import { Semaphore } from "@/lib/semaphore";
 import { beginWork } from "@/lib/shutdown";
 import { emitDeadLetter } from "@/modules/flowlog/dead-letter";
 import {
   JOB_DEATH_LEVEL,
+  JOB_POOL,
   JOB_SPENDS_PROVIDER,
   observeClaimLimit,
   sharedProviderConcurrency,
@@ -326,13 +328,14 @@ async function runWithDeadline(
   markRunning(job.id);
   // The async wrapper turns a synchronous throw into a rejection, so the row always leaves the
   // running set.
-  const running = (async () =>
+  const running = runInPoolClass(JOB_POOL[job.kind], async () =>
     handler(job, base, {
       signal: controller.signal,
       commit: () => {
         committed = true;
       },
-    }))();
+    }),
+  );
   const lateChain = running
     .catch(() => null)
     .then(async (late) => {

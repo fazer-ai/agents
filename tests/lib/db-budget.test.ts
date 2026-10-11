@@ -1,10 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
+import config from "@/config";
 import {
   assertConnectionBudget,
   ConnectionBudgetError,
   type PoolShare,
+  poolShares,
   readServerLimits,
+  serverOf,
 } from "@/lib/db-budget";
 
 // The sum of a replica's pools against what each database server accepts from the runtime role.
@@ -51,6 +54,34 @@ describe("connection budget", () => {
       "METRICS_POOL_MAX=3",
     ]) {
       expect(err.message).toContain(v);
+    }
+  });
+
+  test("the background pool counts in the main server's sum, and a value one over refuses naming it", async () => {
+    const saved = config.backgroundPoolMax;
+    config.backgroundPoolMax = 7;
+    try {
+      const pools = poolShares();
+      const background = pools.find((p) => p.env === "BACKGROUND_POOL_MAX");
+      expect(background?.size).toBe(7);
+      expect(background?.url).toBe(config.databaseUrl ?? "");
+      const main = serverOf(config.databaseUrl ?? "");
+      const sum = pools
+        .filter((p) => serverOf(p.url) === main)
+        .reduce((n, p) => n + p.size, 0);
+      const exactly = await assertConnectionBudget(pools, async () => ({
+        maxConnections: sum + 3,
+        reserved: 3,
+      }));
+      expect(exactly[0]?.line).toContain("BACKGROUND_POOL_MAX=7");
+      const err = await assertConnectionBudget(pools, async () => ({
+        maxConnections: sum + 2,
+        reserved: 3,
+      })).catch((e) => e);
+      expect(err).toBeInstanceOf(ConnectionBudgetError);
+      expect(err.message).toContain("BACKGROUND_POOL_MAX=7");
+    } finally {
+      config.backgroundPoolMax = saved;
     }
   });
 

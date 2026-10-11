@@ -72,6 +72,7 @@ const {
   DB_POOL_MAX,
   LANGGRAPH_POOL_MAX,
   METRICS_POOL_MAX,
+  BACKGROUND_POOL_MAX,
   METRICS_TIMEOUT_MS,
   DB_TX_MAX_WAIT_MS,
   DB_TX_TIMEOUT_MS,
@@ -375,6 +376,16 @@ const config = {
     "It is how long a statement may wait on a lock; 0 turns the limit off.",
     MAX_DURATION_MS,
     0,
+  ),
+  // NOTE: Background work (src/lib/pool-class.ts: the scheduler's background kinds, the outbound
+  // webhook, alert and compaction workers, flow-log writes) runs on a pool of its own, so a burst of
+  // it, or its transactions stuck behind a lock, cannot take the connections a customer reply needs.
+  backgroundPoolMax: parseIntSetting(
+    BACKGROUND_POOL_MAX,
+    "BACKGROUND_POOL_MAX",
+    10,
+    "It sizes the Postgres pool background work (scheduled jobs, webhook and alert delivery, compaction, the flow log) runs on.",
+    MAX_COUNT,
   ),
   // NOTE: The console's metrics reads (src/modules/analytics) run on a pool of their own, so a
   // dashboard load cannot take the connections turns need. `timeoutMs` bounds the wait for one of

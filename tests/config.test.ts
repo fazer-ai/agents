@@ -321,6 +321,7 @@ describe("database pools and budgets", () => {
   test("a value that is not a whole number in range refuses by name, and a lock timeout of 0 is off", async () => {
     for (const [env, raw] of [
       ["METRICS_POOL_MAX", "0"],
+      ["BACKGROUND_POOL_MAX", "2.5"],
       ["LANGGRAPH_POOL_MAX", "abc"],
       ["METRICS_TIMEOUT_MS", "15s"],
       ["DB_TX_TIMEOUT_MS", "-1"],
@@ -345,6 +346,7 @@ describe("database pools and budgets", () => {
       for (const v of [
         "DB_POOL_MAX",
         "LANGGRAPH_POOL_MAX",
+        "BACKGROUND_POOL_MAX",
         "METRICS_POOL_MAX",
         "METRICS_TIMEOUT_MS",
         "DB_TX_MAX_WAIT_MS",

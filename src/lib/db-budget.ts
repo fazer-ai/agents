@@ -36,6 +36,11 @@ export function poolShares(): PoolShare[] {
       url: config.databaseUrl ?? "",
     },
     {
+      env: "BACKGROUND_POOL_MAX",
+      size: config.backgroundPoolMax,
+      url: config.databaseUrl ?? "",
+    },
+    {
       env: "METRICS_POOL_MAX",
       size: config.metrics.poolMax,
       url: config.databaseUrl ?? "",

@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { Prisma, PrismaClient } from "@/../generated/prisma/client";
+import { currentPoolClass, type PoolClass } from "@/lib/pool-class";
 import { runScopedOn } from "@/lib/tenancy";
 import {
   type ClaimedJob,
@@ -1066,6 +1067,44 @@ describe.skipIf(!dbUp)("scheduler", () => {
     const s = await statusOf(id);
     expect(s.status).toBe("PENDING");
     expect(s.attempts).toBe(1);
+  });
+
+  // The pool a handler draws from is its kind's (JOB_POOL): a follow-up or a sweep on the background
+  // pool, the recovery of a stranded customer message on the turns' pool.
+  test("runClaimed runs each handler in its kind's pool class", async () => {
+    const seen: Partial<Record<string, PoolClass>> = {};
+    for (const kind of ["WEBHOOK_RETRY", "DELIVERY_RECOVERY"] as const) {
+      registerJobHandler(kind, async () => {
+        seen[kind] = currentPoolClass();
+        return { outcome: "done" };
+      });
+    }
+    const background = await enqueueJob({
+      rearm: "same-work",
+      tenantId,
+      kind: "WEBHOOK_RETRY",
+      dedupeKey: "dk-pool-bg",
+      runAt: past(),
+      base: appDb,
+    });
+    const main = await enqueueJob({
+      rearm: "same-work",
+      tenantId,
+      kind: "DELIVERY_RECOVERY",
+      dedupeKey: "dk-pool-main",
+      runAt: past(),
+      base: appDb,
+    });
+    const claimed = [
+      ...(await claimDueJobs(10, appDb, new Date(), tenantId)),
+      ...(await claimDueTrafficJobs(10, appDb, new Date(), tenantId)),
+    ].filter((j) => j.id === background || j.id === main);
+    expect(claimed).toHaveLength(2);
+    for (const job of claimed) await runClaimed(job, appDb);
+    expect(seen).toEqual({
+      WEBHOOK_RETRY: "background",
+      DELIVERY_RECOVERY: "main",
+    });
   });
 
   test("runClaimed dispatches to the registered handler", async () => {

@@ -120,6 +120,7 @@ services:
       # default; the pools' sum per replica must fit the server's max_connections, or boot refuses.
       - DB_POOL_MAX=${DB_POOL_MAX:-}
       - LANGGRAPH_POOL_MAX=${LANGGRAPH_POOL_MAX:-}
+      - BACKGROUND_POOL_MAX=${BACKGROUND_POOL_MAX:-}
       - METRICS_POOL_MAX=${METRICS_POOL_MAX:-}
       - METRICS_TIMEOUT_MS=${METRICS_TIMEOUT_MS:-}
       - DB_TX_MAX_WAIT_MS=${DB_TX_MAX_WAIT_MS:-}

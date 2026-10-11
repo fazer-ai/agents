@@ -2,6 +2,7 @@ import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
+import { runInPoolClass } from "@/lib/pool-class";
 import { isDraining } from "@/lib/shutdown";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { nextBackoffMs } from "@/modules/webhooks/outbound/service";
@@ -375,7 +376,11 @@ export function startAlertWorker(opts: AlertWorkerOptions = {}): void {
   if (state.timer) return; // singleton (survives bun --hot via globalThis)
   const base = opts.base ?? basePrisma;
   const intervalMs = config.alertWorker.intervalMs;
-  state.timer = setInterval(() => void tick(base, state), intervalMs);
+  // NOTE: background pool: nobody is waiting on a delivery to a third party this second.
+  state.timer = setInterval(
+    () => void runInPoolClass("background", () => tick(base, state)),
+    intervalMs,
+  );
   state.timer.unref?.();
   logger.info("Alert worker started (interval %dms)", intervalMs);
 }

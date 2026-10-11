@@ -3,23 +3,9 @@
 // and `FIXME:` stay allowed, since work that is owed is owed in markup too. Only a child that is
 // wholly one block comment hugged by its braces is read: a comment beside an expression in braces is
 // a code comment, and the formatter moves a lone block comment in a code body off its braces.
-//
-// A string, a JSX attribute, a template or a `//` comment line that spells `{/* … */}` is refused too, tagged or not, as
-// the sweep this replaces refused it: a reader cannot tell it from markup at a glance. Build the text
-// (`"{/" + "* … *" + "/}"`) where a sample of the shape is really wanted.
 language js;
 
-or {
-    JsxExpressionChild() as $child where {
-        $child <: r"\{/\*(?:[^*]|\*+[^*/])*\bNOTE:(?:[^*]|\*+[^*/])*\*+/\}",
-        register_diagnostic(span = $child, message = "A JSX comment documents the element below it and carries no `NOTE:` (`TODO:` and `FIXME:` stay allowed). See CLAUDE.md, \"Where the tag goes\".")
-    },
-    or { JsStringLiteralExpression(), JsxString(), JsTemplateExpression() } as $literal where {
-        $literal <: r"[\s\S]*\{/\*[\s\S]*?\*/\}[\s\S]*",
-        register_diagnostic(span = $literal, message = "This text spells a JSX comment (`{/* … */}`) that is not one: build it from parts so it cannot be read as markup.")
-    },
-    $program where {
-        $program <: r"[\s\S]*\n[ \t]*//[^\n]*\{/\*[^\n]*?\*/\}[\s\S]*",
-        register_diagnostic(span = $program, message = "A `//` comment in this file spells a JSX comment (`{/* … */}`): name the shape in words so it cannot be read as markup.")
-    }
+JsxExpressionChild() as $child where {
+    $child <: r"\{/\*(?:[^*]|\*+[^*/])*\bNOTE:(?:[^*]|\*+[^*/])*\*+/\}",
+    register_diagnostic(span = $child, message = "A JSX comment documents the element below it and carries no `NOTE:` (`TODO:` and `FIXME:` stay allowed). See CLAUDE.md, \"Where the tag goes\".")
 }

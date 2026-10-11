@@ -1,6 +1,5 @@
 // Rewrites tests/lib/comment-ledger.ts from the tree as it stands, refusing any count above the current
-// entry. It counts what the comment sweep reads, the part of each file the Biome comment rules cannot
-// (`lintBlindText`). Run it after a cleanup lowers a file's count; the sweep fails until the ledger says it.
+// entry. Run it after a cleanup lowers a file's count; the sweep fails until the ledger says it.
 //
 // On the master tree, entries for files an edition drops are wrapped in that edition's markers, so a
 // derived tree lists only files it has.
@@ -8,7 +7,6 @@ import { existsSync } from "node:fs";
 import {
   countFile,
   type FileCounts,
-  lintBlindText,
   raisedEntries,
   renderLedger,
   sweptFiles,
@@ -41,9 +39,7 @@ async function droppedBy(): Promise<{
 const counted: Array<[string, FileCounts]> = [];
 for (const path of await sweptFiles()) {
   if (path === LEDGER) continue;
-  const { counts } = countFile(
-    lintBlindText(path, await Bun.file(path).text()),
-  );
+  const { counts } = countFile(await Bun.file(path).text());
   if (counts[0] > 0 || counts[1] > 0) counted.push([path, counts]);
 }
 

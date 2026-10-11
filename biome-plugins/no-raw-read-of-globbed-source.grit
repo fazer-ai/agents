@@ -16,6 +16,9 @@ or {
     `$recv.text()` as $read where { $recv <: r"[\s\S]*Bun\.file\([\s\S]*" },
     literal() as $read where { $read <: r"[\s\S]*Bun\.file\([^)]*\)[\s\S]{0,20}\.text\(\)[\s\S]*" }
 } where {
+    // A cheap first pass over the whole text, comments included: a file that spells no glob of
+    // `src` anywhere is answered without walking its nodes.
+    $program <: r"[\s\S]*(?:\.scan\(\s*\"src|Glob\(\s*[\"'`]src/)[\s\S]*",
     $program <: contains or {
         `$_.scan($dir)` where { $dir <: r"\"src[\s\S]*" },
         `new $glob($pattern, $...)` where {

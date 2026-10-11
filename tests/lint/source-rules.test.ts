@@ -1,10 +1,9 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { LINT_BLIND_FILES } from "@/tests/utils/comment-blocks";
 
-// The repo-wide rules in biome-plugins/ that replaced sweeps under tests/lib (the source rules, the
-// comment rules and the rules for tests), run through the real Biome over probe files. biome.jsonc
+// The repo-wide rules in biome-plugins/ that replaced sweeps under tests/lib (the source rules and
+// the rules for tests), run through the real Biome over probe files. biome.jsonc
 // applies the source rules under tests/lint/.probe-src-*, and the test rules apply to every file under
 // tests/. The probes end in `.ts` or `.tsx`, never `.test.ts`, so `bun test` never collects them, and
 // each run writes under its own pid. One Biome process lints every probe.
@@ -21,236 +20,11 @@ const ENV_WAIVED = [
 const JOSE_WAIVED = "tests/api/features/auth/google.service.test.ts";
 
 const P = (name: string) => `${PROBE}/${name}`;
-// Biome hands a plugin the program from its first token to its last, so every comment probe starts
-// and ends with code.
-const C = (body: string) =>
-  `export const p = 0;\n${body}\nexport const q = 1;\n`;
 const CLIENT_STUBBED = [
   "@/client/contexts/AuthContext",
   "@/client/contexts/ThemeContext",
   "@/client/hooks/useTenantEvents",
 ];
-
-// The comment sweep's own fixtures (tests/lib/comment-sweep.test.ts), each as a probe with the hits it
-// draws: [provenance, over the line ceiling, tagged docstring].
-type CommentHits = [number, number, number];
-const lines = (n: number) =>
-  Array.from({ length: n }, (_, i) => `// line ${i + 1}`).join("\n");
-const anchors = (n: number) =>
-  Array.from(
-    { length: n },
-    (_, i) => `// translate('errors.k${i}', 'Default ${i}.')`,
-  ).join("\n");
-const COMMENT_FIXTURES: Record<string, [string, ...CommentHits]> = {
-  ...Object.fromEntries(
-    [
-      "// Closed in #123.",
-      "// See issue #45 for the case.",
-      "// PR #9 moved it here.",
-      "/* review round 2 asked for this */",
-      "// The fix from round 3.",
-      "// Fixed in https://github.com/acme/app/pull/123",
-      "/* see https://github.com/acme/app/issues/9#issuecomment-1 */",
-      "// Review found both halves of that.",
-      "// Flagged by Codex on the last pass.",
-      "// Kept after review r6.",
-      "// The branch that was dropped (r3).",
-      "// Before the fix they were identical.",
-      "// The first version of this check looked only at the product.",
-      "// This used to vanish silently.",
-      "// The order used to be the reverse.",
-      "// Measured on a real socket, the server reads the path.",
-      "// This PR moves the check to the boundary.",
-      "// Nesta PR a regra mudou.",
-      "// Caso real: o turno travou.",
-      "// The flag this\n// used to carry.",
-      "// Found during a pass, and flagged\n// by Codex.",
-      "// TODO: drop it (#149).\n// Came from #120.",
-      "// comment-waiver:\n// #77",
-      "// intro\n/* fixed in #123 */",
-      "/* biome-ignore lint/x: reason */\n// fixed in #12",
-      "// comment-waiver: upstream id\n// biome-ignore lint/x: reason\n// fixed in #12",
-      "/* Fixed in #123. comment-waiver: */",
-    ].map((body, i) => [`cited-${i}`, [C(body), 1, 0, 0]]),
-  ),
-  ...Object.fromEntries(
-    [
-      "// A read that started before the change is still on the wire.",
-      "// Used to name the downloaded graph image.",
-      "// Measured on the repaired text, not on the value.",
-      "// The first attempt fails fast.",
-      "// A token that no longer matches is refused.",
-      "// Uma correção apoiada no id erraria calada o caso real.",
-      "// TODO: drop the column (#149).",
-      "// Color is &#123; in the entity.",
-      "// Five rounds of retries.",
-      'export const url = "https://x.test/issues/123#456";',
-      'export const pr = "https://github.com/acme/app/pull/123";',
-      "// Docs: https://github.com/acme/app/blob/main/x.md",
-      "// comment-waiver: the upstream bug id is the fix.\n// #77",
-      "/* Fixed in #123. comment-waiver: upstream id */",
-      "// biome-ignore lint/x: reason #12",
-    ].map((body, i) => [`prose-${i}`, [C(body), 0, 0, 0]]),
-  ),
-  "ceiling-at": [C(lines(8)), 0, 0, 0],
-  "ceiling-over": [C(lines(9)), 0, 1, 0],
-  "ceiling-blank-between": [C(`${lines(5)}\n\n${lines(5)}`), 0, 0, 0],
-  "ceiling-code-between": [
-    C(`${lines(5)}\nexport const a = 1;\n${lines(5)}`),
-    0,
-    0,
-    0,
-  ],
-  "ceiling-block-comment": [
-    C(`/*\n${Array.from({ length: 8 }, () => " * x").join("\n")}\n */`),
-    0,
-    1,
-    0,
-  ],
-  "ceiling-two-block-comments": [
-    C(`/*\n${" * x\n".repeat(4)} */\n/*\n${" * x\n".repeat(4)} */`),
-    0,
-    0,
-    0,
-  ],
-  "ceiling-directive-between": [
-    C(`${lines(5)}\n// biome-ignore lint/x: reason\n${lines(5)}`),
-    0,
-    0,
-    0,
-  ],
-  "ceiling-anchors": [C(anchors(10)), 0, 0, 0],
-  "ceiling-prose-above-anchors": [
-    C(`// Declared here for the extractor.\n${anchors(10)}`),
-    0,
-    0,
-    0,
-  ],
-  ...Object.fromEntries(
-    [
-      "const LIMIT = 3;",
-      "  let pending = 0;",
-      "export function run() {}",
-      "export default async function main() {}",
-      "export async function* rows() {}",
-      "class Queue {}",
-      "export abstract class Base {}",
-      "interface Row { id: number }",
-      "export type Id = string;",
-      "type Pair<T> = [T, T];",
-      "enum Mode { A }",
-      "declare const VERSION: string;",
-      "  const { a, b } = pick();",
-      "  const [first] = rows;",
-    ].map((decl, i) => [
-      `tagged-${i}`,
-      [C(`// NOTE: why it exists.\n${decl}`), 0, 0, 1],
-    ]),
-  ),
-  "tagged-block": [
-    C("/* NOTE: a block comment\n   over two lines */\nconst x = 1;"),
-    0,
-    0,
-    1,
-  ],
-  "tagged-two-lines": [
-    C(
-      "// NOTE: the first line carries the tag,\n// and the block ends here.\nconst x = 1;",
-    ),
-    0,
-    0,
-    1,
-  ],
-  "tagged-directive-between": [
-    C("// NOTE: why it exists.\n// biome-ignore lint/x: reason\nconst x = 1;"),
-    0,
-    0,
-    1,
-  ],
-  "tagged-anchor-between": [
-    C("// NOTE: the keys below.\n// t('a.b', 'A')\nconst x = 1;"),
-    0,
-    0,
-    1,
-  ],
-  "tagged-after-trailing": [
-    C("run(); // the call\n// NOTE: why it exists.\nconst x = 1;"),
-    0,
-    0,
-    1,
-  ],
-  "tagged-in-string": [
-    C("const a = `\n// NOTE: text\n`;\nconst x = 1;"),
-    0,
-    0,
-    0,
-  ],
-  ...Object.fromEntries(
-    [
-      "  await flush();",
-      "  return rows;",
-      "  for (const row of rows) {}",
-      "  if (done) return;",
-      "  type = next;",
-      "  constant = 1;",
-      "  letters.push(x);",
-      "  classify(row);",
-    ].map((stmt, i) => [
-      `aside-${i}`,
-      [C(`export async function f() {\n// NOTE: why.\n${stmt}\n}`), 0, 0, 0],
-    ]),
-  ),
-  "untagged-docstring": [C("// Why it exists.\nconst x = 1;"), 0, 0, 0],
-  "trailing-note": [C("run(); // NOTE: aside\nconst x = 1;"), 0, 0, 0],
-  "note-then-gap": [
-    C("// NOTE: about the call above.\n\nconst x = 1;"),
-    0,
-    0,
-    0,
-  ],
-  "note-waived": [
-    C(
-      "// NOTE: kept on purpose. comment-waiver: quoted by a test\nconst x = 1;",
-    ),
-    0,
-    0,
-    0,
-  ],
-  "todo-docstring": [C("// TODO: split it.\nconst x = 1;"), 0, 0, 0],
-  // A comment spelled inside a string is not one, as the sweep's scan reads it; a real comment after
-  // a string on the same line still is.
-  "cited-in-string": [C('export const s = "a // fixed in #1234";'), 0, 0, 0],
-  "cited-in-block-string": [
-    C('export const s = "x /* review round 2 asked */ y";'),
-    0,
-    0,
-    0,
-  ],
-  "cited-after-string": [
-    C(`export const g = 'a "/*" b'; // fixed in #12`),
-    1,
-    0,
-    0,
-  ],
-  "cited-after-globs": [
-    C(
-      'declare function f(a: string, b: string): number;\nexport const g = f("**/*.ts", "x/**/"); /* review round 2 */',
-    ),
-    1,
-    0,
-    0,
-  ],
-  "tagged-in-one-line-string": [
-    C('export const s = "// NOTE: x";\nconst y = 1;'),
-    0,
-    0,
-    0,
-  ],
-  // What a plugin cannot read, and the sweep does: a comment above the first token or below the last.
-  "header-cited": ["// Fixed in #1234.\nexport const a = 1;\n", 0, 0, 0],
-  "header-tagged": ["// NOTE: why it exists.\nexport const a = 1;\n", 0, 0, 0],
-  "footer-cited": ["export const a = 1;\n// Fixed in #1234.\n", 0, 0, 0],
-};
 
 const PROBES: Record<string, string> = {
   // no-jsx-comment-note
@@ -370,15 +144,6 @@ const PROBES: Record<string, string> = {
   [P("client-mock-other-hook.ts")]:
     'import { mock } from "bun:test";\nmock.module("@/client/hooks/useTenantEventsSoon", () => ({}));\n',
 
-  // no-jsx-comment-note: a spelling of the shape that is not markup
-  [P("jsx-spelled-in-template.tsx")]: "export const t = `a {/* fine */} b`;\n",
-  [P("jsx-spelled-in-attribute.tsx")]:
-    'export const e = <i title="{/* NOTE: y */}" />;\n',
-  [P("jsx-spelled-in-line-comment.tsx")]:
-    "export const a = 1;\n// writes {/* x */} here\nexport const b = 2;\n",
-  [P("jsx-spelled-from-parts.tsx")]:
-    'export const ok = "{/" + "* NOTE: x *" + "/}";\n',
-
   // no-raw-read-of-globbed-source
   [P("glob-raw.ts")]:
     `const { Glob } = await import("bun");\nlet n = 0;\nfor await (const rel of new Glob("**/*.ts").scan("${SRC}")) {\n  n += (await Bun.file(\`${SRC}/\${rel}\`).text()).length;\n}\nexport { n };\n`,
@@ -396,22 +161,16 @@ const PROBES: Record<string, string> = {
     `const { Glob } = await import("bun");\nfor await (const rel of new Glob("**/*.ts").scan("${SRC}")) {\n  void rel;\n}\nexport const doc = "Bun.file(x).text()";\n`,
   [P("glob-spelled-import.ts")]:
     `const { Glob } = await import("bun");\nconst note = 'from "@/tests/utils/source-text"';\nlet n = 0;\nfor await (const rel of new Glob("**/*.ts").scan("${SRC}")) {\n  n += (await Bun.file(\`${SRC}/\${rel}\`).text()).length;\n}\nexport { n, note };\n`,
+  // Biome's own lexer tells a regex literal, a comment and a string apart, as the sweep's scan did.
+  [P("glob-after-regex-literal.ts")]:
+    `const re = /["']/;\nconst { Glob } = await import("bun");\nlet n = 0;\nfor await (const rel of new Glob("**/*.ts").scan("${SRC}")) {\n  n += (await Bun.file(\`${SRC}/\${rel}\`).text()).length;\n}\nexport { n, re };\n`,
+  [P("glob-in-comment.ts")]:
+    `/* new Glob("${SRC}/**").scan(".") */\nexport const t = await Bun.file("package.json").text();\n`,
+  [P("glob-import-in-comment.ts")]:
+    `/**\n * import { codeOnly } from "@/tests/utils/source-text";\n */\nconst { Glob } = await import("bun");\nlet n = 0;\nfor await (const rel of new Glob("**/*.ts").scan("${SRC}")) {\n  n += (await Bun.file(\`${SRC}/\${rel}\`).text()).length;\n}\nexport { n };\n`,
   [P("glob-none.ts")]:
     'export const t = await Bun.file("package.json").text();\n',
 
-  // no-comment-provenance, comment-block-ceiling, no-tagged-docstring: the comment sweep's fixtures
-  ...Object.fromEntries(
-    Object.entries(COMMENT_FIXTURES).map(([name, [body]]) => [
-      P(`comment-${name}.ts`),
-      body,
-    ]),
-  ),
-  ...Object.fromEntries(
-    [...LINT_BLIND_FILES].map((path, i) => [
-      P(`lint-blind-copy-${i}.ts`),
-      readFileSync(join(ROOT, path), "utf8"),
-    ]),
-  ),
   ...Object.fromEntries(
     ENV_WAIVED.map((path, i) => [
       P(`env-waived-copy-${i}.ts`),
@@ -430,11 +189,7 @@ const RULES = {
   undo: "rewrote this namespace in place",
   auth: "Stub this client context or hook per file with `stubExports`",
   unused: "Suppression comment has no effect",
-  jsxText: "spells a JSX comment",
   glob: "A test that globs src/ reads each file",
-  cited: "says where the code came from",
-  long: "runs over 8 lines",
-  tagged: "opens with `NOTE:`",
 } as const;
 type Rule = keyof typeof RULES;
 
@@ -455,7 +210,6 @@ beforeAll(() => {
       ...Object.keys(PROBES),
       ...ENV_WAIVED,
       JOSE_WAIVED,
-      ...LINT_BLIND_FILES,
     ],
     cwd: ROOT,
   });
@@ -493,32 +247,15 @@ describe("no-jsx-comment-note", () => {
   test.each([
     ["jsx-untagged.tsx"],
     ["jsx-todo.tsx"],
+    ["jsx-note-in-string.tsx"],
     ["jsx-note-in-code.tsx"],
     ["jsx-note-beside-expression.tsx"],
   ])(
     "an untagged or TODO: JSX comment, and a NOTE: that is not one, pass (%s)",
     (name) => {
       expect(of(P(name), "jsx")).toBe(0);
-      expect(of(P(name), "jsxText")).toBe(0);
     },
   );
-
-  // The sweep this replaces counted `{/* … */}` in the raw text against the comments its scan found,
-  // and refused a file where they differed: a string, an attribute, a template or a `//` line that
-  // spells the shape, tagged or not.
-  test.each([
-    ["jsx-note-in-string.tsx"],
-    ["jsx-spelled-in-template.tsx"],
-    ["jsx-spelled-in-attribute.tsx"],
-    ["jsx-spelled-in-line-comment.tsx"],
-  ])("text that spells a JSX comment is refused (%s)", (name) => {
-    expect(of(P(name), "jsxText")).toBe(1);
-    expect(of(P(name), "jsx")).toBe(0);
-  });
-
-  test("the same text built from parts passes", () => {
-    expect(of(P("jsx-spelled-from-parts.tsx"), "jsxText")).toBe(0);
-  });
 });
 
 describe("no-bigint-cast", () => {
@@ -659,6 +396,12 @@ describe("no-raw-read-of-globbed-source", () => {
     expect(of(P("glob-spelled-read.ts"), "glob")).toBe(1);
   });
 
+  test("a regex literal holding quotes does not hide a raw read, and a comment is neither a glob nor an import", () => {
+    expect(of(P("glob-after-regex-literal.ts"), "glob")).toBe(1);
+    expect(of(P("glob-in-comment.ts"), "glob")).toBe(0);
+    expect(of(P("glob-import-in-comment.ts"), "glob")).toBe(1);
+  });
+
   test("a string that spells the import counts as adoption, as it did for the sweep", () => {
     expect(of(P("glob-spelled-import.ts"), "glob")).toBe(0);
   });
@@ -666,35 +409,5 @@ describe("no-raw-read-of-globbed-source", () => {
   test("a read through the scan, and a raw read in a test that globs nothing, pass", () => {
     expect(of(P("glob-scanned.ts"), "glob")).toBe(0);
     expect(of(P("glob-none.ts"), "glob")).toBe(0);
-  });
-});
-
-describe("the comment rules", () => {
-  test.each(Object.entries(COMMENT_FIXTURES).map(([name, f]) => [name, ...f]))(
-    "%s",
-    (name, _body, cited, long, tagged) => {
-      const path = P(`comment-${name}.ts`);
-      expect([of(path, "cited"), of(path, "long"), of(path, "tagged")]).toEqual(
-        [cited, long, tagged],
-      );
-    },
-  );
-
-  test("each file biome.jsonc keeps from them is skipped there and drawn by a copy elsewhere", () => {
-    [...LINT_BLIND_FILES].forEach((path, i) => {
-      expect(of(path, "cited") + of(path, "long")).toBe(0);
-      const copy = P(`lint-blind-copy-${i}.ts`);
-      expect(of(copy, "cited") + of(copy, "long")).toBeGreaterThan(0);
-    });
-  });
-
-  test("biome.jsonc skips exactly the files the comment sweep reads whole", () => {
-    const config = readFileSync(join(ROOT, "biome.jsonc"), "utf8");
-    const override = config.slice(
-      config.lastIndexOf("{", config.indexOf("no-comment-provenance.grit")),
-      config.indexOf("no-comment-provenance.grit"),
-    );
-    const skipped = [...override.matchAll(/"!([^"]+)"/g)].map((m) => m[1]);
-    expect(skipped.sort()).toEqual([...LINT_BLIND_FILES].sort());
   });
 });

@@ -246,6 +246,9 @@ model EndedSession {
   userId    BigInt   @map("user_id")
   expiresAt DateTime @map("expires_at")
   endedAt   DateTime @default(now()) @map("ended_at")
+  // Ended because a re-issued cookie replaced it in the same browser, not by a logout: its sockets
+  // reconnect under the new cookie instead of signing out.
+  replaced  Boolean  @default(false)
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 

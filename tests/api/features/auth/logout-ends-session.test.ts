@@ -76,7 +76,9 @@ afterAll(() => {
 });
 
 const server = (await import("@/app")).default;
-const { authPlugin, passwordFingerprint } = await import("@/api/lib/auth");
+const { authPlugin, isSessionLoggedOut, passwordFingerprint } = await import(
+  "@/api/lib/auth"
+);
 const { trackSocket, untrackSocket } = await import(
   "@/api/features/realtime/realtime.service"
 );
@@ -221,6 +223,15 @@ describe.skipIf(!dbUp)("logging out", () => {
     expect(await signedIn(session(phone))).toBe(true);
   });
 
+  test("ends a session presented under the legacy name behind an empty current cookie", async () => {
+    const token = await signIn();
+    const res = await logout(
+      `fazerai_auth_token=; secretaria_v4_auth_token=${token}`,
+    );
+    expect(res.status).toBe(200);
+    expect(await signedIn(session(token))).toBe(false);
+  });
+
   test("refuses the copy under the legacy cookie name too", async () => {
     const token = await signIn();
     await logout(session(token));
@@ -342,6 +353,10 @@ describe.skipIf(!dbUp)("logging out", () => {
       expect(await signedIn(session(first))).toBe(false);
       expect(await signedIn(session(renewed))).toBe(true);
       expect(closes).toEqual([WS_CLOSE.CREDENTIALS_CHANGED]);
+      // Replaced, not logged out: a socket refused on its re-check reconnects instead of signing out.
+      expect(await isSessionLoggedOut(jtiOf(first) ?? "")).toBe(false);
+      await logout(session(renewed));
+      expect(await isSessionLoggedOut(jtiOf(renewed) ?? "")).toBe(true);
     } finally {
       untrackSocket(userId, `${tag}-first`);
     }

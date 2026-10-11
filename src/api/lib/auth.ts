@@ -57,10 +57,14 @@ function sessionEnded(row: { endedSessions?: { jti: string }[] }): boolean {
   return (row.endedSessions?.length ?? 0) > 0;
 }
 
-// Whether a logout ended this session. Lets a socket refused on its re-check tell a logout (4401,
-// signed out) from a password change (4409, reconnect under the re-issued cookie).
-export async function isSessionEnded(sessionId: string): Promise<boolean> {
-  return (await prisma.endedSession.count({ where: { jti: sessionId } })) > 0;
+// Whether a LOGOUT ended this session, as opposed to a re-issued cookie replacing it. Lets a socket
+// refused on its re-check sign out (4401) or reconnect under the new cookie (4409).
+export async function isSessionLoggedOut(sessionId: string): Promise<boolean> {
+  return (
+    (await prisma.endedSession.count({
+      where: { jti: sessionId, replaced: false },
+    })) > 0
+  );
 }
 
 // A verified token that names its session.
@@ -86,7 +90,10 @@ function namedSession(payload: JWTPayload | false): NamedSession | null {
 // Records the session as ended until its token expires, dropping the rows past their expiry. True
 // when this call ended it, false when it already was. A deleted account (foreign key) has no
 // session left to end, and counts as this call ending it. Throws 503 on any other failure.
-async function recordEnded(session: NamedSession): Promise<boolean> {
+async function recordEnded(
+  session: NamedSession,
+  how: { replaced: boolean },
+): Promise<boolean> {
   try {
     const [, inserted] = await prisma.$transaction([
       prisma.endedSession.deleteMany({
@@ -98,6 +105,7 @@ async function recordEnded(session: NamedSession): Promise<boolean> {
             jti: session.sessionId,
             userId: session.userId,
             expiresAt: session.expiresAt,
+            replaced: how.replaced,
           },
         ],
         skipDuplicates: true,
@@ -252,11 +260,19 @@ export const authPlugin = new Elysia({ name: "auth" })
     }),
   )
   .derive({ as: "global" }, ({ jwt, cookie, headers }) => {
+    // The token the browser presents, under the current name or else the pre-rename one, picked the
+    // way `getAuthUser` picks it: an empty current cookie falls through to the legacy one.
+    function presentedToken(): string | null {
+      const current = cookie[COOKIE_NAME]?.value;
+      if (current && typeof current === "string") return current;
+      const legacy = cookie[LEGACY_COOKIE_NAME]?.value;
+      return legacy && typeof legacy === "string" ? legacy : null;
+    }
+
     // The session the browser's cookie names, verified, or null.
     async function currentSession(): Promise<NamedSession | null> {
-      const token =
-        cookie[COOKIE_NAME]?.value ?? cookie[LEGACY_COOKIE_NAME]?.value;
-      if (!token || typeof token !== "string") return null;
+      const token = presentedToken();
+      if (!token) return null;
       try {
         return namedSession((await jwt.verify(token)) as JWTPayload | false);
       } catch {
@@ -283,11 +299,17 @@ export const authPlugin = new Elysia({ name: "auth" })
           if (replaced?.sessionId !== options.proofSessionId) {
             throw new UnauthorizedError();
           }
-          if (!(await recordEnded(replaced))) throw new UnauthorizedError();
+          // NOTE: refused only when a logout DID end it. A failure to record is not a refusal: the
+          // caller (accepting an invitation) has already committed, and a 503 would leave a used
+          // invitation and no session; the replaced token then lives until it expires.
+          const ended = await recordEnded(replaced, { replaced: true }).catch(
+            () => true,
+          );
+          if (!ended) throw new UnauthorizedError();
         } else if (replaced) {
           // NOTE: best effort: failing to end the replaced session never refuses a sign-in that
           // proved itself; that token keeps working until it expires, as before sessions had ids.
-          await recordEnded(replaced).catch(() => false);
+          await recordEnded(replaced, { replaced: true }).catch(() => false);
         }
         if (replaced) {
           closeSessionSockets(
@@ -322,7 +344,7 @@ export const authPlugin = new Elysia({ name: "auth" })
       async endSession(): Promise<EndedSessionRef | null> {
         const session = await currentSession();
         if (!session) return null;
-        await recordEnded(session);
+        await recordEnded(session, { replaced: false });
         return { userId: session.userId, sessionId: session.sessionId };
       },
       // NOTE: WHICH PERSON the session cookie names, and the password hash it was verified against,
@@ -330,9 +352,8 @@ export const authPlugin = new Elysia({ name: "auth" })
       // the session is only proof of identity (accepting an invitation into the account it names), a
       // stale selector must not turn that proof into "signed out".
       async getSessionIdentity(): Promise<SessionIdentity | null> {
-        const token =
-          cookie[COOKIE_NAME]?.value ?? cookie[LEGACY_COOKIE_NAME]?.value;
-        if (!token || typeof token !== "string") return null;
+        const token = presentedToken();
+        if (!token) return null;
         let payload: JWTPayload | false;
         try {
           payload = (await jwt.verify(token)) as JWTPayload | false;

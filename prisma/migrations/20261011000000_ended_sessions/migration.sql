@@ -5,6 +5,7 @@ CREATE TABLE "ended_sessions" (
     "user_id" BIGINT NOT NULL,
     "expires_at" TIMESTAMP(3) NOT NULL,
     "ended_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "replaced" BOOLEAN NOT NULL DEFAULT false,
 
     CONSTRAINT "ended_sessions_pkey" PRIMARY KEY ("jti")
 );

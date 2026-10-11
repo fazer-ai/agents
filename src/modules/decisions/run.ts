@@ -160,12 +160,17 @@ export async function applyDecisions(
   // Latched ahead of dispatch, by fired action (LatchAhead).
   const ahead = new Map<number, string[]>();
   const leftNothing = (a: ActionReport) => a.outcome !== "ran" && !a.committed;
-  // The latches written ahead whose action settled without writing anything: released.
-  const undone = (): string[] =>
-    [...ahead].flatMap(([at, k]) => {
+  // Latched ahead for an action that was then not dispatched.
+  const dropped = new Set<string>();
+  // The latches written ahead whose action settled without writing anything, or never started:
+  // released.
+  const undone = (): string[] => [
+    ...[...ahead].flatMap(([at, k]) => {
       const a = slots[at];
       return a && leftNothing(a) ? k : [];
-    });
+    }),
+    ...dropped,
+  ];
   const settled = () => {
     progress.undo = undone();
   };
@@ -273,8 +278,25 @@ export async function applyDecisions(
     // Every member's fence first, then the dispatch in one go: a fence is database reads, and a
     // member dispatched while the next one's fence is still being asked would have its write out
     // before the others could join it.
+    // The group's latches go out before its fences are asked (LatchAhead), so a withdrawal that lands
+    // while they are written is seen by the fence after; a write that fails stops the group like a
+    // fence that could not answer.
+    if (!dryRun) {
+      const due = group.map((m) => [m.at, latchKeys(m.at)] as const);
+      try {
+        const all = due.flatMap(([, k]) => k);
+        if (all.length > 0) await latchAhead(all);
+        for (const [at, k] of due) {
+          if (k.length === 0) continue;
+          ahead.set(at, k);
+          for (const key of k) dropped.delete(key);
+        }
+      } catch (err) {
+        fenceError = { err };
+      }
+    }
     const admitted: typeof group = [];
-    for (const member of group) {
+    for (const member of fenceError === null ? group : []) {
       try {
         signal.throwIfAborted();
         if (!(await stillWanted())) {
@@ -296,18 +318,20 @@ export async function applyDecisions(
       admitted.length = 1;
       i = start + 1;
     }
-    // The admitted members' latches go out before any of them does (LatchAhead); a write that fails
-    // stops the group like a fence that could not answer.
-    if (fenceError === null && withdrawnAt === null && !dryRun) {
-      const due = admitted.map((m) => [m.at, latchKeys(m.at)] as const);
-      try {
-        const all = due.flatMap(([, k]) => k);
-        if (all.length > 0) await latchAhead(all);
-        for (const [at, k] of due) if (k.length > 0) ahead.set(at, k);
-      } catch (err) {
-        fenceError = { err };
-      }
+    // Latched ahead and not dispatched now (stopped, or left for after the head): released, unless
+    // a later run latches it again.
+    const dispatching = new Set(
+      fenceError === null && withdrawnAt === null
+        ? admitted.map((m) => m.at)
+        : [],
+    );
+    for (const member of group) {
+      const k = ahead.get(member.at);
+      if (!k || dispatching.has(member.at)) continue;
+      ahead.delete(member.at);
+      for (const key of k) dropped.add(key);
     }
+    settled();
     // A refusal or a deadline met while asking stops the whole group, the members already admitted
     // included: none of them has started, and the answer that stopped the last one is the newest.
     if (fenceError === null && withdrawnAt === null) {

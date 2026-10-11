@@ -584,7 +584,37 @@ describe("applyDecisions and the trigger state", () => {
     ).rejects.toThrow();
     expect(order).toEqual([`latched ${handoffKey}`, "dispatched"]);
     // In flight when the tick ended: it may have written, so its latch is not undone.
-    expect(progress.undo).toBeUndefined();
+    expect(progress.undo).toEqual([]);
+  });
+
+  test("a withdrawal that lands while the latch is written is seen before dispatch, and the latch released", async () => {
+    let withdrawn = false;
+    const order: string[] = [];
+    const t = tools(async () => "ok");
+    const r = await applyDecisions(
+      { rules: config.rules.slice(0, 1) },
+      answers,
+      t.list,
+      [],
+      t.controller.signal,
+      async () => {
+        order.push("fence");
+        return !withdrawn;
+      },
+      10,
+      () => null,
+      false,
+      new Set(),
+      {},
+      async () => {
+        order.push("latch");
+        withdrawn = true;
+      },
+    );
+    expect(order).toEqual(["latch", "fence"]);
+    expect(t.ran).toEqual([]);
+    expect(r.withdrawn).toBe(true);
+    expect(r.triggerState.release).toEqual([noteKey]);
   });
 
   test("a latch that cannot be written ahead stops the tick before anything is dispatched", async () => {

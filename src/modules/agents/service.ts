@@ -4,7 +4,11 @@ import type { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import { broadcastAgentConfigEvent } from "@/api/features/realtime/realtime.service";
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
-import { DEFAULT_MODEL_CONFIG, modelConfigSchema } from "@/graph/model-config";
+import {
+  DEFAULT_MODEL_CONFIG,
+  modelConfigReason,
+  modelConfigSchema,
+} from "@/graph/model-config";
 import { modelOptionalFor } from "@/graph/model-defaults";
 import {
   CUSTOMER_DELIVERY_NATIVE_TOOL_NAMES,
@@ -16,6 +20,7 @@ import { parseDbId, requireDbId } from "@/lib/db-id";
 import {
   AppError,
   NotFoundError,
+  quotingReason,
   TenantTargetRequiredError,
   type TranslatedParam,
 } from "@/lib/errors";
@@ -1876,7 +1881,7 @@ export async function updateAgent(
 
 // modelConfig may be {} (unconfigured — the agent simply won't run until set); any non-empty value
 // must be a full, valid model config (immediate feedback instead of a silent no-run at invoke).
-function validateModelConfigForWrite(raw: unknown): void {
+export function validateModelConfigForWrite(raw: unknown): void {
   if (raw == null) return;
   if (typeof raw !== "object" || Array.isArray(raw)) {
     throw new AppError(
@@ -1888,12 +1893,14 @@ function validateModelConfigForWrite(raw: unknown): void {
   if (Object.keys(raw as Record<string, unknown>).length === 0) return;
   const parsed = modelConfigSchema.safeParse(raw);
   if (!parsed.success) {
-    throw new AppError(
-      `invalid model config: ${parsed.error.message}`,
+    const reason = modelConfigReason(parsed.error);
+    const error = new AppError(
+      `invalid model config: ${reason.message}`,
       400,
       "errors.invalidModelConfigDetail",
-      { reason: parsed.error.message },
+      { reason: reason.message },
     );
+    throw quotingReason(error, reason);
   }
 }
 

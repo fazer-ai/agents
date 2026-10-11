@@ -1,7 +1,7 @@
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import config, { type InternalTarget } from "@/config";
-import { AppError } from "@/lib/errors";
+import { AppError, phrase, type TranslatedParam } from "@/lib/errors";
 
 // Anti-SSRF guard for every configurable outbound URL (webhooks, custom HTTP tools, MCP
 // connections, integration callbacks). Blocks private / loopback / link-local / CGNAT /
@@ -15,8 +15,15 @@ import { AppError } from "@/lib/errors";
 // so the residual threat is a privileged operator, not an anonymous attacker.
 
 export class SsrfError extends AppError {
-  constructor(message: string) {
-    super(`Blocked outbound URL: ${message}`, 400);
+  // Why the URL was refused, without the "Blocked outbound URL" frame: a refusal that quotes it inside
+  // its own sentence reads it in the caller's language when it is one of ours (a phrase).
+  readonly reason: string | TranslatedParam;
+  constructor(reason: string | TranslatedParam) {
+    super(
+      `Blocked outbound URL: ${typeof reason === "string" ? reason : reason.message}`,
+      400,
+    );
+    this.reason = reason;
   }
 }
 
@@ -221,7 +228,7 @@ export async function assertSafeOutboundUrl(
   try {
     url = new URL(rawUrl);
   } catch {
-    throw new SsrfError("invalid URL");
+    throw new SsrfError(phrase("errors.ssrfInvalidUrl", "invalid URL"));
   }
 
   const privateAllowed = opts.allowPrivate ?? config.ssrf.allowPrivateTargets;
@@ -236,7 +243,11 @@ export async function assertSafeOutboundUrl(
     : matchInternalTarget(url, opts.internalTargets);
   if (internal === "match") {
     if (url.protocol !== "https:" && url.protocol !== "http:") {
-      throw new SsrfError(`protocol ${url.protocol} not allowed`);
+      throw new SsrfError(
+        phrase("errors.ssrfProtocol", `protocol ${url.protocol} not allowed`, {
+          protocol: url.protocol,
+        }),
+      );
     }
     return url;
   }
@@ -247,12 +258,20 @@ export async function assertSafeOutboundUrl(
       .map((t) => t.port)
       .join(", ");
     throw new SsrfError(
-      `${host} is a declared internal target only on port ${declared}, not ${effectivePort(url)}`,
+      phrase(
+        "errors.ssrfInternalTargetPort",
+        `${host} is a declared internal target only on port ${declared}, not ${effectivePort(url)}`,
+        { host, declared, port: effectivePort(url) },
+      ),
     );
   }
 
   if (url.protocol !== "https:" && !(httpAllowed && url.protocol === "http:")) {
-    throw new SsrfError(`protocol ${url.protocol} not allowed`);
+    throw new SsrfError(
+      phrase("errors.ssrfProtocol", `protocol ${url.protocol} not allowed`, {
+        protocol: url.protocol,
+      }),
+    );
   }
 
   if (privateAllowed) return url;
@@ -261,7 +280,15 @@ export async function assertSafeOutboundUrl(
 
   if (isIP(host)) {
     if (isBlockedIp(host))
-      throw new SsrfError(`address ${host} is in a blocked range`);
+      throw new SsrfError(
+        phrase(
+          "errors.ssrfBlockedAddress",
+          `address ${host} is in a blocked range`,
+          {
+            host,
+          },
+        ),
+      );
     return url;
   }
 
@@ -276,16 +303,34 @@ export async function assertSafeOutboundUrl(
     // message is the only place an operator debugging a resolver outage can see that the lookup
     // threw rather than came back empty.
     if (isNameNotFound(e)) {
+      const code = String((e as { code?: string }).code);
       throw new SsrfError(
-        `${host} did not resolve (${(e as { code?: string }).code})`,
+        phrase(
+          "errors.ssrfDidNotResolveCode",
+          `${host} did not resolve (${code})`,
+          {
+            host,
+            code,
+          },
+        ),
       );
     }
     throw e;
   }
-  if (addresses.length === 0) throw new SsrfError(`${host} did not resolve`);
+  if (addresses.length === 0) {
+    throw new SsrfError(
+      phrase("errors.ssrfDidNotResolve", `${host} did not resolve`, { host }),
+    );
+  }
   for (const { address } of addresses) {
     if (isBlockedIp(address)) {
-      throw new SsrfError(`${host} resolves to blocked address ${address}`);
+      throw new SsrfError(
+        phrase(
+          "errors.ssrfResolvesToBlocked",
+          `${host} resolves to blocked address ${address}`,
+          { host, address },
+        ),
+      );
     }
   }
   return url;

@@ -1,5 +1,11 @@
-import { z } from "zod";
-import { AppError } from "@/lib/errors";
+import { type ZodError, z } from "zod";
+import {
+  AppError,
+  andList,
+  phrase,
+  reasonList,
+  type TranslatedParam,
+} from "@/lib/errors";
 import { modelOptionalFor } from "./model-defaults";
 import { REASONING_EFFORTS } from "./openai-reasoning";
 import {
@@ -85,23 +91,37 @@ export const modelConfigSchema = z
     promptCacheConversationTtl: z.enum(PROMPT_CACHE_TTLS).optional(),
   })
   .superRefine((cfg, ctx) => {
-    if (!cfg.model.trim() && !modelOptionalFor(cfg.provider)) {
+    // Each rule's reason is a phrase, so a refusal quotes it in the caller's language
+    // (modelConfigReason); the issue's own message is its English text.
+    const refuse = (path: string, reason: TranslatedParam) =>
       ctx.addIssue({
         code: "custom",
-        path: ["model"],
-        message: "model is required for this provider",
+        path: [path],
+        message: reason.message,
+        params: { phrase: reason },
       });
+    if (!cfg.model.trim() && !modelOptionalFor(cfg.provider)) {
+      refuse(
+        "model",
+        phrase(
+          "errors.modelConfigModelRequired",
+          "model is required for this provider",
+        ),
+      );
     }
     // NOTE: any effort above "none" needs /v1/responses, OpenAI's own endpoint: OpenAI-shaped servers
     // (openrouter, openai-compatible) mostly do not implement it, and the other providers spell
     // reasoning differently (Anthropic thinking budgets, Google thinkingBudget). Accepting the field
     // there would be a control that either does nothing or fails every turn.
     if (cfg.reasoningEffort !== undefined && cfg.provider !== "openai") {
-      ctx.addIssue({
-        code: "custom",
-        path: ["reasoningEffort"],
-        message: `reasoningEffort is only supported on the "openai" provider, not "${cfg.provider}"`,
-      });
+      refuse(
+        "reasoningEffort",
+        phrase(
+          "errors.modelConfigReasoningOpenaiOnly",
+          `reasoningEffort is only supported on the "openai" provider, not "${cfg.provider}"`,
+          { provider: cfg.provider },
+        ),
+      );
     }
     // OpenAI and the rest cache a repeated prefix on their own, so the fields would be a control
     // that does nothing there, the same reason reasoningEffort is refused off "openai".
@@ -113,13 +133,21 @@ export const modelConfigSchema = z
     if (
       !(PROVIDERS_WITH_PROMPT_CACHE as readonly string[]).includes(cfg.provider)
     ) {
+      const providers = andList(
+        PROVIDERS_WITH_PROMPT_CACHE.map((p) => JSON.stringify(p)),
+      );
+      const providersText =
+        typeof providers === "string" ? providers : providers.message;
       for (const f of cacheFields)
         if (cfg[f] !== undefined)
-          ctx.addIssue({
-            code: "custom",
-            path: [f],
-            message: `${f} is only supported on the ${PROVIDERS_WITH_PROMPT_CACHE.map((p) => `"${p}"`).join(" and ")} providers, not "${cfg.provider}"`,
-          });
+          refuse(
+            f,
+            phrase(
+              "errors.modelConfigPromptCacheProviders",
+              `${f} is only supported on the ${providersText} providers, not "${cfg.provider}"`,
+              { field: f, providers, provider: cfg.provider },
+            ),
+          );
     }
     if (
       !(PROVIDERS_WITH_PROMPT_CACHE_1H as readonly string[]).includes(
@@ -128,11 +156,14 @@ export const modelConfigSchema = z
     ) {
       for (const f of ["promptCacheTtl", "promptCacheConversationTtl"] as const)
         if (cfg[f] === "1h")
-          ctx.addIssue({
-            code: "custom",
-            path: [f],
-            message: `${f} "1h" is only supported on the "anthropic" provider, not "${cfg.provider}": its usage does not say which writes were 1h, so they could not be priced`,
-          });
+          refuse(
+            f,
+            phrase(
+              "errors.modelConfigPromptCache1hAnthropicOnly",
+              `${f} "1h" is only supported on the "anthropic" provider, not "${cfg.provider}": its usage does not say which writes were 1h, so they could not be priced`,
+              { field: f, provider: cfg.provider },
+            ),
+          );
     }
     // NOTE: the API refuses a longer TTL after a shorter one, and the prefix comes first, so a 1h
     // conversation behind a 5m prefix would fail every call.
@@ -140,14 +171,39 @@ export const modelConfigSchema = z
       cfg.promptCacheConversationTtl === "1h" &&
       (cfg.promptCacheTtl ?? "5m") === "5m"
     ) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["promptCacheConversationTtl"],
-        message:
-          'promptCacheConversationTtl "1h" needs promptCacheTtl "1h": a longer cache TTL cannot follow a shorter one',
-      });
+      refuse(
+        "promptCacheConversationTtl",
+        phrase(
+          "errors.modelConfigConversationTtlAfterPrefix",
+          `promptCacheConversationTtl "${cfg.promptCacheConversationTtl}" needs promptCacheTtl "${cfg.promptCacheConversationTtl}": a longer cache TTL cannot follow a shorter one`,
+          {
+            conversationTtl: cfg.promptCacheConversationTtl,
+            prefixTtl: cfg.promptCacheConversationTtl,
+          },
+        ),
+      );
     }
   });
+
+// Why a model config was refused, one phrase per issue in the caller's language. Ours (the rules
+// above) carry their own phrase; zod's built-in checks (a number out of range, an unknown provider)
+// answer in zod's English, quoted as the validator's words rather than read as part of our sentence.
+export function modelConfigReason(error: ZodError): TranslatedParam {
+  return reasonList(
+    error.issues.map((issue) => {
+      const own = (issue as { params?: { phrase?: TranslatedParam } }).params
+        ?.phrase;
+      if (own) return own;
+      const path = issue.path.map(String).join(".") || "modelConfig";
+      const detail = issue.message.replaceAll("`", "'");
+      return phrase(
+        "errors.modelConfigValidatorSaid",
+        `${path}: the validator answered "${detail}"`,
+        { path, detail },
+      );
+    }),
+  );
+}
 
 export type ModelConfig = z.infer<typeof modelConfigSchema>;
 

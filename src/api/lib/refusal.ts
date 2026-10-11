@@ -1,10 +1,20 @@
-import { getLocaleFromHeader, translateWithLocale } from "@/api/lib/i18n";
+import {
+  getLocaleFromHeader,
+  type Locale,
+  translateWithLocale,
+} from "@/api/lib/i18n";
 import { REJECTED_TENANT_SELECTOR_HEADER } from "@/lib/console-params";
 import {
   ActiveTenantNotFoundError,
   type AppError,
   TenantSelectorRefusedError,
+  type TranslatedParam,
 } from "@/lib/errors";
+
+// The phrases every refusal may compose with, registered for the i18n extractor here.
+// translate('errors.listAnd', '{{first}} and {{last}}')
+// translate('errors.listOr', '{{first}} or {{last}}')
+// translate('errors.reasonList', '{{first}}; {{rest}}')
 
 // What a refusal ANSWERS: the sentence, localized for whoever reads it, and `field`, the server's own
 // name for the one input it is about, identical in every language so a client never parses prose
@@ -21,6 +31,20 @@ export interface RefusalBody {
   turnId?: string;
 }
 
+// A phrase in `locale`, its own phrase params first: a reason that names where it failed (`block "b1"`)
+// is one phrase quoting another, and both read in the caller's language.
+function translatedPhrase(locale: Locale, p: TranslatedParam): string {
+  const params = p.params
+    ? Object.fromEntries(
+        Object.entries(p.params).map(([name, v]) => [
+          name,
+          typeof v === "object" ? translatedPhrase(locale, v) : v,
+        ]),
+      )
+    : undefined;
+  return translateWithLocale(locale, p.key, p.message, params);
+}
+
 export function refusalBody(
   error: AppError,
   acceptLanguage: string | null,
@@ -32,7 +56,7 @@ export function refusalBody(
         ...Object.fromEntries(
           Object.entries(error.translatedParams).map(([name, p]) => [
             name,
-            translateWithLocale(locale, p.key, p.message, p.params),
+            translatedPhrase(locale, p),
           ]),
         ),
       }

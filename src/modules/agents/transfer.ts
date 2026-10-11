@@ -1892,7 +1892,8 @@ function readBundledTemplate(
       ...(tpl.approvalTtlHours !== undefined
         ? { approvalTtlHours: tpl.approvalTtlHours }
         : {}),
-    }) ?? (slugProblem(tpl.slug) ? `slug: ${slugProblem(tpl.slug)}.` : null);
+    })?.message ??
+    (slugProblem(tpl.slug) ? `slug: ${slugProblem(tpl.slug)}.` : null);
   if (metaFault) return { ok: false, reason: metaFault };
   const content = parseAuthoredTemplate(tpl.blocks, tpl.fields, tpl.style);
   if (!content.ok) return { ok: false, reason: content.reason };

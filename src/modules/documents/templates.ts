@@ -6,9 +6,12 @@ import {
   AppError,
   type ErrorTranslationKey,
   NotFoundError,
+  phrase,
+  quotingReason,
+  type TranslatedParam,
 } from "@/lib/errors";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
-import { unstorableProblem } from "@/lib/text";
+import { unstorablePhrase } from "@/lib/text";
 import { markUndisclosed, undisclosedMoved } from "@/modules/audit/projection";
 import { auditMutation, projectionMoved } from "@/modules/audit/service";
 import {
@@ -36,7 +39,7 @@ import {
   nextNumberProblem,
   usedNumberProblem,
 } from "./numbering";
-import { unprintableProblem } from "./printable";
+import { unprintablePhrase } from "./printable";
 import { renderDocumentPdf } from "./render";
 import { sampleValues } from "./sample";
 import { documentToolName, slugifyTemplateName, slugProblem } from "./slug";
@@ -45,6 +48,7 @@ import {
   authoredStyleProblem,
   type DocumentValues,
   invalidDocumentTemplate,
+  invalidDocumentValues,
   parseAuthoredTemplate,
   parseDocumentValues,
   parseTemplateContent,
@@ -280,7 +284,7 @@ export async function documentTemplateWriteProblem(
 ): Promise<string | null> {
   const { deriveSlugFromName, excludeId } = opts;
   const metadata = templateMetadataProblem(input);
-  if (metadata) return metadata;
+  if (metadata) return metadata.message;
   if (input.nextNumber !== undefined) {
     const problem = await nextNumberWriteProblem(
       ctx,
@@ -507,7 +511,7 @@ export function templateMetadataProblem(input: {
   description?: unknown;
   numberPrefix?: unknown;
   approvalTtlHours?: unknown;
-}): string | null {
+}): TranslatedParam | null {
   if (input.approvalTtlHours !== undefined) {
     const problem = approvalTtlProblem(input.approvalTtlHours);
     if (problem) return problem;
@@ -516,18 +520,26 @@ export function templateMetadataProblem(input: {
     input.name !== undefined &&
     !templateNameSchema.safeParse(input.name).success
   ) {
-    return "name: must be between 1 and 120 characters.";
+    return phrase(
+      "errors.documentNameLength",
+      "name: must be between 1 and 120 characters.",
+      { min: 1, max: 120 },
+    );
   }
   // The name is DRAWN: it resolves {{doc_title}}, which every bundled starter prints in its header.
   if (typeof input.name === "string") {
-    const problem = unprintableProblem(input.name, "name");
+    const problem = unprintablePhrase(input.name, "name");
     if (problem) return problem;
   }
   if (
     input.description !== undefined &&
     !templateDescriptionSchema.safeParse(input.description ?? null).success
   ) {
-    return "description: must be at most 2000 characters.";
+    return phrase(
+      "errors.documentDescriptionLength",
+      "description: must be at most 2000 characters.",
+      { max: 2000 },
+    );
   }
   // NOT `unprintableProblem`, and the difference is the point: the description is read by the MODEL
   // and drawn by nobody, so an emoji in it is fine and refusing one would be a rule with no reason
@@ -535,20 +547,24 @@ export function templateMetadataProblem(input: {
   // value reached `document_templates.description`, and Postgres answered with a 500 for REST and
   // MCP, or by aborting the whole transaction an agent import runs in.
   if (typeof input.description === "string") {
-    const problem = unstorableProblem(input.description, "description");
+    const problem = unstorablePhrase(input.description, "description");
     if (problem) return problem;
   }
   if (
     input.numberPrefix !== undefined &&
     !templateNumberPrefixSchema.safeParse(input.numberPrefix ?? null).success
   ) {
-    return "numberPrefix: must be at most 20 characters.";
+    return phrase(
+      "errors.documentNumberPrefixLength",
+      "numberPrefix: must be at most 20 characters.",
+      { max: 20 },
+    );
   }
   // The prefix is DRAWN: it is the front of every document number on the page. A length check alone
   // let a character the fonts cannot encode through, and the renderer then prints a different one —
   // on every document that template ever issues.
   if (typeof input.numberPrefix === "string") {
-    const problem = unprintableProblem(input.numberPrefix, "numberPrefix");
+    const problem = unprintablePhrase(input.numberPrefix, "numberPrefix");
     if (problem) return problem;
   }
   return null;
@@ -557,14 +573,18 @@ export function templateMetadataProblem(input: {
 // How long an approval request waits for a person, in whole hours (docs/documents.md, Approval).
 export const APPROVAL_TTL_HOURS = { min: 1, max: 168, default: 24 } as const;
 
-export function approvalTtlProblem(value: unknown): string | null {
+export function approvalTtlProblem(value: unknown): TranslatedParam | null {
   if (
     typeof value !== "number" ||
     !Number.isInteger(value) ||
     value < APPROVAL_TTL_HOURS.min ||
     value > APPROVAL_TTL_HOURS.max
   ) {
-    return `approvalTtlHours: must be a whole number of hours from ${APPROVAL_TTL_HOURS.min} to ${APPROVAL_TTL_HOURS.max}.`;
+    return phrase(
+      "errors.documentApprovalTtlRange",
+      `approvalTtlHours: must be a whole number of hours from ${APPROVAL_TTL_HOURS.min} to ${APPROVAL_TTL_HOURS.max}.`,
+      { min: APPROVAL_TTL_HOURS.min, max: APPROVAL_TTL_HOURS.max },
+    );
   }
   return null;
 }
@@ -572,9 +592,12 @@ export function approvalTtlProblem(value: unknown): string | null {
 function parseApprovalTtl(value: unknown): number {
   const problem = approvalTtlProblem(value);
   if (problem) {
-    throw new AppError(problem, 400, "errors.invalidDocumentApprovalTtl", {
-      reason: problem,
-    });
+    throw quotingReason(
+      new AppError(problem.message, 400, "errors.invalidDocumentApprovalTtl", {
+        reason: problem.message,
+      }),
+      problem,
+    );
   }
   return value as number;
 }
@@ -582,9 +605,12 @@ function parseApprovalTtl(value: unknown): number {
 function parseNumberPrefix(value: unknown): string | null {
   const problem = templateMetadataProblem({ numberPrefix: value });
   if (problem) {
-    throw new AppError(problem, 400, "errors.invalidDocumentNumberPrefix", {
-      reason: problem,
-    });
+    throw quotingReason(
+      new AppError(problem.message, 400, "errors.invalidDocumentNumberPrefix", {
+        reason: problem.message,
+      }),
+      problem,
+    );
   }
   // biome-ignore lint/plugin/require-parse-input: not caller input, wrapped by invalidDocumentTemplate, which names the rule that broke
   return templateNumberPrefixSchema.parse(value ?? null);
@@ -649,11 +675,14 @@ async function counterForNextNumber(
 function parseTemplateDescription(value: unknown): string | null {
   const problem = templateMetadataProblem({ description: value });
   if (problem) {
-    throw new AppError(
+    throw quotingReason(
+      new AppError(
+        problem.message,
+        400,
+        "errors.invalidDocumentTemplateDescription",
+        { reason: problem.message },
+      ),
       problem,
-      400,
-      "errors.invalidDocumentTemplateDescription",
-      { reason: problem },
     );
   }
   // biome-ignore lint/plugin/require-parse-input: not caller input, wrapped by invalidDocumentTemplate, which names the rule that broke
@@ -663,9 +692,12 @@ function parseTemplateDescription(value: unknown): string | null {
 function parseTemplateName(value: unknown): string {
   const problem = templateMetadataProblem({ name: value });
   if (problem) {
-    throw new AppError(problem, 400, "errors.invalidDocumentTemplateName", {
-      reason: problem,
-    });
+    throw quotingReason(
+      new AppError(problem.message, 400, "errors.invalidDocumentTemplateName", {
+        reason: problem.message,
+      }),
+      problem,
+    );
   }
   // biome-ignore lint/plugin/require-parse-input: not caller input, wrapped by invalidDocumentTemplate, which names the rule that broke
   return templateNameSchema.parse(value);
@@ -692,7 +724,7 @@ function validated(input: {
     input.authored,
   );
   if (!parsed.ok) {
-    throw invalidDocumentTemplate(parsed.reason);
+    throw invalidDocumentTemplate(parsed.phrase);
   }
   return parsed.content;
 }
@@ -841,7 +873,10 @@ export async function createDocumentTemplate(
     // than ignored — a 200 that discarded what was asked for is the failure this whole field exists
     // to prevent.
     throw invalidDocumentTemplate(
-      "blockText: only an update can replace text by block id; when creating, write the text inside blocks.",
+      phrase(
+        "errors.documentBlockTextOnCreate",
+        "blockText: only an update can replace text by block id; when creating, write the text inside blocks.",
+      ),
     );
   }
   const content = validated({
@@ -978,7 +1013,11 @@ function applyBlockText(
   for (const id of Object.keys(text)) {
     if (byId.get(id)?.type !== "text") {
       throw invalidDocumentTemplate(
-        `blockText: "${id}" is not a text block of this template.`,
+        phrase(
+          "errors.documentBlockTextNotText",
+          `blockText: "${id}" is not a text block of this template.`,
+          { id },
+        ),
       );
     }
   }
@@ -1032,7 +1071,7 @@ export function patchedContent(
   // blockText patch. Checked here, on the values as they arrived, which is the only place that knows
   // they came from a caller at all.
   for (const [id, text] of Object.entries(patch.blockText ?? {})) {
-    const problem = unprintableProblem(text, `blockText."${id}"`);
+    const problem = unprintablePhrase(text, `blockText."${id}"`);
     if (problem) throw invalidDocumentTemplate(problem);
   }
   const rawFields = (patch.fields ?? stored?.fields ?? []) as unknown[];
@@ -1091,12 +1130,15 @@ export function patchedContent(
       !authored.blocks &&
       !authored.fields
     ) {
-      throw new AppError(
+      const unreadable = new AppError(
         `this template contains content a newer version wrote and this one cannot read, so saving from here would drop it (${e.message}) — edit it from the client that wrote it, or send blocks explicitly to replace them.`,
         409,
         "errors.documentTemplateUnreadable",
         { reason: e.message },
       );
+      // The stored content's reason, in the caller's language like the sentence around it.
+      const reason = e.translatedParams?.reason;
+      throw reason ? quotingReason(unreadable, reason) : unreadable;
     }
     throw e;
   }
@@ -1343,7 +1385,7 @@ export async function readRenderContext(
 // prints a blank where the customer expects a name, a string where a number belongs throws inside
 // react-pdf, and a line-item array past the ceiling lays out on the API process at whatever length
 // the caller sent. Omitting them is the other path, and it stays free — sample values are ours.
-function callerValues(
+export function callerValues(
   fields: DocumentField[],
   raw: unknown,
   now: Date,
@@ -1353,11 +1395,7 @@ function callerValues(
 ): DocumentValues {
   if (raw === undefined) return sampleValues(fields, now, day, locale);
   const parsed = parseDocumentValues(fields, raw);
-  if (!parsed.ok) {
-    throw new AppError(parsed.reason, 400, "errors.invalidDocumentValues", {
-      reason: parsed.reason,
-    });
-  }
+  if (!parsed.ok) throw invalidDocumentValues(parsed);
   return parsed.values;
 }
 

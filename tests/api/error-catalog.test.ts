@@ -249,9 +249,9 @@ async function errorClasses(): Promise<string[]> {
   return classes;
 }
 
-// Every refusal in `src` that pairs a LITERAL message with a key, in five spellings: `new <Class>(`,
-// `super(`, `{ message, key }` built and thrown elsewhere, `translate(key, msg)` and
-// `translateWithLocale(locale, key, msg)`. The class alternation is DERIVED from src/lib/errors.ts,
+// Every refusal in `src` that pairs a LITERAL message with a key, in six spellings: `new <Class>(`,
+// `super(`, `{ message, key }` built and thrown elsewhere, `phrase(key, msg)` (a reason a refusal
+// quotes, src/lib/errors.ts), `translate(key, msg)` and `translateWithLocale(locale, key, msg)`. The class alternation is DERIVED from src/lib/errors.ts,
 // since a hard-coded list goes stale with the next subclass. The key comes FIRST in the translate
 // forms, so the groups are NAMED (a transposed positional reader still runs, reading a message as a
 // key), and those forms are anchored to the CALL: by adjacency they would also pair neighbouring
@@ -265,6 +265,7 @@ async function throwSiteRes(): Promise<RegExp[]> {
     ),
     new RegExp(`super\\(\\s*${MESSAGE}\\s*,\\s*${STATUS}${KEY}`, "gs"),
     new RegExp(`message:\\s*${MESSAGE}\\s*,\\s*key:\\s*${KEY}`, "gs"),
+    new RegExp(`\\bphrase\\(\\s*${KEY}\\s*,\\s*${MESSAGE}`, "gs"),
     new RegExp(`\\btranslate\\(\\s*${KEY}\\s*,\\s*${MESSAGE}`, "gs"),
     new RegExp(
       `\\btranslateWithLocale\\(\\s*\\w+\\s*,\\s*${KEY}\\s*,\\s*${MESSAGE}`,
@@ -273,7 +274,7 @@ async function throwSiteRes(): Promise<RegExp[]> {
   ];
 }
 
-// THE SIXTH PRODUCER, and the only one that cannot be a regex over the tree: a subclass that
+// THE SEVENTH PRODUCER, and the only one that cannot be a regex over the tree: a subclass that
 // hard-codes BOTH its sentence and its key, so `throw new ProEditionError()` names nothing for a
 // sweep to find. The pair is split between the constructor's `message = "…"` default and the
 // `super(...)` call, so the file is read class by class: a single greedy regex pairs a default with

@@ -1,3 +1,5 @@
+import { phrase, type TranslatedParam } from "@/lib/errors";
+
 // Which characters a document can actually PRINT. The standard 14 PDF fonts use WinAnsiEncoding,
 // and pdfkit writes an unmapped UTF-16 unit above 255 as two bytes the reader draws as unrelated
 // Latin-1 glyphs (中 prints as "-"), silently. So such text is REFUSED, at the keyboard and at the
@@ -46,6 +48,14 @@ export function unprintableCharacters(text: string): string[] {
 // field in. It names the characters, because "this text cannot be printed" about a 2,000-character
 // block is not something anyone can act on.
 export function unprintableProblem(text: string, what: string): string | null {
+  return unprintablePhrase(text, what)?.message ?? null;
+}
+
+// The same sentence as a phrase, for a refusal that quotes it inside a translated one.
+export function unprintablePhrase(
+  text: string,
+  what: string,
+): TranslatedParam | null {
   const bad = unprintableCharacters(text);
   if (bad.length === 0) return null;
   // A control has no shape to quote, and pasting one into the message would put it in a log line and
@@ -56,7 +66,12 @@ export function unprintableProblem(text: string, what: string): string | null {
       ? `U+${code.toString(16).toUpperCase().padStart(4, "0")}`
       : ch;
   });
-  return `${what} contains characters this document cannot print (${named.join(" ")}) — the PDF fonts cover Latin text only, and printing them anyway would put a different character in the document.`;
+  const characters = named.join(" ");
+  return phrase(
+    "errors.unprintableReason",
+    `${what} contains characters this document cannot print (${characters}) — the PDF fonts cover Latin text only, and printing them anyway would put a different character in the document.`,
+    { field: what, characters },
+  );
 }
 
 // Capitals for a label, raised only where the capital itself prints: "µ" has no WinAnsi capital (its

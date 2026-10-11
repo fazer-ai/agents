@@ -1,6 +1,12 @@
 import { type ZodError, z } from "zod";
-import { AppError } from "@/lib/errors";
-import { unstorableProblem } from "@/lib/text";
+import {
+  AppError,
+  orList,
+  phrase,
+  quotingReason,
+  type TranslatedParam,
+} from "@/lib/errors";
+import { unstorablePhrase } from "@/lib/text";
 import {
   blockCanDraw,
   type DocumentBlock,
@@ -16,7 +22,7 @@ import {
   MAX_TOKENS_PER_DOCUMENT,
   parseDocumentStyle,
 } from "./blocks";
-import { unprintableProblem } from "./printable";
+import { unprintablePhrase } from "./printable";
 import {
   DOCUMENT_TOKEN_RE,
   isReservedTokenName,
@@ -41,6 +47,24 @@ function issues(e: ZodError): string {
     .join("; ");
 }
 
+// A refusal's reason as the English sentence (MCP, logs, the untranslated fallback) and as the phrase
+// a REST caller reads in their own language. One value, so the two cannot say different things.
+export interface Refused {
+  ok: false;
+  reason: string;
+  phrase: TranslatedParam;
+}
+
+function refused(p: TranslatedParam): Refused {
+  return { ok: false, reason: p.message, phrase: p };
+}
+
+// Where a token fault sits: a block by id, or the style's footer (an identifier, the same in every
+// language).
+function blockWhere(id: string): TranslatedParam {
+  return phrase("errors.documentWhereBlock", `block "${id}"`, { id });
+}
+
 export const documentBlocksSchema = z.array(documentBlockSchema);
 export const documentFieldsSchema = z.array(documentFieldSchema);
 
@@ -51,7 +75,7 @@ export interface ParsedTemplateContent {
 
 export type TemplateParse =
   | { ok: true; content: ParsedTemplateContent }
-  | { ok: false; reason: string };
+  | Refused;
 
 const BLOCK_TYPES_HINT =
   'blocks are {"type":"header"|"text"|"fields"|"lineItems"|"totals"|"divider", "id":"…"}';
@@ -164,13 +188,25 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
 // caller wrote. The tolerant reader answers ANY invalid value by returning every default, so an
 // operator who mistyped one colour would have their font, margin and currency silently replaced too
 // — and be told it saved.
-export function authoredStyleProblem(rawStyle: unknown): string | null {
+export function authoredStyleProblem(
+  rawStyle: unknown,
+): TranslatedParam | null {
   const styleIn = rawStyle ?? {};
   const parsed = documentStyleSchema.partial().safeParse(styleIn);
-  if (!parsed.success) return `style: ${issues(parsed.error)}`;
+  if (!parsed.success) {
+    const detail = issues(parsed.error);
+    return phrase("errors.documentHalfValidatorSaid", `style: ${detail}`, {
+      half: "style",
+      detail,
+    });
+  }
   const dropped = droppedKey(styleIn, parsed.data, "");
   if (dropped) {
-    return `style: "${dropped}" is not a style property, so it would be stored and never take effect. Check the spelling against document_template_schema, or remove it.`;
+    return phrase(
+      "errors.documentStyleUnknownProperty",
+      `style: "${dropped}" is not a style property, so it would be stored and never take effect. Check the spelling against document_template_schema, or remove it.`,
+      { property: dropped },
+    );
   }
   // The style the CALLER sent, checked for printability here rather than through the authored-halves
   // pass: a partial style patch is never marked as an authored half (the value validated there is
@@ -180,7 +216,7 @@ export function authoredStyleProblem(rawStyle: unknown): string | null {
     (styleIn ?? {}) as Record<string, unknown>,
   )) {
     if (typeof value !== "string") continue;
-    const problem = unprintableProblem(value, `style.${key}`);
+    const problem = unprintablePhrase(value, `style.${key}`);
     if (problem) return problem;
   }
   return null;
@@ -194,7 +230,7 @@ export interface ParsedAuthoredTemplate {
 
 export type AuthoredTemplateParse =
   | { ok: true; content: ParsedAuthoredTemplate }
-  | { ok: false; reason: string };
+  | Refused;
 
 // Which halves the CALLER wrote. The strict pass applies to those and only those: a half that came
 // out of storage is the newer build's, and refusing an ordinary save because a column carries a
@@ -228,23 +264,29 @@ export function parseAuthoredTemplate(
   ).filter(([label]) => authored[label])) {
     const dropped = droppedKey(input, parsed, "");
     if (dropped) {
-      return {
-        ok: false,
-        reason: `${label}: "${dropped}" is not a property this version understands, so it would be stored and never take effect. Check the spelling against document_template_schema, or remove it.`,
-      };
+      return refused(
+        phrase(
+          "errors.documentUnknownProperty",
+          `${label}: "${dropped}" is not a property this version understands, so it would be stored and never take effect. Check the spelling against document_template_schema, or remove it.`,
+          { half: label, property: dropped },
+        ),
+      );
     }
   }
 
   if (Array.isArray(fieldsIn) && fieldsIn.length > MAX_FIELDS_PER_DOCUMENT) {
-    return {
-      ok: false,
-      reason: `fields: at most ${MAX_FIELDS_PER_DOCUMENT} per document, got ${fieldsIn.length} — the declared fields become the agent's tool schema, published on every turn.`,
-    };
+    return refused(
+      phrase(
+        "errors.documentTooManyFields",
+        `fields: at most ${MAX_FIELDS_PER_DOCUMENT} per document, got ${fieldsIn.length} — the declared fields become the agent's tool schema, published on every turn.`,
+        { max: MAX_FIELDS_PER_DOCUMENT, count: fieldsIn.length },
+      ),
+    );
   }
 
   if (authored.style) {
     const problem = authoredStyleProblem(styleIn);
-    if (problem) return { ok: false, reason: problem };
+    if (problem) return refused(problem);
   }
 
   // NOTE: A layout that draws NOTHING is not a document: `blocks` defaults to [] and templates to
@@ -252,11 +294,12 @@ export function parseAuthoredTemplate(
   // is asked here (blockCanDraw); documentDraws settles the rest with the values in hand.
   if (authored.blocks) {
     if (!shared.content.blocks.some(blockCanDraw)) {
-      return {
-        ok: false,
-        reason:
+      return refused(
+        phrase(
+          "errors.documentNothingPrints",
           "blocks: a document needs at least one block that can print something (header, text, fields, lineItems or totals) — as written, every issued document would be a numbered blank page.",
-      };
+        ),
+      );
     }
   }
 
@@ -271,14 +314,14 @@ export function parseAuthoredTemplate(
     authored,
   );
   for (const [label, text] of printed) {
-    const problem = unprintableProblem(text, label);
-    if (problem) return { ok: false, reason: problem };
+    const problem = unprintablePhrase(text, label);
+    if (problem) return refused(problem);
   }
   // The other question, asked of the keys the loop above deliberately skips: printable and storable
   // are different rules, and an id is held only to the second one.
   for (const [label, text] of structural) {
-    const problem = unstorableProblem(text, label);
-    if (problem) return { ok: false, reason: problem };
+    const problem = unstorablePhrase(text, label);
+    if (problem) return refused(problem);
   }
 
   return { ok: true, content: { ...shared.content, style } };
@@ -371,32 +414,48 @@ export function parseTemplateContent(
 ): TemplateParse {
   const blocksParsed = documentBlocksSchema.safeParse(rawBlocks ?? []);
   if (!blocksParsed.success) {
-    return {
-      ok: false,
-      reason: `blocks: ${issues(blocksParsed.error)} — ${BLOCK_TYPES_HINT}.`,
-    };
+    const detail = issues(blocksParsed.error);
+    return refused(
+      phrase(
+        "errors.documentBlocksValidatorSaid",
+        `blocks: ${detail} — ${BLOCK_TYPES_HINT}.`,
+        { detail },
+      ),
+    );
   }
   const fieldsParsed = documentFieldsSchema.safeParse(rawFields ?? []);
   if (!fieldsParsed.success) {
-    return { ok: false, reason: `fields: ${issues(fieldsParsed.error)}` };
+    const detail = issues(fieldsParsed.error);
+    return refused(
+      phrase("errors.documentHalfValidatorSaid", `fields: ${detail}`, {
+        half: "fields",
+        detail,
+      }),
+    );
   }
   const blocks = blocksParsed.data;
   const fields = fieldsParsed.data;
 
   if (blocks.length > MAX_BLOCKS_PER_DOCUMENT) {
-    return {
-      ok: false,
-      reason: `blocks: at most ${MAX_BLOCKS_PER_DOCUMENT} per document, got ${blocks.length}.`,
-    };
+    return refused(
+      phrase(
+        "errors.documentTooManyBlocks",
+        `blocks: at most ${MAX_BLOCKS_PER_DOCUMENT} per document, got ${blocks.length}.`,
+        { max: MAX_BLOCKS_PER_DOCUMENT, count: blocks.length },
+      ),
+    );
   }
 
   const seenBlockIds = new Set<string>();
   for (const b of blocks) {
     if (seenBlockIds.has(b.id)) {
-      return {
-        ok: false,
-        reason: `blocks: duplicate block id "${b.id}" — ids address a block across reorders, so two blocks cannot share one.`,
-      };
+      return refused(
+        phrase(
+          "errors.documentDuplicateBlockId",
+          `blocks: duplicate block id "${b.id}" — ids address a block across reorders, so two blocks cannot share one.`,
+          { id: b.id },
+        ),
+      );
     }
     seenBlockIds.add(b.id);
   }
@@ -404,13 +463,22 @@ export function parseTemplateContent(
   const byName = new Map<string, DocumentField>();
   for (const f of fields) {
     if (byName.has(f.name)) {
-      return { ok: false, reason: `fields: duplicate field name "${f.name}".` };
+      return refused(
+        phrase(
+          "errors.documentDuplicateFieldName",
+          `fields: duplicate field name "${f.name}".`,
+          { name: f.name },
+        ),
+      );
     }
     if (isReservedTokenName(f.name)) {
-      return {
-        ok: false,
-        reason: `fields: "${f.name}" starts with a reserved prefix (company_, empresa_, doc_, documento_) — those names already resolve to the company profile or the document itself, and a field would shadow them silently.`,
-      };
+      return refused(
+        phrase(
+          "errors.documentReservedFieldPrefix",
+          `fields: "${f.name}" starts with a reserved prefix (company_, empresa_, doc_, documento_) — those names already resolve to the company profile or the document itself, and a field would shadow them silently.`,
+          { name: f.name },
+        ),
+      );
     }
     byName.set(f.name, f);
   }
@@ -419,25 +487,35 @@ export function parseTemplateContent(
     for (const ref of fieldRefs(b)) {
       const target = byName.get(ref.name);
       if (!target) {
-        return {
-          ok: false,
-          reason: `blocks: ${b.type} block "${b.id}" points ${ref.prop} at "${ref.name}", which is not a declared field.`,
-        };
+        return refused(
+          phrase(
+            "errors.documentBlockFieldUndeclared",
+            `blocks: ${b.type} block "${b.id}" points ${ref.prop} at "${ref.name}", which is not a declared field.`,
+            { type: b.type, id: b.id, prop: ref.prop, name: ref.name },
+          ),
+        );
       }
       if (!ref.types.includes(target.type)) {
-        return {
-          ok: false,
-          reason: `blocks: ${b.type} block "${b.id}" needs ${ref.prop} to name a field of type ${ref.types.join(" or ")}, but "${ref.name}" is ${target.type}.`,
-        };
+        return refused(
+          phrase(
+            "errors.documentBlockFieldWrongType",
+            `blocks: ${b.type} block "${b.id}" needs ${ref.prop} to name a field of type ${ref.types.join(" or ")}, but "${ref.name}" is ${target.type}.`,
+            {
+              type: b.type,
+              id: b.id,
+              prop: ref.prop,
+              types: orList(ref.types),
+              name: ref.name,
+              actual: target.type,
+            },
+          ),
+        );
       }
     }
     for (const text of textsIn(b)) {
       const fault = unknownToken(text, byName);
       if (fault) {
-        return {
-          ok: false,
-          reason: `blocks: ${tokenFaultReason(`block "${b.id}"`, fault)}`,
-        };
+        return refused(tokenFaultReason("blocks", blockWhere(b.id), fault));
       }
     }
   }
@@ -453,18 +531,22 @@ export function parseTemplateContent(
   const footer = parseDocumentStyle(rawStyle).footerText;
   tokenCount += footer ? [...footer.matchAll(DOCUMENT_TOKEN_RE)].length : 0;
   if (tokenCount > MAX_TOKENS_PER_DOCUMENT) {
-    return {
-      ok: false,
-      reason: `blocks: at most ${MAX_TOKENS_PER_DOCUMENT} {{tokens}} per document, counting repeats, got ${tokenCount} — each one expands to a value of up to 2000 characters when the document is issued.`,
-    };
+    return refused(
+      phrase(
+        "errors.documentTooManyTokens",
+        `blocks: at most ${MAX_TOKENS_PER_DOCUMENT} {{tokens}} per document, counting repeats, got ${tokenCount} — each one expands to a value of up to 2000 characters when the document is issued.`,
+        {
+          max: MAX_TOKENS_PER_DOCUMENT,
+          count: tokenCount,
+          token: "{{tokens}}",
+        },
+      ),
+    );
   }
 
   const footerFault = footer ? unknownToken(footer, byName) : null;
   if (footerFault) {
-    return {
-      ok: false,
-      reason: `style: ${tokenFaultReason("footerText", footerFault)}`,
-    };
+    return refused(tokenFaultReason("style", "footerText", footerFault));
   }
 
   return { ok: true, content: { blocks, fields } };
@@ -503,15 +585,35 @@ function unknownToken(
   return null;
 }
 
-// One sentence per fault kind, written for whoever authored the template.
-function tokenFaultReason(where: string, fault: TokenFault): string {
+// One sentence per fault kind, written for whoever authored the template, prefixed by the half it
+// sits in. The token travels as a param: written into a translation template, its braces would be
+// read as a placeholder.
+function tokenFaultReason(
+  half: "blocks" | "style",
+  where: TranslatedParam | string,
+  fault: TokenFault,
+): TranslatedParam {
+  const w = typeof where === "string" ? where : where.message;
+  const token = fault.kind === "malformed" ? fault.text : `{{${fault.name}}}`;
   switch (fault.kind) {
     case "malformed":
-      return `${where} uses ${fault.text}, which is not a readable token: a name must start with a lowercase letter and contain only lowercase letters, digits and underscores. As written it would print with its braces in the customer's document.`;
+      return phrase(
+        "errors.documentTokenMalformed",
+        `${half}: ${w} uses ${token}, which is not a readable token: a name must start with a lowercase letter and contain only lowercase letters, digits and underscores. As written it would print with its braces in the customer's document.`,
+        { half, where, token },
+      );
     case "notScalar":
-      return `${where} uses {{${fault.name}}}, which is a lineItems field. A table cannot be printed as a token — it renders as a blank. Use a lineItems block to show those items.`;
+      return phrase(
+        "errors.documentTokenNotScalar",
+        `${half}: ${w} uses ${token}, which is a lineItems field. A table cannot be printed as a token — it renders as a blank. Use a lineItems block to show those items.`,
+        { half, where, token },
+      );
     default:
-      return `${where} uses {{${fault.name}}}, which is neither a declared field nor a reserved name. Declare it in fields, or remove it — an unresolved token renders as a blank space in the customer's document.`;
+      return phrase(
+        "errors.documentTokenUnknown",
+        `${half}: ${w} uses ${token}, which is neither a declared field nor a reserved name. Declare it in fields, or remove it — an unresolved token renders as a blank space in the customer's document.`,
+        { half, where, token },
+      );
   }
 }
 
@@ -533,9 +635,7 @@ export type LineItemValue = z.infer<typeof lineItemValueSchema>;
 export type DocumentValue = string | number | LineItemValue[];
 export type DocumentValues = Record<string, DocumentValue>;
 
-export type ValuesParse =
-  | { ok: true; values: DocumentValues }
-  | { ok: false; reason: string };
+export type ValuesParse = { ok: true; values: DocumentValues } | Refused;
 
 const DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
 
@@ -553,37 +653,68 @@ function isCalendarDate(value: string): boolean {
   return at.getUTCFullYear() === year && at.getUTCDate() === day;
 }
 
-function valueProblem(field: DocumentField, value: unknown): string | null {
+function valueProblem(
+  field: DocumentField,
+  value: unknown,
+): TranslatedParam | null {
   switch (field.type) {
     case "text":
       return typeof value === "string" && value.length <= 2_000
         ? null
-        : "must be a string of at most 2000 characters";
+        : phrase(
+            "errors.documentValueTextTooLong",
+            "must be a string of at most 2000 characters",
+            { max: 2000 },
+          );
     case "number":
     case "currency":
       if (typeof value !== "number" || !Number.isFinite(value)) {
-        return "must be a finite number";
+        return phrase(
+          "errors.documentValueNotNumber",
+          "must be a finite number",
+        );
       }
       // Finite is not enough: the arithmetic is in integer cents, and 1e308 is finite right up to
       // the point where it becomes Infinity in cents and prints as a total nobody can read.
       return Math.abs(value) <= MAX_DOCUMENT_AMOUNT
         ? null
-        : `must be at most ${MAX_DOCUMENT_AMOUNT}`;
+        : phrase(
+            "errors.documentValueTooLarge",
+            `must be at most ${MAX_DOCUMENT_AMOUNT}`,
+            { max: MAX_DOCUMENT_AMOUNT },
+          );
     case "date":
       // NOTE: ISO date only, never a pre-formatted string. The document is rendered in the
       // template's locale, and a date the model already wrote as "22/08" cannot be reformatted —
       // an en-US document would then carry one Brazilian date in the middle of it.
       return typeof value === "string" && isCalendarDate(value)
         ? null
-        : "must be an ISO date (YYYY-MM-DD)";
+        : phrase(
+            "errors.documentValueNotDate",
+            "must be an ISO date (YYYY-MM-DD)",
+          );
     case "lineItems": {
-      if (!Array.isArray(value)) return "must be a list of line items";
+      if (!Array.isArray(value)) {
+        return phrase(
+          "errors.documentValueNotList",
+          "must be a list of line items",
+        );
+      }
       if (value.length > MAX_LINE_ITEMS) {
-        return `must have at most ${MAX_LINE_ITEMS} line items`;
+        return phrase(
+          "errors.documentValueTooManyItems",
+          `must have at most ${MAX_LINE_ITEMS} line items`,
+          { max: MAX_LINE_ITEMS },
+        );
       }
       const parsed = z.array(lineItemValueSchema).safeParse(value);
       if (!parsed.success) {
-        return `line items: ${issues(parsed.error)} — each is {"description":"…","quantity":n,"unitPrice":n}`;
+        const detail = issues(parsed.error);
+        return phrase(
+          "errors.documentLineItemsValidatorSaid",
+          `line items: ${detail} — each is {"description":"…","quantity":n,"unitPrice":n}`,
+          { detail },
+        );
       }
       // A description is PRINTED on a priced row, so it has to survive sanitising like any other
       // required text: `min(1)` counts whitespace, which would put a blank line carrying a price on
@@ -595,7 +726,10 @@ function valueProblem(field: DocumentField, value: unknown): string | null {
       // rearranges the table it sits in.
       for (const item of parsed.data) {
         if (sanitizeDocumentValue(item.description).trim() === "") {
-          return "line items: every item needs a description that is not blank once whitespace and control characters are removed";
+          return phrase(
+            "errors.documentLineItemBlankDescription",
+            "line items: every item needs a description that is not blank once whitespace and control characters are removed",
+          );
         }
       }
       // The factors AND their product. Each factor is PRINTED on the line, so a quantity of 1e308
@@ -606,10 +740,18 @@ function valueProblem(field: DocumentField, value: unknown): string | null {
           item.quantity > MAX_DOCUMENT_AMOUNT ||
           item.unitPrice > MAX_DOCUMENT_AMOUNT
         ) {
-          return `line items: "${item.description}" has a quantity or unit price above ${MAX_DOCUMENT_AMOUNT}`;
+          return phrase(
+            "errors.documentLineItemFactorTooLarge",
+            `line items: "${item.description}" has a quantity or unit price above ${MAX_DOCUMENT_AMOUNT}`,
+            { description: item.description, max: MAX_DOCUMENT_AMOUNT },
+          );
         }
         if (item.quantity * item.unitPrice > MAX_DOCUMENT_AMOUNT) {
-          return `line items: "${item.description}" totals more than ${MAX_DOCUMENT_AMOUNT}`;
+          return phrase(
+            "errors.documentLineItemTotalTooLarge",
+            `line items: "${item.description}" totals more than ${MAX_DOCUMENT_AMOUNT}`,
+            { description: item.description, max: MAX_DOCUMENT_AMOUNT },
+          );
         }
       }
       return null;
@@ -622,19 +764,31 @@ export function parseDocumentValues(
   raw: unknown,
 ): ValuesParse {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-    return {
-      ok: false,
-      reason: "values must be an object keyed by field name.",
-    };
+    return refused(
+      phrase(
+        "errors.documentValuesNotObject",
+        "values must be an object keyed by field name.",
+      ),
+    );
   }
   const input = raw as Record<string, unknown>;
   const declared = new Set(fields.map((f) => f.name));
   for (const key of Object.keys(input)) {
     if (!declared.has(key)) {
-      return {
-        ok: false,
-        reason: `values: "${key}" is not a declared field of this template (declared: ${[...declared].join(", ") || "none"}).`,
-      };
+      const list = [...declared].join(", ");
+      return refused(
+        list
+          ? phrase(
+              "errors.documentValueUndeclared",
+              `values: "${key}" is not a declared field of this template (declared: ${list}).`,
+              { name: key, declared: list },
+            )
+          : phrase(
+              "errors.documentValueUndeclaredNone",
+              `values: "${key}" is not a declared field of this template (declared: none).`,
+              { name: key },
+            ),
+      );
     }
   }
   const values: DocumentValues = {};
@@ -642,10 +796,13 @@ export function parseDocumentValues(
     const value = input[field.name];
     if (value === undefined || value === null || value === "") {
       if (field.required) {
-        return {
-          ok: false,
-          reason: `values: "${field.name}" (${field.label}) is required.`,
-        };
+        return refused(
+          phrase(
+            "errors.documentValueRequired",
+            `values: "${field.name}" (${field.label}) is required.`,
+            { name: field.name, label: field.label },
+          ),
+        );
       }
       continue;
     }
@@ -655,10 +812,13 @@ export function parseDocumentValues(
     // with the thing. An optional list stays free to be empty: nothing was promised, and the block
     // renders empty.
     if (field.required && Array.isArray(value) && value.length === 0) {
-      return {
-        ok: false,
-        reason: `values: "${field.name}" (${field.label}) is required, so it needs at least one item.`,
-      };
+      return refused(
+        phrase(
+          "errors.documentValueRequiredItems",
+          `values: "${field.name}" (${field.label}) is required, so it needs at least one item.`,
+          { name: field.name, label: field.label },
+        ),
+      );
     }
     // The same rule for text, against what will actually PRINT. "   " and a string of control
     // characters are non-empty here and empty after sanitising, so a required customer name could
@@ -669,14 +829,23 @@ export function parseDocumentValues(
       typeof value === "string" &&
       sanitizeDocumentValue(value).trim() === ""
     ) {
-      return {
-        ok: false,
-        reason: `values: "${field.name}" (${field.label}) is required, and this value is blank once whitespace and control characters are removed.`,
-      };
+      return refused(
+        phrase(
+          "errors.documentValueRequiredBlank",
+          `values: "${field.name}" (${field.label}) is required, and this value is blank once whitespace and control characters are removed.`,
+          { name: field.name, label: field.label },
+        ),
+      );
     }
     const problem = valueProblem(field, value);
     if (problem) {
-      return { ok: false, reason: `values: "${field.name}" ${problem}.` };
+      return refused(
+        phrase(
+          "errors.documentValueProblem",
+          `values: "${field.name}" ${problem.message}.`,
+          { name: field.name, problem },
+        ),
+      );
     }
     // Every string that will be PRINTED, including the description of each line item. A model
     // writes these, and a model reaches for an emoji or a customer's name in its own script without
@@ -684,8 +853,8 @@ export function parseDocumentValues(
     // Refused rather than stripped, because the tool's error is something the model can act on and
     // a quietly shortened name in a customer's receipt is not.
     for (const text of printedStrings(field, value)) {
-      const unprintable = unprintableProblem(text, `values: "${field.name}"`);
-      if (unprintable) return { ok: false, reason: unprintable };
+      const unprintable = unprintablePhrase(text, `values: "${field.name}"`);
+      if (unprintable) return refused(unprintable);
     }
     // Line items are stored PARSED and sanitised: the snapshot then holds exactly what the renderer
     // will print, which is the whole point of freezing it.
@@ -735,8 +904,26 @@ function printedStrings(field: DocumentField, value: unknown): string[] {
 // act on. Passing the reason as an interpolation keeps the sentence around it translated while the
 // specific half survives; the reason itself is the validator's own English, which is the language
 // the block ids and property names it quotes are written in anyway.
-export function invalidDocumentTemplate(reason: string): AppError {
-  return new AppError(reason, 400, "errors.invalidDocumentTemplateReason", {
-    reason,
-  });
+export function invalidDocumentTemplate(
+  reason: string | TranslatedParam,
+): AppError {
+  const message = typeof reason === "string" ? reason : reason.message;
+  const error = new AppError(
+    message,
+    400,
+    "errors.invalidDocumentTemplateReason",
+    { reason: message },
+  );
+  return typeof reason === "string" ? error : quotingReason(error, reason);
+}
+
+// The same for the values one issuance (or one preview) supplies.
+export function invalidDocumentValues(parsed: Refused): AppError {
+  const error = new AppError(
+    parsed.reason,
+    400,
+    "errors.invalidDocumentValues",
+    { reason: parsed.reason },
+  );
+  return quotingReason(error, parsed.phrase);
 }

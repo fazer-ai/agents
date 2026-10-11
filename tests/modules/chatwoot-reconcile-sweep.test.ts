@@ -67,6 +67,8 @@ interface Scripted {
   // Every page of an inbox's listing, for a read longer than one page.
   pages?: Map<number, ChatwootInboxConversation[][]>;
   pinned?: number[];
+  // Every answer of the listing in call order, for a listing that changes under the read.
+  calls?: ChatwootInboxConversation[][];
   messages: Map<number, unknown[]>;
   failInbox?: number;
   listed: number[];
@@ -83,6 +85,7 @@ function chatwoot(s: Scripted) {
         s.listed.push(inboxId);
         if (inboxId === s.failInbox) throw new Error("HTTP 502");
         expect(status).toBe("pending");
+        if (s.calls) return s.calls.shift() ?? [];
         const pages = s.pages?.get(inboxId);
         if (pages) return pages[page - 1] ?? [];
         return page === 1 ? (s.conversations.get(inboxId) ?? []) : [];
@@ -590,6 +593,116 @@ describe.skipIf(!dbUp)("reconciling from Chatwoot", () => {
     );
     expect(committed).toBe(true);
     expect(result.outcome).toBe("reschedule");
+  });
+
+  test("a conversation leaving pending mid-read shifts the pages, and the lost message behind it is still found", async () => {
+    const all = Array.from({ length: 50 }, (_, i) =>
+      conv(600 + i, minutesAgo(20)),
+    );
+    const messages = new Map<number, unknown[]>();
+    for (const c of all)
+      messages.set(c.id, [
+        incoming(c.id * 10, minutesAgo(21)),
+        outgoing(c.id * 10 + 1, minutesAgo(20)),
+      ]);
+    messages.set(625, [incoming(6250, minutesAgo(20))]);
+    // The first conversation leaves pending after page one is read: page two starts one row later,
+    // and the 26th conversation (625) is on neither page of that listing.
+    const shifted = all.slice(1);
+    const s: Scripted = {
+      conversations: new Map(),
+      calls: [
+        all.slice(0, 25),
+        shifted.slice(25, 50),
+        [],
+        shifted.slice(0, 25),
+        shifted.slice(25, 50),
+        [],
+        shifted.slice(0, 25),
+        shifted.slice(25, 50),
+        [],
+      ],
+      messages,
+      listed: [],
+    };
+    const counts = await reconcileFromChatwoot({
+      tenantId,
+      base: appDb,
+      now: NOW,
+      makeClient: chatwoot(s),
+    });
+    expect(counts.inboxesFailed).toBe(0);
+    expect(counts.handedToRecovery).toBe(1);
+    expect((await ledgerFor(625)).map((r) => r.inboundMessageId)).toEqual([
+      6250,
+    ]);
+  });
+
+  test("a listing that keeps revealing conversations from before the pass fails the inbox; one moved after the pass began does not", async () => {
+    const revealing: Scripted = {
+      conversations: new Map(),
+      calls: [
+        [conv(700, minutesAgo(20))],
+        [],
+        [conv(701, minutesAgo(20))],
+        [],
+        [conv(702, minutesAgo(20))],
+        [],
+      ],
+      messages: new Map(),
+      listed: [],
+    };
+    const failed = await reconcileFromChatwoot({
+      tenantId,
+      base: appDb,
+      now: NOW,
+      makeClient: chatwoot(revealing),
+    });
+    expect(failed.inboxesFailed).toBe(1);
+
+    const later = new Date(NOW.getTime() + 60_000);
+    const moving: Scripted = {
+      conversations: new Map(),
+      calls: [
+        [conv(710, minutesAgo(20))],
+        [],
+        [conv(711, later), conv(710, minutesAgo(20))],
+        [],
+        [conv(712, later), conv(711, later), conv(710, minutesAgo(20))],
+        [],
+      ],
+      messages: new Map(),
+      listed: [],
+    };
+    const ok = await reconcileFromChatwoot({
+      tenantId,
+      base: appDb,
+      now: NOW,
+      makeClient: chatwoot(moving),
+    });
+    expect(ok.inboxesFailed).toBe(0);
+  });
+
+  test("a conversation with no activity time fails the inbox and keeps the cursor", async () => {
+    const s: Scripted = {
+      conversations: new Map([
+        [INBOX, [{ ...conv(560, minutesAgo(20)), lastActivityAt: null }]],
+      ]),
+      messages: new Map(),
+      listed: [],
+    };
+    const counts = await reconcileFromChatwoot({
+      tenantId,
+      base: appDb,
+      now: NOW,
+      makeClient: chatwoot(s),
+    });
+    expect(counts.inboxesFailed).toBe(1);
+    const kept = await suDb.chatwootInstance.findUniqueOrThrow({
+      where: { id: instanceId },
+      select: { reconciledUntil: true },
+    });
+    expect(kept.reconciledUntil?.getTime()).toBe(minutesAgo(40).getTime());
   });
 
   test("a listing that repeats its page fails the inbox and keeps the cursor", async () => {

@@ -179,7 +179,12 @@ async function handOver(
   });
 }
 
-async function reconcileInbox(p: {
+// How many times an inbox's listing may be read in one pass before the pass gives up on it. Page
+// numbers shift under the read when a conversation leaves `pending` (the recoveries this pass arms can
+// do that), so a listing is read again until one finds nothing new; the rest waits for the next pass.
+const MAX_LISTINGS_PER_INBOX = 3;
+
+interface InboxRead {
   base: PrismaClient;
   tenantId: bigint;
   instanceId: bigint;
@@ -187,17 +192,38 @@ async function reconcileInbox(p: {
   inbox: BoundInbox;
   since: Date;
   settledBefore: Date;
+  now: Date;
   counts: ReconcileCounts;
-}): Promise<void> {
-  const { base, tenantId, instanceId, client, inbox, since, settledBefore } = p;
-  const { counts } = p;
-  counts.inboxesRead += 1;
-  // No page cap: the read ends at the first page with nothing recent, so its length is the number of
-  // conversations that moved inside the window, and a cap would freeze the cursor on a busy inbox.
-  // A server that ignores `page` would never end it, which is what the repeated first id catches.
+}
+
+async function reconcileInbox(p: InboxRead): Promise<void> {
+  p.counts.inboxesRead += 1;
   // Conversations the token's user pinned lead the listing whatever their age, possibly for whole
   // pages, so the activity order only starts after them and only an unpinned row can end the read.
-  const pinned = await client.listPinnedConversationIds();
+  const pinned = await p.client.listPinnedConversationIds();
+  const read = new Set<number>();
+  for (let listing = 0; listing < MAX_LISTINGS_PER_INBOX; listing++) {
+    if ((await readListing(p, pinned, read)) === 0) return;
+  }
+  throw new Error(
+    `inbox ${p.inbox.chatwootInboxId} still shifted after ${MAX_LISTINGS_PER_INBOX} listings`,
+  );
+}
+
+// One read of the listing, judging every conversation inside the window not judged yet. Answers how
+// many of those had moved before the pass began: a conversation that moved since is the next pass's,
+// so it does not keep this one reading.
+async function readListing(
+  p: InboxRead,
+  pinned: Set<number>,
+  read: Set<number>,
+): Promise<number> {
+  const { base, tenantId, instanceId, client, inbox, since, settledBefore } = p;
+  const { counts } = p;
+  let unseenBeforePass = 0;
+  // No page cap: the read ends at the first unpinned row older than the window, so its length is the
+  // number of conversations that moved inside it, and a cap would freeze the cursor on a busy inbox.
+  // A server that ignores `page` would never end it, which is what the repeated first id catches.
   let previousFirst: number | null = null;
   for (let page = 1; ; page++) {
     const rows = await client.listInboxConversations(
@@ -205,7 +231,7 @@ async function reconcileInbox(p: {
       "pending",
       page,
     );
-    if (rows.length === 0) return;
+    if (rows.length === 0) return unseenBeforePass;
     const first = (rows[0] as ChatwootInboxConversation).id;
     if (first === previousFirst)
       throw new Error(
@@ -214,10 +240,18 @@ async function reconcileInbox(p: {
     previousFirst = first;
     let reachedOld = false;
     for (const c of rows) {
-      if (c.lastActivityAt === null || c.lastActivityAt < since) {
+      // An unreadable clock says nothing about where the activity order is.
+      if (c.lastActivityAt === null)
+        throw new Error(
+          `inbox ${inbox.chatwootInboxId}: conversation ${c.id} has no activity time`,
+        );
+      if (c.lastActivityAt < since) {
         if (!pinned.has(c.id)) reachedOld = true;
         continue;
       }
+      if (read.has(c.id)) continue;
+      read.add(c.id);
+      if (c.lastActivityAt <= p.now) unseenBeforePass += 1;
       // A person holds it: whatever the customer wrote is theirs to answer.
       if (c.assigneeType === "User") continue;
       counts.conversationsRead += 1;
@@ -237,7 +271,7 @@ async function reconcileInbox(p: {
     }
     // Past the pinned prefix the listing is newest activity first, so an unpinned row older than the
     // window means every later page is older too.
-    if (reachedOld) return;
+    if (reachedOld) return unseenBeforePass;
   }
 }
 
@@ -370,6 +404,7 @@ export async function reconcileFromChatwoot(
           inbox,
           since,
           settledBefore,
+          now,
           counts,
         });
       } catch (err) {

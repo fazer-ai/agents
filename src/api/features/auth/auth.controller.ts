@@ -697,7 +697,8 @@ const baseAuthController = new Elysia({
   )
   .post(
     "/logout",
-    ({ clearAuthCookie }) => {
+    async ({ clearAuthCookie, endSession }) => {
+      await endSession();
       clearAuthCookie();
       return { success: true };
     },
@@ -705,13 +706,16 @@ const baseAuthController = new Elysia({
       detail: {
         ...doc(
           "Log out",
-          "Clears the authentication cookie for the current session.",
+          "Ends the current session on the server, so a copy of its cookie is refused from now on, and clears the cookie. Other sessions of the same account stay signed in. Succeeds with no session or an invalid cookie, ending nothing.",
         ),
         security: [],
         responses: {
           200: jsonResponse(
-            "The auth cookie was cleared.",
+            "The session was ended and the auth cookie cleared.",
             t.Object({ success: t.Literal(true) }),
+          ),
+          503: jsonResponse(
+            "The session could not be recorded as ended (a transient database failure); the cookie was kept so the logout can be retried.",
           ),
         },
       },

@@ -1398,11 +1398,11 @@
           "Auth"
         ],
         "summary": "Log out",
-        "description": "Clears the authentication cookie for the current session.",
+        "description": "Ends the current session on the server, so a copy of its cookie is refused from now on, and clears the cookie. Other sessions of the same account stay signed in. Succeeds with no session or an invalid cookie, ending nothing.",
         "security": [],
         "responses": {
           "200": {
-            "description": "The auth cookie was cleared.",
+            "description": "The session was ended and the auth cookie cleared.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1419,6 +1419,9 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "The session could not be recorded as ended (a transient database failure); the cookie was kept so the logout can be retried."
           }
         },
         "operationId": "postAuthLogout"

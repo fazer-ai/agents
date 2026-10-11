@@ -1,4 +1,4 @@
-import { createHmac } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
 import { jwt } from "@elysiajs/jwt";
 import { Elysia } from "elysia";
 import type { UserRole } from "@/../generated/prisma/client";
@@ -31,6 +31,27 @@ export interface JWTPayload {
   tenantId: string | null;
   // NOTE: `passwordFingerprint` of the hash the session was issued under; absent without a password.
   pwd?: string;
+  // NOTE: names the session so a logout can end it (`ended_sessions`); absent on older tokens.
+  jti?: string;
+  exp?: number;
+}
+
+// The ended-session lookup that rides on the session read's user query: one row when this token's
+// session logged out. A token without a `jti` names no session and selects nothing.
+function endedSessionSelect(payload: JWTPayload) {
+  return payload.jti
+    ? {
+        endedSessions: {
+          where: { jti: payload.jti },
+          select: { jti: true },
+          take: 1,
+        },
+      }
+    : {};
+}
+
+function sessionEnded(row: { endedSessions?: { jti: string }[] }): boolean {
+  return (row.endedSessions?.length ?? 0) > 0;
 }
 
 // Binds a session to the password it was issued under, as Django's session auth hash does: the token
@@ -174,6 +195,7 @@ export const authPlugin = new Elysia({ name: "auth" })
         role: user.role,
         tenantId: user.tenantId === null ? null : user.tenantId.toString(),
         ...(pwd ? { pwd } : {}),
+        jti: randomUUID(),
       });
 
       cookie[COOKIE_NAME]?.set({ value: token, ...sessionCookieOptions() });
@@ -185,6 +207,48 @@ export const authPlugin = new Elysia({ name: "auth" })
     clearAuthCookie() {
       cookie[COOKIE_NAME]?.remove();
       cookie[LEGACY_COOKIE_NAME]?.remove();
+    },
+    // NOTE: ends the session the cookie names, so a copy of it is refused from here on. A cookie that
+    // does not verify, or a token with no `jti`, ends nothing. Expired rows are dropped on the way:
+    // past its expiry the token is refused by its signature alone.
+    async endSession(): Promise<void> {
+      const token =
+        cookie[COOKIE_NAME]?.value ?? cookie[LEGACY_COOKIE_NAME]?.value;
+      if (!token || typeof token !== "string") return;
+      let payload: JWTPayload | false;
+      try {
+        payload = (await jwt.verify(token)) as JWTPayload | false;
+      } catch {
+        return;
+      }
+      if (payload === false) return;
+      if (!payload.jti || typeof payload.exp !== "number") return;
+      const userId =
+        typeof payload.userId === "string" ? parseDbId(payload.userId) : null;
+      if (userId === null) return;
+      try {
+        await prisma.$transaction([
+          prisma.endedSession.deleteMany({
+            where: { expiresAt: { lte: new Date() } },
+          }),
+          prisma.endedSession.createMany({
+            data: [
+              {
+                jti: payload.jti,
+                userId,
+                expiresAt: new Date(payload.exp * 1000),
+              },
+            ],
+            skipDuplicates: true,
+          }),
+        ]);
+      } catch (error) {
+        logger.warn(
+          { error },
+          "Ending the session failed; treating as transient",
+        );
+        throw new ServiceUnavailableError();
+      }
     },
     // NOTE: WHICH PERSON the session cookie names, and the password hash it was verified against,
     // and nothing else: no tenant selector, no membership, no API key. For the one operation where
@@ -205,11 +269,14 @@ export const authPlugin = new Elysia({ name: "auth" })
       if (userId === null) return null;
       // A revoked session proves nothing, so the password fingerprint is checked here too. A DB
       // failure is transient, as in getAuthUser below, and never reads as signed out.
-      let row: { passwordHash: string | null } | null;
+      let row: {
+        passwordHash: string | null;
+        endedSessions?: { jti: string }[];
+      } | null;
       try {
         row = await prisma.user.findUnique({
           where: { id: userId },
-          select: { passwordHash: true },
+          select: { passwordHash: true, ...endedSessionSelect(payload) },
         });
       } catch (error) {
         logger.warn(
@@ -218,7 +285,11 @@ export const authPlugin = new Elysia({ name: "auth" })
         );
         throw new ServiceUnavailableError();
       }
-      if (!row || !sessionMatchesPassword(payload, row.passwordHash)) {
+      if (
+        !row ||
+        !sessionMatchesPassword(payload, row.passwordHash) ||
+        sessionEnded(row)
+      ) {
         return null;
       }
       return { userId, passwordHash: row.passwordHash };
@@ -277,6 +348,7 @@ export const authPlugin = new Elysia({ name: "auth" })
         isSuperAdmin: boolean;
         passwordHash: string | null;
         memberships: Membership[];
+        endedSessions?: { jti: string }[];
       } | null;
       try {
         row = await prisma.user.findUnique({
@@ -291,6 +363,7 @@ export const authPlugin = new Elysia({ name: "auth" })
             memberships: {
               select: { tenantId: true, role: true, createdAt: true },
             },
+            ...endedSessionSelect(payload),
           },
         });
       } catch (error) {
@@ -302,8 +375,15 @@ export const authPlugin = new Elysia({ name: "auth" })
       }
 
       if (!row) return null;
-      const { isSuperAdmin, memberships, passwordHash, ...person } = row;
+      const {
+        isSuperAdmin,
+        memberships,
+        passwordHash,
+        endedSessions,
+        ...person
+      } = row;
       if (!sessionMatchesPassword(payload, passwordHash)) return null;
+      if (sessionEnded({ endedSessions })) return null;
 
       if (isSuperAdmin) {
         return { ...person, tenantId: null, role: "SUPER_ADMIN", memberships };

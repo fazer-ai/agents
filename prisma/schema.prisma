@@ -233,9 +233,25 @@ model User {
   createdAt    DateTime  @default(now()) @map("created_at")
   updatedAt    DateTime  @updatedAt @map("updated_at")
 
-  memberships TenantUser[]
+  memberships   TenantUser[]
+  endedSessions EndedSession[]
 
   @@map("users")
+}
+
+// A session that logged out, named by its token's `jti` and kept until that token would have expired
+// anyway. The session read refuses a token named here; a token with no `jti` cannot be named.
+model EndedSession {
+  jti       String   @id
+  userId    BigInt   @map("user_id")
+  expiresAt DateTime @map("expires_at")
+  endedAt   DateTime @default(now()) @map("ended_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("ended_sessions")
 }
 
 // A person's membership in a tenant, and their role THERE (Chatwoot's `account_users`). GLOBAL table

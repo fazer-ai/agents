@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import {
+  editTab,
   lastSavedSettings,
   renderEditor,
   stubEditorApi,
@@ -32,6 +33,8 @@ describe("the agent editor carries the takeover block through a Behavior save", 
     });
     await renderEditor(stub, "behavior");
     expect(takeoverSwitch().getAttribute("aria-checked")).toBe("false");
+    // A save is of an edit (agents#1365); another block's keeps this one as stored.
+    editTab("behavior");
     await saveBehavior();
     await waitFor(() => expect(lastSavedSettings(stub)).toBeDefined());
     expect(lastSavedSettings(stub)?.takeover).toEqual({ onHumanReply: false });

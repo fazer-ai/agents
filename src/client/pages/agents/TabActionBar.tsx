@@ -5,7 +5,8 @@ import { useStaleNotice } from "./StaleNotice";
 
 // Save/Discard bar shared by the editor tabs, styled as a card. `mt-auto` rests it at the bottom of a
 // short page and `sticky bottom-0` keeps it in view on a long one. With `onOpenPlayground` it also
-// opens the playground; Discard shows only when dirty. Inside the agent editor, while the "changed
+// opens the playground; Discard shows only when dirty, and Save is enabled only when dirty: with no
+// edit there is nothing to write, the same on every tab (Gabriel's call on agents#1365). Inside the agent editor, while the "changed
 // elsewhere" notice is up, it repeats the notice on a row of its own, since on a long tab the card
 // at the top is off screen. Both rows wrap, so a narrow viewport keeps Save on screen.
 export function TabActionBar({
@@ -72,7 +73,7 @@ export function TabActionBar({
             <Button
               onClick={onSave}
               loading={saving}
-              disabled={saving || !!saveDisabled}
+              disabled={saving || !dirty || !!saveDisabled}
             >
               {saveLabel ?? t("common.save", "Save")}
             </Button>

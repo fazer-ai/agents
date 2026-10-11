@@ -160,6 +160,21 @@ const button = (label: string) =>
     (b) => b.textContent?.trim() === label,
   ) as HTMLElement;
 
+// Save tools is enabled only with an edit on the tab (agents#1365): toggle a tool questions and
+// rules draws, so the save has something of its own to write next to the hidden configuration.
+async function saveToolsEdited() {
+  const privateNote = await waitFor(() => {
+    const el = document.getElementById(nativeToolAnchor("private_note"));
+    if (!el) throw new Error("the private_note card is not there yet");
+    return el;
+  });
+  fireEvent.click(focusableIn(privateNote) ?? privateNote);
+  await waitFor(() =>
+    expect((button("Save tools") as HTMLButtonElement)?.disabled).toBe(false),
+  );
+  fireEvent.click(button("Save tools"));
+}
+
 test("a close label removed on the language model is not saved by a Tools save on questions and rules", async () => {
   const asked = stubApi();
   render(
@@ -211,8 +226,7 @@ test("a close label removed on the language model is not saved by a Tools save o
       t.textContent?.includes("Tools"),
     ) as HTMLElement,
   );
-  await waitFor(() => expect(Boolean(button("Save tools"))).toBe(true));
-  fireEvent.click(button("Save tools"));
+  await saveToolsEdited();
 
   const patch = await waitFor(() => {
     const p = asked.find((a) => a.method === "PATCH");
@@ -277,8 +291,7 @@ test("a hidden tool revoked on the language model stays granted through a Tools 
       t.textContent?.includes("Tools"),
     ) as HTMLElement,
   );
-  await waitFor(() => expect(Boolean(button("Save tools"))).toBe(true));
-  fireEvent.click(button("Save tools"));
+  await saveToolsEdited();
   const put = await waitFor(() => {
     const p = asked.find((a) => a.method === "PUT");
     if (!p) throw new Error("no PUT yet");
@@ -441,8 +454,7 @@ test("a Knowledge draft made on the language model stays unsaved through a Tools
   await waitFor(() => expect(Boolean(button("Discard"))).toBe(true));
   await engine("decisions");
   await tab("Tools");
-  await waitFor(() => expect(Boolean(button("Save tools"))).toBe(true));
-  fireEvent.click(button("Save tools"));
+  await saveToolsEdited();
   const put = await waitFor(() => {
     const p = asked.find((a) => a.method === "PUT");
     if (!p) throw new Error("no PUT yet");
@@ -610,8 +622,7 @@ test("a Tools save on questions and rules writes hidden guidance verbatim", asyn
   };
   const asked = stubApi(spaced);
   renderAt("/agents/1/tools");
-  await waitFor(() => expect(Boolean(button("Save tools"))).toBe(true));
-  fireEvent.click(button("Save tools"));
+  await saveToolsEdited();
   const patch = await waitFor(() => {
     const p = asked.find((a) => a.method === "PATCH");
     if (!p) throw new Error("no PATCH yet");
@@ -667,8 +678,7 @@ test("a switch back to the language model while Save tools is out keeps its draf
   fireEvent.click(remove);
   await engine("decisions");
   await tab("Tools");
-  await waitFor(() => expect(Boolean(button("Save tools"))).toBe(true));
-  fireEvent.click(button("Save tools"));
+  await saveToolsEdited();
   await waitFor(() => expect(putSent).toBe(true));
   await engine("llm");
   release();
@@ -759,8 +769,7 @@ test("a stored case key the console would refuse does not block a Tools save on 
   };
   const asked = stubApi(legacy);
   renderAt("/agents/1/tools");
-  await waitFor(() => expect(Boolean(button("Save tools"))).toBe(true));
-  fireEvent.click(button("Save tools"));
+  await saveToolsEdited();
   const patch = await waitFor(() => {
     const p = asked.find((a) => a.method === "PATCH");
     if (!p) throw new Error("no PATCH yet");

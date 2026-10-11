@@ -180,7 +180,9 @@ export function behaviorTabProps(
     setSnoozedFollowUp: noop,
     redirectSuppressesFollowUp: false,
     onScheduleSaved: noop,
-    dirty: false,
+    // Edited: Save is enabled only on an edited tab (agents#1365), and a tab rendered on its own is
+    // here to ask what blocks a save, so it stands for one with an edit.
+    dirty: true,
     saving: false,
     onSave: noop,
     onDiscard: noop,

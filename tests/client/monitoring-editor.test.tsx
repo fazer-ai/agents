@@ -13,6 +13,7 @@ import en from "@/client/locales/en.json";
 import { MONITORING_SECTIONS } from "@/client/pages/agents/BehaviorTab";
 import {
   type EditorStub,
+  editTab,
   lastSavedSettings,
   renderEditor,
   stubEditorApi,
@@ -246,6 +247,9 @@ describe("the editor of a monitoring agent", () => {
         fireEvent.change(read, {
           target: { value: String(Number(read.value) + 5) },
         });
+      } else {
+        // Save is enabled only with an edit (agents#1365): one outside the Observation block.
+        editTab("behavior");
       }
       fireEvent.click(screen.getByRole("button", { name: "Save" }));
       await waitFor(() => expect(lastSavedSettings(stub)).toBeDefined());
@@ -294,6 +298,8 @@ describe("the Channels tab of a watcher", () => {
     const blocked: Record<string, boolean> = {};
     for (const [what, settings] of cases) {
       await open("monitoring", "behavior", { settings });
+      // An edit, so what holds Save is the validators and not the untouched tab (agents#1365).
+      editTab("behavior");
       blocked[what] = saveDisabled();
       cleanup();
     }

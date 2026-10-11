@@ -8,10 +8,9 @@ import {
 } from "../utils/agent-editor";
 
 // Every Behavior block the save writes is also read back, on the three paths that set the form from
-// an agent: the load, the post-save sync and Discard. A block missing from them reopens as its
-// default, and the next save of any behaviour setting writes that default over the stored value.
-// Asked of the whole bag: the save writes every block, so a block added to it and read back nowhere
-// comes back as its default and the comparison names it.
+// an agent: the load, the post-save sync and Discard. Asked through Save, which is enabled only while
+// the form differs from the server's copy (agents#1365): a path that left a block off what the server
+// holds would leave the tab edited, and Save enabled, with nothing touched.
 
 const realFetch = globalThis.fetch;
 afterEach(() => {
@@ -310,10 +309,6 @@ function stubWithHours(): EditorStub {
   return stub;
 }
 
-function lastPatch(stub: EditorStub): Record<string, unknown> | undefined {
-  return [...stub.writes].reverse().find((w) => w.method === "PATCH")?.body;
-}
-
 function changeTo(
   el: HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement,
   value: string,
@@ -395,11 +390,13 @@ async function save(stub: EditorStub): Promise<Record<string, unknown>> {
   return lastSavedSettings(stub) as Record<string, unknown>;
 }
 
+const saveButton = () => screen.getByRole("button", { name: "Save" });
+
 describe("the Behavior tab reads back everything it writes", () => {
-  test("the load: a save right after opening writes back exactly what was stored", async () => {
+  test("the load: nothing reads as edited, so there is nothing to save", async () => {
     const stub = stubEditorApi({ settings: STORED });
     await renderEditor(stub, "behavior");
-    expect(await save(stub)).toEqual(STORED);
+    expect(saveButton()).toHaveProperty("disabled", true);
   });
 
   test("the post-save sync: the form takes what the server answered, every block", async () => {
@@ -419,10 +416,13 @@ describe("the Behavior tab reads back everything it writes", () => {
           )
         : undefined;
     await renderEditor(stub, "behavior");
+    changeTo(
+      screen.getByLabelText("Max tool calls / turn") as HTMLInputElement,
+      "3",
+    );
     await save(stub);
-    stub.override = undefined;
-    stub.agent = { ...stub.agent, updatedAt: "2026-01-02T00:00:00.000Z" };
-    expect(await save(stub)).toEqual(DEFAULTS);
+    // A block the sync left as it was in the form would differ from the server's copy now.
+    await waitFor(() => expect(saveButton()).toHaveProperty("disabled", true));
   });
 
   // Discard also resets the shared settings bag and the observability the recording warning reads,
@@ -434,26 +434,25 @@ describe("the Behavior tab reads back everything it writes", () => {
     await editEveryBlock();
     expect(screen.queryAllByText("Unsaved changes").length).toBeGreaterThan(0);
     fireEvent.click(screen.getByRole("button", { name: "Discard" }));
-    expect(await save(stub)).toEqual(STORED);
-    expect(lastPatch(stub)).toMatchObject({
-      businessHoursId: "h-1",
-      followUpHoursId: "h-1",
-    });
+    // Nothing left that differs from the server's copy: no mark, no Discard, no Save.
+    await waitFor(() =>
+      expect(screen.queryAllByText("Unsaved changes").length).toBe(0),
+    );
+    expect(screen.queryByRole("button", { name: "Discard" })).toBeNull();
+    expect(saveButton()).toHaveProperty("disabled", true);
+    expect(stub.writes.filter((w) => w.method === "PATCH")).toEqual([]);
   });
 
-  // The Observation block is drawn only for a monitoring agent, so its Discard is asked there, against
-  // what a save with no edit writes.
+  // The Observation block is drawn only for a monitoring agent, so its Discard is asked there.
   test("Discard: the Observation block of a monitoring agent goes back too", async () => {
     const stub = stubEditorApi({ mode: "monitoring", settings: STORED });
     await renderEditor(stub, "behavior");
-    // The whole bag: the untouched agent has no `monitoring` block, and a Discard that left the
-    // edit behind would write one (agents#1304).
-    const before = await save(stub);
     const when = screen.getByLabelText("When to classify") as HTMLSelectElement;
     changeTo(when, otherOption(when));
     const read = screen.getByLabelText("Messages read") as HTMLInputElement;
     changeTo(read, String(Number(read.value) + 5));
+    expect(saveButton()).toHaveProperty("disabled", false);
     fireEvent.click(screen.getByRole("button", { name: "Discard" }));
-    expect(await save(stub)).toEqual(before);
+    await waitFor(() => expect(saveButton()).toHaveProperty("disabled", true));
   });
 });

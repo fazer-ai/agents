@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { act, cleanup, fireEvent, screen } from "@testing-library/react";
-import { renderEditor, stubEditorApi } from "../utils/agent-editor";
+import { editTab, renderEditor, stubEditorApi } from "../utils/agent-editor";
 
 // Every field check the Behavior tab computes reaches its Save button. Rendering a field error is
 // not enough: only refusing the save is load-bearing, since a configuration the runtime will not
@@ -145,6 +145,8 @@ async function saveDisabled(agent: {
 }): Promise<boolean> {
   const stub = stubEditorApi(agent);
   await renderEditor(stub, "behavior");
+  // With no edit there is nothing to save (agents#1365): the gate is asked of an edited tab.
+  editTab("behavior");
   return (screen.getByRole("button", { name: "Save" }) as HTMLButtonElement)
     .disabled;
 }
@@ -165,6 +167,7 @@ describe("the Behavior tab's save gate", () => {
       },
     });
     await renderEditor(stub, "behavior");
+    editTab("behavior");
     const save = screen.getByRole("button", {
       name: "Save",
     }) as HTMLButtonElement;
@@ -204,6 +207,10 @@ describe("the Behavior tab's save gate", () => {
     cleanup();
     const stub = stubEditorApi(agent);
     await renderEditor(stub, "decisions");
+    // An edit that leaves the setup incomplete: a question with nothing in it.
+    fireEvent.click(
+      screen.getByRole("button", { name: "Start with a blank question" }),
+    );
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await act(async () => {});
     expect(stub.writes).toEqual([]);

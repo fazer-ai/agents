@@ -53,13 +53,13 @@ export function focusableIn(el: HTMLElement | null): HTMLElement | null {
 
 // The requests General's Save makes. With the decision setup changed, the identity rides in the same
 // PATCH: written apart, `enabled: true` could land with the previous rules and run them, or stay
-// enabled when the setup's write then fails. With nothing edited it writes the identity, as the Save
-// of every other agent does.
+// enabled when the setup's write then fails. With nothing edited there is nothing to write: Save is
+// disabled on every tab until something changes (agents#1365).
 export type GeneralSaveRequest = "identity" | "setup" | "identity+setup";
 export function generalSaveRequests(
   identityEdited: boolean,
   setupEdited: boolean,
 ): GeneralSaveRequest[] {
   if (setupEdited) return [identityEdited ? "identity+setup" : "setup"];
-  return ["identity"];
+  return identityEdited ? ["identity"] : [];
 }

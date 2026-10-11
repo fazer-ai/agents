@@ -4,6 +4,9 @@ import * as TooltipPrimitive from "@radix-ui/react-tooltip";
 import { fireEvent, render, screen } from "@testing-library/react";
 import type { i18n as I18n } from "i18next";
 import { MemoryRouter, Route, Routes } from "react-router";
+import { nativeToolAnchor } from "@/client/pages/agents/editorTabs";
+import { focusableIn } from "@/client/pages/agents/saveAttempt";
+import { NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
 import { withI18n } from "./i18n";
 
 // The agent editor, rendered whole against a stubbed API: what it loads is the agent and grants given
@@ -195,10 +198,39 @@ export function lastSavedSettings(
   return patch?.body.settings as Record<string, unknown> | undefined;
 }
 
-// An edit to a tab whose Save is disabled until something changes (agents#1206), for a test that is
-// about what the save does, not about whether there is anything to save. Other tabs: nothing.
+// The catalog with every native tool, so the Tools tab draws a card to toggle (`editTab("tools")`).
+export const NATIVE_CATALOG = {
+  native: NATIVE_TOOL_NAMES.map((name) => ({ name })),
+};
+
+// An edit to a tab, for a test that is about what the save does: every Save is disabled until its tab
+// has an edit (agents#1206, agents#1365). Tools toggles the private-note card, so its stub needs a
+// catalog with the natives (NATIVE_CATALOG).
 export function editTab(tab: string): void {
-  if (tab === "guardrails") {
+  const panel =
+    document.querySelector<HTMLElement>('[role="tabpanel"]') ?? document.body;
+  if (tab === "general") {
+    const name = screen.getByLabelText(/^Name/) as HTMLInputElement;
+    fireEvent.change(name, { target: { value: `${name.value} (editado)` } });
+  } else if (tab === "behavior") {
+    const n = panel.querySelector<HTMLInputElement>('input[type="number"]');
+    if (!n) throw new Error("no number field on Behavior");
+    fireEvent.change(n, { target: { value: String(Number(n.value) + 1) } });
+  } else if (tab === "knowledge") {
+    const select = panel.querySelector<HTMLSelectElement>("select");
+    if (!select) throw new Error("no select on Knowledge");
+    const other = [...select.options].find(
+      (o) => o.value && o.value !== select.value,
+    );
+    if (!other) throw new Error("the Knowledge select has one option");
+    fireEvent.change(select, { target: { value: other.value } });
+  } else if (tab === "tools") {
+    const card = document.getElementById(nativeToolAnchor("private_note"));
+    if (!card) throw new Error("the private_note card is not drawn");
+    fireEvent.click(focusableIn(card) ?? card);
+  } else if (tab === "decisions") {
+    fireEvent.click(screen.getByRole("button", { name: "Customer sentiment" }));
+  } else if (tab === "guardrails") {
     fireEvent.click(screen.getByRole("switch", { name: /Enable guardrails/ }));
   } else if (tab === "channelRedirect") {
     const message = document.querySelector("textarea");

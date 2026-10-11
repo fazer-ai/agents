@@ -155,6 +155,7 @@ describe("the requests General's Save makes", () => {
     expect(generalSaveRequests(true, true)).toEqual(["identity+setup"]);
     expect(generalSaveRequests(false, true)).toEqual(["setup"]);
     expect(generalSaveRequests(true, false)).toEqual(["identity"]);
-    expect(generalSaveRequests(false, false)).toEqual(["identity"]);
+    // Nothing edited, nothing written (agents#1365).
+    expect(generalSaveRequests(false, false)).toEqual([]);
   });
 });

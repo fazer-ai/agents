@@ -45,6 +45,16 @@ async function saveBehavior(
 
 const saveButton = () => screen.getByRole("button", { name: "Save" });
 
+// An untouched Behavior tab has nothing to save (agents#1365): Save is disabled and nothing is sent.
+async function untouched(seed: EditorAgent, edit?: () => void): Promise<void> {
+  const stub = stubEditorApi(seed);
+  await renderEditor(stub, "behavior");
+  edit?.();
+  await waitFor(() => expect(saveButton()).toHaveProperty("disabled", true));
+  fireEvent.click(saveButton());
+  expect(stub.writes.filter((w) => w.method === "PATCH")).toEqual([]);
+}
+
 // The guardrails' own on/off.
 const mainSwitch = (): HTMLElement =>
   screen.getByRole("switch", { name: /Enable guardrails/ });
@@ -81,9 +91,8 @@ describe("Guardrails and Redirect: an untouched tab has nothing to save (agents#
 });
 
 describe("Behavior writes the sections the operator edited (agents#1304)", () => {
-  test("a reply agent with no settings, saved untouched, keeps no settings", async () => {
-    const { after } = await saveBehavior({ settings: {} });
-    expect(after).toEqual({});
+  test("a reply agent with no settings, untouched, has nothing to save", async () => {
+    await untouched({ settings: {} });
   });
 
   test("editing the wait window writes debounce and nothing else", async () => {
@@ -115,19 +124,19 @@ describe("Behavior writes the sections the operator edited (agents#1304)", () =>
     expect(debounce?.windowSeconds).toBe(15);
   });
 
-  test("editing and undoing writes nothing", async () => {
-    const { after } = await saveBehavior({ settings: {} }, () => {
+  test("editing and undoing leaves nothing to save", async () => {
+    await untouched({ settings: {} }, () => {
       change(field(/^Wait window \(s\)/), "25");
       change(field(/^Wait window \(s\)/), "15");
     });
-    expect(after).toEqual({});
   });
 
   test("a block stored in part and never edited is not completed with defaults", async () => {
-    const { before, after } = await saveBehavior({
-      settings: { debounce: { enabled: true } },
-    });
-    expect(after).toEqual(before as Record<string, unknown>);
+    const { after } = await saveBehavior(
+      { settings: { debounce: { enabled: true } } },
+      () => change(field(/^Max tool calls \/ turn/), "3"),
+    );
+    expect(after?.debounce).toEqual({ enabled: true });
   });
 
   test("editing split keeps the stored debounce and grounding as they are", async () => {
@@ -180,12 +189,8 @@ describe("Behavior writes the sections the operator edited (agents#1304)", () =>
     },
   };
 
-  test("a watcher with only monitoring, saved untouched, keeps exactly that", async () => {
-    const { before, after } = await saveBehavior({
-      mode: "monitoring",
-      settings: { monitoring },
-    });
-    expect(after).toEqual(before as Record<string, unknown>);
+  test("a watcher with only monitoring, untouched, has nothing to save", async () => {
+    await untouched({ mode: "monitoring", settings: { monitoring } });
   });
 
   test("a watcher's burst window edit writes monitoring with the decision setup as stored", async () => {

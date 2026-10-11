@@ -3,6 +3,7 @@ import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import {
   type EditorStub,
   editTab,
+  NATIVE_CATALOG,
   renderEditor,
   stubEditorApi,
 } from "../utils/agent-editor";
@@ -52,7 +53,7 @@ describe("forced saves in the agent editor", () => {
     ["channelRedirect", "Save"],
   ] as const) {
     test(`${tab}: the ordinary save keeps the precondition, the forced one replaces`, async () => {
-      const stub = stubEditorApi({ settings: {} });
+      const stub = stubEditorApi({ settings: {} }, { catalog: NATIVE_CATALOG });
       conflictOnce(stub);
       await renderEditor(stub, tab);
       editTab(tab);

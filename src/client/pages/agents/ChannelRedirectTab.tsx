@@ -792,8 +792,7 @@ export function ChannelRedirectTab({
         saving={saving}
         onSave={onSave}
         onDiscard={onDiscard}
-        // NOTE: Nothing edited, nothing to save, as on Guardrails (agents#1206).
-        saveDisabled={!dirty || missingLink || waMissingLink}
+        saveDisabled={missingLink || waMissingLink}
         onOpenPlayground={onOpenPlayground}
       />
     </div>

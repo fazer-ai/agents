@@ -232,6 +232,13 @@ describe("the Behavior save", () => {
       askEndpointAfterRule: true,
       operatorNoteEnabled: false,
     });
+    // An edit elsewhere in the block, so the save writes it and the strict reading goes back as is.
+    fireEvent.change(
+      screen.getByDisplayValue("https://auth.example.com/check"),
+      {
+        target: { value: "https://auth.example.com/check2" },
+      },
+    );
     expect(await saved(strict)).toEqual({
       askEndpointAfterRule: true,
       operatorNoteEnabled: false,

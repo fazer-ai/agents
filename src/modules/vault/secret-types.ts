@@ -382,8 +382,9 @@ export function secretTypeFits(
     return isManagedOAuthKind(type.id) || yieldsPlainString(type);
   }
   // `apiKey` and `embeddingKey` are the same question about the KIND; they differ only in whether
-  // the stored VALUE is also held to it (see `valueRuleApplies`).
-  return yieldsPlainString(type);
+  // the stored VALUE is also held to it (see `valueRuleApplies`). A Basic pair is a plain string
+  // and still never a key: a provider SDK would send `user:password` as a bearer token.
+  return yieldsPlainString(type) && type.injection !== "basic";
 }
 
 // Whether this use reads a PLAIN KEY out of the entry, as opposed to resolving it through the

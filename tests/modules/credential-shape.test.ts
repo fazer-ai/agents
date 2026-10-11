@@ -56,6 +56,7 @@ let blobRef = "";
 let envRef = "";
 let keyRef = "";
 let malformedRef = "";
+let basicRef = "";
 
 const ctx = (): TenantContext => ({
   tenantId,
@@ -133,6 +134,9 @@ describe.skipIf(!dbUp)("a credential whose kind cannot serve the field", () => {
       paramName: "API_TOKEN",
     });
     keyRef = await mk("model-key", "openai", "sk-live");
+    // A plain string, and still never a key: it is `user:password` already base64-encoded, sent as
+    // `Authorization: Basic`. Handed to a provider SDK it becomes a bearer token no vendor accepts.
+    basicRef = await mk("basic-pair", "basic_auth", "dXNlcjpwYXNz");
     // A kind that DECLARES a plain string, holding something else. `validateVaultValue` refuses this
     // shape today, so it can only exist from before the kind did — or from a path that does not go
     // through it. The catalog cannot see it: only the value can.
@@ -168,6 +172,7 @@ describe.skipIf(!dbUp)("a credential whose kind cannot serve the field", () => {
       ["a multi-field kind", () => oauthRef],
       ["a managed-blob kind", () => blobRef],
       ["a never-outbound kind", () => envRef],
+      ["a basic-auth pair", () => basicRef],
     ] as [string, () => string][]) {
       test(`model credential: ${label}`, async () => {
         const r = await refused(() =>
@@ -295,6 +300,53 @@ describe.skipIf(!dbUp)("a credential whose kind cannot serve the field", () => {
               contactAuth: {
                 enabled: true,
                 credentialRef: oauthRef,
+                url: "https://x.example",
+              },
+            },
+          },
+          appDb,
+          { settingsMode: "replace" },
+        ),
+      );
+      expect(r).toBeNull();
+    });
+
+    // The STT key is a second plain-key slot with its own path to the vault, so it is asked apart
+    // from the model's.
+    test("the STT credential refuses a basic-auth pair, naming its path", async () => {
+      const r = await refused(() =>
+        updateAgent(
+          ctx(),
+          agentId,
+          {
+            settings: {
+              stt: {
+                enabled: true,
+                provider: "openai",
+                credentialRef: basicRef,
+              },
+            },
+          },
+          appDb,
+          { settingsMode: "replace" },
+        ),
+      );
+      expect(r?.status).toBe(400);
+      expect(r?.field).toBe("settings.stt.credentialRef");
+    });
+
+    // Basic auth is still a way to authenticate an outbound call, which is all contact
+    // authorization asks of its credential.
+    test("contact authorization still accepts a basic-auth pair", async () => {
+      const r = await refused(() =>
+        updateAgent(
+          ctx(),
+          agentId,
+          {
+            settings: {
+              contactAuth: {
+                enabled: true,
+                credentialRef: basicRef,
                 url: "https://x.example",
               },
             },
@@ -449,6 +501,13 @@ describe.skipIf(!dbUp)("a credential whose kind cannot serve the field", () => {
       expect(await resolve(envRef)).toEqual({
         state: "unusable",
         kind: "mcp_env",
+      });
+    });
+
+    test("a basic-auth pair is unusable as a key, though it holds a string", async () => {
+      expect(await resolve(basicRef)).toEqual({
+        state: "unusable",
+        kind: "basic_auth",
       });
     });
 

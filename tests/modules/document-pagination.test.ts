@@ -20,7 +20,7 @@ const item = (n: number, long = false): Item => ({
   unitPrice: 10 + n,
 });
 
-async function pagesOf(items: Item[]): Promise<string[][]> {
+async function pagesOf(items: Item[], onlyText?: string): Promise<string[][]> {
   const starter = documentStarters("pt-BR").find((s) => s.key === "quote");
   if (!starter) throw new Error("no quote starter");
   const parsed = parseTemplateContent(starter.blocks, starter.fields, {});
@@ -28,7 +28,10 @@ async function pagesOf(items: Item[]): Promise<string[][]> {
   const field = parsed.content.fields.find((f) => f.type === "lineItems");
   if (!field) throw new Error("the quote starter has no line items");
   const bytes = await renderDocumentPdf({
-    blocks: parsed.content.blocks,
+    blocks:
+      onlyText === undefined
+        ? parsed.content.blocks
+        : [{ id: "only", type: "text", text: onlyText }],
     fields: parsed.content.fields,
     style: starter.style,
     values: {
@@ -127,5 +130,19 @@ describe("a quote that runs past one page", () => {
     const pages = await pagesOf([item(1), giant, item(3)]);
     expect(pages.flat().some((s) => s.includes("FIM"))).toBe(true);
     expect(pageOf(pages, (s) => s.startsWith("Item 3 "))).toBeGreaterThan(0);
+  });
+
+  test("a document that ends at the bottom of a page has no extra page with only the footer", async () => {
+    for (let lines = 56; lines <= 76; lines++) {
+      const text = Array.from(
+        { length: lines },
+        (_, i) => `Linha ${i + 1}`,
+      ).join("\n");
+      const pages = await pagesOf([], text);
+      const empty = pages.findIndex(
+        (strs) => !strs.some((s) => s.startsWith("Linha ")),
+      );
+      expect(`${lines}:${empty}`).toBe(`${lines}:-1`);
+    }
   });
 });

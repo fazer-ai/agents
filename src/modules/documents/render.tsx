@@ -677,10 +677,12 @@ export async function renderDocumentPdf(
   const doc = (
     <Document title={input.meta.title}>
       <Page size={input.style.pageSize} style={sheet.page}>
-        {input.blocks.map((block) => (
+        {input.blocks.map((block, i) => (
           <Fragment key={block.id}>
             <View>{renderBlock(block, input, sheet, vars)}</View>
-            <View style={{ height: SPACE_AFTER[block.spaceAfter ?? "md"] }} />
+            {i < input.blocks.length - 1 ? (
+              <View style={{ height: SPACE_AFTER[block.spaceAfter ?? "md"] }} />
+            ) : null}
           </Fragment>
         ))}
         {input.style.footerText || input.style.showPageNumbers ? (

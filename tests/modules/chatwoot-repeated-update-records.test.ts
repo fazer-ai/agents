@@ -178,8 +178,8 @@ describe("repeated-update records", () => {
       { customAttributes: { pedido: "1" } },
     ],
     ["the status", { status: "open" }],
-    // The rows' own clocks order the inbox name, the contact's bag and the card: a repeat at a newer
-    // clock is a newer version of the same values and must reach the mirror.
+    // The rows' own clocks order the inbox name and the contact's bag: a repeat at a newer clock is a
+    // newer version of the same values and must reach the mirror.
     ["the inbox's own clock", { inboxUpdatedAt: 1_791_000_100.75 }],
     [
       "the contact's own clock",
@@ -192,10 +192,6 @@ describe("repeated-update records", () => {
         },
       },
     ],
-    [
-      "the kanban card's own clock",
-      { kanbanCardId: 1, kanbanCardAt: 1_791_000_100.75 },
-    ],
   ];
   for (const [label, change] of meaningful) {
     test(`a change in ${label} keeps the update from being dropped`, () => {
@@ -203,6 +199,19 @@ describe("repeated-update records", () => {
       expect(dropped(event("message_updated", 1, change))).toBe(false);
     });
   }
+
+  test("a newer state of the same kanban card keeps the update from being dropped", () => {
+    const card = { kanbanCardId: 1, kanbanCardAt: 1_791_000_100.25 };
+    processed(event("message_created", 1, card));
+    expect(
+      dropped(
+        event("message_updated", 1, {
+          ...card,
+          kanbanCardAt: 1_791_000_100.75,
+        }),
+      ),
+    ).toBe(false);
+  });
 
   test("an attachment's metadata is compared with the message", () => {
     processed(event("message_created", 1));

@@ -121,6 +121,7 @@ import {
 } from "@/modules/vault/service";
 import { generateRouteToken } from "@/modules/webhooks/inbound/route-token";
 import { ensureInboundSweep } from "@/modules/webhooks/inbound/sweep";
+import { withCreationDefaults } from "./creation-defaults";
 import {
   AGENT_SELECT,
   type AgentDto,
@@ -1017,11 +1018,17 @@ export async function exportAgent(
     }
     const refToName = (ref: string | null): string | null =>
       ref && isVaultIdRef(ref) ? (nameByRef.get(ref) ?? null) : ref;
-    const { modelConfig, settings } = remapCredRefs(
+    const { modelConfig, settings: remapped } = remapCredRefs(
       modelConfigRaw,
       settingsRaw,
       (ref) => refToName(ref),
     );
+    // The logging switches describe how this instance records this agent, not the agent: an agent
+    // exported from a development server would otherwise arrive elsewhere logging tool values.
+    const { observability: _observability, ...settings } = remapped as Record<
+      string,
+      unknown
+    >;
 
     // Translate component credential refs id→name (deletes the ref when the id no longer resolves).
     const components: ExportedComponents | undefined = componentsRaw
@@ -1453,7 +1460,7 @@ export async function importAgent(
         name: exp.name,
         systemPrompt: prompt.text,
         modelConfig: modelConfig as Prisma.InputJsonValue,
-        settings: storable as Prisma.InputJsonValue,
+        settings: withCreationDefaults(storable) as Prisma.InputJsonValue,
         transferWithSummary: exp.transferWithSummary,
         businessHoursId,
         followUpHoursId,

@@ -69,6 +69,7 @@ import {
 import { isOneOf, SIGNATURE_CHOICES } from "@/modules/signature/domains";
 import { lockToolNames } from "@/modules/tool-definitions/namespace";
 import { requireVaultRefFor } from "@/modules/vault/service";
+import { withCreationDefaults } from "./creation-defaults";
 import {
   AGENT_MODES,
   type AgentMode,
@@ -2046,7 +2047,9 @@ export async function createAgent(
       enabled: data.enabled ?? true,
       // NOTE: New agents are born in test mode (operator opt-in before going live).
       mode: data.mode ?? "test",
-      settings: (data.settings ?? {}) as Prisma.InputJsonValue,
+      settings: withCreationDefaults(
+        data.settings ?? {},
+      ) as Prisma.InputJsonValue,
     };
     const row = await db.agent.create({
       data: {

@@ -422,6 +422,25 @@ export async function selectAnswerableBurst(
       base,
       deps,
     });
+  // The voice notes nobody transcribed, only for `all`: a person asked for this conversation, and the
+  // arrival pass never transcribes one that came in while a person held it. `untried` has no such
+  // mark for audio, and the wait below already covers a transcription the arrival pass has open.
+  // A transcription takes up to a minute per note, so one attempted is a wait like the visual one:
+  // the turn re-asks whose conversation it is before the model runs.
+  if (
+    ctx.fillMedia?.mode === "all" &&
+    (await fillMissingAudio({
+      tenantId,
+      instanceId,
+      conversationId,
+      settings: ctx.settings,
+      pending,
+      fill: ctx.fillMedia,
+      base,
+      deps,
+    }))
+  )
+    waitedOnMedia = true;
 
   // A voice note of this burst that the arrival pass is still transcribing: the re-read above can land
   // a moment before its words do, and rendered now it becomes the marker that asks the customer to
@@ -633,11 +652,13 @@ export async function fillMissingAudio(args: {
   base: PrismaClient;
   deps?: RuntimeDeps;
   stillWanted?: () => Promise<boolean>;
-}): Promise<void> {
+  // True once a transcription was attempted: the caller waited on the provider.
+}): Promise<boolean> {
   const cfg = readSttConfig(args.settings);
-  if (!cfg.enabled) return;
+  if (!cfg.enabled) return false;
   const alvos = args.pending.filter((m) => m.audio && !m.transcribedText);
-  if (alvos.length === 0) return;
+  if (alvos.length === 0) return false;
+  let attempted = false;
   for (const m of alvos) {
     if (args.fill.signal?.aborted) break;
     if (args.stillWanted && !(await args.stillWanted())) break;
@@ -645,6 +666,7 @@ export async function fillMissingAudio(args: {
     if (recusadaAte !== null && m.id <= recusadaAte) continue;
     const audio = m.audio;
     if (!audio) continue;
+    attempted = true;
     try {
       const text = await transcribeInboundAudio({
         tenantId: args.tenantId,
@@ -681,6 +703,7 @@ export async function fillMissingAudio(args: {
       );
     }
   }
+  return attempted;
 }
 
 // The conversation's media refusal mark, or null without one. Unreadable closes everything.

@@ -41,7 +41,14 @@ import {
   pickSnoozedCadence,
   readSnoozedFollowUpConfig,
 } from "@/modules/followups/snoozed-settings";
-import type { ClaimedJob } from "@/modules/scheduler/service";
+import {
+  type ClaimedJob,
+  claimDueJobs,
+  completeJob,
+  failJob,
+  reclaimAfterDeadline,
+  releaseClaim,
+} from "@/modules/scheduler/service";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogRows } from "../utils/flowlog";
 import { until } from "../utils/poll";
@@ -1043,6 +1050,50 @@ describe.skipIf(!dbUp)("snoozed ladder: the handler", () => {
     }
   });
 
+  test("a message cut by the window's budget keeps its sender label, marked as cut", async () => {
+    await setSettings(LADDER);
+    await seed(2089);
+    const contact = (id: number, minutes: number, content: string): Msg => ({
+      id,
+      message_type: 0,
+      created_at: minutesAgo(minutes),
+      sender: { type: "contact", id: 1 },
+      content,
+    });
+    const model = new InputCapturingModel(REPLY);
+    const s = stub({
+      messages: [
+        contact(500, 30, `início ${"x".repeat(60_000)} fim da longa`),
+        contact(501, 20, "segunda"),
+        contact(502, 19, "terceira"),
+        contact(503, 18, "quarta"),
+        contact(504, 17, "quinta"),
+        contact(505, 16, "sexta"),
+        personAsked(506, 3),
+      ],
+      model: () => model,
+    });
+    await snoozedFollowUpHandler(jobFor(2089), appDb, s.deps);
+    const seen = model.inputs.join("\n");
+    const after = (seen.split("conversation, oldest first")[1] ?? "")
+      .split("\n")
+      .slice(1);
+    const end = after.findIndex((line) => !line.startsWith("|"));
+    const block = end === -1 ? after : after.slice(0, end);
+    expect(block[0]).toStartWith("| Cliente: […] ");
+    expect(block[0]).toEndWith("fim da longa");
+    expect(block[0]).not.toContain("início");
+    expect(block.slice(1, 6)).toEqual([
+      "| Cliente: segunda",
+      "| Cliente: terceira",
+      "| Cliente: quarta",
+      "| Cliente: quinta",
+      "| Cliente: sexta",
+    ]);
+    const text = block.map((line) => line.slice(2)).join("\n");
+    expect(text.length).toBeLessThanOrEqual(NUDGE_CONVERSATION_MAX_CHARS);
+  });
+
   test("an image in the window nobody read yet is read, as the re-engage reads it, and reaches the model", async () => {
     await setSettings({
       ...LADDER,
@@ -1867,6 +1918,106 @@ describe.skipIf(!dbUp)("snoozed ladder: the handler", () => {
       select: { status: true },
     });
     expect(job.status).toBe("PENDING");
+  });
+
+  // A run past its scheduler deadline that had committed is taken back and settled
+  // (`reclaimAfterDeadline`), which renews the claim's lease. The run still STARTED when it started:
+  // an event between that start and the recovery is one it never saw.
+  for (const [conv, eventAgoMs, rearmed] of [
+    [2091, 30_000, true],
+    [2092, 90_000, false],
+  ] as const) {
+    test(`a run recovered after its deadline is a watermark at its start (event ${eventAgoMs / 1000}s ago: ${rearmed ? "re-armed" : "left alone"})`, async () => {
+      await setSettings(LADDER);
+      const started = new Date(Date.now() - 60_000);
+      await seed(conv, { lastEventAt: new Date(Date.now() - eventAgoMs) });
+      // Every other watermark before the run: only the event decides.
+      await suDb.$executeRaw`UPDATE agents SET updated_at = now() - interval '10 minutes' WHERE id = ${agentId}`;
+      await suDb.$executeRaw`UPDATE inboxes SET responder_bound_at = NULL WHERE tenant_id = ${tenantId}`;
+      const key = snoozedDedupeKey(threadOf(conv));
+      await suDb.schedulerJob.deleteMany({
+        where: { tenantId, dedupeKey: key },
+      });
+      await suDb.schedulerJob.create({
+        data: {
+          tenantId,
+          kind: "SNOOZED_FOLLOWUP",
+          dedupeKey: key,
+          runAt: new Date(started.getTime() - 1_000),
+          status: "PENDING",
+          payload: { threadId: threadOf(conv) },
+        },
+      });
+      const claimed = await claimDueJobs(500, suDb, started, tenantId);
+      for (const other of claimed.filter((j) => j.dedupeKey !== key))
+        await releaseClaim(other, suDb);
+      const job = claimed.find((j) => j.dedupeKey === key) as ClaimedJob;
+      expect(job).toBeDefined();
+      await failJob(
+        tenantId,
+        job.id,
+        job.claimSeq,
+        job.attempts,
+        job.kind,
+        "deadline",
+        suDb,
+      );
+      const reclaimed = await reclaimAfterDeadline(
+        tenantId,
+        job.id,
+        job.claimSeq,
+        job.attempts,
+        "deadline",
+        suDb,
+      );
+      expect(reclaimed.applied).toBe(true);
+      expect(
+        (await completeJob(tenantId, job.id, job.claimSeq, job.kind, suDb))
+          .applied,
+      ).toBe(true);
+      await sweepSnoozedFollowUps(appDb, tenantId, [agentId]);
+      const after = await suDb.schedulerJob.findFirstOrThrow({
+        where: { tenantId, dedupeKey: key },
+        select: { status: true },
+      });
+      expect(after.status).toBe(rearmed ? "PENDING" : "DONE");
+    });
+  }
+
+  test("a job the sweep already re-armed is not re-armed again on the next pass", async () => {
+    await setSettings(LADDER);
+    await seed(2093, { lastEventAt: new Date(Date.now() - 30_000) });
+    await suDb.$executeRaw`UPDATE agents SET updated_at = now() - interval '10 minutes' WHERE id = ${agentId}`;
+    await suDb.$executeRaw`UPDATE inboxes SET responder_bound_at = NULL WHERE tenant_id = ${tenantId}`;
+    const key = snoozedDedupeKey(threadOf(2093));
+    const started = new Date(Date.now() - 60_000);
+    await suDb.schedulerJob.deleteMany({ where: { tenantId, dedupeKey: key } });
+    await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "SNOOZED_FOLLOWUP",
+        dedupeKey: key,
+        runAt: started,
+        claimedAt: started,
+        runStartedAt: started,
+        status: "DONE",
+        payload: { threadId: threadOf(2093) },
+      },
+    });
+    await sweepSnoozedFollowUps(appDb, tenantId, [agentId]);
+    const first = await suDb.schedulerJob.findFirstOrThrow({
+      where: { tenantId, dedupeKey: key },
+      select: { status: true, runAt: true, updatedAt: true },
+    });
+    expect(first.status).toBe("PENDING");
+    await sweepSnoozedFollowUps(appDb, tenantId, [agentId]);
+    const second = await suDb.schedulerJob.findFirstOrThrow({
+      where: { tenantId, dedupeKey: key },
+      select: { runAt: true, updatedAt: true },
+    });
+    // Already due: arming it again would only rewrite the row on every pass until it is claimed.
+    expect(second.runAt.getTime()).toBe(first.runAt.getTime());
+    expect(second.updatedAt.getTime()).toBe(first.updatedAt.getTime());
   });
 
   test("an event in the last run's own second is swept again: Chatwoot's instants are whole seconds", async () => {

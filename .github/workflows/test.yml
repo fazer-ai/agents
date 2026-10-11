@@ -69,7 +69,7 @@ jobs:
     #   - src/app.ts exported ONE Elysia instance and three files mutated it.
     #   - `mock.module` on a module whose teardown handed the registry back the namespace
     #     `await import()` returned, which is the object the rewrite already changed in place. Six
-    #     files; tests/lib/module-mock-undo.test.ts now refuses the shape.
+    #     files; biome-plugins/no-module-mock-live-namespace.grit now refuses the shape.
     #   - `mock.module("react-i18next", …)` in nine client test files, each freezing `i18n.language`
     #     at a literal for every file downstream. Replaced by a per-file instance delivered through
     #     `I18nextProvider` (tests/utils/i18n.tsx).

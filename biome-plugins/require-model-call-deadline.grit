@@ -1,0 +1,11 @@
+// Refuses a `runModelCall(...)` that does not name `deadlineMs`. The default (the agent's
+// `modelCallTimeoutMs`) keeps a forgotten call bounded without making it right: a guardrail on the
+// customer's path given two minutes is as wrong as one given none. The definition in
+// src/graph/model-limit.ts, where the default lives, is out of scope in biome.jsonc.
+language js;
+
+JsCallExpression(callee = $callee, arguments = $args) as $call where {
+    $callee <: r"(?:[\s\S]*\.)?runModelCall",
+    not $args <: contains r"deadlineMs",
+    register_diagnostic(span = $call, message = "Every model call names its own `deadlineMs`: the agent-wide default is a floor, not a policy for this call (docs/graph.md).")
+}

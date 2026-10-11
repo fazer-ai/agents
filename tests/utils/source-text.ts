@@ -405,9 +405,7 @@ export async function countInSrc(re: RegExp): Promise<Record<string, number>> {
 }
 
 // A SECOND, SIMPLER SCRUBBER, here rather than in a `.test.ts`: a test file another imports registers
-// its tests again in the importer's shard, so shard totals stop matching the serial run
-// (tests/lib/source-text.test.ts still imports `bigIntArgs` from caller-id-spelling.test.ts, whose
-// waiver ledger is keyed by file). NOT merged into `codeOnly`, which answers regex bodies and URL
+// its tests again in the importer's shard, so shard totals stop matching the serial run. NOT merged into `codeOnly`, which answers regex bodies and URL
 // schemes for callers counting positions; these count braces. Blanks every comment and string body
 // to spaces, offsets preserved: counting braces on raw text drifts SILENTLY, since comments here are
 // full of `{ error }`, `{{placeholder}}` and `${…}`, and one stray brace shifts every block after it.

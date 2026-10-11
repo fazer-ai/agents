@@ -271,6 +271,7 @@ export function buildDocumentTools(
             tool: name,
             kind: "document",
             screenText: screenableValues(input),
+            // biome-ignore lint/plugin/no-bigint-cast: the id of the document row this tool just issued.
             documentId: BigInt(issued.id),
           });
           // NOTE: no field values here, and no customer name. This string is the tool's OUTPUT, and

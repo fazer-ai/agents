@@ -267,6 +267,7 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
         | undefined;
       if (body.adminEmail) {
         const created = await createInvite(ctx, {
+          // biome-ignore lint/plugin/no-bigint-cast: the id of the tenant row this handler just created.
           tenantId: BigInt(tenant.id),
           email: body.adminEmail,
           role: "TENANT_ADMIN",

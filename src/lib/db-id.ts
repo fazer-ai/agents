@@ -12,6 +12,7 @@ const DIGITS = /^\d+$/;
 
 export function parseDbId(raw: string | null | undefined): bigint | null {
   if (!raw || !DIGITS.test(raw)) return null;
+  // biome-ignore lint/plugin/no-bigint-cast: the bounded parse itself, the one `BigInt` every rule here is written around.
   const id = BigInt(raw);
   return id > MAX_DB_ID ? null : id;
 }

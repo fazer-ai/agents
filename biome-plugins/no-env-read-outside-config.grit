@@ -1,0 +1,9 @@
+// Refuses a read of the environment (`process.env`, `Bun.env`, `import.meta.env`) outside
+// src/config.ts. Config is where a variable becomes a setting: parsed, validated, given a default and
+// listed in `.env.example` where an operator finds it, and a read anywhere else skips all of that. A
+// file with a reason it cannot go through config is listed in biome.jsonc, with the reason.
+language js;
+
+or { `process.env`, `Bun.env`, `import.meta.env` } as $read where {
+    register_diagnostic(span = $read, message = "The environment is read in src/config.ts, where a variable is parsed, validated, given a default and listed in .env.example. A file that cannot go through it is listed in biome.jsonc with the reason.")
+}

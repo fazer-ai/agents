@@ -69,6 +69,7 @@ export function readVaultRefId(ref: string): bigint | null {
   if (raw.trim() === "") return null;
   let id: bigint;
   try {
+    // biome-ignore lint/plugin/no-bigint-cast: `readVaultRefId`, the reader's parse: lenient about spelling by contract (canonicalVaultRef) and bounded by range right below this call.
     id = BigInt(raw);
   } catch {
     return null;

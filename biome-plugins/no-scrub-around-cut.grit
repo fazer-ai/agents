@@ -1,0 +1,10 @@
+// Refuses `redactSecretsInText(truncate(...))` and `redactSecretsInText(makeStorable(truncate(...)))`.
+// The scrub has to read past the cut: a credential the cut splits is no longer recognised, and its
+// head leaks. `sanitizeErrorMessage` and `redactSecretsDeep` scrub first and cut after; call those.
+language js;
+
+JsCallExpression(callee = $callee, arguments = $args) as $call where {
+    $callee <: r"[\s\S]*redactSecretsInText",
+    $args <: r"\(\s*(?:makeStorable\()?\s*truncate\([\s\S]*",
+    register_diagnostic(span = $call, message = "A scrub wrapped around a cut leaks the head of a credential the cut split: scrub first and cut after, through `sanitizeErrorMessage` (src/lib/redact.ts).")
+}

@@ -466,6 +466,7 @@ export const authPlugin = new Elysia({ name: "auth" })
 
         let userId: bigint;
         try {
+          // biome-ignore lint/plugin/no-bigint-cast: the subject of a JWT this server signed; a token that fails to convert is answered as no session at all.
           userId = BigInt(payload.userId);
         } catch {
           // NOTE: A non-numeric subject is a forged/legacy token shape, not a

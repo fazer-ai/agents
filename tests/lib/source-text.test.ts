@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { bigIntArgs } from "@/tests/lib/caller-id-spelling.test";
 import {
   codeOnly,
   commentSpans,
@@ -685,12 +684,8 @@ describe("every Glob sweep over src/ counts through the scan", () => {
       if (!/Bun\.file\([^)]*\)[\s\S]{0,20}\.text\(\)/.test(code)) continue;
       sweeps.push(path);
       // THE IMPORT, NOT THE NAME: `refusal-callsites.test.ts` defines a LOCAL `codeOnly`,
-      // which a name match would read as adoption. ONE EXEMPTION, a proved one: `caller-id-spelling`
-      // blanks non-code itself and keys its ledger on the argument's TEXT, so stripped source would
-      // rewrite its keys. The exemption is not a name on a list: the test below drives that file's
-      // own predicate with prose and requires it to count zero.
-      const provesItself = /\bblankNonCode\b/.test(code);
-      if (!/from "@\/tests\/utils\/source-text"/.test(code) && !provesItself) {
+      // which a name match would read as adoption.
+      if (!/from "@\/tests\/utils\/source-text"/.test(code)) {
         offenders.push(path);
       }
     }
@@ -698,20 +693,6 @@ describe("every Glob sweep over src/ counts through the scan", () => {
     // NOTE: …and the fence is looking at something: a fence that names a spelling measures the
     // spelling, never the rule, so a floor on the sweeps found catches one that stops matching.
     expect(sweeps.length).toBeGreaterThanOrEqual(9);
-  });
-});
-
-// The proof behind the one exemption above: a waiver that says "this file handles it" is executed
-// here, not taken on trust.
-describe("the exempt sweep really does ignore prose", () => {
-  test("caller-id-spelling counts no BigInt written in a comment", () => {
-    expect(bigIntArgs("const id = BigInt(raw);\n")).toEqual(["raw"]);
-    expect(bigIntArgs("// never write BigInt(raw) here\n")).toEqual([]);
-    expect(bigIntArgs('const s = "BigInt(raw)";\n')).toEqual([]);
-    // …and the literal inside a real argument survives, which is why it reads raw source.
-    expect(
-      bigIntArgs('const id = BigInt(ref.slice("vault:".length));\n'),
-    ).toEqual(['ref.slice("vault:".length)']);
   });
 });
 

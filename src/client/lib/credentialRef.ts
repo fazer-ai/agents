@@ -18,6 +18,7 @@ export function formatVaultRef(id: string): string {
 export function canonicalVaultRef(ref: string): string | null {
   if (!ref.startsWith(VAULT_REF_PREFIX)) return null;
   try {
+    // biome-ignore lint/plugin/no-bigint-cast: the console's mirror of the vault reader; it produces a string to COMPARE against the vault list and never reaches a query.
     return formatVaultRef(String(BigInt(ref.slice(VAULT_REF_PREFIX.length))));
   } catch {
     return null;

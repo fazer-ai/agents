@@ -1,0 +1,19 @@
+// Refuses `mock.module` of a third-party package (any specifier that is not a path: `jose`,
+// `@scope/name`; `./x`, `/x` and `@/x` are ours). The stub has no file scope and no teardown, so
+// every later file in the process imports it, and a `mockReset()` on one of its functions leaves it
+// returning `undefined`. Prefer not stubbing the package; `spyOn` on our own wrapper restores per
+// property. The one argued-for pair is written below, by file AND package, so the waiver never
+// covers a second package that file adds: tests/api/features/auth/google.service.test.ts stubs
+// `jose` with a `jwtVerify` that DELEGATES to the real one unless a test overrides it for its own
+// call, so the leaked function still verifies real tokens downstream (asserted there by a round
+// trip after `beforeEach`).
+language js;
+
+`mock.module($spec, $_)` as $call where {
+    $spec <: or { r"\"[^./@\"][^\"]*\"", r"\"@[^/\"][^\"]*\"", r"\"@\"" },
+    not and {
+        $filename <: r"(?:[\s\S]*/)?tests/api/features/auth/google\.service\.test\.ts",
+        $spec <: r"\"jose\""
+    },
+    register_diagnostic(span = $call, message = "This replaces a third-party package for the whole process, permanently, and a `mockReset()` on it leaves the function returning `undefined`. Do not stub the package; if you must, make the stub delegate to the real implementation and argue for the pair in biome-plugins/no-package-module-mock.grit.")
+}

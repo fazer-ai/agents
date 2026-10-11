@@ -39,7 +39,7 @@ const suDb = su as PrismaClient;
 // The MCP tool reads through the app's default client, which in the suite points at no database, so
 // the call over a real MCP client needs it to be this file's. Restored as a fresh literal holding the
 // original, the only form that puts it back (see tests/api/v1/mcp-oauth-consent-seam.test.ts and the
-// fence in tests/lib/module-mock-undo.test.ts); top-level so a skipped describe cannot leave it installed.
+// fence in biome-plugins/no-module-mock-live-namespace.grit); top-level so a skipped describe cannot leave it installed.
 const originalPrisma = (await import("@/api/lib/prisma")).default;
 mock.module("@/api/lib/prisma", () => ({ default: app }));
 afterAll(() => {

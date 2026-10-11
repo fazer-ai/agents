@@ -38,7 +38,7 @@ const suDb = su as PrismaClient;
 
 // The app's own client against the test database, so the session lookup reads real rows (the
 // shared stub answers `user` and `tenant` only). Restored as a fresh literal, the way
-// tests/lib/module-mock-undo.test.ts requires.
+// biome-plugins/no-module-mock-live-namespace.grit requires.
 const originalPrisma = (await import("@/api/lib/prisma")).default;
 mock.module("@/api/lib/prisma", () => ({ default: app }));
 afterAll(() => {

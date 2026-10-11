@@ -146,7 +146,9 @@ function parsePayload(raw: Record<string, unknown>): CompactPayload | null {
   }
   try {
     return {
+      // biome-ignore lint/plugin/no-bigint-cast: a checkpoint this app wrote; the shape is guarded above the cast and the whole parse answers null.
       instanceId: BigInt(instanceId),
+      // biome-ignore lint/plugin/no-bigint-cast: same checkpoint, same guard.
       agentId: BigInt(agentId),
       contactInboxId,
       conversationId,

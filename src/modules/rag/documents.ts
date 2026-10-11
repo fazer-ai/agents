@@ -1116,6 +1116,7 @@ export function registerRagIngestHandler(): void {
   registerJobHandler("RAG_INGEST", async (job, base) => {
     const rawId = job.payload.documentId;
     if (typeof rawId !== "string") return { outcome: "done" };
+    // biome-ignore lint/plugin/no-bigint-cast: a RAG_INGEST job payload this app enqueued after the document id was parsed at the route.
     const documentId = BigInt(rawId);
     return runIngestJobForTenant(job.tenantId, documentId, base);
   });

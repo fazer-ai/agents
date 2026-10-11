@@ -1,0 +1,15 @@
+// Refuses `mock.module` of `@/client/contexts/AuthContext`, `@/client/contexts/ThemeContext` and
+// `@/client/hooks/useTenantEvents` anywhere under tests/ (scoped in biome.jsonc). A module mock lasts
+// for the rest of the worker, so a stub written for one file is what the next file imports, and a
+// page rendered under the real provider reads the stub's role. Tests replace these hooks per file
+// with `stubExports` (tests/utils/module-stub.ts).
+language js;
+
+`mock.module($spec, $...)` as $call where {
+    $spec <: or {
+        r"[\"']@/client/contexts/AuthContext[\"']",
+        r"[\"']@/client/contexts/ThemeContext[\"']",
+        r"[\"']@/client/hooks/useTenantEvents[\"']"
+    },
+    register_diagnostic(span = $call, message = "Stub this client context or hook per file with `stubExports` (tests/utils/module-stub.ts): a `mock.module` of it lasts for the rest of the worker.")
+}

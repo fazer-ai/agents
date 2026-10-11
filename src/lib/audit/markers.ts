@@ -4,8 +4,8 @@
 // reader looks at moved and `entriesChanged` when a contact gate allowlist, recorded as counts, moved
 // its entries. This module imports nothing because the console reads them and cannot import
 // `src/modules`. A key missing here renders "no field values" over a real change, so a producer writes
-// a marker only through `withAuditMarker`, and biome-plugins/no-raw-audit-marker.grit refuses any other
-// spelling of `…Changed: true`.
+// a marker only through `withAuditMarker`, biome-plugins/no-raw-audit-marker.grit refuses any other
+// spelling, and tests/modules/audit-markers.test.ts fails on a `…Changed: true` a producer emits.
 export const AUDIT_MARKER_KEYS = [
   "undisclosedChanged",
   "unreadConfigChanged",

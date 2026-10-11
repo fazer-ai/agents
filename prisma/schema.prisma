@@ -137,6 +137,7 @@ model Tenant {
   conversations                 Conversation[]
   messageReplyClaims            MessageReplyClaim[]
   agentTurnDeliveries           AgentTurnDelivery[]
+  decisionRuleStates            DecisionRuleState[]
   replyDispensals               ReplyDispensal[]
   agentThreads                  AgentThread[]
   attendanceSummaries           AttendanceSummary[]
@@ -1221,6 +1222,7 @@ model Conversation {
   replyClaims     MessageReplyClaim[]
   turnDeliveries  AgentTurnDelivery[]
   replyDispensals ReplyDispensal[]
+  ruleStates      DecisionRuleState[]
 
   @@unique([tenantId, chatwootInstanceId, chatwootConversationId])
   @@index([threadId])
@@ -1465,6 +1467,7 @@ model Agent {
   chatwootBots      ChatwootAgentBot[]
   contactAuthGrants ContactAuthGrant[]
   observedInboxes   InboxObserver[]
+  ruleStates        DecisionRuleState[]
 
   @@index([tenantId])
   @@map("agents")
@@ -2358,6 +2361,27 @@ model AgentTurnDelivery {
   @@index([conversationId, deliveredAt])
   @@index([tenantId, deliveredAt])
   @@map("agent_turn_deliveries")
+}
+
+// A decisions rule that acted and is held back by its trigger (docs/decisions.md, "When a rule
+// acts"): `on_start` until an observation in which its conditions do not hold, `once` for the rest of
+// the conversation. Per agent and conversation, by `ruleKey` (the rule's conditions, action and
+// trigger, `ruleStateKey`), so an edited rule starts empty and a reordered one keeps its state.
+model DecisionRuleState {
+  tenantId       BigInt   @map("tenant_id")
+  agentId        BigInt   @map("agent_id")
+  conversationId BigInt   @map("conversation_id")
+  ruleKey        String   @map("rule_key")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  tenant       Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  agent        Agent        @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@id([agentId, conversationId, ruleKey])
+  @@index([conversationId])
+  @@index([tenantId])
+  @@map("decision_rule_states")
 }
 
 // The account-wide proactive breaker's STATE (docs/proactive-breaker.md); its configuration is the

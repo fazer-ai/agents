@@ -111,6 +111,7 @@ import {
   RESOLVE_DONE,
 } from "./catalog";
 import type { NoEffectReporter } from "./effect-free";
+import { type FenceReporter, fenceReporterOf } from "./fence-report";
 import { describeLabelWrite, type LabelWriteReporter } from "./label-writes";
 
 export {
@@ -1225,6 +1226,30 @@ interface PendingLabelDelta {
   remove: string[];
   resolve: (report: string) => void;
   reject: (reason: unknown) => void;
+  // The call's own fence reporter (fence-report.ts): the batch is written by whichever call opened
+  // it, so each delta carries its caller's.
+  fenced?: FenceReporter;
+}
+
+// Which fence of `applyLabelDelta` held part or all of one call, told to the caller that asked. A
+// protected label is named first: it is the fence the operator set on the labels themselves.
+function reportLabelFence(
+  report: FenceReporter | undefined,
+  o: {
+    added: string[];
+    removed: string[];
+    refusedAdd: string[];
+    refusedRemove: string[];
+    refusedOutside?: string[];
+  },
+): void {
+  if (!report) return;
+  const partial = o.added.length > 0 || o.removed.length > 0;
+  if (o.refusedAdd.length > 0 || o.refusedRemove.length > 0) {
+    report({ fence: "protected_label", partial });
+  } else if ((o.refusedOutside ?? []).length > 0) {
+    report({ fence: "allowed_labels", partial });
+  }
 }
 
 // How long a caller's own read of the conversation's labels stands in for the tool's.
@@ -1351,6 +1376,7 @@ function setLabelsTool(ctx: ToolCtx) {
         recordShown(ctx, "conversation", state);
         for (const o of outcomes) {
           ctx.onNoEffect?.("set_labels");
+          reportLabelFence(o.delta.fenced, o);
           o.delta.resolve(report(o));
         }
         return;
@@ -1379,7 +1405,10 @@ function setLabelsTool(ctx: ToolCtx) {
         if (first) state = first.next;
         if (!first || !moved(first)) {
           ctx.onNoEffect?.("set_labels");
-          if (first) first.delta.resolve(report(first));
+          if (first) {
+            reportLabelFence(first.delta.fenced, first);
+            first.delta.resolve(report(first));
+          }
           return;
         }
       }
@@ -1400,6 +1429,7 @@ function setLabelsTool(ctx: ToolCtx) {
         } else {
           ctx.onNoEffect?.("set_labels");
         }
+        reportLabelFence(o.delta.fenced, o);
         o.delta.resolve(report(o));
       }
     } catch (err) {
@@ -1425,9 +1455,10 @@ function setLabelsTool(ctx: ToolCtx) {
         remove?: string[];
         scope?: "conversation" | "contact" | "task";
       },
-      _config?: ToolRunnableConfig,
+      config?: ToolRunnableConfig,
     ) => {
       const { add = [], remove = [], scope } = args;
+      const fenced = fenceReporterOf(config);
       // THE RETIRED SHAPE IS REFUSED BY NAME: operator prose written for a complete-list
       // contract makes a model send `{labels: [...]}`, and a strict schema would strip the key and
       // leave an empty delta, so the call would answer "already as requested" for a classification
@@ -1473,6 +1504,13 @@ function setLabelsTool(ctx: ToolCtx) {
           refusedOutside,
           acceptedOutside,
         } = applyLabelDelta(add, remove, cardLabels, guarded, allowed);
+        reportLabelFence(fenced, {
+          added,
+          removed,
+          refusedAdd,
+          refusedRemove,
+          refusedOutside,
+        });
         if (added.length === 0 && removed.length === 0) {
           // NOTE: NOTHING MOVED, so nothing is written: the POST is skipped entirely.
           // The dispatch was counted as an effect on the way in, and a call that changed no label
@@ -1549,6 +1587,13 @@ function setLabelsTool(ctx: ToolCtx) {
           refusedOutside,
           acceptedOutside,
         } = applyLabelDelta(add, remove, current, guarded, allowed);
+        reportLabelFence(fenced, {
+          added,
+          removed,
+          refusedAdd,
+          refusedRemove,
+          refusedOutside,
+        });
         if (added.length === 0 && removed.length === 0) {
           ctx.onNoEffect?.("set_labels");
           recordShown(ctx, "contact", next);
@@ -1593,7 +1638,13 @@ function setLabelsTool(ctx: ToolCtx) {
       // the TAIL of the label queue, its read still out, joins that entry. Only the tail can be
       // joined, so a call is never merged ahead of a writer queued in between.
       return new Promise<string>((resolve, reject) => {
-        const mine: PendingLabelDelta = { add, remove, resolve, reject };
+        const mine: PendingLabelDelta = {
+          add,
+          remove,
+          resolve,
+          reject,
+          ...(fenced ? { fenced } : {}),
+        };
         const alone = ctx.writesAlone?.() === true;
         const tail = alone
           ? undefined

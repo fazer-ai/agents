@@ -15,6 +15,7 @@ import {
 } from "@/modules/agents/tool-preconditions";
 import type { FlowEvent } from "@/modules/flowlog/service";
 import type { NoEffectReporter } from "./effect-free";
+import { fenceReporterOf } from "./fence-report";
 
 function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
@@ -104,6 +105,8 @@ export function guardedTool(
       return inner.invoke(input as never, config);
     }
     onRefused?.({ tool: inner.name, cond, reason, err });
+    // To a caller that asked (fence-report.ts): the call reached the tool and its condition said no.
+    fenceReporterOf(config)?.({ fence: "precondition", partial: false });
     // NOTE: ToolNode hands the whole tool call in as the input, so the id is on it; a direct invocation
     // with plain args (a unit test) has none, and the plain string is the honest degradation there —
     // the same shape failableTool settled on.

@@ -4,10 +4,12 @@
 // tunes thresholds against.
 
 import { isDeepStrictEqual } from "node:util";
-import type {
-  DecisionActionTool,
-  DecisionCondition,
-  DecisionRule,
+import {
+  type DecisionActionTool,
+  type DecisionCondition,
+  type DecisionRule,
+  type DecisionTrigger,
+  triggerOf,
 } from "./config";
 import type { DecisionAnswer } from "./providers";
 
@@ -15,6 +17,8 @@ export interface FiredAction {
   rule: number;
   tool: DecisionActionTool;
   args: Record<string, unknown>;
+  // Later rules that fired the same tool with the same arguments: one write answers for all of them.
+  merged: number[];
 }
 
 export type ConditionMiss =
@@ -42,14 +46,21 @@ export interface RuleOutcome {
   fired: FiredAction[];
   // Rules that did not fire, with the first condition that failed.
   missed: { rule: number; miss: ConditionMiss }[];
+  // Rules whose conditions held and that did not act because their trigger holds them back (an
+  // `on_start` rule that already acted while it keeps holding, a `once` rule that already acted).
+  held: { rule: number; trigger: DecisionTrigger }[];
 }
 
+// `admits` is asked of a rule whose conditions hold: whether its trigger lets it act now. A held rule
+// is left out BEFORE the merge, so an identical rule that may act still does.
 export function evaluateRules(
   rules: DecisionRule[],
   answers: Record<string, DecisionAnswer>,
+  admits: (rule: number) => boolean = () => true,
 ): RuleOutcome {
   const fired: FiredAction[] = [];
   const missed: RuleOutcome["missed"] = [];
+  const held: RuleOutcome["held"] = [];
   for (const [i, rule] of rules.entries()) {
     let miss: ConditionMiss | null = null;
     for (const c of rule.when) {
@@ -60,16 +71,27 @@ export function evaluateRules(
       missed.push({ rule: i, miss });
       continue;
     }
-    const dup = fired.some(
+    if (!admits(i)) {
+      held.push({ rule: i, trigger: triggerOf(rule) });
+      continue;
+    }
+    const dup = fired.find(
       (f) =>
         f.tool === rule.action.tool &&
         isDeepStrictEqual(f.args, rule.action.args),
     );
-    if (!dup) {
-      fired.push({ rule: i, tool: rule.action.tool, args: rule.action.args });
+    if (dup) {
+      dup.merged.push(i);
+    } else {
+      fired.push({
+        rule: i,
+        tool: rule.action.tool,
+        args: rule.action.args,
+        merged: [],
+      });
     }
   }
-  return { fired, missed };
+  return { fired, missed, held };
 }
 
 function checkCondition(

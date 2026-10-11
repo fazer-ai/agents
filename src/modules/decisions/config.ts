@@ -25,6 +25,24 @@ export const DECISION_ACTION_TOOLS = [
 ] as const;
 export type DecisionActionTool = (typeof DECISION_ACTION_TOOLS)[number];
 
+// WHEN A RULE ACTS while its conditions keep holding. `each_time`: on every observation
+// in which they hold. `on_start`: on the observation where they start holding, and again only after
+// one in which they did not. `once`: the first time, never again in that conversation. The default
+// follows what the action does: a write that converges (the second identical one changes nothing)
+// acts each time; one that adds something (a note, a handoff) would repeat itself, so it acts when
+// the conditions start holding.
+export const DECISION_TRIGGERS = ["each_time", "on_start", "once"] as const;
+export type DecisionTrigger = (typeof DECISION_TRIGGERS)[number];
+
+const CONVERGENT_ACTIONS: ReadonlySet<string> = new Set([
+  "set_labels",
+  "set_custom_attribute",
+]);
+
+export function defaultTriggerFor(tool: string): DecisionTrigger {
+  return CONVERGENT_ACTIONS.has(tool) ? "each_time" : "on_start";
+}
+
 export const DEFAULT_DECISION_MODEL: Record<DecisionProvider, string> = {
   openai: "gpt-6-luna",
   typesafe: "jev-latest",
@@ -72,6 +90,12 @@ export type DecisionCondition =
 export interface DecisionRule {
   when: DecisionCondition[];
   action: { tool: DecisionActionTool; args: Record<string, unknown> };
+  // The stored choice; absent, the action's default (`triggerOf`).
+  trigger?: DecisionTrigger;
+}
+
+export function triggerOf(rule: DecisionRule): DecisionTrigger {
+  return rule.trigger ?? defaultTriggerFor(rule.action.tool);
 }
 
 export interface DecisionsConfig {
@@ -119,6 +143,7 @@ const rule = z.looseObject({
       args: z.record(z.string(), z.unknown()).optional(),
     })
     .optional(),
+  trigger: z.enum(DECISION_TRIGGERS).optional(),
 });
 
 // Keys the block no longer has, refused by name rather than kept and ignored like any other unknown
@@ -429,6 +454,7 @@ export function readDecisionsConfig(monitoring: unknown): DecisionsReading {
       tool: r.action?.tool as DecisionActionTool,
       args: (r.action?.args ?? {}) as Record<string, unknown>,
     },
+    ...(r.trigger !== undefined ? { trigger: r.trigger } : {}),
   }));
   return {
     ok: true,
@@ -452,19 +478,30 @@ export function readDecisionsConfig(monitoring: unknown): DecisionsReading {
 export function decisionsFingerprint(
   config: Pick<DecisionsConfig, "questions" | "rules">,
 ): string {
-  const canon = (v: unknown): unknown =>
-    Array.isArray(v)
-      ? v.map(canon)
-      : v && typeof v === "object"
-        ? Object.fromEntries(
-            Object.entries(v as Record<string, unknown>)
-              .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-              .map(([k, x]) => [k, canon(x)]),
-          )
-        : v;
-  const text = JSON.stringify(
-    canon({ questions: config.questions, rules: config.rules }),
+  // A rule's trigger is left out: it changes when the rule acts, not what its index means, so
+  // choosing one keeps the history the console counts.
+  return markOf(
+    canon({
+      questions: config.questions,
+      rules: config.rules.map(({ when, action }) => ({ when, action })),
+    }),
   );
+}
+
+function canon(v: unknown): unknown {
+  return Array.isArray(v)
+    ? v.map(canon)
+    : v && typeof v === "object"
+      ? Object.fromEntries(
+          Object.entries(v as Record<string, unknown>)
+            .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+            .map(([k, x]) => [k, canon(x)]),
+        )
+      : v;
+}
+
+function markOf(value: unknown): string {
+  const text = JSON.stringify(value);
   // FNV-1a, twice with different offsets: not a secret, only a mark two honest sides compute.
   const fnv = (seed: number) => {
     let h = seed;
@@ -475,6 +512,15 @@ export function decisionsFingerprint(
     return (h >>> 0).toString(16).padStart(8, "0");
   };
   return fnv(0x811c9dc5) + fnv(0x01234567);
+}
+
+// WHICH RULE A TRIGGER'S STATE BELONGS TO (decision_rule_states): its conditions, its action and
+// its trigger, not its index. Editing any of them is a different rule whose state starts empty, a
+// reorder keeps every rule's state, and editing one rule leaves the others' alone.
+export function ruleStateKey(rule: DecisionRule): string {
+  return markOf(
+    canon({ when: rule.when, action: rule.action, trigger: triggerOf(rule) }),
+  );
 }
 
 // The same mark for a stored block, or null when the block could not run (no tick ran it).
@@ -564,7 +610,7 @@ export function projectDecisionsBlock(
   }
   if (top.rules !== undefined) {
     top.rules = list(top.rules, (r) => {
-      const o = pick(r, ["when", "action"]);
+      const o = pick(r, ["when", "action", "trigger"]);
       if (o === null) return r;
       if (o.when !== undefined) {
         o.when = list(

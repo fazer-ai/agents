@@ -62,6 +62,7 @@ import {
   moveItem,
   ruleIsBroken,
   ruleToolNotGranted,
+  ruleTriggerShown,
   withActionScope,
 } from "./decisionsFormState";
 import {
@@ -276,6 +277,40 @@ function ruleActivityText(
       t("editor.decisionsRuleMerged", "same action as an earlier rule {{n}}", {
         n: a.merged,
       }),
+    );
+  }
+  if (a.held > 0) {
+    parts.push(
+      t("editor.decisionsRuleHeld", "already acted, held back {{n}}", {
+        n: a.held,
+      }),
+    );
+  }
+  for (const [fence, n] of Object.entries(a.refusedBy)) {
+    parts.push(
+      fence === "protected_label"
+        ? t(
+            "editor.decisionsRuleRefusedProtected",
+            "refused by a protected label {{n}}",
+            { n },
+          )
+        : fence === "allowed_labels"
+          ? t(
+              "editor.decisionsRuleRefusedAllowed",
+              "refused by the allowed labels {{n}}",
+              { n },
+            )
+          : fence === "precondition"
+            ? t(
+                "editor.decisionsRuleRefusedPrecondition",
+                "refused by the tool's condition {{n}}",
+                { n },
+              )
+            : t(
+                "editor.decisionsRuleRefused",
+                "refused by a protection {{n}}",
+                { n },
+              ),
     );
   }
   if (a.blocked > 0) {
@@ -1094,6 +1129,58 @@ export function DecisionsFields({
     return null;
   };
 
+  // When the rule acts while its conditions keep holding (docs/decisions.md, "When a rule acts").
+  // Preselected by the action until the operator picks one: a note or a transfer would repeat on
+  // every message, labels and attributes would not.
+  const triggerField = (ri: number, rule: DecisionRuleForm) => {
+    const shown = ruleTriggerShown(rule);
+    return (
+      <FormField
+        label={t("editor.decisionsTrigger", "When it acts")}
+        error={field(`rules.${ri}.trigger`)}
+        description={
+          shown === "each_time"
+            ? t(
+                "editor.decisionsTriggerEachTimeHint",
+                "It acts again on every message for as long as the conditions hold.",
+              )
+            : shown === "on_start"
+              ? t(
+                  "editor.decisionsTriggerOnStartHint",
+                  "It acts once when the conditions start holding, and again only after a message in which they did not.",
+                )
+              : t(
+                  "editor.decisionsTriggerOnceHint",
+                  "It acts the first time the conditions hold and never again in that conversation.",
+                )
+        }
+      >
+        <Select
+          value={shown}
+          wrapperClassName="max-w-96"
+          data-testid="decisions-rule-trigger"
+          onChange={(e) => setRule(ri, { trigger: e.target.value })}
+        >
+          <option value="each_time">
+            {t(
+              "editor.decisionsTriggerEachTime",
+              "Every time the conditions hold",
+            )}
+          </option>
+          <option value="on_start">
+            {t(
+              "editor.decisionsTriggerOnStart",
+              "When the conditions start holding",
+            )}
+          </option>
+          <option value="once">
+            {t("editor.decisionsTriggerOnce", "Once per conversation")}
+          </option>
+        </Select>
+      </FormField>
+    );
+  };
+
   // A folded rule in one line: "When <conditions>, then <action>".
   const ruleSummary = (rule: DecisionRuleForm): string => {
     const strings = (v: unknown): string[] =>
@@ -1657,6 +1744,7 @@ export function DecisionsFields({
                       </Select>
                     </FormField>
                     {actionFields(ri, rule)}
+                    {triggerField(ri, rule)}
                     {notGranted(rule) && grantWarning(rule)}
                     {gap && (
                       <span className="flex items-start gap-1.5 text-warning text-xs">
@@ -1724,6 +1812,7 @@ export function DecisionsFields({
                     ],
                     tool: "set_labels",
                     args: {},
+                    trigger: "",
                   },
                 ],
               }))

@@ -11,11 +11,16 @@ export interface DecisionLine {
 export interface RuleActivity {
   // Decisions in which every condition of the rule held.
   fired: number;
-  // ...and of those: the tool ran, could not run (not granted, over the tool budget, failed), or was
-  // the same call an earlier rule had already fired (`merged`: two rules firing the same tool with
-  // the same arguments run it once, under the first one's index).
+  // ...and of those: the tool ran, could not run (not granted, over the tool budget, failed), was
+  // refused by a fence inside the tool (`refused`, by fence in `refusedBy`), was held back by the
+  // rule's trigger (`held`: it already acted while the conditions keep holding), or was the same
+  // call an earlier rule had already fired (`merged`: two rules firing the same tool with the same
+  // arguments run it once, under the first one's index, and the outcome is counted for both).
   ran: number;
   blocked: number;
+  refused: number;
+  refusedBy: Record<string, number>;
+  held: number;
   merged: number;
 }
 
@@ -33,12 +38,15 @@ export interface DecisionsActivity {
   answers: ReadonlyMap<string, AnswerSample[]>;
 }
 
-const NONE: RuleActivity = {
+const none = (): RuleActivity => ({
   fired: 0,
   ran: 0,
   blocked: 0,
+  refused: 0,
+  refusedBy: {},
+  held: 0,
   merged: 0,
-};
+});
 
 const bag = (v: unknown): Record<string, unknown> | null =>
   v && typeof v === "object" && !Array.isArray(v)
@@ -94,29 +102,56 @@ export function summarizeDecisions(
     if (!bag(d.answers) || !Array.isArray(d.actions)) continue;
     if (block === null || d.block !== block) continue;
     decisions += 1;
-    for (const raw of d.actions) {
-      const a = bag(raw);
-      const rule = numberOrNull(a?.rule);
-      if (!a || rule === null) continue;
-      const cur = rules.get(rule) ?? { ...NONE };
+    const accounted = new Set<number>();
+    const count = (
+      rule: number,
+      a: Record<string, unknown>,
+      merged: boolean,
+    ) => {
+      const cur = rules.get(rule) ?? none();
       cur.fired += 1;
+      if (merged) cur.merged += 1;
       if (a.outcome === "ran") cur.ran += 1;
+      else if (a.outcome === "refused") {
+        cur.refused += 1;
+        const fence = typeof a.fence === "string" ? a.fence : "";
+        cur.refusedBy[fence] = (cur.refusedBy[fence] ?? 0) + 1;
+      }
       // `shadow` is an outcome only old lines carry, an action recorded and not run: it counts as
       // fired, and neither as run nor as unable to run.
       else if (a.outcome !== "shadow") cur.blocked += 1;
       rules.set(rule, cur);
+      accounted.add(rule);
+    };
+    for (const raw of d.actions) {
+      const a = bag(raw);
+      const rule = numberOrNull(a?.rule);
+      if (!a || rule === null) continue;
+      count(rule, a, false);
+      // The later rules whose identical action this is take its outcome too.
+      for (const m of Array.isArray(a.merged) ? a.merged : []) {
+        const merged = numberOrNull(m);
+        if (merged !== null) count(merged, a, true);
+      }
     }
-    const accounted = new Set<number>();
-    for (const raw of [
-      ...d.actions,
-      ...(Array.isArray(d.notFired) ? d.notFired : []),
-    ]) {
+    for (const raw of Array.isArray(d.held) ? d.held : []) {
+      const rule = numberOrNull(bag(raw)?.rule);
+      if (rule === null) continue;
+      const cur = rules.get(rule) ?? none();
+      cur.fired += 1;
+      cur.held += 1;
+      rules.set(rule, cur);
+      accounted.add(rule);
+    }
+    for (const raw of Array.isArray(d.notFired) ? d.notFired : []) {
       const rule = numberOrNull(bag(raw)?.rule);
       if (rule !== null) accounted.add(rule);
     }
+    // A line written before actions named their merged rules: a rule in no list fired and was merged
+    // into an earlier rule's identical call, with no outcome of its own to count.
     for (let rule = 0; rule < ruleCount; rule++) {
       if (accounted.has(rule)) continue;
-      const cur = rules.get(rule) ?? { ...NONE };
+      const cur = rules.get(rule) ?? none();
       cur.fired += 1;
       cur.merged += 1;
       rules.set(rule, cur);

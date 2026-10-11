@@ -256,6 +256,7 @@ describe("the starting points of a decisions agent", () => {
       when: [],
       tool: "set_labels",
       args: {},
+      trigger: "",
     });
     form = {
       ...form,
@@ -285,6 +286,7 @@ describe("a rule whose tool the agent was not granted", () => {
     when: [],
     tool,
     args: {},
+    trigger: "",
   });
 
   test("is said apart from one that runs", () => {

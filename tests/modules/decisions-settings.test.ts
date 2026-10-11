@@ -12,7 +12,12 @@ import {
   assertSettingsClosedValues,
 } from "@/modules/agents/service";
 import { BEHAVIOR_PATCH_ARGS_SHAPE } from "@/modules/agents/settings-schema";
-import { readDecisionsConfig } from "@/modules/decisions/config";
+import {
+  decisionsBlockFingerprint,
+  readDecisionsConfig,
+  ruleStateKey,
+  triggerOf,
+} from "@/modules/decisions/config";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import { agentSettingsGet, agentSettingsSet } from "@/modules/mcp/write";
 import { readMonitoringConfig } from "@/modules/observe/settings";
@@ -77,6 +82,92 @@ describe("the decisions block at the write boundary", () => {
       expect(r?.message).toContain("Unknown field");
     },
   );
+
+  // When a rule acts: a closed vocabulary, refused by name like any other field.
+  test("a rule's trigger outside the vocabulary is refused, naming the field", () => {
+    const r = refusal({
+      ...valid,
+      decisions: {
+        ...valid.decisions,
+        rules: [{ ...RULES[0], trigger: "sempre_que_der" }],
+      },
+    });
+    expect(r?.statusCode).toBe(400);
+    expect(r?.field).toBe("monitoring.decisions.rules.0.trigger");
+  });
+
+  test.each(["each_time", "on_start", "once"])(
+    "a rule's trigger %s is accepted and read as stored",
+    (trigger) => {
+      const block = {
+        ...valid,
+        decisions: { ...valid.decisions, rules: [{ ...RULES[0], trigger }] },
+      };
+      expect(refusal(block)).toBeNull();
+      const read = readDecisionsConfig(block);
+      expect(read.ok && read.config.rules[0]?.trigger).toBe(trigger);
+      expect(readMonitoringConfig({ monitoring: block }).decisions).toEqual(
+        block.decisions,
+      );
+    },
+  );
+
+  test("a rule with no trigger reads as its action's default, and the stored block keeps it absent", () => {
+    const rules = [
+      { ...RULES[0] },
+      {
+        when: RULES[0]?.when,
+        action: { tool: "private_note", args: { content: "x" } },
+      },
+      {
+        when: RULES[0]?.when,
+        action: { tool: "handoff_to_human", args: {} },
+      },
+      {
+        when: RULES[0]?.when,
+        action: {
+          tool: "set_custom_attribute",
+          args: { key: "k", value: "v" },
+        },
+      },
+    ];
+    const block = { ...valid, decisions: { ...valid.decisions, rules } };
+    const read = readDecisionsConfig(block);
+    if (!read.ok) throw new Error(read.problem);
+    expect(read.config.rules.map(triggerOf)).toEqual([
+      "each_time",
+      "on_start",
+      "on_start",
+      "each_time",
+    ]);
+    expect(read.config.rules.every((r) => r.trigger === undefined)).toBe(true);
+  });
+
+  // The console counts lines whose `block` mark matches the stored block: choosing when a rule acts
+  // does not change what its index means, so it keeps that history.
+  test("a rule's trigger does not change the block's mark, and changes the rule's state key", () => {
+    const plain = { decisions: valid.decisions };
+    const withTrigger = {
+      decisions: {
+        ...valid.decisions,
+        rules: [{ ...RULES[0], trigger: "once" }],
+      },
+    };
+    expect(decisionsBlockFingerprint(withTrigger.decisions)).toBe(
+      decisionsBlockFingerprint(plain.decisions),
+    );
+    const a = readDecisionsConfig(plain);
+    const b = readDecisionsConfig(withTrigger);
+    if (!a.ok || !b.ok) throw new Error("unreadable");
+    const ra = a.config.rules[0];
+    const rb = b.config.rules[0];
+    if (!ra || !rb) throw new Error("no rule");
+    expect(ruleStateKey(ra)).not.toBe(ruleStateKey(rb));
+    // The default spelled out is the same rule as the default left implicit.
+    expect(ruleStateKey(ra)).toBe(
+      ruleStateKey({ ...ra, trigger: "each_time" }),
+    );
+  });
 
   test.each([
     [
@@ -542,6 +633,24 @@ describe.skipIf(!dbUp)("the decisions block through MCP", () => {
     );
     expect(r.ok).toBe(false);
     expect(JSON.stringify(r)).toContain("monitoring.decisions");
+  });
+
+  test("a patch whose rule carries a trigger outside the vocabulary is refused, naming the field, and stores nothing", async () => {
+    const before = JSON.stringify((await stored())?.decisions);
+    const r = await agentSettingsSet(
+      principal(),
+      {
+        agent_id: String(agentId),
+        dry_run: false,
+        monitoring: {
+          decisions: { rules: [{ ...RULES[0], trigger: "sempre_que_der" }] },
+        },
+      } as never,
+      { base: appDb },
+    );
+    expect(r.ok).toBe(false);
+    expect(JSON.stringify(r)).toContain("monitoring.decisions.rules.0.trigger");
+    expect(JSON.stringify((await stored())?.decisions)).toBe(before);
   });
 
   test("a patch that carries the removed apply is refused, naming the field", async () => {

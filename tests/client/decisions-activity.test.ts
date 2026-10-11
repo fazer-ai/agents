@@ -60,12 +60,18 @@ describe("what a decisions agent has been doing", () => {
       fired: 2,
       ran: 1,
       blocked: 0,
+      refused: 0,
+      refusedBy: {},
+      held: 0,
       merged: 0,
     });
     expect(a.rules.get(2)).toEqual({
       fired: 1,
       ran: 0,
       blocked: 1,
+      refused: 0,
+      refusedBy: {},
+      held: 0,
       merged: 0,
     });
     // A rule that never fired has no entry: zero is said by the reader, against `decisions`.
@@ -105,6 +111,9 @@ describe("what a decisions agent has been doing", () => {
       fired: 1,
       ran: 1,
       blocked: 0,
+      refused: 0,
+      refusedBy: {},
+      held: 0,
       merged: 0,
     });
     expect(a.answers.has("irritacao")).toBe(false);
@@ -139,15 +148,126 @@ describe("what a decisions agent has been doing", () => {
       fired: 1,
       ran: 1,
       blocked: 0,
+      refused: 0,
+      refusedBy: {},
+      held: 0,
       merged: 0,
     });
     expect(a.rules.get(1)).toEqual({
       fired: 1,
       ran: 0,
       blocked: 0,
+      refused: 0,
+      refusedBy: {},
+      held: 0,
       merged: 1,
     });
     expect(a.rules.has(2)).toBe(false);
+  });
+
+  // A fence inside the tool refusing the call is not a run, and not "could not run" either: it is
+  // counted apart, by fence.
+  test("an action a fence refused counts as refused, by fence, and never as ran", () => {
+    const a = summarizeDecisions(
+      [
+        line("2026-10-08T12:00:00Z", {
+          answers: { pede_reembolso: { type: "yes_no", probability: 0.9 } },
+          actions: [
+            {
+              rule: 0,
+              tool: "set_labels",
+              outcome: "refused",
+              fence: "protected_label",
+            },
+            {
+              rule: 1,
+              tool: "private_note",
+              outcome: "refused",
+              fence: "precondition",
+            },
+            { rule: 2, tool: "handoff_to_human", outcome: "not_granted" },
+          ],
+        }),
+        line("2026-10-08T12:05:00Z", {
+          answers: { pede_reembolso: { type: "yes_no", probability: 0.9 } },
+          actions: [
+            {
+              rule: 0,
+              tool: "set_labels",
+              outcome: "refused",
+              fence: "protected_label",
+            },
+          ],
+          notFired: [1, 2].map((rule) => ({ rule, miss: {} })),
+        }),
+      ],
+      "aaaa",
+      3,
+    );
+    expect(a.rules.get(0)).toMatchObject({
+      fired: 2,
+      ran: 0,
+      blocked: 0,
+      refused: 2,
+      refusedBy: { protected_label: 2 },
+    });
+    expect(a.rules.get(1)).toMatchObject({
+      ran: 0,
+      refused: 1,
+      refusedBy: { precondition: 1 },
+    });
+    expect(a.rules.get(2)).toMatchObject({ blocked: 1, refused: 0 });
+  });
+
+  // The line names the later rules an action answers for: their outcome is the action's.
+  test("a merged rule takes the outcome of the action it rode on", () => {
+    const a = summarizeDecisions(
+      [
+        line("2026-10-08T12:00:00Z", {
+          answers: { pede_reembolso: { type: "yes_no", probability: 0.9 } },
+          actions: [
+            {
+              rule: 0,
+              tool: "set_labels",
+              outcome: "refused",
+              fence: "protected_label",
+              merged: [1],
+            },
+          ],
+          notFired: [{ rule: 2, miss: {} }],
+        }),
+      ],
+      "aaaa",
+      3,
+    );
+    expect(a.rules.get(1)).toMatchObject({
+      fired: 1,
+      ran: 0,
+      refused: 1,
+      merged: 1,
+    });
+  });
+
+  // A rule its trigger held back fired and did not act: it is neither "did not fire" nor merged.
+  test("a rule its trigger held back counts as fired and held", () => {
+    const a = summarizeDecisions(
+      [
+        line("2026-10-08T12:00:00Z", {
+          answers: { pede_reembolso: { type: "yes_no", probability: 0.9 } },
+          actions: [],
+          held: [{ rule: 0, trigger: "on_start" }],
+          notFired: [1, 2].map((rule) => ({ rule, miss: {} })),
+        }),
+      ],
+      "aaaa",
+      3,
+    );
+    expect(a.rules.get(0)).toMatchObject({
+      fired: 1,
+      held: 1,
+      ran: 0,
+      merged: 0,
+    });
   });
 
   test("counts only ticks the decisions engine decided", () => {

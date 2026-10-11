@@ -13,6 +13,7 @@ import {
   decisionTextCap,
   issuesUnder,
   ruleIsBroken,
+  ruleTriggerShown,
   withActionScope,
 } from "@/client/pages/agents/decisionsFormState";
 import {
@@ -92,6 +93,7 @@ interface Block {
   rules: {
     when: Record<string, unknown>[];
     action: { tool: string; args: Record<string, unknown> };
+    trigger?: string;
   }[];
 }
 const clone = (): Block => structuredClone(BLOCK) as Block;
@@ -205,6 +207,48 @@ describe("the decisions block round trip", () => {
     expect([...decisionsFormIssues(form).keys()]).toEqual([
       "rules.0.when.0.minProbability",
     ]);
+  });
+});
+
+// When a rule acts: shown with the action's default until the operator picks one, and
+// written only when picked, so a rule left alone keeps following its action's default.
+describe("when a rule acts", () => {
+  test("a rule with no trigger shows its action's default and is written without one", () => {
+    const form = formOf(BLOCK);
+    expect(form.rules.map(ruleTriggerShown)).toEqual(["each_time", "on_start"]);
+    expect(form.rules.map((r) => r.trigger)).toEqual(["", ""]);
+    expect(decisionsToStored(form)).toEqual(BLOCK);
+  });
+
+  test("a note rule shows when the conditions start holding; a label rule, every time", () => {
+    const form = formOf(BLOCK);
+    const note = { ...got(form.rules[0]), tool: "private_note", args: {} };
+    expect(ruleTriggerShown(note)).toBe("on_start");
+    expect(ruleTriggerShown({ ...note, tool: "set_labels" })).toBe("each_time");
+  });
+
+  test("a picked trigger is written, round-trips, and survives an action change", () => {
+    const block = clone();
+    got(block.rules[0]).trigger = "once";
+    const form = formOf(block);
+    expect(got(form.rules[0]).trigger).toBe("once");
+    expect<unknown>(decisionsToStored(form)).toEqual(block);
+    const changed = {
+      ...form,
+      rules: form.rules.map((r, i) =>
+        i === 0 ? { ...r, tool: "private_note", args: { content: "x" } } : r,
+      ),
+    };
+    expect(ruleTriggerShown(got(changed.rules[0]))).toBe("once");
+    expect(
+      (decisionsToStored(changed).rules as { trigger?: string }[])[0]?.trigger,
+    ).toBe("once");
+  });
+
+  test("a trigger the server does not know is marked at its field", () => {
+    const block = clone();
+    got(block.rules[0]).trigger = "sempre_que_der";
+    expect(marked(block)).toContain("rules.0.trigger");
   });
 });
 

@@ -685,6 +685,98 @@ describe("a question or a note longer than the typing bound", () => {
   });
 });
 
+// Every rule says when it acts, in words, preselected by its action until the operator
+// picks. A fence's refusal and a rule its trigger held back are counted apart from runs.
+describe("when a rule acts, and what became of it", () => {
+  const unfold = () => {
+    for (const fold of Array.from(
+      document.querySelectorAll<HTMLElement>('[aria-expanded="false"]'),
+    )) {
+      fireEvent.click(fold);
+    }
+  };
+  const triggers = () =>
+    screen
+      .queryAllByTestId("decisions-rule-trigger")
+      .map((el) => (el as HTMLSelectElement).value);
+
+  test("each rule shows the choice preselected by its action, in words", () => {
+    stubApi();
+    renderSection({ monitoring: { engine: "decisions", decisions: BLOCK } });
+    unfold();
+    expect(triggers()).toEqual(["each_time", "on_start"]);
+    const words = Array.from(
+      (screen.getAllByTestId("decisions-rule-trigger")[0] as HTMLSelectElement)
+        .options,
+    ).map((o) => o.textContent ?? "");
+    expect(words).toEqual([
+      "Every time the conditions hold",
+      "When the conditions start holding",
+      "Once per conversation",
+    ]);
+  });
+
+  test("a picked trigger is what the block stores, and an untouched rule stores none", () => {
+    stubApi();
+    const { state } = renderSection({
+      monitoring: { engine: "decisions", decisions: BLOCK },
+    });
+    unfold();
+    fireEvent.change(
+      screen.getAllByTestId("decisions-rule-trigger")[0] as HTMLElement,
+      { target: { value: "once" } },
+    );
+    const rules = observationToStored(state()).decisions?.rules as {
+      trigger?: string;
+    }[];
+    expect(rules.map((r) => r.trigger ?? "")).toEqual(["once", ""]);
+    expect(triggers()).toEqual(["once", "on_start"]);
+  });
+
+  test("a refusal by a protected label and a rule held back are said apart from a run", async () => {
+    const lines = [
+      {
+        id: "3",
+        createdAt: "2026-10-08T12:10:00Z",
+        status: "ok",
+        detail: {
+          engine: "decisions",
+          block: MARK,
+          answers: { pede_reembolso: { type: "yes_no", probability: 0.9 } },
+          actions: [
+            {
+              rule: 0,
+              tool: "set_labels",
+              outcome: "refused",
+              fence: "protected_label",
+            },
+          ],
+          held: [{ rule: 1, trigger: "on_start" }],
+        },
+      },
+    ];
+    stubApi();
+    const inner = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) =>
+      String(input instanceof Request ? input.url : input).includes("/v1/logs")
+        ? new Response(JSON.stringify({ items: lines, nextCursor: null }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          })
+        : inner(input, init)) as typeof fetch;
+    renderSection({ monitoring: { engine: "decisions", decisions: BLOCK } });
+    await waitFor(() => expect(count("decisions-activity-total")).toBe(1));
+    expect(
+      screen
+        .queryAllByTestId("decisions-rule-activity")
+        .map((el) => el.textContent ?? ""),
+    ).toEqual([
+      "Fired in 1 of 1 decisions, refused by a protected label 1.",
+      "Fired in 1 of 1 decisions, already acted, held back 1.",
+    ]);
+  });
+});
+
 // agents#1224: the editor follows the engine. What the engine does not use is replaced, never
 // shown disabled; a new agent starts from ready questions; a rule says when its tool is not
 // allowed; and no stored value (`shadow`, `enforce`, `decisions`) is on screen.

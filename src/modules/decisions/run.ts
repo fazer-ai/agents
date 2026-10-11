@@ -11,7 +11,17 @@ import {
   interopSafeParseAsync,
   isInteropZodSchema,
 } from "@langchain/core/utils/types";
-import type { DecisionsConfig } from "./config";
+import {
+  type FenceName,
+  type FenceReport,
+  withFenceReporter,
+} from "@/graph/tools/fence-report";
+import {
+  type DecisionsConfig,
+  type DecisionTrigger,
+  ruleStateKey,
+  triggerOf,
+} from "./config";
 import {
   DECISION_PROVIDER_REGISTRY,
   type DecisionAnswer,
@@ -43,20 +53,43 @@ export async function askProvider(
 export interface ActionReport {
   rule: number;
   tool: string;
-  // `decided`: decided and not run, only under `dryRun` (never on an observation's line). `ran`: the
-  // tool was invoked and returned. `not_granted`: the agent
-  // does not have the tool, so the rule cannot act (the operator grants it, as for the LLM path).
+  // `decided`: decided and not run, only under `dryRun`. `ran`: the tool was invoked and returned.
+  // `not_granted`: the agent does not have the tool (the operator grants it, as for the LLM path).
   // `failed`: the tool threw; `failure` says which way, never the tool's text: `invalid_arguments`
-  // (the rule's args do not fit the tool's schema) or `tool_error`. `over_budget`: the agent's
-  // `limits.maxToolCalls` was spent by the rules before it, as the graph caps a model's turn.
-  outcome: "decided" | "ran" | "not_granted" | "failed" | "over_budget";
+  // (the rule's args do not fit the tool's schema) or `tool_error`. `over_budget`: the rules before
+  // it spent `limits.maxToolCalls`. `refused`: a fence inside the tool refused the whole call
+  // (`fence` names it: a protected label, a label outside the allowed list, the tool's
+  // precondition), so nothing was written. A call refused only in part ran, with `fence` and `partial`.
+  outcome:
+    | "decided"
+    | "ran"
+    | "not_granted"
+    | "failed"
+    | "over_budget"
+    | "refused";
   failure?: string;
+  fence?: FenceName;
+  partial?: true;
+  // Later rules whose identical action this one is (rules.ts): the outcome is theirs too.
+  merged?: number[];
+}
+
+// What the trigger state of this tick changes (decision_rule_states, by `ruleStateKey`): `latch`
+// the rules that acted and must not act again while they hold (or ever, for `once`), `release` the
+// `on_start` rules that did not hold, `keep` every key of the block that ran, so a key no rule has
+// any more (an edited or deleted rule) is dropped.
+export interface TriggerStateChange {
+  latch: string[];
+  release: string[];
+  keep: string[];
 }
 
 export interface DecisionTickReport {
   fired: FiredAction[];
   missed: { rule: number; miss: ConditionMiss }[];
+  held: { rule: number; trigger: DecisionTrigger }[];
   actions: ActionReport[];
+  triggerState: TriggerStateChange;
   // The observation was withdrawn before an action could run (agent off or detached, claim
   // superseded, reset, reopened): the caller ends the tick on the fence's own refusal.
   withdrawn: boolean;
@@ -65,10 +98,10 @@ export interface DecisionTickReport {
 // Runs what the rules fired through the SAME tool objects the LLM observer calls, with the tick's
 // tool logger as callback, so a decision's write gets the tool's protections, flow line and label
 // accounting. In rule order, one at a time, except what `together` groups (docs/decisions.md). The
-// fence is asked before every action, as the graph asks it before every hop: not every tool asks on
-// its own (`private_note` does not), and the provider call leaves time to withdraw. `dryRun` decides
-// without writing (grant, budget and arguments checked, nothing invoked): internal, not a setting,
-// for a caller that only shows the decisions.
+// fence is asked before every action: not every tool asks on its own (`private_note` does not), and
+// the provider call leaves time to withdraw. `dryRun` decides without writing (internal, for a
+// caller that only shows the decisions). `latched` holds the keys of the rules that already acted in
+// this conversation; a rule its trigger holds back does not act (docs/decisions.md, "When a rule acts").
 export async function applyDecisions(
   config: { rules: DecisionsConfig["rules"] },
   answers: Record<string, DecisionAnswer>,
@@ -79,8 +112,17 @@ export async function applyDecisions(
   maxCalls: number,
   together: (action: FiredAction) => string | null = () => null,
   dryRun = false,
+  latched: ReadonlySet<string> = new Set(),
 ): Promise<DecisionTickReport> {
-  const { fired, missed } = evaluateRules(config.rules, answers);
+  const keys = config.rules.map(ruleStateKey);
+  const triggers = config.rules.map(triggerOf);
+  const { fired, missed, held } = evaluateRules(
+    config.rules,
+    answers,
+    (rule) => triggers[rule] === "each_time" || !latched.has(keys[rule] ?? ""),
+  );
+  const withMerged = (r: ActionReport, f: FiredAction): ActionReport =>
+    f.merged.length > 0 ? { ...r, merged: [...f.merged] } : r;
   // One slot per fired action, filled in whatever order the actions settle and read in rule order.
   const slots: (ActionReport | undefined)[] = fired.map(() => undefined);
   const toRun: { at: number; tool: StructuredToolInterface }[] = [];
@@ -117,7 +159,31 @@ export async function applyDecisions(
     toRun.push({ at, tool });
   }
   const reported = (upTo = fired.length): ActionReport[] =>
-    slots.filter((a, at): a is ActionReport => a !== undefined && at < upTo);
+    slots.flatMap((a, at) => {
+      const f = fired[at];
+      return a !== undefined && f !== undefined && at < upTo
+        ? [withMerged(a, f)]
+        : [];
+    });
+  // A rule latches when its action RAN (in full or in part): one that could not run, or that a
+  // fence refused, acts again on the next observation in which it holds, so a grant or an attribute
+  // that arrives later is not met by a rule that already counts itself done. A dry run writes nothing.
+  const triggerState = (actions: ActionReport[]): TriggerStateChange => {
+    const latch = new Set<string>();
+    if (!dryRun) {
+      for (const a of actions) {
+        if (a.outcome !== "ran") continue;
+        for (const rule of [a.rule, ...(a.merged ?? [])]) {
+          const key = keys[rule];
+          if (key && triggers[rule] !== "each_time") latch.add(key);
+        }
+      }
+    }
+    const release = missed.flatMap(({ rule }) =>
+      triggers[rule] === "on_start" && keys[rule] ? [keys[rule]] : [],
+    );
+    return { latch: [...latch], release, keep: [...new Set(keys)] };
+  };
   // A group is a RUN of consecutive actions whose tool commits calls that arrive together as one
   // write: dispatched together, each after its own fence, and awaited as one. Only neighbours are
   // grouped, so no action runs ahead of one the rules put before it.
@@ -191,28 +257,51 @@ export async function applyDecisions(
       for (const member of admitted) {
         const f = fired[member.at];
         if (!f) continue;
+        const fences: FenceReport[] = [];
         running.push(
-          member.tool.invoke(f.args, { callbacks, signal }).then(
-            () => {
-              slots[member.at] = { rule: f.rule, tool: f.tool, outcome: "ran" };
-            },
-            (err: unknown) => {
-              // Cancellation ends the tick, it is not one tool's failure: the caller owns the deadline.
-              if (signal.aborted) {
-                cancelled ??= { err };
-                return;
-              }
-              slots[member.at] = {
-                rule: f.rule,
-                tool: f.tool,
-                outcome: "failed",
-                failure:
-                  err instanceof ToolInputParsingException
-                    ? "invalid_arguments"
-                    : "tool_error",
-              };
-            },
-          ),
+          member.tool
+            .invoke(
+              f.args,
+              withFenceReporter({ callbacks, signal }, (r) => fences.push(r)),
+            )
+            .then(
+              () => {
+                const whole = fences.find((r) => !r.partial);
+                const part = fences.find((r) => r.partial);
+                slots[member.at] = whole
+                  ? {
+                      rule: f.rule,
+                      tool: f.tool,
+                      outcome: "refused",
+                      fence: whole.fence,
+                    }
+                  : part
+                    ? {
+                        rule: f.rule,
+                        tool: f.tool,
+                        outcome: "ran",
+                        fence: part.fence,
+                        partial: true,
+                      }
+                    : { rule: f.rule, tool: f.tool, outcome: "ran" };
+              },
+              (err: unknown) => {
+                // Cancellation ends the tick, it is not one tool's failure: the caller owns the deadline.
+                if (signal.aborted) {
+                  cancelled ??= { err };
+                  return;
+                }
+                slots[member.at] = {
+                  rule: f.rule,
+                  tool: f.tool,
+                  outcome: "failed",
+                  failure:
+                    err instanceof ToolInputParsingException
+                      ? "invalid_arguments"
+                      : "tool_error",
+                };
+              },
+            ),
         );
       }
     }
@@ -222,15 +311,26 @@ export async function applyDecisions(
     if (fenceError !== null) throw fenceError.err;
     if (cancelled !== null) throw (cancelled as { err: unknown }).err;
     if (withdrawnAt !== null) {
+      const actions = reported(head.at);
       return {
         fired,
         missed,
-        actions: reported(head.at),
+        held,
+        actions,
+        triggerState: triggerState(actions),
         withdrawn: true,
       };
     }
   }
-  return { fired, missed, actions: reported(), withdrawn: false };
+  const actions = reported();
+  return {
+    fired,
+    missed,
+    held,
+    actions,
+    triggerState: triggerState(actions),
+    withdrawn: false,
+  };
 }
 
 // The answers as the flow line carries them: numbers and the operator's own option names, never the

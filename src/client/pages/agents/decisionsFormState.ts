@@ -1,6 +1,9 @@
 import {
+  DECISION_TRIGGERS,
   type DecisionsIssue,
+  type DecisionTrigger,
   decisionsIssues,
+  defaultTriggerFor,
 } from "@/modules/decisions/config";
 
 // The decisions engine's block (`monitoring.decisions`, docs/decisions.md) as the agent editor edits
@@ -70,6 +73,10 @@ export interface DecisionRuleForm {
   // The tool's own input, as stored: edited key by key, so an argument this form has no field for
   // (`scope` on set_labels) survives a save.
   args: Record<string, unknown>;
+  // When the rule acts (`each_time`, `on_start`, `once`). "" when the stored rule does not say, which
+  // the engine reads as the action's default (`ruleTriggerShown`); kept apart so an untouched rule is
+  // written back without one, and a rule whose action changes keeps following the new default.
+  trigger: string;
 }
 
 export interface DecisionsForm {
@@ -187,6 +194,7 @@ export function decisionsToForm(raw: unknown): DecisionsForm | null {
         }),
         tool: text(action.tool),
         args: structuredClone(bag(action.args) ?? {}),
+        trigger: text(o.trigger),
       };
     }),
   };
@@ -278,10 +286,19 @@ export function decisionsToStored(
           return o;
         }),
         action,
+        ...(r.trigger !== "" ? { trigger: r.trigger } : {}),
       };
     });
   }
   return out;
+}
+
+// What the rule's choice of when it acts reads as on screen: its own, or the default of the action it
+// runs (the engine's `defaultTriggerFor`), so a new rule shows the default preselected.
+export function ruleTriggerShown(rule: DecisionRuleForm): DecisionTrigger {
+  return (DECISION_TRIGGERS as readonly string[]).includes(rule.trigger)
+    ? (rule.trigger as DecisionTrigger)
+    : defaultTriggerFor(rule.tool);
 }
 
 // Whether the form still says what the stored block says. An untouched block is written back AS

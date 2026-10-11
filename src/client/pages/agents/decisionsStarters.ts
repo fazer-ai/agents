@@ -68,7 +68,14 @@ function rule(
   tool: string,
   args: Record<string, unknown>,
 ): DecisionRuleForm {
-  return { key: freshDecisionKey(), origin: null, when, tool, args };
+  return {
+    key: freshDecisionKey(),
+    origin: null,
+    when,
+    tool,
+    args,
+    trigger: "",
+  };
 }
 
 function starterOf(

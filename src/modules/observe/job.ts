@@ -73,6 +73,10 @@ import {
   applyDecisions,
   askProvider,
 } from "@/modules/decisions/run";
+import {
+  readLatchedRules,
+  writeTriggerState,
+} from "@/modules/decisions/trigger-state";
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
 import {
   type ClaimedJob,
@@ -1824,6 +1828,52 @@ export async function runObserve(
           ...(labelWrites.length > 0 ? { labels: labelWrites } : {}),
         },
       });
+    // THE TRIGGER STATE, read before anything is paid for: a rule that already acted and holds is
+    // not run again (docs/decisions.md, "When a rule acts"). Unreadable fails the tick before the
+    // provider call, since acting without it could repeat a note the conversation already has.
+    const triggerScope =
+      conv === null ? null : { tenantId, agentId, conversationId: conv.id };
+    let latched: Set<string> = new Set();
+    if (triggerScope !== null) {
+      try {
+        latched = await readLatchedRules(base, triggerScope);
+      } catch (err) {
+        const failure = uncommittedFailure();
+        decisionLine(
+          "error",
+          {
+            failed: "trigger_state",
+            ...failureDetail(err),
+            messagesRead: transcript.length,
+            ...failure.detail,
+          },
+          failure.level,
+        );
+        return {
+          outcome: "fail",
+          error: "observe: the rules' trigger state could not be read",
+        };
+      }
+    }
+    // Written for what ran, the withdrawn tick's actions included: a note that left is one the next
+    // observation must not post again. A write that fails is said on the line and does not undo the
+    // tick, which already committed.
+    const persistTriggerState = async (
+      change: Awaited<ReturnType<typeof applyDecisions>>["triggerState"],
+    ): Promise<boolean> => {
+      if (triggerScope === null) return true;
+      try {
+        await writeTriggerState(base, triggerScope, change);
+        return true;
+      } catch (err) {
+        logger.warn(
+          { err, agentId: String(agentId) },
+          "observe: the rules' trigger state could not be written (conv=%s)",
+          String(conversationId),
+        );
+        return false;
+      }
+    };
     let result: DecisionResult;
     try {
       result = await underSignal(
@@ -1904,6 +1954,8 @@ export async function runObserve(
             sharedWriteKey(action.tool, action.args) === null
               ? null
               : "conversation",
+          false,
+          latched,
         ),
         deadline,
       );
@@ -1931,6 +1983,7 @@ export async function runObserve(
       };
     }
     toolLogger.settle();
+    const stateWritten = await persistTriggerState(report.triggerState);
     if (refusal !== null || report.withdrawn) {
       return endOnRefusal(refusal ?? "superseded");
     }
@@ -1944,6 +1997,10 @@ export async function runObserve(
         answers: answersForLog(result.answers),
         actions: report.actions,
         ...(report.missed.length > 0 ? { notFired: report.missed } : {}),
+        // Rules whose conditions held and that did not act because their trigger holds them back,
+        // so "did not fire" (`notFired`) and "fired and was held" read apart.
+        ...(report.held.length > 0 ? { held: report.held } : {}),
+        ...(stateWritten ? {} : { triggerStateWritten: false }),
         messagesRead: transcript.length,
         labelsBefore: current === null ? null : current.length,
       },

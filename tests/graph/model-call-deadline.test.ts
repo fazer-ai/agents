@@ -73,16 +73,40 @@ async function outcome(p: Promise<unknown>) {
   }
 }
 
-// An endpoint that accepts the connection and never answers, counting what reaches it.
-function hangingEndpoint() {
+// A chat completion as an OpenAI-shaped endpoint returns it.
+const COMPLETION = JSON.stringify({
+  id: "warm",
+  object: "chat.completion",
+  created: 0,
+  model: "probe",
+  choices: [
+    {
+      index: 0,
+      finish_reason: "stop",
+      message: { role: "assistant", content: "aquecido" },
+    },
+  ],
+});
+
+// An endpoint that accepts the connection and never answers, counting what reaches it. With
+// `answerFirst`, the first request is answered instead (and not counted), so a test can warm the
+// client before arming a deadline the request has to beat.
+function hangingEndpoint({ answerFirst = false } = {}) {
   let hits = 0;
   let closedByClient = 0;
+  let toAnswer = answerFirst ? 1 : 0;
   const srv = Bun.serve({
     port: 0,
     idleTimeout: 0,
     fetch: async (req) => {
       const pre = preflight(req);
       if (pre) return pre;
+      if (toAnswer > 0) {
+        toAnswer--;
+        return new BunResponse(COMPLETION, {
+          headers: { ...CORS, "content-type": "application/json" },
+        });
+      }
       hits++;
       req.signal.addEventListener("abort", () => {
         closedByClient++;
@@ -152,9 +176,9 @@ const THREAD = { configurable: { thread_id: "t-809" } };
 
 describe("with no fallback, the primary model call has a deadline", () => {
   test("a provider that never answers fails the turn at the deadline, on the real transport", async () => {
-    const ep = hangingEndpoint();
-    try {
-      const graph = await buildModelAndGraph(
+    const ep = hangingEndpoint({ answerFirst: true });
+    const onEndpoint = () =>
+      buildModelAndGraph(
         makeConfig({
           mc: {
             provider: "openai-compatible",
@@ -165,6 +189,20 @@ describe("with no fallback, the primary model call has a deadline", () => {
         [],
         { checkpointer: new MemorySaver() },
       );
+    try {
+      // The request has to reach the server inside the deadline for the count below to mean
+      // anything, and the FIRST call through this transport pays for loading and compiling the
+      // client, the CORS preflight and the connection, which on a loaded machine outlasts a 40 ms
+      // deadline on its own. So one call is answered first, under a generous deadline (read when the
+      // graph is built, so this graph keeps it), and only the second graph gets the short one.
+      config.agent.modelCallTimeoutMs = GENEROUS_DEADLINE_MS;
+      const warm = await (await onEndpoint()).invoke(
+        { messages: [new HumanMessage("oi")] },
+        { configurable: { thread_id: "t-809-warm" } },
+      );
+      expect(String(warm.messages.at(-1)?.content)).toBe("aquecido");
+      config.agent.modelCallTimeoutMs = DEADLINE_MS;
+      const graph = await onEndpoint();
       const res = await within(
         outcome(graph.invoke({ messages: [new HumanMessage("oi")] }, THREAD)),
         DEADLINE_MS + 3_000,
@@ -336,7 +374,7 @@ describe("callWithDeadline, on its own", () => {
   test("the signal reaches the call: an adapter that listens cancels its request", async () => {
     // Outside a graph, where nothing else cancels it: inside one, LangGraph also aborts the children
     // of a node that failed, so this is the only place the helper's own signal is observable.
-    const ep = hangingEndpoint();
+    const ep = hangingEndpoint({ answerFirst: true });
     try {
       const model = createChatModel({
         provider: "openai-compatible",
@@ -345,12 +383,17 @@ describe("callWithDeadline, on its own", () => {
         baseURL: ep.baseURL,
         temperature: 0,
       });
+      // Warmed first, for the reason the graph test above gives: the request has to reach the server
+      // inside the deadline for its cancellation to be observable.
+      const warm = await model.invoke([new HumanMessage("oi")]);
+      expect(String(warm.content)).toBe("aquecido");
       const res = await outcome(
         callWithDeadline(DEADLINE_MS, (signal) =>
           model.invoke([new HumanMessage("oi")], { signal }),
         ),
       );
       expect(res.ok).toBe(false);
+      expect(ep.hits()).toBe(1);
       await until("the hung request closed by the client", () =>
         ep.closedByClient(),
       );

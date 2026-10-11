@@ -90,13 +90,17 @@ export interface TriggerStateChange {
   keep: string[];
 }
 
-// Filled by `applyDecisions` as actions settle, so a caller whose call rejected (the deadline met
-// a later action) still persists what the actions before it latched.
+// Kept current by `applyDecisions` as actions settle, for a caller whose call rejected (the
+// deadline met a later action): `undo` is the latches written ahead for actions that have since
+// settled without writing, which that caller releases.
 export interface DecisionProgress {
-  triggerState?: TriggerStateChange;
-  // Set by a caller that stopped waiting: every later change is handed to it as it happens.
-  onChange?: (state: TriggerStateChange) => void;
+  undo?: string[];
 }
+
+// Writes, before an action is dispatched, the latches of the rules it answers for: a call the
+// deadline ends while in flight may or may not have written, and a rule that might have acted is
+// held rather than run twice. Throwing stops the tick before anything is dispatched.
+export type LatchAhead = (keys: string[]) => Promise<void>;
 
 export interface DecisionTickReport {
   fired: FiredAction[];
@@ -128,6 +132,7 @@ export async function applyDecisions(
   dryRun = false,
   latched: ReadonlySet<string> = new Set(),
   progress: DecisionProgress = {},
+  latchAhead: LatchAhead = async () => {},
 ): Promise<DecisionTickReport> {
   const keys = config.rules.map(ruleStateKey);
   const triggers = config.rules.map(triggerOf);
@@ -140,15 +145,29 @@ export async function applyDecisions(
     f.merged.length > 0 ? { ...r, merged: [...f.merged] } : r;
   // One slot per fired action, filled in whatever order the actions settle and read in rule order.
   const slots: (ActionReport | undefined)[] = fired.map(() => undefined);
-  // The fired actions whose tool said it wrote something that stays, as it said it: a deadline that
-  // ends the tick after the write and before the call settles must not lose it.
+  // The fired actions whose tool said it wrote something that stays (a handoff's note before its
+  // status change threw).
   const committed = new Set<number>();
-  // Told to the caller on every change, after the call returned too: a write that finishes behind
-  // a deadline that already ended the tick still latches (DecisionProgress).
-  const advance = () => {
-    const state = triggerState(reported());
-    progress.triggerState = state;
-    progress.onChange?.(state);
+  // The latch keys of a fired action: its rule's and its merged rules', `each_time` ones left out.
+  const latchKeys = (at: number): string[] => {
+    const f = fired[at];
+    if (!f) return [];
+    return [f.rule, ...f.merged].flatMap((rule) => {
+      const key = keys[rule];
+      return key && triggers[rule] !== "each_time" ? [key] : [];
+    });
+  };
+  // Latched ahead of dispatch, by fired action (LatchAhead).
+  const ahead = new Map<number, string[]>();
+  const leftNothing = (a: ActionReport) => a.outcome !== "ran" && !a.committed;
+  // The latches written ahead whose action settled without writing anything: released.
+  const undone = (): string[] =>
+    [...ahead].flatMap(([at, k]) => {
+      const a = slots[at];
+      return a && leftNothing(a) ? k : [];
+    });
+  const settled = () => {
+    progress.undo = undone();
   };
   const toRun: { at: number; tool: StructuredToolInterface }[] = [];
   // Every call the tick dispatches counts, a dry run's included, so it reports what a run would.
@@ -193,27 +212,21 @@ export async function applyDecisions(
   // A rule latches when its action RAN (in full or in part), or failed after writing something that
   // stays: one that could not run, wrote nothing, or that a fence refused, acts again on the next
   // observation in which it holds, so a grant or a contact that arrives later is not met by a rule
-  // that already counts itself done. A dry run writes nothing.
-  const triggerState = (actions: ActionReport[]): TriggerStateChange => {
+  // that already counts itself done. Its latch was written ahead; this releases the ones that left
+  // nothing. A dry run writes nothing.
+  const triggerState = (): TriggerStateChange => {
     const latch = new Set<string>();
-    const add = (rules: number[]) => {
-      for (const rule of rules) {
-        const key = keys[rule];
-        if (key && triggers[rule] !== "each_time") latch.add(key);
-      }
-    };
     if (!dryRun) {
-      for (const a of actions) {
-        if (a.outcome === "ran") add([a.rule, ...(a.merged ?? [])]);
-      }
-      for (const at of committed) {
-        const f = fired[at];
-        if (f) add([f.rule, ...f.merged]);
+      for (const [at, a] of slots.entries()) {
+        if (a && !leftNothing(a)) for (const k of latchKeys(at)) latch.add(k);
       }
     }
-    const release = missed.flatMap(({ rule }) =>
-      triggers[rule] === "on_start" && keys[rule] ? [keys[rule]] : [],
-    );
+    const release = [
+      ...missed.flatMap(({ rule }) =>
+        triggers[rule] === "on_start" && keys[rule] ? [keys[rule]] : [],
+      ),
+      ...undone(),
+    ];
     return { latch: [...latch], release, keep: [...new Set(keys)] };
   };
   // A group is a RUN of consecutive actions whose tool commits calls that arrive together as one
@@ -283,6 +296,18 @@ export async function applyDecisions(
       admitted.length = 1;
       i = start + 1;
     }
+    // The admitted members' latches go out before any of them does (LatchAhead); a write that fails
+    // stops the group like a fence that could not answer.
+    if (fenceError === null && withdrawnAt === null && !dryRun) {
+      const due = admitted.map((m) => [m.at, latchKeys(m.at)] as const);
+      try {
+        const all = due.flatMap(([, k]) => k);
+        if (all.length > 0) await latchAhead(all);
+        for (const [at, k] of due) if (k.length > 0) ahead.set(at, k);
+      } catch (err) {
+        fenceError = { err };
+      }
+    }
     // A refusal or a deadline met while asking stops the whole group, the members already admitted
     // included: none of them has started, and the answer that stopped the last one is the newest.
     if (fenceError === null && withdrawnAt === null) {
@@ -296,10 +321,7 @@ export async function applyDecisions(
               f.args,
               withFenceReporter({ callbacks, signal }, (r) => {
                 reports.push(r);
-                if ("committed" in r) {
-                  committed.add(member.at);
-                  advance();
-                }
+                if ("committed" in r) committed.add(member.at);
               }),
             )
             .then(
@@ -329,7 +351,7 @@ export async function applyDecisions(
                           partial: true,
                         }
                       : { rule: f.rule, tool: f.tool, outcome: "ran" };
-                advance();
+                settled();
               },
               (err: unknown) => {
                 // Cancellation ends the tick, it is not one tool's failure: the caller owns the deadline.
@@ -349,7 +371,7 @@ export async function applyDecisions(
                     ? { committed: true as const }
                     : {}),
                 };
-                advance();
+                settled();
               },
             ),
         );
@@ -367,7 +389,7 @@ export async function applyDecisions(
         missed,
         held,
         actions,
-        triggerState: triggerState(actions),
+        triggerState: triggerState(),
         withdrawn: true,
       };
     }
@@ -378,7 +400,7 @@ export async function applyDecisions(
     missed,
     held,
     actions,
-    triggerState: triggerState(actions),
+    triggerState: triggerState(),
     withdrawn: false,
   };
 }

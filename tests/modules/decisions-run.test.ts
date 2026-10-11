@@ -541,9 +541,19 @@ describe("applyDecisions and the trigger state", () => {
     ]);
   });
 
-  test("a write the tool said stays is latched even when the deadline ends the call before it settles", async () => {
+  const noteKey = ruleStateKey({
+    when,
+    action: { tool: "private_note", args: {} },
+  });
+  const handoffKey = ruleStateKey({
+    when,
+    action: { tool: "handoff_to_human", args: {} },
+  });
+
+  test("a rule's latch is written before its action is dispatched, and stays when the deadline ends the call", async () => {
     const controller = new AbortController();
     const progress: DecisionProgress = {};
+    const order: string[] = [];
     await expect(
       applyDecisions(
         {
@@ -553,8 +563,8 @@ describe("applyDecisions and the trigger state", () => {
         },
         answers,
         [
-          reporting("handoff_to_human", async (report) => {
-            report?.({ committed: true });
+          reporting("handoff_to_human", async () => {
+            order.push("dispatched");
             controller.abort(new Error("deadline"));
             throw new Error("aborted");
           }),
@@ -567,11 +577,97 @@ describe("applyDecisions and the trigger state", () => {
         false,
         new Set(),
         progress,
+        async (keys) => {
+          order.push(`latched ${keys.join(",")}`);
+        },
       ),
     ).rejects.toThrow();
-    expect(progress.triggerState?.latch).toEqual([
-      ruleStateKey({ when, action: { tool: "handoff_to_human", args: {} } }),
-    ]);
+    expect(order).toEqual([`latched ${handoffKey}`, "dispatched"]);
+    // In flight when the tick ended: it may have written, so its latch is not undone.
+    expect(progress.undo).toBeUndefined();
+  });
+
+  test("a latch that cannot be written ahead stops the tick before anything is dispatched", async () => {
+    const t = tools(async () => "ok");
+    await expect(
+      applyDecisions(
+        config,
+        answers,
+        t.list,
+        [],
+        t.controller.signal,
+        async () => true,
+        10,
+        () => null,
+        false,
+        new Set(),
+        {},
+        async () => {
+          throw new Error("db down");
+        },
+      ),
+    ).rejects.toThrow("db down");
+    expect(t.ran).toEqual([]);
+  });
+
+  test("an action that settled without writing before the deadline ended the tick is undone", async () => {
+    const controller = new AbortController();
+    const progress: DecisionProgress = {};
+    const latchedAhead: string[] = [];
+    await expect(
+      applyDecisions(
+        config,
+        answers,
+        [
+          reporting("private_note", async (report) => {
+            report?.({ fence: "precondition", partial: false });
+            return "Did not run private_note (its condition does not hold).";
+          }),
+          reporting("set_labels", async () => {
+            controller.abort(new Error("deadline"));
+            throw new Error("aborted");
+          }),
+        ],
+        [],
+        controller.signal,
+        async () => true,
+        10,
+        () => null,
+        false,
+        new Set(),
+        progress,
+        async (keys) => {
+          latchedAhead.push(...keys);
+        },
+      ),
+    ).rejects.toThrow();
+    expect(latchedAhead).toEqual([noteKey]);
+    expect(progress.undo).toEqual([noteKey]);
+  });
+
+  test("a finished tick latches what ran and releases what was latched ahead and wrote nothing", async () => {
+    const r = await applyDecisions(
+      {
+        rules: [
+          { when, action: { tool: "private_note" as const, args: {} } },
+          { when, action: { tool: "handoff_to_human" as const, args: {} } },
+        ],
+      },
+      answers,
+      [
+        reporting("private_note", async () => "ok"),
+        reporting("handoff_to_human", async (report) => {
+          report?.({ noEffect: true });
+          return "Did not run handoff_to_human.";
+        }),
+      ],
+      [],
+      new AbortController().signal,
+      async () => true,
+      10,
+    );
+    expect(r.triggerState.latch).toEqual([noteKey]);
+    expect(r.triggerState.release).toEqual([handoffKey]);
   });
 
   test("a call withdrawn after a fence allowed part of it is no_effect, not a partial run", async () => {
@@ -601,75 +697,5 @@ describe("applyDecisions and the trigger state", () => {
       { rule: 0, tool: "set_labels", outcome: "no_effect" },
     ]);
     expect(r.triggerState.latch).toEqual([]);
-  });
-
-  test("a caller that stopped waiting is handed a write that latched after it", async () => {
-    let finish: () => void = () => {};
-    const progress: DecisionProgress = {};
-    const run = applyDecisions(
-      {
-        rules: [
-          { when, action: { tool: "handoff_to_human" as const, args: {} } },
-        ],
-      },
-      answers,
-      [
-        reporting(
-          "handoff_to_human",
-          (report) =>
-            new Promise((resolve) => {
-              finish = () => {
-                report?.({ committed: true });
-                resolve("done");
-              };
-            }),
-        ),
-      ],
-      [],
-      new AbortController().signal,
-      async () => true,
-      10,
-      () => null,
-      false,
-      new Set(),
-      progress,
-    );
-    // The caller gave up here (its deadline), and asks to be told what comes next.
-    const late: string[][] = [];
-    progress.onChange = (state) => late.push(state.latch);
-    await Bun.sleep(5);
-    finish();
-    await run;
-    expect(late[0]).toEqual([
-      ruleStateKey({ when, action: { tool: "handoff_to_human", args: {} } }),
-    ]);
-  });
-
-  test("an action that ran before the deadline stopped the tick is in the progress the caller persists", async () => {
-    const t = tools(async () => "ok");
-    // The second action meets the deadline: the first one's note already went out.
-    t.list[1] = reporting("set_labels", async () => {
-      t.controller.abort(new Error("deadline"));
-      throw new Error("aborted");
-    });
-    const progress: DecisionProgress = {};
-    await expect(
-      applyDecisions(
-        config,
-        answers,
-        t.list,
-        [],
-        t.controller.signal,
-        async () => true,
-        10,
-        () => null,
-        false,
-        new Set(),
-        progress,
-      ),
-    ).rejects.toThrow();
-    expect(progress.triggerState?.latch).toEqual([
-      ruleStateKey({ when, action: { tool: "private_note", args: {} } }),
-    ]);
   });
 });

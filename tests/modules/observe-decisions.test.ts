@@ -363,8 +363,11 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
     convRowId = conv.id;
   });
 
-  beforeEach(() => {
+  // Every test shares one conversation, so no rule's latch may carry from one test to the next (a
+  // note cut off by its deadline stays latched, docs/decisions.md).
+  beforeEach(async () => {
     __resetChatwootVocabCache();
+    if (dbUp) await suDb.decisionRuleState.deleteMany({ where: { tenantId } });
   });
 
   afterAll(async () => {
@@ -2210,16 +2213,16 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
         await suDb.agent.delete({ where: { id: neighbour.id } });
       });
 
-      test("a late latch is only added: what a later observation wrote stays", async () => {
+      test("a latch written ahead is only added: the state already there stays", async () => {
         const scope = { tenantId, agentId, conversationId: convRowId };
         await triggerState.writeTriggerState(suDb, scope, {
           latch: ["newer"],
           release: [],
           keep: ["newer"],
         });
-        await triggerState.latchRules(suDb, scope, ["late", "newer"]);
+        await triggerState.latchRules(suDb, scope, ["ahead", "newer"]);
         const keys = await triggerState.readLatchedRules(suDb, scope);
-        expect([...keys].sort()).toEqual(["late", "newer"]);
+        expect([...keys].sort()).toEqual(["ahead", "newer"]);
       });
 
       test("a trigger state it cannot read fails the tick before any action", async () => {

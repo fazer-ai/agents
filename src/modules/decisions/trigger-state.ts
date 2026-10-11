@@ -30,9 +30,8 @@ export async function readLatchedRules(
   return new Set(rows.map((r) => r.ruleKey));
 }
 
-// Latches written after the tick that decided them was over (a write that landed behind its
-// deadline): only added, never released or pruned, since a later observation may have moved the
-// state on since.
+// Latches written by the tick before it dispatches the actions they answer for (run.ts,
+// LatchAhead): only added, never released or pruned.
 export async function latchRules(
   base: PrismaClient,
   scope: TriggerScope,
@@ -48,6 +47,25 @@ export async function latchRules(
         ruleKey,
       })),
       skipDuplicates: true,
+    }),
+  );
+}
+
+// The latches written ahead for actions that then wrote nothing, released by a tick that ended
+// before it could write its whole state.
+export async function unlatchRules(
+  base: PrismaClient,
+  scope: TriggerScope,
+  keys: string[],
+): Promise<void> {
+  if (keys.length === 0) return;
+  await runScopedOn(base, sysCtx(scope.tenantId), (db) =>
+    db.decisionRuleState.deleteMany({
+      where: {
+        agentId: scope.agentId,
+        conversationId: scope.conversationId,
+        ruleKey: { in: keys },
+      },
     }),
   );
 }

@@ -93,6 +93,7 @@ describe("Mode on General is a group of cards", () => {
     );
     // One radio name for the group: the browser makes it one Tab stop and moves with the arrows.
     expect(new Set(rs.map((r) => r.name)).size).toBe(1);
+    expect((rs[0]?.name ?? "").length > 0).toBe(true);
   });
 
   test("each card says what the agent does in that mode", () => {

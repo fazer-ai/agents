@@ -501,7 +501,9 @@ export async function announceFailedTurn(params: {
     // Opened: a versioned live read stamps the claim, through it, so a hand-back the operator makes
     // during the claim's window is ordered against it instead of refused by it. A failed toggle
     // keeps the claim to run out, as the takeover's does (an unknown outcome).
-    if (opened && claim !== null) {
+    // An unmirrored hand-over holds no claim, but a row a webhook created meanwhile still says the bot
+    // holds it, so it is reconciled from Chatwoot the same way (with no row, nothing is written).
+    if (opened && (claim !== null || !persona.mirrored)) {
       try {
         const live = parseLiveConversation(
           await client.getConversation(conversationId),
@@ -553,26 +555,30 @@ export async function announceFailedTurn(params: {
     // The window lives on the mirror row, so a conversation with none elects its announcer by
     // the toggle instead: Chatwoot's `expectedStatus` lets exactly one hand-over open it, and only
     // that one posts. One that did not open it says nothing, since nothing else would coalesce it.
-    // Asked of the row as it is now: one a webhook created during the hand-over takes the window.
-    const noticeClaimed =
-      (await claimFailureNotice({
+    // Asked of the row as it is now: one a webhook created during the hand-over takes the window, and
+    // one created between the claim and the count is claimed again rather than read as coalesced.
+    const claimNotice = () =>
+      claimFailureNotice({
         tenantId,
         instanceId,
         chatwootConversationId: conversationId,
         now: params.now,
         cooldownMs: params.cooldownMs,
         base,
-      })) ||
-      (opened &&
-        (await runScopedOn(base, sysCtx(tenantId), (db) =>
-          db.conversation.count({
-            where: {
-              tenantId,
-              chatwootInstanceId: instanceId,
-              chatwootConversationId: conversationId,
-            },
-          }),
-        )) === 0);
+      });
+    let noticeClaimed = await claimNotice();
+    if (!noticeClaimed && opened) {
+      const rows = await runScopedOn(base, sysCtx(tenantId), (db) =>
+        db.conversation.count({
+          where: {
+            tenantId,
+            chatwootInstanceId: instanceId,
+            chatwootConversationId: conversationId,
+          },
+        }),
+      );
+      noticeClaimed = rows === 0 || (await claimNotice());
+    }
     if (!noticeClaimed) {
       return "coalesced";
     }

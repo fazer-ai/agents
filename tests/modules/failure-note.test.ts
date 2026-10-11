@@ -2095,6 +2095,11 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
           threadId: `${tenantId}:${instanceId}:${id}`,
         },
       });
+      liveConversations.set(id, {
+        status: "open",
+        meta: {},
+        updated_at: 1_900_000_500,
+      });
     };
     const row = await suDb.chatwootWebhookDelivery.create({
       data: {
@@ -2114,6 +2119,62 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
       writes.filter((w) => w.conversationId === conv).map((w) => w.kind),
     ).toEqual(["toggle", "note"]);
     // Stamped, so a failure right after a hand-back is coalesced like any mirrored conversation's.
+    expect(await noticeAt(conv)).not.toBeNull();
+    // And it says what Chatwoot does: open, not the bot's `pending` the webhook wrote.
+    expect(
+      (
+        await suDb.conversation.findFirstOrThrow({
+          where: { tenantId, chatwootConversationId: conv },
+          select: { status: true },
+        })
+      ).status,
+    ).toBe("open");
+  });
+
+  test("a mirror row that lands between the note's claim and its count is claimed, not coalesced", async () => {
+    // The claim is an UPDATE that matches nothing on an unmirrored conversation; a statement trigger
+    // fires anyway, which is the one moment between that claim and the count that reads the table.
+    const conv = nextConv++;
+    liveConversations.set(conv, { status: "pending", meta: {} });
+    const fn = `failnote_lands_${process.pid}_${conv}`;
+    await suDb.$executeRawUnsafe(`
+      CREATE FUNCTION ${fn}() RETURNS trigger AS $$
+      BEGIN
+        INSERT INTO conversations (tenant_id, chatwoot_instance_id, chatwoot_conversation_id, inbox_id, status, thread_id, updated_at)
+        SELECT ${tenantId}, ${instanceId}, ${conv}, ${inboxDbId}, 'open', '${tenantId}:${instanceId}:${conv}', now()
+        WHERE NOT EXISTS (SELECT 1 FROM conversations WHERE tenant_id = ${tenantId} AND chatwoot_conversation_id = ${conv});
+        RETURN NULL;
+      END $$ LANGUAGE plpgsql`);
+    const row = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `failnote-gaveup-lands-${process.pid}-${conv}`,
+        event: "message_created",
+        status: "DEAD",
+        conversationId: conv,
+        inboundMessageId: 8_000 + conv,
+        routeAgentBotId: 9,
+      },
+      select: { id: true },
+    });
+    // Armed on the toggle, so only the note's claim (the next UPDATE of the table) can fire it.
+    onToggle = async () => {
+      await suDb.$executeRawUnsafe(
+        `CREATE TRIGGER ${fn} AFTER UPDATE ON conversations FOR EACH STATEMENT EXECUTE FUNCTION ${fn}()`,
+      );
+    };
+    try {
+      await announceUnanswered(tenantId, row.id, appDb);
+    } finally {
+      await suDb.$executeRawUnsafe(
+        `DROP TRIGGER IF EXISTS ${fn} ON conversations`,
+      );
+      await suDb.$executeRawUnsafe(`DROP FUNCTION IF EXISTS ${fn}()`);
+    }
+    expect(
+      writes.filter((w) => w.conversationId === conv).map((w) => w.kind),
+    ).toEqual(["toggle", "note"]);
     expect(await noticeAt(conv)).not.toBeNull();
   });
 

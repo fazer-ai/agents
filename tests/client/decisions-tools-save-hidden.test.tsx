@@ -1,6 +1,6 @@
 /// <reference lib="dom" />
 
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, test } from "bun:test";
 import { TooltipProvider } from "@radix-ui/react-tooltip";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router";
@@ -26,9 +26,25 @@ const { NATIVE_TOOL_NAMES, RAG_TOOL_NAMES } = await import(
 // node serializes a cyclic happy-dom tree and stalls the runner.
 
 const realFetch = globalThis.fetch;
+const realWebSocket = globalThis.WebSocket;
+// The editor opens its realtime socket when the session has a tenant, and whether it does here is not
+// this file's to decide: a file that `mock.module`s AuthContext with a tenant user changes `useAuth`
+// for every file after it in the process. A socket that never connects keeps a refused connection's
+// error, raised whenever it lands, out of these tests, which are about saves and not about realtime.
+class SilentWebSocket extends EventTarget {
+  readyState = 0;
+  send() {}
+  close() {}
+}
+
+beforeEach(() => {
+  globalThis.WebSocket = SilentWebSocket as unknown as typeof WebSocket;
+});
+
 afterEach(() => {
   cleanup();
   globalThis.fetch = realFetch;
+  globalThis.WebSocket = realWebSocket;
 });
 
 const GRANTS = [

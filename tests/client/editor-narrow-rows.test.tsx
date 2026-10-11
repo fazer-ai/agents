@@ -68,14 +68,13 @@ describe("the editor header", () => {
 });
 
 describe("the General tab", () => {
-  test("the mode selector wraps inside the card instead of running past it", async () => {
+  // Mode is a group of cards (agents#1254): one column on a phone, three side by side from sm up,
+  // so it never runs past the card.
+  test("the mode cards stack on a phone and sit side by side from sm up", async () => {
     await renderEditor(stubEditorApi({}));
-    const testMode = screen
-      .getAllByRole("button", { name: "Test" })
-      .find((b) => b.hasAttribute("aria-pressed"));
-    const selector = classesOf(testMode?.parentElement);
-    expect(selector).toContain("flex-wrap");
-    expect(selector).toContain("max-w-full");
+    const cards = classesOf(screen.getByRole("radiogroup", { name: "Mode" }));
+    expect(cards).toContain("grid");
+    expect(cards).toContain("sm:grid-cols-3");
   });
 
   test("the capability map's title row wraps View graph under the title", async () => {

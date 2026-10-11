@@ -1962,7 +1962,6 @@
     "memoryModelHelp": "Leave this on the agent's model unless you've compared alternatives.\n\nThe summary isn't read once: it becomes what the agent knows about that contact from then on, and is never rewritten.\n\nThis is the wrong place to cut costs: on one vendor's cheapest model, the customer's name was lost in one attendance in five.",
     "memorySameAsAgent": "Same as the agent",
     "mode": "Mode",
-    "modeHint": "A test agent stays silent in a conversation until the customer sends /teste; production answers normally; monitoring receives and remembers every message and never answers.",
     "model": "Model",
     "modelFallback": "Fallback provider",
     "modelFallbackBaseURLHint": "Required for OpenAI-compatible endpoints, unless the credential already carries one.",
@@ -1977,8 +1976,11 @@
     "modelSection": "Model",
     "modelSectionHint": "Which LLM powers this agent.",
     "modeMonitoring": "Monitoring",
+    "modeMonitoringHint": "Never answers: reads and classifies every message. The tabs for answering leave the editor.",
     "modeProduction": "Production",
+    "modeProductionHint": "Answers every customer who writes to its inboxes.",
     "modeTest": "Test",
+    "modeTestHint": "Stays silent until the customer sends /teste, so it is safe to try on a real inbox.",
     "monitoringTabsHint": "This agent only observes, so the tabs for answering are hidden. What it does comes from its instructions and the tools allowed in Tools; when it looks is under Behavior.",
     "monitoringTabsHintDecisions": "This agent only observes, so the tabs for answering are hidden. What it asks and what each answer does is under Questions and rules; when it looks is under Behavior.",
     "name": "Name",
@@ -2394,22 +2396,27 @@
     "catalog": {
       "ASAAS": {
         "description": "Brazilian payments. Create payment links and PIX charges; when a charge is paid, the agent is woken on the conversation that generated it.",
+        "hint": "Payment links and PIX charges; a paid charge wakes the agent.",
         "label": "Asaas"
       },
       "GENERIC": {
         "description": "Your own system speaking back into a conversation. An HTTP tool hands it a reference to the conversation when the agent calls it; later your system sends an event with that reference to this webhook, and the agent passes it on to the customer (or leaves a private note when a person holds the conversation).",
+        "hint": "Your own system sends events back into a conversation.",
         "label": "Generic webhook"
       },
       "GOOGLE_CALENDAR": {
         "description": "Scheduling over a connected Google account, restricted to an allowlist of calendars.",
+        "hint": "Scheduling on the calendars you allow.",
         "label": "Google Calendar"
       },
       "GOOGLE_DRIVE": {
         "description": "Find a file, get its link, or send it to the customer over a connected Google account.",
+        "hint": "Finds a file and sends it, or its link, to the customer.",
         "label": "Google Drive"
       },
       "RESEND": {
         "description": "Transactional email over a Resend API key. The agent sends confirmations, reminders and follow-ups; the sender address is fixed in the settings below.",
+        "hint": "Transactional email from a fixed sender address.",
         "label": "Resend"
       }
     },

@@ -2023,7 +2023,6 @@
     "memoryModelHelp": "Deixe no modelo do agente, a menos que você tenha comparado as alternativas.\n\nO resumo não é lido uma vez: ele vira o que o agente sabe daquele contato dali em diante e nunca é reescrito.\n\nEste é o lugar errado para cortar custos: no modelo mais barato de um fornecedor, o nome do cliente se perdeu em um atendimento a cada cinco.",
     "memorySameAsAgent": "Igual ao do agente",
     "mode": "Modo",
-    "modeHint": "Um agente em teste fica em silêncio na conversa até o cliente enviar /teste; em produção responde normalmente; em monitoramento recebe e memoriza cada mensagem e nunca responde.",
     "model": "Modelo",
     "modelFallback": "Provedor reserva",
     "modelFallbackBaseURLHint": "Obrigatório para endpoints compatíveis com OpenAI, a não ser que a credencial já traga uma.",
@@ -2038,8 +2037,11 @@
     "modelSection": "Modelo",
     "modelSectionHint": "Qual LLM alimenta este agente.",
     "modeMonitoring": "Monitoramento",
+    "modeMonitoringHint": "Nunca responde: lê e classifica cada mensagem. As abas de resposta saem do editor.",
     "modeProduction": "Produção",
+    "modeProductionHint": "Responde a todo cliente que escreve nas inboxes dele.",
     "modeTest": "Teste",
+    "modeTestHint": "Fica em silêncio até o cliente enviar /teste, então dá para testar numa inbox real sem risco.",
     "monitoringTabsHint": "Este agente só observa, então as abas de resposta ficam ocultas. O que ele faz vem das instruções e das ferramentas liberadas em Ferramentas; quando ele olha fica em Comportamento.",
     "monitoringTabsHintDecisions": "Este agente só observa, então as abas de resposta ficam ocultas. O que ele pergunta e o que cada resposta faz fica em Perguntas e regras; quando ele olha fica em Comportamento.",
     "name": "Nome",
@@ -2459,22 +2461,27 @@
     "catalog": {
       "ASAAS": {
         "description": "Pagamentos no Brasil. Gera links de pagamento e cobranças PIX; quando uma cobrança é paga, o agente é acordado na conversa que a gerou.",
+        "hint": "Links de pagamento e cobranças PIX; a cobrança paga chama o agente de volta.",
         "label": "Asaas"
       },
       "GENERIC": {
         "description": "O seu próprio sistema falando de volta numa conversa. Uma ferramenta HTTP entrega a ele uma referência da conversa quando o agente a chama; depois o seu sistema envia um evento com essa referência para este webhook, e o agente o repassa ao cliente (ou deixa uma nota privada quando uma pessoa está com a conversa).",
+        "hint": "O seu sistema devolve eventos para dentro de uma conversa.",
         "label": "Webhook genérico"
       },
       "GOOGLE_CALENDAR": {
         "description": "Agendamento em uma conta Google conectada, restrito a uma lista de agendas permitidas.",
+        "hint": "Agendamento nos calendários que você liberar.",
         "label": "Google Calendar"
       },
       "GOOGLE_DRIVE": {
         "description": "Busca um arquivo, obtém o link ou o envia ao cliente, em uma conta Google conectada.",
+        "hint": "Encontra um arquivo e manda ele, ou o link, para o cliente.",
         "label": "Google Drive"
       },
       "RESEND": {
         "description": "E-mail transacional com uma chave de API do Resend. O agente envia confirmações, lembretes e follow-ups; o remetente é fixado nas configurações abaixo.",
+        "hint": "E-mail transacional de um remetente fixo.",
         "label": "Resend"
       }
     },

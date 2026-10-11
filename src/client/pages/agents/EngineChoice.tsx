@@ -1,6 +1,11 @@
 import { Brain, ListChecks, TriangleAlert } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { Button, Card } from "@/client/components";
+import {
+  Button,
+  Card,
+  type ChoiceCardOption,
+  ChoiceCards,
+} from "@/client/components";
 import { cn } from "@/client/lib/utils";
 import type { MonitoringEngine } from "@/modules/observe/settings";
 import { CLASSIFIER_PATHS } from "./DecisionsFields";
@@ -21,12 +26,7 @@ export function EngineCards({
   missing?: React.ReactNode;
 }) {
   const { t } = useTranslation();
-  const options: {
-    value: MonitoringEngine;
-    icon: typeof Brain;
-    title: string;
-    hint: string;
-  }[] = [
+  const options: ChoiceCardOption<MonitoringEngine>[] = [
     {
       value: "llm",
       icon: Brain,
@@ -63,45 +63,13 @@ export function EngineCards({
           )}
         </p>
       </div>
-      <div
-        role="radiogroup"
+      <ChoiceCards
+        value={engine}
+        onChange={onChange}
         aria-label={t("editor.engineSection", "How it decides")}
-        className="grid gap-3 sm:grid-cols-2"
-      >
-        {options.map((o) => {
-          const on = engine === o.value;
-          const Icon = o.icon;
-          return (
-            // biome-ignore lint/a11y/useSemanticElements: a card with a title and a sentence, not a bare radio input.
-            <button
-              key={o.value}
-              type="button"
-              role="radio"
-              aria-checked={on}
-              data-testid={`engine-${o.value}`}
-              onClick={() => onChange(o.value)}
-              className={cn(
-                "flex flex-col gap-1 rounded-lg border p-3 text-left transition-colors",
-                on
-                  ? "border-accent bg-accent-soft"
-                  : "border-border bg-bg-secondary hover:bg-bg-hover",
-              )}
-            >
-              <span className="flex items-center gap-2 font-medium text-sm text-text-primary">
-                <Icon
-                  className={cn(
-                    "h-4 w-4",
-                    on ? "text-accent" : "text-text-muted",
-                  )}
-                  aria-hidden="true"
-                />
-                {o.title}
-              </span>
-              <span className="text-text-muted text-xs">{o.hint}</span>
-            </button>
-          );
-        })}
-      </div>
+        className="sm:grid-cols-2"
+        options={options.map((o) => ({ ...o, testId: `engine-${o.value}` }))}
+      />
       {missing}
     </Card>
   );

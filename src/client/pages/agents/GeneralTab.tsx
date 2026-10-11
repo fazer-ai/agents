@@ -1,8 +1,10 @@
-import { Trash2 } from "lucide-react";
+import { Eye, FlaskConical, MessagesSquare, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import {
   Button,
   Card,
+  type ChoiceCardOption,
+  ChoiceCards,
   CredentialPicker,
   FormField,
   Input,
@@ -15,7 +17,6 @@ import {
 import { useActiveTenantName } from "@/client/hooks/useActiveTenantName";
 import { credentialCompat } from "@/client/lib/credentialCompat";
 import { providerLabel } from "@/client/lib/providerLabels";
-import { cn } from "@/client/lib/utils";
 import { isValidHttpUrl } from "@/client/lib/validation";
 import { MODEL_PROVIDERS } from "@/graph/model-config";
 import { PROVIDER_DEFAULT_MODEL } from "@/graph/model-defaults";
@@ -150,6 +151,40 @@ export function GeneralTab({
     </FormField>
   );
 
+  // Mode decides whether the agent ever speaks to a customer and which tabs exist, so each card
+  // says what the agent does in it and the consequence that matters (agents#1254).
+  const modeIcon = {
+    test: FlaskConical,
+    production: MessagesSquare,
+    monitoring: Eye,
+  };
+  const modeOptions: ChoiceCardOption<AgentMode>[] = AGENT_MODES.map((m) => ({
+    value: m,
+    icon: modeIcon[m],
+    testId: `mode-${m}`,
+    title:
+      m === "test"
+        ? t("editor.modeTest", "Test")
+        : m === "monitoring"
+          ? t("editor.modeMonitoring", "Monitoring")
+          : t("editor.modeProduction", "Production"),
+    hint:
+      m === "test"
+        ? t(
+            "editor.modeTestHint",
+            "Stays silent until the customer sends /teste, so it is safe to try on a real inbox.",
+          )
+        : m === "monitoring"
+          ? t(
+              "editor.modeMonitoringHint",
+              "Never answers: reads and classifies every message. The tabs for answering leave the editor.",
+            )
+          : t(
+              "editor.modeProductionHint",
+              "Answers every customer who writes to its inboxes.",
+            ),
+  }));
+
   return (
     <div className="flex grow flex-col gap-4" data-problems-root="general">
       <Card className="flex flex-col gap-4">
@@ -185,36 +220,14 @@ export function GeneralTab({
             className="h-10 shrink-0"
           />
         </div>
-        <FormField
-          label={t("editor.mode", "Mode")}
-          description={t(
-            "editor.modeHint",
-            "A test agent stays silent in a conversation until the customer sends /teste; production answers normally; monitoring receives and remembers every message and never answers.",
-          )}
-          group
-        >
-          <div className="inline-flex max-w-full flex-wrap self-start rounded-lg border border-border bg-bg-tertiary p-0.5">
-            {AGENT_MODES.map((m) => (
-              <button
-                key={m}
-                type="button"
-                onClick={() => setMode(m)}
-                aria-pressed={mode === m}
-                className={cn(
-                  "rounded-md px-4 py-1.5 font-medium text-sm transition-colors",
-                  mode === m
-                    ? "bg-accent-solid text-accent-foreground"
-                    : "text-text-secondary hover:text-text-primary",
-                )}
-              >
-                {m === "test"
-                  ? t("editor.modeTest", "Test")
-                  : m === "monitoring"
-                    ? t("editor.modeMonitoring", "Monitoring")
-                    : t("editor.modeProduction", "Production")}
-              </button>
-            ))}
-          </div>
+        <FormField label={t("editor.mode", "Mode")} group>
+          <ChoiceCards
+            value={mode}
+            onChange={setMode}
+            aria-label={t("editor.mode", "Mode")}
+            className="sm:grid-cols-3"
+            options={modeOptions}
+          />
         </FormField>
         {!watcher && instructions}
       </Card>

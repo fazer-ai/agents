@@ -1,3 +1,4 @@
+import type { TFunction } from "i18next";
 import {
   AlertTriangle,
   Check,
@@ -12,6 +13,7 @@ import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Button,
+  ChoiceCards,
   ConfirmDialog,
   type ConfirmPayload,
   CredentialPicker,
@@ -47,6 +49,101 @@ type CatalogData = Awaited<
   ReturnType<typeof api.api.v1.integrations.catalog.get>
 >["data"];
 type CatalogEntry = NonNullable<CatalogData>["catalog"][number];
+
+function catalogLabelOf(
+  t: TFunction,
+  c: Pick<CatalogEntry, "catalogType" | "label"> | undefined,
+): string {
+  switch (c?.catalogType) {
+    case "GENERIC":
+      return t("integrations.catalog.GENERIC.label", "Generic webhook");
+    case "ASAAS":
+      return t("integrations.catalog.ASAAS.label", "Asaas");
+    case "GOOGLE_CALENDAR":
+      return t("integrations.catalog.GOOGLE_CALENDAR.label", "Google Calendar");
+    case "GOOGLE_DRIVE":
+      return t("integrations.catalog.GOOGLE_DRIVE.label", "Google Drive");
+    case "RESEND":
+      return t("integrations.catalog.RESEND.label", "Resend");
+    default:
+      return c?.label ?? "";
+  }
+}
+
+// One line per kind, on the card (agents#1254): what the integration does, short enough to choose
+// by. The full description stays under the cards for the kind chosen.
+function catalogHintOf(
+  t: TFunction,
+  c: Pick<CatalogEntry, "catalogType" | "description">,
+): string {
+  switch (c.catalogType) {
+    case "GENERIC":
+      return t(
+        "integrations.catalog.GENERIC.hint",
+        "Your own system sends events back into a conversation.",
+      );
+    case "ASAAS":
+      return t(
+        "integrations.catalog.ASAAS.hint",
+        "Payment links and PIX charges; a paid charge wakes the agent.",
+      );
+    case "GOOGLE_CALENDAR":
+      return t(
+        "integrations.catalog.GOOGLE_CALENDAR.hint",
+        "Scheduling on the calendars you allow.",
+      );
+    case "GOOGLE_DRIVE":
+      return t(
+        "integrations.catalog.GOOGLE_DRIVE.hint",
+        "Finds a file and sends it, or its link, to the customer.",
+      );
+    case "RESEND":
+      return t(
+        "integrations.catalog.RESEND.hint",
+        "Transactional email from a fixed sender address.",
+      );
+    default:
+      return c.description ?? "";
+  }
+}
+
+// The kind of a new integration, as cards (agents#1254): it decides which configuration appears
+// below, and the operator reads what each one does before picking.
+export function IntegrationTypeCards<
+  C extends Pick<CatalogEntry, "catalogType" | "label" | "description">,
+>({
+  catalog,
+  value,
+  onPick,
+}: {
+  catalog: C[];
+  value: string;
+  onPick: (c: C) => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <ChoiceCards
+      value={value}
+      onChange={(v) => {
+        const c = catalog.find((x) => x.catalogType === v);
+        if (c) onPick(c);
+      }}
+      aria-label={t("integrations.type", "Integration")}
+      className="sm:grid-cols-3"
+      options={catalog.map((c) => ({
+        value: c.catalogType,
+        icon: ({ className }: { className?: string }) => (
+          <ServiceLogo
+            service={serviceFor(c.catalogType)}
+            className={className}
+          />
+        ),
+        title: catalogLabelOf(t, c),
+        hint: catalogHintOf(t, c),
+      }))}
+    />
+  );
+}
 
 const AUTH_STRATEGIES = ["NONE", "STATIC_HEADER", "HMAC_SHA256"] as const;
 type AuthStrategy = (typeof AUTH_STRATEGIES)[number];
@@ -525,25 +622,7 @@ export function IntegrationEditModal({
   sharedNotice?: boolean;
 }) {
   const { t } = useTranslation();
-  const catalogLabel = (c: CatalogEntry | undefined) => {
-    switch (c?.catalogType) {
-      case "GENERIC":
-        return t("integrations.catalog.GENERIC.label", "Generic webhook");
-      case "ASAAS":
-        return t("integrations.catalog.ASAAS.label", "Asaas");
-      case "GOOGLE_CALENDAR":
-        return t(
-          "integrations.catalog.GOOGLE_CALENDAR.label",
-          "Google Calendar",
-        );
-      case "GOOGLE_DRIVE":
-        return t("integrations.catalog.GOOGLE_DRIVE.label", "Google Drive");
-      case "RESEND":
-        return t("integrations.catalog.RESEND.label", "Resend");
-      default:
-        return c?.label ?? "";
-    }
-  };
+  const catalogLabel = (c: CatalogEntry | undefined) => catalogLabelOf(t, c);
   const catalogDescription = (c: CatalogEntry | undefined) => {
     switch (c?.catalogType) {
       case "GENERIC":
@@ -1099,32 +1178,11 @@ export function IntegrationEditModal({
               </div>
             ) : (
               <FormField label={t("integrations.type", "Integration")} group>
-                <div className="grid gap-2 sm:grid-cols-3">
-                  {catalog.map((c) => {
-                    const active = c.catalogType === form.catalogType;
-                    return (
-                      <button
-                        key={c.catalogType}
-                        type="button"
-                        onClick={() => pickType(c)}
-                        aria-pressed={active}
-                        className={`flex items-center gap-2 rounded-lg border px-3 py-2.5 text-left transition-colors ${
-                          active
-                            ? "border-accent bg-accent-soft"
-                            : "border-border hover:bg-bg-hover"
-                        }`}
-                      >
-                        <ServiceLogo
-                          service={serviceFor(c.catalogType)}
-                          className="h-5 w-5 shrink-0 text-text-primary"
-                        />
-                        <span className="font-medium text-sm text-text-primary">
-                          {catalogLabel(c)}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
+                <IntegrationTypeCards
+                  catalog={catalog}
+                  value={form.catalogType}
+                  onPick={pickType}
+                />
               </FormField>
             )}
             {catalogDescription(selectedCatalog) && !editId && (

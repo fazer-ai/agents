@@ -343,7 +343,7 @@ describe("the Channels tab of a watcher", () => {
     await open("production");
     fireEvent.click(screen.getByText("Test in playground"));
     await screen.findByText("New session");
-    fireEvent.click(screen.getByRole("button", { name: "Monitoring" }));
+    fireEvent.click(screen.getByRole("radio", { name: /^Monitoring/ }));
     await act(async () => {});
     expect(screen.queryAllByText("New session").length).toBe(0);
   });
@@ -419,7 +419,7 @@ describe("the Channels tab of a watcher", () => {
     };
     await renderEditor(stub, "general");
     // A draft flip, not saved.
-    fireEvent.click(screen.getByRole("button", { name: "Monitoring" }));
+    fireEvent.click(screen.getByRole("radio", { name: /^Monitoring/ }));
     await goTo(/Channels/);
     const sw = await screen.findByRole("switch", { name: /Livre/ });
     fireEvent.click(sw);

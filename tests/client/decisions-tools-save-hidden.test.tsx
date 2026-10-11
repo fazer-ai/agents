@@ -2,7 +2,13 @@
 
 import { afterEach, expect, test } from "bun:test";
 import { TooltipProvider } from "@radix-ui/react-tooltip";
-import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router";
 
 const { AgentEditorPage } = await import(
@@ -526,7 +532,7 @@ test("questions and rules edited before a switch to answering keep the editor un
   fireEvent.click(button("Add question"));
   await waitFor(() => expect(Boolean(button("Discard all"))).toBe(true));
   await tab("General");
-  fireEvent.click(button("Production"));
+  fireEvent.click(screen.getByRole("radio", { name: /^Production/ }));
   fireEvent.click(button("Save"));
   await waitFor(() =>
     expect(asked.some((a) => a.method === "PATCH")).toBe(true),

@@ -9,6 +9,7 @@ export {
 } from "./BusinessHoursForm";
 export { Button } from "./Button";
 export { Card } from "./Card";
+export { type ChoiceCardOption, ChoiceCards } from "./ChoiceCards";
 export {
   CodeEditor,
   type CodeEditorProps,

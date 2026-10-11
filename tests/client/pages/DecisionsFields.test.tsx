@@ -238,12 +238,13 @@ const brokenRules = () =>
   screen
     .queryAllByTestId("decisions-rule")
     .map((el) => el.getAttribute("data-broken"));
-// The engine card that is on, by its stored value.
+// The engine card that is on, by its stored value. The cards are radio inputs (agents#1254).
+const radioOn = (id: string) =>
+  (screen.getByTestId(id) as HTMLInputElement).checked;
 const engineOn = () =>
-  screen.getByTestId("engine-llm").getAttribute("aria-checked") === "true"
+  radioOn("engine-llm")
     ? "llm"
-    : screen.getByTestId("engine-decisions").getAttribute("aria-checked") ===
-        "true"
+    : radioOn("engine-decisions")
       ? "decisions"
       : "none";
 const pickEngine = (engine: "llm" | "decisions") =>

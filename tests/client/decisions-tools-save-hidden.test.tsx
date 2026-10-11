@@ -586,3 +586,41 @@ test("a tool toggled while Save tools is in flight stays unsaved on questions an
     "false true",
   );
 });
+
+// The guidance questions and rules do not draw is written as stored, byte for byte: a Tools save
+// that tidied it would store a value the form does not hold, and the editor would then read a hidden
+// draft nobody made.
+test("a Tools save on questions and rules writes hidden guidance verbatim", async () => {
+  const spaced = {
+    ...DECIDING,
+    settings: {
+      ...DECIDING.settings,
+      toolGuidance: { set_labels: "  nota com espaço  " },
+      kanban: { instructions: "funil \n" },
+      handoff: { mode: "auto", instructions: " passe adiante " },
+    },
+  };
+  const asked = stubApi(spaced);
+  renderAt("/agents/1/tools");
+  await waitFor(() => expect(Boolean(button("Save tools"))).toBe(true));
+  fireEvent.click(button("Save tools"));
+  const patch = await waitFor(() => {
+    const p = asked.find((a) => a.method === "PATCH");
+    if (!p) throw new Error("no PATCH yet");
+    return p;
+  });
+  const sent = (patch.body as { settings: Record<string, unknown> }).settings;
+  expect(
+    JSON.stringify([
+      sent.toolGuidance,
+      (sent.kanban as { instructions?: unknown }).instructions,
+      (sent.handoff as { instructions?: unknown }).instructions,
+    ]),
+  ).toBe(
+    JSON.stringify([
+      { set_labels: "  nota com espaço  " },
+      "funil \n",
+      " passe adiante ",
+    ]),
+  );
+});

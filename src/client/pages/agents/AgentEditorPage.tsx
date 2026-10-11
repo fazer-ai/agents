@@ -3416,19 +3416,38 @@ function AgentEditor() {
         string,
         unknown
       >;
-      const handoffJson = serializeHandoff({
-        ...handoff,
-        instructions: savedGuidance.handoffInstructions,
-      });
-      const kanbanJson = {
-        instructions: savedGuidance.kanbanInstructions.trim() || null,
+      // On questions and rules the guidance is not drawn and goes back AS STORED, byte for byte: the
+      // serializers below tidy what an operator typed (trim, drop empties), and tidying a value the form
+      // still holds untidied would leave the editor reading a hidden draft nobody made.
+      const asStored = (key: string, written: unknown): unknown =>
+        decides && key in syncedSettings ? syncedSettings[key] : written;
+      const storedHandoff = (syncedSettings.handoff ?? {}) as Record<
+        string,
+        unknown
+      >;
+      const handoffJson = {
+        ...serializeHandoff({
+          ...handoff,
+          instructions: savedGuidance.handoffInstructions,
+        }),
+        ...(decides && "instructions" in storedHandoff
+          ? { instructions: storedHandoff.instructions as string | null }
+          : {}),
       };
-      const crossInboxCaseJson = serializeCrossInboxCase(
-        savedGuidance.crossInboxCase,
+      const kanbanJson = asStored("kanban", {
+        instructions: savedGuidance.kanbanInstructions.trim() || null,
+      });
+      const crossInboxCaseJson = asStored(
+        "crossInboxCase",
+        serializeCrossInboxCase(savedGuidance.crossInboxCase),
       );
-      const sendImageJson = serializeSendImage(savedGuidance.sendImage);
-      const resolveConversationJson = serializeResolveConversation(
-        savedGuidance.resolveConversation,
+      const sendImageJson = asStored(
+        "sendImage",
+        serializeSendImage(savedGuidance.sendImage),
+      );
+      const resolveConversationJson = asStored(
+        "resolveConversation",
+        serializeResolveConversation(savedGuidance.resolveConversation),
       );
       // Merge the per-tool guidance map: preserve any entries for other tools, set/clear ours.
       const existingGuidance = (syncedSettings.toolGuidance ?? {}) as Record<
@@ -3436,17 +3455,19 @@ function AgentEditor() {
         unknown
       >;
       const toolGuidanceJson: Record<string, unknown> = { ...existingGuidance };
-      const attrNote = savedGuidance.customAttributeInstructions.trim();
-      const labelNote = savedGuidance.labelInstructions.trim();
-      const updateKanbanNote =
-        savedGuidance.updateKanbanTaskInstructions.trim();
-      if (attrNote) toolGuidanceJson.set_custom_attribute = attrNote;
-      else delete toolGuidanceJson.set_custom_attribute;
-      if (labelNote) toolGuidanceJson.set_labels = labelNote;
-      else delete toolGuidanceJson.set_labels;
-      if (updateKanbanNote)
-        toolGuidanceJson.update_kanban_task = updateKanbanNote;
-      else delete toolGuidanceJson.update_kanban_task;
+      if (!decides) {
+        const attrNote = savedGuidance.customAttributeInstructions.trim();
+        const labelNote = savedGuidance.labelInstructions.trim();
+        const updateKanbanNote =
+          savedGuidance.updateKanbanTaskInstructions.trim();
+        if (attrNote) toolGuidanceJson.set_custom_attribute = attrNote;
+        else delete toolGuidanceJson.set_custom_attribute;
+        if (labelNote) toolGuidanceJson.set_labels = labelNote;
+        else delete toolGuidanceJson.set_labels;
+        if (updateKanbanNote)
+          toolGuidanceJson.update_kanban_task = updateKanbanNote;
+        else delete toolGuidanceJson.update_kanban_task;
+      }
       const toolPreconditionsJson = serializeToolPreconditions(
         toolPreconditions,
         syncedSettings.toolPreconditions,

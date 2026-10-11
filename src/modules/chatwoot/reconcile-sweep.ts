@@ -118,9 +118,15 @@ async function owedOf(
     if (turn === "answered") return null;
     if (turn !== "undecided") return turn;
     if (rows.length === 0) return null;
-    const oldest = Math.min(...rows.map((m) => m.id));
+    // Chatwoot pages by `(created_at, id)`, and an import can number old messages above new ones, so
+    // the cursor is the earliest row by that pair rather than the smallest id.
+    const oldest = rows.reduce((a, b) => {
+      const at = (a.createdAt as Date).getTime();
+      const bt = (b.createdAt as Date).getTime();
+      return bt < at || (bt === at && b.id < a.id) ? b : a;
+    });
     rows = readMessagePage(
-      await client.getMessages(conversationId, { before: oldest }),
+      await client.getMessages(conversationId, { before: oldest.id }),
       conversationId,
     );
   }

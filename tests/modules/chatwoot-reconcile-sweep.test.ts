@@ -102,11 +102,21 @@ function chatwoot(s: Scripted) {
       async getMessages(conversationId: number, opts?: { before?: number }) {
         const all = s.messages.get(conversationId) ?? [];
         if (!Array.isArray(all)) return all;
-        const before = opts?.before;
+        // Ordered and cut by `(created_at, id)`, as the fork's finder does.
+        type Row = { id: number; created_at?: number };
+        const key = (m: Row) => [m.created_at ?? 0, m.id] as const;
+        const before = (a: Row, b: Row) =>
+          key(a)[0] < key(b)[0] || (key(a)[0] === key(b)[0] && a.id < b.id);
+        const sorted = [...(all as Row[])].sort((a, b) =>
+          before(a, b) ? -1 : before(b, a) ? 1 : 0,
+        );
+        const cursor = sorted.find((m) => m.id === opts?.before);
         const older =
-          before === undefined
-            ? all
-            : all.filter((m) => (m as { id: number }).id < before);
+          opts?.before === undefined
+            ? sorted
+            : sorted.filter((m) =>
+                cursor ? before(m, cursor) : m.id < (opts.before as number),
+              );
         return older.slice(-20);
       },
     }) as unknown as ChatwootClient;
@@ -573,6 +583,36 @@ describe.skipIf(!dbUp)("reconciling from Chatwoot", () => {
       makeClient: chatwoot(buried),
     });
     expect(failed.inboxesFailed).toBe(1);
+  });
+
+  test("older pages are walked by time, so imported history numbered newest-first does not stall the read", async () => {
+    // The request, then sixty imported messages after it in time whose ids run against their times.
+    const imported = Array.from({ length: 60 }, (_, i) => ({
+      id: 14_001 + i,
+      message_type: 1,
+      private: false,
+      created_at: epoch(minutesAgo(21 + i * 0.1)),
+      content: "histórico",
+      content_attributes: { imported: true },
+      sender: { id: 7, type: "user" },
+    }));
+    const s: Scripted = {
+      conversations: new Map([[INBOX, [conv(1400, minutesAgo(20))]]]),
+      messages: new Map([
+        [1400, [incoming(14000, minutesAgo(28)), ...imported]],
+      ]),
+      listed: [],
+    };
+    const counts = await reconcileFromChatwoot({
+      tenantId,
+      base: appDb,
+      now: NOW,
+      makeClient: chatwoot(s),
+    });
+    expect(counts.inboxesFailed).toBe(0);
+    expect((await ledgerFor(1400)).map((r) => r.inboundMessageId)).toEqual([
+      14000,
+    ]);
   });
 
   test("a conversation pinned during the read does not end it before the recent ones", async () => {

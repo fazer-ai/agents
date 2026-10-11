@@ -11,6 +11,7 @@ import { isNewIncomingMessage } from "./normalize";
 import {
   decideConversationWrites,
   type FactWrite,
+  type RelationName,
   type StatePayload,
 } from "./state-order";
 import { announceStatusChange } from "./status-announce";
@@ -147,6 +148,11 @@ export async function mirrorChatwootEvent(
     },
     kanbanCardId: n.kanbanCardId ?? null,
     kanbanCardAt: n.kanbanCardAt ?? null,
+    relationsStated: {
+      contact: n.contact?.id != null,
+      contactInbox: n.contactInboxId != null,
+      inbox: n.inboxId != null,
+    },
     // The event that exists only for a status transition says so by its name: the fork dispatches it
     // after commit, when the model's own change record is already gone, so it carries no
     // `changed_attributes`. A holder change has no event of its own and says so in that list.
@@ -253,15 +259,17 @@ export async function mirrorChatwootEvent(
             chatwootKanbanCardId: true,
             chatwootKanbanCardAt: true,
             chatwootRedirectOriginClearedAt: true,
+            chatwootContactAt: true,
+            chatwootContactInboxAt: true,
+            chatwootInboxAt: true,
             // Read for the stale branch, which advances this watermark only when the payload really is
             // ahead of it. See the write there.
             lastInboundAt: true,
             lastInboundMessageId: true,
-            // Read for the stale branch, which fills a missing route and contact. See the write there.
+            // Read so an empty relation is filled by any payload naming it, and so a recovery's inherited
+            // pairing fills an empty one and never replaces a stored one.
             inboxId: true,
             contactId: true,
-            // Read so a recovery's inherited pairing fills an empty one and never replaces a stored one,
-            // and so the stale branch fills a missing one.
             contactInboxId: true,
             // NOTE: the local claim, the one ordering input that does not come from the source.
             // See ./status-claim.ts.
@@ -304,6 +312,16 @@ export async function mirrorChatwootEvent(
                 },
                 kanbanCardId: existing.chatwootKanbanCardId,
                 kanbanCardAt: existing.chatwootKanbanCardAt,
+                relationMarks: {
+                  contact: existing.chatwootContactAt,
+                  contactInbox: existing.chatwootContactInboxAt,
+                  inbox: existing.chatwootInboxAt,
+                },
+                relationsStored: {
+                  contact: existing.contactId != null,
+                  contactInbox: existing.contactInboxId != null,
+                  inbox: existing.inboxId != null,
+                },
               }
             : null,
           now,
@@ -384,6 +402,13 @@ export async function mirrorChatwootEvent(
           releasesEpisode && retiredLadder
             ? { redirectLinkedAt: null, redirectClosedAt: null }
             : {};
+        const relations = relationWrites(decision.relations, {
+          contactId,
+          inboxId: inboxRowId,
+          contactInboxId: n.contactInboxId ?? null,
+          contactInboxInferred: n.factsOnCreateOnly === true,
+          contactInboxStored: existing?.contactInboxId != null,
+        });
 
         if (existing && decision.stale) {
           // A stale event says nothing about the conversation's state, with three exceptions
@@ -439,22 +464,10 @@ export async function mirrorChatwootEvent(
               ? { lastInboundAt: inboundAt }
               : {}),
             ...forwardInboundId(existing.lastInboundMessageId, inboundId),
-            // NOTE: the route, from NULL only. A conversation never changes inbox in Chatwoot, so a
-            // stale event still names the right one, and a row without it runs no pre-turn gate
-            // (test mode, contact authorization) while the turn still resolves its agent from the event.
-            ...(existing.inboxId === null && inboxRowId != null
-              ? { inboxId: inboxRowId }
-              : {}),
-            // The contact, from NULL only, for the same gates: a conversation event can create the row
-            // without naming one, and the contact gate fails closed on a row with no identity.
-            ...(existing.contactId === null && contactId != null
-              ? { contactId }
-              : {}),
-            // The pairing too, from NULL only: a row without one keys its turn on the conversation and
-            // misses the contact's shared memory.
-            ...(existing.contactInboxId === null && n.contactInboxId != null
-              ? { contactInboxId: n.contactInboxId }
-              : {}),
+            // NOTE: the relations, from NULL only here (the decision holds a stale payload to that). A
+            // row without its route runs no pre-turn gate, without its contact fails the contact gate
+            // closed, and without its pairing keys its turn on the conversation.
+            ...relations,
           };
           if (Object.keys(staleWrites).length > 0) {
             await db.conversation.update({
@@ -495,6 +508,7 @@ export async function mirrorChatwootEvent(
               contactInboxId: n.contactInboxId,
               inboxId: inboxRowId,
               contactId,
+              ...relations,
               status: createdStatus,
               assigneeId: n.assigneeId ?? null,
               assigneeType: n.assigneeType ?? null,
@@ -576,17 +590,7 @@ export async function mirrorChatwootEvent(
         await db.conversation.update({
           where: { id: existing.id },
           data: {
-            // A recovery's body (`factsOnCreateOnly`) carries an INHERITED pairing, an inference, so it
-            // fills an empty one and never replaces the one a webhook stored.
-            ...(decision.unversioned &&
-            n.contactInboxId != null &&
-            (!n.factsOnCreateOnly || existing.contactInboxId === null)
-              ? { contactInboxId: n.contactInboxId }
-              : {}),
-            ...(decision.unversioned && inboxRowId != null
-              ? { inboxId: inboxRowId }
-              : {}),
-            ...(decision.unversioned && contactId != null ? { contactId } : {}),
+            ...relations,
             ...(appliedStatus != null ? { status: appliedStatus } : {}),
             // NOTE: The same question the stale branch asked, and the same answer: see
             // `dropsResolutionOrigin` above.
@@ -1045,6 +1049,57 @@ function forwardInboundId(
   return inbound != null && (stored === null || inbound > stored)
     ? { lastInboundMessageId: inbound }
     : {};
+}
+
+const RELATION_COLUMNS: Record<
+  RelationName,
+  {
+    value: "contactId" | "contactInboxId" | "inboxId";
+    mark: "chatwootContactAt" | "chatwootContactInboxAt" | "chatwootInboxAt";
+  }
+> = {
+  contact: { value: "contactId", mark: "chatwootContactAt" },
+  contactInbox: { value: "contactInboxId", mark: "chatwootContactInboxAt" },
+  inbox: { value: "inboxId", mark: "chatwootInboxAt" },
+};
+
+// The relation columns a decision lets this payload write, each with its mark. A recovery's body
+// (`factsOnCreateOnly`) carries an INHERITED pairing, an inference: it fills an empty one, never
+// replaces one a webhook stored, and stamps no mark, so a webhook naming the real one is not refused.
+function relationWrites(
+  decided: Record<RelationName, FactWrite>,
+  p: {
+    contactId: bigint | null;
+    inboxId: bigint | null;
+    contactInboxId: number | null;
+    contactInboxInferred: boolean;
+    contactInboxStored: boolean;
+  },
+): {
+  contactId?: bigint;
+  contactInboxId?: number;
+  inboxId?: bigint;
+  chatwootContactAt?: number;
+  chatwootContactInboxAt?: number;
+  chatwootInboxAt?: number;
+} {
+  const values = {
+    contact: p.contactId,
+    contactInbox: p.contactInboxId,
+    inbox: p.inboxId,
+  };
+  const out: Record<string, bigint | number> = {};
+  for (const relation of Object.keys(RELATION_COLUMNS) as RelationName[]) {
+    const value = values[relation];
+    const { write, at } = decided[relation];
+    if (!write || value == null) continue;
+    const inferred = relation === "contactInbox" && p.contactInboxInferred;
+    if (inferred && p.contactInboxStored) continue;
+    const columns = RELATION_COLUMNS[relation];
+    out[columns.value] = value;
+    if (at != null && !inferred) out[columns.mark] = at;
+  }
+  return out;
 }
 
 // A fact's mark moves with the fact, and only when the decision gives it a version to move to.

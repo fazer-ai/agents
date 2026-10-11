@@ -491,12 +491,15 @@ async function mirrorOf(
   });
 }
 
-// The terminal write's guard: the status the scan read, and, for a row the dead-claim pass read, the
-// claim it judged dead.
+// The terminal write's guard: the attempt the scan read, not just the status. Every claim writes a
+// new `claimedAt`, so a row claimed again since the read (a recovery from DEAD, even by the same
+// process under the same lease) no longer matches; and, for a row the dead-claim pass read, the
+// claimer it judged dead.
 function casOn(row: StrandedRow) {
   return {
     id: row.id,
     status: row.status,
+    claimedAt: row.claimedAt,
     ...(row.claimedBy == null ? {} : { claimedBy: row.claimedBy }),
   };
 }

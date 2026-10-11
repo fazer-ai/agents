@@ -333,6 +333,45 @@ describe.skipIf(!dbUp)("deliveries claimed by a dead process", () => {
     expect(await statusOf(row)).toBe("PROCESSING");
   });
 
+  test("the terminal write misses an attempt claimed again by the same process", async () => {
+    // A process whose lease lapsed for a moment can claim the row again from DEAD under the same id;
+    // a pass that read the earlier attempt must not end the new one.
+    const claimer = randomUUID();
+    const row = await claimed(claimer);
+    const read = await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+      where: { id: row },
+      select: {
+        id: true,
+        status: true,
+        chatwootInstanceId: true,
+        deliveryId: true,
+        event: true,
+        receivedAt: true,
+        claimedAt: true,
+        claimedBy: true,
+        conversationId: true,
+        inboundMessageId: true,
+        humanReplyShape: true,
+        humanReplyMessageId: true,
+        routeObserved: true,
+        routeAgentBotId: true,
+        routeRemembers: true,
+      },
+    });
+    await suDb.chatwootWebhookDelivery.update({
+      where: { id: row },
+      data: { claimedAt: new Date(), claimedBy: claimer },
+    });
+    const won = await finish(
+      { ...read, status: "PROCESSING" },
+      tenantId,
+      "DEAD",
+      appDb,
+    );
+    expect(won).toBe(false);
+    expect(await statusOf(row)).toBe("PROCESSING");
+  });
+
   test("a claim made while this process holds a lease names it, and one made without a lease names nobody", async () => {
     const deliver = async (messageId: number) => {
       const n = normalizeChatwootEvent({

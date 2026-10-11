@@ -116,6 +116,9 @@ describe.skipIf(!dbUp)("the durable turn claim on a thread", () => {
 
   // The renewal timer a claim arms, captured so a test runs one tick instead of waiting minutes for
   // it. A tick's query is fire-and-forget; a tick that renews nothing says so by clearing its timer.
+  // The handle the claim gets back is a real interval (so `unref` and `clearInterval` behave), but it
+  // runs nothing: only the captured tick renews, so a real tick firing during a poll cannot stand in
+  // for the one under test.
   async function armedTimer<T>(take: () => Promise<T>) {
     const realSet = globalThis.setInterval;
     let tick: (() => void) | undefined;
@@ -125,7 +128,7 @@ describe.skipIf(!dbUp)("the durable turn claim on a thread", () => {
       ms?: number,
     ) => {
       tick = fn;
-      timer = realSet(fn, ms);
+      timer = realSet(() => {}, ms);
       return timer;
     }) as unknown as typeof setInterval);
     try {
@@ -619,6 +622,13 @@ describe.skipIf(!dbUp)("the durable turn claim on a thread", () => {
         WHERE tenant_id = ${tenantId} AND contact_inbox_id = ${o.contactInboxId}`,
     );
     expect(await tickOutcome(armed, lease)).toBe("renewed");
+    // Renewed by a whole write lease (30 s), not merely nudged past the cut: measured against the
+    // database clock that minted it, with a few seconds of slack for the round trips.
+    const renewed = await suDb.$queryRawUnsafe<{ ahead: number }[]>(
+      `SELECT EXTRACT(EPOCH FROM ingest_write_until - now())::float8 AS ahead FROM agent_threads
+        WHERE tenant_id = ${tenantId} AND contact_inbox_id = ${o.contactInboxId}`,
+    );
+    expect(renewed[0]?.ahead).toBeGreaterThan(25);
     // Still exclusive against a turn, which is the whole point of holding it longer.
     expect((await rowOf(o)).turnHolders).toBe(0);
     // The release stops the timer, and a tick left over renews nothing under a later claim.

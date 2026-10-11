@@ -167,6 +167,10 @@ describe("the audit answers the same placeholders the model's prompt did", () =>
   });
   // Every option has something to answer: 22:30 of the 20th in São Paulo is already the 21st
   // in UTC, the schedule is closed at that hour, and the triggering message is 90 minutes old.
+  // Friday opens at 01:00, so the same instant is still closed in São Paulo (Thursday 22:30) and
+  // already open in UTC (Friday 01:30): a rendering that read the grid in any zone but the
+  // schedule's own answers {{next_open_at}} differently. With a 09:00 opening every day, both zones
+  // would land on "Friday 09:00" in their own wall clock and the row could not tell them apart.
   const opts = {
     timezone: "America/Sao_Paulo",
     now: new Date("2026-08-21T01:30:00Z"),
@@ -175,7 +179,7 @@ describe("the audit answers the same placeholders the model's prompt did", () =>
         timezone: "America/Sao_Paulo",
         windows: [1, 2, 3, 4, 5].map((day) => ({
           day,
-          start: "09:00",
+          start: day === 5 ? "01:00" : "09:00",
           end: "18:00",
         })),
         exceptions: [],

@@ -1,0 +1,13 @@
+// Refuses a sample contact written into the two prompt editors (BehaviorTab.tsx and PromptPanel.tsx,
+// scoped in biome.jsonc): an `@exemplo.com` address or a literal `contactName`. Both previews speak to
+// the one example person `signaturePreviewVars` builds, and a private one is how they drift apart.
+language js;
+
+or {
+    or { JsStringLiteralExpression(), JsTemplateChunkElement() } as $site where {
+        $site <: r"[\s\S]*@exemplo\.com[\s\S]*"
+    },
+    JsPropertyObjectMember() as $site where { $site <: r"contactName: \"[\s\S]*" }
+} where {
+    register_diagnostic(span = $site, message = "The preview's example person comes from `signaturePreviewVars`, not a contact written beside the call.")
+}

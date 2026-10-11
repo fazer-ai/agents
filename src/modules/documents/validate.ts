@@ -693,7 +693,7 @@ export function parseDocumentValues(
       field.type === "lineItems"
         ? (z
             .array(lineItemValueSchema)
-            // not-caller-input: inside a validator whose contract is { ok: false, reason }, not a throw
+            // biome-ignore lint/plugin/require-parse-input: not caller input, inside a validator whose contract is { ok: false, reason }, not a throw
             .parse(value)
             .map((item) => ({
               ...item,

@@ -1,0 +1,10 @@
+// Refuses a `shouldBotHandle(state, { ourAgentBotId })` whose state does not carry `assigneeId`, in the
+// readers listed in biome.jsonc. Without the id to compare, the strict ownership check degrades into
+// the loose attribution-only gate, where every AgentBot reads as ours (docs/chatwoot.md).
+language js;
+
+`shouldBotHandle($state, $opts)` as $call where {
+    $opts <: r"(?:[\s\S]*[^A-Za-z0-9_])?ourAgentBotId(?:[^A-Za-z0-9_][\s\S]*)?",
+    not $state <: r"(?:[\s\S]*[^A-Za-z0-9_])?assigneeId(?:[^A-Za-z0-9_][\s\S]*)?",
+    register_diagnostic(span = $call, message = "A strict ownership check (`ourAgentBotId`) needs the conversation's `assigneeId` in its state, or it reads every AgentBot as ours.")
+}

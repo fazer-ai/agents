@@ -94,22 +94,16 @@
         "!tests/tooling/**",
         "!tests/api/error-catalog.test.ts",
         "!tests/api/lib/refusal-callsites.test.ts",
-        "!tests/api/lib/step-up.test.ts",
-        "!tests/api/v1/write-body-required.test.ts",
         "!tests/client/behavior-dirty-snapshot.test.ts",
         "!tests/client/debug-warning-source.test.ts",
-        "!tests/client/editor-text-caps.test.ts",
         "!tests/client/error-toast-reason.test.ts",
         "!tests/client/field-refusal-fence.test.ts",
         "!tests/client/import-warnings-rendered.test.ts",
         "!tests/client/locale-plurals.test.ts",
         "!tests/client/pages/CodeToolEditModal.test.tsx",
         "!tests/client/tool-sample-persistence.test.ts",
-        "!tests/client/window-open-api-path.test.ts",
         "!tests/graph/prepare.test.ts",
         "!tests/graph/refused-turn-callsites.test.ts",
-        "!tests/graph/silence.test.ts",
-        "!tests/graph/usage-provider-counts.test.ts",
         "!tests/lib/caller-id-spelling.test.ts",
         "!tests/lib/db-guard.test.ts",
         "!tests/lib/env-read-sweep.test.ts",
@@ -119,23 +113,17 @@
         "!tests/lib/source-text.test.ts",
         "!tests/modules/audit-actions.test.ts",
         "!tests/modules/audit-channel-family.test.ts",
-        "!tests/modules/audit-webhook-family.test.ts",
         "!tests/modules/billed-call-usage.test.ts",
-        "!tests/modules/chatwoot-receiver.test.ts",
         "!tests/modules/chatwoot-recover-delivery.test.ts",
         "!tests/modules/credential-reader-fence.test.ts",
         "!tests/modules/delivery-sweep.test.ts",
-        "!tests/modules/document-tool-name-single-source.test.ts",
         "!tests/modules/flowlog-alert-summary.test.ts",
         "!tests/modules/flowlog-debug-mode.test.ts",
         "!tests/modules/followup-eligibility.test.ts",
-        "!tests/modules/gate-close.test.ts",
         "!tests/modules/late-media-ingest.test.ts",
         "!tests/modules/mcp/write-passes-its-client.test.ts",
         "!tests/modules/operator-text-surface.test.ts",
-        "!tests/modules/playground-tenant-selector.test.ts",
         "!tests/modules/reengage-gate-atomic.test.ts",
-        "!tests/modules/scheduler-row-writers.test.ts",
         "!tests/modules/tenant-selector-entry-points.test.ts",
         "!tests/modules/terminal-failure-fence.test.ts",
         "!tests/modules/vault/base-url-applicability.test.ts",
@@ -230,6 +218,173 @@
         "!tests/modules/webhooks-outbound-deliveries.test.ts"
       ],
       "plugins": ["./biome-plugins/no-test-real-wait.grit"]
+    },
+    // The fences that were sweeps in tests/ (api, client, graph, modules). Each also applies under
+    // tests/lint/.probe-fence-*, where tests/lint/fence-rules.test.ts feeds it a violating and a
+    // conforming snippet. A negated path is the module that owns what the rule keeps everyone else off.
+    {
+      "includes": [
+        "src/**/*.{ts,tsx}",
+        "tests/lint/.probe-fence-*/**/*.{ts,tsx}"
+      ],
+      "plugins": [
+        "./biome-plugins/no-error-key-cast.grit",
+        "./biome-plugins/require-reply-rule-on-final-text.grit",
+        "./biome-plugins/no-secret-ref-write-outside-owner.grit"
+      ]
+    },
+    {
+      "includes": [
+        "src/**/*.{ts,tsx}",
+        "!src/api/features/auth/auth.service.ts",
+        "!src/api/features/auth/auth.controller.ts",
+        "!src/api/features/invitations/invitation.service.ts",
+        "!src/api/lib/step-up.ts",
+        "tests/lint/.probe-fence-*/**/*.{ts,tsx}"
+      ],
+      "plugins": ["./biome-plugins/no-verify-password-outside-login.grit"]
+    },
+    {
+      "includes": [
+        "src/**/*.{ts,tsx}",
+        "!src/api/lib/step-up.ts",
+        "tests/lint/.probe-fence-*/**/*.{ts,tsx}"
+      ],
+      "plugins": ["./biome-plugins/step-up-takes-boundary-principal.grit"]
+    },
+    {
+      "includes": ["src/**/*.ts", "tests/lint/.probe-fence-*/**/*.ts"],
+      "plugins": [
+        "./biome-plugins/no-constrained-zod-record.grit",
+        "./biome-plugins/no-gemini-builtin-tool.grit",
+        "./biome-plugins/require-usage-sink.grit"
+      ]
+    },
+    {
+      "includes": [
+        "src/modules/**/*.ts",
+        "src/api/**/*.ts",
+        "tests/lint/.probe-fence-*/**/*.ts"
+      ],
+      "plugins": ["./biome-plugins/require-parse-input.grit"]
+    },
+    {
+      "includes": [
+        "src/client/**/*.{ts,tsx}",
+        "tests/lint/.probe-fence-*/**/*.{ts,tsx}"
+      ],
+      "plugins": [
+        "./biome-plugins/no-window-open-api-path.grit",
+        "./biome-plugins/no-unparenthesised-fallback-ternary.grit",
+        "./biome-plugins/no-tautological-staleness.grit"
+      ]
+    },
+    // ChannelRedirectTab.tsx and PlaygroundChat.tsx clamp nothing behind their textareas: channel
+    // redirect messages are stored and sent whole, and the playground composer is a message the
+    // operator sends, not stored settings.
+    {
+      "includes": [
+        "src/client/pages/agents/*.tsx",
+        "!src/client/pages/agents/ChannelRedirectTab.tsx",
+        "!src/client/pages/agents/PlaygroundChat.tsx",
+        "tests/lint/.probe-fence-*/**/*.tsx"
+      ],
+      "plugins": ["./biome-plugins/require-textarea-cap.grit"]
+    },
+    {
+      "includes": [
+        "src/client/pages/agents/*.tsx",
+        "tests/lint/.probe-fence-*/**/*.tsx"
+      ],
+      "plugins": ["./biome-plugins/require-highlighted-cap.grit"]
+    },
+    {
+      "includes": [
+        "src/client/pages/agents/BehaviorTab.tsx",
+        "src/client/pages/agents/PromptPanel.tsx",
+        "tests/lint/.probe-fence-*/**/*.tsx"
+      ],
+      "plugins": ["./biome-plugins/no-sample-contact-in-preview.grit"]
+    },
+    {
+      "includes": [
+        "src/graph/nudge.ts",
+        "src/graph/runtime.ts",
+        "src/modules/chatwoot/webhook.ts",
+        "src/modules/conversations/reengage.ts",
+        "src/modules/debounce/handler.ts",
+        "src/modules/followups/eligibility.ts",
+        "tests/lint/.probe-fence-*/**/*.ts"
+      ],
+      "plugins": ["./biome-plugins/strict-ownership-passes-assignee.grit"]
+    },
+    {
+      "includes": [
+        "src/**/*.{ts,tsx}",
+        "!src/modules/documents/slug.ts",
+        "tests/lint/.probe-fence-*/**/*.{ts,tsx}"
+      ],
+      "plugins": ["./biome-plugins/no-document-tool-name-outside-slug.grit"]
+    },
+    {
+      "includes": [
+        "src/**/*.{ts,tsx}",
+        "!src/modules/chatwoot/gate-close.ts",
+        "tests/lint/.probe-fence-*/**/*.{ts,tsx}"
+      ],
+      "plugins": ["./biome-plugins/no-gate-close-outcome-outside-owner.grit"]
+    },
+    {
+      "includes": [
+        "src/modules/playground/**/*.ts",
+        "tests/lint/.probe-fence-*/**/*.ts"
+      ],
+      "plugins": ["./biome-plugins/no-playground-tenant-context.grit"]
+    },
+    {
+      "includes": [
+        "src/**/*.ts",
+        "!src/modules/scheduler/service.ts",
+        "tests/lint/.probe-fence-*/**/*.ts"
+      ],
+      "plugins": ["./biome-plugins/no-scheduler-row-outside-service.grit"]
+    },
+    {
+      "includes": ["src/api/**/*.ts", "tests/lint/.probe-fence-*/**/*.ts"],
+      "plugins": ["./biome-plugins/no-bare-tenant-id-in-api.grit"]
+    },
+    {
+      "includes": [
+        "src/**/*.ts",
+        "!src/modules/vault/service.ts",
+        "tests/lint/.probe-fence-*/**/*.ts"
+      ],
+      "plugins": ["./biome-plugins/no-vault-entry-write-outside-service.grit"]
+    },
+    // tests/utils/flowlog.ts is where the settling spellings are defined, and
+    // tests/modules/flowlog-settle.test.ts's subject is what a clear or a read that does not settle
+    // leaves behind, so it writes the raw one to assert what it costs.
+    {
+      "includes": [
+        "tests/**/*.{ts,tsx}",
+        "!tests/utils/flowlog.ts",
+        "!tests/modules/flowlog-settle.test.ts"
+      ],
+      "plugins": [
+        "./biome-plugins/no-raw-flowlog-clear.grit",
+        "./biome-plugins/no-raw-flowlog-read.grit"
+      ]
+    },
+    {
+      "includes": ["tests/**/*.{ts,tsx}"],
+      "plugins": ["./biome-plugins/no-ingest-population-assertion.grit"]
+    },
+    {
+      "includes": [
+        "tests/**/*.test.{ts,tsx}",
+        "tests/lint/.probe-fence-*/**/*.ts"
+      ],
+      "plugins": ["./biome-plugins/require-tenant-on-scheduler-drain.grit"]
     },
     {
       "includes": ["tests/**/*.{ts,tsx}"],

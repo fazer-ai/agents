@@ -1,0 +1,10 @@
+// Refuses `apiErrorMessage(err) || cond ? a : b`, which binds as `(apiErrorMessage(err) || cond) ? a
+// : b`: the server's sentence is dropped for a fallback that sounds specific. Wrap the fallback
+// ternary in parentheses.
+language js;
+
+JsConditionalExpression(test = $test) as $ternary where {
+    $test <: JsLogicalExpression(),
+    $test <: r"[\s\S]*apiErrorMessage\([A-Za-z0-9_]+\)\s*\|\|[\s\S]*",
+    register_diagnostic(span = $ternary, message = "`a || b ? c : d` binds as `(a || b) ? c : d`: wrap the fallback ternary in parentheses.")
+}

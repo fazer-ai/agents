@@ -1,0 +1,15 @@
+// Refuses a name of a Gemini built-in tool (Search grounding, code execution, URL context) in src/.
+// `extractTokenUsage` books the whole gap in Gemini's `totalTokenCount` as thinking, which holds only
+// while none of them is on: enabling one changes that accounting first.
+language js;
+
+or {
+    or { JsReferenceIdentifier(), JsIdentifierBinding(), JsName(), JsLiteralMemberName(), JsxName(), JsLiteralExportName() } as $site where {
+        $site <: r"[\"']?(?:googleSearch|google_search|googleSearchRetrieval|codeExecution|code_execution|urlContext|url_context)[\"']?"
+    },
+    or { JsStringLiteralExpression(), JsTemplateChunkElement() } as $site where {
+        $site <: r"(?:[\s\S]*[^A-Za-z0-9_])?(?:googleSearch|google_search|googleSearchRetrieval|codeExecution|code_execution|urlContext|url_context)(?:[^A-Za-z0-9_][\s\S]*)?"
+    }
+} where {
+    register_diagnostic(span = $site, message = "A Gemini built-in tool moves prompt-side spend into the gap `extractTokenUsage` books as thinking: change that accounting before enabling one.")
+}

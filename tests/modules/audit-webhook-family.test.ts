@@ -25,7 +25,6 @@ import {
 import { sendWebhookTest } from "@/modules/webhooks/outbound/test";
 import { countingBase } from "../utils/counting-base";
 import { outboundUrl } from "../utils/outbound";
-import { countInSrc } from "../utils/source-text";
 
 // The outbound-webhook and alert-channel trail, recorded by the services that perform the writes, so
 // the console and MCP leave the same row. Two things this family carries:
@@ -119,33 +118,6 @@ async function seedDelivery(subscriptionId: bigint): Promise<bigint> {
   });
   return row.id;
 }
-
-// ── the fence under the projection's own justification ──
-//
-// Both projections carry `secretRef` in full, on the grounds that it is a REFERENCE and never a
-// secret, which holds only because these two services are its only writers and both canonicalize
-// through `requireVaultRef`. A third writer storing a raw value would put it in an append-only row
-// every tenant admin reads, and nothing would fail. The count reads the tree, with no database.
-describe("the projections' claim about who writes these columns", () => {
-  const OWNERS: Record<string, string> = {
-    webhookSubscription: "src/modules/webhooks/outbound/subscriptions.ts",
-    alertChannel: "src/modules/flowlog/channels.ts",
-  };
-
-  for (const [model, owner] of Object.entries(OWNERS)) {
-    test(`only ${owner} writes ${model}`, async () => {
-      // Every Prisma write verb that can put a value in a column, not just the two these services
-      // happen to use: an `upsert` or an `updateManyAndReturn` added later is the same defect.
-      const found = await countInSrc(
-        new RegExp(
-          `\\b${model}\\.(create|createMany|update|updateMany|upsert)\\w*\\(`,
-          "g",
-        ),
-      );
-      expect(Object.keys(found).sort()).toEqual([owner]);
-    });
-  }
-});
 
 describe.skipIf(!dbUp)("the webhook and alert-channel trail", () => {
   beforeAll(async () => {

@@ -1,0 +1,11 @@
+// Refuses `window.open` handed a literal `/api/` path. That navigation carries cookies only, while a
+// tenant-scoped route reads the tenant from the `X-Tenant-Id` header the Eden client and `mediaFetch`
+// add, so a SUPER_ADMIN's tab lands on "a target tenant is required". Fetch through `mediaFetch` and
+// open the blob URL instead.
+language js;
+
+JsCallExpression(callee = $callee, arguments = $args) as $call where {
+    $callee <: `window.open`,
+    $args <: r"\(\s*[`\"']/api/[\s\S]*",
+    register_diagnostic(span = $call, message = "`window.open` on an /api/ path sends no X-Tenant-Id: fetch it through `mediaFetch` and open the blob URL.")
+}

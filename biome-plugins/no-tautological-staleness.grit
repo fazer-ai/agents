@@ -1,0 +1,8 @@
+// Refuses `holder.capture(error, fallback, sent, current)` given the same expression as `sent` and
+// `current`. The check refuses to mark a control that moved on, so the same value twice always places
+// the mark while the render reads the live value and finds none: the refusal reaches neither channel.
+language js;
+
+`$holder.capture($error, $fallback, $same, $same, $...)` as $call where {
+    register_diagnostic(span = $call, message = "`sent` and `current` are the request's value and the box's value: the same expression twice makes the check a tautology and the mark unreadable.")
+}

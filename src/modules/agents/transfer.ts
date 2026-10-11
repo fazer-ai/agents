@@ -1899,7 +1899,7 @@ function readBundledTemplate(
   // Safe only past `templateMetadataProblem`, which is the same schema: the value the gate
   // APPROVED, not the one it was handed — it trims before it measures, so a name padded with
   // whitespace passes a bound the raw string fails.
-  // not-caller-input: a name read off the template being imported, not a value from this request
+  // biome-ignore lint/plugin/require-parse-input: not caller input, a name read off the template being imported, not a value from this request
   const name = templateNameSchema.parse(tpl.name);
   return { ok: true, name, content: content.content };
 }

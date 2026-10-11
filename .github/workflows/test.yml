@@ -74,7 +74,7 @@ jobs:
     #     at a literal for every file downstream. Replaced by a per-file instance delivered through
     #     `I18nextProvider` (tests/utils/i18n.tsx).
     #   - an unfenced `runSchedulerTick` draining rows other files had enqueued
-    #     (tests/modules/scheduler-tenant-fence.test.ts).
+    #     (biome-plugins/require-tenant-on-scheduler-drain.grit).
     #
     # Every one of them failed in a DIFFERENT file than the one at fault, which is why three of the
     # four are now static sweeps rather than notes.

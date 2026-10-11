@@ -1,0 +1,10 @@
+// Refuses a `vaultEntry` write outside src/modules/vault/service.ts (scoped in biome.jsonc). The rule
+// on which kinds may carry a base URL lives in a helper there, and a write path elsewhere would set
+// `baseUrl` without passing the kind.
+language js;
+
+JsStaticMemberExpression(object = $object, member = $member) as $site where {
+    $object <: r"(?:[\s\S]*\.)?vaultEntry",
+    $member <: or { "create", "update", "updateMany", "upsert", "createMany" },
+    register_diagnostic(span = $site, message = "Write vault entries through src/modules/vault/service.ts, where the base-URL rule for each kind is applied.")
+}

@@ -1,0 +1,9 @@
+// Refuses a tenant context built by hand under src/modules/playground (scoped in biome.jsonc): a
+// `role: "TENANT_ADMIN"` or `role: "SUPER_ADMIN"` written there. The playground acts on the context
+// its caller resolved, and one it rebuilds skips the selector's refusal.
+language js;
+
+or { JsPropertyObjectMember(), TsPropertySignatureTypeMember() } as $site where {
+    $site <: r"role:\s*\x22(?:TENANT_ADMIN|SUPER_ADMIN)\x22[\s\S]*",
+    register_diagnostic(span = $site, message = "The playground takes the tenant context its caller resolved; it never builds one.")
+}

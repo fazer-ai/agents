@@ -1,0 +1,16 @@
+// Refuses a clear of the flow log written by hand in tests: `executionLog.deleteMany(...)`, or a raw
+// `DELETE FROM` / `TRUNCATE` of `execution_logs`. A raw clear empties the rows that exist and nothing
+// else, so the next case inherits whatever the previous one had only scheduled; `clearFlowLog`
+// (tests/utils/flowlog.ts) settles first. Scope and the two files exempt are in biome.jsonc.
+language js;
+
+or {
+    JsCallExpression(callee = $callee) as $site where {
+        $callee <: r"[\s\S]*(?i:executionLog)\s*\.\s*(?i:deleteMany)"
+    },
+    or { JsStringLiteralExpression(), JsTemplateChunkElement() } as $site where {
+        $site <: r"[\s\S]*(?:(?i:DELETE)\s+(?i:FROM)|(?i:TRUNCATE)(?:\s+(?i:TABLE))?)\s+\x22?(?i:execution_logs)[\s\S]*"
+    }
+} where {
+    register_diagnostic(span = $site, message = "Clear the flow log with `clearFlowLog` (tests/utils/flowlog.ts), which settles pending writes first.")
+}

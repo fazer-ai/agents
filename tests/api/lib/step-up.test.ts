@@ -5,7 +5,6 @@ import {
   mockUser,
   setupPrismaMock,
 } from "@/tests/utils/prisma-mock";
-import { countInSrc } from "@/tests/utils/source-text";
 
 // Step-up is a property of the SESSION, and a Bearer API key has none: a key minted under a step-up
 // (`stepUpAt`) answers it by itself, rather than with its creator's password, which would tie the
@@ -122,44 +121,6 @@ describe("requireSession", () => {
       expect((err as AppError).translationKey).toBe(
         "errors.apiKeyRequiresSession",
       );
-    }
-  });
-});
-
-// The rule has one implementation. A route that spells `verifyPassword(` itself decides on its own
-// whether a key may pass, against the creator's row. The legitimate callers are the definition, and
-// the two places where a password IS the credential and no session exists yet: the login route, and
-// accepting an invitation into an existing account, which proves the account is the invitee's.
-describe("every step-up goes through confirmStepUp", () => {
-  test("verifyPassword( is called from the login paths and the helper only", async () => {
-    const found = await countInSrc(/\bverifyPassword\(/g);
-    const allowed = new Set([
-      "src/api/features/auth/auth.service.ts",
-      "src/api/features/auth/auth.controller.ts",
-      "src/api/features/invitations/invitation.service.ts",
-      "src/api/lib/step-up.ts",
-    ]);
-    const strays = Object.keys(found).filter((f) => !allowed.has(f));
-    expect(strays).toEqual([]);
-    // Control: the sweep can see a call at all, or an empty stray list proves nothing.
-    expect(found["src/api/lib/step-up.ts"]).toBe(1);
-  });
-
-  // The principal the helper reads is the one the boundary stamped (`stepUpAt` included). A route
-  // that builds `{ userId, actorType }` by hand has dropped the step-up on record, and every key
-  // reaching it, legacy or not, is asked the creator's password — or, with a different hand-built
-  // shape, none is. One spelling at the AuthUser seam (`stepUpPrincipalOf`), the context elsewhere.
-  test("every call site hands the helper the boundary's principal, never a hand-built one", async () => {
-    const calls = await countInSrc(/\bconfirmStepUp\(/g);
-    const whole = await countInSrc(
-      /\bconfirmStepUp\(\s*(?:ctx\b|stepUpPrincipalOf\()/g,
-    );
-    const sites = Object.entries(calls).filter(
-      ([file]) => file !== "src/api/lib/step-up.ts",
-    );
-    expect(sites.length).toBeGreaterThan(1);
-    for (const [file, n] of sites) {
-      expect([file, whole[file] ?? 0]).toEqual([file, n]);
     }
   });
 });

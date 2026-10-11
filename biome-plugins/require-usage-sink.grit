@@ -1,0 +1,12 @@
+// Refuses a model `.invoke(...)` whose option bag names `signal:` and not `callbacks`. The callbacks
+// are the usage sink: an invocation without them is a billed call the ledger never sees.
+language js;
+
+JsCallExpression(callee = $callee, arguments = $args) as $call where {
+    $callee <: r"[\s\S]*\.invoke",
+    $args <: contains JsObjectExpression() as $bag where {
+        $bag <: r"\{[^{}]*signal:[^{}]*\}",
+        not $bag <: r"[\s\S]*callbacks[\s\S]*"
+    },
+    register_diagnostic(span = $call, message = "Pass `callbacks` beside `signal`: they are the usage sink, and a model call without them is billed and never recorded.")
+}

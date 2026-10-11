@@ -1,0 +1,9 @@
+// Refuses a `send_${…}` template outside src/modules/documents/slug.ts (scoped in biome.jsonc). The
+// tool name is what the model is offered, what the grants editor shows and what the template modal
+// previews; `documentToolName` spells it once, and a hand-built copy drifts from it.
+language js;
+
+JsTemplateExpression() as $tpl where {
+    $tpl <: r"`send_\$\{[\s\S]*",
+    register_diagnostic(span = $tpl, message = "Build a document tool name with `documentToolName` (src/modules/documents/slug.ts).")
+}

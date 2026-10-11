@@ -292,7 +292,7 @@ export async function documentTemplateWriteProblem(
     if (problem) return problem;
   }
   const name =
-    // not-caller-input: wrapped by invalidDocumentTemplate, which names the rule that broke
+    // biome-ignore lint/plugin/require-parse-input: not caller input, wrapped by invalidDocumentTemplate, which names the rule that broke
     input.name !== undefined ? templateNameSchema.parse(input.name) : undefined;
   // Only CREATE derives a slug from the name; a rename keeps the slug it already has, because the
   // slug is a tool name an agent may already be granted. Deriving here on an update would refuse a
@@ -586,7 +586,7 @@ function parseNumberPrefix(value: unknown): string | null {
       reason: problem,
     });
   }
-  // not-caller-input: wrapped by invalidDocumentTemplate, which names the rule that broke
+  // biome-ignore lint/plugin/require-parse-input: not caller input, wrapped by invalidDocumentTemplate, which names the rule that broke
   return templateNumberPrefixSchema.parse(value ?? null);
 }
 
@@ -656,7 +656,7 @@ function parseTemplateDescription(value: unknown): string | null {
       { reason: problem },
     );
   }
-  // not-caller-input: wrapped by invalidDocumentTemplate, which names the rule that broke
+  // biome-ignore lint/plugin/require-parse-input: not caller input, wrapped by invalidDocumentTemplate, which names the rule that broke
   return templateDescriptionSchema.parse(value ?? null);
 }
 
@@ -667,7 +667,7 @@ function parseTemplateName(value: unknown): string {
       reason: problem,
     });
   }
-  // not-caller-input: wrapped by invalidDocumentTemplate, which names the rule that broke
+  // biome-ignore lint/plugin/require-parse-input: not caller input, wrapped by invalidDocumentTemplate, which names the rule that broke
   return templateNameSchema.parse(value);
 }
 

@@ -1,0 +1,11 @@
+// Refuses a zod `.parse(...)` in src/modules and src/api (scoped in biome.jsonc) outside
+// `parseInput`, the one place a ZodError becomes the 422 a caller can act on. A parse whose input is
+// not the caller's says why on the line above, as
+// `// biome-ignore lint/plugin/require-parse-input: not caller input, <why>`.
+language js;
+
+JsCallExpression(callee = JsStaticMemberExpression(object = $object, member = $member)) where {
+    $member <: "parse",
+    not $object <: or { `JSON`, `Number`, `Date` },
+    register_diagnostic(span = $member, message = "Parse caller input with `parseInput` (src/lib/parse-input.ts), which raises the 422. A parse of anything else carries `biome-ignore lint/plugin/require-parse-input: not caller input, <why>` on the line above.")
+}

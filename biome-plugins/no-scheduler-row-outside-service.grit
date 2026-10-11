@@ -1,0 +1,16 @@
+// Refuses creating a `scheduler_jobs` row outside src/modules/scheduler/service.ts (scoped in
+// biome.jsonc): `schedulerJob.create/createMany/upsert(...)` or a raw `INSERT INTO scheduler_jobs`.
+// A row's failure budget outlives the work that spent it, so whoever arms the row says what the re-arm
+// means, and `enqueueJob` makes that a required field.
+language js;
+
+or {
+    JsCallExpression(callee = $callee) as $site where {
+        $callee <: r"(?:[\s\S]*[^A-Za-z0-9_$])?schedulerJob\s*\.\s*(?:upsert|create|createMany)"
+    },
+    or { JsStringLiteralExpression(), JsTemplateChunkElement() } as $site where {
+        $site <: r"(?:[\s\S]*[^A-Za-z0-9_])?(?i:INSERT)\s+(?i:INTO)\s+(?i:scheduler_jobs)(?:[^A-Za-z0-9_][\s\S]*)?"
+    }
+} where {
+    register_diagnostic(span = $site, message = "Create a scheduler job row through `enqueueJob` (src/modules/scheduler/service.ts), which makes the caller say what a re-arm means.")
+}

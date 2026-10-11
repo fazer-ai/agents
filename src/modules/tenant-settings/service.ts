@@ -340,7 +340,7 @@ export async function updateEmbeddingSettings(
       // feature ships (configurable dimension + provider registry). Only the
       // credential is honored; provider/model/baseURL from the patch are ignored. Unlocking = restore
       // the `{ ...current, ...patch }` merge.
-      // not-caller-input: the STORED block merged with the patch, so a failure here is not necessarily the caller's
+      // biome-ignore lint/plugin/require-parse-input: not caller input, the STORED block merged with the patch, so a failure here is not necessarily the caller's
       return embeddingSettingsSchema.parse({
         ...EMBEDDING_DEFAULTS,
         credentialRef:
@@ -436,7 +436,7 @@ export async function updateLangfuse(
     },
     (raw) => {
       const live = parseLangfuseSettings(raw);
-      // not-caller-input: the STORED block merged with the patch, so a failure here is not necessarily the caller's
+      // biome-ignore lint/plugin/require-parse-input: not caller input, the STORED block merged with the patch, so a failure here is not necessarily the caller's
       return langfuseSettingsSchema.parse({
         enabled: input.enabled ?? live.enabled,
         // The live value when this request did not mention one, like every other field here.
@@ -504,7 +504,7 @@ export async function updateCompanySettings(
       },
     },
     (raw) =>
-      // not-caller-input: the STORED block merged with the patch; the patch's own fields are refused above with errors.invalidCompanyField
+      // biome-ignore lint/plugin/require-parse-input: not caller input, the STORED block merged with the patch; the patch's own fields are refused above with errors.invalidCompanyField
       companySettingsSchema.parse({ ...parseCompanySettings(raw), ...patch }),
   );
 }
@@ -560,7 +560,7 @@ export async function setCompanyLogoKey(
     async (raw) => {
       const current = parseCompanySettings(raw);
       await publish?.(current);
-      // not-caller-input: the STORED block merged with the patch, so a failure here is not necessarily the caller's
+      // biome-ignore lint/plugin/require-parse-input: not caller input, the STORED block merged with the patch, so a failure here is not necessarily the caller's
       return companySettingsSchema.parse({
         ...current,
         logoKey,
@@ -655,7 +655,7 @@ export async function updateSpendCeiling(
       const current = readSpendCeilingConfig(raw);
       // What is stored is the schema's output: the dollar fields and not the token ones, which is
       // how a save in dollars retires a block written in tokens (`legacyTokens`).
-      // not-caller-input: the STORED block merged with the patch, so a failure here is not necessarily the caller's
+      // biome-ignore lint/plugin/require-parse-input: not caller input, the STORED block merged with the patch, so a failure here is not necessarily the caller's
       const stored = spendCeilingSettingsSchema.parse({ ...current, ...patch });
       // ...unless the patch names no dollar field and the block is still in tokens: a partial API
       // patch (say, only the sentence) would otherwise store a dollar block of synthesized zeroes and drop

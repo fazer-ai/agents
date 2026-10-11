@@ -236,7 +236,7 @@ act ⇔ status == "pending"
     ∧ ¬(assignee_type == "AgentBot" ∧ assigneeId is known ∧ assigneeId != ourAgentBotId)
 ```
 
-The third line is a **pair**, and passing half of it buys the first two lines only. `ourAgentBotId` without an `assigneeId` to compare against leaves the id unknown, so the clause cannot fire and every `AgentBot` reads as ours — silently, since the call still looks strict. Three scoped reads shipped that way (#210). Every caller that supplies `ourAgentBotId` therefore selects `assignee_id` too, and a test walks the source to hold that (`tests/modules/chatwoot-receiver.test.ts`); the other half, that the column reaches the literal, is a type error when the select omits it.
+The third line is a **pair**, and passing half of it buys the first two lines only. `ourAgentBotId` without an `assigneeId` to compare against leaves the id unknown, so the clause cannot fire and every `AgentBot` reads as ours — silently, since the call still looks strict. Three scoped reads shipped that way (#210). Every caller that supplies `ourAgentBotId` therefore selects `assignee_id` too, and the lint rule `biome-plugins/strict-ownership-passes-assignee.grit` holds that; the other half, that the column reaches the literal, is a type error when the select omits it.
 
 ## Observer binding: watching an inbox somebody else answers (issue #476)
 

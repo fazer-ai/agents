@@ -1,0 +1,9 @@
+// Refuses `outcome: "taken_over"` or `outcome: "ownership_lost"` outside
+// src/modules/chatwoot/gate-close.ts (scoped in biome.jsonc). The two outcomes are a vocabulary an
+// operator filters the log by, so every gate gets them from `describeClosedGate`.
+language js;
+
+or { JsPropertyObjectMember(), TsPropertySignatureTypeMember() } as $site where {
+    $site <: r"outcome\s*:\s*[\x22'](?:taken_over|ownership_lost)[\x22'][\s\S]*",
+    register_diagnostic(span = $site, message = "The gate-close outcomes come from `describeClosedGate` (src/modules/chatwoot/gate-close.ts), never a literal of their own.")
+}

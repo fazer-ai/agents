@@ -47,7 +47,7 @@ import {
   searchKnowledge,
   updateKnowledgeBase,
 } from "@/modules/rag/service";
-import { codeOnly, withoutComments } from "@/tests/utils/source-text";
+import { withoutComments } from "@/tests/utils/source-text";
 
 // The console's knowledge/RAG, experiments, integrations and documents controllers hand their modules
 // the CALLER's context, never a bare tenant id: `runScopedOn` verifies an unknown tenant only for a
@@ -339,63 +339,6 @@ describe.skipIf(!dbUp)(
     });
   },
 );
-
-// The half a table cannot cover: whether the next route added to one of these controllers unwraps
-// the request's context back down to an id (as a `bigint` helper or an inline cast). Keyed on the
-// TRANSPORT, not a module path: modules legitimately keep `sysCtx` for internal callers (the graph,
-// the ingest job, the scheduler carry an id read from a row), so sweeping `src/modules/**` would
-// sweep the wrong thing.
-export function handsOutABareTenantId(source: string): boolean {
-  // NOTE: a helper that unwraps the request's context down to its id, so every route below it can
-  // pass the id on.
-  if (/\):\s*bigint\s*\{[\s\S]{0,300}?\breturn\s+\w+\.tenantId;/.test(source)) {
-    return true;
-  }
-  // NOTE: the same unwrapping written inline at the call. In a controller the context always comes
-  // from the request, so the cast always throws the provenance away: no benign spelling exists here.
-  return /\.tenantId as bigint/.test(source);
-}
-
-describe("no REST controller hands a module a bare tenant id", () => {
-  const HELPER = `function tenantId(ctx: TenantContext | null): bigint {
-  if (!ctx) throw new ForbiddenError();
-  if (ctx.tenantId === null) throw new TenantTargetRequiredError();
-  return ctx.tenantId;
-}`;
-  const INLINE = `const created = await createIntegrationInstance(
-        ctx.tenantId as bigint,
-        b,
-      );`;
-
-  // A sweep that finds nothing passes whether or not it works, so both shapes are shown to be
-  // caught, and the shape that REPLACED them is shown not to be.
-  test("the predicate catches both shapes that were there", () => {
-    expect(handsOutABareTenantId(HELPER)).toBe(true);
-    expect(handsOutABareTenantId(INLINE)).toBe(true);
-    expect(
-      handsOutABareTenantId(`function ctxOrThrow(ctx: TenantContext | null): TenantContext {
-  if (!ctx) throw new ForbiddenError();
-  if (ctx.tenantId === null) throw new TenantTargetRequiredError();
-  return ctx;
-}`),
-    ).toBe(false);
-    // A row's id is not a selector: this is the case the role predicate exists to let through.
-    expect(handsOutABareTenantId("await getTenantName(user.tenantId)")).toBe(
-      false,
-    );
-  });
-
-  test("no file under src/api does", async () => {
-    const { Glob } = await import("bun");
-    const offenders: string[] = [];
-    for await (const rel of new Glob("**/*.ts").scan("src/api")) {
-      // Through the scan, so prose naming the shape is not counted as one.
-      const src = codeOnly(await Bun.file(`src/api/${rel}`).text());
-      if (handsOutABareTenantId(src)) offenders.push(rel);
-    }
-    expect(offenders).toEqual([]);
-  });
-});
 
 // The negative control for the two exemptions at the bottom of this file, and the reason they are
 // exemptions rather than routes nobody got around to converting: a FLEET operation answers the

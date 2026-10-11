@@ -58,6 +58,7 @@ export function SendImageFields({
           'One per line, e.g. cdn.minhaloja.com.br. Start with "*." to cover a domain and its subdomains (*.minhaloja.com.br). Paste a full URL and only its host is kept.',
         )}
       >
+        {/* biome-ignore lint/plugin/require-textarea-cap: one host per line, bounded by entry count, so a dropped entry shows as a missing row */}
         <Textarea
           value={sendImage.allowedHosts}
           onChange={(e) => setSendImage({ allowedHosts: e.target.value })}

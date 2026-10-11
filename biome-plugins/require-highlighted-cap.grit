@@ -1,0 +1,11 @@
+// Refuses a highlighted editor in the agent editor (src/client/pages/agents, scoped in biome.jsonc)
+// that clamps its value and does not declare the cap: a `*_MAX` inside the element (every cap in
+// src/modules/agents/text-caps.ts is spelled that way) with no `maxLength`.
+language js;
+
+JsxSelfClosingElement(name = $name) as $el where {
+    $name <: r"Highlighted(?:PromptEditor|TemplateField)",
+    $el <: r"[\s\S]*[^A-Za-z0-9_$][A-Z][A-Z0-9_]*_MAX[^A-Za-z0-9_$][\s\S]*",
+    not $el <: r"[\s\S]*maxLength=[\s\S]*",
+    register_diagnostic(span = $el, message = "This editor clamps at a `*_MAX` cap, so it declares the same cap with `maxLength`.")
+}

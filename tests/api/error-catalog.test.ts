@@ -76,11 +76,6 @@ function flatten(obj: unknown, prefix = ""): Set<string> {
 const API = flatten(apiEn);
 const CLIENT = flatten(clientEn);
 
-// Every `as ErrorTranslationKey` in `src/`, by file. A cast is the one way to hand the wire a key
-// the catalog does not have, so each one is listed with the reason it is allowed to exist. Empty on
-// purpose right now: production code has no reason to assert a key it did not spell.
-const ALLOWED_CASTS: Record<string, string> = {};
-
 // A key whose two languages are the same STRING. A proper noun or a bare protocol word could
 // legitimately land here; nothing has yet, and an entry is how a future one gets argued rather than
 // assumed.
@@ -384,26 +379,6 @@ function keysThatCannotCarryTheirReason(
 const SAY_LESS_GRANDFATHERED: readonly string[] = [];
 
 describe("the error catalog cannot be bypassed", () => {
-  // `src` holds no cast, so a detector matching NOTHING would pass unchanged: the predicate is
-  // proven against a body that contains one before it is pointed at the tree.
-  const castsIn = (body: string): boolean =>
-    body.includes("as ErrorTranslationKey");
-
-  test("the cast detector detects a cast", () => {
-    expect(castsIn('const k = "errors.x" as ErrorTranslationKey;')).toBe(true);
-    expect(castsIn('const k: ErrorTranslationKey = "errors.x";')).toBe(false);
-  });
-
-  test("no production code casts its way past ErrorTranslationKey", async () => {
-    const offenders: string[] = [];
-    for (const f of await sourceFiles("src")) {
-      if (!castsIn(await readFile(f, "utf8"))) continue;
-      if (ALLOWED_CASTS[f]) continue;
-      offenders.push(f);
-    }
-    expect(offenders).toEqual([]);
-  });
-
   // The spelling rule. A literal that LOOKS like a key and resolves to nothing is a typo or a
   // token one side invented. These three are stored values, not keys: `KnowledgeDocument.error` rows
   // may still carry the old dotted spelling, which the console maps onto today's tokens
@@ -496,8 +471,7 @@ describe("the error catalog cannot be bypassed", () => {
   // NOTE: a ledger is subtracted from a set DERIVED from the tree, so appending to it both silences
   // a new offender and satisfies the stale-waiver test. The size is the only fact the tree cannot
   // supply (tests/utils/ledger.ts).
-  test("the cast and legacy-token ledgers may only shrink", () => {
-    expectWaiverLedger("ALLOWED_CASTS", ALLOWED_CASTS, 0);
+  test("the legacy-token ledger may only shrink", () => {
     expectWaiverLedger("STORED_LEGACY_TOKENS", STORED_LEGACY_TOKENS, 3);
   });
 });

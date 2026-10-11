@@ -81,6 +81,11 @@ const ROWS: Row[] = [
     mentions: ["monitoring.debounce.windowSeconds", '"ten"'],
   },
   {
+    name: "a value outside a pattern",
+    error: () => refusalOf({ stt: { language: "portuguese" } }),
+    mentions: ["stt.language", '"portuguese"'],
+  },
+  {
     name: "the signature switch",
     error: () => new InvalidSignatureSwitchError("string"),
     mentions: ["signature.enabled", "string"],

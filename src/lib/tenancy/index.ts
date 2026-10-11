@@ -22,6 +22,7 @@ export {
   asSuperAdminOn,
   runScoped,
   runScopedOn,
+  runWithinBudgetOn,
 } from "./multi-tenant";
 
 import { parseDbId } from "@/lib/db-id";

@@ -6,6 +6,7 @@ import {
   TenantTargetRequiredError,
 } from "@/lib/errors";
 import type { ScopedDb, TenantContext } from "./context";
+import { untilDeadline } from "./deadline";
 import { FLEET_ROLE_FN } from "./fleet-role";
 
 // The closure-extended `$extends` client is not the bare PrismaClient type, but it
@@ -139,6 +140,10 @@ export interface TxBudget {
   // Time the transaction may stay open once it has one. Every section in here is DB-only work by the
   // rule above, so this is a ceiling on a pathology, not a budget anything should approach.
   timeout: number;
+  // When the caller's budget started before the transaction (a request that waited for its
+  // connection), the instant it runs out: each statement of the transaction then gets only what is
+  // left until it (./deadline.ts), rather than a fresh `timeout`.
+  deadline?: number;
 }
 
 export const SCOPED_TX_OPTIONS: TxBudget = {
@@ -158,6 +163,27 @@ function budgetSql(budget: TxBudget): Prisma.Sql {
   return Prisma.sql`set_config('statement_timeout', ${String(budget.timeout)}, true)`;
 }
 
+// Under a deadline, every statement gets only what is left of it, not the time left when the
+// transaction opened.
+function withinBudget<D extends object>(db: D, budget: TxBudget): D {
+  return budget.deadline === undefined
+    ? db
+    : untilDeadline(db, budget.deadline);
+}
+
+// A transaction on a table outside tenancy (the session lookup on `users`), under a budget: what
+// `runScopedOn` gives a scoped read, without the scope.
+export async function runWithinBudgetOn<T>(
+  base: Pick<PrismaClient, "$transaction">,
+  budget: TxBudget,
+  fn: (db: Prisma.TransactionClient) => Promise<T>,
+): Promise<T> {
+  return base.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT ${budgetSql(budget)}`;
+    return fn(withinBudget(tx, budget));
+  }, scopedTxOptions(budget));
+}
+
 let maxWaitForTest: number | undefined;
 
 /**
@@ -168,10 +194,15 @@ export function setScopedTxMaxWaitForTest(ms: number | undefined): void {
   maxWaitForTest = ms;
 }
 
-function scopedTxOptions(budget: TxBudget): TxBudget {
-  return maxWaitForTest === undefined
-    ? budget
-    : { ...budget, maxWait: maxWaitForTest };
+// What Prisma is handed: the two budgets alone (a deadline is this module's, not Prisma's option).
+function scopedTxOptions(budget: TxBudget): {
+  maxWait: number;
+  timeout: number;
+} {
+  return {
+    maxWait: maxWaitForTest ?? budget.maxWait,
+    timeout: budget.timeout,
+  };
 }
 
 export async function runScopedOn<T>(
@@ -179,9 +210,6 @@ export async function runScopedOn<T>(
   ctx: TenantContext,
   fn: (db: ScopedDb) => Promise<T>,
   budget: TxBudget = SCOPED_TX_OPTIONS,
-  // Called when the transaction has its connection, before any statement: where a caller's own
-  // deadline for the transaction starts.
-  opened?: () => void,
 ): Promise<T> {
   if (ctx.tenantId === null) {
     throw new TenantTargetRequiredError();
@@ -189,11 +217,10 @@ export async function runScopedOn<T>(
   const tenantId = ctx.tenantId;
   const extended = base.$extends(makeScopedExtension(tenantId));
   return extended.$transaction(async (tx) => {
-    opened?.();
     // transaction-local GUC: RLS policies scope every statement to this tenant; resets
     // on commit/rollback so it cannot leak to the next request on a pooled connection.
     await tx.$executeRaw`SELECT set_config('app.tenant_id', ${String(tenantId)}, true), ${budgetSql(budget)}`;
-    const db = tx as unknown as ScopedDb;
+    const db = withinBudget(tx as unknown as ScopedDb, budget);
     if (ctx.role === "SUPER_ADMIN") await requireTenantExists(db, tenantId);
     return fn(db);
   }, scopedTxOptions(budget));
@@ -222,7 +249,7 @@ export async function asSuperAdminOn<T>(
 ): Promise<T> {
   return base.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT set_config('role', ${Prisma.raw(FLEET_ROLE_FN)}, true), ${budgetSql(budget)}`;
-    return fn(tx as unknown as ScopedDb);
+    return fn(withinBudget(tx as unknown as ScopedDb, budget));
   }, scopedTxOptions(budget));
 }
 

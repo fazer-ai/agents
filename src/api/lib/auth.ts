@@ -1,7 +1,7 @@
 import { createHmac, randomUUID } from "node:crypto";
 import { jwt } from "@elysiajs/jwt";
 import { Elysia } from "elysia";
-import type { UserRole } from "@/../generated/prisma/client";
+import type { Prisma, UserRole } from "@/../generated/prisma/client";
 import { closeSessionSockets } from "@/api/features/realtime/realtime.service";
 import { translate } from "@/api/lib/i18n";
 import logger from "@/api/lib/logger";
@@ -15,9 +15,13 @@ import {
   TenantSelectorRefusedError,
   UnauthorizedError,
 } from "@/lib/errors";
-import { roleAtLeast, type TxBudget } from "@/lib/tenancy";
+import { roleAtLeast, runWithinBudgetOn, type TxBudget } from "@/lib/tenancy";
 import { type Membership, resolveMembership } from "@/lib/tenancy/membership";
-import { metricsBudget } from "@/modules/analytics/budget";
+import {
+  metricsBudget,
+  metricsDeadline,
+  metricsTooSlow,
+} from "@/modules/analytics/budget";
 import { verifyApiKey } from "@/modules/api-keys/verify";
 
 const COOKIE_NAME = "fazerai_auth_token";
@@ -200,7 +204,7 @@ export interface EndedSessionRef {
 // accordingly. Used only when no session cookie is present (the cookie path is unchanged).
 async function apiKeyAuthUser(
   authHeader: string | undefined,
-  pool: { db: typeof mainPrisma; budget?: TxBudget },
+  pool: AuthPool,
 ): Promise<AuthUser | null> {
   if (typeof authHeader !== "string" || !authHeader.startsWith("Bearer ")) {
     return null;
@@ -213,7 +217,7 @@ async function apiKeyAuthUser(
   } catch (error) {
     // NOTE: transient, as in the session lookups below: a full pool says nothing about the key.
     logger.warn({ error }, "API key lookup failed; treating as transient");
-    throw new ServiceUnavailableError();
+    throw pool.unavailable();
   }
   if (!principal) return null;
   return {
@@ -245,13 +249,130 @@ function sessionCookieOptions() {
 // read through a pool of their own (./prisma-metrics.ts) so the screen still answers while turns hold
 // every connection of the main one, and that only holds if the session or key lookup in front of them
 // does not need the main pool either; on it, the lookup keeps to the metrics budget.
-export function authPoolFor(path: string): {
+// The lookup spends the request's one metrics budget, and a lookup that failed once that budget was
+// spent (no metrics connection in time) is refused the way the read would have been.
+export interface AuthPool {
   db: typeof mainPrisma;
   budget?: TxBudget;
-} {
-  return path === "/api/v1/metrics" || path.startsWith("/api/v1/metrics/")
-    ? { db: metricsPrisma, budget: metricsBudget() }
-    : { db: mainPrisma };
+  // Runs a session lookup through this pool, under its budget when it has one.
+  lookup: <T>(fn: (db: Prisma.TransactionClient) => Promise<T>) => Promise<T>;
+  // The refusal for a lookup that failed: transient, never a signed-out session.
+  unavailable: () => Error;
+}
+
+export function authPoolFor(path: string): AuthPool {
+  if (path !== "/api/v1/metrics" && !path.startsWith("/api/v1/metrics/")) {
+    return {
+      db: mainPrisma,
+      lookup: (fn) => fn(mainPrisma),
+      unavailable: () => new ServiceUnavailableError(),
+    };
+  }
+  const deadline = metricsDeadline();
+  const budget = metricsBudget(deadline);
+  return {
+    db: metricsPrisma,
+    budget,
+    lookup: (fn) => runWithinBudgetOn(metricsPrisma, budget, fn),
+    unavailable: () =>
+      Date.now() >= deadline
+        ? metricsTooSlow(deadline)
+        : new ServiceUnavailableError(),
+  };
+}
+
+const SESSION_USER = {
+  id: true,
+  email: true,
+  name: true,
+  googleId: true,
+  isSuperAdmin: true,
+  passwordHash: true,
+} as const;
+const MEMBERSHIP = { tenantId: true, role: true, createdAt: true } as const;
+
+// A nested relation is a SQL statement of its own under one Prisma call, and a deadline is set per
+// call (src/lib/tenancy/deadline.ts), so under one each relation of a session read is a call of its
+// own, bounded by what is left. Without a deadline the read is one call, as the main pool's always was.
+async function endedSessionsOf(
+  db: Prisma.TransactionClient,
+  userId: bigint,
+  payload: JWTPayload,
+): Promise<{ endedSessions?: { jti: string }[] }> {
+  if (!payload.jti) return {};
+  return {
+    endedSessions: await db.endedSession.findMany({
+      where: { userId, jti: payload.jti },
+      select: { jti: true },
+      take: 1,
+    }),
+  };
+}
+
+// The password fingerprint and the ended-session mark a session's identity check reads.
+export async function findSessionPassword(
+  db: Prisma.TransactionClient,
+  userId: bigint,
+  payload: JWTPayload,
+  underDeadline: boolean,
+): Promise<{
+  passwordHash: string | null;
+  endedSessions?: { jti: string }[];
+} | null> {
+  if (!underDeadline) {
+    return db.user.findUnique({
+      where: { id: userId },
+      select: { passwordHash: true, ...endedSessionSelect(payload) },
+    });
+  }
+  const user = await db.user.findUnique({
+    where: { id: userId },
+    select: { passwordHash: true },
+  });
+  if (!user) return null;
+  return { ...user, ...(await endedSessionsOf(db, userId, payload)) };
+}
+
+// The person behind a session, with their memberships and the ended-session mark.
+export async function findSessionUser(
+  db: Prisma.TransactionClient,
+  userId: bigint,
+  payload: JWTPayload,
+  underDeadline: boolean,
+): Promise<{
+  id: bigint;
+  email: string;
+  name: string | null;
+  googleId: string | null;
+  isSuperAdmin: boolean;
+  passwordHash: string | null;
+  memberships: Membership[];
+  endedSessions?: { jti: string }[];
+} | null> {
+  if (!underDeadline) {
+    return db.user.findUnique({
+      where: { id: userId },
+      select: {
+        ...SESSION_USER,
+        memberships: { select: MEMBERSHIP },
+        ...endedSessionSelect(payload),
+      },
+    });
+  }
+  const user = await db.user.findUnique({
+    where: { id: userId },
+    select: SESSION_USER,
+  });
+  if (!user) return null;
+  const memberships = await db.tenantUser.findMany({
+    where: { userId },
+    select: MEMBERSHIP,
+  });
+  return {
+    ...user,
+    memberships,
+    ...(await endedSessionsOf(db, userId, payload)),
+  };
 }
 
 // The requests that reached a session gate, marked before their query and body are validated.
@@ -407,17 +528,22 @@ export const authPlugin = new Elysia({ name: "auth" })
           passwordHash: string | null;
           endedSessions?: { jti: string }[];
         } | null;
+        const pool = authPoolFor(path);
         try {
-          row = await authPoolFor(path).db.user.findUnique({
-            where: { id: userId },
-            select: { passwordHash: true, ...endedSessionSelect(payload) },
-          });
+          row = await pool.lookup((db) =>
+            findSessionPassword(
+              db,
+              userId,
+              payload,
+              pool.budget?.deadline !== undefined,
+            ),
+          );
         } catch (error) {
           logger.warn(
             { error },
             "Session user lookup failed; treating as transient",
           );
-          throw new ServiceUnavailableError();
+          throw pool.unavailable();
         }
         if (
           !row ||
@@ -489,28 +615,22 @@ export const authPlugin = new Elysia({ name: "auth" })
           memberships: Membership[];
           endedSessions?: { jti: string }[];
         } | null;
+        const pool = authPoolFor(path);
         try {
-          row = await authPoolFor(path).db.user.findUnique({
-            where: { id: userId },
-            select: {
-              id: true,
-              email: true,
-              name: true,
-              googleId: true,
-              isSuperAdmin: true,
-              passwordHash: true,
-              memberships: {
-                select: { tenantId: true, role: true, createdAt: true },
-              },
-              ...endedSessionSelect(payload),
-            },
-          });
+          row = await pool.lookup((db) =>
+            findSessionUser(
+              db,
+              userId,
+              payload,
+              pool.budget?.deadline !== undefined,
+            ),
+          );
         } catch (error) {
           logger.warn(
             { error },
             "Auth user lookup failed; treating as transient",
           );
-          throw new ServiceUnavailableError();
+          throw pool.unavailable();
         }
 
         if (!row) return null;

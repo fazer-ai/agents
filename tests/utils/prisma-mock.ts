@@ -100,10 +100,16 @@ export function asPersonRow(
   };
 }
 
+// The memberships of the person the last read returned: a read that loads them in a call of their
+// own (the session lookup under a metrics deadline, src/api/lib/auth.ts) gets the same ones.
+let lastPerson: MockPersonRow | null | undefined;
+
 const personRead =
   <A extends unknown[]>(fn: (...args: A) => Promise<MockUser>) =>
-  async (...args: A) =>
-    asPersonRow(await fn(...args));
+  async (...args: A) => {
+    lastPerson = asPersonRow(await fn(...args));
+    return lastPerson;
+  };
 
 interface PrismaMockClient {
   user: {
@@ -118,7 +124,13 @@ interface PrismaMockClient {
     findFirst: typeof mockTenantFindFirst;
     create: typeof mockTenantCreate;
   };
-  endedSession: { count: typeof mockEndedSessionCount };
+  endedSession: {
+    count: typeof mockEndedSessionCount;
+    findMany: (...args: unknown[]) => Promise<unknown>;
+  };
+  tenantUser: {
+    findMany: (...args: unknown[]) => Promise<unknown>;
+  };
   $queryRaw: typeof mockQueryRaw;
   $executeRaw: typeof mockExecuteRaw;
   $transaction: <T>(fn: (tx: PrismaMockClient) => Promise<T>) => Promise<T>;
@@ -142,7 +154,14 @@ export const prismaMock: PrismaMockClient = {
     findFirst: mockTenantFindFirst,
     create: mockTenantCreate,
   },
-  endedSession: { count: mockEndedSessionCount },
+  // The session's own ended-session read, under a metrics deadline (src/api/lib/auth.ts): not ended.
+  endedSession: {
+    count: mockEndedSessionCount,
+    findMany: () => Promise.resolve([]),
+  },
+  tenantUser: {
+    findMany: () => Promise.resolve(lastPerson?.memberships ?? []),
+  },
   $queryRaw: mockQueryRaw,
   $executeRaw: mockExecuteRaw,
   // NOTE: Interactive-transaction form only: invoke the callback with the same

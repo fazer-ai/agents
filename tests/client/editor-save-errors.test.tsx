@@ -418,6 +418,46 @@ describe("every save that writes the agent shows what the server said", () => {
     });
   }
 
+  // The questions and rules have a Save of their own on their tab (agents#1224), and its refusal reaches
+  // the same banner as every other form's.
+  test("decisions: the server's sentence, and the fallback when nothing answered", async () => {
+    const stub = stubEditorApi({
+      mode: "monitoring",
+      settings: {
+        monitoring: {
+          engine: "decisions",
+          decisions: {
+            provider: "typesafe",
+            credentialRef: "vault:12",
+            questions: [
+              { name: "pede_reembolso", type: "yes_no", instructions: "Pede?" },
+            ],
+            rules: [],
+          },
+        },
+      },
+    });
+    await renderEditor(stub, "decisions");
+    stub.override = (method, p) => {
+      if (method !== "GET" && isAgent(stub, p)) {
+        return json({ error: "Refused by the server." }, 422);
+      }
+    };
+    save();
+    await waitFor(() =>
+      expect(bannerRows()).toEqual(["Refused by the server."]),
+    );
+    expect(onScreen("Refused by the server.")).toBe(1);
+
+    stub.override = (method, p) => {
+      if (method !== "GET" && isAgent(stub, p)) throw new TypeError("offline");
+    };
+    save();
+    await waitFor(() =>
+      expect(bannerRows()).toEqual(["Could not save the agent."]),
+    );
+  });
+
   test("the Redirect save is settled by its own success", async () => {
     const stub = stubEditorApi({});
     refuseNextPatch(stub, { error: "Refused by the server." });

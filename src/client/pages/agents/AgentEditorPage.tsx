@@ -3741,7 +3741,7 @@ function AgentEditor() {
         };
     const [request] = generalSaveRequests(dirty.general, dirty.decisions);
     if (request === "identity+setup") return saveDecisions(force, identity);
-    if (dirty.general) {
+    if (request === "identity") {
       const ok = await saveAgent(
         identity,
         "general",

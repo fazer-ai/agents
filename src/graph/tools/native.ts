@@ -2754,11 +2754,17 @@ function openCaseInInboxTool(ctx: ToolCtx) {
           result.attachments
         ) {
           const a = result.attachments;
-          if (a.carried + a.skipped + a.failed > 0 || a.unread || a.truncated) {
+          if (
+            a.carried + a.skipped + a.failed > 0 ||
+            a.unread ||
+            a.truncated ||
+            a.calledOff
+          ) {
+            const notCarried = a.notCarried ?? [];
             ctx.onSideEffectError?.({
               tool: OPEN_CASE_TOOL_NAME,
               phase: "case_attachments",
-              ...(a.failed > 0 || a.unread || a.truncated
+              ...(a.failed > 0 || a.unread || a.truncated || a.calledOff
                 ? { level: "warn" as const }
                 : { status: "ok" as const }),
               detail: {
@@ -2768,11 +2774,14 @@ function openCaseInInboxTool(ctx: ToolCtx) {
                 failed: a.failed,
                 ...(a.unread ? { unread: a.unread } : {}),
                 ...(a.truncated ? { truncated: true } : {}),
+                ...(a.calledOff ? { calledOff: true, notCarried } : {}),
               },
               err: new Error(
                 a.unread
                   ? `customer files not carried: the ${a.unread === "attendance" ? "attendance boundary" : "case"} could not be read`
-                  : `customer files: ${a.carried} carried, ${a.skipped} skipped, ${a.failed} failed${a.truncated ? "; the walk stopped at its page limit, older files were not seen" : ""}`,
+                  : a.calledOff
+                    ? `customer files not carried: the run was called off before the upload${notCarried.length > 0 ? ` (attachments ${notCarried.join(", ")})` : ""}`
+                    : `customer files: ${a.carried} carried, ${a.skipped} skipped, ${a.failed} failed${a.truncated ? "; the walk stopped at its page limit, older files were not seen" : ""}`,
               ),
             });
           }

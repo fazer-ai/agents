@@ -54,6 +54,9 @@ export interface CarryOutcome {
   // be read, or the run was called off before the note.
   unread?: "attendance" | "case";
   calledOff?: boolean;
+  // On `calledOff`: the files that came down and were about to be posted, by attachment id, oldest
+  // first. A failed download is not here: it stays counted in `failed`.
+  notCarried?: number[];
   // The walk stopped at its page limit, so older files were never seen.
   truncated?: boolean;
 }
@@ -358,7 +361,12 @@ async function carryLocked(
   }
 
   if (input.stillWanted && !(await input.stillWanted())) {
-    return { carried: 0, skipped: 0, failed: 0, calledOff: true };
+    return {
+      ...outcome,
+      carried: 0,
+      calledOff: true,
+      notCarried: files.map((f) => f.candidate.attachmentId),
+    };
   }
 
   const originUrl = client.conversationUrl(input.originConversationId);

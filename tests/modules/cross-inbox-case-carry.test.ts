@@ -624,15 +624,23 @@ describe("carryCaseAttachments", () => {
     });
   });
 
-  test("a run called off before the note writes nothing", async () => {
+  test("a run called off before the note writes nothing, and names the files it did not carry", async () => {
     const f = fake({
-      messages: [{ id: 1, createdAt: 1, files: [{ id: 11 }] }],
+      messages: [
+        { id: 1, createdAt: 1, files: [{ id: 11 }, { id: 12 }] },
+        { id: 2, createdAt: 2, files: [{ id: 13 }] },
+      ],
+      download: { 12: "fail" },
     });
     const out = await carryCaseAttachments(
       f.client,
       carryInput({}, { stillWanted: async () => false }),
     );
     expect(out?.calledOff).toBe(true);
+    // The two that came down and were about to be posted; the failed download stays a failure.
+    expect(out?.notCarried).toEqual([11, 13]);
+    expect(out?.failed).toBe(1);
+    expect(out?.carried).toBe(0);
     expect(uploads(f.calls)).toHaveLength(0);
     expect(
       f.calls.some((c) => c.fn === "setConversationCustomAttributes"),

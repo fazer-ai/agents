@@ -4339,6 +4339,62 @@ describe("carrying the customer's files (issue #1128)", () => {
     expect(line?.detail).toMatchObject({ carried: 0, truncated: true });
   });
 
+  test("a carry called off after the files came down is a warn line naming the reason and the files left behind", async () => {
+    const f = fakeChatwoot({
+      originRows: [fileRow(1, [75]), fileRow(2, [76])],
+    });
+    // The customer writes while the files are coming down: the turn's fence answers no from then on.
+    let wanted = true;
+    const client = {
+      ...f.client,
+      muted: false,
+      downloadAttachment: async (url: string) => {
+        wanted = false;
+        return f.client.downloadAttachment(url);
+      },
+    } as unknown as ChatwootClient;
+    const reports: Array<{
+      phase: string;
+      detail?: Record<string, unknown>;
+      level?: string;
+      err?: Error;
+    }> = [];
+    const [t] = buildNativeTools(
+      {
+        client,
+        conversationId: 7,
+        stillWanted: async () => wanted,
+        crossInboxCase: {
+          config: {
+            ...CROSS_INBOX_CASE_DEFAULTS,
+            targetInboxId: 40,
+            carryAttachments: {
+              mode: "conversation",
+              fileTypes: ["file"],
+              maxFiles: 5,
+            },
+          },
+          contactId: 5,
+        },
+        onSideEffectError: (e) => reports.push(e),
+      },
+      ["open_case_in_inbox"],
+    );
+    if (!t) throw new Error("tool not built");
+    await t.invoke({ reason: "cliente mandou o comprovante" });
+    expect(f.calls.some((c) => c.fn === "sendFilesAsAdmin")).toBe(false);
+    const line = reports.find((r) => r.phase === "case_attachments");
+    expect(line?.level).toBe("warn");
+    expect(line?.detail).toMatchObject({
+      caseId: 100,
+      carried: 0,
+      calledOff: true,
+      notCarried: [75, 76],
+    });
+    expect(line?.err?.message).toContain("called off");
+    expect(line?.err?.message).toContain("75, 76");
+  });
+
   test("a carry that went through is an ok line, one that failed a warn error line", () => {
     const ok = sideEffectFlowEvent({
       tool: "open_case_in_inbox",

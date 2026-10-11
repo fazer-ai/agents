@@ -204,6 +204,9 @@ export function CodeToolEditModal({
     setFormError(null);
     setLoadError(false);
     setSyntaxWarnings([]);
+    // NOTE: A save from a previous opening may still be out, and its `finally` is fenced to that opening,
+    // so it can no longer clear the flag this one reads.
+    setSaving(false);
     const payloadId = modal.payload?.id;
     // This opening, told apart from the next one. The GET below outlives the dialog it was started
     // for: close it while the request is out, reopen on another tool (or on create), and the old

@@ -26,6 +26,7 @@ import {
   payloadOfCodeTool,
   starterCode,
 } from "@/client/pages/resources/CodeToolEditModal";
+import { until } from "@/tests/utils/poll";
 
 // The dominant pattern in this suite: pure-function tests over the exported form helpers, plus one
 // happy-dom render that proves the load-bearing UI rule — an invalid body warns but never disables
@@ -827,4 +828,90 @@ test("the mirror of CodeMirror's platform rule, at the edges", () => {
     expect([name, isMacLike(nav(over))]).toEqual([name, want]);
   }
   expect(isMacLike(undefined)).toBe(false);
+});
+
+// A save the operator walked away from: Escape while the request is out asks to discard, Discard
+// closes, and the answer arrives after. The next opening is a fresh form, so Cancel works there.
+test("a save discarded mid-flight leaves the next opening able to cancel", async () => {
+  const realFetch = globalThis.fetch;
+  let answer: (r: Response) => void = () => {};
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const href =
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.href
+          : input.url;
+    if (
+      href.includes("/code-tools") &&
+      (init?.method ?? "GET").toUpperCase() === "POST"
+    ) {
+      return new Promise<Response>((resolve) => {
+        answer = resolve;
+      });
+    }
+    return realFetch(input as RequestInfo, init);
+  }) as typeof fetch;
+  try {
+    let abandonedSaved = false;
+    function SavedHarness() {
+      const modal = useModalController<{ id?: string }>();
+      return (
+        <ToastProvider>
+          <button type="button" onClick={() => modal.open({})}>
+            open
+          </button>
+          <CodeToolEditModal
+            modal={modal}
+            onSaved={() => {
+              abandonedSaved = true;
+            }}
+          />
+        </ToastProvider>
+      );
+    }
+    render(<SavedHarness />);
+    fireEvent.click(screen.getByText("open"));
+    const label = document.body.querySelector("input") as HTMLInputElement;
+    fireEvent.change(label, { target: { value: "Look up CPF" } });
+    fireEvent.change(descriptionField(), {
+      target: { value: "a description" },
+    });
+    setCode("return input.cpf;");
+    fireEvent.click(screen.getByText("Save").closest("button") as HTMLElement);
+
+    const dialog = document.body.querySelector(
+      '[role="dialog"]',
+    ) as HTMLElement;
+    dialog.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Escape",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await waitFor(() =>
+      expect(document.body.textContent).toContain("Discard changes?"),
+    );
+    fireEvent.click(screen.getByText("Discard"));
+    await waitFor(() =>
+      expect(document.body.textContent?.includes("Look up CPF")).toBe(false),
+    );
+
+    await act(async () => {
+      answer(
+        new Response(JSON.stringify({ tool: codeTool(), warnings: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+      await until("the abandoned save to answer", () => abandonedSaved);
+    });
+
+    fireEvent.click(screen.getByText("open"));
+    const cancel = await screen.findByText("Cancel");
+    expect(cancel.closest("button")?.hasAttribute("disabled")).toBe(false);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });

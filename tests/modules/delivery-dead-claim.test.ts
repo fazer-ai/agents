@@ -269,6 +269,20 @@ describe.skipIf(!dbUp)("deliveries claimed by a dead process", () => {
     expect(a.lost + b.lost).toBe(1);
   });
 
+  test("a row that leaves PROCESSING forgets its claimer, so an older build's claim from DEAD is not taken", async () => {
+    // An older build's recovery claims DEAD -> PROCESSING without writing `claimed_by`; a dead claimer
+    // left on the row would make the next pass end that live recovery.
+    const row = await claimed(randomUUID());
+    await sweepDeadClaims({ base: appDb });
+    expect(await statusOf(row)).toBe("DEAD");
+    await suDb.chatwootWebhookDelivery.update({
+      where: { id: row },
+      data: { status: "PROCESSING", claimedAt: new Date() },
+    });
+    await sweepDeadClaims({ base: appDb });
+    expect(await statusOf(row)).toBe("PROCESSING");
+  });
+
   test("the terminal write is guarded on the claim the pass judged dead", async () => {
     // Read as claimed by a dead process, then claimed again (a recovery from DEAD) before the write:
     // the write must miss rather than end the live attempt.
@@ -338,17 +352,38 @@ describe.skipIf(!dbUp)("deliveries claimed by a dead process", () => {
         normalized: n,
         base: appDb,
       });
-      return (
-        await suDb.chatwootWebhookDelivery.findFirstOrThrow({
-          where: { tenantId, deliveryId },
-          select: { claimedBy: true, claimedAt: true },
-        })
-      ).claimedBy;
+      const seen = await suDb.$queryRawUnsafe<
+        Array<{ claimed_by: string | null }>
+      >(
+        `SELECT claimed_by::text AS claimed_by FROM ${PROBE} WHERE delivery_id = $1`,
+        deliveryId,
+      );
+      expect(seen).toHaveLength(1);
+      return seen[0]?.claimed_by ?? null;
     };
-    expect(await deliver(1)).toBeNull();
-    await startProcessLease(appDb, 60_000);
-    leases.push(processLeaseId());
-    expect(await deliver(2)).toBe(processLeaseId());
+    // The claim is read as it is written: the row is PROCESSED a moment later, which forgets the claimer.
+    const PROBE = `dead_claim_probe_${process.pid}`;
+    await suDb.$executeRawUnsafe(
+      `CREATE TABLE ${PROBE} (delivery_id text, claimed_by uuid)`,
+    );
+    await suDb.$executeRawUnsafe(
+      `CREATE FUNCTION ${PROBE}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN INSERT INTO ${PROBE} VALUES (NEW.delivery_id, NEW.claimed_by); RETURN NEW; END $$`,
+    );
+    await suDb.$executeRawUnsafe(
+      `CREATE TRIGGER ${PROBE} AFTER UPDATE ON chatwoot_webhook_deliveries FOR EACH ROW WHEN (OLD.status = 'PENDING' AND NEW.status = 'PROCESSING' AND NEW.tenant_id = ${tenantId}) EXECUTE FUNCTION ${PROBE}()`,
+    );
+    try {
+      expect(await deliver(1)).toBeNull();
+      await startProcessLease(appDb, 60_000);
+      leases.push(processLeaseId());
+      expect(await deliver(2)).toBe(processLeaseId());
+    } finally {
+      await suDb.$executeRawUnsafe(
+        `DROP TRIGGER ${PROBE} ON chatwoot_webhook_deliveries`,
+      );
+      await suDb.$executeRawUnsafe(`DROP FUNCTION ${PROBE}()`);
+      await suDb.$executeRawUnsafe(`DROP TABLE ${PROBE}`);
+    }
   });
 
   test("a process stops naming itself on claims once its renewals stop committing, and its lease leaves with it", async () => {

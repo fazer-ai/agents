@@ -2101,6 +2101,7 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
         conversationId: conv,
         inboundMessageId: 8_000 + conv,
         routeAgentBotId: 9,
+        routeObserved: false,
       },
       select: { id: true },
     });
@@ -2126,6 +2127,7 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
         conversationId: conv,
         inboundMessageId: 8_000 + conv,
         routeAgentBotId: 9,
+        routeObserved: false,
       },
       select: { id: true },
     });
@@ -2147,6 +2149,7 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
         conversationId: conv,
         inboundMessageId: 8_000 + conv,
         routeAgentBotId: 9,
+        routeObserved: false,
       },
       select: { id: true },
     });
@@ -2184,6 +2187,7 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
         conversationId: conv,
         inboundMessageId: 8_000 + conv,
         routeAgentBotId: 9,
+        routeObserved: false,
       },
       select: { id: true },
     });
@@ -2228,6 +2232,7 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
         conversationId: conv,
         inboundMessageId: 8_000 + conv,
         routeAgentBotId: 9,
+        routeObserved: false,
       },
       select: { id: true },
     });
@@ -2251,6 +2256,27 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
     expect(await noticeAt(conv)).not.toBeNull();
   });
 
+  test("an unmirrored delivery whose route names no role is not handed over as that route", async () => {
+    // A route with no stated role may be an observer's, which is not who answers the customer.
+    const conv = nextConv++;
+    liveConversations.set(conv, { status: "pending", meta: {} });
+    const row = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `failnote-gaveup-unmirrored-norole-${process.pid}-${conv}`,
+        event: "message_created",
+        status: "DEAD",
+        conversationId: conv,
+        inboundMessageId: 8_000 + conv,
+        routeAgentBotId: 9,
+      },
+      select: { id: true },
+    });
+    await announceUnanswered(tenantId, row.id, appDb);
+    expect(writes.filter((w) => w.conversationId === conv)).toEqual([]);
+  });
+
   test("an unmirrored conversation a person holds in Chatwoot is not opened", async () => {
     const conv = nextConv++;
     liveConversations.set(conv, {
@@ -2267,6 +2293,7 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
         conversationId: conv,
         inboundMessageId: 8_000 + conv,
         routeAgentBotId: 9,
+        routeObserved: false,
       },
       select: { id: true },
     });
@@ -2297,6 +2324,7 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
         conversationId: conv,
         inboundMessageId: 8_000 + conv,
         routeAgentBotId: 9,
+        routeObserved: false,
       },
       select: { id: true },
     });

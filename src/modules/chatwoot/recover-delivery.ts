@@ -1647,15 +1647,24 @@ function liveChannelOf(raw: unknown): string | null {
 
 // The channel the age ceiling reads: the mirror's inbox, or the live conversation's where that inbox
 // never learned it. With no inbox at all, the live channel only where a refusal can still be handed
-// over: the hand-over's persona is then the delivery's route bot, and a row an older build wrote
-// carries none, so it keeps `MAX_RECOVERY_AGE_MS`.
+// over: the hand-over's persona is then the delivery's responder route (`respondingRouteBot`), and
+// a row without one keeps `MAX_RECOVERY_AGE_MS`.
 function handOverChannel(
-  row: { routeAgentBotId: number | null },
+  row: Parameters<typeof respondingRouteBot>[0],
   inbox: { channelType: string | null } | null | undefined,
   raw: unknown,
 ): string | null {
   if (inbox) return inbox.channelType ?? liveChannelOf(raw);
-  return row.routeAgentBotId === null ? null : liveChannelOf(raw);
+  return respondingRouteBot(row) === null ? null : liveChannelOf(raw);
+}
+
+// The bot a delivery arrived on, when the receiver recorded it as the RESPONDER's route; null for an
+// observer's, for a role nobody stated, and for a row an older build wrote.
+function respondingRouteBot(row: {
+  routeAgentBotId: number | null;
+  routeObserved: boolean | null;
+}): number | null {
+  return row.routeObserved === false ? row.routeAgentBotId : null;
 }
 
 // Whether the delivery owed the customer a reply, or only the agent's memory: an observer's route, a
@@ -1945,9 +1954,9 @@ export async function announceUnanswered(
           };
         },
         aboutMessageId: row.inboundMessageId,
-        // For a conversation the mirror never learned. Only a reply-owing row gets here, so the route
-        // is the responder's, never an observer's.
-        routeAgentBotId: row.routeAgentBotId,
+        // For a conversation the mirror never learned, and only a route the receiver recorded as the
+        // responder's: one with no stated role may be an observer's, which is not who answers.
+        routeAgentBotId: respondingRouteBot(row),
         error: new Error(RECOVERY_GAVE_UP),
         base,
         deps: opts.makeClient ? { makeClient: opts.makeClient } : undefined,

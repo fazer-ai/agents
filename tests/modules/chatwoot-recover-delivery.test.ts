@@ -1227,6 +1227,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
             inboundMessageId: messageId,
             receivedAgoMs: 2 * 60 * 60 * 1000,
             routeAgentBotId: AGENT_BOT_ID,
+            routeObserved: false,
           });
           const stub = stubChatwoot({
             page: pageWith([
@@ -1301,6 +1302,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
           inboundMessageId: messageId,
           receivedAgoMs: 10 * 60 * 1000,
           routeAgentBotId: AGENT_BOT_ID,
+          routeObserved: false,
         });
         const stub = stubChatwoot({
           page: pageWith([

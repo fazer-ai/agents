@@ -994,7 +994,7 @@ async function upsertInbox(
         name: n.inboxName ?? placeholder,
         channelType: n.channel ?? null,
         metadataAt: position,
-        metadataClock: n.inboxUpdatedAt ?? null,
+        metadataClock: n.inboxName != null ? (n.inboxUpdatedAt ?? null) : null,
       },
       skipDuplicates: true,
     });
@@ -1010,10 +1010,11 @@ async function upsertInbox(
   const positioned = position
     ? Prisma.sql`(metadata_at IS NULL OR metadata_at <= ${position})`
     : Prisma.sql`(metadata_at IS NULL)`;
-  // The inbox's own clock (`inbox.updated_at`, message events only). With it and a row that has one,
-  // the clock alone decides, as for the contact's bag; a row with no clock yet takes the position rule
-  // and is stamped; a payload without one (every `conversation_*` event) keeps the position rule.
-  const clock = n.inboxUpdatedAt ?? null;
+  // The inbox's own clock (`inbox.updated_at`, message events only), counted only beside the name it
+  // versions: a payload that omits the name cannot move a clock over a name it never stated. With it
+  // and a row that has one, the clock alone decides, as for the contact's bag; a row with no clock yet
+  // takes the position rule and is stamped; without it (every `conversation_*` event) the position rule.
+  const clock = name !== null ? (n.inboxUpdatedAt ?? null) : null;
   const accepts =
     clock !== null
       ? Prisma.sql`(CASE WHEN metadata_clock IS NOT NULL THEN metadata_clock < ${clock} ELSE ${positioned} END)`

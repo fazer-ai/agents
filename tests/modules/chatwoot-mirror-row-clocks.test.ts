@@ -362,6 +362,37 @@ describe.skipIf(!dbUp)(
       expect((await inboxOf(302)).name).toBe("Comercial");
     });
 
+    test("an inbox clock that arrives without the name does not fence the name it versions", async () => {
+      const ids = { contact: 213, conv: 2213, inbox: 308 };
+      await mirror(
+        at(withInbox(onRows(inboxN2, ids), "Suporte", 100), 500, 500.1),
+      );
+      const nameless = at(
+        withInbox(onRows(inboxN2, ids), "x", 200),
+        600,
+        600.1,
+      );
+      delete (nameless.inbox as Body).name;
+      await mirror(nameless);
+      await mirror(
+        at(withInbox(onRows(inboxN2, ids), "Atendimento", 200), 610, 610.1),
+      );
+      expect((await inboxOf(308)).name).toBe("Atendimento");
+      // The same when the nameless payload creates the row: its clock is not stored over the
+      // placeholder, so an older name that fills the placeholder does not inherit it.
+      const fresh = { contact: 214, conv: 2214, inbox: 309 };
+      const first = at(withInbox(onRows(inboxN2, fresh), "x", 200), 600, 600.1);
+      delete (first.inbox as Body).name;
+      await mirror(first);
+      await mirror(
+        at(withInbox(onRows(inboxN2, fresh), "Suporte", 150), 700, 700.1),
+      );
+      await mirror(
+        at(withInbox(onRows(inboxN2, fresh), "Atendimento", 200), 710, 710.1),
+      );
+      expect((await inboxOf(309)).name).toBe("Atendimento");
+    });
+
     test("an inbox-list sync that renames the inbox keeps a delivery older than its read from writing the old name back", async () => {
       // The list carries no inbox clock; the clock stored described the name the sync replaced.
       const ids = { contact: 210, conv: 2210, inbox: 305 };

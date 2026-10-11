@@ -36,7 +36,41 @@ const suDb = su as PrismaClient;
 // The app's own client against the test database, so the session lookup reads real rows. Restored as
 // a fresh literal, the way tests/lib/module-mock-undo.test.ts requires.
 const originalPrisma = (await import("@/api/lib/prisma")).default;
-mock.module("@/api/lib/prisma", () => ({ default: appDb }));
+// Runs once right after the next session-identity read (the user lookup that selects only the
+// password hash), to land a logout between a request's proof and its re-issue.
+let afterSessionRead: (() => Promise<void>) | null = null;
+type Delegate = Record<string | symbol, unknown>;
+const db =
+  appDb &&
+  new Proxy(appDb, {
+    get(target, key) {
+      const value = Reflect.get(target, key);
+      if (key !== "user") {
+        return typeof value === "function" ? value.bind(target) : value;
+      }
+      return new Proxy(value as Delegate, {
+        get(users, method) {
+          const fn = Reflect.get(users, method);
+          if (typeof fn !== "function") return fn;
+          if (method !== "findUnique") return fn.bind(users);
+          return async (args: { select?: Record<string, unknown> }) => {
+            const row = await fn.call(users, args);
+            if (
+              afterSessionRead &&
+              args?.select?.passwordHash &&
+              !args.select.memberships
+            ) {
+              const run = afterSessionRead;
+              afterSessionRead = null;
+              await run();
+            }
+            return row;
+          };
+        },
+      });
+    },
+  });
+mock.module("@/api/lib/prisma", () => ({ default: db }));
 afterAll(() => {
   mock.module("@/api/lib/prisma", () => ({ default: originalPrisma }));
 });
@@ -66,6 +100,27 @@ const minter = new Elysia()
       tenantId,
     };
     return { token: await setAuthCookie(user, passwordHash) };
+  })
+  .post("/mint-proved", async ({ setAuthCookie, headers, set }) => {
+    const user = {
+      id: userId,
+      email: `${tag}@x.test`,
+      name: null,
+      googleId: null,
+      role: "AGENT" as const,
+      tenantId,
+    };
+    try {
+      return {
+        token: await setAuthCookie(user, passwordHash, {
+          proofSessionId: headers["x-proof"],
+        }),
+      };
+    } catch (error) {
+      // NOTE: the app's error handler answers an AppError with its own status (src/app.ts).
+      set.status = (error as { statusCode?: number }).statusCode ?? 500;
+      return { error: String(error) };
+    }
   });
 
 // A session as the login issues it; `over` is a cookie the browser already holds.
@@ -269,15 +324,41 @@ describe.skipIf(!dbUp)("logging out", () => {
     expect((await logout(session(token))).status).toBe(200);
   });
 
-  // A cookie re-issued over a live session (accepting an invitation, a password change) is the same
-  // session, so the tabs sharing the browser end together.
-  test("a cookie re-issued over a live session keeps it, and one logout ends both", async () => {
+  // A cookie re-issued over a live session (accepting an invitation, a password change, signing in
+  // again) is a new session, and the one it replaces ends: the browser holds one session, and its
+  // sockets reconnect under the new cookie.
+  test("a cookie re-issued over a live session replaces it, and the old one ends", async () => {
     const first = await signIn();
-    const renewed = await signIn(session(first));
-    expect(jtiOf(renewed)).toBe(jtiOf(first));
-    await logout(session(renewed));
-    expect(await signedIn(session(first))).toBe(false);
-    expect(jtiOf(await signIn(session(first)))).not.toBe(jtiOf(first));
+    const closes: number[] = [];
+    trackSocket(
+      userId,
+      `${tag}-first`,
+      { close: (c) => closes.push(c ?? 0) },
+      jtiOf(first),
+    );
+    try {
+      const renewed = await signIn(session(first));
+      expect(jtiOf(renewed)).not.toBe(jtiOf(first));
+      expect(await signedIn(session(first))).toBe(false);
+      expect(await signedIn(session(renewed))).toBe(true);
+      expect(closes).toEqual([WS_CLOSE.CREDENTIALS_CHANGED]);
+    } finally {
+      untrackSocket(userId, `${tag}-first`);
+    }
+  });
+
+  // A re-issue whose only proof was the session (accepting an invitation signed in) is refused when a
+  // logout ended that session between the proof and the re-issue.
+  test("a re-issue proved by a session that a logout just ended is refused", async () => {
+    const proof = await signIn();
+    await logout(session(proof));
+    const res = await minter.handle(
+      new BunRequest("http://localhost/mint-proved", {
+        method: "POST",
+        headers: { cookie: session(proof), "x-proof": jtiOf(proof) ?? "" },
+      }),
+    );
+    expect(res.status).toBe(401);
   });
 
   test("a different person signing in over the cookie starts their own session", async () => {
@@ -315,6 +396,7 @@ describe.skipIf(!dbUp)("logging out", () => {
         ).json()) as { token: string }
       ).token;
       expect(jtiOf(theirs)).not.toBe(jtiOf(mine));
+      expect(await signedIn(session(mine))).toBe(false);
     } finally {
       await suDb.$executeRawUnsafe(`DELETE FROM users WHERE id = ${otherId}`);
     }
@@ -349,6 +431,55 @@ describe.skipIf(!dbUp)("logging out", () => {
 
     expect((await accept(session(await signIn()))).status).toBe(200);
     expect(await joined()).toBe(1);
+  });
+
+  // Signed in, the session is the invitation's only proof: a logout landing after that proof was read
+  // and before the cookie is re-issued refuses the re-issue instead of minting a session.
+  test("an invitation accepted on a session that logs out meanwhile issues no session", async () => {
+    const { createInvite } = await import(
+      "@/api/features/invitations/invitation.service"
+    );
+    const third = (
+      await suDb.tenant.create({
+        data: { name: "T1275 third", slug: `${tag}-third` },
+        select: { id: true },
+      })
+    ).id;
+    try {
+      const { token } = await createInvite(
+        { tenantId: null, userId, role: "SUPER_ADMIN" },
+        { tenantId: third, email: `${tag}@x.test`, role: "AGENT" },
+        suDb,
+      );
+      const proof = await signIn();
+      afterSessionRead = async () => {
+        await logout(session(proof));
+      };
+      const res = await server.handle(
+        new BunRequest("http://localhost/api/auth/accept-invite", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            cookie: session(proof),
+          },
+          body: JSON.stringify({ token }),
+        }),
+      );
+      expect(afterSessionRead).toBeNull();
+      expect(res.status).toBe(401);
+    } finally {
+      afterSessionRead = null;
+      await suDb.$executeRawUnsafe(
+        `DELETE FROM invitations WHERE tenant_id = ${third}`,
+      );
+      await suDb.$executeRawUnsafe(
+        `DELETE FROM tenant_users WHERE tenant_id = ${third}`,
+      );
+      await suDb.$executeRawUnsafe(
+        `DELETE FROM audit_logs WHERE tenant_id = ${third}`,
+      );
+      await suDb.$executeRawUnsafe(`DELETE FROM tenants WHERE id = ${third}`);
+    }
   });
 
   // A token signed before sessions carried an id cannot be named, so it keeps working until it

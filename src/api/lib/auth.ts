@@ -2,14 +2,17 @@ import { createHmac, randomUUID } from "node:crypto";
 import { jwt } from "@elysiajs/jwt";
 import { Elysia } from "elysia";
 import type { UserRole } from "@/../generated/prisma/client";
+import { closeSessionSockets } from "@/api/features/realtime/realtime.service";
 import { translate } from "@/api/lib/i18n";
 import logger from "@/api/lib/logger";
 import prisma from "@/api/lib/prisma";
+import { WS_CLOSE } from "@/api/lib/realtime";
 import config from "@/config";
 import { parseDbId } from "@/lib/db-id";
 import {
   ServiceUnavailableError,
   TenantSelectorRefusedError,
+  UnauthorizedError,
 } from "@/lib/errors";
 import { roleAtLeast } from "@/lib/tenancy";
 import { type Membership, resolveMembership } from "@/lib/tenancy/membership";
@@ -60,6 +63,54 @@ export async function isSessionEnded(sessionId: string): Promise<boolean> {
   return (await prisma.endedSession.count({ where: { jti: sessionId } })) > 0;
 }
 
+// A verified token that names its session.
+interface NamedSession {
+  userId: bigint;
+  sessionId: string;
+  expiresAt: Date;
+}
+
+function namedSession(payload: JWTPayload | false): NamedSession | null {
+  if (payload === false) return null;
+  if (!payload.jti || typeof payload.exp !== "number") return null;
+  const userId =
+    typeof payload.userId === "string" ? parseDbId(payload.userId) : null;
+  if (userId === null) return null;
+  return {
+    userId,
+    sessionId: payload.jti,
+    expiresAt: new Date(payload.exp * 1000),
+  };
+}
+
+// Records the session as ended until its token expires, dropping the rows past their expiry. True
+// when this call ended it, false when it already was. A deleted account (foreign key) has no
+// session left to end, and counts as this call ending it. Throws 503 on any other failure.
+async function recordEnded(session: NamedSession): Promise<boolean> {
+  try {
+    const [, inserted] = await prisma.$transaction([
+      prisma.endedSession.deleteMany({
+        where: { expiresAt: { lte: new Date() } },
+      }),
+      prisma.endedSession.createMany({
+        data: [
+          {
+            jti: session.sessionId,
+            userId: session.userId,
+            expiresAt: session.expiresAt,
+          },
+        ],
+        skipDuplicates: true,
+      }),
+    ]);
+    return inserted.count > 0;
+  } catch (error) {
+    if ((error as { code?: string }).code === "P2003") return true;
+    logger.warn({ error }, "Ending the session failed; treating as transient");
+    throw new ServiceUnavailableError();
+  }
+}
+
 // Binds a session to the password it was issued under, as Django's session auth hash does: the token
 // carries an HMAC of the stored hash, so any write that changes the hash (Settings, `bun set-admin`)
 // revokes every session signed before it, with no column to remember to stamp. Keyed with the JWT
@@ -88,6 +139,8 @@ function sessionMatchesPassword(
 export interface SessionIdentity {
   userId: bigint;
   passwordHash: string | null;
+  // The session's `jti`, for a re-issue that takes this session as its only proof.
+  sessionId?: string;
 }
 
 export interface AuthUser {
@@ -199,19 +252,13 @@ export const authPlugin = new Elysia({ name: "auth" })
     }),
   )
   .derive({ as: "global" }, ({ jwt, cookie, headers }) => {
-    // NOTE: a cookie re-issued over a live session of the same person (accepting an invitation, a
-    // password change, signing in again) keeps that session's `jti`, so the tabs and sockets that
-    // share the browser stay one session, and one logout ends all of it. An ended or unreadable
-    // session starts a new one; failing to look is never a reason to refuse the sign-in.
-    async function renewedSessionId(userId: bigint): Promise<string | null> {
+    // The session the browser's cookie names, verified, or null.
+    async function currentSession(): Promise<NamedSession | null> {
       const token =
         cookie[COOKIE_NAME]?.value ?? cookie[LEGACY_COOKIE_NAME]?.value;
       if (!token || typeof token !== "string") return null;
       try {
-        const payload = (await jwt.verify(token)) as JWTPayload | false;
-        if (payload === false || !payload.jti) return null;
-        if (payload.userId !== userId.toString()) return null;
-        return (await isSessionEnded(payload.jti)) ? null : payload.jti;
+        return namedSession((await jwt.verify(token)) as JWTPayload | false);
       } catch {
         return null;
       }
@@ -221,7 +268,34 @@ export const authPlugin = new Elysia({ name: "auth" })
       // NOTE: `passwordHash` is the hash the caller authenticated against, not what the row holds by
       // the time the cookie is signed: a login that verified the OLD password while a change landed
       // must come out already revoked, not valid under the new one. Required so no call site omits it.
-      async setAuthCookie(user: AuthUser, passwordHash: string | null) {
+      // NOTE: a re-issued cookie is a NEW session (a new `jti`), and the one it replaces in this
+      // browser ends, its sockets closed with 4409 so they reconnect under the new cookie: one logout
+      // then ends everything the browser holds. With `proofSessionId` the replaced session was the
+      // request's only proof of identity, so a logout that ended it first refuses the re-issue (401)
+      // instead of minting a session nothing proved.
+      async setAuthCookie(
+        user: AuthUser,
+        passwordHash: string | null,
+        options: { proofSessionId?: string } = {},
+      ) {
+        const replaced = await currentSession();
+        if (options.proofSessionId !== undefined) {
+          if (replaced?.sessionId !== options.proofSessionId) {
+            throw new UnauthorizedError();
+          }
+          if (!(await recordEnded(replaced))) throw new UnauthorizedError();
+        } else if (replaced) {
+          // NOTE: best effort: failing to end the replaced session never refuses a sign-in that
+          // proved itself; that token keeps working until it expires, as before sessions had ids.
+          await recordEnded(replaced).catch(() => false);
+        }
+        if (replaced) {
+          closeSessionSockets(
+            replaced.userId,
+            replaced.sessionId,
+            WS_CLOSE.CREDENTIALS_CHANGED,
+          );
+        }
         const pwd = passwordFingerprint(passwordHash);
         const token = await jwt.sign({
           userId: user.id.toString(),
@@ -229,7 +303,7 @@ export const authPlugin = new Elysia({ name: "auth" })
           role: user.role,
           tenantId: user.tenantId === null ? null : user.tenantId.toString(),
           ...(pwd ? { pwd } : {}),
-          jti: (await renewedSessionId(user.id)) ?? randomUUID(),
+          jti: randomUUID(),
         });
 
         cookie[COOKIE_NAME]?.set({ value: token, ...sessionCookieOptions() });
@@ -246,48 +320,10 @@ export const authPlugin = new Elysia({ name: "auth" })
       // does not verify, or a token with no `jti`, ends nothing. Expired rows are dropped on the way:
       // past its expiry the token is refused by its signature alone.
       async endSession(): Promise<EndedSessionRef | null> {
-        const token =
-          cookie[COOKIE_NAME]?.value ?? cookie[LEGACY_COOKIE_NAME]?.value;
-        if (!token || typeof token !== "string") return null;
-        let payload: JWTPayload | false;
-        try {
-          payload = (await jwt.verify(token)) as JWTPayload | false;
-        } catch {
-          return null;
-        }
-        if (payload === false) return null;
-        if (!payload.jti || typeof payload.exp !== "number") return null;
-        const userId =
-          typeof payload.userId === "string" ? parseDbId(payload.userId) : null;
-        if (userId === null) return null;
-        const ended = { userId, sessionId: payload.jti };
-        try {
-          await prisma.$transaction([
-            prisma.endedSession.deleteMany({
-              where: { expiresAt: { lte: new Date() } },
-            }),
-            prisma.endedSession.createMany({
-              data: [
-                {
-                  jti: payload.jti,
-                  userId,
-                  expiresAt: new Date(payload.exp * 1000),
-                },
-              ],
-              skipDuplicates: true,
-            }),
-          ]);
-        } catch (error) {
-          // NOTE: the account is gone (foreign key), so the session cannot authenticate any more:
-          // already ended, nothing to record, and the cookie can go.
-          if ((error as { code?: string }).code === "P2003") return ended;
-          logger.warn(
-            { error },
-            "Ending the session failed; treating as transient",
-          );
-          throw new ServiceUnavailableError();
-        }
-        return ended;
+        const session = await currentSession();
+        if (!session) return null;
+        await recordEnded(session);
+        return { userId: session.userId, sessionId: session.sessionId };
       },
       // NOTE: WHICH PERSON the session cookie names, and the password hash it was verified against,
       // and nothing else: no tenant selector, no membership, no API key. For the one operation where
@@ -331,7 +367,11 @@ export const authPlugin = new Elysia({ name: "auth" })
         ) {
           return null;
         }
-        return { userId, passwordHash: row.passwordHash };
+        return {
+          userId,
+          passwordHash: row.passwordHash,
+          ...(payload.jti ? { sessionId: payload.jti } : {}),
+        };
       },
       async getAuthUser(): Promise<AuthUser | null> {
         let token = cookie[COOKIE_NAME]?.value;

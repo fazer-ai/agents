@@ -54,6 +54,12 @@ function sessionEnded(row: { endedSessions?: { jti: string }[] }): boolean {
   return (row.endedSessions?.length ?? 0) > 0;
 }
 
+// Whether a logout ended this session. Lets a socket refused on its re-check tell a logout (4401,
+// signed out) from a password change (4409, reconnect under the re-issued cookie).
+export async function isSessionEnded(sessionId: string): Promise<boolean> {
+  return (await prisma.endedSession.count({ where: { jti: sessionId } })) > 0;
+}
+
 // Binds a session to the password it was issued under, as Django's session auth hash does: the token
 // carries an HMAC of the stored hash, so any write that changes the hash (Settings, `bun set-admin`)
 // revokes every session signed before it, with no column to remember to stamp. Keyed with the JWT
@@ -192,239 +198,259 @@ export const authPlugin = new Elysia({ name: "auth" })
       exp: TOKEN_EXPIRY,
     }),
   )
-  .derive({ as: "global" }, ({ jwt, cookie, headers }) => ({
-    // NOTE: `passwordHash` is the hash the caller authenticated against, not what the row holds by
-    // the time the cookie is signed: a login that verified the OLD password while a change landed
-    // must come out already revoked, not valid under the new one. Required so no call site omits it.
-    async setAuthCookie(user: AuthUser, passwordHash: string | null) {
-      const pwd = passwordFingerprint(passwordHash);
-      const token = await jwt.sign({
-        userId: user.id.toString(),
-        email: user.email,
-        role: user.role,
-        tenantId: user.tenantId === null ? null : user.tenantId.toString(),
-        ...(pwd ? { pwd } : {}),
-        jti: randomUUID(),
-      });
-
-      cookie[COOKIE_NAME]?.set({ value: token, ...sessionCookieOptions() });
-      // A fresh login supersedes any pre-rename cookie; drop it so it can't outlive this session.
-      cookie[LEGACY_COOKIE_NAME]?.remove();
-
-      return token;
-    },
-    clearAuthCookie() {
-      cookie[COOKIE_NAME]?.remove();
-      cookie[LEGACY_COOKIE_NAME]?.remove();
-    },
-    // NOTE: ends the session the cookie names, so a copy of it is refused from here on. A cookie that
-    // does not verify, or a token with no `jti`, ends nothing. Expired rows are dropped on the way:
-    // past its expiry the token is refused by its signature alone.
-    async endSession(): Promise<EndedSessionRef | null> {
+  .derive({ as: "global" }, ({ jwt, cookie, headers }) => {
+    // NOTE: a cookie re-issued over a live session of the same person (accepting an invitation, a
+    // password change, signing in again) keeps that session's `jti`, so the tabs and sockets that
+    // share the browser stay one session, and one logout ends all of it. An ended or unreadable
+    // session starts a new one; failing to look is never a reason to refuse the sign-in.
+    async function renewedSessionId(userId: bigint): Promise<string | null> {
       const token =
         cookie[COOKIE_NAME]?.value ?? cookie[LEGACY_COOKIE_NAME]?.value;
       if (!token || typeof token !== "string") return null;
-      let payload: JWTPayload | false;
       try {
-        payload = (await jwt.verify(token)) as JWTPayload | false;
+        const payload = (await jwt.verify(token)) as JWTPayload | false;
+        if (payload === false || !payload.jti) return null;
+        if (payload.userId !== userId.toString()) return null;
+        return (await isSessionEnded(payload.jti)) ? null : payload.jti;
       } catch {
         return null;
       }
-      if (payload === false) return null;
-      if (!payload.jti || typeof payload.exp !== "number") return null;
-      const userId =
-        typeof payload.userId === "string" ? parseDbId(payload.userId) : null;
-      if (userId === null) return null;
-      const ended = { userId, sessionId: payload.jti };
-      try {
-        await prisma.$transaction([
-          prisma.endedSession.deleteMany({
-            where: { expiresAt: { lte: new Date() } },
-          }),
-          prisma.endedSession.createMany({
-            data: [
-              {
-                jti: payload.jti,
-                userId,
-                expiresAt: new Date(payload.exp * 1000),
-              },
-            ],
-            skipDuplicates: true,
-          }),
-        ]);
-      } catch (error) {
-        // NOTE: the account is gone (foreign key), so the session cannot authenticate any more:
-        // already ended, nothing to record, and the cookie can go.
-        if ((error as { code?: string }).code === "P2003") return ended;
-        logger.warn(
-          { error },
-          "Ending the session failed; treating as transient",
-        );
-        throw new ServiceUnavailableError();
-      }
-      return ended;
-    },
-    // NOTE: WHICH PERSON the session cookie names, and the password hash it was verified against,
-    // and nothing else: no tenant selector, no membership, no API key. For the one operation where
-    // the session is only proof of identity (accepting an invitation into the account it names), a
-    // stale selector must not turn that proof into "signed out".
-    async getSessionIdentity(): Promise<SessionIdentity | null> {
-      const token =
-        cookie[COOKIE_NAME]?.value ?? cookie[LEGACY_COOKIE_NAME]?.value;
-      if (!token || typeof token !== "string") return null;
-      let payload: JWTPayload | false;
-      try {
-        payload = (await jwt.verify(token)) as JWTPayload | false;
-      } catch {
-        return null;
-      }
-      if (!payload || typeof payload.userId !== "string") return null;
-      const userId = parseDbId(payload.userId);
-      if (userId === null) return null;
-      // A revoked session proves nothing, so the password fingerprint is checked here too. A DB
-      // failure is transient, as in getAuthUser below, and never reads as signed out.
-      let row: {
-        passwordHash: string | null;
-        endedSessions?: { jti: string }[];
-      } | null;
-      try {
-        row = await prisma.user.findUnique({
-          where: { id: userId },
-          select: { passwordHash: true, ...endedSessionSelect(payload) },
+    }
+
+    return {
+      // NOTE: `passwordHash` is the hash the caller authenticated against, not what the row holds by
+      // the time the cookie is signed: a login that verified the OLD password while a change landed
+      // must come out already revoked, not valid under the new one. Required so no call site omits it.
+      async setAuthCookie(user: AuthUser, passwordHash: string | null) {
+        const pwd = passwordFingerprint(passwordHash);
+        const token = await jwt.sign({
+          userId: user.id.toString(),
+          email: user.email,
+          role: user.role,
+          tenantId: user.tenantId === null ? null : user.tenantId.toString(),
+          ...(pwd ? { pwd } : {}),
+          jti: (await renewedSessionId(user.id)) ?? randomUUID(),
         });
-      } catch (error) {
-        logger.warn(
-          { error },
-          "Session user lookup failed; treating as transient",
-        );
-        throw new ServiceUnavailableError();
-      }
-      if (
-        !row ||
-        !sessionMatchesPassword(payload, row.passwordHash) ||
-        sessionEnded(row)
-      ) {
-        return null;
-      }
-      return { userId, passwordHash: row.passwordHash };
-    },
-    async getAuthUser(): Promise<AuthUser | null> {
-      let token = cookie[COOKIE_NAME]?.value;
-      if (!token || typeof token !== "string") {
-        const legacy = cookie[LEGACY_COOKIE_NAME]?.value;
-        if (legacy && typeof legacy === "string") {
-          // Migrate in place. The token is verified below either way, so copying it under the new
-          // name grants a forged legacy cookie nothing it did not already have.
-          token = legacy;
-          cookie[COOKIE_NAME]?.set({
-            value: legacy,
-            ...sessionCookieOptions(),
-          });
-          cookie[LEGACY_COOKIE_NAME]?.remove();
+
+        cookie[COOKIE_NAME]?.set({ value: token, ...sessionCookieOptions() });
+        // A fresh login supersedes any pre-rename cookie; drop it so it can't outlive this session.
+        cookie[LEGACY_COOKIE_NAME]?.remove();
+
+        return token;
+      },
+      clearAuthCookie() {
+        cookie[COOKIE_NAME]?.remove();
+        cookie[LEGACY_COOKIE_NAME]?.remove();
+      },
+      // NOTE: ends the session the cookie names, so a copy of it is refused from here on. A cookie that
+      // does not verify, or a token with no `jti`, ends nothing. Expired rows are dropped on the way:
+      // past its expiry the token is refused by its signature alone.
+      async endSession(): Promise<EndedSessionRef | null> {
+        const token =
+          cookie[COOKIE_NAME]?.value ?? cookie[LEGACY_COOKIE_NAME]?.value;
+        if (!token || typeof token !== "string") return null;
+        let payload: JWTPayload | false;
+        try {
+          payload = (await jwt.verify(token)) as JWTPayload | false;
+        } catch {
+          return null;
         }
-      }
-      if (!token || typeof token !== "string") {
-        // No session cookie — fall back to a Bearer API key (REST v1 / MCP external clients).
-        return apiKeyAuthUser(headers.authorization);
-      }
+        if (payload === false) return null;
+        if (!payload.jti || typeof payload.exp !== "number") return null;
+        const userId =
+          typeof payload.userId === "string" ? parseDbId(payload.userId) : null;
+        if (userId === null) return null;
+        const ended = { userId, sessionId: payload.jti };
+        try {
+          await prisma.$transaction([
+            prisma.endedSession.deleteMany({
+              where: { expiresAt: { lte: new Date() } },
+            }),
+            prisma.endedSession.createMany({
+              data: [
+                {
+                  jti: payload.jti,
+                  userId,
+                  expiresAt: new Date(payload.exp * 1000),
+                },
+              ],
+              skipDuplicates: true,
+            }),
+          ]);
+        } catch (error) {
+          // NOTE: the account is gone (foreign key), so the session cannot authenticate any more:
+          // already ended, nothing to record, and the cookie can go.
+          if ((error as { code?: string }).code === "P2003") return ended;
+          logger.warn(
+            { error },
+            "Ending the session failed; treating as transient",
+          );
+          throw new ServiceUnavailableError();
+        }
+        return ended;
+      },
+      // NOTE: WHICH PERSON the session cookie names, and the password hash it was verified against,
+      // and nothing else: no tenant selector, no membership, no API key. For the one operation where
+      // the session is only proof of identity (accepting an invitation into the account it names), a
+      // stale selector must not turn that proof into "signed out".
+      async getSessionIdentity(): Promise<SessionIdentity | null> {
+        const token =
+          cookie[COOKIE_NAME]?.value ?? cookie[LEGACY_COOKIE_NAME]?.value;
+        if (!token || typeof token !== "string") return null;
+        let payload: JWTPayload | false;
+        try {
+          payload = (await jwt.verify(token)) as JWTPayload | false;
+        } catch {
+          return null;
+        }
+        if (!payload || typeof payload.userId !== "string") return null;
+        const userId = parseDbId(payload.userId);
+        if (userId === null) return null;
+        // A revoked session proves nothing, so the password fingerprint is checked here too. A DB
+        // failure is transient, as in getAuthUser below, and never reads as signed out.
+        let row: {
+          passwordHash: string | null;
+          endedSessions?: { jti: string }[];
+        } | null;
+        try {
+          row = await prisma.user.findUnique({
+            where: { id: userId },
+            select: { passwordHash: true, ...endedSessionSelect(payload) },
+          });
+        } catch (error) {
+          logger.warn(
+            { error },
+            "Session user lookup failed; treating as transient",
+          );
+          throw new ServiceUnavailableError();
+        }
+        if (
+          !row ||
+          !sessionMatchesPassword(payload, row.passwordHash) ||
+          sessionEnded(row)
+        ) {
+          return null;
+        }
+        return { userId, passwordHash: row.passwordHash };
+      },
+      async getAuthUser(): Promise<AuthUser | null> {
+        let token = cookie[COOKIE_NAME]?.value;
+        if (!token || typeof token !== "string") {
+          const legacy = cookie[LEGACY_COOKIE_NAME]?.value;
+          if (legacy && typeof legacy === "string") {
+            // Migrate in place. The token is verified below either way, so copying it under the new
+            // name grants a forged legacy cookie nothing it did not already have.
+            token = legacy;
+            cookie[COOKIE_NAME]?.set({
+              value: legacy,
+              ...sessionCookieOptions(),
+            });
+            cookie[LEGACY_COOKIE_NAME]?.remove();
+          }
+        }
+        if (!token || typeof token !== "string") {
+          // No session cookie — fall back to a Bearer API key (REST v1 / MCP external clients).
+          return apiKeyAuthUser(headers.authorization);
+        }
 
-      let payload: JWTPayload | false;
-      try {
-        payload = (await jwt.verify(token)) as JWTPayload | false;
-      } catch (error) {
-        // NOTE: A malformed/forged/expired token is a genuine "not
-        // authenticated" → null (the caller treats it as logged out). Only
-        // token verification belongs in this catch, never the DB lookup below.
-        logger.debug({ error }, "Failed to verify auth token");
-        return null;
-      }
-      if (!payload) return null;
+        let payload: JWTPayload | false;
+        try {
+          payload = (await jwt.verify(token)) as JWTPayload | false;
+        } catch (error) {
+          // NOTE: A malformed/forged/expired token is a genuine "not
+          // authenticated" → null (the caller treats it as logged out). Only
+          // token verification belongs in this catch, never the DB lookup below.
+          logger.debug({ error }, "Failed to verify auth token");
+          return null;
+        }
+        if (!payload) return null;
 
-      let userId: bigint;
-      try {
-        userId = BigInt(payload.userId);
-      } catch {
-        // NOTE: A non-numeric subject is a forged/legacy token shape, not a
-        // session.
-        return null;
-      }
+        let userId: bigint;
+        try {
+          userId = BigInt(payload.userId);
+        } catch {
+          // NOTE: A non-numeric subject is a forged/legacy token shape, not a
+          // session.
+          return null;
+        }
 
-      // Re-resolve role+tenant from the DB on every request (stale tokens never grant elevated
-      // access; a moved/demoted user loses it at once). A DB failure HERE is TRANSIENT (pool
-      // reconnecting, a brief outage), NOT proof the session is invalid: throw 503 so the request is
-      // retryable, never a null user the client reads as a logout (bouncing the operator to /login on
-      // every blip and closing any WebSocket with the auth-lost code). The client retries /me at boot.
-      let row: {
-        id: bigint;
-        email: string;
-        name: string | null;
-        googleId: string | null;
-        isSuperAdmin: boolean;
-        passwordHash: string | null;
-        memberships: Membership[];
-        endedSessions?: { jti: string }[];
-      } | null;
-      try {
-        row = await prisma.user.findUnique({
-          where: { id: userId },
-          select: {
-            id: true,
-            email: true,
-            name: true,
-            googleId: true,
-            isSuperAdmin: true,
-            passwordHash: true,
-            memberships: {
-              select: { tenantId: true, role: true, createdAt: true },
+        // Re-resolve role+tenant from the DB on every request (stale tokens never grant elevated
+        // access; a moved/demoted user loses it at once). A DB failure HERE is TRANSIENT (pool
+        // reconnecting, a brief outage), NOT proof the session is invalid: throw 503 so the request is
+        // retryable, never a null user the client reads as a logout (bouncing the operator to /login on
+        // every blip and closing any WebSocket with the auth-lost code). The client retries /me at boot.
+        let row: {
+          id: bigint;
+          email: string;
+          name: string | null;
+          googleId: string | null;
+          isSuperAdmin: boolean;
+          passwordHash: string | null;
+          memberships: Membership[];
+          endedSessions?: { jti: string }[];
+        } | null;
+        try {
+          row = await prisma.user.findUnique({
+            where: { id: userId },
+            select: {
+              id: true,
+              email: true,
+              name: true,
+              googleId: true,
+              isSuperAdmin: true,
+              passwordHash: true,
+              memberships: {
+                select: { tenantId: true, role: true, createdAt: true },
+              },
+              ...endedSessionSelect(payload),
             },
-            ...endedSessionSelect(payload),
-          },
-        });
-      } catch (error) {
-        logger.warn(
-          { error },
-          "Auth user lookup failed; treating as transient",
-        );
-        throw new ServiceUnavailableError();
-      }
+          });
+        } catch (error) {
+          logger.warn(
+            { error },
+            "Auth user lookup failed; treating as transient",
+          );
+          throw new ServiceUnavailableError();
+        }
 
-      if (!row) return null;
-      const {
-        isSuperAdmin,
-        memberships,
-        passwordHash,
-        endedSessions,
-        ...person
-      } = row;
-      if (!sessionMatchesPassword(payload, passwordHash)) return null;
-      if (sessionEnded({ endedSessions })) return null;
+        if (!row) return null;
+        const {
+          isSuperAdmin,
+          memberships,
+          passwordHash,
+          endedSessions,
+          ...person
+        } = row;
+        if (!sessionMatchesPassword(payload, passwordHash)) return null;
+        if (sessionEnded({ endedSessions })) return null;
 
-      if (isSuperAdmin) {
+        if (isSuperAdmin) {
+          return {
+            ...person,
+            tenantId: null,
+            role: "SUPER_ADMIN",
+            memberships,
+            ...(payload.jti ? { sessionId: payload.jti } : {}),
+          };
+        }
+
+        // Fail-closed. A person with no membership has no tenant to run under, and is treated as
+        // unauthenticated rather than degraded to a tenant-less session. A selector outside their
+        // memberships is refused with the id it named, so the console drops it.
+        const current = resolveMembership(memberships, headers["x-tenant-id"]);
+        if (current === null) return null;
+        if ("rejected" in current) {
+          throw new TenantSelectorRefusedError(current.rejected);
+        }
         return {
           ...person,
-          tenantId: null,
-          role: "SUPER_ADMIN",
+          ...current,
           memberships,
           ...(payload.jti ? { sessionId: payload.jti } : {}),
         };
-      }
-
-      // Fail-closed. A person with no membership has no tenant to run under, and is treated as
-      // unauthenticated rather than degraded to a tenant-less session. A selector outside their
-      // memberships is refused with the id it named, so the console drops it.
-      const current = resolveMembership(memberships, headers["x-tenant-id"]);
-      if (current === null) return null;
-      if ("rejected" in current) {
-        throw new TenantSelectorRefusedError(current.rejected);
-      }
-      return {
-        ...person,
-        ...current,
-        memberships,
-        ...(payload.jti ? { sessionId: payload.jti } : {}),
-      };
-    },
-  }))
+      },
+    };
+  })
   .derive({ as: "global" }, ({ request, getAuthUser }) => ({
     // The session as this request read it, shared by the tenancy boundary, the gates and the
     // refusal of a request without one. `getAuthUser` stays a fresh read on every call, since a

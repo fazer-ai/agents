@@ -47,6 +47,7 @@ export const mockTenantCreate = mock<() => Promise<MockTenantEntity>>();
 export const mockQueryRaw =
   mock<() => Promise<Array<Record<string, number>>>>();
 export const mockExecuteRaw = mock<() => Promise<number>>();
+export const mockEndedSessionCount = mock<() => Promise<number>>();
 
 // One place to keep the default async return values so declarations
 // and `resetPrismaMocks` can't drift out of sync. `mockReset()` clears the
@@ -63,6 +64,7 @@ function applyDefaultPrismaMockImplementations() {
   mockTenantCreate.mockImplementation(() => Promise.resolve(mockTenant));
   mockQueryRaw.mockImplementation(() => Promise.resolve([{ 1: 1 }]));
   mockExecuteRaw.mockImplementation(() => Promise.resolve(1));
+  mockEndedSessionCount.mockImplementation(() => Promise.resolve(0));
 }
 
 applyDefaultPrismaMockImplementations();
@@ -116,6 +118,7 @@ interface PrismaMockClient {
     findFirst: typeof mockTenantFindFirst;
     create: typeof mockTenantCreate;
   };
+  endedSession: { count: typeof mockEndedSessionCount };
   $queryRaw: typeof mockQueryRaw;
   $executeRaw: typeof mockExecuteRaw;
   $transaction: <T>(fn: (tx: PrismaMockClient) => Promise<T>) => Promise<T>;
@@ -139,6 +142,7 @@ export const prismaMock: PrismaMockClient = {
     findFirst: mockTenantFindFirst,
     create: mockTenantCreate,
   },
+  endedSession: { count: mockEndedSessionCount },
   $queryRaw: mockQueryRaw,
   $executeRaw: mockExecuteRaw,
   // NOTE: Interactive-transaction form only: invoke the callback with the same
@@ -166,5 +170,6 @@ export function resetPrismaMocks() {
   mockTenantCreate.mockReset();
   mockQueryRaw.mockReset();
   mockExecuteRaw.mockReset();
+  mockEndedSessionCount.mockReset();
   applyDefaultPrismaMockImplementations();
 }

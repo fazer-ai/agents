@@ -13,7 +13,7 @@ import {
   tryAttachUser,
   untrackSocket,
 } from "@/api/features/realtime/realtime.service";
-import { authPlugin } from "@/api/lib/auth";
+import { authPlugin, isSessionEnded } from "@/api/lib/auth";
 import logger from "@/api/lib/logger";
 import { doc, errors } from "@/api/lib/openapi";
 import { originPlugin } from "@/api/lib/origin";
@@ -66,7 +66,13 @@ async function registerAndRecheck(
     current = null;
   }
   if (!current) {
-    ws.close(WS_CLOSE.CREDENTIALS_CHANGED, "session revoked");
+    // NOTE: a logout signs the tab out (4401); a password change asks it to reconnect under the
+    // re-issued cookie (4409), which the tab holding that cookie can.
+    const loggedOut =
+      user.sessionId !== undefined &&
+      (await isSessionEnded(user.sessionId).catch(() => false));
+    if (loggedOut) ws.close(WS_CLOSE.UNAUTHORIZED, "session ended");
+    else ws.close(WS_CLOSE.CREDENTIALS_CHANGED, "session revoked");
     return false;
   }
   return true;

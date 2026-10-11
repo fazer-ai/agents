@@ -12,6 +12,7 @@ import {
 } from "bun:test";
 import { Elysia } from "elysia";
 import {
+  mockEndedSessionCount,
   mockFindUnique,
   mockUser,
   setupPrismaMock,
@@ -148,6 +149,31 @@ describe("a password change and the realtime sockets", () => {
     expect(result.opened).toBe(true);
     expect(messages).toEqual([]);
     expect(result.code).toBe(WS_CLOSE.CREDENTIALS_CHANGED);
+  });
+
+  // A logout landing between the upgrade and `open` signs the tab out instead of asking it to
+  // reconnect: the reconnect would be refused, and the tab would keep a signed-in screen.
+  test("a logout between the upgrade and open closes the socket as signed out", async () => {
+    const before = await readsBeforeOpen();
+    let reads = 0;
+    mockFindUnique.mockImplementation(() => {
+      reads += 1;
+      return Promise.resolve(
+        reads <= before
+          ? row(OLD_HASH)
+          : { ...row(OLD_HASH), endedSessions: [{ jti: jtiOf(cookie) }] },
+      );
+    });
+    mockEndedSessionCount.mockImplementation(() => Promise.resolve(1));
+    try {
+      const { messages, closed } = connect();
+      const result = await closed;
+      expect(result.opened).toBe(true);
+      expect(messages).toEqual([]);
+      expect(result.code).toBe(WS_CLOSE.UNAUTHORIZED);
+    } finally {
+      mockEndedSessionCount.mockImplementation(() => Promise.resolve(0));
+    }
   });
 
   test("a session revoked before the upgrade never opens", async () => {

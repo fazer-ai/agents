@@ -68,10 +68,13 @@ const minter = new Elysia()
     return { token: await setAuthCookie(user, passwordHash) };
   });
 
-// A session as the login issues it.
-async function signIn(): Promise<string> {
+// A session as the login issues it; `over` is a cookie the browser already holds.
+async function signIn(over?: string): Promise<string> {
   const res = await minter.handle(
-    new Request("http://localhost/mint", { method: "POST" }),
+    new BunRequest("http://localhost/mint", {
+      method: "POST",
+      headers: over ? { cookie: over } : {},
+    }),
   );
   return ((await res.json()) as { token: string }).token;
 }
@@ -264,6 +267,57 @@ describe.skipIf(!dbUp)("logging out", () => {
     ).json()) as { token: string };
     await suDb.$executeRawUnsafe(`DELETE FROM users WHERE id = ${goneId}`);
     expect((await logout(session(token))).status).toBe(200);
+  });
+
+  // A cookie re-issued over a live session (accepting an invitation, a password change) is the same
+  // session, so the tabs sharing the browser end together.
+  test("a cookie re-issued over a live session keeps it, and one logout ends both", async () => {
+    const first = await signIn();
+    const renewed = await signIn(session(first));
+    expect(jtiOf(renewed)).toBe(jtiOf(first));
+    await logout(session(renewed));
+    expect(await signedIn(session(first))).toBe(false);
+    expect(jtiOf(await signIn(session(first)))).not.toBe(jtiOf(first));
+  });
+
+  test("a different person signing in over the cookie starts their own session", async () => {
+    const otherId = (
+      await suDb.user.create({
+        data: { email: `${tag}-other@x.test`, passwordHash },
+        select: { id: true },
+      })
+    ).id;
+    try {
+      const other = new Elysia()
+        .use(authPlugin)
+        .post("/mint", async ({ setAuthCookie }) => ({
+          token: await setAuthCookie(
+            {
+              id: otherId,
+              email: `${tag}-other@x.test`,
+              name: null,
+              googleId: null,
+              role: "AGENT",
+              tenantId,
+            },
+            passwordHash,
+          ),
+        }));
+      const mine = await signIn();
+      const theirs = (
+        (await (
+          await other.handle(
+            new BunRequest("http://localhost/mint", {
+              method: "POST",
+              headers: { cookie: session(mine) },
+            }),
+          )
+        ).json()) as { token: string }
+      ).token;
+      expect(jtiOf(theirs)).not.toBe(jtiOf(mine));
+    } finally {
+      await suDb.$executeRawUnsafe(`DELETE FROM users WHERE id = ${otherId}`);
+    }
   });
 
   // Accepting an invitation takes a signed-in session as proof of the account; an ended one is not.

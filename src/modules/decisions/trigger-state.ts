@@ -96,11 +96,14 @@ export async function unlatchRules(
 
 // One transaction, so a crash between the steps cannot leave a released rule latched or a latch
 // written for a key the same tick dropped. A key no rule of the block has any more is dropped too:
-// the rule was edited or deleted, and its state goes with it.
+// the rule was edited or deleted, and its state goes with it. Only rows written up to `upTo` (when
+// the tick read the state, or last latched) are released or dropped: two ticks can finish out of
+// order, and a newer one's latch is not the older one's to remove.
 export async function writeTriggerState(
   base: PrismaClient,
   scope: TriggerScope,
   change: TriggerStateChange,
+  upTo: Date = new Date(),
 ): Promise<void> {
   const where = {
     agentId: scope.agentId,
@@ -110,6 +113,7 @@ export async function writeTriggerState(
     await db.decisionRuleState.deleteMany({
       where: {
         ...where,
+        createdAt: { lte: upTo },
         OR: [
           { ruleKey: { notIn: change.keep } },
           ...(change.release.length > 0

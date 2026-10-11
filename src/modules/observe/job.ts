@@ -1840,6 +1840,9 @@ export async function runObserve(
     // The state as read: a release after the tick ended touches only rows written up to then or by
     // this tick's own latches, never one a later observation wrote.
     const readAt = new Date();
+    // When this tick last wrote latches ahead (`readAt` until it does): the bound of what it may
+    // release or drop.
+    let latchedUpTo: Date = readAt;
     if (triggerScope !== null) {
       try {
         latched = await readLatchedRules(base, triggerScope);
@@ -1869,7 +1872,7 @@ export async function runObserve(
     ): Promise<boolean> => {
       if (triggerScope === null) return true;
       try {
-        await writeTriggerState(base, triggerScope, change);
+        await writeTriggerState(base, triggerScope, change, latchedUpTo);
         return true;
       } catch (err) {
         logger.warn(
@@ -1939,8 +1942,6 @@ export async function runObserve(
     // deadline and is retried whole, repeating what already committed.
     let report: Awaited<ReturnType<typeof applyDecisions>>;
     const progress: DecisionProgress = {};
-    // When this tick last wrote latches ahead (`readAt` until it does).
-    let latchedUpTo: Date = readAt;
     let applying: Promise<unknown> = Promise.resolve();
     try {
       const run = applyDecisions(

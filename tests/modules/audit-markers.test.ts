@@ -20,6 +20,33 @@ describe("the audit markers a reader has to know", () => {
     expect(carriesAuditMarker(audit?.after)).toBe(true);
   });
 
+  // A contact gate allowlist is projected as counts, so swapping one number for another leaves both
+  // sides equal and the marker is the only trace of the edit, alone or as a condition of a combination.
+  test("an allowlist whose entries moved without its counts moving carries a marker", () => {
+    // Digits, the form the gate stores: a `+` the reader strips would move the unread residue and
+    // put a marker on the row for a reason that has nothing to do with the swap.
+    const gate = (phone: string, combined: boolean) => {
+      const list = { kind: "allowlist", phones: [phone], identifiers: [] };
+      return {
+        settings: {
+          contactAuth: {
+            rule: combined ? { kind: "all", conditions: [list] } : list,
+          },
+        },
+      };
+    };
+    for (const combined of [false, true]) {
+      const audit = agentUpdateAudit(
+        gate("5511999990001", combined),
+        gate("5511999990002", combined),
+      );
+      expect(audit).not.toBeNull();
+      expect(audit?.before).toEqual(audit?.after);
+      expect(carriesAuditMarker(audit?.before)).toBe(true);
+      expect(carriesAuditMarker(audit?.after)).toBe(true);
+    }
+  });
+
   test("a marker is found wherever a producer puts it, not only at the top", () => {
     expect(carriesAuditMarker({ undisclosedChanged: true })).toBe(true);
     // NOTE: the settings shape: the marker rides on the FIELD's own projection.

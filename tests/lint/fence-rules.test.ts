@@ -53,6 +53,7 @@ const RULES = {
   vault: "Write vault entries through",
   secretRef: "Only the owning service writes",
   staleness: "makes the check a tautology",
+  marker: "Write an audit marker through",
   unusedWaiver: "Suppression comment has no effect",
 } as const;
 type Rule = keyof typeof RULES;
@@ -255,6 +256,14 @@ const PROBES: Record<string, string> = {
   [P("secret-ref-read.ts")]:
     `${ANY}await db.webhookSubscription.findMany({ where: x });\nawait db.alertChannel.findFirst({ where: x });\n`,
 
+  // no-raw-audit-marker
+  [P("marker-literal.ts")]:
+    `${ANY}export const a = { ...x, entriesChanged: true };\nexport const b = { "unreadConfigChanged": true };\n`,
+  [P("marker-assigned.ts")]:
+    `${ANY}x.entriesChanged = true;\nx["undisclosedChanged"] = true;\nx.shape.somethingChanged =\n  true;\n`,
+  [P("marker-helper.ts")]:
+    `${ANY}export const a = withAuditMarker(x, "entriesChanged");\nexport const b = { changed: true, entriesChanged: false };\nx.entriesChanged = w;\nexport const c = x.entriesChanged === true;\n`,
+
   // no-tautological-staleness
   [P("staleness-same.ts")]:
     `${ANY}x.capture(w, ctx, { accountIds: user }, { accountIds: user });\n`,
@@ -273,6 +282,7 @@ const OWNERS = [
   `${SRC}/modules/vault/service.ts`,
   `${SRC}/modules/webhooks/outbound/subscriptions.ts`,
   `${SRC}/modules/flowlog/channels.ts`,
+  `${SRC}/graph/tools/native.ts`,
   `${SRC}/client/pages/agents/ChannelRedirectTab.tsx`,
   `${SRC}/client/pages/agents/PlaygroundChat.tsx`,
   "tests/utils/flowlog.ts",
@@ -287,6 +297,7 @@ const EXEMPTED: Array<[string, Rule]> = [
   [`${SRC}/modules/vault/service.ts`, "vault"],
   [`${SRC}/modules/webhooks/outbound/subscriptions.ts`, "secretRef"],
   [`${SRC}/modules/flowlog/channels.ts`, "secretRef"],
+  [`${SRC}/graph/tools/native.ts`, "marker"],
   [`${SRC}/api/lib/step-up.ts`, "verify"],
   [`${SRC}/api/features/auth/auth.service.ts`, "verify"],
   [`${SRC}/api/features/auth/auth.controller.ts`, "verify"],
@@ -433,6 +444,9 @@ describe("each fence refuses its shape and nothing else", () => {
     ["secret-ref-webhook.ts", { secretRef: 1 }],
     ["secret-ref-alert.ts", { secretRef: 1 }],
     ["secret-ref-read.ts", {}],
+    ["marker-literal.ts", { marker: 2 }],
+    ["marker-assigned.ts", { marker: 3 }],
+    ["marker-helper.ts", {}],
     ["staleness-same.ts", { staleness: 1 }],
     ["staleness-live.ts", {}],
   ] as Array<[string, Partial<Record<Rule, number>>]>)("%s", (name, want) => {

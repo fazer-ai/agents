@@ -353,6 +353,16 @@
       "includes": ["src/api/**/*.ts", "tests/lint/.probe-fence-*/**/*.ts"],
       "plugins": ["./biome-plugins/no-bare-tenant-id-in-api.grit"]
     },
+    // src/graph/tools/native.ts sets `ownerChanged` on a tool call's own state, which no audit row
+    // carries.
+    {
+      "includes": [
+        "src/**/*.{ts,tsx}",
+        "!src/graph/tools/native.ts",
+        "tests/lint/.probe-fence-*/**/*.{ts,tsx}"
+      ],
+      "plugins": ["./biome-plugins/no-raw-audit-marker.grit"]
+    },
     {
       "includes": [
         "src/**/*.ts",

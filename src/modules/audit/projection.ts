@@ -1,3 +1,4 @@
+import { withAuditMarker } from "@/lib/audit/markers";
 import { clipText, makeStorable } from "@/lib/text";
 import { readableVaultRef } from "@/modules/vault/service";
 
@@ -105,5 +106,5 @@ export function undisclosedMoved(
 export function markUndisclosed<T extends object>(
   projection: T,
 ): T & { undisclosedChanged: true } {
-  return { ...projection, undisclosedChanged: true };
+  return withAuditMarker(projection, "undisclosedChanged");
 }

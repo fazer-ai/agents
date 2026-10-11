@@ -96,6 +96,26 @@ describe("the field-level diff", () => {
     expect(d.changes).toEqual([]);
   });
 
+  // A contact gate allowlist is recorded as counts, so a swap of one number for another leaves both
+  // sides equal and the marker on the list is all the row has to say about the edit.
+  test("an allowlist whose entries moved is a change the row does not show", () => {
+    const side = {
+      settings: {
+        contactAuth: {
+          rule: {
+            kind: "allowlist",
+            phones: 1,
+            identifiers: 0,
+            entriesChanged: true,
+          },
+        },
+      },
+    };
+    const d = diffProjection(side, structuredClone(side));
+    expect(d.undisclosed).toBe(true);
+    expect(d.changes).toEqual([]);
+  });
+
   test("a nested marker alongside a visible change keeps both", () => {
     const d = diffProjection(
       { name: "antes", settings: { tts: "off", unreadConfigChanged: true } },

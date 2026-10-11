@@ -1,0 +1,16 @@
+// Refuses an audit marker written by hand, `xChanged: true` in an object or `o.xChanged = true` (scoped
+// in biome.jsonc). The console finds a marker only by its key in AUDIT_MARKER_KEYS
+// (src/lib/audit/markers.ts), and one it does not know renders a real change as "no field values", so
+// a producer writes it through `withAuditMarker`, whose key the type checker holds to that list.
+language js;
+
+or {
+    JsPropertyObjectMember() as $site where {
+        $site <: r"[\x22']?[A-Za-z0-9_$]*Changed[\x22']?\s*:\s*true"
+    },
+    JsAssignmentExpression() as $site where {
+        $site <: r"[\s\S]*(?:\.\s*[A-Za-z0-9_$]*Changed|\[\s*[\x22'][A-Za-z0-9_$]*Changed[\x22']\s*\])\s*=\s*true"
+    }
+} where {
+    register_diagnostic(span = $site, message = "Write an audit marker through `withAuditMarker` (src/lib/audit/markers.ts), which holds its key to the list the console reads.")
+}

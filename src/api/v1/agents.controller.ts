@@ -14,6 +14,7 @@ import {
 import { instanceIdentity } from "@/lib/instance";
 import type { TenantContext } from "@/lib/tenancy";
 import { readAgentConfigHealth } from "@/modules/agents/config-health-read";
+import { readLimitsConfig } from "@/modules/agents/limits";
 import {
   AGENT_MODES,
   type AgentCreate,
@@ -346,12 +347,22 @@ export const agentsController = new Elysia({
   )
   .get(
     "/:id",
-    async ({ tenantContext, params }) => ({
-      instance: instanceIdentity,
-      agent: await getAgent(ctxOrThrow(tenantContext), requireDbId(params.id)),
-    }),
+    async ({ tenantContext, params }) => {
+      const agent = await getAgent(
+        ctxOrThrow(tenantContext),
+        requireDbId(params.id),
+      );
+      return {
+        instance: instanceIdentity,
+        agent,
+        effective: { limits: readLimitsConfig(agent.settings) },
+      };
+    },
     {
-      detail: doc("Get agent", "Returns a single agent by id."),
+      detail: doc(
+        "Get agent",
+        "Returns a single agent by id. `agent.settings` is the bag as stored, which is what a PATCH sends back. `effective.limits` is what the runtime enforces: the stored execution limits with every absent or `null` field read as its default (`maxToolCalls` 10, `maxHistoryTokens` null = no ceiling, `retrySilence` true, `maxTurnsPerHour` 60, `maxProactivePerDay` 10; a stored `0` on the last two means no limit). It is read-only: do not send it back.",
+      ),
       response: errors(400, 401, 403, 404),
       requireRole: "TENANT_ADMIN",
       params: t.Object({

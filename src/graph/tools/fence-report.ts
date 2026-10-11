@@ -14,7 +14,12 @@ export interface FenceReport {
   partial: boolean;
 }
 
-export type FenceReporter = (report: FenceReport) => void;
+// Two more facts only the handler knows, on the same channel: the call returned without writing
+// anything (a scope the conversation does not have), or it wrote something that stays even though
+// the call then threw (a handoff's note filed before its status change failed).
+export type CallReport = FenceReport | { noEffect: true } | { committed: true };
+
+export type FenceReporter = (report: CallReport) => void;
 
 const KEY = "fazeraiFenceReporter";
 

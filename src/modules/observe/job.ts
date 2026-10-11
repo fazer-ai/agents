@@ -72,6 +72,7 @@ import {
   answersForLog,
   applyDecisions,
   askProvider,
+  type DecisionProgress,
 } from "@/modules/decisions/run";
 import {
   readLatchedRules,
@@ -1932,6 +1933,7 @@ export async function runObserve(
     // signal does not cancel, and a tick that outlives its budget reaches the scheduler's outer
     // deadline and is retried whole, repeating what already committed.
     let report: Awaited<ReturnType<typeof applyDecisions>>;
+    const progress: DecisionProgress = {};
     try {
       report = await underSignal(
         applyDecisions(
@@ -1956,11 +1958,16 @@ export async function runObserve(
               : "conversation",
           false,
           latched,
+          progress,
         ),
         deadline,
       );
     } catch (err) {
       toolLogger.settle();
+      // What the actions before the one that stopped the tick latched stays latched: a note that
+      // went out is one the next observation must not post again.
+      if (progress.triggerState)
+        await persistTriggerState(progress.triggerState);
       if (refusal !== null) return endOnRefusal(refusal);
       // The same rule as the model-failure path: a dispatch that never settled counts as committed,
       // and a committed effect is never retried.

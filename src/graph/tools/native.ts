@@ -588,124 +588,138 @@ function handoffTool(ctx: ToolCtx) {
       }
     : {};
   return tool(
-    async ({
-      reason,
-      assignTo,
-      customerMessage,
-    }: {
-      reason?: string;
-      assignTo?: string;
-      // Required on a speaking turn and absent from the schema on a muted one, so `undefined` here
-      // means the muted branch and never a model that forgot (see the schema below).
-      customerMessage?: string;
-    }) => {
-      // NOTE: Transfer-with-summary: a private note for the human BEFORE handing off, gated by the
-      // per-agent toggle (default on).
-      if (reason && ctx.transferWithSummary !== false) {
-        // NOTE: The model's words, escaped for Chatwoot's Liquid.
-        await ctx.client.sendPrivateNote(
-          ctx.conversationId,
-          literalForChatwoot(reason),
-        );
-        // NOTE: ASKED AGAIN between the note and the status change, only when the note was sent: the
-        // graph's ask at the tool boundary came before this wait, and an observation holds no thread
-        // claim to keep a `/reset` or a detach out of it. The note stays filed; this stops the pair
-        // below (out of `pending`, then assigned), a routing change on an episode the operator was
-        // just told was cleared. Same rule `set_labels` applies in its queue and
-        // `resolve_conversation` after its read.
-        if (ctx.stillWanted && !(await ctx.stillWanted())) {
-          return "Did not hand off (the run was called off while the note was in flight); the note was already filed.";
-        }
-      }
-      // NOTE: Set status `open` → the conversation leaves `pending`, so the attribution gate stops the
-      // bot and the human queue picks it up.
-      await ownStatusChange(ctx, () =>
-        ctx.client.toggleStatus(ctx.conversationId, "open"),
-      );
-      // NOTE: Only here: everything above can throw, and a handoff that did not reach this line has
-      // not happened; the assignment below is best-effort, as the conversation is already out of
-      // `pending`. The closing line comes from THIS invocation's argument: a model whose first
-      // attempt threw calls again, and a successful retry with no line must not deliver the first
-      // one's promise. Recorded rather than sent from the tool, so it passes the output guardrail,
-      // TTS and the pacing every reply gets; the cost is that the customer reads it just after the
-      // transfer instead of just before, which Chatwoot does not show them.
-      if (ctx.handoffState) {
-        // BOTH fields come from THIS invocation, so a second successful call cannot leave the first
-        // one's promise standing next to its own silence: the turn would then be holding a line to
-        // deliver and a declaration not to, and whichever the runtime asked about first would win.
-        const spoken = customerMessage?.trim() ?? "";
-        ctx.handoffState.customerMessage = spoken || null;
-        ctx.handoffState.lineByOperator = false;
-        ctx.handoffState.declinedToSpeak = speaks && !spoken;
-        ctx.handoffState.completed = true;
-      }
-
-      // Optional targeting (best-effort: the handoff already happened, so an assignment failure must
-      // not break the turn). In `route` mode nothing is assigned (Chatwoot routes).
-      let assigned = "";
+    async (
+      {
+        reason,
+        assignTo,
+        customerMessage,
+      }: {
+        reason?: string;
+        assignTo?: string;
+        // Required on a speaking turn and absent from the schema on a muted one, so `undefined` here
+        // means the muted branch and never a model that forgot (see the schema below).
+        customerMessage?: string;
+      },
+      config?: ToolRunnableConfig,
+    ) => {
+      // Set once the note is filed: a throw after it still left that note in the conversation.
+      let filed = false;
       try {
-        if (mode === "pinned") {
-          if (ctx.handoff?.targetAgentId) {
-            await ctx.client.assignToAgent(
-              ctx.conversationId,
-              ctx.handoff.targetAgentId,
-            );
-            assigned = " Assigned to the configured agent.";
-          } else if (ctx.handoff?.targetTeamId) {
-            await ctx.client.assignTeam(
-              ctx.conversationId,
-              ctx.handoff.targetTeamId,
-            );
-            assigned = " Assigned to the configured team.";
-          }
-        } else if (agentChoice && assignTo?.trim()) {
-          // Resolve against the list grounded at turn prep; fall back to a live read only if it was
-          // not pre-resolved (e.g. the prep-time fetch failed).
-          const targets = ctx.handoffTargets ?? {
-            agents: await ctx.client.listAgents(),
-            teams: await ctx.client.listTeams(),
-          };
-          const target = matchHandoffTarget(targets, assignTo);
-          if (target?.kind === "agent") {
-            await ctx.client.assignToAgent(ctx.conversationId, target.id);
-            assigned = ` Assigned to ${target.name}.`;
-          } else if (target?.kind === "team") {
-            await ctx.client.assignTeam(ctx.conversationId, target.id);
-            assigned = ` Assigned to team ${target.name}.`;
-          } else {
-            // NOTE: No match: surface it instead of failing silently — a private note tells the human the
-            // intended target, and the conversation falls back to default routing.
-            await ctx.client.sendPrivateNote(
-              ctx.conversationId,
-              `Tentei encaminhar para "${literalForChatwoot(assignTo)}", mas não encontrei um agente ou time com esse nome no Chatwoot. Deixei no roteamento padrão.`,
-            );
-            assigned = ` No agent/team named "${assignTo}" was found; left for default routing.`;
+        return await handOff();
+      } catch (e) {
+        if (filed) fenceReporterOf(config)?.({ committed: true });
+        throw e;
+      }
+      async function handOff(): Promise<string> {
+        // NOTE: Transfer-with-summary: a private note for the human BEFORE handing off, gated by the
+        // per-agent toggle (default on).
+        if (reason && ctx.transferWithSummary !== false) {
+          // NOTE: The model's words, escaped for Chatwoot's Liquid.
+          await ctx.client.sendPrivateNote(
+            ctx.conversationId,
+            literalForChatwoot(reason),
+          );
+          filed = true;
+          // NOTE: ASKED AGAIN between the note and the status change, only when the note was sent: the
+          // graph's ask at the tool boundary came before this wait, and an observation holds no thread
+          // claim to keep a `/reset` or a detach out of it. The note stays filed; this stops the pair
+          // below (out of `pending`, then assigned), a routing change on an episode the operator was
+          // just told was cleared. Same rule `set_labels` applies in its queue and
+          // `resolve_conversation` after its read.
+          if (ctx.stillWanted && !(await ctx.stillWanted())) {
+            return "Did not hand off (the run was called off while the note was in flight); the note was already filed.";
           }
         }
-      } catch (e) {
-        logger.warn(
-          "handoff assignment failed (conv=%s): %s",
-          String(ctx.conversationId),
-          e instanceof Error ? e.message : String(e),
+        // NOTE: Set status `open` → the conversation leaves `pending`, so the attribution gate stops the
+        // bot and the human queue picks it up.
+        await ownStatusChange(ctx, () =>
+          ctx.client.toggleStatus(ctx.conversationId, "open"),
         );
-        ctx.onSideEffectError?.({
-          tool: "handoff_to_human",
-          phase: "assign",
-          detail: { mode },
-          err: e,
-        });
+        // NOTE: Only here: everything above can throw, and a handoff that did not reach this line has
+        // not happened; the assignment below is best-effort, as the conversation is already out of
+        // `pending`. The closing line comes from THIS invocation's argument: a model whose first
+        // attempt threw calls again, and a successful retry with no line must not deliver the first
+        // one's promise. Recorded rather than sent from the tool, so it passes the output guardrail,
+        // TTS and the pacing every reply gets; the cost is that the customer reads it just after the
+        // transfer instead of just before, which Chatwoot does not show them.
+        if (ctx.handoffState) {
+          // BOTH fields come from THIS invocation, so a second successful call cannot leave the first
+          // one's promise standing next to its own silence: the turn would then be holding a line to
+          // deliver and a declaration not to, and whichever the runtime asked about first would win.
+          const spoken = customerMessage?.trim() ?? "";
+          ctx.handoffState.customerMessage = spoken || null;
+          ctx.handoffState.lineByOperator = false;
+          ctx.handoffState.declinedToSpeak = speaks && !spoken;
+          ctx.handoffState.completed = true;
+        }
+
+        // Optional targeting (best-effort: the handoff already happened, so an assignment failure must
+        // not break the turn). In `route` mode nothing is assigned (Chatwoot routes).
+        let assigned = "";
+        try {
+          if (mode === "pinned") {
+            if (ctx.handoff?.targetAgentId) {
+              await ctx.client.assignToAgent(
+                ctx.conversationId,
+                ctx.handoff.targetAgentId,
+              );
+              assigned = " Assigned to the configured agent.";
+            } else if (ctx.handoff?.targetTeamId) {
+              await ctx.client.assignTeam(
+                ctx.conversationId,
+                ctx.handoff.targetTeamId,
+              );
+              assigned = " Assigned to the configured team.";
+            }
+          } else if (agentChoice && assignTo?.trim()) {
+            // Resolve against the list grounded at turn prep; fall back to a live read only if it was
+            // not pre-resolved (e.g. the prep-time fetch failed).
+            const targets = ctx.handoffTargets ?? {
+              agents: await ctx.client.listAgents(),
+              teams: await ctx.client.listTeams(),
+            };
+            const target = matchHandoffTarget(targets, assignTo);
+            if (target?.kind === "agent") {
+              await ctx.client.assignToAgent(ctx.conversationId, target.id);
+              assigned = ` Assigned to ${target.name}.`;
+            } else if (target?.kind === "team") {
+              await ctx.client.assignTeam(ctx.conversationId, target.id);
+              assigned = ` Assigned to team ${target.name}.`;
+            } else {
+              // NOTE: No match: surface it instead of failing silently — a private note tells the human the
+              // intended target, and the conversation falls back to default routing.
+              await ctx.client.sendPrivateNote(
+                ctx.conversationId,
+                `Tentei encaminhar para "${literalForChatwoot(assignTo)}", mas não encontrei um agente ou time com esse nome no Chatwoot. Deixei no roteamento padrão.`,
+              );
+              assigned = ` No agent/team named "${assignTo}" was found; left for default routing.`;
+            }
+          }
+        } catch (e) {
+          logger.warn(
+            "handoff assignment failed (conv=%s): %s",
+            String(ctx.conversationId),
+            e instanceof Error ? e.message : String(e),
+          );
+          ctx.onSideEffectError?.({
+            tool: "handoff_to_human",
+            phase: "assign",
+            detail: { mode },
+            err: e,
+          });
+        }
+        // WHAT THE MODEL READS AFTER TRANSFERRING, one sentence per case, each a promise the
+        // product keeps: the declared silence is enforced by `handoffDeclaredSilence` above, so "no
+        // message will be sent" is not advice. None of them tells the model to stay silent: a model
+        // obeys that as an instruction. When a line IS supplied, `runtime.ts` blanks the model's own
+        // text (the duplicate-reply guard), which does not depend on this sentence.
+        const silenceNote = !speaks
+          ? " This turn does not answer the customer, so nothing is sent to them."
+          : customerMessage?.trim()
+            ? " The message you wrote will be delivered to the customer; do not repeat it."
+            : " No message will be sent to the customer, as you indicated.";
+        return `${HANDOFF_DONE_PREFIX} (status set to open).${assigned}${silenceNote}`;
       }
-      // WHAT THE MODEL READS AFTER TRANSFERRING, one sentence per case, each a promise the
-      // product keeps: the declared silence is enforced by `handoffDeclaredSilence` above, so "no
-      // message will be sent" is not advice. None of them tells the model to stay silent: a model
-      // obeys that as an instruction. When a line IS supplied, `runtime.ts` blanks the model's own
-      // text (the duplicate-reply guard), which does not depend on this sentence.
-      const silenceNote = !speaks
-        ? " This turn does not answer the customer, so nothing is sent to them."
-        : customerMessage?.trim()
-          ? " The message you wrote will be delivered to the customer; do not repeat it."
-          : " No message will be sent to the customer, as you indicated.";
-      return `${HANDOFF_DONE_PREFIX} (status set to open).${assigned}${silenceNote}`;
     },
     {
       // NOTE: From the catalog, because the hand-back decision matches results by this exact name
@@ -899,18 +913,25 @@ function setCustomAttributeTool(ctx: ToolCtx) {
     ? knownAttributesXml(convDefs, contactDefs, taskScope ? taskDefs : null)
     : undefined;
   return tool(
-    async ({
-      key,
-      value,
-      scope,
-    }: {
-      key: string;
-      value: string;
-      scope?: "conversation" | "contact" | "task";
-    }) => {
+    async (
+      {
+        key,
+        value,
+        scope,
+      }: {
+        key: string;
+        value: string;
+        scope?: "conversation" | "contact" | "task";
+      },
+      config?: ToolRunnableConfig,
+    ) => {
+      const noEffect = () => {
+        ctx.onNoEffect?.("set_custom_attribute");
+        fenceReporterOf(config)?.({ noEffect: true });
+      };
       if (scope === "task") {
         if (!ctx.kanban) {
-          ctx.onNoEffect?.("set_custom_attribute");
+          noEffect();
           return "Could not set the task attribute (this conversation has no linked card).";
         }
         try {
@@ -921,7 +942,7 @@ function setCustomAttributeTool(ctx: ToolCtx) {
           );
         } catch (e) {
           if (e instanceof ChatwootCalledOffError) {
-            ctx.onNoEffect?.("set_custom_attribute");
+            noEffect();
             return CALLED_OFF_ATTRIBUTE;
           }
           throw e;
@@ -931,7 +952,7 @@ function setCustomAttributeTool(ctx: ToolCtx) {
       }
       if (scope === "contact") {
         if (!ctx.base || ctx.tenantId == null || ctx.contactDbId == null) {
-          ctx.onNoEffect?.("set_custom_attribute");
+          noEffect();
           return "Could not set the contact attribute (no contact in scope).";
         }
         const tenantId = ctx.tenantId;
@@ -943,7 +964,7 @@ function setCustomAttributeTool(ctx: ToolCtx) {
           }),
         );
         if (!contact?.chatwootContactId) {
-          ctx.onNoEffect?.("set_custom_attribute");
+          noEffect();
           return "Could not set the contact attribute (contact not linked to Chatwoot).";
         }
         // NOTE: ASKED AGAIN, after the lookup and before the write: the graph's ask happens at
@@ -951,7 +972,7 @@ function setCustomAttributeTool(ctx: ToolCtx) {
         // the conversation it was written from, so a value written after a `/reset` (or after the
         // agent was switched off) is one nothing later corrects.
         if (ctx.stillWanted && !(await ctx.stillWanted())) {
-          ctx.onNoEffect?.("set_custom_attribute");
+          noEffect();
           return "Could not set the contact attribute (the run was called off while this write waited).";
         }
         try {
@@ -965,7 +986,7 @@ function setCustomAttributeTool(ctx: ToolCtx) {
           );
         } catch (e) {
           if (e instanceof ChatwootCalledOffError) {
-            ctx.onNoEffect?.("set_custom_attribute");
+            noEffect();
             return CALLED_OFF_ATTRIBUTE;
           }
           throw e;
@@ -987,7 +1008,7 @@ function setCustomAttributeTool(ctx: ToolCtx) {
         );
       } catch (e) {
         if (e instanceof ChatwootCalledOffError) {
-          ctx.onNoEffect?.("set_custom_attribute");
+          noEffect();
           return CALLED_OFF_ATTRIBUTE;
         }
         throw e;

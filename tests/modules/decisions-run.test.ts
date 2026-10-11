@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { DynamicStructuredTool } from "@langchain/core/tools";
 import { z } from "zod";
-import { applyDecisions } from "@/modules/decisions/run";
+import { fenceReporterOf } from "@/graph/tools/fence-report";
+import { ruleStateKey } from "@/modules/decisions/config";
+import { applyDecisions, type DecisionProgress } from "@/modules/decisions/run";
 
 // The tick's deadline inside `applyDecisions`, without the observation's fence (here always still
 // wanted), so each of the two checks is the only thing that can stop the next rule.
@@ -463,5 +465,107 @@ describe("applyDecisions dispatching the actions that share a write", () => {
       ),
     ).rejects.toThrow();
     expect(r.startedOrder).toEqual(["k1", "k2", "k2:returned"]);
+  });
+});
+
+// What latches when the actions do not all simply run (docs/decisions.md, "When a rule acts").
+describe("applyDecisions and the trigger state", () => {
+  const reporting = (
+    name: string,
+    fn: (report: ReturnType<typeof fenceReporterOf>) => Promise<string>,
+  ) =>
+    new DynamicStructuredTool({
+      name,
+      description: name,
+      schema: z.object({}).passthrough(),
+      func: async (_args, _run, config) => fn(fenceReporterOf(config)),
+    });
+
+  test("an action that wrote nothing is no_effect and does not latch", async () => {
+    const rules = [
+      {
+        when,
+        action: { tool: "set_custom_attribute" as const, args: {} },
+        trigger: "once" as const,
+      },
+    ];
+    const r = await applyDecisions(
+      { rules },
+      answers,
+      [
+        reporting("set_custom_attribute", async (report) => {
+          report?.({ noEffect: true });
+          return "Could not set the contact attribute (no contact in scope).";
+        }),
+      ],
+      [],
+      new AbortController().signal,
+      async () => true,
+      10,
+    );
+    expect(r.actions).toEqual([
+      { rule: 0, tool: "set_custom_attribute", outcome: "no_effect" },
+    ]);
+    expect(r.triggerState.latch).toEqual([]);
+  });
+
+  test("a failed action that left something behind latches", async () => {
+    const rules = [
+      { when, action: { tool: "handoff_to_human" as const, args: {} } },
+    ];
+    const r = await applyDecisions(
+      { rules },
+      answers,
+      [
+        reporting("handoff_to_human", async (report) => {
+          report?.({ committed: true });
+          throw new Error("status change failed");
+        }),
+      ],
+      [],
+      new AbortController().signal,
+      async () => true,
+      10,
+    );
+    expect(r.actions).toEqual([
+      {
+        rule: 0,
+        tool: "handoff_to_human",
+        outcome: "failed",
+        failure: "tool_error",
+        committed: true,
+      },
+    ]);
+    expect(r.triggerState.latch).toEqual([
+      ruleStateKey({ when, action: { tool: "handoff_to_human", args: {} } }),
+    ]);
+  });
+
+  test("an action that ran before the deadline stopped the tick is in the progress the caller persists", async () => {
+    const t = tools(async () => "ok");
+    // The second action meets the deadline: the first one's note already went out.
+    t.list[1] = reporting("set_labels", async () => {
+      t.controller.abort(new Error("deadline"));
+      throw new Error("aborted");
+    });
+    const progress: DecisionProgress = {};
+    await expect(
+      applyDecisions(
+        config,
+        answers,
+        t.list,
+        [],
+        t.controller.signal,
+        async () => true,
+        10,
+        () => null,
+        false,
+        new Set(),
+        progress,
+      ),
+    ).rejects.toThrow();
+    expect(progress.triggerState?.latch).toEqual([
+      ruleStateKey({ when, action: { tool: "private_note", args: {} } }),
+    ]);
   });
 });

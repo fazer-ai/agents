@@ -12,6 +12,7 @@ import {
   isInteropZodSchema,
 } from "@langchain/core/utils/types";
 import {
+  type CallReport,
   type FenceName,
   type FenceReport,
   withFenceReporter,
@@ -60,14 +61,19 @@ export interface ActionReport {
   // it spent `limits.maxToolCalls`. `refused`: a fence inside the tool refused the whole call
   // (`fence` names it: a protected label, a label outside the allowed list, the tool's
   // precondition), so nothing was written. A call refused only in part ran, with `fence` and `partial`.
+  // `no_effect`: the tool returned without writing (the contact it targets is not there).
   outcome:
     | "decided"
     | "ran"
     | "not_granted"
     | "failed"
     | "over_budget"
-    | "refused";
+    | "refused"
+    | "no_effect";
   failure?: string;
+  // A failed call that wrote something that stays (a handoff's note filed before its status change
+  // threw): the rule latches as if it had run, so the next observation does not file it again.
+  committed?: true;
   fence?: FenceName;
   partial?: true;
   // Later rules whose identical action this one is (rules.ts): the outcome is theirs too.
@@ -82,6 +88,12 @@ export interface TriggerStateChange {
   latch: string[];
   release: string[];
   keep: string[];
+}
+
+// Filled by `applyDecisions` as actions settle, so a caller whose call rejected (the deadline met
+// a later action) still persists what the actions before it latched.
+export interface DecisionProgress {
+  triggerState?: TriggerStateChange;
 }
 
 export interface DecisionTickReport {
@@ -113,6 +125,7 @@ export async function applyDecisions(
   together: (action: FiredAction) => string | null = () => null,
   dryRun = false,
   latched: ReadonlySet<string> = new Set(),
+  progress: DecisionProgress = {},
 ): Promise<DecisionTickReport> {
   const keys = config.rules.map(ruleStateKey);
   const triggers = config.rules.map(triggerOf);
@@ -165,14 +178,15 @@ export async function applyDecisions(
         ? [withMerged(a, f)]
         : [];
     });
-  // A rule latches when its action RAN (in full or in part): one that could not run, or that a
-  // fence refused, acts again on the next observation in which it holds, so a grant or an attribute
-  // that arrives later is not met by a rule that already counts itself done. A dry run writes nothing.
+  // A rule latches when its action RAN (in full or in part), or failed after writing something that
+  // stays: one that could not run, wrote nothing, or that a fence refused, acts again on the next
+  // observation in which it holds, so a grant or a contact that arrives later is not met by a rule
+  // that already counts itself done. A dry run writes nothing.
   const triggerState = (actions: ActionReport[]): TriggerStateChange => {
     const latch = new Set<string>();
     if (!dryRun) {
       for (const a of actions) {
-        if (a.outcome !== "ran") continue;
+        if (a.outcome !== "ran" && !a.committed) continue;
         for (const rule of [a.rule, ...(a.merged ?? [])]) {
           const key = keys[rule];
           if (key && triggers[rule] !== "each_time") latch.add(key);
@@ -257,15 +271,18 @@ export async function applyDecisions(
       for (const member of admitted) {
         const f = fired[member.at];
         if (!f) continue;
-        const fences: FenceReport[] = [];
+        const reports: CallReport[] = [];
         running.push(
           member.tool
             .invoke(
               f.args,
-              withFenceReporter({ callbacks, signal }, (r) => fences.push(r)),
+              withFenceReporter({ callbacks, signal }, (r) => reports.push(r)),
             )
             .then(
               () => {
+                const fences = reports.filter(
+                  (r): r is FenceReport => "fence" in r,
+                );
                 const whole = fences.find((r) => !r.partial);
                 const part = fences.find((r) => r.partial);
                 slots[member.at] = whole
@@ -283,7 +300,10 @@ export async function applyDecisions(
                         fence: part.fence,
                         partial: true,
                       }
-                    : { rule: f.rule, tool: f.tool, outcome: "ran" };
+                    : reports.some((r) => "noEffect" in r)
+                      ? { rule: f.rule, tool: f.tool, outcome: "no_effect" }
+                      : { rule: f.rule, tool: f.tool, outcome: "ran" };
+                progress.triggerState = triggerState(reported());
               },
               (err: unknown) => {
                 // Cancellation ends the tick, it is not one tool's failure: the caller owns the deadline.
@@ -299,7 +319,11 @@ export async function applyDecisions(
                     err instanceof ToolInputParsingException
                       ? "invalid_arguments"
                       : "tool_error",
+                  ...(reports.some((r) => "committed" in r)
+                    ? { committed: true as const }
+                    : {}),
                 };
+                progress.triggerState = triggerState(reported());
               },
             ),
         );

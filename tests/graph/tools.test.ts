@@ -1,6 +1,7 @@
 import { describe, expect, setSystemTime, test } from "bun:test";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import type { PrismaClient } from "@/../generated/prisma/client";
+import { type CallReport, withFenceReporter } from "@/graph/tools/fence-report";
 import { modelVisibleLabels, SHOWN_LABELS_MAX } from "@/graph/tools/label-view";
 import {
   applyLabelDelta,
@@ -2559,6 +2560,53 @@ describe("native tools", () => {
     expect(out.toLowerCase()).toContain("no contact in scope");
     // Nothing was written (no base/contact wired in this pure ctx).
     expect(calls).toEqual([]);
+  });
+
+  // The decisions engine reads what a call did off its own config (fence-report.ts), not the sentence.
+  test("set_custom_attribute with no contact in scope tells the call it wrote nothing", async () => {
+    const { client } = recordingClient();
+    const tools = buildNativeTools({ client, conversationId: 7 });
+    const reports: CallReport[] = [];
+    await byName(tools, "set_custom_attribute").invoke(
+      { key: "plano", value: "Pro", scope: "contact" },
+      withFenceReporter({}, (r) => reports.push(r)),
+    );
+    expect(reports).toEqual([{ noEffect: true }]);
+  });
+
+  test("a handoff whose status change throws after its note was filed tells the call the note stays", async () => {
+    const { client, calls } = recordingClient();
+    (client as unknown as { toggleStatus: () => Promise<never> }).toggleStatus =
+      async () => {
+        throw new Error("chatwoot down");
+      };
+    const tools = buildNativeTools({ client, conversationId: 7 });
+    const reports: CallReport[] = [];
+    await expect(
+      byName(tools, "handoff_to_human").invoke(
+        { reason: "Pediu reembolso", customerMessage: "" },
+        withFenceReporter({}, (r) => reports.push(r)),
+      ),
+    ).rejects.toThrow("chatwoot down");
+    expect(calls.map(([name]) => name)).toEqual(["sendPrivateNote"]);
+    expect(reports).toEqual([{ committed: true }]);
+  });
+
+  test("a handoff that throws before filing anything reports nothing", async () => {
+    const { client } = recordingClient();
+    (client as unknown as { toggleStatus: () => Promise<never> }).toggleStatus =
+      async () => {
+        throw new Error("chatwoot down");
+      };
+    const tools = buildNativeTools({ client, conversationId: 7 });
+    const reports: CallReport[] = [];
+    await expect(
+      byName(tools, "handoff_to_human").invoke(
+        { customerMessage: "" },
+        withFenceReporter({}, (r) => reports.push(r)),
+      ),
+    ).rejects.toThrow("chatwoot down");
+    expect(reports).toEqual([]);
   });
 });
 

@@ -4751,6 +4751,7 @@ function AgentEditor() {
                       : null
                   }
                   grantsPending={toolGrantsPending}
+                  grantWriting={savingGrants}
                   onGrantTool={(tool) => void grantNativeTool(tool)}
                   onOpenTools={(tool) =>
                     goToEditorTarget({

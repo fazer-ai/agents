@@ -682,3 +682,67 @@ test("a switch back to the language model while Save tools is out keeps its draf
     `${JSON.stringify(sent.resolveConversation)} ${Boolean(button("Discard all"))}`,
   ).toBe(`${JSON.stringify({ assignLabels: ["vip"] })} true`);
 });
+
+// Two rules that each need a tool not granted: while the first Allow is written, the second waits.
+// Both would replace the grant set built from the same saved copy and version, and the server would
+// refuse the second as a conflict nobody caused.
+test("a second Allow waits while the first grant is written", async () => {
+  const twoRules = {
+    ...DECIDING,
+    settings: {
+      ...DECIDING.settings,
+      monitoring: {
+        engine: "decisions",
+        decisions: {
+          ...DECIDING.settings.monitoring.decisions,
+          rules: [
+            {
+              when: [{ question: "pede_reembolso", minProbability: 0.7 }],
+              action: { tool: "private_note", args: { content: "ver" } },
+            },
+            {
+              when: [{ question: "pede_reembolso", minProbability: 0.9 }],
+              action: { tool: "handoff_to_human", args: {} },
+            },
+          ],
+        },
+      },
+    },
+  };
+  const asked = stubApi(twoRules, [
+    { ...GRANTS[0], enabledTools: ["set_labels"] },
+  ]);
+  const served = globalThis.fetch;
+  let release: () => void = () => {};
+  const held = new Promise<void>((r) => {
+    release = r;
+  });
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if ((init?.method ?? "GET") === "PUT") await held;
+    return served(input, init);
+  }) as typeof fetch;
+  renderAt("/agents/1/decisions");
+  const allows = await waitFor(() => {
+    const b = [
+      ...document.querySelectorAll<HTMLButtonElement>(
+        '[data-testid="decisions-rule-grant"]',
+      ),
+    ];
+    if (b.length < 2) throw new Error("the Allow buttons are not there yet");
+    return b;
+  });
+  fireEvent.click(allows[0] as HTMLElement);
+  fireEvent.click(allows[1] as HTMLElement);
+  const waiting = [
+    ...document.querySelectorAll<HTMLButtonElement>(
+      '[data-testid="decisions-rule-grant"]',
+    ),
+  ].every((b) => b.disabled);
+  release();
+  await waitFor(() =>
+    expect(asked.filter((a) => a.method === "PUT").length).toBe(1),
+  );
+  expect(`${waiting} ${asked.filter((a) => a.method === "PUT").length}`).toBe(
+    "true 1",
+  );
+});

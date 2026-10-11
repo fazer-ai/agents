@@ -301,6 +301,7 @@ export function DecisionsFields({
   serverRefusal,
   granted,
   grantsPending,
+  grantWriting = false,
   onGrantTool,
   onOpenTools,
   onOpenGeneral,
@@ -324,6 +325,9 @@ export function DecisionsFields({
   // Whether the Tools tab holds grant changes not saved yet: then granting one tool from a rule
   // would write it beside a selection nobody has confirmed, so the rule sends the operator there.
   grantsPending: boolean;
+  // A grant write is out (an Allow, or a Tools save): the Allow buttons wait for it, since each
+  // replaces the whole set from the same saved copy.
+  grantWriting?: boolean;
   onGrantTool: (tool: string) => void;
   // Opens Tools on that tool's card.
   onOpenTools: (tool: string) => void;
@@ -567,6 +571,7 @@ export function DecisionsFields({
           size="sm"
           variant="secondary"
           data-testid="decisions-rule-grant"
+          disabled={grantWriting}
           onClick={() => onGrantTool(rule.tool)}
         >
           {t("editor.decisionsGrantTool", "Allow")}

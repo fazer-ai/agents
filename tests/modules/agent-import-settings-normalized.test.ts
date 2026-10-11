@@ -446,8 +446,9 @@ describe.skipIf(!dbUp)("an imported settings bag create would refuse", () => {
       },
     });
     expect(good.dropped).toEqual([]);
+    // Kept in the form the reader reads, which is how every write stores it.
     expect((good.stored?.contactAuth as Record<string, unknown>)?.rule).toEqual(
-      { kind: "allowlist", phones: ["+5511988887777"] },
+      { kind: "allowlist", phones: ["5511988887777"], identifiers: [] },
     );
   });
 

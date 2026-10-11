@@ -138,6 +138,11 @@ The type and the labels come from the mirror (`Conversation.conversationType`, `
   with `errors.invalidContactAuthRule`, one bad entry refusing the whole list. The reader drops one
   stored some other way, and an enabled gate with neither a rule nor a `url` is the fail-closed
   `not_configured` it always was.
+- **The rule is stored as the reader reads it.** Every write of the settings (console, REST, MCP,
+  create, import) stores the parsed rule: phones as digits, labels lowercased, entries trimmed and
+  deduplicated (`settingsForStorage`, `src/modules/agents/settings-storage.ts`). A rule stored before
+  that keeps its `+` and still reads as the digits; the audit compares both sides in the stored form,
+  so the save that rewrites it records nothing.
 - **The audit trail keeps the shape, not the list.** An allowlist is a list of people, and the
   trail is append-only, so an `agent.settings_set` row records the kind, how many phones and
   identifiers, and `entriesChanged` when they moved. That marker is one of the keys the console

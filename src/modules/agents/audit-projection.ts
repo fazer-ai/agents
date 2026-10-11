@@ -1,6 +1,7 @@
 import { modelConfigSchema } from "@/graph/model-config";
 import { withAuditMarker } from "@/lib/audit/markers";
 import { readBehaviorSettings } from "@/modules/agents/behavior-settings";
+import { withStoredContactAuthRule } from "@/modules/agents/settings-storage";
 import { readVaultRefId, VAULT_REF_PREFIX } from "@/modules/vault/service";
 
 // Which of the three agent actions (`agent_update`, `prompt_set`, `agent_settings_set`) a write to
@@ -359,8 +360,13 @@ export function agentUpdateAudit(
   const afterProj: Record<string, unknown> = {};
 
   for (const field of AUDITED_AGENT_FIELDS) {
-    const rawB = jsonish(before[field]);
-    const rawA = jsonish(after[field]);
+    // The contact gate's rule as it is stored today on both sides, so a rule stored before
+    // that normalization (a phone with its `+`) does not read as unread configuration moving when
+    // the next save rewrites it as the digits it already meant.
+    const stored = (v: unknown) =>
+      field === "settings" ? withStoredContactAuthRule(v) : v;
+    const rawB = jsonish(stored(before[field]));
+    const rawA = jsonish(stored(after[field]));
     const canonB = canonical(field, before[field], now);
     const canonA = canonical(field, after[field], now);
     // Two questions, asked SEPARATELY and both recorded. The first is what the runtime will do

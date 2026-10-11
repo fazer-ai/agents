@@ -90,7 +90,8 @@ export function isAllowedImageHost(
   });
 }
 
-// Every write path for `agent.settings` funnels through this: the operator is invited to paste a
+// Every write path for `agent.settings` funnels through this (by way of `settingsForStorage`,
+// src/modules/agents/settings-storage.ts): the operator is invited to paste a
 // full URL on the promise that only the host is kept, and that has to hold for what is STORED, not
 // only for what is read back. A pasted presigned link would otherwise leave its signature (and any
 // `user:pass@`) sitting in the row, handed to the editor on every load and to an export on the way

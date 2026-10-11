@@ -35,6 +35,7 @@ import { readBehaviorSettings } from "@/modules/agents/behavior-settings";
 import { collectCredentialRefWrites } from "@/modules/agents/credential-paths";
 import { protectedResolveLabels } from "@/modules/agents/resolve-labels";
 import { BEHAVIOR_PATCH_SHAPE } from "@/modules/agents/settings-schema";
+import { settingsForStorage } from "@/modules/agents/settings-storage";
 import { collectOversizedTextChanges } from "@/modules/agents/text-caps";
 import {
   ALLOWED_LABELS_MAX,
@@ -60,7 +61,6 @@ import {
 import { ensureTenantSweep } from "@/modules/followups/handlers";
 import { readFollowUpConfig } from "@/modules/followups/settings";
 import { readSnoozedFollowUpConfig } from "@/modules/followups/snoozed-settings";
-import { normalizeSettingsForStorage } from "@/modules/images/settings";
 import { getCatalogEntry } from "@/modules/integrations/catalog";
 import {
   getToolpackToolNames,
@@ -1784,9 +1784,9 @@ export async function updateAgent(
       modelConfig: before?.model_config,
       settings: before?.settings,
     });
-    // See normalizeSettingsForStorage — the host list is reduced to hosts on the way IN, on
-    // every write path, not only when it is read back.
-    const normalizedSettings = normalizeSettingsForStorage(rest.settings);
+    // See settingsForStorage: what is STORED is normalized on the way in, on every write path, not
+    // only when it is read back.
+    const normalizedSettings = settingsForStorage(rest.settings);
     if (normalizedSettings) updateData.settings = normalizedSettings;
     if (before) {
       const after = {
@@ -2061,7 +2061,7 @@ export async function createAgent(
         transferWithSummary: data.transferWithSummary ?? true,
         modelConfig: (data.modelConfig ??
           DEFAULT_MODEL_CONFIG) as Prisma.InputJsonValue,
-        settings: (normalizeSettingsForStorage(createShape.settings) ??
+        settings: (settingsForStorage(createShape.settings) ??
           createShape.settings) as Prisma.InputJsonValue,
         businessHoursId: bhId,
         followUpHoursId: fuhId,

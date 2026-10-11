@@ -39,6 +39,7 @@ import {
   remapCredRefAt,
   SETTINGS_CREDENTIAL_PATHS,
 } from "@/modules/agents/credential-paths";
+import { settingsForStorage } from "@/modules/agents/settings-storage";
 import {
   clampOversizedTextInPlace,
   TOOL_INSTRUCTIONS_MAX,
@@ -65,7 +66,6 @@ import {
 } from "@/modules/documents/templates";
 import { parseAuthoredTemplate } from "@/modules/documents/validate";
 import { disarmFullDetail } from "@/modules/flowlog/settings";
-import { normalizeSettingsForStorage } from "@/modules/images/settings";
 import {
   getCatalogEntry,
   isKnownCatalogType,
@@ -1431,7 +1431,7 @@ export async function importAgent(
       disarmFullDetail(
         stripRetiredLabelKeys(
           renameNativeToolKeys(
-            normalizeSettingsForStorage(settings) ?? settings,
+            settingsForStorage(settings) ?? settings,
             renamed,
             customToolNames,
           ),

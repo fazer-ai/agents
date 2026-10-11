@@ -136,6 +136,8 @@ async function handOver(
         chatwootInstanceId: instanceId,
         conversationId,
         inboundMessageId: message.id,
+        // A transcription's `message_updated` names the same message and runs no turn.
+        event: "message_created",
         ...(inbox.routeBotId !== null
           ? {
               OR: [
@@ -291,7 +293,12 @@ function readMessagePage(
   if (list === null)
     throw new Error(`conversation ${conversationId}: no message array`);
   const rows = parseChatwootMessages(list);
-  if (rows.length !== list.length)
+  // A row without its time or kind cannot be placed: it might be the customer's newest message, or
+  // the reply after it.
+  if (
+    rows.length !== list.length ||
+    rows.some((m) => m.createdAt === null || m.messageType === "other")
+  )
     throw new Error(`conversation ${conversationId}: unreadable message row`);
   return rows;
 }

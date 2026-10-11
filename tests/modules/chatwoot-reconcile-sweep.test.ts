@@ -478,6 +478,33 @@ describe.skipIf(!dbUp)("reconciling from Chatwoot", () => {
     ).toBe(BOT);
   });
 
+  test("a transcription's update naming the message does not cover the creation that never arrived", async () => {
+    await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: "transcription-update",
+        event: "message_updated",
+        status: "PROCESSED",
+        conversationId: 515,
+        inboundMessageId: 9025,
+        routeAgentBotId: BOT,
+      },
+    });
+    const s: Scripted = {
+      conversations: new Map([[INBOX, [conv(515, minutesAgo(25))]]]),
+      messages: new Map([[515, [incoming(9025, minutesAgo(25))]]]),
+      listed: [],
+    };
+    const counts = await reconcileFromChatwoot({
+      tenantId,
+      base: appDb,
+      now: NOW,
+      makeClient: chatwoot(s),
+    });
+    expect(counts.handedToRecovery).toBe(1);
+  });
+
   test("a busy inbox is read to the end of the window, however many pages that takes", async () => {
     // Fifty pages of recent conversations we already answered, and the lost message on the last one.
     const pages: ChatwootInboxConversation[][] = [];
@@ -561,6 +588,24 @@ describe.skipIf(!dbUp)("reconciling from Chatwoot", () => {
     });
     expect(rowCounts.inboxesFailed).toBe(1);
     expect(await ledgerFor(551)).toHaveLength(0);
+    // And rows that keep their id but lose the time or the kind they need to be placed.
+    for (const [id, row] of [
+      [552, { id: 9053, message_type: 0, private: false, content: "oi" }],
+      [553, { id: 9054, private: false, created_at: epoch(minutesAgo(20)) }],
+    ] as const) {
+      const degraded: Scripted = {
+        conversations: new Map([[INBOX, [conv(id, minutesAgo(20))]]]),
+        messages: new Map([[id, [incoming(id * 10, minutesAgo(25)), row]]]),
+        listed: [],
+      };
+      const c = await reconcileFromChatwoot({
+        tenantId,
+        base: appDb,
+        now: NOW,
+        makeClient: chatwoot(degraded),
+      });
+      expect(c.inboxesFailed).toBe(1);
+    }
     const counts = await reconcileFromChatwoot({
       tenantId,
       base: appDb,

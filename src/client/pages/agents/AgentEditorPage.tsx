@@ -200,6 +200,7 @@ import {
   withDraftEngine,
   withEngine,
   withSavedDecisions,
+  withStoredOf,
 } from "./observationFormState";
 import { PlaygroundFab } from "./PlaygroundFab";
 import { PlaygroundTab } from "./PlaygroundTab";
@@ -943,8 +944,32 @@ function AgentEditor() {
   const [review, setReview] = useState<SuggestionReviewState>(() =>
     suggestionReviewToForm({}),
   );
-  const [observation, setObservation] = useState<ObservationState>(() =>
+  // The last server-synced agent/grants: what a discard restores, what every unsaved mark is
+  // measured against, and what each save carries for the blocks it does not write.
+  const syncedAgentRef = useRef<Agent | null>(null);
+  const syncedGrantsRef = useRef<ToolSelectionView["grants"]>([]);
+  const [observationDraft, setObservation] = useState<ObservationState>(() =>
     observationToForm({}),
+  );
+  // The stored setup read off the synced agent once per sync, and laid over the draft: everything
+  // below reads `observation`, so no save or mark judges against a stored block the form kept.
+  const syncedObservationRef = useRef<{
+    agent: Agent;
+    form: ObservationState;
+  } | null>(null);
+  const syncedAgentNow = syncedAgentRef.current;
+  if (
+    syncedAgentNow &&
+    syncedObservationRef.current?.agent !== syncedAgentNow
+  ) {
+    syncedObservationRef.current = {
+      agent: syncedAgentNow,
+      form: observationToForm(syncedAgentNow.settings),
+    };
+  }
+  const observation = withStoredOf(
+    observationDraft,
+    syncedAgentNow ? (syncedObservationRef.current?.form ?? null) : null,
   );
   // A watcher on questions and rules runs no chat model: General draws the classifier in place of
   // the instructions and the Model card, and the tabs follow (agents#1224).
@@ -1492,11 +1517,6 @@ function AgentEditor() {
   // save rejection. `conflictRetry` (when set) re-runs the rejected save, overwriting on purpose.
   const [staleNotice, setStaleNotice] = useState(false);
   const [conflictRetry, setConflictRetry] = useState<(() => void) | null>(null);
-
-  // The last server-synced agent/grants, kept so a discard can restore the
-  // baseline (the JSON snapshot only detects drift; it can't rehydrate state).
-  const syncedAgentRef = useRef<Agent | null>(null);
-  const syncedGrantsRef = useRef<ToolSelectionView["grants"]>([]);
 
   // transferWithSummary + handoff + kanban guidance are config of native tools, owned by the Tools tab.
   // They are synced from the server here (load / discard-all / Tools save / Tools revert) and

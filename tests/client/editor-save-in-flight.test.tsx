@@ -397,3 +397,56 @@ test("Discard all after the debug window closed leaves nothing unsaved", async (
     setSystemTime();
   }
 });
+
+// A decisions save that lands while the setup was being edited: the next save that falls back to the
+// stored block (an incomplete draft behind the language model) falls back to the block just saved,
+// not to the one read before it.
+test("a decisions save kept off an edited form is the stored block the next save falls back to", async () => {
+  const stub = stubEditorApi({
+    mode: "monitoring",
+    settings: {
+      monitoring: {
+        engine: "decisions",
+        decisions: {
+          provider: "typesafe",
+          credentialRef: "vault:1",
+          questions: [{ name: "q", type: "yes_no", instructions: "?" }],
+          rules: [],
+        },
+      },
+    },
+  });
+  await renderEditor(stub, "decisions");
+  fireEvent.click(screen.getByRole("button", { name: "Customer sentiment" }));
+  const writes = holdWrites();
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(writes.held()).toBe(true));
+  fireEvent.click(screen.getByRole("button", { name: "Add question" }));
+  writes.release();
+  await screen.findByText("Agent saved.");
+  const saved = (
+    (stub.agent.settings as { monitoring: { decisions: { questions: [] } } })
+      .monitoring.decisions.questions ?? []
+  ).length;
+  fireEvent.click(screen.getByRole("tab", { name: /^General/ }));
+  fireEvent.click(
+    await waitFor(() => {
+      const e = document.querySelector<HTMLElement>(
+        '[data-testid="engine-llm"]',
+      );
+      if (!e) throw new Error("the engine cards are not drawn");
+      return e;
+    }),
+  );
+  const before = stub.writes.length;
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(stub.writes.length).toBeGreaterThan(before));
+  const last = stub.writes[stub.writes.length - 1] as {
+    body: {
+      settings?: { monitoring?: { decisions?: { questions?: unknown[] } } };
+    };
+  };
+  expect(
+    `${saved} ${last.body.settings?.monitoring?.decisions?.questions?.length}`,
+  ).toBe("2 2");
+});

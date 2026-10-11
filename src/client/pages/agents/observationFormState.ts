@@ -236,6 +236,22 @@ export function withSavedDecisions(
   };
 }
 
+// The form with what is STORED taken from the server's copy (`synced`), never from the form: the
+// stored engine and block are what a save falls back to and what an untouched setup is judged by,
+// and a copy kept in the form goes stale when a save's answer is kept off an edited form.
+export function withStoredOf(
+  form: ObservationState,
+  synced: ObservationState | null,
+): ObservationState {
+  if (!synced) return form;
+  return {
+    ...form,
+    storedPresent: synced.storedPresent,
+    storedEngine: synced.storedEngine,
+    storedDecisions: synced.storedDecisions,
+  };
+}
+
 // The halves as text, for the unsaved marks. The setup is split once more by where it is drawn: the
 // head (engine and Classifier) on General, the body (questions, rules, rehearsal or live) on its tab.
 export function timingOf(form: ObservationState): string {

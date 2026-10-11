@@ -111,12 +111,23 @@ export class ConnectionBudgetError extends Error {
 // settings query itself (`query_timeout` rejects on the client even when the server stops
 // answering). The client is not awaited on the way out, since closing a connection whose server
 // went silent can wait as long as the query would have.
-export async function readServerLimits(url: string): Promise<ServerLimits> {
-  const client = new Client({
+type SettingsClient = Pick<Client, "connect" | "query" | "end" | "on">;
+
+export async function readServerLimits(
+  url: string,
+  open: (options: ConstructorParameters<typeof Client>[0]) => SettingsClient = (
+    options,
+  ) => new Client(options),
+): Promise<ServerLimits> {
+  const client = open({
     connectionString: url,
     connectionTimeoutMillis: 5_000,
     query_timeout: 5_000,
   });
+  // A connection the server drops after `connect()` rejects the pending query AND emits `error` on the
+  // client; with no listener that event is thrown outside this function and ends the boot, instead of
+  // reaching the caller as a server it could not read.
+  client.on("error", () => {});
   try {
     await client.connect();
     const { rows } = await client.query<{ m: number; s: number; r: number }>(

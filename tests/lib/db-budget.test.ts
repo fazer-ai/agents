@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import { EventEmitter } from "node:events";
 import {
   assertConnectionBudget,
   ConnectionBudgetError,
   type PoolShare,
+  readServerLimits,
 } from "@/lib/db-budget";
 
 // The sum of a replica's pools against what each database server accepts from the runtime role.
@@ -102,5 +104,25 @@ describe("connection budget", () => {
     const logged = lines.map((l) => `${l.server} ${l.line}`).join("\n");
     expect(logged).not.toContain("s3cret-pass");
     expect(lines[0]?.checked).toBe(false);
+  });
+
+  test("a server that drops the connection mid-read is a server not read, not a crash", async () => {
+    // What `pg` does when the server goes away after connecting: the pending query rejects and the
+    // client emits `error` from the socket's handler, where nothing up the stack catches it. An
+    // `error` with no listener is thrown from there, so the read must listen before it queries.
+    let listening = 0;
+    const client = Object.assign(new EventEmitter(), {
+      connect: async () => {},
+      end: async () => {},
+      query: () => {
+        listening = client.listenerCount("error");
+        const dropped = new Error("Connection terminated unexpectedly");
+        if (listening > 0) client.emit("error", dropped);
+        return Promise.reject(dropped);
+      },
+    });
+    const read = readServerLimits(MAIN, () => client as never);
+    await expect(read).rejects.toThrow("Connection terminated unexpectedly");
+    expect(listening).toBeGreaterThan(0);
   });
 });

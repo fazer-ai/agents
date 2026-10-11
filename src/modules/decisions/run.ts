@@ -91,10 +91,13 @@ export interface TriggerStateChange {
 }
 
 // Kept current by `applyDecisions` as actions settle, for a caller whose call rejected (the
-// deadline met a later action): `undo` is the latches written ahead for actions that have since
-// settled without writing, which that caller releases.
+// deadline met a later action): `undo` is what that caller releases, the `on_start` rules that did
+// not hold and the latches written ahead for actions that wrote nothing or never started. A handler
+// can still say it wrote nothing after the call was given up on, so `onChange` is called on every
+// change.
 export interface DecisionProgress {
   undo?: string[];
+  onChange?: () => void;
 }
 
 // Writes, before an action is dispatched, the latches of the rules it answers for: a call the
@@ -167,12 +170,22 @@ export async function applyDecisions(
   const undone = (): string[] => [
     ...[...ahead].flatMap(([at, k]) => {
       const a = slots[at];
-      return a && leftNothing(a) ? k : [];
+      // A call given up on at the deadline has no slot, and counts only once its tool said it wrote
+      // nothing.
+      const nothing = a ? leftNothing(a) : quiet.has(at) && !committed.has(at);
+      return nothing ? k : [];
     }),
     ...dropped,
   ];
+  // The fired actions whose tool said it wrote nothing.
+  const quiet = new Set<number>();
+  const missedReleases = (): string[] =>
+    missed.flatMap(({ rule }) =>
+      triggers[rule] === "on_start" && keys[rule] ? [keys[rule]] : [],
+    );
   const settled = () => {
-    progress.undo = undone();
+    progress.undo = [...new Set([...missedReleases(), ...undone()])];
+    progress.onChange?.();
   };
   const toRun: { at: number; tool: StructuredToolInterface }[] = [];
   // Every call the tick dispatches counts, a dry run's included, so it reports what a run would.
@@ -226,12 +239,7 @@ export async function applyDecisions(
         if (a && !leftNothing(a)) for (const k of latchKeys(at)) latch.add(k);
       }
     }
-    const release = [
-      ...missed.flatMap(({ rule }) =>
-        triggers[rule] === "on_start" && keys[rule] ? [keys[rule]] : [],
-      ),
-      ...undone(),
-    ];
+    const release = [...missedReleases(), ...undone()];
     return { latch: [...latch], release, keep: [...new Set(keys)] };
   };
   // A group is a RUN of consecutive actions whose tool commits calls that arrive together as one
@@ -346,6 +354,10 @@ export async function applyDecisions(
               withFenceReporter({ callbacks, signal }, (r) => {
                 reports.push(r);
                 if ("committed" in r) committed.add(member.at);
+                if ("noEffect" in r) {
+                  quiet.add(member.at);
+                  settled();
+                }
               }),
             )
             .then(

@@ -1837,6 +1837,9 @@ export async function runObserve(
     const triggerScope =
       conv === null ? null : { tenantId, agentId, conversationId: conv.id };
     let latched: Set<string> = new Set();
+    // The state as read: a release after the tick ended touches only rows written up to then or by
+    // this tick's own latches, never one a later observation wrote.
+    const readAt = new Date();
     if (triggerScope !== null) {
       try {
         latched = await readLatchedRules(base, triggerScope);
@@ -1936,9 +1939,8 @@ export async function runObserve(
     // deadline and is retried whole, repeating what already committed.
     let report: Awaited<ReturnType<typeof applyDecisions>>;
     const progress: DecisionProgress = {};
-    // When this tick last wrote latches ahead: a release after the tick ended touches only rows
-    // written up to then, never one a later observation wrote.
-    let latchedUpTo: Date | null = null;
+    // When this tick last wrote latches ahead (`readAt` until it does).
+    let latchedUpTo: Date = readAt;
     let applying: Promise<unknown> = Promise.resolve();
     try {
       const run = applyDecisions(
@@ -1977,13 +1979,14 @@ export async function runObserve(
       toolLogger.settle();
       // The latches written ahead stay: an action still in flight when the deadline ended the call
       // may have written, and holding its rule is safer than repeating it. Those whose action
-      // settled without writing, or that were never dispatched, are released, now and again once
-      // the engine has stopped (it may still be between a latch and its fence).
+      // settled without writing, or that were never dispatched, and the `on_start` rules that did
+      // not hold, are released: now, on every later change (a handler that says after the deadline
+      // it wrote nothing) and once the engine has stopped (it may still be between a latch and its
+      // fence).
       const released = new Set<string>();
       const release = async () => {
         const keys = (progress.undo ?? []).filter((k) => !released.has(k));
-        if (triggerScope === null || latchedUpTo === null || keys.length === 0)
-          return;
+        if (triggerScope === null || keys.length === 0) return;
         for (const k of keys) released.add(k);
         await unlatchRules(base, triggerScope, keys, latchedUpTo).catch(
           (err: unknown) =>
@@ -1994,6 +1997,7 @@ export async function runObserve(
             ),
         );
       };
+      progress.onChange = () => void release();
       await release();
       void applying.then(release, release);
       if (refusal !== null) return endOnRefusal(refusal);

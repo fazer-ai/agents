@@ -101,10 +101,12 @@ export async function writeTriggerState(
     });
     if (change.latch.length > 0) {
       await db.decisionRuleState.createMany({
+        // App time, as `latchRules` and the bound `unlatchRules` is given are.
         data: change.latch.map((ruleKey) => ({
           tenantId: scope.tenantId,
           ...where,
           ruleKey,
+          createdAt: new Date(),
         })),
         skipDuplicates: true,
       });

@@ -617,6 +617,93 @@ describe("applyDecisions and the trigger state", () => {
     expect(r.triggerState.release).toEqual([noteKey]);
   });
 
+  test("a call given up on at the deadline that then says it wrote nothing is undone, and the caller is told", async () => {
+    const controller = new AbortController();
+    let say: () => void = () => {};
+    const progress: DecisionProgress = {};
+    const run = applyDecisions(
+      {
+        rules: [
+          {
+            when,
+            action: { tool: "set_labels" as const, args: {} },
+            trigger: "once" as const,
+          },
+        ],
+      },
+      answers,
+      [
+        reporting(
+          "set_labels",
+          (report) =>
+            new Promise<string>(() => {
+              say = () => report?.({ noEffect: true });
+            }),
+        ),
+      ],
+      [],
+      controller.signal,
+      async () => true,
+      10,
+      () => null,
+      false,
+      new Set(),
+      progress,
+    );
+    await Bun.sleep(5);
+    expect(progress.undo).toEqual([]);
+    let told = 0;
+    progress.onChange = () => {
+      told++;
+    };
+    say();
+    const key = ruleStateKey({
+      when,
+      action: { tool: "set_labels", args: {} },
+      trigger: "once",
+    });
+    expect(progress.undo).toEqual([key]);
+    expect(told).toBe(1);
+    controller.abort(new Error("deadline"));
+    void run.catch(() => {});
+  });
+
+  test("an on_start rule that did not hold is released even when another action ends the tick", async () => {
+    const controller = new AbortController();
+    const progress: DecisionProgress = {};
+    const offRule = {
+      when: [{ question: "q", minProbability: 0.99 }],
+      action: { tool: "private_note" as const, args: {} },
+    };
+    await expect(
+      applyDecisions(
+        {
+          rules: [
+            offRule,
+            { when, action: { tool: "set_labels" as const, args: {} } },
+          ],
+        },
+        answers,
+        [
+          reporting("private_note", async () => "ok"),
+          reporting("set_labels", async () => {
+            controller.abort(new Error("deadline"));
+            throw new Error("aborted");
+          }),
+        ],
+        [],
+        controller.signal,
+        async () => true,
+        10,
+        () => null,
+        false,
+        new Set(),
+        progress,
+      ),
+    ).rejects.toThrow();
+    expect(progress.undo).toEqual([ruleStateKey(offRule)]);
+  });
+
   test("a latch that cannot be written ahead stops the tick before anything is dispatched", async () => {
     const t = tools(async () => "ok");
     await expect(

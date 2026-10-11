@@ -1,62 +1,27 @@
 #!/usr/bin/env bun
-// Regenerates src/modules/pricing/model-prices.json from LiteLLM's price table (MIT), pinned to the
-// commit it was read at; the diff is the review, and nothing reads the network at runtime.
+// Regenerates src/modules/pricing/model-prices.json from LiteLLM's price table (MIT), pinned to its
+// commit, and OpenRouter's models API for the `openrouter/` rows, pinned to a hash of those rows. The
+// diff is the review, and nothing reads the network at runtime.
 //
 //   bun scripts/refresh-model-prices.ts
 //
-// Keeps only chat models of the providers the model factory speaks to, and the four rates a ledger
-// row can use, in USD per MILLION tokens so a reviewer can hold them against the vendor's page. A
-// rate above a context threshold (OpenAI's >272K, Gemini's >200K) is kept as a tier.
+// Rates are kept in USD per MILLION tokens so a reviewer can hold them against the vendor's page;
+// which rows and rates each source yields is in scripts/price-sources.ts.
 
-import { plausibleRefresh } from "./refresh-guard";
+import {
+  countBySource,
+  litellmModels,
+  OPENROUTER_MODELS_URL,
+  openrouterModels,
+  rowsHash,
+} from "./price-sources";
+import { implausibleSource } from "./refresh-guard";
 
 const REPO = "BerriAI/litellm";
 const FILE = "model_prices_and_context_window.json";
 const OUT = "src/modules/pricing/model-prices.json";
 // The table's identity on its own, import-free, so the console can name the table without shipping it.
 const VERSION_OUT = "src/modules/pricing/version.ts";
-
-// LiteLLM's provider name → ours.
-const PROVIDERS: Record<string, string> = {
-  openai: "openai",
-  anthropic: "anthropic",
-  gemini: "google",
-  deepseek: "deepseek",
-  openrouter: "openrouter",
-};
-
-type Rates = {
-  input: number;
-  cachedInput?: number;
-  cacheWrite?: number;
-  cacheWrite1h?: number;
-  output: number;
-};
-type Entry = Rates & { tiers?: (Rates & { above: number })[] };
-
-const perMillion = (v: unknown): number | undefined =>
-  typeof v === "number" && Number.isFinite(v)
-    ? Math.round(v * 1e6 * 1e6) / 1e6
-    : undefined;
-
-function rates(e: Record<string, unknown>, suffix: string): Rates | null {
-  const input = perMillion(e[`input_cost_per_token${suffix}`]);
-  const output = perMillion(e[`output_cost_per_token${suffix}`]);
-  if (input === undefined || output === undefined) return null;
-  const r: Rates = { input, output };
-  const cachedInput = perMillion(e[`cache_read_input_token_cost${suffix}`]);
-  const cacheWrite = perMillion(e[`cache_creation_input_token_cost${suffix}`]);
-  if (cachedInput !== undefined) r.cachedInput = cachedInput;
-  if (cacheWrite !== undefined) r.cacheWrite = cacheWrite;
-  // LiteLLM states the 1-hour write only at the base tier; a row without it is priced at 2x input
-  // (`cacheWrite1hRate` in src/modules/pricing/price.ts).
-  const cacheWrite1h =
-    suffix === ""
-      ? perMillion(e.cache_creation_input_token_cost_above_1hr)
-      : undefined;
-  if (cacheWrite1h !== undefined) r.cacheWrite1h = cacheWrite1h;
-  return r;
-}
 
 // Unauthenticated, the commits API allows 60 requests an hour per IP, and a CI runner shares its IP
 // with strangers; the scheduled job (.github/workflows/refresh-model-prices.yml) hands its token in.
@@ -82,52 +47,37 @@ const tableRes = await fetch(
 if (!tableRes.ok) {
   throw new Error(`GitHub answered ${tableRes.status} for the LiteLLM table`);
 }
-const table = (await tableRes.json()) as Record<
-  string,
-  Record<string, unknown>
->;
+const litellm = litellmModels(await tableRes.json());
 
-const models: Record<string, Entry> = {};
-for (const [key, e] of Object.entries(table)) {
-  if (typeof e !== "object" || e === null) continue;
-  if (e.mode !== "chat" && e.mode !== "responses") continue;
-  if (
-    typeof e.litellm_provider !== "string" ||
-    !(e.litellm_provider in PROVIDERS)
-  )
-    continue;
-  const base = rates(e, "");
-  if (!base) continue;
-  const thresholds = new Set<number>();
-  for (const k of Object.keys(e)) {
-    const m = /^input_cost_per_token_above_(\d+)k_tokens$/.exec(k);
-    if (m) thresholds.add(Number(m[1]) * 1000);
-  }
-  const tiers = [...thresholds]
-    .sort((a, b) => a - b)
-    .flatMap((above) => {
-      const r = rates(e, `_above_${above / 1000}k_tokens`);
-      return r ? [{ above, ...r }] : [];
-    });
-  models[key] = tiers.length > 0 ? { ...base, tiers } : base;
+const openrouterRes = await fetch(OPENROUTER_MODELS_URL);
+if (!openrouterRes.ok) {
+  throw new Error(
+    `OpenRouter answered ${openrouterRes.status} for its models list`,
+  );
 }
+const openrouter = openrouterModels(await openrouterRes.json());
+const models = { ...litellm, ...openrouter };
 
 // A source that answers 200 with a truncated or empty file would otherwise write a table with most
 // models gone, and the scheduled job would propose removing them. A real refresh moves a handful of
 // rows; losing more than half of them is a broken read, not a price change.
-const previous = Object.keys(
+const previous = countBySource(
   (
     (await Bun.file(OUT)
       .json()
       .catch(() => ({}))) as { models?: Record<string, unknown> }
   ).models ?? {},
-).length;
-const kept = Object.keys(models).length;
-if (!plausibleRefresh(kept, previous))
+);
+const kept = countBySource(models);
+const broken = implausibleSource(kept, previous);
+if (broken) {
+  const key = broken === "LiteLLM" ? "litellm" : "openrouter";
   throw new Error(
-    `the LiteLLM table gave ${kept} priced models where the current table has ${previous}: refusing to write it`,
+    `the ${broken} read gave ${kept[key]} priced models where the current table has ${previous[key]}: refusing to write it`,
   );
+}
 
+const openrouterHash = rowsHash(openrouter).slice(0, 12);
 const readAt = new Date().toISOString().slice(0, 10);
 const sorted = Object.fromEntries(
   Object.entries(models).sort(([a], [b]) => a.localeCompare(b)),
@@ -137,6 +87,7 @@ await Bun.write(
   `${JSON.stringify(
     {
       source: `https://github.com/${REPO}/blob/${sha}/${FILE}`,
+      openrouter: { source: OPENROUTER_MODELS_URL, hash: openrouterHash },
       readAt,
       models: sorted,
     },
@@ -148,9 +99,10 @@ await Bun.write(
   VERSION_OUT,
   `// Generated by scripts/refresh-model-prices.ts with model-prices.json. Do not edit by hand.
 export const PRICE_TABLE_READ_AT = "${readAt}";
-export const PRICE_TABLE_VERSION = "litellm@${sha.slice(0, 12)}";
+export const PRICE_TABLE_VERSION =
+  "litellm@${sha.slice(0, 12)}+openrouter@${openrouterHash}";
 `,
 );
 console.log(
-  `${Object.keys(sorted).length} models from ${REPO}@${sha.slice(0, 12)} → ${OUT}`,
+  `${kept.litellm} models from ${REPO}@${sha.slice(0, 12)} and ${kept.openrouter} from OpenRouter@${openrouterHash} → ${OUT}`,
 );

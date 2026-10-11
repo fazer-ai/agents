@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { type Entry, rowsHash } from "@/../scripts/price-sources";
 import { PROVIDER_DEFAULT_MODEL } from "@/graph/model-defaults";
+import table from "@/modules/pricing/model-prices.json";
 import {
   callCostUsd,
   deepseekOffPeak,
@@ -13,7 +15,7 @@ import {
 } from "@/modules/pricing/version";
 
 // What a call cost, from the price table the ledger is written with. The table is
-// LiteLLM's, pinned; the rows below are held to what each VENDOR's own pricing page said on the day
+// LiteLLM's plus OpenRouter's own rows, each pinned; the rows below are held to what each VENDOR's own pricing page said on the day
 // the table was read, so a regenerated table that disagrees with the vendor on a default model is a
 // red test, not a quietly wrong figure on every turn.
 
@@ -39,7 +41,14 @@ describe("the table", () => {
   test("the version the rows record is the table's own", () => {
     expect(PRICE_TABLE_READ_AT).toBe(PRICES_READ_AT);
     const sha = /\/blob\/([0-9a-f]{12})/.exec(PRICES_SOURCE)?.[1];
-    expect(PRICE_TABLE_VERSION).toBe(`litellm@${sha}`);
+    const openrouterRows = Object.fromEntries(
+      Object.entries(table.models as Record<string, Entry>).filter(([k]) =>
+        k.startsWith("openrouter/"),
+      ),
+    );
+    expect(PRICE_TABLE_VERSION).toBe(
+      `litellm@${sha}+openrouter@${rowsHash(openrouterRows).slice(0, 12)}`,
+    );
   });
 
   test("says where it came from and when", () => {

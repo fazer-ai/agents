@@ -7,3 +7,17 @@
 export function plausibleRefresh(kept: number, previous: number): boolean {
   return kept > 0 && kept >= previous / 2;
 }
+
+export type SourceCounts = { litellm: number; openrouter: number };
+
+// The source whose read is not a real one, named for the error, or null when both are. Each source is
+// held to its own rows, so one broken read cannot hide behind the other's.
+export function implausibleSource(
+  kept: SourceCounts,
+  previous: SourceCounts,
+): "LiteLLM" | "OpenRouter" | null {
+  if (!plausibleRefresh(kept.litellm, previous.litellm)) return "LiteLLM";
+  if (!plausibleRefresh(kept.openrouter, previous.openrouter))
+    return "OpenRouter";
+  return null;
+}

@@ -890,6 +890,74 @@ describe.skipIf(!dbUp)("reconciling from Chatwoot", () => {
     ]);
   });
 
+  test("an unclassified receipt is placed by its route: another bot under the same binding is an observer, the responder's bot or an older binding covers", async () => {
+    await suDb.chatwootWebhookDelivery.createMany({
+      data: [
+        {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          deliveryId: "stranded-observer",
+          event: "message_created",
+          status: "PENDING",
+          conversationId: 517,
+          inboundMessageId: 9027,
+          routeAgentBotId: BOT + 1,
+          bindingGeneration: 0,
+        },
+        {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          deliveryId: "stranded-responder",
+          event: "message_created",
+          status: "PENDING",
+          conversationId: 518,
+          inboundMessageId: 9028,
+          routeAgentBotId: BOT,
+          bindingGeneration: 0,
+        },
+        {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          deliveryId: "stranded-before-rebind",
+          event: "message_created",
+          status: "PENDING",
+          conversationId: 519,
+          inboundMessageId: 9029,
+          routeAgentBotId: BOT + 2,
+          bindingGeneration: -1,
+        },
+      ],
+    });
+    const s: Scripted = {
+      conversations: new Map([
+        [
+          INBOX,
+          [
+            conv(517, minutesAgo(25)),
+            conv(518, minutesAgo(25)),
+            conv(519, minutesAgo(25)),
+          ],
+        ],
+      ]),
+      messages: new Map([
+        [517, [incoming(9027, minutesAgo(25))]],
+        [518, [incoming(9028, minutesAgo(25))]],
+        [519, [incoming(9029, minutesAgo(25))]],
+      ]),
+      listed: [],
+    };
+    const counts = await reconcileFromChatwoot({
+      tenantId,
+      base: appDb,
+      now: NOW,
+      makeClient: chatwoot(s),
+    });
+    expect(counts.handedToRecovery).toBe(1);
+    expect(await ledgerFor(517)).toHaveLength(2);
+    expect(await ledgerFor(518)).toHaveLength(1);
+    expect(await ledgerFor(519)).toHaveLength(1);
+  });
+
   test("a responder's delivery from before a rebind still covers the message", async () => {
     await suDb.chatwootWebhookDelivery.create({
       data: {

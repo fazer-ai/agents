@@ -176,7 +176,10 @@ async function handOver(
   return runScopedOn(base, sysCtx(tenantId), async (db) => {
     // Only a responder's delivery covers the message: an observer's webhook can succeed while the
     // responder's exhausts its retries. Asked of the role recorded at receipt, not of today's bot, so
-    // a responder's delivery from before a rebind still counts (a null role predates the column).
+    // a responder's delivery from before a rebind still counts. A null role is a row the claim never
+    // classified (or one older than the column), placed by its route instead: the responder's bot or
+    // no route covers; another bot under the same binding is an observer; under an older binding the
+    // role cannot be told, and the row covers rather than risk a second answer.
     const known = await db.chatwootWebhookDelivery.findFirst({
       where: {
         chatwootInstanceId: instanceId,
@@ -184,7 +187,18 @@ async function handOver(
         inboundMessageId: message.id,
         // A transcription's `message_updated` names the same message and runs no turn.
         event: "message_created",
-        OR: [{ routeObserved: false }, { routeObserved: null }],
+        OR: [
+          { routeObserved: false },
+          { routeObserved: null, routeAgentBotId: null },
+          ...(inbox.routeBotId !== null
+            ? [{ routeObserved: null, routeAgentBotId: inbox.routeBotId }]
+            : []),
+          { routeObserved: null, bindingGeneration: null },
+          {
+            routeObserved: null,
+            bindingGeneration: { not: inbox.bindingGeneration },
+          },
+        ],
       },
       select: { id: true },
     });

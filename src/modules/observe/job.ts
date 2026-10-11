@@ -1983,12 +1983,17 @@ export async function runObserve(
       // not hold, are released: now, on every later change (a handler that says after the deadline
       // it wrote nothing) and once the engine has stopped (it may still be between a latch and its
       // fence).
-      const released = new Set<string>();
+      // By key, up to which latch: a key released once is released again when the engine has since
+      // latched it anew (a member deferred after its group and stopped before it ran).
+      const released = new Map<string, number>();
       const release = async () => {
-        const keys = (progress.undo ?? []).filter((k) => !released.has(k));
+        const upTo = latchedUpTo;
+        const keys = (progress.undo ?? []).filter(
+          (k) => (released.get(k) ?? -1) < upTo.getTime(),
+        );
         if (triggerScope === null || keys.length === 0) return;
-        for (const k of keys) released.add(k);
-        await unlatchRules(base, triggerScope, keys, latchedUpTo).catch(
+        for (const k of keys) released.set(k, upTo.getTime());
+        await unlatchRules(base, triggerScope, keys, upTo).catch(
           (err: unknown) =>
             logger.warn(
               { err, agentId: String(agentId) },

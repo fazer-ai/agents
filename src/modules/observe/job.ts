@@ -1940,6 +1940,18 @@ export async function runObserve(
     // UNDER THE TICK'S DEADLINE, as the graph is: a native write can wait in a keyed queue that the
     // signal does not cancel, and a tick that outlives its budget reaches the scheduler's outer
     // deadline and is retried whole, repeating what already committed.
+    // Read again now that the provider has answered: a tick the deadline ended may have released a
+    // latch since the first read, and a rule must not be held on a snapshot older than that. A read
+    // that fails keeps the first one, which holds at least as much.
+    if (triggerScope !== null) {
+      const at = new Date();
+      try {
+        latched = await readLatchedRules(base, triggerScope);
+        latchedUpTo = at;
+      } catch {
+        // The first snapshot stands.
+      }
+    }
     let report: Awaited<ReturnType<typeof applyDecisions>>;
     const progress: DecisionProgress = {};
     let applying: Promise<unknown> = Promise.resolve();

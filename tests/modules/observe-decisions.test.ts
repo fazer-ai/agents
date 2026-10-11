@@ -1931,6 +1931,8 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
       rules: unknown[],
       holds: boolean,
       extra: Record<string, unknown> = {},
+      // Runs while the provider is being asked, before it answers.
+      duringProvider: () => Promise<void> = async () => {},
     ) {
       await suDb.agent.update({
         where: { id: agentId },
@@ -1960,7 +1962,10 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
           makeClient: async (cfg) =>
             new ChatwootClient(cfg, chatwoot.fetchImpl),
           makeModel: () => new CountingModel() as never,
-          decisionFetch: p.fetchImpl,
+          decisionFetch: (async (...args: Parameters<typeof fetch>) => {
+            await duringProvider();
+            return p.fetchImpl(...args);
+          }) as typeof fetch,
         },
       );
       return detail();
@@ -2264,6 +2269,22 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
         });
         const keys = await triggerState.readLatchedRules(suDb, scope);
         expect([...keys]).toEqual([]);
+      });
+
+      test("a latch released while the provider is asked does not hold the rule back", async () => {
+        const chatwoot = fakeChatwoot({ labels: [], attributes: {} });
+        const rule = note("Supervisor");
+        const scope = { tenantId, agentId, conversationId: convRowId };
+        await triggerState.latchRules(suDb, scope, [
+          ruleStateKey(rule as never),
+        ]);
+        const d = await observeWith(chatwoot, [rule], true, {}, async () => {
+          await suDb.decisionRuleState.deleteMany({ where: { tenantId } });
+        });
+        expect(d.actions).toEqual([
+          { rule: 0, tool: "private_note", outcome: "ran" },
+        ]);
+        expect(notesOf(chatwoot, "Supervisor")).toBe(1);
       });
 
       test("a trigger state it cannot read fails the tick before any action", async () => {

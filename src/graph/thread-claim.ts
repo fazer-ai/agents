@@ -81,6 +81,11 @@ export interface TurnHold {
 // 2 s) is retried by the next tick, and the claim lapses only after five in a row.
 const RENEW_EVERY_MS = (TURN_LEASE_SECONDS / 6) * 1_000;
 
+// Joining an occupancy and renewing a hold both EXTEND the lease, never shorten it (`GREATEST`). In a
+// rolling deploy a live turn on the previous release holds a 300-second lease it renews every 100
+// seconds; writing `now() + 60s` over it would let that claim lapse before its next renewal, and an
+// append would land inside an invoke that is still running.
+
 function renewing(
   owner: ThreadOwner,
   base: PrismaClient,
@@ -92,7 +97,7 @@ function renewing(
       sysCtx(owner.tenantId),
       (db) => db.$executeRaw`
         UPDATE agent_threads
-           SET turn_held_until = now() + make_interval(secs => ${TURN_LEASE_SECONDS}),
+           SET turn_held_until = GREATEST(turn_held_until, now() + make_interval(secs => ${TURN_LEASE_SECONDS})),
                updated_at = now()
          WHERE tenant_id = ${owner.tenantId}
            AND chatwoot_instance_id = ${owner.instanceId}
@@ -145,7 +150,7 @@ async function bumpTurnHolders(
                WHEN turn_held_until IS NULL OR turn_held_until <= now() THEN turn_epoch + 1
                ELSE turn_epoch
              END,
-             turn_held_until = now() + make_interval(secs => ${TURN_LEASE_SECONDS}),
+             turn_held_until = GREATEST(turn_held_until, now() + make_interval(secs => ${TURN_LEASE_SECONDS})),
              updated_at = now()
        WHERE tenant_id = ${owner.tenantId}
          AND chatwoot_instance_id = ${owner.instanceId}

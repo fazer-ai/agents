@@ -139,6 +139,38 @@ describe.skipIf(!dbUp)("a turn claim whose holder is gone", () => {
     }
   });
 
+  // Catches a rolling deploy cutting short the claim of a live turn on the previous release, which
+  // took a 300-second lease and renews it every 100: a turn on this release joining the occupancy,
+  // or renewing its own hold beside it, must not pull that lease down to 60 seconds, or it lapses
+  // before the old turn's next renewal and an append lands inside its invoke.
+  test("joining or renewing beside a longer lease keeps it", async () => {
+    const o = owner();
+    jest.useFakeTimers();
+    try {
+      const old = await markTurnOwning(o, appDb);
+      old.stopRenewal?.();
+      clearTurnInFlight(o.graphThreadId);
+      await suDb.$executeRaw`
+        UPDATE agent_threads SET turn_held_until = now() + interval '300 seconds'
+         WHERE tenant_id = ${tenantId}
+           AND chatwoot_instance_id = ${instanceId}
+           AND contact_inbox_id = ${o.contactInboxId}`;
+      const joined = await markTurnOwning(o, appDb);
+      clearTurnInFlight(o.graphThreadId);
+      const afterJoin = await leaseLeft(o);
+      jest.advanceTimersByTime(10_000);
+      // the renewal is fire-and-forget; give its statement time to land before reading
+      for (let i = 0; i < 20; i++) await leaseLeft(o);
+      const afterRenew = await leaseLeft(o);
+      expect(afterJoin).toBeGreaterThan(290);
+      expect(afterRenew).toBeGreaterThan(290);
+      await clearTurnOwning(o, appDb, joined);
+      await clearTurnOwning(o, appDb, old);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   // Catches the wait for a turn already on the thread shrinking with the lease: a live turn longer
   // than one lease would then have a second turn started beside it, which erases a message.
   test("a second turn waits out a live one for five minutes, not one lease", () => {

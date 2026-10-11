@@ -1192,6 +1192,75 @@ describe.skipIf(!dbUp)("reconciling from Chatwoot", () => {
     }
   });
 
+  test("a message a turn already decided without a ledger row is no loss: a claim, a dispensal range, or a floor past it", async () => {
+    const mirror = async (
+      chatwootConversationId: number,
+      marks: { lastHandledMessageId?: number } = {},
+    ) =>
+      suDb.conversation.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootConversationId,
+          status: "pending",
+          threadId: `rcn-${process.pid}-${chatwootConversationId}`,
+          lastEventAt: minutesAgo(20),
+          ...marks,
+        },
+        select: { id: true },
+      });
+    const claimed = await mirror(592);
+    await suDb.messageReplyClaim.create({
+      data: {
+        tenantId,
+        conversationId: claimed.id,
+        messageId: 9092,
+        reason: "CLAIMED",
+      },
+    });
+    const ranged = await mirror(593);
+    await suDb.replyDispensal.create({
+      data: {
+        tenantId,
+        conversationId: ranged.id,
+        fromMessageId: 9000,
+        toMessageId: 9100,
+      },
+    });
+    await mirror(594, { lastHandledMessageId: 9094 });
+    await mirror(595, { lastHandledMessageId: 9094 });
+    // The message each conversation is owed, by its Chatwoot id: claimed, inside the dispensal range,
+    // at the handled floor, and past the floor with nothing written about it.
+    const owed = new Map([
+      [592, 9092],
+      [593, 9093],
+      [594, 9094],
+      [595, 9095],
+    ]);
+    const s: Scripted = {
+      conversations: new Map([
+        [INBOX, [...owed.keys()].map((id) => conv(id, minutesAgo(20)))],
+      ]),
+      messages: new Map(
+        [...owed].map(([id, msg]) => [
+          id,
+          [incoming(msg, minutesAgo(25)), ourReply(msg + 1000, minutesAgo(20))],
+        ]),
+      ),
+      listed: [],
+    };
+    const counts = await reconcileFromChatwoot({
+      tenantId,
+      base: appDb,
+      now: NOW,
+      makeClient: chatwoot(s),
+    });
+    expect(counts.handedToRecovery).toBe(1);
+    expect((await ledgerFor(595)).map((r) => r.inboundMessageId)).toEqual([
+      9095,
+    ]);
+  });
+
   test("a conversation with no activity time fails the inbox and keeps the cursor", async () => {
     const s: Scripted = {
       conversations: new Map([

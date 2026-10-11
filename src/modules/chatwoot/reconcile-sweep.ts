@@ -221,6 +221,41 @@ async function handOver(
       select: { id: true },
     });
     if (known) return false;
+    // A turn can answer a message no ledger row names (an operator's re-engage reads the channel, not
+    // the ledger), and what it decided is written per message: a claim or a dispensal, or a floor the
+    // conversation's marks have passed. Any of them means the message is not lost.
+    const mirror = await db.conversation.findFirst({
+      where: {
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: conversationId,
+      },
+      select: {
+        id: true,
+        lastHandledMessageId: true,
+        lastRepliedMessageId: true,
+      },
+    });
+    if (mirror) {
+      const floor = Math.max(
+        mirror.lastHandledMessageId ?? 0,
+        mirror.lastRepliedMessageId ?? 0,
+      );
+      if (floor >= message.id) return false;
+      const decided = await db.messageReplyClaim.findFirst({
+        where: { conversationId: mirror.id, messageId: message.id },
+        select: { id: true },
+      });
+      if (decided) return false;
+      const dispensed = await db.replyDispensal.findFirst({
+        where: {
+          conversationId: mirror.id,
+          toMessageId: { gte: message.id },
+          OR: [{ fromMessageId: null }, { fromMessageId: { lt: message.id } }],
+        },
+        select: { id: true },
+      });
+      if (dispensed) return false;
+    }
     try {
       const row = await db.chatwootWebhookDelivery.create({
         data: {

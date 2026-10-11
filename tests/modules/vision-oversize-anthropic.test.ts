@@ -6,11 +6,14 @@ import { encryptJson } from "@/api/lib/crypto";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import {
   extractInboundFile,
+  extractPlaygroundFile,
+  readInboundFile,
   resolveVisionConfig,
 } from "@/modules/vision/service";
 import type { VisionConfig } from "@/modules/vision/settings";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { clearFlowLog, flowLogRows } from "../utils/flowlog";
 
 // An iPhone photo arrives as `image/heic`, which OpenAI and Anthropic refuse (400) and Gemini accepts,
 // so it is converted before it reaches a provider that refuses it.
@@ -52,6 +55,7 @@ const LIMIT = 8000;
 
 let tenantId = 0n;
 let instanceId = 0n;
+let agentId = 0n;
 const CHATWOOT_INBOX_ID = 31;
 
 function anthropicFetch() {
@@ -120,7 +124,62 @@ function heavyPhoto(width: number, height: number): Buffer {
   return jpeg.encode({ data, width, height }, 100).data as Buffer;
 }
 
-function stubClient(bytes: Buffer) {
+// OpenAI's own check, as gpt-6.1-sol answered it live: 32 px patches, at most 30,000 per image, and a
+// photo over that is refused rather than downscaled. The message is the vendor's, character for
+// character, with the counts computed the way the measured 4536x8064 (35784) comes out.
+function openaiFetch() {
+  const seen: Array<{ width: number; height: number }> = [];
+  const impl = (async (_url: string | URL, init?: RequestInit) => {
+    const body = JSON.parse((init?.body as string) ?? "{}") as {
+      messages?: Array<{
+        content?: Array<{ type?: string; image_url?: { url?: string } }>;
+      }>;
+    };
+    const url =
+      body.messages?.[0]?.content?.find((c) => c.type === "image_url")
+        ?.image_url?.url ?? "";
+    const bytes = Buffer.from(url.slice(url.indexOf(",") + 1), "base64");
+    const d = jpeg.decode(bytes, { useTArray: true, maxResolutionInMP: 100 });
+    seen.push({ width: d.width, height: d.height });
+    const patches = Math.ceil(d.width / 32) * Math.ceil(d.height / 32);
+    if (patches > 30_000)
+      return new Response(
+        JSON.stringify({
+          error: {
+            message: `The image you provided requires ${patches} patches after processing, exceeding the limit of 30000. Please resize the image and try again.`,
+            type: "invalid_request_error",
+            param: "messages",
+            code: "invalid_value",
+          },
+        }),
+        { status: 400, headers: { "content-type": "application/json" } },
+      );
+    return new Response(
+      JSON.stringify({
+        choices: [{ message: { content: EXTRACTED }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 900, completion_tokens: 12 },
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  }) as unknown as typeof fetch;
+  return { impl, seen };
+}
+
+// A WebP header (VP8X) declaring the given size, with no image data behind it: the size is all the
+// plan reads, and there is no WebP decoder here to fit it with.
+function webpOf(width: number, height: number): Buffer {
+  const b = Buffer.alloc(64);
+  b.write("RIFF", 0);
+  b.writeUInt32LE(b.length - 8, 4);
+  b.write("WEBP", 8);
+  b.write("VP8X", 12);
+  b.writeUInt32LE(10, 16);
+  b.writeUIntLE(width - 1, 24, 3);
+  b.writeUIntLE(height - 1, 27, 3);
+  return b;
+}
+
+function stubClient(bytes: Buffer, contentType = "image/jpeg") {
   return async () =>
     ({
       downloadAttachment: async () => ({
@@ -128,7 +187,7 @@ function stubClient(bytes: Buffer) {
           bytes.byteOffset,
           bytes.byteOffset + bytes.byteLength,
         ),
-        contentType: "image/jpeg",
+        contentType,
       }),
       updateAttachmentMeta: async () => ({}),
     }) as unknown as ChatwootClient;
@@ -170,6 +229,7 @@ describe.skipIf(!dbUp)("an image over Anthropic's dimension limit", () => {
         },
       },
     });
+    agentId = agent.id;
     await suDb.inbox.create({
       data: {
         tenantId,
@@ -183,6 +243,7 @@ describe.skipIf(!dbUp)("an image over Anthropic's dimension limit", () => {
 
   afterAll(async () => {
     if (tenantId) {
+      await clearFlowLog(suDb, { tenantId });
       for (const table of [
         "inboxes",
         "agents",
@@ -246,6 +307,235 @@ describe.skipIf(!dbUp)("an image over Anthropic's dimension limit", () => {
     expect(seen).toHaveLength(1);
     expect(seen[0]?.width).toBeGreaterThan(0);
     expect(out?.text).toBe(EXTRACTED);
+  });
+
+  test("on OpenAI a full-resolution phone photo is downscaled under its patch limit, and read", async () => {
+    const { impl, seen } = openaiFetch();
+    const cfg = (await resolveVisionConfig(
+      tenantId,
+      instanceId,
+      CHATWOOT_INBOX_ID,
+      appDb,
+    )) as VisionConfig;
+    nextId += 1;
+    const out = await extractInboundFile({
+      tenantId,
+      instanceId,
+      conversationId: 910,
+      messageId: nextId,
+      attachmentId: nextId,
+      dataUrl: "https://vision-limit.example.com/IMG_0004.jpg",
+      cfg: { ...cfg, provider: "openai", model: "gpt-6.1-sol" },
+      base: appDb,
+      deps: {
+        makeClient: stubClient(photo(4536, 8064)),
+        fetchImpl: impl,
+        sleep: async () => {},
+      },
+    });
+    expect(seen).toHaveLength(1);
+    const sent = seen[0] ?? { width: 0, height: 0 };
+    expect(
+      Math.ceil(sent.width / 32) * Math.ceil(sent.height / 32),
+    ).toBeLessThanOrEqual(30_000);
+    expect(sent.height).toBeGreaterThan(sent.width);
+    expect(out?.text).toBe(EXTRACTED);
+  });
+
+  test("on OpenAI a photo too large to fit here is sent as received, since the model may resize it itself", async () => {
+    // A header declaring 8000x7000 (56 MP, over the converter's pixel cap) on a tiny JPEG body.
+    const forged = Buffer.from(photo(32, 32));
+    let sof = 2;
+    while (!(forged[sof] === 0xff && forged[sof + 1] === 0xc0))
+      sof += 2 + forged.readUInt16BE(sof + 2);
+    forged.writeUInt16BE(7000, sof + 5);
+    forged.writeUInt16BE(8000, sof + 7);
+    const sent: string[] = [];
+    const impl = (async (_url: string | URL, init?: RequestInit) => {
+      const body = JSON.parse((init?.body as string) ?? "{}") as {
+        messages?: Array<{
+          content?: Array<{ type?: string; image_url?: { url?: string } }>;
+        }>;
+      };
+      const url =
+        body.messages?.[0]?.content?.find((c) => c.type === "image_url")
+          ?.image_url?.url ?? "";
+      sent.push(url.slice(url.indexOf(",") + 1));
+      return new Response(
+        JSON.stringify({
+          choices: [{ message: { content: EXTRACTED }, finish_reason: "stop" }],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }) as unknown as typeof fetch;
+    const cfg = (await resolveVisionConfig(
+      tenantId,
+      instanceId,
+      CHATWOOT_INBOX_ID,
+      appDb,
+    )) as VisionConfig;
+    nextId += 1;
+    const out = await extractInboundFile({
+      tenantId,
+      instanceId,
+      conversationId: 910,
+      messageId: nextId,
+      attachmentId: nextId,
+      dataUrl: "https://vision-limit.example.com/IMG_0005.jpg",
+      cfg: { ...cfg, provider: "openai", model: "gpt-4o" },
+      base: appDb,
+      deps: {
+        makeClient: stubClient(forged),
+        fetchImpl: impl,
+        sleep: async () => {},
+      },
+    });
+    expect(sent).toEqual([forged.toString("base64")]);
+    expect(out?.text).toBe(EXTRACTED);
+  });
+
+  test("a WebP over the limit, which nothing here can fit, is not sent and its line says why", async () => {
+    let calls = 0;
+    const impl = (async () => {
+      calls += 1;
+      return new Response("{}", { status: 400 });
+    }) as unknown as typeof fetch;
+    nextId += 1;
+    const turnId = `vision-over-limit-${process.pid}-${nextId}`;
+    const out = await readInboundFile({
+      tenantId,
+      instanceId,
+      conversationId: 910,
+      messageId: nextId,
+      attachmentId: nextId,
+      dataUrl: "https://vision-limit.example.com/banner.webp",
+      cfg: (await resolveVisionConfig(
+        tenantId,
+        instanceId,
+        CHATWOOT_INBOX_ID,
+        appDb,
+      )) as VisionConfig,
+      base: appDb,
+      flow: { tenantId, turnId, source: "inbox", base: appDb },
+      deps: {
+        makeClient: stubClient(webpOf(10_000, 1_000), "image/webp"),
+        fetchImpl: impl,
+        sleep: async () => {},
+      },
+    });
+    expect(calls).toBe(0);
+    expect(out).toEqual({ unread: "too_large" });
+    const rows = await flowLogRows(suDb, {
+      where: { turnId, stage: "vision" },
+      select: { level: true, status: true, detail: true },
+    });
+    expect(
+      rows.map((r) => ({ level: r.level, status: r.status, detail: r.detail })),
+    ).toEqual([
+      {
+        level: "info",
+        status: "skipped",
+        detail: { reason: "over_provider_limit" },
+      },
+    ]);
+  });
+
+  test("the same WebP to an endpoint that is not Anthropic's is sent, since its limits are not ours to know", async () => {
+    let calls = 0;
+    const impl = (async () => {
+      calls += 1;
+      return new Response(
+        JSON.stringify({
+          content: [{ type: "text", text: EXTRACTED }],
+          stop_reason: "end_turn",
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }) as unknown as typeof fetch;
+    const cfg = (await resolveVisionConfig(
+      tenantId,
+      instanceId,
+      CHATWOOT_INBOX_ID,
+      appDb,
+    )) as VisionConfig;
+    nextId += 1;
+    const out = await extractInboundFile({
+      tenantId,
+      instanceId,
+      conversationId: 910,
+      messageId: nextId,
+      attachmentId: nextId,
+      dataUrl: "https://vision-limit.example.com/banner.webp",
+      cfg: { ...cfg, baseURL: "https://llm-proxy.example.com/v1" },
+      base: appDb,
+      deps: {
+        makeClient: stubClient(webpOf(10_000, 1_000), "image/webp"),
+        fetchImpl: impl,
+        sleep: async () => {},
+      },
+    });
+    expect(calls).toBe(1);
+    expect(out?.text).toBe(EXTRACTED);
+  });
+
+  test("the playground path refuses the same WebP on Anthropic's endpoint and sends it to another one", async () => {
+    let calls = 0;
+    const impl = (async () => {
+      calls += 1;
+      return new Response(
+        JSON.stringify({
+          content: [{ type: "text", text: EXTRACTED }],
+          stop_reason: "end_turn",
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }) as unknown as typeof fetch;
+    const webp = webpOf(10_000, 1_000);
+    const file = new Uint8Array(webp).buffer;
+    const vision = {
+      enabled: true,
+      provider: "anthropic",
+      model: "claude-haiku-5-5",
+      credentialRef: (
+        (await resolveVisionConfig(
+          tenantId,
+          instanceId,
+          CHATWOOT_INBOX_ID,
+          appDb,
+        )) as VisionConfig
+      ).credentialRef,
+    };
+    const turnId = `vision-playground-${process.pid}-${nextId}`;
+    const run = (baseURL?: string) =>
+      extractPlaygroundFile({
+        ctx: { tenantId, userId: null, role: "TENANT_ADMIN" },
+        agentId,
+        file,
+        mimeType: "image/webp",
+        settings: { vision: baseURL ? { ...vision, baseURL } : vision },
+        base: appDb,
+        deps: { fetchImpl: impl, sleep: async () => {} },
+        flow: { tenantId, turnId, source: "playground", base: appDb },
+      });
+    expect(await run()).toEqual({ kind: "unsupported", text: "" });
+    expect(calls).toBe(0);
+    const rows = await flowLogRows(suDb, {
+      where: { turnId, stage: "vision" },
+      select: { level: true, status: true, detail: true },
+    });
+    expect(
+      rows.map((r) => ({ level: r.level, status: r.status, detail: r.detail })),
+    ).toEqual([
+      {
+        level: "info",
+        status: "skipped",
+        detail: { reason: "over_provider_limit" },
+      },
+    ]);
+    expect((await run("https://llm-proxy.example.com/v1")).text).toBe(
+      EXTRACTED,
+    );
+    expect(calls).toBe(1);
   });
 
   test("a photo at the limit goes as it came", async () => {

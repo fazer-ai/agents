@@ -139,6 +139,7 @@ const REFUSALS: ReadonlyArray<readonly [RegExp, string]> = [
     "image dimensions exceed max allowed size",
   ],
   [/image exceeds .*maximum/i, "image bytes exceed max allowed size"],
+  [/requires \d+ patches/i, "image patches exceed max allowed count"],
 ];
 
 function refusalOf(providerMessage: string | null): string | null {

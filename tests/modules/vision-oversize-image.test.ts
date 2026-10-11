@@ -177,14 +177,24 @@ describe("planImageConversion with the provider's dimension limit", () => {
         mimeType: "image/jpeg",
         dimensions: over,
       }),
-    ).toEqual({ action: "convert", converter: "jpeg-fit", to: "image/jpeg" });
+    ).toEqual({
+      action: "convert",
+      converter: "jpeg-fit",
+      to: "image/jpeg",
+      required: true,
+    });
     expect(
       planImageConversion({
         provider: "anthropic",
         mimeType: "image/png",
         dimensions: { width: 9000, height: 300 },
       }),
-    ).toEqual({ action: "convert", converter: "png-fit", to: "image/jpeg" });
+    ).toEqual({
+      action: "convert",
+      converter: "png-fit",
+      to: "image/jpeg",
+      required: true,
+    });
   });
 
   test("at the limit, below it, or with no dimensions, it goes as it came", () => {
@@ -232,23 +242,167 @@ describe("planImageConversion with the provider's dimension limit", () => {
     ).toBe("as-is");
   });
 
-  test("a provider that downscales on its side is left alone at any size", () => {
-    for (const provider of ["openai", "gemini"])
-      expect(
-        planImageConversion({
-          provider,
-          mimeType: "image/jpeg",
-          dimensions: { width: 4536, height: 8064 },
-        }).action,
-      ).toBe("as-is");
+  test("on OpenAI a photo over 30,000 patches of 32 px is downscaled, and one at 30,000 goes as it came", () => {
+    // Measured against gpt-6.1-sol: 4536x8064 answers 400 "requires 35784 patches after processing,
+    // exceeding the limit of 30000", which is ceil(4536/32) * ceil(8064/32).
+    expect(
+      planImageConversion({
+        provider: "openai",
+        mimeType: "image/jpeg",
+        dimensions: { width: 4536, height: 8064 },
+      }),
+    ).toEqual({
+      action: "convert",
+      converter: "jpeg-fit",
+      to: "image/jpeg",
+      required: false,
+    });
+    // 150 x 200 patches is the limit itself; one pixel more opens a 151st column.
+    expect(
+      planImageConversion({
+        provider: "openai",
+        mimeType: "image/jpeg",
+        dimensions: { width: 4800, height: 6400 },
+      }).action,
+    ).toBe("as-is");
+    expect(
+      planImageConversion({
+        provider: "openai",
+        mimeType: "image/jpeg",
+        dimensions: { width: 4801, height: 6400 },
+      }).action,
+    ).toBe("convert");
   });
 
-  test("a type there is no decoder for goes as-is, and the vendor answers for itself", () => {
+  test("Gemini has no dimension limit, only the inline request ceiling", () => {
+    expect(
+      planImageConversion({
+        provider: "gemini",
+        mimeType: "image/jpeg",
+        dimensions: { width: 4536, height: 8064 },
+        byteLength: 9_000_000,
+      }).action,
+    ).toBe("as-is");
+    expect(
+      planImageConversion({
+        provider: "gemini",
+        mimeType: "image/jpeg",
+        dimensions: { width: 4536, height: 8064 },
+        byteLength: 16_000_000,
+      }).action,
+    ).toBe("convert");
+    // A HEIC is native to Gemini, so only its weight can send it to the HEIC converter.
+    expect(
+      planImageConversion({
+        provider: "gemini",
+        mimeType: "image/heic",
+        byteLength: 16_000_000,
+      }),
+    ).toEqual({
+      action: "convert",
+      converter: "heic-to-jpeg",
+      to: "image/jpeg",
+      required: true,
+    });
+  });
+
+  test("Gemini refuses only what cannot fit its 20 MB request, and fits what crowds out the prompt", () => {
+    // 14,400,000 bytes is 19,200,000 as base64: past the fit line, under the ceiling.
+    expect(
+      planImageConversion({
+        provider: "gemini",
+        mimeType: "image/webp",
+        byteLength: 14_400_000,
+      }).action,
+    ).toBe("as-is");
+    expect(
+      planImageConversion({
+        provider: "gemini",
+        mimeType: "image/jpeg",
+        byteLength: 14_400_000,
+      }),
+    ).toEqual({
+      action: "convert",
+      converter: "jpeg-fit",
+      to: "image/jpeg",
+      required: false,
+    });
+    // 15,728,641 bytes is 20,971,524 as base64, over 20 MiB.
+    expect(
+      planImageConversion({
+        provider: "gemini",
+        mimeType: "image/webp",
+        byteLength: 15_728_641,
+      }).action,
+    ).toBe("over-limit");
+  });
+
+  test("a type there is no decoder for, over the limit, is refused before the call instead of sent to a 400", () => {
     expect(
       planImageConversion({
         provider: "anthropic",
         mimeType: "image/webp",
         dimensions: { width: 9000, height: 9000 },
+      }).action,
+    ).toBe("over-limit");
+    expect(
+      planImageConversion({
+        provider: "anthropic",
+        mimeType: "image/webp",
+        dimensions: { width: 8000, height: 8000 },
+      }).action,
+    ).toBe("as-is");
+    // The vendor's own host by name, and a regional subdomain of it, refuse the same way.
+    for (const baseURL of [
+      "https://api.anthropic.com/v1",
+      "https://eu.api.anthropic.com/v1",
+    ])
+      expect(
+        planImageConversion({
+          provider: "anthropic",
+          mimeType: "image/webp",
+          dimensions: { width: 9000, height: 9000 },
+          baseURL,
+        }).action,
+      ).toBe("over-limit");
+  });
+
+  test("on an endpoint that is not the vendor's, a limit fits but never refuses", () => {
+    for (const baseURL of [
+      "https://llm-proxy.example.com/v1",
+      "http://api.anthropic.com/v1",
+      "not a url",
+    ])
+      expect(
+        planImageConversion({
+          provider: "anthropic",
+          mimeType: "image/webp",
+          dimensions: { width: 9000, height: 9000 },
+          baseURL,
+        }).action,
+      ).toBe("as-is");
+    // The fit still runs there, but a fit that fails sends the original instead of skipping it.
+    expect(
+      planImageConversion({
+        provider: "anthropic",
+        mimeType: "image/jpeg",
+        dimensions: { width: 9000, height: 9000 },
+        baseURL: "https://llm-proxy.example.com/v1",
+      }),
+    ).toEqual({
+      action: "convert",
+      converter: "jpeg-fit",
+      to: "image/jpeg",
+      required: false,
+    });
+  });
+
+  test("OpenAI's patch limit depends on the model, so it fits a JPEG and never refuses a WebP", () => {
+    expect(
+      planImageConversion({
+        provider: "openai",
+        mimeType: "image/webp",
+        dimensions: { width: 4536, height: 8064 },
       }).action,
     ).toBe("as-is");
   });
@@ -539,6 +693,23 @@ describe("a provider 4xx keeps the provider's own words", () => {
     );
     expect(bytes.message).toBe(
       "vision anthropic failed with 400 (image bytes exceed max allowed size)",
+    );
+
+    // OpenAI's refusal of an image over its patch limit, as gpt-6.1-sol answered it live; it reaches
+    // the line only when the header could not be read, since a known size is fitted before the call.
+    const patches = await failureOf(
+      anthropicReplying(
+        400,
+        JSON.stringify({
+          error: {
+            message:
+              "The image you provided requires 35784 patches after processing, exceeding the limit of 30000. Please resize the image and try again.",
+          },
+        }),
+      ),
+    );
+    expect(patches.message).toBe(
+      "vision anthropic failed with 400 (image patches exceed max allowed count)",
     );
 
     const prose = await failureOf(anthropicReplying(400, "<html>oops</html>"));

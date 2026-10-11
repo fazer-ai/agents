@@ -33,7 +33,7 @@ import { readImageDimensions } from "./convert/dimensions";
 import { isDecorativeImage } from "./decorative";
 import { visionAcceptsDocuments } from "./document-support";
 import {
-  MAX_IMAGE_EDGE,
+  imageLimitsFor,
   normalizeMediaType,
   planImageConversion,
 } from "./media-conversion";
@@ -302,23 +302,35 @@ async function convertForProvider(args: {
   bytes: ArrayBuffer;
   mimeType: string | null;
   provider: string;
+  baseURL: string | null;
   flow?: FlowContext;
 }): Promise<
   | { ok: true; bytes: ArrayBuffer; mimeType: string | null }
   | { ok: false; reason: string }
 > {
+  const limits = imageLimitsFor(args.provider);
   const plan = planImageConversion({
     mimeType: args.mimeType,
     provider: args.provider,
-    // Read only where a limit exists to compare against; a header walk is cheap but not free.
+    // Read only where a limit on size exists to compare against; a header walk is cheap but not free.
     dimensions:
-      MAX_IMAGE_EDGE[args.provider] === undefined
+      limits.maxEdge === null && limits.maxPatches === null
         ? null
         : readImageDimensions(args.bytes),
     byteLength: args.bytes.byteLength,
+    baseURL: args.baseURL,
   });
   if (plan.action === "as-is")
     return { ok: true, bytes: args.bytes, mimeType: args.mimeType };
+  // NOTE: Application log only; the Logs page gets the caller's skip line with the reason.
+  if (plan.action === "over-limit") {
+    logger.info(
+      "vision: %s over the provider's documented limit and no converter fits it, the attachment was not read (provider=%s)",
+      normalizeMediaType(args.mimeType),
+      args.provider,
+    );
+    return { ok: false, reason: "over_provider_limit" };
+  }
   const startedAt = performance.now();
   try {
     const bytes = await runMediaConverter(plan.converter, args.bytes);
@@ -341,6 +353,16 @@ async function convertForProvider(args: {
     return { ok: true, bytes, mimeType: plan.to };
   } catch (err) {
     const why = err instanceof Error ? err.message : String(err);
+    // NOTE: A fit that was only prudent (a soft limit) and could not run leaves the original, which
+    // the provider may still read; skipping it would turn a readable file into an unread one.
+    if (!plan.required) {
+      logger.info(
+        "vision: %s — the original goes as received (provider=%s)",
+        why,
+        args.provider,
+      );
+      return { ok: true, bytes: args.bytes, mimeType: args.mimeType };
+    }
     // NOTE: A mismatch stopped NOTHING (the bytes go untouched and are read), so it logs that the
     // declared type was wrong, at info, not a conversion failure at warn. These are application log
     // lines only: the Logs page gets the caller's `convert_failed`, and nothing for a mismatch.
@@ -566,6 +588,7 @@ async function extractInboundOnce(
     bytes,
     mimeType: contentType,
     provider: cfg.provider,
+    baseURL: entry.baseUrl ?? cfg.baseURL,
     flow: params.flow,
   });
   if (!converted.ok) return skip(converted.reason);
@@ -781,9 +804,22 @@ export async function extractPlaygroundFile(
     bytes: params.file,
     mimeType: params.mimeType,
     provider: cfg.provider,
+    baseURL: entry.baseUrl ?? cfg.baseURL,
     flow: params.flow,
   });
-  if (!converted.ok) return { kind: "unsupported", text: "" };
+  if (!converted.ok) {
+    // The inbound path writes this line through its `skip`; the playground has no marker to leave,
+    // so the line is what tells the operator why the file was not read.
+    if (params.flow)
+      emitFlowEvent(params.flow, {
+        stage: "vision",
+        level: skipLevel(converted.reason),
+        status: "skipped",
+        provider: cfg.provider,
+        detail: { reason: converted.reason },
+      });
+    return { kind: "unsupported", text: "" };
+  }
 
   // The playground's own ceiling, asked once the file is known to be extractable AND convertible,
   // and before the provider round trip. It throws (see `assertPlaygroundSpendCeiling`), so an

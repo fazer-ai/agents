@@ -232,6 +232,7 @@ describe("planImageConversion", () => {
       action: "convert",
       converter: "heic-to-jpeg",
       to: "image/jpeg",
+      required: true,
     });
   });
 

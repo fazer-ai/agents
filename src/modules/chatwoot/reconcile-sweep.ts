@@ -110,22 +110,19 @@ const MAX_MESSAGE_PAGES = 10;
 // The fork's catch-up read returns at most this many messages per call.
 const CATCH_UP_PAGE = 100;
 
-// The newest page, completed with the catch-up read over and past it: the default page keeps a reaction only
-// when its target is on the page, so a reaction to an older message is missing from it, and the
-// catch-up read (every message with a higher id, no reaction window) is where it appears. Ordered by
-// `(created_at, id)`, as the pages are.
-async function newestMessages(
+// A page completed with the catch-up read: the default and `before` pages keep a reaction only when
+// its target is on the same page, so a reaction to a message pages away is missing from all of them,
+// and the catch-up read (every message above an id, no reaction window) is where it appears. Read from
+// just below the page's lowest id, since an omitted reaction can sit between two rows the page did
+// return; a row any page already returned (`seen`) is dropped. Ordered by `(created_at, id)`.
+async function completePage(
   client: ChatwootClient,
   conversationId: number,
+  rows: ChatwootMessageRow[],
+  seen: Set<number>,
 ): Promise<ChatwootMessageRow[]> {
-  const rows = readMessagePage(
-    await client.getMessages(conversationId),
-    conversationId,
-  );
   if (rows.length === 0) return rows;
-  const seen = new Set(rows.map((m) => m.id));
-  // From just below the page's lowest id, not its highest: an omitted reaction can sit between two
-  // rows the page did return (a note or activity line after it), and the duplicates are dropped.
+  for (const m of rows) seen.add(m.id);
   let after = Math.min(...rows.map((m) => m.id)) - 1;
   for (let read = 0; ; read++) {
     if (read >= MAX_MESSAGE_PAGES)
@@ -156,7 +153,13 @@ async function owedOf(
   conversationId: number,
   managedBotIds: ReadonlySet<number>,
 ): Promise<ChatwootMessageRow | null> {
-  let rows = await newestMessages(client, conversationId);
+  const seen = new Set<number>();
+  let rows = await completePage(
+    client,
+    conversationId,
+    readMessagePage(await client.getMessages(conversationId), conversationId),
+    seen,
+  );
   for (let page = 0; page < MAX_MESSAGE_PAGES; page++) {
     const turn = newestTurn(rows, managedBotIds);
     if (turn === "answered") return null;
@@ -169,9 +172,14 @@ async function owedOf(
       const bt = (b.createdAt as Date).getTime();
       return bt < at || (bt === at && b.id < a.id) ? b : a;
     });
-    rows = readMessagePage(
-      await client.getMessages(conversationId, { before: oldest.id }),
+    rows = await completePage(
+      client,
       conversationId,
+      readMessagePage(
+        await client.getMessages(conversationId, { before: oldest.id }),
+        conversationId,
+      ),
+      seen,
     );
   }
   throw new Error(

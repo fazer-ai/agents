@@ -731,6 +731,54 @@ describe.skipIf(!dbUp)("reconciling from Chatwoot", () => {
     ).toEqual([17000, 17001]);
   });
 
+  test("a lost reaction to a message pages back, behind a page of notes, is still found", async () => {
+    await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: "answered-turn-1800",
+        event: "message_created",
+        status: "PROCESSED",
+        conversationId: 1800,
+        inboundMessageId: 18000,
+        routeAgentBotId: BOT,
+        routeObserved: false,
+      },
+    });
+    const notes = Array.from({ length: 45 }, (_, i) => ({
+      ...outgoing(18_002 + i, minutesAgo(24 - i * 0.05)),
+      private: true,
+    }));
+    const s: Scripted = {
+      conversations: new Map([[INBOX, [conv(1800, minutesAgo(20))]]]),
+      messages: new Map([
+        [
+          1800,
+          [
+            incoming(18000, minutesAgo(30)),
+            {
+              ...incoming(18001, minutesAgo(25)),
+              content: "👍",
+              content_attributes: { is_reaction: true },
+              offPage: true,
+            },
+            ...notes,
+          ],
+        ],
+      ]),
+      listed: [],
+    };
+    await reconcileFromChatwoot({
+      tenantId,
+      base: appDb,
+      now: NOW,
+      makeClient: chatwoot(s),
+    });
+    expect(
+      (await ledgerFor(1800)).map((r) => r.inboundMessageId).sort(),
+    ).toEqual([18000, 18001]);
+  });
+
   test("the catch-up read is followed past a full page to the newest message", async () => {
     const reactions = Array.from({ length: 105 }, (_, i) => ({
       ...incoming(16_001 + i, minutesAgo(25 - i * 0.04)),

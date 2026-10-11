@@ -1,5 +1,6 @@
 import {
   afterAll,
+  afterEach,
   beforeAll,
   beforeEach,
   describe,
@@ -48,7 +49,15 @@ if (appUrl && suUrl) {
 }
 
 // The wait for a connection a read is refused after, in place of the shipped two seconds.
-const MAX_WAIT_MS = 100;
+const MAX_WAIT_MS = 25;
+
+// The retry's first pause before it asks again. The callers leave the jitter to `Math.random` over
+// the shipped 250 ms ceiling (POOL_RETRY_BASE_MS), so a draw of 0.1 is a 25 ms pause, each later one
+// double the one before. Nothing else these reads run draws from `Math.random`: Prisma's ids come
+// from `crypto` where it exists, and its cuid fallback only folds the draw in next to a counter and
+// the clock.
+const RETRY_DRAW = 0.1;
+const RETRY_PAUSE_MS = 25;
 
 // The options a transaction is opened with, read off a base that records them. Both openers take
 // the same options: the tenant-scoped one and the fleet one.
@@ -106,18 +115,26 @@ describe.skipIf(!dbUp)("tool reads on a full pool", () => {
   let pool: PrismaClient;
   let embeddingConfig: { mockRestore(): void } | null = null;
   let warn: { mockRestore(): void } | null = null;
-  let refusals = 0;
+  // The pause each refusal was retried after, read off the line the retry writes.
+  let pauses: unknown[] = [];
+  let random: { mockRestore(): void } | null = null;
   let onRefusal: () => void = () => {};
 
   // Takes the pool's only connection, resolves once it has it, and keeps it until a read is refused
-  // for want of it. The hold comes back in an object: an async function returning the promise itself
-  // would adopt it and wait the hold out.
-  async function holdPool(): Promise<{ done: Promise<void> }> {
+  // for want of it, or until `release` (a read that failed outright is never refused through the
+  // retry, and must not leave the pool held for the next test). The hold comes back in an object: an
+  // async function returning the promise itself would adopt it and wait the hold out.
+  async function holdPool(): Promise<{
+    done: Promise<void>;
+    release: () => void;
+  }> {
     let taken: () => void = () => {};
     const has = new Promise<void>((r) => {
       taken = r;
     });
+    let release: () => void = () => {};
     const refused = new Promise<void>((r) => {
+      release = r;
       onRefusal = r;
     });
     const held = pool.$transaction(
@@ -129,7 +146,20 @@ describe.skipIf(!dbUp)("tool reads on a full pool", () => {
       { timeout: 10_000 },
     );
     await has;
-    return { done: held };
+    return { done: held, release };
+  }
+
+  // What a read came to: its value, or the error it threw by code and message, so a read that fails
+  // shows up in the assertion that names it rather than escaping the test.
+  async function outcomeOf<T>(
+    read: Promise<T>,
+  ): Promise<{ value: T } | { error: string }> {
+    try {
+      return { value: await read };
+    } catch (err) {
+      const { code, message } = err as { code?: unknown; message?: unknown };
+      return { error: `${String(code ?? "")} ${String(message ?? err)}` };
+    }
   }
 
   beforeAll(async () => {
@@ -160,17 +190,35 @@ describe.skipIf(!dbUp)("tool reads on a full pool", () => {
     });
     setScopedTxMaxWaitForTest(MAX_WAIT_MS);
     // The line the retry writes for a transaction that never started is the refusal this file waits on.
-    warn = spyOn(logger, "warn").mockImplementation(((msg: unknown) => {
+    warn = spyOn(logger, "warn").mockImplementation(((
+      msg: unknown,
+      ...args: unknown[]
+    ) => {
       if (String(msg).includes("the database pool had no free connection")) {
-        refusals += 1;
+        pauses.push(args[3]);
         onRefusal();
       }
     }) as never);
   });
 
   beforeEach(() => {
-    refusals = 0;
+    pauses = [];
+    random = spyOn(Math, "random").mockReturnValue(RETRY_DRAW);
   });
+
+  afterEach(() => {
+    random?.mockRestore();
+    random = null;
+  });
+
+  // The read was refused while the pool was held, and retried after the first pause. The hold's
+  // commit races that pause on a loaded machine (measured: a 50 ms window lost about 1 run in 100,
+  // an 85 ms one 1 in 600), and a commit that loses it costs one more refusal, which the retry
+  // absorbs with its doubled pause, exactly as in production. So the count past the first is not
+  // asserted; the read's outcome is.
+  function expectRefusedThenRetried(): void {
+    expect(pauses.slice(0, 1)).toEqual([RETRY_PAUSE_MS]);
+  }
 
   afterAll(async () => {
     setScopedTxMaxWaitForTest(undefined);
@@ -183,14 +231,17 @@ describe.skipIf(!dbUp)("tool reads on a full pool", () => {
 
   test("an HTTP tool's vault credential is read once the pool frees up, not failed", async () => {
     const held = await holdPool();
-    const cred = await resolveInjectableCredentialEntry(
-      pool,
-      tenantId,
-      vaultRef,
-    );
-    await held.done;
-    expect(cred?.value).toBe("s3cret");
-    expect(refusals).toBe(1);
+    let outcome: Awaited<ReturnType<typeof outcomeOf>>;
+    try {
+      outcome = await outcomeOf(
+        resolveInjectableCredentialEntry(pool, tenantId, vaultRef),
+      );
+    } finally {
+      held.release();
+      await held.done;
+    }
+    expect(outcome).toMatchObject({ value: { value: "s3cret" } });
+    expectRefusedThenRetried();
   });
 
   test("search_knowledge's first read survives a full pool", async () => {
@@ -199,44 +250,56 @@ describe.skipIf(!dbUp)("tool reads on a full pool", () => {
     );
     try {
       const held = await holdPool();
-      const hits = await searchKnowledge({
-        ctx: { tenantId, userId: null, role: "TENANT_ADMIN" },
-        query: "horário",
-        knowledgeBaseIds: [kbId],
-        base: pool,
-      });
-      await held.done;
-      expect(hits).toEqual([]);
+      let outcome: Awaited<ReturnType<typeof outcomeOf>>;
+      try {
+        outcome = await outcomeOf(
+          searchKnowledge({
+            ctx: { tenantId, userId: null, role: "TENANT_ADMIN" },
+            query: "horário",
+            knowledgeBaseIds: [kbId],
+            base: pool,
+          }),
+        );
+      } finally {
+        held.release();
+        await held.done;
+      }
+      expect(outcome).toEqual({ value: [] });
       expect(embed).toHaveBeenCalledTimes(1);
-      expect(refusals).toBe(1);
+      expectRefusedThenRetried();
     } finally {
       embed.mockRestore();
     }
   });
 
   test("search_knowledge's vector read survives a pool that fills while the query is embedded", async () => {
-    let hold: Promise<void> = Promise.resolve();
+    let held: Awaited<ReturnType<typeof holdPool>> | undefined;
     const embed = spyOn(embeddings, "embedQuery").mockImplementation(
       async () => {
         // The pool fills between the two reads, which is where the embedding's network call sits.
-        hold = (await holdPool()).done;
+        held = await holdPool();
         return Array.from({ length: EMBEDDING_DIM }, () => 0.01);
       },
     );
+    let outcome: Awaited<ReturnType<typeof outcomeOf>>;
     try {
-      const hits = await searchKnowledge({
-        ctx: { tenantId, userId: null, role: "TENANT_ADMIN" },
-        query: "horário",
-        knowledgeBaseIds: [kbId],
-        base: pool,
-      });
-      await hold;
-      expect(hits).toEqual([]);
-      expect(refusals).toBe(1);
+      outcome = await outcomeOf(
+        searchKnowledge({
+          ctx: { tenantId, userId: null, role: "TENANT_ADMIN" },
+          query: "horário",
+          knowledgeBaseIds: [kbId],
+          base: pool,
+        }),
+      );
     } finally {
+      held?.release();
+      await held?.done;
       embed.mockRestore();
     }
+    expect(outcome).toEqual({ value: [] });
+    expectRefusedThenRetried();
   });
+
   test("a turn's lease is released once the pool frees up, not left to read as a running turn", async () => {
     const db = su as PrismaClient;
     const inst = await seedChatwootInstance(db, {
@@ -258,17 +321,25 @@ describe.skipIf(!dbUp)("tool reads on a full pool", () => {
       },
     });
     const held = await holdPool();
-    await clearTurnOwning(
-      { tenantId, instanceId: inst.id, contactInboxId, graphThreadId },
-      pool,
-      { epoch: 7n, heldBefore: false },
-    );
-    await held.done;
+    let outcome: Awaited<ReturnType<typeof outcomeOf>>;
+    try {
+      outcome = await outcomeOf(
+        clearTurnOwning(
+          { tenantId, instanceId: inst.id, contactInboxId, graphThreadId },
+          pool,
+          { epoch: 7n, heldBefore: false },
+        ),
+      );
+    } finally {
+      held.release();
+      await held.done;
+    }
+    expect(outcome).toEqual({ value: undefined });
     const row = await db.agentThread.findFirstOrThrow({
       where: { tenantId, contactInboxId },
       select: { turnHolders: true, turnHeldUntil: true },
     });
     expect(row).toEqual({ turnHolders: 0, turnHeldUntil: null });
-    expect(refusals).toBe(1);
+    expectRefusedThenRetried();
   });
 });

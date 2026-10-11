@@ -13,7 +13,9 @@ import { until } from "../utils/poll";
 // it there and through the graph, with a model that never looks at the signal.
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const DEADLINE_MS = 300;
+// Short, because every test here waits it out once or twice. Each test also checks the call it cuts
+// was actually reached, so a deadline that fired before anything ran cannot pass for one that worked.
+const DEADLINE_MS = 40;
 
 async function outcome(p: Promise<unknown>) {
   const t0 = performance.now();
@@ -51,13 +53,20 @@ class DeafModel extends BaseChatModel {
 
 describe("every call through runModelCall ends at its deadline", () => {
   test("a call deaf to the signal is cut at the deadline it was given", async () => {
+    let reached = 0;
     const res = await outcome(
-      runModelCall(() => new Promise<never>(() => {}), {
-        deadlineMs: DEADLINE_MS,
-      }),
+      runModelCall(
+        () => {
+          reached += 1;
+          return new Promise<never>(() => {});
+        },
+        { deadlineMs: DEADLINE_MS },
+      ),
     );
+    expect(reached).toBe(1);
     expect(res.ok).toBe(false);
-    expect(res.ms).toBeGreaterThanOrEqual(DEADLINE_MS - 20);
+    // Cut by the deadline, not before it: the timer never fires early by more than rounding.
+    expect(res.ms).toBeGreaterThanOrEqual(DEADLINE_MS - 2);
     expect(res.ms).toBeLessThan(DEADLINE_MS + 1_000);
     expect((res as { err: Error }).err.message).toBe("timeout");
   });
@@ -87,9 +96,14 @@ describe("every call through runModelCall ends at its deadline", () => {
     });
 
     test("gets the agent's modelCallTimeoutMs, never none", async () => {
+      let reached = 0;
       const res = await outcome(
-        runModelCall(() => new Promise<never>(() => {})),
+        runModelCall(() => {
+          reached += 1;
+          return new Promise<never>(() => {});
+        }),
       );
+      expect(reached).toBe(1);
       expect(res.ok).toBe(false);
       expect(res.ms).toBeLessThan(DEADLINE_MS + 1_000);
       expect((res as { err: Error }).err.message).toBe("timeout");
@@ -97,6 +111,7 @@ describe("every call through runModelCall ends at its deadline", () => {
   });
 
   test("the fallback is cut at its own deadline, not the primary's", async () => {
+    let fallbackReached = 0;
     const res = await outcome(
       runModelCall(
         () =>
@@ -109,11 +124,15 @@ describe("every call through runModelCall ends at its deadline", () => {
           fallback: {
             labels: { provider: "google", model: "f" },
             deadlineMs: DEADLINE_MS,
-            run: () => new Promise<never>(() => {}),
+            run: () => {
+              fallbackReached += 1;
+              return new Promise<never>(() => {});
+            },
           },
         },
       ),
     );
+    expect(fallbackReached).toBe(1);
     expect(res.ok).toBe(false);
     expect(res.ms).toBeLessThan(DEADLINE_MS + 1_000);
     expect((res as { err: Error }).err.message).toBe("timeout");
@@ -127,14 +146,17 @@ describe("every call through runModelCall ends at its deadline", () => {
       answerNow = r;
     });
     let landed = 0;
+    let started = 0;
     const late = Array.from({ length: cap }, () =>
       outcome(
         runModelCall(
-          () =>
-            answers.then(() => {
+          () => {
+            started += 1;
+            return answers.then(() => {
               landed += 1;
               return "late";
-            }),
+            });
+          },
           { deadlineMs: DEADLINE_MS },
         ),
       ),
@@ -145,8 +167,10 @@ describe("every call through runModelCall ends at its deadline", () => {
     });
     const waited = performance.now() - t0;
     expect(queued).toBe("next");
-    expect(waited).toBeGreaterThanOrEqual(DEADLINE_MS - 20);
-    expect(waited).toBeLessThan(DEADLINE_MS * 3);
+    // Every permit was taken by a hung call, so the queued one waited for a deadline to give one back.
+    expect(started).toBe(cap);
+    expect(waited).toBeGreaterThanOrEqual(DEADLINE_MS - 2);
+    expect(waited).toBeLessThan(DEADLINE_MS + 1_000);
     for (const r of await Promise.all(late)) expect(r.ok).toBe(false);
     // The late answers land now. A permit returned twice would let more than `cap` run at once.
     answerNow();
@@ -197,13 +221,15 @@ describe("the agent turn bounds both models, fallback or not", () => {
   });
 
   test("a hung fallback ends the turn at its deadline", async () => {
+    const primary = new DeafModel(600_000);
+    const fallback = new DeafModel(600_000);
     const graph = buildAgentGraph({
-      model: new DeafModel(600_000),
+      model: primary,
       systemPrompt: "s",
       primary: PRIMARY,
       primaryDeadlineMs: DEADLINE_MS,
       fallback: {
-        model: new DeafModel(600_000),
+        model: fallback,
         provider: "google",
         modelId: "gemini-fallback",
         deadlineMs: DEADLINE_MS,
@@ -215,5 +241,7 @@ describe("the agent turn bounds both models, fallback or not", () => {
     expect(res.ok).toBe(false);
     expect(res.ms).toBeLessThan(DEADLINE_MS * 2 + 1_000);
     expect((res as { err: Error }).err.message).toBe("timeout");
+    // Both were asked: the turn ended on the fallback's deadline, not before reaching it.
+    expect([primary.calls, fallback.calls]).toEqual([1, 1]);
   });
 });

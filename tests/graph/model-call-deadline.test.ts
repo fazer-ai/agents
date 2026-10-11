@@ -33,9 +33,12 @@ const preflight = (req: Request) =>
     ? new BunResponse(null, { status: 204, headers: CORS })
     : null;
 
-// Pinned below the default so a test cannot pass on the default by accident, and short enough to
-// keep the file fast: every test that reaches the deadline waits it out.
-const DEADLINE_MS = 400;
+// Pinned far below the default so a test cannot pass on the default by accident, and short because
+// every test that reaches the deadline waits it out. A test about an answer that must arrive INSIDE
+// the deadline sets its own, generous one: a budget the work has to fit in on a loaded machine, which
+// a passing run never waits.
+const DEADLINE_MS = 40;
+const GENEROUS_DEADLINE_MS = 5_000;
 let savedDeadline: number | undefined;
 beforeEach(() => {
   savedDeadline = config.agent.modelCallTimeoutMs;
@@ -98,9 +101,11 @@ function hangingEndpoint() {
 
 // A model that answers after `delay` (a duration, or a promise the test settles) and never looks at
 // the abort signal, which is how the Google adapter behaves (neither `timeout` nor `signal` on invoke
-// stops it). `answered` settles once it has returned its answer.
+// stops it). `answered` settles once it has returned its answer; `abortedAtStart` records, per call,
+// whether the signal it was handed had already fired.
 class DeafModel extends BaseChatModel {
   calls = 0;
+  abortedAtStart: boolean[] = [];
   answered: Promise<void>;
   private markAnswered: () => void = () => {};
   constructor(
@@ -118,8 +123,12 @@ class DeafModel extends BaseChatModel {
   override bindTools() {
     return this;
   }
-  async _generate(): Promise<ChatResult> {
+  async _generate(
+    _messages: unknown,
+    options: { signal?: AbortSignal },
+  ): Promise<ChatResult> {
     this.calls++;
+    this.abortedAtStart.push(options.signal?.aborted ?? false);
     await (typeof this.delay === "number" ? sleep(this.delay) : this.delay);
     queueMicrotask(this.markAnswered);
     return {
@@ -163,7 +172,8 @@ describe("with no fallback, the primary model call has a deadline", () => {
       expect(res).not.toBe("pending");
       if (res === "pending") return;
       expect(res.ok).toBe(false);
-      expect(res.ms).toBeGreaterThanOrEqual(DEADLINE_MS - 50);
+      // Cut by the deadline, not refused before it: the timer never fires early by more than rounding.
+      expect(res.ms).toBeGreaterThanOrEqual(DEADLINE_MS - 2);
       expect((res.err as Error).message).toBe("timeout");
       // A hang is one attempt: nothing comes back to retry on.
       expect(ep.hits()).toBe(1);
@@ -191,7 +201,10 @@ describe("with no fallback, the primary model call has a deadline", () => {
   });
 
   test("a slow answer inside the deadline is delivered", async () => {
-    const graph = await graphOn(new DeafModel(DEADLINE_MS / 4, "chegou"));
+    config.agent.modelCallTimeoutMs = GENEROUS_DEADLINE_MS;
+    // Slow enough to cross several turns of the event loop, which is all a deadline armed wrong (at
+    // zero, or already expired) needs to cut it.
+    const graph = await graphOn(new DeafModel(DEADLINE_MS, "chegou"));
     const out = await graph.invoke(
       { messages: [new HumanMessage("oi")] },
       THREAD,
@@ -201,15 +214,19 @@ describe("with no fallback, the primary model call has a deadline", () => {
   });
 
   test("every call gets its own deadline, not one shared by the graph", async () => {
-    // Two calls back to back, each taking most of the deadline: a signal created once, when the
-    // graph is built, would expire during the second one.
-    const graph = await graphOn(new DeafModel(DEADLINE_MS * 0.7, "ok"));
+    // Two calls that each answer at once, the second started a whole deadline after the first ended:
+    // a signal created once, when the graph is built or on the first call, has expired by then.
+    const model = new DeafModel(Promise.resolve(), "ok");
+    const graph = await graphOn(model);
     await graph.invoke({ messages: [new HumanMessage("um")] }, THREAD);
+    await sleep(DEADLINE_MS + 5);
     const out = await graph.invoke(
       { messages: [new HumanMessage("dois")] },
       THREAD,
     );
     expect(String(out.messages.at(-1)?.content)).toBe("ok");
+    // The second call was handed a live signal, not one whose time ran out before it began.
+    expect(model.abortedAtStart).toEqual([false, false]);
   });
 
   test("an answer that arrives after the deadline never reaches the thread", async () => {
@@ -278,7 +295,9 @@ describe("with no fallback, the primary model call has a deadline", () => {
 
 describe("with a fallback, nothing about the primary changes", () => {
   test("the primary is not cut at this deadline: it has its own 45 s ceiling instead", async () => {
-    const primary = new DeafModel(DEADLINE_MS + 200, "primario");
+    // Answers after the no-fallback deadline would have fired: that timer, armed first and set to
+    // expire first, would always win the race.
+    const primary = new DeafModel(DEADLINE_MS + 5, "primario");
     const seen: ResolvedModelConfig[] = [];
     const graph = await buildModelAndGraph(
       makeConfig({
@@ -327,7 +346,7 @@ describe("callWithDeadline, on its own", () => {
         temperature: 0,
       });
       const res = await outcome(
-        callWithDeadline(300, (signal) =>
+        callWithDeadline(DEADLINE_MS, (signal) =>
           model.invoke([new HumanMessage("oi")], { signal }),
         ),
       );

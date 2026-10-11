@@ -28,9 +28,11 @@ const vec = (seed: number): number[] =>
 
 const passThrough: EmbeddingDeps["assertSafe"] = async (u) => new URL(u);
 
-// Short enough for a test and in the same proportions as the real one: the second pause (2 s) no
-// longer fits, so a search that keeps stalling makes exactly two attempts.
-const BUDGET = { attemptMs: 60, deadlineMs: 1_200 };
+// Short enough for a test, since every stalled attempt waits it out: the second pause (2 s) no longer
+// fits the deadline, so a search that keeps stalling makes exactly two attempts. The deadline itself
+// is never reached by a passing run; it only has to leave the two attempts room on a loaded machine.
+const ATTEMPT_MS = 25;
+const BUDGET = { attemptMs: ATTEMPT_MS, deadlineMs: 1_200 };
 
 // The pauses between attempts while this file runs: the first shortened through the module's test
 // seam, the second as shipped, which no budget here leaves room for.
@@ -251,7 +253,7 @@ describe("a query embedding gives up on a stalled request quickly (issue #844)",
         data: [{ embedding: vec(1) }],
       })).fetchImpl,
       assertSafe: () => new Promise<URL>(() => {}),
-      queryBudget: { attemptMs: 60, deadlineMs: 400 },
+      queryBudget: { attemptMs: ATTEMPT_MS, deadlineMs: 400 },
     }).catch((e: unknown) => e);
     expect((err as Error).message).toContain("timeout");
     expect(Date.now() - started).toBeLessThan(400);
@@ -270,7 +272,7 @@ describe("a query embedding gives up on a stalled request quickly (issue #844)",
     const started = Date.now();
     const err = await embedQuery("consulta", openai, {
       fetchImpl,
-      queryBudget: { attemptMs: 60, deadlineMs: 400 },
+      queryBudget: { attemptMs: ATTEMPT_MS, deadlineMs: 400 },
     }).catch((e: unknown) => e);
     expect((err as Error).message).toContain("timeout");
     expect(Date.now() - started).toBeLessThan(400);
@@ -293,7 +295,7 @@ describe("a query embedding gives up on a stalled request quickly (issue #844)",
         await answered;
         return new URL(u);
       },
-      queryBudget: { attemptMs: 60, deadlineMs: 400 },
+      queryBudget: { attemptMs: ATTEMPT_MS, deadlineMs: 400 },
     }).catch(() => undefined);
     // Every check answers now, after the search gave up on it, and what it would set off is let run.
     answerNow();

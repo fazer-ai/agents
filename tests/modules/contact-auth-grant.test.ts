@@ -189,8 +189,9 @@ const realWithKeyedQueue = locks.withKeyedQueue;
 let grantQueueJoins = 0;
 
 // A gate budget short enough that a test that reaches it does not wait long; nothing here asks the
-// gate to fit real work inside it.
-const SHORT_BUDGET_MS = 150;
+// gate to fit real work inside it, only to get as far as the statement the test holds, which each
+// such test checks it did.
+const SHORT_BUDGET_MS = 40;
 async function ask(params: {
   cfg: ContactAuthConfig;
   fetchImpl: typeof fetch;
@@ -533,6 +534,7 @@ describe.skipIf(!dbUp)("contact authorization: reusing a verdict", () => {
   test("a stored-verdict read that hangs spends the gate's budget, not more", async () => {
     const ep = endpoint(allowed);
     const hung = gate();
+    let reached = 0;
     const before = Date.now();
     const verdict = await ask({
       cfg: cfg({ timeoutMs: SHORT_BUDGET_MS }),
@@ -540,6 +542,7 @@ describe.skipIf(!dbUp)("contact authorization: reusing a verdict", () => {
       base: baseWithGrantHook(appDb, (m) =>
         m === "findUnique"
           ? async () => {
+              reached += 1;
               await hung.wait;
               return null;
             }
@@ -547,6 +550,7 @@ describe.skipIf(!dbUp)("contact authorization: reusing a verdict", () => {
       ),
     });
     const elapsed = Date.now() - before;
+    expect(reached).toBe(1);
     // `timeoutMs` covers every step that waits, and a saturated pool is as capable of holding the
     // webhook as a slow endpoint is. A read that never answers against a short budget: the gate
     // comes back on its own deadline, and it comes back as the fail-closed answer.
@@ -770,12 +774,14 @@ describe.skipIf(!dbUp)("contact authorization: reusing a verdict", () => {
     // The retry runs into a delete that outlives the gate's budget. The caller walks away on time;
     // the STATEMENT does not stop, and it is still on its way to the database.
     const straggler = gate();
+    let reached = 0;
     const timedOut = await ask({
       cfg: cfg({ timeoutMs: SHORT_BUDGET_MS }),
       fetchImpl: ep.fetchImpl,
       base: baseWithGrantHook(appDb, (m, delegate) =>
         m === "deleteMany"
           ? async (...args: unknown[]) => {
+              reached += 1;
               await straggler.wait;
               return delegate.deleteMany(...args);
             }
@@ -783,6 +789,7 @@ describe.skipIf(!dbUp)("contact authorization: reusing a verdict", () => {
       ),
     });
     expect(timedOut.outcome).toBe("error");
+    expect(reached).toBe(1);
 
     // The next message is allowed and its grant is stored. Released from the queue when the CALLER
     // gave up, the straggler would delete this row and cost an endpoint call nobody needed. It lands
@@ -1008,6 +1015,7 @@ describe.skipIf(!dbUp)("contact authorization: reusing a verdict", () => {
     // Left outside it, a pool in trouble adds the scoped transaction's own maxWait and timeout on
     // top of a gate configured for one second.
     const hung = gate();
+    let reached = 0;
     const before = Date.now();
     const verdict = await ask({
       cfg: cfg({ timeoutMs: SHORT_BUDGET_MS }),
@@ -1015,12 +1023,14 @@ describe.skipIf(!dbUp)("contact authorization: reusing a verdict", () => {
       base: baseWithGrantHook(appDb, (m) =>
         m === "deleteMany"
           ? async () => {
+              reached += 1;
               await hung.wait;
               return { count: 0 };
             }
           : undefined,
       ),
     });
+    expect(reached).toBe(1);
     expect(Date.now() - before).toBeLessThan(2500);
     expect(verdict.outcome).toBe("error");
     expect(verdict.reason).toBe("timeout");

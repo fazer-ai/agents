@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setSystemTime, test } from "bun:test";
 import { inflateSync } from "node:zlib";
 import { getDocumentProxy } from "unpdf";
 import {
@@ -182,14 +182,19 @@ describe("renderDocumentPdf", () => {
   // only worth freezing if replaying it lands in the same place.
   test("is deterministic for the same input", async () => {
     const input = starterInput();
-    const a = await renderDocumentPdf(input);
-    const b = await renderDocumentPdf(input);
-    // The file's own timestamps and id differ by design; everything the page holds does not.
+    // The file stamps its creation time in a metadata object of its own, so both renders run on one
+    // frozen clock; the file id differs by design and is the only thing left out.
+    setSystemTime(new Date("2026-03-04T05:06:07Z"));
+    let a: Buffer;
+    let b: Buffer;
+    try {
+      a = await renderDocumentPdf(input);
+      b = await renderDocumentPdf(input);
+    } finally {
+      setSystemTime();
+    }
     const content = (bytes: Buffer) =>
-      bytes
-        .toString("latin1")
-        .replace(/\/(CreationDate|ModDate)\s*\([^)]*\)/g, "")
-        .replace(/\/ID\s*\[[^\]]*\]/g, "");
+      bytes.toString("latin1").replace(/\/ID\s*\[[^\]]*\]/g, "");
     expect(drawnText(a)).toContain("Consultoria inicial");
     expect(drawnText(a)).toBe(drawnText(b));
     expect(content(a)).toBe(content(b));

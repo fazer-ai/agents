@@ -5,6 +5,7 @@ import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
 import type { RuntimeDeps } from "@/graph/runtime";
 import { withKeyedQueue } from "@/lib/locks";
+import { runInPoolClass } from "@/lib/pool-class";
 import { isDraining, trackWork } from "@/lib/shutdown";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { normalizeChatwootEvent } from "./normalize";
@@ -138,7 +139,10 @@ function pump(a: Admission, laneName: AdmissionLane): void {
             return "skipped";
           }
         : next.run;
-    void trackWork("chatwoot_delivery", work)
+    // NOTE: Every delivery runs on the main pool, whoever admitted it: a customer message is a turn,
+    // and the slot that frees here starts the next delivery from this callback's context, which may be
+    // the delivery sweep's (background) and not the live webhook that queued it.
+    void trackWork("chatwoot_delivery", () => runInPoolClass("main", work))
       .then(
         () => {
           a.failed.delete(next.rowId);

@@ -10,6 +10,7 @@ import { createHmac } from "node:crypto";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import { currentPoolClass, runInPoolClass } from "@/lib/pool-class";
 import { drainInFlight, resetShutdownForTest } from "@/lib/shutdown";
 import {
   ADMISSION_MAX_WAITING,
@@ -39,6 +40,7 @@ import type { ClaimedJob } from "@/modules/scheduler/service";
 import { getJobHandler } from "@/modules/scheduler/worker";
 import { generateRouteToken } from "@/modules/webhooks/inbound/route-token";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { until } from "../utils/poll";
 
 // A bounded number of deliveries is processed at once and the rest wait in memory as ledger rows. A
 // customer message that is not processed here goes to the delivery recovery at once; anything else is
@@ -208,6 +210,26 @@ describe("admission", () => {
     expect(runs).toBe(1);
     // Done, so a later dispatch of the same row (a redelivery) is admitted again; its CAS decides.
     expect(admitChatwootDelivery(7n, async () => {})).toBe(true);
+  });
+
+  test("a delivery runs on the main pool even when a background pass admitted the one ahead of it", async () => {
+    // One slot. The delivery sweep (background) admits a stored row; a live webhook's delivery waits
+    // behind it and starts from the slot the first one frees, inside that callback's context.
+    resetChatwootAdmissionForTest(1);
+    const first = held();
+    const seen: Record<string, string> = {};
+    runInPoolClass("background", () =>
+      admitChatwootDelivery(1n, async () => {
+        seen.stored = currentPoolClass();
+        await first.gate;
+      }),
+    );
+    admitChatwootDelivery(2n, async () => {
+      seen.live = currentPoolClass();
+    });
+    first.release();
+    await until("the live delivery to run", () => seen.live);
+    expect(seen).toEqual({ stored: "main", live: "main" });
   });
 
   test("a throwing delivery frees its slot", async () => {

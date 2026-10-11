@@ -127,6 +127,7 @@ export const JOB_POOL: Record<SchedulerJobKind, PoolClass> = {
   HEARTBEAT: "background",
   FLOWLOG_SWEEP: "background",
   MEMORY_COMPACT: "background",
+  // The sweep itself; the stored deliveries it admits run on main (src/modules/chatwoot/delivery-queue.ts).
   DELIVERY_SWEEP: "background",
   SPEND_CEILING_POLL: "background",
   // Background: it repairs a conversation's status; no reply is sent.

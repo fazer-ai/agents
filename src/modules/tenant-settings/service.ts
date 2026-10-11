@@ -14,6 +14,15 @@ import {
   priceOverridesSchema,
   readPriceOverrides,
 } from "@/modules/pricing/overrides";
+import {
+  breakerLockKey,
+  clearTripForOff,
+} from "@/modules/proactive-breaker/service";
+import {
+  type ProactiveBreakerConfig,
+  proactiveBreakerSettingsSchema,
+  readProactiveBreakerConfig,
+} from "@/modules/proactive-breaker/settings";
 import { syncTenantSpendPoll } from "@/modules/spend-ceiling/arm";
 import {
   readSpendCeilingConfig,
@@ -226,11 +235,18 @@ async function patchBlock<
     | CompanySettings
     | SpendCeilingStored
     | SpendCeilingLegacyStored
-    | PriceOverridesBlock,
+    | PriceOverridesBlock
+    | ProactiveBreakerConfig,
 >(
   ctx: TenantContext,
   base: PrismaClient,
-  key: "embedding" | "langfuse" | "company" | "spendCeiling" | "priceOverrides",
+  key:
+    | "embedding"
+    | "langfuse"
+    | "company"
+    | "spendCeiling"
+    | "priceOverrides"
+    | "proactiveBreaker",
   // Handed both states, so a block can report what moved without carrying what it holds (the
   // company profile needs the difference; see `sides` for the shape the others use).
   audit: {
@@ -244,9 +260,17 @@ async function patchBlock<
   // Last so it stays a trailing callback. May be async to read under the lock before the commit: the
   // logo upload needs the key it supersedes, and a read outside the lock is already stale.
   merge: (raw: Record<string, unknown>) => T | Promise<T>,
+  // Runs in the same transaction after the write, for state that has to move with the setting.
+  afterWrite?: (db: ScopedDb, value: T) => Promise<void>,
+  // An advisory lock taken BEFORE the tenant row: a block whose state another path locks first and
+  // then writes rows referencing the tenant (the proactive breaker) takes it in that same order, or
+  // the two wait on each other.
+  lockFirst?: string,
 ): Promise<T> {
   const tenantId = requireTenantId(ctx);
   return runScopedOn(base, ctx, async (db) => {
+    if (lockFirst)
+      await db.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lockFirst})::bigint)`;
     await db.$queryRaw`SELECT 1 FROM "tenants" WHERE "id" = ${tenantId} FOR UPDATE`;
     const raw = await readRawSettings(db, tenantId);
     const value = await merge(raw);
@@ -255,6 +279,7 @@ async function patchBlock<
       where: { id: tenantId },
       data: { settings: settings as Prisma.InputJsonValue },
     });
+    if (afterWrite) await afterWrite(db, value);
     await auditMutation(db, ctx, {
       action: audit.action,
       target: audit.target,
@@ -544,6 +569,41 @@ export async function setCompanyLogoKey(
         logoVersion: Math.max(now, current.logoVersion + 1),
       });
     },
+  );
+}
+
+// Updates the account-wide proactive breaker's configuration (docs/proactive-breaker.md). Validated on
+// the way in, so a limit typed as -5 or 1.5 is a 422 rather than a guard silently read as the default.
+// A fixed mode needs a number, and the number is kept when switching away so switching back restores
+// it. Changing the limit never reopens a tripped breaker: only a resume does.
+export async function updateProactiveBreakerSettings(
+  ctx: TenantContext,
+  patch: Partial<ProactiveBreakerConfig>,
+  base: PrismaClient = basePrisma,
+): Promise<ProactiveBreakerConfig> {
+  return patchBlock(
+    ctx,
+    base,
+    "proactiveBreaker",
+    {
+      action: "tenant_settings.proactive_breaker_set",
+      target: "tenant_settings:proactiveBreaker",
+      project: sides(readProactiveBreakerConfig),
+    },
+    (raw) => {
+      const merged = { ...readProactiveBreakerConfig(raw), ...patch };
+      const parsed = proactiveBreakerSettingsSchema.safeParse(merged);
+      if (!parsed.success)
+        throw new AppError(
+          `proactive breaker: ${parsed.error.issues[0]?.message ?? "invalid"}`,
+          422,
+        );
+      return parsed.data;
+    },
+    async (db, value) => {
+      if (value.mode === "off") await clearTripForOff(db, requireTenantId(ctx));
+    },
+    breakerLockKey(requireTenantId(ctx)),
   );
 }
 

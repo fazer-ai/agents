@@ -63,6 +63,7 @@ import {
   mcpConnectionList,
   metricsGet,
   metricsTimeseries,
+  proactiveBreakerGet,
   tenantSettingsGet,
   toolGet,
   toolList,
@@ -188,6 +189,8 @@ import {
   experimentUpdate,
   langfuseConnect,
   type McpPriceOverride,
+  proactiveBreakerResume,
+  proactiveBreakerSet,
   tenantSettingsUpdate,
 } from "./write-settings";
 import {
@@ -1112,6 +1115,18 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
         inputSchema: {},
       },
       async (_args, eff) => writeContent(await tenantSettingsGet(eff)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
+      "proactive_breaker_get",
+      {
+        description:
+          "Get the account-wide proactive breaker: mode, limit in force, the 24h count toward it, and whether it is tripped.",
+        inputSchema: {},
+      },
+      async (_args, eff) => writeContent(await proactiveBreakerGet(eff)),
     );
 
     registerTenantTool(
@@ -3196,6 +3211,42 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
         },
         eff,
       ) => writeContent(await tenantSettingsUpdate(eff, args)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
+      "proactive_breaker_set",
+      {
+        description:
+          "Set the account-wide proactive breaker: mode auto, fixed (needs limit, per 24h) or off. Does not reopen a tripped breaker. Previews unless dry_run is false.",
+        inputSchema: {
+          mode: z.enum(["auto", "fixed", "off"]).optional(),
+          limit: z.number().int().nullable().optional(),
+          dry_run: z.boolean().optional(),
+        },
+      },
+      async (
+        args: {
+          mode?: "auto" | "fixed" | "off";
+          limit?: number | null;
+          dry_run?: boolean;
+        },
+        eff,
+      ) => writeContent(await proactiveBreakerSet(eff, args)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
+      "proactive_breaker_resume",
+      {
+        description:
+          "Resume proactive messages after the breaker tripped; the count restarts from zero. Previews unless dry_run is false.",
+        inputSchema: { dry_run: z.boolean().optional() },
+      },
+      async (args: { dry_run?: boolean }, eff) =>
+        writeContent(await proactiveBreakerResume(eff, args)),
     );
 
     registerTenantTool(

@@ -2,10 +2,12 @@
 
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { MemoryRouter } from "react-router";
 import { ToastProvider } from "@/client/components/Toast";
+import { ProactiveBreakerProvider } from "@/client/contexts/ProactiveBreakerContext";
 import { AdvancedPanel } from "@/client/pages/resources/AdvancedPanel";
 
-// THE ADVANCED SCREEN HAS AN INDEX, like the agent's Behavior tab: four tall cards, one entry each,
+// THE ADVANCED SCREEN HAS AN INDEX, like the agent's Behavior tab: five tall cards, one entry each,
 // in the order they are drawn, and each entry pointing at an anchor its card carries.
 
 const realFetch = globalThis.fetch;
@@ -52,11 +54,15 @@ afterAll(() => {
 });
 
 describe("the Advanced screen's index", () => {
-  test("lists the four cards in the order they are drawn, each pointing at its card", async () => {
+  test("lists the five cards in the order they are drawn, each pointing at its card", async () => {
     render(
-      <ToastProvider>
-        <AdvancedPanel />
-      </ToastProvider>,
+      <MemoryRouter>
+        <ToastProvider>
+          <ProactiveBreakerProvider>
+            <AdvancedPanel />
+          </ProactiveBreakerProvider>
+        </ToastProvider>
+      </MemoryRouter>,
     );
     const nav = await waitFor(() =>
       screen.getByRole("navigation", { name: "Sections" }),
@@ -64,6 +70,7 @@ describe("the Advanced screen's index", () => {
     const links = Array.from(nav.querySelectorAll("a"));
     expect(links.map((a) => a.textContent)).toEqual([
       "Spend ceiling",
+      "Proactive message breaker",
       "Model prices",
       "Embedding",
       "Observability (Langfuse)",
@@ -83,6 +90,6 @@ describe("the Advanced screen's index", () => {
     }
     // Each anchor holds its own card's title.
     expect(cards[0]?.textContent).toContain("Spend ceiling");
-    expect(cards[3]?.textContent).toContain("Observability (Langfuse)");
+    expect(cards[4]?.textContent).toContain("Observability (Langfuse)");
   });
 });

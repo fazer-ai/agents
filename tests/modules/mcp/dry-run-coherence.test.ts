@@ -458,6 +458,13 @@ const TABLE: Record<string, Row> = {
       "measured on an agent that EXISTS: `updateAgent` is reached with only a prompt in the patch, and an empty one is stored by both halves.",
   },
   tenant_create: { args: { name: "n", slug: "" }, why: "empty slug" },
+  proactive_breaker_resume: {
+    skip: "takes no input it could refuse: resuming an open breaker changes nothing, so the preview and the apply agree by construction",
+  },
+  proactive_breaker_set: {
+    args: { mode: "fixed", limit: -5 },
+    why: "limit below 1",
+  },
   tenant_settings_update: {
     args: { embedding: { credential_ref: `vault:${NOPE}` } },
     why: "credential_ref names no credential",

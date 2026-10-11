@@ -1,6 +1,7 @@
-import { Binary, Gauge, ScrollText, Tags } from "lucide-react";
+import { Binary, Gauge, ScrollText, ShieldAlert, Tags } from "lucide-react";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { useSearchParams } from "react-router";
 import {
   Button,
   Card,
@@ -16,6 +17,7 @@ import { useFieldRefusal } from "@/client/hooks/useFieldRefusal";
 import { api } from "@/client/lib/api";
 import { SectionNav } from "@/client/pages/agents/SectionNav";
 import { PriceOverridesCard } from "./PriceOverridesCard";
+import { ProactiveBreakerCard } from "./ProactiveBreakerCard";
 import { SpendCeilingCard } from "./SpendCeilingCard";
 
 type Settings = NonNullable<
@@ -95,6 +97,17 @@ export function AdvancedPanel() {
     void load();
   }, [load]);
 
+  // A link that names a card (`?section=proactive-breaker`, which the breaker's alert and banner use)
+  // lands on it once the page has drawn.
+  const [searchParams] = useSearchParams();
+  const section = searchParams.get("section");
+  useEffect(() => {
+    if (loading || !section) return;
+    document
+      .getElementById(section)
+      ?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [loading, section]);
+
   async function saveEmbedding() {
     setEmbSaving(true);
     const ref = embCredential || null;
@@ -164,6 +177,11 @@ export function AdvancedPanel() {
       label: t("spendCeiling.title", "Spend ceiling"),
     },
     {
+      id: "proactive-breaker",
+      icon: ShieldAlert,
+      label: t("proactiveBreaker.title", "Proactive message breaker"),
+    },
+    {
       id: "model-prices",
       icon: Tags,
       label: t("priceOverrides.title", "Model prices"),
@@ -193,6 +211,9 @@ export function AdvancedPanel() {
               />
             </div>
           )}
+          <div id="proactive-breaker" className="scroll-mt-4">
+            <ProactiveBreakerCard />
+          </div>
           {priceOverrides && (
             <div id="model-prices" className="scroll-mt-4">
               <PriceOverridesCard

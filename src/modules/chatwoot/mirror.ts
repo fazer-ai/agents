@@ -252,6 +252,7 @@ export async function mirrorChatwootEvent(
             chatwootKanbanAttributesAt: true,
             chatwootKanbanCardId: true,
             chatwootKanbanCardAt: true,
+            chatwootRedirectOriginClearedAt: true,
             // Read for the stale branch, which advances this watermark only when the payload really is
             // ahead of it. See the write there.
             lastInboundAt: true,
@@ -289,6 +290,8 @@ export async function mirrorChatwootEvent(
                 redirectOriginKnown:
                   existing.chatwootRedirectOriginAt != null ||
                   existing.redirectOriginDisplayId != null,
+                redirectOriginClearedAt:
+                  existing.chatwootRedirectOriginClearedAt,
                 statusClaimUntil: existing.statusClaimUntil,
                 statusClaimFrom: existing.statusClaimFrom,
                 statusClaimStampedAt: existing.statusClaimStampedAt,
@@ -412,6 +415,12 @@ export async function mirrorChatwootEvent(
             ...(redirectOriginAt != null
               ? { chatwootRedirectOriginAt: redirectOriginAt }
               : {}),
+            ...(decision.redirectOriginClearedAt != null
+              ? {
+                  chatwootRedirectOriginClearedAt:
+                    decision.redirectOriginClearedAt,
+                }
+              : {}),
             ...episodeRelease,
             ...staleSla,
             ...(decision.ownershipChangedAt != null
@@ -500,6 +509,7 @@ export async function mirrorChatwootEvent(
               chatwootCustomAttributesAt: decision.facts.customAttributes.at,
               chatwootConversationTypeAt: decision.facts.conversationType.at,
               chatwootKanbanAttributesAt: decision.facts.kanbanAttributes.at,
+              chatwootRedirectOriginClearedAt: decision.redirectOriginClearedAt,
               lastInboundAt: inboundAt,
               lastInboundMessageId: inboundId,
               // A row created mid-dialogue needs no special case here: what it stores is what
@@ -670,6 +680,12 @@ export async function mirrorChatwootEvent(
               : {}),
             ...(redirectOriginAt != null
               ? { chatwootRedirectOriginAt: redirectOriginAt }
+              : {}),
+            ...(decision.redirectOriginClearedAt != null
+              ? {
+                  chatwootRedirectOriginClearedAt:
+                    decision.redirectOriginClearedAt,
+                }
               : {}),
             ...episodeRelease,
           },

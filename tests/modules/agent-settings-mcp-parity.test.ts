@@ -55,6 +55,12 @@ const NOT_PUBLISHED: Record<string, string> = {
     "`PATCH /v1/tenant-settings/spend-ceiling` and the console's own screen. If it is ever to reach " +
     "MCP it belongs to `tenant_settings_update`, which today carries embedding and langfuse only — " +
     "`company` sits outside it for the same reason, so this is not the ceiling's own gap.",
+  proactiveBreaker:
+    "NOT an agent-settings block. `readProactiveBreakerConfig` is only ever handed a TENANT's " +
+    "settings bag (proactive-breaker/service.ts reads it off the `tenants` row, and " +
+    "tenant-settings/service.ts patches that row): the breaker counts every agent of the account, " +
+    "so a per-agent knob would contradict itself across agents. It reaches MCP through " +
+    "`proactive_breaker_set`.",
   appointmentReminders:
     "NOT an agent-settings block. `readAppointmentReminderConfig` is only ever called with " +
     "`sel.config` — the Google Calendar integration INSTANCE's config (toolpacks/google-calendar.ts, " +

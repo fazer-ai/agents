@@ -178,6 +178,24 @@ describe("repeated-update records", () => {
       { customAttributes: { pedido: "1" } },
     ],
     ["the status", { status: "open" }],
+    // The rows' own clocks order the inbox name, the contact's bag and the card: a repeat at a newer
+    // clock is a newer version of the same values and must reach the mirror.
+    ["the inbox's own clock", { inboxUpdatedAt: 1_791_000_100.75 }],
+    [
+      "the contact's own clock",
+      {
+        contact: {
+          id: 501,
+          name: "Cliente",
+          phone: "+5511999990000",
+          updatedAt: 1_791_000_100.75,
+        },
+      },
+    ],
+    [
+      "the kanban card's own clock",
+      { kanbanCardId: 1, kanbanCardAt: 1_791_000_100.75 },
+    ],
   ];
   for (const [label, change] of meaningful) {
     test(`a change in ${label} keeps the update from being dropped`, () => {

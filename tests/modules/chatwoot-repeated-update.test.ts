@@ -119,6 +119,10 @@ interface Shape {
   contactName?: string;
   contactPhone?: string | null;
   contactEmail?: string | null;
+  redirectOrigin?: number | null;
+  inboxClock?: number;
+  contactClock?: number;
+  contactAttrs?: Record<string, unknown>;
 }
 
 const body = (event: string, s: Shape) =>
@@ -142,7 +146,11 @@ const body = (event: string, s: Shape) =>
       ...(s.externalError ? { external_error: s.externalError } : {}),
       ...(s.deleted ? { deleted: true } : {}),
     },
-    inbox: { id: 7, name: s.inboxName ?? "WhatsApp" },
+    inbox: {
+      id: 7,
+      name: s.inboxName ?? "WhatsApp",
+      ...(s.inboxClock !== undefined ? { updated_at: s.inboxClock } : {}),
+    },
     conversation: conversation(s),
   });
 
@@ -159,6 +167,9 @@ const conversation = (s: Shape) => ({
   custom_attributes: s.customAttributes ?? {},
   ...(s.kanban ? { kanban_task: { id: 1, custom_attributes: s.kanban } } : {}),
   contact_inbox: { id: 77 },
+  ...("redirectOrigin" in s
+    ? { redirect_origin_display_id: s.redirectOrigin }
+    : {}),
   meta: {
     assignee_type: s.assignee ? "User" : null,
     assignee: s.assignee ?? null,
@@ -167,6 +178,10 @@ const conversation = (s: Shape) => ({
       name: s.contactName ?? "Cliente",
       phone_number: s.contactPhone ?? null,
       email: s.contactEmail ?? null,
+      ...(s.contactClock !== undefined ? { updated_at: s.contactClock } : {}),
+      ...(s.contactAttrs !== undefined
+        ? { custom_attributes: s.contactAttrs }
+        : {}),
     },
   },
 });
@@ -414,9 +429,9 @@ describe.skipIf(!dbUp)("repeated message updates", () => {
     expect((await deliver(body("message_updated", stamped))).rows).toBe(0);
   });
 
-  // The accepted limit (docs/chatwoot.md, step 3a): a shared row whose value goes A, B, A while the
-  // conversation's clock stands still is left with B by a dropped repeat, and the next delivery that
-  // is not a receipt writes A back.
+  // The accepted limit (docs/chatwoot.md, step 3a): without the row's own clock, a shared row whose
+  // value goes A, B, A while the conversation's clock stands still is left with B by a dropped repeat,
+  // and the next delivery that is not a receipt writes A back.
   test("a value that went back while the clock stood still waits for the next delivery that is not a receipt", async () => {
     // A clock ahead of every other test's, since the inbox row is shared by the whole file.
     const s = { conv: 1017, msg: 91017, updatedAt: 1_791_000_900.5 };
@@ -435,6 +450,73 @@ describe.skipIf(!dbUp)("repeated message updates", () => {
     expect(await name()).toBe("Vendas");
     await deliver(body("message_created", { ...s, msg: 91217 }));
     expect(await name()).toBe("WhatsApp");
+  });
+
+  // A reply stating no pairing is processed, a delayed conversation_updated from before it names an
+  // older origin, and the receipt that would restate the null is dropped. The null's version keeps the
+  // older pairing out on its own, so nothing waits on the dropped receipt.
+  test("a delayed older pairing between a processed reply and its dropped receipt stays out", async () => {
+    const s = {
+      conv: 1018,
+      msg: 91018,
+      updatedAt: 1_791_001_000.5,
+      redirectOrigin: null,
+    };
+    await deliver(body("message_created", s));
+    const older = { ...s, updatedAt: 1_791_000_950.5, redirectOrigin: 42 };
+    expect((await deliver(conversationUpdated(older))).rows).toBe(1);
+    expect((await deliver(body("message_updated", s))).rows).toBe(0);
+    const row = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: 1018 },
+      select: { redirectOriginDisplayId: true },
+    });
+    expect(row.redirectOriginDisplayId).toBeNull();
+  });
+
+  // With the rows' own clocks on the wire, the dropped repeat carries the record's clocks,
+  // which never beat the newer inbox name or contact bag another message wrote: processing it on a
+  // route with no record leaves the same values the drop left.
+  test("with the rows' own clocks the dropped repeat would not have written the old value back", async () => {
+    const s = {
+      conv: 1019,
+      msg: 91019,
+      updatedAt: 1_791_001_100.5,
+      inboxClock: 1_791_001_100.25,
+      contactClock: 1_791_001_100.25,
+      contactAttrs: { plano: "ouro" },
+    };
+    await deliver(body("message_created", s));
+    const other = {
+      ...s,
+      msg: 91119,
+      inboxName: "Vendas",
+      inboxClock: 1_791_001_100.75,
+      contactClock: 1_791_001_100.75,
+      contactAttrs: { plano: "prata" },
+    };
+    await deliver(body("message_created", other));
+    const kept = async () => ({
+      inbox: (
+        await suDb.inbox.findFirst({
+          where: { tenantId, chatwootInboxId: 7 },
+          select: { name: true },
+        })
+      )?.name,
+      bag: (
+        await suDb.contact.findFirst({
+          where: { tenantId, chatwootContactId: 501 },
+          select: { customAttributes: true },
+        })
+      )?.customAttributes,
+    });
+    expect((await deliver(body("message_updated", s))).rows).toBe(0);
+    expect(await kept()).toEqual({ inbox: "Vendas", bag: { plano: "prata" } });
+    const processed = await deliver(body("message_updated", s), {
+      bot: OTHER_BOT,
+    });
+    expect(processed.rows).toBe(1);
+    expect(processed.processError).toBeNull();
+    expect(await kept()).toEqual({ inbox: "Vendas", bag: { plano: "prata" } });
   });
 
   test("each bot route answers for its own deliveries", async () => {

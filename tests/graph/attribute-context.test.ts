@@ -271,7 +271,7 @@ describe.skipIf(!dbUp)("attribute context in the system prompt", () => {
         data: {
           chatwootInstanceId: instanceId,
           tenantId,
-          chatwootContactId: 4244,
+          chatwootContactId: 4245,
           name: "Lia",
           customAttributes: { plano: "free" },
         },

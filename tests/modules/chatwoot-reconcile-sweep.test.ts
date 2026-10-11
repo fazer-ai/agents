@@ -125,6 +125,11 @@ const outgoing = (id: number, at: Date) => ({
   private: false,
   created_at: epoch(at),
   content: "olá",
+  sender: { id: 7, type: "user" },
+});
+// A reply from our own bot, which answers only what its turn took.
+const ourReply = (id: number, at: Date) => ({
+  ...outgoing(id, at),
   sender: { id: BOT, type: "agent_bot" },
 });
 
@@ -1113,6 +1118,78 @@ describe.skipIf(!dbUp)("reconciling from Chatwoot", () => {
     expect((await ledgerFor(1125)).map((r) => r.inboundMessageId)).toEqual([
       11250,
     ]);
+  });
+
+  test("our bot's reply after a lost message does not hide it, and one after a received message is no loss", async () => {
+    await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: "received-normally",
+        event: "message_created",
+        status: "PROCESSED",
+        conversationId: 581,
+        inboundMessageId: 9081,
+        routeAgentBotId: BOT,
+        routeObserved: false,
+      },
+    });
+    const s: Scripted = {
+      conversations: new Map([
+        [INBOX, [conv(580, minutesAgo(20)), conv(581, minutesAgo(20))]],
+      ]),
+      messages: new Map([
+        [580, [incoming(9080, minutesAgo(25)), ourReply(9082, minutesAgo(20))]],
+        [581, [incoming(9081, minutesAgo(25)), ourReply(9083, minutesAgo(20))]],
+      ]),
+      listed: [],
+    };
+    const counts = await reconcileFromChatwoot({
+      tenantId,
+      base: appDb,
+      now: NOW,
+      makeClient: chatwoot(s),
+    });
+    expect(counts.handedToRecovery).toBe(1);
+    expect((await ledgerFor(580)).map((r) => r.inboundMessageId)).toEqual([
+      9080,
+    ]);
+    expect(await ledgerFor(581)).toHaveLength(1);
+  });
+
+  test("a message from before the responder was bound is not made the responder's work", async () => {
+    await suDb.inbox.updateMany({
+      where: { tenantId, chatwootInboxId: INBOX },
+      data: { responderBoundAt: minutesAgo(22) },
+    });
+    try {
+      const s: Scripted = {
+        conversations: new Map([
+          [INBOX, [conv(590, minutesAgo(20)), conv(591, minutesAgo(20))]],
+        ]),
+        messages: new Map([
+          [590, [incoming(9090, minutesAgo(25))]],
+          [591, [incoming(9091, minutesAgo(20))]],
+        ]),
+        listed: [],
+      };
+      const counts = await reconcileFromChatwoot({
+        tenantId,
+        base: appDb,
+        now: NOW,
+        makeClient: chatwoot(s),
+      });
+      expect(counts.handedToRecovery).toBe(1);
+      expect(await ledgerFor(590)).toHaveLength(0);
+      expect((await ledgerFor(591)).map((r) => r.inboundMessageId)).toEqual([
+        9091,
+      ]);
+    } finally {
+      await suDb.inbox.updateMany({
+        where: { tenantId, chatwootInboxId: INBOX },
+        data: { responderBoundAt: null },
+      });
+    }
   });
 
   test("a conversation with no activity time fails the inbox and keeps the cursor", async () => {

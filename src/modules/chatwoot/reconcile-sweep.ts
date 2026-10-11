@@ -62,15 +62,20 @@ export function reconciledDeliveryId(
 // recovery tells those apart with the inbox's provider, so the message is handed to it.
 export function owedCustomerMessage(
   rows: ChatwootMessageRow[],
+  managedBotIds: ReadonlySet<number> = new Set(),
 ): ChatwootMessageRow | null {
-  const turn = newestTurn(rows);
+  const turn = newestTurn(rows, managedBotIds);
   return typeof turn === "object" ? turn : null;
 }
 
 // The same reading, telling "a reply came last" from "nothing on this page decides": a page of notes
-// and activity lines says nothing, and the answer is on an older page.
+// and activity lines says nothing, and the answer is on an older page. A reply from one of our own
+// bots is not an answer either: a turn answers only the messages it took, and one finishing after a
+// lost message posts past it. The customer message before it is returned, and the ledger, which holds
+// a row for every message a turn received, tells the two apart.
 function newestTurn(
   rows: ChatwootMessageRow[],
+  managedBotIds: ReadonlySet<number>,
 ): ChatwootMessageRow | "answered" | "undecided" {
   for (let i = rows.length - 1; i >= 0; i--) {
     const m = rows[i] as ChatwootMessageRow;
@@ -80,6 +85,12 @@ function newestTurn(
       if (hasAnswerableContent(m)) return m;
       continue;
     }
+    if (
+      m.senderType === "agent_bot" &&
+      m.senderId !== null &&
+      managedBotIds.has(m.senderId)
+    )
+      continue;
     if (
       (m.messageType === "outgoing" || m.messageType === "template") &&
       m.senderType !== null
@@ -96,13 +107,14 @@ const MAX_MESSAGE_PAGES = 10;
 async function owedOf(
   client: ChatwootClient,
   conversationId: number,
+  managedBotIds: ReadonlySet<number>,
 ): Promise<ChatwootMessageRow | null> {
   let rows = readMessagePage(
     await client.getMessages(conversationId),
     conversationId,
   );
   for (let page = 0; page < MAX_MESSAGE_PAGES; page++) {
-    const turn = newestTurn(rows);
+    const turn = newestTurn(rows, managedBotIds);
     if (turn === "answered") return null;
     if (turn !== "undecided") return turn;
     if (rows.length === 0) return null;
@@ -129,7 +141,9 @@ interface BoundInbox {
   chatwootInboxId: number;
   agentId: bigint;
   bindingGeneration: number;
+  responderBoundAt: Date | null;
   routeBotId: number | null;
+  managedBotIds: ReadonlySet<number>;
 }
 
 async function boundInboxes(
@@ -145,6 +159,7 @@ async function boundInboxes(
         chatwootInboxId: true,
         agentId: true,
         bindingGeneration: true,
+        responderBoundAt: true,
       },
     });
     const bots = await db.chatwootAgentBot.findMany({
@@ -152,12 +167,15 @@ async function boundInboxes(
       select: { agentId: true, chatwootAgentBotId: true },
     });
     const botOf = new Map(bots.map((b) => [b.agentId, b.chatwootAgentBotId]));
+    const managedBotIds = new Set(bots.map((b) => b.chatwootAgentBotId));
     return inboxes.map((i) => ({
       id: i.id,
       chatwootInboxId: i.chatwootInboxId,
       agentId: i.agentId as bigint,
       bindingGeneration: i.bindingGeneration,
+      responderBoundAt: i.responderBoundAt,
       routeBotId: botOf.get(i.agentId as bigint) ?? null,
+      managedBotIds,
     }));
   });
 }
@@ -336,11 +354,18 @@ async function readListing(
       // A person holds it: whatever the customer wrote is theirs to answer.
       if (c.assigneeType === "User") continue;
       counts.conversationsRead += 1;
-      const message = await owedOf(client, c.id);
+      const message = await owedOf(client, c.id, inbox.managedBotIds);
       if (
         !message?.createdAt ||
         message.createdAt < since ||
         message.createdAt >= settledBefore
+      )
+        continue;
+      // A message from before the responder was bound was received for another role (an observer
+      // promoted since keeps its bot), and the row written here would name today's binding.
+      if (
+        inbox.responderBoundAt !== null &&
+        message.createdAt < inbox.responderBoundAt
       )
         continue;
       if (await handOver(base, tenantId, instanceId, inbox, c.id, message)) {

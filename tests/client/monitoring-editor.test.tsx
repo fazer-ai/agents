@@ -239,8 +239,14 @@ describe("the editor of a monitoring agent", () => {
     for (const mode of ["monitoring", "production"] as const) {
       const stub = await open(mode, "behavior");
       const ids = sections().map((s) => s.id);
-      // The save REPLACES the `monitoring` block through the form-state pair, and only for an agent
-      // that is a watcher (or already has the block).
+      // An edit to the Observation block is saved through the form-state pair, and only a watcher
+      // draws it; untouched, the block stays as stored (here, absent).
+      if (mode === "monitoring") {
+        const read = screen.getByLabelText("Messages read") as HTMLInputElement;
+        fireEvent.change(read, {
+          target: { value: String(Number(read.value) + 5) },
+        });
+      }
       fireEvent.click(screen.getByRole("button", { name: "Save" }));
       await waitFor(() => expect(lastSavedSettings(stub)).toBeDefined());
       drawn[mode] = {
@@ -298,19 +304,30 @@ describe("the Channels tab of a watcher", () => {
     });
   });
 
-  // The fallback section is drawn for a watcher, so the save writes the block like any other, in the
-  // shape the form-state pair writes (the blanks as null).
+  // The fallback section is drawn for a watcher, so an edit to it is saved like any other, in the
+  // shape the form-state pair writes (the blanks as null). Untouched, it goes back as stored.
   test("a watcher's save writes the fallback block like any other", async () => {
     const stub = await open("monitoring", "behavior", {
-      settings: { modelFallback: { provider: "gemini", model: "gemini-x" } },
+      settings: {
+        modelFallback: {
+          provider: "openai-compatible",
+          model: "m",
+          baseURL: "https://a.example/v1",
+        },
+      },
     });
+    const baseURL = [...document.querySelectorAll("input")].find(
+      (i) => i.value === "https://a.example/v1",
+    );
+    if (!baseURL) throw new Error("the fallback base URL is not drawn");
+    fireEvent.change(baseURL, { target: { value: "https://b.example/v1" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(lastSavedSettings(stub)).toBeDefined());
     expect(lastSavedSettings(stub)?.modelFallback).toEqual({
-      provider: "gemini",
-      model: "gemini-x",
+      provider: "openai-compatible",
+      model: "m",
       credentialRef: null,
-      baseURL: null,
+      baseURL: "https://b.example/v1",
     });
   });
 

@@ -10,6 +10,7 @@ import { firstRefusalAt, settlesRefusal } from "@/client/lib/fieldRefusal";
 import { PROTECTED_LABELS_MAX } from "@/modules/agents/tool-guidance";
 import {
   type EditorStub,
+  editTab,
   renderEditor,
   stubEditorApi,
 } from "../utils/agent-editor";
@@ -97,6 +98,10 @@ describe("agent editor save errors", () => {
     expect(bannerRows()).toEqual(["The policy is too long."]);
     expect(onScreen("The policy is too long.")).toBe(2);
 
+    // The fix the row asks for, and its save (Save waits for an edit there: agents#1206).
+    fireEvent.change(screen.getByRole("textbox", { name: "Custom policy" }), {
+      target: { value: "Seja breve." },
+    });
     const saves = stub.writes.length;
     save();
     await waitFor(() => expect(stub.writes.length).toBe(saves + 1));
@@ -390,6 +395,7 @@ describe("every save that writes the agent shows what the server said", () => {
     test(`${tab}: the server's sentence, and the fallback when nothing answered`, async () => {
       const stub = stubEditorApi({});
       await renderEditor(stub, tab);
+      editTab(tab);
       const writes = (p: string) =>
         path === "agent" ? isAgent(stub, p) : isGrants(stub, p);
       stub.override = (method, p) => {
@@ -462,6 +468,7 @@ describe("every save that writes the agent shows what the server said", () => {
     const stub = stubEditorApi({});
     refuseNextPatch(stub, { error: "Refused by the server." });
     await renderEditor(stub, "channelRedirect");
+    editTab("channelRedirect");
     save();
     await waitFor(() =>
       expect(bannerRows()).toEqual(["Refused by the server."]),

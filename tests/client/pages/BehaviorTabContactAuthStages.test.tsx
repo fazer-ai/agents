@@ -200,7 +200,8 @@ describe("the Behavior save", () => {
 
   test("reads them back as strictly as the runtime does", async () => {
     // Only a literal `true` asks the endpoint after a rule, and only a literal `false` silences the
-    // note: any other spelling reads the runtime's way, and a save right after the load writes that.
+    // note: any other spelling reads the runtime's way, and a save that writes the block (any edit
+    // to it) writes that reading. Untouched, the block goes back as stored (agents#1304).
     const lax = await openGate({
       enabled: true,
       rule: LABEL_STORED,
@@ -208,8 +209,19 @@ describe("the Behavior save", () => {
       askEndpointAfterRule: "true",
       operatorNoteEnabled: "false",
     });
+    const ask = screen.getByRole("switch", {
+      name: /^Ask an external endpoint/,
+    });
+    expect(ask.getAttribute("aria-checked")).toBe("false");
+    expect(
+      screen
+        .getByRole("switch", { name: /^Write a private note when a contact/ })
+        .getAttribute("aria-checked"),
+    ).toBe("true");
+    // The edit that makes the save write the block: the note's reading goes with it, strictly.
+    fireEvent.click(ask);
     expect(await saved(lax)).toEqual({
-      askEndpointAfterRule: false,
+      askEndpointAfterRule: true,
       operatorNoteEnabled: true,
     });
     cleanup();

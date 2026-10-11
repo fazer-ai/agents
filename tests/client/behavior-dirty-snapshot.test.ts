@@ -46,7 +46,7 @@ function braceBlockAt(source: string, from: number): string {
 }
 
 export function savedBlockKeys(source: string): string[] {
-  const fn = braceBlockAt(source, source.indexOf("function buildSettings"));
+  const fn = braceBlockAt(source, source.indexOf("function behaviorBlocksOf"));
   const ret = braceBlockAt(fn, fn.indexOf("return {"));
   const keys: string[] = [];
   let depth = 0;
@@ -80,7 +80,7 @@ describe("the Behavior tab's dirty snapshot", () => {
   // POSITIVE CONTROL over the predicate: an inline-literal block, saved and compared nowhere.
   test("an inline-literal block that is not compared is caught, and the complete one is clean", () => {
     const save = `
-      function buildSettings(): Record<string, unknown> {
+      function behaviorBlocksOf(): Record<string, unknown> {
         return {
           memory: memoryToStored(memory),
           newBlock: { text: newBlock.text.trim() },

@@ -446,13 +446,14 @@ describe("the Behavior tab reads back everything it writes", () => {
   test("Discard: the Observation block of a monitoring agent goes back too", async () => {
     const stub = stubEditorApi({ mode: "monitoring", settings: STORED });
     await renderEditor(stub, "behavior");
-    const before = (await save(stub)).monitoring;
-    expect(before).toBeDefined();
+    // The whole bag: the untouched agent has no `monitoring` block, and a Discard that left the
+    // edit behind would write one (agents#1304).
+    const before = await save(stub);
     const when = screen.getByLabelText("When to classify") as HTMLSelectElement;
     changeTo(when, otherOption(when));
     const read = screen.getByLabelText("Messages read") as HTMLInputElement;
     changeTo(read, String(Number(read.value) + 5));
     fireEvent.click(screen.getByRole("button", { name: "Discard" }));
-    expect((await save(stub)).monitoring).toEqual(before);
+    expect(await save(stub)).toEqual(before);
   });
 });

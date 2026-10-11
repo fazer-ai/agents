@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import {
   type EditorStub,
+  editTab,
   renderEditor,
   stubEditorApi,
 } from "../utils/agent-editor";
@@ -54,6 +55,7 @@ describe("forced saves in the agent editor", () => {
       const stub = stubEditorApi({ settings: {} });
       conflictOnce(stub);
       await renderEditor(stub, tab);
+      editTab(tab);
       fireEvent.click(screen.getByRole("button", { name: save }));
       // The notice is drawn twice (the card and the save bar); either runs the same retry.
       fireEvent.click(

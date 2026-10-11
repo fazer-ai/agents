@@ -1,7 +1,7 @@
 /// <reference lib="dom" />
 
 import * as TooltipPrimitive from "@radix-ui/react-tooltip";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import type { i18n as I18n } from "i18next";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { withI18n } from "./i18n";
@@ -193,4 +193,18 @@ export function lastSavedSettings(
     .reverse()
     .find((w) => w.method === "PATCH" && w.body.settings !== undefined);
   return patch?.body.settings as Record<string, unknown> | undefined;
+}
+
+// An edit to a tab whose Save is disabled until something changes (agents#1206), for a test that is
+// about what the save does, not about whether there is anything to save. Other tabs: nothing.
+export function editTab(tab: string): void {
+  if (tab === "guardrails") {
+    fireEvent.click(screen.getByRole("switch", { name: /Enable guardrails/ }));
+  } else if (tab === "channelRedirect") {
+    const message = document.querySelector("textarea");
+    if (!message) throw new Error("the redirect message is not drawn");
+    fireEvent.change(message, {
+      target: { value: "Continue pelo site: {link}" },
+    });
+  }
 }

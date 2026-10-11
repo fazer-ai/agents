@@ -454,11 +454,14 @@ export function GuardrailsTab({
           )}
         </div>
       </div>
+      {/* Nothing edited, nothing to save: a save of the untouched tab would write the block with
+          the values the form shows, freezing today's defaults into the agent (agents#1206). */}
       <TabActionBar
         dirty={dirty}
         saving={saving}
         onSave={onSave}
         onDiscard={onDiscard}
+        saveDisabled={!dirty}
       />
     </div>
   );

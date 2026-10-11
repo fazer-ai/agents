@@ -129,6 +129,7 @@ import {
   type ModelFallbackState,
   type TakeoverState,
 } from "./BehaviorTab";
+import { editedBlocks } from "./behaviorSave";
 import {
   type ChannelRedirectFormState,
   ChannelRedirectTab,
@@ -1828,17 +1829,58 @@ function AgentEditor() {
     return true;
   }
 
-  // Merge the debounce sub-form back into the preserved settings bag (the server clamps the values;
-  // see modules/debounce/settings). Spreading `settings` keeps any other keys (e.g. grounding).
+  // The settings a Behavior save writes: what the server holds now (never a copy kept beside it),
+  // with the blocks the operator EDITED on top (./behaviorSave). The blocks this save does not write
+  // (another tab's, or the ones this engine does not draw) and the ones nobody touched go back
+  // exactly as stored, absent included (agents#1304).
+  // NOTE: channelRedirect is intentionally NOT among the blocks. It is its own editor section with
+  // its own Save (saveChannelRedirect merges it onto the synced settings), so reading the live
+  // channelRedirect form in a Behavior save would clobber that tab's unsaved edits.
   function buildSettings(): Record<string, unknown> {
+    const synced = syncedAgentRef.current;
+    const stored = (synced?.settings ?? {}) as Record<string, unknown>;
+    const fromForm = behaviorBlocksOf(formNow, stored);
+    if (!synced) return { ...stored, ...fromForm };
     return {
-      // What the server holds now, never a copy kept beside it: the blocks this save does not write
-      // (another tab's, or the ones this engine does not draw) go back exactly as stored.
-      ...((syncedAgentRef.current?.settings ?? {}) as Record<string, unknown>),
-      // NOTE: channelRedirect is intentionally NOT overridden from the live form here. It is its own
-      // editor section with its own Save (saveChannelRedirect merges it onto the synced settings), so
-      // reading the live channelRedirect form in a Behavior save would clobber that tab's unsaved
-      // edits. The spread above carries the stored one.
+      ...stored,
+      ...editedBlocks(
+        fromForm,
+        behaviorBlocksOf(formOfSynced(synced, syncedGrantsRef.current), stored),
+        stored,
+      ),
+    };
+  }
+
+  // The blocks a Behavior save owns, serialized from a form state (the server clamps the values; see
+  // modules/debounce/settings). Read off the form and off the server's copy, so the two are compared
+  // block by block by the same rule.
+  function behaviorBlocksOf(
+    f: SnapForm,
+    stored: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const {
+      awayEnabled,
+      awayMessage,
+      debounce,
+      stt,
+      contactAuth,
+      tts,
+      split,
+      signature,
+      serviceWindow,
+      followUp,
+      snoozedFollowUp,
+      vision,
+      limits,
+      observability,
+      memory,
+      modelFallback,
+      observation,
+      attributeContext,
+      contactFields,
+      takeover,
+    } = f;
+    return {
       availability: { enabled: awayEnabled, awayMessage: awayMessage.trim() },
       debounce: {
         enabled: debounce.enabled,
@@ -1942,10 +1984,7 @@ function AgentEditor() {
       // ./observationFormState is its guard.
       // The decision setup is not this save's: it goes back as stored, and its own save writes it.
       ...monitoringPatch(
-        withDecisionsOf(
-          observation,
-          observationToForm(syncedAgentRef.current?.settings ?? {}),
-        ),
+        withDecisionsOf(observation, observationToForm(stored)),
         agentMode === "monitoring",
       ),
       attributeContext: {

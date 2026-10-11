@@ -381,14 +381,20 @@ describe("planImageConversion with the provider's dimension limit", () => {
           baseURL,
         }).action,
       ).toBe("as-is");
+    // The fit still runs there, but a fit that fails sends the original instead of skipping it.
     expect(
       planImageConversion({
         provider: "anthropic",
         mimeType: "image/jpeg",
         dimensions: { width: 9000, height: 9000 },
         baseURL: "https://llm-proxy.example.com/v1",
-      }).action,
-    ).toBe("convert");
+      }),
+    ).toEqual({
+      action: "convert",
+      converter: "jpeg-fit",
+      to: "image/jpeg",
+      required: false,
+    });
   });
 
   test("OpenAI's patch limit depends on the model, so it fits a JPEG and never refuses a WebP", () => {

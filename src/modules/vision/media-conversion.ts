@@ -220,20 +220,22 @@ export function planImageConversion(args: {
     const limits = imageLimitsFor(args.provider);
     const over = overLimits(limits, args.dimensions, args.byteLength);
     if (!over.hard && !over.soft) return { action: "as-is" };
+    // A hard limit binds only on the vendor's own endpoint: elsewhere the fit is prudent and the
+    // original stays sendable, whether the file has no converter or its conversion fails.
+    const binding =
+      over.hard && isVendorEndpoint(limits.host, args.baseURL ?? null);
     // A HEIC that Gemini reads natively but is over its ceiling is fitted by the HEIC converter,
     // which outputs the same fitted JPEG.
     const fit =
       FIT_CONVERTERS.find((c) => c.from.has(mime)) ??
       MEDIA_CONVERTERS.find((c) => c.from.has(mime));
     if (fit === undefined)
-      return over.hard && isVendorEndpoint(limits.host, args.baseURL ?? null)
-        ? { action: "over-limit" }
-        : { action: "as-is" };
+      return binding ? { action: "over-limit" } : { action: "as-is" };
     return {
       action: "convert",
       converter: fit.id,
       to: fit.to,
-      required: over.hard,
+      required: binding,
     };
   }
   const converter = MEDIA_CONVERTERS.find((c) => c.from.has(mime));

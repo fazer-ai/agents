@@ -377,14 +377,16 @@ const config = {
     MAX_DURATION_MS,
     0,
   ),
-  // NOTE: Background work (src/lib/pool-class.ts: the scheduler's background kinds, the outbound
-  // webhook, alert and compaction workers, flow-log writes) runs on a pool of its own, so a burst of
-  // it, or its transactions stuck behind a lock, cannot take the connections a customer reply needs.
+  // NOTE: Background work (src/lib/pool-class.ts: the scheduler's background kinds, follow-ups and
+  // reminders, sweeps, flow-log retention, memory compaction, the observer and syncs among them, and
+  // outbound webhook and alert delivery) runs on a pool of its own, so a burst of it, or its
+  // transactions stuck behind a lock, cannot take the connections a customer reply needs. A flow-log
+  // line is written on the pool of the work that emits it.
   backgroundPoolMax: parseIntSetting(
     BACKGROUND_POOL_MAX,
     "BACKGROUND_POOL_MAX",
     10,
-    "It sizes the Postgres pool background work (scheduled jobs, webhook and alert delivery, compaction, the flow log) runs on.",
+    "It sizes the Postgres pool background work runs on: scheduled follow-ups and reminders, sweeps, flow-log retention, memory compaction, the observer, syncs, and outbound webhook and alert delivery.",
     MAX_COUNT,
   ),
   // NOTE: The console's metrics reads (src/modules/analytics) run on a pool of their own, so a

@@ -979,7 +979,7 @@ export function claimSql(
   return Prisma.sql`
     WITH ${due}
     UPDATE scheduler_jobs
-    SET status = 'CLAIMED', claim_seq = claim_seq + 1, claimed_at = ${now}, updated_at = now()
+    SET status = 'CLAIMED', claim_seq = claim_seq + 1, claimed_at = ${now}, run_started_at = ${now}, updated_at = now()
     FROM due
     WHERE scheduler_jobs.id = due.id
     RETURNING scheduler_jobs.id, scheduler_jobs.tenant_id AS "tenantId",
@@ -1468,7 +1468,8 @@ export async function failJob(
 // Takes back a run its deadline failed, so the outcome of the work it committed can be written. Only
 // the row exactly as `failJob` left it: PENDING under the same token, with that failure's attempts
 // and error (a re-arm keeps the token but clears `last_error`). A dead-lettered row is not taken back.
-// `claimed_at` is renewed so the reaper does not take the row before the outcome lands.
+// `claimed_at` is renewed so the reaper does not take the row before the outcome lands; `run_started_at`
+// is not, because the run still started when it started (the snoozed sweep's watermark).
 export async function reclaimAfterDeadline(
   tenantId: bigint,
   id: bigint,

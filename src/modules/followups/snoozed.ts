@@ -180,7 +180,9 @@ export async function sweepSnoozedFollowUps(
               AND j.dedupe_key = ${SNOOZED_DEDUPE_PREFIX} || c.thread_id
               AND (
                 -- A run in flight is left alone. Otherwise the watermark is the last run's START
-                -- (its live read comes after the claim), or the arming for a row never run: an event
+                -- (its live read comes after the claim), kept in run_started_at because a run
+                -- recovered after its deadline has its claimed_at renewed, or the arming for a row
+                -- never run: an event
                 -- after it is one no run has seen, even when that run completed later. What counts
                 -- as an event: the last message; the last status or holder change, which
                 -- last_event_at (Chatwoot last_activity_at) does not move with; an edit of the agent
@@ -189,7 +191,7 @@ export async function sweepSnoozedFollowUps(
                 -- Chatwoot's two instants are whole seconds: an event stamped S may have happened up to
                 -- S + 1s, so a run that started inside that second has not seen it.
                 j.status = 'CLAIMED'
-                OR COALESCE(j.claimed_at, j.updated_at) >= GREATEST(
+                OR COALESCE(j.run_started_at, j.claimed_at, j.updated_at) >= GREATEST(
                   c.last_event_at + interval '1 second',
                   to_timestamp(c.chatwoot_status_at + 1) AT TIME ZONE 'UTC',
                   a.updated_at,

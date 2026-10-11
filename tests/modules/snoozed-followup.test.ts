@@ -41,7 +41,14 @@ import {
   pickSnoozedCadence,
   readSnoozedFollowUpConfig,
 } from "@/modules/followups/snoozed-settings";
-import type { ClaimedJob } from "@/modules/scheduler/service";
+import {
+  type ClaimedJob,
+  claimDueJobs,
+  completeJob,
+  failJob,
+  reclaimAfterDeadline,
+  releaseClaim,
+} from "@/modules/scheduler/service";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogRows } from "../utils/flowlog";
 import { until } from "../utils/poll";
@@ -1912,6 +1919,70 @@ describe.skipIf(!dbUp)("snoozed ladder: the handler", () => {
     });
     expect(job.status).toBe("PENDING");
   });
+
+  // A run past its scheduler deadline that had committed is taken back and settled
+  // (`reclaimAfterDeadline`), which renews the claim's lease. The run still STARTED when it started:
+  // an event between that start and the recovery is one it never saw.
+  for (const [conv, eventAgoMs, rearmed] of [
+    [2091, 30_000, true],
+    [2092, 90_000, false],
+  ] as const) {
+    test(`a run recovered after its deadline is a watermark at its start (event ${eventAgoMs / 1000}s ago: ${rearmed ? "re-armed" : "left alone"})`, async () => {
+      await setSettings(LADDER);
+      const started = new Date(Date.now() - 60_000);
+      await seed(conv, { lastEventAt: new Date(Date.now() - eventAgoMs) });
+      // Every other watermark before the run: only the event decides.
+      await suDb.$executeRaw`UPDATE agents SET updated_at = now() - interval '10 minutes' WHERE id = ${agentId}`;
+      await suDb.$executeRaw`UPDATE inboxes SET responder_bound_at = NULL WHERE tenant_id = ${tenantId}`;
+      const key = snoozedDedupeKey(threadOf(conv));
+      await suDb.schedulerJob.deleteMany({
+        where: { tenantId, dedupeKey: key },
+      });
+      await suDb.schedulerJob.create({
+        data: {
+          tenantId,
+          kind: "SNOOZED_FOLLOWUP",
+          dedupeKey: key,
+          runAt: new Date(started.getTime() - 1_000),
+          status: "PENDING",
+          payload: { threadId: threadOf(conv) },
+        },
+      });
+      const claimed = await claimDueJobs(500, suDb, started, tenantId);
+      for (const other of claimed.filter((j) => j.dedupeKey !== key))
+        await releaseClaim(other, suDb);
+      const job = claimed.find((j) => j.dedupeKey === key) as ClaimedJob;
+      expect(job).toBeDefined();
+      await failJob(
+        tenantId,
+        job.id,
+        job.claimSeq,
+        job.attempts,
+        job.kind,
+        "deadline",
+        suDb,
+      );
+      const reclaimed = await reclaimAfterDeadline(
+        tenantId,
+        job.id,
+        job.claimSeq,
+        job.attempts,
+        "deadline",
+        suDb,
+      );
+      expect(reclaimed.applied).toBe(true);
+      expect(
+        (await completeJob(tenantId, job.id, job.claimSeq, job.kind, suDb))
+          .applied,
+      ).toBe(true);
+      await sweepSnoozedFollowUps(appDb, tenantId, [agentId]);
+      const after = await suDb.schedulerJob.findFirstOrThrow({
+        where: { tenantId, dedupeKey: key },
+        select: { status: true },
+      });
+      expect(after.status).toBe(rearmed ? "PENDING" : "DONE");
+    });
+  }
 
   test("an event in the last run's own second is swept again: Chatwoot's instants are whole seconds", async () => {
     await setSettings(LADDER);

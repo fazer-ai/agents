@@ -1185,16 +1185,24 @@ describe.skipIf(!dbUp)("the stored-agent boundaries", () => {
     expect(JSON.stringify(r)).toContain("24h");
   });
 
-  // The import path: a bundle exported from an armed agent arrives disarmed, with the rest of the
-  // block intact.
+  // The import path. The export carries no observability block, so the case left is an older
+  // bundle that still has one, armed: it arrives disarmed, with the rest of the block intact.
   test("an imported agent arrives with the mode off", async () => {
-    const id = await seedAgent({
-      observability: {
-        logToolValues: true,
-        fullDetailUntil: new Date(Date.now() + 3_600_000).toISOString(),
+    const id = await seedAgent({});
+    const exported = await exportAgent(ctx(), id, appDb);
+    const doc = {
+      ...exported,
+      agent: {
+        ...exported.agent,
+        settings: {
+          ...exported.agent.settings,
+          observability: {
+            logToolValues: true,
+            fullDetailUntil: new Date(Date.now() + 3_600_000).toISOString(),
+          },
+        },
       },
-    });
-    const doc = await exportAgent(ctx(), id, appDb);
+    };
     const { agent } = await importAgent(ctx(), doc, appDb);
     const stored = await suDb.agent.findUniqueOrThrow({
       where: { id: BigInt(agent.id) },

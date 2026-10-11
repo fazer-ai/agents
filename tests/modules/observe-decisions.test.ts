@@ -4,6 +4,7 @@ import {
   beforeEach,
   describe,
   expect,
+  spyOn,
   test,
 } from "bun:test";
 import { AIMessage } from "@langchain/core/messages";
@@ -17,7 +18,11 @@ import {
   listInboxLabels,
 } from "@/modules/chatwoot/management";
 import { __resetChatwootVocabCache } from "@/modules/chatwoot/vocab";
-import { decisionsBlockFingerprint } from "@/modules/decisions/config";
+import {
+  decisionsBlockFingerprint,
+  ruleStateKey,
+} from "@/modules/decisions/config";
+import * as triggerState from "@/modules/decisions/trigger-state";
 import { runObserve } from "@/modules/observe/job";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
@@ -2136,6 +2141,105 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
           where: { id: convRowId },
           data: { customAttributes: {} },
         });
+      });
+
+      // Different conditions, so two rules with two states: the merged one latches with the one it rode on.
+      test("two rules with the same note post it once, and both are held after", async () => {
+        const chatwoot = fakeChatwoot({ labels: [], attributes: {} });
+        const rules = [
+          note("Supervisor"),
+          {
+            ...note("Supervisor"),
+            when: [{ question: "pede_reembolso", minProbability: 0.5 }],
+          },
+        ];
+        const first = await observeWith(chatwoot, rules, true);
+        expect(first.actions).toEqual([
+          { rule: 0, tool: "private_note", outcome: "ran", merged: [1] },
+        ]);
+        const next = await observeWith(chatwoot, rules, true);
+        expect(next.actions).toEqual([]);
+        expect(next.held).toEqual([
+          { rule: 0, trigger: "on_start" },
+          { rule: 1, trigger: "on_start" },
+        ]);
+        expect(notesOf(chatwoot, "Supervisor")).toBe(1);
+      });
+
+      test("a rule that acts every time keeps no state", async () => {
+        const chatwoot = fakeChatwoot({ labels: [], attributes: {} });
+        const rules = [
+          {
+            when: yes,
+            action: { tool: "set_labels", args: { add: ["furioso"] } },
+          },
+        ];
+        await observeWith(chatwoot, rules, true);
+        expect(await suDb.decisionRuleState.count({ where: { agentId } })).toBe(
+          0,
+        );
+      });
+
+      test("another agent's state on the same conversation does not hold this one back", async () => {
+        const chatwoot = fakeChatwoot({ labels: [], attributes: {} });
+        const rule = note("Supervisor");
+        const neighbour = await suDb.agent.create({
+          data: {
+            tenantId,
+            name: "Vizinha",
+            systemPrompt: "x",
+            modelConfig: { provider: "openai", model: "gpt-5.4-mini" },
+            enabled: true,
+            mode: "monitoring",
+            settings: {},
+          },
+        });
+        await suDb.decisionRuleState.create({
+          data: {
+            tenantId,
+            agentId: neighbour.id,
+            conversationId: convRowId,
+            ruleKey: ruleStateKey(rule as never),
+          },
+        });
+        const d = await observeWith(chatwoot, [rule], true);
+        expect(d.actions).toEqual([
+          { rule: 0, tool: "private_note", outcome: "ran" },
+        ]);
+        expect(notesOf(chatwoot, "Supervisor")).toBe(1);
+        await suDb.agent.delete({ where: { id: neighbour.id } });
+      });
+
+      test("a trigger state it cannot read fails the tick before any action", async () => {
+        const chatwoot = fakeChatwoot({ labels: [], attributes: {} });
+        const read = spyOn(triggerState, "readLatchedRules").mockRejectedValue(
+          new Error("db down"),
+        );
+        try {
+          const d = await observeWith(chatwoot, [note("Supervisor")], true);
+          expect(d.failed).toBe("trigger_state");
+          expect(notesOf(chatwoot, "Supervisor")).toBe(0);
+        } finally {
+          read.mockRestore();
+        }
+      });
+
+      test("a trigger state it cannot write is said on the line, and the action stands", async () => {
+        const chatwoot = fakeChatwoot({ labels: [], attributes: {} });
+        const write = spyOn(
+          triggerState,
+          "writeTriggerState",
+        ).mockRejectedValue(new Error("db down"));
+        try {
+          const d = await observeWith(chatwoot, [note("Supervisor")], true);
+          expect(d.actions).toEqual([
+            { rule: 0, tool: "private_note", outcome: "ran" },
+          ]);
+          expect(d.triggerStateWritten).toBe(false);
+          expect(notesOf(chatwoot, "Supervisor")).toBe(1);
+        } finally {
+          write.mockRestore();
+        }
       });
     });
 

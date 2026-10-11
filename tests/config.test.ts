@@ -336,6 +336,15 @@ describe("database pools and budgets", () => {
     expect(off.dbLockTimeoutMs).toBe(0);
   });
 
+  // NOTE: an operator sizing this pool reads the refusal to learn what runs on it. A turn's flow-log
+  // lines are written on the pool of the work that emits them, so naming the flow log here sends the
+  // operator to size the wrong pool for it.
+  test("the BACKGROUND_POOL_MAX refusal names flow-log retention, not the flow log", async () => {
+    const refusal = await refusalOf({ BACKGROUND_POOL_MAX: "0" });
+    expect(refusal).toContain("flow-log retention");
+    expect(refusal).not.toContain("the flow log");
+  });
+
   test("every deploy compose forwards the pool sizes and budgets, empty for the app default", () => {
     for (const file of [
       "docker-compose.prod.yml",

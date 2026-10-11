@@ -1841,13 +1841,51 @@ function AgentEditor() {
     const stored = (synced?.settings ?? {}) as Record<string, unknown>;
     const fromForm = behaviorBlocksOf(formNow, stored);
     if (!synced) return { ...stored, ...fromForm };
+    const now = serverNowDate();
     return {
       ...stored,
       ...editedBlocks(
         fromForm,
-        behaviorBlocksOf(formOfSynced(synced, syncedGrantsRef.current), stored),
+        behaviorStateOf(formNow, now),
+        behaviorStateOf(formOfSynced(synced, syncedGrantsRef.current), now),
         stored,
       ),
+    };
+  }
+
+  // Each block's FORM state, keyed like the block `behaviorBlocksOf` writes: what decides whether the
+  // block was edited, compared before its lossy serialization. The debug window is read at `now` on
+  // both sides, as the dirty snapshot reads it, so a window that closed in between is not an edit.
+  function behaviorStateOf(f: SnapForm, now: Date): Record<string, unknown> {
+    return {
+      availability: { awayEnabled: f.awayEnabled, awayMessage: f.awayMessage },
+      debounce: f.debounce,
+      stt: f.stt,
+      contactAuth: f.contactAuth,
+      tts: f.tts,
+      split: f.split,
+      signature: f.signature,
+      serviceWindow: f.serviceWindow,
+      followUp: f.followUp,
+      snoozedFollowUp: f.snoozedFollowUp,
+      vision: f.vision,
+      limits: f.limits,
+      observability: {
+        logToolValues: f.observability.logToolValues,
+        fullDetailUntil: isFullDetailWindowOpen(
+          f.observability.fullDetailUntil,
+          now,
+        )
+          ? f.observability.fullDetailUntil?.toISOString()
+          : null,
+      },
+      memory: f.memory,
+      modelFallback: f.modelFallback,
+      // Behavior's half of the block: the decision setup goes back as synced either way.
+      monitoring: timingOf(f.observation),
+      attributeContext: f.attributeContext,
+      contactFields: f.contactFields,
+      takeover: f.takeover,
     };
   }
 

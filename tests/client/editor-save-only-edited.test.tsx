@@ -95,6 +95,26 @@ describe("Behavior writes the sections the operator edited (agents#1304)", () =>
     expect(debounce?.windowSeconds).toBe(25);
   });
 
+  // The serialization is lossy (`Number(x) || 15`): a stored 0 and a typed 15 serialize alike, so
+  // the edit is judged on the form state, before it.
+  test("a stored 0 changed to the default is an edit, and is written", async () => {
+    const { after } = await saveBehavior(
+      {
+        settings: {
+          debounce: {
+            enabled: true,
+            windowSeconds: 0,
+            maxMessagesPerBurst: 20,
+            maxWindowSeconds: 60,
+          },
+        },
+      },
+      () => change(field(/^Wait window \(s\)/), "15"),
+    );
+    const debounce = after?.debounce as Record<string, unknown> | undefined;
+    expect(debounce?.windowSeconds).toBe(15);
+  });
+
   test("editing and undoing writes nothing", async () => {
     const { after } = await saveBehavior({ settings: {} }, () => {
       change(field(/^Wait window \(s\)/), "25");

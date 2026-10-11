@@ -585,6 +585,29 @@ describe.skipIf(!dbUp)("reconciling from Chatwoot", () => {
     ]);
   });
 
+  test("two reads that stop at the same row are not stable while the pins changed around them", async () => {
+    const s: Scripted = {
+      conversations: new Map(),
+      pages: new Map([
+        [INBOX, [[conv(810, minutesAgo(600))], [conv(811, minutesAgo(20))]]],
+      ]),
+      // Pinned during the first read, unpinned and pinned again around the second.
+      pinnedCalls: [[], [810], [], [810], [810], [810], [810], [810]],
+      messages: new Map([[811, [incoming(9811, minutesAgo(20))]]]),
+      listed: [],
+    };
+    const counts = await reconcileFromChatwoot({
+      tenantId,
+      base: appDb,
+      now: NOW,
+      makeClient: chatwoot(s),
+    });
+    expect(counts.inboxesFailed).toBe(0);
+    expect((await ledgerFor(811)).map((r) => r.inboundMessageId)).toEqual([
+      9811,
+    ]);
+  });
+
   test("a busy inbox is read to the end of the window, however many pages that takes", async () => {
     // Fifty pages of recent conversations we already answered, and the lost message on the last one.
     const pages: ChatwootInboxConversation[][] = [];
@@ -773,6 +796,10 @@ describe.skipIf(!dbUp)("reconciling from Chatwoot", () => {
         [],
         [conv(702, minutesAgo(20))],
         [],
+        [conv(703, minutesAgo(20))],
+        [],
+        [conv(704, minutesAgo(20))],
+        [],
       ],
       messages: new Map(),
       listed: [],
@@ -795,6 +822,10 @@ describe.skipIf(!dbUp)("reconciling from Chatwoot", () => {
         [],
         [conv(712, later), conv(711, later), conv(710, minutesAgo(20))],
         [],
+        [conv(713, later), conv(710, minutesAgo(20))],
+        [],
+        [conv(714, later), conv(710, minutesAgo(20))],
+        [],
       ],
       messages: new Map(),
       listed: [],
@@ -806,6 +837,78 @@ describe.skipIf(!dbUp)("reconciling from Chatwoot", () => {
       makeClient: chatwoot(moving),
     });
     expect(ok.inboxesFailed).toBe(0);
+  });
+
+  test("a second read naming only judged conversations is not proof: the one it skipped is still found", async () => {
+    const all = Array.from({ length: 50 }, (_, i) =>
+      conv(900 + i, minutesAgo(20)),
+    );
+    const messages = new Map<number, unknown[]>();
+    for (const c of all)
+      messages.set(c.id, [
+        incoming(c.id * 10, minutesAgo(21)),
+        outgoing(c.id * 10 + 1, minutesAgo(20)),
+      ]);
+    messages.set(925, [incoming(9250, minutesAgo(20))]);
+    // Both reads lose a row to a departure between their pages, and 925 falls in that gap twice; the
+    // second read names nothing new, only fewer. The third reads the listing whole.
+    const rest = all.slice(1);
+    const s: Scripted = {
+      conversations: new Map(),
+      calls: [
+        all.slice(0, 25),
+        all.slice(26, 50),
+        [],
+        rest.slice(0, 24),
+        rest.slice(25, 49),
+        [],
+        rest,
+        [],
+        rest,
+        [],
+      ],
+      messages,
+      listed: [],
+    };
+    const counts = await reconcileFromChatwoot({
+      tenantId,
+      base: appDb,
+      now: NOW,
+      makeClient: chatwoot(s),
+    });
+    expect(counts.inboxesFailed).toBe(0);
+    expect((await ledgerFor(925)).map((r) => r.inboundMessageId)).toEqual([
+      9250,
+    ]);
+  });
+
+  test("a responder's delivery from before a rebind still covers the message", async () => {
+    await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: "previous-responder",
+        event: "message_created",
+        status: "PROCESSED",
+        conversationId: 516,
+        inboundMessageId: 9026,
+        routeAgentBotId: BOT + 5,
+        routeObserved: false,
+      },
+    });
+    const s: Scripted = {
+      conversations: new Map([[INBOX, [conv(516, minutesAgo(25))]]]),
+      messages: new Map([[516, [incoming(9026, minutesAgo(25))]]]),
+      listed: [],
+    };
+    const counts = await reconcileFromChatwoot({
+      tenantId,
+      base: appDb,
+      now: NOW,
+      makeClient: chatwoot(s),
+    });
+    expect(counts.handedToRecovery).toBe(0);
+    expect(await ledgerFor(516)).toHaveLength(1);
   });
 
   test("a conversation with no activity time fails the inbox and keeps the cursor", async () => {

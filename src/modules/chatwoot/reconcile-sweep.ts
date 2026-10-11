@@ -166,8 +166,9 @@ async function handOver(
   message: ChatwootMessageRow,
 ): Promise<boolean> {
   return runScopedOn(base, sysCtx(tenantId), async (db) => {
-    // Only a delivery on the responder's route covers the message: an observer's webhook can succeed
-    // while the responder's exhausts its retries. A row with no route predates the column.
+    // Only a responder's delivery covers the message: an observer's webhook can succeed while the
+    // responder's exhausts its retries. Asked of the role recorded at receipt, not of today's bot, so
+    // a responder's delivery from before a rebind still counts (a null role predates the column).
     const known = await db.chatwootWebhookDelivery.findFirst({
       where: {
         chatwootInstanceId: instanceId,
@@ -175,14 +176,7 @@ async function handOver(
         inboundMessageId: message.id,
         // A transcription's `message_updated` names the same message and runs no turn.
         event: "message_created",
-        ...(inbox.routeBotId !== null
-          ? {
-              OR: [
-                { routeAgentBotId: inbox.routeBotId },
-                { routeAgentBotId: null },
-              ],
-            }
-          : {}),
+        OR: [{ routeObserved: false }, { routeObserved: null }],
       },
       select: { id: true },
     });
@@ -220,8 +214,9 @@ async function handOver(
 
 // How many times an inbox's listing may be read in one pass before the pass gives up on it. Page
 // numbers shift under the read when a conversation leaves `pending` (the recoveries this pass arms can
-// do that), so a listing is read again until one finds nothing new; the rest waits for the next pass.
-const MAX_LISTINGS_PER_INBOX = 3;
+// do that), so the listing is read again until two reads in a row name the same conversations; the
+// rest waits for the next pass.
+const MAX_LISTINGS_PER_INBOX = 5;
 
 interface InboxRead {
   base: PrismaClient;
@@ -240,32 +235,42 @@ async function reconcileInbox(p: InboxRead): Promise<void> {
   // Conversations the token's user pinned lead the listing whatever their age, possibly for whole
   // pages, so the activity order only starts after them and only an unpinned row can end the read.
   // Read around every listing: a pin made during one would read as an old row and end it early.
+  // A read that only finds nothing new proves nothing: a conversation leaving between two reads shifts
+  // the pages again, and the second can skip a row while naming only rows already judged.
   const read = new Set<number>();
+  let previous: Set<number> | null = null;
   for (let listing = 0; listing < MAX_LISTINGS_PER_INBOX; listing++) {
     const pinned = await p.client.listPinnedConversationIds();
-    const unseen = await readListing(p, pinned, read);
+    const named = await readListing(p, pinned, read);
     const pinnedAfter = await p.client.listPinnedConversationIds();
-    const samePins =
-      pinnedAfter.size === pinned.size &&
-      [...pinned].every((id) => pinnedAfter.has(id));
-    if (unseen === 0 && samePins) return;
+    if (
+      previous !== null &&
+      sameIds(previous, named) &&
+      sameIds(pinned, pinnedAfter)
+    )
+      return;
+    previous = named;
   }
   throw new Error(
     `inbox ${p.inbox.chatwootInboxId} still shifted after ${MAX_LISTINGS_PER_INBOX} listings`,
   );
 }
 
-// One read of the listing, judging every conversation inside the window not judged yet. Answers how
-// many of those had moved before the pass began: a conversation that moved since is the next pass's,
-// so it does not keep this one reading.
+function sameIds(a: Set<number>, b: Set<number>): boolean {
+  return a.size === b.size && [...a].every((id) => b.has(id));
+}
+
+// One read of the listing, judging every conversation inside the window not judged yet. Answers which
+// conversations inside the window it named that had moved before the pass began: one that moved since
+// is the next pass's, so it does not keep this one reading.
 async function readListing(
   p: InboxRead,
   pinned: Set<number>,
   read: Set<number>,
-): Promise<number> {
+): Promise<Set<number>> {
   const { base, tenantId, instanceId, client, inbox, since, settledBefore } = p;
   const { counts } = p;
-  let unseenBeforePass = 0;
+  const named = new Set<number>();
   // No page cap: the read ends at the first unpinned row older than the window, so its length is the
   // number of conversations that moved inside it, and a cap would freeze the cursor on a busy inbox.
   // A server that ignores `page` would never end it, which is what the repeated first id catches.
@@ -276,7 +281,7 @@ async function readListing(
       "pending",
       page,
     );
-    if (rows.length === 0) return unseenBeforePass;
+    if (rows.length === 0) return named;
     const first = (rows[0] as ChatwootInboxConversation).id;
     if (first === previousFirst)
       throw new Error(
@@ -294,9 +299,9 @@ async function readListing(
         if (!pinned.has(c.id)) reachedOld = true;
         continue;
       }
+      if (c.lastActivityAt <= p.now) named.add(c.id);
       if (read.has(c.id)) continue;
       read.add(c.id);
-      if (c.lastActivityAt <= p.now) unseenBeforePass += 1;
       // A person holds it: whatever the customer wrote is theirs to answer.
       if (c.assigneeType === "User") continue;
       counts.conversationsRead += 1;
@@ -314,7 +319,7 @@ async function readListing(
     }
     // Past the pinned prefix the listing is newest activity first, so an unpinned row older than the
     // window means every later page is older too.
-    if (reachedOld) return unseenBeforePass;
+    if (reachedOld) return named;
   }
 }
 

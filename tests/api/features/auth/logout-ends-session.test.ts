@@ -462,6 +462,21 @@ describe.skipIf(!dbUp)("logging out", () => {
     expect(res.status).toBe(200);
   });
 
+  test("a logout after the session was replaced still reads as a logout", async () => {
+    const a = await signIn();
+    await signIn(session(a));
+    expect(await isSessionLoggedOut(jtiOf(a) ?? "")).toBe(false);
+    await logout(session(a));
+    expect(await isSessionLoggedOut(jtiOf(a) ?? "")).toBe(true);
+    const res = await minter.handle(
+      new BunRequest("http://localhost/mint-proved", {
+        method: "POST",
+        headers: { cookie: session(a), "x-proof": jtiOf(a) ?? "" },
+      }),
+    );
+    expect(res.status).toBe(401);
+  });
+
   // Signed in, the session is the invitation's only proof: a logout landing after that proof was read
   // and before the cookie is re-issued refuses the re-issue instead of minting a session.
   test("an invitation accepted on a session that logs out meanwhile issues no session", async () => {

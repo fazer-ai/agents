@@ -88,7 +88,7 @@ function namedSession(payload: JWTPayload | false): NamedSession | null {
 }
 
 // Records the session as ended until its token expires, dropping the rows past their expiry. True
-// when this call ended it, false when it already was. A deleted account (foreign key) has no
+// when this call inserted the row, false when one was already there. A deleted account (foreign key) has no
 // session left to end, and counts as this call ending it. Throws 503 on any other failure.
 async function recordEnded(
   session: NamedSession,
@@ -110,6 +110,16 @@ async function recordEnded(
         ],
         skipDuplicates: true,
       }),
+      // A logout wins over a replacement recorded first (an invitation re-issue racing it), so the
+      // session reads as logged out; a replacement never overwrites a logout.
+      ...(how.replaced
+        ? []
+        : [
+            prisma.endedSession.updateMany({
+              where: { jti: session.sessionId, replaced: true },
+              data: { replaced: false },
+            }),
+          ]),
     ]);
     return inserted.count > 0;
   } catch (error) {

@@ -51,6 +51,21 @@ function allFacts(write: boolean, at: number | null = null) {
   };
 }
 
+const ALL_RELATIONS = { contact: true, contactInbox: true, inbox: true };
+
+function relationMarks(v: number | null) {
+  return { contact: v, contactInbox: v, inbox: v };
+}
+
+// Fresh objects per key, for the reason `allFacts` gives.
+function allRelations(write: boolean, at: number | null = null) {
+  return {
+    contact: { write, at },
+    contactInbox: { write, at },
+    inbox: { write, at },
+  };
+}
+
 function conversationEvent(over: Partial<StatePayload> = {}): StatePayload {
   return {
     version: V_NEW,
@@ -67,6 +82,7 @@ function conversationEvent(over: Partial<StatePayload> = {}): StatePayload {
     factsStated: ALL_STATED,
     kanbanCardId: null,
     kanbanCardAt: null,
+    relationsStated: ALL_RELATIONS,
     ...over,
   };
 }
@@ -98,6 +114,8 @@ function storedRow(over: Partial<StateRow> = {}): StateRow {
     kanbanCardId: null,
     kanbanCardAt: null,
     redirectOriginClearedAt: null,
+    relationMarks: relationMarks(null),
+    relationsStored: ALL_RELATIONS,
     ...over,
   };
 }
@@ -128,10 +146,10 @@ const CASES: Case[] = [
     want: { statusAt: null, assigneeAt: null },
   },
   {
-    name: "a message snapshot still mirrors the unversioned fields",
+    name: "a message snapshot still mirrors the relations",
     payload: messageEvent({ activityAt: NOW }),
     row: storedRow(),
-    want: { unversioned: true },
+    want: { relations: allRelations(true, V_NEW) },
   },
   // The one transition a message carries faithfully, because Chatwoot performs it before dispatch.
   {
@@ -197,7 +215,12 @@ const CASES: Case[] = [
     name: "a conversation event behind BOTH marks is stale",
     payload: conversationEvent({ version: V_OLD }),
     row: storedRow(),
-    want: { stale: true, status: null, assignee: false, unversioned: false },
+    want: {
+      stale: true,
+      status: null,
+      assignee: false,
+      relations: allRelations(false),
+    },
   },
   {
     name: "behind the status mark but not the assignee mark: not stale, assignee only",
@@ -218,10 +241,10 @@ const CASES: Case[] = [
     want: { stale: false, status: "resolved", assignee: true },
   },
   {
-    name: "...and its unversioned fields stay silent, so a newer payload's bags survive",
+    name: "...and its relations stay silent, so a newer payload's relations survive",
     payload: conversationEvent({ activityAt: EARLIER }),
     row: storedRow({ activityAt: LATER }),
-    want: { unversioned: false },
+    want: { relations: allRelations(false) },
   },
   {
     name: "a versioned event against a migrated row (no marks) applies",
@@ -313,7 +336,7 @@ const CASES: Case[] = [
       stale: false,
       status: "resolved",
       assignee: true,
-      unversioned: true,
+      relations: allRelations(true, V_NEW),
       statusAt: V_NEW,
       assigneeAt: V_NEW,
     },
@@ -372,7 +395,11 @@ const CASES: Case[] = [
       redirectOriginStated: true,
     }),
     row: storedRow({ activityAt: LATER, redirectOriginAt: V_OLD }),
-    want: { redirectOrigin: true, redirectOriginAt: V_NEW, unversioned: false },
+    want: {
+      redirectOrigin: true,
+      redirectOriginAt: V_NEW,
+      relations: allRelations(false),
+    },
   },
   // The stale branch's one exception: `stale` means "behind on every axis this payload OFFERS", and
   // the pairing is an axis of its own. The first payload to carry one is routinely behind on the
@@ -392,7 +419,7 @@ const CASES: Case[] = [
       redirectOriginStated: true,
     }),
     row: storedRow({ redirectOriginAt: null }),
-    want: { status: null, assignee: false, unversioned: false },
+    want: { status: null, assignee: false, relations: allRelations(false) },
   },
   {
     name: "a stale event behind the redirect mark too writes no pairing",
@@ -646,11 +673,11 @@ const CASES: Case[] = [
     want: { facts: allFacts(false) },
   },
   {
-    // The relations keep the recency rule alone: a payload refused for the facts still writes them.
-    name: "a fact refused by its mark leaves the relations to the recency rule",
+    // Each relation is ordered by its own mark: a payload refused for the facts still writes them.
+    name: "a fact refused by its mark leaves the relations to their own marks",
     payload: messageEvent({ version: V_OLD, activityAt: LATER }),
     row: storedRow({ activityAt: LATER, factMarks: marks(V_NOW) }),
-    want: { unversioned: true },
+    want: { relations: allRelations(true, V_OLD) },
   },
   {
     name: "a newer version in the same second writes the facts and moves their marks",
@@ -688,7 +715,7 @@ const CASES: Case[] = [
     name: "a newer version behind on last_activity_at still writes no facts",
     payload: conversationEvent({ version: V_NEW, activityAt: EARLIER }),
     row: storedRow({ activityAt: LATER, factMarks: marks(V_NOW) }),
-    want: { unversioned: false, facts: allFacts(false) },
+    want: { facts: allFacts(false) },
   },
   {
     // A payload that omits a fact says nothing about it, so its mark stays where the last writer of
@@ -911,6 +938,114 @@ const CASES: Case[] = [
     }),
     row: storedRow(),
     want: { redirectOriginClearedAt: null },
+  },
+  // THE RELATIONS. Moving the contact or the contact inbox is a write to the conversation, so its
+  // version moves and `last_activity_at` does not: a snapshot serialized before a merge shares the
+  // second of the one after it and used to write the old contact back.
+  {
+    name: "a snapshot older than the version that last wrote a relation leaves it, in the same second",
+    payload: messageEvent({ version: V_OLD, activityAt: LATER }),
+    row: storedRow({ activityAt: LATER, relationMarks: relationMarks(V_NOW) }),
+    want: { stale: false, relations: allRelations(false) },
+  },
+  {
+    name: "a newer version in the same second writes the relations and moves their marks",
+    payload: messageEvent({ version: V_NEW, activityAt: LATER }),
+    row: storedRow({ activityAt: LATER, relationMarks: relationMarks(V_NOW) }),
+    want: { relations: allRelations(true, V_NEW) },
+  },
+  {
+    // The case a single mark for every relation could not hold: the degraded event that created the
+    // row named none, so nothing it stamped can refuse the complete event serialized before it.
+    name: "an empty relation is filled by an older payload naming it, and stamped",
+    payload: messageEvent({ version: V_OLD, activityAt: LATER }),
+    row: storedRow({
+      activityAt: LATER,
+      relationsStored: { contact: false, contactInbox: false, inbox: true },
+    }),
+    want: {
+      relations: {
+        contact: { write: true, at: V_OLD },
+        contactInbox: { write: true, at: V_OLD },
+        inbox: { write: true, at: V_OLD },
+      },
+    },
+  },
+  {
+    name: "...even when the payload is stale, which fills and holds nothing back",
+    payload: conversationEvent({ version: V_OLD }),
+    row: storedRow({
+      relationsStored: { contact: false, contactInbox: true, inbox: true },
+    }),
+    want: {
+      stale: true,
+      relations: {
+        contact: { write: true, at: V_OLD },
+        contactInbox: { write: false, at: null },
+        inbox: { write: false, at: null },
+      },
+    },
+  },
+  {
+    name: "...and so is one behind on last_activity_at",
+    payload: conversationEvent({ version: V_NEW, activityAt: EARLIER }),
+    row: storedRow({
+      activityAt: LATER,
+      relationsStored: { contact: false, contactInbox: true, inbox: true },
+    }),
+    want: {
+      relations: {
+        contact: { write: true, at: V_NEW },
+        contactInbox: { write: false, at: null },
+        inbox: { write: false, at: null },
+      },
+    },
+  },
+  {
+    // A degraded payload names no relation, so it moves no mark and a later payload newer than the
+    // last one that DID name it is still heard.
+    name: "a relation the payload does not name is neither written nor stamped",
+    payload: messageEvent({
+      version: V_NEW,
+      activityAt: LATER,
+      relationsStated: { contact: false, contactInbox: false, inbox: true },
+    }),
+    row: storedRow({ activityAt: LATER, relationMarks: relationMarks(V_OLD) }),
+    want: {
+      relations: {
+        contact: { write: false, at: null },
+        contactInbox: { write: false, at: null },
+        inbox: { write: true, at: V_NEW },
+      },
+    },
+  },
+  {
+    name: "each relation is ordered by its own mark",
+    payload: messageEvent({ version: V_NOW, activityAt: LATER }),
+    row: storedRow({
+      activityAt: LATER,
+      relationMarks: { ...relationMarks(V_OLD), contactInbox: V_NEW },
+    }),
+    want: {
+      relations: {
+        ...allRelations(true, V_NOW),
+        contactInbox: { write: false, at: null },
+      },
+    },
+  },
+  {
+    name: "a versionless payload keeps the recency rule for relations and stamps nothing",
+    payload: messageEvent({ version: null, activityAt: LATER }),
+    row: storedRow({ activityAt: LATER, relationMarks: relationMarks(V_NOW) }),
+    want: { relations: allRelations(true, null) },
+  },
+  {
+    name: "a row born from a payload naming no relation stamps none",
+    payload: messageEvent({
+      relationsStated: { contact: false, contactInbox: false, inbox: false },
+    }),
+    row: null,
+    want: { relations: allRelations(false) },
   },
 ];
 

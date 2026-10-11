@@ -912,6 +912,13 @@ model Conversation {
   // conversation never told about a pairing, which stamps nothing above so `episodeOriginQuery` keeps
   // its recency fallback. A stated origin older than this is refused, since the null is newer news.
   chatwootRedirectOriginClearedAt Float? @map("chatwoot_redirect_origin_cleared_at")
+  // The relations' marks: the version (`updated_at`) of the payload that last wrote the contact, the
+  // contact inbox and the inbox. Moving a relation is a write to the conversation, so its version
+  // moves and `last_activity_at` does not. Stamped only by a payload that NAMES the relation, so a
+  // degraded one cannot advance a mark over a value it never stated. NULL until then.
+  chatwootContactAt               Float? @map("chatwoot_contact_at")
+  chatwootContactInboxAt          Float? @map("chatwoot_contact_inbox_at")
+  chatwootInboxAt                 Float? @map("chatwoot_inbox_at")
   // THE LOCAL STATUS CLAIM (issue #436): a status this side wrote that the source has not versioned,
   // and the instant that write stops fencing this row. NULL = no local write is outstanding.
   //

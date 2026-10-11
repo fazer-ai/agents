@@ -23,7 +23,7 @@ export interface StatePayload {
    * microseconds apart into one version.
    */
   version: number | null;
-  /** `last_activity_at`. Coarse (see 3 above), and the only axis the unversioned fields have. */
+  /** `last_activity_at`. Coarse (see 3 above), and the recency axis every payload has. */
   activityAt: Date | null;
   /** False when the payload embeds a message snapshot (see 1 above). */
   fromConversationEvent: boolean;
@@ -69,6 +69,8 @@ export interface StatePayload {
    * conversation, so this is the only clock that orders two states of one card under one version.
    */
   kanbanCardAt: number | null;
+  /** Which relations the payload NAMES. A degraded payload names none, and moves no relation mark. */
+  relationsStated: Record<RelationName, boolean>;
 }
 
 /** The conversation facts that carry no version of their own and are ordered by the conversation's. */
@@ -79,6 +81,14 @@ export const FACT_NAMES = [
   "kanbanAttributes",
 ] as const;
 export type FactName = (typeof FACT_NAMES)[number];
+
+/**
+ * The conversation's relations. Moving one (a contact merge, a WhatsApp contact-inbox consolidation)
+ * is an `update!` on the conversation, so it moves `updated_at` and not `last_activity_at`, like the
+ * facts above.
+ */
+export const RELATION_NAMES = ["contact", "contactInbox", "inbox"] as const;
+export type RelationName = (typeof RELATION_NAMES)[number];
 
 /** What to do with one fact: write it or not, and the version to stamp on its mark (null: leave). */
 export interface FactWrite {
@@ -125,6 +135,10 @@ export interface StateRow {
   /** The card whose attributes are stored, and its clock as of them. */
   kanbanCardId: number | null;
   kanbanCardAt: number | null;
+  /** Each relation's mark (see `relations` on the decision). */
+  relationMarks: Record<RelationName, number | null>;
+  /** Whether the row holds a value for each relation: an empty one is filled by any payload naming it. */
+  relationsStored: Record<RelationName, boolean>;
 }
 
 export interface StateDecision {
@@ -141,15 +155,6 @@ export interface StateDecision {
   /** Whether the payload's assignee trio may overwrite the stored one. */
   assignee: boolean;
   /**
-   * Whether the payload's UNVERSIONED fields may be written: the relations (contact, contact inbox,
-   * inbox) and the attribute bags, which every payload carries. They need a recency fence: a
-   * conversation event can win on version alone, and one with an older `last_activity_at` would roll
-   * a bag back (a Kanban card jumping back a column) or restore a relation a contact merge moved (the
-   * graph's thread key is built from the contact inbox). Behind on this axis: state ruling kept,
-   * these fields silent. The bags, the labels and the type are also held to `facts` below.
-   */
-  unversioned: boolean;
-  /**
    * Per fact: whether the payload's value may be written, and the version to stamp on that fact's
    * mark. `last_activity_at` does not move on a label, attribute or `group_type` write while
    * `updated_at` does, so a payload behind a fact's mark is older than the value stored even when it
@@ -158,6 +163,13 @@ export interface StateDecision {
    * `decideFact`).
    */
   facts: Record<FactName, FactWrite>;
+  /**
+   * Per relation, on the facts' terms with one addition: a relation the row does not hold is filled
+   * by any payload naming it, older or stale included, and stamped. A degraded event names none, so a
+   * row it created stays fillable by the complete event serialized before it, and that event's mark
+   * then keeps a still older one out. The graph's thread key is built from the contact inbox.
+   */
+  relations: Record<RelationName, FactWrite>;
   /** Version to stamp on the status mark, or null to leave it where it is. */
   statusAt: number | null;
   /**
@@ -270,6 +282,29 @@ function decideFact(
   return { write, at: write ? advancesFrom(mark, payload.version) : null };
 }
 
+// One relation. Empty: filled by whatever names it. Held: as a fact, by recency and its own mark.
+function decideRelation(
+  relation: RelationName,
+  payload: StatePayload,
+  row: StateRow,
+  recent: boolean,
+): FactWrite {
+  if (!payload.relationsStated[relation]) return { write: false, at: null };
+  const mark = row.relationMarks[relation];
+  const behind =
+    payload.version != null && mark != null && payload.version < mark;
+  const write = !row.relationsStored[relation] || (recent && !behind);
+  return { write, at: write ? advancesFrom(mark, payload.version) : null };
+}
+
+function mapRelations(
+  decide: (relation: RelationName) => FactWrite,
+): Record<RelationName, FactWrite> {
+  return Object.fromEntries(
+    RELATION_NAMES.map((r) => [r, decide(r)]),
+  ) as Record<RelationName, FactWrite>;
+}
+
 export function decideConversationWrites(
   payload: StatePayload,
   row: StateRow | null,
@@ -305,7 +340,6 @@ export function decideConversationWrites(
       stale: false,
       status: payload.status,
       assignee: payload.assigneeStated,
-      unversioned: true,
       statusAt: payload.status != null ? payload.version : null,
       ownershipChangedAt:
         payload.status != null || payload.assigneeStated
@@ -316,6 +350,10 @@ export function decideConversationWrites(
       facts: mapFacts((f) => ({
         write: payload.factsStated[f],
         at: payload.factsStated[f] ? payload.version : null,
+      })),
+      relations: mapRelations((r) => ({
+        write: payload.relationsStated[r],
+        at: payload.relationsStated[r] ? payload.version : null,
       })),
       redirectOrigin: redirectOriginAnswers,
       redirectOriginAt: redirectOriginAnswers ? payload.version : null,
@@ -373,12 +411,17 @@ export function decideConversationWrites(
       stale: true,
       status: null,
       assignee: false,
-      unversioned: false,
       statusAt: null,
       ownershipChangedAt: lateChangeAt,
       statusClaimRefusedAt: null,
       assigneeAt: null,
       facts: mapFacts(() => ({ write: false, at: null })),
+      // A stale payload holds no relation back, but still fills one the row lacks.
+      relations: mapRelations((r) =>
+        row.relationsStored[r]
+          ? { write: false, at: null }
+          : decideRelation(r, payload, row, false),
+      ),
       redirectOrigin: redirectOriginAnswers && !olderThanRedirectOrigin,
       redirectOriginAt:
         redirectOriginAnswers && !olderThanRedirectOrigin
@@ -462,14 +505,16 @@ export function decideConversationWrites(
   // stamps nothing: with no key to order by, the last write wins.
   const redirectOrigin = redirectOriginAnswers && !olderThanRedirectOrigin;
 
-  const unversioned = row.activityAt == null || eventAt >= row.activityAt;
+  // Not behind on `last_activity_at`: a conversation event can win on version alone, and one with an
+  // older activity would roll a bag back or restore a relation a merge moved.
+  const recent = row.activityAt == null || eventAt >= row.activityAt;
 
   return {
     stale: false,
     status,
     assignee,
-    unversioned,
-    facts: mapFacts((f) => decideFact(f, payload, row, unversioned)),
+    facts: mapFacts((f) => decideFact(f, payload, row, recent)),
+    relations: mapRelations((r) => decideRelation(r, payload, row, recent)),
     statusAt: status != null ? advances(row.statusAt) : null,
     ownershipChangedAt:
       (status != null &&

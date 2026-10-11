@@ -32,7 +32,7 @@ import {
   daysOf,
   type Window,
 } from "./filters";
-import { useBlock } from "./useBlock";
+import { askBreakdown, useBlock } from "./useBlock";
 
 const LineTrend = lazy(() =>
   import("./charts").then((m) => ({ default: m.LineTrend })),
@@ -120,9 +120,7 @@ export function CostSection({
     },
   );
   const cache = useBlock(JSON.stringify(["cache", query]), async () => {
-    const res = await api.api.v1.metrics.breakdown.get({
-      query: { ...query, dimension: "agent" },
-    });
+    const res = await askBreakdown(query, "agent");
     return { data: res.data?.rows ?? null, ...failureOf(res.error) };
   });
   const ceiling = useBlock<Ceiling>(

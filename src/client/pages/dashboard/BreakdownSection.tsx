@@ -2,12 +2,12 @@ import { ArrowDown, ArrowUp, Table2 } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { SegmentedControl, Skeleton } from "@/client/components";
-import { api } from "@/client/lib/api";
+import type { api } from "@/client/lib/api";
 import { cn } from "@/client/lib/utils";
 import { Block, type BlockTable, failureOf } from "./Block";
 import { useNodeLabel } from "./CostSection";
 import { apiQuery, type DashboardFilters, type Window } from "./filters";
-import { useBlock } from "./useBlock";
+import { askBreakdown, useBlock } from "./useBlock";
 
 type Dimension = "agent" | "inbox" | "model" | "node";
 type BreakdownData = Awaited<
@@ -57,9 +57,7 @@ export function BreakdownSection({
   const block = useBlock(
     JSON.stringify(["breakdown", query, dimension]),
     async () => {
-      const res = await api.api.v1.metrics.breakdown.get({
-        query: { ...query, dimension },
-      });
+      const res = await askBreakdown(query, dimension);
       return { data: res.data?.rows ?? null, ...failureOf(res.error) };
     },
   );

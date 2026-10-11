@@ -328,6 +328,19 @@ describe("one filter, in the URL, for every block", () => {
     expect(Boolean(prev)).toBe(true);
   });
 
+  test("one opening of the screen sends each distinct request once", async () => {
+    await renderDash("/?range=30d");
+    await waitFor(() => {
+      expect(asks("/metrics/knowledge").length).toBeGreaterThan(0);
+      expect(asks("/metrics/breakdown").length).toBeGreaterThan(0);
+    });
+    const sent = asked
+      .filter((u) => u.pathname.includes("/metrics/"))
+      .map((u) => `${u.pathname}?${[...u.searchParams].sort().join("&")}`);
+    const twice = sent.filter((k, i) => sent.indexOf(k) !== i);
+    expect(twice).toEqual([]);
+  });
+
   test("a link to an agent this account does not have opens on every agent", async () => {
     await renderDash("/?agent=999999");
     await waitFor(() => {

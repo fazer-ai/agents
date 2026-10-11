@@ -287,22 +287,28 @@ export function outcomeRates(c: OutcomeCounts) {
 }
 
 // The counts behind the funnel, as SQL aggregates over the view's conversations. `group` adds one
-// grouping column (a local day, an agent, an inbox); without it the result is a single row.
+// grouping column (a local day, an agent, an inbox); without it the result is a single row. Each
+// conversation's outcome and "the agent ran on it" are worked out once, in the materialized rows, and
+// the five counts read them: written into each FILTER, the ledger probe ran once per figure.
 export function outcomeCountsSql(
   f: DashboardFilter,
-  group?: { key: Prisma.Sql; from?: Prisma.Sql },
+  group?: { key: Prisma.Sql },
 ): Prisma.Sql {
-  const ran = agentRanSql("c", f.agentId);
-  const outcome = outcomeSql("c");
   return Prisma.sql`
-    SELECT ${group ? Prisma.sql`${group.key} AS key,` : Prisma.empty}
-           COUNT(DISTINCT c.id)::int AS total,
-           COUNT(DISTINCT c.id) FILTER (WHERE ${ran})::int AS involved,
-           COUNT(DISTINCT c.id) FILTER (WHERE ${ran} AND ${outcome} = 'resolved_by_agent')::int AS resolved,
-           COUNT(DISTINCT c.id) FILTER (WHERE ${ran} AND ${outcome} = 'handoff')::int AS handoff,
-           COUNT(DISTINCT c.id) FILTER (WHERE ${ran} AND ${outcome} = 'resolved_before_tracking')::int AS untracked
-      FROM conversations c ${group?.from ?? Prisma.empty}
-     WHERE ${cohortWhereSql("c", f)}
+    WITH v AS MATERIALIZED (
+      SELECT ${group ? Prisma.sql`${group.key} AS key,` : Prisma.empty}
+             ${outcomeSql("c")} AS outcome,
+             ${agentRanSql("c", f.agentId)} AS ran
+        FROM conversations c
+       WHERE ${cohortWhereSql("c", f)}
+    )
+    SELECT ${group ? Prisma.sql`v.key,` : Prisma.empty}
+           COUNT(*)::int AS total,
+           COUNT(*) FILTER (WHERE v.ran)::int AS involved,
+           COUNT(*) FILTER (WHERE v.ran AND v.outcome = 'resolved_by_agent')::int AS resolved,
+           COUNT(*) FILTER (WHERE v.ran AND v.outcome = 'handoff')::int AS handoff,
+           COUNT(*) FILTER (WHERE v.ran AND v.outcome = 'resolved_before_tracking')::int AS untracked
+      FROM v
      ${group ? Prisma.sql`GROUP BY 1` : Prisma.empty}`;
 }
 

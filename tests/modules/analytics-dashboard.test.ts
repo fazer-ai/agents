@@ -1510,6 +1510,18 @@ describe.skipIf(!dbUp)("the view's boundaries", () => {
       reason: "not_for_us",
       assigned: "routing",
     });
+    await line(other, "2026-09-21T11:00:00Z", "tool", {
+      tool: "skip_reply",
+      skipReason: "not_for_us",
+    });
+    // The agent's own transfer counts as a cause and records no target, even if its line carried
+    // the key a hand-over line uses.
+    const agentOwn = await seedConv(ex, "targets3", { at: D1, inbox: ex.i1 });
+    await line(agentOwn, "2026-09-21T12:00:00Z", "tool", {
+      tool: "handoff_to_human",
+      handedOff: true,
+      assigned: "agent",
+    });
     const r = await getHandoffReasons(
       ctx(ex.tenantId),
       {
@@ -1521,8 +1533,13 @@ describe.skipIf(!dbUp)("the view's boundaries", () => {
     );
     expect(r.silenceDays).toEqual([
       { date: "2026-09-20", reason: "needs_human", turns: 1 },
-      { date: "2026-09-21", reason: "not_for_us", turns: 1 },
+      { date: "2026-09-21", reason: "not_for_us", turns: 2 },
     ]);
+    expect(r.silences).toEqual([
+      { reason: "not_for_us", turns: 2 },
+      { reason: "needs_human", turns: 1 },
+    ]);
+    expect(r.totals.find((t) => t.cause === "agent")?.conversations).toBe(1);
     expect(r.targets.sort((a, b) => a.cause.localeCompare(b.cause))).toEqual([
       { cause: "skip_needs_human", target: "pinned", conversations: 1 },
       { cause: "skip_not_for_us", target: "routing", conversations: 1 },

@@ -103,6 +103,13 @@ const CAUSE_SQL = Prisma.sql`(CASE
     THEN 'person'
   END)`;
 
+// The lines a cause can come from: every transfer the flow log records, and the agent's own
+// handoff_to_human call. Narrower than `stage IN ('tool', 'handoff')` only by tool lines whose cause
+// is NULL, and written this way so the reads below reach their lines through
+// `execution_logs_dashboard_lines_idx` instead of every tool line of the window.
+const HANDOFF_LINE_SQL = Prisma.sql`(l.stage = 'handoff'
+  OR (l.stage = 'tool' AND l.detail->>'tool' = 'handoff_to_human'))`;
+
 export async function getHandoffReasons(
   ctx: TenantContext,
   filter: DashboardFilter,
@@ -110,76 +117,65 @@ export async function getHandoffReasons(
 ): Promise<HandoffReasons> {
   const tz = normalizeTimeZone(filter.tz);
   return runMetricsScoped(base, ctx, async (db) => {
-    const rows = await db.$queryRaw<
-      { date: string; cause: string; conversations: number }[]
+    // One pass over the window's transfer lines, the cause worked out once per line, grouped three
+    // ways: per day (set 1), for the period (set 3) and per where it went (set 2). Only a hand-over
+    // line records where it went, so the target is NULL on every other line, and that group is not a
+    // target.
+    const causes = await db.$queryRaw<
+      {
+        set: number;
+        date: string | null;
+        cause: string;
+        target: string | null;
+        conversations: number;
+      }[]
     >(Prisma.sql`
-      SELECT date, cause, COUNT(DISTINCT conversation_id)::int AS conversations
-        FROM (SELECT ${localDaySql(Prisma.sql`l.created_at`, tz)} AS date,
-                     ${CAUSE_SQL} AS cause,
-                     l.conversation_id
-                FROM execution_logs l
-               WHERE ${logWhereSql("l", filter)}
-                 AND l.conversation_id IS NOT NULL
-                 AND l.stage IN ('tool', 'handoff')) x
-       WHERE cause IS NOT NULL
-       GROUP BY 1, 2
-       ORDER BY 1, 2`);
-    const [totalsRows, silences] = [
-      await db.$queryRaw<{ cause: string; conversations: number }[]>(
-        Prisma.sql`
-        SELECT cause, COUNT(DISTINCT conversation_id)::int AS conversations
-          FROM (SELECT ${CAUSE_SQL} AS cause, l.conversation_id
-                  FROM execution_logs l
-                 WHERE ${logWhereSql("l", filter)}
-                   AND l.conversation_id IS NOT NULL
-                   AND l.stage IN ('tool', 'handoff')) x
-         WHERE cause IS NOT NULL
-         GROUP BY 1`,
-      ),
-      await db.$queryRaw<{ reason: string; turns: number }[]>(Prisma.sql`
-        SELECT COALESCE(l.detail->>'skipReason', 'unrecorded') AS reason,
-               COUNT(*)::int AS turns
+      WITH x AS MATERIALIZED (
+        SELECT ${localDaySql(Prisma.sql`l.created_at`, tz)} AS date,
+               ${CAUSE_SQL} AS cause,
+               CASE WHEN l.stage = 'handoff' THEN ${TARGET_SQL} END AS target,
+               l.conversation_id
           FROM execution_logs l
          WHERE ${logWhereSql("l", filter)}
-           AND l.stage = 'tool'
-           AND l.detail->>'tool' = 'skip_reply'
-           -- Only a call that ran: a refused one (arguments that failed the schema, a precondition
-           -- that did not hold) silenced nothing.
-           AND ${callRanSql("l")}
-         GROUP BY 1
-         ORDER BY 2 DESC`),
-    ];
-    const silenceDays = await db.$queryRaw<
-      { date: string; reason: string; turns: number }[]
+           AND l.conversation_id IS NOT NULL
+           AND ${HANDOFF_LINE_SQL}
+      )
+      SELECT GROUPING(x.date, x.target)::int AS set,
+             x.date, x.cause, x.target,
+             COUNT(DISTINCT x.conversation_id)::int AS conversations
+        FROM x
+       WHERE x.cause IS NOT NULL
+       GROUP BY GROUPING SETS ((x.date, x.cause), (x.cause), (x.cause, x.target))
+       ORDER BY 1, 2, 3, 4`);
+    // Silences per reason for the period and per day, in one pass. Only a call that ran: a refused
+    // one (arguments that failed the schema, a precondition that did not hold) silenced nothing.
+    const silenceRows = await db.$queryRaw<
+      { date: string | null; reason: string; turns: number }[]
     >(Prisma.sql`
-      SELECT ${localDaySql(Prisma.sql`l.created_at`, tz)} AS date,
-             COALESCE(l.detail->>'skipReason', 'unrecorded') AS reason,
-             COUNT(*)::int AS turns
-        FROM execution_logs l
-       WHERE ${logWhereSql("l", filter)}
-         AND l.stage = 'tool'
-         AND l.detail->>'tool' = 'skip_reply'
-         AND ${callRanSql("l")}
-       GROUP BY 1, 2
-       ORDER BY 1, 2`);
-    const targets = await db.$queryRaw<
-      { cause: string; target: string; conversations: number }[]
-    >(Prisma.sql`
-      SELECT cause, target, COUNT(DISTINCT conversation_id)::int AS conversations
-        FROM (SELECT ${CAUSE_SQL} AS cause, ${TARGET_SQL} AS target, l.conversation_id
+      SELECT s.date, s.reason, COUNT(*)::int AS turns
+        FROM (SELECT ${localDaySql(Prisma.sql`l.created_at`, tz)} AS date,
+                     COALESCE(l.detail->>'skipReason', 'unrecorded') AS reason
                 FROM execution_logs l
                WHERE ${logWhereSql("l", filter)}
-                 AND l.conversation_id IS NOT NULL
-                 AND l.stage = 'handoff') x
-       WHERE cause IS NOT NULL AND target IS NOT NULL
-       GROUP BY 1, 2`);
+                 AND l.stage = 'tool'
+                 AND l.detail->>'tool' = 'skip_reply'
+                 AND ${callRanSql("l")}) s
+       GROUP BY GROUPING SETS ((s.reason), (s.date, s.reason))
+       ORDER BY 1, 2`);
+    const rows = causes.filter((r) => r.set === 1);
+    const totalsRows = causes.filter((r) => r.set === 3);
+    const targets = causes.filter((r) => r.set === 2 && r.target !== null);
+    const silences = silenceRows
+      .filter((r) => r.date === null)
+      .sort((a, b) => Number(b.turns) - Number(a.turns));
+    const silenceDays = silenceRows.filter((r) => r.date !== null);
     const known = (c: string): c is HandoffCause =>
       (HANDOFF_CAUSES as readonly string[]).includes(c);
     return {
       days: rows
         .filter((r) => known(r.cause))
         .map((r) => ({
-          date: r.date,
+          date: r.date as string,
           cause: r.cause as HandoffCause,
           conversations: Number(r.conversations),
         })),
@@ -195,7 +191,7 @@ export async function getHandoffReasons(
         turns: Number(s.turns),
       })),
       silenceDays: silenceDays.map((s) => ({
-        date: s.date,
+        date: s.date as string,
         reason: s.reason,
         turns: Number(s.turns),
       })),
@@ -234,8 +230,6 @@ export async function getLabelOutcomes(
   base: PrismaClient = metricsPrisma,
 ): Promise<LabelOutcomes> {
   return runMetricsScoped(base, ctx, async (db) => {
-    const ran = agentRanSql("c", filter.agentId);
-    const outcome = outcomeSql("c");
     const rows = await db.$queryRaw<
       {
         label: string;
@@ -245,14 +239,20 @@ export async function getLabelOutcomes(
         handoff: number;
       }[]
     >(Prisma.sql`
+      WITH v AS MATERIALIZED (
+        SELECT c.id, c.labels,
+               ${outcomeSql("c")} AS outcome,
+               ${agentRanSql("c", filter.agentId)} AS ran
+          FROM conversations c
+         WHERE ${cohortWhereSql("c", filter)} AND cardinality(c.labels) > 0
+      )
       SELECT lb.label,
-             COUNT(DISTINCT c.id)::int AS total,
-             COUNT(DISTINCT c.id) FILTER (WHERE ${ran})::int AS involved,
-             COUNT(DISTINCT c.id) FILTER (WHERE ${ran} AND ${outcome} = 'resolved_by_agent')::int AS resolved,
-             COUNT(DISTINCT c.id) FILTER (WHERE ${ran} AND ${outcome} = 'handoff')::int AS handoff
-        FROM conversations c
-        CROSS JOIN LATERAL unnest(c.labels) AS lb(label)
-       WHERE ${cohortWhereSql("c", filter)}
+             COUNT(DISTINCT v.id)::int AS total,
+             COUNT(DISTINCT v.id) FILTER (WHERE v.ran)::int AS involved,
+             COUNT(DISTINCT v.id) FILTER (WHERE v.ran AND v.outcome = 'resolved_by_agent')::int AS resolved,
+             COUNT(DISTINCT v.id) FILTER (WHERE v.ran AND v.outcome = 'handoff')::int AS handoff
+        FROM v
+        CROSS JOIN LATERAL unnest(v.labels) AS lb(label)
        GROUP BY 1
        ORDER BY 2 DESC, 1`);
     const [unlabeled] = await db.$queryRaw<{ n: number }[]>(Prisma.sql`

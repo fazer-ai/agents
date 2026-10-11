@@ -217,20 +217,21 @@ async function resetBreaker() {
   await clearFlowLog(suDb, { tenantId });
 }
 
+// One INSERT for the n rows: the peak test seeds about 2,400 lines, and one round trip per line is
+// what put it past the 5 s test timeout on a loaded machine.
 async function seedGenerate(outcome: string, at: Date, n: number) {
-  for (let i = 0; i < n; i++)
-    await suDb.executionLog.create({
-      data: {
-        tenantId,
-        turnId: crypto.randomUUID(),
-        stage: "generate",
-        status: "ok",
-        level: "info",
-        source: "inbox",
-        detail: { trigger: "GENERIC", outcome },
-        createdAt: new Date(at.getTime() + i * 1000),
-      },
-    });
+  await suDb.executionLog.createMany({
+    data: Array.from({ length: n }, (_, i) => ({
+      tenantId,
+      turnId: crypto.randomUUID(),
+      stage: "generate",
+      status: "ok",
+      level: "info",
+      source: "inbox",
+      detail: { trigger: "GENERIC", outcome },
+      createdAt: new Date(at.getTime() + i * 1000),
+    })),
+  });
 }
 
 describe.skipIf(!dbUp)("proactive breaker", () => {

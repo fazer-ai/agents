@@ -6,6 +6,10 @@ import { join } from "node:path";
 // require-test-server-hostname.grit), run through the real Biome over probe files written under
 // tests/. One Biome process lints every probe. The probes end in `.ts`, not `.test.ts`, so `bun test`
 // never collects them, and each run writes under its own pid.
+//
+// The exemption is proven with the SMALLEST listed file of each rule, linted in place and as a copy.
+// Biome's time grows with the lines it reads: the 11,772-line tests/graph/runtime.test.ts, linted twice,
+// was over 2 s of the hook alone and put it past the 5 s hook timeout on a loaded machine.
 
 const ROOT = join(import.meta.dir, "../..");
 const PROBE = `tests/lint/.probe-${process.pid}`;
@@ -13,7 +17,9 @@ const TOOLING_PROBE = `tests/tooling/.probe-${process.pid}`;
 // Built rather than written: a literal path in this file is exactly what the first rule refuses.
 const SRC = ["s", "rc"].join("");
 const DOCS = ["do", "cs"].join("");
-const LISTED = "tests/graph/runtime.test.ts";
+// On the no-test-reads-source list, and on the no-test-real-wait list, in biome.jsonc.
+const LISTED_SOURCE = "tests/client/import-warnings-rendered.test.ts";
+const LISTED_WAIT = "tests/api/features/realtime/realtime.controller.test.ts";
 const APP = "declare const app: { listen: (...a: unknown[]) => unknown };\n";
 
 const PROBES: Record<string, string> = {
@@ -39,7 +45,14 @@ const PROBES: Record<string, string> = {
     "const ms500 = 1;\nexport const a = Bun.sleep(ms500);\n",
   [`${PROBE}/timeout-10.ts`]:
     "export const a = (fn: () => void) => setTimeout(fn, 10);\n",
-  [`${PROBE}/listed-copy.ts`]: readFileSync(join(ROOT, LISTED), "utf8"),
+  [`${PROBE}/listed-source-copy.ts`]: readFileSync(
+    join(ROOT, LISTED_SOURCE),
+    "utf8",
+  ),
+  [`${PROBE}/listed-wait-copy.ts`]: readFileSync(
+    join(ROOT, LISTED_WAIT),
+    "utf8",
+  ),
   [`${PROBE}/serve-no-hostname.ts`]:
     'export const s = Bun.serve({ port: 0, fetch: () => new Response("x") });\n',
   [`${PROBE}/serve-reads-hostname.ts`]:
@@ -75,7 +88,8 @@ beforeAll(() => {
       "--max-diagnostics=none",
       "--reporter=github",
       ...Object.keys(PROBES),
-      LISTED,
+      LISTED_SOURCE,
+      LISTED_WAIT,
     ],
     cwd: ROOT,
   });
@@ -145,11 +159,16 @@ describe("no-test-real-wait", () => {
   });
 });
 
-test("a file on the list is exempt, and the same content anywhere else is not", () => {
-  const copy = of(`${PROBE}/listed-copy.ts`);
-  expect(copy.source + copy.wait).toBeGreaterThan(0);
-  expect(of(LISTED)).toEqual(NONE);
-});
+test.each([
+  ["source", LISTED_SOURCE, "listed-source-copy.ts"],
+  ["wait", LISTED_WAIT, "listed-wait-copy.ts"],
+] as const)(
+  "a file on the %s list is exempt, and the same content anywhere else is not",
+  (rule, listed, copy) => {
+    expect(of(`${PROBE}/${copy}`)[rule]).toBeGreaterThan(0);
+    expect(of(listed)).toEqual(NONE);
+  },
+);
 
 describe("require-test-server-hostname", () => {
   test.each([

@@ -35,6 +35,7 @@ import {
   OTHER_INBOXES_DEFAULTS,
   type OtherInboxesConfig,
 } from "@/modules/other-inboxes/settings";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { makeConfig } from "../utils/agent-config";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
@@ -49,8 +50,8 @@ if (appUrl && suUrl) {
     });
     await su.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const suDb = su as PrismaClient;

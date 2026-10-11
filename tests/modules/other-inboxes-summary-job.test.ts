@@ -16,6 +16,7 @@ import { summarizeTranscript } from "@/modules/memory/summarize";
 import { SUMMARY_MIN_INTERVAL_MS } from "@/modules/other-inboxes/context";
 import { runOtherInboxSummary } from "@/modules/other-inboxes/summary-job";
 import type { ClaimedJob } from "@/modules/scheduler/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { burnSchedulerJobId } from "../utils/scheduler";
 import { UsageReportingModel } from "../utils/scripted-models";
@@ -31,8 +32,8 @@ if (appUrl && suUrl) {
     });
     await su.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const suDb = su as PrismaClient;

@@ -319,6 +319,8 @@ interface InboxRead {
   now: Date;
   listingBudgetMs: number;
   counts: ReconcileCounts;
+  // Conversations this inbox's read could not judge, which fail the inbox once the read is done.
+  failedConversations: number[];
 }
 
 // One read of a listing whose page requests outlast this is not converging (conversations arriving faster than the
@@ -343,8 +345,13 @@ async function reconcileInbox(p: InboxRead): Promise<void> {
       !overlapped &&
       sameIds(previous, named) &&
       sameIds(pinned, pinnedAfter)
-    )
+    ) {
+      if (p.failedConversations.length > 0)
+        throw new Error(
+          `inbox ${p.inbox.chatwootInboxId}: conversations ${p.failedConversations.join(", ")} could not be judged`,
+        );
       return;
+    }
     // An overlapped read missed a row, so it cannot be what the next read is compared against.
     previous = overlapped ? null : named;
   }
@@ -365,7 +372,7 @@ async function readListing(
   pinned: Set<number>,
   read: Set<number>,
 ): Promise<{ named: Set<number>; overlapped: boolean }> {
-  const { base, tenantId, instanceId, client, inbox, since, settledBefore } = p;
+  const { client, inbox, since } = p;
   const { counts } = p;
   const named = new Set<number>();
   // Every row of this read, to see two pages overlap: the listing has a fixed length, so a row named
@@ -418,31 +425,61 @@ async function readListing(
       // A person holds it: whatever the customer wrote is theirs to answer.
       if (c.assigneeType === "User") continue;
       counts.conversationsRead += 1;
-      const message = await owedOf(client, c.id, inbox.managedBotIds);
-      if (
-        !message?.createdAt ||
-        message.createdAt < since ||
-        message.createdAt >= settledBefore
-      )
-        continue;
-      // A message from before the responder was bound was received for another role (an observer
-      // promoted since keeps its bot), and the row written here would name today's binding.
-      // NOTE: Chatwoot's `created_at` is whole seconds and the binding is stamped in milliseconds, so the
-      // binding is compared at its second: a message in the same second may have followed it.
-      if (
-        inbox.responderBoundAt !== null &&
-        message.createdAt.getTime() <
-          Math.floor(inbox.responderBoundAt.getTime() / 1000) * 1000
-      )
-        continue;
-      if (await handOver(base, tenantId, instanceId, inbox, c.id, message)) {
-        counts.handedToRecovery += 1;
-        await lineFor(base, tenantId, instanceId, inbox, c.id, message.id);
+      // One conversation that cannot be judged does not hide the ones behind it: the rest of the
+      // listing is still read, and the inbox fails the pass afterwards.
+      try {
+        await judgeConversation(p, c.id);
+      } catch (err) {
+        p.failedConversations.push(c.id);
+        logger.warn(
+          { err, inbox: inbox.chatwootInboxId },
+          "chatwoot reconcile: conversation %d could not be judged; the inbox is read again next pass",
+          c.id,
+        );
       }
     }
     // Past the pinned prefix the listing is newest activity first, so an unpinned row older than the
     // window means every later page is older too.
     if (reachedOld) return { named, overlapped };
+  }
+}
+
+// Whether one conversation owes a customer an answer nobody received, and if so, hands it over.
+async function judgeConversation(
+  p: InboxRead,
+  conversationId: number,
+): Promise<void> {
+  const { base, tenantId, instanceId, client, inbox, since, settledBefore } = p;
+  const { counts } = p;
+  const message = await owedOf(client, conversationId, inbox.managedBotIds);
+  if (
+    !message?.createdAt ||
+    message.createdAt < since ||
+    message.createdAt >= settledBefore
+  )
+    return;
+  // A message from before the responder was bound was received for another role (an observer
+  // promoted since keeps its bot), and the row written here would name today's binding.
+  // NOTE: Chatwoot's `created_at` is whole seconds and the binding is stamped in milliseconds, so the
+  // binding is compared at its second: a message in the same second may have followed it.
+  if (
+    inbox.responderBoundAt !== null &&
+    message.createdAt.getTime() <
+      Math.floor(inbox.responderBoundAt.getTime() / 1000) * 1000
+  )
+    return;
+  if (
+    await handOver(base, tenantId, instanceId, inbox, conversationId, message)
+  ) {
+    counts.handedToRecovery += 1;
+    await lineFor(
+      base,
+      tenantId,
+      instanceId,
+      inbox,
+      conversationId,
+      message.id,
+    );
   }
 }
 
@@ -550,11 +587,30 @@ export async function reconcileFromChatwoot(
     }),
   );
   for (const instance of instances) {
-    const since = new Date(
-      instance.reconciledUntil
-        ? instance.reconciledUntil.getTime() - CURSOR_MARGIN_MS
-        : now.getTime() - FIRST_PASS_LOOKBACK_MS,
-    );
+    // The first pass's window is written before it is read, so a first pass that fails is retried over
+    // the same window instead of one that slid forward with the clock.
+    let reconciledUntil = instance.reconciledUntil;
+    if (reconciledUntil === null) {
+      const start = new Date(
+        now.getTime() - FIRST_PASS_LOOKBACK_MS + CURSOR_MARGIN_MS,
+      );
+      await runScopedOn(base, sysCtx(tenantId), (db) =>
+        db.chatwootInstance.updateMany({
+          where: { id: instance.id, reconciledUntil: null },
+          data: { reconciledUntil: start },
+        }),
+      );
+      reconciledUntil =
+        (
+          await runScopedOn(base, sysCtx(tenantId), (db) =>
+            db.chatwootInstance.findUnique({
+              where: { id: instance.id },
+              select: { reconciledUntil: true },
+            }),
+          )
+        )?.reconciledUntil ?? start;
+    }
+    const since = new Date(reconciledUntil.getTime() - CURSOR_MARGIN_MS);
     const inboxes = await boundInboxes(base, tenantId, instance.id);
     if (inboxes.length === 0) continue;
     let finished = true;
@@ -585,6 +641,7 @@ export async function reconcileFromChatwoot(
           now,
           listingBudgetMs: params.listingBudgetMs ?? LISTING_BUDGET_MS,
           counts,
+          failedConversations: [],
         });
       } catch (err) {
         finished = false;

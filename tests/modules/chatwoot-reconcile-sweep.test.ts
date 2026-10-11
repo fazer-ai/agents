@@ -1353,6 +1353,68 @@ describe.skipIf(!dbUp)("reconciling from Chatwoot", () => {
     expect(kept.reconciledUntil?.getTime()).toBe(minutesAgo(40).getTime());
   });
 
+  test("a conversation that cannot be judged does not hide the lost message behind it, and the inbox still fails", async () => {
+    const s: Scripted = {
+      conversations: new Map([
+        [INBOX, [conv(1300, minutesAgo(20)), conv(1301, minutesAgo(19))]],
+      ]),
+      messages: new Map([
+        [1300, { meta: {} } as unknown as unknown[]],
+        [1301, [incoming(13010, minutesAgo(20))]],
+      ]),
+      listed: [],
+    };
+    const counts = await reconcileFromChatwoot({
+      tenantId,
+      base: appDb,
+      now: NOW,
+      makeClient: chatwoot(s),
+    });
+    expect(counts.inboxesFailed).toBe(1);
+    expect((await ledgerFor(1301)).map((r) => r.inboundMessageId)).toEqual([
+      13010,
+    ]);
+    const kept = await suDb.chatwootInstance.findUniqueOrThrow({
+      where: { id: instanceId },
+      select: { reconciledUntil: true },
+    });
+    expect(kept.reconciledUntil?.getTime()).toBe(minutesAgo(40).getTime());
+  });
+
+  test("a first pass that fails is retried over the same window, not one that slid with the clock", async () => {
+    await suDb.chatwootInstance.update({
+      where: { id: instanceId },
+      data: { reconciledUntil: null },
+    });
+    const failing: Scripted = {
+      conversations: new Map(),
+      messages: new Map(),
+      failInbox: INBOX,
+      listed: [],
+    };
+    await reconcileFromChatwoot({
+      tenantId,
+      base: appDb,
+      now: NOW,
+      makeClient: chatwoot(failing),
+    });
+    // Ten minutes later, a message from five hours fifty-five minutes before the first pass: inside
+    // that pass's window, outside one computed from the retry's own clock.
+    const later = new Date(NOW.getTime() + 10 * 60_000);
+    const s: Scripted = {
+      conversations: new Map([[INBOX, [conv(1310, minutesAgo(30))]]]),
+      messages: new Map([[1310, [incoming(13100, minutesAgo(355))]]]),
+      listed: [],
+    };
+    const counts = await reconcileFromChatwoot({
+      tenantId,
+      base: appDb,
+      now: later,
+      makeClient: chatwoot(s),
+    });
+    expect(counts.handedToRecovery).toBe(1);
+  });
+
   test("a conversation with no activity time fails the inbox and keeps the cursor", async () => {
     const s: Scripted = {
       conversations: new Map([

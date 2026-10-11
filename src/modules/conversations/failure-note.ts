@@ -149,7 +149,8 @@ export async function claimFailureNotice(params: {
 // inbox (`Inbox.agentId`), the same resolution the console does. The agent's handoff setting comes
 // along, so the hand-over lands where `handoff_to_human` would send it. A conversation the mirror
 // never learned, or one whose row names no inbox, takes the bot the delivery arrived on
-// (`routeAgentBotId`) when the caller knows it. `mirrored` says whether the conversation has a row.
+// (`routeAgentBotId`) when the caller knows it. An inbox bound to no agent is an operator's unbinding,
+// not missing information, and gets no persona. `mirrored` says whether the conversation has a row.
 async function personaOf(
   tenantId: bigint,
   instanceId: bigint,
@@ -173,7 +174,7 @@ async function personaOf(
     }),
   );
   const routed =
-    conv?.inbox?.agentId == null && routeAgentBotId !== null
+    (conv === null || conv.inbox === null) && routeAgentBotId !== null
       ? await runScopedOn(base, sysCtx(tenantId), (db) =>
           db.chatwootAgentBot.findFirst({
             where: {

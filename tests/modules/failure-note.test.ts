@@ -2337,6 +2337,46 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
     );
   });
 
+  test("a conversation on an inbox an operator unbound is not handed over as the delivery's route", async () => {
+    const unbound = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: INBOX_ID + 1,
+        name: "Desvinculada",
+      },
+      select: { id: true },
+    });
+    const conv = nextConv++;
+    await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: conv,
+        inboxId: unbound.id,
+        status: "pending",
+        threadId: `${tenantId}:${instanceId}:${conv}`,
+      },
+    });
+    liveConversations.set(conv, { status: "pending", meta: {} });
+    const row = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `failnote-gaveup-unbound-${process.pid}-${conv}`,
+        event: "message_created",
+        status: "DEAD",
+        conversationId: conv,
+        inboundMessageId: 8_000 + conv,
+        routeAgentBotId: 9,
+        routeObserved: false,
+      },
+      select: { id: true },
+    });
+    await announceUnanswered(tenantId, row.id, appDb);
+    expect(writes.filter((w) => w.conversationId === conv)).toEqual([]);
+  });
+
   // The customer's message reopened a resolved conversation in Chatwoot and the mirror never heard:
   // the hand-over reconciles before it reads the ownership, instead of refusing a stale `resolved`.
   test("a recovery that gives up hands over a conversation the mirror still calls resolved", async () => {

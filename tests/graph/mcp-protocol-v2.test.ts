@@ -344,6 +344,7 @@ describe("MCP connections on @langchain/mcp-adapters 2", () => {
     expect(closed.translationKey).toBe("errors.mcpDiscoveryUnreachable");
 
     const hung = Bun.serve({
+      hostname: "127.0.0.1",
       port: 0,
       fetch: () => new Promise<Response>(() => {}),
     });

@@ -19,10 +19,10 @@ describe("dev static plugin HTML bundling", () => {
         bunFullstack: true,
       }),
     );
-    app.listen(0);
+    app.listen({ port: 0, hostname: "127.0.0.1" });
     const port = app.server?.port;
     if (!port) throw new Error("server did not bind");
-    baseUrl = `http://localhost:${port}`;
+    baseUrl = `http://127.0.0.1:${port}`;
   });
 
   afterAll(() => {

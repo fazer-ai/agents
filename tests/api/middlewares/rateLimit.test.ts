@@ -35,10 +35,13 @@ const serve = (max: number, trusted = false) => {
   const app = new Elysia()
     .use(rateLimitMiddleware(max, clientKeyFor(trusted, 1)))
     .get("/api/x", () => "x");
-  const listening = app.listen(0) as unknown as ListeningApp;
+  const listening = app.listen({
+    port: 0,
+    hostname: "127.0.0.1",
+  }) as unknown as ListeningApp;
   if (!listening.server?.port) throw new Error("Failed to start test server");
   servers.push(listening.server);
-  return { url: `http://localhost:${listening.server.port}/api/x` };
+  return { url: `http://127.0.0.1:${listening.server.port}/api/x` };
 };
 
 beforeAll(() => {
@@ -158,11 +161,14 @@ describe("the DCR limiter covers every spelling that routes", () => {
     const app = new Elysia()
       .use(registerRateLimitMiddleware())
       .post("/api/v1/mcp/oauth/register", () => ({ ok: true }));
-    const listening = app.listen(0) as unknown as ListeningApp;
+    const listening = app.listen({
+      port: 0,
+      hostname: "127.0.0.1",
+    }) as unknown as ListeningApp;
     if (!listening.server?.port) throw new Error("Failed to start test server");
     servers.push(listening.server);
     const send = (path: string) =>
-      Bun.fetch(`http://localhost:${listening.server.port}${path}`, {
+      Bun.fetch(`http://127.0.0.1:${listening.server.port}${path}`, {
         method: "POST",
       });
 

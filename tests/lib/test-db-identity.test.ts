@@ -3,6 +3,8 @@ import { createHash } from "node:crypto";
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { Client } from "pg";
+import { FLEET_ROLE_EXPR } from "@/lib/tenancy/fleet-role";
 import {
   appliedMigrations,
   appliedOutOfOrder,
@@ -26,6 +28,28 @@ import { checkoutRootFrom, testDbNameFor, withDbName } from "../db-name";
 // sharing a database, and the diff keeps a database that drifted anyway from reading as a verdict.
 
 const ROOT = checkoutRootFrom(import.meta.url, "../..");
+
+// The live tests below create, drop and reprovision scratch databases, and the name is derived from
+// the checkout, so two copies of this file running at once (`bun test --parallel`, or the same file
+// in two terminals) would derive the SAME scratch name: one drops what the other just seeded, and
+// the reprovisioning one terminates the other's connections along with its own. The process id in
+// the base makes each run's scratch its own; the checkout half of the name still comes from ROOT.
+const GATE_BASE = `fzgate417_p${process.pid}_test`;
+const SETUP_BASE = `fzsetup417_p${process.pid}_test`;
+
+// What `bun db:test:setup` leaves behind besides the database: db-bootstrap provisions a fleet role
+// named after it, and roles are cluster-wide, so a per-run scratch name would otherwise leave one
+// role per run on the server. Best-effort, like the DROP it follows.
+async function dropScratchSetup(maint: Client, scratch: string) {
+  await maint.query(`DROP DATABASE IF EXISTS "${scratch}"`).catch(() => {});
+  const { rows } = await maint.query<{ role: string }>(
+    `SELECT ${FLEET_ROLE_EXPR.replaceAll("current_database()::text", "$1::text")} AS role`,
+    [scratch],
+  );
+  // Safe to interpolate: the derivation normalises the name to `[a-zA-Z0-9_]`.
+  const role = rows[0]?.role;
+  if (role) await maint.query(`DROP ROLE IF EXISTS "${role}"`).catch(() => {});
+}
 
 describe("the test database's name belongs to ONE checkout", () => {
   // The basename alone is not the identity: worktrees are named after the issue they carry, and two
@@ -149,7 +173,7 @@ describe("the test database's name belongs to ONE checkout", () => {
   // budget and erase the base half. The live tests in this file create scratch databases from their
   // own bases, so a collision would have them DROP the database backing the suite running them.
   test("different bases never merge, however long the checkout name is", () => {
-    const bases = ["secretaria_v4_test", "fzgate417_test", "fzsetup417_test"];
+    const bases = ["secretaria_v4_test", GATE_BASE, SETUP_BASE];
     for (const root of ["/dev/agents/main", `/dev/${"w".repeat(52)}`]) {
       const names = bases.map((b) => testDbNameFor(b, root));
       expect(new Set(names).size).toBe(bases.length);
@@ -417,7 +441,7 @@ describe("which states cannot be deployed onto", () => {
 describe("the refusal, as a run", () => {
   const suUrl = process.env.MIGRATION_DATABASE_URL;
   const live = process.env[DB_GATE_OPT_OUT] !== "1" && Boolean(suUrl);
-  const BASE = "fzgate417_test";
+  const BASE = GATE_BASE;
   const FOREIGN = "20260828000000_left_by_another_branch";
   // `fileURLToPath`, not `.pathname`, for the same reason the derivation uses it: a repository
   // under a directory with a space would otherwise hand `bun test` a filename that does not exist.
@@ -511,7 +535,7 @@ describe("the command the refusal names", () => {
   const appUrl = process.env.TEST_APP_DATABASE_URL;
   const live =
     process.env[DB_GATE_OPT_OUT] !== "1" && Boolean(suUrl) && Boolean(appUrl);
-  const BASE = "fzsetup417_test";
+  const BASE = SETUP_BASE;
   const FOREIGN = "20260828000000_left_by_another_branch";
   const repoRoot = ROOT;
 
@@ -594,9 +618,7 @@ describe("the command the refusal names", () => {
           await after.end();
         }
       } finally {
-        await maint
-          .query(`DROP DATABASE IF EXISTS "${scratch}"`)
-          .catch(() => {});
+        await dropScratchSetup(maint, scratch);
         await maint.end();
       }
     },
@@ -677,8 +699,11 @@ ${err}`;
         // NOTE: the error a FORCE-less DROP gives, spelled out so a regression fails HERE and not in
         // somebody's terminal.
         expect(output).not.toContain("is being accessed by other users");
+        // Exactly the one connection this test left open: a background worker visiting the fresh
+        // database (autovacuum) is not a connection anybody left behind, and is not counted.
         expect(output).toContain("closed 1 connection");
         expect(code).toBe(0);
+        await expect(squatter.query("SELECT 1")).rejects.toThrow();
 
         const after = new Client({
           connectionString: at(suUrl as string, scratch),
@@ -694,9 +719,7 @@ ${err}`;
         }
       } finally {
         await squatter?.end().catch(() => {});
-        await maint
-          .query(`DROP DATABASE IF EXISTS "${scratch}"`)
-          .catch(() => {});
+        await dropScratchSetup(maint, scratch);
         await maint.end();
       }
     },

@@ -270,6 +270,7 @@ let prevBase: string | undefined;
 
 beforeAll(() => {
   server = Bun.serve({
+    hostname: "127.0.0.1",
     port: 0,
     async fetch(req) {
       if (req.method === "OPTIONS")
@@ -303,7 +304,7 @@ beforeAll(() => {
     },
   });
   prevBase = process.env.ANTHROPIC_BASE_URL;
-  process.env.ANTHROPIC_BASE_URL = `http://localhost:${server.port}`;
+  process.env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${server.port}`;
 });
 
 afterAll(() => {

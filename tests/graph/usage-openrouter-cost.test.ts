@@ -126,6 +126,7 @@ afterAll(() => {
 
 function serving(respond: (streamed: boolean) => Response) {
   const s = Bun.serve({
+    hostname: "127.0.0.1",
     port: 0,
     async fetch(req) {
       if (req.method === "OPTIONS")
@@ -136,7 +137,7 @@ function serving(respond: (streamed: boolean) => Response) {
     },
   });
   servers.push(s);
-  return `http://localhost:${s.port}/api/v1`;
+  return `http://127.0.0.1:${s.port}/api/v1`;
 }
 
 function answering(usage: unknown, toolCall = false) {

@@ -22,6 +22,7 @@ let baseURL = "";
 describe("an embedding failure carries no part of what was embedded", () => {
   beforeAll(() => {
     server = Bun.serve({
+      hostname: "127.0.0.1",
       port: 0,
       // happy-dom's fetch preflights a cross-origin request, and a preflight nobody answers fails
       // the call before the provider's own status is ever seen (tests/dom-setup.ts).
@@ -51,7 +52,7 @@ describe("an embedding failure carries no part of what was embedded", () => {
               },
             ),
     });
-    baseURL = `http://localhost:${server.port}/v1`;
+    baseURL = `http://127.0.0.1:${server.port}/v1`;
   });
 
   afterAll(() => {

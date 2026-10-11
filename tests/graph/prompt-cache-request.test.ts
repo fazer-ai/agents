@@ -75,6 +75,7 @@ let prevBase: string | undefined;
 
 beforeAll(() => {
   server = Bun.serve({
+    hostname: "127.0.0.1",
     port: 0,
     async fetch(req) {
       if (req.method === "OPTIONS")
@@ -95,7 +96,7 @@ beforeAll(() => {
   // NOTE: the anthropic provider takes no baseURL from the agent's config, and the SDK reads this
   // variable when none is given, which is how the request reaches the recorder instead of the API.
   prevBase = process.env.ANTHROPIC_BASE_URL;
-  process.env.ANTHROPIC_BASE_URL = `http://localhost:${server.port}`;
+  process.env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${server.port}`;
 });
 
 afterAll(() => {
@@ -306,7 +307,7 @@ describe("a system prompt already in blocks", () => {
 });
 
 describe("openrouter: only a Claude model behind it is marked", () => {
-  const base = () => `http://localhost:${server.port}`;
+  const base = () => `http://127.0.0.1:${server.port}`;
 
   test("anthropic/* gets marks on the system message and the last message", async () => {
     const body = await send({

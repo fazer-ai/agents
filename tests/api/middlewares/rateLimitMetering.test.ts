@@ -28,10 +28,13 @@ beforeAll(async () => {
   app.get("/__metering/thrown-404", () => {
     throw new NotFoundError("gone");
   });
-  const listening = app.listen(0) as unknown as ListeningApp;
+  const listening = app.listen({
+    port: 0,
+    hostname: "127.0.0.1",
+  }) as unknown as ListeningApp;
   if (!listening.server?.port) throw new Error("Failed to start the app");
   server = listening.server;
-  base = `http://localhost:${listening.server.port}`;
+  base = `http://127.0.0.1:${listening.server.port}`;
 });
 
 afterAll(() => {
@@ -145,7 +148,10 @@ describe("a thrown 404 on a matched route", () => {
       .get("/forbidden", () => {
         throw new ForbiddenError("no");
       });
-    const listening = probe.listen(0) as unknown as ListeningApp;
+    const listening = probe.listen({
+      port: 0,
+      hostname: "127.0.0.1",
+    }) as unknown as ListeningApp;
     if (!listening.server?.port) throw new Error("Failed to start the probe");
     return listening.server;
   };
@@ -153,7 +159,7 @@ describe("a thrown 404 on a matched route", () => {
   test("costs exactly one, like any other matched route", async () => {
     const probe = serveWithAppOrdering(20);
     const rem = async (path: string) => {
-      const res = await Bun.fetch(`http://localhost:${probe.port}${path}`);
+      const res = await Bun.fetch(`http://127.0.0.1:${probe.port}${path}`);
       return Number(res.headers.get("ratelimit-remaining"));
     };
     try {
@@ -172,7 +178,7 @@ describe("a thrown 404 on a matched route", () => {
   test("still answers 404 on the last request of the budget", async () => {
     const probe = serveWithAppOrdering(4);
     const get = (path: string) =>
-      Bun.fetch(`http://localhost:${probe.port}${path}`);
+      Bun.fetch(`http://127.0.0.1:${probe.port}${path}`);
     try {
       for (let i = 0; i < 3; i++) expect((await get("/ok")).status).toBe(200);
       const last = await get("/missing");
@@ -187,7 +193,7 @@ describe("a thrown 404 on a matched route", () => {
   test("the budget is still spent, so the next request is rejected", async () => {
     const probe = serveWithAppOrdering(4);
     const get = (path: string) =>
-      Bun.fetch(`http://localhost:${probe.port}${path}`);
+      Bun.fetch(`http://127.0.0.1:${probe.port}${path}`);
     try {
       for (let i = 0; i < 3; i++) await get("/ok");
       await get("/missing");

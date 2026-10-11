@@ -256,13 +256,19 @@ export function trackRouteTokenRefresh(
     );
   }, expireAfterMs);
   expiry.unref?.();
+  // The outcome is recorded only while this refresh is still THE one registered for the token. One
+  // that was detached (an invalidation retired it, or a waiter's bound or the expiry dropped it) no
+  // longer speaks for the token: its success would lift the backoff a failed replacement just set,
+  // and its failure would start a backoff for a world it never looked at. The expiry and the waiter's
+  // bound record their own failure when they detach it.
+  const current = () => s.refreshing.get(routeTokenHash) === p;
   p = run()
     .then(
       () => {
-        s.refreshFailedUntil.delete(routeTokenHash);
+        if (current()) s.refreshFailedUntil.delete(routeTokenHash);
       },
       (err: unknown) => {
-        noteRefreshFailed(routeTokenHash);
+        if (current()) noteRefreshFailed(routeTokenHash);
         throw err;
       },
     )

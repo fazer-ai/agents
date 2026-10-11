@@ -81,10 +81,13 @@ const serve = (opts: {
     .get("/api/x", () => "x")
     .post("/api/v1/chatwoot/webhook/:token", receiver)
     .post("/api/v1/integrations/inbound/:token", receiver);
-  const listening = app.listen(0) as unknown as ListeningApp;
+  const listening = app.listen({
+    port: 0,
+    hostname: "127.0.0.1",
+  }) as unknown as ListeningApp;
   if (!listening.server?.port) throw new Error("Failed to start test server");
   servers.push(listening.server);
-  const base = `http://localhost:${listening.server.port}`;
+  const base = `http://127.0.0.1:${listening.server.port}`;
   return {
     post: async (path: string) =>
       (await Bun.fetch(`${base}${path}`, { method: "POST", body: "{}" }))
@@ -311,10 +314,13 @@ describe("through the real app", () => {
   beforeAll(async () => {
     const { buildApp } = await import("@/app");
     const app = await buildApp();
-    const listening = app.listen(0) as unknown as ListeningApp;
+    const listening = app.listen({
+      port: 0,
+      hostname: "127.0.0.1",
+    }) as unknown as ListeningApp;
     if (!listening.server?.port) throw new Error("Failed to start the app");
     servers.push(listening.server);
-    base = `http://localhost:${listening.server.port}`;
+    base = `http://127.0.0.1:${listening.server.port}`;
   });
 
   const remaining = async (): Promise<number> => {

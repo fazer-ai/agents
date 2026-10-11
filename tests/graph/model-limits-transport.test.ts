@@ -15,6 +15,7 @@ async function requestsUntilFailure(
 ): Promise<number> {
   let hits = 0;
   const srv = Bun.serve({
+    hostname: "127.0.0.1",
     port: 0,
     idleTimeout: 0,
     fetch: () => {

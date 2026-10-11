@@ -89,9 +89,12 @@ async function main() {
           `test-db-setup: "${dbName}" cannot be deployed onto (${reasons.length} reason(s)), so it is being reprovisioned:`,
         );
         for (const m of reasons) console.log(`  ${m}`);
+        // Client backends only: an autovacuum worker visiting the fresh database is listed under its
+        // name too, is not a connection anybody left open, and DROP DATABASE signals it on its own.
         const { rows: closed } = await maint.query(
           `SELECT pg_terminate_backend(pid) FROM pg_stat_activity
-            WHERE datname = $1 AND pid <> pg_backend_pid()`,
+            WHERE datname = $1 AND pid <> pg_backend_pid()
+              AND backend_type = 'client backend'`,
           [dbName],
         );
         if (closed.length > 0) {

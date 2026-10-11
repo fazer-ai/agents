@@ -200,6 +200,9 @@ export async function applyDecisions(
     progress.undo = [...new Set([...missedReleases(), ...undone()])];
     progress.onChange?.();
   };
+  // Before anything is awaited: a deadline that ends the tick with nothing dispatched still owes the
+  // releases of the `on_start` rules that did not hold.
+  settled();
   const toRun: { at: number; tool: StructuredToolInterface }[] = [];
   // Every call the tick dispatches counts, a dry run's included, so it reports what a run would.
   let calls = 0;

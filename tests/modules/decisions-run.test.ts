@@ -753,6 +753,28 @@ describe("applyDecisions and the trigger state", () => {
     expect(latchedAhead).toEqual([[noteKey]]);
   });
 
+  test("an on_start rule that did not hold is in the progress before anything is awaited", () => {
+    const progress: DecisionProgress = {};
+    const offRule = {
+      when: [{ question: "q", minProbability: 0.99 }],
+      action: { tool: "private_note" as const, args: {} },
+    };
+    void applyDecisions(
+      { rules: [offRule] },
+      answers,
+      [],
+      [],
+      new AbortController().signal,
+      async () => true,
+      10,
+      () => null,
+      false,
+      new Set(),
+      progress,
+    );
+    expect(progress.undo).toEqual([ruleStateKey(offRule)]);
+  });
+
   test("an on_start rule that did not hold is released even when another action ends the tick", async () => {
     const controller = new AbortController();
     const progress: DecisionProgress = {};

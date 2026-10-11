@@ -1707,7 +1707,7 @@ export function BehaviorTab({
     }
     // A caret index, not a cap: `selectionStart` is a position the browser maintains and it never
     // sits between the two halves of an astral character, which is why this cut is bare and the two
-    // that bound the value are not (biome-plugins/pin-bare-slices.grit).
+    // that bound the value are not (tests/lib/astral-cap-sweep.test.ts).
     const start = el.selectionStart ?? signature.text.length;
     const end = el.selectionEnd ?? signature.text.length;
     const next =

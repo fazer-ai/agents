@@ -21,13 +21,6 @@ const ENV_WAIVED = [
 const JOSE_WAIVED = "tests/api/features/auth/google.service.test.ts";
 
 const P = (name: string) => `${PROBE}/${name}`;
-// A listed file of both error ledgers, copied under the probe at its own path (the ledgers match the
-// path's tail) and at an unlisted one.
-const LEDGERED = `${SRC}/modules/flowlog/service.ts`;
-const LEDGERED_TEXT = readFileSync(join(ROOT, LEDGERED), "utf8");
-// A listed file of the bare-cut ledger, the same way.
-const CUT_LISTED = `${SRC}/api/lib/auth.ts`;
-const CUT_LISTED_TEXT = readFileSync(join(ROOT, CUT_LISTED), "utf8");
 // Biome hands a plugin the program from its first token to its last, so every comment probe starts
 // and ends with code.
 const C = (body: string) =>
@@ -224,6 +217,35 @@ const COMMENT_FIXTURES: Record<string, [string, ...CommentHits]> = {
     0,
   ],
   "todo-docstring": [C("// TODO: split it.\nconst x = 1;"), 0, 0, 0],
+  // A comment spelled inside a string is not one, as the sweep's scan reads it; a real comment after
+  // a string on the same line still is.
+  "cited-in-string": [C('export const s = "a // fixed in #1234";'), 0, 0, 0],
+  "cited-in-block-string": [
+    C('export const s = "x /* review round 2 asked */ y";'),
+    0,
+    0,
+    0,
+  ],
+  "cited-after-string": [
+    C(`export const g = 'a "/*" b'; // fixed in #12`),
+    1,
+    0,
+    0,
+  ],
+  "cited-after-globs": [
+    C(
+      'declare function f(a: string, b: string): number;\nexport const g = f("**/*.ts", "x/**/"); /* review round 2 */',
+    ),
+    1,
+    0,
+    0,
+  ],
+  "tagged-in-one-line-string": [
+    C('export const s = "// NOTE: x";\nconst y = 1;'),
+    0,
+    0,
+    0,
+  ],
   // What a plugin cannot read, and the sweep does: a comment above the first token or below the last.
   "header-cited": ["// Fixed in #1234.\nexport const a = 1;\n", 0, 0, 0],
   "header-tagged": ["// NOTE: why it exists.\nexport const a = 1;\n", 0, 0, 0],
@@ -357,44 +379,6 @@ const PROBES: Record<string, string> = {
   [P("jsx-spelled-from-parts.tsx")]:
     'export const ok = "{/" + "* NOTE: x *" + "/}";\n',
 
-  // pin-error-column-lines and pin-error-message-guard
-  [P(LEDGERED)]: LEDGERED_TEXT,
-  [P(`unlisted/${LEDGERED}`.replace(`/${SRC}/`, "/elsewhere/"))]: LEDGERED_TEXT,
-  [P(`guard-removed/${LEDGERED}`)]: LEDGERED_TEXT.replace(
-    "sanitizeErrorMessage(",
-    "String(",
-  ),
-  [P(`guard-into-prose/${LEDGERED}`)]: `${LEDGERED_TEXT.replace(
-    "sanitizeErrorMessage(",
-    "String(",
-  )}\n// sanitizeErrorMessage(x) in prose\n`,
-  [P(`key-added/${LEDGERED}`)]:
-    `${LEDGERED_TEXT}\nexport const extra = { lastError: "x" };\n`,
-  [P("guard-unlisted.ts")]:
-    "declare function sanitizeErrorMessage(e: unknown): string;\nexport const a = sanitizeErrorMessage(1);\n",
-  [P("key-unlisted.ts")]: 'export const a = { errorMessage: "x" };\n',
-  [P("ledger-prose.ts")]:
-    'export const a = 1;\n// sanitizeErrorMessage(x) and lastError: in prose\n/**\n * lastError: too\n */\nexport const b = "x";\n',
-
-  // pin-bare-slices
-  [P(CUT_LISTED)]: CUT_LISTED_TEXT,
-  [P(`cut-added/${CUT_LISTED}`)]:
-    `${CUT_LISTED_TEXT}\nexport const plantCut = (s: string) => s.slice(0, 5);\n`,
-  [P(`cut-into-prose/${CUT_LISTED}`)]: `${CUT_LISTED_TEXT.replace(
-    ".slice(0",
-    ".substring(0",
-  )}\n// s.slice(0, 5) in prose\n`,
-  [P("cut-unlisted-tail.ts")]:
-    "export const plantCut = (s: string) => s.slice(-5);\n",
-  [P("cut-unlisted-length.ts")]:
-    "export const plantCut = (s: string) => s.slice(s.length - 5);\n",
-  [P("cut-unlisted-head-wrapped.ts")]:
-    "export const plantCut = (s: string) =>\n  s.slice(\n    0,\n    5,\n  );\n",
-  [P("cut-unlisted-position.ts")]:
-    'export const plantCut = (s: string) => s.slice(s.indexOf(":") + 1);\n',
-  [P("cut-unlisted-prose.ts")]:
-    'export const a = 1;\n// s.slice(0, 5) in prose\n/**\n * s.slice(-5) too\n */\nexport const b = "x";\n',
-
   // no-raw-read-of-globbed-source
   [P("glob-raw.ts")]:
     `const { Glob } = await import("bun");\nlet n = 0;\nfor await (const rel of new Glob("**/*.ts").scan("${SRC}")) {\n  n += (await Bun.file(\`${SRC}/\${rel}\`).text()).length;\n}\nexport { n };\n`,
@@ -404,6 +388,14 @@ const PROBES: Record<string, string> = {
     `const { Glob } = await import("bun");\nfor await (const rel of new Glob("**/*.ts").scan("${SRC}")) {\n  await import(\`../../${SRC}/\${rel}\`);\n}\nexport const t = await Bun.file("package.json").text();\n`,
   [P("glob-scanned.ts")]:
     `import { codeOnly } from "@/tests/utils/source-text";\nconst { Glob } = await import("bun");\nlet n = 0;\nfor await (const rel of new Glob("**/*.ts").scan("${SRC}")) {\n  n += codeOnly(await Bun.file(\`${SRC}/\${rel}\`).text()).length;\n}\nexport { n };\n`,
+  // The sweep read the file without its comments, strings kept, so a literal spelling the glob, the
+  // read or the import counted as one.
+  [P("glob-spelled-glob.ts")]:
+    `export const doc = 'new Glob("${SRC}/**").scan(".")';\nexport const t = await Bun.file("package.json").text();\n`,
+  [P("glob-spelled-read.ts")]:
+    `const { Glob } = await import("bun");\nfor await (const rel of new Glob("**/*.ts").scan("${SRC}")) {\n  void rel;\n}\nexport const doc = "Bun.file(x).text()";\n`,
+  [P("glob-spelled-import.ts")]:
+    `const { Glob } = await import("bun");\nconst note = 'from "@/tests/utils/source-text"';\nlet n = 0;\nfor await (const rel of new Glob("**/*.ts").scan("${SRC}")) {\n  n += (await Bun.file(\`${SRC}/\${rel}\`).text()).length;\n}\nexport { n, note };\n`,
   [P("glob-none.ts")]:
     'export const t = await Bun.file("package.json").text();\n',
 
@@ -439,10 +431,7 @@ const RULES = {
   auth: "Stub this client context or hook per file with `stubExports`",
   unused: "Suppression comment has no effect",
   jsxText: "spells a JSX comment",
-  column: "count of `lastError:`",
-  guard: "count of `sanitizeErrorMessage(`",
   glob: "A test that globs src/ reads each file",
-  cut: "count of bare cuts",
   cited: "says where the code came from",
   long: "runs over 8 lines",
   tagged: "opens with `NOTE:`",
@@ -653,60 +642,6 @@ describe("no-raw-auth-context-mock", () => {
   });
 });
 
-describe("pin-error-column-lines and pin-error-message-guard", () => {
-  test("a listed file at its count passes, and the same text at an unlisted path is refused", () => {
-    expect(of(P(LEDGERED), "column")).toBe(0);
-    expect(of(P(LEDGERED), "guard")).toBe(0);
-    const elsewhere = P(
-      `unlisted/${LEDGERED}`.replace(`/${SRC}/`, "/elsewhere/"),
-    );
-    expect(of(elsewhere, "column")).toBe(1);
-    expect(of(elsewhere, "guard")).toBe(1);
-  });
-
-  test("a guard call removed from a listed file is refused, even with its name left in a comment", () => {
-    expect(of(P(`guard-removed/${LEDGERED}`), "guard")).toBe(1);
-    expect(of(P(`guard-into-prose/${LEDGERED}`), "guard")).toBe(1);
-    expect(of(P(`guard-removed/${LEDGERED}`), "column")).toBe(0);
-  });
-
-  test("a new error-column line in a listed file is refused", () => {
-    expect(of(P(`key-added/${LEDGERED}`), "column")).toBe(1);
-    expect(of(P(`key-added/${LEDGERED}`), "guard")).toBe(0);
-  });
-
-  test("a guard call or an error-column line in an unlisted file is refused, and prose naming them passes", () => {
-    expect(of(P("guard-unlisted.ts"), "guard")).toBe(1);
-    expect(of(P("key-unlisted.ts"), "column")).toBe(1);
-    expect(of(P("ledger-prose.ts"), "guard")).toBe(0);
-    expect(of(P("ledger-prose.ts"), "column")).toBe(0);
-  });
-});
-
-describe("pin-bare-slices", () => {
-  test("a listed file at its count passes", () => {
-    expect(of(P(CUT_LISTED), "cut")).toBe(0);
-  });
-
-  test("a cut added to a listed file, or one removed with its spelling left in a comment, is refused", () => {
-    expect(of(P(`cut-added/${CUT_LISTED}`), "cut")).toBe(1);
-    expect(of(P(`cut-into-prose/${CUT_LISTED}`), "cut")).toBe(1);
-  });
-
-  test.each([
-    ["cut-unlisted-tail.ts"],
-    ["cut-unlisted-length.ts"],
-    ["cut-unlisted-head-wrapped.ts"],
-  ])("a bare cut in an unlisted file is refused (%s)", (name) => {
-    expect(of(P(name), "cut")).toBe(1);
-  });
-
-  test("a slice at a computed position, and prose naming a cut, pass", () => {
-    expect(of(P("cut-unlisted-position.ts"), "cut")).toBe(0);
-    expect(of(P("cut-unlisted-prose.ts"), "cut")).toBe(0);
-  });
-});
-
 describe("no-raw-read-of-globbed-source", () => {
   test.each([
     ["glob-raw.ts"],
@@ -718,6 +653,15 @@ describe("no-raw-read-of-globbed-source", () => {
       expect(of(P(name), "glob")).toBe(1);
     },
   );
+
+  test("a string that spells the glob or the read counts as one, as it did for the sweep", () => {
+    expect(of(P("glob-spelled-glob.ts"), "glob")).toBe(1);
+    expect(of(P("glob-spelled-read.ts"), "glob")).toBe(1);
+  });
+
+  test("a string that spells the import counts as adoption, as it did for the sweep", () => {
+    expect(of(P("glob-spelled-import.ts"), "glob")).toBe(0);
+  });
 
   test("a read through the scan, and a raw read in a test that globs nothing, pass", () => {
     expect(of(P("glob-scanned.ts"), "glob")).toBe(0);

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { DEBUG_MAX_STRING } from "@/modules/flowlog/service";
+import { countInSrc } from "@/tests/utils/source-text";
 
 // The guard against the next cap that cuts a character in half. A `slice` landing between the halves
 // of an astral character leaves an unpaired surrogate: Postgres refuses one inside a `jsonb` write,
@@ -7,7 +8,7 @@ import { DEBUG_MAX_STRING } from "@/modules/flowlog/service";
 // with `clipText` (`src/lib/text.ts`); here every cap that bounds text runs through its real entry
 // point with an astral character straddling the cut. An index-based slice at a position the code
 // computed (a delimiter, an array bound, an already-ASCII slug) is a different operation, which is
-// why a regex alone cannot decide this: biome-plugins/pin-bare-slices.grit lists every bare cut left.
+// why a regex sweep alone cannot decide this.
 
 // `for...of` yields a well-formed pair as ONE two-unit string, so a single-unit string in the
 // surrogate range is by definition an orphan half.
@@ -342,5 +343,197 @@ describe("no tail cap ever starts on half a character", () => {
       if (loneSurrogates(out) > 0) offenders.push(`tokens@${tokens}`);
     }
     expect(offenders).toEqual([]);
+  });
+});
+
+// Why a remaining bare `.slice(…)` in `src/` is not a text cap:
+//   array         bounds how MANY entries are kept, not how long a string is
+//   index         slices at a position the code computed (a delimiter, a trailing character, a caret)
+//   ascii         the value was already reduced to [a-z0-9_-] (or is ASCII by construction)
+//   fixed-format  a date or version string of known ASCII shape (`toISOString().slice(0, 10)`)
+//   parse-only    the cut result is handed to a parser and never used as text
+//   the-cut       `clipText` itself
+type NotACap =
+  | "array"
+  | "index"
+  | "ascii"
+  | "fixed-format"
+  | "parse-only"
+  | "the-cut";
+
+// Every remaining text-cap-shaped `.slice(…)` in `src/`, with its judgement. The table above cannot
+// prove the ABSENCE of a cap it forgot, and a regex cannot tell a string cut from an array bound, so
+// a new bare cut fails until somebody writes down which it is; a routed cap leaves no occurrence.
+// Two shapes are counted: `.slice(0, n)` keeps the head, `.slice(-n)` / `.slice(x.length - n)` the
+// tail. Every other `.slice(…)` names a position the code computed and cannot be a cap.
+const BARE_SLICES: Record<
+  string,
+  [number, NotACap | `${NotACap} + ${NotACap}`]
+> = {
+  "src/api/features/auth/auth.service.ts": [1, "ascii"],
+  "src/api/lib/auth.ts": [1, "ascii"],
+  "src/api/middlewares/rateLimit.ts": [1, "index"],
+  "src/api/v1/document-approvals.controller.ts": [2, "array"],
+  "src/client/components/Modal.tsx": [1, "array"],
+  "src/client/contexts/ThemeContext.tsx": [1, "index"],
+  "src/client/lib/breadcrumbs.ts": [1, "array"],
+  // The text BEFORE a parse error, counted and thrown away: the cut result is never shown, stored or
+  // sent. The offset comes from the JSON grammar, which reports token boundaries, so it cannot land
+  // inside a code point.
+  "src/client/lib/sampleJson.ts": [1, "parse-only"],
+  // Four cuts into a DATE KEY: `YYYY-MM-DD` and the ten leading characters of an ISO instant. Every
+  // character on either side of every one of them is a digit or a hyphen, and `DATE_KEY_RE` refuses
+  // anything else before the value is used, so no cut here can land inside a surrogate pair.
+  "src/client/lib/auditPeriod.ts": [4, "ascii"],
+  // The cursor stack's own pop (Previous), and the page's array of entries. The one cut that lands
+  // in TEXT (the preview of a `before`/`after` value, which can be a system prompt) goes through
+  // `clipText` like every other cap.
+  "src/client/pages/AuditPage.tsx": [1, "array"],
+  "src/client/pages/LogsPage.tsx": [1, "array"],
+  // The signature's own token insert, which splices at a SELECTION. A caret is a position the browser
+  // maintains and it never sits between the two halves of an astral character. The two cuts in that
+  // field that DO bound the value go through `clipText`.
+  "src/client/pages/agents/BehaviorTab.tsx": [1, "index"],
+  "src/client/pages/agents/CapabilityMap.tsx": [1, "array"],
+  "src/client/pages/agents/PlaygroundChat.tsx": [1, "array"],
+  "src/client/pages/agents/PromptPanel.tsx": [1, "index"],
+  "src/client/pages/agents/followUpFormState.ts": [1, "array"],
+  "src/client/pages/agents/snoozedFollowUpFormState.ts": [1, "array"],
+  "src/client/pages/approvals/ConversationApprovals.tsx": [1, "array"],
+  // Two: the token insert splices at a SELECTION, which the browser never puts inside a surrogate
+  // pair, and `eachBlockEdit` cuts at the same boundary to ask what sits on either side of it.
+  "src/client/pages/resources/ToolEditModal.tsx": [2, "index"],
+  // The history without its last message, when that message is a stalled repeat the dangling-call
+  // repair leaves to the stall's own removal. An array of messages, never a string.
+  "src/graph/graph.ts": [1, "array"],
+  // The idempotency key's tail is a hex digest.
+  "src/graph/tools/documents.ts": [1, "ascii"],
+  "src/graph/tools/mcp.ts": [5, "ascii"],
+  // Six: the fifth is the ceiling on what the model is SHOWN of a scope's labels, applied to the
+  // write report, and the sixth is the same ceiling over the GUARDED list. Both cut arrays of label
+  // titles, so neither cut can land inside one.
+  "src/graph/tools/native.ts": [6, "array"],
+  // The same ceiling at its source, over the same array of titles (graph/tools/label-view.ts).
+  "src/graph/tools/label-view.ts": [1, "array"],
+  "src/graph/tools/toolName.ts": [1, "ascii"],
+  "src/graph/trace.ts": [2, "array + index"],
+  "src/lib/redact.ts": [1, "array"],
+  "src/lib/ssrf.ts": [1, "index"],
+  "src/lib/text.ts": [3, "the-cut"],
+  "src/modules/agents/credential-paths.ts": [2, "array"],
+  "src/modules/agents/text-caps.ts": [3, "array"],
+  // Three, none bounding prose. `countNotStoredAsWritten` cuts the bundled entries a schedule cap lets
+  // through (an array of JSON entries). `renamedToolName` trims the STEM of a tool name, already
+  // `[a-z0-9_-]` from `normalizeToolName`, so the `_2` suffix fits the provider's 64. The third clamps
+  // an imported protected-label list, an array of titles. The label and description that loop clips
+  // go through `clipText`.
+  "src/modules/agents/transfer.ts": [3, "array"],
+  // The date the reminder says it was sent on, cut from `toISOString()`: a fixed-width ASCII
+  // `YYYY-MM-DD` the runtime produces, never operator or customer text.
+  "src/modules/appointments/reminders.ts": [1, "ascii"],
+  "src/modules/api-keys/verify.ts": [1, "ascii"],
+  "src/modules/appointments/settings.ts": [1, "array"],
+  // The page's own overshoot row, dropped: the list takes `limit + 1` to learn whether a next page
+  // exists, and it cuts an array of rows, never a string.
+  // The export's two, and neither touches a string: the page's overshoot row is dropped off an ARRAY
+  // of rows (`limit + 1`, to learn whether more matched), and the filename's instant is sliced off an
+  // ISO string, which is ASCII by construction. The byte budget cuts BETWEEN rows and never inside
+  // one, so the file cannot end on half a character either.
+  "src/modules/audit/export.ts": [2, "array + ascii"],
+  // The page's overshoot row, dropped off an ARRAY (`limit + 1`, to learn whether more matched). The
+  // cursor codec splits on the separator it wrote rather than cutting at an offset.
+  "src/modules/audit/service.ts": [1, "array"],
+  "src/modules/business-hours/announce.ts": [2, "fixed-format"],
+  "src/modules/business-hours/hours.ts": [1, "fixed-format"],
+  "src/modules/chatwoot/attributes.ts": [1, "array"],
+  // The drain's room for rows that failed here, cut off an ARRAY of row ids.
+  "src/modules/chatwoot/delivery-queue.ts": [1, "array"],
+  // NOTE: the first few offending account ids for the refusal message. A slice over an array of
+  // NUMBERS cannot land inside a surrogate pair; the join that renders it happens after the cut.
+  "src/modules/chatwoot/management.ts": [1, "array"],
+  "src/modules/conversations/service.ts": [1, "array"],
+  // The newest turns' lines kept off an ARRAY of turns, never a string.
+  "src/modules/conversations/usage.ts": [1, "array"],
+  // Two: the newest `maxFiles` of the candidate files, and the newest entries of the carried record.
+  // Both are ARRAYS (of files, of `msg:attachment` entries), never a string.
+  "src/modules/cross-inbox-case/carry-attachments.ts": [2, "array"],
+  // The operator's case labels capped as an ARRAY of labels, never a string.
+  "src/modules/cross-inbox-case/settings.ts": [1, "array"],
+  "src/modules/debounce/handler.ts": [2, "array"],
+  // The approval page's last messages: an array bound.
+  "src/modules/documents/approval-context.ts": [1, "array"],
+  // The logo's one-shot download token is hex from randomUUID.
+  "src/modules/documents/company.ts": [1, "ascii"],
+  // The legacy date fallback reads a fixed ISO prefix; the file name was already reduced to
+  // [a-zA-Z0-9-] before it is bounded, because it travels through a Content-Disposition header.
+  "src/modules/documents/issue.ts": [2, "fixed-format + ascii"],
+  "src/modules/documents/sample.ts": [1, "fixed-format"],
+  // The tool name a template derives to, after the name was reduced to [a-z0-9_]. This ledger is
+  // keyed by PATH, so moving a cut to another file reads as an unaccounted cut there.
+  "src/modules/documents/slug.ts": [2, "ascii"],
+  "src/modules/flowlog/export.ts": [2, "fixed-format + array"],
+  "src/modules/flowlog/read.ts": [1, "array"],
+  // The reminder's window, the newest messages kept off an ARRAY of rows, twice: once to render,
+  // once to pick what to read.
+  "src/modules/followups/snoozed.ts": [2, "array"],
+  // `parseIsoInstant`: the date half of an ISO instant, to check a calendar `Date.parse` would
+  // silently normalise (February 30 to March 2). Position 10 is the format's own boundary, and the
+  // string already matched an ASCII-only pattern.
+  "src/modules/flowlog/settings.ts": [1, "fixed-format"],
+  "src/modules/followups/settings.ts": [1, "array"],
+  "src/modules/followups/snoozed-settings.ts": [2, "array"],
+  "src/modules/images/fetch.ts": [1, "array"],
+  // No response-body cap here: `lib/outbound.ts` caps the READ, cutting through `clipText`.
+  "src/modules/integrations/toolpacks/asaas.ts": [1, "fixed-format"],
+  // The refusal a calendar write answers with lists the nearest bookable slots; the cut bounds that
+  // LIST, and each entry is a slot object this code built, never received text.
+  "src/modules/integrations/toolpacks/calendar-slots.ts": [1, "array"],
+  // Zod issue PATHS, which name our own schema's keys, never the received values.
+  "src/modules/integrations/mappers.ts": [1, "ascii"],
+  "src/modules/mcp/write-agents.ts": [1, "array"],
+  "src/modules/memory/cut.ts": [2, "index + array"],
+  // Four: the transcript window, the notes window, the label-change window and the page walk. Every
+  // one is a slice of an ARRAY of rows, so none can land inside a surrogate pair.
+  "src/modules/observe/job.ts": [4, "array"],
+  "src/modules/playground/service.ts": [1, "array"],
+  // The page of a document list: `rows.slice(0, take)` keeps the first `take` rows.
+  "src/modules/rag/documents.ts": [1, "array"],
+  // The balloon's own LINES, cut from the array `split("\n")` returned, to ask whether the run at
+  // either end of it is the model's copy of the signature. An array of strings, never a string, so
+  // no cut can land inside a code point; and the pieces are compared, never sent.
+  "src/modules/signature/service.ts": [2, "array"],
+  // Two: the overflow merge carries the separators beside the chunks, and both are slices of an ARRAY
+  // of already-split strings, so neither can land inside a surrogate pair.
+  "src/modules/split/service.ts": [2, "array"],
+  // The audit fingerprint of the over-ceiling sentence: a hex digest, so the cut cannot land inside
+  // a surrogate pair.
+  "src/modules/tenant-settings/service.ts": [1, "ascii"],
+  "src/modules/tool-definitions/body-shape.ts": [1, "array"],
+  // Two. How many items the picker samples for a block's fields (entries, never characters; the
+  // per-value cut inside an item goes through clipText). And `templateWriteAt` cutting the document at
+  // the CARET to read what the operator typed since `{{`: CodeMirror never puts a caret inside a
+  // surrogate pair, and the result is parsed, never shown.
+  "src/modules/tool-definitions/response-template.ts": [2, "array"],
+  "src/modules/updates/semver.ts": [1, "array"],
+  // Read only to be substring-matched against the provider's auth-failure shapes, then dropped:
+  // never stored, never shown, never sent anywhere.
+  "src/modules/vault/secret-test.ts": [1, "parse-only"],
+  // The page's own overshoot row, dropped: the list takes `limit + 1` to learn whether a next page
+  // exists. Same shape as flowlog/read.ts, and it cuts an array of rows, never a string.
+  "src/modules/webhooks/outbound/deliveries.ts": [1, "array"],
+};
+
+describe("every bare cut left in src/ is accounted for", () => {
+  test("the file list and the per-file counts still match", async () => {
+    // Through `countInSrc`, so a comment explaining a cut is not counted as one. Do not answer a
+    // phantom entry by adding the file to the ledger: that arms a waiver over a file with no cut in
+    // it, which silences the day it grows one.
+    const found = await countInSrc(
+      /\.slice\(\s*(?:0\s*,|-|[A-Za-z_$][\w$.]*\.length\s*-)/g,
+    );
+    const expected = Object.fromEntries(
+      Object.entries(BARE_SLICES).map(([f, [n]]) => [f, n]),
+    );
+    expect(found).toEqual(expected);
   });
 });

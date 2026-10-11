@@ -11,13 +11,13 @@ language js;
 
 // The same two searches without capture groups, which run on the fast path of the regex engine: a
 // file with no candidate is answered without walking it.
-pattern has_line_run() { r"[\s\S]*?(?:\n[ \t]*|[ \t])(?:(?://[^\n]*\n[ \t]*)*//[^\n]*?(?:[^\n]*(?:\n[ \t]*//[^\n]*){8})[^\n]*(?:\n[ \t]*//[^\n]*)*)[\s\S]*" }
-pattern has_block_comment() { r"[\s\S]*?(?:\n[ \t]*|[ \t{(,])(?:/\*(?:[^*]|\*+[^*/])*?(?:(?:\n(?:[^*]|\*+[^*/])*?){8})[\s\S]*?\*/)[\s\S]*" }
+pattern has_line_run() { r"(?:[\s\S]*?\n)?(?:(?:[^\"'`\n/]|/[^/*\n\"'`]|\"(?:[^\"\\\n]|\\.)*\"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\\n]|\\.)*`)*[ \t])?[ \t]*(?:(?://[^\n]*\n[ \t]*)*//[^\n]*?(?:[^\n]*(?:\n[ \t]*//[^\n]*){8})[^\n]*(?:\n[ \t]*//[^\n]*)*)[\s\S]*" }
+pattern has_block_comment() { r"(?:[\s\S]*?\n)?(?:(?:[^\"'`\n/]|/[^/*\n\"'`]|\"(?:[^\"\\\n]|\\.)*\"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\\n]|\\.)*`)*[ \t{(,])?[ \t]*(?:/\*(?:[^*]|\*+[^*/])*?(?:(?:\n(?:[^*]|\*+[^*/])*?){8})[\s\S]*?\*/)[\s\S]*" }
 
 // The `//` runs of the program that could break the rule, one at a time: the first, then the same
 // question of the text after it. Only candidates are visited, so the recursion stays shallow.
 pattern each_line_run() {
-    r"[\s\S]*?(?:\n[ \t]*|[ \t])((?://[^\n]*\n[ \t]*)*//[^\n]*?(?:[^\n]*(?:\n[ \t]*//[^\n]*){8})[^\n]*(?:\n[ \t]*//[^\n]*)*)([\s\S]*)"($run, $rest) where {
+    r"(?:[\s\S]*?\n)?(?:(?:[^\"'`\n/]|/[^/*\n\"'`]|\"(?:[^\"\\\n]|\\.)*\"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\\n]|\\.)*`)*[ \t])?[ \t]*((?://[^\n]*\n[ \t]*)*//[^\n]*?(?:[^\n]*(?:\n[ \t]*//[^\n]*){8})[^\n]*(?:\n[ \t]*//[^\n]*)*)([\s\S]*)"($run, $rest) where {
         or { $run <: each_block(), $rest <: each_line_run() }
     }
 }
@@ -41,7 +41,7 @@ pattern each_block() {
 
 // The block comments of the program that could break the rule, one at a time. A directive (`/* biome-ignore … */`) is none.
 pattern each_block_comment() {
-    r"[\s\S]*?(?:\n[ \t]*|[ \t{(,])(/\*(?:[^*]|\*+[^*/])*?(?:(?:\n(?:[^*]|\*+[^*/])*?){8})[\s\S]*?\*/)([\s\S]*)"($comment, $rest) where {
+    r"(?:[\s\S]*?\n)?(?:(?:[^\"'`\n/]|/[^/*\n\"'`]|\"(?:[^\"\\\n]|\\.)*\"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\\n]|\\.)*`)*[ \t{(,])?[ \t]*(/\*(?:[^*]|\*+[^*/])*?(?:(?:\n(?:[^*]|\*+[^*/])*?){8})[\s\S]*?\*/)([\s\S]*)"($comment, $rest) where {
         or {
             and {
                 not $comment <: r"/\*[ \t\n]*(?:biome-ignore|@ts-|t\(|translate\(|@(?:full|free|master)-only|/ <reference|eslint)[\s\S]*",

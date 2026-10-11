@@ -9,7 +9,7 @@ import { phrase, type TranslatedParam } from "@/lib/errors";
 // Cut to `max` UTF-16 units without ever ending on half of a character. Dropping the orphan half
 // costs one character off a value that was too long anyway.
 //
-// This is the cut EVERY length cap uses; `biome-plugins/pin-bare-slices.grit` lists every bare cut left. An
+// This is the cut EVERY length cap uses; `tests/lib/astral-cap-sweep.test.ts` is the list of them. An
 // index-based slice at a position the code computed (a delimiter, a trailing separator, an array
 // bound) is a different operation and not what this replaces.
 export function clipText(value: string, max: number): string {

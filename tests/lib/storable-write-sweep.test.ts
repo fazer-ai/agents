@@ -4,6 +4,9 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { sanitizeErrorMessage } from "@/lib/redact";
 import { unstorableProblem } from "@/lib/text";
 import { claimDueJobs, enqueueJob, failJob } from "@/modules/scheduler/service";
+// Both ledgers below count through the shared scan, so prose that NAMES a column or the guard is not
+// counted as a use of it.
+import { countInSrc } from "@/tests/utils/source-text";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // THE GUARD AGAINST THE NEXT COLUMN THAT LOSES AN ERROR MESSAGE. A NUL is refused by `text` and
@@ -12,8 +15,8 @@ import { seedChatwootInstance } from "../utils/chatwoot";
 // HTTP tool, whose response body becomes the failure's cause and, with `logToolValues` on, reaches
 // `execution_logs.error_message` (tests/graph/tool-flowlog.test.ts); a refused `failJob` write leaves
 // the row CLAIMED, unretried and unreported. So `sanitizeErrorMessage` is the ONE place the rule is
-// applied to error text: this file asserts its output at the ROW. Error columns only (scope:
-// docs/logs.md, Model); every call site is pinned in biome-plugins/pin-error-message-guard.grit.
+// applied to error text: this file asserts its output at the ROW, and the ledgers below account for
+// every call site. Error columns only (scope: docs/logs.md, Model).
 
 const NUL = String.fromCharCode(0);
 
@@ -286,5 +289,116 @@ describe.skipIf(!dbUp)("error text reaches every column that holds it", () => {
     });
     expect(row.status).toBe("DEAD");
     expect(row.lastError).toContain("provider said");
+  });
+});
+
+// Every line in `src/` naming an error column whose key is unambiguous enough to scan for
+// (`lastError`, `errorMessage`); counted per file, so a NEW line in a listed file trips this too.
+// flow-event: handed to emitFlowEvent, sanitized at the chokepoint in flowlog/service.ts, the one
+// shape that may pass a raw message along. guarded: sanitizeErrorMessage at the write. cleared:
+// writes null. read: a select, a filter, a DTO field. unrelated: a client-side field that happens to
+// share the name; listed rather than filtered by path, since a path rule would also hide a real one.
+type ErrorSite = "flow-event" | "guarded" | "cleared" | "read" | "unrelated";
+
+const ERROR_COLUMN_LINES: Record<string, [number, ErrorSite | string]> = {
+  "src/graph/nudge.ts": [2, "flow-event"],
+  "src/graph/prepare.ts": [2, "flow-event"],
+  "src/graph/runtime.ts": [7, "flow-event"],
+  "src/graph/tool-flowlog.ts": [3, "flow-event"],
+  // A playground turn that failed unhandled: a fixed sentence, never the error's text. And the two
+  // fallback-failed lines, the redacted reason.
+  "src/modules/playground/service.ts": [3, "flow-event"],
+  // An upload row's own failure in the console, which never reaches a column.
+  "src/client/pages/resources/useKnowledgeManager.tsx": [1, "unrelated"],
+  // The line a recovery writes when it ends with the delivery still DEAD: a fixed sentence.
+  "src/modules/chatwoot/recover-delivery.ts": [1, "flow-event"],
+  "src/modules/chatwoot/webhook.ts": [1, "cleared"],
+  "src/modules/contact-auth/service.ts": [1, "flow-event"],
+  "src/modules/conversations/error.ts": [3, "guarded + cleared"],
+  "src/modules/conversations/service.ts": [12, "read"],
+  // The line a dead debounce flush writes: a fixed sentence and a count, never the job's error.
+  "src/modules/debounce/handler.ts": [1, "flow-event"],
+  // Both roads to DEAD write through one `finalizeDead`.
+  "src/modules/flowlog/alert-worker.ts": [3, "guarded + cleared"],
+  // The follow-up sweep's reading of the failure backoff: the type of the row it is handed. And the
+  // line a lost follow-up sequence writes, a fixed English sentence.
+  "src/modules/followups/handlers.ts": [2, "read + flow-event"],
+  "src/modules/flowlog/dead-letter.ts": [1, "flow-event"],
+  "src/modules/flowlog/read.ts": [4, "read"],
+  "src/modules/flowlog/service.ts": [2, "guarded"],
+  "src/modules/flowlog/webhook.ts": [1, "flow-event"],
+  "src/modules/guardrails/gate.ts": [2, "flow-event"],
+  // The guardrail's own transfer, when the status change is refused.
+  "src/modules/guardrails/handoff.ts": [1, "flow-event"],
+  "src/modules/guardrails/health.ts": [4, "read"],
+  "src/modules/memory/compact.ts": [1, "flow-event"],
+  "src/modules/observe/job.ts": [2, "flow-event"],
+  // The follow-up sweep's re-arm reads the column to tell the scheduler's failure backoff from a row
+  // that stood down: a select and the type it is handed as.
+  "src/modules/scheduler/service.ts": [6, "guarded + cleared + read"],
+  // The model a captured call could not be priced for, named in a flow event.
+  "src/modules/pricing/unpriced-alert.ts": [1, "flow-event"],
+  "src/modules/proactive-limit/service.ts": [2, "flow-event"],
+  // The poll's failure line (the ledger read's error text) travels as a flow event.
+  "src/modules/spend-ceiling/poll.ts": [1, "flow-event"],
+  // The balloon send reports its failure without throwing: the flow line is the only place an
+  // operator can see that part of a reply went missing.
+  "src/modules/split/service.ts": [1, "flow-event"],
+  "src/modules/stt/service.ts": [2, "flow-event"],
+  // The audio check's "unavailable" line: a closed `audio check unavailable (<code>)`.
+  "src/modules/tts/service.ts": [1, "flow-event"],
+  // The turn limit's failed hand-over, as a flow event.
+  "src/modules/turn-limit/handoff.ts": [1, "flow-event"],
+  "src/modules/vision/service.ts": [3, "flow-event"],
+  // Three reads of `lastError`, and none of them a write: the DTO field, the projection that feeds
+  // it, and the type. The ledger surfaces the column an operator uses to decide whether to requeue
+  // and the value was sanitized where the worker stored it.
+  "src/modules/webhooks/outbound/deliveries.ts": [3, "read"],
+  "src/modules/webhooks/outbound/worker.ts": [3, "guarded + cleared"],
+};
+
+// The other half of the same ledger, and the half that covers the two columns the scan above cannot
+// see: `knowledge_documents.error` and `alert_deliveries.summary` are named by keys (`error`,
+// `summary`) far too common to grep for. Pinning where the guard is CALLED reaches them, and catches
+// the removal of a call that the ledger above would read as an ordinary `read`.
+const GUARD_CALLS: Record<string, number> = {
+  // The cause of a failed call, the cause of a thrown one, and the turn's outcome line per tool.
+  "src/graph/tool-flowlog.ts": 3,
+  "src/lib/redact.ts": 1,
+  "src/modules/conversations/error.ts": 1,
+  "src/modules/conversations/failure-note.ts": 1,
+  // The worker's send, shared with the console's Test button, sanitizes in its own `catch`. The
+  // column it guards (`alert_deliveries.last_error`) is written by the worker, from a string this
+  // file built.
+  "src/modules/flowlog/alert-send.ts": 1,
+  // The body of an alert and of a rate alert, each a line posted to the channel.
+  "src/modules/flowlog/alerts.ts": 2,
+  "src/modules/flowlog/service.ts": 2,
+  "src/modules/rag/documents.ts": 1,
+  // A knowledge source run's failure (the fetch, the reconcile), before it reaches `last_message`,
+  // and the boot re-arm's before it reaches the log.
+  "src/modules/rag/source.ts": 3,
+  // The third reads it back: a run past its deadline takes its row back only while the row still
+  // carries the failure that deadline wrote, compared in the form `failJob` stored it.
+  "src/modules/scheduler/service.ts": 3,
+  // The ledger read's error text, before it reaches `poll_error`.
+  "src/modules/spend-ceiling/poll.ts": 1,
+  // The line the retry loop writes for a retry it announced and could not start.
+  "src/modules/vision/service.ts": 1,
+  "src/modules/webhooks/outbound/worker.ts": 1,
+};
+
+describe("every line that names an error column is accounted for", () => {
+  test("the file list and the per-file counts still match", async () => {
+    const found = await countInSrc(/\b(?:lastError|errorMessage)\s*:/g);
+    const expected = Object.fromEntries(
+      Object.entries(ERROR_COLUMN_LINES).map(([f, [n]]) => [f, n]),
+    );
+    expect(found).toEqual(expected);
+  });
+
+  test("the guard is still called everywhere it was", async () => {
+    const found = await countInSrc(/sanitizeErrorMessage\(/g);
+    expect(found).toEqual(GUARD_CALLS);
   });
 });

@@ -98,10 +98,7 @@
       ],
       "plugins": [
         "./biome-plugins/no-bigint-cast.grit",
-        "./biome-plugins/no-scrub-around-cut.grit",
-        "./biome-plugins/pin-error-column-lines.grit",
-        "./biome-plugins/pin-error-message-guard.grit",
-        "./biome-plugins/pin-bare-slices.grit"
+        "./biome-plugins/no-scrub-around-cut.grit"
       ]
     },
     // The comment rules read every file the comment sweep reads, except workers/, which Biome does not

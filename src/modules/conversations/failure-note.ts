@@ -396,7 +396,7 @@ export async function announceFailedTurn(params: {
             return false;
           }
           // Read before the last ask: the claim below pins the newest message it names.
-          const keys = await turnKeysOf(
+          let keys = await turnKeysOf(
             tenantId,
             instanceId,
             conversationId,
@@ -404,6 +404,13 @@ export async function announceFailedTurn(params: {
           );
           lastAsk = isTurnLost(await params.assess()) ? "lost" : "not-lost";
           if (lastAsk === "not-lost") return false;
+          // An unmirrored conversation is read again after the last ask: a webhook that mirrored it
+          // meanwhile (a newer customer message among them) must go through the claim below, whose
+          // newest-message fence is what keeps that message's turn, and not through the no-row path.
+          if (keys.rowId === null) {
+            keys = await turnKeysOf(tenantId, instanceId, conversationId, base);
+            if (keys.rowId !== null) ownership = await ownershipNow();
+          }
           // A turn already running on the conversation (an operator's re-engage, a follow-up, a
           // flush) was started without a new message, so neither ask can see it; opening the
           // conversation would discard its reply. It may still answer, so nothing is announced.

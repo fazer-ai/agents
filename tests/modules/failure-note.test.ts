@@ -684,6 +684,79 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
     expect(mirror.status).toBe("pending");
   });
 
+  test("an unmirrored conversation mirrored with a newer message during the last ask stays with the agent", async () => {
+    const conv = nextConv++;
+    liveConversations.set(conv, { status: "pending", meta: {} });
+    let asks = 0;
+    const outcome = await announceFailedTurn({
+      tenantId,
+      instanceId,
+      chatwootConversationId: conv,
+      routeAgentBotId: 9,
+      aboutMessageId: 6_000,
+      assess: async () => {
+        // The webhook of the customer's next message mirrors the conversation while the last ask
+        // is out: that message has its own turn coming.
+        if (asks++ === 1) {
+          await suDb.conversation.create({
+            data: {
+              tenantId,
+              chatwootInstanceId: instanceId,
+              chatwootConversationId: conv,
+              inboxId: inboxDbId,
+              status: "pending",
+              threadId: `${tenantId}:${instanceId}:${conv}`,
+              lastInboundMessageId: 6_001,
+            },
+          });
+        }
+        return { path: "job", deadLettered: true };
+      },
+      error: new Error("boom"),
+      base: appDb,
+    });
+    expect(outcome).toBe("posted");
+    expect(
+      writes.filter((w) => w.conversationId === conv).map((w) => w.kind),
+    ).toEqual(["note"]);
+  });
+
+  test("an unmirrored conversation mirrored during the last ask with no newer message is still handed over", async () => {
+    const conv = nextConv++;
+    liveConversations.set(conv, { status: "pending", meta: {} });
+    let asks = 0;
+    await announceFailedTurn({
+      tenantId,
+      instanceId,
+      chatwootConversationId: conv,
+      routeAgentBotId: 9,
+      aboutMessageId: 6_100,
+      assess: async () => {
+        // The stranded message's own conversation_created mirrors it: nothing newer, so the claim
+        // over the new row is what lets the hand-over through.
+        if (asks++ === 1) {
+          await suDb.conversation.create({
+            data: {
+              tenantId,
+              chatwootInstanceId: instanceId,
+              chatwootConversationId: conv,
+              inboxId: inboxDbId,
+              status: "pending",
+              threadId: `${tenantId}:${instanceId}:${conv}`,
+              lastInboundMessageId: 6_100,
+            },
+          });
+        }
+        return { path: "job", deadLettered: true };
+      },
+      error: new Error("boom"),
+      base: appDb,
+    });
+    expect(
+      writes.filter((w) => w.conversationId === conv).map((w) => w.kind),
+    ).toEqual(["toggle", "note"]);
+  });
+
   test("an opened hand-over stamps its claim from Chatwoot's versioned read", async () => {
     const conv = await seedConversation();
     liveConversations.set(conv, { status: "pending", meta: {} });

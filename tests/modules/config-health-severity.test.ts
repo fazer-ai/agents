@@ -3,6 +3,7 @@ import type { ConfigIssueKey } from "@/modules/agents/config-health";
 import {
   type ConfigIssueSeverity,
   severityOf,
+  worstFirst,
 } from "@/modules/agents/config-health-severity";
 
 // The decision table for how bad each warning is, written out rather than derived, because the whole
@@ -55,4 +56,24 @@ describe("config issue severity", () => {
     expect(severityOf("guardrails")).toBe("blocking");
     expect(severityOf("outOfHoursBoth")).toBe("advisory");
   });
+});
+
+// The editor's warnings box reads top-down: blocking above degraded above advisory, and inside one
+// severity the order the health check gave.
+test("issues are listed worst first, stable within a severity", () => {
+  const keys: ConfigIssueKey[] = [
+    "outOfHoursBoth",
+    "stt",
+    "decisions",
+    "tts",
+    "model",
+  ];
+  const sorted = worstFirst(keys.map((key) => ({ key }))).map((i) => i.key);
+  expect(sorted).toEqual([
+    "decisions",
+    "model",
+    "stt",
+    "tts",
+    "outOfHoursBoth",
+  ]);
 });

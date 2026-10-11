@@ -70,3 +70,15 @@ export const SEVERITY_ORDER: readonly ConfigIssueSeverity[] = [
   "degraded",
   "advisory",
 ];
+
+// Issues ordered worst-first, for a list a person reads top-down. Stable, so issues of one severity
+// keep the order they came in.
+export function worstFirst<T extends { key: ConfigIssueKey }>(
+  issues: readonly T[],
+): T[] {
+  return issues.toSorted(
+    (a, b) =>
+      SEVERITY_ORDER.indexOf(severityOf(a.key)) -
+      SEVERITY_ORDER.indexOf(severityOf(b.key)),
+  );
+}

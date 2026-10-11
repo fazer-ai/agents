@@ -90,6 +90,7 @@ import {
   issueHasAction,
 } from "@/modules/agents/config-health";
 import { configIssueMessage } from "@/modules/agents/config-health-message";
+import { worstFirst } from "@/modules/agents/config-health-severity";
 import { type AgentMode, normalizeAgentMode } from "@/modules/agents/mode";
 import { protectedResolveLabels } from "@/modules/agents/resolve-labels";
 import { collectOversizedTextChanges } from "@/modules/agents/text-caps";
@@ -223,13 +224,13 @@ import {
   setupSaveBlocked,
 } from "./saveAttempt";
 import { signatureToForm, signatureToStored } from "./signatureFormState";
-import { TabActionBar } from "./TabActionBar";
 import {
   snoozedFollowUpBlocksSave,
   snoozedFollowUpStoredIndices,
   snoozedFollowUpToForm,
   snoozedFollowUpToStored,
 } from "./snoozedFollowUpFormState";
+import { TabActionBar } from "./TabActionBar";
 import {
   parseToolPreconditionRows,
   serializeToolPreconditions,
@@ -2448,9 +2449,12 @@ function AgentEditor() {
     // describes the row, and a schedule picked but not saved gates nothing yet.
     savedSchedule: scheduleOf(hours, syncedAgentRef.current?.businessHoursId),
   });
-  const configIssues = watcher
-    ? allConfigIssues.filter((issue) => watcherCanActOn(issue, engine))
-    : allConfigIssues;
+  // Worst first (`worstFirst`): what stops the agent reads above what only weakens it.
+  const configIssues = worstFirst(
+    watcher
+      ? allConfigIssues.filter((issue) => watcherCanActOn(issue, engine))
+      : allConfigIssues,
+  );
 
   // Deep-link to a config issue. For a PENDING credential the fix lives in the vault, so jump to the
   // vault list with the fill modal pre-opened (?fill=<id>). Otherwise switch to the issue's tab

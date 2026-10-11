@@ -1702,7 +1702,9 @@ export function ToolGrantsEditor({
             )}
           </p>
         )}
-        <div className="grid gap-2 sm:grid-cols-2">
+        {/* One column on questions and rules, where the cards below it are full width too: a
+            single card in a two-column grid would sit at half their width. */}
+        <div className={decides ? "grid gap-2" : "grid gap-2 sm:grid-cols-2"}>
           {catalog.native
             .filter((n) => !(observing && n.deliversToCustomer))
             .filter((n) => offeredToRules(n.name))

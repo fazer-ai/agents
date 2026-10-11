@@ -102,8 +102,8 @@ const TEXT_TARGETS: ReadonlyArray<{ match: RegExp } & EditorTarget> = [
     sectionId: "observability",
   },
   // The decision setup of a monitoring agent: the engine choice and the Classifier on General, the
-  // questions, rules and rehearsal-or-live on their own tab. The block is a list, marked field by
-  // field from the path itself (DecisionsFields), so it is targeted here and not owned.
+  // questions and rules on their own tab. The block is a list, marked field by field from the path
+  // itself (DecisionsFields), so it is targeted here and not owned.
   {
     match: /^monitoring\.engine$/,
     tab: "general",

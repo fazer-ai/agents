@@ -233,6 +233,11 @@ test("on questions and rules, only what a rule can run is listed", async () => {
   // No summary written before the handoff: that is a model's.
   expect(text.includes("private summary before handing off")).toBe(false);
   expect(text.includes("optionally with a summary")).toBe(false);
+  // Its one card in the shared grid sits at the width of the cards below it, not half of it.
+  const grid = document
+    .getElementById(nativeToolAnchor("private_note"))
+    ?.closest(".grid");
+  expect(grid?.className.includes("sm:grid-cols-2")).toBe(false);
 });
 
 test("on the language model, the catalog and the summary switch are there", async () => {

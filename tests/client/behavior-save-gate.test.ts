@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { cleanup, fireEvent, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { renderEditor, stubEditorApi } from "../utils/agent-editor";
 
 // Every field check the Behavior tab computes reaches its Save button. Rendering a field error is
@@ -137,24 +137,6 @@ const REFUSED: Array<
       },
     },
   ],
-  [
-    "a watcher's decisions block the server would refuse",
-    {
-      mode: "monitoring",
-      settings: {
-        monitoring: {
-          engine: "decisions",
-          decisions: {
-            provider: "typesafe",
-            credentialRef: "vault:1",
-            questions: [],
-            rules: [],
-            apply: "shadow",
-          },
-        },
-      },
-    },
-  ],
 ];
 
 async function saveDisabled(agent: {
@@ -199,6 +181,32 @@ describe("the Behavior tab's save gate", () => {
     expect(await saveDisabled({ mode: "monitoring", settings: {} })).toBe(
       false,
     );
+  });
+
+  // The decision setup has a Save of its own on Questions and rules (agents#1224), so a setup the
+  // server would refuse is that Save's to stop: Behavior keeps only the timing and still saves it.
+  test("a watcher's incomplete decision setup is refused by its own Save, not by Behavior's", async () => {
+    const agent = {
+      mode: "monitoring",
+      settings: {
+        monitoring: {
+          engine: "decisions",
+          decisions: {
+            provider: "typesafe",
+            credentialRef: "vault:1",
+            questions: [],
+            rules: [],
+          },
+        },
+      },
+    };
+    expect(await saveDisabled(agent)).toBe(false);
+    cleanup();
+    const stub = stubEditorApi(agent);
+    await renderEditor(stub, "decisions");
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await act(async () => {});
+    expect(stub.writes).toEqual([]);
   });
 
   // A watcher draws no speech section, so a leftover bad rewrite on it has no field to explain a

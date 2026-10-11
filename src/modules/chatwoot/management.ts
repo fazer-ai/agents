@@ -3175,7 +3175,7 @@ export async function syncInboxes(
            SET name = EXCLUDED.name,
                channel_type = EXCLUDED.channel_type,
                provider = EXCLUDED.provider,
-               -- The mirror's inbox clock (#1282) described the name and channel this replaces, and
+               -- The mirror's inbox clock described the name and channel this replaces, and
                -- the list carries no clock of its own: cleared, so the mirror falls back to its
                -- position rule instead of letting a delivery older than this read write it back.
                metadata_clock = CASE

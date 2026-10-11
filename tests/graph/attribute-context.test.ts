@@ -358,8 +358,8 @@ describe.skipIf(!dbUp)("attribute context in the system prompt", () => {
   });
 
   test("a pre-write snapshot carrying the contact's own clock cannot erase the write-through either", async () => {
-    // With the fork's contact clock (#1282) a clocked payload is ordered by that clock alone, so the
-    // write-through's position barrier only holds if the stored clock stops describing the bag.
+    // A payload carrying the contact's clock is ordered by that clock alone, so the write-through's
+    // position barrier only holds if the stored clock stops describing the bag.
     const contact = await suDb.contact.create({
       data: {
         chatwootInstanceId: instanceId,

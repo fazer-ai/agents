@@ -13,11 +13,10 @@ import inboxN2 from "../fixtures/chatwoot-row-clocks/007-message_created.json";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // The contact's custom attributes and the inbox's name live on rows many conversations share, so the
-// conversation's clocks cannot order them (issue #1282). The fork ships each row's own `updated_at`
-// (fazer-ai/chatwoot#826) and the mirror orders by it when it is there. The fixtures are wire bodies
-// of a local fork on that branch, trimmed to what the mirror reads: a contact edited ouro -> prata
-// with no message between (so both share `last_activity_at`), and an inbox renamed. Each test reads
-// the row right after the delayed delivery, with nothing re-applying the newer state.
+// conversation's clocks cannot order them; the mirror orders them by each row's own `updated_at` when
+// the payload carries it. The fixtures are wire bodies of the fork, trimmed to what the mirror reads:
+// a contact edited ouro -> prata with no message between (both share `last_activity_at`), and an inbox
+// renamed. Each test reads the row right after the delayed delivery, with nothing re-applying it.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -240,7 +239,7 @@ describe.skipIf(!dbUp)(
 
     test("a row written before the clocks existed is ordered from the first payload carrying one", async () => {
       const ids = { contact: 107, conv: 1107 };
-      // Chatwoot without #826, then with it: the clockless value is replaced by position, the clock
+      // A Chatwoot without the clocks, then with them: the clockless value is replaced by position, the clock
       // stamped with it then refuses an older snapshot, and a clockless one positioned earlier still
       // loses on position.
       await mirror(

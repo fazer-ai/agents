@@ -592,7 +592,7 @@ model Inbox {
   // restore a replaced name. NULL until the first change.
   metadataAt         DateTime? @map("metadata_at")
   // The INBOX'S OWN version (`inbox.updated_at`, unix seconds) as of the name and channel stored, when
-  // the payload that wrote them carried it (fork #826, message events only). Once set, a payload with
+  // the payload that wrote them carried it (message events only). Once set, a payload with
   // its own clock is ordered by it alone; one without keeps the `metadataAt` rule. NULL: never stated.
   metadataClock      Float?    @map("metadata_clock")
   // WhatsApp provider (whatsapp_cloud | default(=360dialog) | baileys | zapi) when channelType is
@@ -731,7 +731,7 @@ model Contact {
   customAttributes       Json      @default("{}") @map("custom_attributes")
   customAttributesAt     DateTime? @map("custom_attributes_at")
   // The CONTACT'S OWN version (`meta.sender.updated_at`, unix seconds) of the snapshot that wrote
-  // customAttributes, when that payload carried it (fork #826). Once set, a payload with its own clock
+  // customAttributes, when that payload carried it. Once set, a payload with its own clock
   // is ordered by it alone; one without keeps the customAttributesAt rule. NULL: never stated, or
   // cleared by the agent's write-through, which writes a value no Chatwoot version describes.
   customAttributesClock  Float?    @map("custom_attributes_clock")

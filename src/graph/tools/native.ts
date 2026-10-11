@@ -829,10 +829,7 @@ async function mirrorAttributeWrite(
           // `AT TIME ZONE 'UTC'` is load-bearing: the column is TIMESTAMP holding UTC and bare NOW() is
           // timestamptz, so GREATEST would resolve through the unpinned SESSION TimeZone, and under a
           // non-UTC session the stored value reads as hours ahead and the barrier never advances.
-          // The contact's clock (issue #1282) is cleared: it named the Chatwoot version of the bag
-          // stored, and this bag is newer than any version we have seen, so a payload ordered by that
-          // clock alone would erase the key. Without it, the position barrier above decides until a
-          // payload carrying the contact's clock is accepted and stamps it again.
+          // The contact's clock is cleared too: this bag is newer than any version it could name.
           await db.$executeRaw`
           UPDATE contacts
           SET custom_attributes = custom_attributes || ${patch}::jsonb,

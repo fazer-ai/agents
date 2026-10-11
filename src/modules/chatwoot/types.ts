@@ -146,7 +146,7 @@ export interface NormalizedChatwootContact {
   // and the mirror keeps what it had.
   additionalAttributes?: Partial<Record<AdditionalContactField, string | null>>;
   // The contact row's own `updated_at` (unix seconds, sub-second) as of this snapshot, from the fork's
-  // `meta.sender.updated_at` (fazer-ai/chatwoot#826). It orders the custom attributes ONLY: it also
+  // `meta.sender.updated_at`. It orders the custom attributes ONLY: it also
   // moves when nothing the mirror reads changed (every incoming message writes `last_activity_at`),
   // so it is a version of the values carried and never a sign that they changed. `null`/absent:
   // Chatwoot without it, or not a positive number.
@@ -179,7 +179,7 @@ export interface NormalizedChatwootEvent {
   contact?: NormalizedChatwootContact | null;
   inboxName?: string | null;
   // The inbox row's own `updated_at` (unix seconds), from the message events' `inbox.updated_at`
-  // (fazer-ai/chatwoot#826); conversation events name the inbox only by id. Orders `inboxName` and
+  // only; conversation events name the inbox only by id. Orders `inboxName` and
   // `channel`. `null`/absent: not carried, or not a positive number.
   inboxUpdatedAt?: number | null;
   channel?: string | null;

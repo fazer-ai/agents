@@ -905,17 +905,12 @@ async function upsertContact(
     `;
   }
 
-  // NOTE: The custom attributes are ordered by the CONTACT'S OWN clock when the payload carries it
-  // (`meta.sender.updated_at`, fork #826) and the row already has one: the conversation's position is
-  // not this row's clock (one contact is written by every one of its conversations, and an edit moves
-  // neither of the conversation's clocks), so a strictly newer contact version writes whatever its
-  // position, and an equal or older one writes nothing. The clock moves with the bag it came with, the
-  // same bag included, because the contact's `updated_at` also moves on every incoming message: left
-  // behind, a state from between the two would pass it. A row with no clock yet takes the position
-  // rule below and stamps the clock with the bag. A payload without the clock (Chatwoot without
-  // #826, a recovery's REST read) keeps the position rule exactly, and a bag it writes clears the
-  // clock: the stored clock must describe the stored bag, or a snapshot newer than that clock but
-  // older than this write would pass it (the same reason the agent's write-through clears it).
+  // NOTE: With the contact's own clock (`meta.sender.updated_at`) and a row that has one, the clock
+  // alone orders the bag: strictly newer writes whatever its position, equal or older writes nothing.
+  // The clock moves with its bag even when the bag is unchanged, since it also moves on every incoming
+  // message. A row with no clock takes the position rule and is stamped. A payload without the clock
+  // keeps the position rule, and a bag it writes clears the clock, which must describe the bag stored.
+  // Reasoning: docs/chatwoot.md, "Mirror sync".
   if (c.customAttributes && c.updatedAt != null) {
     const bag = JSON.stringify(c.customAttributes);
     const positioned = eventAt
@@ -1015,11 +1010,9 @@ async function upsertInbox(
   const positioned = position
     ? Prisma.sql`(metadata_at IS NULL OR metadata_at <= ${position})`
     : Prisma.sql`(metadata_at IS NULL)`;
-  // NOTE: With the inbox's own clock (`inbox.updated_at`, fork #826, message events only) and a row
-  // that has one, the clock alone decides, as for the contact's attributes: the conversation's
-  // position is no inbox's clock. A row with no clock yet takes the position rule and stamps it; a
-  // payload without one (every `conversation_*` event, which names the inbox by id and channel only)
-  // keeps the position rule and leaves the clock alone, so its position cannot fence a rename.
+  // The inbox's own clock (`inbox.updated_at`, message events only). With it and a row that has one,
+  // the clock alone decides, as for the contact's bag; a row with no clock yet takes the position rule
+  // and is stamped; a payload without one (every `conversation_*` event) keeps the position rule.
   const clock = n.inboxUpdatedAt ?? null;
   const accepts =
     clock !== null

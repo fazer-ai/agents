@@ -224,6 +224,14 @@ test("a close label removed on the language model is not saved by a Tools save o
   expect(JSON.stringify(settingsSent.resolveConversation)).toBe(
     JSON.stringify({ assignLabels: ["vip"] }),
   );
+  // The draft is the language model's, so it is pending on the editor and not on this Tools tab.
+  await waitFor(() => expect(text().includes("Tools updated.")).toBe(true));
+  const toolsTab = [...document.querySelectorAll('[role="tab"]')].find((t) =>
+    t.textContent?.includes("Tools"),
+  );
+  expect(
+    `${toolsTab?.querySelector(".bg-warning") !== null} ${Boolean(button("Discard all"))}`,
+  ).toBe("false true");
 });
 
 // The same holds for the grants: a tool this engine does not draw, revoked on the language model
@@ -623,4 +631,54 @@ test("a Tools save on questions and rules writes hidden guidance verbatim", asyn
       " passe adiante ",
     ]),
   );
+});
+
+// The engine switched back while a Tools save on questions and rules is out: the request wrote the
+// language model's settings as stored, so the edit made there before the switch is still unsaved.
+test("a switch back to the language model while Save tools is out keeps its draft unsaved", async () => {
+  const asked = stubApi();
+  const served = globalThis.fetch;
+  let release: () => void = () => {};
+  const held = new Promise<void>((r) => {
+    release = r;
+  });
+  let putSent = false;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if ((init?.method ?? "GET") === "PUT") {
+      putSent = true;
+      await held;
+    }
+    return served(input, init);
+  }) as typeof fetch;
+  renderAt("/agents/1/tools");
+  await waitFor(() => expect(text().includes("Save tools")).toBe(true));
+  // Remove "vip" from "Labels on close", a setting questions and rules do not draw.
+  const settings = [...document.querySelectorAll("button")].filter(
+    (b) => b.getAttribute("aria-label") === "Settings",
+  );
+  fireEvent.click(settings[0] as HTMLElement);
+  const remove = await waitFor(() => {
+    const b = document.querySelector<HTMLElement>(
+      'button[aria-label="Remove"]',
+    );
+    if (!b) throw new Error("the close label chip is not there yet");
+    return b;
+  });
+  fireEvent.click(remove);
+  await engine("decisions");
+  await tab("Tools");
+  await waitFor(() => expect(Boolean(button("Save tools"))).toBe(true));
+  fireEvent.click(button("Save tools"));
+  await waitFor(() => expect(putSent).toBe(true));
+  await engine("llm");
+  release();
+  await waitFor(() =>
+    expect(asked.some((a) => a.method === "PATCH")).toBe(true),
+  );
+  await waitFor(() => expect(text().includes("Tools updated.")).toBe(true));
+  const patch = asked.find((a) => a.method === "PATCH") as { body: unknown };
+  const sent = (patch.body as { settings: Record<string, unknown> }).settings;
+  expect(
+    `${JSON.stringify(sent.resolveConversation)} ${Boolean(button("Discard all"))}`,
+  ).toBe(`${JSON.stringify({ assignLabels: ["vip"] })} true`);
 });

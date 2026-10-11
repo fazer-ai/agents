@@ -37,9 +37,6 @@ const {
   CUSTOMER_DELIVERY_NATIVE_TOOL_NAMES,
 } = await import("@/graph/tools/catalog");
 const { readSendImageConfig } = await import("@/modules/images/settings");
-const { rebaseToolGrants } = await import(
-  "@/client/pages/agents/toolsBaseline"
-);
 
 const WARNING =
   "No host is allowed yet, so every call is refused. Add at least one host.";
@@ -193,35 +190,6 @@ describe("which save owns the block", () => {
     await waitFor(() => expect(dirty(/Knowledge/)).toBe(false));
     expect(stub.requests).toContain("PUT /api/v1/agents/41/tool-selections");
     expect(dirty(/Tools/)).toBe(true);
-  });
-});
-
-// The Knowledge save writes the grant set and none of the Tools config, so it may move only the
-// grants half of the Tools baseline; recapturing all of it would make a host list typed and not saved
-// stop reading as unsaved.
-describe("the Knowledge save leaves unsaved tool config dirty", () => {
-  test("only the grants move", () => {
-    const baseline = JSON.stringify({
-      grants: ["old"],
-      sendImage: { allowedHosts: "" },
-    });
-    const snapshot = JSON.stringify({
-      grants: ["new"],
-      sendImage: { allowedHosts: "cdn.loja.com.br" },
-    });
-    const rebased = rebaseToolGrants(baseline, snapshot);
-    expect(JSON.parse(rebased)).toEqual({
-      grants: ["new"],
-      sendImage: { allowedHosts: "" },
-    });
-    // NOTE: still dirty against the live snapshot, and clean once the config matches again.
-    expect(rebased).not.toBe(snapshot);
-    expect(
-      rebaseToolGrants(
-        baseline,
-        JSON.stringify({ ...JSON.parse(baseline), grants: ["new"] }),
-      ),
-    ).toBe(JSON.stringify({ ...JSON.parse(baseline), grants: ["new"] }));
   });
 });
 

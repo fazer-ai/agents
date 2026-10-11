@@ -241,7 +241,6 @@ import {
   guidanceToSave,
   type ToolGuidance,
 } from "./toolGuidance";
-import { rebaseToolGrants, rebaseToolGrantsOnto } from "./toolsBaseline";
 import { readTtsFormState, ttsSettingsFrom } from "./ttsFormState";
 import type {
   GrantState,
@@ -351,26 +350,6 @@ function watcherSectionReachable(
     MONITORING_SECTIONS.has(sectionId)
   );
 }
-
-// The four config sections with their own unsaved-changes baseline + save button. Each is tracked
-// independently so saving one never re-baselines (or drops) another's pending edits.
-type SectionKey =
-  | "general"
-  | "behavior"
-  | "channelRedirect"
-  | "guardrails"
-  | "tools"
-  | "knowledge"
-  | "decisions";
-const SECTION_KEYS: SectionKey[] = [
-  "general",
-  "behavior",
-  "decisions",
-  "channelRedirect",
-  "guardrails",
-  "tools",
-  "knowledge",
-];
 
 // The structured import warnings from POST /agents/import (derived from the Eden client, never
 // hand-declared — see docs/eden-treaty). Each carries a `code` the editor localizes + an optional
@@ -1501,26 +1480,10 @@ function AgentEditor() {
   // The suggested name prefilled on open; the modal only warns about discarding
   // when the user actually edited it.
   const cloneNameDefaultRef = useRef("");
-  // Per-section sync counters: bumping a section recaptures ONLY that section's unsaved-changes
-  // baseline (below) from the freshly-synced state. Per-section (not one global counter) so saving
-  // one tab never re-baselines another tab's pending edits, which would silently mask unsaved
-  // changes made in a different tab.
-  const [sectionSync, setSectionSync] = useState<Record<SectionKey, number>>({
-    general: 0,
-    behavior: 0,
-    decisions: 0,
-    channelRedirect: 0,
-    guardrails: 0,
-    tools: 0,
-    knowledge: 0,
-  });
-  const bumpSync = useCallback((...keys: SectionKey[]) => {
-    setSectionSync((s) => {
-      const next = { ...s };
-      for (const k of keys) next[k] += 1;
-      return next;
-    });
-  }, []);
+  // A render after a server sync. The unsaved-changes baselines are read from the synced agent and
+  // grants, which live in refs, so a sync that changes nothing else in state still redraws the dots.
+  const [, setSyncTick] = useState(0);
+  const bumpSync = useCallback(() => setSyncTick((n) => n + 1), []);
 
   // The agent's version token (updatedAt) the editor last loaded/saved. Sent as the save precondition
   // (optimistic concurrency) and compared against realtime agent-config events to flag external edits.
@@ -1573,8 +1536,7 @@ function AgentEditor() {
   }, []);
 
   // Full reset of the general + behavior form state from a synced agent. Used on load and discard-all
-  // (NOT on a single-section save — that would clobber other tabs' unsaved edits). Callers bump the
-  // relevant section sync counters afterward to recapture baselines.
+  // (NOT on a single-section save — that would clobber other tabs' unsaved edits).
   const applyAgent = useCallback((a: Agent) => {
     syncedAgentRef.current = a;
     setName(a.name);
@@ -1719,7 +1681,7 @@ function AgentEditor() {
       setGrants(mapGrants(tsRes.data.grants));
       setCatalog(tsRes.data.catalog);
       loadedUpdatedAtRef.current = String(agentRes.data.agent.updatedAt);
-      bumpSync(...SECTION_KEYS);
+      bumpSync();
       setStaleNotice(false);
       setConflictRetry(null);
       // NOTE: The other half of the sync tick. A reload is an explicit "tell me the current state", and
@@ -2045,125 +2007,243 @@ function AgentEditor() {
     (decides &&
       JSON.stringify(review) !==
         JSON.stringify(suggestionReviewToForm(syncedForChat?.settings)));
-  const sectionSnap = {
-    // NOTE: General covers identity + model (the tabs merged). Track the raw model
-    // form state, not buildModelConfig() — the latter collapses to {} until
-    // provider+model are both set and drops empty/normalized fields, so editing
-    // temperature/baseURL/credential wouldn't register as dirty.
-    general: JSON.stringify({
-      name,
-      systemPrompt: chatSnap.systemPrompt,
-      enabled,
-      agentMode,
-      model: chatSnap.model,
-    }),
-    // NOTE: Track the behavior FORM state directly (not buildSettings(), which spreads the whole settings
-    // bag including tool-owned handoff/kanban) so a Tools save never falsely lights up Behavior's dot.
-    behavior: JSON.stringify({
-      businessHoursId,
-      awayEnabled,
-      awayMessage,
-      followUpHoursId,
-      debounce,
-      stt,
-      contactAuth,
-      tts,
-      split,
-      signature,
-      serviceWindow,
-      followUp,
-      snoozedFollowUp,
-      vision,
-      limits,
-      attributeContext,
-      contactFields,
-      takeover,
-      observability,
-      memory: hiddenSnap.memory,
-      modelFallback: hiddenSnap.modelFallback,
-      // NOTE: Named after the block the save writes (`monitoring`), which is what the dirty-snapshot
-      // fence reads off the writer; the form state behind it is `observation`. Its timing only: the
-      // decision setup is the `decisions` section's.
-      monitoring: timingOf(observation),
-    }),
-    // NOTE: The decision setup, drawn on two tabs: the head (engine and classifier) on General, the
-    // body (questions, rules, rehearsal or live) on Questions and rules. One section, since either
-    // save writes all of it; the two halves light their own tab's dot.
-    decisions: `${decisionsHeadOf(observation)}\u0000${decisionsBodyOf(observation)}`,
-    // NOTE: The WhatsApp→website-chat redirect (own Save button). widgetInboxId is excluded (server-owned,
-    // persisted on provision), so provisioning the widget never lights up this tab's unsaved-changes dot.
-    channelRedirect: channelRedirectSnapshot(channelRedirect),
-    // NOTE: Guardrails (own Save button) — the full config JSON.
-    guardrails: JSON.stringify(guardrails),
-    // NOTE: transferWithSummary + handoff are config of the handoff_to_human tool (Tools tab), saved with
-    // the grant set, so they flag the Tools tab's unsaved-changes dot — not Behavior's.
-    tools: JSON.stringify({
-      grants: canonicalGrants(savedGrants.filter((g) => g.source !== "RAG")),
-      transferWithSummary: savedGuidance.transferWithSummary,
-      handoff: { ...handoff, instructions: savedGuidance.handoffInstructions },
-      kanbanInstructions: savedGuidance.kanbanInstructions,
-      customAttributeInstructions: savedGuidance.customAttributeInstructions,
-      labelInstructions: savedGuidance.labelInstructions,
-      protectedLabels,
-      allowedLabels,
-      outsideAllowedLabels,
-      updateKanbanTaskInstructions: savedGuidance.updateKanbanTaskInstructions,
-      toolPreconditions,
-      crossInboxCase: savedGuidance.crossInboxCase,
-      sendImage: savedGuidance.sendImage,
-      resolveConversation: savedGuidance.resolveConversation,
-    }),
-    // NOTE: The grant set and the reviewer model, the two halves the Knowledge save writes.
-    knowledge: JSON.stringify({
-      grants: canonicalGrants(grants.filter((g) => g.source === "RAG")),
-      review,
-    }),
+  // The form state every section snapshot reads, so the same snapshot can be taken of the form and of
+  // the server's copy (`formOfSynced`). Keep it in step with what `applyAgent`, `syncToolConfig`,
+  // the review and the grants load from an agent: a field read here and not there would read dirty.
+  type SnapForm = {
+    name: string;
+    systemPrompt: string;
+    enabled: boolean;
+    agentMode: typeof agentMode;
+    model: typeof model;
+    businessHoursId: typeof businessHoursId;
+    awayEnabled: boolean;
+    awayMessage: string;
+    followUpHoursId: typeof followUpHoursId;
+    debounce: typeof debounce;
+    stt: typeof stt;
+    contactAuth: typeof contactAuth;
+    tts: typeof tts;
+    split: typeof split;
+    signature: typeof signature;
+    serviceWindow: typeof serviceWindow;
+    followUp: typeof followUp;
+    snoozedFollowUp: typeof snoozedFollowUp;
+    vision: typeof vision;
+    limits: typeof limits;
+    attributeContext: typeof attributeContext;
+    contactFields: typeof contactFields;
+    takeover: typeof takeover;
+    observability: typeof observability;
+    memory: MemoryState;
+    modelFallback: ModelFallbackState;
+    observation: ObservationState;
+    channelRedirect: typeof channelRedirect;
+    guardrails: GuardrailsConfig;
+    guidance: ToolGuidance;
+    handoff: HandoffUiState;
+    protectedLabels: string;
+    allowedLabels: string;
+    outsideAllowedLabels: typeof outsideAllowedLabels;
+    toolPreconditions: typeof toolPreconditions;
+    grants: GrantState[];
+    review: SuggestionReviewState;
   };
-  const baselineRef = useRef<typeof sectionSnap | null>(null);
-  const lastSyncRef = useRef<Record<SectionKey, number>>({
-    general: -1,
-    behavior: -1,
-    decisions: -1,
-    channelRedirect: -1,
-    guardrails: -1,
-    tools: -1,
-    knowledge: -1,
-  });
-  // Set by the Knowledge save, which writes the grants and none of the Tools tab's config: the next
-  // Tools recapture then moves only the grants half of its baseline (see ./toolsBaseline).
-  const toolGrantsOnlyRef = useRef(false);
-  // With it, the grants an "Allow" wrote, canonical: that recapture takes them instead of the form.
-  // Set alone by a Tools save, the whole section is recaptured but its grants half is still the written
-  // set, so a grant toggled while the request ran stays unsaved.
-  const toolGrantsWrittenRef = useRef<string | null>(null);
-  // NOTE: Recapture each section's baseline during the render that follows ITS server sync (bumpSync for
-  // that section); `sectionSnap` already reflects the freshly-synced state there. Per-section (not a
-  // single token) so saving one tab leaves the others' baselines — and unsaved-changes dots — intact.
-  if (baselineRef.current === null) {
-    baselineRef.current = { ...sectionSnap };
-  }
-  for (const k of SECTION_KEYS) {
-    if (lastSyncRef.current[k] !== sectionSync[k]) {
-      lastSyncRef.current[k] = sectionSync[k];
-      const grantsOnly = k === "tools" && toolGrantsOnlyRef.current;
-      const written = k === "tools" ? toolGrantsWrittenRef.current : null;
-      if (k === "tools") {
-        toolGrantsOnlyRef.current = false;
-        toolGrantsWrittenRef.current = null;
-      }
-      baselineRef.current = {
-        ...baselineRef.current,
-        [k]: grantsOnly
-          ? written !== null
-            ? rebaseToolGrantsOnto(baselineRef.current.tools, written)
-            : rebaseToolGrants(baselineRef.current.tools, sectionSnap.tools)
-          : written !== null
-            ? rebaseToolGrantsOnto(sectionSnap.tools, written)
-            : sectionSnap[k],
-      };
-    }
-  }
-  const baseline = baselineRef.current;
+  const formNow: SnapForm = {
+    name,
+    systemPrompt,
+    enabled,
+    agentMode,
+    model,
+    businessHoursId,
+    awayEnabled,
+    awayMessage,
+    followUpHoursId,
+    debounce,
+    stt,
+    contactAuth,
+    tts,
+    split,
+    signature,
+    serviceWindow,
+    followUp,
+    snoozedFollowUp,
+    vision,
+    limits,
+    attributeContext,
+    contactFields,
+    takeover,
+    observability,
+    memory,
+    modelFallback,
+    observation,
+    channelRedirect,
+    guardrails,
+    guidance: formGuidance,
+    handoff,
+    protectedLabels,
+    allowedLabels,
+    outsideAllowedLabels,
+    toolPreconditions,
+    grants,
+    review,
+  };
+  // The form a fresh load of `a` would draw, through the same readers.
+  const formOfSynced = (
+    a: Agent,
+    syncedGrants: ToolSelectionView["grants"],
+  ): SnapForm => {
+    const b = readBehaviorState(a);
+    return {
+      name: a.name,
+      systemPrompt: a.systemPrompt,
+      enabled: a.enabled,
+      agentMode: normalizeAgentMode(a.mode),
+      model: readModelState(a),
+      businessHoursId: b.businessHoursId,
+      awayEnabled: b.awayEnabled,
+      awayMessage: b.awayMessage,
+      followUpHoursId: b.followUpHoursId,
+      debounce: b.debounce,
+      stt: b.stt,
+      contactAuth: b.contactAuth,
+      tts: b.tts,
+      split: b.split,
+      signature: b.signature,
+      serviceWindow: b.serviceWindow,
+      followUp: b.followUp,
+      snoozedFollowUp: b.snoozedFollowUp,
+      vision: b.vision,
+      limits: b.limits,
+      attributeContext: b.attributeContext,
+      contactFields: b.contactFields,
+      takeover: b.takeover,
+      observability: b.observability,
+      memory: b.memory,
+      modelFallback: b.modelFallback,
+      observation: b.observation,
+      channelRedirect: readChannelRedirectState(a),
+      guardrails: readGuardrailsFormState(a.settings),
+      guidance: guidanceOf(b),
+      handoff: b.handoff,
+      protectedLabels: b.protectedLabels,
+      allowedLabels: b.allowedLabels,
+      outsideAllowedLabels: b.outsideAllowedLabels,
+      toolPreconditions: b.toolPreconditions,
+      grants: mapGrants(syncedGrants),
+      review: suggestionReviewToForm(a.settings),
+    };
+  };
+  // Each section serialized as its save would write it, under the CURRENT engine: the engine decides
+  // what a save writes, so the form and the server's copy are always read by the same rule.
+  const snapshotOf = (f: SnapForm) => {
+    const chat =
+      decides && syncedForChat
+        ? {
+            systemPrompt: syncedForChat.systemPrompt,
+            model: readModelState(syncedForChat),
+          }
+        : { systemPrompt: f.systemPrompt, model: f.model };
+    const hidden =
+      decides && syncedForChat
+        ? {
+            memory: memoryToForm(syncedForChat.settings),
+            modelFallback: modelFallbackToForm(syncedForChat.settings),
+          }
+        : { memory: f.memory, modelFallback: f.modelFallback };
+    const guidance = guidanceToSave(f.guidance, storedGuidance);
+    const written = grantsToSave(
+      f.grants,
+      decides ? mapGrants(syncedGrantsRef.current) : null,
+      DECISION_ACTION_TOOLS,
+      catalog?.native.map((n) => n.name) ?? [],
+    );
+    return {
+      // NOTE: General covers identity + model (the tabs merged). Track the raw model
+      // form state, not buildModelConfig() — the latter collapses to {} until
+      // provider+model are both set and drops empty/normalized fields, so editing
+      // temperature/baseURL/credential wouldn't register as dirty.
+      general: JSON.stringify({
+        name: f.name,
+        systemPrompt: chat.systemPrompt,
+        enabled: f.enabled,
+        agentMode: f.agentMode,
+        model: chat.model,
+      }),
+      // NOTE: Track the behavior FORM state directly (not buildSettings(), which spreads the whole
+      // settings bag including tool-owned handoff/kanban) so a Tools save never falsely lights up
+      // Behavior's dot.
+      behavior: JSON.stringify({
+        businessHoursId: f.businessHoursId,
+        awayEnabled: f.awayEnabled,
+        awayMessage: f.awayMessage,
+        followUpHoursId: f.followUpHoursId,
+        debounce: f.debounce,
+        stt: f.stt,
+        contactAuth: f.contactAuth,
+        tts: f.tts,
+        split: f.split,
+        signature: f.signature,
+        serviceWindow: f.serviceWindow,
+        followUp: f.followUp,
+        snoozedFollowUp: f.snoozedFollowUp,
+        vision: f.vision,
+        limits: f.limits,
+        attributeContext: f.attributeContext,
+        contactFields: f.contactFields,
+        takeover: f.takeover,
+        observability: f.observability,
+        memory: hidden.memory,
+        modelFallback: hidden.modelFallback,
+        // NOTE: Named after the block the save writes (`monitoring`), which is what the dirty-snapshot
+        // fence reads off the writer; the form state behind it is `observation`. Its timing only: the
+        // decision setup is the `decisions` section's.
+        monitoring: timingOf(f.observation),
+      }),
+      // NOTE: The decision setup, drawn on two tabs: the head (engine and classifier) on General, the
+      // body (questions and rules) on Questions and rules. One section, since either save writes all
+      // of it; the two halves light their own tab's dot.
+      decisions: `${decisionsHeadOf(f.observation)}\u0000${decisionsBodyOf(f.observation)}`,
+      // NOTE: The WhatsApp→website-chat redirect (own Save button). widgetInboxId is excluded
+      // (server-owned, persisted on provision), so provisioning the widget never lights up this tab's
+      // unsaved-changes dot.
+      channelRedirect: channelRedirectSnapshot(f.channelRedirect),
+      // NOTE: Guardrails (own Save button) — the full config JSON.
+      guardrails: JSON.stringify(f.guardrails),
+      // NOTE: transferWithSummary + handoff are config of the handoff_to_human tool (Tools tab), saved
+      // with the grant set, so they flag the Tools tab's unsaved-changes dot — not Behavior's.
+      tools: JSON.stringify({
+        grants: canonicalGrants(written.filter((g) => g.source !== "RAG")),
+        transferWithSummary: guidance.transferWithSummary,
+        handoff: { ...f.handoff, instructions: guidance.handoffInstructions },
+        kanbanInstructions: guidance.kanbanInstructions,
+        customAttributeInstructions: guidance.customAttributeInstructions,
+        labelInstructions: guidance.labelInstructions,
+        protectedLabels: f.protectedLabels,
+        allowedLabels: f.allowedLabels,
+        outsideAllowedLabels: f.outsideAllowedLabels,
+        updateKanbanTaskInstructions: guidance.updateKanbanTaskInstructions,
+        toolPreconditions: f.toolPreconditions,
+        crossInboxCase: guidance.crossInboxCase,
+        sendImage: guidance.sendImage,
+        resolveConversation: guidance.resolveConversation,
+      }),
+      // NOTE: The grant set and the reviewer model, the two halves the Knowledge save writes.
+      knowledge: JSON.stringify({
+        grants: canonicalGrants(f.grants.filter((g) => g.source === "RAG")),
+        review: f.review,
+      }),
+    };
+  };
+  const sectionSnap = snapshotOf(formNow);
+  // What each section is compared with: the SERVER's copy, read through the same snapshot every
+  // render, never a snapshot of the form captured after a save. A save in flight while the operator
+  // edits, or switches the engine, changes the form and not the server, so whatever the request did
+  // not write stays unsaved; and a save that wrote nothing of a section leaves its dot alone, since
+  // the server's copy of it did not move.
+  const baseline = syncedForChat
+    ? snapshotOf(formOfSynced(syncedForChat, syncedGrantsRef.current))
+    : null;
   const [baseHead = "", baseBody = ""] = (baseline?.decisions ?? "").split(
     "\u0000",
   );
@@ -2178,6 +2258,15 @@ function AgentEditor() {
     !!baseline &&
     (decisionsHeadOf(observation) !== baseHead ||
       decisionsBodyOf(observation) !== baseBody);
+  // The form's sections as they stand now, read by a save when its answer lands: it puts the answer
+  // into the form only for a section the operator has not touched since the request went out, so an
+  // edit made meanwhile is neither overwritten nor read as saved.
+  const formSnapRef = useRef(sectionSnap);
+  formSnapRef.current = sectionSnap;
+  const untouchedSince = (sent: Partial<typeof sectionSnap>): boolean =>
+    Object.entries(sent).every(
+      ([k, v]) => formSnapRef.current[k as keyof typeof sectionSnap] === v,
+    );
   const dirty = {
     general: !!baseline && sectionSnap.general !== baseline.general,
     decisions: decisionsHeadDirty || decisionsBodyDirty,
@@ -3224,7 +3313,7 @@ function AgentEditor() {
           setReview(suggestionReviewToForm(a.settings));
         }
         setGrants(mapGrants(syncedGrantsRef.current));
-        bumpSync(...SECTION_KEYS);
+        bumpSync();
       },
     });
   }
@@ -3287,6 +3376,7 @@ function AgentEditor() {
     // Snapshotted BEFORE the request, never after: the staleness check compares what went out
     // with what the boxes hold when the answer lands, and `currentRef` is live.
     const sent = sentFor(patch);
+    const sentSnap = { [section]: sectionSnap[section] };
     try {
       const expected = expectedFor(force);
       const { data, error: err } = await api.api.v1.agents({ id }).patch({
@@ -3303,12 +3393,14 @@ function AgentEditor() {
         return false;
       }
       if (err || !data) throw err ?? new Error("no data");
-      // NOTE: Re-sync ONLY the saved section so the other tabs' unsaved edits are never clobbered.
-      if (section === "general") {
+      // NOTE: Re-sync ONLY the saved section so the other tabs' unsaved edits are never clobbered, and
+      // only when it was not edited while the request ran (`untouchedSince`).
+      if (!untouchedSince(sentSnap)) syncedAgentRef.current = data.agent;
+      else if (section === "general") {
         applyGeneral(data.agent, "systemPrompt" in patch);
       } else applyBehavior(data.agent, !decides);
       markSynced(String(data.agent.updatedAt));
-      bumpSync(section);
+      bumpSync();
       // NOTE: Only for the section this holder DRAWS. One function writes both, and a Behavior save
       // carries neither `name` nor `systemPrompt` — clearing there takes the standing refusal off
       // the General tab without anything having answered it, so the operator comes back to a form
@@ -3350,6 +3442,10 @@ function AgentEditor() {
       };
       const knowledgeSettings = { ...syncedSettings, knowledge: knowledgeJson };
       if (reviewChanged) sent = sentFor({ settings: knowledgeSettings });
+      const sentSnap = {
+        knowledge: sectionSnap.knowledge,
+        tools: sectionSnap.tools,
+      };
       const expected = expectedFor(force);
       const { data, error: err } = await api.api.v1
         .agents({ id })
@@ -3360,7 +3456,7 @@ function AgentEditor() {
       if (handleConflict(err, () => void saveGrants(true))) return;
       if (err || !data) throw err ?? new Error("no data");
       syncedGrantsRef.current = data.grants;
-      setGrants(mapGrants(data.grants));
+      if (untouchedSince(sentSnap)) setGrants(mapGrants(data.grants));
       setCatalog(data.catalog);
       const afterGrants = data.agentUpdatedAt
         ? String(data.agentUpdatedAt)
@@ -3377,14 +3473,15 @@ function AgentEditor() {
           throw agentRes.error ?? new Error("no data");
         }
         syncedAgentRef.current = agentRes.data.agent;
-        setReview(suggestionReviewToForm(agentRes.data.agent.settings));
+        if (untouchedSince(sentSnap)) {
+          setReview(suggestionReviewToForm(agentRes.data.agent.settings));
+        }
         // NOTE: The SAME block that was just written, so a later Behavior save, which spreads the
         // shared bag, does not put the previous reviewer model back.
         setSettings((cur) => ({ ...cur, knowledge: knowledgeJson }));
         markSynced(String(agentRes.data.agent.updatedAt));
       }
-      toolGrantsOnlyRef.current = true;
-      bumpSync("tools", "knowledge");
+      bumpSync();
       settleRefusalFor("knowledge");
       showToast(t("editor.grantsSaved", "Tools updated."), "success");
     } catch (e) {
@@ -3409,6 +3506,7 @@ function AgentEditor() {
     savingRef.current += 1;
     setSavingGrants(true);
     let sent: Record<string, unknown> = {};
+    const sentTools = { tools: sectionSnap.tools };
     try {
       // Everything the PATCH will send, built BEFORE the grants PUT so the whole bag can be checked
       // against the write boundary's own rule first. None of it depends on the PUT's result.
@@ -3571,10 +3669,11 @@ function AgentEditor() {
       syncedGrantsRef.current = grantsRes.data.grants;
       // On questions and rules the form keeps its hidden grant drafts and any toggle made while this
       // request ran; the baseline takes the written grants, not the form.
-      if (!decides) setGrants(mapGrants(grantsRes.data.grants));
+      const untouched = untouchedSince(sentTools);
+      if (!decides && untouched) setGrants(mapGrants(grantsRes.data.grants));
       setCatalog(grantsRes.data.catalog);
       syncedAgentRef.current = agentRes.data.agent;
-      syncToolConfig(agentRes.data.agent, decides);
+      if (untouched) syncToolConfig(agentRes.data.agent, decides);
       setSettings((s) => ({
         ...s,
         handoff: handoffJson,
@@ -3595,22 +3694,7 @@ function AgentEditor() {
         resolveConversation: resolveConversationJson,
       }));
       markSynced(String(agentRes.data.agent.updatedAt));
-      // The grant PUT carries the knowledge grants too, but not the reviewer model: while that
-      // is still unsaved, the Knowledge section stays dirty instead of rebasing over it.
-      const reviewPending =
-        JSON.stringify(review) !==
-        JSON.stringify(suggestionReviewToForm(agentRes.data.agent.settings));
-      // Knowledge grants this engine does not draw were written as stored, so a draft of them keeps
-      // Knowledge unsaved.
-      const ragDraftHidden =
-        canonicalGrants(grants.filter((g) => g.source === "RAG")) !==
-        canonicalGrants(savedGrants.filter((g) => g.source === "RAG"));
-      // Set with the bump that consumes it, so a PATCH that fails after the PUT leaves nothing behind.
-      toolGrantsWrittenRef.current = canonicalGrants(
-        mapGrants(grantsRes.data.grants).filter((g) => g.source !== "RAG"),
-      );
-      if (reviewPending || ragDraftHidden) bumpSync("tools");
-      else bumpSync("tools", "knowledge");
+      bumpSync();
       settleRefusalFor("tools");
       showToast(t("editor.grantsSaved", "Tools updated."), "success");
     } catch (e) {
@@ -3651,15 +3735,17 @@ function AgentEditor() {
       // NOTE: Snapshot BEFORE the request, never read in the catch: `currentRef` is live, so comparing it
       // with itself there can never fire the staleness check.
       sent = sentFor(patch);
+      const sentSnap = { channelRedirect: sectionSnap.channelRedirect };
       const { data, error: err } = await api.api.v1.agents({ id }).patch(patch);
       if (handleConflict(err, () => void saveChannelRedirect(true))) return;
       if (err || !data) throw err ?? new Error("no data");
-      applyChannelRedirect(data.agent);
+      if (untouchedSince(sentSnap)) applyChannelRedirect(data.agent);
+      else syncedAgentRef.current = data.agent;
       // NOTE: Keep the local settings bag's channelRedirect in step so a later Behavior save (which spreads
       // it) doesn't rewrite a stale value.
       setSettings((s) => ({ ...s, channelRedirect: crJson }));
       markSynced(String(data.agent.updatedAt));
-      bumpSync("channelRedirect");
+      bumpSync();
       showToast(t("editor.saved", "Agent saved."), "success");
       settleRefusalFor("channelRedirect");
     } catch (e) {
@@ -3707,6 +3793,8 @@ function AgentEditor() {
         settings: { ...syncedSettings, ...merged },
       };
       sent = sentFor(patch);
+      const sentSnap = { decisions: sectionSnap.decisions };
+      const sentGeneral = { general: sectionSnap.general };
       const { data, error: err } = await api.api.v1.agents({ id }).patch({
         ...patch,
         ...(expected ? { expectedUpdatedAt: expected } : {}),
@@ -3719,10 +3807,13 @@ function AgentEditor() {
       )
         return false;
       if (err || !data) throw err ?? new Error("no data");
-      applyDecisions(data.agent);
+      syncedAgentRef.current = data.agent;
+      if (untouchedSince(sentSnap)) applyDecisions(data.agent);
       if (identity) {
-        applyGeneral(data.agent, "systemPrompt" in identity);
-        bumpSync("general");
+        if (untouchedSince(sentGeneral)) {
+          applyGeneral(data.agent, "systemPrompt" in identity);
+        }
+        bumpSync();
         settleRefusalFor("general");
       }
       setDecisionsAttempted(false);
@@ -3731,7 +3822,7 @@ function AgentEditor() {
       setSettings((cur) => ({ ...cur, ...merged }));
       setDecisionsRefused(null);
       markSynced(String(data.agent.updatedAt));
-      bumpSync("decisions");
+      bumpSync();
       settleRefusalFor("decisions");
       // NOTE: The classifier is drawn on General, so `settleRefusalFor` (by drawing tab) leaves its
       // marks; this save wrote the whole block, which answers every refusal about it.
@@ -3818,11 +3909,7 @@ function AgentEditor() {
       );
       setCatalog(data.catalog);
       markSynced(data.agentUpdatedAt ? String(data.agentUpdatedAt) : null);
-      toolGrantsOnlyRef.current = true;
-      toolGrantsWrittenRef.current = canonicalGrants(
-        mapGrants(data.grants).filter((g) => g.source !== "RAG"),
-      );
-      bumpSync("tools");
+      bumpSync();
       showToast(t("editor.grantsSaved", "Tools updated."), "success");
     } catch (e) {
       showToast(
@@ -3851,6 +3938,7 @@ function AgentEditor() {
       >;
       const patch = { settings: { ...syncedSettings, guardrails } };
       sent = sentFor(patch);
+      const sentSnap = { guardrails: sectionSnap.guardrails };
       const { data, error: err } = await api.api.v1.agents({ id }).patch({
         ...patch,
         ...(expected ? { expectedUpdatedAt: expected } : {}),
@@ -3858,10 +3946,11 @@ function AgentEditor() {
       });
       if (handleConflict(err, () => void saveGuardrails(true))) return;
       if (err || !data) throw err ?? new Error("no data");
-      applyGuardrails(data.agent);
+      if (untouchedSince(sentSnap)) applyGuardrails(data.agent);
+      else syncedAgentRef.current = data.agent;
       setSettings((s) => ({ ...s, guardrails }));
       markSynced(String(data.agent.updatedAt));
-      bumpSync("guardrails");
+      bumpSync();
       settleRefusalFor("guardrails");
       showToast(t("editor.saved", "Agent saved."), "success");
     } catch (e) {

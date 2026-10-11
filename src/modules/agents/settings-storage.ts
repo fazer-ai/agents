@@ -1,19 +1,33 @@
 import { parseContactAuthRule } from "@/modules/contact-auth/settings";
 import { normalizeSettingsForStorage } from "@/modules/images/settings";
 
-// The contact gate's rule as the reader reads it (a phone as its digits, a label lowercased, entries
-// trimmed and deduplicated). Stored as typed, `+55 (11) 98888-7777` and `5511988887777` are one
-// person to the gate and two values to the row. A rule the reader cannot parse is left as it is:
-// refusing it is the write boundary's call.
+function plain(v: unknown): v is Record<string, unknown> {
+  return !!v && typeof v === "object" && !Array.isArray(v);
+}
+
+// The contact gate's rule with the values the reader reads written as it reads them (a phone as its
+// digits, a label lowercased, entries trimmed and deduplicated). Stored as typed,
+// `+55 (11) 98888-7777` and `5511988887777` are one person to the gate and two values to the row.
+// Laid OVER the stored rule rather than replacing it: a key the reader does not know stays, so a
+// newer field survives an older writer and the audit still sees it go. A rule the reader cannot
+// parse is left as it is, since refusing it is the write boundary's call.
 export function withStoredContactAuthRule(settings: unknown): unknown {
-  if (!settings || typeof settings !== "object" || Array.isArray(settings)) {
-    return settings;
+  if (!plain(settings) || !plain(settings.contactAuth)) return settings;
+  const raw = settings.contactAuth.rule;
+  const read = parseContactAuthRule(raw);
+  if (!read || !plain(raw)) return settings;
+  let rule: Record<string, unknown> = { ...raw, ...read };
+  if ("conditions" in read && Array.isArray(raw.conditions)) {
+    const conditions = raw.conditions as unknown[];
+    rule = {
+      ...rule,
+      conditions: read.conditions.map((c, i) => ({
+        ...(plain(conditions[i]) ? conditions[i] : {}),
+        ...c,
+      })),
+    };
   }
-  const bag = settings as Record<string, unknown>;
-  const block = bag.contactAuth;
-  if (!block || typeof block !== "object" || Array.isArray(block)) return bag;
-  const rule = parseContactAuthRule((block as Record<string, unknown>).rule);
-  return rule ? { ...bag, contactAuth: { ...block, rule } } : bag;
+  return { ...settings, contactAuth: { ...settings.contactAuth, rule } };
 }
 
 // What a write of `agent.settings` stores, on every path that writes one (update, create, import):

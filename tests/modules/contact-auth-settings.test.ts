@@ -538,6 +538,40 @@ describe.skipIf(!dbUp)("contactAuth on the write surfaces", () => {
     expect((await settingsRows()).length).toBe(rows);
   });
 
+  // Only the values the reader reads are rewritten: a key it does not know (a newer field, written by
+  // a newer console) is stored as sent, and taking it out is still an edit the trail records.
+  test("a key the reader does not know stays in the rule, and removing it is recorded", async () => {
+    const withExtra = {
+      contactAuth: {
+        enabled: true,
+        rule: { kind: "label", label: "VIP", futureFlag: true },
+      },
+    };
+    await updateAgent(ctx(), agentId, { settings: withExtra }, appDb, {
+      settingsMode: "replace",
+    });
+    expect(await storedRule(agentId)).toEqual({
+      kind: "label",
+      label: "vip",
+      futureFlag: true,
+    });
+    const rows = (await settingsRows()).length;
+    await updateAgent(
+      ctx(),
+      agentId,
+      {
+        settings: {
+          contactAuth: { enabled: true, rule: { kind: "label", label: "vip" } },
+        },
+      },
+      appDb,
+      { settingsMode: "replace" },
+    );
+    const after = await settingsRows();
+    expect(after.length).toBe(rows + 1);
+    expect(JSON.stringify(after.at(-1))).toContain("unreadConfigChanged");
+  });
+
   test("MCP, create and import store the same form", async () => {
     const r = await agentSettingsSet(
       principal(),

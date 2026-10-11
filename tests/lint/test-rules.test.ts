@@ -47,6 +47,11 @@ const PROBES: Record<string, string> = {
   [`${PROBE}/listen-port-only.ts`]: `${APP}export const l = app.listen(0);\n`,
   [`${PROBE}/listen-port-callback.ts`]: `${APP}export const l = app.listen(0, () => {});\n`,
   [`${PROBE}/listen-other-host.ts`]: `${APP}export const l = app.listen(0, "0.0.0.0", () => {});\n`,
+  [`${PROBE}/serve-wildcard-host.ts`]:
+    'export const s = Bun.serve({ hostname: "0.0.0.0", port: 0, fetch: () => new Response("x") });\n',
+  [`${PROBE}/serve-ipv6-wildcard.ts`]:
+    'export const s = Bun.serve({ hostname: "::", port: 0, fetch: () => new Response("x") });\n',
+  [`${PROBE}/listen-options-wildcard.ts`]: `${APP}export const l = app.listen({ port: 0, hostname: "0.0.0.0" });\n`,
   [`${PROBE}/serve-loopback.ts`]:
     'export const s = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("x") });\n',
   [`${PROBE}/listen-options-loopback.ts`]: `${APP}export const l = app.listen({ port: 0, hostname: "127.0.0.1" });\n`,
@@ -153,6 +158,9 @@ describe("require-test-server-hostname", () => {
     ["listen-port-only.ts"],
     ["listen-port-callback.ts"],
     ["listen-other-host.ts"],
+    ["serve-wildcard-host.ts"],
+    ["serve-ipv6-wildcard.ts"],
+    ["listen-options-wildcard.ts"],
   ])("a test server that names no loopback host is refused (%s)", (name) => {
     expect(of(`${PROBE}/${name}`).server).toBe(1);
   });

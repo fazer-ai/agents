@@ -10,6 +10,8 @@ import { RESOLVE_LABELS_MAX } from "@/modules/agents/resolve-labels";
 import {
   CUSTOM_POLICY_MAX,
   GENERATION_PROMPT_MAX,
+  SNOOZED_FOLLOW_UP_MAX_CADENCES,
+  SNOOZED_FOLLOW_UP_MAX_LABELED_CADENCES,
   TEMPLATE_MESSAGE_MAX,
   TOOL_INSTRUCTIONS_MAX,
 } from "@/modules/agents/text-caps";
@@ -324,7 +326,9 @@ const snoozedFollowUp = z.looseObject({
   cadences: z
     .array(snoozedFollowUpCadence)
     .optional()
-    .describe("replaced whole; first label match wins"),
+    .describe(
+      `replaced whole; first label match wins; first ${SNOOZED_FOLLOW_UP_MAX_CADENCES} kept (default + ${SNOOZED_FOLLOW_UP_MAX_LABELED_CADENCES} labeled)`,
+    ),
   signature: z.boolean().optional(),
 });
 

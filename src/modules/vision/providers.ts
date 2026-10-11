@@ -33,10 +33,17 @@ export interface VisionRequest {
   // constant here on purpose: the caller owns the total, so it can spend what is left of it rather
   // than granting every attempt the whole ceiling.
   timeoutMs: number;
+  // The caller's deadline, on top of the attempt's: past it the request in flight is aborted.
+  signal?: AbortSignal;
   // From `settings.vision`, already validated by the reader. Absent or null = not configured, and the
   // request carries no field for it (anthropic's required `max_tokens` takes its default).
   maxOutputTokens?: number | null;
   reasoningEffort?: VisionReasoningEffort | null;
+}
+
+function visionSignal(req: VisionRequest): AbortSignal {
+  const own = AbortSignal.timeout(req.timeoutMs);
+  return req.signal ? AbortSignal.any([own, req.signal]) : own;
 }
 
 // What a vision call cost, in the provider's own numbers, returned alongside the text by every
@@ -267,7 +274,7 @@ async function chatCompletionsExtract(
     },
     body: JSON.stringify(body),
     redirect: "error",
-    signal: AbortSignal.timeout(req.timeoutMs),
+    signal: visionSignal(req),
   });
   if (!res.ok) throw await failure(providerName, res);
   const json = (await res.json()) as {
@@ -353,7 +360,7 @@ async function geminiExtract(req: VisionRequest): Promise<VisionResult> {
       },
       body: JSON.stringify(body),
       redirect: "error",
-      signal: AbortSignal.timeout(req.timeoutMs),
+      signal: visionSignal(req),
     },
   );
   if (!res.ok) throw await failure("gemini", res);
@@ -446,7 +453,7 @@ async function anthropicExtract(req: VisionRequest): Promise<VisionResult> {
     },
     body: JSON.stringify(body),
     redirect: "error",
-    signal: AbortSignal.timeout(req.timeoutMs),
+    signal: visionSignal(req),
   });
   if (!res.ok) throw await failure("anthropic", res);
   const json = (await res.json()) as {

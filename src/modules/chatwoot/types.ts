@@ -203,6 +203,11 @@ export interface NormalizedChatwootEvent {
   // Kanban::Task#common_event_data carries `custom_attributes`). `undefined` ⇒ absent (upstream
   // Chatwoot, or a conversation with no card).
   kanbanAttributes?: Record<string, unknown>;
+  // That card's id and its own `updated_at` (unix seconds, millisecond precision as the fork renders
+  // it). Editing a card does not write the conversation, so this is what orders two states of one card
+  // carried under one conversation version. `null` when the payload names no card or no usable clock.
+  kanbanCardId?: number | null;
+  kanbanCardAt?: number | null;
   // The fork's `conversation.group_type`. `undefined` ⇒ the payload said nothing (the mirror keeps
   // what it has).
   conversationType?: "group" | "individual";

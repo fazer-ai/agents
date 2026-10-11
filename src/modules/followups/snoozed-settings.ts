@@ -11,11 +11,16 @@
 import { clipText } from "@/lib/text";
 import {
   FOLLOW_UP_MAX_STEPS,
+  SNOOZED_CADENCE_LABEL_MAX,
   SNOOZED_FOLLOW_UP_MAX_CADENCES,
+  SNOOZED_FOLLOW_UP_MAX_LABELED_CADENCES,
 } from "@/modules/agents/text-caps";
 import { type FollowUpStep, parseFollowUpStep } from "./settings";
 
-export { SNOOZED_FOLLOW_UP_MAX_CADENCES } from "@/modules/agents/text-caps";
+export {
+  SNOOZED_FOLLOW_UP_MAX_CADENCES,
+  SNOOZED_FOLLOW_UP_MAX_LABELED_CADENCES,
+} from "@/modules/agents/text-caps";
 
 // One SNOOZED_FOLLOWUP row per conversation. Here, beside the config, so the /reset path can name it
 // without importing the handler and the graph behind it.
@@ -51,7 +56,7 @@ function readCadence(raw: unknown): SnoozedFollowUpCadence | null {
   const bag = raw as Record<string, unknown>;
   const label =
     typeof bag.label === "string" && bag.label.trim()
-      ? clipText(bag.label.trim(), 100)
+      ? clipText(bag.label.trim(), SNOOZED_CADENCE_LABEL_MAX)
       : null;
   const steps = (Array.isArray(bag.steps) ? bag.steps : [])
     .slice(0, FOLLOW_UP_MAX_STEPS)
@@ -85,13 +90,20 @@ export function readSnoozedFollowUpConfig(
   // One cadence per label: a second one with the same label could never be picked, and a second
   // default is the same. The first wins, as `pickSnoozedCadence` reads the list.
   const seen = new Set<string>();
+  // The default does not count against the labeled ones: the list holds it plus up to
+  // SNOOZED_FOLLOW_UP_MAX_LABELED_CADENCES labeled, read from the first SNOOZED_FOLLOW_UP_MAX_CADENCES
+  // entries (where the text walker stops too).
+  let labeled = 0;
   for (const c of (Array.isArray(bag.cadences) ? bag.cadences : [])
     .slice(0, SNOOZED_FOLLOW_UP_MAX_CADENCES)
     .map(readCadence)) {
     if (!c) continue;
     const key = c.label === null ? "\u0000default" : c.label.toLowerCase();
     if (seen.has(key)) continue;
+    if (c.label !== null && labeled >= SNOOZED_FOLLOW_UP_MAX_LABELED_CADENCES)
+      continue;
     seen.add(key);
+    if (c.label !== null) labeled += 1;
     cadences.push(c);
   }
   return {

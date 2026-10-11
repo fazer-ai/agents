@@ -1,21 +1,42 @@
 import { describe, expect, spyOn, test } from "bun:test";
-import { t } from "elysia";
+import { Elysia, t } from "elysia";
+import { authPlugin } from "@/api/lib/auth";
 import logger from "@/api/lib/logger";
 import { errors } from "@/api/lib/openapi";
 import { buildApp } from "@/app";
-import { setupPrismaMock } from "@/tests/utils/prisma-mock";
+import {
+  mockFindUnique,
+  mockUser,
+  setupPrismaMock,
+} from "@/tests/utils/prisma-mock";
 
 // A refusal from the SCHEMA layer, as the client receives it and as the server records it.
 //
 // It runs the `onError` in src/app.ts because both leaks it guards are invisible from a unit: the
 // answer must not echo the submitted body (`found`), and neither must the log line. `POST
 // /api/v1/vault` makes it concrete: a write-only secret sits next to a `name` with `minLength: 1`,
-// and schema validation runs BEFORE the role guard, so an unauthenticated request reaches it.
+// and schema validation runs BEFORE the role guard, so an AGENT's request reaches it. (With no
+// session at all the gate answers 401 first, and the input is never looked at.)
 setupPrismaMock();
 // ITS OWN APP, NOT THE PROCESS'S: Elysia compiles its router on first use, so routes this file
 // added to the shared export after another file's request would fall through to the `/*` SPA
 // handler. `buildApp()` is the builder the server runs, so the `onError` arm is the real one.
 const app = await buildApp();
+
+const agent = { ...mockUser, role: "AGENT" as const };
+mockFindUnique.mockImplementation(() => Promise.resolve(agent));
+const tokenApp = new Elysia()
+  .use(authPlugin)
+  .post("/mint", async ({ setAuthCookie }) => ({
+    token: await setAuthCookie(agent, agent.passwordHash),
+  }));
+const { token } = (await (
+  await tokenApp.handle(
+    new Request("http://localhost/mint", { method: "POST" }),
+  )
+).json()) as { token: string };
+const BunRequest = (globalThis as unknown as { BunRequest: typeof Request })
+  .BunRequest;
 
 const SUBMITTED_SECRET = "sk-live-DO-NOT-ECHO-ME";
 
@@ -41,7 +62,11 @@ const send = async (
   path: string,
   init?: RequestInit,
 ): Promise<{ status: number; raw: string; body: Record<string, unknown> }> => {
-  const res = await app.handle(new Request(`http://localhost${path}`, init));
+  const headers = new Headers(init?.headers);
+  headers.set("cookie", `fazerai_auth_token=${token}`);
+  const res = await app.handle(
+    new BunRequest(`http://localhost${path}`, { ...init, headers }),
+  );
   const raw = await res.text();
   let body: Record<string, unknown> = {};
   try {

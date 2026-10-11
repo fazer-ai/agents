@@ -82,6 +82,11 @@ const TEXT_TARGETS: ReadonlyArray<{ match: RegExp } & EditorTarget> = [
     sectionId: "tts",
   },
   { match: /^followUp\.steps\[/, tab: "behavior", sectionId: "proactive" },
+  {
+    match: /^snoozedFollowUp\.cadences\[/,
+    tab: "behavior",
+    sectionId: "snoozedFollowUp",
+  },
   // Not text caps: the other refusals an agent write names by a settings path, here so a refusal
   // about one can take the operator to it. Without an entry the banner would say "no control in the
   // console" about a picker that is on screen.
@@ -195,9 +200,17 @@ export interface EditorControlsShown {
   // How many follow-up steps the Proactive section is showing. The note of a step that does not
   // exist is a name nothing can render, so the list stops where the editor's does.
   followUpSteps: number;
+  // The snoozed follow-up's steps are drawn while its switch is on, and an agent that only watches
+  // never draws the section at all.
+  snoozedFollowUpEnabled: boolean;
+  // How many steps each snoozed cadence is showing, by cadence, for the reason `followUpSteps` is.
+  snoozedFollowUpSteps: readonly number[];
 }
 
-type SwitchName = Exclude<keyof EditorControlsShown, "tab" | "followUpSteps">;
+type SwitchName = Exclude<
+  keyof EditorControlsShown,
+  "tab" | "followUpSteps" | "snoozedFollowUpSteps"
+>;
 
 // The switch each credential picker sits behind, by the path the server refuses it under. Keyed by
 // path and looked up rather than listed alongside, so a credential added to
@@ -303,6 +316,14 @@ export function followUpStepField(index: number): string {
   return `followUp.steps[${index}].instructions`;
 }
 
+// One snoozed follow-up step's note, by the server's name for it, in the same bracket spelling.
+export function snoozedFollowUpStepField(
+  cadence: number,
+  step: number,
+): string {
+  return `snoozedFollowUp.cadences[${cadence}].steps[${step}].instructions`;
+}
+
 // What the editor is DRAWING right now, and everything it can mark.
 //
 // `drawn` is what decides whether a mark is readable, so it answers per control and not per tab.
@@ -316,12 +337,24 @@ export function editorRefusalFields(view: EditorControlsShown): {
     { length: Math.max(0, view.followUpSteps) },
     (_, i) => followUpStepField(i),
   );
-  const owned = [...OWNED_FIELDS.map((f) => f.field), ...steps];
+  const snoozedSteps = view.snoozedFollowUpSteps.flatMap((count, c) =>
+    Array.from({ length: Math.max(0, count) }, (_, i) =>
+      snoozedFollowUpStepField(c, i),
+    ),
+  );
+  const owned = [
+    ...OWNED_FIELDS.map((f) => f.field),
+    ...steps,
+    ...snoozedSteps,
+  ];
   const drawn = [
     ...OWNED_FIELDS.filter(
       (f) => f.tab === view.tab && (!f.needs || view[f.needs]),
     ).map((f) => f.field),
     ...(view.tab === "behavior" && view.followUpEnabled ? steps : []),
+    ...(view.tab === "behavior" && view.snoozedFollowUpEnabled
+      ? snoozedSteps
+      : []),
   ];
   return { drawn, owned };
 }

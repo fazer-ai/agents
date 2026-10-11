@@ -62,6 +62,7 @@ import {
   followUpStepField,
   hasNoConsoleControl,
   sentFromPatch,
+  snoozedFollowUpStepField,
 } from "@/client/lib/editorRefusal";
 import {
   firstRefusalAt,
@@ -187,6 +188,12 @@ import {
   staleNoticeOf,
 } from "./StaleNotice";
 import { signatureToForm, signatureToStored } from "./signatureFormState";
+import {
+  snoozedFollowUpBlocksSave,
+  snoozedFollowUpStoredIndices,
+  snoozedFollowUpToForm,
+  snoozedFollowUpToStored,
+} from "./snoozedFollowUpFormState";
 import {
   parseToolPreconditionRows,
   serializeToolPreconditions,
@@ -533,6 +540,7 @@ function readBehaviorState(a: Agent) {
       templateContent: str(sw.templateContent),
     },
     followUp: followUpToForm(s),
+    snoozedFollowUp: snoozedFollowUpToForm(s),
     handoff: {
       mode: str(ho.mode) || "route",
       target: num(ho.targetAgentId)
@@ -880,6 +888,11 @@ function AgentEditor() {
     ],
     pauseWhileAppointment: true,
   });
+  // The snoozed follow-up (a person waiting on the customer). Mirrors agent.settings.snoozedFollowUp
+  // through ./snoozedFollowUpFormState.
+  const [snoozedFollowUp, setSnoozedFollowUp] = useState(() =>
+    snoozedFollowUpToForm({}),
+  );
   // Image/document extraction (vision). Mirrors agent.settings.vision (modules/vision).
   const [vision, setVision] = useState(() => visionToForm({}));
   // Runtime limits. Mirrors agent.settings.limits (modules/agents/limits): the per-turn tool-call
@@ -1082,6 +1095,11 @@ function AgentEditor() {
   // it is there (a toast would scroll away with the only copy of the reason). Declared AFTER the
   // state it reads: the lists depend on the open tab and the follow-up steps drawn. The switches
   // are this page's state; the module owns which switch each control sits behind. See docs/ui.md.
+  // By the index the save writes, which is the one the server names (the screen shows the default
+  // first).
+  const snoozedWrittenSteps = snoozedFollowUpToStored(
+    snoozedFollowUp,
+  ).cadences.map((c) => c.steps.length);
   const refusalView: EditorControlsShown = {
     tab,
     awayEnabled,
@@ -1105,8 +1123,12 @@ function AgentEditor() {
     guardrailsEnabled: guardrails.enabled,
     followUpEnabled: followUp.enabled,
     followUpSteps: followUp.steps.length,
+    snoozedFollowUpEnabled:
+      snoozedFollowUp.enabled && agentMode !== "monitoring",
+    snoozedFollowUpSteps: snoozedWrittenSteps,
   };
   const refusalFields = editorRefusalFields(refusalView);
+  const snoozedStoredIndices = snoozedFollowUpStoredIndices(snoozedFollowUp);
 
   // ONE HELD REFUSAL PER FORM THAT WRITES (`capture` is also the clear, so a shared holder
   // lets a second refused save erase the first), as six fixed calls since hooks cannot run in a
@@ -1228,6 +1250,15 @@ function AgentEditor() {
         followUpStepField(i),
         step.instructions,
       ]),
+    ),
+    // NOTE: Through the writer as well, for the same reason.
+    ...Object.fromEntries(
+      snoozedFollowUpToStored(snoozedFollowUp).cadences.flatMap((c, ci) =>
+        c.steps.map((step, i) => [
+          snoozedFollowUpStepField(ci, i),
+          step.instructions,
+        ]),
+      ),
     ),
   };
   // What THIS write carried, by the server's names, read from the patch it is about to send
@@ -1442,6 +1473,7 @@ function AgentEditor() {
     setSignature(b.signature);
     setServiceWindow(b.serviceWindow);
     setFollowUp(b.followUp);
+    setSnoozedFollowUp(b.snoozedFollowUp);
     setVision(b.vision);
     setLimits(b.limits);
     setObservability(b.observability);
@@ -1484,6 +1516,7 @@ function AgentEditor() {
     setSignature(b.signature);
     setServiceWindow(b.serviceWindow);
     setFollowUp(b.followUp);
+    setSnoozedFollowUp(b.snoozedFollowUp);
     setVision(b.vision);
     setLimits(b.limits);
     setObservability(b.observability);
@@ -1764,6 +1797,8 @@ function AgentEditor() {
         templateContent: serviceWindow.templateContent.trim() || null,
       },
       followUp: followUpToStored(followUp),
+      // NOTE: through the pair, for the same reason as `followUp`: this save REPLACES the block.
+      snoozedFollowUp: snoozedFollowUpToStored(snoozedFollowUp),
       // NOTE: through the pair, for the same reason as `limits` below: this save REPLACES the block,
       // and the output limits have no control to keep them (./visionFormState).
       vision: visionToStored(vision),
@@ -1826,6 +1861,7 @@ function AgentEditor() {
       signature,
       serviceWindow,
       followUp,
+      snoozedFollowUp,
       vision,
       limits,
       attributeContext,
@@ -2836,6 +2872,7 @@ function AgentEditor() {
     setSignature(b.signature);
     setServiceWindow(b.serviceWindow);
     setFollowUp(b.followUp);
+    setSnoozedFollowUp(b.snoozedFollowUp);
     setVision(b.vision);
     setLimits(b.limits);
     setObservability(b.observability);
@@ -3428,6 +3465,20 @@ function AgentEditor() {
         t(
           "editor.contactAuthEmpty",
           "Add at least one condition or turn on the external endpoint, or turn the gate off.",
+        ),
+        "error",
+      );
+      return false;
+    }
+    // NOTE: Same reason: the snoozed ladder's cadence issues hold the Behavior Save, not this path.
+    if (
+      dirty.behavior &&
+      snoozedFollowUpBlocksSave(snoozedFollowUp, agentMode)
+    ) {
+      showToast(
+        t(
+          "editor.snoozedFollowUpInvalidToast",
+          "Fix the snoozed follow-up's cadences before saving.",
         ),
         "error",
       );
@@ -4047,6 +4098,8 @@ function AgentEditor() {
                 setServiceWindow={setServiceWindow}
                 followUp={followUp}
                 setFollowUp={setFollowUp}
+                snoozedFollowUp={snoozedFollowUp}
+                setSnoozedFollowUp={setSnoozedFollowUp}
                 redirectSuppressesFollowUp={
                   channelRedirect.enabled &&
                   (channelRedirect.entryInboxId !== "" ||
@@ -4145,6 +4198,21 @@ function AgentEditor() {
                       followUpStepField(i),
                       currentRef.current[followUpStepField(i)],
                     ),
+                  ),
+                  snoozedFollowUpSteps: snoozedFollowUp.cadences.map(
+                    (c, ci) => {
+                      const stored = snoozedStoredIndices[ci] ?? null;
+                      return c.steps.map((_step, i) =>
+                        stored === null
+                          ? null
+                          : refusal.at(
+                              snoozedFollowUpStepField(stored, i),
+                              currentRef.current[
+                                snoozedFollowUpStepField(stored, i)
+                              ],
+                            ),
+                      );
+                    },
                   ),
                 }}
                 dirty={dirty.behavior}

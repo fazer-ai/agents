@@ -892,6 +892,21 @@ model Conversation {
   // conversation_updated that announces a new pairing arrives with a FROZEN activity timestamp and a
   // recency fence would discard exactly the payload that carries the answer.
   chatwootRedirectOriginAt     Float?    @map("chatwoot_redirect_origin_at")
+  // The facts with no version of their own (the labels, the two attribute bags, the type), each with
+  // the version (`updated_at`) of the payload that last wrote it. `last_activity_at` does not move
+  // when they change and `updated_at` does, so a payload behind a fact's mark is older than the value
+  // stored even when it shares its second. One per fact, written with the fact, for the reason the
+  // state has split marks: a payload that omits one must not advance a mark over a value it never
+  // stated. NULL until the first versioned payload writes that fact.
+  chatwootLabelsAt             Float?    @map("chatwoot_labels_at")
+  chatwootCustomAttributesAt   Float?    @map("chatwoot_custom_attributes_at")
+  chatwootConversationTypeAt   Float?    @map("chatwoot_conversation_type_at")
+  chatwootKanbanAttributesAt   Float?    @map("chatwoot_kanban_attributes_at")
+  // The kanban card whose attributes `kanbanAttributes` holds, and the card's own `updated_at` (unix
+  // seconds) as of them. Editing a card writes the card and not the conversation, so two snapshots of
+  // one conversation version can carry two states of the same card, and this clock orders them.
+  chatwootKanbanCardId         Int?      @map("chatwoot_kanban_card_id")
+  chatwootKanbanCardAt         Float?    @map("chatwoot_kanban_card_at")
   // THE LOCAL STATUS CLAIM (issue #436): a status this side wrote that the source has not versioned,
   // and the instant that write stops fencing this row. NULL = no local write is outstanding.
   //

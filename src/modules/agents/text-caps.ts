@@ -20,9 +20,19 @@ export const SIGNATURE_MAX = 500;
 // Not a text cap: how many follow-up steps readFollowUpConfig keeps. It lives here because the walker
 // below has to stop where the reader stops — text in a step the reader discards is text nothing reads.
 export const FOLLOW_UP_MAX_STEPS = 10;
+// A step's delay when the stored one is missing or unreadable, in minutes. The runtime reader and the
+// console's step mapper both default to it, so a save that rewrites a step does not change its delay.
+export const FOLLOW_UP_DEFAULT_DELAY_VALUE = 60;
+// The longest cadence label the snoozed reader keeps; longer ones are clipped, so two labels sharing
+// this prefix are one label to it.
+export const SNOOZED_CADENCE_LABEL_MAX = 100;
 // Not a text cap either: how many cadences readSnoozedFollowUpConfig keeps, here for the same reason.
-// Each cadence is a label the team picks by hand, so a handful is the whole useful range.
-export const SNOOZED_FOLLOW_UP_MAX_CADENCES = 10;
+// Each labeled cadence is a label the team picks by hand, so a handful is the whole useful range. The
+// default cadence (`label: null`) does not count against the labeled ones: the list holds the default
+// plus up to 10 labeled, so the reader reads at most 11 entries and the walker stops at the same place.
+export const SNOOZED_FOLLOW_UP_MAX_LABELED_CADENCES = 10;
+export const SNOOZED_FOLLOW_UP_MAX_CADENCES =
+  SNOOZED_FOLLOW_UP_MAX_LABELED_CADENCES + 1;
 
 export interface OversizedText {
   // Dotted path into the settings bag, e.g. `handoff.instructions`. It is what the operator reads in

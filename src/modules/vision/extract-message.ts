@@ -234,6 +234,7 @@ export async function extractMessageVisuals(params: {
           flow: params.flow,
           deps: params.deps,
           stashAnnotation: false,
+          signal: params.signal,
         }).catch(() => null),
       ),
     );

@@ -398,6 +398,7 @@ const BARE_SLICES: Record<
   "src/client/pages/agents/PlaygroundChat.tsx": [1, "array"],
   "src/client/pages/agents/PromptPanel.tsx": [1, "index"],
   "src/client/pages/agents/followUpFormState.ts": [1, "array"],
+  "src/client/pages/agents/snoozedFollowUpFormState.ts": [1, "array"],
   "src/client/pages/approvals/ConversationApprovals.tsx": [1, "array"],
   // Two: the token insert splices at a SELECTION, which the browser never puts inside a surrogate
   // pair, and `eachBlockEdit` cuts at the same boundary to ask what sits on either side of it.
@@ -472,6 +473,9 @@ const BARE_SLICES: Record<
   "src/modules/documents/slug.ts": [2, "ascii"],
   "src/modules/flowlog/export.ts": [2, "fixed-format + array"],
   "src/modules/flowlog/read.ts": [1, "array"],
+  // The reminder's window, the newest messages kept off an ARRAY of rows, twice: once to render,
+  // once to pick what to read.
+  "src/modules/followups/snoozed.ts": [2, "array"],
   // `parseIsoInstant`: the date half of an ISO instant, to check a calendar `Date.parse` would
   // silently normalise (February 30 to March 2). Position 10 is the format's own boundary, and the
   // string already matched an ASCII-only pattern.

@@ -23,6 +23,34 @@ const V_NEW = 1_776_000_000.303;
 const CLAIM_LIVE = new Date(NOW.getTime() + 30_000);
 const CLAIM_EXPIRED = new Date(NOW.getTime() - 1);
 
+const ALL_STATED = {
+  labels: true,
+  customAttributes: true,
+  conversationType: true,
+  kanbanAttributes: true,
+};
+
+function marks(v: number | null) {
+  return {
+    labels: v,
+    customAttributes: v,
+    conversationType: v,
+    kanbanAttributes: v,
+  };
+}
+
+// Every fact written and stamped with `at`, or every fact left alone. A fresh object per key: Bun's
+// `toMatchObject` stops comparing an expected object it has already visited, so one object shared by
+// the four keys is checked against the first of them only.
+function allFacts(write: boolean, at: number | null = null) {
+  return {
+    labels: { write, at },
+    customAttributes: { write, at },
+    conversationType: { write, at },
+    kanbanAttributes: { write, at },
+  };
+}
+
 function conversationEvent(over: Partial<StatePayload> = {}): StatePayload {
   return {
     version: V_NEW,
@@ -36,6 +64,9 @@ function conversationEvent(over: Partial<StatePayload> = {}): StatePayload {
     redirectOriginStated: false,
     ownershipChangeStated: false,
     assigneeId: null,
+    factsStated: ALL_STATED,
+    kanbanCardId: null,
+    kanbanCardAt: null,
     ...over,
   };
 }
@@ -63,6 +94,9 @@ function storedRow(over: Partial<StateRow> = {}): StateRow {
     statusClaimRefusedAt: null,
     ownershipChangedAt: null,
     assigneeId: null,
+    factMarks: marks(null),
+    kanbanCardId: null,
+    kanbanCardAt: null,
     ...over,
   };
 }
@@ -588,6 +622,185 @@ const CASES: Case[] = [
       statusClaimFrom: "pending",
     }),
     want: { status: "pending", statusAt: V_NEW },
+  },
+
+  // THE FACT MARKS. Labels, attribute bags and `group_type` carry no version of their own and
+  // `last_activity_at` does not move when they change, so a delayed snapshot from the same second used
+  // to win. The conversation's version moves on every one of those writes.
+  {
+    name: "a snapshot older than the version that last wrote a fact leaves it alone, in the same second",
+    payload: messageEvent({ version: V_OLD, activityAt: LATER }),
+    row: storedRow({ activityAt: LATER, factMarks: marks(V_NOW) }),
+    want: { stale: false, facts: allFacts(false) },
+  },
+  {
+    name: "...and so does a conversation event at an older version",
+    payload: conversationEvent({ version: V_OLD, activityAt: LATER }),
+    row: storedRow({
+      activityAt: LATER,
+      factMarks: marks(V_NOW),
+      statusAt: V_OLD,
+      assigneeAt: V_OLD,
+    }),
+    want: { facts: allFacts(false) },
+  },
+  {
+    // The relations keep the recency rule alone: a payload refused for the facts still writes them.
+    name: "a fact refused by its mark leaves the relations to the recency rule",
+    payload: messageEvent({ version: V_OLD, activityAt: LATER }),
+    row: storedRow({ activityAt: LATER, factMarks: marks(V_NOW) }),
+    want: { unversioned: true },
+  },
+  {
+    name: "a newer version in the same second writes the facts and moves their marks",
+    payload: messageEvent({ version: V_NEW, activityAt: LATER }),
+    row: storedRow({ activityAt: LATER, factMarks: marks(V_NOW) }),
+    want: { facts: allFacts(true, V_NEW) },
+  },
+  {
+    // The same row version is the same facts, and its companions agree by construction.
+    name: "the same version writes the facts again and leaves the marks",
+    payload: messageEvent({ version: V_NOW, activityAt: LATER }),
+    row: storedRow({ activityAt: LATER, factMarks: marks(V_NOW) }),
+    want: { facts: allFacts(true, null) },
+  },
+  {
+    name: "a row from before the marks takes the first versioned facts and is stamped",
+    payload: messageEvent({ version: V_OLD, activityAt: LATER }),
+    row: storedRow({ activityAt: LATER }),
+    want: { facts: allFacts(true, V_OLD) },
+  },
+  {
+    name: "a row born from a versioned payload is stamped",
+    payload: messageEvent({ version: V_NEW }),
+    row: null,
+    want: { facts: allFacts(true, V_NEW) },
+  },
+  {
+    // Chatwoot < 4.0.2: no version to order by, so the recency rule stands alone, ties included.
+    name: "a versionless payload keeps the recency rule and stamps nothing",
+    payload: messageEvent({ version: null, activityAt: LATER }),
+    row: storedRow({ activityAt: LATER, factMarks: marks(V_NOW) }),
+    want: { facts: allFacts(true, null) },
+  },
+  {
+    name: "a newer version behind on last_activity_at still writes no facts",
+    payload: conversationEvent({ version: V_NEW, activityAt: EARLIER }),
+    row: storedRow({ activityAt: LATER, factMarks: marks(V_NOW) }),
+    want: { unversioned: false, facts: allFacts(false) },
+  },
+  {
+    // A payload that omits a fact says nothing about it, so its mark stays where the last writer of
+    // THAT fact left it, and an older payload carrying it is still heard.
+    name: "a fact the payload omits is neither written nor stamped",
+    payload: messageEvent({
+      version: V_NEW,
+      activityAt: LATER,
+      factsStated: { ...ALL_STATED, labels: false },
+    }),
+    row: storedRow({ activityAt: LATER, factMarks: marks(V_NOW) }),
+    want: {
+      facts: { ...allFacts(true, V_NEW), labels: { write: false, at: null } },
+    },
+  },
+  {
+    name: "each fact is ordered by its own mark",
+    payload: messageEvent({ version: V_NOW, activityAt: LATER }),
+    row: storedRow({
+      activityAt: LATER,
+      factMarks: { ...marks(V_OLD), labels: V_NEW },
+    }),
+    want: {
+      facts: { ...allFacts(true, V_NOW), labels: { write: false, at: null } },
+    },
+  },
+  // THE CARD. Editing a kanban card writes the card, not the conversation, so two snapshots of one
+  // conversation version can carry two states of the same card; the card's own `updated_at` orders
+  // them. Linking another card moves neither clock, so a different card at the same version is a tie.
+  {
+    name: "at the same version, an older state of the same card is refused, the rest still written",
+    payload: messageEvent({
+      version: V_NOW,
+      activityAt: LATER,
+      kanbanCardId: 7,
+      kanbanCardAt: V_OLD,
+    }),
+    row: storedRow({
+      activityAt: LATER,
+      factMarks: marks(V_NOW),
+      kanbanCardId: 7,
+      kanbanCardAt: V_NOW,
+    }),
+    want: {
+      facts: {
+        ...allFacts(true, null),
+        kanbanAttributes: { write: false, at: null },
+      },
+    },
+  },
+  {
+    name: "at the same version, a newer state of the same card is written",
+    payload: messageEvent({
+      version: V_NOW,
+      activityAt: LATER,
+      kanbanCardId: 7,
+      kanbanCardAt: V_NEW,
+    }),
+    row: storedRow({
+      activityAt: LATER,
+      factMarks: marks(V_NOW),
+      kanbanCardId: 7,
+      kanbanCardAt: V_NOW,
+    }),
+    want: { facts: allFacts(true, null) },
+  },
+  {
+    name: "at the same version, another card is written whatever its clock",
+    payload: messageEvent({
+      version: V_NOW,
+      activityAt: LATER,
+      kanbanCardId: 8,
+      kanbanCardAt: V_OLD,
+    }),
+    row: storedRow({
+      activityAt: LATER,
+      factMarks: marks(V_NOW),
+      kanbanCardId: 7,
+      kanbanCardAt: V_NOW,
+    }),
+    want: { facts: allFacts(true, null) },
+  },
+  {
+    name: "a newer conversation version writes the card even when its clock is older",
+    payload: messageEvent({
+      version: V_NEW,
+      activityAt: LATER,
+      kanbanCardId: 7,
+      kanbanCardAt: V_OLD,
+    }),
+    row: storedRow({
+      activityAt: LATER,
+      factMarks: marks(V_NOW),
+      kanbanCardId: 7,
+      kanbanCardAt: V_NOW,
+    }),
+    want: { facts: allFacts(true, V_NEW) },
+  },
+  {
+    name: "a card behind its mark is refused whatever its clock",
+    payload: messageEvent({
+      version: V_OLD,
+      activityAt: LATER,
+      kanbanCardId: 7,
+      kanbanCardAt: V_NEW,
+    }),
+    row: storedRow({
+      activityAt: LATER,
+      factMarks: marks(V_NOW),
+      kanbanCardId: 7,
+      kanbanCardAt: V_NOW,
+    }),
+    want: { facts: allFacts(false) },
   },
 ];
 

@@ -8,6 +8,7 @@ import { clipText } from "@/lib/text";
 // default step (its pre-multi-step config is not read).
 
 import {
+  FOLLOW_UP_DEFAULT_DELAY_VALUE,
   FOLLOW_UP_INSTRUCTIONS_MAX,
   FOLLOW_UP_MAX_STEPS,
 } from "@/modules/agents/text-caps";
@@ -145,7 +146,12 @@ const VALID_UNITS = new Set<string>(FOLLOW_UP_DELAY_UNITS);
 export function parseFollowUpStep(raw: unknown): FollowUpStep | null {
   if (!raw || typeof raw !== "object") return null;
   const bag = raw as Record<string, unknown>;
-  const delayValue = clampInt(bag.delayValue, 1, 100_000, 60);
+  const delayValue = clampInt(
+    bag.delayValue,
+    1,
+    100_000,
+    FOLLOW_UP_DEFAULT_DELAY_VALUE,
+  );
   const delayUnit: FollowUpDelayUnit = VALID_UNITS.has(bag.delayUnit as string)
     ? (bag.delayUnit as FollowUpDelayUnit)
     : "minutes";

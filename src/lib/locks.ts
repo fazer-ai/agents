@@ -89,3 +89,77 @@ export function shareInFlight<T>(
   sharedFlights.set(key, run);
   return run;
 }
+
+// `shareInFlight` for work a caller may stop waiting for. Each caller waits under its own signal and
+// is let go when it aborts; the shared run gets its own signal, aborted only once every caller that
+// joined it has given up, so one caller's deadline never cuts the read another is still waiting on.
+// A caller with no signal waits to the end and keeps the run alive. A run being torn down is not
+// joined: the next caller starts a fresh one.
+interface AbortableFlight {
+  run: Promise<unknown>;
+  controller: AbortController;
+  waiting: number;
+  pinned: boolean;
+}
+const abortableFlights = new Map<string, AbortableFlight>();
+
+export function shareAbortableInFlight<T>(
+  key: string,
+  fn: (signal: AbortSignal) => Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> {
+  let flight = abortableFlights.get(key);
+  if (!flight) {
+    const controller = new AbortController();
+    const entry: AbortableFlight = {
+      run: Promise.resolve(),
+      controller,
+      waiting: 0,
+      pinned: false,
+    };
+    entry.run = fn(controller.signal).finally(() => {
+      if (abortableFlights.get(key) === entry) abortableFlights.delete(key);
+    });
+    // A run every caller left still settles; its rejection is nobody's to handle.
+    entry.run.catch(() => {});
+    abortableFlights.set(key, entry);
+    flight = entry;
+  }
+  const entry = flight;
+  const run = entry.run as Promise<T>;
+  const leave = (reason: unknown) => {
+    entry.waiting--;
+    if (entry.waiting === 0 && !entry.pinned) {
+      if (abortableFlights.get(key) === entry) abortableFlights.delete(key);
+      entry.controller.abort(reason);
+    }
+  };
+  if (!signal) {
+    entry.pinned = true;
+    return run;
+  }
+  entry.waiting++;
+  if (signal.aborted) {
+    leave(signal.reason);
+    return Promise.reject(signal.reason);
+  }
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      leave(signal.reason);
+      reject(signal.reason);
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    run.then(
+      (v) => {
+        signal.removeEventListener("abort", onAbort);
+        entry.waiting--;
+        resolve(v);
+      },
+      (e) => {
+        signal.removeEventListener("abort", onAbort);
+        entry.waiting--;
+        reject(e);
+      },
+    );
+  });
+}

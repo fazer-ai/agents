@@ -4,7 +4,9 @@ import { staticPlugin } from "@elysiajs/static";
 import Elysia, { NotFoundError, ValidationError } from "elysia";
 import { helmet } from "elysia-helmet";
 import api from "@/api";
+import { refusedForSession } from "@/api/lib/auth";
 import { cspDirectives } from "@/api/lib/csp";
+import { getLocaleFromHeader, translateWithLocale } from "@/api/lib/i18n";
 import logger from "@/api/lib/logger";
 import { parseOrigins } from "@/api/lib/origin";
 import { refusalBody, refusalHeaders } from "@/api/lib/refusal";
@@ -149,13 +151,29 @@ export async function buildApp() {
     // from the plugin's own `onError`, and Elysia stops at the first error handler that returns a
     // value, so answering NOT_FOUND or VALIDATION before the plugin would leave them uncharged.
     // Framework refusals such as PARSE return `undefined` below, so they reach the plugin either way.
-    .onError(({ path, route, error, request, set }) => {
+    .onError(async ({ path, route, error, request, set }) => {
       const logged = loggedPath(path, route);
       // NOTE: a schema refusal in the app's own vocabulary (body and log line: api/lib/schema-refusal.ts).
       // Here and not next to the AppError branch, so the plugin's charge for VALIDATION is not skipped
       // (see middlewares/rateLimit.ts). Keyed on identity, not `code`: Elysia forwards a thrown value's
       // own `code`, so any plain error carrying "VALIDATION" would match.
       if (error instanceof ValidationError) {
+        // NOTE: the gate's answer to a request with no session, before anything about its input.
+        // Charged by the limiters' own handler above, as the schema refusal would have been.
+        if (await refusedForSession(request)) {
+          logger.warn("%s refused: no session", logged);
+          set.status = 401;
+          return Response.json(
+            {
+              error: translateWithLocale(
+                getLocaleFromHeader(request.headers.get("accept-language")),
+                "errors.unauthorized",
+                "Unauthorized",
+              ),
+            },
+            { status: 401 },
+          );
+        }
         const refusal = schemaRefusal(
           error,
           request.headers.get("accept-language"),

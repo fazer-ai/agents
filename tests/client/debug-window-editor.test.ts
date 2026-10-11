@@ -228,6 +228,31 @@ describe("the window is on the server's clock, not the browser's", () => {
     );
     expect(warning()).toContain("full log detail");
   });
+
+  test("a saved window stops being reported at the server's deadline, with the browser behind or ahead", async () => {
+    // Behind first: a timer counted from the browser's now would fire hours late. Ahead: a filter on
+    // the browser's now would drop the deadline as already past and arm nothing.
+    for (const skew of [3 * HOUR, -2 * HOUR]) {
+      await openBehavior(
+        { fullDetailUntil: new Date(Date.now() + skew + HOUR).toISOString() },
+        () => serverClock(skew),
+      );
+      expect(warning()).toContain("full log detail");
+      jest.useFakeTimers();
+      // Re-armed in the form, so the scheduler runs again under the fake clock; the saved deadline
+      // is still the earlier one.
+      fireEvent.click(fullDetailSwitch());
+      fireEvent.click(fullDetailSwitch());
+      await advance(HOUR - 60_000);
+      expect(warning()).toContain("full log detail");
+      await advance(2 * 60_000);
+      expect(warning()).toBeNull();
+      jest.useRealTimers();
+      cleanup();
+      globalThis.fetch = realFetch;
+      resetServerClock();
+    }
+  });
 });
 
 describe("the derivation the warning goes through", () => {

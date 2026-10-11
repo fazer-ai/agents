@@ -102,11 +102,23 @@ function chatwoot(s: Scripted) {
       },
       // Twenty messages a page, newest last, and `before` reads the page ending below that id, as
       // Chatwoot pages a conversation.
-      async getMessages(conversationId: number, opts?: { before?: number }) {
+      async getMessages(
+        conversationId: number,
+        opts?: { before?: number; after?: number },
+      ) {
         const all = s.messages.get(conversationId) ?? [];
         if (!Array.isArray(all)) return all;
-        // Ordered and cut by `(created_at, id)`, as the fork's finder does.
-        type Row = { id: number; created_at?: number };
+        // The catch-up read: every message with a higher id, a hundred at most, reactions included.
+        if (opts?.after !== undefined) {
+          const after = opts.after;
+          return (all as { id: number }[])
+            .filter((m) => m.id > after)
+            .sort((a, b) => a.id - b.id)
+            .slice(0, 100);
+        }
+        // Ordered and cut by `(created_at, id)`, as the fork's finder does. A reaction whose target is
+        // off the page is left out of it, which `offPage` stands in for.
+        type Row = { id: number; created_at?: number; offPage?: boolean };
         const key = (m: Row) => [m.created_at ?? 0, m.id] as const;
         const before = (a: Row, b: Row) =>
           key(a)[0] < key(b)[0] || (key(a)[0] === key(b)[0] && a.id < b.id);
@@ -120,7 +132,7 @@ function chatwoot(s: Scripted) {
             : sorted.filter((m) =>
                 cursor ? before(m, cursor) : m.id < (opts.before as number),
               );
-        return older.slice(-20);
+        return older.filter((m) => !m.offPage).slice(-20);
       },
     }) as unknown as ChatwootClient;
 }
@@ -627,6 +639,76 @@ describe.skipIf(!dbUp)("reconciling from Chatwoot", () => {
     expect(counts.inboxesFailed).toBe(0);
     expect((await ledgerFor(1400)).map((r) => r.inboundMessageId)).toEqual([
       14000,
+    ]);
+  });
+
+  test("a lost reaction to a message off the newest page is found through the catch-up read", async () => {
+    await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: "answered-turn",
+        event: "message_created",
+        status: "PROCESSED",
+        conversationId: 1500,
+        inboundMessageId: 15000,
+        routeAgentBotId: BOT,
+        routeObserved: false,
+      },
+    });
+    const s: Scripted = {
+      conversations: new Map([[INBOX, [conv(1500, minutesAgo(20))]]]),
+      messages: new Map([
+        [
+          1500,
+          [
+            incoming(15000, minutesAgo(30)),
+            ourReply(15001, minutesAgo(29)),
+            {
+              ...incoming(15002, minutesAgo(20)),
+              content: "👍",
+              content_attributes: { is_reaction: true },
+              offPage: true,
+            },
+          ],
+        ],
+      ]),
+      listed: [],
+    };
+    const counts = await reconcileFromChatwoot({
+      tenantId,
+      base: appDb,
+      now: NOW,
+      makeClient: chatwoot(s),
+    });
+    expect(counts.handedToRecovery).toBe(1);
+    expect(
+      (await ledgerFor(1500)).map((r) => r.inboundMessageId).sort(),
+    ).toEqual([15000, 15002]);
+  });
+
+  test("the catch-up read is followed past a full page to the newest message", async () => {
+    const reactions = Array.from({ length: 105 }, (_, i) => ({
+      ...incoming(16_001 + i, minutesAgo(25 - i * 0.04)),
+      content: "👍",
+      content_attributes: { is_reaction: true },
+      offPage: true,
+    }));
+    const s: Scripted = {
+      conversations: new Map([[INBOX, [conv(1600, minutesAgo(20))]]]),
+      messages: new Map([
+        [1600, [ourReply(16000, minutesAgo(30)), ...reactions]],
+      ]),
+      listed: [],
+    };
+    await reconcileFromChatwoot({
+      tenantId,
+      base: appDb,
+      now: NOW,
+      makeClient: chatwoot(s),
+    });
+    expect((await ledgerFor(1600)).map((r) => r.inboundMessageId)).toEqual([
+      16_105,
     ]);
   });
 

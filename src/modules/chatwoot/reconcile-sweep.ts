@@ -107,15 +107,54 @@ function newestTurn(
 // activity lines. Past them the conversation is left undecided and the inbox unfinished.
 const MAX_MESSAGE_PAGES = 10;
 
+// The fork's catch-up read returns at most this many messages per call.
+const CATCH_UP_PAGE = 100;
+
+// The newest page, completed with the catch-up read past it: the default page keeps a reaction only
+// when its target is on the page, so a reaction to an older message is missing from it, and the
+// catch-up read (every message with a higher id, no reaction window) is where it appears. Ordered by
+// `(created_at, id)`, as the pages are.
+async function newestMessages(
+  client: ChatwootClient,
+  conversationId: number,
+): Promise<ChatwootMessageRow[]> {
+  const rows = readMessagePage(
+    await client.getMessages(conversationId),
+    conversationId,
+  );
+  if (rows.length === 0) return rows;
+  const seen = new Set(rows.map((m) => m.id));
+  let after = Math.max(...rows.map((m) => m.id));
+  for (let read = 0; ; read++) {
+    if (read >= MAX_MESSAGE_PAGES)
+      throw new Error(
+        `conversation ${conversationId}: catch-up read still full after ${MAX_MESSAGE_PAGES} pages`,
+      );
+    const more = readMessagePage(
+      await client.getMessages(conversationId, { after }),
+      conversationId,
+    );
+    for (const m of more) {
+      if (!seen.has(m.id)) {
+        seen.add(m.id);
+        rows.push(m);
+      }
+    }
+    if (more.length < CATCH_UP_PAGE) break;
+    after = Math.max(after, ...more.map((m) => m.id));
+  }
+  return rows.sort((a, b) => {
+    const d = (a.createdAt as Date).getTime() - (b.createdAt as Date).getTime();
+    return d !== 0 ? d : a.id - b.id;
+  });
+}
+
 async function owedOf(
   client: ChatwootClient,
   conversationId: number,
   managedBotIds: ReadonlySet<number>,
 ): Promise<ChatwootMessageRow | null> {
-  let rows = readMessagePage(
-    await client.getMessages(conversationId),
-    conversationId,
-  );
+  let rows = await newestMessages(client, conversationId);
   for (let page = 0; page < MAX_MESSAGE_PAGES; page++) {
     const turn = newestTurn(rows, managedBotIds);
     if (turn === "answered") return null;

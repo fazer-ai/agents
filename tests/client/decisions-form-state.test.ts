@@ -865,6 +865,43 @@ describe("a threshold on screen", () => {
       minConfidence: 0.65,
     });
   });
+  test("a stored threshold keeps every digit through the form", () => {
+    const precise = structuredClone(stored);
+    precise.rules[0] = {
+      when: [{ question: "pede", minProbability: 0.123456789 }],
+      action: { tool: "set_labels", args: { add: ["x"] } },
+    };
+    const form = decisionsToForm(precise);
+    if (!form) throw new Error("fixture");
+    expect(form.rules[0]?.when[0]?.minProbability).toBe("12.3456789");
+    const out = decisionsToStored(form) as unknown as {
+      rules: { when: { minProbability?: number }[] }[];
+    };
+    expect(out.rules[0]?.when[0]?.minProbability).toBe(0.123456789);
+  });
+  test("a threshold reads and writes as typed, without float noise", () => {
+    const noisy = structuredClone(stored);
+    noisy.rules[0] = {
+      when: [{ question: "pede", minProbability: 0.57 }],
+      action: { tool: "set_labels", args: { add: ["x"] } },
+    };
+    const form = decisionsToForm(noisy);
+    if (!form?.rules[0]?.when[0]) throw new Error("fixture");
+    expect(form.rules[0].when[0].minProbability).toBe("57");
+    form.rules[0].when[0].minProbability = "1.1";
+    const out = decisionsToStored(form) as unknown as {
+      rules: { when: { minProbability?: number }[] }[];
+    };
+    expect(out.rules[0]?.when[0]?.minProbability).toBe(0.011);
+  });
+  test("a negative percentage too small to round is still refused", () => {
+    const form = decisionsToForm(stored);
+    if (!form?.rules[0]?.when[0]) throw new Error("fixture");
+    form.rules[0].when[0].minProbability = "-0.00001";
+    expect([...decisionsFormIssues(form).keys()]).toContain(
+      "rules.0.when.0.minProbability",
+    );
+  });
   test("a percentage past 100 is refused at its field", () => {
     const form = decisionsToForm(stored);
     if (!form?.rules[0]?.when[0]) throw new Error("fixture");

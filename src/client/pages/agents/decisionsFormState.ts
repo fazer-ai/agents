@@ -112,12 +112,18 @@ const list = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
 
 // A threshold as the operator reads and types it, a percentage, from the fraction the engine stores.
 // Text that is not a number stays as it was, so the server's refusal still names it.
+// A number scaled by a power of ten in its decimal form, not by a float multiply: `0.123456789 * 100`
+// is not `12.3456789`, and rounding it instead would change a stored threshold, or let a negative
+// one round to 0 and pass.
+const shift = (n: number, places: number): number => {
+  const [mantissa, exponent = "0"] = String(n).split("e");
+  return Number(`${mantissa}e${Number(exponent) + places}`);
+};
+
 const percentText = (v: unknown): string => {
   const raw = text(v);
   const n = Number(raw);
-  return raw.trim() !== "" && Number.isFinite(n)
-    ? String(Number((n * 100).toFixed(4)))
-    : raw;
+  return raw.trim() !== "" && Number.isFinite(n) ? String(shift(n, 2)) : raw;
 };
 
 function optionsToForm(v: unknown): DecisionOptionForm[] {
@@ -198,7 +204,7 @@ function num(v: string): number | string | undefined {
 // The stored fraction of a percentage typed on screen, under the same rule as `num`.
 function fraction(v: string): number | string | undefined {
   const n = num(v);
-  return typeof n === "number" ? Number((n / 100).toFixed(6)) : n;
+  return typeof n === "number" ? shift(n, -2) : n;
 }
 
 function put(out: Record<string, unknown>, key: string, value: unknown): void {

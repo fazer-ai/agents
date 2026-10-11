@@ -771,3 +771,26 @@ test("a stored case key the console would refuse does not block a Tools save on 
     JSON.stringify({ caseAttributeKey: "invalid-key" }),
   );
 });
+
+// A note over its cap on a field questions and rules do not draw (the handoff instructions) has no
+// control on that engine, so its warning, and the Fix that would open a tab without the field, go
+// with the engine that draws it.
+test("a capped note the decisions engine does not draw raises no warning there", async () => {
+  const long = "x".repeat(20_000);
+  const read = async (engine: "llm" | "decisions") => {
+    stubApi({
+      ...DECIDING,
+      settings: {
+        ...DECIDING.settings,
+        handoff: { mode: "auto", instructions: long },
+        monitoring: { ...DECIDING.settings.monitoring, engine },
+      },
+    });
+    renderAt("/agents/1/general");
+    await waitFor(() => expect(text().includes("Observadora")).toBe(true));
+    const warned = text().includes("handoff.instructions holds");
+    cleanup();
+    return warned;
+  };
+  expect(`${await read("llm")} ${await read("decisions")}`).toBe("true false");
+});

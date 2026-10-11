@@ -161,6 +161,7 @@ import { DecisionsSetupMissing, EngineCards } from "./EngineChoice";
 import { ExportAgentModal } from "./ExportAgentModal";
 import {
   nativeToolAnchor,
+  watcherFieldUsed,
   watcherIssueUsed,
   watcherSectionUsed,
   watcherTabKeys,
@@ -323,6 +324,7 @@ function watcherCanActOn(
     key: string;
     tab?: string;
     sectionId?: string;
+    field?: string;
   },
   engine: MonitoringEngine,
 ): boolean {
@@ -330,6 +332,8 @@ function watcherCanActOn(
   // base it was granted is one it searches. The decisions engine searches none, so they go. An
   // issue with no target points nowhere for any agent, so it is kept rather than singled out.
   if (!watcherIssueUsed(engine, issue.key)) return false;
+  // A field this engine does not draw (tool guidance on the decisions engine) has no control here.
+  if (!watcherFieldUsed(engine, issue.field)) return false;
   if (issue.tab === undefined) return true;
   return watcherSectionReachable(issue.tab, issue.sectionId, engine);
 }

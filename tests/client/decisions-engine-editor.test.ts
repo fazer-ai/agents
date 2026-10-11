@@ -18,6 +18,7 @@ import {
   withStarter,
 } from "@/client/pages/agents/decisionsStarters";
 import {
+  watcherFieldUsed,
   watcherIssueUsed,
   watcherSectionUsed,
   watcherTabKeys,
@@ -137,6 +138,35 @@ describe("switching to questions and rules and back", () => {
     );
     expect(decisionsHeadOf(back)).toBe(decisionsHeadOf(stored));
     expect(decisionsBodyOf(back)).toBe(decisionsBodyOf(stored));
+  });
+});
+
+// The tool guidance the decisions engine does not draw: a warning about one of its fields has no
+// control there. The fence of a rule's action (labels, preconditions) is drawn on both engines.
+describe("a warning about a field the engine does not draw", () => {
+  test("tool guidance is the language model's; the tool fence is both engines'", () => {
+    const hidden = [
+      "handoff.instructions",
+      "kanban.instructions",
+      "toolGuidance.set_labels",
+      "crossInboxCase.subjectTemplate",
+      "sendImage.allowedHosts",
+      "resolveConversation.assignLabels",
+    ];
+    const drawn = [
+      "setLabels.protected",
+      "toolPreconditions",
+      "guardrails.customPolicy",
+    ];
+    expect(hidden.map((f) => watcherFieldUsed("decisions", f))).toEqual(
+      hidden.map(() => false),
+    );
+    expect(hidden.map((f) => watcherFieldUsed("llm", f))).toEqual(
+      hidden.map(() => true),
+    );
+    expect(drawn.map((f) => watcherFieldUsed("decisions", f))).toEqual(
+      drawn.map(() => true),
+    );
   });
 });
 

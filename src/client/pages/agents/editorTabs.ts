@@ -60,6 +60,28 @@ export function watcherIssueUsed(
   return engine !== "decisions" || !KNOWLEDGE_ISSUE_KEYS.has(key);
 }
 
+// The settings fields the Tools tab draws only for the language model: the text a model reads and the
+// settings of the tools a rule cannot fire (./toolGuidance). A warning about one of them (a note over
+// its cap) has no control on the decisions engine, so it goes with the engine that draws it.
+const CHAT_MODEL_FIELD_PREFIXES: readonly string[] = [
+  "handoff.instructions",
+  "kanban.",
+  "toolGuidance.",
+  "crossInboxCase.",
+  "sendImage.",
+  "resolveConversation.",
+];
+
+export function watcherFieldUsed(
+  engine: MonitoringEngine,
+  field: string | undefined,
+): boolean {
+  if (engine !== "decisions" || field === undefined) return true;
+  return !CHAT_MODEL_FIELD_PREFIXES.some(
+    (p) => field === p || field.startsWith(p),
+  );
+}
+
 // The anchor of a native tool's card on the Tools tab, so a link from elsewhere (a rule's "Open
 // Tools") lands on that tool rather than on the top of the tab.
 export function nativeToolAnchor(name: string): string {

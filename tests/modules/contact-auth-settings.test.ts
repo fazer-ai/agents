@@ -572,6 +572,26 @@ describe.skipIf(!dbUp)("contactAuth on the write surfaces", () => {
     expect(JSON.stringify(after.at(-1))).toContain("unreadConfigChanged");
   });
 
+  // `İ` lowercases to two characters, so a label at the cap is read as a label past it. Stored in
+  // that form, the next read would drop the rule and the gate with it.
+  test("a rule whose read form would not read back is stored as sent, and the gate still reads it", async () => {
+    const label = `${"a".repeat(254)}İ`;
+    const rule = { kind: "label", label };
+    await updateAgent(
+      ctx(),
+      agentId,
+      { settings: { contactAuth: { enabled: true, rule } } },
+      appDb,
+      { settingsMode: "replace" },
+    );
+    expect(await storedRule(agentId)).toEqual(rule);
+    const row = await suDb.agent.findUniqueOrThrow({
+      where: { id: agentId },
+      select: { settings: true },
+    });
+    expect(readContactAuthConfig(row.settings).rule).not.toBeNull();
+  });
+
   test("MCP, create and import store the same form", async () => {
     const r = await agentSettingsSet(
       principal(),

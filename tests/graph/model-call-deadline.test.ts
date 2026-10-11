@@ -73,40 +73,23 @@ async function outcome(p: Promise<unknown>) {
   }
 }
 
-// A chat completion as an OpenAI-shaped endpoint returns it.
-const COMPLETION = JSON.stringify({
-  id: "warm",
-  object: "chat.completion",
-  created: 0,
-  model: "probe",
-  choices: [
-    {
-      index: 0,
-      finish_reason: "stop",
-      message: { role: "assistant", content: "aquecido" },
-    },
-  ],
-});
+// Every server here binds the address the client dials. Bun.serve's default binds the wildcard, and
+// on macOS another process (a parallel test run) may then bind 127.0.0.1 on the same port and take
+// every request to 127.0.0.1 from it: this test's request lands on a stranger that answers 404 or
+// never answers.
+const LOOPBACK = "127.0.0.1";
 
-// An endpoint that accepts the connection and never answers, counting what reaches it. With
-// `answerFirst`, the first request is answered instead (and not counted), so a test can warm the
-// client before arming a deadline the request has to beat.
-function hangingEndpoint({ answerFirst = false } = {}) {
+// An endpoint that accepts the connection and never answers, counting what reaches it.
+function hangingEndpoint() {
   let hits = 0;
   let closedByClient = 0;
-  let toAnswer = answerFirst ? 1 : 0;
   const srv = Bun.serve({
+    hostname: LOOPBACK,
     port: 0,
     idleTimeout: 0,
     fetch: async (req) => {
       const pre = preflight(req);
       if (pre) return pre;
-      if (toAnswer > 0) {
-        toAnswer--;
-        return new BunResponse(COMPLETION, {
-          headers: { ...CORS, "content-type": "application/json" },
-        });
-      }
       hits++;
       req.signal.addEventListener("abort", () => {
         closedByClient++;
@@ -116,7 +99,7 @@ function hangingEndpoint({ answerFirst = false } = {}) {
     },
   });
   return {
-    baseURL: `http://127.0.0.1:${srv.port}/v1`,
+    baseURL: `http://${LOOPBACK}:${srv.port}/v1`,
     hits: () => hits,
     closedByClient: () => closedByClient,
     stop: () => srv.stop(true),
@@ -174,11 +157,34 @@ async function graphOn(
 
 const THREAD = { configurable: { thread_id: "t-809" } };
 
+// A test that cuts a REAL request at DEADLINE_MS can only see the cut on the server if the request
+// got there first, and on a loaded machine connection setup, the CORS preflight and (in a fresh
+// process) loading the client can outlast 40 ms. An attempt whose request never arrived is an unmet
+// precondition, not a product failure: `attempt` asserts the outcome every time, and only the
+// observation of the server side waits for an attempt the request reached, each on a fresh endpoint
+// so a late arrival from an earlier one cannot be counted. A deadline that never fires fails the
+// first attempt, so the repetition cannot hide it.
+const ARRIVAL_ATTEMPTS = 8;
+async function attemptUntilArrival(
+  attempt: (ep: ReturnType<typeof hangingEndpoint>) => Promise<void>,
+) {
+  for (let i = 1; ; i++) {
+    const ep = hangingEndpoint();
+    try {
+      await attempt(ep);
+    } catch (err) {
+      ep.stop();
+      throw err;
+    }
+    if (ep.hits() > 0 || i === ARRIVAL_ATTEMPTS) return ep;
+    ep.stop();
+  }
+}
+
 describe("with no fallback, the primary model call has a deadline", () => {
   test("a provider that never answers fails the turn at the deadline, on the real transport", async () => {
-    const ep = hangingEndpoint({ answerFirst: true });
-    const onEndpoint = () =>
-      buildModelAndGraph(
+    const ep = await attemptUntilArrival(async (ep) => {
+      const graph = await buildModelAndGraph(
         makeConfig({
           mc: {
             provider: "openai-compatible",
@@ -189,20 +195,6 @@ describe("with no fallback, the primary model call has a deadline", () => {
         [],
         { checkpointer: new MemorySaver() },
       );
-    try {
-      // The request has to reach the server inside the deadline for the count below to mean
-      // anything, and the FIRST call through this transport pays for loading and compiling the
-      // client, the CORS preflight and the connection, which on a loaded machine outlasts a 40 ms
-      // deadline on its own. So one call is answered first, under a generous deadline (read when the
-      // graph is built, so this graph keeps it), and only the second graph gets the short one.
-      config.agent.modelCallTimeoutMs = GENEROUS_DEADLINE_MS;
-      const warm = await (await onEndpoint()).invoke(
-        { messages: [new HumanMessage("oi")] },
-        { configurable: { thread_id: "t-809-warm" } },
-      );
-      expect(String(warm.messages.at(-1)?.content)).toBe("aquecido");
-      config.agent.modelCallTimeoutMs = DEADLINE_MS;
-      const graph = await onEndpoint();
       const res = await within(
         outcome(graph.invoke({ messages: [new HumanMessage("oi")] }, THREAD)),
         DEADLINE_MS + 3_000,
@@ -213,6 +205,8 @@ describe("with no fallback, the primary model call has a deadline", () => {
       // Cut by the deadline, not refused before it: the timer never fires early by more than rounding.
       expect(res.ms).toBeGreaterThanOrEqual(DEADLINE_MS - 2);
       expect((res.err as Error).message).toBe("timeout");
+    });
+    try {
       // A hang is one attempt: nothing comes back to retry on.
       expect(ep.hits()).toBe(1);
       // And it is CANCELLED, not abandoned open: this adapter listens to the signal.
@@ -297,6 +291,7 @@ describe("with no fallback, the primary model call has a deadline", () => {
     // run never waits it.
     config.agent.modelCallTimeoutMs = 10_000;
     const srv = Bun.serve({
+      hostname: LOOPBACK,
       port: 0,
       fetch: (req) =>
         preflight(req) ??
@@ -314,7 +309,7 @@ describe("with no fallback, the primary model call has a deadline", () => {
           mc: {
             provider: "openai-compatible",
             model: "probe",
-            baseURL: `http://127.0.0.1:${srv.port}/v1`,
+            baseURL: `http://${LOOPBACK}:${srv.port}/v1`,
           },
         }),
         [],
@@ -374,8 +369,7 @@ describe("callWithDeadline, on its own", () => {
   test("the signal reaches the call: an adapter that listens cancels its request", async () => {
     // Outside a graph, where nothing else cancels it: inside one, LangGraph also aborts the children
     // of a node that failed, so this is the only place the helper's own signal is observable.
-    const ep = hangingEndpoint({ answerFirst: true });
-    try {
+    const ep = await attemptUntilArrival(async (ep) => {
       const model = createChatModel({
         provider: "openai-compatible",
         model: "probe",
@@ -383,16 +377,20 @@ describe("callWithDeadline, on its own", () => {
         baseURL: ep.baseURL,
         temperature: 0,
       });
-      // Warmed first, for the reason the graph test above gives: the request has to reach the server
-      // inside the deadline for its cancellation to be observable.
-      const warm = await model.invoke([new HumanMessage("oi")]);
-      expect(String(warm.content)).toBe("aquecido");
-      const res = await outcome(
-        callWithDeadline(DEADLINE_MS, (signal) =>
-          model.invoke([new HumanMessage("oi")], { signal }),
+      const res = await within(
+        outcome(
+          callWithDeadline(DEADLINE_MS, (signal) =>
+            model.invoke([new HumanMessage("oi")], { signal }),
+          ),
         ),
+        DEADLINE_MS + 3_000,
       );
+      expect(res).not.toBe("pending");
+      if (res === "pending") return;
       expect(res.ok).toBe(false);
+      expect((res.err as Error).name).toBe("TimeoutError");
+    });
+    try {
       expect(ep.hits()).toBe(1);
       await until("the hung request closed by the client", () =>
         ep.closedByClient(),

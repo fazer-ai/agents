@@ -125,18 +125,18 @@ function stt(text: string) {
 }
 
 async function setStt(enabled: boolean) {
+  // Off is the switch, with the provider and credential still there: a missing credential would
+  // skip the transcription for a different reason.
   await suDb.agent.update({
     where: { id: agentId },
     data: {
-      settings: enabled
-        ? {
-            stt: {
-              enabled: true,
-              provider: "openai",
-              credentialRef: `vault:${llmKeyId}`,
-            },
-          }
-        : {},
+      settings: {
+        stt: {
+          enabled,
+          provider: "openai",
+          credentialRef: `vault:${llmKeyId}`,
+        },
+      },
     },
   });
 }

@@ -603,7 +603,7 @@ export async function requireVaultRefFor(
   // about the text and wrong about the code, which is the fence doing its job.
   if (readsPlainKey(use)) {
     throw new AppError(
-      `${field}: credential "${ref}" (kind "${entry.kind}") cannot serve a field that reads a plain API key`,
+      `${field}: this field reads an API key and the "${entry.kind}" credential type cannot supply one: it holds several fields instead of a single secret, a user and password for Basic auth, or a value this product never sends to another service. Pick a different credential than "${ref}".`,
       400,
       "errors.credentialKindUnusableAsKey",
       { kind: entry.kind },

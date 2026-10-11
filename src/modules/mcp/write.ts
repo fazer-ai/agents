@@ -33,6 +33,7 @@ import {
   SETTINGS_CREDENTIAL_PATHS,
 } from "@/modules/agents/credential-paths";
 import {
+  assertCredentialRefsUsable,
   assertPromptSize,
   assertResolveLabelsNotProtected,
   assertSettingsClosedValues,
@@ -696,8 +697,12 @@ export async function agentSettingsSet(
     }
     const diff = diffFields(beforeProj, afterProj);
 
-    // dry-run is the default: apply ONLY when dry_run is explicitly false.
+    // dry-run is the default: apply ONLY when dry_run is explicitly false. The credential kinds are
+    // asked first, as the apply asks them, so the preview refuses what the apply refuses.
     if (args.dry_run !== false) {
+      await assertCredentialRefsUsable(ctx, { settings: nextBag }, base, {
+        settings: current.settings,
+      });
       return ok({ dryRun: true, target, diff });
     }
 

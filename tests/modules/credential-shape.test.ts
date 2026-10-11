@@ -14,6 +14,7 @@ import {
   importAgent,
 } from "@/modules/agents/transfer";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
+import { agentSettingsSet } from "@/modules/mcp/write";
 import { agentUpdate } from "@/modules/mcp/write-agents";
 import { updateEmbeddingSettings } from "@/modules/tenant-settings/service";
 import { tryResolveApiKeyEntry } from "@/modules/vault/service";
@@ -382,6 +383,27 @@ describe.skipIf(!dbUp)("a credential whose kind cannot serve the field", () => {
     });
   });
 
+  // The settings tool resolves names in its own loop and used to preview a key it would then refuse:
+  // the preview answered with a diff, the apply with the refusal. Both ask now, and the sentence
+  // says what the kind cannot do, since MCP hands the message over as written.
+  for (const dry_run of [true, false]) {
+    test(`agent_settings_set refuses a basic-auth pair for the STT key (dry_run=${dry_run})`, async () => {
+      const r = await agentSettingsSet(
+        principal(),
+        {
+          agent_id: String(agentId),
+          stt: { enabled: true, provider: "openai", credentialRef: basicRef },
+          dry_run,
+        } as never,
+        { base: appDb },
+      );
+      expect(r.ok).toBe(false);
+      const text = JSON.stringify(r);
+      expect(text).toContain("settings.stt.credentialRef");
+      expect(text).toContain("this field reads an API key");
+    });
+  }
+
   test("the MCP write refuses it too, through the same boundary", async () => {
     const r = await agentUpdate(
       principal(),
@@ -426,7 +448,7 @@ describe.skipIf(!dbUp)("a credential whose kind cannot serve the field", () => {
     // ...and the refusal it DOES make has to name the right problem. `google_oauth` travels outbound
     // perfectly well as a refreshed token; what it cannot do is be the plain key embedding reads, so
     // the sentence is the API-key one and not "this type is never sent to another service".
-    expect(bad?.message).toContain("reads a plain API key");
+    expect(bad?.message).toContain("this field reads an API key");
   });
 
   // An import is the one way a bad pairing can still be CREATED, because the payload is authored

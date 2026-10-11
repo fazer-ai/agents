@@ -18,7 +18,16 @@ import {
   resetProcessLeaseForTest,
   startProcessLease,
 } from "@/lib/process-lease";
-import { finish, sweepDeadClaims } from "@/modules/chatwoot/delivery-sweep";
+import {
+  drainInFlight,
+  inFlightWork,
+  resetShutdownForTest,
+} from "@/lib/shutdown";
+import {
+  finish,
+  runDeadClaimPass,
+  sweepDeadClaims,
+} from "@/modules/chatwoot/delivery-sweep";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import { deliveryRecoveryDedupeKey } from "@/modules/chatwoot/recover-delivery";
 import { recordAndProcessChatwootDelivery } from "@/modules/chatwoot/webhook";
@@ -390,6 +399,23 @@ describe.skipIf(!dbUp)("deliveries claimed by a dead process", () => {
       );
       await suDb.$executeRawUnsafe(`DROP FUNCTION ${PROBE}()`);
       await suDb.$executeRawUnsafe(`DROP TABLE ${PROBE}`);
+    }
+  });
+
+  test("a running pass holds the shutdown drain open, and a draining process starts none", async () => {
+    // A pass the drain does not wait for can be cut between closing a row and arming what it owes.
+    const row = await claimed(randomUUID());
+    const pass = runDeadClaimPass(appDb);
+    expect(inFlightWork().byKind["chatwoot-dead-claim-pass"]).toBe(1);
+    await pass;
+    expect(await statusOf(row)).toBe("DEAD");
+    const later = await claimed(randomUUID());
+    try {
+      await drainInFlight({ boundMs: 0 });
+      await runDeadClaimPass(appDb);
+      expect(await statusOf(later)).toBe("PROCESSING");
+    } finally {
+      resetShutdownForTest();
     }
   });
 

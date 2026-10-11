@@ -6,6 +6,7 @@ import {
   processLeaseId,
   pruneProcessLeases,
 } from "@/lib/process-lease";
+import { isDraining, trackWork } from "@/lib/shutdown";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { writeFlowEvent } from "@/modules/flowlog/service";
 import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
@@ -769,10 +770,21 @@ function deadClaimHolder(): DeadClaimHolder {
   return g[DEAD_CLAIM_KEY];
 }
 
-async function deadClaimPass(base: PrismaClient): Promise<void> {
+// One pass, registered with the shutdown drain: a verdict that closes a row and then arms what it
+// owes is two writes, and an exit between them leaves a terminal row nothing revisits. A draining
+// process starts none.
+export async function runDeadClaimPass(base: PrismaClient): Promise<void> {
   const h = deadClaimHolder();
-  if (h.running) return;
+  if (h.running || isDraining()) return;
   h.running = true;
+  await trackWork("chatwoot-dead-claim-pass", () =>
+    deadClaimPass(base),
+  ).finally(() => {
+    h.running = false;
+  });
+}
+
+async function deadClaimPass(base: PrismaClient): Promise<void> {
   try {
     const c = await sweepDeadClaims({ base });
     const settled =
@@ -795,8 +807,6 @@ async function deadClaimPass(base: PrismaClient): Promise<void> {
       { err },
       "chatwoot: the dead-claim pass failed; the next one retries",
     );
-  } finally {
-    h.running = false;
   }
 }
 
@@ -805,9 +815,9 @@ async function deadClaimPass(base: PrismaClient): Promise<void> {
 export function startDeadClaimSweep(base: PrismaClient = basePrisma): void {
   const h = deadClaimHolder();
   if (h.timer !== null) return;
-  h.timer = setInterval(() => void deadClaimPass(base), DEAD_CLAIM_PASS_MS);
+  h.timer = setInterval(() => void runDeadClaimPass(base), DEAD_CLAIM_PASS_MS);
   h.timer.unref?.();
-  void deadClaimPass(base);
+  void runDeadClaimPass(base);
 }
 
 export function stopDeadClaimSweep(): void {

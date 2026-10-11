@@ -2210,6 +2210,18 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
         await suDb.agent.delete({ where: { id: neighbour.id } });
       });
 
+      test("a late latch is only added: what a later observation wrote stays", async () => {
+        const scope = { tenantId, agentId, conversationId: convRowId };
+        await triggerState.writeTriggerState(suDb, scope, {
+          latch: ["newer"],
+          release: [],
+          keep: ["newer"],
+        });
+        await triggerState.latchRules(suDb, scope, ["late", "newer"]);
+        const keys = await triggerState.readLatchedRules(suDb, scope);
+        expect([...keys].sort()).toEqual(["late", "newer"]);
+      });
+
       test("a trigger state it cannot read fails the tick before any action", async () => {
         const chatwoot = fakeChatwoot({ labels: [], attributes: {} });
         const read = spyOn(triggerState, "readLatchedRules").mockRejectedValue(

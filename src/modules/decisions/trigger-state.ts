@@ -30,6 +30,28 @@ export async function readLatchedRules(
   return new Set(rows.map((r) => r.ruleKey));
 }
 
+// Latches written after the tick that decided them was over (a write that landed behind its
+// deadline): only added, never released or pruned, since a later observation may have moved the
+// state on since.
+export async function latchRules(
+  base: PrismaClient,
+  scope: TriggerScope,
+  keys: string[],
+): Promise<void> {
+  if (keys.length === 0) return;
+  await runScopedOn(base, sysCtx(scope.tenantId), (db) =>
+    db.decisionRuleState.createMany({
+      data: keys.map((ruleKey) => ({
+        tenantId: scope.tenantId,
+        agentId: scope.agentId,
+        conversationId: scope.conversationId,
+        ruleKey,
+      })),
+      skipDuplicates: true,
+    }),
+  );
+}
+
 // One transaction, so a crash between the steps cannot leave a released rule latched or a latch
 // written for a key the same tick dropped. A key no rule of the block has any more is dropped too:
 // the rule was edited or deleted, and its state goes with it.

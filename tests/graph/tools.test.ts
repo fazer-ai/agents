@@ -2574,6 +2574,17 @@ describe("native tools", () => {
     expect(reports).toEqual([{ noEffect: true }]);
   });
 
+  test("private_note tells the call its note stays as soon as it is filed", async () => {
+    const { client } = recordingClient();
+    const tools = buildNativeTools({ client, conversationId: 7 });
+    const reports: CallReport[] = [];
+    await byName(tools, "private_note").invoke(
+      { content: "Pediu reembolso" },
+      withFenceReporter({}, (r) => reports.push(r)),
+    );
+    expect(reports).toEqual([{ committed: true }]);
+  });
+
   test("set_custom_attribute tells the call its write stays before it mirrors it", async () => {
     const { client } = recordingClient();
     const tools = buildNativeTools({ client, conversationId: 7 });

@@ -744,11 +744,13 @@ function handoffTool(ctx: ToolCtx) {
 
 function privateNoteTool(ctx: ToolCtx) {
   return tool(
-    async ({ content }: { content: string }) => {
+    async ({ content }: { content: string }, config?: ToolRunnableConfig) => {
       await ctx.client.sendPrivateNote(
         ctx.conversationId,
         literalForChatwoot(content),
       );
+      // Said as it lands: a deadline can end the call before it returns, and the note is still filed.
+      fenceReporterOf(config)?.({ committed: true });
       return "Private note posted (visible to agents, not the customer).";
     },
     {

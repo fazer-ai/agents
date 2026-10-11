@@ -75,6 +75,7 @@ import {
   type DecisionProgress,
 } from "@/modules/decisions/run";
 import {
+  latchRules,
   readLatchedRules,
   writeTriggerState,
 } from "@/modules/decisions/trigger-state";
@@ -1967,8 +1968,20 @@ export async function runObserve(
       // What the actions before the one that stopped the tick latched stays latched: a note that
       // went out is one the next observation must not post again.
       // A write still in flight when the deadline ended the call can finish after this: its latch is
-      // persisted as it arrives.
-      progress.onChange = (state) => void persistTriggerState(state);
+      // added as it arrives, and only its latch, since another observation may have run by then.
+      const persisted = new Set(progress.triggerState?.latch ?? []);
+      progress.onChange = (state) => {
+        const fresh = state.latch.filter((key) => !persisted.has(key));
+        for (const key of fresh) persisted.add(key);
+        if (triggerScope === null || fresh.length === 0) return;
+        latchRules(base, triggerScope, fresh).catch((err: unknown) =>
+          logger.warn(
+            { err, agentId: String(agentId) },
+            "observe: a late latch could not be written (conv=%s)",
+            String(conversationId),
+          ),
+        );
+      };
       if (progress.triggerState)
         await persistTriggerState(progress.triggerState);
       if (refusal !== null) return endOnRefusal(refusal);

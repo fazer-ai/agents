@@ -417,6 +417,13 @@ model ChatwootWebhookDelivery {
   // and measuring that live attempt from the ORIGINAL receipt makes it look abandoned the moment it
   // starts. NULL = never claimed, so the row is still measured from receipt.
   claimedAt                  DateTime?             @map("claimed_at")
+  // WHICH PROCESS made the current claim: its `process_leases` id, written by the same
+  // CAS that writes `claimedAt`. While that lease is renewed the row is being worked; once it lapses
+  // (or the process released it on exit) nothing will ever finish the attempt, and the dead-claim pass
+  // in src/modules/chatwoot/delivery-sweep.ts settles the row then instead of after the stranded
+  // sweep's 30 minutes. Null on a row an older build claimed and on one claimed while the process had
+  // no lease it could vouch for; those keep the 30-minute window.
+  claimedBy                  String?               @map("claimed_by") @db.Uuid
   // The Chatwoot display id this delivery was about. What the stranded-delivery sweep files its
   // report against, and deliberately the only thing stored: an id, never the event body, so nothing
   // here can hold what the customer wrote. Null on an event that names no conversation, and on every
@@ -2099,6 +2106,19 @@ model Appointment {
 }
 
 // ──────────────────────────────────────────────────── scheduler ──
+
+// One row per running server process, renewed every few seconds while it lives
+// (src/lib/process-lease.ts). Not tenant data and not under tenant RLS: it says only that a process
+// exists, and is read across tenants by the pass that settles deliveries a dead process claimed.
+model ProcessLease {
+  id          String   @id @db.Uuid
+  startedAt   DateTime @default(now()) @map("started_at") @db.Timestamptz(3)
+  heartbeatAt DateTime @default(now()) @map("heartbeat_at") @db.Timestamptz(3)
+  host        String?
+  pid         Int?
+
+  @@map("process_leases")
+}
 
 model SchedulerJob {
   id            BigInt             @id @default(autoincrement())

@@ -1,6 +1,12 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
+import {
+  LEASE_TTL_MS,
+  liveProcessLeases,
+  processLeaseId,
+  pruneProcessLeases,
+} from "@/lib/process-lease";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { writeFlowEvent } from "@/modules/flowlog/service";
 import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
@@ -34,7 +40,9 @@ import {
 // path runs the turn inside `processChatwootDelivery`, and neither the model call nor the tools have
 // a timeout). Early costs one false alert, not a second turn: a turn still running has its row
 // marked DEAD and its loss dispatched, then tx2 writes PROCESSED over it by id. The alert cannot be
-// recalled; closing that properly needs a processor heartbeat.
+// recalled. A claim that names its process (`claimed_by`) does not wait for this when
+// that process is dead: `sweepDeadClaims` below settles it once its lease lapses. This window is what
+// is left for a claim whose process is alive, and for one an older build made.
 export const STALE_AFTER_MS = 30 * 60 * 1000;
 // Cadence of the sweep. Recovery is not on the table, so what this buys is how fast an operator
 // learns; minutes rather than hours because the answer is "go read this conversation".
@@ -360,6 +368,9 @@ interface StrandedRow {
   event: string;
   receivedAt: Date;
   claimedAt: Date | null;
+  // Read only by the dead-claim pass, which takes the row from the claim it judged dead and no other:
+  // a recovery that claimed it since stamps its own process, and the CAS then matches nothing.
+  claimedBy?: string | null;
   conversationId: number | null;
   inboundMessageId: number | null;
   humanReplyShape: string | null;
@@ -480,6 +491,16 @@ async function mirrorOf(
   });
 }
 
+// The terminal write's guard: the status the scan read, and, for a row the dead-claim pass read, the
+// claim it judged dead.
+function casOn(row: StrandedRow) {
+  return {
+    id: row.id,
+    status: row.status,
+    ...(row.claimedBy == null ? {} : { claimedBy: row.claimedBy }),
+  };
+}
+
 // Writes the row's terminal state, CASing on the status the scan read. Losing the CAS means a
 // redelivery claimed the row and is processing it now, so nothing is recorded. On a PENDING row,
 // winning races the delivery's own claim and discards a redelivery arriving that instant; the report
@@ -493,7 +514,7 @@ export async function finish(
 ): Promise<boolean> {
   const { count } = await runScopedOn(base, sysCtx(tenantId), (db) =>
     db.chatwootWebhookDelivery.updateMany({
-      where: { id: row.id, status: row.status },
+      where: casOn(row),
       data: { status, processedAt: new Date() },
     }),
   );
@@ -514,7 +535,7 @@ async function finishDead(
   try {
     return await runScopedOn(base, sysCtx(tenantId), async (db) => {
       const { count } = await db.chatwootWebhookDelivery.updateMany({
-        where: { id: row.id, status: row.status },
+        where: casOn(row),
         data: { status: "DEAD", processedAt: new Date() },
       });
       if (count === 0) return "lost";
@@ -610,36 +631,204 @@ export async function sweepStrandedDeliveries(
   )) as StrandedRow[];
 
   for (const row of rows) {
-    const verdict = classifyStrandedDelivery(row, {
-      now,
-      staleAfterMs: STALE_AFTER_MS,
-    });
-    // NOTE: unreachable through the query, kept because the rule is the classifier's: two
-    // statements of one threshold, and this is where they would be caught disagreeing.
-    if (verdict === "in-flight") continue;
-    // The mirror is read only for a row going in the loss list (the only verdict that writes
-    // a line). A throwing read must not cost the report, since `record` marks the row terminal
-    // first; null is "could not tell", said out loud.
-    const mirror =
-      verdict === "lost" ||
-      verdict === "observer-strand" ||
-      verdict === "role-unstated"
-        ? await mirrorOf(
-            row,
-            tenantId,
-            base,
-            verdict === "observer-strand" || verdict === "role-unstated",
-          ).catch((err) => {
-            logger.warn(
-              { err, deliveryId: row.deliveryId },
-              "chatwoot delivery sweep: the mirror of a stranded delivery could not be read",
-            );
-            return null;
-          })
-        : null;
-    await record(verdict, row, tenantId, mirror, counts, base);
+    await settleStranded(row, tenantId, base, now, STALE_AFTER_MS, counts);
   }
   return counts;
+}
+
+function emptyCounts(): SweepCounts {
+  return {
+    closed: 0,
+    lost: 0,
+    owed: 0,
+    observerStrands: 0,
+    owedTranscription: 0,
+    roleUnstated: 0,
+    raced: 0,
+  };
+}
+
+// One stranded row to its verdict and its terminal state. `staleAfterMs` is the window the row has to
+// be past: the stranded sweep's for a row it reads by age, none for one whose claimer is known dead.
+async function settleStranded(
+  row: StrandedRow,
+  tenantId: bigint,
+  base: PrismaClient,
+  now: Date,
+  staleAfterMs: number,
+  counts: SweepCounts,
+): Promise<void> {
+  const verdict = classifyStrandedDelivery(row, { now, staleAfterMs });
+  // NOTE: unreachable through either caller (the stranded sweep's query already cut at the same
+  // window, and the dead-claim pass asks with none), kept because the rule is the classifier's: two
+  // statements of one threshold, and this is where they would be caught disagreeing.
+  if (verdict === "in-flight") return;
+  // The mirror is read only for a row going in the loss list (the only verdict that writes
+  // a line). A throwing read must not cost the report, since `record` marks the row terminal
+  // first; null is "could not tell", said out loud.
+  const mirror =
+    verdict === "lost" ||
+    verdict === "observer-strand" ||
+    verdict === "role-unstated"
+      ? await mirrorOf(
+          row,
+          tenantId,
+          base,
+          verdict === "observer-strand" || verdict === "role-unstated",
+        ).catch((err) => {
+          logger.warn(
+            { err, deliveryId: row.deliveryId },
+            "chatwoot delivery sweep: the mirror of a stranded delivery could not be read",
+          );
+          return null;
+        })
+      : null;
+  await record(verdict, row, tenantId, mirror, counts, base);
+}
+
+// How often each process looks for claims whose process died. Together with the lease's lifetime
+// this is the whole wait of a delivery a dead process claimed: at most `LEASE_TTL_MS` plus one pass
+// after the death, or one pass after the first process starts when none was running.
+export const DEAD_CLAIM_PASS_MS = 15_000;
+// Rows one pass reads. The rows a dead process can leave are bounded by what it was processing,
+// which the admission bound caps per lane (`CHATWOOT_DELIVERY_CONCURRENCY`).
+const DEAD_CLAIM_BATCH = 500;
+
+export interface SweepDeadClaimsParams {
+  base: PrismaClient;
+  // Where the leases are read; the main pool by default.
+  leaseBase?: PrismaClient;
+  // This process's lease, whose claims are never taken: they are alive by definition while it runs,
+  // including the ones a live attempt left PROCESSING on purpose for the stranded sweep.
+  self?: string;
+  now?: Date;
+  batch?: number;
+  ttlMs?: number;
+}
+
+// Settles the PROCESSING rows whose claim names a process that is no longer alive: the
+// same verdicts the stranded sweep gives, without its 30-minute window, since a dead claimer is the
+// one thing that window was waiting to be sure of. A row claimed by a live process, or by an older
+// build (no `claimed_by`), is not read. Every process runs it: the CAS on the dead claim makes
+// concurrent passes settle a row once.
+export async function sweepDeadClaims(
+  params: SweepDeadClaimsParams,
+): Promise<SweepCounts> {
+  const { base } = params;
+  const now = params.now ?? new Date();
+  const self = params.self ?? processLeaseId();
+  const counts = emptyCounts();
+  // The claims first, then the leases: a process writes its lease before it stamps a claim, so any
+  // claim this read returns names a lease the next read sees live unless that process is gone.
+  // The other order would read a lease set from before a process that started in between, and take
+  // its first claims as dead.
+  const rows = await asSuperAdminOn(base, (db) =>
+    db.chatwootWebhookDelivery.findMany({
+      where: {
+        status: "PROCESSING",
+        claimedBy: { not: null },
+        NOT: { claimedBy: self },
+      },
+      orderBy: { claimedAt: "asc" },
+      take: params.batch ?? DEAD_CLAIM_BATCH,
+      select: {
+        id: true,
+        tenantId: true,
+        status: true,
+        chatwootInstanceId: true,
+        deliveryId: true,
+        event: true,
+        receivedAt: true,
+        claimedAt: true,
+        claimedBy: true,
+        conversationId: true,
+        inboundMessageId: true,
+        humanReplyShape: true,
+        humanReplyMessageId: true,
+        routeObserved: true,
+        routeAgentBotId: true,
+        routeRemembers: true,
+      },
+    }),
+  );
+  if (rows.length === 0) return counts;
+  const live = await liveProcessLeases(
+    params.leaseBase ?? base,
+    [...new Set(rows.map((r) => r.claimedBy as string))],
+    params.ttlMs ?? LEASE_TTL_MS,
+  );
+  for (const { tenantId, ...row } of rows) {
+    if (live.has(row.claimedBy as string)) continue;
+    // NOTE: no window at all, not zero: `claimedAt` is the dead process's clock, and on a host a little
+    // ahead of this one a zero window would read the claim as in flight until the clocks agree.
+    await settleStranded(
+      row as StrandedRow,
+      tenantId,
+      base,
+      now,
+      Number.NEGATIVE_INFINITY,
+      counts,
+    );
+  }
+  return counts;
+}
+
+interface DeadClaimHolder {
+  timer: ReturnType<typeof setInterval> | null;
+  running: boolean;
+}
+const DEAD_CLAIM_KEY = Symbol.for("fazerai.deadClaimSweep");
+function deadClaimHolder(): DeadClaimHolder {
+  const g = globalThis as unknown as Record<symbol, DeadClaimHolder>;
+  g[DEAD_CLAIM_KEY] ??= { timer: null, running: false };
+  return g[DEAD_CLAIM_KEY];
+}
+
+async function deadClaimPass(base: PrismaClient): Promise<void> {
+  const h = deadClaimHolder();
+  if (h.running) return;
+  h.running = true;
+  try {
+    const c = await sweepDeadClaims({ base });
+    const settled =
+      c.closed +
+      c.lost +
+      c.owed +
+      c.observerStrands +
+      c.owedTranscription +
+      c.roleUnstated;
+    if (settled > 0) {
+      logger.warn(
+        "chatwoot: settled %d deliveries claimed by a process that is no longer running (%d to the recovery)",
+        settled,
+        c.lost,
+      );
+    }
+    await pruneProcessLeases(base);
+  } catch (err) {
+    logger.warn(
+      { err },
+      "chatwoot: the dead-claim pass failed; the next one retries",
+    );
+  } finally {
+    h.running = false;
+  }
+}
+
+// Runs the dead-claim pass now and every `DEAD_CLAIM_PASS_MS`, in every process (a web replica's
+// death is found by the leader, and the leader's by whatever starts next). Idempotent.
+export function startDeadClaimSweep(base: PrismaClient = basePrisma): void {
+  const h = deadClaimHolder();
+  if (h.timer !== null) return;
+  h.timer = setInterval(() => void deadClaimPass(base), DEAD_CLAIM_PASS_MS);
+  h.timer.unref?.();
+  void deadClaimPass(base);
+}
+
+export function stopDeadClaimSweep(): void {
+  const h = deadClaimHolder();
+  if (h.timer !== null) clearInterval(h.timer);
+  h.timer = null;
 }
 
 // The words, a second debt on the same row. Not a verdict: the verdicts answer what the conversation

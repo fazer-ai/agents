@@ -30,6 +30,7 @@ import {
   isTransactionNeverStarted,
   retryWhileTransactionNeverStarted,
 } from "@/lib/pool-retry";
+import { claimingProcessId } from "@/lib/process-lease";
 import {
   asSuperAdminOn,
   runScopedOn,
@@ -4369,6 +4370,10 @@ export async function processChatwootDelivery(
       data: {
         status: "PROCESSING",
         claimedAt: new Date(),
+        // NOTE: Whose claim this is, so a death of this process is settled when its lease lapses rather
+        // than after the stranded sweep's window. Null while this process has no fresh
+        // lease, which keeps that window.
+        claimedBy: claimingProcessId(),
         // NOTE: The body the ack stored leaves with the first attempt that claims the row: from here a
         // death is the sweep's, which rebuilds from Chatwoot, so nothing reads it again.
         payload: null,

@@ -1,12 +1,14 @@
 import { initSetupState } from "@/api/features/auth/setup.service";
 import { setPublisher } from "@/api/features/realtime/realtime.service";
 import logger, { configForBootLog } from "@/api/lib/logger";
+import ackPrisma from "@/api/lib/prisma-ack";
 import app from "@/app";
 import config from "@/config";
 import {
   assertRuntimeRoleIsNotSuperuser,
   RuntimeIsolationError,
 } from "@/lib/db-guard";
+import { releaseProcessLease, startProcessLease } from "@/lib/process-lease";
 import { installShutdownHandlers } from "@/lib/shutdown";
 import { registerAppointmentReminderHandler } from "@/modules/appointments/reminders";
 import { registerRedirectFollowUpHandlers } from "@/modules/channel-redirect/followup";
@@ -14,6 +16,8 @@ import { drainStoredChatwootDeliveries } from "@/modules/chatwoot/delivery-queue
 import {
   ensureAllDeliverySweeps,
   registerDeliverySweepHandler,
+  startDeadClaimSweep,
+  stopDeadClaimSweep,
 } from "@/modules/chatwoot/delivery-sweep";
 import { registerDeliveryRecoveryHandler } from "@/modules/chatwoot/recover-delivery";
 import { registerHumanReplyRecoveryHandler } from "@/modules/chatwoot/recover-human-reply";
@@ -253,6 +257,13 @@ void drainStoredChatwootDeliveries({ minAgeMs: 0 }).catch((error) =>
   logger.warn({ error }, "Failed to drain stored Chatwoot deliveries"),
 );
 
+// NOTE: This process's lease, renewed on the ack's pool so a drained main pool cannot make a live
+// process look dead, and the pass that settles what a dead process claimed. Every replica
+// runs both: a web replica's death is found by the leader, the leader's by whatever starts next.
+void startProcessLease(ackPrisma)
+  .catch((error) => logger.warn({ error }, "Failed to start the process lease"))
+  .finally(() => startDeadClaimSweep());
+
 // A full route-token cache invalidation looks the dropped tokens up again, so a bot nobody retired
 // keeps an entry to serve if the lookup starts failing (src/modules/chatwoot/route-token-cache.ts).
 enableRouteTokenRewarm();
@@ -265,6 +276,12 @@ installShutdownHandlers({
     stopDebounceWorker();
     stopCompactionWorker();
     stopAlertWorker();
+    stopDeadClaimSweep();
   },
   boundMs: config.shutdown.drainMs,
+  // The lease goes last, after the drain: what this process still holds will not finish, and deleting
+  // the lease lets another process settle it at its next pass instead of a lease's lifetime later.
+  exit: (code) => {
+    void releaseProcessLease().finally(() => process.exit(code));
+  },
 });

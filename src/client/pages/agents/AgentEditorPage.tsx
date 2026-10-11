@@ -72,6 +72,7 @@ import {
   settlesRefusal,
 } from "@/client/lib/fieldRefusal";
 import { importWarningCount } from "@/client/lib/importWarningCount";
+import { serverNowDate } from "@/client/lib/serverClock";
 import { formatRelativeTime, slugify } from "@/client/lib/utils";
 import {
   invalidateVault,
@@ -112,6 +113,7 @@ import {
   DECISION_ACTION_TOOLS,
   decisionsBlockFingerprint,
 } from "@/modules/decisions/config";
+import { isFullDetailWindowOpen } from "@/modules/flowlog/settings";
 import {
   GUARDRAILS_DEFAULTS,
   type GuardrailsConfig,
@@ -2125,6 +2127,11 @@ function AgentEditor() {
   };
   // Each section serialized as its save would write it, under the CURRENT engine: the engine decides
   // what a save writes, so the form and the server's copy are always read by the same rule.
+  // One instant for every snapshot of a render. The debug window is read off the clock, and the form
+  // and the server's copy may have been read at different moments (a load, a discard, an unrelated
+  // save): each side states the window as open or closed at THIS instant, so a window that closed
+  // in between reads the same on both.
+  const snapshotNow = serverNowDate();
   const snapshotOf = (f: SnapForm) => {
     const chat =
       decides && syncedForChat
@@ -2181,7 +2188,15 @@ function AgentEditor() {
         attributeContext: f.attributeContext,
         contactFields: f.contactFields,
         takeover: f.takeover,
-        observability: f.observability,
+        observability: {
+          logToolValues: f.observability.logToolValues,
+          fullDetailUntil: isFullDetailWindowOpen(
+            f.observability.fullDetailUntil,
+            snapshotNow,
+          )
+            ? f.observability.fullDetailUntil?.toISOString()
+            : null,
+        },
         memory: hidden.memory,
         modelFallback: hidden.modelFallback,
         // NOTE: Named after the block the save writes (`monitoring`), which is what the dirty-snapshot
@@ -2242,22 +2257,10 @@ function AgentEditor() {
     (syncedFormRef.current?.agent !== syncedForChat ||
       syncedFormRef.current.grants !== syncedGrantsRef.current)
   ) {
-    const prev = syncedFormRef.current;
-    const form = formOfSynced(syncedForChat, syncedGrantsRef.current);
-    // A block the sync did not change keeps the reading taken when it was first read: the debug
-    // window is derived from the clock, and re-reading it after an unrelated save would close it on
-    // the baseline while the form still shows it open.
-    if (
-      prev &&
-      JSON.stringify(prev.agent.settings?.observability ?? null) ===
-        JSON.stringify(syncedForChat.settings?.observability ?? null)
-    ) {
-      form.observability = prev.form.observability;
-    }
     syncedFormRef.current = {
       agent: syncedForChat,
       grants: syncedGrantsRef.current,
-      form,
+      form: formOfSynced(syncedForChat, syncedGrantsRef.current),
     };
   }
   // What the SERVER is doing, as opposed to what the form is about to ask it to do. The "recording

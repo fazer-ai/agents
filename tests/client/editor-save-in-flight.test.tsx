@@ -367,3 +367,33 @@ test("a General save after the debug window closed does not mark Behavior unsave
     setSystemTime();
   }
 });
+
+// Discard all puts the form back from the server's copy, read now; the baseline was read at load.
+// A debug window that closed in between must read the same on both sides.
+test("Discard all after the debug window closed leaves nothing unsaved", async () => {
+  setSystemTime(new Date("2026-03-01T12:00:00.000Z"));
+  try {
+    const stub = stubEditorApi({
+      settings: {
+        observability: { fullDetailUntil: "2026-03-01T12:30:00.000Z" },
+      },
+    });
+    await renderEditor(stub, "general");
+    change(screen.getByLabelText(/^Name/), "Ana");
+    setSystemTime(new Date("2026-03-01T13:00:00.000Z"));
+    fireEvent.click(await screen.findByRole("button", { name: "Discard all" }));
+    const confirm = await screen.findByRole("dialog");
+    const buttons = [...confirm.querySelectorAll("button")];
+    fireEvent.click(
+      buttons.find((b) => /Discard/.test(b.textContent ?? "")) as HTMLElement,
+    );
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("button", { name: "Discard all" }) === null,
+      ).toBe(true),
+    );
+    expect(`${dot(/^General/)} ${dot(/^Behavior/)}`).toBe("false false");
+  } finally {
+    setSystemTime();
+  }
+});

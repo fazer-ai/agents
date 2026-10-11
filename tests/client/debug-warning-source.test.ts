@@ -11,7 +11,7 @@ import { describe, expect, test } from "bun:test";
 // expired becomes the `null` that the next save of any Behavior field writes back. Server-side
 // readers are on the server's clock by construction; a new client-side one would not be.
 describe("every client-side read of the window is on the server's clock", () => {
-  test("there are exactly two, and neither reads the browser's clock", async () => {
+  test("there are exactly three, and none reads the browser's clock", async () => {
     const dir = new URL("../../src/client/", import.meta.url).pathname;
     const files = (
       await Array.fromAsync(
@@ -33,7 +33,9 @@ describe("every client-side read of the window is on the server's clock", () => 
         expect(text).toContain("@/client/lib/serverClock");
       }
     }
+    // The editor states the window at one instant for both sides of its unsaved-changes comparison.
     expect(touching).toEqual([
+      "pages/agents/AgentEditorPage.tsx",
       "pages/agents/BehaviorTab.tsx",
       "pages/agents/observabilityFormState.ts",
     ]);

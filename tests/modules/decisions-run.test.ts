@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { DynamicStructuredTool } from "@langchain/core/tools";
 import { z } from "zod";
 import { fenceReporterOf } from "@/graph/tools/fence-report";
+import { ChatwootExpiredError } from "@/modules/chatwoot/client";
 import { ruleStateKey } from "@/modules/decisions/config";
 import { applyDecisions, type DecisionProgress } from "@/modules/decisions/run";
 
@@ -869,6 +870,46 @@ describe("applyDecisions and the trigger state", () => {
     );
     expect(r.triggerState.latch).toEqual([noteKey]);
     expect(r.triggerState.release).toEqual([handoffKey]);
+  });
+
+  test("a call that threw may have written: its rule stays latched", async () => {
+    const r = await applyDecisions(
+      {
+        rules: [{ when, action: { tool: "private_note" as const, args: {} } }],
+      },
+      answers,
+      [
+        reporting("private_note", async () => {
+          throw new Error("response could not be read");
+        }),
+      ],
+      [],
+      new AbortController().signal,
+      async () => true,
+      10,
+    );
+    expect(r.triggerState.latch).toEqual([noteKey]);
+    expect(r.triggerState.release).toEqual([]);
+  });
+
+  test("a write the client refused before it left is released", async () => {
+    const r = await applyDecisions(
+      {
+        rules: [{ when, action: { tool: "private_note" as const, args: {} } }],
+      },
+      answers,
+      [
+        reporting("private_note", async () => {
+          throw new ChatwootExpiredError("POST messages");
+        }),
+      ],
+      [],
+      new AbortController().signal,
+      async () => true,
+      10,
+    );
+    expect(r.triggerState.latch).toEqual([]);
+    expect(r.triggerState.release).toEqual([noteKey]);
   });
 
   test("a call withdrawn after a fence allowed part of it is no_effect, not a partial run", async () => {

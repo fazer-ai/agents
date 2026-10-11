@@ -18,6 +18,10 @@ import {
   withFenceReporter,
 } from "@/graph/tools/fence-report";
 import {
+  ChatwootCalledOffError,
+  ChatwootExpiredError,
+} from "@/modules/chatwoot/client";
+import {
   type DecisionsConfig,
   type DecisionTrigger,
   ruleStateKey,
@@ -162,7 +166,14 @@ export async function applyDecisions(
   };
   // Latched ahead of dispatch, by fired action (LatchAhead).
   const ahead = new Map<number, string[]>();
-  const leftNothing = (a: ActionReport) => a.outcome !== "ran" && !a.committed;
+  // What is known to have written nothing. A call that threw may have written before it did, so it
+  // counts only when it never reached its handler (`invalid_arguments`) or the client proved the
+  // write never left (`quiet`).
+  const leftNothing = (a: ActionReport, at: number) =>
+    a.outcome === "failed"
+      ? a.failure === "invalid_arguments" ||
+        (quiet.has(at) && !committed.has(at))
+      : a.outcome !== "ran";
   // Latched ahead for an action that was then not dispatched.
   const dropped = new Set<string>();
   // The latches written ahead whose action settled without writing anything, or never started:
@@ -172,7 +183,9 @@ export async function applyDecisions(
       const a = slots[at];
       // A call given up on at the deadline has no slot, and counts only once its tool said it wrote
       // nothing.
-      const nothing = a ? leftNothing(a) : quiet.has(at) && !committed.has(at);
+      const nothing = a
+        ? leftNothing(a, at)
+        : quiet.has(at) && !committed.has(at);
       return nothing ? k : [];
     }),
     ...dropped,
@@ -236,7 +249,8 @@ export async function applyDecisions(
     const latch = new Set<string>();
     if (!dryRun) {
       for (const [at, a] of slots.entries()) {
-        if (a && !leftNothing(a)) for (const k of latchKeys(at)) latch.add(k);
+        if (a && !leftNothing(a, at))
+          for (const k of latchKeys(at)) latch.add(k);
       }
     }
     const release = [...missedReleases(), ...undone()];
@@ -353,7 +367,10 @@ export async function applyDecisions(
           member.tool
             .invoke(
               f.args,
-              withFenceReporter({ callbacks, signal }, (r) => {
+              // Without the tick's signal: given it, the call would reject the moment the deadline
+              // passes while its handler goes on, and what the handler then did would be lost. The
+              // handlers keep their own deadline (the Chatwoot client's).
+              withFenceReporter({ callbacks }, (r) => {
                 reports.push(r);
                 if ("committed" in r) committed.add(member.at);
                 // Wrote nothing: said no to, whole, by a fence, or nothing it could write.
@@ -393,9 +410,17 @@ export async function applyDecisions(
                 settled();
               },
               (err: unknown) => {
+                // Refused by the client before the request left: nothing was written.
+                if (
+                  err instanceof ChatwootExpiredError ||
+                  err instanceof ChatwootCalledOffError
+                ) {
+                  quiet.add(member.at);
+                }
                 // Cancellation ends the tick, it is not one tool's failure: the caller owns the deadline.
                 if (signal.aborted) {
                   cancelled ??= { err };
+                  settled();
                   return;
                 }
                 slots[member.at] = {

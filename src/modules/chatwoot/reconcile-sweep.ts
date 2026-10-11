@@ -233,14 +233,29 @@ async function handOver(
         id: true,
         lastHandledMessageId: true,
         lastRepliedMessageId: true,
+        replyClaimFloorMessageId: true,
+        resetAtMessageId: true,
       },
     });
     if (mirror) {
-      const floor = Math.max(
+      // The marks speak only below the per-message floor: above it every decision writes a row, and a
+      // mark past the message can belong to a later message decided alone (docs/debounce.md).
+      const claimFloor = mirror.replyClaimFloorMessageId;
+      const marks = Math.max(
         mirror.lastHandledMessageId ?? 0,
         mirror.lastRepliedMessageId ?? 0,
       );
-      if (floor >= message.id) return false;
+      if (
+        (claimFloor === null || message.id <= claimFloor) &&
+        marks >= message.id
+      )
+        return false;
+      // `/reset` retires the burst before it with no row of its own.
+      if (
+        mirror.resetAtMessageId !== null &&
+        mirror.resetAtMessageId >= message.id
+      )
+        return false;
       const decided = await db.messageReplyClaim.findFirst({
         where: { conversationId: mirror.id, messageId: message.id },
         select: { id: true },

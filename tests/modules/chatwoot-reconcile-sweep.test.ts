@@ -1195,7 +1195,11 @@ describe.skipIf(!dbUp)("reconciling from Chatwoot", () => {
   test("a message a turn already decided without a ledger row is no loss: a claim, a dispensal range, or a floor past it", async () => {
     const mirror = async (
       chatwootConversationId: number,
-      marks: { lastHandledMessageId?: number } = {},
+      marks: {
+        lastHandledMessageId?: number;
+        replyClaimFloorMessageId?: number;
+        resetAtMessageId?: number;
+      } = {},
     ) =>
       suDb.conversation.create({
         data: {
@@ -1229,6 +1233,15 @@ describe.skipIf(!dbUp)("reconciling from Chatwoot", () => {
     });
     await mirror(594, { lastHandledMessageId: 9094 });
     await mirror(595, { lastHandledMessageId: 9094 });
+    // Per-message era: a mark past the message is a later message decided alone, not this one.
+    await mirror(596, {
+      lastHandledMessageId: 9200,
+      replyClaimFloorMessageId: 9000,
+    });
+    await mirror(597, {
+      resetAtMessageId: 9097,
+      replyClaimFloorMessageId: 9000,
+    });
     // The message each conversation is owed, by its Chatwoot id: claimed, inside the dispensal range,
     // at the handled floor, and past the floor with nothing written about it.
     const owed = new Map([
@@ -1236,6 +1249,8 @@ describe.skipIf(!dbUp)("reconciling from Chatwoot", () => {
       [593, 9093],
       [594, 9094],
       [595, 9095],
+      [596, 9096],
+      [597, 9097],
     ]);
     const s: Scripted = {
       conversations: new Map([
@@ -1255,10 +1270,14 @@ describe.skipIf(!dbUp)("reconciling from Chatwoot", () => {
       now: NOW,
       makeClient: chatwoot(s),
     });
-    expect(counts.handedToRecovery).toBe(1);
+    expect(counts.handedToRecovery).toBe(2);
     expect((await ledgerFor(595)).map((r) => r.inboundMessageId)).toEqual([
       9095,
     ]);
+    expect((await ledgerFor(596)).map((r) => r.inboundMessageId)).toEqual([
+      9096,
+    ]);
+    expect(await ledgerFor(597)).toHaveLength(0);
   });
 
   test("a conversation with no activity time fails the inbox and keeps the cursor", async () => {

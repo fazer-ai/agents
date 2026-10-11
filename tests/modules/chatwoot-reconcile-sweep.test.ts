@@ -67,6 +67,8 @@ interface Scripted {
   // Every page of an inbox's listing, for a read longer than one page.
   pages?: Map<number, ChatwootInboxConversation[][]>;
   pinned?: number[];
+  // Every answer of the pin listing in call order, for pins that change under the read.
+  pinnedCalls?: number[][];
   // Every answer of the listing in call order, for a listing that changes under the read.
   calls?: ChatwootInboxConversation[][];
   messages: Map<number, unknown[]>;
@@ -91,10 +93,21 @@ function chatwoot(s: Scripted) {
         return page === 1 ? (s.conversations.get(inboxId) ?? []) : [];
       },
       async listPinnedConversationIds() {
-        return new Set(s.pinned ?? []);
+        return new Set(
+          s.pinnedCalls ? (s.pinnedCalls.shift() ?? []) : (s.pinned ?? []),
+        );
       },
-      async getMessages(conversationId: number) {
-        return s.messages.get(conversationId) ?? [];
+      // Twenty messages a page, newest last, and `before` reads the page ending below that id, as
+      // Chatwoot pages a conversation.
+      async getMessages(conversationId: number, opts?: { before?: number }) {
+        const all = s.messages.get(conversationId) ?? [];
+        if (!Array.isArray(all)) return all;
+        const before = opts?.before;
+        const older =
+          before === undefined
+            ? all
+            : all.filter((m) => (m as { id: number }).id < before);
+        return older.slice(-20);
       },
     }) as unknown as ChatwootClient;
 }
@@ -503,6 +516,73 @@ describe.skipIf(!dbUp)("reconciling from Chatwoot", () => {
       makeClient: chatwoot(s),
     });
     expect(counts.handedToRecovery).toBe(1);
+  });
+
+  test("a lost message behind a page of notes is found on an older page, and one too far back fails the inbox", async () => {
+    const notes = (from: number, n: number) =>
+      Array.from({ length: n }, (_, i) => ({
+        ...outgoing(from + i, minutesAgo(20)),
+        private: true,
+      }));
+    const s: Scripted = {
+      conversations: new Map([[INBOX, [conv(570, minutesAgo(20))]]]),
+      messages: new Map([
+        [570, [incoming(9070, minutesAgo(25)), ...notes(9071, 25)]],
+      ]),
+      listed: [],
+    };
+    const counts = await reconcileFromChatwoot({
+      tenantId,
+      base: appDb,
+      now: NOW,
+      makeClient: chatwoot(s),
+    });
+    expect(counts.handedToRecovery).toBe(1);
+    expect((await ledgerFor(570)).map((r) => r.inboundMessageId)).toEqual([
+      9070,
+    ]);
+
+    await suDb.chatwootInstance.update({
+      where: { id: instanceId },
+      data: { reconciledUntil: minutesAgo(40) },
+    });
+    const buried: Scripted = {
+      conversations: new Map([[INBOX, [conv(571, minutesAgo(20))]]]),
+      messages: new Map([
+        [571, [incoming(9100, minutesAgo(25)), ...notes(9101, 205)]],
+      ]),
+      listed: [],
+    };
+    const failed = await reconcileFromChatwoot({
+      tenantId,
+      base: appDb,
+      now: NOW,
+      makeClient: chatwoot(buried),
+    });
+    expect(failed.inboxesFailed).toBe(1);
+  });
+
+  test("a conversation pinned during the read does not end it before the recent ones", async () => {
+    const s: Scripted = {
+      conversations: new Map(),
+      pages: new Map([
+        [INBOX, [[conv(800, minutesAgo(600))], [conv(801, minutesAgo(20))]]],
+      ]),
+      // Unpinned when the first listing starts, pinned by the time it ends.
+      pinnedCalls: [[], [800], [800], [800], [800], [800]],
+      messages: new Map([[801, [incoming(9801, minutesAgo(20))]]]),
+      listed: [],
+    };
+    const counts = await reconcileFromChatwoot({
+      tenantId,
+      base: appDb,
+      now: NOW,
+      makeClient: chatwoot(s),
+    });
+    expect(counts.inboxesFailed).toBe(0);
+    expect((await ledgerFor(801)).map((r) => r.inboundMessageId)).toEqual([
+      9801,
+    ]);
   });
 
   test("a busy inbox is read to the end of the window, however many pages that takes", async () => {

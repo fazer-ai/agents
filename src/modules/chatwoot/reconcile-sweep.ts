@@ -59,6 +59,15 @@ export function reconciledDeliveryId(
 export function owedCustomerMessage(
   rows: ChatwootMessageRow[],
 ): ChatwootMessageRow | null {
+  const turn = newestTurn(rows);
+  return typeof turn === "object" ? turn : null;
+}
+
+// The same reading, telling "a reply came last" from "nothing on this page decides": a page of notes
+// and activity lines says nothing, and the answer is on an older page.
+function newestTurn(
+  rows: ChatwootMessageRow[],
+): ChatwootMessageRow | "answered" | "undecided" {
   for (let i = rows.length - 1; i >= 0; i--) {
     const m = rows[i] as ChatwootMessageRow;
     if (m.private || m.isReaction || m.imported) continue;
@@ -67,9 +76,37 @@ export function owedCustomerMessage(
       (m.messageType === "outgoing" || m.messageType === "template") &&
       m.senderType !== null
     )
-      return null;
+      return "answered";
   }
-  return null;
+  return "undecided";
+}
+
+// Older pages a conversation may be read back through when its newest ones hold only notes and
+// activity lines. Past them the conversation is left undecided and the inbox unfinished.
+const MAX_MESSAGE_PAGES = 10;
+
+async function owedOf(
+  client: ChatwootClient,
+  conversationId: number,
+): Promise<ChatwootMessageRow | null> {
+  let rows = readMessagePage(
+    await client.getMessages(conversationId),
+    conversationId,
+  );
+  for (let page = 0; page < MAX_MESSAGE_PAGES; page++) {
+    const turn = newestTurn(rows);
+    if (turn === "answered") return null;
+    if (turn !== "undecided") return turn;
+    if (rows.length === 0) return null;
+    const oldest = Math.min(...rows.map((m) => m.id));
+    rows = readMessagePage(
+      await client.getMessages(conversationId, { before: oldest }),
+      conversationId,
+    );
+  }
+  throw new Error(
+    `conversation ${conversationId}: no public message in ${MAX_MESSAGE_PAGES} pages`,
+  );
 }
 
 export interface ReconcileCounts {
@@ -202,10 +239,16 @@ async function reconcileInbox(p: InboxRead): Promise<void> {
   p.counts.inboxesRead += 1;
   // Conversations the token's user pinned lead the listing whatever their age, possibly for whole
   // pages, so the activity order only starts after them and only an unpinned row can end the read.
-  const pinned = await p.client.listPinnedConversationIds();
+  // Read around every listing: a pin made during one would read as an old row and end it early.
   const read = new Set<number>();
   for (let listing = 0; listing < MAX_LISTINGS_PER_INBOX; listing++) {
-    if ((await readListing(p, pinned, read)) === 0) return;
+    const pinned = await p.client.listPinnedConversationIds();
+    const unseen = await readListing(p, pinned, read);
+    const pinnedAfter = await p.client.listPinnedConversationIds();
+    const samePins =
+      pinnedAfter.size === pinned.size &&
+      [...pinned].every((id) => pinnedAfter.has(id));
+    if (unseen === 0 && samePins) return;
   }
   throw new Error(
     `inbox ${p.inbox.chatwootInboxId} still shifted after ${MAX_LISTINGS_PER_INBOX} listings`,
@@ -257,9 +300,7 @@ async function readListing(
       // A person holds it: whatever the customer wrote is theirs to answer.
       if (c.assigneeType === "User") continue;
       counts.conversationsRead += 1;
-      const message = owedCustomerMessage(
-        readMessagePage(await client.getMessages(c.id), c.id),
-      );
+      const message = await owedOf(client, c.id);
       if (
         !message?.createdAt ||
         message.createdAt < since ||

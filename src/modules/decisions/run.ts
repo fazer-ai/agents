@@ -94,6 +94,8 @@ export interface TriggerStateChange {
 // a later action) still persists what the actions before it latched.
 export interface DecisionProgress {
   triggerState?: TriggerStateChange;
+  // Set by a caller that stopped waiting: every later change is handed to it as it happens.
+  onChange?: (state: TriggerStateChange) => void;
 }
 
 export interface DecisionTickReport {
@@ -141,6 +143,13 @@ export async function applyDecisions(
   // The fired actions whose tool said it wrote something that stays, as it said it: a deadline that
   // ends the tick after the write and before the call settles must not lose it.
   const committed = new Set<number>();
+  // Told to the caller on every change, after the call returned too: a write that finishes behind
+  // a deadline that already ended the tick still latches (DecisionProgress).
+  const advance = () => {
+    const state = triggerState(reported());
+    progress.triggerState = state;
+    progress.onChange?.(state);
+  };
   const toRun: { at: number; tool: StructuredToolInterface }[] = [];
   // Every call the tick dispatches counts, a dry run's included, so it reports what a run would.
   let calls = 0;
@@ -289,7 +298,7 @@ export async function applyDecisions(
                 reports.push(r);
                 if ("committed" in r) {
                   committed.add(member.at);
-                  progress.triggerState = triggerState(reported());
+                  advance();
                 }
               }),
             )
@@ -307,18 +316,20 @@ export async function applyDecisions(
                       outcome: "refused",
                       fence: whole.fence,
                     }
-                  : part
-                    ? {
-                        rule: f.rule,
-                        tool: f.tool,
-                        outcome: "ran",
-                        fence: part.fence,
-                        partial: true,
-                      }
-                    : reports.some((r) => "noEffect" in r)
-                      ? { rule: f.rule, tool: f.tool, outcome: "no_effect" }
+                  : // Before the partial fence: a call withdrawn after its fence was asked wrote
+                    // neither the part the fence allowed nor the rest.
+                    reports.some((r) => "noEffect" in r)
+                    ? { rule: f.rule, tool: f.tool, outcome: "no_effect" }
+                    : part
+                      ? {
+                          rule: f.rule,
+                          tool: f.tool,
+                          outcome: "ran",
+                          fence: part.fence,
+                          partial: true,
+                        }
                       : { rule: f.rule, tool: f.tool, outcome: "ran" };
-                progress.triggerState = triggerState(reported());
+                advance();
               },
               (err: unknown) => {
                 // Cancellation ends the tick, it is not one tool's failure: the caller owns the deadline.
@@ -338,7 +349,7 @@ export async function applyDecisions(
                     ? { committed: true as const }
                     : {}),
                 };
-                progress.triggerState = triggerState(reported());
+                advance();
               },
             ),
         );

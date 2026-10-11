@@ -1966,6 +1966,9 @@ export async function runObserve(
       toolLogger.settle();
       // What the actions before the one that stopped the tick latched stays latched: a note that
       // went out is one the next observation must not post again.
+      // A write still in flight when the deadline ended the call can finish after this: its latch is
+      // persisted as it arrives.
+      progress.onChange = (state) => void persistTriggerState(state);
       if (progress.triggerState)
         await persistTriggerState(progress.triggerState);
       if (refusal !== null) return endOnRefusal(refusal);

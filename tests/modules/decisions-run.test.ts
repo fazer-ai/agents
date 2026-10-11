@@ -574,6 +574,77 @@ describe("applyDecisions and the trigger state", () => {
     ]);
   });
 
+  test("a call withdrawn after a fence allowed part of it is no_effect, not a partial run", async () => {
+    const rules = [
+      {
+        when,
+        action: { tool: "set_labels" as const, args: {} },
+        trigger: "once" as const,
+      },
+    ];
+    const r = await applyDecisions(
+      { rules },
+      answers,
+      [
+        reporting("set_labels", async (report) => {
+          report?.({ fence: "protected_label", partial: true });
+          report?.({ noEffect: true });
+          return "Could not set the contact labels (the run was called off while this write waited).";
+        }),
+      ],
+      [],
+      new AbortController().signal,
+      async () => true,
+      10,
+    );
+    expect(r.actions).toEqual([
+      { rule: 0, tool: "set_labels", outcome: "no_effect" },
+    ]);
+    expect(r.triggerState.latch).toEqual([]);
+  });
+
+  test("a caller that stopped waiting is handed a write that latched after it", async () => {
+    let finish: () => void = () => {};
+    const progress: DecisionProgress = {};
+    const run = applyDecisions(
+      {
+        rules: [
+          { when, action: { tool: "handoff_to_human" as const, args: {} } },
+        ],
+      },
+      answers,
+      [
+        reporting(
+          "handoff_to_human",
+          (report) =>
+            new Promise((resolve) => {
+              finish = () => {
+                report?.({ committed: true });
+                resolve("done");
+              };
+            }),
+        ),
+      ],
+      [],
+      new AbortController().signal,
+      async () => true,
+      10,
+      () => null,
+      false,
+      new Set(),
+      progress,
+    );
+    // The caller gave up here (its deadline), and asks to be told what comes next.
+    const late: string[][] = [];
+    progress.onChange = (state) => late.push(state.latch);
+    await Bun.sleep(5);
+    finish();
+    await run;
+    expect(late[0]).toEqual([
+      ruleStateKey({ when, action: { tool: "handoff_to_human", args: {} } }),
+    ]);
+  });
+
   test("an action that ran before the deadline stopped the tick is in the progress the caller persists", async () => {
     const t = tools(async () => "ok");
     // The second action meets the deadline: the first one's note already went out.

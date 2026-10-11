@@ -4,6 +4,7 @@ import { type StructuredToolInterface, tool } from "@langchain/core/tools";
 import { ToolNode } from "@langchain/langgraph/prebuilt";
 import { z } from "zod";
 import { isEffectFreeTool, markEffectFree } from "@/graph/tools/effect-free";
+import { type CallReport, withFenceReporter } from "@/graph/tools/fence-report";
 import {
   applyToolPreconditions,
   guardedTool,
@@ -47,6 +48,19 @@ const unmet = async () => ({
 });
 
 describe("guardedTool", () => {
+  // The decisions engine reads what a call did off its config (fence-report.ts): withdrawn during
+  // the read, the tool never ran, so the call says it wrote nothing rather than reading as a run.
+  test("a call withdrawn while its precondition was read reports no effect", async () => {
+    const { tool: inner, calls } = spyTool();
+    const reports: CallReport[] = [];
+    await guardedTool(inner, COND, met, undefined, async () => false).invoke(
+      {},
+      withFenceReporter({}, (r) => reports.push(r)),
+    );
+    expect(calls).toEqual([]);
+    expect(reports).toEqual([{ noEffect: true }]);
+  });
+
   test("does NOT run the tool when the precondition is unmet", async () => {
     const { tool: inner, calls } = spyTool();
     const out = await guardedTool(inner, COND, unmet).invoke({ reason: "2" });

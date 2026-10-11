@@ -98,6 +98,7 @@ export function guardedTool(
     }
     if (met) {
       if (stillWanted && !(await stillWanted().catch(() => true))) {
+        fenceReporterOf(config)?.({ noEffect: true });
         return answer(
           `Did not run ${inner.name} (the run was called off while its precondition was read).`,
         );

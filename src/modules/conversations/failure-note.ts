@@ -409,7 +409,11 @@ export async function announceFailedTurn(params: {
           // newest-message fence is what keeps that message's turn, and not through the no-row path.
           if (keys.rowId === null) {
             keys = await turnKeysOf(tenantId, instanceId, conversationId, base);
-            if (keys.rowId !== null) ownership = await ownershipNow();
+          }
+          // A row that was missing at the ownership read and is there now, found by either key read,
+          // is read like any other before the claim.
+          if (!ownership.ours && keys.rowId !== null) {
+            ownership = await ownershipNow();
           }
           // A turn already running on the conversation (an operator's re-engage, a follow-up, a
           // flush) was started without a new message, so neither ask can see it; opening the

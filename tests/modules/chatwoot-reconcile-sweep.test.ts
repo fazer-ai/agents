@@ -9,9 +9,9 @@ import {
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
-import type {
+import {
   ChatwootClient,
-  ChatwootInboxConversation,
+  type ChatwootInboxConversation,
 } from "@/modules/chatwoot/client";
 import { parseChatwootMessages } from "@/modules/chatwoot/messages";
 import {
@@ -63,6 +63,8 @@ let instanceId = 0n;
 
 interface Scripted {
   conversations: Map<number, ChatwootInboxConversation[]>;
+  // Every page of an inbox's listing, for a read longer than one page.
+  pages?: Map<number, ChatwootInboxConversation[][]>;
   messages: Map<number, unknown[]>;
   failInbox?: number;
   listed: number[];
@@ -79,6 +81,8 @@ function chatwoot(s: Scripted) {
         s.listed.push(inboxId);
         if (inboxId === s.failInbox) throw new Error("HTTP 502");
         expect(status).toBe("pending");
+        const pages = s.pages?.get(inboxId);
+        if (pages) return pages[page - 1] ?? [];
         return page === 1 ? (s.conversations.get(inboxId) ?? []) : [];
       },
       async getMessages(conversationId: number) {
@@ -100,6 +104,7 @@ const outgoing = (id: number, at: Date) => ({
   private: false,
   created_at: epoch(at),
   content: "olá",
+  sender: { id: BOT, type: "agent_bot" },
 });
 
 const conv = (
@@ -161,6 +166,43 @@ describe("which message a conversation owes", () => {
       { id: 3, message_type: 2, created_at: epoch(minutesAgo(20)) },
     ]);
     expect(owedCustomerMessage(rows)?.id).toBe(1);
+  });
+  test("a sender-less outgoing message after the customer (an automation, an away message) does not answer them", () => {
+    const { sender: _, ...automation } = outgoing(2, minutesAgo(20));
+    const rows = parseChatwootMessages([
+      incoming(1, minutesAgo(30)),
+      automation,
+    ]);
+    expect(owedCustomerMessage(rows)?.id).toBe(1);
+  });
+});
+
+describe("the conversation listing", () => {
+  const listing = async (body: unknown) => {
+    const fetchImpl = (async () =>
+      new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })) as unknown as typeof fetch;
+    const c = new ChatwootClient(
+      {
+        baseUrl: "https://chat.example.com",
+        accountId: 5,
+        adminToken: "admin",
+        botToken: "bot",
+      },
+      fetchImpl,
+    );
+    return c.listInboxConversations(81, "pending", 1);
+  };
+  test("an empty payload is the end of the listing", async () => {
+    expect(await listing({ data: { payload: [] } })).toEqual([]);
+  });
+  test("a listing with no payload array, or with a row it cannot read, is an error and not the end", async () => {
+    await expect(listing({ data: {} })).rejects.toThrow("no payload array");
+    await expect(
+      listing({ data: { payload: [{ status: "pending" }] } }),
+    ).rejects.toThrow("unreadable row");
   });
 });
 
@@ -393,6 +435,98 @@ describe.skipIf(!dbUp)("reconciling from Chatwoot", () => {
         where: { tenantId, kind: "DELIVERY_RECOVERY" },
       }),
     ).toBe(1);
+  });
+
+  test("an observer's delivery of the message does not cover the responder's that never arrived", async () => {
+    await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: "observer-delivery",
+        event: "message_created",
+        status: "PROCESSED",
+        conversationId: 510,
+        inboundMessageId: 9020,
+        routeAgentBotId: BOT + 1,
+        routeObserved: true,
+      },
+    });
+    const s: Scripted = {
+      conversations: new Map([[INBOX, [conv(510, minutesAgo(25))]]]),
+      messages: new Map([[510, [incoming(9020, minutesAgo(25))]]]),
+      listed: [],
+    };
+    const counts = await reconcileFromChatwoot({
+      tenantId,
+      base: appDb,
+      now: NOW,
+      makeClient: chatwoot(s),
+    });
+    expect(counts.handedToRecovery).toBe(1);
+    const rows = await ledgerFor(510);
+    expect(
+      rows.find((r) => r.deliveryId === reconciledDeliveryId(510, 9020))
+        ?.routeAgentBotId,
+    ).toBe(BOT);
+  });
+
+  test("a busy inbox is read to the end of the window, however many pages that takes", async () => {
+    // Fifty pages of recent conversations we already answered, and the lost message on the last one.
+    const pages: ChatwootInboxConversation[][] = [];
+    const messages = new Map<number, unknown[]>();
+    for (let p = 0; p < 50; p++) {
+      const page: ChatwootInboxConversation[] = [];
+      for (let i = 0; i < 25; i++) {
+        const id = 10_000 + p * 25 + i;
+        page.push(conv(id, minutesAgo(20)));
+        messages.set(id, [
+          incoming(id * 10, minutesAgo(21)),
+          outgoing(id * 10 + 1, minutesAgo(20)),
+        ]);
+      }
+      pages.push(page);
+    }
+    const lost = 10_000 + 49 * 25 + 24;
+    messages.set(lost, [incoming(lost * 10, minutesAgo(20))]);
+    const s: Scripted = {
+      conversations: new Map(),
+      pages: new Map([[INBOX, pages]]),
+      messages,
+      listed: [],
+    };
+    const counts = await reconcileFromChatwoot({
+      tenantId,
+      base: appDb,
+      now: NOW,
+      makeClient: chatwoot(s),
+    });
+    expect(counts.inboxesFailed).toBe(0);
+    expect(counts.handedToRecovery).toBe(1);
+    expect((await ledgerFor(lost)).map((r) => r.inboundMessageId)).toEqual([
+      lost * 10,
+    ]);
+  });
+
+  test("a listing that repeats its page fails the inbox and keeps the cursor", async () => {
+    const page = [conv(520, minutesAgo(20))];
+    const s: Scripted = {
+      conversations: new Map(),
+      pages: new Map([[INBOX, [page, page, page]]]),
+      messages: new Map([[520, [outgoing(9030, minutesAgo(20))]]]),
+      listed: [],
+    };
+    const counts = await reconcileFromChatwoot({
+      tenantId,
+      base: appDb,
+      now: NOW,
+      makeClient: chatwoot(s),
+    });
+    expect(counts.inboxesFailed).toBe(1);
+    const kept = await suDb.chatwootInstance.findUniqueOrThrow({
+      where: { id: instanceId },
+      select: { reconciledUntil: true },
+    });
+    expect(kept.reconciledUntil?.getTime()).toBe(minutesAgo(40).getTime());
   });
 
   test("the cursor advances to the settle line after a pass that read every inbox, and not after one that failed", async () => {

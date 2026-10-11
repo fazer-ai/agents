@@ -1757,10 +1757,20 @@ export class ChatwootClient {
       "GET",
       `/conversations?${qs.toString()}`,
     )) as { data?: { payload?: unknown } } | null;
-    const rows = Array.isArray(res?.data?.payload) ? res.data.payload : [];
-    return rows.flatMap((row) => {
+    // An unreadable listing throws instead of reading as the end: an empty answer lets the
+    // caller advance its cursor past conversations it never saw.
+    const rows = res?.data?.payload;
+    if (!Array.isArray(rows))
+      throw new Error(
+        `GET /conversations: no payload array for inbox ${inboxId}`,
+      );
+    return rows.map((row) => {
       const c = parseInboxConversation(row);
-      return c ? [c] : [];
+      if (!c)
+        throw new Error(
+          `GET /conversations: unreadable row for inbox ${inboxId}`,
+        );
+      return c;
     });
   }
 

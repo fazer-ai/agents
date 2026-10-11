@@ -6,7 +6,7 @@ import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { writeFlowEvent } from "@/modules/flowlog/service";
 import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
-import type { ChatwootClient } from "./client";
+import type { ChatwootClient, ChatwootInboxConversation } from "./client";
 import { type LoadChatwootClientDeps, loadChatwootClient } from "./instance";
 import { type ChatwootMessageRow, parseChatwootMessages } from "./messages";
 import { armDeliveryRecoveryOn, MAX_RECOVERY_AGE_MS } from "./recover-delivery";
@@ -33,9 +33,6 @@ const CURSOR_MARGIN_MS = 2 * 60 * 1000;
 // How far back the very first pass reads: the longest any recovery would still answer. Older messages
 // would only be handed to the team, and a first pass is not the place to hand over a backlog.
 const FIRST_PASS_LOOKBACK_MS = MAX_RECOVERY_AGE_MS;
-// Pages of 25 an inbox may be read per pass, against a pathological backlog. The rest is read on the
-// next pass, since the cursor does not advance past an inbox it did not finish.
-const MAX_PAGES_PER_INBOX = 40;
 
 function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
@@ -51,8 +48,10 @@ export function reconciledDeliveryId(
 }
 
 // The customer message a conversation owes an answer to, read off its newest page: the newest public
-// message that is a customer's or ours, when it is the customer's. Private notes, activity lines,
-// reactions and imported history say nothing about who spoke last.
+// message that is a customer's or a reply, when it is the customer's. Private notes, activity lines,
+// reactions and imported history say nothing about who spoke last, and neither does a sender-less
+// outgoing message (an automation, an away message, a survey, or a reply typed on a paired phone): the
+// recovery tells those apart with the inbox's provider, so the message is handed to it.
 export function owedCustomerMessage(
   rows: ChatwootMessageRow[],
 ): ChatwootMessageRow | null {
@@ -60,7 +59,10 @@ export function owedCustomerMessage(
     const m = rows[i] as ChatwootMessageRow;
     if (m.private || m.isReaction || m.imported) continue;
     if (m.messageType === "incoming") return m;
-    if (m.messageType === "outgoing" || m.messageType === "template")
+    if (
+      (m.messageType === "outgoing" || m.messageType === "template") &&
+      m.senderType !== null
+    )
       return null;
   }
   return null;
@@ -123,11 +125,21 @@ async function handOver(
   message: ChatwootMessageRow,
 ): Promise<boolean> {
   return runScopedOn(base, sysCtx(tenantId), async (db) => {
+    // Only a delivery on the responder's route covers the message: an observer's webhook can succeed
+    // while the responder's exhausts its retries. A row with no route predates the column.
     const known = await db.chatwootWebhookDelivery.findFirst({
       where: {
         chatwootInstanceId: instanceId,
         conversationId,
         inboundMessageId: message.id,
+        ...(inbox.routeBotId !== null
+          ? {
+              OR: [
+                { routeAgentBotId: inbox.routeBotId },
+                { routeAgentBotId: null },
+              ],
+            }
+          : {}),
       },
       select: { id: true },
     });
@@ -176,13 +188,23 @@ async function reconcileInbox(p: {
   const { base, tenantId, instanceId, client, inbox, since, settledBefore } = p;
   const { counts } = p;
   counts.inboxesRead += 1;
-  for (let page = 1; page <= MAX_PAGES_PER_INBOX; page++) {
+  // No page cap: the read ends at the first page with nothing recent, so its length is the number of
+  // conversations that moved inside the window, and a cap would freeze the cursor on a busy inbox.
+  // A server that ignores `page` would never end it, which is what the repeated first id catches.
+  let previousFirst: number | null = null;
+  for (let page = 1; ; page++) {
     const rows = await client.listInboxConversations(
       inbox.chatwootInboxId,
       "pending",
       page,
     );
     if (rows.length === 0) return;
+    const first = (rows[0] as ChatwootInboxConversation).id;
+    if (first === previousFirst)
+      throw new Error(
+        `inbox ${inbox.chatwootInboxId} page ${page} repeats the previous page`,
+      );
+    previousFirst = first;
     let anyRecent = false;
     for (const c of rows) {
       if (c.lastActivityAt === null || c.lastActivityAt < since) continue;
@@ -208,12 +230,6 @@ async function reconcileInbox(p: {
     // page one whatever their age, which is why the whole page is read before deciding.
     if (!anyRecent) return;
   }
-  logger.warn(
-    "chatwoot reconcile: inbox %d still had recent conversations after %d pages; the rest is read next pass",
-    inbox.chatwootInboxId,
-    MAX_PAGES_PER_INBOX,
-  );
-  throw new Error("page cap reached");
 }
 
 // The per-conversation line: `info`, since the recovery writes the outcome (an answer, or the

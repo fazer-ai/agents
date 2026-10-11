@@ -66,7 +66,7 @@ describe("agent editor follow-up round-trip", () => {
   test("a step without the exemption writes no key for it", () => {
     const round = followUpToStored(followUpToForm({}));
     expect(round.steps[0]).toEqual({
-      delayValue: 30,
+      delayValue: 60,
       delayUnit: "minutes",
       instructions: "",
     });
@@ -83,4 +83,22 @@ describe("agent editor follow-up round-trip", () => {
     expect(cfg.steps[0]?.delayValue).toBe(3);
     expect(cfg.pauseWhileAppointment).toBe(true);
   });
+});
+
+// A step with no delay stored runs on the runtime reader's default, and the Behavior save rewrites
+// the whole block, so the form has to load that same default or an unrelated save changes the delay.
+describe("a delay the operator never set", () => {
+  for (const [label, settings] of [
+    ["an agent with no followUp block", {}],
+    ["a step stored without a delay", { followUp: { steps: [{}] } }],
+  ] as const) {
+    test(`${label}: a save leaves the delay the runtime runs on`, () => {
+      const runtime = readFollowUpConfig(settings).steps[0];
+      const saved = readFollowUpConfig({
+        followUp: followUpToStored(followUpToForm(settings)),
+      }).steps[0];
+      expect(saved?.delayValue).toEqual(runtime?.delayValue);
+      expect(saved?.delayUnit).toEqual(runtime?.delayUnit);
+    });
+  }
 });

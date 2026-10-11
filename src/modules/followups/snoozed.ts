@@ -191,6 +191,9 @@ export async function sweepSnoozedFollowUps(
                 -- Chatwoot's two instants are whole seconds: an event stamped S may have happened up to
                 -- S + 1s, so a run that started inside that second has not seen it.
                 j.status = 'CLAIMED'
+                -- A row waiting and already due runs next anyway: arming it again would only rewrite
+                -- it on every pass until it is claimed, since its watermark is still its last start.
+                OR (j.status IN ('PENDING', 'FAILED') AND j.run_at <= now() AT TIME ZONE 'UTC')
                 OR COALESCE(j.run_started_at, j.claimed_at, j.updated_at) >= GREATEST(
                   c.last_event_at + interval '1 second',
                   to_timestamp(c.chatwoot_status_at + 1) AT TIME ZONE 'UTC',

@@ -1984,6 +1984,42 @@ describe.skipIf(!dbUp)("snoozed ladder: the handler", () => {
     });
   }
 
+  test("a job the sweep already re-armed is not re-armed again on the next pass", async () => {
+    await setSettings(LADDER);
+    await seed(2093, { lastEventAt: new Date(Date.now() - 30_000) });
+    await suDb.$executeRaw`UPDATE agents SET updated_at = now() - interval '10 minutes' WHERE id = ${agentId}`;
+    await suDb.$executeRaw`UPDATE inboxes SET responder_bound_at = NULL WHERE tenant_id = ${tenantId}`;
+    const key = snoozedDedupeKey(threadOf(2093));
+    const started = new Date(Date.now() - 60_000);
+    await suDb.schedulerJob.deleteMany({ where: { tenantId, dedupeKey: key } });
+    await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "SNOOZED_FOLLOWUP",
+        dedupeKey: key,
+        runAt: started,
+        claimedAt: started,
+        runStartedAt: started,
+        status: "DONE",
+        payload: { threadId: threadOf(2093) },
+      },
+    });
+    await sweepSnoozedFollowUps(appDb, tenantId, [agentId]);
+    const first = await suDb.schedulerJob.findFirstOrThrow({
+      where: { tenantId, dedupeKey: key },
+      select: { status: true, runAt: true, updatedAt: true },
+    });
+    expect(first.status).toBe("PENDING");
+    await sweepSnoozedFollowUps(appDb, tenantId, [agentId]);
+    const second = await suDb.schedulerJob.findFirstOrThrow({
+      where: { tenantId, dedupeKey: key },
+      select: { runAt: true, updatedAt: true },
+    });
+    // Already due: arming it again would only rewrite the row on every pass until it is claimed.
+    expect(second.runAt.getTime()).toBe(first.runAt.getTime());
+    expect(second.updatedAt.getTime()).toBe(first.updatedAt.getTime());
+  });
+
   test("an event in the last run's own second is swept again: Chatwoot's instants are whole seconds", async () => {
     await setSettings(LADDER);
     // The run starts after every other watermark (the agent edit above), so only the event can re-arm.

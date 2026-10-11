@@ -305,6 +305,53 @@ describe("planImageConversion with the provider's dimension limit", () => {
         dimensions: { width: 8000, height: 8000 },
       }).action,
     ).toBe("as-is");
+    // The vendor's own host by name, and a regional subdomain of it, refuse the same way.
+    for (const baseURL of [
+      "https://api.anthropic.com/v1",
+      "https://eu.api.anthropic.com/v1",
+    ])
+      expect(
+        planImageConversion({
+          provider: "anthropic",
+          mimeType: "image/webp",
+          dimensions: { width: 9000, height: 9000 },
+          baseURL,
+        }).action,
+      ).toBe("over-limit");
+  });
+
+  test("on an endpoint that is not the vendor's, a limit fits but never refuses", () => {
+    for (const baseURL of [
+      "https://llm-proxy.example.com/v1",
+      "http://api.anthropic.com/v1",
+      "not a url",
+    ])
+      expect(
+        planImageConversion({
+          provider: "anthropic",
+          mimeType: "image/webp",
+          dimensions: { width: 9000, height: 9000 },
+          baseURL,
+        }).action,
+      ).toBe("as-is");
+    expect(
+      planImageConversion({
+        provider: "anthropic",
+        mimeType: "image/jpeg",
+        dimensions: { width: 9000, height: 9000 },
+        baseURL: "https://llm-proxy.example.com/v1",
+      }).action,
+    ).toBe("convert");
+  });
+
+  test("OpenAI's patch limit depends on the model, so it fits a JPEG and never refuses a WebP", () => {
+    expect(
+      planImageConversion({
+        provider: "openai",
+        mimeType: "image/webp",
+        dimensions: { width: 4536, height: 8064 },
+      }).action,
+    ).toBe("as-is");
   });
 });
 

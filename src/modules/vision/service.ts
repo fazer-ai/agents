@@ -302,6 +302,7 @@ async function convertForProvider(args: {
   bytes: ArrayBuffer;
   mimeType: string | null;
   provider: string;
+  baseURL: string | null;
   flow?: FlowContext;
 }): Promise<
   | { ok: true; bytes: ArrayBuffer; mimeType: string | null }
@@ -317,6 +318,7 @@ async function convertForProvider(args: {
         ? null
         : readImageDimensions(args.bytes),
     byteLength: args.bytes.byteLength,
+    baseURL: args.baseURL,
   });
   if (plan.action === "as-is")
     return { ok: true, bytes: args.bytes, mimeType: args.mimeType };
@@ -576,6 +578,7 @@ async function extractInboundOnce(
     bytes,
     mimeType: contentType,
     provider: cfg.provider,
+    baseURL: entry.baseUrl ?? cfg.baseURL,
     flow: params.flow,
   });
   if (!converted.ok) return skip(converted.reason);
@@ -791,6 +794,7 @@ export async function extractPlaygroundFile(
     bytes: params.file,
     mimeType: params.mimeType,
     provider: cfg.provider,
+    baseURL: entry.baseUrl ?? cfg.baseURL,
     flow: params.flow,
   });
   if (!converted.ok) return { kind: "unsupported", text: "" };

@@ -57,12 +57,16 @@ export type ImageLimits = {
   readonly maxBase64Bytes: number | null;
   // The total area, counted the way the vendor counts it: `edge`-px patches per image.
   readonly maxPatches: { readonly edge: number; readonly count: number } | null;
+  // The vendor's own API host. A base URL elsewhere is an endpoint we cannot speak for, so its
+  // limits never REFUSE a file there; fitting one still applies, since a fitted JPEG is read anywhere.
+  readonly host: string | null;
 };
 
 export const NO_IMAGE_LIMITS: ImageLimits = {
   maxEdge: null,
   maxBase64Bytes: null,
   maxPatches: null,
+  host: null,
 };
 
 export const IMAGE_LIMITS: Readonly<Record<string, ImageLimits>> = {
@@ -73,16 +77,20 @@ export const IMAGE_LIMITS: Readonly<Record<string, ImageLimits>> = {
     maxEdge: 8000,
     maxBase64Bytes: 10 * 1024 * 1024,
     maxPatches: null,
+    host: "api.anthropic.com",
   },
   // developers.openai.com/api/docs/guides/images-vision: 32x32 px patches, at most 30,000 per image
   // after the model's own resizing, and an image over that is "rejected, not automatically resized".
   // Counted on the original, because the models whose `auto` detail is `original` do not resize
   // below 65,535 px: gpt-6.1-sol answered 400 "requires 35784 patches after processing, exceeding
   // the limit of 30000" to a 4536x8064 photo (measured). No per-image byte limit is documented.
+  // Counting on the original over-counts the models that resize first (gpt-4o fits 2048 px), so the
+  // patch limit FITS what it can and never refuses: a type nothing here can fit goes as received.
   openai: {
     maxEdge: null,
     maxBase64Bytes: null,
     maxPatches: { edge: 32, count: 30_000 },
+    host: "api.openai.com",
   },
   // ai.google.dev/gemini-api/docs/image-understanding: inline data caps the WHOLE request at 20 MB,
   // prompt included, so the image gets 19 MB and the prompt the rest. No dimension limit is
@@ -91,6 +99,7 @@ export const IMAGE_LIMITS: Readonly<Record<string, ImageLimits>> = {
     maxEdge: null,
     maxBase64Bytes: 19 * 1000 * 1000,
     maxPatches: null,
+    host: "generativelanguage.googleapis.com",
   },
 };
 
@@ -102,37 +111,53 @@ function base64Length(byteLength: number): number {
   return Math.ceil(byteLength / 3) * 4;
 }
 
-// Whether an image of this size and weight is over any limit of the provider. Unknown dimensions or
-// bytes count as within: the provider's answer is the fallback, never a guess here.
+// The limits an image of this size and weight is over: `hard` are the ones the vendor enforces for
+// every model (side, bytes), `patches` the one that depends on the model. Unknown dimensions or bytes
+// count as within: the provider's answer is the fallback, never a guess here.
 function overLimits(
   limits: ImageLimits,
   dimensions: { width: number; height: number } | null | undefined,
   byteLength: number | undefined,
-): boolean {
+): { hard: boolean; patches: boolean } {
   const d = dimensions;
-  if (
-    d &&
+  const wide =
+    !!d &&
     limits.maxEdge !== null &&
-    Math.max(d.width, d.height) > limits.maxEdge
-  )
-    return true;
-  if (
-    d &&
+    Math.max(d.width, d.height) > limits.maxEdge;
+  const heavy =
+    limits.maxBase64Bytes !== null &&
+    byteLength !== undefined &&
+    base64Length(byteLength) > limits.maxBase64Bytes;
+  const patches =
+    !!d &&
     limits.maxPatches !== null &&
     Math.ceil(d.width / limits.maxPatches.edge) *
       Math.ceil(d.height / limits.maxPatches.edge) >
-      limits.maxPatches.count
-  )
-    return true;
-  return (
-    limits.maxBase64Bytes !== null &&
-    byteLength !== undefined &&
-    base64Length(byteLength) > limits.maxBase64Bytes
-  );
+      limits.maxPatches.count;
+  return { hard: wide || heavy, patches };
 }
 
-// No WebP or GIF entry: there is no decoder for them here, so an oversized one is refused before the
-// call (`over-limit`) instead of being sent to a 400 that bills nothing and explains nothing.
+// A blank base URL is the adapter's own default, the vendor's endpoint. Anything else must be https
+// on the vendor's host; a regional subdomain of it is the same API.
+function isVendorEndpoint(
+  host: string | null,
+  baseURL: string | null,
+): boolean {
+  if (host === null) return false;
+  const raw = (baseURL ?? "").trim();
+  if (raw === "") return true;
+  try {
+    const url = new URL(raw);
+    const h = url.hostname.toLowerCase();
+    return url.protocol === "https:" && (h === host || h.endsWith(`.${host}`));
+  } catch {
+    return false;
+  }
+}
+
+// No WebP or GIF entry: there is no decoder for them here, so one over a hard limit of the vendor's
+// own endpoint is refused before the call (`over-limit`) instead of being sent to a 400 that bills
+// nothing and explains nothing.
 export const FIT_CONVERTERS: readonly MediaConverterSpec[] = [
   { id: "jpeg-fit", from: new Set(["image/jpeg"]), to: "image/jpeg" },
   { id: "png-fit", from: new Set(["image/png"]), to: "image/jpeg" },
@@ -159,9 +184,9 @@ export type ImagePlan =
 
 // A type we cannot convert goes as-is and the vendor answers for itself: refusing on a table of TYPES
 // turns every mime spelling we guessed wrong into a silent skip. The one refusal before the call is
-// a size the header proves over a documented limit, in a type with no fit converter (`over-limit`).
-// NO `baseURL`, unlike `visionAcceptsDocuments`: the target is always a JPEG, which every endpoint
-// that serves images reads, so the address cannot change the answer.
+// a size the header proves over a limit the vendor documents for every model, on the vendor's own
+// endpoint, in a type with no fit converter (`over-limit`). The base URL decides only that refusal:
+// a fitted JPEG is read by every endpoint that serves images.
 export function planImageConversion(args: {
   mimeType: string | null;
   provider: string;
@@ -170,24 +195,25 @@ export function planImageConversion(args: {
   dimensions?: { width: number; height: number } | null;
   // The file's size, checked against the provider's base64 ceiling.
   byteLength?: number;
+  // The endpoint the call goes to (the vault entry's, else the settings'). Absent or blank: the
+  // vendor's own.
+  baseURL?: string | null;
 }): ImagePlan {
   const mime = normalizeMediaType(args.mimeType);
   const native = NATIVE_IMAGE_SUBTYPES[args.provider];
   if (native?.has(mediaSubtype(mime))) {
-    if (
-      !overLimits(
-        imageLimitsFor(args.provider),
-        args.dimensions,
-        args.byteLength,
-      )
-    )
-      return { action: "as-is" };
+    const limits = imageLimitsFor(args.provider);
+    const over = overLimits(limits, args.dimensions, args.byteLength);
+    if (!over.hard && !over.patches) return { action: "as-is" };
     // A HEIC that Gemini reads natively but is over its ceiling is fitted by the HEIC converter,
     // which outputs the same fitted JPEG.
     const fit =
       FIT_CONVERTERS.find((c) => c.from.has(mime)) ??
       MEDIA_CONVERTERS.find((c) => c.from.has(mime));
-    if (fit === undefined) return { action: "over-limit" };
+    if (fit === undefined)
+      return over.hard && isVendorEndpoint(limits.host, args.baseURL ?? null)
+        ? { action: "over-limit" }
+        : { action: "as-is" };
     return { action: "convert", converter: fit.id, to: fit.to };
   }
   const converter = MEDIA_CONVERTERS.find((c) => c.from.has(mime));

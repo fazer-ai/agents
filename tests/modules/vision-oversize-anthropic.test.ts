@@ -6,6 +6,7 @@ import { encryptJson } from "@/api/lib/crypto";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import {
   extractInboundFile,
+  extractPlaygroundFile,
   readInboundFile,
   resolveVisionConfig,
 } from "@/modules/vision/service";
@@ -54,6 +55,7 @@ const LIMIT = 8000;
 
 let tenantId = 0n;
 let instanceId = 0n;
+let agentId = 0n;
 const CHATWOOT_INBOX_ID = 31;
 
 function anthropicFetch() {
@@ -227,6 +229,7 @@ describe.skipIf(!dbUp)("an image over Anthropic's dimension limit", () => {
         },
       },
     });
+    agentId = agent.id;
     await suDb.inbox.create({
       data: {
         tenantId,
@@ -383,6 +386,89 @@ describe.skipIf(!dbUp)("an image over Anthropic's dimension limit", () => {
         detail: { reason: "over_provider_limit" },
       },
     ]);
+  });
+
+  test("the same WebP to an endpoint that is not Anthropic's is sent, since its limits are not ours to know", async () => {
+    let calls = 0;
+    const impl = (async () => {
+      calls += 1;
+      return new Response(
+        JSON.stringify({
+          content: [{ type: "text", text: EXTRACTED }],
+          stop_reason: "end_turn",
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }) as unknown as typeof fetch;
+    const cfg = (await resolveVisionConfig(
+      tenantId,
+      instanceId,
+      CHATWOOT_INBOX_ID,
+      appDb,
+    )) as VisionConfig;
+    nextId += 1;
+    const out = await extractInboundFile({
+      tenantId,
+      instanceId,
+      conversationId: 910,
+      messageId: nextId,
+      attachmentId: nextId,
+      dataUrl: "https://vision-limit.example.com/banner.webp",
+      cfg: { ...cfg, baseURL: "https://llm-proxy.example.com/v1" },
+      base: appDb,
+      deps: {
+        makeClient: stubClient(webpOf(10_000, 1_000), "image/webp"),
+        fetchImpl: impl,
+        sleep: async () => {},
+      },
+    });
+    expect(calls).toBe(1);
+    expect(out?.text).toBe(EXTRACTED);
+  });
+
+  test("the playground path refuses the same WebP on Anthropic's endpoint and sends it to another one", async () => {
+    let calls = 0;
+    const impl = (async () => {
+      calls += 1;
+      return new Response(
+        JSON.stringify({
+          content: [{ type: "text", text: EXTRACTED }],
+          stop_reason: "end_turn",
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }) as unknown as typeof fetch;
+    const webp = webpOf(10_000, 1_000);
+    const file = new Uint8Array(webp).buffer;
+    const vision = {
+      enabled: true,
+      provider: "anthropic",
+      model: "claude-haiku-5-5",
+      credentialRef: (
+        (await resolveVisionConfig(
+          tenantId,
+          instanceId,
+          CHATWOOT_INBOX_ID,
+          appDb,
+        )) as VisionConfig
+      ).credentialRef,
+    };
+    const run = (baseURL?: string) =>
+      extractPlaygroundFile({
+        ctx: { tenantId, userId: null, role: "TENANT_ADMIN" },
+        agentId,
+        file,
+        mimeType: "image/webp",
+        settings: { vision: baseURL ? { ...vision, baseURL } : vision },
+        base: appDb,
+        deps: { fetchImpl: impl, sleep: async () => {} },
+      });
+    expect(await run()).toEqual({ kind: "unsupported", text: "" });
+    expect(calls).toBe(0);
+    expect((await run("https://llm-proxy.example.com/v1")).text).toBe(
+      EXTRACTED,
+    );
+    expect(calls).toBe(1);
   });
 
   test("a photo at the limit goes as it came", async () => {

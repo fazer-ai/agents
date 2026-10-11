@@ -321,7 +321,7 @@ interface InboxRead {
   counts: ReconcileCounts;
 }
 
-// One read of a listing that outlasts this is not converging (conversations arriving faster than the
+// One read of a listing whose page requests outlast this is not converging (conversations arriving faster than the
 // pages are read): the inbox fails the pass with its cursor held, and the other inboxes still run.
 const LISTING_BUDGET_MS = 2 * 60 * 1000;
 
@@ -377,17 +377,21 @@ async function readListing(
   // number of conversations that moved inside it, and a cap would freeze the cursor on a busy inbox.
   // A server that ignores `page` would never end it, which is what the repeated first id catches.
   let previousFirst: number | null = null;
-  const startedAt = Date.now();
+  // Only the listing calls count against the budget: judging each conversation is work the inbox's
+  // size asks for, and counting it would fail a large, stable inbox at the same page every pass.
+  let listingMs = 0;
   for (let page = 1; ; page++) {
-    if (Date.now() - startedAt > p.listingBudgetMs)
+    if (listingMs > p.listingBudgetMs)
       throw new Error(
         `inbox ${inbox.chatwootInboxId}: listing still going after ${page - 1} pages`,
       );
+    const pageStarted = Date.now();
     const rows = await client.listInboxConversations(
       inbox.chatwootInboxId,
       "pending",
       page,
     );
+    listingMs += Date.now() - pageStarted;
     if (rows.length === 0) return { named, overlapped };
     const first = (rows[0] as ChatwootInboxConversation).id;
     if (first === previousFirst)

@@ -1292,6 +1292,37 @@ describe.skipIf(!dbUp)("reconciling from Chatwoot", () => {
     expect(await ledgerFor(597)).toHaveLength(0);
   });
 
+  test("judging the conversations does not count against the listing budget", async () => {
+    const slow: Scripted = {
+      conversations: new Map([
+        [INBOX, [conv(1200, minutesAgo(20)), conv(1201, minutesAgo(20))]],
+      ]),
+      messages: new Map([
+        [1200, [incoming(12000, minutesAgo(21))]],
+        [1201, [incoming(12010, minutesAgo(21))]],
+      ]),
+      listed: [],
+    };
+    const makeClient = chatwoot(slow);
+    const counts = await reconcileFromChatwoot({
+      tenantId,
+      base: appDb,
+      now: NOW,
+      makeClient: async (...args: Parameters<typeof makeClient>) => {
+        const c = await makeClient(...args);
+        const getMessages = c.getMessages.bind(c);
+        c.getMessages = (async (...a: Parameters<typeof getMessages>) => {
+          await Bun.sleep(40);
+          return getMessages(...a);
+        }) as typeof c.getMessages;
+        return c;
+      },
+      listingBudgetMs: 30,
+    });
+    expect(counts.inboxesFailed).toBe(0);
+    expect(counts.handedToRecovery).toBe(2);
+  });
+
   test("a listing that keeps growing past its budget fails the inbox and keeps the cursor", async () => {
     let next = 20_000;
     const endless = async () =>

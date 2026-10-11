@@ -5,14 +5,7 @@
 // being implied, and a scope this operator cannot use leaves the URL as well as the query (a shared
 // link would otherwise carry a trail the page is not reading).
 
-import {
-  afterEach,
-  beforeEach,
-  expect,
-  mock,
-  setSystemTime,
-  test,
-} from "bun:test";
+import { afterEach, beforeEach, expect, setSystemTime, test } from "bun:test";
 import { TooltipProvider } from "@radix-ui/react-tooltip";
 import {
   act,
@@ -21,16 +14,16 @@ import {
   render,
   waitFor,
 } from "@testing-library/react";
-import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router";
 import { ToastProvider } from "@/client/components";
+import * as AuthModule from "@/client/contexts/AuthContext";
+import { stubExports } from "@/tests/utils/module-stub";
 
 const mockUser = { role: "TENANT_ADMIN" as string };
 
-mock.module("@/client/contexts/AuthContext", () => ({
+stubExports(AuthModule, {
   useAuth: () => ({ user: mockUser }),
-  AuthProvider: ({ children }: { children: ReactNode }) => children,
-}));
+});
 
 const { AuditPage } = await import("@/client/pages/AuditPage");
 

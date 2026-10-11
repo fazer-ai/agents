@@ -1,4 +1,5 @@
 import { modelConfigSchema } from "@/graph/model-config";
+import { withAuditMarker } from "@/lib/audit/markers";
 import { readBehaviorSettings } from "@/modules/agents/behavior-settings";
 import { readVaultRefId, VAULT_REF_PREFIX } from "@/modules/vault/service";
 
@@ -265,11 +266,11 @@ export function grantSetChanged(before: unknown[], after: unknown[]): boolean {
 function markable(v: unknown): Record<string, unknown> {
   // NOTE: Shaping, not a guard: `{ value: undefined, ... }` serializes to the same row, but the value
   // stays honest before serialization.
-  if (v === undefined) return { unreadConfigChanged: true };
+  if (v === undefined) return withAuditMarker({}, "unreadConfigChanged");
   if (v !== null && typeof v === "object" && !Array.isArray(v)) {
-    return { ...(v as Record<string, unknown>), unreadConfigChanged: true };
+    return withAuditMarker(v as Record<string, unknown>, "unreadConfigChanged");
   }
-  return { value: v, unreadConfigChanged: true };
+  return withAuditMarker({ value: v }, "unreadConfigChanged");
 }
 
 // The contact gate's allowlist is a list of PEOPLE, and the trail is append-only, so a number projected
@@ -310,13 +311,12 @@ function redactContactAuthRule(
   const ra = ruleOf(after.contactAuth);
   const moved = people(rb) !== people(ra);
   const shapeOf = (l: unknown): Record<string, unknown> => {
-    const shape: Record<string, unknown> = {
+    const shape = {
       kind: "allowlist",
       phones: entries(l, "phones")?.length ?? 0,
       identifiers: entries(l, "identifiers")?.length ?? 0,
     };
-    if (moved) shape.entriesChanged = true;
-    return shape;
+    return moved ? withAuditMarker(shape, "entriesChanged") : shape;
   };
   for (const [block, r] of [
     [before.contactAuth, rb],

@@ -2,7 +2,7 @@ import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { parseDbId } from "@/lib/db-id";
-import { AppError, NotFoundError } from "@/lib/errors";
+import { AppError, NotFoundError, quotingReason } from "@/lib/errors";
 import { sanitizeErrorMessage } from "@/lib/redact";
 import { assertSafeOutboundUrl, SsrfError } from "@/lib/ssrf";
 import {
@@ -193,13 +193,17 @@ export async function parseSourceInput(
     // (`EAI_AGAIN`) is the infrastructure's, and reporting it as an invalid field would tell the
     // operator to change a URL that is fine.
     if (err instanceof SsrfError) {
-      throw new AppError(
+      const refusal = new AppError(
         `baseUrl is not allowed: ${err.message}`,
         400,
         "errors.sourceUrlNotAllowed",
         { reason: err.message },
         "baseUrl",
       );
+      // The guard's reason without its English frame, in the caller's language like the sentence.
+      throw typeof err.reason === "string"
+        ? refusal
+        : quotingReason(refusal, err.reason);
     }
     throw err;
   }

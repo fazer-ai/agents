@@ -1111,7 +1111,13 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
       });
 
       expect(outcome).toBe("delivered");
-      expect(s.sent.length).toBeGreaterThan(0);
+      expect(s.sent).toEqual([[ENTRY_CONV, "Vamos encerrar por aqui."]]);
+      expect(s.resolved).toEqual([ENTRY_CONV]);
+      const row = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: WIDGET_CONV },
+        select: { redirectClosedAt: true },
+      });
+      expect(row.redirectClosedAt).toBeInstanceOf(Date);
     } finally {
       await restoreAnchor();
       await suDb.conversation.updateMany({
@@ -1201,7 +1207,13 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
       });
 
       expect(outcome).toBe("delivered");
-      expect(s.sent.length).toBeGreaterThan(0);
+      expect(s.sent).toEqual([[ENTRY_CONV, "Vamos encerrar por aqui."]]);
+      expect(s.resolved).toEqual([ENTRY_CONV]);
+      const row = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: WIDGET_CONV },
+        select: { redirectClosedAt: true },
+      });
+      expect(row.redirectClosedAt).toBeInstanceOf(Date);
     } finally {
       await restoreAnchor();
     }
@@ -1564,17 +1576,23 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
       },
     }) as unknown as PrismaClient;
     const s = stubClient();
+    const checkpointer = new MemorySaver();
 
     await redirectFollowUpHandler(job, failing, {
       ...deps(),
+      checkpointer,
       makeClient: s.makeClient,
     }).catch(() => {
       // The strict ask propagates, and the scheduler's own bounded retry is what carries the job.
       // Whether it surfaces as a throw or a stand-down is the handler's business; what this test is
-      // about is the line below.
+      // about is the lines below.
     });
 
-    // Nothing left, and nothing was written back over the reset.
+    // Nothing was written back over the reset, and nothing left.
+    const memory = await checkpointer.getTuple({
+      configurable: { thread_id: widgetThread },
+    });
+    expect(memory).toBeUndefined();
     expect(s.sent).toEqual([]);
     expect(s.resolved).toEqual([]);
   });
@@ -1862,18 +1880,31 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
     const job = await claimed("whatsapp");
     const s = stubClient();
     wire.length = 0;
-    globalThis.fetch = httpDouble;
+    const posts: Array<[string, string]> = [];
+    globalThis.fetch = (async (
+      input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      if (String(input).includes("/messages"))
+        posts.push([String(input), String(init?.body ?? "")]);
+      return httpDouble(input, init);
+    }) as typeof fetch;
+    let result: Awaited<ReturnType<typeof redirectFollowUpHandler>>;
     try {
-      await redirectFollowUpHandler(job, appDb, {
+      result = await redirectFollowUpHandler(job, appDb, {
         ...deps(),
         makeClient: s.makeClient,
       });
     } finally {
       globalThis.fetch = originalFetch;
     }
-    // Specifically: it posts. Asserting only that SOMETHING hit the wire would let a stage that
-    // merely mints a link stand in for one that messages the customer.
-    expect(wire.some((u) => u.includes("/messages"))).toBe(true);
+    // Specifically: it posts the link to the WhatsApp side. A stage that merely mints a link, or
+    // posts it to the chat, does not stand in for one that messages the customer.
+    expect(posts).toHaveLength(1);
+    expect(posts[0]?.[0]).toContain(`/conversations/${ENTRY_CONV}/messages`);
+    expect(posts[0]?.[1]).toContain("Ainda dá tempo: ");
+    expect(posts[0]?.[1]).toContain("tok-1");
+    expect(result.outcome).toBe("reschedule");
   });
 
   // The gate the predicate above describes, asked where it is actually consumed. The stage's own

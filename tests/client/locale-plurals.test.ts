@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { createInstance } from "i18next";
+import en from "@/client/locales/en.json";
+import ptBR from "@/client/locales/pt-BR.json";
 import { codeOnly, withoutComments } from "@/tests/utils/source-text";
 
 // A counter has to have a singular: "1 campos" / "1 fields" for one changed field is wrong. The class
@@ -92,12 +95,24 @@ function flatten(node: Catalog, prefix = ""): Record<string, string> {
   return out;
 }
 
+// The catalogs as the console ships them: the objects the app hands i18next.
+const CATALOGS: Record<string, Catalog> = { en, "pt-BR": ptBR };
+
 async function catalog(locale: string): Promise<Record<string, string>> {
-  const file = new URL(
-    `../../src/client/locales/${locale}.json`,
-    import.meta.url,
-  );
-  return flatten(JSON.parse(await Bun.file(file).text()) as Catalog);
+  return flatten(CATALOGS[locale] as Catalog);
+}
+
+// What a reader sees for `count`, through i18next itself: the category it picks and the template it
+// interpolates.
+function rendered(locale: string): (key: string, count: number) => string {
+  const i18n = createInstance();
+  i18n.init({
+    lng: locale,
+    resources: { [locale]: { translation: CATALOGS[locale] as Catalog } },
+    fallbackLng: false,
+    interpolation: { escapeValue: false },
+  });
+  return (key, count) => i18n.t(key, { count }) as string;
 }
 
 // A waiver is a standing exemption, so it must still name a string that actually dodges. The check
@@ -237,11 +252,13 @@ describe.each(Object.entries(LOCALES))(
       "many and other carry the same form",
       async () => {
         const entries = await catalog(locale);
+        const t = rendered(locale);
+        // A million is `many` in Portuguese; it has to read like any other plural count.
         const differ = Object.keys(entries)
           .filter((k) => k.endsWith("_many"))
+          .map((k) => k.slice(0, -"_many".length))
           .filter(
-            (k) =>
-              entries[k] !== entries[`${k.slice(0, -"_many".length)}_other`],
+            (base) => t(base, 1_000_000) !== t(`${base}_other`, 1_000_000),
           );
         expect(differ).toEqual([]);
       },
@@ -254,13 +271,15 @@ describe.each(Object.entries(LOCALES))(
     // identical on purpose need nothing.
     test.if(locale === "pt-BR")("zero takes the plural form", async () => {
       const entries = await catalog(locale);
+      const t = rendered(locale);
       const wrong: string[] = [];
       for (const [key, value] of Object.entries(entries)) {
         if (!key.endsWith("_one")) continue;
         const base = key.slice(0, -"_one".length);
         const other = entries[`${base}_other`];
         if (other === undefined || other === value) continue;
-        if (entries[`${base}_zero`] !== other) wrong.push(base);
+        // What "0 …" reads as on screen, against the plural template with the same count.
+        if (t(base, 0) !== t(`${base}_other`, 0)) wrong.push(base);
       }
       expect(wrong).toEqual([]);
     });

@@ -29,7 +29,7 @@ describe("mcpHeadersProblem", () => {
     h: Record<string, string>,
     transport = "streamableHttp",
     cred: string | null = null,
-  ) => mcpHeadersProblem(h, transport, cred);
+  ) => mcpHeadersProblem(h, transport, cred)?.message ?? null;
 
   test("accepts literal values and conversation variables", () => {
     expect(ok({})).toBeNull();
@@ -67,9 +67,9 @@ describe("mcpHeadersProblem", () => {
 
   test("a __proto__ name and a value that is not text are refused, not dropped", () => {
     expect(
-      mcpHeadersProblem(JSON.parse('{"__proto__":"x"}'), "sse", null),
+      mcpHeadersProblem(JSON.parse('{"__proto__":"x"}'), "sse", null)?.message,
     ).toContain("not a valid header name");
-    expect(mcpHeadersProblem({ "X-A": 1 }, "sse", null)).toContain(
+    expect(mcpHeadersProblem({ "X-A": 1 }, "sse", null)?.message).toContain(
       "must be text",
     );
   });

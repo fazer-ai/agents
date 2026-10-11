@@ -195,11 +195,20 @@ describe.skipIf(!dbUp)("a partial settings bag over the wire", () => {
       where: { id: BigInt(agentId) },
       data: { settings: STORED },
     });
+    const updates = (
+      service.updateAgent as unknown as { mock: { calls: unknown[] } }
+    ).mock.calls;
+    const before = updates.length;
+    // A complete bag, which the service would accept, so only the schema can refuse it.
     const res = await patch({
-      settings: { split: { enabled: false } },
+      settings: { ...STORED, split: { enabled: false } },
       settingsMode: "REPLACE",
     });
-    expect(res.status).toBeGreaterThanOrEqual(400);
+    expect(res.status).toBe(422);
+    expect(((await res.json()) as { field?: string }).field).toBe(
+      "settingsMode",
+    );
+    expect(updates.length).toBe(before);
     expect(await settingsOf()).toEqual(STORED);
   });
 });

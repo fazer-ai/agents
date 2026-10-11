@@ -145,6 +145,12 @@ export interface NormalizedChatwootContact {
   // null when the bag lacks it. `undefined` = the payload carried no `additional_attributes` at all,
   // and the mirror keeps what it had.
   additionalAttributes?: Partial<Record<AdditionalContactField, string | null>>;
+  // The contact row's own `updated_at` (unix seconds, sub-second) as of this snapshot, from the fork's
+  // `meta.sender.updated_at`. It orders the custom attributes ONLY: it also
+  // moves when nothing the mirror reads changed (every incoming message writes `last_activity_at`),
+  // so it is a version of the values carried and never a sign that they changed. `null`/absent:
+  // Chatwoot without it, or not a positive number.
+  updatedAt?: number | null;
 }
 
 export interface NormalizedChatwootEvent {
@@ -172,6 +178,10 @@ export interface NormalizedChatwootEvent {
   // ── mirror metadata (best-effort; absent on payloads that do not carry it) ──
   contact?: NormalizedChatwootContact | null;
   inboxName?: string | null;
+  // The inbox row's own `updated_at` (unix seconds), from the message events' `inbox.updated_at`
+  // only; conversation events name the inbox only by id. Orders `inboxName` and
+  // `channel`. `null`/absent: not carried, or not a positive number.
+  inboxUpdatedAt?: number | null;
   channel?: string | null;
   // last_activity_at as unix SECONDS (EventDataPresenter push_timestamps); drives the
   // monotonic lastEventAt guard so out-of-order deliveries cannot regress mirror state.

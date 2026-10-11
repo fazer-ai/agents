@@ -21,15 +21,16 @@ import { seedChatwootInstance } from "../utils/chatwoot";
 const NUL = String.fromCharCode(0);
 
 // Each is a message a provider, an HTTP tool or a third party can produce, and each is refused or
-// corrupted by a `text` column as it stands. The last one is the ordering trap: dropping the NUL
-// first would join the two orphan halves into U+10000, a character nobody wrote.
-const BAD: [string, string][] = [
-  ["NUL in the middle", `boom${NUL}tail`],
-  ["NUL at the end", `boom${NUL}`],
-  ["lone high surrogate, then text", "boom\ud800tail"],
-  ["lone high surrogate at the end", "boom\ud800"],
-  ["lone low surrogate, then text", "boom\udc00tail"],
-  ["a NUL between two orphan halves", `\ud800${NUL}\udc00`],
+// corrupted by a `text` column as it stands, with the text the column must hold instead. The last one
+// is the ordering trap: dropping the NUL first would join the two orphan halves into U+10000, a
+// character nobody wrote.
+const BAD: [string, string, string][] = [
+  ["NUL in the middle", `boom${NUL}tail`, "boomtail"],
+  ["NUL at the end", `boom${NUL}`, "boom"],
+  ["lone high surrogate, then text", "boom\ud800tail", "boom\uFFFDtail"],
+  ["lone high surrogate at the end", "boom\ud800", "boom"],
+  ["lone low surrogate, then text", "boom\udc00tail", "boom\uFFFDtail"],
+  ["a NUL between two orphan halves", `\ud800${NUL}\udc00`, "\uFFFD\uFFFD"],
 ];
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
@@ -211,12 +212,13 @@ describe.skipIf(!dbUp)("error text reaches every column that holds it", () => {
   });
 
   for (const sink of SINKS) {
-    for (const [label, raw] of BAD) {
+    for (const [label, raw, repaired] of BAD) {
       test(`${sink.name} <- ${label}`, async () => {
         const guarded = sanitizeErrorMessage(raw);
         expect(unstorableProblem(guarded, "guarded")).toBeNull();
+        expect(guarded).toBe(repaired);
         const stored = await sink.write(guarded);
-        expect(stored).toBe(guarded);
+        expect(stored).toBe(repaired);
       });
     }
   }

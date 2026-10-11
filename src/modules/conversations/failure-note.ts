@@ -147,16 +147,21 @@ export async function claimFailureNotice(params: {
 // inbox. `loadChatwootClient` defaults the bot token to "" and Chatwoot answers 401, which a
 // best-effort catch swallows — a note that never posts at all. The bot comes from the conversation's
 // inbox (`Inbox.agentId`), the same resolution the console does. The agent's handoff setting comes
-// along, so the hand-over lands where `handoff_to_human` would send it.
+// along, so the hand-over lands where `handoff_to_human` would send it. A conversation the mirror
+// never learned, or one whose row names no inbox, takes the bot the delivery arrived on
+// (`routeAgentBotId`) when the caller knows it. An inbox bound to no agent is an operator's unbinding,
+// not missing information, and gets no persona. `mirrored` says whether the conversation has a row.
 async function personaOf(
   tenantId: bigint,
   instanceId: bigint,
   chatwootConversationId: number,
   base: PrismaClient,
+  routeAgentBotId: number | null,
 ): Promise<{
   botToken: string;
   chatwootAgentBotId: number;
   handoff: HandoffConfig;
+  mirrored: boolean;
 } | null> {
   const conv = await runScopedOn(base, sysCtx(tenantId), (db) =>
     db.conversation.findFirst({
@@ -168,7 +173,20 @@ async function personaOf(
       select: { inbox: { select: { agentId: true } } },
     }),
   );
-  const agentId = conv?.inbox?.agentId;
+  const routed =
+    (conv === null || conv.inbox === null) && routeAgentBotId !== null
+      ? await runScopedOn(base, sysCtx(tenantId), (db) =>
+          db.chatwootAgentBot.findFirst({
+            where: {
+              tenantId,
+              chatwootInstanceId: instanceId,
+              chatwootAgentBotId: routeAgentBotId,
+            },
+            select: { agentId: true },
+          }),
+        )
+      : null;
+  const agentId = conv?.inbox?.agentId ?? routed?.agentId;
   if (agentId == null) return null;
   const bot = await loadAgentBot(tenantId, instanceId, agentId, base);
   if (!bot?.accessToken) return null;
@@ -179,6 +197,7 @@ async function personaOf(
     botToken: bot.accessToken,
     chatwootAgentBotId: bot.chatwootAgentBotId,
     handoff: readHandoffConfig(agent?.settings ?? null),
+    mirrored: conv !== null,
   };
 }
 
@@ -269,6 +288,8 @@ export async function announceFailedTurn(params: {
   // The Chatwoot id of the customer message the failed turn was answering (the newest of its burst),
   // when the caller knows it. A message mirrored past it is a turn still owed, whenever it landed.
   aboutMessageId?: number | null;
+  // The bot the delivery arrived on, for a conversation the mirror has no row for (see `personaOf`).
+  routeAgentBotId?: number | null;
   error: unknown;
   now?: Date;
   cooldownMs?: number;
@@ -282,7 +303,13 @@ export async function announceFailedTurn(params: {
     chatwootConversationId: conversationId,
   } = params;
   try {
-    const persona = await personaOf(tenantId, instanceId, conversationId, base);
+    const persona = await personaOf(
+      tenantId,
+      instanceId,
+      conversationId,
+      base,
+      params.routeAgentBotId ?? null,
+    );
     if (persona === null) {
       logger.warn(
         "conversations: no persona bot to announce a failed turn as (conv=%s)",
@@ -336,19 +363,41 @@ export async function announceFailedTurn(params: {
             lastAsk = null;
             return false;
           }
-          const ownership = await conversationOwnershipNow({
-            tenantId,
-            instanceId,
-            conversationId,
-            ourAgentBotId: persona.chatwootAgentBotId,
-            base,
-          });
-          if (!ownership.ours) {
+          const ownershipNow = () =>
+            conversationOwnershipNow({
+              tenantId,
+              instanceId,
+              conversationId,
+              ourAgentBotId: persona.chatwootAgentBotId,
+              base,
+            });
+          let ownership = await ownershipNow();
+          // NOTE: Chatwoot says the bot holds it and the mirror disagrees: the mirror is behind (a
+          // customer message that reopened a resolved conversation, mirrored by the delivery that
+          // died). Reconciled from this snapshot under the webhook's ordering rule, so a decision
+          // committed since still outranks it, and asked again. Only on that disagreement, so a
+          // conversation both sides call ours pays nothing.
+          if (!ownership.ours && live !== null && persona.mirrored) {
+            await reconcileMirrorFromLive({
+              tenantId,
+              instanceId,
+              conversationId,
+              live,
+              base,
+            });
+            ownership = await ownershipNow();
+          }
+          // With no mirror row, Chatwoot's answer above is the only one there is, and it said ours, as
+          // long as it named the holder: a snapshot with no `meta` reads as unassigned and says
+          // nothing. A row that appeared since is read like any other.
+          const unmirroredOurs =
+            !persona.mirrored && live !== null && live.assigneeStated;
+          if (!ownership.ours && !unmirroredOurs) {
             lastAsk = null;
             return false;
           }
           // Read before the last ask: the claim below pins the newest message it names.
-          const keys = await turnKeysOf(
+          let keys = await turnKeysOf(
             tenantId,
             instanceId,
             conversationId,
@@ -356,6 +405,17 @@ export async function announceFailedTurn(params: {
           );
           lastAsk = isTurnLost(await params.assess()) ? "lost" : "not-lost";
           if (lastAsk === "not-lost") return false;
+          // An unmirrored conversation is read again after the last ask: a webhook that mirrored it
+          // meanwhile (a newer customer message among them) must go through the claim below, whose
+          // newest-message fence is what keeps that message's turn, and not through the no-row path.
+          if (keys.rowId === null) {
+            keys = await turnKeysOf(tenantId, instanceId, conversationId, base);
+          }
+          // A row that was missing at the ownership read and is there now, found by either key read,
+          // is read like any other before the claim.
+          if (!ownership.ours && keys.rowId !== null) {
+            ownership = await ownershipNow();
+          }
           // A turn already running on the conversation (an operator's re-engage, a follow-up, a
           // flush) was started without a new message, so neither ask can see it; opening the
           // conversation would discard its reply. It may still answer, so nothing is announced.
@@ -389,6 +449,8 @@ export async function announceFailedTurn(params: {
           // decision (a hand-back, a person claiming it) and closes the fence like any refusal. No
           // mirror row has nothing to claim and nothing a reader could misread.
           if (keys.rowId === null) return true;
+          // A row a webhook created since the ownership read, unread: nothing to claim it against.
+          if (!ownership.ours) return false;
           claimHeld = await claimOpenForHumanQueue({
             tenantId,
             instanceId,
@@ -451,7 +513,9 @@ export async function announceFailedTurn(params: {
     // Opened: a versioned live read stamps the claim, through it, so a hand-back the operator makes
     // during the claim's window is ordered against it instead of refused by it. A failed toggle
     // keeps the claim to run out, as the takeover's does (an unknown outcome).
-    if (opened && claim !== null) {
+    // An unmirrored hand-over holds no claim, but a row a webhook created meanwhile still says the bot
+    // holds it, so it is reconciled from Chatwoot the same way (with no row, nothing is written).
+    if (opened && (claim !== null || !persona.mirrored)) {
       try {
         const live = parseLiveConversation(
           await client.getConversation(conversationId),
@@ -500,16 +564,34 @@ export async function announceFailedTurn(params: {
         logLabel: "failed-turn handoff",
       });
     }
-    if (
-      !(await claimFailureNotice({
+    // The window lives on the mirror row, so a conversation with none elects its announcer by
+    // the toggle instead: Chatwoot's `expectedStatus` lets exactly one hand-over open it, and only
+    // that one posts. One that did not open it says nothing, since nothing else would coalesce it.
+    // Asked of the row as it is now: one a webhook created during the hand-over takes the window, and
+    // one created between the claim and the count is claimed again rather than read as coalesced.
+    const claimNotice = () =>
+      claimFailureNotice({
         tenantId,
         instanceId,
         chatwootConversationId: conversationId,
         now: params.now,
         cooldownMs: params.cooldownMs,
         base,
-      }))
-    ) {
+      });
+    let noticeClaimed = await claimNotice();
+    if (!noticeClaimed && opened) {
+      const rows = await runScopedOn(base, sysCtx(tenantId), (db) =>
+        db.conversation.count({
+          where: {
+            tenantId,
+            chatwootInstanceId: instanceId,
+            chatwootConversationId: conversationId,
+          },
+        }),
+      );
+      noticeClaimed = rows === 0 || (await claimNotice());
+    }
+    if (!noticeClaimed) {
       return "coalesced";
     }
     await client.sendPrivateNote(

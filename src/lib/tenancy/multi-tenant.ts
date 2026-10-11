@@ -158,6 +158,22 @@ function budgetSql(budget: TxBudget): Prisma.Sql {
   return Prisma.sql`set_config('statement_timeout', ${String(budget.timeout)}, true)`;
 }
 
+let maxWaitForTest: number | undefined;
+
+/**
+ * Test-only: shortens `maxWait`, so a test of a drained pool waits out a refusal in milliseconds
+ * rather than two seconds. `undefined` puts the caller's budget back. Production never calls it.
+ */
+export function setScopedTxMaxWaitForTest(ms: number | undefined): void {
+  maxWaitForTest = ms;
+}
+
+function scopedTxOptions(budget: TxBudget): TxBudget {
+  return maxWaitForTest === undefined
+    ? budget
+    : { ...budget, maxWait: maxWaitForTest };
+}
+
 export async function runScopedOn<T>(
   base: TransactionCapable,
   ctx: TenantContext,
@@ -180,7 +196,7 @@ export async function runScopedOn<T>(
     const db = tx as unknown as ScopedDb;
     if (ctx.role === "SUPER_ADMIN") await requireTenantExists(db, tenantId);
     return fn(db);
-  }, budget);
+  }, scopedTxOptions(budget));
 }
 
 export async function runScoped<T>(
@@ -207,7 +223,7 @@ export async function asSuperAdminOn<T>(
   return base.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT set_config('role', ${Prisma.raw(FLEET_ROLE_FN)}, true), ${budgetSql(budget)}`;
     return fn(tx as unknown as ScopedDb);
-  }, budget);
+  }, scopedTxOptions(budget));
 }
 
 export async function asSuperAdmin<T>(

@@ -24,9 +24,13 @@ describe("slugify", () => {
   });
 
   test("output always satisfies the slug pattern (when non-empty)", () => {
-    for (const input of ["Açaí & Cia", "  Foo   Bar  ", "Über Café 42"]) {
+    for (const [input, expected] of [
+      ["Açaí & Cia", "acai-cia"],
+      ["  Foo   Bar  ", "foo-bar"],
+      ["Über Café 42", "uber-cafe-42"],
+    ] as const) {
       const slug = slugify(input);
-      expect(slug.length).toBeGreaterThan(0);
+      expect(slug).toBe(expected);
       expect(isValidSlug(slug)).toBe(true);
     }
   });

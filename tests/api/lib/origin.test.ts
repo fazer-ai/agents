@@ -53,7 +53,11 @@ describe("parseOrigins", () => {
     });
     const parsed = parseOrigins("/^https:\\/\\/.*\\.example\\.com$/");
     expect(parsed).toHaveLength(1);
-    expect(parsed[0]).toBeInstanceOf(RegExp);
+    const re = parsed[0] as RegExp;
+    expect(re).toBeInstanceOf(RegExp);
+    expect(re.source).toBe("^https:\\/\\/.*\\.example\\.com$");
+    expect(re.test("https://app.example.com")).toBe(true);
+    expect(re.test("https://app.example.org")).toBe(false);
   });
 
   test("throws a labelled error when a /regex/ pattern is invalid", async () => {

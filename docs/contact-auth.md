@@ -140,7 +140,9 @@ The type and the labels come from the mirror (`Conversation.conversationType`, `
   `not_configured` it always was.
 - **The audit trail keeps the shape, not the list.** An allowlist is a list of people, and the
   trail is append-only, so an `agent.settings_set` row records the kind, how many phones and
-  identifiers, and `entriesChanged` when they moved. An identifier with a line break is refused,
+  identifiers, and `entriesChanged` when they moved. That marker is one of the keys the console
+  reads as "a change the row does not show" (`AUDIT_MARKER_KEYS`, `src/lib/audit/markers.ts`), so a
+  swap that keeps the counts still renders as an edit. An identifier with a line break is refused,
   since the editor holds the list one entry per line.
 - **The refusal says which condition.** The flow line carries our code, never the value compared:
   `rule_not_listed` (list), `rule_unmet` (attribute), `rule_conversation_type`, `rule_label`. An

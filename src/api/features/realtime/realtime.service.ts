@@ -9,21 +9,27 @@ import { type Membership, resolveMembership } from "@/lib/tenancy/membership";
 // wrapper, which Elysia 1.4.x re-creates for every lifecycle hook.
 const userConnections = new Map<string, number>();
 
-// The open sockets of both channels, by user and then by `ws.id`, so a server event (a password
-// change) can close them. Holds Bun's raw socket, which is stable across hooks, not Elysia's wrapper.
+// The open sockets of both channels, by user and then by `ws.id`, with the session that opened each,
+// so a server event can close them: all of a user's on a password change, one session's on its
+// logout. Holds Bun's raw socket, which is stable across hooks, not Elysia's wrapper.
 interface ClosableSocket {
   close(code?: number, reason?: string): void;
 }
-const userSockets = new Map<string, Map<string, ClosableSocket>>();
+interface TrackedSocket {
+  socket: ClosableSocket;
+  sessionId?: string;
+}
+const userSockets = new Map<string, Map<string, TrackedSocket>>();
 
 export function trackSocket(
   userId: bigint,
   socketId: string,
   socket: ClosableSocket,
+  sessionId?: string,
 ): void {
   const key = userId.toString();
-  const sockets = userSockets.get(key) ?? new Map<string, ClosableSocket>();
-  sockets.set(socketId, socket);
+  const sockets = userSockets.get(key) ?? new Map<string, TrackedSocket>();
+  sockets.set(socketId, { socket, sessionId });
   userSockets.set(key, sockets);
 }
 
@@ -41,7 +47,20 @@ export function closeUserSockets(userId: bigint, code: number): number {
   const sockets = userSockets.get(userId.toString());
   if (!sockets) return 0;
   const open = [...sockets.values()];
-  for (const socket of open) socket.close(code);
+  for (const { socket } of open) socket.close(code);
+  return open.length;
+}
+
+// The sockets one session opened, for its logout; the user's other sessions keep theirs.
+export function closeSessionSockets(
+  userId: bigint,
+  sessionId: string,
+  code: number,
+): number {
+  const sockets = userSockets.get(userId.toString());
+  if (!sockets) return 0;
+  const open = [...sockets.values()].filter((s) => s.sessionId === sessionId);
+  for (const { socket } of open) socket.close(code);
   return open.length;
 }
 

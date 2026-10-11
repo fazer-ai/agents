@@ -1,16 +1,18 @@
 /// <reference lib="dom" />
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, jest, spyOn, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { completionStatus, startCompletion } from "@codemirror/autocomplete";
 import { EditorView } from "@codemirror/view";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
   screen,
   waitFor,
 } from "@testing-library/react";
+import * as acorn from "acorn";
 import { ToastProvider } from "@/client/components";
 import { isMacLike, scopeKeyLabel } from "@/client/components/CodeEditor";
 import { useModalController } from "@/client/components/Modal";
@@ -24,6 +26,7 @@ import {
   payloadOfCodeTool,
   starterCode,
 } from "@/client/pages/resources/CodeToolEditModal";
+import { until } from "@/tests/utils/poll";
 
 // The dominant pattern in this suite: pure-function tests over the exported form helpers, plus one
 // happy-dom render that proves the load-bearing UI rule — an invalid body warns but never disables
@@ -610,23 +613,73 @@ test("a save that FAILS after the dialog was dismissed does not mark the next on
   }
 });
 
-test("the parser only runs while the dialog is open", () => {
-  // This component stays mounted on the Tools page and the agent editor, and the empty form starts
-  // with the starter body, so an ungated effect downloads the parser chunk and parses a body
-  // nobody is editing, on every visit to either page. A source fence rather than a module mock:
-  // `mock.module` is process-global here and tears down mocks other files installed (the note in
-  // document-starters-race.test.tsx), and what is being asserted is one guard's presence.
-  const src = readFileSync(
-    "src/client/pages/resources/CodeToolEditModal.tsx",
-    "utf8",
-  );
-  const effect = src.slice(
-    src.indexOf("const code = form.code;") - 400,
-    src.indexOf("const code = form.code;"),
-  );
-  expect(effect.includes("if (!modal.isOpen) return;")).toBe(true);
+// This component stays mounted on the Tools page and the agent editor, and the empty form starts
+// with the starter body, so an ungated effect downloads the parser chunk and parses a body nobody is
+// editing, on every visit to either page. Asked of the parser itself: closed, it is never called;
+// opened, it is.
+test("the parser only runs while the dialog is open", async () => {
+  const parse = spyOn(acorn, "parse");
+  jest.useFakeTimers();
+  try {
+    render(<TwoToolsHarness />);
+    act(() => jest.advanceTimersByTime(1_000));
+    await act(async () => {});
+    const whileClosed = parse.mock.calls.length;
+    fireEvent.click(screen.getByText("open-new"));
+    act(() => jest.advanceTimersByTime(1_000));
+    jest.useRealTimers();
+    await waitFor(() => expect(parse.mock.calls.length).toBeGreaterThan(0));
+    expect(whileClosed).toBe(0);
+  } finally {
+    jest.useRealTimers();
+    parse.mockRestore();
+  }
 });
 
+// NO WAY OUT WHILE THE SAVE IS IN FLIGHT (docs/modals.md): dismissing mid-request and reopening
+// offers a second Save for a write already on its way. Asked of the dialog: Escape on an unedited
+// stored tool whose save is out leaves it open.
+test("a save in flight cannot be dismissed", async () => {
+  const realFetch = globalThis.fetch;
+  const held: Array<() => void> = [];
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const href = input instanceof Request ? input.url : String(input);
+    const method = (init?.method ?? "GET").toUpperCase();
+    if (href.includes("/code-tools") && method !== "GET") {
+      await new Promise<void>((r) => held.push(r));
+      return new Response(JSON.stringify({ tool: codeTool(), warnings: [] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    if (/\/code-tools\/\d+/.test(href)) {
+      return new Response(JSON.stringify({ tool: codeTool() }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    return realFetch(input as RequestInfo, init);
+  }) as typeof fetch;
+  try {
+    render(<TwoToolsHarness />);
+    // Unedited, so Escape is the dialog's own dismissal and not the discard prompt's.
+    fireEvent.click(screen.getByText("open-1"));
+    await screen.findByDisplayValue("Look up CPF");
+    fireEvent.click(screen.getByText("Save").closest("button") as HTMLElement);
+    await waitFor(() => expect(held.length).toBe(1));
+    fireEvent.keyDown(document.activeElement ?? document.body, {
+      key: "Escape",
+    });
+    await act(async () => {});
+    expect(screen.queryAllByText("Edit code tool").length).toBe(1);
+    held[0]?.();
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+// NOTE: the `finally` half stays a source fence: a reopened dialog does not reset `saving`, so the
+// scoped `setSaving(false)` has no observable effect to assert until the opening resets it.
 test("a save in flight cannot be dismissed, and its finally belongs to its own opening", () => {
   // Two guards over one hole, a save dismissed with Esc/X and reopened before it answers. The
   // dialog refuses the dismissal (docs/modals.md), which makes the second guard unreachable from
@@ -775,4 +828,90 @@ test("the mirror of CodeMirror's platform rule, at the edges", () => {
     expect([name, isMacLike(nav(over))]).toEqual([name, want]);
   }
   expect(isMacLike(undefined)).toBe(false);
+});
+
+// A save the operator walked away from: Escape while the request is out asks to discard, Discard
+// closes, and the answer arrives after. The next opening is a fresh form, so Cancel works there.
+test("a save discarded mid-flight leaves the next opening able to cancel", async () => {
+  const realFetch = globalThis.fetch;
+  let answer: (r: Response) => void = () => {};
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const href =
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.href
+          : input.url;
+    if (
+      href.includes("/code-tools") &&
+      (init?.method ?? "GET").toUpperCase() === "POST"
+    ) {
+      return new Promise<Response>((resolve) => {
+        answer = resolve;
+      });
+    }
+    return realFetch(input as RequestInfo, init);
+  }) as typeof fetch;
+  try {
+    let abandonedSaved = false;
+    function SavedHarness() {
+      const modal = useModalController<{ id?: string }>();
+      return (
+        <ToastProvider>
+          <button type="button" onClick={() => modal.open({})}>
+            open
+          </button>
+          <CodeToolEditModal
+            modal={modal}
+            onSaved={() => {
+              abandonedSaved = true;
+            }}
+          />
+        </ToastProvider>
+      );
+    }
+    render(<SavedHarness />);
+    fireEvent.click(screen.getByText("open"));
+    const label = document.body.querySelector("input") as HTMLInputElement;
+    fireEvent.change(label, { target: { value: "Look up CPF" } });
+    fireEvent.change(descriptionField(), {
+      target: { value: "a description" },
+    });
+    setCode("return input.cpf;");
+    fireEvent.click(screen.getByText("Save").closest("button") as HTMLElement);
+
+    const dialog = document.body.querySelector(
+      '[role="dialog"]',
+    ) as HTMLElement;
+    dialog.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Escape",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await waitFor(() =>
+      expect(document.body.textContent).toContain("Discard changes?"),
+    );
+    fireEvent.click(screen.getByText("Discard"));
+    await waitFor(() =>
+      expect(document.body.textContent?.includes("Look up CPF")).toBe(false),
+    );
+
+    await act(async () => {
+      answer(
+        new Response(JSON.stringify({ tool: codeTool(), warnings: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+      await until("the abandoned save to answer", () => abandonedSaved);
+    });
+
+    fireEvent.click(screen.getByText("open"));
+    const cancel = await screen.findByText("Cancel");
+    expect(cancel.closest("button")?.hasAttribute("disabled")).toBe(false);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });

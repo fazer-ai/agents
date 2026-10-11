@@ -233,9 +233,28 @@ model User {
   createdAt    DateTime  @default(now()) @map("created_at")
   updatedAt    DateTime  @updatedAt @map("updated_at")
 
-  memberships TenantUser[]
+  memberships   TenantUser[]
+  endedSessions EndedSession[]
 
   @@map("users")
+}
+
+// A session that logged out, named by its token's `jti` and kept until that token would have expired
+// anyway. The session read refuses a token named here; a token with no `jti` cannot be named.
+model EndedSession {
+  jti       String   @id
+  userId    BigInt   @map("user_id")
+  expiresAt DateTime @map("expires_at")
+  endedAt   DateTime @default(now()) @map("ended_at")
+  // Ended because a re-issued cookie replaced it in the same browser, not by a logout: its sockets
+  // reconnect under the new cookie instead of signing out.
+  replaced  Boolean  @default(false)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("ended_sessions")
 }
 
 // A person's membership in a tenant, and their role THERE (Chatwoot's `account_users`). GLOBAL table
@@ -591,6 +610,10 @@ model Inbox {
   // is positioned after this, so an unchanged inbox is never rewritten and a late delivery cannot
   // restore a replaced name. NULL until the first change.
   metadataAt         DateTime? @map("metadata_at")
+  // The INBOX'S OWN version (`inbox.updated_at`, unix seconds) as of the name and channel stored, when
+  // the payload that wrote them carried it (message events only). Once set, a payload with
+  // its own clock is ordered by it alone; one without keeps the `metadataAt` rule. NULL: never stated.
+  metadataClock      Float?    @map("metadata_clock")
   // WhatsApp provider (whatsapp_cloud | default(=360dialog) | baileys | zapi) when channelType is
   // Channel::Whatsapp; null for other channels or until an inbox sync populates it. Drives the 24h
   // service-window gate (only the official providers have a window). Captured from the inbox-list sync.
@@ -726,6 +749,11 @@ model Contact {
   // touched by several conversations, so the write is gated on it to keep the snapshot monotonic.
   customAttributes       Json      @default("{}") @map("custom_attributes")
   customAttributesAt     DateTime? @map("custom_attributes_at")
+  // The CONTACT'S OWN version (`meta.sender.updated_at`, unix seconds) of the snapshot that wrote
+  // customAttributes, when that payload carried it. Once set, a payload with its own clock
+  // is ordered by it alone; one without keeps the customAttributesAt rule. NULL: never stated, or
+  // cleared by the agent's write-through, which writes a value no Chatwoot version describes.
+  customAttributesClock  Float?    @map("custom_attributes_clock")
   // Source watermark of each identity field above, for the same reason customAttributesAt exists one
   // field up: the write is unconditional otherwise, and deliveries do arrive out of order, so an
   // older event could restore what a newer one cleared. These are load-bearing beyond the prompt —

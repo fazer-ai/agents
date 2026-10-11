@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { phrase, type TranslatedParam } from "@/lib/errors";
 import { CONTEXT_VAR_NAMES } from "@/modules/tool-definitions/normalize";
 import { resolveSecretInjection } from "@/modules/vault/secret-types";
 
@@ -72,13 +73,22 @@ export function mcpHeadersProblem(
   headers: Record<string, unknown>,
   transport: string,
   credentialHeader: string | null,
-): string | null {
+): TranslatedParam | null {
   const entries = Object.entries(headers);
   if (entries.length === 0) return null;
   if (transport === "stdio")
-    return "headers apply to network transports only; a stdio server is a local process";
+    return phrase(
+      "errors.mcpHeadersStdio",
+      "headers apply to network transports only; a stdio server is a local process",
+    );
   if (entries.length > MAX_MCP_HEADERS)
-    return `at most ${MAX_MCP_HEADERS} headers`;
+    return phrase(
+      "errors.mcpHeadersTooMany",
+      `at most ${MAX_MCP_HEADERS} headers`,
+      {
+        max: MAX_MCP_HEADERS,
+      },
+    );
   const seen = new Set<string>();
   for (const [name, value] of entries) {
     if (
@@ -86,24 +96,64 @@ export function mcpHeadersProblem(
       !HEADER_NAME.test(name) ||
       name === "__proto__"
     )
-      return `"${name}" is not a valid header name`;
-    if (typeof value !== "string") return `header "${name}" must be text`;
+      return phrase(
+        "errors.mcpHeaderBadName",
+        `"${name}" is not a valid header name`,
+        { name },
+      );
+    if (typeof value !== "string")
+      return phrase(
+        "errors.mcpHeaderNotText",
+        `header "${name}" must be text`,
+        {
+          name,
+        },
+      );
     const lower = name.toLowerCase();
-    if (seen.has(lower)) return `header "${name}" is declared twice`;
+    if (seen.has(lower))
+      return phrase(
+        "errors.mcpHeaderDuplicate",
+        `header "${name}" is declared twice`,
+        { name },
+      );
     seen.add(lower);
     if (TRANSPORT_HEADERS.has(lower))
-      return `header "${name}" is set by the MCP transport`;
+      return phrase(
+        "errors.mcpHeaderTransport",
+        `header "${name}" is set by the MCP transport`,
+        { name },
+      );
     if (lower === credentialHeader)
-      return `header "${name}" carries the connection's credential`;
+      return phrase(
+        "errors.mcpHeaderCredential",
+        `header "${name}" carries the connection's credential`,
+        { name },
+      );
     if (value.length > MAX_VALUE_CHARS)
-      return `header "${name}" is longer than ${MAX_VALUE_CHARS} characters`;
+      return phrase(
+        "errors.mcpHeaderTooLong",
+        `header "${name}" is longer than ${MAX_VALUE_CHARS} characters`,
+        { name, max: MAX_VALUE_CHARS },
+      );
     if (!LITERAL_TEXT.test(value.replace(PLACEHOLDER, "")))
-      return `header "${name}" has a character a header cannot carry (printable ASCII only; a conversation value is encoded for you)`;
+      return phrase(
+        "errors.mcpHeaderUnsafeCharacter",
+        `header "${name}" has a character a header cannot carry (printable ASCII only; a conversation value is encoded for you)`,
+        { name },
+      );
     const unknown = [...value.matchAll(PLACEHOLDER)]
       .map((m) => m[1] as string)
       .filter((n) => !CONTEXT_NAMES.has(n));
     if (unknown.length > 0)
-      return `header "${name}" uses {{${unknown[0]}}}, which is not a conversation variable (${CONTEXT_VAR_NAMES.join(", ")})`;
+      return phrase(
+        "errors.mcpHeaderUnknownVariable",
+        `header "${name}" uses {{${unknown[0]}}}, which is not a conversation variable (${CONTEXT_VAR_NAMES.join(", ")})`,
+        {
+          name,
+          token: `{{${unknown[0]}}}`,
+          variables: CONTEXT_VAR_NAMES.join(", "),
+        },
+      );
   }
   return null;
 }

@@ -566,12 +566,15 @@ describe.skipIf(!dbUp)("a turn already running when /reset lands", () => {
     held.resolve();
     await turn;
 
-    const ack = cw.calls
+    const acks = cw.calls
       .filter((c) => c.method === "POST" && c.path.endsWith("/messages"))
       .map((c) => String((c.body as { content?: string })?.content ?? ""))
-      .find((t) => t.includes("🔄") || t.includes("memória"));
-    // The command reports the step it could not do, instead of confirming a clean slate.
-    expect(ack ?? "").toContain("memória");
+      .filter((t) => t.includes("🔄") || t.includes("Reset parcial"));
+    // The command reports the one step it could not do, instead of confirming a clean slate.
+    expect(acks).toHaveLength(1);
+    expect(acks[0]).toStartWith(
+      "⚠️ Reset parcial: não consegui limpar memória. O restante foi limpo.",
+    );
   }, 30000);
 
   // A TOOL-CALL ID OF THIS TEST'S OWN, and it is not hygiene. The stub above hardcodes

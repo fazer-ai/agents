@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { encryptJson } from "@/api/lib/crypto";
-import { buildHttpTools, loadToolSelections } from "@/graph/tools/assemble";
+import {
+  buildHttpTools,
+  type HttpToolBuildDeps,
+  loadToolSelections,
+} from "@/graph/tools/assemble";
 import type { ScopedDb } from "@/lib/tenancy";
 import { VAULT_REF_PREFIX } from "@/modules/vault/service";
 
@@ -119,8 +123,7 @@ describe("loadToolSelections — credential kind + paramName batch resolution", 
 
 describe("buildHttpTools — credentialParamName propagation", () => {
   test("passes credentialParamName into the built tool (header kind injects the named header)", async () => {
-    // buildHttpTools wraps buildHttpTool; inject the fetch at the HttpToolBuildDeps resolveCredential
-    // level and capture the outbound request via the credential path.
+    const sent: (string | null)[] = [];
     const tools = buildHttpTools(
       [
         {
@@ -149,14 +152,20 @@ describe("buildHttpTools — credentialParamName propagation", () => {
       ],
       {
         resolveCredential: async () => "tok",
-        // NOTE: fetchImpl is not part of HttpToolBuildDeps; we use globalThis.fetch override here.
-        // The actual injection test lives in tools-http.test.ts; this test only verifies that
-        // buildHttpTools correctly threads credentialParamName into the tool definition shape.
-      },
+        // buildHttpTools hands its deps to every tool whole, so the tool's own fetchImpl seam reaches it.
+        fetchImpl: (async (_url: string | URL, init?: RequestInit) => {
+          sent.push(new Headers(init?.headers).get("X-Token"));
+          return new Response("{}", {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }) as unknown as typeof fetch,
+      } as HttpToolBuildDeps & { fetchImpl: typeof fetch },
     );
-    // Verify that the tool was built (not just skipped due to missing credentialParamName).
-    expect(tools).toHaveLength(1);
-    expect(tools[0]?.name).toBe("test_tool");
+    expect(tools.map((t) => t.name)).toEqual(["test_tool"]);
+    await tools[0]?.invoke({});
+    // NOTE: the secret went out under the header the definition named.
+    expect(sent).toEqual(["tok"]);
   });
 });
 

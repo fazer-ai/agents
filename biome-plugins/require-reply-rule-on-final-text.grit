@@ -1,0 +1,10 @@
+// Refuses `lastAssistantText(...)` read outside `customerFacingReply(...)` or `proactiveReply(...)`.
+// The model's final text carries tokens meant for the runtime (the silence protocol among them), and
+// a site that takes it without one of the two rules can send them to the customer.
+language js;
+
+JsCallExpression(callee = $callee) as $call where {
+    $callee <: `lastAssistantText`,
+    not $call <: within or { `customerFacingReply($...)`, `proactiveReply($...)` },
+    register_diagnostic(span = $call, message = "Read the model's final text through `customerFacingReply` or `proactiveReply`, which apply the reply rules.")
+}

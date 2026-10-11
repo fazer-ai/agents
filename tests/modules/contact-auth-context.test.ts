@@ -126,9 +126,9 @@ describe("readAuthContext: what the endpoint may say about a contact", () => {
       string,
       unknown
     >;
-    const value = bag(parsed)?.[0]?.value ?? "";
-    expect([...value].every((ch) => !isLoneSurrogate(ch))).toBe(true);
-    expect(JSON.stringify(value)).not.toContain("\\ud");
+    // The half character becomes a space and the rest of the value survives: dropping the whole
+    // fact would also leave no half character.
+    expect(pairs(bag(parsed))).toEqual(["plan=pre mium"]);
   });
 
   test("the cut never splits a character in half", () => {

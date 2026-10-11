@@ -9,7 +9,6 @@
 
 import { describe, expect, it } from "bun:test";
 import { afterLogout, performLogout } from "@/client/lib/logout";
-import { codeOnly } from "@/tests/utils/source-text";
 
 describe("logging out", () => {
   it("ends the session when the server answered", async () => {
@@ -75,25 +74,5 @@ describe("what the callers do with the answer", () => {
       () => done.push("warn"),
     );
     expect(done).toEqual(["warn"]);
-  });
-
-  // NOTE: BOTH buttons go through that decision, which the value alone cannot answer for: a caller
-  // that navigates on its own would reopen the bug at that site.
-  it("is the decision both buttons make", async () => {
-    for (const f of [
-      "src/client/components/UserMenu.tsx",
-      "src/client/pages/OAuthConsentPage.tsx",
-    ]) {
-      const src = codeOnly(await Bun.file(f).text());
-      const from = src.indexOf("logout()");
-      expect(from).toBeGreaterThan(-1);
-      // Both ways from the call, because the menu passes the answer straight in
-      // (`afterLogout(await logout(), …)`) while the consent page waits on the promise first.
-      const handler = src.slice(Math.max(0, from - 400), from + 700);
-      expect(handler).toInclude("afterLogout(");
-      // NOTE: a `finally` would navigate on every resolution, which is what the answer exists to
-      // stop.
-      expect(handler).not.toInclude("finally");
-    }
   });
 });

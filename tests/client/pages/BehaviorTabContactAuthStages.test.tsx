@@ -8,8 +8,14 @@ import {
   expect,
   test,
 } from "bun:test";
-import { readFileSync } from "node:fs";
-import { cleanup, render, screen } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
+import en from "@/client/locales/en.json";
 import {
   BehaviorTab,
   type ContactAuthState,
@@ -18,6 +24,13 @@ import {
   EMPTY_CONTACT_AUTH_CONDITION_FORM,
   EMPTY_CONTACT_AUTH_RULE_FORM,
 } from "@/client/pages/agents/contactAuthRuleForm";
+import {
+  type EditorStub,
+  lastSavedSettings,
+  renderEditor,
+  stubEditorApi,
+} from "../../utils/agent-editor";
+import { createTestI18n } from "../../utils/i18n";
 import { behaviorTabProps } from "./behaviorTabProps";
 
 // The section decides who the agent serves: a rule first, the endpoint after it when the operator
@@ -130,35 +143,100 @@ describe("the section in the editor", () => {
   });
 });
 
-// Checked on the source for the reason BehaviorTabContactAuthRule gives: rendering the whole editor
-// page pulls auth, theme, toast and a live catalog.
+// The editor around the tab: what the Behavior save writes from these switches, how the load reads
+// them back, and which warnings the endpoint stage raises.
 describe("the Behavior save", () => {
-  const src = readFileSync(
-    "src/client/pages/agents/AgentEditorPage.tsx",
-    "utf8",
-  );
+  afterEach(() => {
+    cleanup();
+    globalThis.fetch = realFetch;
+  });
+  const LABEL_STORED = { kind: "label", label: "vip" };
 
-  test("carries both new fields as the form holds them", () => {
-    expect(src.replace(/\s+/g, " ")).toContain(
-      "askEndpointAfterRule: contactAuth.endpointEnabled,",
+  async function openGate(contactAuth: Record<string, unknown>) {
+    const stub = stubEditorApi({ settings: { contactAuth } });
+    // The warning's sentence lives only in the catalog.
+    await renderEditor(
+      stub,
+      "behavior",
+      createTestI18n("en", { en: { translation: en } }),
     );
-    expect(src).toContain(
-      "operatorNoteEnabled: contactAuth.operatorNoteEnabled,",
+    return stub;
+  }
+  async function saved(stub: EditorStub) {
+    const before = stub.writes.length;
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(stub.writes.length).toBeGreaterThan(before));
+    const ca = (lastSavedSettings(stub)?.contactAuth ?? {}) as Record<
+      string,
+      unknown
+    >;
+    return {
+      askEndpointAfterRule: ca.askEndpointAfterRule,
+      operatorNoteEnabled: ca.operatorNoteEnabled,
+    };
+  }
+
+  test("carries both new fields as the form holds them", async () => {
+    const stub = await openGate({
+      enabled: true,
+      rule: LABEL_STORED,
+      url: "https://auth.example.com/check",
+      askEndpointAfterRule: false,
+      operatorNoteEnabled: true,
+    });
+    fireEvent.click(
+      screen.getByRole("switch", { name: /^Ask an external endpoint/ }),
     );
+    fireEvent.click(
+      screen.getByRole("switch", {
+        name: /^Write a private note when a contact is refused/,
+      }),
+    );
+    expect(await saved(stub)).toEqual({
+      askEndpointAfterRule: true,
+      operatorNoteEnabled: false,
+    });
   });
 
-  test("reads them back as strictly as the runtime does", () => {
-    expect(src).toMatch(
-      /endpointEnabled: readContactAuthEndpointEnabled\(\s*caRule,\s*ca\.url,\s*ca\.askEndpointAfterRule,\s*\)/,
-    );
-    expect(src).toContain(
-      "operatorNoteEnabled: ca.operatorNoteEnabled !== false,",
-    );
+  test("reads them back as strictly as the runtime does", async () => {
+    // Only a literal `true` asks the endpoint after a rule, and only a literal `false` silences the
+    // note: any other spelling reads the runtime's way, and a save right after the load writes that.
+    const lax = await openGate({
+      enabled: true,
+      rule: LABEL_STORED,
+      url: "https://auth.example.com/check",
+      askEndpointAfterRule: "true",
+      operatorNoteEnabled: "false",
+    });
+    expect(await saved(lax)).toEqual({
+      askEndpointAfterRule: false,
+      operatorNoteEnabled: true,
+    });
+    cleanup();
+    const strict = await openGate({
+      enabled: true,
+      rule: LABEL_STORED,
+      url: "https://auth.example.com/check",
+      askEndpointAfterRule: true,
+      operatorNoteEnabled: false,
+    });
+    expect(await saved(strict)).toEqual({
+      askEndpointAfterRule: true,
+      operatorNoteEnabled: false,
+    });
   });
 
-  test("the endpoint warnings follow the endpoint stage", () => {
-    expect(src).toMatch(
-      /contactAuthRuleOnly:\s*contactAuth\.ruleConditions\.length > 0 && !contactAuth\.endpointEnabled,/,
+  test("the endpoint warnings follow the endpoint stage", async () => {
+    const NO_URL = /^The authorization check is on but has no endpoint to ask/;
+    // A rule alone decides: no endpoint is asked, so a missing URL is not a problem.
+    await openGate({ enabled: true, rule: LABEL_STORED, url: null });
+    expect(screen.queryAllByText(NO_URL).length).toBe(0);
+    // The endpoint asked after the rule needs its URL.
+    fireEvent.click(
+      screen.getByRole("switch", { name: /^Ask an external endpoint/ }),
+    );
+    await waitFor(() =>
+      expect(screen.queryAllByText(NO_URL).length).toBeGreaterThan(0),
     );
   });
 });

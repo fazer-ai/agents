@@ -2456,6 +2456,21 @@ describe.skipIf(!dbUp)("debounce", () => {
         },
       });
       // THE ASSERTION. The turn never ran, because the ceiling was asked before it.
+      expect(sent).toEqual([
+        [
+          convId,
+          "Não consigo responder agora. Encaminhei sua mensagem para a equipe.",
+        ],
+      ]);
+      const claims = await suDb.messageReplyClaim.findMany({
+        where: { conversationId: id },
+        select: { messageId: true, reason: true },
+        orderBy: { messageId: "asc" },
+      });
+      expect(claims).toEqual([
+        { messageId: 1, reason: "DISPENSED" },
+        { messageId: 2, reason: "DISPENSED" },
+      ]);
       expect(model.seen).toEqual([]);
     } finally {
       await suDb.tenant.update({
@@ -6410,11 +6425,12 @@ describe.skipIf(!dbUp)("debounce", () => {
       { id: 8, content: "até logo" },
       { id: 9, content: "quero marcar um horário pra sexta" },
     ]);
+    const model = new CaptureReplyModel(REPLY);
     const out = await flushDebounceJob({
       job: jobFor(807, { lastMessageId: 9 }),
       base: appDb,
       deps: {
-        makeModel: fakeModel,
+        makeModel: () => model as unknown as BaseChatModel,
         makeClient: makeStub({ pages: [fullHistory], sent, calls }),
         checkpointer: new MemorySaver(),
       },
@@ -6422,6 +6438,18 @@ describe.skipIf(!dbUp)("debounce", () => {
     expect(out).toEqual({ outcome: "done" });
     expect(sent).toEqual([[807, REPLY]]); // one reply, to the new request only
     expect(await watermarkOf(807)).toBe(9);
+    // NOTE: the turn was asked about message 9 alone; the backlog the human handled never reached it.
+    expect(model.seen).toHaveLength(1);
+    expect(model.seen[0]).toContain("quero marcar um horário pra sexta");
+    for (const handled of [
+      "quero remarcar",
+      "isso está um absurdo!",
+      "que atendimento péssimo",
+      "obrigado pela ajuda",
+      "até logo",
+    ]) {
+      expect(model.seen[0]).not.toContain(handled);
+    }
   });
 
   // When both attempts come back empty the turn is lost for good and the operator becomes the

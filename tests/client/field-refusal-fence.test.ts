@@ -224,44 +224,6 @@ export function distrustedNulls(src: string): string[] {
   return [...new Set(out)];
 }
 
-// A staleness check that compares a value with itself. `capture` takes what the request CARRIED and
-// what the inputs hold NOW, and refuses to mark a control that has moved on. The same expression
-// twice makes that a tautology (always placed) while the render reads the live value and finds no
-// mark, so the refusal reaches neither channel (e.g. a picker whose rows stay live during a PUT).
-export function tautologicalStaleness(src: string): string[] {
-  const code = codeSkeleton(src);
-  const out: string[] = [];
-  for (const m of code.matchAll(/\.capture\(/g)) {
-    const args = splitArgs(
-      argumentOf(code, (m.index as number) + ".capture".length),
-    );
-    if (args.length < 4) continue;
-    const [, , sent, current] = args as [string, string, string, string];
-    if (sent.trim() && sent.trim() === current.trim()) out.push(sent.trim());
-  }
-  return out;
-}
-
-// A call's arguments, split on the commas that belong to IT.
-function splitArgs(args: string): string[] {
-  const out: string[] = [];
-  let depth = 0;
-  let last = 0;
-  for (let i = 0; i < args.length; i++) {
-    const c = args[i];
-    if (c === "(" || c === "[" || c === "{") depth++;
-    else if (c === ")" || c === "]" || c === "}") depth--;
-    else if (c === "," && depth === 0) {
-      out.push(args.slice(last, i));
-      last = i + 1;
-    }
-  }
-  out.push(args.slice(last));
-  return out
-    .map((a) => a.trim())
-    .filter((a, i, all) => a || i < all.length - 1);
-}
-
 // A holder that is declared and then half-used. Either half alone is silence: a holder nobody
 // captures into answers null at every `at(…)`, and one nobody reads keeps the toast quiet about a
 // refusal placed nowhere. A holder can be used through a REGISTER (the agent editor's
@@ -1093,32 +1055,6 @@ describe("a form that writes holds the refusal it gets", () => {
   };
     `;
     expect(distrustedNulls(src)).toEqual([]);
-  });
-
-  test("no staleness check compares a value with itself", () => {
-    const tautological = sources(ROOT).flatMap((f) =>
-      tautologicalStaleness(readFileSync(f, "utf8")).map(
-        (a) => `${f.slice(`${ROOT}/`.length)} :: ${a}`,
-      ),
-    );
-    expect(
-      tautological,
-      "`sent` and `current` are the request's value and the box's value: handing over the same one makes the check a tautology and the mark unreadable",
-    ).toEqual([]);
-  });
-
-  test("the predicate flags sent and current being one snapshot", () => {
-    const src = `
-      r.capture(e, fallback, { accountIds: wanted }, { accountIds: wanted });
-    `;
-    expect(tautologicalStaleness(src)).toEqual(["{ accountIds: wanted }"]);
-  });
-
-  test("a live read against the snapshot is not flagged", () => {
-    const src = `
-      r.capture(e, fallback, { accountIds: wanted }, { accountIds: ref.current });
-    `;
-    expect(tautologicalStaleness(src)).toEqual([]);
   });
 
   test("no holder is declared and half-used", () => {

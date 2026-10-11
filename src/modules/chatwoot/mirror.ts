@@ -905,12 +905,34 @@ async function upsertContact(
     `;
   }
 
-  if (c.customAttributes) {
+  // NOTE: With the contact's own clock (`meta.sender.updated_at`) and a row that has one, the clock
+  // alone orders the bag: strictly newer writes whatever its position, equal or older writes nothing.
+  // The clock moves with its bag even when the bag is unchanged, since it also moves on every incoming
+  // message. A row with no clock takes the position rule and is stamped. A payload without the clock
+  // keeps the position rule, and a bag it writes clears the clock, which must describe the bag stored.
+  // Reasoning: docs/chatwoot.md, "Mirror sync".
+  if (c.customAttributes && c.updatedAt != null) {
+    const bag = JSON.stringify(c.customAttributes);
+    const positioned = eventAt
+      ? Prisma.sql`(custom_attributes_at IS NULL OR custom_attributes_at <= ${eventAt})`
+      : Prisma.sql`custom_attributes_at IS NULL`;
+    await db.$executeRaw`
+      UPDATE contacts
+      SET custom_attributes = ${bag}::jsonb,
+          custom_attributes_clock = ${c.updatedAt},
+          custom_attributes_at = GREATEST(custom_attributes_at, ${eventAt})
+      WHERE id = ${row.id} AND tenant_id = ${tenantId}
+        AND CASE WHEN custom_attributes_clock IS NOT NULL
+              THEN custom_attributes_clock < ${c.updatedAt}
+              ELSE ${positioned} END
+    `;
+  } else if (c.customAttributes) {
     const bag = JSON.stringify(c.customAttributes);
     await (eventAt
       ? db.$executeRaw`
           UPDATE contacts
-          SET custom_attributes = ${bag}::jsonb, custom_attributes_at = ${eventAt}
+          SET custom_attributes = ${bag}::jsonb, custom_attributes_at = ${eventAt},
+              custom_attributes_clock = NULL
           WHERE id = ${row.id} AND tenant_id = ${tenantId}
             AND (custom_attributes_at IS NULL OR custom_attributes_at <= ${eventAt})
             AND (custom_attributes_at IS DISTINCT FROM ${eventAt}
@@ -918,7 +940,7 @@ async function upsertContact(
         `
       : db.$executeRaw`
           UPDATE contacts
-          SET custom_attributes = ${bag}::jsonb
+          SET custom_attributes = ${bag}::jsonb, custom_attributes_clock = NULL
           WHERE id = ${row.id} AND tenant_id = ${tenantId}
             AND custom_attributes_at IS NULL
             AND custom_attributes IS DISTINCT FROM ${bag}::jsonb
@@ -972,6 +994,7 @@ async function upsertInbox(
         name: n.inboxName ?? placeholder,
         channelType: n.channel ?? null,
         metadataAt: position,
+        metadataClock: n.inboxName != null ? (n.inboxUpdatedAt ?? null) : null,
       },
       skipDuplicates: true,
     });
@@ -984,9 +1007,31 @@ async function upsertInbox(
   const name = n.inboxName ?? null;
   const channel = n.channel ?? null;
   if (name === null && channel === null) return row.id;
-  const accepts = position
+  const positioned = position
     ? Prisma.sql`(metadata_at IS NULL OR metadata_at <= ${position})`
     : Prisma.sql`(metadata_at IS NULL)`;
+  // The inbox's own clock (`inbox.updated_at`, message events only), counted only beside the name it
+  // versions: a payload that omits the name cannot move a clock over a name it never stated. With it
+  // and a row that has one, the clock alone decides, as for the contact's bag; a row with no clock yet
+  // takes the position rule and is stamped; without it (every `conversation_*` event) the position rule.
+  const clock = name !== null ? (n.inboxUpdatedAt ?? null) : null;
+  const accepts =
+    clock !== null
+      ? Prisma.sql`(CASE WHEN metadata_clock IS NOT NULL THEN metadata_clock < ${clock} ELSE ${positioned} END)`
+      : positioned;
+  const clockMoves =
+    clock !== null
+      ? Prisma.sql`(${accepts} AND metadata_clock IS DISTINCT FROM ${clock})`
+      : Prisma.sql`FALSE`;
+  // A payload without the clock that REPLACES a stated name or channel clears the clock, which no
+  // longer describes what is stored; filling a field never stated (the placeholder name, a NULL
+  // channel, what a `conversation_*` event does) leaves it, since the clock never covered it.
+  const clockCleared =
+    clock === null
+      ? Prisma.sql`(${accepts} AND (
+          (${name}::text IS NOT NULL AND name <> ${placeholder} AND name IS DISTINCT FROM ${name}::text)
+          OR (${channel}::text IS NOT NULL AND channel_type IS NOT NULL AND channel_type IS DISTINCT FROM ${channel}::text)))`
+      : Prisma.sql`FALSE`;
   // One statement, decided against the row as it stands when the UPDATE reaches it (an earlier read
   // may be stale); a WHERE that matches nothing writes nothing. A payload positioned at or after the
   // last change writes every field it states, so a field left out cannot keep an older value under
@@ -1005,6 +1050,8 @@ async function upsertInbox(
         WHEN ${accepts} AND ${channel}::text IS NOT NULL THEN ${channel}::text
         WHEN channel_type IS NULL AND ${channel}::text IS NOT NULL THEN ${channel}::text
         ELSE channel_type END,
+      metadata_clock = CASE WHEN ${clockMoves} THEN ${clock}::float8
+        WHEN ${clockCleared} THEN NULL ELSE metadata_clock END,
       metadata_at = GREATEST(metadata_at, ${position}),
       updated_at = now()
     WHERE id = ${row.id}
@@ -1012,6 +1059,7 @@ async function upsertInbox(
         (${accepts} AND (
           (${name}::text IS NOT NULL AND name IS DISTINCT FROM ${name}::text)
           OR (${channel}::text IS NOT NULL AND channel_type IS DISTINCT FROM ${channel}::text)))
+        OR ${clockMoves}
         OR (name = ${placeholder} AND ${name}::text IS NOT NULL AND ${name}::text <> ${placeholder})
         OR (channel_type IS NULL AND ${channel}::text IS NOT NULL)
       )`;

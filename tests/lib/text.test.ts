@@ -41,9 +41,12 @@ describe("clipText", () => {
 
   test("no cut position of an astral string ever leaves an orphan half", () => {
     const s = "😀🙂🎉ok😀";
-    for (let max = 0; max <= s.length + 2; max++) {
-      expect(loneSurrogates(clipText(s, max))).toBe(0);
-    }
+    // Index = cap: the longest prefix that ends on a whole character.
+    const want = ["", "", "😀", "😀", "😀🙂", "😀🙂", "😀🙂🎉", "😀🙂🎉o"];
+    want.push("😀🙂🎉ok", "😀🙂🎉ok", s, s, s);
+    const got = want.map((_, max) => clipText(s, max));
+    expect(got).toEqual(want);
+    for (const out of got) expect(loneSurrogates(out)).toBe(0);
   });
 
   test("a LOW surrogate at the end is left alone: it is the cut that makes orphans, not the input", () => {
@@ -72,9 +75,12 @@ describe("clipTextEnd", () => {
 
   test("no start position of an astral string ever leaves an orphan half", () => {
     const s = "😀🙂🎉ok😀";
-    for (let max = 0; max <= s.length + 2; max++) {
-      expect(loneSurrogates(clipTextEnd(s, max))).toBe(0);
-    }
+    // Index = cap: the longest suffix that starts on a whole character.
+    const want = ["", "", "😀", "k😀", "ok😀", "ok😀", "🎉ok😀", "🎉ok😀"];
+    want.push("🙂🎉ok😀", "🙂🎉ok😀", s, s, s);
+    const got = want.map((_, max) => clipTextEnd(s, max));
+    expect(got).toEqual(want);
+    for (const out of got) expect(loneSurrogates(out)).toBe(0);
   });
 
   test("a HIGH surrogate at the start is left alone: it is the start that makes orphans", () => {
@@ -106,7 +112,7 @@ describe("replaceLoneSurrogates", () => {
   });
   test("a high surrogate at the very end is an orphan", () => {
     const s = JSON.parse('"tail\\ud83d"') as string;
-    expect(loneSurrogates(replaceLoneSurrogates(s))).toBe(0);
+    expect(replaceLoneSurrogates(s)).toBe("tail\uFFFD");
   });
   test("two orphans in a row are both replaced, and a pair between them survives", () => {
     const s = JSON.parse('"\\ud800a😀b\\udfff"') as string;
@@ -249,10 +255,16 @@ describe("makeStorableDeep", () => {
 
   test("drops the branch below the depth cap rather than passing it through unrepaired", () => {
     // 12 levels: deeper than any allowlisted projection, and deep enough to be past the cap.
-    let deep: unknown = `bottom\ud800`;
-    for (let i = 0; i < 12; i++) deep = { down: deep };
-    const out = makeStorableDeep(deep);
-    expect(residue(out)).toBe(0);
-    expect(JSON.stringify(out)).toContain("null");
+    const nest = (levels: number, leaf: unknown): unknown => {
+      let v = leaf;
+      for (let i = 0; i < levels; i++) v = { down: v };
+      return v;
+    };
+    // Eight object levels are kept and the ninth becomes null.
+    expect(makeStorableDeep(nest(12, `bottom\ud800`))).toEqual(nest(8, null));
+    // Just inside the cap, the leaf is repaired, not dropped.
+    expect(makeStorableDeep(nest(8, `bottom\ud800`))).toEqual(
+      nest(8, "bottom\uFFFD"),
+    );
   });
 });

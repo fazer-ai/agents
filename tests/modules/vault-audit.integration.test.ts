@@ -393,8 +393,12 @@ describe.skipIf(!dbUp)("phase-2 primitives", () => {
   });
 
   test("withEntityLock runs the body inside the scoped tx", async () => {
-    const { result, lockedId } = await scoped((db) =>
+    const { result, lockedId, held } = await scoped((db) =>
       withEntityLock(db, `tenant:${tenantId}:demo`, async () => {
+        // The transaction-scoped advisory lock this body runs under, seen from its own connection.
+        const [locks] = await db.$queryRaw<{ n: number }[]>`
+          SELECT count(*)::int AS n FROM pg_locks
+          WHERE locktype = 'advisory' AND pid = pg_backend_pid() AND granted`;
         // Use db directly (already inside the scoped tx) to avoid a nested transaction.
         const created = await db.vaultEntry.create({
           data: {
@@ -405,10 +409,11 @@ describe.skipIf(!dbUp)("phase-2 primitives", () => {
           },
           select: { id: true },
         });
-        return { result: "done", lockedId: created.id };
+        return { result: "done", lockedId: created.id, held: locks?.n };
       }),
     );
     expect(result).toBe("done");
+    expect(held).toBe(1);
     const v = await scoped((db) =>
       resolveVaultSecret<{ v: number }>(db, `vault:${lockedId}`),
     );
@@ -669,8 +674,6 @@ describe.skipIf(!dbUp)("phase-2 primitives", () => {
       undefined,
       appDb,
     );
-    expect(cwId).toBeDefined();
-
     const { id: ocId } = await createVaultEntry(
       ctx,
       {
@@ -683,8 +686,6 @@ describe.skipIf(!dbUp)("phase-2 primitives", () => {
       undefined,
       appDb,
     );
-    expect(ocId).toBeDefined();
-
     const { id: lfId } = await createVaultEntry(
       ctx,
       {
@@ -697,7 +698,28 @@ describe.skipIf(!dbUp)("phase-2 primitives", () => {
       undefined,
       appDb,
     );
-    expect(lfId).toBeDefined();
+    const stored = await su?.vaultEntry.findMany({
+      where: { id: { in: [cwId, ocId, lfId] } },
+      select: { name: true, kind: true, baseUrl: true },
+      orderBy: { id: "asc" },
+    });
+    expect(stored).toEqual([
+      {
+        name: "cw-with-base",
+        kind: "chatwoot_api_token",
+        baseUrl: "https://chat.example.com",
+      },
+      {
+        name: "oc-with-base",
+        kind: "openai_compatible",
+        baseUrl: "https://api.example.com/v1",
+      },
+      {
+        name: "lf-with-base",
+        kind: "langfuse",
+        baseUrl: "https://us.cloud.langfuse.com",
+      },
+    ]);
   });
 
   test("vault: requiresBaseUrl kinds reject update that clears baseUrl", async () => {
@@ -748,6 +770,11 @@ describe.skipIf(!dbUp)("phase-2 primitives", () => {
       appDb,
     );
     expect(sameId).toBe(id);
+    const row = await su?.vaultEntry.findUnique({
+      where: { id },
+      select: { baseUrl: true },
+    });
+    expect(row?.baseUrl).toBe("https://api2.example.com/v1");
   });
 
   test("vault: non-requiresBaseUrl kinds continue accepting missing/empty baseUrl", async () => {
@@ -760,7 +787,6 @@ describe.skipIf(!dbUp)("phase-2 primitives", () => {
       undefined,
       appDb,
     );
-    expect(id1).toBeDefined();
 
     const { id: id2 } = await createVaultEntry(
       ctx,
@@ -769,9 +795,17 @@ describe.skipIf(!dbUp)("phase-2 primitives", () => {
       undefined,
       appDb,
     );
-    expect(id2).toBeDefined();
 
     const sameId = await updateVaultEntry(ctx, id1, { baseUrl: null }, appDb);
     expect(sameId).toBe(id1);
+    const stored = await su?.vaultEntry.findMany({
+      where: { id: { in: [id1, id2] } },
+      select: { name: true, kind: true, baseUrl: true },
+      orderBy: { id: "asc" },
+    });
+    expect(stored).toEqual([
+      { name: "bearer-no-base", kind: "bearer_token", baseUrl: null },
+      { name: "openai-no-base", kind: "openai", baseUrl: null },
+    ]);
   });
 });

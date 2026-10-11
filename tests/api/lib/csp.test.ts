@@ -20,8 +20,10 @@ describe("extractInlineScriptHashes", () => {
   test("emits distinct hashes for multiple distinct scripts", () => {
     const html = `<script>a()</script><script>b()</script>`;
     const hashes = extractInlineScriptHashes(html);
-    expect(hashes).toHaveLength(2);
-    expect(hashes[0]).not.toBe(hashes[1]);
+    expect(hashes).toEqual([
+      `'sha256-${sha256b64("a()")}'`,
+      `'sha256-${sha256b64("b()")}'`,
+    ]);
   });
 
   test("handles scripts with attributes other than src", () => {

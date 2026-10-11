@@ -1,0 +1,8 @@
+// Refuses a cast to `ErrorTranslationKey`. The type is the catalog's key set, so a cast is how a key
+// the catalog does not hold reaches a refusal: type the literal or widen the catalog instead.
+language js;
+
+TsAsExpression() as $cast where {
+    $cast <: r"[\s\S]*\sas\s+ErrorTranslationKey[\s\S]*",
+    register_diagnostic(span = $cast, message = "Do not cast to ErrorTranslationKey: a cast lets a key the error catalog does not hold through. Use a key the catalog declares.")
+}

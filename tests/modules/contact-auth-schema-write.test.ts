@@ -238,13 +238,13 @@ const CASES: [string, unknown, string, string][] = [
     "askEndpointAfterRule that is not a boolean",
     { askEndpointAfterRule: "yes" },
     "invalid_type askEndpointAfterRule: Invalid input: expected boolean, received string",
-    'InvalidSettingsValueError: settings.contactAuth.askEndpointAfterRule expects boolean, got "yes"',
+    'InvalidSettingsValueError: settings.contactAuth.askEndpointAfterRule expects a value of type boolean, got "yes"',
   ],
   [
     "operatorNoteEnabled that is not a boolean",
     { operatorNoteEnabled: 1 },
     "invalid_type operatorNoteEnabled: Invalid input: expected boolean, received number",
-    "InvalidSettingsValueError: settings.contactAuth.operatorNoteEnabled expects boolean, got number",
+    "InvalidSettingsValueError: settings.contactAuth.operatorNoteEnabled expects a value of type boolean, got number",
   ],
   [
     "a mode outside its choices",
@@ -256,13 +256,13 @@ const CASES: [string, unknown, string, string][] = [
     "a url that is not text",
     { url: 5 },
     "invalid_type url: Invalid input: expected string, received number",
-    "InvalidSettingsValueError: settings.contactAuth.url expects string, got number",
+    "InvalidSettingsValueError: settings.contactAuth.url expects a value of type string, got number",
   ],
   [
     "a grant lifetime that is not a number",
     { grantTtlSeconds: "1h" },
     "invalid_type grantTtlSeconds: Invalid input: expected number, received string",
-    'InvalidSettingsValueError: settings.contactAuth.grantTtlSeconds expects number, got "1h"',
+    'InvalidSettingsValueError: settings.contactAuth.grantTtlSeconds expects a value of type number, got "1h"',
   ],
   [
     "a team id that is not positive",

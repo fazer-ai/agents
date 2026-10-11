@@ -8,6 +8,7 @@ import {
   View,
 } from "@react-pdf/renderer";
 import PDFDocument from "pdfkit";
+import { Fragment } from "react";
 import type { CompanySettings } from "@/modules/tenant-settings/service";
 import {
   type DocumentBlock,
@@ -74,6 +75,11 @@ const BOLD_FONT: Record<DocumentStyle["font"], string> = {
   sans: "Helvetica-Bold",
   serif: "Times-Bold",
   mono: "Courier-Bold",
+};
+
+const PAGE_HEIGHT: Record<DocumentStyle["pageSize"], number> = {
+  A4: 841.89,
+  LETTER: 792,
 };
 
 const measurer = new PDFDocument({ autoFirstPage: false });
@@ -308,6 +314,29 @@ function InlineText({ spans }: { spans: InlineSpan[] }) {
   );
 }
 
+// A line item row is kept whole across a page break. A row taller than the page cannot be: the renderer
+// would move it to a fresh page and clip what does not fit, so such a row is left to break. The height
+// is measured in the font the page is drawn with, against a fifth of the page held back for the
+// renderer's own line height.
+function rowKeepsWhole(
+  description: string,
+  style: DocumentStyle,
+  columns: readonly LineItemColumn[],
+): boolean {
+  const margin = MARGIN[style.margin];
+  const flex = columns.reduce((sum, col) => sum + COLUMN_FLEX[col], 0);
+  const width =
+    ((PAGE_WIDTH[style.pageSize] - 2 * margin - 12) * COLUMN_FLEX.description) /
+    flex;
+  const height =
+    measurer
+      .font(FONT_FAMILY[style.font])
+      .fontSize(style.baseFontSize)
+      .heightOfString(description, { width }) + 10;
+  const body = PAGE_HEIGHT[style.pageSize] - 2 * margin - footerReserve(style);
+  return height <= body * 0.8;
+}
+
 function itemsOf(values: DocumentValues, field: string): LineItemValue[] {
   const value = values[field];
   return Array.isArray(value) ? value : [];
@@ -529,7 +558,7 @@ function renderBlock(
       return (
         <View>
           {block.showHeader === false ? null : (
-            <View style={sheet.tableHead}>
+            <View style={sheet.tableHead} fixed>
               {columns.map((col) => (
                 <Text key={col} style={[sheet.tableHeadCell, cell(col)]}>
                   {L[col]}
@@ -538,8 +567,12 @@ function renderBlock(
             </View>
           )}
           {items.map((item, i) => (
-            // biome-ignore lint/suspicious/noArrayIndexKey: render-only list, stable within one render.
-            <View key={i} style={sheet.tableRow}>
+            <View
+              // biome-ignore lint/suspicious/noArrayIndexKey: render-only list, stable within one render.
+              key={i}
+              style={sheet.tableRow}
+              wrap={!rowKeepsWhole(item.description, style, columns)}
+            >
               {columns.map((col) => (
                 <Text key={col} style={cell(col)}>
                   {col === "description"
@@ -644,13 +677,13 @@ export async function renderDocumentPdf(
   const doc = (
     <Document title={input.meta.title}>
       <Page size={input.style.pageSize} style={sheet.page}>
-        {input.blocks.map((block) => (
-          <View
-            key={block.id}
-            style={{ marginBottom: SPACE_AFTER[block.spaceAfter ?? "md"] }}
-          >
-            {renderBlock(block, input, sheet, vars)}
-          </View>
+        {input.blocks.map((block, i) => (
+          <Fragment key={block.id}>
+            <View>{renderBlock(block, input, sheet, vars)}</View>
+            {i < input.blocks.length - 1 ? (
+              <View style={{ height: SPACE_AFTER[block.spaceAfter ?? "md"] }} />
+            ) : null}
+          </Fragment>
         ))}
         {input.style.footerText || input.style.showPageNumbers ? (
           <View style={sheet.footer} fixed>

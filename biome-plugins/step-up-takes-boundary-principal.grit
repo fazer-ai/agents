@@ -1,0 +1,15 @@
+// Refuses a `confirmStepUp(...)` whose first argument is not the boundary's context (`ctx`) or
+// `stepUpPrincipalOf(user)`. A principal built by hand drops the step-up on record (`stepUpAt`), so
+// every key reaching that route is asked its creator's password. src/api/lib/step-up.ts, where the
+// helper is defined, is out of scope in biome.jsonc.
+language js;
+
+or {
+    JsCallExpression(callee = $callee, arguments = $args) as $site where {
+        $callee <: r"(?:[\s\S]*\.)?confirmStepUp",
+        not $args <: r"\(\s*(?:ctx[^A-Za-z0-9_]|stepUpPrincipalOf\()[\s\S]*"
+    },
+    JsFunctionDeclaration(id = $id) as $site where { $id <: "confirmStepUp" }
+} where {
+    register_diagnostic(span = $site, message = "Hand `confirmStepUp` the principal the boundary stamped: `ctx`, or `stepUpPrincipalOf(user)` at the AuthUser seam. A hand-built `{ userId, actorType }` drops the step-up on record.")
+}

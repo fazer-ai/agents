@@ -86,10 +86,11 @@ describe("unprintableCharacters agrees with the renderer", () => {
   test("what it refuses is drawn as something else entirely", async () => {
     for (const ch of ["中", "😀", "Ж", "א", "→"]) {
       expect(unprintableCharacters(ch)).toEqual([ch]);
-      const hex = await drawn(`A${ch}A`);
-      // Not the character, and not nothing: extra bytes between the two A's.
-      expect(hex.startsWith("41")).toBe(true);
-      expect(hex).not.toBe("4141");
+      // Each UTF-16 unit is drawn as its low byte, an unrelated Latin-1 glyph (中 prints as "-").
+      const units = [...Array(ch.length).keys()]
+        .map((i) => (ch.charCodeAt(i) & 0xff).toString(16).padStart(2, "0"))
+        .join("");
+      expect(await drawn(`A${ch}A`)).toBe(`41${units}41`);
     }
   });
 

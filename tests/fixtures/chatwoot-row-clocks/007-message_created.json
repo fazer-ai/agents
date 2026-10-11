@@ -1,0 +1,57 @@
+{
+  "event": "message_created",
+  "id": 11,
+  "message_type": "incoming",
+  "content": "m2 (inbox N2)",
+  "private": false,
+  "created_at": "2026-10-11T02:30:03.482Z",
+  "sender": {
+    "id": 3,
+    "name": "ship1282-1791685800",
+    "type": null,
+    "custom_attributes": {
+      "plano": "ouro"
+    },
+    "updated_at": 1791685802.796915
+  },
+  "inbox": {
+    "id": 3,
+    "name": "ship1282-1791685800-N2",
+    "updated_at": 1791685803.416985
+  },
+  "conversation": {
+    "id": 3,
+    "inbox_id": 3,
+    "channel": "Channel::Api",
+    "status": "pending",
+    "group_type": "individual",
+    "contact_inbox": {
+      "id": 3
+    },
+    "meta": {
+      "sender": {
+        "id": 3,
+        "name": "ship1282-1791685800",
+        "email": null,
+        "phone_number": "+5511984056200",
+        "identifier": null,
+        "additional_attributes": {},
+        "custom_attributes": {
+          "plano": "ouro"
+        },
+        "type": "contact",
+        "updated_at": 1791685802.796915
+      },
+      "assignee_type": "AgentBot",
+      "assignee": {
+        "id": 2,
+        "name": "ship1282-1791685800",
+        "type": "agent_bot"
+      }
+    },
+    "custom_attributes": {},
+    "labels": [],
+    "last_activity_at": 1791685803,
+    "updated_at": 1791685803.489046
+  }
+}

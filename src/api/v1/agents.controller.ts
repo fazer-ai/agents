@@ -14,6 +14,7 @@ import {
 import { instanceIdentity } from "@/lib/instance";
 import type { TenantContext } from "@/lib/tenancy";
 import { readAgentConfigHealth } from "@/modules/agents/config-health-read";
+import { readLimitsConfig } from "@/modules/agents/limits";
 import {
   AGENT_MODES,
   type AgentCreate,
@@ -68,6 +69,12 @@ import { listTtsOptions } from "@/modules/tts/listing";
 // translate('errors.invalidAgentExport', 'This file is not a valid agent export.')
 // translate('errors.invalidModelConfig', 'The model configuration must be an object.')
 // translate('errors.invalidModelConfigDetail', 'The model configuration is not valid: {{reason}}')
+// translate('errors.modelConfigModelRequired', 'model is required for this provider')
+// translate('errors.modelConfigReasoningOpenaiOnly', 'reasoningEffort is only supported on the "openai" provider, not "{{provider}}"')
+// translate('errors.modelConfigPromptCacheProviders', '{{field}} is only supported on the {{providers}} providers, not "{{provider}}"')
+// translate('errors.modelConfigPromptCache1hAnthropicOnly', '{{field}} "1h" is only supported on the "anthropic" provider, not "{{provider}}": its usage does not say which writes were 1h, so they could not be priced')
+// translate('errors.modelConfigConversationTtlAfterPrefix', 'promptCacheConversationTtl "{{conversationTtl}}" needs promptCacheTtl "{{prefixTtl}}": a longer cache TTL cannot follow a shorter one')
+// translate('errors.modelConfigValidatorSaid', '{{path}}: the validator answered "{{detail}}"')
 // translate('errors.promptTooLong', 'System prompt is too long: {{len}} characters (limit {{max}}).')
 // translate('errors.providerModelsFailed', '{{provider}} refused the list request (status {{status}}).')
 // translate('errors.providerListUnexpectedResponse', '{{provider}} answered the list request in an unexpected format.')
@@ -79,6 +86,12 @@ import { listTtsOptions } from "@/modules/tts/listing";
 // translate('errors.settingsBlocksDropped', 'This `settings` would delete what this agent has configured under {{blocks}}, because it replaces the whole object. Add what is missing, or pass `settingsMode: "replace"` to say it is complete.')
 // translate('errors.invalidSignatureChoice', '`signature.{{field}}` must be one of {{allowed}}, not {{got}}. Send the whole signature block to change it.')
 // translate('errors.invalidSettingsValue', '`{{field}}` expects {{expected}}, not {{got}}. The agent would ignore that value and use its default, so it is not stored.')
+// translate('errors.settingsExpectedOneOf', 'one of {{values}}')
+// translate('errors.settingsExpectedType', 'a value of type {{type}}')
+// translate('errors.settingsExpectedAtLeast', 'a number of at least {{min}}')
+// translate('errors.settingsExpectedGreaterThan', 'a number greater than {{min}}')
+// translate('errors.settingsExpectedPattern', 'a value matching {{pattern}}')
+// translate('errors.settingsExpectedValid', 'a valid value')
 // translate('errors.debugWindowTooLong', 'The log debug mode can be armed for at most {{hours}}h at a time.')
 // translate('errors.invalidToolPrecondition', '`{{tool}}` has an invalid precondition: it must name an attribute scope and key.')
 // translate('errors.contactFieldNotInContext', 'A contact field the agent may update must also be in its context: {{fields}}.')
@@ -346,12 +359,22 @@ export const agentsController = new Elysia({
   )
   .get(
     "/:id",
-    async ({ tenantContext, params }) => ({
-      instance: instanceIdentity,
-      agent: await getAgent(ctxOrThrow(tenantContext), requireDbId(params.id)),
-    }),
+    async ({ tenantContext, params }) => {
+      const agent = await getAgent(
+        ctxOrThrow(tenantContext),
+        requireDbId(params.id),
+      );
+      return {
+        instance: instanceIdentity,
+        agent,
+        effective: { limits: readLimitsConfig(agent.settings) },
+      };
+    },
     {
-      detail: doc("Get agent", "Returns a single agent by id."),
+      detail: doc(
+        "Get agent",
+        "Returns a single agent by id. `agent.settings` is the bag as stored, which is what a PATCH sends back. `effective.limits` is what the runtime enforces: the stored execution limits with every absent or `null` field read as its default (`maxToolCalls` 10, `maxHistoryTokens` null = no ceiling, `retrySilence` true, `maxTurnsPerHour` 60, `maxProactivePerDay` 10; a stored `0` on the last two means no limit). It is read-only: do not send it back.",
+      ),
       response: errors(400, 401, 403, 404),
       requireRole: "TENANT_ADMIN",
       params: t.Object({

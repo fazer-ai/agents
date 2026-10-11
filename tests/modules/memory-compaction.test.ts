@@ -43,6 +43,7 @@ import type { JobResult } from "@/modules/scheduler/worker";
 import { withJobHandler } from "@/tests/utils/job-registry";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogCount, flowLogRow } from "../utils/flowlog";
+import { until } from "../utils/poll";
 import { UsageReportingModel } from "../utils/scripted-models";
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
@@ -1412,16 +1413,17 @@ describe.skipIf(!dbUp)("memory compaction", () => {
     );
 
     // UsageCapture persists fire-and-forget, like the flow lines.
-    let usage = null;
-    for (let i = 0; i < 40 && !usage; i++) {
-      usage = await suDb.llmUsage.findFirst({
+    const usage = await until("the memory_compact usage row", () =>
+      suDb.llmUsage.findFirst({
         where: { tenantId, threadId, node: "memory_compact" },
-      });
-      if (!usage) await new Promise((r) => setTimeout(r, 25));
-    }
-    expect(usage).not.toBeNull();
-    expect(usage?.promptTokens).toBeGreaterThan(0);
-    expect(usage?.completionTokens).toBeGreaterThan(0);
+      }),
+    );
+    // NOTE: the tokens the model reported, on customer traffic.
+    expect({
+      source: usage.source,
+      promptTokens: usage.promptTokens,
+      completionTokens: usage.completionTokens,
+    }).toEqual({ source: "inbox", promptTokens: 11, completionTokens: 7 });
   });
 
   // The job is armed for the attendance that closed, but a claimed job can find the thread already
@@ -1735,12 +1737,15 @@ describe.skipIf(!dbUp)("memory compaction", () => {
     );
 
     const head = (await readThread(saver, threadId))[0] ?? "";
-    // The two oldest fell off the front, which is the same order a person forgets in.
-    expect(head).not.toContain("atendimento numero 0\n");
-    expect(head).not.toContain("atendimento numero 1\n");
-    expect(head).toContain(`atendimento numero ${total - 1}`);
-    // Oldest-first among the ones kept: the head reads as a history, not a stack.
-    expect(head.indexOf("atendimento numero 2")).toBeLessThan(
+    // The oldest fell off the front, which is the same order a person forgets in: this run's own
+    // summary takes the last of the slots. The rest read oldest-first: a history, not a stack.
+    const order = [...head.matchAll(/atendimento numero (\d+)/g)].map((m) =>
+      Number(m[1]),
+    );
+    expect(order).toEqual(
+      Array.from({ length: MEMORY_HEAD_MAX_ATTENDANCES - 1 }, (_, i) => i + 3),
+    );
+    expect(head.indexOf("Voltou.")).toBeGreaterThan(
       head.indexOf(`atendimento numero ${total - 1}`),
     );
   });

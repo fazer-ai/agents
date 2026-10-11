@@ -1524,6 +1524,17 @@ function SnoozedFollowUpEditor({
                 {t("editor.snoozedFollowUpAddLabeled", "Add cadence by label")}
               </Button>
             )}
+            {/* At the limit the button is gone, and this says why. Past it, the refusal above says
+                it already, and holds Save. */}
+            {labeledCount === SNOOZED_FOLLOW_UP_MAX_LABELED_CADENCES && (
+              <p className="text-text-muted text-xs">
+                {t(
+                  "editor.snoozedFollowUpAtLimit",
+                  "Up to {{max}} cadences by label.",
+                  { max: SNOOZED_FOLLOW_UP_MAX_LABELED_CADENCES },
+                )}
+              </p>
+            )}
           </div>
         </>
       )}

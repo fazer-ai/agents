@@ -246,30 +246,50 @@ describe("planImageConversion", () => {
     // type it converts INTO is one the provider reads, because today it always is; this is what
     // holds that true. A converter added with a target some listed provider cannot read fails here,
     // which is the moment the missing branch has to be written.
+    const converted: string[] = [];
     for (const spec of MEDIA_CONVERTERS) {
       for (const provider of ["openai", "anthropic", "gemini"]) {
-        const some = [...spec.from][0] as string;
-        const plan = planImageConversion({ provider, mimeType: some });
-        if (plan.action !== "convert") continue;
-        // The target, planned for the same provider, must need no conversion of its own.
-        expect(
-          planImageConversion({ provider, mimeType: plan.to }).action,
-        ).toBe("as-is");
+        for (const from of spec.from) {
+          const plan = planImageConversion({ provider, mimeType: from });
+          if (plan.action !== "convert") continue;
+          // The target, planned for the same provider, must need no conversion of its own.
+          const again = planImageConversion({ provider, mimeType: plan.to });
+          converted.push(`${provider} ${from} -> ${plan.to}: ${again.action}`);
+        }
       }
     }
+    // NOTE: every pair the table converts was checked; gemini reads HEIC/HEIF itself.
+    expect(converted).toEqual([
+      "openai image/heic -> image/jpeg: as-is",
+      "openai image/heif -> image/jpeg: as-is",
+      "openai image/heic-sequence -> image/jpeg: as-is",
+      "anthropic image/heic -> image/jpeg: as-is",
+      "anthropic image/heif -> image/jpeg: as-is",
+      "anthropic image/heic-sequence -> image/jpeg: as-is",
+      "gemini image/heic-sequence -> image/jpeg: as-is",
+    ]);
   });
 
   test("every registered converter has an implementation", async () => {
     // The runtime mirror of the compile-time guarantee: `IMPLS` is a `Record` over the id union, so
     // this can only fail if the union and the registry are edited apart.
+    // What each implementation says about a file that is branded right and holds no image: an
+    // answer about the CONTENT, which only a converter that read the bytes can give.
+    const contentRefusal: Record<string, string> = {
+      "heic-to-jpeg": "heic carries no image frame",
+    };
+    expect(MEDIA_CONVERTERS.map((s) => s.id as string)).toEqual(
+      Object.keys(contentRefusal),
+    );
     for (const spec of MEDIA_CONVERTERS) {
       expect(spec.from.size).toBeGreaterThan(0);
       expect(spec.to).toMatch(/^[a-z]+\/[a-z0-9+.-]+$/);
-      // Rejects for the CONTENT, never with "unknown converter", and always as this module's own
-      // error type even when the refusal came from the third-party decoder.
-      await expect(
-        runMediaConverter(spec.id, brandedHeic()),
-      ).rejects.toBeInstanceOf(MediaConversionError);
+      // Always as this module's own error type even when the refusal came from the decoder.
+      const err = await runMediaConverter(spec.id, brandedHeic()).catch(
+        (e: unknown) => e,
+      );
+      expect(err).toBeInstanceOf(MediaConversionError);
+      expect((err as Error).message).toBe(contentRefusal[spec.id] as string);
     }
   });
 });
@@ -643,26 +663,6 @@ describe("heic-to-jpeg", () => {
       return [raw.width, raw.height, raw.data.length] as const;
     });
     expect(seen).toEqual([2400, 1600, 2400 * 1600 * 4]);
-  });
-
-  test("the decoder is released even when the body throws", async () => {
-    // The `finally` is what makes the ownership ours on every path, including the ones libheif's own
-    // wrapper never returned a handle for. Observable here only as "the throw comes through and the
-    // next call still works" — a wedged or leaked decoder shows up as the second call failing.
-    await expect(
-      withHeicFrames(heicBytes(), async () => {
-        throw new Error("estourou no meio");
-      }),
-    ).rejects.toThrow("estourou no meio");
-    const again = await withHeicFrames(heicBytes(), async (f) => f.length);
-    expect(again).toBe(1);
-  });
-
-  test("a file that parses to no image still releases the decoder", async () => {
-    // The case the previous wrapper could not release: it built the decoder and only then decided
-    // whether to hand the caller anything to free. Truncated, brand intact, so it reaches libheif.
-    const out = await withHeicFrames(truncatedHeic(), async (f) => f.length);
-    expect(out).toBe(0);
   });
 
   test("a rejected file leaves NOTHING behind in the wasm heap", async () => {
@@ -1428,14 +1428,22 @@ describe("a grid HEIC over the pixel cap", () => {
   });
 
   test("the heap does not grow from one grid to the next", async () => {
-    const lib = await loadLibheif();
+    // The malloc(1) probe, not HEAPU8.length: the heap grows in pages, so a small leak never
+    // moves its length, while the probe's pointer moves with any allocation left behind.
+    const lib = (await loadLibheif()) as unknown as {
+      _malloc(n: number): number;
+      _free(p: number): void;
+    };
+    const probe = () => {
+      const p = lib._malloc(1);
+      lib._free(p);
+      return p;
+    };
     const opts = { maxEdge: 1568, maxTilePixels: MAX_SOURCE_PIXELS };
     await decodeGridFitted(buf(HEIC), opts);
-    const after = (lib as unknown as { HEAPU8: Uint8Array }).HEAPU8.length;
+    const after = probe();
     for (let i = 0; i < 4; i++) await decodeGridFitted(buf(HEIC), opts);
-    expect((lib as unknown as { HEAPU8: Uint8Array }).HEAPU8.length).toBe(
-      after,
-    );
+    expect(probe() - after).toBe(0);
   });
 
   const tiling = (

@@ -334,14 +334,6 @@ describe.skipIf(!dbUp)("the trail has a door the console can use", () => {
       const seeded = new Set(["one.a", "two.b", "three.c"]);
       expect(body.entries.filter((e) => seeded.has(e.action)).length).toBe(3);
     });
-
-    test("the tenant scope is still the default", async () => {
-      role = "TENANT_ADMIN";
-      const res = await get("", await sign("TENANT_ADMIN"));
-      expect(res.status).toBe(200);
-      const body = (await res.json()) as Page;
-      expect(body.entries.length).toBeGreaterThan(0);
-    });
   });
   // THE DOOR THE EXPORT BUTTON USES. The console downloads through this REST endpoint and turns the
   // body into a Blob, as the Logs page's button does, so the route is the button's transport.

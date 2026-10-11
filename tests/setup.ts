@@ -26,8 +26,8 @@ import { checkoutRootFrom, testDbNameFor, withDbName } from "./db-name";
 // DIFFERENT deadline lapses on each run. Raising them costs nothing on a passing run (`waitFor`
 // returns the moment its condition holds, a test timeout only elapses on a hang); only the report
 // of a real failure gets slower. NOT the answer for a window a test's own SETUP must fit inside,
-// paid on every run: see `setRefusalProtectionForTest` in tests/modules/contact-auth-grant.test.ts
-// and the per-test cost note in tests/tooling/stale-base-guard.test.ts.
+// paid on every run: see the overflow-drain test in tests/modules/contact-auth-grant.test.ts, which
+// holds the clock still instead, and the per-test cost note in tests/tooling/stale-base-guard.test.ts.
 jest.setTimeout(30_000);
 configure({ asyncUtilTimeout: 5_000 });
 

@@ -1,0 +1,11 @@
+// Refuses a cross-tenant scheduler drain in a test file without a `tenantId` among its arguments.
+// The tick and its claims reach the whole database by default, and tests share one database per
+// checkout, so an unfenced drain under `bun test --parallel` claims another file's rows and the
+// failure lands in that file. Pass the tenant the file seeded (`TickOptions.tenantId`).
+language js;
+
+JsCallExpression(callee = $callee, arguments = $args) as $call where {
+    $callee <: r"(?:[\s\S]*\.)?(?:runSchedulerTick|claimDueJobs|claimDueTrafficJobs|claimDueObserveJobs|claimDueDebounceJobs|claimPendingByKeyPrefix|reapStaleJobs)",
+    not $args <: contains r"tenantId",
+    register_diagnostic(span = $call, message = "A scheduler drain without `tenantId` claims rows of other test files sharing this database. Pass the tenant this file seeded (TickOptions.tenantId in src/modules/scheduler/worker.ts).")
+}

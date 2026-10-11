@@ -550,44 +550,6 @@ export function unaskedToasts(src: string, file = "<memory>"): Offender[] {
     .map((v) => v.at);
 }
 
-// `a || b ? c : d` is `(a || b) ? c : d`: `apiErrorMessage(err) || status === 409 ? <409 sentence>
-// : <generic>` answers the 409 sentence for EVERY refusal that carries a message, a fixed sentence
-// that sounds specific. Neither the compiler nor the fence above can see it (both branches are
-// strings, and `apiErrorMessage` is in the argument), so it gets its own rule.
-export function unparenthesisedFallback(
-  src: string,
-  file = "<memory>",
-): string[] {
-  const out: string[] = [];
-  for (const m of codeSkeleton(src).matchAll(
-    /apiErrorMessage\(\w+\)\s*\|\|\s*/g,
-  )) {
-    const tail = src.slice(m.index + m[0].length);
-    let depth = 0;
-    for (let i = 0; i < tail.length && i < 600; i++) {
-      const c = tail[i] as string;
-      if ("([{".includes(c)) depth++;
-      else if (")]}".includes(c)) {
-        if (depth === 0) break;
-        depth--;
-      } else if (depth === 0 && c === ",") break;
-      // `?.` and `??` both start with the character a ternary does, and `??` has to be excluded on
-      // BOTH sides: skipping only the first of the pair leaves the second one reading as a ternary.
-      else if (
-        depth === 0 &&
-        c === "?" &&
-        tail[i + 1] !== "." &&
-        tail[i + 1] !== "?" &&
-        tail[i - 1] !== "?"
-      ) {
-        out.push(`${file}:${src.slice(0, m.index).split("\n").length}`);
-        break;
-      }
-    }
-  }
-  return out;
-}
-
 // The judgement calls: a toast raised AFTER the handler has talked to the server that is still
 // correctly a fixed sentence, for a reason the source cannot state. Each one is named with why, and
 // every entry is a toast about something the server did NOT refuse.
@@ -1067,48 +1029,6 @@ describe("an error toast shows what the server said", () => {
     expect(
       offenders.map((o) => `${o.file}:${o.line}  ${o.shown}`),
       "these raise a fixed sentence where the server sent one: pass it through apiErrorMessage",
-    ).toEqual([]);
-  });
-
-  test("a ternary fallback without parentheses is flagged", () => {
-    // The positive control for the rule below, in the shape it is about.
-    const broken = `showToast(
-      apiErrorMessage(err) || status === 409 ? t("a", "A") : t("b", "B"),
-      "error",
-    );`;
-    expect(unparenthesisedFallback(broken).length).toBe(1);
-  });
-
-  test("the same fallback with parentheses is not", () => {
-    const fixed = `showToast(
-      apiErrorMessage(err) || (status === 409 ? t("a", "A") : t("b", "B")),
-      "error",
-    );`;
-    expect(unparenthesisedFallback(fixed)).toEqual([]);
-  });
-
-  test("optional chaining and nullish coalescing are not ternaries", () => {
-    // `||` cannot be mixed with `??` without parentheses at all, so the pair under test is the one
-    // that does occur: optional chaining on the left, another `||` after it.
-    const fine = `showToast(apiErrorMessage(err) || other?.msg || t("b", "B"), "error");`;
-    expect(unparenthesisedFallback(fine)).toEqual([]);
-  });
-
-  test("a ternary after the call is not this call's fallback", () => {
-    // The scan stops at the argument's own comma. Without that it runs on into the NEXT argument and
-    // reports its ternary as this fallback's — and a `?` after a top-level comma is still inside the
-    // call, so no closing paren stops it first.
-    const later = `showToast(apiErrorMessage(err) || t("b", "B"), tone ? "error" : "info");`;
-    expect(unparenthesisedFallback(later)).toEqual([]);
-  });
-
-  test("no fallback swallows its own ternary", () => {
-    const offenders = sources(ROOT).flatMap((f) =>
-      unparenthesisedFallback(readFileSync(f, "utf8"), f),
-    );
-    expect(
-      offenders,
-      "`a || b ? c : d` binds as `(a || b) ? c : d`: wrap the fallback ternary in parentheses",
     ).toEqual([]);
   });
 

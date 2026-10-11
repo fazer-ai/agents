@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
@@ -24,6 +24,7 @@ import {
 import { runScopedOn } from "@/lib/tenancy";
 import { sysCtx } from "@/modules/documents/issue";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { until as pollUntil } from "../utils/poll";
 
 // The in-process registry cannot see a turn running on another replica, so the claim it
 // answers with has to live in a row. What is asserted here is the ROW's behaviour, read back with a
@@ -111,6 +112,51 @@ describe.skipIf(!dbUp)("the durable turn claim on a thread", () => {
       contactInboxId,
       graphThreadId: contactInboxThreadId(tenantId, instanceId, contactInboxId),
     };
+  }
+
+  // The renewal timer a claim arms, captured so a test runs one tick instead of waiting minutes for
+  // it. A tick's query is fire-and-forget; a tick that renews nothing says so by clearing its timer.
+  // The handle the claim gets back is a real interval (so `unref` and `clearInterval` behave), but it
+  // runs nothing: only the captured tick renews, so a real tick firing during a poll cannot stand in
+  // for the one under test.
+  async function armedTimer<T>(take: () => Promise<T>) {
+    const realSet = globalThis.setInterval;
+    let tick: (() => void) | undefined;
+    let timer: unknown;
+    const spy = spyOn(globalThis, "setInterval").mockImplementation(((
+      fn: () => void,
+      ms?: number,
+    ) => {
+      tick = fn;
+      timer = realSet(() => {}, ms);
+      return timer;
+    }) as unknown as typeof setInterval);
+    try {
+      const claim = await take();
+      return { claim, tick: () => tick?.(), timer };
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  // Runs one tick and waits for its outcome: the lease moved, or the timer was cleared.
+  async function tickOutcome(
+    armed: { tick: () => void; timer: unknown },
+    lease: () => Promise<Date | null>,
+  ): Promise<"renewed" | "stopped" | "nothing"> {
+    const before = (await lease())?.getTime() ?? 0;
+    const cleared = spyOn(globalThis, "clearInterval");
+    try {
+      armed.tick();
+      return await pollUntil("the renewal tick to settle", async () => {
+        if (cleared.mock.calls.some((c) => c[0] === armed.timer))
+          return "stopped" as const;
+        const now = (await lease())?.getTime() ?? 0;
+        return now > before ? ("renewed" as const) : null;
+      }).catch(() => "nothing" as const);
+    } finally {
+      cleared.mockRestore();
+    }
   }
 
   async function rowOf(o: ThreadOwner) {
@@ -358,20 +404,23 @@ describe.skipIf(!dbUp)("the durable turn claim on a thread", () => {
   // deliberately short window rather than by waiting 300 seconds.
   test("the hold outlives its own lease while the turn is alive", async () => {
     const o = owner();
-    const hold = await markTurnOwning(o, appDb);
-    const before = (await rowOf(o)).turnHeldUntil as Date;
-    // The renewal interval is minutes long, so the renewing statement is exercised directly here;
-    // what this pins is that renewal targets THIS occupancy and moves the lease forward.
-    await suDb.$executeRawUnsafe(
-      `UPDATE agent_threads
-          SET turn_held_until = now() + interval '600 seconds'
-        WHERE tenant_id = ${tenantId} AND contact_inbox_id = ${o.contactInboxId}
-          AND turn_epoch = ${hold.epoch} AND turn_holders > 0`,
-    );
-    const after = (await rowOf(o)).turnHeldUntil as Date;
-    expect(after.getTime()).toBeGreaterThan(before.getTime());
+    const armed = await armedTimer(() => markTurnOwning(o, appDb));
+    const cutLease = () =>
+      suDb.$executeRawUnsafe(
+        `UPDATE agent_threads SET turn_held_until = now() + interval '1 second'
+          WHERE tenant_id = ${tenantId} AND contact_inbox_id = ${o.contactInboxId}`,
+      );
+    const lease = async () => (await rowOf(o)).turnHeldUntil;
+    // NOTE: a lease about to lapse under a turn that is still running is pushed forward by the tick.
+    await cutLease();
+    expect(await tickOutcome(armed, lease)).toBe("renewed");
     expect(await turnOwnsThread(o, appDb)).toBe(true);
-    await clearTurnOwning(o, appDb, hold);
+    // And the tick renews only the occupancy it was armed for, never the next one.
+    await clearTurnOwning(o, appDb, armed.claim);
+    const next = await markTurnOwning(o, appDb);
+    await cutLease();
+    expect(await tickOutcome(armed, lease)).toBe("stopped");
+    await clearTurnOwning(o, appDb, next);
   });
 
   // Whether another invoke was already reading has to come from the ACQUIRING statement. Asked
@@ -565,31 +614,38 @@ describe.skipIf(!dbUp)("the durable turn claim on a thread", () => {
   // is still going to write.
   test("the write claim outlives its own lease while the append is alive", async () => {
     const o = owner();
-    const claim = await claimIngestWrite(o, appDb);
-    expect(claim.state).toBe("created");
-    const before = (await rowOf(o)).ingestWriteUntil as Date;
+    const armed = await armedTimer(() => claimIngestWrite(o, appDb));
+    expect(armed.claim.state).toBe("created");
+    const lease = async () => (await rowOf(o)).ingestWriteUntil;
     await suDb.$executeRawUnsafe(
-      `UPDATE agent_threads
-          SET ingest_write_until = now() + interval '600 seconds'
-        WHERE tenant_id = ${tenantId} AND contact_inbox_id = ${o.contactInboxId}
-          AND ingest_write_token = '${claim.token}'`,
+      `UPDATE agent_threads SET ingest_write_until = now() + interval '1 second'
+        WHERE tenant_id = ${tenantId} AND contact_inbox_id = ${o.contactInboxId}`,
     );
-    const after = (await rowOf(o)).ingestWriteUntil as Date;
-    expect(after.getTime()).toBeGreaterThan(before.getTime());
+    expect(await tickOutcome(armed, lease)).toBe("renewed");
+    // Renewed by a whole write lease (30 s), not merely nudged past the cut: measured against the
+    // database clock that minted it, with a few seconds of slack for the round trips.
+    const renewed = await suDb.$queryRawUnsafe<{ ahead: number }[]>(
+      `SELECT EXTRACT(EPOCH FROM ingest_write_until - now())::float8 AS ahead FROM agent_threads
+        WHERE tenant_id = ${tenantId} AND contact_inbox_id = ${o.contactInboxId}`,
+    );
+    expect(renewed[0]?.ahead).toBeGreaterThan(25);
     // Still exclusive against a turn, which is the whole point of holding it longer.
     expect((await rowOf(o)).turnHolders).toBe(0);
-    // Released with nothing written to the row, so the row goes with it (the rule the two tests
-    // below pin); what this one is about is that the lease moved while the append was alive.
-    await releaseIngestWrite(o, appDb, claim);
-    expect(
-      await suDb.agentThread.count({
-        where: {
-          tenantId,
-          chatwootInstanceId: instanceId,
-          contactInboxId: o.contactInboxId,
-        },
-      }),
-    ).toBe(0);
+    // The release stops the timer, and a tick left over renews nothing under a later claim.
+    const cleared = spyOn(globalThis, "clearInterval");
+    try {
+      await releaseIngestWrite(o, appDb, armed.claim);
+      expect(cleared.mock.calls.some((c) => c[0] === armed.timer)).toBe(true);
+    } finally {
+      cleared.mockRestore();
+    }
+    const later = await claimIngestWrite(o, appDb);
+    await suDb.$executeRawUnsafe(
+      `UPDATE agent_threads SET ingest_write_until = now() + interval '1 second'
+        WHERE tenant_id = ${tenantId} AND contact_inbox_id = ${o.contactInboxId}`,
+    );
+    expect(await tickOutcome(armed, lease)).toBe("stopped");
+    await releaseIngestWrite(o, appDb, later);
   });
 
   // NOTE: WHAT /reset HAS TO EXCLUDE IS BOTH SIDES, not just a turn. On the sanctioned topology the
@@ -635,28 +691,51 @@ describe.skipIf(!dbUp)("the durable turn claim on a thread", () => {
     const o = owner();
     const claim = await claimIngestWrite(o, appDb);
     expect(claim.state).toBe("created");
-    // The append is alive and keeps pushing its lease forward, the way its renewal does.
+    // The process clock runs 5 s ahead after every renewal lands, so the wait crosses its fixed
+    // span (the write lease plus 5 s) several times over while the append keeps renewing.
+    let skew = 0;
+    const realNow = Date.now.bind(Date);
+    const clock = spyOn(Date, "now").mockImplementation(() => realNow() + skew);
     let renewals = 0;
     const renewing = setInterval(() => {
       renewals += 1;
-      void suDb.$executeRawUnsafe(
-        `UPDATE agent_threads
-            SET ingest_write_until = now() + interval '30 seconds'
-          WHERE tenant_id = ${tenantId} AND contact_inbox_id = ${o.contactInboxId}
-            AND ingest_write_token = '${claim.token}'`,
+      void suDb
+        .$executeRawUnsafe(
+          `UPDATE agent_threads
+              SET ingest_write_until = now() + interval '30 seconds'
+            WHERE tenant_id = ${tenantId} AND contact_inbox_id = ${o.contactInboxId}
+              AND ingest_write_token = '${claim.token}'`,
+        )
+        .then(() => {
+          skew += 5_000;
+        });
+    }, 25);
+    const took = markTurnOwning(o, appDb).then(
+      () => "took" as const,
+      (e: Error) => e.message,
+    );
+    try {
+      // NOTE: no deadline of its own, since `until` reads the skewed clock; the test's bounds it.
+      await pollUntil(
+        "the clock to cross the fixed span",
+        () => skew >= 120_000,
+        {
+          deadlineMs: Number.MAX_SAFE_INTEGER,
+        },
       );
-    }, 50);
-    // Give the turn long enough that a fixed deadline shorter than the lease would have fired.
-    const took = markTurnOwning(o, appDb).then(() => "took" as const);
-    await Bun.sleep(400);
-    clearInterval(renewing);
-    expect(renewals).toBeGreaterThan(2);
-    // Still waiting: the claim never stopped being renewed, so nothing has gone wrong to report.
-    const racing = await Promise.race([
-      took,
-      Bun.sleep(50).then(() => "still waiting" as const),
-    ]);
-    expect(racing).toBe("still waiting");
+      // Still waiting: the claim never stopped being renewed, so nothing has gone wrong to report.
+      const racing = await Promise.race([
+        took,
+        new Promise<"still waiting">((r) =>
+          setTimeout(() => r("still waiting"), 0),
+        ),
+      ]);
+      expect(racing).toBe("still waiting");
+      expect(renewals).toBeGreaterThan(5);
+    } finally {
+      clearInterval(renewing);
+      clock.mockRestore();
+    }
     // The append finishes; the turn proceeds.
     await releaseIngestWrite(o, appDb, claim);
     expect(await took).toBe("took");

@@ -6,7 +6,6 @@ import {
   beforeEach,
   describe,
   expect,
-  mock,
   test,
 } from "bun:test";
 import {
@@ -16,10 +15,11 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router";
 import { ToastProvider } from "@/client/components";
+import * as ThemeModule from "@/client/contexts/ThemeContext";
 import { withI18n } from "@/tests/utils/i18n";
+import { stubExports } from "@/tests/utils/module-stub";
 
 // With only Approve and Reject, an operator facing a suggestion the agent hedged ("solicita-se
 // validação da informação") could only approve the hedge or lose the finding. These tests drive the
@@ -83,15 +83,14 @@ function installFetchStub() {
   }) as typeof fetch;
 }
 
-mock.module("@/client/contexts/ThemeContext", () => ({
+stubExports(ThemeModule, {
   useTheme: () => ({
     theme: "dark",
     resolvedTheme: "dark",
     setTheme: () => {},
   }),
   useThemedAsset: (path: string) => ({ src: path }),
-  ThemeProvider: ({ children }: { children: ReactNode }) => children,
-}));
+});
 
 const { KnowledgeApprovals } = await import(
   "@/client/pages/resources/KnowledgeApprovals"
@@ -146,7 +145,6 @@ describe("KnowledgeApprovals — reviewing before approving", () => {
 
   afterAll(() => {
     globalThis.fetch = realFetch;
-    mock.restore();
   });
 
   test("editing the content and saving sends only what changed", async () => {

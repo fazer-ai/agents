@@ -490,8 +490,7 @@ describe("the render options travel with the variables (review of #599)", () => 
       availability: { schedule },
       now: new Date("2026-09-14T13:00:00Z"),
     } as Parameters<typeof signatureFor>[2]);
-    expect(out).not.toBeNull();
-    expect(out).not.toContain("{{horario_atendimento}}");
+    expect(out).toBe("— Bia · seg. 09:00–18:00");
   });
 
   test("without options the same name stays literal rather than blank", () => {

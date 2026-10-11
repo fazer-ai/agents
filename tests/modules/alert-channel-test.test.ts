@@ -599,9 +599,9 @@ describe.skipIf(!dbUp)("testing an alert channel", () => {
       data: {
         tenantId,
         channelId: id,
-        stage: "test",
-        level: "info",
-        summary: "unused",
+        stage: probeBody.stage,
+        level: probeBody.level,
+        summary: probeBody.summary,
       },
       select: { id: true },
     });
@@ -622,13 +622,35 @@ describe.skipIf(!dbUp)("testing an alert channel", () => {
     await suDb.alertDelivery.deleteMany({ where: { id: row.id } });
 
     expect(real.sent).toHaveLength(1);
-    const realBody = JSON.parse(real.sent[0]?.rawBody ?? "{}");
-    // Same envelope keys, same destination, same signing header set: only the values that describe
-    // WHICH alert this is may differ.
-    expect(Object.keys(probeBody).sort()).toEqual(Object.keys(realBody).sort());
-    expect(probe.sent[0]?.url).toBe(real.sent[0]?.url);
-    expect(Object.keys(probe.sent[0]?.headers ?? {}).sort()).toEqual(
-      Object.keys(real.sent[0]?.headers ?? {}).sort(),
+    const probeSent = probe.sent[0] as Sent;
+    const realSent = real.sent[0] as Sent;
+    const realBody = JSON.parse(realSent.rawBody);
+    // Only the values that say WHICH alert this is may differ: the delivery id, the timestamps.
+    expect({ ...realBody, firstAt: null }).toEqual(probeBody);
+    expect(probeSent.url).toBe(realSent.url);
+    expect(probeSent.method).toBe("POST");
+    expect(realSent.method).toBe(probeSent.method);
+    expect(realSent.redirect).toBe(probeSent.redirect);
+    const perAlert = new Set([
+      "x-fazerai-delivery",
+      "x-secretaria-delivery",
+      "x-fazerai-timestamp",
+      "x-secretaria-timestamp",
+      "x-fazerai-signature",
+      "x-secretaria-signature",
+    ]);
+    const shared = (h: Record<string, string>) =>
+      Object.fromEntries(Object.entries(h).filter(([k]) => !perAlert.has(k)));
+    expect(shared(realSent.headers)).toEqual(shared(probeSent.headers));
+    expect(Object.keys(probeSent.headers).sort()).toEqual(
+      Object.keys(realSent.headers).sort(),
     );
+    for (const s of [probeSent, realSent]) {
+      const ts = s.headers["x-fazerai-timestamp"];
+      const mac = createHmac("sha256", "signing-secret")
+        .update(`${ts}.${s.rawBody}`)
+        .digest("hex");
+      expect(s.headers["x-fazerai-signature"]).toBe(`sha256=${mac}`);
+    }
   });
 });

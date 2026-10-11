@@ -217,18 +217,18 @@ describe.skipIf(!dbUp)("a grant target deleted mid-save", () => {
       (e: unknown) => e,
     );
     const deleted = await deleting;
-    // 40P01 is the database's, and Prisma wraps it as P2039 with the code in the message, so the
-    // assertion reads the text rather than a code that would pass on any other failure.
-    const deadlocked = (e: unknown) =>
-      e instanceof Error && /40P01|deadlock/i.test(e.message);
-    expect([saved && String(saved), deadlocked(saved)]).toEqual([
-      saved && String(saved),
-      false,
-    ]);
-    expect([deleted && String(deleted), deadlocked(deleted)]).toEqual([
-      deleted && String(deleted),
-      false,
-    ]);
+    // The save holds the lock, so it lands whole; the delete then goes, and its cascade takes the
+    // doomed grant. Neither fails, so a 40P01 (or any other error) shows here as its own text.
+    expect(saved === undefined ? "saved" : String(saved)).toBe("saved");
+    expect(deleted === undefined ? "deleted" : String(deleted)).toBe("deleted");
+    const grants = await suDb.agentToolSelection.findMany({
+      where: { agentId: ag.id },
+      select: { codeToolDefinitionId: true },
+    });
+    expect(grants.map((g) => g.codeToolDefinitionId)).toEqual([kept.id]);
+    expect(
+      await suDb.codeToolDefinition.findUnique({ where: { id: doomed.id } }),
+    ).toBeNull();
   }, 30_000);
 
   // NOTE: The third path that writes selection rows, and the one whose ids come from ANOTHER agent: a clone
@@ -278,11 +278,23 @@ describe.skipIf(!dbUp)("a grant target deleted mid-save", () => {
       (a) => a,
       (e: unknown) => e,
     );
-    await deleting;
-    expect([
-      cloned instanceof Error ? String(cloned) : "ok",
-      cloned instanceof Error,
-    ]).toEqual([cloned instanceof Error ? String(cloned) : "ok", false]);
+    const deleted = await deleting;
+    expect(cloned instanceof Error ? String(cloned) : "cloned").toBe("cloned");
+    expect(deleted === undefined ? "deleted" : String(deleted)).toBe("deleted");
+    // The copy exists under its new name, and the delete's cascade left it no grant to the tool.
+    const copy = await suDb.agent.findUnique({
+      where: { id: BigInt((cloned as { id: string }).id) },
+      select: { name: true },
+    });
+    expect(copy?.name).toBe("copy");
+    expect(
+      await suDb.agentToolSelection.count({
+        where: { codeToolDefinitionId: tool.id },
+      }),
+    ).toBe(0);
+    expect(
+      await suDb.codeToolDefinition.findUnique({ where: { id: tool.id } }),
+    ).toBeNull();
   }, 30_000);
 
   // The control, and it is what keeps the catch from becoming "answer not-found whenever the write

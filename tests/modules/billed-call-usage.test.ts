@@ -624,59 +624,7 @@ describe.skipIf(!dbUp)("billed model calls reach the usage ledger", () => {
   });
 });
 
-// The fence: it stops the next call site from being born without a usage sink. The predicate is the
-// offender's GRAMMAR, not its intention: an option bag handed to a model invocation that names
-// `signal` and not `callbacks` (compliant sites such as `tts/normalize.ts` and `memory/summarize.ts`
-// carry `callbacks` right beside `signal`).
-const INVOKE_OPTIONS = /\.invoke\([\s\S]{0,400}?\{([^{}]*signal:[^{}]*)\}/g;
-
-function sinkless(source: string): string[] {
-  const out: string[] = [];
-  for (const m of source.matchAll(INVOKE_OPTIONS)) {
-    if (!m[1]?.includes("callbacks")) out.push(m[1] ?? "");
-  }
-  return out;
-}
-
-async function tsFilesUnder(dir: string): Promise<string[]> {
-  const glob = new Bun.Glob("**/*.ts");
-  const out: string[] = [];
-  for await (const f of glob.scan({ cwd: dir, absolute: true })) out.push(f);
-  return out;
-}
-
-describe("every model invocation carries a usage sink", () => {
-  // A sweep that finds nothing passes whether the rule holds or the predicate is broken. This is
-  // what tells the two apart.
-  test("the predicate recognises an invocation with no sink", () => {
-    const offender = `
-      const res = await model.invoke(messages, {
-        signal: AbortSignal.timeout(15_000),
-      });`;
-    const fixed = `
-      const res = await model.invoke(messages, {
-        signal: AbortSignal.timeout(15_000),
-        callbacks,
-      });`;
-    expect(sinkless(offender).length).toBe(1);
-    expect(sinkless(fixed).length).toBe(0);
-  });
-
-  test("no billed call in src/ invokes a model without one", async () => {
-    const offenders: string[] = [];
-    for (const file of await tsFilesUnder(
-      new URL("../../src", import.meta.url).pathname,
-    )) {
-      const found = sinkless(await Bun.file(file).text());
-      for (const f of found) {
-        offenders.push(`${file.split("/src/")[1]}: ${f.trim().slice(0, 60)}`);
-      }
-    }
-    expect(offenders).toEqual([]);
-  });
-});
-
-// A second sweep: the ledger holds rows for calls the agent did not make (vision bills before the
+// The ledger holds rows for calls the agent did not make (vision bills before the
 // bot-ownership gate), so "has a billed call" is not "the agent took this conversation" for
 // `getKpis`. Every node written must be classified. The predicate is a `node:` key resolving to a
 // string literal inside a file that builds a ledger sink; scoping it to sink files keeps unrelated
@@ -687,6 +635,13 @@ const NODE_LITERAL = /\bnode:\s*[^,\n}]*?"([a-z_]+)"/g;
 function nodesWritten(source: string): string[] {
   if (!SINK_FILE.test(source)) return [];
   return [...source.matchAll(NODE_LITERAL)].map((m) => m[1] as string);
+}
+
+async function tsFilesUnder(dir: string): Promise<string[]> {
+  const glob = new Bun.Glob("**/*.ts");
+  const out: string[] = [];
+  for await (const f of glob.scan({ cwd: dir, absolute: true })) out.push(f);
+  return out;
 }
 
 describe("every node the ledger writes is classified for the involvement KPI", () => {

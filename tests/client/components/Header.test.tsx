@@ -1,32 +1,32 @@
 /// <reference lib="dom" />
 
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import * as TooltipPrimitive from "@radix-ui/react-tooltip";
 import { cleanup, render, screen } from "@testing-library/react";
-import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router";
 
-mock.module("@/client/contexts/AuthContext", () => ({
+stubExports(AuthModule, {
   useAuth: () => ({
     user: { email: "admin@fazer.ai" },
     logout: async () => {},
   }),
-  AuthProvider: ({ children }: { children: ReactNode }) => children,
-}));
+});
 
-mock.module("@/client/contexts/ThemeContext", () => ({
+stubExports(ThemeModule, {
   useThemedAsset: (path: string) => ({ src: path }),
   useTheme: () => ({
     theme: "dark",
     resolvedTheme: "dark",
     setTheme: () => {},
   }),
-  ThemeProvider: ({ children }: { children: ReactNode }) => children,
-}));
+});
 
 import { Header } from "@/client/components/Header";
 import { ToastProvider } from "@/client/components/Toast";
+import * as AuthModule from "@/client/contexts/AuthContext";
 import { SidebarProvider } from "@/client/contexts/SidebarContext";
+import * as ThemeModule from "@/client/contexts/ThemeContext";
+import { stubExports } from "@/tests/utils/module-stub";
 
 function renderHeader(path = "/") {
   return render(

@@ -12,6 +12,7 @@ import {
 } from "bun:test";
 import { Elysia } from "elysia";
 import {
+  mockEndedSessionCount,
   mockFindUnique,
   mockUser,
   setupPrismaMock,
@@ -22,7 +23,7 @@ setupPrismaMock();
 const { realtimeController } = await import(
   "@/api/features/realtime/realtime.controller"
 );
-const { closeUserSockets } = await import(
+const { closeSessionSockets, closeUserSockets } = await import(
   "@/api/features/realtime/realtime.service"
 );
 const { authPlugin } = await import("@/api/lib/auth");
@@ -45,6 +46,8 @@ interface ListeningApp {
 let server: ListeningApp["server"] | null = null;
 let base = "";
 let cookie = "";
+let otherCookie = "";
+let mintFor: () => Promise<string> = async () => "";
 
 beforeAll(async () => {
   (globalThis as { Response: typeof Response }).Response =
@@ -58,11 +61,24 @@ beforeAll(async () => {
   const listening = app.listen(0) as unknown as ListeningApp;
   server = listening.server;
   base = `localhost:${server.port}`;
-  const { token } = (await (
-    await app.handle(new Request("http://localhost/mint", { method: "POST" }))
-  ).json()) as { token: string };
-  cookie = `fazerai_auth_token=${token}`;
+  mintFor = async () =>
+    (
+      (await (
+        await app.handle(
+          new Request("http://localhost/mint", { method: "POST" }),
+        )
+      ).json()) as { token: string }
+    ).token;
+  cookie = `fazerai_auth_token=${await mintFor()}`;
+  otherCookie = `fazerai_auth_token=${await mintFor()}`;
 });
+
+const jtiOf = (sessionCookie: string): string =>
+  JSON.parse(
+    Buffer.from(sessionCookie.split(".")[1] ?? "", "base64url").toString(
+      "utf8",
+    ),
+  ).jti;
 
 afterAll(() => {
   server?.stop(true);
@@ -74,13 +90,13 @@ beforeEach(() => {
 });
 
 // Opens /events, and resolves once the socket closes, with the messages it received before that.
-function connect(onFirstMessage?: () => void) {
+function connect(onFirstMessage?: () => void, withCookie = cookie) {
   const WS = nativeGlobals.BunWebSocket as unknown as new (
     url: string,
     options?: { headers?: Record<string, string> },
   ) => WebSocket;
   const ws = new WS(`ws://${base}/api/realtime/events`, {
-    headers: { Cookie: cookie },
+    headers: { Cookie: withCookie },
   });
   const messages: unknown[] = [];
   const closed = new Promise<{ opened: boolean; code: number }>(
@@ -135,6 +151,31 @@ describe("a password change and the realtime sockets", () => {
     expect(result.code).toBe(WS_CLOSE.CREDENTIALS_CHANGED);
   });
 
+  // A logout landing between the upgrade and `open` signs the tab out instead of asking it to
+  // reconnect: the reconnect would be refused, and the tab would keep a signed-in screen.
+  test("a logout between the upgrade and open closes the socket as signed out", async () => {
+    const before = await readsBeforeOpen();
+    let reads = 0;
+    mockFindUnique.mockImplementation(() => {
+      reads += 1;
+      return Promise.resolve(
+        reads <= before
+          ? row(OLD_HASH)
+          : { ...row(OLD_HASH), endedSessions: [{ jti: jtiOf(cookie) }] },
+      );
+    });
+    mockEndedSessionCount.mockImplementation(() => Promise.resolve(1));
+    try {
+      const { messages, closed } = connect();
+      const result = await closed;
+      expect(result.opened).toBe(true);
+      expect(messages).toEqual([]);
+      expect(result.code).toBe(WS_CLOSE.UNAUTHORIZED);
+    } finally {
+      mockEndedSessionCount.mockImplementation(() => Promise.resolve(0));
+    }
+  });
+
   test("a session revoked before the upgrade never opens", async () => {
     mockFindUnique.mockImplementation(() => Promise.resolve(row(NEW_HASH)));
     const result = await connect().closed;
@@ -176,6 +217,31 @@ describe("a password change and the realtime sockets", () => {
     const { ws, messages, closed } = connect(() => ws.close(1000, "done"));
     await closed;
     expect(messages).toEqual([{ type: "subscribed", tenantId: "1" }]);
+  });
+
+  // A logout ends one session: the sockets it opened close, and the same account's other session
+  // keeps its own.
+  test("ending one session closes only the sockets that session opened", async () => {
+    mockFindUnique.mockImplementation(() => Promise.resolve(row(OLD_HASH)));
+    let opened: () => void = () => {};
+    const otherOpen = new Promise<void>((resolve) => {
+      opened = resolve;
+    });
+    const other = connect(opened, otherCookie);
+    await otherOpen;
+    let swept = -1;
+    const ended = connect(() => {
+      swept = closeSessionSockets(
+        mockUser.id,
+        jtiOf(cookie),
+        WS_CLOSE.UNAUTHORIZED,
+      );
+    });
+    const result = await ended.closed;
+    expect(swept).toBe(1);
+    expect(result.code).toBe(WS_CLOSE.UNAUTHORIZED);
+    other.ws.close(1000, "done");
+    expect((await other.closed).code).toBe(1000);
   });
 
   // Last, so the count of exactly one also proves the sockets of the tests above were untracked.

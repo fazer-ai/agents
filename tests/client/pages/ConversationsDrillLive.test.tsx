@@ -6,14 +6,15 @@ import {
   beforeAll,
   describe,
   expect,
-  mock,
   test,
 } from "bun:test";
 import * as TooltipPrimitive from "@radix-ui/react-tooltip";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { ToastProvider } from "@/client/components";
+import * as TenantEventsModule from "@/client/hooks/useTenantEvents";
 import { withI18n } from "@/tests/utils/i18n";
+import { stubExports } from "@/tests/utils/module-stub";
 
 // A LIST NARROWED TO AN OUTCOME STAYS THAT OUTCOME'S. A live event can move a row out of it (a
 // reopen, a person taking over) and does not carry what decides membership, so the list asks the
@@ -30,11 +31,11 @@ type Handlers = {
   }) => void;
 };
 let handlers: Handlers = {};
-mock.module("@/client/hooks/useTenantEvents", () => ({
+stubExports(TenantEventsModule, {
   useTenantEvents: (h: Handlers) => {
     handlers = h;
   },
-}));
+});
 
 const { ConversationsPage } = await import("@/client/pages/ConversationsPage");
 

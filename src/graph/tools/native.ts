@@ -829,13 +829,15 @@ async function mirrorAttributeWrite(
           // `AT TIME ZONE 'UTC'` is load-bearing: the column is TIMESTAMP holding UTC and bare NOW() is
           // timestamptz, so GREATEST would resolve through the unpinned SESSION TimeZone, and under a
           // non-UTC session the stored value reads as hours ahead and the barrier never advances.
+          // The contact's clock is cleared too: this bag is newer than any version it could name.
           await db.$executeRaw`
           UPDATE contacts
           SET custom_attributes = custom_attributes || ${patch}::jsonb,
               custom_attributes_at = GREATEST(
                 custom_attributes_at,
                 (NOW() AT TIME ZONE 'UTC')
-              )
+              ),
+              custom_attributes_clock = NULL
           WHERE id = ${ctx.contactDbId} AND tenant_id = ${tenantId}
         `;
           return;

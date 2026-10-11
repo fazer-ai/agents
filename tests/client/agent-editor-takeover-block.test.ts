@@ -1,25 +1,55 @@
-import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { afterEach, describe, expect, test } from "bun:test";
+import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
+import {
+  lastSavedSettings,
+  renderEditor,
+  stubEditorApi,
+} from "../utils/agent-editor";
 
 // The Behavior save REPLACES each block it names, so a block the save bag stops naming is DELETED
 // on the next save and the reader projects its default. For `takeover` that default is ON, so an
 // operator's step-back OFF would silently come back on.
-// A source test, not a round-trip one: `takeover` is built inline in the save bag inside a
-// component closure, and the failure is a deleted line, which no pure function could round-trip.
-const PAGE = "src/client/pages/agents/AgentEditorPage.tsx";
 
-describe("the agent editor carries the takeover block through a Behavior save", () => {
-  const src = readFileSync(PAGE, "utf8");
+const realFetch = globalThis.fetch;
+afterEach(() => {
+  cleanup();
+  globalThis.fetch = realFetch;
+});
 
-  test("the save bag names it", () => {
-    expect(src).toContain("takeover: { onHumanReply: takeover.onHumanReply }");
+const takeoverSwitch = () =>
+  screen.getByRole("switch", {
+    name: /Stop answering when a person replies to the customer/,
   });
 
-  // NOTE: the other half: a bag that HAS the block has to load into the form, or the save above writes the
-  // default over the operator's stored choice.
-  test("the reader loads it, defaulting to ON", () => {
-    expect(src).toMatch(
-      /takeover:\s*\{[\s\S]{0,200}onHumanReply[\s\S]{0,120}!==\s*false/,
+async function saveBehavior() {
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+}
+
+describe("the agent editor carries the takeover block through a Behavior save", () => {
+  test("a stored OFF loads as OFF and is saved as OFF", async () => {
+    const stub = stubEditorApi({
+      settings: { takeover: { onHumanReply: false } },
+    });
+    await renderEditor(stub, "behavior");
+    expect(takeoverSwitch().getAttribute("aria-checked")).toBe("false");
+    await saveBehavior();
+    await waitFor(() => expect(lastSavedSettings(stub)).toBeDefined());
+    expect(lastSavedSettings(stub)?.takeover).toEqual({ onHumanReply: false });
+  });
+
+  test("an agent with no block loads as ON, and an operator's OFF is what the next load reads", async () => {
+    const stub = stubEditorApi({ settings: {} });
+    await renderEditor(stub, "behavior");
+    expect(takeoverSwitch().getAttribute("aria-checked")).toBe("true");
+    fireEvent.click(takeoverSwitch());
+    await saveBehavior();
+    await waitFor(() =>
+      expect(lastSavedSettings(stub)?.takeover).toEqual({
+        onHumanReply: false,
+      }),
     );
+    cleanup();
+    await renderEditor(stub, "behavior");
+    expect(takeoverSwitch().getAttribute("aria-checked")).toBe("false");
   });
 });

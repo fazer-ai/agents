@@ -424,5 +424,17 @@ describe("a failing announcement never costs the drain", () => {
       },
     });
     expect(out.claimed).toBe(0);
+    // The failure is absorbed, and the next full tick asks again.
+    await expect(out.reported).resolves.toBeUndefined();
+    const askedBefore = w.asked.length;
+    await tick(1, w.deps);
+    expect(w.asked).toHaveLength(askedBefore + 1);
+    // And the drain goes on: a freed slot is claimed and its job runs.
+    for (const release of hung.splice(0)) release();
+    await new Promise((r) => setTimeout(r, 0));
+    w.claimable.push(job(2));
+    const next = await tick(1, w.deps);
+    expect(next.claimed).toBe(1);
+    expect(hung).toHaveLength(1);
   });
 });

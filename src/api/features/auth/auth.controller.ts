@@ -46,7 +46,10 @@ import {
   InviteInvalidError,
   InvitePasswordRequiredError,
 } from "@/api/features/invitations/invitation.service";
-import { closeUserSockets } from "@/api/features/realtime/realtime.service";
+import {
+  closeSessionSockets,
+  closeUserSockets,
+} from "@/api/features/realtime/realtime.service";
 import { authPlugin } from "@/api/lib/auth";
 import { translate } from "@/api/lib/i18n";
 import logger from "@/api/lib/logger";
@@ -596,14 +599,15 @@ const baseAuthController = new Elysia({
     "/accept-invite",
     async ({ body, set, setAuthCookie, getSessionIdentity }) => {
       let user: Awaited<ReturnType<typeof acceptInvite>>;
+      // A signed-in session only proves WHICH person it is, so it is read without the tenant
+      // selector: a membership removed while the page was open must not sign the invitee out here.
+      const session = await getSessionIdentity();
       try {
-        // NOTE: a signed-in session only proves WHICH person it is, so it is read without the tenant
-        // selector: a membership removed while the page was open must not sign the invitee out here.
         user = await acceptInvite({
           token: body.token,
           password: body.password,
           name: body.name?.trim() || null,
-          session: await getSessionIdentity(),
+          session,
         });
       } catch (error) {
         if (error instanceof InviteAccountProofError) {
@@ -644,7 +648,18 @@ const baseAuthController = new Elysia({
         }
         throw error;
       }
-      await setAuthCookie(user, user.sessionPasswordHash);
+      // The same test `acceptInvite` applies before a password: when the session was the proof,
+      // the re-issue is refused if a logout ended that session meanwhile.
+      const provedBySession =
+        session?.userId === user.id &&
+        session.passwordHash === user.sessionPasswordHash;
+      await setAuthCookie(
+        user,
+        user.sessionPasswordHash,
+        provedBySession && session.sessionId
+          ? { proofSessionId: session.sessionId }
+          : {},
+      );
       logger.info(
         { userId: user.id.toString(), role: user.role },
         "User account created via invitation",
@@ -697,7 +712,17 @@ const baseAuthController = new Elysia({
   )
   .post(
     "/logout",
-    ({ clearAuthCookie }) => {
+    async ({ clearAuthCookie, endSession }) => {
+      const ended = await endSession();
+      // NOTE: a socket only checks its session when it opens, so the ones this session already
+      // opened are closed here; one opening right now re-reads the session and finds it ended.
+      if (ended) {
+        closeSessionSockets(
+          ended.userId,
+          ended.sessionId,
+          WS_CLOSE.UNAUTHORIZED,
+        );
+      }
       clearAuthCookie();
       return { success: true };
     },
@@ -705,13 +730,16 @@ const baseAuthController = new Elysia({
       detail: {
         ...doc(
           "Log out",
-          "Clears the authentication cookie for the current session.",
+          "Ends the current session on the server, so a copy of its cookie is refused from now on, and clears the cookie. Other sessions of the same account stay signed in. Succeeds with no session or an invalid cookie, ending nothing.",
         ),
         security: [],
         responses: {
           200: jsonResponse(
-            "The auth cookie was cleared.",
+            "The session was ended and the auth cookie cleared.",
             t.Object({ success: t.Literal(true) }),
+          ),
+          503: jsonResponse(
+            "The session could not be recorded as ended (a transient database failure); the cookie was kept so the logout can be retried.",
           ),
         },
       },

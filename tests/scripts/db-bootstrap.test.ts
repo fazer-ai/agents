@@ -20,6 +20,16 @@ import {
 // the fixture builds that shape for real: a CREATEROLE/NOSUPERUSER admin owning its own database,
 // and the actual `scripts/db-bootstrap.ts` run against it as a subprocess, exactly as the image CMD
 // runs it. Nothing here mocks Postgres: the privilege checks under test are the server's.
+// "passes", or the refusal's message: a table of these pins both sides of a guard.
+function outcomeOf(run: () => void): string {
+  try {
+    run();
+    return "passes";
+  } catch (e) {
+    return (e as Error).message;
+  }
+}
+
 const suUrl = process.env.MIGRATION_DATABASE_URL;
 let dbUp = false;
 let su: Client | undefined;
@@ -408,9 +418,19 @@ describe("planRoleProvisioning", () => {
   // It is a post-condition on two strings the catalog produces, so it tests as one.
   describe("assertRuntimeRoleIsUnprivileged", () => {
     test("a role reaching nothing privileged passes", () => {
-      expect(() =>
-        assertRuntimeRoleIsUnprivileged("app_role", null, null),
-      ).not.toThrow();
+      expect([
+        outcomeOf(() =>
+          assertRuntimeRoleIsUnprivileged("app_role", null, null),
+        ),
+        outcomeOf(() =>
+          assertRuntimeRoleIsUnprivileged("app_role", "rds_superuser", null),
+        ),
+      ]).toEqual([
+        "passes",
+        expect.stringContaining(
+          'runtime role "app_role" reaches a privileged role through a membership (rds_superuser)',
+        ),
+      ]);
     });
 
     test("a direct membership is reported and revoked by the same name", () => {
@@ -463,9 +483,25 @@ describe("planRoleProvisioning", () => {
     const ok = { reaches: null };
 
     test("the role this design creates passes", () => {
-      expect(() =>
-        assertFleetRoleIsUnprivileged("fleet_role", ok),
-      ).not.toThrow();
+      const states = [
+        ok,
+        ...FLEET_ROLE_FORBIDDEN_ATTRIBUTES.map(([field]) => ({
+          ...ok,
+          [field]: true,
+        })),
+      ];
+      expect(
+        states.map((st) =>
+          outcomeOf(() => assertFleetRoleIsUnprivileged("fleet_role", st)),
+        ),
+      ).toEqual([
+        "passes",
+        ...FLEET_ROLE_FORBIDDEN_ATTRIBUTES.map(([, word]) =>
+          expect.stringContaining(
+            `"fleet_role" already exists and is privileged (${word})`,
+          ),
+        ),
+      ]);
     });
 
     // Each attribute on its own, because a check written as one boolean would pass five of these —
@@ -517,14 +553,30 @@ describe("planRoleProvisioning", () => {
     const repair = fleetMembershipRepair("app_role", "fleet_role", 170000);
 
     test("able to SET ROLE and not inheriting is the only state that passes", () => {
-      expect(() =>
-        assertFleetMembership(
-          "app_role",
-          "fleet_role",
-          { can_set_role: true, usage: false },
-          repair,
+      const states = [
+        { can_set_role: true, usage: false },
+        { can_set_role: true, usage: true },
+        { can_set_role: false, usage: true },
+        { can_set_role: false, usage: false },
+      ];
+      expect(
+        states.map((st) =>
+          outcomeOf(() =>
+            assertFleetMembership("app_role", "fleet_role", st, repair),
+          ),
         ),
-      ).not.toThrow();
+      ).toEqual([
+        "passes",
+        expect.stringContaining(
+          'runtime role "app_role" INHERITS "fleet_role"',
+        ),
+        expect.stringContaining(
+          'runtime role "app_role" INHERITS "fleet_role"',
+        ),
+        expect.stringContaining(
+          'runtime role "app_role" cannot SET ROLE to "fleet_role"',
+        ),
+      ]);
     });
 
     // NOTE: Both refuse. A missing capability breaks more than fleet administration (the message names
@@ -706,21 +758,34 @@ describe("planRoleProvisioning", () => {
   // boundary against external input (DATABASE_URL is operator-supplied), but an unquoted-identifier
   // check that accepts a quote is not defense at all, so it gets a table of its own.
   describe("parseAppRole", () => {
-    const cases: [string, string, "ok" | "rejects"][] = [
-      ["a plain name", "postgres://app_role:pw@h:5432/db", "ok"],
-      ["a hyphenated name", "postgres://app-role:pw@h:5432/db", "ok"],
-      ["digits", "postgres://app9:pw@h:5432/db", "ok"],
+    type Parsed = { role: string; password: string };
+    const cases: [string, string, Parsed | "rejects"][] = [
+      [
+        "a plain name",
+        "postgres://app_role:p%40ss%3Aw@h:5432/db",
+        { role: "app_role", password: "p@ss:w" },
+      ],
+      [
+        "a hyphenated name",
+        "postgres://app-role:pw@h:5432/db",
+        { role: "app-role", password: "pw" },
+      ],
+      [
+        "digits",
+        "postgres://app9:pw@h:5432/db",
+        { role: "app9", password: "pw" },
+      ],
       ["an embedded double quote", "postgres://ap%22p:pw@h:5432/db", "rejects"],
       ["a semicolon", "postgres://app%3Bdrop:pw@h:5432/db", "rejects"],
       ["a space", "postgres://ap%20p:pw@h:5432/db", "rejects"],
       ["an empty role", "postgres://:pw@h:5432/db", "rejects"],
     ];
     for (const [name, url, expected] of cases) {
-      test(`${expected === "ok" ? "accepts" : "rejects"} ${name}`, () => {
-        if (expected === "ok") {
-          expect(parseAppRole(url).role).toMatch(/^[A-Za-z0-9_-]+$/);
-        } else {
+      test(`${expected === "rejects" ? "rejects" : "accepts"} ${name}`, () => {
+        if (expected === "rejects") {
           expect(() => parseAppRole(url)).toThrow("unsafe app role name");
+        } else {
+          expect(parseAppRole(url)).toEqual(expected);
         }
       });
     }

@@ -22,7 +22,6 @@ import {
 import { listThreadTurnNotes } from "@/modules/playground/turn-notes";
 import { transcribePlaygroundAudio } from "@/modules/stt/service";
 import { extractPlaygroundFile } from "@/modules/vision/service";
-import { withoutComments } from "@/tests/utils/source-text";
 
 // The playground takes the caller's `TenantContext` all the way down, so the unknown-tenant check at
 // `runScopedOn` applies to it (docs/playground.md, docs/tenancy.md rule 5). A selector naming a
@@ -288,52 +287,3 @@ describe.skipIf(!dbUp)(
     });
   },
 );
-
-// Everything above proves the FUNCTIONS refuse; this pins that the next entry point cannot rebuild
-// a context: nowhere under `src/modules/playground/` does a context get MADE. The predicate is
-// extracted so the fence can be shown to catch something (a sweep with no offender in the tree
-// passes whether or not it works), and the fixture below is its positive control.
-export function buildsATenantContext(source: string): boolean {
-  return /\brole:\s*"(?:TENANT_ADMIN|SUPER_ADMIN)"/.test(source);
-}
-
-describe("no playground module builds a tenant context of its own", () => {
-  const OFFENDER = `function sysCtx(tenantId: bigint): TenantContext {
-  return { tenantId, userId: null, role: "TENANT_ADMIN" };
-}`;
-
-  test("the predicate catches the shape that was there", () => {
-    expect(buildsATenantContext(OFFENDER)).toBe(true);
-    // NOTE: …AND through the reader the sweep actually uses. Calling the predicate on raw text
-    // cannot see a reader that strips the literal it matches on, as `codeOnly` does.
-    expect(buildsATenantContext(withoutComments(OFFENDER))).toBe(true);
-    // The prose the strip is there for: a comment naming the shape is not one.
-    expect(
-      buildsATenantContext(
-        withoutComments('// never write role: "TENANT_ADMIN" here\n'),
-      ),
-    ).toBe(false);
-    expect(
-      buildsATenantContext(
-        "await runScopedOn(base, ctx, (db) => db.x.findMany())",
-      ),
-    ).toBe(false);
-  });
-
-  test("no file under src/modules/playground builds one", async () => {
-    const { Glob } = await import("bun");
-    const offenders: string[] = [];
-    for await (const rel of new Glob("**/*.ts").scan(
-      "src/modules/playground",
-    )) {
-      // `withoutComments`, not `codeOnly`: the predicate matches ON a literal
-      // (`role: "TENANT_ADMIN"`), so blanking string contents would hide the offender and silence
-      // the sweep, which a control calling the predicate on unstripped text cannot see.
-      const src = withoutComments(
-        await Bun.file(`src/modules/playground/${rel}`).text(),
-      );
-      if (buildsATenantContext(src)) offenders.push(rel);
-    }
-    expect(offenders).toEqual([]);
-  });
-});

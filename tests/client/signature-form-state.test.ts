@@ -1,11 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import {
+  signaturePreviewParts,
+  signaturePreviewVars,
+} from "@/client/pages/agents/BehaviorTab";
+import {
   SIGNATURE_SEED,
   signatureOnToggle,
   signatureToForm,
   signatureToStored,
 } from "@/client/pages/agents/signatureFormState";
-import { PROMPT_CONTEXT_VARS } from "@/graph/prompt";
 import { SIGNATURE_MAX } from "@/modules/agents/text-caps";
 
 // The signature switch as the screen reads and writes it. Each test here is a property that, when
@@ -144,11 +147,13 @@ describe("signatureOnToggle: the seed, and the guard that matters more", () => {
   // The seed is only useful if it resolves; a literal `{{...}}` in the preview would teach the
   // operator the variables do not work at the moment they are learning the field.
   test("the seed names a variable the field supports", () => {
-    const named = [...SIGNATURE_SEED.matchAll(/\{\{([^}]+)\}\}/g)].map(
-      (m) => m[1] as string,
+    const seeded = signatureOnToggle(off, true);
+    const [first] = signaturePreviewParts(
+      seeded,
+      (_k: string, d: string) => d,
+      signaturePreviewVars("Ana", "ACME"),
     );
-    expect(named.length).toBeGreaterThan(0);
-    expect(named.filter((n) => !PROMPT_CONTEXT_VARS.includes(n))).toEqual([]);
+    expect(first?.[0]).toBe("**Ana**");
   });
 });
 

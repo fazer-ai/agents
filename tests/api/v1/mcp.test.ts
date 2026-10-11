@@ -57,8 +57,16 @@ describe("MCP OAuth discovery (RFC 8414 / 9728) at the root", () => {
     );
     expect(res.status).toBe(200);
     const body = (await res.json()) as Record<string, unknown>;
-    expect(body.resource).toContain("/api/v1/mcp");
-    expect(Array.isArray(body.authorization_servers)).toBe(true);
+    const issuer = config.publicUrl.replace(/\/$/, "");
+    expect(body.resource).toBe(`${issuer}/api/v1/mcp`);
+    // The one server this instance runs, by the issuer its own metadata names.
+    const as = (await (
+      await app.handle(
+        new Request("http://localhost/.well-known/oauth-authorization-server"),
+      )
+    ).json()) as { issuer: string };
+    expect(as.issuer).toBe(issuer);
+    expect(body.authorization_servers).toEqual([as.issuer]);
   });
 });
 

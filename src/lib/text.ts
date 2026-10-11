@@ -1,3 +1,5 @@
+import { phrase, type TranslatedParam } from "@/lib/errors";
+
 // A JS string is a sequence of UTF-16 code UNITS, not characters: an astral character (an emoji, a
 // letter outside the BMP) is a SURROGATE PAIR, and either half alone is not a character. Postgres
 // refuses a `jsonb` write carrying an unpaired surrogate (`22P02`), and since `emitFlowEvent` is
@@ -131,9 +133,22 @@ export function unstorableCodePoints(value: string): string[] | null {
 }
 
 export function unstorableProblem(value: string, what: string): string | null {
+  return unstorablePhrase(value, what)?.message ?? null;
+}
+
+// The same sentence as a phrase, for a refusal that quotes it inside a translated one.
+export function unstorablePhrase(
+  value: string,
+  what: string,
+): TranslatedParam | null {
   const named = unstorableCodePoints(value);
   if (named === null) return null;
-  return `${what} contains characters the database cannot store (${named.join(" ")}) — a NUL or half of a character, which PostgreSQL refuses in text and JSON columns alike.`;
+  const codePoints = named.join(" ");
+  return phrase(
+    "errors.unstorableReason",
+    `${what} contains characters the database cannot store (${codePoints}) — a NUL or half of a character, which PostgreSQL refuses in text and JSON columns alike.`,
+    { field: what, codePoints },
+  );
 }
 
 export interface UnstorableField {

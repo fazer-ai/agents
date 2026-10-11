@@ -784,29 +784,6 @@ describe.skipIf(!dbUp)(
       expect(all.filter((t) => !fnFor(t))).toEqual([]);
     });
 
-    // The row that names NOTHING has to say what was measured past the not-found. Mechanical on
-    // purpose: `NOPE` in the arguments IS the shape, so a row added later with a fresh id-that-does-
-    // not-exist cannot join without the measurement, and the failure names it.
-    //
-    // SURVIVING MUTANT, by construction: narrowing the filter (`&& false`) leaves this green, while
-    // widening it and deleting any single `pastOwnership` both turn it red. That is what a fence
-    // over a table can be — it detects a row that stops carrying the measurement, not a future
-    // author weakening the fence itself, which is a change a reviewer sees in the diff.
-    test("every row that names no row records what was measured on one that does", () => {
-      const missing = Object.entries(TABLE)
-        .filter(([, row]) => !("skip" in row))
-        .filter(([, row]) => {
-          const cases = [
-            row as Case,
-            ...((row as { also?: Case[] }).also ?? []),
-          ];
-          return cases.some((c) => JSON.stringify(c.args).includes(NOPE));
-        })
-        .filter(([, row]) => !(row as { pastOwnership?: string }).pastOwnership)
-        .map(([name]) => name);
-      expect(missing).toEqual([]);
-    });
-
     test("every row's arguments are ones the registry would actually deliver", async () => {
       const { schemas } = await publishedDryRunTools();
       const bad: Record<string, string[]> = {};
@@ -822,11 +799,10 @@ describe.skipIf(!dbUp)(
       expect(bad).toEqual({});
     });
 
+    // NOTE: a `skip` row is a decision recorded in the table, which the coverage test above
+    // enforces; it has nothing to run, so it emits no test.
     for (const [name, row] of Object.entries(TABLE)) {
-      if ("skip" in row) {
-        test.skip(`${name} — ${row.skip}`, () => {});
-        continue;
-      }
+      if ("skip" in row) continue;
       test(`${name}: preview and apply agree (${row.why})`, async () => {
         const fn = fnFor(name) as WriteFn;
         const p = principalFor(name);

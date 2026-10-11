@@ -32,16 +32,13 @@ let maxTrackedContacts = 10_000;
 
 // How long a refusal marker is protected from eviction: no check can outlive its own budget, and the
 // budget is clamped here (./settings.ts).
-let refusalProtectionMs: number = CONTACT_AUTH_TIMEOUT_MAX_MS;
+const refusalProtectionMs: number = CONTACT_AUTH_TIMEOUT_MAX_MS;
 let sweepTimer: ReturnType<typeof setTimeout> | undefined;
 
-// Test-only, so the eviction rule can be exercised without ten thousand contacts and without
-// waiting out the protection window. Production never calls these.
+// Test-only, so the eviction rule can be exercised without ten thousand contacts. Production never
+// calls it.
 export function setMaxTrackedContactsForTest(n: number): void {
   maxTrackedContacts = n;
-}
-export function setRefusalProtectionForTest(ms: number): void {
-  refusalProtectionMs = ms;
 }
 export function knownContactCount(): number {
   return known.size;
@@ -158,7 +155,6 @@ export async function retryUnconfirmedWrite(
 export function clearContactAuthGrantState(): void {
   known.clear();
   maxTrackedContacts = 10_000;
-  refusalProtectionMs = CONTACT_AUTH_TIMEOUT_MAX_MS;
   if (sweepTimer) clearTimeout(sweepTimer);
   sweepTimer = undefined;
 }

@@ -650,6 +650,20 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
   });
 
   describe("a conversation the mirror never learned", () => {
+    // A recovery teaches the shared inbox the channel the live read names, so a case that reads
+    // WhatsApp puts the inbox back, or every later case in the file inherits the shorter ceiling.
+    async function keepingInboxChannel(run: () => Promise<void>) {
+      const before = await suDb.inbox.findUniqueOrThrow({
+        where: { id: inboxDbId },
+        select: { channelType: true, metadataAt: true },
+      });
+      try {
+        await run();
+      } finally {
+        await suDb.inbox.update({ where: { id: inboxDbId }, data: before });
+      }
+    }
+
     // The mirror failing is how a first message strands, so the conversation it belonged to has no
     // row: the recovery reads it from Chatwoot instead of giving up on exactly those customers.
     const contactOf = async (chatwootContactId: number, name?: string) =>
@@ -680,7 +694,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       await suDb.conversation.deleteMany({
         where: {
           tenantId,
-          chatwootConversationId: { gte: 7310, lte: 7342 },
+          chatwootConversationId: { gte: 7310, lte: 7345 },
         },
       });
       await dropContact(77);
@@ -1197,28 +1211,23 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 1 });
     });
 
-    test.each([7335, 7336] as const)(
-      "keeps six hours for a conversation the mirror never learned, WhatsApp or not (%i)",
-      async (convId) => {
-        // A refusal hands the conversation to the team, and the hand-over reads the mirror row: with
-        // none, a WhatsApp conversation is still answered late rather than left with the bot.
-        // The route's inbox says WhatsApp too: the hand-over still has no mirror row to read.
-        const before = await suDb.inbox.findUniqueOrThrow({
-          where: { id: inboxDbId },
-          select: { channelType: true },
-        });
-        if (convId === 7335)
-          await suDb.inbox.update({
-            where: { id: inboxDbId },
-            data: { channelType: "Channel::Whatsapp" },
-          });
-        try {
+    test.each([
+      [7335, "Channel::Whatsapp", "unrecoverable"],
+      [7336, "Channel::Api", "recovered"],
+    ] as const)(
+      "a conversation the mirror never learned takes its ceiling from the live channel (%i, %s)",
+      async (convId, channel, outcome) => {
+        await keepingInboxChannel(async () => {
+          // No mirror row: the channel Chatwoot names is all there is, and the refusal still reaches
+          // the team (the hand-over takes the route's persona).
           await dropContact(77);
           const messageId = convId + 500;
           const rowId = await seedDeadDelivery({
             conversationId: convId,
             inboundMessageId: messageId,
             receivedAgoMs: 2 * 60 * 60 * 1000,
+            routeAgentBotId: AGENT_BOT_ID,
+            routeObserved: false,
           });
           const stub = stubChatwoot({
             page: pageWith([
@@ -1228,9 +1237,53 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
                 createdAt: Math.floor(Date.now() / 1000) - 2 * 60 * 60,
               },
             ]),
-            conv: {
-              channel: convId === 7335 ? "Channel::Whatsapp" : "Channel::Api",
-            },
+            conv: { channel },
+          });
+          expect(
+            await recoverStrandedDelivery({
+              tenantId,
+              deliveryRowId: rowId,
+              base: appDb,
+              deps: depsWith(stub),
+            }),
+          ).toBe(outcome);
+          expect(stub.sent).toEqual(
+            outcome === "recovered" ? [[convId, REPLY]] : [],
+          );
+          // Refused on the receipt, before any message is read.
+          if (outcome === "unrecoverable") expect(stub.asked).toEqual([]);
+        });
+      },
+    );
+
+    test.each([
+      ["an older build wrote, with no route", null],
+      ["whose route bot was re-provisioned since", 999],
+    ] as const)(
+      "an unmirrored WhatsApp row %s keeps six hours",
+      async (_, routeBot) => {
+        await keepingInboxChannel(async () => {
+          // Nothing could hand a refusal over (no inbox and no route bot to post as), so it is answered
+          // late rather than left with the bot.
+          const convId = routeBot === null ? 7344 : 7345;
+          const messageId = convId + 500;
+          await dropContact(77);
+          const rowId = await seedDeadDelivery({
+            conversationId: convId,
+            inboundMessageId: messageId,
+            receivedAgoMs: 2 * 60 * 60 * 1000,
+            routeAgentBotId: routeBot,
+            routeObserved: routeBot === null ? null : false,
+          });
+          const stub = stubChatwoot({
+            page: pageWith([
+              {
+                id: messageId,
+                content: "oi",
+                createdAt: Math.floor(Date.now() / 1000) - 2 * 60 * 60,
+              },
+            ]),
+            conv: { channel: "Channel::Whatsapp" },
           });
           expect(
             await recoverStrandedDelivery({
@@ -1241,11 +1294,45 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
             }),
           ).toBe("recovered");
           expect(stub.sent).toEqual([[convId, REPLY]]);
-        } finally {
-          await suDb.inbox.update({ where: { id: inboxDbId }, data: before });
-        }
+        });
       },
     );
+
+    test("refuses on the live channel a message the customer wrote two hours ago, unmirrored, though its webhook arrived late", async () => {
+      await keepingInboxChannel(async () => {
+        // The receipt is recent, so only the check on the customer's clock can refuse it, and with no
+        // mirror row the live conversation is what names the channel there too.
+        const convId = 7343;
+        const messageId = 7843;
+        await dropContact(77);
+        const rowId = await seedDeadDelivery({
+          conversationId: convId,
+          inboundMessageId: messageId,
+          receivedAgoMs: 10 * 60 * 1000,
+          routeAgentBotId: AGENT_BOT_ID,
+          routeObserved: false,
+        });
+        const stub = stubChatwoot({
+          page: pageWith([
+            {
+              id: messageId,
+              content: "oi",
+              createdAt: Math.floor(Date.now() / 1000) - 2 * 60 * 60,
+            },
+          ]),
+          conv: { channel: "Channel::Whatsapp" },
+        });
+        expect(
+          await recoverStrandedDelivery({
+            tenantId,
+            deliveryRowId: rowId,
+            base: appDb,
+            deps: depsWith(stub),
+          }),
+        ).toBe("unrecoverable");
+        expect(stub.sent).toEqual([]);
+      });
+    });
 
     test("refuses a WhatsApp reply the customer wrote ninety minutes ago, though its webhook arrived late", async () => {
       // The receipt is recent, so the check before the network lets it through; the live read
@@ -1393,7 +1480,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
               createdAt: Math.floor(Date.now() / 1000) - 2 * 60 * 60,
             },
           ]),
-          conv: { channel: "Channel::Whatsapp" },
+          // No channel on the live read: the route's inbox is what names it.
         });
         expect(
           await recoverStrandedDelivery({
@@ -2861,7 +2948,9 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
           base: appDb,
           deps: depsWith(stub),
         }),
-      ).not.toBe("unrecoverable");
+      ).toBe("recovered");
+      expect(stub.sent).toEqual([[convId, REPLY]]);
+      expect(await ledger(rowId)).toEqual({ status: "PROCESSED", attempts: 1 });
     } finally {
       await suDb.inbox.update({
         where: { id: inboxDbId },
@@ -2946,7 +3035,9 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
           base: appDb,
           deps: depsWith(stub),
         }),
-      ).not.toBe("unrecoverable");
+      ).toBe("recovered");
+      expect(stub.sent).toEqual([[convId, REPLY]]);
+      expect(await ledger(rowId)).toEqual({ status: "PROCESSED", attempts: 1 });
     } finally {
       await suDb.inbox.update({
         where: { id: inboxDbId },
@@ -5407,9 +5498,10 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     );
 
     // NOTE: the OUTCOME is the assertion, not an append: a command is ACTIVE only for a test-mode
-    // agent, whose route does not ingest continuously. It shows the replay reaching the delivery path,
-    // where the gates that decide the append live.
-    expect(outcome).not.toBe("unrecoverable");
+    // agent, whose route does not ingest continuously. The replay reached the delivery path, spent
+    // its attempt there, and went back to DEAD because no route remembered it.
+    expect(outcome).toBe("unreachable");
+    expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 1 });
     expect(stub.sent).toEqual([]);
   });
 

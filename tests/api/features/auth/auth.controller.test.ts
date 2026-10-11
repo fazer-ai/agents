@@ -364,12 +364,30 @@ describe("authController", () => {
   });
 
   describe("POST /auth/logout", () => {
-    test("logs out successfully", async () => {
-      const api = createTestClient();
-      const response = await api.auth.logout.post();
+    test("logs out by expiring the current and the legacy session cookie", async () => {
+      // Happy-dom drops `Cookie` from its Request and `Set-Cookie` from its Response, so the
+      // request is Bun's and the cookies are read off the jar Elysia serializes.
+      let jar: Record<string, unknown> | undefined;
+      const app = new Elysia()
+        .onAfterHandle(({ set }) => {
+          jar = structuredClone(set.cookie);
+        })
+        .use(authController);
+      const BunReq = (globalThis as unknown as { BunRequest: typeof Request })
+        .BunRequest;
+      const response = await app.handle(
+        new BunReq("http://localhost/auth/logout", {
+          method: "POST",
+          headers: {
+            cookie: "fazerai_auth_token=a; secretaria_v4_auth_token=b",
+          },
+        }),
+      );
 
       expect(response.status).toBe(200);
-      expect(response.data).toHaveProperty("success", true);
+      const expired = { value: "", maxAge: 0 };
+      expect(jar?.fazerai_auth_token).toMatchObject(expired);
+      expect(jar?.secretaria_v4_auth_token).toMatchObject(expired);
     });
   });
 });

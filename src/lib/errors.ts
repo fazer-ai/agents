@@ -11,6 +11,61 @@ type ApiLocale = typeof import("@/api/locales/en.json");
 export type ErrorTranslationKey =
   `errors.${keyof ApiLocale["errors"] & string}`;
 
+// A phrase interpolated into a refusal: its English text, its own key and its own params. A param may
+// itself be a phrase (a reason that names WHERE it failed: `block "b1"`), translated in the same
+// locale before the phrase around it is rendered.
+export interface TranslatedParam {
+  message: string;
+  key: ErrorTranslationKey;
+  params?: Record<string, string | number | TranslatedParam>;
+}
+
+// A phrase whose English text is `message`. The params are the key's interpolation values; `message`
+// arrives pre-interpolated, like AppError's, because it is the log line and the untranslated fallback.
+export function phrase(
+  key: ErrorTranslationKey,
+  message: string,
+  params?: Record<string, string | number | TranslatedParam>,
+): TranslatedParam {
+  return params ? { key, message, params } : { key, message };
+}
+
+// All but the last item, comma-separated: the head of "a, b and c".
+function listHead(items: readonly string[]): string {
+  return items.filter((_, i) => i < items.length - 1).join(", ");
+}
+
+// "a", "a and b", "a, b and c", as a phrase: the conjunction is a word, so it is translated too.
+export function andList(items: readonly string[]): TranslatedParam | string {
+  if (items.length <= 1) return items[0] ?? "";
+  const first = listHead(items);
+  const last = items[items.length - 1] as string;
+  return phrase("errors.listAnd", `${first} and ${last}`, { first, last });
+}
+
+// The same with "or".
+export function orList(items: readonly string[]): TranslatedParam | string {
+  if (items.length <= 1) return items[0] ?? "";
+  const first = listHead(items);
+  const last = items[items.length - 1] as string;
+  return phrase("errors.listOr", `${first} or ${last}`, { first, last });
+}
+
+// Several reasons for one refusal, each in the caller's language, separated the way the English
+// message separates them.
+export function reasonList(
+  reasons: readonly TranslatedParam[],
+): TranslatedParam {
+  const [head, ...rest] = reasons;
+  if (!head) throw new Error("reasonList needs at least one reason");
+  if (rest.length === 0) return head;
+  const tail = reasonList(rest);
+  return phrase("errors.reasonList", `${head.message}; ${tail.message}`, {
+    first: head,
+    rest: tail,
+  });
+}
+
 export class AppError extends Error {
   readonly statusCode: number;
   // NOTE: optional i18n key. When set, `onError` translates it (per the request's
@@ -21,6 +76,11 @@ export class AppError extends Error {
   // NOTE: interpolation values for translationKey ({{placeholders}} in the locale entry).
   // `message` must arrive pre-interpolated: it is the log line and the untranslated fallback.
   readonly translationParams?: Record<string, string | number>;
+  // NOTE: interpolation values that are themselves PHRASES (`a number of at least 0`), translated in
+  // the same locale as the sentence before it is rendered, so a translated sentence never quotes an
+  // English phrase. They override the same names in `translationParams`, which keep the English
+  // phrase for `message` and for code that reads the params.
+  translatedParams?: Record<string, TranslatedParam>;
   // Optional. The value this refusal is ABOUT, by the name the SERVER uses for it: a column
   // (`systemPrompt`), a key of a patch (`document`), or a dotted path into a bag the server owns
   // (`guardrails.output.templateMessage`). Never a form path and never localized: it is a key the
@@ -48,6 +108,16 @@ export class AppError extends Error {
     this.translationParams = translationParams;
     this.field = field;
   }
+}
+
+// `error`, its {{reason}} quoted from a phrase so it reads in the caller's language; the English
+// `reason` param stays for `message` and for code that reads the params.
+export function quotingReason<E extends AppError>(
+  error: E,
+  reason: TranslatedParam,
+): E {
+  error.translatedParams = { ...error.translatedParams, reason };
+  return error;
 }
 
 export class ForbiddenError extends AppError {

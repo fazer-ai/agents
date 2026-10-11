@@ -684,6 +684,79 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
     expect(mirror.status).toBe("pending");
   });
 
+  test("an unmirrored conversation mirrored with a newer message during the last ask stays with the agent", async () => {
+    const conv = nextConv++;
+    liveConversations.set(conv, { status: "pending", meta: {} });
+    let asks = 0;
+    const outcome = await announceFailedTurn({
+      tenantId,
+      instanceId,
+      chatwootConversationId: conv,
+      routeAgentBotId: 9,
+      aboutMessageId: 6_000,
+      assess: async () => {
+        // The webhook of the customer's next message mirrors the conversation while the last ask
+        // is out: that message has its own turn coming.
+        if (asks++ === 1) {
+          await suDb.conversation.create({
+            data: {
+              tenantId,
+              chatwootInstanceId: instanceId,
+              chatwootConversationId: conv,
+              inboxId: inboxDbId,
+              status: "pending",
+              threadId: `${tenantId}:${instanceId}:${conv}`,
+              lastInboundMessageId: 6_001,
+            },
+          });
+        }
+        return { path: "job", deadLettered: true };
+      },
+      error: new Error("boom"),
+      base: appDb,
+    });
+    expect(outcome).toBe("posted");
+    expect(
+      writes.filter((w) => w.conversationId === conv).map((w) => w.kind),
+    ).toEqual(["note"]);
+  });
+
+  test("an unmirrored conversation mirrored during the last ask with no newer message is still handed over", async () => {
+    const conv = nextConv++;
+    liveConversations.set(conv, { status: "pending", meta: {} });
+    let asks = 0;
+    await announceFailedTurn({
+      tenantId,
+      instanceId,
+      chatwootConversationId: conv,
+      routeAgentBotId: 9,
+      aboutMessageId: 6_100,
+      assess: async () => {
+        // The stranded message's own conversation_created mirrors it: nothing newer, so the claim
+        // over the new row is what lets the hand-over through.
+        if (asks++ === 1) {
+          await suDb.conversation.create({
+            data: {
+              tenantId,
+              chatwootInstanceId: instanceId,
+              chatwootConversationId: conv,
+              inboxId: inboxDbId,
+              status: "pending",
+              threadId: `${tenantId}:${instanceId}:${conv}`,
+              lastInboundMessageId: 6_100,
+            },
+          });
+        }
+        return { path: "job", deadLettered: true };
+      },
+      error: new Error("boom"),
+      base: appDb,
+    });
+    expect(
+      writes.filter((w) => w.conversationId === conv).map((w) => w.kind),
+    ).toEqual(["toggle", "note"]);
+  });
+
   test("an opened hand-over stamps its claim from Chatwoot's versioned read", async () => {
     const conv = await seedConversation();
     liveConversations.set(conv, { status: "pending", meta: {} });
@@ -2011,6 +2084,324 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
     writes = [];
     await announceUnanswered(tenantId, row.id, appDb);
     expect(writes.filter((w) => w.conversationId === conv)).toHaveLength(0);
+  });
+
+  // A first message that stranded before it was mirrored: no conversation row. The persona comes from
+  // the bot the delivery arrived on, and the ownership from Chatwoot, which is all there is.
+  test("a recovery that gives up on a conversation the mirror never learned still hands it over", async () => {
+    const conv = nextConv++;
+    liveConversations.set(conv, { status: "pending", meta: {} });
+    const row = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `failnote-gaveup-unmirrored-${process.pid}-${conv}`,
+        event: "message_created",
+        status: "DEAD",
+        conversationId: conv,
+        inboundMessageId: 8_000 + conv,
+        routeAgentBotId: 9,
+        routeObserved: false,
+      },
+      select: { id: true },
+    });
+    await announceUnanswered(tenantId, row.id, appDb);
+    expect(
+      writes.filter((w) => w.conversationId === conv).map((w) => w.kind),
+    ).toEqual(["toggle", "note"]);
+    const note = posted.find((p) => p.conversationId === conv);
+    expect(note?.token).toBe(BOT_TOKEN);
+    expect(note?.content).toContain(RECOVERY_GAVE_UP);
+  });
+
+  test("an unmirrored conversation Chatwoot cannot answer for is not opened", async () => {
+    // No row and no live read: nothing says the bot holds it, so nothing is toggled or posted.
+    const conv = nextConv++;
+    const row = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `failnote-gaveup-unmirrored-unread-${process.pid}-${conv}`,
+        event: "message_created",
+        status: "DEAD",
+        conversationId: conv,
+        inboundMessageId: 8_000 + conv,
+        routeAgentBotId: 9,
+        routeObserved: false,
+      },
+      select: { id: true },
+    });
+    await announceUnanswered(tenantId, row.id, appDb);
+    expect(writes.filter((w) => w.conversationId === conv)).toEqual([]);
+  });
+
+  test("an unmirrored conversation whose live read names no holder is not opened", async () => {
+    // `pending` with no `meta`: nobody is named, which is not the same as nobody holding it.
+    const conv = nextConv++;
+    liveConversations.set(conv, { status: "pending" });
+    const row = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `failnote-gaveup-unmirrored-nometa-${process.pid}-${conv}`,
+        event: "message_created",
+        status: "DEAD",
+        conversationId: conv,
+        inboundMessageId: 8_000 + conv,
+        routeAgentBotId: 9,
+        routeObserved: false,
+      },
+      select: { id: true },
+    });
+    await announceUnanswered(tenantId, row.id, appDb);
+    expect(writes.filter((w) => w.conversationId === conv)).toEqual([]);
+  });
+
+  test("a mirror row a webhook creates during the hand-over takes the note's window", async () => {
+    const conv = nextConv++;
+    liveConversations.set(conv, { status: "pending", meta: {} });
+    onToggle = async (id) => {
+      await suDb.conversation.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootConversationId: id,
+          inboxId: inboxDbId,
+          status: "pending",
+          threadId: `${tenantId}:${instanceId}:${id}`,
+        },
+      });
+      liveConversations.set(id, {
+        status: "open",
+        meta: {},
+        updated_at: 1_900_000_500,
+      });
+    };
+    const row = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `failnote-gaveup-unmirrored-appears-${process.pid}-${conv}`,
+        event: "message_created",
+        status: "DEAD",
+        conversationId: conv,
+        inboundMessageId: 8_000 + conv,
+        routeAgentBotId: 9,
+        routeObserved: false,
+      },
+      select: { id: true },
+    });
+    await announceUnanswered(tenantId, row.id, appDb);
+    expect(
+      writes.filter((w) => w.conversationId === conv).map((w) => w.kind),
+    ).toEqual(["toggle", "note"]);
+    // Stamped, so a failure right after a hand-back is coalesced like any mirrored conversation's.
+    expect(await noticeAt(conv)).not.toBeNull();
+    // And it says what Chatwoot does: open, not the bot's `pending` the webhook wrote.
+    expect(
+      (
+        await suDb.conversation.findFirstOrThrow({
+          where: { tenantId, chatwootConversationId: conv },
+          select: { status: true },
+        })
+      ).status,
+    ).toBe("open");
+  });
+
+  test("a mirror row that lands between the note's claim and its count is claimed, not coalesced", async () => {
+    // The claim is an UPDATE that matches nothing on an unmirrored conversation; a statement trigger
+    // fires anyway, which is the one moment between that claim and the count that reads the table.
+    const conv = nextConv++;
+    liveConversations.set(conv, { status: "pending", meta: {} });
+    const fn = `failnote_lands_${process.pid}_${conv}`;
+    await suDb.$executeRawUnsafe(`
+      CREATE FUNCTION ${fn}() RETURNS trigger AS $$
+      BEGIN
+        INSERT INTO conversations (tenant_id, chatwoot_instance_id, chatwoot_conversation_id, inbox_id, status, thread_id, updated_at)
+        SELECT ${tenantId}, ${instanceId}, ${conv}, ${inboxDbId}, 'open', '${tenantId}:${instanceId}:${conv}', now()
+        WHERE NOT EXISTS (SELECT 1 FROM conversations WHERE tenant_id = ${tenantId} AND chatwoot_conversation_id = ${conv});
+        RETURN NULL;
+      END $$ LANGUAGE plpgsql`);
+    const row = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `failnote-gaveup-lands-${process.pid}-${conv}`,
+        event: "message_created",
+        status: "DEAD",
+        conversationId: conv,
+        inboundMessageId: 8_000 + conv,
+        routeAgentBotId: 9,
+        routeObserved: false,
+      },
+      select: { id: true },
+    });
+    // Armed on the toggle, so only the note's claim (the next UPDATE of the table) can fire it.
+    onToggle = async () => {
+      await suDb.$executeRawUnsafe(
+        `CREATE TRIGGER ${fn} AFTER UPDATE ON conversations FOR EACH STATEMENT EXECUTE FUNCTION ${fn}()`,
+      );
+    };
+    try {
+      await announceUnanswered(tenantId, row.id, appDb);
+    } finally {
+      await suDb.$executeRawUnsafe(
+        `DROP TRIGGER IF EXISTS ${fn} ON conversations`,
+      );
+      await suDb.$executeRawUnsafe(`DROP FUNCTION IF EXISTS ${fn}()`);
+    }
+    expect(
+      writes.filter((w) => w.conversationId === conv).map((w) => w.kind),
+    ).toEqual(["toggle", "note"]);
+    expect(await noticeAt(conv)).not.toBeNull();
+  });
+
+  test("an unmirrored delivery whose route names no role is not handed over as that route", async () => {
+    // A route with no stated role may be an observer's, which is not who answers the customer.
+    const conv = nextConv++;
+    liveConversations.set(conv, { status: "pending", meta: {} });
+    const row = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `failnote-gaveup-unmirrored-norole-${process.pid}-${conv}`,
+        event: "message_created",
+        status: "DEAD",
+        conversationId: conv,
+        inboundMessageId: 8_000 + conv,
+        routeAgentBotId: 9,
+      },
+      select: { id: true },
+    });
+    await announceUnanswered(tenantId, row.id, appDb);
+    expect(writes.filter((w) => w.conversationId === conv)).toEqual([]);
+  });
+
+  test("an unmirrored conversation a person holds in Chatwoot is not opened", async () => {
+    const conv = nextConv++;
+    liveConversations.set(conv, {
+      status: "open",
+      meta: { assignee_type: "User", assignee: { id: 41 } },
+    });
+    const row = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `failnote-gaveup-unmirrored-held-${process.pid}-${conv}`,
+        event: "message_created",
+        status: "DEAD",
+        conversationId: conv,
+        inboundMessageId: 8_000 + conv,
+        routeAgentBotId: 9,
+        routeObserved: false,
+      },
+      select: { id: true },
+    });
+    await announceUnanswered(tenantId, row.id, appDb);
+    expect(writes.filter((w) => w.conversationId === conv)).toEqual([]);
+  });
+
+  test("a mirror row that names no inbox takes the persona of the delivery's route", async () => {
+    const conv = nextConv++;
+    await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: conv,
+        inboxId: null,
+        status: "pending",
+        threadId: `${tenantId}:${instanceId}:${conv}`,
+      },
+    });
+    liveConversations.set(conv, { status: "pending", meta: {} });
+    const row = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `failnote-gaveup-noinbox-${process.pid}-${conv}`,
+        event: "message_created",
+        status: "DEAD",
+        conversationId: conv,
+        inboundMessageId: 8_000 + conv,
+        routeAgentBotId: 9,
+        routeObserved: false,
+      },
+      select: { id: true },
+    });
+    await announceUnanswered(tenantId, row.id, appDb);
+    expect(
+      writes.filter((w) => w.conversationId === conv).map((w) => w.kind),
+    ).toEqual(["toggle", "note"]);
+    expect(posted.find((p) => p.conversationId === conv)?.token).toBe(
+      BOT_TOKEN,
+    );
+  });
+
+  test("a conversation on an inbox an operator unbound is not handed over as the delivery's route", async () => {
+    const unbound = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: INBOX_ID + 1,
+        name: "Desvinculada",
+      },
+      select: { id: true },
+    });
+    const conv = nextConv++;
+    await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: conv,
+        inboxId: unbound.id,
+        status: "pending",
+        threadId: `${tenantId}:${instanceId}:${conv}`,
+      },
+    });
+    liveConversations.set(conv, { status: "pending", meta: {} });
+    const row = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `failnote-gaveup-unbound-${process.pid}-${conv}`,
+        event: "message_created",
+        status: "DEAD",
+        conversationId: conv,
+        inboundMessageId: 8_000 + conv,
+        routeAgentBotId: 9,
+        routeObserved: false,
+      },
+      select: { id: true },
+    });
+    await announceUnanswered(tenantId, row.id, appDb);
+    expect(writes.filter((w) => w.conversationId === conv)).toEqual([]);
+  });
+
+  // The customer's message reopened a resolved conversation in Chatwoot and the mirror never heard:
+  // the hand-over reconciles before it reads the ownership, instead of refusing a stale `resolved`.
+  test("a recovery that gives up hands over a conversation the mirror still calls resolved", async () => {
+    const conv = await seedConversation({ status: "resolved" });
+    liveConversations.set(conv, {
+      status: "pending",
+      meta: {},
+      last_activity_at: Math.floor(Date.now() / 1000),
+    });
+    const row = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `failnote-gaveup-stale-${process.pid}-${conv}`,
+        event: "message_created",
+        status: "DEAD",
+        conversationId: conv,
+        inboundMessageId: 8_000 + conv,
+      },
+      select: { id: true },
+    });
+    await announceUnanswered(tenantId, row.id, appDb);
+    expect(
+      writes.filter((w) => w.conversationId === conv).map((w) => w.kind),
+    ).toEqual(["toggle", "note"]);
   });
 
   test("a given-up row whose conversation mirrored a newer message hands nothing over", async () => {

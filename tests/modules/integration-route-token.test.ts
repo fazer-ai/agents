@@ -295,7 +295,12 @@ describe.skipIf(!dbUp)("integration route token", () => {
         },
         appDb,
       );
-      expect(created.id).toBeDefined();
+      const stored = await getIntegrationInstance(
+        ctxOf(tenantId),
+        created.id,
+        appDb,
+      );
+      expect(stored.config).toEqual({ authHeader: value });
     }
   });
 
@@ -312,7 +317,10 @@ describe.skipIf(!dbUp)("integration route token", () => {
       },
       appDb,
     );
-    expect(objectValued.id).toBeDefined();
+    expect(
+      (await getIntegrationInstance(ctxOf(tenantId), objectValued.id, appDb))
+        .config,
+    ).toEqual({ authHeader: { a: 1 } });
 
     const created = await createIntegrationInstance(
       ctxOf(tenantId),
@@ -326,7 +334,9 @@ describe.skipIf(!dbUp)("integration route token", () => {
       },
       appDb,
     );
-    expect(created.id).toBeDefined();
+    expect(
+      (await getIntegrationInstance(ctxOf(tenantId), created.id, appDb)).config,
+    ).toEqual({ authHeader: 42, signatureHeader: null, extra: { a: 1 } });
   });
 
   test("rotating an unknown instance is a 404, not a silent mint", async () => {

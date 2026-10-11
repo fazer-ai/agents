@@ -874,20 +874,7 @@ function AgentEditor() {
     separator: "blank" as "blank" | "--",
   });
   // Proactive follow-up sequence. Mirrors agent.settings.followUp ({ enabled, steps[] }).
-  const [followUp, setFollowUp] = useState({
-    enabled: false,
-    steps: [
-      {
-        delayValue: "30",
-        delayUnit: "minutes",
-        instructions: "",
-        assignLabels: [] as string[],
-        resolve: false,
-        ignoreAppointmentPause: false,
-      },
-    ],
-    pauseWhileAppointment: true,
-  });
+  const [followUp, setFollowUp] = useState(() => followUpToForm({}));
   // The snoozed follow-up (a person waiting on the customer). Mirrors agent.settings.snoozedFollowUp
   // through ./snoozedFollowUpFormState.
   const [snoozedFollowUp, setSnoozedFollowUp] = useState(() =>

@@ -3175,6 +3175,13 @@ export async function syncInboxes(
            SET name = EXCLUDED.name,
                channel_type = EXCLUDED.channel_type,
                provider = EXCLUDED.provider,
+               -- The mirror's inbox clock described the name and channel this replaces, and
+               -- the list carries no clock of its own: cleared, so the mirror falls back to its
+               -- position rule instead of letting a delivery older than this read write it back.
+               metadata_clock = CASE
+                 WHEN inboxes.name IS DISTINCT FROM EXCLUDED.name
+                   OR inboxes.channel_type IS DISTINCT FROM EXCLUDED.channel_type
+                 THEN NULL ELSE inboxes.metadata_clock END,
                updated_at = now()
          WHERE inboxes.name IS DISTINCT FROM EXCLUDED.name
             OR inboxes.channel_type IS DISTINCT FROM EXCLUDED.channel_type

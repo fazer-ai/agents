@@ -34,6 +34,9 @@ const suDb = su as Client;
 
 let tenantId = 0n;
 const ids: Record<string, bigint> = {};
+// What the migration's first run raised, if anything. Captured rather than thrown so a raise fails a
+// NAMED test on its expect: thrown from beforeAll it shows up as "(unnamed)" and no test below runs.
+let migrationError: string | null = null;
 
 // Every shape an agent's settings bag can be in when this migration runs. The names are the point:
 // each one is a row that has to survive.
@@ -86,6 +89,11 @@ describe.skipIf(!dbUp)("migration: tts normalize default on", () => {
       );
       ids[name] = BigInt(r.rows[0].id);
     }
+    try {
+      await suDb.query(sql);
+    } catch (e) {
+      migrationError = e instanceof Error ? e.message : String(e);
+    }
   });
 
   afterAll(async () => {
@@ -98,9 +106,11 @@ describe.skipIf(!dbUp)("migration: tts normalize default on", () => {
     await suDb.end();
   });
 
-  test("runs over every settings shape without raising, including a non-object tts", async () => {
-    // No try/catch: a throw here IS the failure being guarded against.
-    await suDb.query(sql);
+  // The shapes `#-` cannot walk (an array holding "normalize", a string equal to it) are seeded above,
+  // so this is where a missing jsonb_typeof guard shows: "path element at position 2 is not an
+  // integer", and on a real install a deploy that crash-loops before `serve`.
+  test("the migration runs over every settings shape, including a non-object tts", () => {
+    expect(migrationError).toBeNull();
   });
 
   test("drops the stored flag so the new default reaches the agent", async () => {

@@ -1,4 +1,5 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import {
   contactAuthGateEmpty,
   contactAuthRulePayload,
@@ -6,6 +7,7 @@ import {
   readContactAuthEndpointEnabled,
   readContactAuthRuleForm,
 } from "@/client/pages/agents/contactAuthRuleForm";
+import { renderEditor, stubEditorApi } from "../utils/agent-editor";
 
 // The editor holds the gate's rule as ONE list of conditions and the endpoint as one switch, while
 // the stored shape and the runtime stay as they are: what is stored loads into the list and saves
@@ -82,19 +84,59 @@ describe("an enabled gate with nothing to decide", () => {
     );
     expect(contactAuthGateEmpty({ ...base, ruleConditions: [{}] })).toBe(false);
   });
+});
 
-  // Checked on the source for the reason BehaviorTabContactAuthRule gives: rendering the whole editor
-  // page pulls auth, theme, toast and a live catalog.
-  test("is refused by Save and export too, before any section is written, and the export does not run", async () => {
-    const src = (
-      await Bun.file("src/client/pages/agents/AgentEditorPage.tsx").text()
-    ).replace(/\s+/g, " ");
-    const body = src.slice(src.indexOf("async function saveAllDirty"));
-    const guard = body.indexOf(
-      "if (dirty.behavior && contactAuthGateEmpty(contactAuth))",
+// "Save and export" saves every dirty section without the Behavior tab's Save button, so it refuses
+// the empty gate itself, before writing any section, and then does not export.
+describe("save and export with an enabled gate that decides nothing", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    cleanup();
+    globalThis.fetch = realFetch;
+  });
+
+  async function saveAndExport(removeTheCondition: boolean) {
+    const stub = stubEditorApi({
+      settings: {
+        contactAuth: { enabled: true, rule: { kind: "label", label: "vip" } },
+      },
+    });
+    await renderEditor(stub, "general");
+    fireEvent.change(screen.getByDisplayValue("Atendente"), {
+      target: { value: "Atendente 2" },
+    });
+    fireEvent.click(screen.getByRole("tab", { name: /Behavior/ }));
+    if (removeTheCondition) {
+      fireEvent.click(
+        await screen.findByRole("button", { name: "Remove condition" }),
+      );
+    } else {
+      fireEvent.change(await screen.findByDisplayValue("vip"), {
+        target: { value: "vip2" },
+      });
+    }
+    fireEvent.click(screen.getByRole("button", { name: "Export" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Save and export" }),
     );
-    expect(guard > 0).toBe(true);
-    expect(guard < body.indexOf("if (dirty.general)")).toBe(true);
-    expect(src).toContain("if (saveFirst && !(await saveAllDirty())) return;");
+    return stub;
+  }
+
+  test("is refused before any section is written, and nothing is exported", async () => {
+    const stub = await saveAndExport(true);
+    // NOTE: the toast and the gate's own line under the rule say the same sentence.
+    await screen.findAllByText(
+      "Add at least one condition or turn on the external endpoint, or turn the gate off.",
+    );
+    expect(stub.writes).toEqual([]);
+    expect(stub.requests.filter((r) => r.endsWith("/export"))).toEqual([]);
+  });
+
+  test("a gate with a condition saves both sections and exports", async () => {
+    const stub = await saveAndExport(false);
+    await waitFor(() =>
+      expect(stub.requests.some((r) => r.endsWith("/export"))).toBe(true),
+    );
+    expect(stub.writes.filter((w) => w.method === "PATCH")).toHaveLength(2);
   });
 });

@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import {
   ChatwootCalledOffError,
   ChatwootClient,
@@ -241,10 +241,19 @@ describe("a muted Chatwoot client", () => {
       },
       fetchImpl,
     );
-    await c.setConversationLabels(9, ["vip"]);
-    // NOTE: combined, not replaced: the signal handed down is neither of the two originals.
-    expect(seen[0]).toBeDefined();
+    // The request's own timeout, under the test's hand, so it can fire while the deadline is live.
+    const requestTimeout = new AbortController();
+    const timeout = spyOn(AbortSignal, "timeout").mockImplementation(
+      () => requestTimeout.signal,
+    );
+    try {
+      await c.setConversationLabels(9, ["vip"]);
+    } finally {
+      timeout.mockRestore();
+    }
     expect(seen[0]?.aborted).toBe(false);
+    requestTimeout.abort();
+    expect(seen[0]?.aborted).toBe(true);
   });
 
   test("the client says whether it is muted, for effects the transport cannot see", async () => {

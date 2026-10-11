@@ -123,14 +123,6 @@ describe("the two snapshots are canonicalized at ONE instant", () => {
     ).toBeNull();
   });
 
-  test("the same instant makes the two sides agree", () => {
-    for (const at of [open, closed]) {
-      expect(JSON.stringify(readBehaviorSettings(bag, at))).toBe(
-        JSON.stringify(readBehaviorSettings(bag, at)),
-      );
-    }
-  });
-
   test("the clock is read ONCE for the whole comparison", () => {
     // A clock that crosses the expiry between its first read and every later one: a comparison that
     // read it per side would resolve the unchanged bag two ways and report a settings change.

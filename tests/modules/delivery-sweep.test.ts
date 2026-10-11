@@ -61,6 +61,22 @@ if (appUrl && suUrl) {
 const appDb = app as PrismaClient;
 const suDb = su as PrismaClient;
 
+// Naming no messages at all is not a call anyone can write, and the typecheck holds that whether or
+// not the database is up. The two ways to say what a decision covered are a union, so the third
+// (neither the burst nor the range, which would retire every non-terminal row on the conversation)
+// does not typecheck; `@ts-expect-error` fails the typecheck if the error stops happening.
+// @ts-expect-error — neither shape: no message bound at all.
+const neitherShape: Parameters<typeof retireCoveredDeliveries>[0] = {
+  tenantId: 1n,
+  instanceId: 1n,
+  conversationId: 1,
+  conversationRowId: null,
+  settlement: "consumed",
+  covered: false,
+  base: appDb,
+};
+void neitherShape;
+
 const CHATWOOT_INBOX_ID = 61;
 const AGENT_BOT_ID = 9;
 const STALE_MS = 30 * 60 * 1000;
@@ -1748,26 +1764,6 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     });
     await clearFlowLog(suDb, { tenantId });
     await suDb.schedulerJob.deleteMany({ where: { tenantId } });
-  });
-
-  test("naming no messages at all is not a call anyone can write", () => {
-    // A COMPILE-time guard, held by `bun check` rather than by this run: the two ways to say
-    // what a decision covered are a union, so the third combination (neither the burst nor the
-    // range) does not typecheck. It is the dangerous one: a filter of `{ chatwootInstanceId,
-    // conversationId }` retires every non-terminal row on the conversation and closes whatever loss
-    // sits there. `@ts-expect-error` is the assertion: it fails the typecheck if the error stops
-    // happening.
-    // @ts-expect-error — neither shape: no message bound at all, so this does not typecheck.
-    const neither: Parameters<typeof retireCoveredDeliveries>[0] = {
-      tenantId: 1n,
-      instanceId: 1n,
-      conversationId: 1,
-      conversationRowId: null,
-      settlement: "consumed",
-      covered: false,
-      base: appDb,
-    };
-    expect(neither.settlement).toBe("consumed");
   });
 
   test("a wide settlement never closes a TRANSCRIPTION's row", async () => {

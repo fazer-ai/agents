@@ -1,0 +1,10 @@
+// Refuses a read of the flow log written against the client in tests. `emitFlowEvent` is
+// fire-and-forget, so a read that does not settle answers before the row lands; `flowLogRows`,
+// `flowLogRow` and `flowLogCount` (tests/utils/flowlog.ts) settle first. Scope and the two files
+// exempt are in biome.jsonc.
+language js;
+
+JsCallExpression(callee = $callee) as $call where {
+    $callee <: r"[\s\S]*(?i:executionLog)\s*\.\s*(?i:findMany|findFirst|findFirstOrThrow|findUnique|findUniqueOrThrow|count|aggregate|groupBy)",
+    register_diagnostic(span = $call, message = "Read the flow log through `flowLogRows`, `flowLogRow` or `flowLogCount` (tests/utils/flowlog.ts), which settle pending writes first.")
+}

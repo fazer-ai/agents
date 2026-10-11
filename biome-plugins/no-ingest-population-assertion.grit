@@ -1,0 +1,10 @@
+// Refuses an assertion that decides "was ingestion armed for this message" by the SIZE of the
+// INGEST_MESSAGE population (`expect((...INGEST_MESSAGE")).length).toBe(...)`). The row is deleted on
+// completion and drained by other paths, so the count lies; ask for the message's own row with
+// `ingestDedupeKey(graphThreadId, messageId)`, as tests/modules/chatwoot-monitoring-seam.test.ts does.
+language js;
+
+JsCallExpression(callee = $callee) as $call where {
+    $callee <: r"[\s\S]*INGEST_MESSAGE\x22\s*\)\s*\)\s*\.length\s*\)\s*\.(?:toBe|toBeGreaterThan|toBeLessThan)",
+    register_diagnostic(span = $call, message = "Ask for the message's own row (`ingestDedupeKey(graphThreadId, messageId)`), not the size of the INGEST_MESSAGE population.")
+}

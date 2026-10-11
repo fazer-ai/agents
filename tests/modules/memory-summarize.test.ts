@@ -404,8 +404,10 @@ describe("renderTranscript: the declared history ceiling", () => {
   );
 
   test("without a ceiling the transcript is not token-clipped", () => {
-    const t = renderTranscript(long);
-    expect(estimateTokenCount(t)).toBeGreaterThan(200);
+    // NOTE: every turn, from the first, inside the character cap that applies with or without one.
+    expect(renderTranscript(long)).toBe(
+      long.map((m) => `cliente: ${String(m.content)}`).join("\n"),
+    );
   });
 
   test("with a ceiling the transcript fits inside it", () => {

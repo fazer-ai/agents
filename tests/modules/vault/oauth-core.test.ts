@@ -18,16 +18,19 @@ describe("oauth-core: PKCE", () => {
   });
 
   test("challenge is deterministic and URL-safe", () => {
-    const verifier = generateCodeVerifier();
-    const challenge = computeCodeChallenge(verifier);
-    expect(computeCodeChallenge(verifier)).toBe(challenge);
-    expect(challenge).not.toMatch(/[+/=]/);
+    // RFC 7636, Appendix B: S256 is the unpadded base64url of the verifier's SHA-256.
+    const verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+    expect(computeCodeChallenge(verifier)).toBe(
+      "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
+    );
+    expect(computeCodeChallenge(verifier)).toBe(computeCodeChallenge(verifier));
   });
 
   test("newNonce is non-empty and URL-safe", () => {
+    // Twelve random bytes: sixteen base64url characters, and a fresh value every call.
     const n = newNonce();
-    expect(n.length).toBeGreaterThan(0);
-    expect(n).not.toMatch(/[+/=]/);
+    expect(n).toMatch(/^[A-Za-z0-9_-]{16}$/);
+    expect(newNonce()).not.toBe(n);
   });
 });
 

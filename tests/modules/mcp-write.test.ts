@@ -1,8 +1,9 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import config from "@/config";
 import { unstorableProblem } from "@/lib/text";
+import * as agentsService from "@/modules/agents/service";
 import { BEHAVIOR_PATCH_SHAPE } from "@/modules/agents/settings-schema";
 import { TOOL_INSTRUCTIONS_MAX } from "@/modules/agents/text-caps";
 import { truncForAudit } from "@/modules/audit/projection";
@@ -329,36 +330,42 @@ describe("agent_settings_set writes every block it advertises", () => {
     BEHAVIOR_PATCH_SHAPE,
   ) as (keyof typeof BEHAVIOR_PATCH_SHAPE)[];
 
-  // "Did this key reach the patch" and nothing more. Past the patch the call needs a row, so what it
-  // answers there — not found, or a database that is not up — is not this test's subject; the one
-  // answer that means the key was dropped is the refusal that lists the accepted fields.
-  const reachedThePatch = async (key: string): Promise<boolean> => {
+  // The patch the first check after the copy receives. The agent read and that check are stubbed, so
+  // the probe needs no row and stops there; undefined means the call never got that far.
+  const patchFor = async (key: string): Promise<unknown> => {
+    let seen: unknown;
+    const read = spyOn(agentsService, "getAgent").mockResolvedValue({
+      settings: {},
+    } as never);
+    const sizes = spyOn(
+      agentsService,
+      "assertSettingsTextSizes",
+    ).mockImplementation((patch) => {
+      seen = structuredClone(patch);
+      throw new Error("the probe stops here");
+    });
     try {
-      const r = await agentSettingsSet(principal({}), {
+      await agentSettingsSet(principal({}), {
         agent_id: "1",
-        [key]: {},
-      } as never);
-      return r.ok || !r.error.includes("no updatable fields");
-    } catch {
-      return true;
+        [key]: { probe: key },
+      } as never).catch(() => undefined);
+    } finally {
+      read.mockRestore();
+      sizes.mockRestore();
     }
+    return seen;
   };
 
   for (const key of KEYS) {
     test(`${key} reaches the patch on its own`, async () => {
-      expect(await reachedThePatch(key)).toBe(true);
+      expect(await patchFor(key)).toEqual({ [key]: { probe: key } });
     });
   }
 
-  // POSITIVE CONTROL. Without it, a probe that answered `true` for anything at all would report the
-  // whole schema as wired and be unable to tell that from the code being right.
+  // POSITIVE CONTROL. Without it, a probe that answered for anything at all would report the whole
+  // schema as wired and be unable to tell that from the code being right.
   test("a block the schema does not publish does NOT reach it", async () => {
-    expect(await reachedThePatch("nonesuch")).toBe(false);
-  });
-
-  test("the scan sees the real schema, including the newest block", () => {
-    expect(KEYS.length).toBeGreaterThanOrEqual(18);
-    expect(KEYS).toContain("modelFallback");
+    expect(await patchFor("nonesuch")).toBeUndefined();
   });
 
   // NOTE: The refusal is the operator's only list of what this tool takes, so it is derived from the same

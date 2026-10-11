@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { treaty } from "@elysiajs/eden";
 import { Elysia } from "elysia";
+import config from "@/config";
 import {
   mockQueryRaw,
   resetPrismaMocks,
@@ -55,8 +56,10 @@ describe("healthController", () => {
       const response = await api.health.get();
 
       expect(response.status).toBe(200);
-      expect(response.data).toHaveProperty("name");
-      expect(response.data).toHaveProperty("version");
+      expect(response.data).toMatchObject({
+        name: config.packageInfo.name,
+        version: config.packageInfo.version,
+      });
     });
   });
 });

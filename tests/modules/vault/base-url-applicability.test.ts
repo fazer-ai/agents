@@ -95,31 +95,9 @@ const validParamName = (kind: string): string | undefined =>
 
 const ELSEWHERE = "https://elsewhere.invalid";
 
-describe("nothing writes a base URL past the rule", () => {
-  // The rule is a helper, and a helper only holds the sites that call it. This counts the
-  // vault-entry WRITES in `src/` and pins them to the one file the helper lives in: a fourth write
-  // path — an OAuth callback storing a discovered endpoint, an import restoring an export — would
-  // set `baseUrl` without ever passing the kind, and no test of the three current boundaries would
-  // notice. `codeOnly` because a comment naming `vaultEntry.update` is prose, not a write.
-  const WRITE = /\bvaultEntry\.(create|update|updateMany|upsert|createMany)\b/g;
-
-  test("every vaultEntry write lives in the vault service", async () => {
-    const files = new Glob("src/**/*.ts").scanSync(".");
-    const sites: string[] = [];
-    for (const file of files) {
-      const code = codeOnly(await Bun.file(file).text());
-      for (const _ of code.matchAll(WRITE)) sites.push(file);
-    }
-    // NOTE: a FLOOR, not an equality: a sweep that silently stops matching (a rename, a Prisma
-    // extension, a moved file) reports zero sites and passes as "nothing bypasses the rule".
-    expect(sites.length).toBeGreaterThan(3);
-    expect([...new Set(sites)]).toEqual(["src/modules/vault/service.ts"]);
-  });
-});
-
 describe("nothing reads a base URL past the gate", () => {
-  // The write-side sweep above has a read-side twin, because gating the resolvers is not
-  // enough: `assemble.ts` and `test-run.ts` build their OWN vault query and would copy `baseUrl`
+  // The write side is biome-plugins/no-vault-entry-write-outside-service.grit. This is the read
+  // side, because gating the resolvers is not enough: `assemble.ts` and `test-run.ts` build their OWN vault query and would copy `baseUrl`
   // straight into `credentialBaseUrl`, so a relative HTTP tool would dial the stray host. A ledger rather than a rule, because two of these files are
   // supposed to read the row raw — the audit projection and the console listing — and the point is
   // that a NEW reader has to be looked at rather than silently join either side.

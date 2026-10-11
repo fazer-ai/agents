@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { z } from "zod";
@@ -14,6 +14,7 @@ import {
 } from "@/modules/flowlog/settings";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import { buildMcpServer } from "@/modules/mcp/server";
+import * as mcpWrite from "@/modules/mcp/write";
 import { readMemoryConfig } from "@/modules/memory/settings";
 import { STT_PROVIDER_NAMES } from "@/modules/stt/providers";
 import { VISION_PROVIDER_NAMES } from "@/modules/vision/providers";
@@ -298,11 +299,11 @@ describe("agent_settings_set argument schema", () => {
   // BETWEEN fields. docs/mcp.md puts those in the description, so the schema must NOT carry it —
   // copying it in would refuse the half-pair a stored bag legitimately re-sends.
   test("a between-fields requirement stays out of the schema", () => {
-    expect(() =>
+    expect(
       z.object(BEHAVIOR_PATCH_SHAPE).parse({
         modelFallback: { provider: "openai" },
       }),
-    ).not.toThrow();
+    ).toStrictEqual({ modelFallback: { provider: "openai" } });
   });
 
   // NOTE: The other half: `null` is the documented way to clear, so it must still parse everywhere blank is
@@ -313,7 +314,7 @@ describe("agent_settings_set argument schema", () => {
       { kanban: { instructions: null } },
       { toolGuidance: { handoff_to_human: null } },
     ]) {
-      expect(() => z.object(BEHAVIOR_PATCH_SHAPE).parse(patch)).not.toThrow();
+      expect(z.object(BEHAVIOR_PATCH_SHAPE).parse(patch)).toStrictEqual(patch);
     }
   });
 
@@ -577,12 +578,24 @@ describe("agent_settings_set over MCP", () => {
   });
 
   test("a clamped value is NOT refused, it goes through to the readers", async () => {
-    const r = await callSettingsSet({
-      agent_id: "1",
-      debounce: { windowSeconds: 9999 },
-    });
-    // It fails on the unreachable database, which is the proof: the argument passed validation and
-    // the handler ran. A bound copied into the schema would have stopped it one layer earlier.
-    expect(r.text).not.toContain("Invalid arguments");
+    // The handler is stubbed, so what it receives is what the SDK's parse let through. A bound copied
+    // into the schema would have stopped the call one layer earlier.
+    let received: Record<string, unknown> | undefined;
+    const handler = spyOn(mcpWrite, "agentSettingsSet").mockImplementation(
+      async (_eff, args) => {
+        received = args as unknown as Record<string, unknown>;
+        return { ok: true, data: { applied: true } };
+      },
+    );
+    try {
+      const r = await callSettingsSet({
+        agent_id: "1",
+        debounce: { windowSeconds: 9999 },
+      });
+      expect(r.isError).toBe(false);
+      expect(received?.debounce).toEqual({ windowSeconds: 9999 });
+    } finally {
+      handler.mockRestore();
+    }
   });
 });

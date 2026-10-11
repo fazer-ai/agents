@@ -254,9 +254,9 @@ describe("FormField help", () => {
         <Input aria-invalid value="" onChange={() => {}} />
       </FormField>,
     );
-    expect(
-      screen.getByRole("textbox").getAttribute("aria-invalid"),
-    ).toBeTruthy();
+    const box = screen.getByRole("textbox");
+    expect(box.getAttribute("aria-invalid")).toBe("true");
+    expect(box.className).toContain("border-error");
   });
 
   // NOTE: the announcement and the drawing have to agree: a `FormField error=` around a <Select>

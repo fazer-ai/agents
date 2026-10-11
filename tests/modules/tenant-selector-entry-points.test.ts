@@ -4,7 +4,11 @@ import type { PrismaClient as PrismaClientType } from "@/../generated/prisma/cli
 import { PrismaClient } from "@/../generated/prisma/client";
 import { createTenant } from "@/api/v1/tenants.admin.service";
 import { listTenants } from "@/api/v1/tenants.service";
-import { ActiveTenantNotFoundError, AppError } from "@/lib/errors";
+import {
+  ActiveTenantNotFoundError,
+  AppError,
+  ProEditionError,
+} from "@/lib/errors";
 import { resolveRequestTenantContext, type TenantContext } from "@/lib/tenancy";
 import { issueDocument } from "@/modules/documents/issue";
 import {
@@ -43,7 +47,7 @@ import {
   searchKnowledge,
   updateKnowledgeBase,
 } from "@/modules/rag/service";
-import { codeOnly, withoutComments } from "@/tests/utils/source-text";
+import { withoutComments } from "@/tests/utils/source-text";
 
 // The console's knowledge/RAG, experiments, integrations and documents controllers hand their modules
 // the CALLER's context, never a bare tenant id: `runScopedOn` verifies an unknown tenant only for a
@@ -336,63 +340,6 @@ describe.skipIf(!dbUp)(
   },
 );
 
-// The half a table cannot cover: whether the next route added to one of these controllers unwraps
-// the request's context back down to an id (as a `bigint` helper or an inline cast). Keyed on the
-// TRANSPORT, not a module path: modules legitimately keep `sysCtx` for internal callers (the graph,
-// the ingest job, the scheduler carry an id read from a row), so sweeping `src/modules/**` would
-// sweep the wrong thing.
-export function handsOutABareTenantId(source: string): boolean {
-  // NOTE: a helper that unwraps the request's context down to its id, so every route below it can
-  // pass the id on.
-  if (/\):\s*bigint\s*\{[\s\S]{0,300}?\breturn\s+\w+\.tenantId;/.test(source)) {
-    return true;
-  }
-  // NOTE: the same unwrapping written inline at the call. In a controller the context always comes
-  // from the request, so the cast always throws the provenance away: no benign spelling exists here.
-  return /\.tenantId as bigint/.test(source);
-}
-
-describe("no REST controller hands a module a bare tenant id", () => {
-  const HELPER = `function tenantId(ctx: TenantContext | null): bigint {
-  if (!ctx) throw new ForbiddenError();
-  if (ctx.tenantId === null) throw new TenantTargetRequiredError();
-  return ctx.tenantId;
-}`;
-  const INLINE = `const created = await createIntegrationInstance(
-        ctx.tenantId as bigint,
-        b,
-      );`;
-
-  // A sweep that finds nothing passes whether or not it works, so both shapes are shown to be
-  // caught, and the shape that REPLACED them is shown not to be.
-  test("the predicate catches both shapes that were there", () => {
-    expect(handsOutABareTenantId(HELPER)).toBe(true);
-    expect(handsOutABareTenantId(INLINE)).toBe(true);
-    expect(
-      handsOutABareTenantId(`function ctxOrThrow(ctx: TenantContext | null): TenantContext {
-  if (!ctx) throw new ForbiddenError();
-  if (ctx.tenantId === null) throw new TenantTargetRequiredError();
-  return ctx;
-}`),
-    ).toBe(false);
-    // A row's id is not a selector: this is the case the role predicate exists to let through.
-    expect(handsOutABareTenantId("await getTenantName(user.tenantId)")).toBe(
-      false,
-    );
-  });
-
-  test("no file under src/api does", async () => {
-    const { Glob } = await import("bun");
-    const offenders: string[] = [];
-    for await (const rel of new Glob("**/*.ts").scan("src/api")) {
-      // Through the scan, so prose naming the shape is not counted as one.
-      const src = codeOnly(await Bun.file(`src/api/${rel}`).text());
-      if (handsOutABareTenantId(src)) offenders.push(rel);
-    }
-    expect(offenders).toEqual([]);
-  });
-});
-
 // The negative control for the two exemptions at the bottom of this file, and the reason they are
 // exemptions rather than routes nobody got around to converting: a FLEET operation answers the
 // selector instead of refusing it. `listTenants` and `createTenant` both branch to `asSuperAdminOn`
@@ -400,14 +347,16 @@ describe("no REST controller hands a module a bare tenant id", () => {
 // their response maps to name a 404 would publish a status they cannot return.
 describe.skipIf(!dbUp)("a fleet route answers a dead selector", () => {
   test("listing tenants returns the fleet rather than refusing", async () => {
-    const rows = await listTenants(fromSelector(deadId), appDb);
-    expect(Array.isArray(rows)).toBe(true);
+    const ids = (await listTenants(fromSelector(deadId), appDb)).map(
+      (r) => r.id,
+    );
+    expect(ids).toContain(String(liveId));
+    expect(ids).not.toContain(String(deadId));
   });
 
-  // Written as "whatever it answers, it is not about the selector" because this file ships to both
-  // editions: the derivation swaps `tenants.admin.service` for a stub that refuses with
-  // `ProEditionError` in Free, so asserting the row gets created would fail there for a reason that
-  // has nothing to do with what is under test.
+  // Either edition's answer, because this file ships to both: the derivation swaps
+  // `tenants.admin.service` for a stub that refuses with `ProEditionError` in Free, and Pro creates
+  // the row. Anything else is the selector, or something broken, answering.
   test("creating a tenant never refuses the selector", async () => {
     const slug = `selsweep-fleet-${process.pid}`;
     const err = await createTenant(
@@ -418,6 +367,14 @@ describe.skipIf(!dbUp)("a fleet route answers a dead selector", () => {
       .then(() => null)
       .catch((e: unknown) => e);
     try {
+      const created = await suDb.tenant.findUnique({
+        where: { slug },
+        select: { name: true },
+      });
+      expect([
+        err === null && created?.name === "SelSweepFleet",
+        err instanceof ProEditionError,
+      ]).toContain(true);
       expect(err instanceof ActiveTenantNotFoundError).toBe(false);
     } finally {
       await suDb.tenant.deleteMany({ where: { slug } });

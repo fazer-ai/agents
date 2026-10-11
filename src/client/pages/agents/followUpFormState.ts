@@ -1,3 +1,4 @@
+import { FOLLOW_UP_DEFAULT_DELAY_VALUE } from "@/modules/agents/text-caps";
 import { FOLLOW_UP_MAX_STEPS } from "@/modules/followups/settings";
 import type { FollowUpState, FollowUpStepState } from "./BehaviorTab";
 
@@ -34,9 +35,9 @@ function readSteps(fu: Record<string, unknown>): FollowUpStepState[] {
 // a field added to a step is carried by both editors or by neither. An empty list stays empty.
 export function stepsToForm(
   rawSteps: readonly unknown[],
-  // The delay a step with none stored loads with. The snoozed ladder passes the runtime reader's
-  // default, so a save that rewrites the block does not change a delay the operator never set.
-  defaultDelayValue = "30",
+  // The delay a step with none stored loads with: the runtime reader's, so a save that rewrites the
+  // block does not change a delay the operator never set.
+  defaultDelayValue = String(FOLLOW_UP_DEFAULT_DELAY_VALUE),
 ): FollowUpStepState[] {
   // A step that is not an object is dropped, as `parseFollowUpStep` drops it: built into a default row
   // here, a save would write a reminder the runtime never had.

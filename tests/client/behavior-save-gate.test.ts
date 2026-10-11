@@ -1,93 +1,222 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { cleanup, fireEvent, screen } from "@testing-library/react";
+import { renderEditor, stubEditorApi } from "../utils/agent-editor";
 
 // Every field check the Behavior tab computes reaches its Save button. Rendering a field error is
 // not enough: only refusing the save is load-bearing, since a configuration the runtime will not
-// build is worth nothing stored (a fallback that cannot be built is the same as none).
-// The rule is per check, so the scan reads the shape all this tab's checks share (`<feature><What>`
-// ending in Invalid, Unsupported, Missing or Required), not only the endpoint checks.
+// build is worth nothing stored (a fallback that cannot be built is the same as none). Each case is
+// an agent stored with exactly one thing wrong, opened on the Behavior tab.
 
-const SOURCE = await Bun.file("src/client/pages/agents/BehaviorTab.tsx").text();
+const realFetch = globalThis.fetch;
+afterEach(() => {
+  cleanup();
+  globalThis.fetch = realFetch;
+});
 
-// The checks, by the shape their names share: a feature prefix and a verdict suffix (endpoint ones
-// like `<feature>BaseUrlInvalid` or `<feature>UrlInvalid`, field ones like `<feature>ModelMissing`).
-// Read off the DECLARATIONS, so a check that exists is on the list whether or not anyone remembered.
-export function declaredEndpointChecks(source: string): string[] {
-  const decl = /\bconst\s+(\w+(?:Invalid|Unsupported|Missing|Required))\s*=/g;
-  return [
-    ...new Set([...source.matchAll(decl)].map((m) => m[1] as string)),
-  ].sort();
-}
+const NOT_A_URL = "not a url";
+const ELSEWHERE = "https://llm.example.com/v1";
 
-// The expression the Save button is disabled by. Matched to its closing brace rather than to the
-// first one, so a multi-line `||` chain is read whole.
-export function saveGateExpression(source: string): string {
-  const at = source.indexOf("saveDisabled={");
-  if (at < 0) return "";
-  let depth = 0;
-  for (let i = at + "saveDisabled=".length; i < source.length; i++) {
-    if (source[i] === "{") depth += 1;
-    else if (source[i] === "}") {
-      depth -= 1;
-      if (depth === 0) return source.slice(at, i + 1);
-    }
-  }
-  return "";
-}
+const REFUSED: Array<
+  [string, { mode?: string; settings: Record<string, unknown> }]
+> = [
+  [
+    "a transcription endpoint that is not a URL",
+    {
+      settings: {
+        stt: {
+          enabled: true,
+          provider: "openai-compatible",
+          baseURL: NOT_A_URL,
+        },
+      },
+    },
+  ],
+  [
+    "an image-reading endpoint that is not a URL",
+    {
+      settings: {
+        vision: {
+          enabled: true,
+          provider: "openai-compatible",
+          baseURL: NOT_A_URL,
+        },
+      },
+    },
+  ],
+  [
+    "a summariser on a compatible provider with no endpoint",
+    {
+      settings: {
+        memory: {
+          compaction: {
+            enabled: true,
+            provider: "openai-compatible",
+            model: "m",
+            baseURL: null,
+          },
+        },
+      },
+    },
+  ],
+  [
+    "a summariser endpoint on a provider that takes none",
+    {
+      settings: {
+        memory: {
+          compaction: {
+            enabled: true,
+            provider: "anthropic",
+            model: "claude-x",
+            baseURL: ELSEWHERE,
+          },
+        },
+      },
+    },
+  ],
+  [
+    "a fallback on a compatible provider with no endpoint",
+    {
+      settings: {
+        modelFallback: {
+          provider: "openai-compatible",
+          model: "m",
+          baseURL: null,
+        },
+      },
+    },
+  ],
+  [
+    "a fallback endpoint on a provider that takes none",
+    {
+      settings: {
+        modelFallback: {
+          provider: "anthropic",
+          model: "claude-x",
+          baseURL: ELSEWHERE,
+        },
+      },
+    },
+  ],
+  [
+    "a fallback provider with no model",
+    { settings: { modelFallback: { provider: "gemini", model: "" } } },
+  ],
+  [
+    "an authorization gate with neither a rule nor an endpoint",
+    { settings: { contactAuth: { enabled: true } } },
+  ],
+  [
+    "an authorization endpoint that is not a URL",
+    { settings: { contactAuth: { enabled: true, url: NOT_A_URL } } },
+  ],
+  [
+    "a speech rewrite on a compatible provider with no endpoint",
+    {
+      settings: {
+        tts: {
+          mode: "mirror",
+          normalize: true,
+          normalizeProvider: "openai-compatible",
+          normalizeModel: "m",
+          normalizeBaseURL: null,
+        },
+      },
+    },
+  ],
+  [
+    "a speech rewrite endpoint on a provider that takes none",
+    {
+      settings: {
+        tts: {
+          mode: "mirror",
+          normalize: true,
+          normalizeProvider: "anthropic",
+          normalizeModel: "claude-x",
+          normalizeBaseURL: ELSEWHERE,
+        },
+      },
+    },
+  ],
+  [
+    "a watcher's decisions block the server would refuse",
+    {
+      mode: "monitoring",
+      settings: {
+        monitoring: {
+          engine: "decisions",
+          decisions: {
+            provider: "typesafe",
+            credentialRef: "vault:1",
+            questions: [],
+            rules: [],
+            apply: "shadow",
+          },
+        },
+      },
+    },
+  ],
+];
 
-export function checksMissingFromGate(source: string): string[] {
-  const gate = saveGateExpression(source);
-  return declaredEndpointChecks(source).filter((c) => !gate.includes(c));
+async function saveDisabled(agent: {
+  mode?: string;
+  settings: Record<string, unknown>;
+}): Promise<boolean> {
+  const stub = stubEditorApi(agent);
+  await renderEditor(stub, "behavior");
+  return (screen.getByRole("button", { name: "Save" }) as HTMLButtonElement)
+    .disabled;
 }
 
 describe("the Behavior tab's save gate", () => {
-  test("every endpoint check it computes also blocks the save", () => {
-    expect(checksMissingFromGate(SOURCE)).toEqual([]);
+  for (const [what, agent] of REFUSED) {
+    test(`${what} blocks the save`, async () => {
+      expect(await saveDisabled(agent)).toBe(true);
+    });
+  }
+
+  // A stored rule the reader would drop reads as no rule, so the bad rule is a draft: a label
+  // condition whose label is erased.
+  test("an authorization rule the server would refuse blocks the save", async () => {
+    const stub = stubEditorApi({
+      settings: {
+        contactAuth: { enabled: true, rule: { kind: "label", label: "vip" } },
+      },
+    });
+    await renderEditor(stub, "behavior");
+    const save = screen.getByRole("button", {
+      name: "Save",
+    }) as HTMLButtonElement;
+    expect(save.disabled).toBe(false);
+    fireEvent.change(screen.getByDisplayValue("vip"), {
+      target: { value: "" },
+    });
+    expect(save.disabled).toBe(true);
   });
 
-  // NOTE: the scan has to find something, or an empty answer above would be the scan failing rather
-  // than the code passing.
-  test("the scan actually sees the checks", () => {
-    const found = declaredEndpointChecks(SOURCE);
-    expect(found.length).toBeGreaterThanOrEqual(10);
-    expect(found).toContain("fallbackBaseUrlInvalid");
-    expect(found).toContain("fallbackBaseUrlUnsupported");
-    // NOTE: a field check, which an endpoint-only scan would not see.
-    expect(found).toContain("fallbackModelMissing");
-    expect(saveGateExpression(SOURCE)).toContain("saveDisabled={");
+  test("a valid agent, and a valid watcher, can save", async () => {
+    expect(await saveDisabled({ settings: {} })).toBe(false);
+    cleanup();
+    expect(await saveDisabled({ mode: "monitoring", settings: {} })).toBe(
+      false,
+    );
   });
 
-  // POSITIVE CONTROL. The predicate is proved against a fixture that HAS the defect, because a
-  // fence with no offender left in the tree passes for either reason and cannot tell them apart.
-  test("a check that renders its error and does not block the save is caught", () => {
-    const broken = `
-      const sttBaseUrlInvalid = compute();
-      const newFeatureBaseUrlInvalid = compute();
-      return <TabActionBar saveDisabled={sttBaseUrlInvalid} />;
-    `;
-    expect(checksMissingFromGate(broken)).toEqual(["newFeatureBaseUrlInvalid"]);
-  });
-
-  // NOTE: the second control: a field check an endpoint-only scan would answer `[]` to.
-  test("a non-endpoint check off the gate is caught too", () => {
-    const broken = `
-      const sttBaseUrlInvalid = compute();
-      const newFeatureModelMissing = compute();
-      return <TabActionBar saveDisabled={sttBaseUrlInvalid} />;
-    `;
-    expect(checksMissingFromGate(broken)).toEqual(["newFeatureModelMissing"]);
-    const endpointOnly =
-      /\bconst\s+(\w*(?:BaseUrlInvalid|BaseUrlUnsupported|UrlInvalid))\s*=/g;
-    expect([...broken.matchAll(endpointOnly)].map((m) => m[1])).toEqual([
-      "sttBaseUrlInvalid",
-    ]);
-  });
-
-  test("and the same fixture with the gate complete is clean", () => {
-    const fixed = `
-      const sttBaseUrlInvalid = compute();
-      const newFeatureBaseUrlInvalid = compute();
-      return <TabActionBar saveDisabled={sttBaseUrlInvalid || newFeatureBaseUrlInvalid} />;
-    `;
-    expect(checksMissingFromGate(fixed)).toEqual([]);
+  // A watcher draws no speech section, so a leftover bad rewrite on it has no field to explain a
+  // disabled Save.
+  test("a watcher's leftover speech rewrite does not block its save", async () => {
+    expect(
+      await saveDisabled({
+        mode: "monitoring",
+        settings: {
+          tts: {
+            mode: "mirror",
+            normalize: true,
+            normalizeProvider: "openai-compatible",
+            normalizeModel: "m",
+            normalizeBaseURL: null,
+          },
+        },
+      }),
+    ).toBe(false);
   });
 });

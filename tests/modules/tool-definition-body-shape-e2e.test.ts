@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { buildHttpTool } from "@/graph/tools/http";
@@ -128,13 +128,12 @@ afterAll(async () => {
 describe.skipIf(!dbUp)(
   "an unsupported body is refused where it is authored",
   () => {
-    test("setup", async () => {
+    beforeAll(async () => {
       const t = await suDb.tenant.create({
         data: { name: "body-shape", slug: `body-shape-${process.pid}` },
       });
       tenantId = t.id;
       tenants.push(t.id);
-      expect(tenantId).toBeGreaterThan(0n);
     });
 
     // NOTE: REST and the console both land here.

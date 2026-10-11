@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { noteServerDate, resetServerClock } from "@/client/lib/serverClock";
 import {
   observabilityToForm,
   observabilityToStored,
@@ -68,13 +69,6 @@ describe("observability form ↔ stored round trip", () => {
 // that was not the whole family: this is where the deadline is decoded on load, and whatever it
 // decides is what the next save writes back. A window read as expired here is a window disarmed by
 // a save that had nothing to do with it.
-const FORM_SOURCE = await Bun.file(
-  new URL(
-    "../../src/client/pages/agents/observabilityFormState.ts",
-    import.meta.url,
-  ),
-).text();
-
 describe("the form decodes the deadline on the server's clock", () => {
   test("a window still open on the server survives a browser running ahead", () => {
     // The server's window has 30 minutes left; this browser thinks it is an hour from now, which
@@ -99,11 +93,28 @@ describe("the form decodes the deadline on the server's clock", () => {
     );
   });
 
+  // The default is what every call site gets, and a call site that forgot to pass an instant is
+  // exactly how this was missed the first time.
   test("the default instant is the server's, not the browser's", () => {
-    // A property of the SOURCE: the default is what every call site gets, and a call site that
-    // forgot to pass one is exactly how this was missed the first time.
-    expect(FORM_SOURCE).toContain("now: Date = serverNowDate()");
-    expect(FORM_SOURCE).toContain("readObservabilityConfig(settings, now)");
-    expect(FORM_SOURCE).not.toContain("readObservabilityConfig(settings)");
+    try {
+      // The server's clock is an hour behind this browser, and its window has 30 minutes left: on
+      // the browser's clock the deadline is already spent.
+      const serverAt = Date.now() - 60 * 60_000;
+      noteServerDate(
+        new Response(null, {
+          headers: { Date: new Date(serverAt).toUTCString() },
+        }),
+      );
+      const until = new Date(
+        Math.floor(serverAt / 1000) * 1000 + 30 * 60_000,
+      ).toISOString();
+      const form = observabilityToForm({
+        observability: { logToolValues: false, fullDetailUntil: until },
+      });
+      expect(form.fullDetailUntil?.toISOString()).toBe(until);
+      expect(observabilityToStored(form).fullDetailUntil).toBe(until);
+    } finally {
+      resetServerClock();
+    }
   });
 });

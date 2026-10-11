@@ -1892,14 +1892,15 @@ function readBundledTemplate(
       ...(tpl.approvalTtlHours !== undefined
         ? { approvalTtlHours: tpl.approvalTtlHours }
         : {}),
-    }) ?? (slugProblem(tpl.slug) ? `slug: ${slugProblem(tpl.slug)}.` : null);
+    })?.message ??
+    (slugProblem(tpl.slug) ? `slug: ${slugProblem(tpl.slug)}.` : null);
   if (metaFault) return { ok: false, reason: metaFault };
   const content = parseAuthoredTemplate(tpl.blocks, tpl.fields, tpl.style);
   if (!content.ok) return { ok: false, reason: content.reason };
   // Safe only past `templateMetadataProblem`, which is the same schema: the value the gate
   // APPROVED, not the one it was handed — it trims before it measures, so a name padded with
   // whitespace passes a bound the raw string fails.
-  // not-caller-input: a name read off the template being imported, not a value from this request
+  // biome-ignore lint/plugin/require-parse-input: not caller input, a name read off the template being imported, not a value from this request
   const name = templateNameSchema.parse(tpl.name);
   return { ok: true, name, content: content.content };
 }

@@ -500,13 +500,32 @@ describe.skipIf(!dbUp)("readGuardrailHealth", () => {
   });
 
   test("RLS: a tenant only ever reads its own agent's failures", async () => {
-    const health = await readGuardrailHealth(
-      ctx(tenantB),
-      AGENT_B,
-      SINCE,
-      appDb,
-    );
-    expect(health.failures).toBe(1);
-    expect(health.lastError).toBe("other tenant");
+    // A newer row filed under tenant A that names B's agent: the agent filter alone would count it.
+    const planted = await suDb.executionLog.create({
+      data: {
+        tenantId: tenantA,
+        turnId: "g-planted",
+        agentId: AGENT_B,
+        stage: "guardrail",
+        level: "warn",
+        status: "error",
+        source: "inbox",
+        errorMessage: "filed under tenant A",
+        createdAt: ago(1),
+      },
+      select: { id: true },
+    });
+    try {
+      const health = await readGuardrailHealth(
+        ctx(tenantB),
+        AGENT_B,
+        SINCE,
+        appDb,
+      );
+      expect(health.failures).toBe(1);
+      expect(health.lastError).toBe("other tenant");
+    } finally {
+      await suDb.executionLog.delete({ where: { id: planted.id } });
+    }
   });
 });

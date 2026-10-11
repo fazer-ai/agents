@@ -111,6 +111,34 @@ describe("snoozed follow-up section", () => {
     expect(saveDisabled()).toBe(false);
   });
 
+  test("at the label limit the add button gives way to a hint naming the limit", () => {
+    const labeled = (n: number) =>
+      Array.from({ length: n }, (_, i) => cadence(`etiqueta-${i}`));
+    const addButtons = () =>
+      screen.queryAllByRole("button", {
+        name: /Add cadence by label|Adicionar cadência por etiqueta/,
+      }).length;
+    const AT_LIMIT =
+      /^(Up to 10 cadences by label\.|Até 10 cadências por etiqueta\.)$/;
+
+    renderWith({ enabled: true, signature: false, cadences: labeled(9) });
+    expect(addButtons()).toBe(1);
+    expect(count(AT_LIMIT)).toBe(0);
+    cleanup();
+
+    renderWith({ enabled: true, signature: false, cadences: labeled(10) });
+    expect(addButtons()).toBe(0);
+    expect(count(AT_LIMIT)).toBe(1);
+    expect(saveDisabled()).toBe(false);
+    cleanup();
+
+    // Past the limit the refusal already says it, and holds Save: no second sentence beside it.
+    renderWith({ enabled: true, signature: false, cadences: labeled(11) });
+    expect(addButtons()).toBe(0);
+    expect(count(AT_LIMIT)).toBe(0);
+    expect(count(/Remove the extra ones|Remova as que sobram/)).toBe(1);
+  });
+
   test("a clean config saves", () => {
     renderWith({
       enabled: true,

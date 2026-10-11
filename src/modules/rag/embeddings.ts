@@ -65,7 +65,19 @@ const COMPATIBLE_BATCH_SIZE = 512;
 // `@langchain/openai` retries six times by default; this path does its own retrying instead. An ingest
 // failure is terminal (the document lands in FAILED until a manual reindex), so a single 503 must not
 // cost it. Three attempts, not six, because `embedQuery` shares this path inside a live turn.
-const COMPATIBLE_RETRY_DELAYS_MS = [500, 2000];
+const COMPATIBLE_RETRY_DELAYS_MS: readonly number[] = [500, 2000];
+
+let retryDelaysForTest: readonly number[] | undefined;
+
+/**
+ * Test-only: the pauses between attempts, so a test of the retry loop does not sit through half a
+ * second per retry. `undefined` puts COMPATIBLE_RETRY_DELAYS_MS back. Production never calls it.
+ */
+export function setEmbeddingRetryDelaysForTest(
+  delays: readonly number[] | undefined,
+): void {
+  retryDelaysForTest = delays;
+}
 
 // What is worth asking again differs per caller; the transient STATUSES are shared (see
 // `provider-failure`). A failure with no status (a reset, or a base URL that never resolves) divides
@@ -347,7 +359,7 @@ async function withTransientRetry<T>(
     try {
       return await withinDeadline(call, Math.min(budget.attemptMs, left));
     } catch (err) {
-      const delay = COMPATIBLE_RETRY_DELAYS_MS[attempt];
+      const delay = (retryDelaysForTest ?? COMPATIBLE_RETRY_DELAYS_MS)[attempt];
       if (delay === undefined || !isTransient(err, retryStatusless)) throw err;
       if (
         budget.deadlineMs !== undefined &&

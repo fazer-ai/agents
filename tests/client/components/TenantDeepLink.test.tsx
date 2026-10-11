@@ -6,7 +6,6 @@ import {
   beforeEach,
   describe,
   expect,
-  mock,
   test,
 } from "bun:test";
 import {
@@ -18,7 +17,9 @@ import {
 } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { ToastProvider } from "@/client/components";
+import * as AuthModule from "@/client/contexts/AuthContext";
 import { withI18n } from "@/tests/utils/i18n";
+import { stubExports } from "@/tests/utils/module-stub";
 
 // The decision has a table of its own (tests/client/lib/tenantDeepLink.test.ts); tested HERE is
 // what a pure function cannot see: when the parameter is consumed, and when the page underneath may
@@ -64,7 +65,7 @@ function installFetchStub() {
   }) as typeof fetch;
 }
 
-mock.module("@/client/contexts/AuthContext", () => ({
+stubExports(AuthModule, {
   useAuth: () => ({
     user: { id: "1", role, tenantId: userTenantId, tenants: userTenants },
     loading: false,
@@ -72,7 +73,7 @@ mock.module("@/client/contexts/AuthContext", () => ({
       refreshes += 1;
     },
   }),
-}));
+});
 
 const { TenantDeepLink } = await import("@/client/components/TenantDeepLink");
 const { ProtectedRoute } = await import("@/client/components/ProtectedRoute");

@@ -67,7 +67,7 @@ export interface UsageRow {
   // What the call cost in USD, from the price table or as the provider reported it. Null when
   // neither could price it.
   costUsd: number | null;
-  // What priced it: the table (`litellm@<commit>`), the tenant's own price (`tenant-override@...`),
+  // What priced it: the table (`litellm@<commit>+openrouter@<hash>`), the tenant's own price (`tenant-override@...`),
   // or the cost OpenRouter reported (`openrouter:reported`).
   priceTable: string;
 }

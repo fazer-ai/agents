@@ -157,6 +157,28 @@ export function attachLangfuseDeliveryLogging(
   client.on("warning", handle("warning"));
 }
 
+// How a client retries a failed delivery: three more tries, three seconds apart. These are the SDK's
+// own defaults, stated so the value a client is built with is one this module names.
+export const LANGFUSE_DELIVERY_RETRY = {
+  fetchRetryCount: 3,
+  fetchRetryDelay: 3_000,
+} as const;
+
+let deliveryRetryForTest:
+  | { fetchRetryCount: number; fetchRetryDelay: number }
+  | undefined;
+
+/**
+ * Test-only: the retry a client built from now on gets, so a test that drains clients pointed at an
+ * unreachable Langfuse does not sit through nine seconds of retries. `undefined` puts
+ * LANGFUSE_DELIVERY_RETRY back. Production never calls it.
+ */
+export function setLangfuseDeliveryRetryForTest(
+  retry: { fetchRetryCount: number; fetchRetryDelay: number } | undefined,
+): void {
+  deliveryRetryForTest = retry;
+}
+
 // environment is pinned at the CLIENT level (constructor), NOT per-trace: with updateRoot:true the
 // LangChain handler emits a trace-update that does NOT carry environment, so traceStateless would
 // reinject the client default and the server's per-id merge would clobber a per-trace override.
@@ -177,6 +199,7 @@ function getClient(
       baseUrl: cfg.baseUrl,
       mask: makeMask(cfg.sendContent),
       environment,
+      ...(deliveryRetryForTest ?? LANGFUSE_DELIVERY_RETRY),
     });
     attachLangfuseDeliveryLogging(client, {
       tenantId,

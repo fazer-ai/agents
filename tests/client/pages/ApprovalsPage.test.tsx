@@ -1,6 +1,6 @@
 /// <reference lib="dom" />
 
-import { afterAll, afterEach, expect, mock, test } from "bun:test";
+import { afterAll, afterEach, expect, test } from "bun:test";
 import {
   cleanup,
   fireEvent,
@@ -10,17 +10,18 @@ import {
 } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { MemoryRouter, Route, Routes, useNavigate } from "react-router";
+import * as AuthModule from "@/client/contexts/AuthContext";
 import { fetchTracker } from "@/tests/utils/fetch-settle";
+import { stubExports } from "@/tests/utils/module-stub";
 
 // The one approvals queue: a document waiting on the team is listed for every role and counted in
 // the sidebar badge, and the knowledge suggestions join both only for an admin, who alone reviews
 // them. A document opens the same page as the alert's link.
 
 let role = "AGENT";
-mock.module("@/client/contexts/AuthContext", () => ({
+stubExports(AuthModule, {
   useAuth: () => ({ user: { role } }),
-  AuthProvider: ({ children }: { children: ReactNode }) => children,
-}));
+});
 
 const { ApprovalsProvider, usePendingApprovals } = await import(
   "@/client/contexts/ApprovalsContext"

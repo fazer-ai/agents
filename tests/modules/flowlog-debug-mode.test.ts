@@ -3,12 +3,14 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { z } from "zod";
 import { PrismaClient } from "@/../generated/prisma/client";
 import config from "@/config";
+import { interpolatePromptVars } from "@/graph/prompt";
 import { auditedPromptVar, buildPromptAudit } from "@/graph/prompt-audit";
 import { MAX_STRING, redactSecretsDeep } from "@/lib/redact";
 import type { TenantContext } from "@/lib/tenancy";
 import {
   assertAgentCreatable,
   assertSettingsDebugWindow,
+  DebugWindowTooLongError,
   updateAgent,
 } from "@/modules/agents/service";
 import { BEHAVIOR_PATCH_SHAPE } from "@/modules/agents/settings-schema";
@@ -279,7 +281,21 @@ describe("the debug ceiling is derived from what the API already accepts", () =>
   test("ordinary prose expands by about 1.08x", () => {
     const prose =
       "Você é a atendente virtual da {{nome_empresa}}. Fale com {{nome_contato}} de forma cordial e objetiva, sempre no mesmo idioma em que a pessoa escrever. Nunca invente informações sobre procedimentos, valores ou disponibilidade: se não souber, diga que vai verificar e ofereça transferir para um atendente humano. ";
-    expect(factor(prose.repeat(30), VARS)).toBeLessThan(1.2);
+    // NOTE: each placeholder becomes its audited form and nothing else moves.
+    expect(
+      buildPromptAudit({
+        template: prose.repeat(30),
+        vars: VARS,
+        opts: { now },
+        sections: [],
+      }),
+    ).toBe(
+      prose
+        .replace("{{nome_empresa}}", "{{nome_empresa: string(15)}}")
+        .replace("{{nome_contato}}", "{{nome_contato: string(24)}}")
+        .repeat(30),
+    );
+    expect(factor(prose.repeat(30), VARS)).toBeCloseTo(1.077, 3);
   });
 
   test("the ceiling covers the worst case over the largest prompt the API accepts", () => {
@@ -338,7 +354,8 @@ describe("redactSecretsDeep — the ceiling is the caller's, at every depth", ()
       0,
       MAX_STRING + 1000,
     ) as { s: string };
-    expect(out.s).not.toContain("sk-abcdefghijklmnopqrstuvwx");
+    // The key is replaced and the rest of the string is kept whole under the raised ceiling.
+    expect(out.s).toBe(`${long} ‹redacted›`);
   });
 });
 
@@ -384,8 +401,8 @@ describe("the raised ceiling is a budget for the whole detail, not per string", 
     >;
     // Both survive to the full per-string cap: this is the behaviour every line already has, and
     // sharing the ordinary 2,000 across an event would silently shorten all of them.
-    expect(out.a?.length).toBeGreaterThan(MAX_STRING - 1);
-    expect(out.b?.length).toBeGreaterThan(MAX_STRING - 1);
+    const capped = `${"a".repeat(MAX_STRING)}…[truncated]`;
+    expect(out).toEqual({ a: capped, b: capped });
   });
 
   // The sum of what the LEAVES carry, which is what the budget bounds. `JSON.stringify` would
@@ -402,10 +419,15 @@ describe("the raised ceiling is a budget for the whole detail, not per string", 
     const leaves = Object.fromEntries(
       Array.from({ length: 50 }, (_, i) => [`k${i}`, "a".repeat(10_000)]),
     );
-    const out = redactSecretsDeep(leaves, 0, cap, { left: cap });
+    const out = redactSecretsDeep(leaves, 0, cap, { left: cap }) as Record<
+      string,
+      string
+    >;
     // NOTE: The budget plus the ONE marker on the leaf that spent it. Not one per leaf: an allowance that
     // scales with the field count is not a bound.
-    expect(carried(out)).toBeLessThanOrEqual(cap + "…[truncated]".length);
+    expect(out.k0).toBe(`${"a".repeat(cap)}…[truncated]`);
+    expect(Object.values(out).slice(1)).toEqual(Array(49).fill(""));
+    expect(carried(out)).toBe(cap + "…[truncated]".length);
   });
 
   // NOTE: The count is the whole point: `MAX_ARRAY` bounds arrays and `MAX_DEPTH` bounds nesting, but an
@@ -428,8 +450,9 @@ describe("the raised ceiling is a budget for the whole detail, not per string", 
           { left: cap },
         ),
       );
-    expect(row(5_000)).toBe(row(50));
-    expect(row(5_000)).toBeLessThanOrEqual(cap + "…[truncated]".length);
+    // Eight 500-char leaves spend the 4,000 exactly; every field after them is empty.
+    expect(row(50)).toBe(cap);
+    expect(row(5_000)).toBe(cap);
   });
 
   test("a budget spent to EXACTLY zero is spent", () => {
@@ -557,10 +580,9 @@ describe("the raised ceiling is a budget for the whole detail, not per string", 
       cap,
       { left: cap },
     ) as { args: { deep: Array<{ v: string }> }; result: string };
-    const spent =
-      (out.args.deep[0]?.v.replace("…[truncated]", "").length ?? 0) +
-      out.result.replace("…[truncated]", "").length;
-    expect(spent).toBeLessThanOrEqual(cap);
+    // The nested leaf spends the whole budget, so the top-level one after it gets nothing.
+    expect(out.args.deep[0]?.v).toBe(`${"a".repeat(cap)}…[truncated]`);
+    expect(out.result).toBe("");
   });
 
   test("a `generate` line is unaffected, because it holds one string", () => {
@@ -809,11 +831,14 @@ describe("a schedule variable expands once, not once per occurrence", () => {
       opts: { now, availability },
       sections: [],
     });
+  const render = (template: string) =>
+    interpolatePromptVars(template, {}, { now, availability });
 
   test("one occurrence still carries the whole schedule, which is the point of keeping it", () => {
     const a = audit("{{horario_atendimento}}");
+    // NOTE: exactly what the turn itself renders for the placeholder, every window of it.
+    expect(a).toBe(render("{{horario_atendimento}}"));
     expect(a.length).toBeGreaterThan(2_000);
-    expect(a).not.toContain("string(");
   });
 
   test("the repeats collapse instead of multiplying", () => {
@@ -831,17 +856,35 @@ describe("a schedule variable expands once, not once per occurrence", () => {
     // The collapse keys on the same map the interpolation resolves from, so `business_hours` and
     // `horario_atendimento` are two names for one concept and each keeps one rendering. A spelling
     // left out of that map would go back to expanding on every occurrence.
-    const both = audit("{{horario_atendimento}}{{business_hours}}").length;
-    const one = audit("{{horario_atendimento}}").length;
-    expect(both).toBeGreaterThan(one * 1.5);
+    expect(audit("{{horario_atendimento}}{{business_hours}}")).toBe(
+      render("{{horario_atendimento}}") + render("{{business_hours}}"),
+    );
   });
 
   test("the ceiling reserves room for exactly that rule", () => {
     // Six names in the schedule map, one full rendering each, on top of the template's own audit.
+    const names = [
+      "horario_atendimento",
+      "business_hours",
+      "esta_aberto",
+      "is_open",
+      "proximo_atendimento",
+      "next_open_at",
+    ];
     const worst = audit(
-      "{{horario_atendimento}}{{business_hours}}{{esta_aberto}}{{is_open}}{{proximo_atendimento}}{{next_open_at}}".repeat(
-        200,
-      ),
+      names
+        .map((n) => `{{${n}}}`)
+        .join("")
+        .repeat(200),
+    );
+    // The first pass renders each name once; the other 199 are its measured placeholder.
+    const full = names.map((n) => render(`{{${n}}}`));
+    expect(worst).toBe(
+      full.join("") +
+        names
+          .map((n, i) => auditedPromptVar(n, full[i] as string))
+          .join("")
+          .repeat(199),
     );
     expect(worst.length).toBeLessThan(DEBUG_MAX_STRING);
   });
@@ -927,6 +970,14 @@ describe("an over-horizon deadline is refused where it is written", () => {
     expect(() =>
       assertSettingsDebugWindow(bag(ahead(1)), undefined, now),
     ).not.toThrow();
+    // The control: the same write one hour past the horizon is the refusal.
+    expect(() =>
+      assertSettingsDebugWindow(
+        bag(ahead(FULL_DETAIL_MAX_HOURS + 1)),
+        undefined,
+        now,
+      ),
+    ).toThrow(DebugWindowTooLongError);
   });
 
   // Same shape as the text-size rule next to it: only what the write INTRODUCES or CHANGES is
@@ -936,6 +987,10 @@ describe("an over-horizon deadline is refused where it is written", () => {
     expect(() =>
       assertSettingsDebugWindow(bag(ahead(48)), stored, now),
     ).not.toThrow();
+    // The control: the same value over a bag that did not hold it is refused.
+    expect(() =>
+      assertSettingsDebugWindow(bag(ahead(48)), bag(ahead(1)), now),
+    ).toThrow(DebugWindowTooLongError);
   });
 
   test("turning it off is always allowed", () => {
@@ -945,6 +1000,10 @@ describe("an over-horizon deadline is refused where it is written", () => {
     expect(() =>
       assertSettingsDebugWindow(bag(ahead(-1)), bag(ahead(48)), now),
     ).not.toThrow();
+    // The control: over the same stored bag, moving it to another far instant is refused.
+    expect(() =>
+      assertSettingsDebugWindow(bag(ahead(72)), bag(ahead(48)), now),
+    ).toThrow(DebugWindowTooLongError);
   });
 
   test("a bag without the block is not a write of it", () => {
@@ -952,6 +1011,10 @@ describe("an over-horizon deadline is refused where it is written", () => {
     expect(() =>
       assertSettingsDebugWindow({ observability: {} }, undefined, now),
     ).not.toThrow();
+    // The control: the block carrying an over-horizon instant is a write of it, and refused.
+    expect(() =>
+      assertSettingsDebugWindow(bag(ahead(48)), undefined, now),
+    ).toThrow(DebugWindowTooLongError);
   });
 });
 
@@ -979,9 +1042,11 @@ describe("the MCP dry run answers the same as the apply", () => {
   // a short prompt is not what this preview refuses. The variants are parsed BEFORE the agent is looked
   // up, in the apply's own order, so the pair still separates a refusal about the prompt from any other.
   test("a short variant prompt is not what the preview refuses", async () => {
-    const res = JSON.stringify(await preview("curto"));
-    expect(res).not.toContain("insufficient_scope");
-    expect(res).not.toContain("variants");
+    // NOTE: past the name and the variants, the refusal is the agent's, the next question in order.
+    expect(await preview("curto")).toEqual({
+      ok: false,
+      error: "an experiment applies to one agent, and this write names none",
+    });
   });
 
   test("an update with an oversized variant answers, it does not throw", async () => {
@@ -993,8 +1058,10 @@ describe("the MCP dry run answers the same as the apply", () => {
       variants: [{ key: "a", system_prompt: over }],
       dry_run: true,
     });
-    expect(JSON.stringify(res)).toContain('"ok":false');
-    expect(JSON.stringify(res)).not.toContain("insufficient_scope");
+    expect(res).toEqual({
+      ok: false,
+      error: "The value sent in variants.0.systemPrompt is not valid.",
+    });
   });
 
   test("an oversized variant prompt is refused on the preview too", async () => {

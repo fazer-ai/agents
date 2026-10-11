@@ -1,0 +1,37 @@
+{
+  "id": 3,
+  "inbox_id": 3,
+  "channel": "Channel::Api",
+  "status": "pending",
+  "group_type": "individual",
+  "contact_inbox": {
+    "id": 3
+  },
+  "meta": {
+    "sender": {
+      "id": 3,
+      "name": "ship1282-1791685800",
+      "email": null,
+      "phone_number": "+5511984056200",
+      "identifier": null,
+      "additional_attributes": {},
+      "custom_attributes": {
+        "plano": "ouro"
+      },
+      "type": "contact",
+      "updated_at": 1791685802.796915
+    },
+    "assignee_type": "AgentBot",
+    "assignee": {
+      "id": 2,
+      "name": "ship1282-1791685800",
+      "type": "agent_bot"
+    }
+  },
+  "custom_attributes": {},
+  "labels": [],
+  "last_activity_at": 1791685801,
+  "updated_at": 1791685802.847544,
+  "event": "conversation_status_changed",
+  "changed_attributes": null
+}

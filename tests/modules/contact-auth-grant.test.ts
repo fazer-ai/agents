@@ -1,31 +1,36 @@
 import {
   afterAll,
+  afterEach,
   beforeAll,
   beforeEach,
   describe,
   expect,
+  jest,
+  spyOn,
   test,
 } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import * as locks from "@/lib/locks";
 import {
   clearContactAuthGrantState,
   contactAuthPolicyHash,
   dropContactAuthGrant,
   knownContactCount,
   setMaxTrackedContactsForTest,
-  setRefusalProtectionForTest,
   unconfirmedWriteCount,
   writeContactAuthGrant,
 } from "@/modules/contact-auth/grants";
 import { authorizeContact } from "@/modules/contact-auth/service";
 import {
   CONTACT_AUTH_DEFAULTS,
+  CONTACT_AUTH_TIMEOUT_MAX_MS,
   type ContactAuthConfig,
 } from "@/modules/contact-auth/settings";
 import { clearContactAuthState } from "@/modules/contact-auth/state";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { until } from "../utils/poll";
 
 // Reusing a positive verdict across messages (`mode: "once"`), and every way back out of it: TTL,
 // identity, policy (a match rule, not a revocation) and a fresh denial (under every mode, because
@@ -33,7 +38,8 @@ import { seedChatwootInstance } from "../utils/chatwoot";
 // verdict (`mode: "once"`)"; these tests pin each exit.
 //
 // Nothing here polls or sleeps for a verdict: the endpoint double counts its own calls, so "the
-// endpoint was not asked" is a number rather than a timing.
+// endpoint was not asked" is a number rather than a timing. A statement held "in flight" is held on a
+// gate the test opens once the overlap it is about is in place, never for a guessed duration.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -163,6 +169,29 @@ function baseWithGrantHook(
 }
 
 let seq = 0;
+
+// A statement held until the test opens it. `open` is idempotent, and every gate a test leaves shut
+// is opened after it, so a statement abandoned on the gate's deadline does not hold the contact's
+// queue into the next test.
+const shutGates: Array<() => void> = [];
+function gate(): { wait: Promise<void>; open: () => void } {
+  let open: () => void = () => {};
+  const wait = new Promise<void>((r) => {
+    open = r;
+  });
+  shutGates.push(open);
+  return { wait, open };
+}
+
+// How many times a contact's grant queue has been joined: a check owing a delete joins it first, so
+// a count that moved says that check is now waiting behind whatever holds the queue.
+const realWithKeyedQueue = locks.withKeyedQueue;
+let grantQueueJoins = 0;
+
+// A gate budget short enough that a test that reaches it does not wait long; nothing here asks the
+// gate to fit real work inside it, only to get as far as the statement the test holds, which each
+// such test checks it did.
+const SHORT_BUDGET_MS = 40;
 async function ask(params: {
   cfg: ContactAuthConfig;
   fetchImpl: typeof fetch;
@@ -277,6 +306,23 @@ describe.skipIf(!dbUp)("contact authorization: reusing a verdict", () => {
     await suDb.tenant.delete({ where: { id: tenantId } });
     await suDb.$disconnect();
     await appDb.$disconnect();
+  });
+
+  afterEach(() => {
+    for (const open of shutGates.splice(0)) open();
+  });
+
+  let queueSpy: { mockRestore(): void } | null = null;
+  beforeAll(() => {
+    queueSpy = spyOn(locks, "withKeyedQueue").mockImplementation(
+      (key, fn, tail) => {
+        if (key.startsWith("contact-auth-grant:")) grantQueueJoins += 1;
+        return realWithKeyedQueue(key, fn, tail);
+      },
+    );
+  });
+  afterAll(() => {
+    queueSpy?.mockRestore();
   });
 
   beforeEach(async () => {
@@ -487,22 +533,26 @@ describe.skipIf(!dbUp)("contact authorization: reusing a verdict", () => {
 
   test("a stored-verdict read that hangs spends the gate's budget, not more", async () => {
     const ep = endpoint(allowed);
+    const hung = gate();
+    let reached = 0;
     const before = Date.now();
     const verdict = await ask({
-      cfg: cfg({ timeoutMs: 1000 }),
+      cfg: cfg({ timeoutMs: SHORT_BUDGET_MS }),
       fetchImpl: ep.fetchImpl,
       base: baseWithGrantHook(appDb, (m) =>
         m === "findUnique"
           ? async () => {
-              await Bun.sleep(5000);
+              reached += 1;
+              await hung.wait;
               return null;
             }
           : undefined,
       ),
     });
     const elapsed = Date.now() - before;
+    expect(reached).toBe(1);
     // `timeoutMs` covers every step that waits, and a saturated pool is as capable of holding the
-    // webhook as a slow endpoint is. Five seconds of read against a one-second budget: the gate
+    // webhook as a slow endpoint is. A read that never answers against a short budget: the gate
     // comes back on its own deadline, and it comes back as the fail-closed answer.
     expect(elapsed).toBeLessThan(2500);
     expect(verdict.outcome).toBe("error");
@@ -636,6 +686,7 @@ describe.skipIf(!dbUp)("contact authorization: reusing a verdict", () => {
     const upserting = new Promise<void>((r) => {
       upsertStarted = r;
     });
+    const slowUpsert = gate();
     // The other interleaving, and the one a mark-before-delete does NOT close: this allow passes its
     // ordering check while no refusal is known, and only then is slow. Whatever the refusal records
     // afterwards, this write is already past the point that would have read it.
@@ -646,15 +697,19 @@ describe.skipIf(!dbUp)("contact authorization: reusing a verdict", () => {
         m === "upsert"
           ? async (...args: unknown[]) => {
               upsertStarted?.();
-              await Bun.sleep(200);
+              await slowUpsert.wait;
               return delegate.upsert(...args);
             }
           : undefined,
       ),
     });
     await upserting;
-    // The refusal runs to completion here, delete included, while that upsert is still in flight.
-    await ask({ cfg: cfg({ mode: "perMessage" }), ...ep });
+    // The refusal is answered and its delete queued while that upsert is still in flight, and only
+    // then does the upsert finish.
+    const refusal = ask({ cfg: cfg({ mode: "perMessage" }), ...ep });
+    await until("the refusal's delete queued", () => unconfirmedWriteCount());
+    slowUpsert.open();
+    await refusal;
     await allowInFlight;
 
     // One queue per contact is what makes this hold: the refusal's section waits for the allow's,
@@ -670,6 +725,7 @@ describe.skipIf(!dbUp)("contact authorization: reusing a verdict", () => {
     const deleting = new Promise<void>((r) => {
       deleteStarted = r;
     });
+    const slowDelete = gate();
     const denial = ask({
       cfg: cfg({ mode: "perMessage" }),
       fetchImpl: ep.fetchImpl,
@@ -677,7 +733,7 @@ describe.skipIf(!dbUp)("contact authorization: reusing a verdict", () => {
         m === "deleteMany"
           ? async (...args: unknown[]) => {
               deleteStarted?.();
-              await Bun.sleep(200);
+              await slowDelete.wait;
               return delegate.deleteMany(...args);
             }
           : undefined,
@@ -685,8 +741,13 @@ describe.skipIf(!dbUp)("contact authorization: reusing a verdict", () => {
     });
     await deleting;
     // The read starts while the delete is in flight. Un-serialized it gets a snapshot taken before
-    // the row was removed, and a fresh refusal is answered with the verdict it just replaced.
-    const reader = await ask({ cfg: cfg(), ...ep });
+    // the row was removed, and a fresh refusal is answered with the verdict it just replaced. The
+    // delete finishes once the reader is waiting behind it.
+    const joined = grantQueueJoins;
+    const reading = ask({ cfg: cfg(), ...ep });
+    await until("the reader queued", () => grantQueueJoins > joined);
+    slowDelete.open();
+    const reader = await reading;
     await denial;
 
     expect(reader.reused).toBeFalsy();
@@ -712,25 +773,33 @@ describe.skipIf(!dbUp)("contact authorization: reusing a verdict", () => {
 
     // The retry runs into a delete that outlives the gate's budget. The caller walks away on time;
     // the STATEMENT does not stop, and it is still on its way to the database.
+    const straggler = gate();
+    let reached = 0;
     const timedOut = await ask({
-      cfg: cfg({ timeoutMs: 1000 }),
+      cfg: cfg({ timeoutMs: SHORT_BUDGET_MS }),
       fetchImpl: ep.fetchImpl,
       base: baseWithGrantHook(appDb, (m, delegate) =>
         m === "deleteMany"
           ? async (...args: unknown[]) => {
-              await Bun.sleep(1500);
+              reached += 1;
+              await straggler.wait;
               return delegate.deleteMany(...args);
             }
           : undefined,
       ),
     });
     expect(timedOut.outcome).toBe("error");
+    expect(reached).toBe(1);
 
     // The next message is allowed and its grant is stored. Released from the queue when the CALLER
-    // gave up, the straggler would delete this row and cost an endpoint call nobody needed.
-    const stored = await ask({ cfg: cfg(), ...ep });
+    // gave up, the straggler would delete this row and cost an endpoint call nobody needed. It lands
+    // once the next check is waiting behind it.
+    const joined = grantQueueJoins;
+    const storing = ask({ cfg: cfg(), ...ep });
+    await until("the next check queued", () => grantQueueJoins > joined);
+    straggler.open();
+    const stored = await storing;
     expect(stored.outcome).toBe("allowed");
-    await Bun.sleep(1200);
     expect(await grants()).toHaveLength(1);
   });
 
@@ -747,6 +816,7 @@ describe.skipIf(!dbUp)("contact authorization: reusing a verdict", () => {
     const held = new Promise<void>((r) => {
       holdingQueue = r;
     });
+    const slowUpsert = gate();
     const slowWriter = ask({
       cfg: cfg({ grantTtlSeconds: 1800 }),
       fetchImpl: ep.fetchImpl,
@@ -754,7 +824,7 @@ describe.skipIf(!dbUp)("contact authorization: reusing a verdict", () => {
         m === "upsert"
           ? async (...args: unknown[]) => {
               holdingQueue?.();
-              await Bun.sleep(300);
+              await slowUpsert.wait;
               return delegate.upsert(...args);
             }
           : undefined,
@@ -777,12 +847,17 @@ describe.skipIf(!dbUp)("contact authorization: reusing a verdict", () => {
       }) as unknown as typeof fetch,
     });
     await denialAnswered;
-    await Bun.sleep(50);
+    await until("the refusal remembered", () => unconfirmedWriteCount());
 
     // The reader's own retry of that refusal queues behind the writer, so it waits — for the writer,
     // not for the network — and comes back having asked the endpoint. Un-marked, it would find a row
-    // that still looks valid and serve it without waiting for anything.
-    const reader = await ask({ cfg: cfg({ timeoutMs: 2000 }), ...ep });
+    // that still looks valid and serve it without waiting for anything. The writer finishes once
+    // the reader is waiting behind it.
+    const joined = grantQueueJoins;
+    const reading = ask({ cfg: cfg({ timeoutMs: 10_000 }), ...ep });
+    await until("the reader queued", () => grantQueueJoins > joined);
+    slowUpsert.open();
+    const reader = await reading;
     expect(reader.reused).toBeFalsy();
     await Promise.all([slowWriter, denial]);
   });
@@ -833,26 +908,28 @@ describe.skipIf(!dbUp)("contact authorization: reusing a verdict", () => {
 
   test("the overflow a refusal spike leaves behind drains on its own", async () => {
     setMaxTrackedContactsForTest(1);
-    // NOTE: the protection window has to outlast the SETUP, not just the assertion. The loop below
-    // fills the map and arms the sweep (the first drop arms a timer for `refusedAt + window`, every
-    // later drop is a database write), so a window shorter than the loop lets the timer drain the
-    // map before the precondition reads it on a loaded `bun test --parallel` run. 2s is the window
-    // sized to that work; the wait below is sized past it so the drain still has room after.
-    setRefusalProtectionForTest(2000);
-    // Every marker young enough to be protected, so eviction cannot take any of them and the map is
-    // over its cap. Nothing else is coming: a spike that stops refusing is exactly the case where no
-    // later call arrives to look at this again, and the entries would sit there for the life of the
-    // process.
-    for (const contact of [contactId, ...spareContacts]) {
-      await dropContactAuthGrant(
-        appDb,
-        { tenantId, agentId, contactId: contact },
-        { refusedAt: Date.now() },
-      );
-    }
-    expect(knownContactCount()).toBeGreaterThan(1);
-    for (let i = 0; i < 160 && knownContactCount() > 1; i++) {
-      await Bun.sleep(25);
+    // NOTE: on a fake clock, with the shipped protection window: the clock stands still through the
+    // setup, so no marker can age out of its window before the precondition reads the map, however
+    // long the database writes take, and the sweep's timer fires when the clock is moved past it.
+    jest.useFakeTimers();
+    try {
+      // Every marker young enough to be protected, so eviction cannot take any of them and the map
+      // is over its cap. Nothing else is coming: a spike that stops refusing is exactly the case
+      // where no later call arrives to look at this again, and the entries would sit there for the
+      // life of the process.
+      for (const contact of [contactId, ...spareContacts]) {
+        await dropContactAuthGrant(
+          appDb,
+          { tenantId, agentId, contactId: contact },
+          { refusedAt: Date.now() },
+        );
+      }
+      expect(knownContactCount()).toBeGreaterThan(1);
+      jest.advanceTimersByTime(CONTACT_AUTH_TIMEOUT_MAX_MS - 1);
+      expect(knownContactCount()).toBeGreaterThan(1);
+      jest.advanceTimersByTime(2);
+    } finally {
+      jest.useRealTimers();
     }
     // Back to the cap, without another refusal having arrived.
     expect(knownContactCount()).toBe(1);
@@ -886,27 +963,36 @@ describe.skipIf(!dbUp)("contact authorization: reusing a verdict", () => {
   test("a grant that expires while its own read is in flight is not served", async () => {
     const ep = endpoint(allowed, allowed);
     await ask({ cfg: cfg(), ...ep });
+    const expiresAt = Date.now() + 60_000;
     await suDb.contactAuthGrant.updateMany({
       where: { tenantId, agentId },
-      data: { expiresAt: new Date(Date.now() + 250) },
+      data: { expiresAt: new Date(expiresAt) },
     });
     // The row is live when the query starts and dead when it comes back. The TTL is a promise about
-    // the moment the verdict is SERVED, so the clock that decides is the one read after the await.
-    const verdict = await ask({
-      cfg: cfg(),
-      fetchImpl: ep.fetchImpl,
-      base: baseWithGrantHook(appDb, (m, delegate) =>
-        m === "findUnique"
-          ? async (...args: unknown[]) => {
-              const row = await delegate.findUnique(...args);
-              await Bun.sleep(500);
-              return row;
-            }
-          : undefined,
-      ),
-    });
-    expect(verdict.reused).toBeFalsy();
-    expect(ep.calls).toHaveLength(2);
+    // the moment the verdict is SERVED, so the clock that decides is the one read after the await:
+    // here the read comes back with the wall clock moved past the row's expiry.
+    // In an object: the assignment lives in a closure, and TS keeps the `null` narrowed otherwise.
+    const clock = { spy: null as { mockRestore(): void } | null };
+    try {
+      const verdict = await ask({
+        cfg: cfg(),
+        fetchImpl: ep.fetchImpl,
+        base: baseWithGrantHook(appDb, (m, delegate) =>
+          m === "findUnique"
+            ? async (...args: unknown[]) => {
+                const row = await delegate.findUnique(...args);
+                clock.spy = spyOn(Date, "now").mockReturnValue(expiresAt + 1);
+                return row;
+              }
+            : undefined,
+        ),
+      });
+      clock.spy?.mockRestore();
+      expect(verdict.reused).toBeFalsy();
+      expect(ep.calls).toHaveLength(2);
+    } finally {
+      clock.spy?.mockRestore();
+    }
   });
 
   test("the retry of an unconfirmed write spends the gate's budget, not more", async () => {
@@ -928,19 +1014,23 @@ describe.skipIf(!dbUp)("contact authorization: reusing a verdict", () => {
     // The retry runs BEFORE the answer, so it is inside the budget like the stored-verdict read.
     // Left outside it, a pool in trouble adds the scoped transaction's own maxWait and timeout on
     // top of a gate configured for one second.
+    const hung = gate();
+    let reached = 0;
     const before = Date.now();
     const verdict = await ask({
-      cfg: cfg({ timeoutMs: 1000 }),
+      cfg: cfg({ timeoutMs: SHORT_BUDGET_MS }),
       fetchImpl: ep.fetchImpl,
       base: baseWithGrantHook(appDb, (m) =>
         m === "deleteMany"
           ? async () => {
-              await Bun.sleep(5000);
+              reached += 1;
+              await hung.wait;
               return { count: 0 };
             }
           : undefined,
       ),
     });
+    expect(reached).toBe(1);
     expect(Date.now() - before).toBeLessThan(2500);
     expect(verdict.outcome).toBe("error");
     expect(verdict.reason).toBe("timeout");

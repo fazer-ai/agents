@@ -5,14 +5,7 @@
 // applied filter, the scope, and no cursor. The server owns bounding and serialization.
 // Truncation has its own test: an export that was cut and says nothing is a wrong answer.
 
-import {
-  afterEach,
-  beforeEach,
-  expect,
-  mock,
-  setSystemTime,
-  test,
-} from "bun:test";
+import { afterEach, beforeEach, expect, setSystemTime, test } from "bun:test";
 import { TooltipProvider } from "@radix-ui/react-tooltip";
 import {
   act,
@@ -21,16 +14,16 @@ import {
   render,
   waitFor,
 } from "@testing-library/react";
-import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router";
 import { ToastProvider } from "@/client/components";
+import * as AuthModule from "@/client/contexts/AuthContext";
+import { stubExports } from "@/tests/utils/module-stub";
 
 const mockUser = { role: "TENANT_ADMIN" as string };
 
-mock.module("@/client/contexts/AuthContext", () => ({
+stubExports(AuthModule, {
   useAuth: () => ({ user: mockUser }),
-  AuthProvider: ({ children }: { children: ReactNode }) => children,
-}));
+});
 
 const clicked: { href: string; download: string }[] = [];
 
@@ -210,7 +203,9 @@ test("a truncated export says so, and says how many it kept", async () => {
   await waitFor(() => expect(toastCount()).toBeGreaterThan(0));
   // The count is IN the sentence: "we cut it" without saying where to is a warning the operator
   // cannot act on.
-  expect(toastText()).toContain("500");
+  expect(toastText()).toContain(
+    "Exported the newest 500 entries; more matched. Narrow the period to take the rest.",
+  );
 });
 
 // A cut that kept nothing is not an empty match. When the newest matching row alone exceeds the

@@ -91,31 +91,35 @@ describe("extractText", () => {
   });
 
   test("PDF with no extractable text throws 422 errors.noExtractableText", async () => {
-    // A minimal valid PDF that contains no text streams: just the required structure,
-    // no content stream. unpdf will return an empty string for this.
+    // A well-formed PDF with one page and no content stream, its xref offsets computed so the
+    // parser reads it rather than refusing it: the empty text is what the loader has to refuse.
+    const objects = [
+      "1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n",
+      "2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n",
+      "3 0 obj<</Type/Page/MediaBox[0 0 612 792]/Parent 2 0 R>>endobj\n",
+    ];
+    let body = "%PDF-1.4\n";
+    const offsets: number[] = [];
+    for (const o of objects) {
+      offsets.push(body.length);
+      body += o;
+    }
+    const xrefAt = body.length;
     const emptyPdf = [
-      "%PDF-1.4",
-      "1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj",
-      "2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj",
-      "3 0 obj<</Type/Page/MediaBox[0 0 612 792]/Parent 2 0 R>>endobj",
-      "xref",
-      "0 4",
-      "0000000000 65535 f ",
-      "0000000009 00000 n ",
-      "0000000058 00000 n ",
-      "0000000115 00000 n ",
-      "trailer<</Size 4/Root 1 0 R>>",
-      "startxref",
-      "190",
-      "%%EOF",
-    ].join("\n");
+      body,
+      "xref\n0 4\n0000000000 65535 f \n",
+      ...offsets.map((o) => `${String(o).padStart(10, "0")} 00000 n \n`),
+      `trailer<</Size 4/Root 1 0 R>>\nstartxref\n${xrefAt}\n%%EOF\n`,
+    ].join("");
     const err = await extractText({
       name: "empty.pdf",
       type: "application/pdf",
       bytes: toBytes(emptyPdf),
-    }).catch((e) => e);
-    // Either 422 (no text) or a parse error from unpdf on a malformed PDF.
-    // We accept either: the invariant is that no text is returned silently.
-    expect([422, 500, 400]).toContain(err.statusCode ?? 422);
+    }).then(
+      () => null,
+      (e: { statusCode?: number; translationKey?: string }) => e,
+    );
+    expect(err?.statusCode).toBe(422);
+    expect(err?.translationKey).toBe("errors.noExtractableText");
   });
 });

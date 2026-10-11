@@ -1,14 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
 import { describeClosedGate } from "@/modules/chatwoot/gate-close";
 
-// The decision the three ownership gates share, and the sweep that keeps it shared.
-//
-// The table proves the FUNCTION. It cannot prove that a gate calls it: a gate that spells the ternary
-// out again passes every table row and can still report the wrong thing (classify, write nothing, or
-// write a line with no reason). So the second half reads the source and asks where this vocabulary
-// is allowed to be written at all.
+// The decision the three ownership gates share. The table proves the FUNCTION; that no gate spells
+// the outcomes out again is biome-plugins/no-gate-close-outcome-outside-owner.grit.
 
 describe("describeClosedGate", () => {
   const cases: Array<{
@@ -68,37 +62,4 @@ describe("describeClosedGate", () => {
       ).toEqual(c.expected);
     });
   }
-});
-
-// The two outcomes are a vocabulary, not two strings: an operator filtering the log for one of them
-// has to get every gate that produced it. A second speller is how they drift apart.
-const OWNER = "src/modules/chatwoot/gate-close.ts";
-const VOCABULARY = /outcome\s*:\s*["'](?:taken_over|ownership_lost)["']/;
-
-function tsFiles(dir: string): string[] {
-  const out: string[] = [];
-  for (const e of readdirSync(dir, { withFileTypes: true })) {
-    const p = join(dir, e.name);
-    if (e.isDirectory()) out.push(...tsFiles(p));
-    else if (e.name.endsWith(".ts") || e.name.endsWith(".tsx")) out.push(p);
-  }
-  return out;
-}
-
-describe("the gate-close vocabulary has one speller", () => {
-  // NOTE: The control the sweep needs to be worth reading: a sweep that finds nothing passes whether it
-  // works or not. Both spellings, because a predicate that knows one spacing misses the other.
-  test("the predicate recognises the shape it is looking for", () => {
-    expect(VOCABULARY.test('detail: { outcome: "taken_over" }')).toBe(true);
-    expect(VOCABULARY.test("detail: { outcome:'ownership_lost' }")).toBe(true);
-    expect(VOCABULARY.test('{ outcome  :  "taken_over" }')).toBe(true);
-    expect(VOCABULARY.test('detail: { outcome: "resolved" }')).toBe(false);
-  });
-
-  test("no file outside the owner writes either outcome as a literal", () => {
-    const offenders = tsFiles("src")
-      .filter((f) => f !== OWNER)
-      .filter((f) => VOCABULARY.test(readFileSync(f, "utf8")));
-    expect(offenders).toEqual([]);
-  });
 });

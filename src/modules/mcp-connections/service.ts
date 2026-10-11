@@ -8,7 +8,12 @@ import {
   discoverMcpServer,
   httpErrorCode,
 } from "@/graph/tools/mcp";
-import { AppError, ConflictError, NotFoundError } from "@/lib/errors";
+import {
+  AppError,
+  ConflictError,
+  NotFoundError,
+  quotingReason,
+} from "@/lib/errors";
 import {
   hasSafeStdioCommandChars,
   isMcpStdioLauncher,
@@ -208,20 +213,21 @@ async function assertTransportValid(effective: {
   await assertSafeOutboundUrl(effective.url);
 }
 
-function assertHeadersFit(
+export function assertHeadersFit(
   headers: Record<string, unknown>,
   transport: string,
   credentialHeader: string | null,
 ): asserts headers is McpHeaders {
   const problem = mcpHeadersProblem(headers, transport, credentialHeader);
   if (problem) {
-    throw new AppError(
-      `invalid headers: ${problem}`,
+    const error = new AppError(
+      `invalid headers: ${problem.message}`,
       400,
       "errors.mcpHeadersInvalid",
-      { reason: problem },
+      { reason: problem.message },
       "headers",
     );
+    throw quotingReason(error, problem);
   }
 }
 

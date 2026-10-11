@@ -9,6 +9,9 @@ import {
 } from "@/modules/n8n-export/n8n";
 import { exportToolWorkflow } from "@/modules/n8n-export/service";
 
+// Built at run time so the repo holds no literal that reads as a credential.
+const FAKE_TOKEN = ["abcd", "EFGH", "1234", "5678"].join("");
+
 describe("assertNoSecrets (value scan)", () => {
   test("passes clean content", () => {
     expect(() =>
@@ -17,12 +20,24 @@ describe("assertNoSecrets (value scan)", () => {
         url: "https://api.x.com/v1/pay",
       }),
     ).not.toThrow();
+    // The same object with one token in it is refused, so the pass above is the scan's answer.
+    expect(() =>
+      assertNoSecrets({
+        name: "Create charge",
+        url: `https://api.x.com/v1/pay?access_token=${FAKE_TOKEN}`,
+      }),
+    ).toThrow(SecretLeakError);
   });
 
   test("allows our {{secret}} vault placeholder (a reference, not a secret)", () => {
     expect(() =>
       assertNoSecrets({ headers: { Authorization: "{{secret}}" } }),
     ).not.toThrow();
+    expect(() =>
+      assertNoSecrets({
+        headers: { Authorization: `Bearer ${FAKE_TOKEN}` },
+      }),
+    ).toThrow(SecretLeakError);
   });
 
   test("catches a Bearer token anywhere (even under an innocent key)", () => {

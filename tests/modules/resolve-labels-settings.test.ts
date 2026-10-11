@@ -78,6 +78,13 @@ describe("a resolve label that is also protected is refused", () => {
         resolveConversation: { assignLabels: ["agente-off"] },
       }),
     ).not.toThrow();
+    // The same close list beside a protected list that kept the label is the refusal.
+    expect(() =>
+      assertResolveLabelsNotProtected({
+        setLabels: { protected: ["agente-off"] },
+        resolveConversation: { assignLabels: ["agente-off"] },
+      }),
+    ).toThrow(/agente-off/);
   });
 
   test("disjoint lists and an empty resolve list are accepted", () => {
@@ -93,6 +100,15 @@ describe("a resolve label that is also protected is refused", () => {
         resolveConversation: { assignLabels: [] },
       }),
     ).not.toThrow();
+    // One shared label in the same lists, and the check speaks.
+    expect(() =>
+      assertResolveLabelsNotProtected({
+        setLabels: { protected: ["agente-off"] },
+        resolveConversation: {
+          assignLabels: ["resolvido-pela-ia", "agente-off"],
+        },
+      }),
+    ).toThrow(/agente-off/);
   });
 });
 

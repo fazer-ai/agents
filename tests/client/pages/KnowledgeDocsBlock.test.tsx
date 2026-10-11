@@ -6,7 +6,6 @@ import {
   beforeEach,
   describe,
   expect,
-  mock,
   test,
 } from "bun:test";
 import { TooltipProvider } from "@radix-ui/react-tooltip";
@@ -17,11 +16,13 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import type { ReactNode } from "react";
 import { ToastProvider } from "@/client/components";
+import * as ThemeModule from "@/client/contexts/ThemeContext";
+import * as TenantEventsModule from "@/client/hooks/useTenantEvents";
 import clientEn from "@/client/locales/en.json";
 import clientPt from "@/client/locales/pt-BR.json";
 import { createTestI18n, withI18n } from "@/tests/utils/i18n";
+import { stubExports } from "@/tests/utils/module-stub";
 
 // The embedding block is a READ-TIME answer about the workspace's configuration, and the documents
 // modal holds a snapshot taken when the list was fetched. While it stays open, another tab can
@@ -100,13 +101,13 @@ async function nextBlock(): Promise<{ block: { reason: string } | null }> {
   return { block: answer };
 }
 
-mock.module("@/client/hooks/useTenantEvents", () => ({
+stubExports(TenantEventsModule, {
   useTenantEvents: (o: {
     onKnowledgeDocument?: typeof onKnowledgeDocument;
   }) => {
     onKnowledgeDocument = o.onKnowledgeDocument ?? null;
   },
-}));
+});
 
 // The api module is NOT mocked: `mock.module` is global to the process and leaks into every other
 // file sharing the worker. The Eden treaty calls `globalThis.fetch`, so stubbing that reaches the
@@ -173,15 +174,14 @@ function lookup(locale: string, key: string): string | undefined {
   return typeof node === "string" ? node : undefined;
 }
 
-mock.module("@/client/contexts/ThemeContext", () => ({
+stubExports(ThemeModule, {
   useTheme: () => ({
     theme: "dark",
     resolvedTheme: "dark",
     setTheme: () => {},
   }),
   useThemedAsset: (path: string) => ({ src: path }),
-  ThemeProvider: ({ children }: { children: ReactNode }) => children,
-}));
+});
 
 const { useKnowledgeManager } = await import(
   "@/client/pages/resources/useKnowledgeManager"
@@ -271,11 +271,10 @@ describe("knowledge documents modal — the embedding block is never stale", () 
     cleanup();
   });
 
-  // The two module mocks left are for hooks nothing else under test imports; the fetch stub is
-  // handed back either way.
+  // The hook stubs are put back by `stubExports` after the file's last test, so no `mock.restore()`
+  // here: it restores every spy in the process, and the later describes still need theirs.
   afterAll(() => {
     globalThis.fetch = realFetch;
-    mock.restore();
   });
 
   test("the block the list came with is what the banner explains", async () => {

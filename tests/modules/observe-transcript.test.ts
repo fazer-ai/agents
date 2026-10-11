@@ -385,13 +385,38 @@ describe("the notes the conversation already carries", () => {
         messageType: "outgoing",
         private: true,
       });
-    const notes = notesFromRows([big(1, "a"), big(2, "b"), big(3, "c")], 20);
-    const total = notes.join("").length;
-    expect(total).toBeLessThanOrEqual(8_000);
-    // Every kept note is whole (each clipped to its own 2k cap, none cut by the block budget).
-    for (const n of notes) expect(n.length).toBe(2_000);
-    // The newest survive: it is the newest note a duplicate would duplicate.
-    expect(notes.at(-1)?.[0]).toBe("c");
+    const note = (n: number, text: string) =>
+      row({ id: n, content: text, messageType: "outgoing", private: true });
+    // Four notes at their 2k cap fill the 8k budget exactly; the one-character note before them is
+    // one past it, and goes whole. The newest survive: they are what a duplicate would duplicate.
+    const over = notesFromRows(
+      [note(1, "z"), big(2, "a"), big(3, "b"), big(4, "c"), big(5, "d")],
+      20,
+    );
+    expect(over.map((n) => `${n[0]}${n.length}`)).toEqual([
+      "a2000",
+      "b2000",
+      "c2000",
+      "d2000",
+    ]);
+    // One character less in the newest, and the oldest fits at exactly the budget.
+    const at = notesFromRows(
+      [
+        note(1, "z"),
+        big(2, "a"),
+        big(3, "b"),
+        big(4, "c"),
+        note(5, "d".repeat(1_999)),
+      ],
+      20,
+    );
+    expect(at.map((n) => `${n[0]}${n.length}`)).toEqual([
+      "z1",
+      "a2000",
+      "b2000",
+      "c2000",
+      "d1999",
+    ]);
   });
 
   test("no notes says so, rather than leaving the block out", () => {
@@ -930,23 +955,27 @@ describe("the notes the conversation already carries", () => {
     });
 
     test("a message is not narration, whoever wrote it", () => {
-      // A customer who types the word is not a label change, and a private note about one is a note.
+      // The very sentence a label change renders, typed by the customer, sent by the team, or put
+      // in a private activity, is not one; only the public activity row is.
+      const sentence = "Ana adicionou cancelamento";
       expect(
         labelHistoryFromRows(
           [
-            row({ id: 1, content: "quero cancelamento" }),
+            row({ id: 1, content: sentence }),
+            row({ id: 2, messageType: "outgoing", content: sentence }),
             row({
-              id: 2,
-              messageType: "outgoing",
+              id: 3,
+              messageType: "activity",
               private: true,
-              content: "coloquei cancelamento",
+              content: sentence,
             }),
+            row({ id: 4, messageType: "activity", content: sentence }),
           ],
           vocab,
           undefined,
           8,
         ).lines,
-      ).toEqual([]);
+      ).toEqual([sentence]);
     });
 
     test("with no vocabulary read, nothing is recognised as a label change", () => {
@@ -1578,14 +1607,19 @@ describe("the notes the conversation already carries", () => {
               id: 1,
               messageType: "activity",
               activityType: "conversation_status_changed",
-              content: "Conversa marcada como resolvida por cancelamento",
+              content: "Ana adicionou cancelamento",
+            }),
+            row({
+              id: 2,
+              messageType: "activity",
+              content: "Ana adicionou dúvidas-evento",
             }),
           ],
           vocab,
           undefined,
           8,
         ).lines,
-      ).toEqual([]);
+      ).toEqual(["Ana adicionou dúvidas-evento"]);
     });
 
     // NOTE: recognition does not compile one regular expression out of the whole vocabulary: Bun

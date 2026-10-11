@@ -1,16 +1,19 @@
-import { createHmac } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
 import { jwt } from "@elysiajs/jwt";
 import { Elysia } from "elysia";
 import type { UserRole } from "@/../generated/prisma/client";
+import { closeSessionSockets } from "@/api/features/realtime/realtime.service";
 import { translate } from "@/api/lib/i18n";
 import logger from "@/api/lib/logger";
 import mainPrisma from "@/api/lib/prisma";
 import metricsPrisma from "@/api/lib/prisma-metrics";
+import { WS_CLOSE } from "@/api/lib/realtime";
 import config from "@/config";
 import { parseDbId } from "@/lib/db-id";
 import {
   ServiceUnavailableError,
   TenantSelectorRefusedError,
+  UnauthorizedError,
 } from "@/lib/errors";
 import { roleAtLeast, type TxBudget } from "@/lib/tenancy";
 import { type Membership, resolveMembership } from "@/lib/tenancy/membership";
@@ -33,6 +36,99 @@ export interface JWTPayload {
   tenantId: string | null;
   // NOTE: `passwordFingerprint` of the hash the session was issued under; absent without a password.
   pwd?: string;
+  // NOTE: names the session so a logout can end it (`ended_sessions`); absent on older tokens.
+  jti?: string;
+  exp?: number;
+}
+
+// The ended-session lookup that rides on the session read's user query: one row when this token's
+// session logged out. A token without a `jti` names no session and selects nothing.
+function endedSessionSelect(payload: JWTPayload) {
+  return payload.jti
+    ? {
+        endedSessions: {
+          where: { jti: payload.jti },
+          select: { jti: true },
+          take: 1,
+        },
+      }
+    : {};
+}
+
+function sessionEnded(row: { endedSessions?: { jti: string }[] }): boolean {
+  return (row.endedSessions?.length ?? 0) > 0;
+}
+
+// Whether a LOGOUT ended this session, as opposed to a re-issued cookie replacing it. Lets a socket
+// refused on its re-check sign out (4401) or reconnect under the new cookie (4409).
+export async function isSessionLoggedOut(sessionId: string): Promise<boolean> {
+  return (
+    (await mainPrisma.endedSession.count({
+      where: { jti: sessionId, replaced: false },
+    })) > 0
+  );
+}
+
+// A verified token that names its session.
+interface NamedSession {
+  userId: bigint;
+  sessionId: string;
+  expiresAt: Date;
+}
+
+function namedSession(payload: JWTPayload | false): NamedSession | null {
+  if (payload === false) return null;
+  if (!payload.jti || typeof payload.exp !== "number") return null;
+  const userId =
+    typeof payload.userId === "string" ? parseDbId(payload.userId) : null;
+  if (userId === null) return null;
+  return {
+    userId,
+    sessionId: payload.jti,
+    expiresAt: new Date(payload.exp * 1000),
+  };
+}
+
+// Records the session as ended until its token expires, dropping the rows past their expiry. True
+// when this call inserted the row, false when one was already there. A deleted account (foreign key) has no
+// session left to end, and counts as this call ending it. Throws 503 on any other failure.
+async function recordEnded(
+  session: NamedSession,
+  how: { replaced: boolean },
+): Promise<boolean> {
+  try {
+    const [, inserted] = await mainPrisma.$transaction([
+      mainPrisma.endedSession.deleteMany({
+        where: { expiresAt: { lte: new Date() } },
+      }),
+      mainPrisma.endedSession.createMany({
+        data: [
+          {
+            jti: session.sessionId,
+            userId: session.userId,
+            expiresAt: session.expiresAt,
+            replaced: how.replaced,
+          },
+        ],
+        skipDuplicates: true,
+      }),
+      // A logout wins over a replacement recorded first (an invitation re-issue racing it), so the
+      // session reads as logged out; a replacement never overwrites a logout.
+      ...(how.replaced
+        ? []
+        : [
+            mainPrisma.endedSession.updateMany({
+              where: { jti: session.sessionId, replaced: true },
+              data: { replaced: false },
+            }),
+          ]),
+    ]);
+    return inserted.count > 0;
+  } catch (error) {
+    if ((error as { code?: string }).code === "P2003") return true;
+    logger.warn({ error }, "Ending the session failed; treating as transient");
+    throw new ServiceUnavailableError();
+  }
 }
 
 // Binds a session to the password it was issued under, as Django's session auth hash does: the token
@@ -63,6 +159,8 @@ function sessionMatchesPassword(
 export interface SessionIdentity {
   userId: bigint;
   passwordHash: string | null;
+  // The session's `jti`, for a re-issue that takes this session as its only proof.
+  sessionId?: string;
 }
 
 export interface AuthUser {
@@ -84,6 +182,15 @@ export interface AuthUser {
   // For a key: when its minter answered the password step-up, or null for a key that predates the
   // rule. Absent for a session, which answers the step-up per request. Read by `confirmStepUp`.
   stepUpAt?: Date | null;
+  // The `jti` of the cookie session, so a logout can close the sockets it opened. Absent on an API
+  // key and on a token issued before sessions carried one.
+  sessionId?: string;
+}
+
+// The session a logout ended: whose it was, and its `jti`.
+export interface EndedSessionRef {
+  userId: bigint;
+  sessionId: string;
 }
 
 // Resolves a Bearer API key from the Authorization header to an AuthUser, or null. The synthetic
@@ -185,164 +292,264 @@ export const authPlugin = new Elysia({ name: "auth" })
       exp: TOKEN_EXPIRY,
     }),
   )
-  .derive({ as: "global" }, ({ jwt, cookie, headers, path }) => ({
-    // NOTE: `passwordHash` is the hash the caller authenticated against, not what the row holds by
-    // the time the cookie is signed: a login that verified the OLD password while a change landed
-    // must come out already revoked, not valid under the new one. Required so no call site omits it.
-    async setAuthCookie(user: AuthUser, passwordHash: string | null) {
-      const pwd = passwordFingerprint(passwordHash);
-      const token = await jwt.sign({
-        userId: user.id.toString(),
-        email: user.email,
-        role: user.role,
-        tenantId: user.tenantId === null ? null : user.tenantId.toString(),
-        ...(pwd ? { pwd } : {}),
-      });
+  .derive({ as: "global" }, ({ jwt, cookie, headers, path }) => {
+    // The token the browser presents, under the current name or else the pre-rename one, picked the
+    // way `getAuthUser` picks it: an empty current cookie falls through to the legacy one.
+    function presentedToken(): string | null {
+      const current = cookie[COOKIE_NAME]?.value;
+      if (current && typeof current === "string") return current;
+      const legacy = cookie[LEGACY_COOKIE_NAME]?.value;
+      return legacy && typeof legacy === "string" ? legacy : null;
+    }
 
-      cookie[COOKIE_NAME]?.set({ value: token, ...sessionCookieOptions() });
-      // A fresh login supersedes any pre-rename cookie; drop it so it can't outlive this session.
-      cookie[LEGACY_COOKIE_NAME]?.remove();
-
-      return token;
-    },
-    clearAuthCookie() {
-      cookie[COOKIE_NAME]?.remove();
-      cookie[LEGACY_COOKIE_NAME]?.remove();
-    },
-    // NOTE: WHICH PERSON the session cookie names, and the password hash it was verified against,
-    // and nothing else: no tenant selector, no membership, no API key. For the one operation where
-    // the session is only proof of identity (accepting an invitation into the account it names), a
-    // stale selector must not turn that proof into "signed out".
-    async getSessionIdentity(): Promise<SessionIdentity | null> {
-      const token =
-        cookie[COOKIE_NAME]?.value ?? cookie[LEGACY_COOKIE_NAME]?.value;
-      if (!token || typeof token !== "string") return null;
-      let payload: JWTPayload | false;
+    // The session the browser's cookie names, verified, or null.
+    async function currentSession(): Promise<NamedSession | null> {
+      const token = presentedToken();
+      if (!token) return null;
       try {
-        payload = (await jwt.verify(token)) as JWTPayload | false;
+        return namedSession((await jwt.verify(token)) as JWTPayload | false);
       } catch {
         return null;
       }
-      if (!payload || typeof payload.userId !== "string") return null;
-      const userId = parseDbId(payload.userId);
-      if (userId === null) return null;
-      // A revoked session proves nothing, so the password fingerprint is checked here too. A DB
-      // failure is transient, as in getAuthUser below, and never reads as signed out.
-      let row: { passwordHash: string | null } | null;
-      try {
-        row = await authPoolFor(path).db.user.findUnique({
-          where: { id: userId },
-          select: { passwordHash: true },
-        });
-      } catch (error) {
-        logger.warn(
-          { error },
-          "Session user lookup failed; treating as transient",
-        );
-        throw new ServiceUnavailableError();
-      }
-      if (!row || !sessionMatchesPassword(payload, row.passwordHash)) {
-        return null;
-      }
-      return { userId, passwordHash: row.passwordHash };
-    },
-    async getAuthUser(): Promise<AuthUser | null> {
-      let token = cookie[COOKIE_NAME]?.value;
-      if (!token || typeof token !== "string") {
-        const legacy = cookie[LEGACY_COOKIE_NAME]?.value;
-        if (legacy && typeof legacy === "string") {
-          // Migrate in place. The token is verified below either way, so copying it under the new
-          // name grants a forged legacy cookie nothing it did not already have.
-          token = legacy;
-          cookie[COOKIE_NAME]?.set({
-            value: legacy,
-            ...sessionCookieOptions(),
-          });
-          cookie[LEGACY_COOKIE_NAME]?.remove();
+    }
+
+    return {
+      // NOTE: `passwordHash` is the hash the caller authenticated against, not what the row holds by
+      // the time the cookie is signed: a login that verified the OLD password while a change landed
+      // must come out already revoked, not valid under the new one. Required so no call site omits it.
+      // NOTE: a re-issued cookie is a NEW session (a new `jti`), and the one it replaces in this
+      // browser ends, its sockets closed with 4409 so they reconnect under the new cookie: one logout
+      // then ends everything the browser holds. With `proofSessionId` the replaced session was the
+      // request's only proof of identity, so a logout that ended it first refuses the re-issue (401)
+      // instead of minting a session nothing proved.
+      async setAuthCookie(
+        user: AuthUser,
+        passwordHash: string | null,
+        options: { proofSessionId?: string } = {},
+      ) {
+        const replaced = await currentSession();
+        if (options.proofSessionId !== undefined) {
+          if (replaced?.sessionId !== options.proofSessionId) {
+            throw new UnauthorizedError();
+          }
+          // Refused only when a logout DID end it. A failure to record is not a refusal: the
+          // caller (accepting an invitation) has already committed, and a 503 would leave a used
+          // invitation and no session; the replaced token then lives until it expires.
+          const ended = await recordEnded(replaced, { replaced: true }).catch(
+            () => true,
+          );
+          // A row already there may be another re-issue of this same cookie (two invitations
+          // accepted at once), which is no reason to refuse; only a logout's row is.
+          const loggedOut =
+            !ended &&
+            (await isSessionLoggedOut(replaced.sessionId).catch(() => false));
+          if (loggedOut) throw new UnauthorizedError();
+        } else if (replaced) {
+          // NOTE: best effort: failing to end the replaced session never refuses a sign-in that
+          // proved itself; that token keeps working until it expires, as before sessions had ids.
+          await recordEnded(replaced, { replaced: true }).catch(() => false);
         }
-      }
-      if (!token || typeof token !== "string") {
-        // No session cookie — fall back to a Bearer API key (REST v1 / MCP external clients).
-        return apiKeyAuthUser(headers.authorization, authPoolFor(path));
-      }
-
-      let payload: JWTPayload | false;
-      try {
-        payload = (await jwt.verify(token)) as JWTPayload | false;
-      } catch (error) {
-        // NOTE: A malformed/forged/expired token is a genuine "not
-        // authenticated" → null (the caller treats it as logged out). Only
-        // token verification belongs in this catch, never the DB lookup below.
-        logger.debug({ error }, "Failed to verify auth token");
-        return null;
-      }
-      if (!payload) return null;
-
-      let userId: bigint;
-      try {
-        userId = BigInt(payload.userId);
-      } catch {
-        // NOTE: A non-numeric subject is a forged/legacy token shape, not a
-        // session.
-        return null;
-      }
-
-      // Re-resolve role+tenant from the DB on every request (stale tokens never grant elevated
-      // access; a moved/demoted user loses it at once). A DB failure HERE is TRANSIENT (pool
-      // reconnecting, a brief outage), NOT proof the session is invalid: throw 503 so the request is
-      // retryable, never a null user the client reads as a logout (bouncing the operator to /login on
-      // every blip and closing any WebSocket with the auth-lost code). The client retries /me at boot.
-      let row: {
-        id: bigint;
-        email: string;
-        name: string | null;
-        googleId: string | null;
-        isSuperAdmin: boolean;
-        passwordHash: string | null;
-        memberships: Membership[];
-      } | null;
-      try {
-        row = await authPoolFor(path).db.user.findUnique({
-          where: { id: userId },
-          select: {
-            id: true,
-            email: true,
-            name: true,
-            googleId: true,
-            isSuperAdmin: true,
-            passwordHash: true,
-            memberships: {
-              select: { tenantId: true, role: true, createdAt: true },
-            },
-          },
+        if (replaced) {
+          closeSessionSockets(
+            replaced.userId,
+            replaced.sessionId,
+            WS_CLOSE.CREDENTIALS_CHANGED,
+          );
+        }
+        const pwd = passwordFingerprint(passwordHash);
+        const token = await jwt.sign({
+          userId: user.id.toString(),
+          email: user.email,
+          role: user.role,
+          tenantId: user.tenantId === null ? null : user.tenantId.toString(),
+          ...(pwd ? { pwd } : {}),
+          jti: randomUUID(),
         });
-      } catch (error) {
-        logger.warn(
-          { error },
-          "Auth user lookup failed; treating as transient",
-        );
-        throw new ServiceUnavailableError();
-      }
 
-      if (!row) return null;
-      const { isSuperAdmin, memberships, passwordHash, ...person } = row;
-      if (!sessionMatchesPassword(payload, passwordHash)) return null;
+        cookie[COOKIE_NAME]?.set({ value: token, ...sessionCookieOptions() });
+        // A fresh login supersedes any pre-rename cookie; drop it so it can't outlive this session.
+        cookie[LEGACY_COOKIE_NAME]?.remove();
 
-      if (isSuperAdmin) {
-        return { ...person, tenantId: null, role: "SUPER_ADMIN", memberships };
-      }
+        return token;
+      },
+      clearAuthCookie() {
+        cookie[COOKIE_NAME]?.remove();
+        cookie[LEGACY_COOKIE_NAME]?.remove();
+      },
+      // NOTE: ends the session the cookie names, so a copy of it is refused from here on. A cookie that
+      // does not verify, or a token with no `jti`, ends nothing. Expired rows are dropped on the way:
+      // past its expiry the token is refused by its signature alone.
+      async endSession(): Promise<EndedSessionRef | null> {
+        const session = await currentSession();
+        if (!session) return null;
+        await recordEnded(session, { replaced: false });
+        return { userId: session.userId, sessionId: session.sessionId };
+      },
+      // NOTE: WHICH PERSON the session cookie names, and the password hash it was verified against,
+      // and nothing else: no tenant selector, no membership, no API key. For the one operation where
+      // the session is only proof of identity (accepting an invitation into the account it names), a
+      // stale selector must not turn that proof into "signed out".
+      async getSessionIdentity(): Promise<SessionIdentity | null> {
+        const token = presentedToken();
+        if (!token) return null;
+        let payload: JWTPayload | false;
+        try {
+          payload = (await jwt.verify(token)) as JWTPayload | false;
+        } catch {
+          return null;
+        }
+        if (!payload || typeof payload.userId !== "string") return null;
+        const userId = parseDbId(payload.userId);
+        if (userId === null) return null;
+        // A revoked session proves nothing, so the password fingerprint is checked here too. A DB
+        // failure is transient, as in getAuthUser below, and never reads as signed out.
+        let row: {
+          passwordHash: string | null;
+          endedSessions?: { jti: string }[];
+        } | null;
+        try {
+          row = await authPoolFor(path).db.user.findUnique({
+            where: { id: userId },
+            select: { passwordHash: true, ...endedSessionSelect(payload) },
+          });
+        } catch (error) {
+          logger.warn(
+            { error },
+            "Session user lookup failed; treating as transient",
+          );
+          throw new ServiceUnavailableError();
+        }
+        if (
+          !row ||
+          !sessionMatchesPassword(payload, row.passwordHash) ||
+          sessionEnded(row)
+        ) {
+          return null;
+        }
+        return {
+          userId,
+          passwordHash: row.passwordHash,
+          ...(payload.jti ? { sessionId: payload.jti } : {}),
+        };
+      },
+      async getAuthUser(): Promise<AuthUser | null> {
+        let token = cookie[COOKIE_NAME]?.value;
+        if (!token || typeof token !== "string") {
+          const legacy = cookie[LEGACY_COOKIE_NAME]?.value;
+          if (legacy && typeof legacy === "string") {
+            // Migrate in place. The token is verified below either way, so copying it under the new
+            // name grants a forged legacy cookie nothing it did not already have.
+            token = legacy;
+            cookie[COOKIE_NAME]?.set({
+              value: legacy,
+              ...sessionCookieOptions(),
+            });
+            cookie[LEGACY_COOKIE_NAME]?.remove();
+          }
+        }
+        if (!token || typeof token !== "string") {
+          // No session cookie — fall back to a Bearer API key (REST v1 / MCP external clients).
+          return apiKeyAuthUser(headers.authorization, authPoolFor(path));
+        }
 
-      // Fail-closed. A person with no membership has no tenant to run under, and is treated as
-      // unauthenticated rather than degraded to a tenant-less session. A selector outside their
-      // memberships is refused with the id it named, so the console drops it.
-      const current = resolveMembership(memberships, headers["x-tenant-id"]);
-      if (current === null) return null;
-      if ("rejected" in current) {
-        throw new TenantSelectorRefusedError(current.rejected);
-      }
-      return { ...person, ...current, memberships };
-    },
-  }))
+        let payload: JWTPayload | false;
+        try {
+          payload = (await jwt.verify(token)) as JWTPayload | false;
+        } catch (error) {
+          // NOTE: A malformed/forged/expired token is a genuine "not
+          // authenticated" → null (the caller treats it as logged out). Only
+          // token verification belongs in this catch, never the DB lookup below.
+          logger.debug({ error }, "Failed to verify auth token");
+          return null;
+        }
+        if (!payload) return null;
+
+        let userId: bigint;
+        try {
+          userId = BigInt(payload.userId);
+        } catch {
+          // NOTE: A non-numeric subject is a forged/legacy token shape, not a
+          // session.
+          return null;
+        }
+
+        // Re-resolve role+tenant from the DB on every request (stale tokens never grant elevated
+        // access; a moved/demoted user loses it at once). A DB failure HERE is TRANSIENT (pool
+        // reconnecting, a brief outage), NOT proof the session is invalid: throw 503 so the request is
+        // retryable, never a null user the client reads as a logout (bouncing the operator to /login on
+        // every blip and closing any WebSocket with the auth-lost code). The client retries /me at boot.
+        let row: {
+          id: bigint;
+          email: string;
+          name: string | null;
+          googleId: string | null;
+          isSuperAdmin: boolean;
+          passwordHash: string | null;
+          memberships: Membership[];
+          endedSessions?: { jti: string }[];
+        } | null;
+        try {
+          row = await authPoolFor(path).db.user.findUnique({
+            where: { id: userId },
+            select: {
+              id: true,
+              email: true,
+              name: true,
+              googleId: true,
+              isSuperAdmin: true,
+              passwordHash: true,
+              memberships: {
+                select: { tenantId: true, role: true, createdAt: true },
+              },
+              ...endedSessionSelect(payload),
+            },
+          });
+        } catch (error) {
+          logger.warn(
+            { error },
+            "Auth user lookup failed; treating as transient",
+          );
+          throw new ServiceUnavailableError();
+        }
+
+        if (!row) return null;
+        const {
+          isSuperAdmin,
+          memberships,
+          passwordHash,
+          endedSessions,
+          ...person
+        } = row;
+        if (!sessionMatchesPassword(payload, passwordHash)) return null;
+        if (sessionEnded({ endedSessions })) return null;
+
+        if (isSuperAdmin) {
+          return {
+            ...person,
+            tenantId: null,
+            role: "SUPER_ADMIN",
+            memberships,
+            ...(payload.jti ? { sessionId: payload.jti } : {}),
+          };
+        }
+
+        // Fail-closed. A person with no membership has no tenant to run under, and is treated as
+        // unauthenticated rather than degraded to a tenant-less session. A selector outside their
+        // memberships is refused with the id it named, so the console drops it.
+        const current = resolveMembership(memberships, headers["x-tenant-id"]);
+        if (current === null) return null;
+        if ("rejected" in current) {
+          throw new TenantSelectorRefusedError(current.rejected);
+        }
+        return {
+          ...person,
+          ...current,
+          memberships,
+          ...(payload.jti ? { sessionId: payload.jti } : {}),
+        };
+      },
+    };
+  })
   .derive({ as: "global" }, ({ request, getAuthUser }) => ({
     // The session as this request read it, shared by the tenancy boundary, the gates and the
     // refusal of a request without one. `getAuthUser` stays a fresh read on every call, since a

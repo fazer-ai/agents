@@ -1,6 +1,6 @@
 /// <reference lib="dom" />
 
-import { afterAll, afterEach, describe, expect, mock, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import {
   cleanup,
   fireEvent,
@@ -9,7 +9,9 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
+import * as AuthModule from "@/client/contexts/AuthContext";
 import { withI18n } from "@/tests/utils/i18n";
+import { stubExports } from "@/tests/utils/module-stub";
 
 // An invitation to an account that signs in with Google has no password to enter on the accept
 // page. It offers signing in instead, and the invitation waits in the tab (never back on a URL)
@@ -57,7 +59,7 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
 let signedInAs: { email: string } | null = null;
 let logoutAnswer = true;
 let logouts = 0;
-mock.module("@/client/contexts/AuthContext", () => ({
+stubExports(AuthModule, {
   useAuth: () => ({
     user: signedInAs,
     login: () => {},
@@ -67,7 +69,7 @@ mock.module("@/client/contexts/AuthContext", () => ({
       return logoutAnswer;
     },
   }),
-}));
+});
 
 const { AcceptInvitePage } = await import("@/client/pages/AcceptInvitePage");
 // Accepting from a running session reloads onto the joined tenant; the test only needs it not to.

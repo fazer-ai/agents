@@ -156,7 +156,7 @@ describe("the audit answers the same placeholders the model's prompt did", () =>
   // Bracketed so a name is matched whole: the audit rewrites a resolved context var as
   // `{{nome_contato: string(11)}}`, which must NOT read as the literal `{{nome_contato}}`.
   const literal = (name: string) => `[{{${name}}}]`;
-  const template = names.map((n) => `${n}=${literal(n)}`).join(" ");
+  const template = names.map((n) => `${n}=${literal(n)}`).join("\u0001");
   const vars = buildPromptVars({
     contactName: "Maria Silva",
     contactEmail: "maria@example.com",
@@ -165,17 +165,53 @@ describe("the audit answers the same placeholders the model's prompt did", () =>
     companyName: "Clínica Alfa",
     agentName: "Alfa",
   });
-  const real = interpolatePromptVars(template, vars, OPTS);
-  const audit = buildPromptAudit({ template, vars, opts: OPTS, sections: [] });
+  // Every option has something to answer: 22:30 of the 20th in São Paulo is already the 21st
+  // in UTC, the schedule is closed at that hour, and the triggering message is 90 minutes old.
+  // Friday opens at 01:00, so the same instant is still closed in São Paulo (Thursday 22:30) and
+  // already open in UTC (Friday 01:30): a rendering that read the grid in any zone but the
+  // schedule's own answers {{next_open_at}} differently. With a 09:00 opening every day, both zones
+  // would land on "Friday 09:00" in their own wall clock and the row could not tell them apart.
+  const opts = {
+    timezone: "America/Sao_Paulo",
+    now: new Date("2026-08-21T01:30:00Z"),
+    availability: {
+      schedule: {
+        timezone: "America/Sao_Paulo",
+        windows: [1, 2, 3, 4, 5].map((day) => ({
+          day,
+          start: day === 5 ? "01:00" : "09:00",
+          end: "18:00",
+        })),
+        exceptions: [],
+      },
+    },
+    messageAt: new Date("2026-08-21T00:00:00Z"),
+  };
+  const real = interpolatePromptVars(template, vars, opts);
+  const audit = buildPromptAudit({ template, vars, opts, sections: [] });
+  const answers = (rendered: string) =>
+    Object.fromEntries(
+      rendered.split("\u0001").map((row) => {
+        const at = row.indexOf("=");
+        return [row.slice(0, at), row.slice(at + 1)];
+      }),
+    );
+  const realAnswers = answers(real);
+  const auditAnswers = answers(audit);
 
   // Anchors the rows below: without this they would also pass if BOTH renderings stopped resolving.
   test("every known variable resolves in the model's own prompt", () => {
     expect(names.filter((n) => real.includes(literal(n)))).toEqual([]);
   });
 
+  // A context value is masked to its name and length; every other answer is the model's own, word
+  // for word.
   for (const name of names) {
     test(`{{${name}}}`, () => {
-      expect(audit.includes(literal(name))).toBe(real.includes(literal(name)));
+      const answer = realAnswers[name] as string;
+      expect(auditAnswers[name]).toBe(
+        name in vars ? `[{{${name}: string(${answer.length - 2})}}]` : answer,
+      );
     });
   }
 });

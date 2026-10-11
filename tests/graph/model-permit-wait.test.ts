@@ -93,15 +93,22 @@ describe("a model call waiting for a permit", () => {
   test("a call that fails after waiting still reported the wait once", async () => {
     const release = await holdEveryPermit();
     const seen: unknown[] = [];
+    let ran = 0;
+    const boom = new Error("boom");
     const call = runModelCall(
       async () => {
-        throw new Error("boom");
+        ran++;
+        throw boom;
       },
       { primary: LABELS, onPermitWait: (info) => seen.push(info) },
-    ).catch((e: Error) => e.message);
+    ).catch((e: Error) => e);
     await sleep(THRESHOLD_MS * 1.5);
     release();
-    expect(await call).toBeString();
+    // The call ran once, after the permit, and the caller gets its failure, redacted, with
+    // the provider's own error as the cause.
+    const err = await call;
+    expect([err.message, err.cause]).toEqual(["provider error", boom]);
+    expect(ran).toBe(1);
     expect(seen).toHaveLength(1);
   });
 

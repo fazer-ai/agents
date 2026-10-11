@@ -1,0 +1,10 @@
+// Refuses `z.record(z.string(), <schema>)` with any value schema other than `z.unknown()`. A record
+// that validates its values fails below a key the caller wrote, and the refusal's path then carries
+// that key back on the wire (src/api/lib/schema-refusal.ts walks the schema to avoid exactly this).
+language js;
+
+`z.record($key, $value, $...)` as $record where {
+    $key <: `z.string()`,
+    not $value <: r"z\.unknown\(\)[\s\S]*",
+    register_diagnostic(span = $record, message = "A zod record that validates its values puts the caller's key in the refusal path. Declare `z.record(z.string(), z.unknown())` and validate the values where each key is known.")
+}

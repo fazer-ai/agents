@@ -1,7 +1,6 @@
 /// <reference lib="dom" />
 
-import { afterEach, describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { afterEach, describe, expect, jest, test } from "bun:test";
 import {
   CompletionContext,
   closeCompletion,
@@ -700,7 +699,9 @@ describe("text is not code: no completion inside a string or a comment", () => {
   // A slash is division far more often than it is a pattern, and lezer tells the two apart. This is
   // the case the guard must NOT take with it.
   test("but a division is code, and still completes", () => {
-    expect(ask("const x = a / input.")?.options.length).toBeGreaterThan(0);
+    expect(ask("const x = a / input.")?.options.map((o) => o.label)).toEqual([
+      "cpf",
+    ]);
   });
 
   // The hole in a template IS code, and the commonest place a body builds a message from a
@@ -969,17 +970,51 @@ describe("hover answers with the completion the list would have offered", () => 
     expect(SHOW_SCOPE_KEYS.every((b) => b.preventDefault)).toBe(true);
   });
 
-  // NOTE: the tests above ask `hoverInfo` directly, so they stay green if the hover is removed from the
-  // editor's extensions. A hover cannot be driven here (happy-dom answers `posAtCoords` with 0 and
-  // the hover plugin needs real geometry), so this is a source fence over the WIRING: the hover
-  // rides in the same extension the completion does, so a renamed argument reaches both at once.
-  test("the hover is actually installed, in the completion's own compartment", () => {
-    const src = readFileSync("src/client/components/CodeEditor.tsx", "utf8");
-    const ext = src.slice(
-      src.indexOf("function completionExt("),
-      src.indexOf("function completionExt(") + 900,
+  // The pointer resting on a name opens the same sentence, and a renamed argument reaches it with
+  // the same reconfigure that reaches the list. happy-dom has no layout, so the view is told where
+  // the pointer is, and the hover delay runs on fake timers.
+  test("the hover answers on the editor, and follows a renamed argument", () => {
+    const doc = "return input.cpf;";
+    const hoverOn = (names: string[]) => (
+      <CodeEditor
+        value={doc}
+        onChange={() => {}}
+        argumentNames={names}
+        aria-label="Code"
+      />
     );
-    expect(ext.includes("scopeHover(names, t)")).toBe(true);
+    const { rerender } = render(hoverOn(["cpf"]));
+    const view = EditorView.findFromDOM(
+      document.body.querySelector(".cm-editor") as HTMLElement,
+    ) as EditorView;
+    const at = inside(doc, "cpf");
+    view.posAtCoords = (() => at) as typeof view.posAtCoords;
+    view.coordsAtPos = () => ({ top: 0, bottom: 20, left: 0, right: 400 });
+    const hovered = () => {
+      jest.useFakeTimers();
+      try {
+        const line = view.contentDOM.querySelector(".cm-line") as HTMLElement;
+        line.dispatchEvent(
+          new MouseEvent("mousemove", {
+            bubbles: true,
+            clientX: 10,
+            clientY: 10,
+          }),
+        );
+        jest.advanceTimersByTime(1_000);
+      } finally {
+        jest.useRealTimers();
+      }
+      const shown = document.body.querySelector(".cm-scopeHoverName");
+      return shown?.textContent ?? null;
+    };
+
+    expect(hovered()).toBe("cpf");
+    rerender(hoverOn(["valor"]));
+    expect(document.body.querySelector(".cm-scopeHoverName") === null).toBe(
+      true,
+    );
+    expect(hovered()).toBeNull();
   });
 
   test("and nothing at all for a name this editor does not know", () => {
@@ -1093,7 +1128,7 @@ describe("what is a root, and what is somebody else's member", () => {
 
   for (const doc of ["return context.", "  context.", "} context."]) {
     test(`${doc} is still a root`, () => {
-      expect(ask(doc)?.options.length).toBeGreaterThan(0);
+      expect(ask(doc)?.options.map((o) => o.label)).toContain("contact_name");
     });
   }
 

@@ -22,6 +22,7 @@ import { readRenderContext } from "./templates";
 import {
   type DocumentValues,
   invalidDocumentTemplate,
+  invalidDocumentValues,
   parseDocumentValues,
   parseTemplateContent,
 } from "./validate";
@@ -261,20 +262,13 @@ export async function freezeDocumentSnapshot(params: {
     prepared.style,
   );
   if (!content.ok) {
-    throw invalidDocumentTemplate(content.reason);
+    throw invalidDocumentTemplate(content.phrase);
   }
   const parsedValues = parseDocumentValues(
     content.content.fields,
     params.values,
   );
-  if (!parsedValues.ok) {
-    throw new AppError(
-      parsedValues.reason,
-      400,
-      "errors.invalidDocumentValues",
-      { reason: parsedValues.reason },
-    );
-  }
+  if (!parsedValues.ok) throw invalidDocumentValues(parsedValues);
   const { company, logo } = await readRenderContext(ctx, base);
   const snapshot: DocumentSnapshot = {
     blocks: content.content.blocks,

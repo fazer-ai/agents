@@ -45,8 +45,14 @@ describe("redactSecretsDeep repairs before it decides", () => {
       [`k${NUL}1`]: `a${NUL}b`,
       nested: [`c\ud800d`, { deep: `e${NUL}\udc00f` }],
     });
-    const json = JSON.stringify(out) ?? "";
-    expect(unstorableProblem(json, "serialized")).toBeNull();
+    // NOTE: read off the decoded values, since JSON.stringify escapes exactly what jsonb refuses.
+    expect(out).toEqual({
+      k1: "ab",
+      nested: ["c\uFFFDd", { deep: "e\uFFFDf" }],
+    });
+    expect(
+      unstorableProblem(JSON.stringify(out) ?? "", "serialized"),
+    ).toBeNull();
   });
 });
 
@@ -304,7 +310,8 @@ describe("a deleted character does not come out of the margin", () => {
     // geometry as the NUL case: the token is only redacted if the window reached past the cut.
     const v = `${"\ud800".repeat(64)}${"h".repeat(1_917)} ${token}`;
     const out = redactSecretsDeep({ v }) as { v: string };
-    expect(out.v).not.toContain("sk-A");
-    expect(out.v).toContain("‹redacted›");
+    expect(out.v).toBe(
+      `${"\uFFFD".repeat(64)}${"h".repeat(1_917)} ‹redacted›…[truncated]`,
+    );
   });
 });

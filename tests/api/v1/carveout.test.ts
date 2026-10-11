@@ -1,5 +1,5 @@
-import { describe, expect, test } from "bun:test";
-import { setupPrismaMock } from "@/tests/utils/prisma-mock";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { prismaMock, setupPrismaMock } from "@/tests/utils/prisma-mock";
 
 // Routing carve-out smoke for the v1 read API. Proves /api/v1/* is routed to Elysia (not
 // served the SPA HTMLBundle by Bun's native routes table) for BOTH GET and POST — the
@@ -7,10 +7,53 @@ import { setupPrismaMock } from "@/tests/utils/prisma-mock";
 // future webhook POST never silently receives index.html).
 setupPrismaMock();
 const app = (await import("@/app")).default;
+const { buildApp } = await import("@/app");
 
 async function bodyOf(res: Response): Promise<string> {
   return (await res.text()).toLowerCase();
 }
+
+// The carve-out lives in Bun's native `serve.routes`, which `app.handle` never consults, so the
+// routing claims below go through a listening server of their own (a fresh `buildApp()`, since
+// `listen()` on the shared default export breaks later files' `app.handle`).
+const nativeGlobals = globalThis as unknown as {
+  BunResponse: typeof Response;
+  BunHeaders: typeof Headers;
+};
+const happyResponse = globalThis.Response;
+const happyHeaders = globalThis.Headers;
+let base = "";
+let stopServer: (() => void) | undefined;
+// No route token is known, so each receptor answers its own unknown-token refusal.
+const models = prismaMock as unknown as Record<string, unknown>;
+beforeAll(async () => {
+  for (const model of ["chatwootAgentBot", "integrationInstance"]) {
+    models[model] = { findUnique: async () => null };
+  }
+  (globalThis as { Response: typeof Response }).Response =
+    nativeGlobals.BunResponse;
+  (globalThis as { Headers: typeof Headers }).Headers =
+    nativeGlobals.BunHeaders;
+  const listening = (await buildApp()).listen(0) as unknown as {
+    server: { port: number; stop(force: boolean): void };
+  };
+  base = `http://localhost:${listening.server.port}`;
+  stopServer = () => listening.server.stop(true);
+});
+afterAll(() => {
+  delete models.chatwootAgentBot;
+  delete models.integrationInstance;
+  stopServer?.();
+  (globalThis as { Response: typeof Response }).Response = happyResponse;
+  (globalThis as { Headers: typeof Headers }).Headers = happyHeaders;
+});
+
+const postJson = (path: string, body?: string) =>
+  Bun.fetch(`${base}${path}`, {
+    method: "POST",
+    headers: body ? { "content-type": "application/json" } : {},
+    body,
+  });
 
 describe("read API routing carve-out", () => {
   test("GET /api/v1/meta without auth → 401 JSON, not HTML", async () => {
@@ -20,37 +63,28 @@ describe("read API routing carve-out", () => {
   });
 
   test("POST /api/v1/tenants → JSON, never the SPA HTMLBundle", async () => {
-    const res = await app.handle(
-      new Request("http://localhost/api/v1/tenants", { method: "POST" }),
-    );
-    expect(await bodyOf(res)).not.toContain("<!doctype");
+    const res = await postJson("/api/v1/tenants");
+    expect(res.status).toBe(401);
+    expect(res.headers.get("content-type") ?? "").toContain("application/json");
+    expect(await res.json()).toEqual({ error: "Unauthorized" });
   });
 
   test("POST /api/v1/integrations/inbound/:token → handled by Elysia, never the SPA HTMLBundle", async () => {
-    const res = await app.handle(
-      new Request("http://localhost/api/v1/integrations/inbound/sometoken", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: "{}",
-      }),
-    );
-    // The route reached Elysia (no DB in this mock → not a 200 HTML shell). The load-bearing
-    // invariant: a webhook POST must not silently receive index.html (Chatwoot would then
-    // auto-escalate pending→open on the non-2xx/HTML ack).
-    expect(await bodyOf(res)).not.toContain("<!doctype");
+    const res = await postJson("/api/v1/integrations/inbound/sometoken", "{}");
+    // NOTE: a webhook POST must never receive index.html: an unknown route token is the receptor's
+    // own JSON refusal.
+    expect(res.status).toBe(401);
+    expect(res.headers.get("content-type") ?? "").toContain("application/json");
+    expect(await res.json()).toEqual({ error: "Unauthorized" });
   });
 
   test("POST /api/v1/chatwoot/webhook/:token → handled by Elysia, never the SPA HTMLBundle", async () => {
-    const res = await app.handle(
-      new Request("http://localhost/api/v1/chatwoot/webhook/sometoken", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: "{}",
-      }),
-    );
+    const res = await postJson("/api/v1/chatwoot/webhook/sometoken", "{}");
     // A bad/unknown token resolves to a uniform 401 (UnauthorizedError), never index.html — a
     // non-2xx/HTML ack would make Chatwoot auto-escalate the conversation pending→open.
-    expect(await bodyOf(res)).not.toContain("<!doctype");
+    expect(res.status).toBe(401);
+    expect(res.headers.get("content-type") ?? "").toContain("application/json");
+    expect(await res.json()).toEqual({ error: "Unauthorized" });
   });
 
   test("POST /api/v1/knowledge/search without auth → JSON, never the SPA HTMLBundle", async () => {
@@ -74,10 +108,10 @@ describe("read API routing carve-out", () => {
   });
 
   test("a non-API deep route still serves the SPA shell", async () => {
-    const res = await app.handle(
-      new Request("http://localhost/settings/profile"),
-    );
+    const res = await Bun.fetch(`${base}/settings/profile`);
     expect(res.status).toBe(200);
+    expect(res.headers.get("content-type") ?? "").toContain("text/html");
+    expect(await res.text()).toContain('<div id="root">');
   });
 
   // The API docs are mounted in dev (tests run with env=development). The OpenAPI spec is served

@@ -1,4 +1,5 @@
-import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import logger from "@/api/lib/logger";
 import config from "@/config";
 import {
   mockFindFirst,
@@ -82,6 +83,11 @@ describe("setup.service", () => {
     // public helpers: initSetupState() with no users + token off seeds
     // (setupComplete=false, setupToken=null); then completeSetup() flips
     // setupComplete=true if a test wants the short-circuit baseline.
+    const loggedToken = (info: { mock: { calls: unknown[][] } }) =>
+      info.mock.calls
+        .map((c) => /[?&]token=([\w-]+)/.exec(String(c[0]))?.[1])
+        .find(Boolean);
+
     async function seedNoUsersNoToken() {
       const previous = config.setupTokenRequired;
       config.setupTokenRequired = false;
@@ -120,16 +126,18 @@ describe("setup.service", () => {
       config.setupTokenRequired = true;
       mockFindFirst.mockResolvedValueOnce(null);
 
-      await refreshSetupState();
-
-      expect(isSetupRequired()).toBe(true);
-      expect(isSetupTokenRequired()).toBe(true);
-      // A real token is now set: anything that isn't it (empty, wrong,
-      // undefined) is rejected. The black-box signature of "a token exists"
-      // vs "the prior null-token state" where every compare also returned
-      // false but for the wrong reason.
-      expect(verifySetupToken(undefined)).toBe(false);
-      expect(verifySetupToken("not-the-token")).toBe(false);
+      const info = spyOn(logger, "info").mockImplementation(() => logger);
+      try {
+        await refreshSetupState();
+        const token = loggedToken(info);
+        expect(isSetupRequired()).toBe(true);
+        expect(token).toBeString();
+        // NOTE: the token the operator reads in the log is the one the gate accepts.
+        expect(verifySetupToken(token)).toBe(true);
+        expect(verifySetupToken("not-the-token")).toBe(false);
+      } finally {
+        info.mockRestore();
+      }
     });
 
     test("does not generate a token when the token is not required", async () => {
@@ -137,12 +145,14 @@ describe("setup.service", () => {
       config.setupTokenRequired = false;
       mockFindFirst.mockResolvedValueOnce(null);
 
-      await refreshSetupState();
-
-      expect(isSetupRequired()).toBe(true);
-      // With requirement off, verifySetupToken short-circuits to true and
-      // does not depend on whether a token was generated.
-      expect(verifySetupToken(undefined)).toBe(true);
+      const info = spyOn(logger, "info").mockImplementation(() => logger);
+      try {
+        await refreshSetupState();
+        expect(isSetupRequired()).toBe(true);
+        expect(loggedToken(info)).toBeUndefined();
+      } finally {
+        info.mockRestore();
+      }
     });
   });
 });

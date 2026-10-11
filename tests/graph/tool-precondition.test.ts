@@ -272,9 +272,13 @@ describe("round 1: one model-issued call is ONE tool run", () => {
 
   test("a tool whose NAME is an Object member is not guarded by an inherited value", async () => {
     const { tool: inner, calls } = spyTool("toString");
-    // The map comes from the runtime reader (null-prototype), but this is the lookup that would
-    // break on a plain object, so it is asserted where it happens.
-    const out = applyToolPreconditions([inner], Object.create(null), unmet);
+    // A PLAIN object with a rule for another tool, so the lookup runs and has an inherited
+    // `toString` to find; the runtime reader's map is null-prototype, which would hide that.
+    const out = applyToolPreconditions(
+      [inner],
+      { handoff_to_human: COND },
+      unmet,
+    );
     expect(out[0]).toBe(inner);
     await out[0]?.invoke({});
     expect(calls).toHaveLength(1);

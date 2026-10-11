@@ -29,3 +29,36 @@ __nativeBunGlobals.BunAbortController = AbortController;
 __nativeBunGlobals.BunAbortSignal = AbortSignal;
 
 GlobalRegistrator.register();
+
+// A page that subscribes to the tenant's realtime events opens a socket on render. happy-dom's
+// WebSocket dials through `ws`, and a refused connection emits an `error` nobody listens to, which
+// surfaces as an unhandled error inside whichever test happens to be running when it lands. No DOM
+// test talks to a live socket (the realtime tests use `BunWebSocket`, the hook tests a fake), so the
+// global one never connects: it stays CONNECTING until closed, and emits nothing.
+class InertWebSocket extends EventTarget {
+  static readonly CONNECTING = 0;
+  static readonly OPEN = 1;
+  static readonly CLOSING = 2;
+  static readonly CLOSED = 3;
+  readonly CONNECTING = 0;
+  readonly OPEN = 1;
+  readonly CLOSING = 2;
+  readonly CLOSED = 3;
+  readyState = 0;
+  binaryType: BinaryType = "blob";
+  bufferedAmount = 0;
+  extensions = "";
+  protocol = "";
+  onopen: ((ev: Event) => unknown) | null = null;
+  onmessage: ((ev: MessageEvent) => unknown) | null = null;
+  onerror: ((ev: Event) => unknown) | null = null;
+  onclose: ((ev: CloseEvent) => unknown) | null = null;
+  constructor(readonly url: string | URL) {
+    super();
+  }
+  send(): void {}
+  close(): void {
+    this.readyState = 3;
+  }
+}
+globalThis.WebSocket = InertWebSocket as unknown as typeof WebSocket;

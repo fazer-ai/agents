@@ -1,6 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
 import { AIMessage, HumanMessage, ToolMessage } from "@langchain/core/messages";
 import { contentToText } from "@/graph/message-text";
 import {
@@ -413,85 +411,6 @@ describe("skipReplyRan — the MARK is the identity, not the name and not the te
       expect(contentToText(out.content)).toContain(SKIP_REPLY_ACK);
       expect(skipReplyRan(out)).toBe(true);
     }
-  });
-});
-
-// The fence: a new site that takes the model's final text and skips the rule fails here. Anchored
-// on `lastAssistantText`, narrower than the invariant; `contentToText` underneath would accuse
-// correct sites (token counting, the trace, the summarizer, the HUMAN message). Not covered:
-// `playground/sessions.ts` (own `lastAi`, covered by tests/modules/playground-sessions.test.ts),
-// `graph/trace.ts` (meant to stay raw), and `memory/summarize.ts` (how the token can reach
-// permanent memory, a recurrence question rather than a leak).
-describe("every site that reads the model's final text applies a rule", () => {
-  // Kept as a predicate over TEXT rather than an inline scan, so the fixture below can prove it
-  // rejects the offending shape: a fence with no offender in the tree proves nothing about
-  // whether it can see one.
-  const READERS = /lastAssistantText\(/;
-  function unguardedSites(source: string): string[] {
-    return source
-      .split("\n")
-      .filter(
-        (l) =>
-          READERS.test(l) && !/(customerFacingReply|proactiveReply)\(/.test(l),
-      )
-      .map((l) => l.trim());
-  }
-
-  test("the predicate sees the defect it was written for", () => {
-    expect(
-      unguardedSites(
-        "  const reply = lastAssistantText(result.messages).trim();",
-      ),
-    ).toHaveLength(1);
-    expect(
-      unguardedSites(
-        "  const drafted = customerFacingReply(lastAssistantText(result.messages));",
-      ),
-    ).toHaveLength(0);
-    expect(
-      unguardedSites(
-        "  const drafted = proactiveReply(lastAssistantText(result.messages));",
-      ),
-    ).toHaveLength(0);
-  });
-
-  test("no production site reads it unguarded", () => {
-    const files: string[] = [];
-    const walk = (dir: string) => {
-      for (const e of readdirSync(dir)) {
-        const p = join(dir, e);
-        if (statSync(p).isDirectory()) walk(p);
-        else if (p.endsWith(".ts") || p.endsWith(".tsx")) files.push(p);
-      }
-    };
-    walk("src");
-
-    const offenders: string[] = [];
-    let sites = 0;
-    for (const f of files) {
-      const src = readFileSync(f, "utf8");
-      if (!READERS.test(src)) continue;
-      // Definitions and import lines name the readers without reading a turn.
-      const body = src
-        .split("\n")
-        .filter(
-          (l) =>
-            !l.includes("export function lastAssistantText") &&
-            !l.trimStart().startsWith("import") &&
-            !l.includes("lastAssistantText } from"),
-        )
-        .join("\n");
-      for (const l of unguardedSites(body)) offenders.push(`${f}: ${l}`);
-      sites += body
-        .split("\n")
-        .filter(
-          (l) => READERS.test(l) && !l.trimStart().startsWith("//"),
-        ).length;
-    }
-    // A scan that stopped FINDING sites would pass by invisibility, so the count is asserted too:
-    // it is allowed to grow, and a drop to zero means the scan broke, not that the tree got safer.
-    expect(sites).toBeGreaterThanOrEqual(4);
-    expect(offenders).toEqual([]);
   });
 });
 

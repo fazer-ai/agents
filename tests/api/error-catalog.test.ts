@@ -76,11 +76,6 @@ function flatten(obj: unknown, prefix = ""): Set<string> {
 const API = flatten(apiEn);
 const CLIENT = flatten(clientEn);
 
-// Every `as ErrorTranslationKey` in `src/`, by file. A cast is the one way to hand the wire a key
-// the catalog does not have, so each one is listed with the reason it is allowed to exist. Empty on
-// purpose right now: production code has no reason to assert a key it did not spell.
-const ALLOWED_CASTS: Record<string, string> = {};
-
 // A key whose two languages are the same STRING. A proper noun or a bare protocol word could
 // legitimately land here; nothing has yet, and an entry is how a future one gets argued rather than
 // assumed.
@@ -254,9 +249,9 @@ async function errorClasses(): Promise<string[]> {
   return classes;
 }
 
-// Every refusal in `src` that pairs a LITERAL message with a key, in five spellings: `new <Class>(`,
-// `super(`, `{ message, key }` built and thrown elsewhere, `translate(key, msg)` and
-// `translateWithLocale(locale, key, msg)`. The class alternation is DERIVED from src/lib/errors.ts,
+// Every refusal in `src` that pairs a LITERAL message with a key, in six spellings: `new <Class>(`,
+// `super(`, `{ message, key }` built and thrown elsewhere, `phrase(key, msg)` (a reason a refusal
+// quotes, src/lib/errors.ts), `translate(key, msg)` and `translateWithLocale(locale, key, msg)`. The class alternation is DERIVED from src/lib/errors.ts,
 // since a hard-coded list goes stale with the next subclass. The key comes FIRST in the translate
 // forms, so the groups are NAMED (a transposed positional reader still runs, reading a message as a
 // key), and those forms are anchored to the CALL: by adjacency they would also pair neighbouring
@@ -270,6 +265,7 @@ async function throwSiteRes(): Promise<RegExp[]> {
     ),
     new RegExp(`super\\(\\s*${MESSAGE}\\s*,\\s*${STATUS}${KEY}`, "gs"),
     new RegExp(`message:\\s*${MESSAGE}\\s*,\\s*key:\\s*${KEY}`, "gs"),
+    new RegExp(`\\bphrase\\(\\s*${KEY}\\s*,\\s*${MESSAGE}`, "gs"),
     new RegExp(`\\btranslate\\(\\s*${KEY}\\s*,\\s*${MESSAGE}`, "gs"),
     new RegExp(
       `\\btranslateWithLocale\\(\\s*\\w+\\s*,\\s*${KEY}\\s*,\\s*${MESSAGE}`,
@@ -278,7 +274,7 @@ async function throwSiteRes(): Promise<RegExp[]> {
   ];
 }
 
-// THE SIXTH PRODUCER, and the only one that cannot be a regex over the tree: a subclass that
+// THE SEVENTH PRODUCER, and the only one that cannot be a regex over the tree: a subclass that
 // hard-codes BOTH its sentence and its key, so `throw new ProEditionError()` names nothing for a
 // sweep to find. The pair is split between the constructor's `message = "…"` default and the
 // `super(...)` call, so the file is read class by class: a single greedy regex pairs a default with
@@ -384,26 +380,6 @@ function keysThatCannotCarryTheirReason(
 const SAY_LESS_GRANDFATHERED: readonly string[] = [];
 
 describe("the error catalog cannot be bypassed", () => {
-  // `src` holds no cast, so a detector matching NOTHING would pass unchanged: the predicate is
-  // proven against a body that contains one before it is pointed at the tree.
-  const castsIn = (body: string): boolean =>
-    body.includes("as ErrorTranslationKey");
-
-  test("the cast detector detects a cast", () => {
-    expect(castsIn('const k = "errors.x" as ErrorTranslationKey;')).toBe(true);
-    expect(castsIn('const k: ErrorTranslationKey = "errors.x";')).toBe(false);
-  });
-
-  test("no production code casts its way past ErrorTranslationKey", async () => {
-    const offenders: string[] = [];
-    for (const f of await sourceFiles("src")) {
-      if (!castsIn(await readFile(f, "utf8"))) continue;
-      if (ALLOWED_CASTS[f]) continue;
-      offenders.push(f);
-    }
-    expect(offenders).toEqual([]);
-  });
-
   // The spelling rule. A literal that LOOKS like a key and resolves to nothing is a typo or a
   // token one side invented. These three are stored values, not keys: `KnowledgeDocument.error` rows
   // may still carry the old dotted spelling, which the console maps onto today's tokens
@@ -496,8 +472,7 @@ describe("the error catalog cannot be bypassed", () => {
   // NOTE: a ledger is subtracted from a set DERIVED from the tree, so appending to it both silences
   // a new offender and satisfies the stale-waiver test. The size is the only fact the tree cannot
   // supply (tests/utils/ledger.ts).
-  test("the cast and legacy-token ledgers may only shrink", () => {
-    expectWaiverLedger("ALLOWED_CASTS", ALLOWED_CASTS, 0);
+  test("the legacy-token ledger may only shrink", () => {
     expectWaiverLedger("STORED_LEGACY_TOKENS", STORED_LEGACY_TOKENS, 3);
   });
 });
@@ -988,10 +963,10 @@ describe("a registered key still has to say something", () => {
       for (const locale of ["en", "pt-BR"] as const) {
         const out = translateWithLocale(
           locale,
-          k as never,
+          `errors.${k}` as never,
           `fallback for ${k}`,
         );
-        expect(out, `${locale} ${k}`).not.toContain("{{");
+        expect(out, `${locale} ${k}`).toBe(`fallback for ${k}`);
       }
     }
   });

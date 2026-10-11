@@ -1,0 +1,19 @@
+// Refuses unwrapping the request's tenant context down to its id in src/api (scoped in biome.jsonc):
+// `ctx.tenantId as bigint`, or a helper typed `): bigint` that returns `x.tenantId`. A module handed a
+// bare id cannot refuse a dead selector; hand it the context.
+language js;
+
+or {
+    TsAsExpression() as $site where { $site <: r"[\s\S]*\.tenantId as bigint" },
+    or {
+        `function $name($...): bigint { $... }`,
+        `async function $name($...): bigint { $... }`,
+        `function ($...): bigint { $... }`,
+        JsMethodClassMember() as $m where { $m <: r"[^{]*\):\s*bigint\s*\{[\s\S]*" },
+        JsMethodObjectMember() as $m where { $m <: r"[^{]*\):\s*bigint\s*\{[\s\S]*" }
+    } as $site where {
+        $site <: contains JsReturnStatement() as $ret where { $ret <: r"return\s+[A-Za-z0-9_]+\.tenantId;" }
+    }
+} where {
+    register_diagnostic(span = $site, message = "Hand the module the request's tenant context, not its bare id: a bare id cannot refuse a dead selector.")
+}

@@ -39,6 +39,7 @@ if (appUrl && suUrl) {
 // Non-optional aliases for use inside the (skipped-when-down) describe block, avoiding
 // non-null assertions; when dbUp is false the suite is skipped and these are never read.
 const appDb = app as PrismaClient;
+const suDb = su as PrismaClient;
 
 let t1 = 0n;
 let t2 = 0n;
@@ -109,19 +110,28 @@ describe.skipIf(!dbUp)("tenancy isolation (RLS)", () => {
   });
 
   test("cross-tenant write is blocked by the RLS WITH CHECK", async () => {
-    await expect(
+    const insertAs = (rowTenant: bigint, conv: number) =>
       appDb.$transaction(async (tx) => {
         await tx.$executeRaw`SELECT set_config('app.tenant_id', ${String(t1)}, true)`;
         const inst = await tx.chatwootInstance.findFirstOrThrow({
           select: { id: true },
         });
-        // Force a row that belongs to tenant 2 while scoped to tenant 1.
-        await tx.$executeRaw`
+        return tx.$executeRaw`
           INSERT INTO conversations
             (tenant_id, chatwoot_instance_id, chatwoot_conversation_id, status, thread_id, updated_at)
-          VALUES (${t2}, ${inst.id}, 999, 'pending', 'x', now())`;
-      }),
-    ).rejects.toThrow();
+          VALUES (${rowTenant}, ${inst.id}, ${conv}, 'pending', ${`x${conv}`}, now())`;
+      });
+    // Control: the same insert for the scoped tenant goes through.
+    expect(await insertAs(t1, 998)).toBe(1);
+    await suDb.$executeRaw`DELETE FROM conversations WHERE chatwoot_conversation_id = 998 AND tenant_id = ${t1}`;
+
+    await expect(insertAs(t2, 999)).rejects.toThrow(
+      /new row violates row-level security policy for table "conversations"/,
+    );
+    const landed = await suDb.conversation.count({
+      where: { chatwootConversationId: 999, tenantId: { in: [t1, t2] } },
+    });
+    expect(landed).toBe(0);
   });
 
   // NOTE: through the real helper, not a copy of what it does: a hand-rolled copy keeps passing against a

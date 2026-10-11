@@ -22,7 +22,10 @@ import {
 //
 // Every assertion reduces to a boolean or a string BEFORE expect: a failing expectation that holds
 // a DOM node serializes a cyclic happy-dom tree and stalls the runner.
-function renderWith(action: GuardrailAction): void {
+function renderWith(
+  action: GuardrailAction,
+  setGuardrails: (next: unknown) => void = () => {},
+): GuardrailsConfig {
   const config: GuardrailsConfig = {
     ...structuredClone(GUARDRAILS_DEFAULTS),
     enabled: true,
@@ -34,7 +37,7 @@ function renderWith(action: GuardrailAction): void {
   render(
     <GuardrailsTab
       guardrails={config}
-      setGuardrails={() => {}}
+      setGuardrails={setGuardrails as never}
       refusals={NO_REFUSALS}
       dirty={false}
       saving={false}
@@ -42,6 +45,7 @@ function renderWith(action: GuardrailAction): void {
       onDiscard={() => {}}
     />,
   );
+  return config;
 }
 
 const templateFields = () =>
@@ -75,8 +79,25 @@ describe("GuardrailsTab template message", () => {
   });
 
   test("is editable on the template action", () => {
-    renderWith("template");
-    expect(templateFields() > 0).toBe(true);
+    let next: GuardrailsConfig | undefined;
+    const config = renderWith("template", (update) => {
+      next = (update as (s: GuardrailsConfig) => GuardrailsConfig)(config);
+    });
+    const fields = screen.queryAllByLabelText(
+      /^Template message/,
+    ) as HTMLTextAreaElement[];
+    expect(fields.map((f) => f.disabled)).toEqual([false, false]);
+    // Each box writes its own direction, input first.
+    const written = (["input", "output"] as const).map((dir, i) => {
+      fireEvent.change(fields[i] as HTMLTextAreaElement, {
+        target: { value: `nova ${dir}` },
+      });
+      return [next?.input.templateMessage, next?.output.templateMessage];
+    });
+    expect(written).toEqual([
+      ["nova input", config.output.templateMessage],
+      [config.input.templateMessage, "nova output"],
+    ]);
   });
 
   test("is gone on silent, which sends nothing at all", () => {
@@ -202,9 +223,11 @@ describe("a refusal handed to the guardrails tab lands at its input", () => {
   });
 
   test("with nothing refused the tab says none of it", () => {
-    // The control for the count above: a rendering that always showed the string would pass every
-    // line of it.
+    // NOTE: no field marks itself refused, whatever sentence a refusal would carry.
     renderRefused(NO_REFUSALS);
-    expect(screen.queryAllByText(/^refused: /).length).toBe(0);
+    expect(document.querySelectorAll('[aria-invalid="true"]').length).toBe(0);
+    cleanup();
+    renderRefused({ ...NO_REFUSALS, customPolicy: "x" });
+    expect(document.querySelectorAll('[aria-invalid="true"]').length).toBe(1);
   });
 });

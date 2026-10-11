@@ -4,7 +4,8 @@ import { describe, expect, test } from "bun:test";
 // (src/modules/flowlog/service.ts), so a test asserting on its lines has three obligations: SCOPE (a
 // tenant-only filter answers with another test of the same file), WAIT (read through `flowLogRows` /
 // `flowLogRow` / `flowLogCount`, which settle first) and CLEAR (`clearFlowLog` settles, then
-// deletes). Each has ONE SPELLING, so each is checked off the source. The ledger is per file with a
+// deletes). SCOPE is checked here; WAIT and CLEAR are biome-plugins/no-raw-flowlog-read.grit and
+// no-raw-flowlog-clear.grit. The ledger is per file with a
 // count, and `tenant-wide` is a decision written down, not an omission. What it does not cover, and
 // the cost of a tree-wide ledger: docs/logs.md, "Testing the flow log".
 
@@ -264,74 +265,9 @@ const FLOWLOG_READERS: Record<string, number> = {
 // The one file the scan skips, because its fixtures below are unscoped reads written on purpose.
 const SELF = "tests/modules/flowlog-reader-scope.test.ts";
 
-// The helper file, skipped by BOTH scans below and for the same reason each time: it is where the
-// one correct spelling is DEFINED, so it holds the raw clear and the raw reads that every other file
-// is forbidden. Exempting it is not a hole: nothing in it asserts on a row, so neither obligation
-// has anything to be about.
+// The helper file, skipped by the scan below: it is where the settling readers are DEFINED, and
+// nothing in it asserts on a row.
 const HELPER = "tests/utils/flowlog.ts";
-
-// A clear of `execution_logs` written by hand, in any spelling a test has reached for. `TRUNCATE` is
-// listed because it is the same act under a different verb, and a guard that only knew `DELETE`
-// would wave it through. `\s` inside the pattern rather than a literal space for the same reason
-// the scan below is whole-file: `executionLog\n  .deleteMany(…)` and a `DELETE\nFROM execution_logs`
-// inside a template literal are what the formatter produces on a long enough line, and a predicate
-// run per line would report the file as clean.
-const RAW_CLEAR =
-  /executionLog\s*\.\s*deleteMany\s*\(|(?:DELETE\s+FROM|TRUNCATE(?:\s+TABLE)?)\s+"?execution_logs"?/gi;
-
-// A READ of `execution_logs` written against the client instead of the settling helper. Same shape
-// as RAW_CLEAR above and for the same reason: `\s` rather than a literal space, because
-// `executionLog\n  .findMany(…)` is what the formatter produces on a long enough line and a
-// per-line predicate would call that file clean.
-//
-// Only the READING methods. `deleteMany` has its own guard above, and `create` is how a test SEEDS
-// rows it then reads, awaited, with no emit in the path, so the wait obligation has nothing to be about.
-const RAW_READ =
-  /executionLog\s*\.\s*(?:findMany|findFirst|findFirstOrThrow|findUnique|findUniqueOrThrow|count|aggregate|groupBy)\s*\(/g;
-
-export function rawReadLines(src: string): number[] {
-  const out: number[] = [];
-  const re = new RegExp(RAW_READ.source, "gi");
-  for (;;) {
-    const hit = re.exec(src);
-    if (!hit) return out;
-    out.push(src.slice(0, hit.index).split("\n").length);
-  }
-}
-
-export function rawClearLines(src: string): number[] {
-  const out: number[] = [];
-  // A fresh regex per call: a `g` pattern carries `lastIndex` between calls, so a shared instance
-  // would start the second file mid-way through and miss whatever sits before that offset.
-  const re = new RegExp(RAW_CLEAR.source, "gi");
-  for (;;) {
-    const hit = re.exec(src);
-    if (!hit) return out;
-    // The line the match STARTS on, counted from the offset rather than from a per-line loop, which
-    // is what lets the match itself span lines.
-    out.push(src.slice(0, hit.index).split("\n").length);
-  }
-}
-
-// `clearFlowLog` is the one correct spelling. Three files are exempt and each for its own reason:
-// the helper IS the spelling; the settle file's subject is what a clear that does not settle leaves
-// behind, so it has to write the wrong one to assert what it costs; and this file, like the reader
-// scan above it, holds fixtures of the very thing it flags.
-const CLEAR_EXEMPT = new Set([
-  HELPER,
-  "tests/modules/flowlog-settle.test.ts",
-  SELF,
-]);
-
-// `flowLogRows` / `flowLogRow` / `flowLogCount` are the correct spellings. The same three files are
-// exempt as for the clear, and the middle one for a sharper reason than there: flowlog-settle's
-// SUBJECT is that the row is not there when the emit returns, so it has to read without settling to
-// assert what settling buys. A guard that forced it to settle would delete its premise.
-const READ_EXEMPT = new Set([
-  HELPER,
-  "tests/modules/flowlog-settle.test.ts",
-  SELF,
-]);
 
 async function scanTests(): Promise<Map<string, Reader[]>> {
   const { Glob } = await import("bun");
@@ -453,140 +389,5 @@ describe("every flow-log reader in the suite is accounted for", () => {
       }
     }
     expect(unscoped).toEqual([]);
-  });
-});
-
-describe("nothing empties the flow log by hand", () => {
-  test("it flags a raw deleteMany and a raw DELETE, and both spellings of TRUNCATE", () => {
-    expect(
-      rawClearLines("await db.executionLog.deleteMany({ where });"),
-    ).toEqual([1]);
-    expect(
-      rawClearLines(
-        "await db.$executeRawUnsafe(`DELETE FROM execution_logs WHERE x`);",
-      ),
-    ).toEqual([1]);
-    expect(
-      rawClearLines('await db.$executeRawUnsafe("TRUNCATE execution_logs");'),
-    ).toEqual([1]);
-    expect(
-      rawClearLines(
-        'await db.$executeRawUnsafe(`TRUNCATE TABLE "execution_logs"`);',
-      ),
-    ).toEqual([1]);
-  });
-
-  test("the spellings the formatter produces do not escape it", () => {
-    // NOTE: A per-line predicate reads any clear the formatter broke across lines as clean, and these are not
-    // exotic spellings: they are what Biome emits once the chain or the template is long enough.
-    expect(
-      rawClearLines("await suDb.executionLog\n  .deleteMany({ where });"),
-    ).toEqual([1]);
-    expect(
-      rawClearLines(
-        "await db.$executeRawUnsafe(`DELETE\n  FROM execution_logs\n  WHERE x`);",
-      ),
-    ).toEqual([1]);
-    expect(
-      rawClearLines(
-        "const a = 1;\nconst b = 2;\nawait db.executionLog.deleteMany({ w });",
-      ),
-    ).toEqual([3]);
-    // Two of them, so the scan cannot stop at the first and call the rest of the file clean.
-    expect(
-      rawClearLines(
-        "await db.executionLog.deleteMany({ a });\nawait db.executionLog.deleteMany({ b });",
-      ),
-    ).toEqual([1, 2]);
-  });
-
-  test("it does not flag the helper call, nor another table's clear", () => {
-    // The positive control above is what makes this line mean something: a predicate that flagged
-    // nothing would pass this test and the sweep below without reading anything.
-    expect(rawClearLines("await clearFlowLog(suDb, { tenantId });")).toEqual(
-      [],
-    );
-    expect(
-      rawClearLines("await suDb.alertDelivery.deleteMany({ where });"),
-    ).toEqual([]);
-    expect(
-      rawClearLines(
-        "await suDb.$executeRawUnsafe(`DELETE FROM alert_deliveries WHERE x`);",
-      ),
-    ).toEqual([]);
-  });
-
-  test("every clear in the suite goes through clearFlowLog", async () => {
-    const { Glob } = await import("bun");
-    const offenders: string[] = [];
-    for await (const rel of new Glob("**/*.{ts,tsx}").scan("tests")) {
-      const path = `tests/${rel}`;
-      if (CLEAR_EXEMPT.has(path)) continue;
-      for (const line of rawClearLines(await Bun.file(path).text())) {
-        offenders.push(`${path}:${line}`);
-      }
-    }
-    // A raw clear empties the table of the rows that exist and of nothing else, so the case that runs
-    // next inherits whatever the case before it had only scheduled. `clearFlowLog` settles first.
-    expect(offenders).toEqual([]);
-  });
-});
-
-describe("nothing reads the flow log without waiting for the write", () => {
-  test("it flags a raw read in each of its methods, and across a line break", () => {
-    expect(
-      rawReadLines("const r = await db.executionLog.findMany({ w });"),
-    ).toEqual([1]);
-    expect(rawReadLines("await db.executionLog.findFirst({ w });")).toEqual([
-      1,
-    ]);
-    expect(rawReadLines("await db.executionLog.count({ w });")).toEqual([1]);
-    // What Biome emits once the chain is long enough, and the shape a per-line predicate misses.
-    expect(
-      rawReadLines("await suDb.executionLog\n  .findMany({ w });"),
-    ).toEqual([1]);
-    // Two of them, so the scan cannot stop at the first and call the rest of the file clean.
-    expect(
-      rawReadLines(
-        "await db.executionLog.findMany({ a });\nawait db.executionLog.count({ b });",
-      ),
-    ).toEqual([1, 2]);
-  });
-
-  test("it does not flag the helper calls, a seeding create, nor another table", () => {
-    // The positive control above is what makes this line mean something: a predicate that flagged
-    // nothing would pass this test and the sweep below without reading anything.
-    expect(
-      rawReadLines("const r = await flowLogRows(suDb, { where });"),
-    ).toEqual([]);
-    expect(
-      rawReadLines("const r = await flowLogRow(suDb, { where });"),
-    ).toEqual([]);
-    expect(
-      rawReadLines("const n = await flowLogCount(suDb, { where });"),
-    ).toEqual([]);
-    // A test that INSERTS its own rows awaits the write, so there is no emit to outrun.
-    expect(rawReadLines("await suDb.executionLog.create({ data });")).toEqual(
-      [],
-    );
-    expect(
-      rawReadLines("await suDb.alertDelivery.findMany({ where });"),
-    ).toEqual([]);
-  });
-
-  test("every read in the suite goes through the settling helper", async () => {
-    const { Glob } = await import("bun");
-    const offenders: string[] = [];
-    for await (const rel of new Glob("**/*.{ts,tsx}").scan("tests")) {
-      const path = `tests/${rel}`;
-      if (READ_EXEMPT.has(path)) continue;
-      for (const line of rawReadLines(await Bun.file(path).text())) {
-        offenders.push(`${path}:${line}`);
-      }
-    }
-    // NOTE: A read that does not settle answers before the row lands. For an assertion that a line EXISTS that
-    // is a flake; for one that a line does NOT exist it is worse, because the read passes for exactly the
-    // reason that makes it wrong: with the write delayed, only the cases asserting an absence still pass.
-    expect(offenders).toEqual([]);
   });
 });

@@ -416,7 +416,9 @@ describe("resend toolpack — what a muted turn may hold", () => {
     const spec = resendToolpack.toolSpecs.find(
       (t) => t.name === "resend_email_status",
     );
-    expect(spec?.deliversToCustomer ?? false).toBe(false);
+    // The spec is there, and it says nothing about delivering, which is what the mute reads.
+    expect(spec?.name).toBe("resend_email_status");
+    expect(spec?.deliversToCustomer).toBeUndefined();
   });
 });
 

@@ -269,9 +269,16 @@ describe("a failed vault load", () => {
   });
 
   test("leaves useVaultRefs at not-loaded", async () => {
-    failNext = true;
+    holdNextResponse({ fail: true });
     const { result } = renderHook(() => useVaultRefs());
-    await waitFor(() => expect(getCalls).toBe(1));
+    await waitFor(() => expect(claimedHolds).toHaveLength(1));
+    // The failure is released and the hook's own handler has run before the state is read.
+    const settled = loadVault().catch(() => undefined);
+    await act(async () => {
+      releaseHeld(0);
+      await settled;
+    });
+    expect(getCalls).toBe(1);
     expect(result.current.known).toBeNull();
     cleanup();
   });

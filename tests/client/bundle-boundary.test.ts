@@ -1,29 +1,28 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, statSync } from "node:fs";
+import { relative } from "node:path";
 
-// What the browser is allowed to pull in, enforced on the actual import graph rather than on a
-// comment nobody re-reads.
+// What the browser is allowed to pull in, asked of the bundler itself: the console's entry is built
+// for the browser and the build's own input graph must not hold a server-only module.
 //
-// Two modules in this tree state the rule in prose and had nothing checking it: `modules/tts/
-// providers` (the synthesis registry, reached by importing `modules/tts/settings`) and the LangChain
-// SDKs (`graph/model-config` is deliberately free of them so the HTTP layer can validate a model
-// config without them). The first one broke: the agent editor imported a voice clamp and shipped the
-// ElevenLabs HTTP client and the WAV header writer to every browser that loads the console.
+// Two modules in this tree state the rule in prose: `modules/tts/providers` (the synthesis registry,
+// reached by importing `modules/tts/settings`) and the LangChain SDKs (`graph/model-config` is
+// deliberately free of them so the HTTP layer can validate a model config without them).
 
-const ENTRY = "src/client/frontend.tsx";
+const ROOT = `${import.meta.dir}/../..`;
+const local = (spec: string) =>
+  relative(process.cwd(), Bun.resolveSync(spec, import.meta.dir));
 
-// Server-only modules and packages, with why each one is on the list.
+// Server-only modules, with why each one is on the list.
 const FORBIDDEN = [
   // Object.keys(PROVIDERS) at module scope: importing anything from it evaluates the whole registry.
-  "src/modules/tts/providers.ts",
+  local("@/modules/tts/providers"),
   // The synthesis path itself (fetch + audio encoding), reachable the same way.
-  "src/modules/tts/normalize.ts",
-  "src/config.ts",
+  local("@/modules/tts/normalize"),
+  local("@/config"),
   // `new AsyncLocalStorage()` at module scope, and its browser shim is empty: importing ANYTHING
-  // from here (the audit page wanted `ACTOR_TYPES`) throws before the console renders, on every
-  // screen and not only the one that imported it. The value half lives in `tenancy/actor.ts`, which
-  // has no imports at all.
-  "src/lib/tenancy/context.ts",
+  // from here throws before the console renders, on every screen. The value half lives in
+  // `tenancy/actor.ts`, which has no imports at all.
+  local("@/lib/tenancy/context"),
 ];
 const FORBIDDEN_PACKAGES = [
   "@langchain/",
@@ -31,74 +30,46 @@ const FORBIDDEN_PACKAGES = [
   "@prisma/client",
   "node:async_hooks",
   // The code-tool sandbox interpreter (QuickJS over WebAssembly) cannot load under the console's
-  // CSP and must never reach the browser bundle: the client reads only the import-free limits module
-  // and the isomorphic acorn check, never `graph/tools/code-sandbox` or its worker.
+  // CSP and must never reach the browser bundle.
   "quickjs-emscripten-core",
   "@jitl/quickjs",
 ];
 
-const EXTENSIONS = [".ts", ".tsx", ".js", ".jsx"];
-
-function resolveLocal(spec: string, fromFile: string): string | null {
-  let base: string;
-  if (spec.startsWith("@/")) base = `src/${spec.slice(2)}`;
-  else if (spec.startsWith(".")) {
-    const dir = fromFile.split("/").slice(0, -1).join("/");
-    base = new URL(spec, `file:///${dir}/`).pathname.replace(/^\//, "");
-  } else return null;
-  // Only ever a FILE: `Bun.file` reports a non-zero size for a directory too, and `src/client/
-  // components` would otherwise resolve as if it were a module.
-  const candidates = EXTENSIONS.some((e) => base.endsWith(e))
-    ? [base]
-    : [
-        ...EXTENSIONS.map((e) => base + e),
-        ...EXTENSIONS.map((e) => `${base}/index${e}`),
-      ];
-  for (const candidate of candidates) {
-    if (existsSync(candidate) && statSync(candidate).isFile()) return candidate;
-  }
-  return null;
+interface Metafile {
+  inputs: Record<string, { imports: { path: string; external?: boolean }[] }>;
 }
-
-// `import ... from "x"`, `export ... from "x"` and `import("x")`. Type-only imports are erased by the
-// bundler, so they cannot pull anything in and are skipped.
-const SPEC_RE =
-  /(?:^|\n)\s*(?:import|export)(?!\s+type\s)[\s\S]*?from\s*["']([^"']+)["']|import\s*\(\s*["']([^"']+)["']\s*\)/g;
 
 describe("client bundle boundary", () => {
   test("no server-only module is reachable from the browser entry", async () => {
-    const seen = new Set<string>();
-    const packageHits: string[] = [];
-    const queue = [ENTRY];
-    const via = new Map<string, string>();
+    const built = await Bun.build({
+      entrypoints: [Bun.resolveSync("@/client/frontend", import.meta.dir)],
+      root: ROOT,
+      target: "browser",
+      metafile: true,
+      throw: false,
+    } as Parameters<typeof Bun.build>[0]);
+    expect(built.success).toBe(true);
+    const meta = (built as unknown as { metafile: Metafile }).metafile;
+    const inputs = Object.keys(meta.inputs);
+    // The build has to actually reach the app, or an empty graph would pass silently.
+    expect(inputs.length).toBeGreaterThan(50);
+    expect(inputs).toContain(local("@/client/pages/agents/AgentEditorPage"));
 
-    while (queue.length > 0) {
-      const file = queue.shift() as string;
-      if (seen.has(file)) continue;
-      seen.add(file);
-      const text = await Bun.file(file).text();
-      for (const m of text.matchAll(SPEC_RE)) {
-        const spec = m[1] ?? m[2];
-        if (!spec) continue;
-        const local = resolveLocal(spec, file);
-        if (local === null) {
-          if (FORBIDDEN_PACKAGES.some((p) => spec.startsWith(p))) {
-            packageHits.push(`${spec} (from ${file})`);
-          }
-          continue;
-        }
-        if (!via.has(local)) via.set(local, file);
-        queue.push(local);
-      }
+    const importer = new Map<string, string>();
+    for (const [file, { imports }] of Object.entries(meta.inputs)) {
+      for (const i of imports)
+        if (!importer.has(i.path)) importer.set(i.path, file);
     }
-
-    // The walk has to actually reach the app, or an empty graph would pass silently.
-    expect(seen.size).toBeGreaterThan(50);
-    expect(seen.has("src/client/pages/agents/AgentEditorPage.tsx")).toBe(true);
-
-    const hits = FORBIDDEN.filter((f) => seen.has(f)).map(
-      (f) => `${f} (imported by ${via.get(f)})`,
-    );
-    expect([...hits, ...packageHits]).toEqual([]);
+    const reached = new Set([...inputs, ...importer.keys()]);
+    const hits = [...reached]
+      .filter(
+        (p) =>
+          FORBIDDEN.includes(p) ||
+          FORBIDDEN_PACKAGES.some(
+            (pkg) => p.startsWith(pkg) || p.includes(`node_modules/${pkg}`),
+          ),
+      )
+      .map((p) => `${p} (imported by ${importer.get(p) ?? "the entry"})`);
+    expect(hits).toEqual([]);
   });
 });

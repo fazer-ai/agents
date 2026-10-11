@@ -14,6 +14,7 @@ import {
   fencedFetch,
   registerToolpack,
 } from "@/modules/integrations/toolpacks/types";
+import { until } from "@/tests/utils/poll";
 
 // 8.8.8.8 is a public IP literal: the SSRF guard treats it as an IP (no DNS lookup) and does not
 // block it, so these tests never touch the network.
@@ -58,6 +59,7 @@ describe("sanitizeToolName / schema", () => {
 
   test("empty schema → no declared args", () => {
     const schema = parseToolInputSchema({});
+    expect(Object.keys(schema.shape)).toEqual([]);
     expect(schema.safeParse({}).success).toBe(true);
   });
 });
@@ -183,10 +185,11 @@ describe("buildHttpTool credential auto-injection (item 8)", () => {
       { resolveCredential: async () => "qk", fetchImpl: stubFetch(captured) },
     );
     await tool.invoke({});
-    // resolveSecretInjection("query", ...) without paramName → null → no injection.
+    // resolveSecretInjection("query", ...) without paramName → null → no injection, under any name.
+    expect(new URL(captured.url as string).search).toBe("");
     expect(
-      new URL(captured.url as string).searchParams.get("api_key"),
-    ).toBeNull();
+      JSON.stringify({ url: captured.url, headers: captured.init?.headers }),
+    ).not.toContain("qk");
   });
 
   test("header kind + credentialParamName injects the named header", async () => {
@@ -447,13 +450,23 @@ describe("buildHttpTool slow-tool ack (item 4)", () => {
 
   test("ack arg still required but simply not sent when emitAck is absent (playground)", async () => {
     const captured: Captured = {};
-    const tool = buildHttpTool(def({ ackMessage: "Já verifico…" }), {
-      resolveCredential: async () => null,
-      fetchImpl: stubFetch(captured),
-    });
-    // The model still writes __wait_message; with no emitAck wired it is a no-op and the call runs.
-    await tool.invoke({ __wait_message: "Checando…" });
-    expect(captured.url).toBeDefined();
+    const tool = buildHttpTool(
+      def({
+        ackMessage: "Já verifico…",
+        inputSchema: { q: { type: "string" } },
+      }),
+      {
+        resolveCredential: async () => null,
+        fetchImpl: stubFetch(captured),
+      },
+    );
+    // Still required: a call without it is refused before anything is sent.
+    await expect(tool.invoke({ q: "x" })).rejects.toThrow();
+    expect(captured.url).toBeUndefined();
+    // The model still writes __wait_message; with no emitAck wired it is a no-op and the call runs,
+    // carrying only its own arguments.
+    await tool.invoke({ q: "x", __wait_message: "Checando…" });
+    expect(captured.url).toBe(`https://${PUBLIC}/v1/thing?q=x`);
   });
 });
 
@@ -1038,8 +1051,9 @@ describe("buildHttpTool — programmatic authoring shapes (JSON-Schema input_sch
       { resolveCredential: async () => null, fetchImpl: stubFetch(captured) },
     );
     const out = await tool.invoke({});
-    expect(String(out)).toContain("id");
-    expect(String(out).toLowerCase()).toContain("error");
+    expect(String(out)).toBe(
+      "Error: no value available for URL placeholder(s): {{id}}. Call the tool again providing the missing input field(s).",
+    );
     expect(captured.url).toBeUndefined();
   });
 });
@@ -1500,7 +1514,15 @@ describe("a list of unknown length renders through a block (#459)", () => {
     );
     const text = String(await tool.invoke({}));
     expect(text).not.toContain("…[truncated]");
-    expect(text).toMatch(/\(and \d+ more not shown\)\n$/);
+    // Whole rows from the first, none cut, and the count is exactly what was left out.
+    const shown = [...text.matchAll(/^- #(\d+) (d*)$/gm)];
+    expect(shown.length).toBeGreaterThan(0);
+    expect(shown.map((m) => [Number(m[1]), m[2]])).toEqual(
+      shown.map((_, i) => [i + 1, "d".repeat(80)]),
+    );
+    expect(text.endsWith(`(and ${100 - shown.length} more not shown)\n`)).toBe(
+      true,
+    );
     expect(notes).toEqual([]);
   });
 
@@ -1595,18 +1617,32 @@ describe("the turn's deadline reaches an http tool", () => {
   });
 
   test("a live deadline does not stop anything, and rides along to the fetch", async () => {
-    const captured: Captured = {};
     const ctrl = new AbortController();
+    let sentTo: string | undefined;
+    let inFlight: AbortSignal | undefined;
     const tool = buildHttpTool(def(), {
       resolveCredential: async () => null,
-      fetchImpl: stubFetch(captured),
+      // NOTE: a request that stays in flight until its own signal aborts.
+      fetchImpl: ((url: string, init?: RequestInit) => {
+        sentTo = url;
+        inFlight = init?.signal ?? undefined;
+        return new Promise((_, reject) => {
+          inFlight?.addEventListener("abort", () =>
+            reject(new Error("aborted")),
+          );
+        });
+      }) as unknown as typeof fetch,
       expiresOn: ctrl.signal,
     });
-    await tool.invoke({});
-    expect(captured.url).toContain("/v1/thing");
+    const run = tool.invoke({}).catch((e: unknown) => e);
+    await until("the request to go out", () => inFlight);
+    expect(sentTo).toBe(`https://${PUBLIC}/v1/thing`);
+    expect(inFlight?.aborted).toBe(false);
     // Relayed onto the bounded fetch's own controller, so a request in flight is cancelled when the
     // budget ends instead of running to its own timeout past the end of the tick.
-    expect(captured.init?.signal).toBeDefined();
+    ctrl.abort();
+    expect(inFlight?.aborted).toBe(true);
+    await run;
   });
 });
 

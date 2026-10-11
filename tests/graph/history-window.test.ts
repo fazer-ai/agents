@@ -154,11 +154,21 @@ describe("selectHistoryWindow", () => {
   test("counts each message once instead of re-counting the whole prefix", () => {
     const history = build(SHAPE);
     const seen = new Map<BaseMessage, number>();
-    selectHistoryWindow(history, 45, (m) => {
+    const window = selectHistoryWindow(history, 45, (m) => {
       seen.set(m, (seen.get(m) ?? 0) + 1);
       return EACH;
     });
-    // NOTE: Guards against an O(n^2) walk that re-counts the surviving prefix on every step.
-    for (const [, times] of seen) expect(times).toBe(1);
+    // NOTE: Guards against an O(n^2) walk that re-counts the surviving prefix on every step. The
+    // walk visits the four that fit and the one that did not, each once.
+    expect(
+      [...seen.entries()].map(([m, times]) => [history.indexOf(m), times]),
+    ).toEqual([
+      [9, 1],
+      [8, 1],
+      [7, 1],
+      [6, 1],
+      [5, 1],
+    ]);
+    expect(window).toEqual({ kept: history.slice(6), dropped: 6, tokens: 40 });
   });
 });

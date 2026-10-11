@@ -1,16 +1,16 @@
 /// <reference lib="dom" />
 
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { cleanup, render, screen } from "@testing-library/react";
-import type { ReactNode } from "react";
 import { MemoryRouter, Route, Routes } from "react-router";
+import * as AuthModule from "@/client/contexts/AuthContext";
+import { stubExports } from "@/tests/utils/module-stub";
 
 let authState: { user: { email: string } | null; setupRequired: boolean };
 
-mock.module("@/client/contexts/AuthContext", () => ({
+stubExports(AuthModule, {
   useAuth: () => authState,
-  AuthProvider: ({ children }: { children: ReactNode }) => children,
-}));
+});
 
 const { SetupGate } = await import("@/client/components/SetupGate");
 

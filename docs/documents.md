@@ -24,6 +24,8 @@ A document is an ordered list of blocks, from a **closed** vocabulary
 Every block carries an `id` (so the console can edit one across a reorder made from the API) and an
 optional `spaceAfter`.
 
+**Across a page break**, a `lineItems` row moves to the next page whole instead of splitting its description from its numbers, and the table head prints again at the top of every page the table continues on (it is `fixed` inside the table, so it does not follow the table past its end). A row taller than the page body is the exception: kept whole it would be clipped, so `rowKeepsWhole` (`render.tsx`) measures its description in the page's font and lets it break when it would take more than four fifths of the page. A block's `spaceAfter` is a spacer drawn between it and the next block, not a bottom margin on it, and the last block gets none (a spacer that alone overflowed would open a page with nothing but the footer): with a margin, a block whose content fits the rest of the page but whose margin does not is moved whole to the next page, leaving the page it started on nearly empty.
+
 The set is closed because every block is something the renderer knows how to lay out. What it does
 not cover goes into a `text` block as prose — that is the escape hatch, and it is why there is no
 `html` or `raw` block. `text` understands a small markdown: `**bold**`, `*italic*` / `_italic_`,

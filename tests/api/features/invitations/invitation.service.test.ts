@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import {
@@ -93,12 +94,16 @@ describe.skipIf(!dbUp)("invitation service (DB)", () => {
       },
       appDb,
     );
-    expect(inv.token).toBeTruthy();
     const row = await suDb.invitation.findFirst({
       where: { tenantId: tenantA, email: "a1@x.com" },
     });
-    expect(row?.tokenHash).toBeTruthy();
-    expect(row?.tokenHash).not.toBe(inv.token);
+    expect(row?.tokenHash).toBe(
+      createHash("sha256").update(inv.token).digest("hex"),
+    );
+    expect(await findValidInviteByToken(inv.token, appDb)).toMatchObject({
+      email: "a1@x.com",
+      role: "AGENT",
+    });
   });
 
   test("createInvite refuses SUPER_ADMIN role", async () => {
@@ -119,16 +124,20 @@ describe.skipIf(!dbUp)("invitation service (DB)", () => {
   test("the DB CHECK also rejects a SUPER_ADMIN invitation row", async () => {
     // $executeRawUnsafe returns a (lazy) PrismaPromise, which bun's .rejects matcher does not
     // accept directly — await it inside try/catch instead.
-    let threw = false;
-    try {
-      await suDb.$executeRawUnsafe(
+    const insert = (email: string, role: string) =>
+      suDb.$executeRawUnsafe(
         `INSERT INTO invitations (tenant_id, email, role, token_hash, expires_at, updated_at)
-         VALUES (${tenantA}, 'chk@x.com', 'SUPER_ADMIN', 'h-${pid}', now() + interval '1 day', now())`,
+         VALUES (${tenantA}, '${email}', '${role}', 'h-${email}-${pid}', now() + interval '1 day', now())`,
       );
-    } catch {
-      threw = true;
+    let refusal = "";
+    try {
+      await insert("chk@x.com", "SUPER_ADMIN");
+    } catch (e) {
+      refusal = String(e);
     }
-    expect(threw).toBe(true);
+    expect(refusal).toContain("invitations_fleet_role_check");
+    // NOTE: the same row with a tenant role goes in, so the refusal is the role and nothing else.
+    expect(await insert("chk-ok@x.com", "AGENT")).toBe(1);
   });
 
   test("acceptInvite binds tenant+role from the row and is single-use", async () => {

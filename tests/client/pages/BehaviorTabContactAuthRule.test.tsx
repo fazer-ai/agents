@@ -8,8 +8,13 @@ import {
   expect,
   test,
 } from "bun:test";
-import { readFileSync } from "node:fs";
-import { cleanup, render, screen } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { BehaviorTab } from "@/client/pages/agents/BehaviorTab";
 import {
   type ContactAuthConditionForm,
@@ -21,6 +26,11 @@ import {
   EMPTY_CONTACT_AUTH_RULE_FORM,
   readContactAuthRuleForm,
 } from "@/client/pages/agents/contactAuthRuleForm";
+import {
+  lastSavedSettings,
+  renderEditor,
+  stubEditorApi,
+} from "../../utils/agent-editor";
 import { behaviorTabProps } from "./behaviorTabProps";
 
 // The contact gate can decide from a list or an attribute instead of an endpoint. The editor is
@@ -95,18 +105,6 @@ describe("the rule's form state", () => {
     const valid = one("allowlist", { rulePhones: "+55 11 98888-7777" });
     expect(contactAuthRuleToSave(valid, false)).toEqual(
       contactAuthRulePayload(valid),
-    );
-  });
-
-  // Checked on the source for the reason tests/client/contact-auth-ttl-zero.test.ts gives: rendering
-  // the whole editor page pulls auth, theme, toast and a live catalog.
-  test("and the Behavior save is the one that goes through it", () => {
-    const src = readFileSync(
-      "src/client/pages/agents/AgentEditorPage.tsx",
-      "utf8",
-    );
-    expect(src).toContain(
-      "rule: contactAuthRuleToSave(contactAuth, contactAuth.enabled)",
     );
   });
 
@@ -197,5 +195,44 @@ describe("the gate's section in the editor", () => {
     renderGate(one("attribute", { ruleKey: "plano" }));
     expect(keyField() > 0).toBe(true);
     expect(urlField()).toBe(0);
+  });
+});
+
+// The rendered editor: switching the gate off with a draft the server would refuse saves no rule, so
+// the switch-off itself goes through; a valid rule is kept for when the gate comes back on.
+describe("the Behavior save goes through the same rule", () => {
+  afterEach(() => {
+    cleanup();
+    globalThis.fetch = realFetch;
+  });
+
+  async function switchOffAndSave(label: string) {
+    const stub = stubEditorApi({
+      settings: {
+        contactAuth: { enabled: true, rule: { kind: "label", label: "vip" } },
+      },
+    });
+    await renderEditor(stub, "behavior");
+    fireEvent.change(screen.getByDisplayValue("vip"), {
+      target: { value: label },
+    });
+    fireEvent.click(
+      screen.getByRole("switch", { name: /^Only answer authorized contacts/ }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(lastSavedSettings(stub)).toBeDefined());
+    const ca = lastSavedSettings(stub)?.contactAuth as Record<string, unknown>;
+    return { enabled: ca.enabled, rule: ca.rule };
+  }
+
+  test("an emptied draft is dropped when the gate goes off", async () => {
+    expect(await switchOffAndSave("")).toEqual({ enabled: false, rule: null });
+  });
+
+  test("a valid rule is kept when the gate goes off", async () => {
+    expect(await switchOffAndSave("vip2")).toEqual({
+      enabled: false,
+      rule: { kind: "label", label: "vip2" },
+    });
   });
 });

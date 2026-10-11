@@ -128,7 +128,11 @@ describe("a stored schedule cannot be larger than a written one", () => {
       "-",
       "pt-BR",
     );
-    // 5,000 windows render 65,039 characters when nothing bounds them.
+    // 5,000 windows render 65,039 characters when nothing bounds them; the cap renders exactly the
+    // first MAX_SCHEDULE_WINDOWS, no fewer.
+    expect(rendered).toBe(
+      formatWindowsSummary(many(MAX_SCHEDULE_WINDOWS), "-", "pt-BR"),
+    );
     expect(rendered.length).toBeLessThan(4000);
   });
 

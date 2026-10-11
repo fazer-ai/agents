@@ -17,6 +17,7 @@ import {
   type TtsFormState,
 } from "@/client/pages/agents/ttsFormState";
 import type { TtsCheckMode } from "@/modules/tts/settings-shared";
+import { createTestI18n, withI18n } from "@/tests/utils/i18n";
 import { behaviorTabProps } from "./behaviorTabProps";
 
 // The audio check is picked per agent, next to the audio reply settings, and an install with no
@@ -91,20 +92,37 @@ describe("the audio check in the agent editor", () => {
   });
 
   test("the pt-BR catalog carries every string of the field", () => {
-    const editor = (clientPt as unknown as { editor: Record<string, string> })
-      .editor;
-    for (const key of [
-      "ttsCheckMode",
-      "ttsCheckModeHelp",
-      "ttsCheckModeUnavailable",
-      "ttsCheckModeDocs",
-      "ttsCheckModeDefault",
-      "ttsCheckOff",
-      "ttsCheckShadow",
-      "ttsCheckEnforce",
-    ]) {
-      expect(editor[key]).toBeTruthy();
-    }
-    expect(editor.ttsCheckModeDefault).toContain("{{mode}}");
+    const pt = () =>
+      createTestI18n("pt-BR", {
+        "pt-BR": { translation: clientPt },
+      });
+    const tts = readTtsFormState({ mode: "mirror" });
+    const tab = (ttsCheck: { configured: boolean; mode: TtsCheckMode }) =>
+      withI18n(
+        <AuthContext.Provider value={{ ttsCheck } as never}>
+          <BehaviorTab
+            {...behaviorTabProps({ tts, setTts: (() => {}) as never })}
+          />
+        </AuthContext.Provider>,
+        pt(),
+      );
+    const view = render(tab({ configured: true, mode: "shadow" }));
+    const select = screen.getByLabelText(
+      /^Verificação do áudio/,
+    ) as HTMLSelectElement;
+    expect([...select.options].map((o) => o.textContent)).toEqual([
+      "Padrão da instalação (Só registrar)",
+      "Desligada",
+      "Só registrar",
+      "Regenerar",
+    ]);
+
+    view.rerender(tab({ configured: false, mode: "off" }));
+    expect(
+      screen.queryByText(/Esta instalação não tem detector de áudio/) !== null,
+    ).toBe(true);
+    expect(
+      screen.queryByRole("link", { name: "Como configurar" }) !== null,
+    ).toBe(true);
   });
 });

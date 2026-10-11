@@ -13,7 +13,7 @@ import {
   tryAttachUser,
   untrackSocket,
 } from "@/api/features/realtime/realtime.service";
-import { authPlugin } from "@/api/lib/auth";
+import { authPlugin, isSessionLoggedOut } from "@/api/lib/auth";
 import logger from "@/api/lib/logger";
 import { doc, errors } from "@/api/lib/openapi";
 import { originPlugin } from "@/api/lib/origin";
@@ -52,9 +52,9 @@ async function registerAndRecheck(
     close(code?: number, reason?: string): void;
     data: { getAuthUser(): Promise<unknown> };
   },
-  userId: bigint,
+  user: { id: bigint; sessionId?: string },
 ): Promise<boolean> {
-  trackSocket(userId, String(ws.id), ws.raw);
+  trackSocket(user.id, String(ws.id), ws.raw, user.sessionId);
   let current: unknown;
   try {
     current = await ws.data.getAuthUser();
@@ -66,7 +66,13 @@ async function registerAndRecheck(
     current = null;
   }
   if (!current) {
-    ws.close(WS_CLOSE.CREDENTIALS_CHANGED, "session revoked");
+    // A logout signs the tab out (4401); a password change asks it to reconnect under the
+    // re-issued cookie (4409), which the tab holding that cookie can.
+    const loggedOut =
+      user.sessionId !== undefined &&
+      (await isSessionLoggedOut(user.sessionId).catch(() => false));
+    if (loggedOut) ws.close(WS_CLOSE.UNAUTHORIZED, "session ended");
+    else ws.close(WS_CLOSE.CREDENTIALS_CHANGED, "session revoked");
     return false;
   }
   return true;
@@ -150,7 +156,7 @@ export const realtimeController = new Elysia({
           settle = resolve;
         }),
       );
-      if (!(await registerAndRecheck(ws, user.id)) || !attached.has(id)) {
+      if (!(await registerAndRecheck(ws, user)) || !attached.has(id)) {
         settle(false);
         return;
       }
@@ -298,7 +304,7 @@ export const realtimeController = new Elysia({
       }
       const id = String(ws.id);
       eventsLive.add(id);
-      if (!(await registerAndRecheck(ws, user.id)) || !eventsLive.has(id)) {
+      if (!(await registerAndRecheck(ws, user)) || !eventsLive.has(id)) {
         return;
       }
       const resolution = resolveEventsTenant(user, ws.data.query.tenantId);

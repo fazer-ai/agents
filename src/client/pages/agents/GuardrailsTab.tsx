@@ -420,6 +420,7 @@ export function GuardrailsTab({
                     "One per line. Used by the competitor-mentions check.",
                   )}
                 >
+                  {/* biome-ignore lint/plugin/require-textarea-cap: bounded by entry count and per-entry length, so a dropped entry shows as a missing row, not a sentence that ends early */}
                   <Textarea
                     value={g.competitors.join("\n")}
                     onChange={(e) =>

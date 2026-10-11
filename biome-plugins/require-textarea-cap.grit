@@ -1,0 +1,11 @@
+// Refuses a `<Textarea />` in the agent editor (src/client/pages/agents, scoped in biome.jsonc)
+// without `maxLength`. A field whose stored value its reader clamps says so on the control, or the
+// operator meets the cap only in what the model receives. A field with no clamp behind it carries
+// `biome-ignore lint/plugin/require-textarea-cap: <why>` above the element.
+language js;
+
+JsxSelfClosingElement(name = $name) as $el where {
+    $name <: "Textarea",
+    not $el <: r"[\s\S]*maxLength=[\s\S]*",
+    register_diagnostic(span = $el, message = "Declare the field's cap with `maxLength` (src/modules/agents/text-caps.ts). A field nothing clamps carries `biome-ignore lint/plugin/require-textarea-cap: <why>`.")
+}

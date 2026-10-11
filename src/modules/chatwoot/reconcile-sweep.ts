@@ -79,12 +79,15 @@ function newestTurn(
 ): ChatwootMessageRow | "answered" | "undecided" {
   for (let i = rows.length - 1; i >= 0; i--) {
     const m = rows[i] as ChatwootMessageRow;
-    if (m.private || m.isReaction || m.imported) continue;
-    // A blank incoming message runs no turn, so it cannot be the one owed an answer.
+    if (m.private) continue;
+    // The customer side is the recovery's own predicate (`maxIncomingId`): the message picked here is
+    // the one the recovery will find newest, or it refuses the row as behind a newer one and the loss
+    // closes unanswered. A blank incoming message runs no turn, so it is not that message.
     if (m.messageType === "incoming") {
       if (hasAnswerableContent(m)) return m;
       continue;
     }
+    if (m.isReaction || m.imported) continue;
     if (
       m.senderType === "agent_bot" &&
       m.senderId !== null &&

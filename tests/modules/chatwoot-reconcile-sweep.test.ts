@@ -13,7 +13,10 @@ import {
   ChatwootClient,
   type ChatwootInboxConversation,
 } from "@/modules/chatwoot/client";
-import { parseChatwootMessages } from "@/modules/chatwoot/messages";
+import {
+  maxIncomingId,
+  parseChatwootMessages,
+} from "@/modules/chatwoot/messages";
 import {
   owedCustomerMessage,
   reconciledDeliveryId,
@@ -209,6 +212,18 @@ describe("which message a conversation owes", () => {
       incoming(2, minutesAgo(30)),
       { ...incoming(3, minutesAgo(20)), content: "  " },
     ]);
+    expect(owedCustomerMessage(rows)?.id).toBe(2);
+  });
+  test("an incoming reaction after the request is the newest customer message, as the recovery reads it", () => {
+    const rows = parseChatwootMessages([
+      incoming(1, minutesAgo(30)),
+      {
+        ...incoming(2, minutesAgo(20)),
+        content: "👍",
+        content_attributes: { is_reaction: true },
+      },
+    ]);
+    expect(maxIncomingId(rows, 0)).toBe(2);
     expect(owedCustomerMessage(rows)?.id).toBe(2);
   });
   test("a sender-less outgoing message after the customer (an automation, an away message) does not answer them", () => {

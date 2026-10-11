@@ -2235,6 +2235,16 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
         expect([...keys]).toEqual(["later"]);
       });
 
+      test("a latch written over an older one takes its time, so the older tick's late release leaves it", async () => {
+        const scope = { tenantId, agentId, conversationId: convRowId };
+        const older = new Date(Date.now() - 60_000);
+        await triggerState.latchRules(suDb, scope, ["shared"], older);
+        await triggerState.latchRules(suDb, scope, ["shared"]);
+        await triggerState.unlatchRules(suDb, scope, ["shared"], older);
+        const keys = await triggerState.readLatchedRules(suDb, scope);
+        expect([...keys]).toEqual(["shared"]);
+      });
+
       test("a trigger state it cannot read fails the tick before any action", async () => {
         const chatwoot = fakeChatwoot({ labels: [], attributes: {} });
         const read = spyOn(triggerState, "readLatchedRules").mockRejectedValue(

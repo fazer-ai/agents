@@ -4,7 +4,7 @@
 // after them by the observation that decided.
 
 import type { PrismaClient } from "@/../generated/prisma/client";
-import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import type { TriggerStateChange } from "./run";
 
 function sysCtx(tenantId: bigint): TenantContext {
@@ -40,17 +40,36 @@ export async function latchRules(
 ): Promise<void> {
   if (keys.length === 0) return;
   await runScopedOn(base, sysCtx(scope.tenantId), (db) =>
-    db.decisionRuleState.createMany({
-      data: keys.map((ruleKey) => ({
-        tenantId: scope.tenantId,
-        agentId: scope.agentId,
-        conversationId: scope.conversationId,
-        ruleKey,
-        createdAt: at,
-      })),
-      skipDuplicates: true,
-    }),
+    writeLatches(db, scope, keys, at),
   );
+}
+
+// A row already there takes this write's time when it is older: the release bounded by `upTo`
+// (unlatchRules) belongs to whoever latched last, so an older tick's late cleanup cannot remove a
+// latch a newer one wrote over it.
+async function writeLatches(
+  db: ScopedDb,
+  scope: TriggerScope,
+  keys: string[],
+  at: Date,
+): Promise<void> {
+  const where = {
+    agentId: scope.agentId,
+    conversationId: scope.conversationId,
+  };
+  await db.decisionRuleState.createMany({
+    data: keys.map((ruleKey) => ({
+      tenantId: scope.tenantId,
+      ...where,
+      ruleKey,
+      createdAt: at,
+    })),
+    skipDuplicates: true,
+  });
+  await db.decisionRuleState.updateMany({
+    where: { ...where, ruleKey: { in: keys }, createdAt: { lt: at } },
+    data: { createdAt: at },
+  });
 }
 
 // The latches written ahead for actions that then wrote nothing, released by a tick that ended
@@ -99,17 +118,9 @@ export async function writeTriggerState(
         ],
       },
     });
+    // App time, as `latchRules` and the bound `unlatchRules` is given are.
     if (change.latch.length > 0) {
-      await db.decisionRuleState.createMany({
-        // App time, as `latchRules` and the bound `unlatchRules` is given are.
-        data: change.latch.map((ruleKey) => ({
-          tenantId: scope.tenantId,
-          ...where,
-          ruleKey,
-          createdAt: new Date(),
-        })),
-        skipDuplicates: true,
-      });
+      await writeLatches(db, scope, change.latch, new Date());
     }
   });
 }

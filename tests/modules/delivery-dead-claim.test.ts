@@ -212,6 +212,17 @@ describe.skipIf(!dbUp)("deliveries claimed by a dead process", () => {
     expect(await recoveryJobs(alive)).toBe(0);
   });
 
+  test("older live claims filling a pass's batch do not hide a dead one behind them", async () => {
+    // A capped read that skipped live claims after reading them would return the same live rows
+    // every pass and never reach the dead one.
+    const live = await lease(0);
+    await claimed(live, { claimedAgoMs: 600_000 });
+    await claimed(live, { claimedAgoMs: 590_000 });
+    const dead = await claimed(randomUUID(), { claimedAgoMs: 1_000 });
+    await sweepDeadClaims({ base: appDb, batch: 2 });
+    expect(await statusOf(dead)).toBe("DEAD");
+  });
+
   test("this process's own claims are never taken, even with its lease lapsed", async () => {
     // Its own rows include the ones a live attempt left PROCESSING on purpose for the stranded sweep.
     const self = await lease(LEASE_TTL_MS * 3);

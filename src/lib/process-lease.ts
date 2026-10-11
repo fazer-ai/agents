@@ -136,22 +136,6 @@ export async function releaseProcessLease(boundMs = 1_000): Promise<void> {
   clearTimeout(timer);
 }
 
-// Of these lease ids, the ones still renewed within the lease's lifetime. Read AFTER the claims it is
-// asked about: a process writes its lease before it stamps any claim, so every claim read first names
-// a lease that this read either sees live or that is genuinely gone or lapsed.
-export async function liveProcessLeases(
-  base: PrismaClient,
-  ids: string[],
-  ttlMs: number = LEASE_TTL_MS,
-): Promise<Set<string>> {
-  if (ids.length === 0) return new Set();
-  const rows = await base.$queryRaw<Array<{ id: string }>>`
-    SELECT id::text AS id FROM process_leases
-     WHERE id = ANY(${ids}::uuid[])
-       AND heartbeat_at > now() - make_interval(secs => ${ttlMs / 1000})`;
-  return new Set(rows.map((r) => r.id));
-}
-
 // Deletes leases lapsed longer than the retention. Best-effort housekeeping for the dead-claim pass.
 export async function pruneProcessLeases(base: PrismaClient): Promise<void> {
   await base.$executeRaw`

@@ -10,7 +10,12 @@ import { metricsPoolOptions } from "@/api/lib/pool-options";
 import config from "@/config";
 import { postgresCodeOf } from "@/lib/pg-error";
 import { runWithinBudgetOn } from "@/lib/tenancy";
-import { metricsBudget, runMetricsScoped } from "@/modules/analytics/budget";
+import { untilDeadline } from "@/lib/tenancy/deadline";
+import {
+  isOverMetricsBudget,
+  metricsBudget,
+  runMetricsScoped,
+} from "@/modules/analytics/budget";
 import { getDashboardCosts } from "@/modules/analytics/costs";
 import { getHealth } from "@/modules/analytics/health";
 import { hashApiKey, verifyApiKey } from "@/modules/api-keys/verify";
@@ -96,6 +101,28 @@ function withMetricsTimeout<T>(ms: number, fn: () => Promise<T>): Promise<T> {
     metrics.timeoutMs = saved;
   });
 }
+
+test("a statement asked for after the deadline is refused before it is sent, and reads as the metrics refusal", async () => {
+  // A cheap statement finishes inside any timeout Postgres is given, so clamping what is left to 1 ms
+  // would let a read keep answering past its budget, one fast statement at a time.
+  const sent: string[] = [];
+  const db = {
+    $executeRaw: async () => {
+      sent.push("set statement_timeout");
+      return 0;
+    },
+    llmUsage: {
+      count: async () => {
+        sent.push("count");
+        return 0;
+      },
+    },
+  };
+  const late = untilDeadline(db, Date.now() - 1);
+  const error = await late.llmUsage.count().catch((e: unknown) => e);
+  expect(sent).toEqual([]);
+  expect(isOverMetricsBudget(error)).toBe(true);
+});
 
 describe.skipIf(!dbUp)("metrics time budget", () => {
   test("a read past METRICS_TIMEOUT_MS answers 503 at the budget and leaves no statement running", async () => {

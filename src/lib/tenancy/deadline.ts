@@ -2,6 +2,15 @@
 // statement, so a first statement of 14 s and a second of 14 s under a 15 s budget hold the connection
 // 28 s. Every statement issued through the returned client, raw or through a model, first sets the
 // time left until the deadline: one round trip per statement, and the whole transaction bounded at it.
+// Once the deadline has passed, a statement is refused before it is sent: a clamp to 1 ms would still
+// let a cheap one through, and a read could keep answering past its budget one fast statement at a time.
+export class DeadlinePassedError extends Error {
+  constructor() {
+    super("the transaction's deadline has passed");
+    this.name = "DeadlinePassedError";
+  }
+}
+
 export function untilDeadline<D extends object>(db: D, deadline: number): D {
   const setLeft = (
     db as unknown as {
@@ -14,7 +23,8 @@ export function untilDeadline<D extends object>(db: D, deadline: number): D {
   const bounded =
     (call: (...a: unknown[]) => unknown, self: unknown) =>
     async (...args: unknown[]) => {
-      const left = Math.max(1, Math.ceil(deadline - Date.now()));
+      const left = Math.ceil(deadline - Date.now());
+      if (left <= 0) throw new DeadlinePassedError();
       await setLeft`SELECT set_config('statement_timeout', ${String(left)}, true)`;
       return call.apply(self, args);
     };

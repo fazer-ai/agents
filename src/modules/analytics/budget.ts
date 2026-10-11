@@ -4,6 +4,7 @@ import config from "@/config";
 import { MetricsTooSlowError } from "@/lib/errors";
 import { isPrismaTransactionError, postgresCodeOf } from "@/lib/pg-error";
 import {
+  DeadlinePassedError,
   runScopedOn,
   type ScopedDb,
   type TenantContext,
@@ -37,7 +38,9 @@ export function metricsTooSlow(deadline: number): MetricsTooSlowError {
 // 57014: a statement ran past what was left of the budget. 55P03: it waited on a lock past
 // `DB_LOCK_TIMEOUT_MS`, which is the same answer for whoever is looking at the dashboard. P2028: no
 // connection within the wait, or the transaction outlived its budget between statements.
+// DeadlinePassedError: a statement asked for after the deadline, refused before it was sent.
 export function isOverMetricsBudget(error: unknown): boolean {
+  if (error instanceof DeadlinePassedError) return true;
   const code = postgresCodeOf(error);
   return (
     code === "57014" || code === "55P03" || isPrismaTransactionError(error)

@@ -301,11 +301,12 @@ describe.skipIf(!dbUp)(
       const saw = { abort: false };
       const sent = await flushUnderDeadline(
         2002,
-        slowModel(800, false, saw),
-        300,
+        (abort) => slowModel(800, false, saw, abort),
+        null,
       );
       // Give the ignored call time to answer and the turn time to try to send it.
       await sleep(1_200);
+      expect(saw.abort).toBe(true);
       expect(sent).toEqual([]);
     });
 

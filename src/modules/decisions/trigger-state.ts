@@ -94,11 +94,11 @@ export async function unlatchRules(
   );
 }
 
-// One transaction, so a crash between the steps cannot leave a released rule latched or a latch
-// written for a key the same tick dropped. A key no rule of the block has any more is dropped too:
-// the rule was edited or deleted, and its state goes with it. Only rows written up to `upTo` (when
-// the tick read the state, or last latched) are released or dropped: two ticks can finish out of
-// order, and a newer one's latch is not the older one's to remove.
+// What a tick that finished releases, and the keys no rule of the block has any more (an edited or
+// deleted rule's state goes with it). Its `latch` is not written here: every latch went out ahead
+// of its action (latchRules), and writing it again at the end would undo a newer tick's release.
+// Only rows written up to `upTo` (when the tick read the state, or last latched) are touched: two
+// ticks can finish out of order, and a newer one's latch is not the older one's to remove.
 export async function writeTriggerState(
   base: PrismaClient,
   scope: TriggerScope,
@@ -122,9 +122,5 @@ export async function writeTriggerState(
         ],
       },
     });
-    // App time, as `latchRules` and the bound `unlatchRules` is given are.
-    if (change.latch.length > 0) {
-      await writeLatches(db, scope, change.latch, new Date());
-    }
   });
 }

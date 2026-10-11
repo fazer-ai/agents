@@ -2215,11 +2215,7 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
 
       test("a latch written ahead is only added: the state already there stays", async () => {
         const scope = { tenantId, agentId, conversationId: convRowId };
-        await triggerState.writeTriggerState(suDb, scope, {
-          latch: ["newer"],
-          release: [],
-          keep: ["newer"],
-        });
+        await triggerState.latchRules(suDb, scope, ["newer"]);
         await triggerState.latchRules(suDb, scope, ["ahead", "newer"]);
         const keys = await triggerState.readLatchedRules(suDb, scope);
         expect([...keys].sort()).toEqual(["ahead", "newer"]);
@@ -2257,6 +2253,17 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
         );
         const keys = await triggerState.readLatchedRules(suDb, scope);
         expect([...keys]).toEqual(["note"]);
+      });
+
+      test("an older tick finishing late does not latch again what a newer tick released", async () => {
+        const scope = { tenantId, agentId, conversationId: convRowId };
+        await triggerState.writeTriggerState(suDb, scope, {
+          latch: ["note"],
+          release: [],
+          keep: ["note"],
+        });
+        const keys = await triggerState.readLatchedRules(suDb, scope);
+        expect([...keys]).toEqual([]);
       });
 
       test("a trigger state it cannot read fails the tick before any action", async () => {

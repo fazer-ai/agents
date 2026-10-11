@@ -1043,6 +1043,50 @@ describe.skipIf(!dbUp)("snoozed ladder: the handler", () => {
     }
   });
 
+  test("a message cut by the window's budget keeps its sender label, marked as cut", async () => {
+    await setSettings(LADDER);
+    await seed(2089);
+    const contact = (id: number, minutes: number, content: string): Msg => ({
+      id,
+      message_type: 0,
+      created_at: minutesAgo(minutes),
+      sender: { type: "contact", id: 1 },
+      content,
+    });
+    const model = new InputCapturingModel(REPLY);
+    const s = stub({
+      messages: [
+        contact(500, 30, `início ${"x".repeat(60_000)} fim da longa`),
+        contact(501, 20, "segunda"),
+        contact(502, 19, "terceira"),
+        contact(503, 18, "quarta"),
+        contact(504, 17, "quinta"),
+        contact(505, 16, "sexta"),
+        personAsked(506, 3),
+      ],
+      model: () => model,
+    });
+    await snoozedFollowUpHandler(jobFor(2089), appDb, s.deps);
+    const seen = model.inputs.join("\n");
+    const after = (seen.split("conversation, oldest first")[1] ?? "")
+      .split("\n")
+      .slice(1);
+    const end = after.findIndex((line) => !line.startsWith("|"));
+    const block = end === -1 ? after : after.slice(0, end);
+    expect(block[0]).toStartWith("| Cliente: […] ");
+    expect(block[0]).toEndWith("fim da longa");
+    expect(block[0]).not.toContain("início");
+    expect(block.slice(1, 6)).toEqual([
+      "| Cliente: segunda",
+      "| Cliente: terceira",
+      "| Cliente: quarta",
+      "| Cliente: quinta",
+      "| Cliente: sexta",
+    ]);
+    const text = block.map((line) => line.slice(2)).join("\n");
+    expect(text.length).toBeLessThanOrEqual(NUDGE_CONVERSATION_MAX_CHARS);
+  });
+
   test("an image in the window nobody read yet is read, as the re-engage reads it, and reaches the model", async () => {
     await setSettings({
       ...LADDER,

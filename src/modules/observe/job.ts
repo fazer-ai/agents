@@ -134,6 +134,8 @@ const REFUSAL_ENDING = {
 type Refusal = keyof typeof REFUSAL_ENDING;
 
 const TRANSCRIPT_MAX_CHARS = 40_000;
+// What stands in for the start of a message the window had no room for.
+const CUT_MARK = "[…]";
 // The notes block gets its own budget, and it needs one for the same reason the transcript has one:
 // `window.messages` caps a COUNT, and a count is not a size. Twenty notes of twenty thousand
 // characters is a four-hundred-thousand-character prompt beside a three-line transcript, which
@@ -968,11 +970,31 @@ export function transcriptFromRows(
   return out;
 }
 
-export function renderTranscript(lines: readonly TranscriptLine[]): string {
-  const joined = lines
-    .map((l) => `${ROLE_LABEL[l.role]}: ${l.text}`)
-    .join("\n");
-  return clipTextEnd(joined, TRANSCRIPT_MAX_CHARS);
+// Kept from the newest message back, within `max`. The budget is spent per MESSAGE, not on the
+// joined text: a cut inside the joined text lands mid-message, and the oldest line kept then starts
+// with no label (or, in a multi-line message, as a bare continuation line), so the model reads words
+// it cannot attribute. The message the budget runs out on keeps its label and says it was cut.
+export function renderTranscript(
+  lines: readonly TranscriptLine[],
+  max: number = TRANSCRIPT_MAX_CHARS,
+): string {
+  const kept: string[] = [];
+  let room = max;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const l = lines[i] as TranscriptLine;
+    const sep = kept.length > 0 ? 1 : 0;
+    const line = `${ROLE_LABEL[l.role]}: ${l.text}`;
+    if (line.length + sep <= room) {
+      kept.unshift(line);
+      room -= line.length + sep;
+      continue;
+    }
+    const prefix = `${ROLE_LABEL[l.role]}: ${CUT_MARK} `;
+    const tail = room - sep - prefix.length;
+    if (tail > 0) kept.unshift(prefix + clipTextEnd(l.text, tail));
+    break;
+  }
+  return kept.join("\n");
 }
 
 function _isRequestRefused(err: unknown): boolean {

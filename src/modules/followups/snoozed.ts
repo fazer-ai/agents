@@ -1,6 +1,11 @@
 import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
-import { type AgentNudge, parseThreadId, runAgentNudge } from "@/graph/nudge";
+import {
+  type AgentNudge,
+  NUDGE_CONVERSATION_MAX_CHARS,
+  parseThreadId,
+  runAgentNudge,
+} from "@/graph/nudge";
 import { isRepairableNudgeRefusal, nextNudgeRetry } from "@/graph/nudge-retry";
 import { resetLandedAfter } from "@/graph/reset-episode";
 import type { RuntimeDeps } from "@/graph/runtime";
@@ -668,6 +673,9 @@ export async function snoozedFollowUpHandler(
         ),
         trustPhoneEcho: providerReservesEchoIds(ctx.reply.whatsappProvider),
       }),
+      // The nudge's own budget, spent here per message: cut again there, the window would lose the
+      // label of its oldest line.
+      NUDGE_CONVERSATION_MAX_CHARS,
     );
   }
 

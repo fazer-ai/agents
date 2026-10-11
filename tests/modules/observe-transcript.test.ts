@@ -117,6 +117,88 @@ describe("what the observer reads", () => {
     );
   });
 
+  test("a line the budget cuts keeps its sender label and says it was cut", () => {
+    const lines = [
+      { role: "person" as const, text: `pedido ${"a".repeat(100)} final` },
+      { role: "customer" as const, text: "ok" },
+    ];
+    const out = renderTranscript(lines, 40);
+    const prefix = "Atendente (pessoa): […] ";
+    const tail = 40 - "\nCliente: ok".length - prefix.length;
+    expect(out).toBe(`${prefix}${lines[0]?.text.slice(-tail)}\nCliente: ok`);
+    expect(out.length).toBeLessThanOrEqual(40);
+  });
+
+  test("a multi-line message cut in the middle opens with its label, not with a bare line", () => {
+    const out = renderTranscript(
+      [
+        { role: "customer", text: "linha um\nlinha dois\nlinha três" },
+        { role: "assistant", text: "certo" },
+      ],
+      52,
+    );
+    expect(out).toBe("Cliente: […] is\nlinha três\nAssistente virtual: certo");
+  });
+
+  test("a cut that lands between two messages drops the older one whole, with no marker", () => {
+    const newest = "Cliente: segunda";
+    const out = renderTranscript(
+      [
+        { role: "customer", text: "primeira" },
+        { role: "customer", text: "segunda" },
+      ],
+      newest.length + 1,
+    );
+    expect(out).toBe(newest);
+  });
+
+  test("a cut with room for the label alone drops that message rather than sending an empty line", () => {
+    const newest = "Cliente: segunda";
+    const max = newest.length + 1 + "Cliente: […] ".length;
+    const out = renderTranscript(
+      [
+        { role: "customer", text: "primeira mensagem longa" },
+        { role: "customer", text: "segunda" },
+      ],
+      max,
+    );
+    expect(out).toBe(newest);
+  });
+
+  test("nothing older than the message the budget cut is kept, however short", () => {
+    const out = renderTranscript(
+      [
+        { role: "customer", text: "oi" },
+        { role: "person", text: "b".repeat(200) },
+        { role: "customer", text: "ok" },
+      ],
+      60,
+    );
+    expect(out.startsWith("Atendente (pessoa): […] ")).toBe(true);
+    expect(out).not.toContain("Cliente: oi");
+    expect(out).toEndWith("\nCliente: ok");
+  });
+
+  test("the observer's transcript is bounded by its own budget, and its oldest line stays labeled", () => {
+    const out = renderTranscript([
+      { role: "customer", text: "c".repeat(50_000) },
+      { role: "assistant", text: "certo" },
+    ]);
+    expect(out.length).toBeLessThanOrEqual(40_000);
+    expect(out.length).toBeGreaterThan(39_000);
+    expect(out.startsWith("Cliente: […] ")).toBe(true);
+  });
+
+  test("a window that fits is left whole, with no marker", () => {
+    const lines = [
+      { role: "customer" as const, text: "oi" },
+      { role: "person" as const, text: "olá" },
+    ];
+    expect(renderTranscript(lines, 1_000)).toBe(
+      "Cliente: oi\nAtendente (pessoa): olá",
+    );
+  });
+
   test("a transcription is read in the customer's place, and fences in the text are stripped", () => {
     const lines = transcriptFromRows(
       [

@@ -14,7 +14,7 @@ export function lockTimeoutOption(): { lock_timeout?: number } {
 // The metrics reads are a few large aggregates, and the JIT compiles each of them again on every
 // request: on a month of a busy instance that compilation is most of a second per read, more than it
 // saves. Off for this pool only, whatever the server's `jit`. `pg` lets an `options` in the URL
-// replace this field, so one already there is kept and extended instead.
+// replace this field, even an empty one, so one already there is kept and extended instead.
 export function withJitOff(connectionString: string | undefined): {
   connectionString: string | undefined;
   options: string;
@@ -25,7 +25,8 @@ export function withJitOff(connectionString: string | undefined): {
     : null;
   const own = url?.searchParams.get("options");
   const options = own ? `${own} -c jit=off` : "-c jit=off";
-  if (!url || !own) return { connectionString, options };
+  if (!url || own === null || own === undefined)
+    return { connectionString, options };
   url.searchParams.set("options", options);
   return { connectionString: url.toString(), options };
 }

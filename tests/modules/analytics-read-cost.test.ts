@@ -217,6 +217,14 @@ describe.skipIf(!dbUp)("the dashboard's reads, by what they cost", () => {
 });
 
 describe("the metrics pool's options", () => {
+  test("an empty `options` in the URL is rewritten too, since `pg` would let it win", async () => {
+    const { parse } = await import("pg-connection-string");
+    const { connectionString } = withJitOff(
+      "postgres://u:p@h:5432/db?options=",
+    );
+    expect(parse(connectionString as string).options).toBe("-c jit=off");
+  });
+
   test("an `options` the URL already carries is kept, and the JIT is turned off beside it", async () => {
     const { parse } = await import("pg-connection-string");
     const { connectionString } = withJitOff(

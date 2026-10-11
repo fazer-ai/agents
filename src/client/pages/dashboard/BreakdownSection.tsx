@@ -7,7 +7,7 @@ import { cn } from "@/client/lib/utils";
 import { Block, type BlockTable, failureOf } from "./Block";
 import { useNodeLabel } from "./CostSection";
 import { apiQuery, type DashboardFilters, type Window } from "./filters";
-import { askBreakdown, useBlock } from "./useBlock";
+import { useAskBreakdown, useBlock } from "./useBlock";
 
 type Dimension = "agent" | "inbox" | "model" | "node";
 type BreakdownData = Awaited<
@@ -53,6 +53,7 @@ export function BreakdownSection({
       style: "percent",
       maximumFractionDigits: 1,
     }).format(v);
+  const askBreakdown = useAskBreakdown();
   const query = apiQuery(filters, win);
   const block = useBlock(
     JSON.stringify(["breakdown", query, dimension]),

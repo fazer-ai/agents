@@ -45,7 +45,7 @@ import {
   type PerformanceView,
 } from "./dashboard/PerformanceSection";
 import { ReasonsSection } from "./dashboard/ReasonsSection";
-import { useBlock } from "./dashboard/useBlock";
+import { SharedRequestsProvider, useBlock } from "./dashboard/useBlock";
 
 // THE OPERATOR'S DASHBOARD, organised by the question an operator brings: is the agent
 // doing its job, why does it hand over and what are people asking, what does it cost, is it healthy,
@@ -337,11 +337,13 @@ export function DashboardPage() {
             )}
           </DataBoundary>
         </div>
-        <ReasonsSection filters={filters} win={win} />
-        <CostSection filters={filters} win={win} prev={prev} />
-        <HealthSection filters={filters} win={win} />
-        <AutomationSection filters={filters} win={win} />
-        <BreakdownSection filters={filters} win={win} onFilter={setFilters} />
+        <SharedRequestsProvider>
+          <ReasonsSection filters={filters} win={win} />
+          <CostSection filters={filters} win={win} prev={prev} />
+          <HealthSection filters={filters} win={win} />
+          <AutomationSection filters={filters} win={win} />
+          <BreakdownSection filters={filters} win={win} onFilter={setFilters} />
+        </SharedRequestsProvider>
       </div>
     </PageContainer>
   );

@@ -1,4 +1,13 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  createContext,
+  createElement,
+  type ReactNode,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { api } from "@/client/lib/api";
 import type { apiQuery } from "./filters";
 
@@ -73,12 +82,23 @@ export function useBlock<T>(
   return { ...state, reload };
 }
 
-const inFlight = new Map<string, Promise<unknown>>();
+const SharedRequests = createContext<Map<string, Promise<unknown>> | null>(
+  null,
+);
+
+// The requests one opening of the dashboard shares between its blocks. A map per mount, never per
+// module: a logout and a login in the same tab mount a new page, so a request the previous session
+// left in flight cannot answer the next one.
+export function SharedRequestsProvider({ children }: { children: ReactNode }) {
+  const [inFlight] = useState(() => new Map<string, Promise<unknown>>());
+  return createElement(SharedRequests.Provider, { value: inFlight }, children);
+}
 
 // One request for every block that asks the same thing while it is running: the agent breakdown is
 // read by the cost block and by the breakdown table on the same load, and each answer is a pass over
 // the period's ledger. Only a request still in flight is shared, so a reload asks again.
 export function sharedRequest<T>(
+  inFlight: Map<string, Promise<unknown>>,
   key: string,
   request: () => Promise<T>,
 ): Promise<T> {
@@ -89,12 +109,22 @@ export function sharedRequest<T>(
   return mine;
 }
 
-// The breakdown of the period by `dimension`, shared with any block asking for the same one.
-export function askBreakdown(
-  query: ReturnType<typeof apiQuery>,
-  dimension: "agent" | "inbox" | "model" | "node",
-) {
-  return sharedRequest(JSON.stringify(["breakdown", query, dimension]), () =>
-    api.api.v1.metrics.breakdown.get({ query: { ...query, dimension } }),
-  );
+// The breakdown of the period by `dimension`, shared with any block of the same page asking for the
+// same one. Outside a provider nothing is shared.
+export function useAskBreakdown() {
+  const inFlight = useContext(SharedRequests);
+  return (
+    query: ReturnType<typeof apiQuery>,
+    dimension: "agent" | "inbox" | "model" | "node",
+  ) => {
+    const ask = () =>
+      api.api.v1.metrics.breakdown.get({ query: { ...query, dimension } });
+    return inFlight
+      ? sharedRequest(
+          inFlight,
+          JSON.stringify(["breakdown", query, dimension]),
+          ask,
+        )
+      : ask();
+  };
 }

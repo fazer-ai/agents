@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { TOOL_INSTRUCTIONS_MAX } from "@/modules/agents/text-caps";
 import { readToolGuidance } from "@/modules/agents/tool-guidance";
 
 describe("readToolGuidance", () => {
@@ -37,6 +38,7 @@ describe("readToolGuidance", () => {
     const g = readToolGuidance({
       toolGuidance: { set_labels: "x".repeat(5000) },
     });
-    expect((g.set_labels ?? "").length).toBeLessThanOrEqual(1500);
+    // The note is kept, cut to the cap from the front.
+    expect(g.set_labels).toBe("x".repeat(TOOL_INSTRUCTIONS_MAX));
   });
 });

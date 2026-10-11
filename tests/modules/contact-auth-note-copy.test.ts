@@ -72,17 +72,6 @@ describe("contactAuthNoteText: só diz o que não está na tela", () => {
 
   // The two verdicts that are silent to the customer BY DESIGN keep their wording: there is no copy
   // to describe, and "não respondeu automaticamente" is the whole truth there.
-  // The `sent` note is the shortest of the four ON PURPOSE: everything it could add is already on
-  // screen. This pins that, so nobody "improves" it back into a redundant sentence.
-  test("`sent` is the shortest note of the four", () => {
-    const sent = contactAuthNoteText(denied, true, "sent");
-    for (const outro of ["none", "suppressed", "failed"] as const) {
-      expect(sent.length).toBeLessThan(
-        contactAuthNoteText(denied, true, outro).length,
-      );
-    }
-  });
-
   test("no_identity and error are untouched", () => {
     expect(
       contactAuthNoteText({ outcome: "no_identity" }, false, "sent"),

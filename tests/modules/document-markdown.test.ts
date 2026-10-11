@@ -93,8 +93,17 @@ describe("parseInline", () => {
   });
 
   test("is total: never throws, on any of the hostile inputs above", () => {
-    for (const input of ["***", "____", "*", "\\", "**a", "_a**b_"]) {
-      expect(() => parseInline(input)).not.toThrow();
+    // An unmatched marker stays literal; "____" is two closed, empty italic runs, which print nothing.
+    const cases: Array<[string, ReturnType<typeof parseInline>]> = [
+      ["***", plain("***")],
+      ["____", []],
+      ["*", plain("*")],
+      ["\\", plain("\\")],
+      ["**a", plain("**a")],
+      ["_a**b_", [{ text: "a**b", italic: true }]],
+    ];
+    for (const [input, spans] of cases) {
+      expect(parseInline(input)).toEqual(spans);
     }
   });
 });

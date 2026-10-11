@@ -86,11 +86,10 @@ describe("claimContactAuthNotice", () => {
       60_000,
       T0,
     );
-    for (const entry of contactAuthNoticeEntries()) {
-      expect(Object.keys(entry).sort()).toEqual(["key", "until"]);
-      expect(typeof entry.key).toBe("string");
-      expect(typeof entry.until).toBe("number");
-    }
+    // One entry: the conversation's ids and the notice kind, and the instant its window lapses.
+    expect(contactAuthNoticeEntries()).toEqual([
+      { key: "1:2:3:note", until: T0 + 60_000 },
+    ]);
   });
 });
 

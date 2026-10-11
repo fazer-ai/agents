@@ -1,9 +1,10 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { z } from "zod";
 import { NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
 import { readBehaviorSettings } from "@/modules/agents/behavior-settings";
+import * as agentService from "@/modules/agents/service";
 import { assertSettingsToolPreconditions } from "@/modules/agents/service";
 import { BEHAVIOR_PATCH_SHAPE } from "@/modules/agents/settings-schema";
 import { invalidToolPreconditions } from "@/modules/agents/tool-preconditions";
@@ -592,16 +593,33 @@ describe("__proto__ in a tool map: a measured transport limitation", () => {
   }
 
   test("the key does not reach the write boundary", async () => {
-    const out = await callThroughTransport(
-      JSON.parse(
-        '{"agent_id":"999999999","toolPreconditions":{"__proto__":null}}',
-      ),
-    );
-    // NOTE: the call proceeds PAST the shape checks and fails on the agent lookup, so `__proto__`
-    // never became a refusal. If this starts saying "not a valid precondition", the transport now
-    // preserves the key and the boundary answers, which is the outcome we want.
-    expect(out).not.toContain("not a valid precondition");
-    expect(out).not.toContain("no updatable fields");
+    const seen: unknown[] = [];
+    const lookup = spyOn(agentService, "getAgent").mockResolvedValue({
+      settings: {},
+    } as Awaited<ReturnType<typeof agentService.getAgent>>);
+    const boundary = spyOn(
+      agentService,
+      "assertSettingsToolPreconditions",
+    ).mockImplementation((patch) => {
+      seen.push((patch as Record<string, unknown>).toolPreconditions);
+      throw new Error("boundary reached");
+    });
+    try {
+      const out = await callThroughTransport(
+        JSON.parse(
+          '{"agent_id":"999999999","toolPreconditions":{"__proto__":null}}',
+        ),
+      );
+      // NOTE: the block reaches the boundary EMPTY. If it ever arrives holding `__proto__`, the
+      // transport preserves the key and the boundary's own refusal answers, which is what we want.
+      expect(out).toContain("boundary reached");
+      expect(seen).toHaveLength(1);
+      expect(Object.getOwnPropertyNames(seen[0])).toEqual([]);
+      expect(lookup).toHaveBeenCalledTimes(1);
+    } finally {
+      lookup.mockRestore();
+      boundary.mockRestore();
+    }
   });
 
   test("but the write boundary DOES refuse it whenever it arrives", () => {

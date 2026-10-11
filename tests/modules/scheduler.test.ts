@@ -45,6 +45,16 @@ if (appUrl && suUrl) {
 const appDb = app as PrismaClient;
 const suDb = su as PrismaClient;
 
+// Arming many rows refuses, at COMPILE time, a row with no payload: the rows travel as a `text[]`, so
+// `upsertJobRow`'s "no payload keeps the stored one" cannot be said, and coercing it to `{}` would
+// REPLACE the stored payload and clear its secret half. The typecheck holds this whether or not the
+// database is up; making the field optional removes the error and fails it on this line.
+const noPayload: Parameters<typeof upsertJobRows>[1]["rows"] = [
+  // @ts-expect-error: a bulk row carries its own payload; omitting it does not typecheck.
+  { dedupeKey: "bulk-no-payload" },
+];
+void noPayload;
+
 let tenantId = 0n;
 const past = () => new Date(Date.now() - 60_000);
 
@@ -166,22 +176,6 @@ describe.skipIf(!dbUp)("scheduler", () => {
       tenantId,
       userId: null,
       role: "TENANT_ADMIN" as const,
-    });
-
-    // NOTE: the set-based sibling cannot express `upsertJobRow`'s "no payload means keep the stored
-    // one": the rows travel as a `text[]`, and every JSON spelling of an omission is also a payload
-    // somebody could mean; coercing it to `{}` would REPLACE the stored payload and clear its secret
-    // half. `@ts-expect-error` is the assertion, as in `delivery-sweep.test.ts`: making the field
-    // optional again removes the error and fails the typecheck on this line.
-    test("refuses at COMPILE time to arm a row with no payload", () => {
-      const shape = (rows: Parameters<typeof upsertJobRows>[1]["rows"]) =>
-        rows.length;
-      expect(
-        shape([
-          // @ts-expect-error: a bulk row carries its own payload; omitting it does not typecheck.
-          { dedupeKey: key(99) },
-        ]),
-      ).toBe(1);
     });
 
     test("arms every row it is given, and nothing for an empty list", async () => {

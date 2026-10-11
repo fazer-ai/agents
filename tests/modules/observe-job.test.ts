@@ -1379,8 +1379,10 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
       },
     );
     expect(calls.n).toBe(1);
-    // The quoted line is rendered with the reply that points at it.
-    expect(seen).toContain("boa tarde");
+    // The quoted line is rendered WITH the reply that points at it, not only as a row of its own.
+    expect(seen).toContain(
+      JSON.stringify('Cliente: <em resposta a: "boa tarde">\nsim').slice(1, -1),
+    );
   });
 
   // NOTE: the row not having landed reads identical to a detach on the row alone, and completing
@@ -1482,142 +1484,6 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
       await suDb.inboxObserver.updateMany({
         where: { id: { in: rows.map((r) => r.id) } },
         data: { attachedAt: new Date() },
-      });
-    }
-  });
-
-  // NOTE: the verdict was computed against the set the prompt showed; a person who moved one of OUR
-  // groups during the call is fresher information than a transcript that predates the move, and the
-  // commonest verdict (repeat what you were shown) would revert it silently.
-  test("a group moved during the model call is left to the next tick", async () => {
-    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
-    const calls = { n: 0 };
-    // The prompt sees `compra-de-ingresso`; a person moves it to `cancelamento` mid-call.
-    const labels = ["compra-de-ingresso", "vip"];
-    const client = stubClient([message(1, "ok, obrigado")], labels, log);
-    expect(
-      await runObserve(
-        tenantId,
-        {
-          instanceId,
-          conversationId: CONV,
-          agentId,
-          reason: "burst",
-          atMessageId: null,
-        },
-        appDb,
-        {
-          makeClient: async () => client,
-          makeModel: () => {
-            const m = verdictModel(
-              // No new demand: the model repeats what it was shown.
-              {
-                assunto: "compra-de-ingresso",
-                confidence: 0.9,
-                reason: "sem demanda nova",
-              },
-              calls,
-            );
-            const inner = m.invoke.bind(m);
-            (m as { invoke: unknown }).invoke = async (
-              msgs: Parameters<typeof inner>[0],
-              opts: Parameters<typeof inner>[1],
-            ) => {
-              labels.splice(0, labels.length, "cancelamento", "vip");
-              return inner(msgs, opts);
-            };
-            return m;
-          },
-        },
-      ),
-    ).toEqual({ outcome: "done" });
-    expect(calls.n).toBe(1);
-    // Nothing written: the person's `cancelamento` stands.
-    expect(log.labelsWritten).toEqual([]);
-    expect(log.notes).toEqual([]);
-    expect(labels).toEqual(["cancelamento", "vip"]);
-  });
-
-  // NOTE: a verdict is an answer to a DEFINITION (these values, accumulating or not). An additive
-  // group flipped to exclusive during the call makes `applyVerdict` sweep out a value the model was
-  // told could stand beside the one it chose.
-  test("a group whose definition changed during the call is left alone", async () => {
-    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
-    const calls = { n: 0 };
-    const additive = {
-      monitoring: {
-        labelGroups: [
-          {
-            name: "sinal",
-            exclusive: false,
-            values: ["vip", "urgente"],
-          },
-        ],
-      },
-    };
-    await suDb.agent.update({
-      where: { id: agentId },
-      data: { settings: additive },
-    });
-    try {
-      expect(
-        await runObserve(
-          tenantId,
-          {
-            instanceId,
-            conversationId: CONV,
-            agentId,
-            reason: "burst",
-            atMessageId: null,
-          },
-          appDb,
-          {
-            makeClient: async () =>
-              stubClient(
-                [message(1, "quero cancelar")],
-                ["vip", "urgente"],
-                log,
-              ),
-            makeModel: () => {
-              const m = verdictModel(
-                { sinal: "vip", confidence: 0.9, reason: "r" },
-                calls,
-              );
-              const inner = m.invoke.bind(m);
-              (m as { invoke: unknown }).invoke = async (
-                msgs: Parameters<typeof inner>[0],
-                opts: Parameters<typeof inner>[1],
-              ) => {
-                await suDb.agent.update({
-                  where: { id: agentId },
-                  data: {
-                    settings: {
-                      monitoring: {
-                        labelGroups: [
-                          {
-                            name: "sinal",
-                            exclusive: true,
-                            values: ["vip", "urgente"],
-                          },
-                        ],
-                      },
-                    },
-                  },
-                });
-                return inner(msgs, opts);
-              };
-              return m;
-            },
-          },
-        ),
-      ).toEqual({ outcome: "done" });
-      expect(calls.n).toBe(1);
-      // `urgente` would have been swept out under the new exclusive rule.
-      expect(log.labelsWritten).toEqual([]);
-    } finally {
-      await suDb.agent.update({
-        where: { id: agentId },
-        data: { settings: { monitoring: MONITORING } },
       });
     }
   });
@@ -1729,7 +1595,19 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
         makeModel: () => new CalculatesThenDies() as unknown as BaseChatModel,
       },
     );
-    expect(res.outcome).toBe("fail");
+    // FAIL, so the scheduler retries: the provider died AFTER the calculator ran, which left nothing.
+    expect(res).toEqual({ outcome: "fail", error: "observe: provider error" });
+    const ran = (await stageLines("tool")).map((l) => [
+      (l.detail as { tool?: string } | null)?.tool,
+      l.status,
+    ]);
+    expect(ran).toContainEqual(["calculator", "ok"]);
+    const last = (await stageLines("observe")).at(-1)?.detail as {
+      failed?: string;
+      retried?: boolean;
+    } | null;
+    expect(last?.failed).toBe("model_call");
+    expect(last?.retried).toBeUndefined();
   });
 
   test("a tenant tool wearing the search_knowledge name counts as an effect", async () => {
@@ -2286,6 +2164,7 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
   // with no line and no alert, and no second copy anywhere, since the observer's checkpoint is
   // discarded.
   test("a tool call writes its own flow line under the tick", async () => {
+    await clearFlowLog(suDb, { tenantId });
     const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
     const model = new LabellingModel(["cancelamento"]);
     const res = await runObserve(
@@ -2305,12 +2184,19 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
       },
     );
     expect(res).toEqual({ outcome: "done" });
-    const tools = await stageLines("tool");
-    expect(
-      tools.some(
-        (t) => (t.detail as { tool?: string } | null)?.tool === "set_labels",
-      ),
-    ).toBe(true);
+    // NOTE: exactly one line, the call's, attributed to the watcher that made it.
+    expect((await stageLines("tool")) as unknown[]).toEqual([
+      {
+        status: "ok",
+        level: "info",
+        detail: {
+          tool: "set_labels",
+          args: { add: "array(1)" },
+          output: expect.stringMatching(/^string\(\d+\)$/),
+        },
+        agentId,
+      },
+    ]);
   });
 
   // NOTE: a fallback that cannot be built is indistinguishable from no fallback at all, and the

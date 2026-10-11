@@ -579,12 +579,16 @@ describe.skipIf(!dbUp)(
       const cw = fakeChatwoot();
       globalThis.fetch = cw.impl;
       await sendReset();
+      const commandMessageId = 9000 + deliverySeq;
 
       const conv = await suDb.conversation.findFirstOrThrow({
         where: { tenantId, chatwootConversationId: CONV_ID },
         select: { resetAtMessageId: true, memoryClearedAtMessageId: true },
       });
-      expect(conv.memoryClearedAtMessageId).toBe(conv.resetAtMessageId);
+      expect(conv).toEqual({
+        resetAtMessageId: commandMessageId,
+        memoryClearedAtMessageId: commandMessageId,
+      });
     });
 
     // NOTE: compaction is not the only queued writer of this memory: continuous ingestion can owe
@@ -2097,8 +2101,17 @@ describe.skipIf(!dbUp)(
         const cw = fakeChatwoot();
         globalThis.fetch = cw.impl;
         await sendReset("/reset", 44, { inboxId: WIDGET_INBOX_ID });
-        // NOTE: a typed command has to answer something.
-        expect(ackCalls(cw.calls)).not.toEqual([]);
+        // A typed command has to answer, and with the clean slate it ran, not a notice.
+        const acks = ackCalls(cw.calls).map(
+          (c) => (c.body as { content?: string })?.content ?? "",
+        );
+        expect(acks).toHaveLength(1);
+        expect(acks[0]).toStartWith("🔄 Memória");
+        const widget = await suDb.conversation.findFirstOrThrow({
+          where: { tenantId, chatwootConversationId: 44 },
+          select: { resetAtMessageId: true },
+        });
+        expect(widget.resetAtMessageId).toBe(9000 + deliverySeq);
       });
     });
 
@@ -2460,10 +2473,16 @@ describe.skipIf(!dbUp)(
       try {
         await sendReset();
 
-        const ack = ackCalls(cw.calls)
-          .map((c) => (c.body as { content?: string })?.content ?? "")
-          .join(" ");
-        expect(ack).not.toContain("memória");
+        const acks = ackCalls(cw.calls).map(
+          (c) => (c.body as { content?: string })?.content ?? "",
+        );
+        expect(acks).toHaveLength(1);
+        expect(acks[0]).toStartWith("🔄 Memória");
+        const conv = await suDb.conversation.findFirstOrThrow({
+          where: { tenantId, chatwootConversationId: CONV_ID },
+          select: { memoryClearedAtMessageId: true },
+        });
+        expect(conv.memoryClearedAtMessageId).toBe(9000 + deliverySeq);
       } finally {
         globalThis.fetch = originalFetch;
       }

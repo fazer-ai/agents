@@ -532,11 +532,13 @@ describe.skipIf(!dbUp)("two flushes on one thread", () => {
       },
     });
 
+    // The claimed burst began earlier than the re-armed row's, and the deadline is the claimed one.
+    const claimedBurst = Date.now() - 5_000;
     markTurnInFlight(thread);
     let out: Awaited<ReturnType<typeof flushDebounceJob>>;
     try {
       out = await flushDebounceJob({
-        job: jobFor(jobIdA, CONV_CARIMBO, Date.now()),
+        job: jobFor(jobIdA, CONV_CARIMBO, claimedBurst),
         base: appDb,
         deps: {
           makeModel: () => overlapModel(10, { active: 0, max: 0 }, []),
@@ -554,8 +556,7 @@ describe.skipIf(!dbUp)("two flushes on one thread", () => {
       select: { payload: true },
     });
     const stamp = (row.payload as { deferringSince?: number }).deferringSince;
-    console.log(`[carimbo] deferringSince gravado: ${stamp ?? "NENHUM"}`);
-    expect(typeof stamp).toBe("number");
+    expect(stamp).toBe(claimedBurst);
   }, 30_000);
 
   test("the stamp is dropped once the flush actually runs, so it cannot outlive its burst", async () => {

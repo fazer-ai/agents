@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import enCatalog from "@/client/locales/en.json";
+import ptCatalog from "@/client/locales/pt-BR.json";
 import type { ConfigIssue } from "@/modules/agents/config-health";
 import { configIssueTranslator } from "@/modules/agents/config-health-copy";
 import { configIssueMessage } from "@/modules/agents/config-health-message";
@@ -13,6 +15,16 @@ import { configIssueMessage } from "@/modules/agents/config-health-message";
 // no assertion about keys would catch.
 const en = configIssueTranslator("en");
 const pt = configIssueTranslator("pt-BR");
+
+// The catalog entry itself, read straight from the console's JSON, so a sentence picked from the
+// wrong key or the wrong language cannot agree with it by accident.
+const entry = (catalog: unknown, key: string): string =>
+  key
+    .split(".")
+    .reduce<unknown>(
+      (node, part) => (node as Record<string, unknown>)?.[part],
+      catalog,
+    ) as string;
 
 const message = (
   issue: ConfigIssue,
@@ -87,10 +99,16 @@ describe("configIssueMessage", () => {
       { key: "guardrailsFailing", failures: 1 },
       { translate: en, guardrailLastError: "" },
     );
-    expect(withCause).toContain("boom");
-    expect(without).not.toContain("boom");
-    expect(without).not.toBe(withCause);
-    expect(without).not.toContain("{{");
+    expect(withCause).toEndWith("The last one said: boom");
+    const vars = (t: string) =>
+      t
+        .replace("{{failures}}", "1")
+        .replace("{{hours}}", "24")
+        .replace("{{when}}", "-");
+    expect(without).toBe(
+      vars(entry(enCatalog, "editor.configIssueGuardrailsFailing")),
+    );
+    expect(without).not.toContain("said:");
   });
 
   // A timestamp with no formatter is the JSON caller's case: it gets the instant, not "-".
@@ -124,20 +142,24 @@ describe("configIssueMessage", () => {
     const missing = message({ ...base });
     const pending = message({ ...base, pending: true, vaultId: "7" });
     const unresolved = message({ ...base, unresolved: true });
+    expect(missing).toBe(entry(enCatalog, "editor.configIssue.stt"));
+    expect(pending).toBe(entry(enCatalog, "editor.configIssuePending.stt"));
+    expect(unresolved).toBe(
+      entry(enCatalog, "editor.configIssueUnresolved.stt"),
+    );
     expect(new Set([missing, pending, unresolved]).size).toBe(3);
-    // And none of them is the generic default the renderer falls back to.
-    expect(missing).not.toBe(
-      "This feature is enabled but has no credential set.",
-    );
-    expect(pending).not.toBe(
-      "This credential is referenced but not filled in yet.",
-    );
   });
 
   test("the translator answers in the language it was built for", () => {
     const key = { key: "guardrails" } as const;
-    expect(message(key, { translate: pt })).not.toBe(
-      message(key, { translate: en }),
+    expect(message(key, { translate: pt })).toBe(
+      entry(ptCatalog, "editor.configIssue.guardrails"),
+    );
+    expect(message(key, { translate: en })).toBe(
+      entry(enCatalog, "editor.configIssue.guardrails"),
+    );
+    expect(entry(ptCatalog, "editor.configIssue.guardrails")).not.toBe(
+      entry(enCatalog, "editor.configIssue.guardrails"),
     );
   });
 

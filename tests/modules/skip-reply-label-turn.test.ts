@@ -304,6 +304,7 @@ describe.skipIf(!dbUp)("o marcador de silêncio e o turno que falou", () => {
     await clearFlowLog(suDb, { tenantId });
     await linhaDeFerramenta("turno-antigo", "skip_reply");
     const skip = (await trilha()).find((e) => e.name === "skip_reply");
-    expect(skip?.turnDelivered ?? false).toBe(false);
+    expect(skip?.name).toBe("skip_reply");
+    expect(skip?.turnDelivered).toBeNull();
   });
 });

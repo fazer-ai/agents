@@ -10,6 +10,7 @@ import {
   configHealthAfterWrite,
   readAgentConfigHealth,
 } from "@/modules/agents/config-health-read";
+import { listKnowledgeBasesNeedingIndex } from "@/modules/agents/service";
 import {
   AGENT_EXPORT_KIND,
   AGENT_EXPORT_VERSION,
@@ -490,18 +491,15 @@ describe.skipIf(!dbUp)("agent configuration health", () => {
           status: "UNINDEXED",
         },
       });
-      const health = await readAgentConfigHealth(ctx(tenantId), ragAgent, {
-        base: appDb,
-        live: false,
-      });
-      // Still exactly one rollup, and it is the granted base's — a leak would raise a second issue
-      // or name the wrong base.
-      expect(health.issues.filter((i) => i.key === "embedding")).toHaveLength(
-        1,
+      // The focused query the reading takes its bases from: only the granted one, by name. The rollup
+      // into one embedding issue would hide a leak from the reading's own answer.
+      const needing = await listKnowledgeBasesNeedingIndex(
+        ctx(tenantId),
+        ragAgent,
+        appDb,
       );
-      expect(
-        health.issues.some((i) => i.knowledgeBaseName === "Não concedida"),
-      ).toBe(false);
+      expect(needing.map((b) => b.name)).toEqual(["Catálogo"]);
+      expect(needing.map((b) => b.id)).not.toContain(String(stranger.id));
     });
 
     // AN EXPORT CARRYING TWO RAG GRANTS. The export vocabulary does not forbid it, and the table

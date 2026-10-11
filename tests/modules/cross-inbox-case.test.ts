@@ -3183,9 +3183,10 @@ describe("the case's email subject", () => {
 
   test("clipped to a header's length without splitting a character, and empty is no subject", () => {
     const long = `${"x".repeat(CROSS_INBOX_CASE_SUBJECT_MAX - 1)}😀 e mais texto`;
-    const out = renderCaseSubject("{{resumo}}", long, interpolate) ?? "";
-    expect(out.length).toBeLessThanOrEqual(CROSS_INBOX_CASE_SUBJECT_MAX);
-    expect(out.endsWith("\ud83d")).toBe(false);
+    // NOTE: the emoji straddles the cap, so it goes whole and every character before it stays.
+    expect(renderCaseSubject("{{resumo}}", long, interpolate)).toBe(
+      "x".repeat(CROSS_INBOX_CASE_SUBJECT_MAX - 1),
+    );
     expect(renderCaseSubject("{{resumo}}", "  ", interpolate)).toBeNull();
     expect(renderCaseSubject(null, "reembolso", interpolate)).toBeNull();
   });

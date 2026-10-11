@@ -176,56 +176,8 @@ describe.skipIf(!dbUp)("per-turn appointment context (issue #22)", () => {
   });
 
   // O bloco enuncia o instante corrente, e ele tem que ser o MESMO que as variáveis de prompt
-  // renderizam: duas leituras do relógio de um turno não podem discordar dentro de um prompt. Aqui as
-  // duas atravessam o caminho real (`loadAgentConfig`), com o `{{data_hora_atual}}` ao lado do bloco.
-  test("the block's clock is the same one the prompt variables render", async () => {
-    await seedConversation(140);
-    await appointmentBooked({
-      tenantId,
-      threadId: threadOf(140),
-      eventId: "ev_clock",
-      calendarId: null,
-      credentialRef: null,
-      startISO: inHours(30),
-      summary: "Consulta – relógio",
-      calendarLabel: null,
-      reminders: null,
-      base: appDb,
-    });
-    const before = await suDb.agent.findUniqueOrThrow({
-      where: { id: agentId },
-      select: { systemPrompt: true },
-    });
-    await suDb.agent.update({
-      where: { id: agentId },
-      data: { systemPrompt: "Agora é {{data_hora_atual}}." },
-    });
-    try {
-      const prompt = await promptFor(140);
-      const varRendered = /Agora é (\d{2}\/\d{2}\/\d{4} \d{2}:\d{2})\./.exec(
-        prompt,
-      );
-      const blockRendered =
-        /Momento atual deste atendimento: (\d{2}\/\d{2}\/\d{4} \d{2}:\d{2})/.exec(
-          prompt,
-        );
-      // Os controles primeiro: as duas leituras existem neste prompt, senão a igualdade abaixo é
-      // sobre dois `undefined`.
-      expect(varRendered?.[1]).toBeTruthy();
-      expect(blockRendered?.[1]).toBeTruthy();
-      expect(blockRendered?.[1]).toBe(varRendered?.[1]);
-    } finally {
-      await suDb.agent.update({
-        where: { id: agentId },
-        data: { systemPrompt: before.systemPrompt },
-      });
-    }
-  });
-
-  // A cerca acima passa com o relógio REAL nas duas pontas, onde trocar `promptOpts.now` por um
-  // `new Date()` próprio não muda nada (o arredondamento de meia hora engole a diferença). Quem
-  // discrimina é o playground com a simulação de tempo ligada: o bloco tem que responder à PAREDE
-  // simulada, senão o operador vê as variáveis em 23:00 e o bloco no relógio do servidor.
+  // renderizam. Com o relógio real o arredondamento de meia hora engole a diferença, então quem
+  // discrimina é o playground com a simulação de tempo ligada: o bloco responde à PAREDE simulada.
   test("the playground's simulated clock reaches the block, not just the variables", async () => {
     await seedConversation(141);
     await appointmentBooked({

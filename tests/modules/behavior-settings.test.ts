@@ -22,8 +22,15 @@ describe("behavior-settings — the merge stores every block it owns", () => {
   // The two blocks whose stored form is deliberately NOT the read form, each for a reason at its own
   // assignment: `observability` persists through `storableObservability` because `fullDetail` is
   // DERIVED and storing it would freeze a mode that is supposed to expire; `grounding` is persisted
-  // only when the patch touched it, so an untouched bag keeps whatever it had.
-  const NOT_THE_READ_SHAPE = new Set(["observability", "grounding"]);
+  // only when the patch touched it, so an untouched bag keeps whatever it had. The two tool-keyed
+  // blocks are stored raw, since their readers filter; tests/modules/mcp-settings-tool-maps.test.ts
+  // proves their merge.
+  const NOT_THE_READ_SHAPE = new Set([
+    "observability",
+    "grounding",
+    "toolGuidance",
+    "toolPreconditions",
+  ]);
 
   for (const key of BEHAVIOR_SETTINGS_KEYS) {
     if (NOT_THE_READ_SHAPE.has(key)) continue;
@@ -40,12 +47,14 @@ describe("behavior-settings — the merge stores every block it owns", () => {
     });
   }
 
-  test("the loop actually covers the blocks, including the newest", () => {
-    const covered = BEHAVIOR_SETTINGS_KEYS.filter(
+  test("the loop covers every block the reader projects, but the four exceptions", () => {
+    const covered: string[] = BEHAVIOR_SETTINGS_KEYS.filter(
       (k) => !NOT_THE_READ_SHAPE.has(k),
     );
-    expect(covered.length).toBeGreaterThanOrEqual(15);
-    expect(covered).toContain("modelFallback");
+    const projected = Object.keys(readBehaviorSettings({})).filter(
+      (k) => !NOT_THE_READ_SHAPE.has(k),
+    );
+    expect([...covered].sort()).toEqual(projected.sort());
   });
 });
 
@@ -264,12 +273,22 @@ describe("behavior-settings — a patch into a nested block", () => {
       for (let i = 0; i < n; i++) o = { k: o };
       return o;
     };
-    expect(() =>
-      mergeBehaviorSettings(
+    let merged: Record<string, unknown> = {};
+    expect(() => {
+      merged = mergeBehaviorSettings(
         { memory: { compaction: deep(50_000) } },
-        { memory: { compaction: deep(50_000) } },
-      ),
-    ).not.toThrow();
+        {
+          memory: {
+            compaction: { ...deep(50_000), enabled: false },
+            historyDates: { enabled: false },
+          },
+        },
+      );
+    }).not.toThrow();
+    // Bounded, and still a merge: the patch's real fields land next to the deep junk.
+    const memory = readBehaviorSettings(merged).memory;
+    expect(memory.compaction.enabled).toBe(false);
+    expect(memory.historyDates.enabled).toBe(false);
   });
 
   // The cap is not a number someone liked: it has to clear the deepest shape the readers actually

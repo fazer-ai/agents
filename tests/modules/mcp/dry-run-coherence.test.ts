@@ -822,11 +822,10 @@ describe.skipIf(!dbUp)(
       expect(bad).toEqual({});
     });
 
+    // NOTE: a `skip` row is a decision recorded in the table, which the coverage test above
+    // enforces; it has nothing to run, so it emits no test.
     for (const [name, row] of Object.entries(TABLE)) {
-      if ("skip" in row) {
-        test.skip(`${name} — ${row.skip}`, () => {});
-        continue;
-      }
+      if ("skip" in row) continue;
       test(`${name}: preview and apply agree (${row.why})`, async () => {
         const fn = fnFor(name) as WriteFn;
         const p = principalFor(name);

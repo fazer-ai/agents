@@ -1116,7 +1116,10 @@ describe("runPlaygroundAudioTurn guards", () => {
         agentId: 1n,
         file: fakeFile(30 * 1024 * 1024, "audio/webm"),
       }),
-    ).rejects.toThrow();
+    ).rejects.toMatchObject({
+      statusCode: 413,
+      translationKey: "errors.audioTooLarge",
+    });
   });
 
   test("rejects a non-audio mime type", async () => {
@@ -1126,7 +1129,10 @@ describe("runPlaygroundAudioTurn guards", () => {
         agentId: 1n,
         file: fakeFile(1000, "image/png"),
       }),
-    ).rejects.toThrow();
+    ).rejects.toMatchObject({
+      statusCode: 415,
+      translationKey: "errors.unsupportedAudioType",
+    });
   });
 });
 

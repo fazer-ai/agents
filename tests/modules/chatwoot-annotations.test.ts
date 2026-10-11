@@ -195,6 +195,15 @@ describe("transcriptions in flight", () => {
     instanceId: I1,
     messageId,
   });
+  // Whether the wait is still pending once everything already queued has run.
+  const stillWaiting = async (wait: Promise<unknown>) => {
+    let done = false;
+    void wait.then(() => {
+      done = true;
+    });
+    await Bun.sleep(0);
+    return !done;
+  };
 
   test("nothing open: no wait, and the answer says so", async () => {
     const started = Date.now();
@@ -206,11 +215,11 @@ describe("transcriptions in flight", () => {
 
   test("the wait ends when the transcription closes, well before the bound", async () => {
     const close = openTranscription(target(1));
-    setTimeout(close, 50);
     const started = Date.now();
-    expect(
-      await awaitOpenTranscriptions(T1, I1, [1], { timeoutMs: 5000 }),
-    ).toBe(true);
+    const wait = awaitOpenTranscriptions(T1, I1, [1], { timeoutMs: 2000 });
+    expect(await stillWaiting(wait)).toBe(true);
+    close();
+    expect(await wait).toBe(true);
     expect(Date.now() - started).toBeLessThan(1000);
   });
 
@@ -250,15 +259,15 @@ describe("transcriptions in flight", () => {
 
   test("words stashed end the wait, with the pass still writing them back", async () => {
     openTranscription(target(1));
-    setTimeout(
-      () => stashMediaAnnotation(target(1), { transcribedText: "palavras" }),
-      50,
-    );
     const started = Date.now();
-    expect(
-      await awaitOpenTranscriptions(T1, I1, [1], { timeoutMs: 5000 }),
-    ).toBe(true);
+    const wait = awaitOpenTranscriptions(T1, I1, [1], { timeoutMs: 2000 });
+    expect(await stillWaiting(wait)).toBe(true);
+    stashMediaAnnotation(target(1), { transcribedText: "palavras" });
+    expect(await wait).toBe(true);
     expect(Date.now() - started).toBeLessThan(1000);
+    const rows = [row({ id: 1 })];
+    overlayMediaAnnotations(T1, I1, rows);
+    expect(rows[0]?.transcribedText).toBe("palavras");
   });
 
   test("the words and then the close of one message count once, while another is still open", async () => {
@@ -275,12 +284,11 @@ describe("transcriptions in flight", () => {
 
   test("an empty transcription stashed ends the wait too", async () => {
     openTranscription(target(1));
-    setTimeout(
-      () => stashMediaAnnotation(target(1), { transcriptionEmpty: true }),
-      50,
-    );
     const started = Date.now();
-    await awaitOpenTranscriptions(T1, I1, [1], { timeoutMs: 5000 });
+    const wait = awaitOpenTranscriptions(T1, I1, [1], { timeoutMs: 2000 });
+    expect(await stillWaiting(wait)).toBe(true);
+    stashMediaAnnotation(target(1), { transcriptionEmpty: true });
+    expect(await wait).toBe(true);
     expect(Date.now() - started).toBeLessThan(1000);
   });
 
@@ -306,12 +314,14 @@ describe("transcriptions in flight", () => {
   test("the job's signal ends the wait", async () => {
     openTranscription(target(1));
     const abort = new AbortController();
-    setTimeout(() => abort.abort(), 30);
     const started = Date.now();
-    await awaitOpenTranscriptions(T1, I1, [1], {
-      timeoutMs: 5000,
+    const wait = awaitOpenTranscriptions(T1, I1, [1], {
+      timeoutMs: 2000,
       signal: abort.signal,
     });
+    expect(await stillWaiting(wait)).toBe(true);
+    abort.abort();
+    expect(await wait).toBe(true);
     expect(Date.now() - started).toBeLessThan(1000);
   });
 

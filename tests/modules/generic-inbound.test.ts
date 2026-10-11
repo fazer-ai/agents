@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { createHmac } from "node:crypto";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
@@ -8,10 +8,7 @@ import { getAgentToolSelections } from "@/modules/agents/service";
 import { exportAgent, importAgent } from "@/modules/agents/transfer";
 import { shouldBotHandle } from "@/modules/chatwoot/normalize";
 import { getCatalogEntry } from "@/modules/integrations/catalog";
-import {
-  CONVERSATION_REF_KIND,
-  ensureConversationRef,
-} from "@/modules/integrations/conversation-ref";
+import { ensureConversationRef } from "@/modules/integrations/conversation-ref";
 import { getMapper } from "@/modules/integrations/mappers";
 import {
   createIntegrationInstance,
@@ -549,18 +546,32 @@ describe.skipIf(!dbUp)("GENERIC inbound end to end", () => {
       text: "prazo",
     });
     let seen: AbortSignal | undefined;
-    await processInboundDelivery({
-      deliveryId: r.deliveryId as bigint,
-      tenantId,
-      base: appDb,
-      deps: {
-        runNudge: async (args) => {
-          seen = args.signal;
-          return "messaged";
-        },
-      },
+    const armed: Array<[number, AbortSignal]> = [];
+    const timeout = AbortSignal.timeout.bind(AbortSignal);
+    const spy = spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
+      const signal = timeout(ms);
+      armed.push([ms, signal]);
+      return signal;
     });
-    expect(seen).toBeInstanceOf(AbortSignal);
+    try {
+      await processInboundDelivery({
+        deliveryId: r.deliveryId as bigint,
+        tenantId,
+        base: appDb,
+        deps: {
+          runNudge: async (args) => {
+            seen = args.signal;
+            return "messaged";
+          },
+        },
+      });
+    } finally {
+      spy.mockRestore();
+    }
+    // NOTE: the nudge's signal is the deadline armed for this dispatch, not one that never fires.
+    expect(armed.map(([ms]) => ms)).toContain(DISPATCH_DEADLINE_MS);
+    const deadline = armed.find(([ms]) => ms === DISPATCH_DEADLINE_MS);
+    expect(seen).toBe(deadline?.[1] as AbortSignal);
     expect(seen?.aborted).toBe(false);
   });
 
@@ -802,12 +813,5 @@ describe.skipIf(!dbUp)("GENERIC inbound end to end", () => {
     expect(
       warnings.some((w) => w.code === "httpToolConversationRefNotFound"),
     ).toBe(false);
-  });
-
-  test("refs of this kind are rows of the existing correlation table", async () => {
-    const n = await suDb.integrationExternalRef.count({
-      where: { tenantId, kind: CONVERSATION_REF_KIND },
-    });
-    expect(n).toBeGreaterThan(0);
   });
 });

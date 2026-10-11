@@ -1509,13 +1509,32 @@ describe.skipIf(!dbUp)(
       });
 
       test("a blank or oversized experiment name is refused by both halves", async () => {
+        // With an agent that exists, so the NAME is the only thing either half can refuse.
         for (const name of ["", "  ", "z".repeat(201)]) {
           expect({
             name: name.slice(0, 12),
-            ...(await halves(experimentCreate as never, { name, variants })),
-          }).toMatchObject({ applied: false, previewed: false });
+            ...(await halves(experimentCreate as never, {
+              name,
+              agent_id: agentId,
+              variants,
+            })),
+          }).toEqual({
+            name: name.slice(0, 12),
+            applied: false,
+            previewed: false,
+            error: expect.stringContaining("name must be 1 to 200 characters"),
+          });
         }
         expect(await suDb.experiment.count({ where: { tenantId } })).toBe(0);
+        // The control: at the ceiling, both halves take it.
+        expect(
+          await halves(experimentCreate as never, {
+            name: "z".repeat(200),
+            agent_id: agentId,
+            variants,
+          }),
+        ).toEqual({ applied: true, previewed: true });
+        await suDb.experiment.deleteMany({ where: { tenantId } });
       });
     });
   },

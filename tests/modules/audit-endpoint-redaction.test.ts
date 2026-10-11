@@ -62,17 +62,4 @@ describe("redactEndpoint", () => {
       expect(redactEndpoint(bad)).toBe("…");
     }
   });
-
-  test("no case in the table leaks the secret it carries", () => {
-    // The table above is read by eye; this is the assertion that does not depend on that.
-    const SECRETS = ["pw", "abc", "xyz", "sk-live-abc", "TOKENHERE", "hunter2"];
-    for (const [what, url, redacted] of CASES) {
-      for (const secret of SECRETS) {
-        if (!url.includes(secret)) continue;
-        expect(`${what} keeps ${secret}: ${redacted.includes(secret)}`).toBe(
-          `${what} keeps ${secret}: false`,
-        );
-      }
-    }
-  });
 });

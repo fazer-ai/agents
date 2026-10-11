@@ -55,7 +55,9 @@ describe("serializeLogItems", () => {
   });
 
   test("csv of an empty export is header-only", () => {
-    expect(serializeLogItems([], "csv")).not.toContain("\r\n");
+    expect(serializeLogItems([], "csv")).toBe(
+      "id,createdAt,source,turnId,stage,level,status,provider,model,durationMs,conversationId,agentId,inboxId,threadId,errorMessage,detail",
+    );
   });
 
   test("csv quotes cells with commas, quotes or newlines (RFC 4180)", () => {
@@ -200,13 +202,23 @@ describe.skipIf(!dbUp)("exportExecutionLogs", () => {
   });
 
   test("maxRows is clamped to the hard cap", async () => {
+    // One row past the cap, under a turn of their own so the other cases never see them.
+    await suDb.executionLog.createMany({
+      data: Array.from({ length: MAX_LOG_EXPORT_ROWS + 1 }, () => ({
+        tenantId: tenantA,
+        turnId: "bulk",
+        stage: "generate",
+        level: "info",
+        source: "inbox",
+      })),
+    });
     const res = await exportExecutionLogs(
       ctx(tenantA),
-      { format: "json", maxRows: MAX_LOG_EXPORT_ROWS * 10 },
+      { format: "json", turnId: "bulk", maxRows: MAX_LOG_EXPORT_ROWS * 10 },
       appDb,
     );
-    // Everything fits under the cap, so nothing is truncated.
-    expect(res.truncated).toBe(false);
+    expect(res.count).toBe(MAX_LOG_EXPORT_ROWS);
+    expect(res.truncated).toBe(true);
   });
 
   test("RLS: a tenant's export never leaks another tenant's rows", async () => {

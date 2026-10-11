@@ -418,11 +418,41 @@ describe.skipIf(!dbUp)("MCP read tools (DB)", () => {
     if (fine.ok) expect(fine.data.warnings).toEqual([]);
   });
 
-  test("api_key_list returns no secrets for a fresh tenant", async () => {
-    const r = await apiKeyList(principal({ tenantId: tenantB }), {
+  test("api_key_list answers each tenant its own keys, and no secret", async () => {
+    const keyHash = `hash-${process.pid}-the-secret`;
+    const key = await suDb.apiKey.create({
+      data: {
+        tenantId: tenantA,
+        displayName: "Leitor",
+        keyHash,
+        keyPrefix: "sk_lei",
+        role: "TENANT_ADMIN",
+      },
+    });
+    const mine = await apiKeyList(principal({ tenantId: tenantA }), {
       base: appDb,
     });
-    expect(r.ok).toBe(true);
-    if (r.ok) expect(Array.isArray(r.data.apiKeys)).toBe(true);
+    expect(mine).toEqual({
+      ok: true,
+      data: {
+        apiKeys: [
+          {
+            id: String(key.id),
+            displayName: "Leitor",
+            keyPrefix: "sk_lei",
+            role: "TENANT_ADMIN",
+            lastUsedAt: null,
+            revokedAt: null,
+            stepUpAt: null,
+            createdAt: key.createdAt,
+          },
+        ],
+      },
+    });
+    expect(JSON.stringify(mine)).not.toContain(keyHash);
+    const fresh = await apiKeyList(principal({ tenantId: tenantB }), {
+      base: appDb,
+    });
+    expect(fresh).toEqual({ ok: true, data: { apiKeys: [] } });
   });
 });

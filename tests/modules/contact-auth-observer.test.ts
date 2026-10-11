@@ -1437,7 +1437,8 @@ describe.skipIf(!dbUp)("the contact gate's rule on the observer path", () => {
     expect(await observeRows(19)).toHaveLength(1);
     expect(providers.auth).toBe(1);
     authAnswer = "deny";
-    await runObserve(
+    let modelCalls = 0;
+    const out = await runObserve(
       tenantId,
       {
         instanceId,
@@ -1449,11 +1450,34 @@ describe.skipIf(!dbUp)("the contact gate's rule on the observer path", () => {
       appDb,
       {
         makeModel: () => {
+          modelCalls += 1;
           throw new Error("no model in this test");
         },
-        makeClient: stubClient() as never,
+        makeClient: (async () => ({
+          ...(await stubClient()()),
+          getConversationLabels: async () => [],
+          getMessages: async () => ({
+            payload: [
+              {
+                id: 1,
+                content: "oi",
+                message_type: 0,
+                private: false,
+                created_at: Math.floor(Date.now() / 1000),
+                sender: { id: 1, name: "Cliente", type: "contact" },
+                attachments: [],
+              },
+            ],
+          }),
+        })) as never,
       },
-    ).catch(() => {});
+    );
+    // NOTE: the tick went past the gate to the model, so not asking was not a refusal by another name.
+    expect(out).toEqual({
+      outcome: "fail",
+      error: "observe: model could not be built: no model in this test",
+    });
+    expect(modelCalls).toBe(1);
     expect(providers.auth).toBe(1);
   });
 

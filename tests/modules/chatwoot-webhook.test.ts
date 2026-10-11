@@ -343,8 +343,19 @@ describe("runEagerMedia (eager STT/vision idempotency contract)", () => {
       transcribedText: "já feito",
       attachments: [{ id: 5, fileType: "audio", dataUrl: "https://x/a.ogg" }],
     });
-    // A second pass must NOT re-transcribe: the field is set, so it never reaches resolveSttConfig.
-    await runEagerMedia(3n, 5n, n, base, {
+    // A second pass must NOT re-transcribe: the field is set, so it never reaches resolveSttConfig,
+    // which is the first thing on that path to touch the database.
+    const touched: PropertyKey[] = [];
+    const watched = new Proxy(
+      {},
+      {
+        get(_t, prop) {
+          touched.push(prop);
+          return undefined;
+        },
+      },
+    ) as unknown as PrismaClient;
+    await runEagerMedia(3n, 5n, n, watched, {
       conversationId: 90n,
       agentId: 11n,
       inboxId: 7n,
@@ -352,6 +363,7 @@ describe("runEagerMedia (eager STT/vision idempotency contract)", () => {
       deliveryRowId: null,
       admission: "allowed",
     });
+    expect(touched).toEqual([]);
     expect(n.message?.transcribedText).toBe("já feito");
   });
 

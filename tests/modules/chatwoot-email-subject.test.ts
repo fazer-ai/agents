@@ -109,18 +109,21 @@ describe("renderInboundMessage: the email subject", () => {
 
   test("changes nothing on a message that has no subject", () => {
     // Every non-email channel takes this path, and it has to render byte-identical to before.
-    for (const m of [
-      { text: "quero agendar", attachmentTypes: [] },
-      {
-        text: "",
-        transcribedText: "quero remarcar",
-        attachmentTypes: ["audio"],
-      },
-      { text: "", attachmentTypes: [] },
-    ]) {
-      expect(renderInboundMessage({ ...m, emailSubject: null })).toBe(
-        renderInboundMessage(m),
-      );
+    const cases: Array<[Parameters<typeof renderInboundMessage>[0], string]> = [
+      [{ text: "quero agendar", attachmentTypes: [] }, "quero agendar"],
+      [
+        {
+          text: "",
+          transcribedText: "quero remarcar",
+          attachmentTypes: ["audio"],
+        },
+        "<mensagem-de-audio>quero remarcar</mensagem-de-audio>",
+      ],
+      [{ text: "", attachmentTypes: [] }, ""],
+    ];
+    for (const [m, rendered] of cases) {
+      expect(renderInboundMessage({ ...m, emailSubject: null })).toBe(rendered);
+      expect(renderInboundMessage(m)).toBe(rendered);
     }
   });
 

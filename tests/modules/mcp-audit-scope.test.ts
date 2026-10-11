@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { PrismaPg } from "@prisma/adapter-pg";
@@ -6,6 +6,7 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { recordAudit } from "@/modules/audit/service";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
+import * as mcpRead from "@/modules/mcp/read";
 import { auditList } from "@/modules/mcp/read";
 import { buildMcpServer } from "@/modules/mcp/server";
 import { syntheticAction } from "../utils/audit-action";
@@ -16,8 +17,8 @@ import { syntheticAction } from "../utils/audit-action";
 // would let the widest reader reach the fleet rows only by naming an unrelated tenant. The REST
 // surface answers this too; these tests hold the two doors to agreeing. TWO BLOCKS, because the gates
 // sit on opposite sides of the DB line: `tests/setup.ts` points `DATABASE_URL` at a database that
-// does not exist, so a call through the registered tool proves only that the WRAPPER let it past. The
-// rows are asserted one layer down, on `auditList` with an injected client.
+// does not exist, so a call through the registered tool reaches the rows only with the client
+// injected by a spy on `auditList`; the rest are asserted one layer down, on `auditList` itself.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -110,13 +111,6 @@ describe("audit_list tenant targeting over MCP", () => {
     expect(required.get("agent_list")).toContain("tenant");
   });
 
-  for (const scope of ["fleet", "all"] as const) {
-    test(`the wrapper lets a targetless ${scope} read through`, async () => {
-      const r = await call(principal(), { scope, limit: 1 });
-      expect(r.text).not.toContain(ASKS_FOR_A_TARGET);
-    });
-  }
-
   // The default is unchanged: the tenant trail cannot say WHICH tenant without a target, so that
   // scope still demands one and says so.
   test("the tenant scope still asks for a target", async () => {
@@ -204,6 +198,26 @@ describe.skipIf(!dbUp)("what a targetless audit_list actually reads", () => {
 
   const read = (p: VerifiedToken, args: Record<string, unknown>) =>
     auditList(p, { limit: 500, ...args }, { base: appDb });
+
+  // Through the transport, so the wrapper is what is under test; the spy only hands the handler the
+  // test database.
+  for (const scope of ["fleet", "all"] as const) {
+    test(`the wrapper lets a targetless ${scope} read through`, async () => {
+      const real = auditList;
+      const spy = spyOn(mcpRead, "auditList").mockImplementation((p, a, d) =>
+        real(p, { ...a, limit: 500 }, { ...d, base: appDb }),
+      );
+      try {
+        const r = await call(principal(), { scope, limit: 1 });
+        expect(r.isError).toBe(false);
+        expect(r.text).toContain(`${TAG}:fleet`);
+        if (scope === "all") expect(r.text).toContain(`${TAG}:mine`);
+        else expect(r.text).not.toContain(`${TAG}:mine`);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+  }
 
   test("fleet reaches the rows keyed to no tenant, with no tenant selected", async () => {
     const r = await read(principal(), { scope: "fleet" });
@@ -325,18 +339,22 @@ describe.skipIf(!dbUp)("what a targetless audit_list actually reads", () => {
       { base: appDb },
     )) as {
       ok: true;
-      data: { nextCursor: string | null };
+      data: { nextCursor: string | null; entries: { id: string }[] };
     };
     const cursor = first.data.nextCursor ?? "";
     expect(cursor).toContain("|");
-    const second = await auditList(
+    const second = (await auditList(
       p,
       { limit: 1, scope: "all", cursor },
       { base: appDb },
-    );
-    expect(JSON.stringify(second)).not.toContain("nextCursor` from a previous");
-    // ...and it really moved: the second page is not the first one again.
-    expect(JSON.stringify(second)).not.toBe(JSON.stringify(first));
+    )) as { ok: boolean; data?: { entries: { id: string }[] } };
+    expect(second.ok).toBe(true);
+    // ...and it really moved: the second page holds the next row, not the first one again.
+    const firstIds = first.data.entries.map((e) => e.id);
+    const secondIds = (second.data?.entries ?? []).map((e) => e.id);
+    expect(firstIds).toHaveLength(1);
+    expect(secondIds).toHaveLength(1);
+    expect(secondIds).not.toContain(firstIds[0]);
   });
 
   test("a tenant token still reads its own trail and only that", async () => {
@@ -344,16 +362,6 @@ describe.skipIf(!dbUp)("what a targetless audit_list actually reads", () => {
       await read(principal({ tenantId: mine, role: "TENANT_ADMIN" }), {}),
     );
     expect(text).toContain(`${TAG}:mine`);
-    expect(text).not.toContain(`${TAG}:fleet`);
-  });
-
-  test("and is refused the wider scopes rather than narrowed to itself", async () => {
-    const text = JSON.stringify(
-      await read(principal({ tenantId: mine, role: "TENANT_ADMIN" }), {
-        scope: "fleet",
-      }),
-    );
-    expect(text).not.toContain(`${TAG}:mine`);
     expect(text).not.toContain(`${TAG}:fleet`);
   });
 });

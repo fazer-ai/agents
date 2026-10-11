@@ -2861,7 +2861,9 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
           base: appDb,
           deps: depsWith(stub),
         }),
-      ).not.toBe("unrecoverable");
+      ).toBe("recovered");
+      expect(stub.sent).toEqual([[convId, REPLY]]);
+      expect(await ledger(rowId)).toEqual({ status: "PROCESSED", attempts: 1 });
     } finally {
       await suDb.inbox.update({
         where: { id: inboxDbId },
@@ -2946,7 +2948,9 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
           base: appDb,
           deps: depsWith(stub),
         }),
-      ).not.toBe("unrecoverable");
+      ).toBe("recovered");
+      expect(stub.sent).toEqual([[convId, REPLY]]);
+      expect(await ledger(rowId)).toEqual({ status: "PROCESSED", attempts: 1 });
     } finally {
       await suDb.inbox.update({
         where: { id: inboxDbId },
@@ -5407,9 +5411,10 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     );
 
     // NOTE: the OUTCOME is the assertion, not an append: a command is ACTIVE only for a test-mode
-    // agent, whose route does not ingest continuously. It shows the replay reaching the delivery path,
-    // where the gates that decide the append live.
-    expect(outcome).not.toBe("unrecoverable");
+    // agent, whose route does not ingest continuously. The replay reached the delivery path, spent
+    // its attempt there, and went back to DEAD because no route remembered it.
+    expect(outcome).toBe("unreachable");
+    expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 1 });
     expect(stub.sent).toEqual([]);
   });
 

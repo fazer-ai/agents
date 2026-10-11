@@ -307,6 +307,12 @@ describe("normalizeInputSchemaShape / CONTEXT_VAR_NAMES", () => {
       "agent_name",
     ]) {
       expect(CONTEXT_VAR_NAMES as readonly string[]).toContain(name);
+      // And normalization reads it: the single-brace spelling becomes the placeholder, unwarned.
+      const { shapes, warnings } = normalizeToolShapes({
+        urlTemplate: `https://api.example.com/x/{${name}}`,
+      });
+      expect(shapes.urlTemplate).toBe(`https://api.example.com/x/{{${name}}}`);
+      expect(warnings).toEqual([]);
     }
   });
 });

@@ -443,10 +443,19 @@ describe.skipIf(!dbUp)("contact authorization gate and the media pass", () => {
     await seedConversation(8871, INBOX_GATED);
     authAnswers.push(true);
     const messageId = 7_811;
+    let openDuring: boolean | null = null;
     duringStt = async () => {
+      // NOTE: announced while the provider works, so "closed" below is a close and not "never opened".
+      openDuring = await awaitOpenTranscriptions(
+        tenantId,
+        instanceId,
+        [messageId],
+        { timeoutMs: 0 },
+      );
       throw new Error("provider down");
     };
     await deliver({ convId: 8871, chatwootInboxId: INBOX_GATED, messageId });
+    expect(openDuring as boolean | null).toBe(true);
     expect(
       await awaitOpenTranscriptions(tenantId, instanceId, [messageId], {
         timeoutMs: 0,

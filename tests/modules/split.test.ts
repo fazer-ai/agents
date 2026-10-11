@@ -50,8 +50,12 @@ describe("splitReply", () => {
       "Primeira frase. Segunda frase aqui. Terceira.",
       small,
     );
-    expect(out.length).toBeGreaterThan(1);
-    for (const c of out) expect(c.length).toBeLessThanOrEqual(40);
+    // NOTE: whole sentences, each a balloon: none fits beside the next under 20 characters.
+    expect(out).toEqual([
+      "Primeira frase.",
+      "Segunda frase aqui.",
+      "Terceira.",
+    ]);
   });
   test("caps the balloon count, merging the overflow", () => {
     const many = "a\n\nb\n\nc\n\nd\n\ne\n\nf\n\ng";

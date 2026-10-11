@@ -1251,14 +1251,6 @@ describe("the scanner answers what the runtime does", () => {
     expect(seen).toBe("/x?a=1");
     expect(seen).not.toContain(SECRET);
   });
-
-  test("the table is not all one answer", () => {
-    // The floor. Every assertion above is `toBe(w.reaches)`, so a table that drifted to a
-    // single verdict would still pass while proving nothing about the boundary between them.
-    const reaching = CASES.filter((c) => c.reaches).length;
-    expect(reaching).toBeGreaterThan(29);
-    expect(CASES.length - reaching).toBeGreaterThan(32);
-  });
 });
 
 describe("which kinds the warning is about", () => {

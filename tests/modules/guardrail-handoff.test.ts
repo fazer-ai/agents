@@ -86,12 +86,19 @@ describe("what the gate hands the caller", () => {
   });
 
   test("a long refused reply is bounded in the note", () => {
-    const note = handedOffNote("HEAD", {
-      direction: "output",
-      outcome: "handed-off",
-      refused: "x".repeat(REFUSED_REPLY_NOTE_MAX * 2),
-    });
-    expect(note.length).toBeLessThan(REFUSED_REPLY_NOTE_MAX + 200);
+    const quoted = (refused: string) =>
+      handedOffNote("HEAD", {
+        direction: "output",
+        outcome: "handed-off",
+        refused,
+      }).split("(não enviada ao cliente):\n")[1];
+    // At the cap the reply is quoted whole; one past it, the tail is what goes.
+    const atCap = `${"x".repeat(REFUSED_REPLY_NOTE_MAX - 1)}Z`;
+    expect(quoted(atCap)).toBe(atCap);
+    expect(quoted(`${atCap}!`)).toBe(atCap);
+    expect(quoted("x".repeat(REFUSED_REPLY_NOTE_MAX * 2))).toBe(
+      "x".repeat(REFUSED_REPLY_NOTE_MAX),
+    );
   });
 
   test("screenedByOperator: the template and the hand-over message are the operator's, a generated reply is not", () => {

@@ -123,16 +123,17 @@ describe("the write paths ask, not just the validator", () => {
   // …and neither refuses what the caller did NOT write: a stored value from a newer build has to
   // stay editable, which is the reason those flags exist in the first place.
   test("the same patch over stored text a newer build wrote still saves", () => {
-    expect(() =>
-      patchedContent(
-        {
-          blocks: [{ id: "t", type: "text", text: `de outro build ${bad}` }],
-          fields: [],
-          style: { footerText: `rodapé ${bad}` },
-        },
-        { blockText: { t: "texto novo" } },
-      ),
-    ).not.toThrow();
+    const out = patchedContent(
+      {
+        blocks: [{ id: "t", type: "text", text: `de outro build ${bad}` }],
+        fields: [],
+        style: { footerText: `rodapé ${bad}` },
+      },
+      { blockText: { t: "texto novo" } },
+    );
+    expect(out.blocks).toEqual([{ id: "t", type: "text", text: "texto novo" }]);
+    expect(out.rawStyle).toEqual({ footerText: `rodapé ${bad}` });
+    expect(out.content.style.footerText).toBe(`rodapé ${bad}`);
   });
 });
 

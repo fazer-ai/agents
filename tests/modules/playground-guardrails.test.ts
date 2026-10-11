@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { AIMessage, type BaseMessage } from "@langchain/core/messages";
 import { FakeListChatModel } from "@langchain/core/utils/testing";
@@ -6,6 +6,7 @@ import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import { getCheckpointer } from "@/graph/checkpointer";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import {
   runPlaygroundFollowup,
@@ -915,14 +916,24 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
   // The line that makes the delete safe to perform at all: `deleteThread` is scoped by nothing, and
   // every Chatwoot conversation lives in the same checkpointer.
   test("a thread outside the fence is refused, not deleted", async () => {
-    await expect(
-      deletePlaygroundSession(
+    const checkpointer = await getCheckpointer();
+    const deleted = spyOn(checkpointer, "deleteThread");
+    try {
+      const refusal = await deletePlaygroundSession(
         ctx(tenantId),
         agentTemplate,
         `${tenantId}:1:4242`,
         appDb,
-      ),
-    ).rejects.toThrow();
+      ).then(
+        () => null,
+        (e: unknown) => e as { statusCode?: number; translationKey?: string },
+      );
+      expect(refusal?.statusCode).toBe(404);
+      expect(refusal?.translationKey).toBe("errors.sessionNotFound");
+      expect(deleted).not.toHaveBeenCalled();
+    } finally {
+      deleted.mockRestore();
+    }
   });
 
   // NOTE: the inbox's proactive path is screened, so the playground's simulated follow-up is too,

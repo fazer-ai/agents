@@ -1626,8 +1626,11 @@ describe("google calendar toolpack — aggregated availability (issue #100)", ()
       CLINIC,
       baseCtx({ fetchImpl: impl }),
     )?.invoke(RANGE)) as string;
-    const times = parse(out).slots.map((s) => Date.parse(s.start));
-    expect(times).toEqual([...times].sort((a, b) => a - b));
+    // Paulo is free at 09:00 and Ana at 11:00: the earlier start leads, whichever calendar holds it.
+    expect(parse(out).slots.map((s) => [s.label, s.calendarId])).toEqual([
+      ["seg 22/06 09:00", PAULO],
+      ["seg 22/06 11:00", ANA],
+    ]);
   });
 
   test("an explicit calendarId still asks that one calendar only", async () => {
@@ -1660,7 +1663,11 @@ describe("google calendar toolpack — aggregated availability (issue #100)", ()
       baseCtx({ fetchImpl: impl }),
     )?.invoke(RANGE)) as string;
     const parsed = parse(out);
-    expect(parsed.slots.every((s) => s.calendarId === ANA)).toBe(true);
+    expect(parsed.slots.map((s) => [s.label, s.calendarId])).toEqual([
+      ["seg 22/06 09:00", ANA],
+      ["seg 22/06 10:00", ANA],
+      ["seg 22/06 11:00", ANA],
+    ]);
     expect(parsed.unavailableCalendars).toEqual(["Dr. Paulo"]);
   });
 
@@ -1734,8 +1741,12 @@ describe("google calendar toolpack — aggregated availability (issue #100)", ()
     // is the model reporting later times unavailable.
     const desc = toolFor("calendar_check_availability", CLINIC, baseCtx())
       ?.description as string;
-    expect(desc).toContain("coveredUntil");
-    expect(desc).toContain("timeMin");
+    expect(desc).toContain(
+      "If `coveredUntil` comes back, the search stopped early and that timestamp is the FIRST start time it did not cover",
+    );
+    expect(desc).toContain(
+      "call again with timeMin set to that value to continue",
+    );
   });
 
   test("an afternoon is still offered: several calendars are not cut to their first few starts", async () => {
@@ -1852,9 +1863,12 @@ describe("google calendar toolpack — aggregated availability (issue #100)", ()
     )?.invoke(RANGE)) as string;
     const parsed = parse(out);
     expect(parsed.unavailableCalendars).toEqual(ids.slice(10));
-    expect(
-      parsed.slots.every((s) => ids.slice(0, 10).includes(s.calendarId)),
-    ).toBe(true);
+    // Every hour of the range, for each of the ten calendars the first batch read.
+    expect(parsed.slots.map((s) => `${s.label} ${s.calendarId}`)).toEqual(
+      ["09:00", "10:00", "11:00"].flatMap((hm) =>
+        ids.slice(0, 10).map((id) => `seg 22/06 ${hm} ${id}`),
+      ),
+    );
   });
 
   test("a calendar listed as BOTH operable and blocking still blocks its siblings", async () => {
@@ -1970,7 +1984,16 @@ describe("google calendar toolpack — aggregated availability (issue #100)", ()
     expect(bodyOf(calls[0] as { init: RequestInit })).toMatchObject({
       items: [{ id: ANA }],
     });
-    expect(parse(out).slots.every((s) => s.calendarId === ANA)).toBe(true);
+    expect(JSON.parse(out)).toEqual({
+      slots: ["09:00", "10:00", "11:00"].map((hm) => ({
+        start: expect.any(String),
+        end: expect.any(String),
+        label: `seg 22/06 ${hm}`,
+        calendarId: ANA,
+        calendarLabel: "Dra. Ana",
+      })),
+      timeZone: "America/Sao_Paulo",
+    });
   });
 });
 

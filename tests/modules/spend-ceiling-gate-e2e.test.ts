@@ -1036,9 +1036,13 @@ describe.skipIf(!dbUp)("the spend ceiling (webhook e2e)", () => {
       makeClient: s.makeClient,
       allowModel: true,
     });
-    const publics = s.publicOn(9403).map((m) => m.content);
-    expect(publics).not.toContain(OVER_COPY);
-    expect(publics.length).toBeGreaterThan(0);
+    // NOTE: the agent's own reply and nothing of the ceiling's: no copy, handoff, note or line.
+    expect(s.publicOn(9403).map((m) => m.content)).toEqual([
+      "Claro, posso ajudar.",
+    ]);
+    expect(s.statusToggles.filter(([c]) => c === 9403)).toEqual([]);
+    expect(s.notesOn(9403)).toEqual([]);
+    expect(await ceilingRows(9403)).toEqual([]);
   });
 
   // The playground's own spending must not be able to silence customers, which is the entire reason
@@ -1058,7 +1062,13 @@ describe.skipIf(!dbUp)("the spend ceiling (webhook e2e)", () => {
       makeClient: s.makeClient,
       allowModel: true,
     });
-    expect(s.publicOn(9404).map((m) => m.content)).not.toContain(OVER_COPY);
+    // NOTE: the agent's own reply and nothing of the ceiling's: no copy, handoff, note or line.
+    expect(s.publicOn(9404).map((m) => m.content)).toEqual([
+      "Claro, posso ajudar.",
+    ]);
+    expect(s.statusToggles.filter(([c]) => c === 9404)).toEqual([]);
+    expect(s.notesOn(9404)).toEqual([]);
+    expect(await ceilingRows(9404)).toEqual([]);
   });
 
   // The verdict is evaluated on every message; the COPY is not. Ten people writing in after the
@@ -1101,7 +1111,12 @@ describe.skipIf(!dbUp)("the spend ceiling (webhook e2e)", () => {
       makeClient: s.makeClient,
       allowModel: true,
     });
-    expect(s.publicOn(9406).map((m) => m.content)).not.toContain(OVER_COPY);
+    // NOTE: the agent's own reply and nothing of the ceiling's: no copy, handoff, note or line.
+    expect(s.publicOn(9406).map((m) => m.content)).toEqual([
+      "Claro, posso ajudar.",
+    ]);
+    expect(s.statusToggles.filter(([c]) => c === 9406)).toEqual([]);
     expect(s.notesOn(9406)).toEqual([]);
+    expect(await ceilingRows(9406)).toEqual([]);
   });
 });

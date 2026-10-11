@@ -569,14 +569,31 @@ describe.skipIf(!dbUp)("reconcileMirrorFromLive", () => {
       chatwootAssigneeAt: T + 1,
     });
     const before = await readRow(id);
-    await applyFor(id, {
-      status: "open",
-      assigneeType: "User",
-      assigneeId: 7,
-      updatedAt: T + 1,
-    });
-    const after = await readRow(id);
-    expect(after.updatedAt.getTime()).toBe(before.updatedAt.getTime());
+    const writes: string[] = [];
+    const watching = appDb.$extends({
+      query: {
+        conversation: {
+          async $allOperations({ operation, args, query }) {
+            if (/^(update|upsert|create|delete)/.test(operation))
+              writes.push(operation);
+            return query(args);
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+    await applyFor(
+      id,
+      {
+        status: "open",
+        assigneeType: "User",
+        assigneeId: 7,
+        updatedAt: T + 1,
+      },
+      null,
+      watching,
+    );
+    expect(writes).toEqual([]);
+    expect(await readRow(id)).toEqual(before);
   });
 
   test("a Chatwoot too old to send a version still applies, ordered by activity alone", async () => {

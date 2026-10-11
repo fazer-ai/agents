@@ -455,7 +455,17 @@ describe("judgeBooking — the rule a calendar write has to pass", () => {
       endMs: Date.parse(iso("15:15")),
     });
     expect(v.bookable).toBe(false);
-    expect(v.alternatives.map((s) => localHM(s.start))).not.toContain("14:00");
+    // The six nearest free starts, at the length the business sells: the taken 14:00 is skipped.
+    expect(
+      v.alternatives.map((s) => `${localHM(s.start)}-${localHM(s.end)}`),
+    ).toEqual([
+      "11:00-12:00",
+      "12:00-13:00",
+      "13:00-14:00",
+      "15:00-16:00",
+      "16:00-17:00",
+      "17:00-18:00",
+    ]);
     for (const alt of v.alternatives) {
       expect(
         judgeBooking({

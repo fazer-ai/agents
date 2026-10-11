@@ -1,7 +1,8 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import type { TenantContext } from "@/lib/tenancy";
+import * as auditService from "@/modules/audit/service";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import {
   langfuseConnect,
@@ -204,9 +205,36 @@ describe.skipIf(!dbUp)("the tenant family records from its services", () => {
   });
 
   test("a settings write and its row share ONE transaction", async () => {
+    await clearAudit();
+    await updateCompanySettings(ctx(), { phone: "1100000" }, appDb);
+    await clearAudit();
+    // The row is written, THEN the work fails: a row written outside the write's transaction
+    // survives the rollback, and so would a settings write split from it.
+    const original = auditService.auditMutation;
+    let recorded = 0;
+    const spy = spyOn(auditService, "auditMutation").mockImplementation(
+      async (...args) => {
+        await original(...args);
+        recorded += 1;
+        throw new Error("after the row");
+      },
+    );
     const { base, total } = countingBase(appDb);
-    await updateCompanySettings(ctx(), { phone: "1199999" }, base);
+    try {
+      await expect(
+        updateCompanySettings(ctx(), { phone: "1199999" }, base),
+      ).rejects.toThrow("after the row");
+    } finally {
+      spy.mockRestore();
+    }
+    expect(recorded).toBe(1);
     expect(total()).toBe(1);
+    expect(await rows({ tenantId })).toEqual([]);
+    const t = await su?.tenant.findUniqueOrThrow({ where: { id: tenantId } });
+    const settings = t?.settings as
+      | { company?: { phone?: string } }
+      | undefined;
+    expect(settings?.company?.phone).toBe("1100000");
   });
 
   test("no letterhead value reaches a row, not even the one being replaced", async () => {

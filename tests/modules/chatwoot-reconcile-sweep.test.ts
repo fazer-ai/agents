@@ -1026,6 +1026,95 @@ describe.skipIf(!dbUp)("reconciling from Chatwoot", () => {
     expect(kept.reconciledUntil?.getTime()).toBe(minutesAgo(40).getTime());
   });
 
+  test("an overlapped read is no baseline: a later read that skips the same row by a shift does not match it", async () => {
+    const all = Array.from({ length: 50 }, (_, i) =>
+      conv(1000 + i, minutesAgo(20)),
+    );
+    const messages = new Map<number, unknown[]>();
+    for (const c of all)
+      messages.set(c.id, [
+        incoming(c.id * 10, minutesAgo(21)),
+        outgoing(c.id * 10 + 1, minutesAgo(20)),
+      ]);
+    messages.set(1025, [incoming(10250, minutesAgo(20))]);
+    const rest = all.slice(1);
+    const s: Scripted = {
+      conversations: new Map(),
+      calls: [
+        // Overlapping pages: 1024 twice, 1025 on neither.
+        all.slice(0, 25),
+        [all[24], ...all.slice(26, 50)] as ChatwootInboxConversation[],
+        [],
+        // 1000 leaves between the pages: 1025 shifts out of both, naming the same set as above.
+        all.slice(0, 25),
+        all.slice(26, 50),
+        [],
+        rest.slice(0, 25),
+        rest.slice(25, 49),
+        [],
+        rest.slice(0, 25),
+        rest.slice(25, 49),
+        [],
+      ],
+      messages,
+      listed: [],
+    };
+    const counts = await reconcileFromChatwoot({
+      tenantId,
+      base: appDb,
+      now: NOW,
+      makeClient: chatwoot(s),
+    });
+    expect(counts.inboxesFailed).toBe(0);
+    expect((await ledgerFor(1025)).map((r) => r.inboundMessageId)).toEqual([
+      10250,
+    ]);
+  });
+
+  test("an overlapped read never confirms a clean one that missed the same row", async () => {
+    const all = Array.from({ length: 50 }, (_, i) =>
+      conv(1100 + i, minutesAgo(20)),
+    );
+    const messages = new Map<number, unknown[]>();
+    for (const c of all)
+      messages.set(c.id, [
+        incoming(c.id * 10, minutesAgo(21)),
+        outgoing(c.id * 10 + 1, minutesAgo(20)),
+      ]);
+    messages.set(1125, [incoming(11250, minutesAgo(20))]);
+    const s: Scripted = {
+      conversations: new Map(),
+      calls: [
+        // A clean read that a shift made miss 1125.
+        all.slice(0, 25),
+        all.slice(26, 50),
+        [],
+        // An overlapped read naming the same set: 1124 twice, 1125 on neither.
+        all.slice(0, 25),
+        [all[24], ...all.slice(26, 50)] as ChatwootInboxConversation[],
+        [],
+        all.slice(0, 25),
+        all.slice(25, 50),
+        [],
+        all.slice(0, 25),
+        all.slice(25, 50),
+        [],
+      ],
+      messages,
+      listed: [],
+    };
+    const counts = await reconcileFromChatwoot({
+      tenantId,
+      base: appDb,
+      now: NOW,
+      makeClient: chatwoot(s),
+    });
+    expect(counts.inboxesFailed).toBe(0);
+    expect((await ledgerFor(1125)).map((r) => r.inboundMessageId)).toEqual([
+      11250,
+    ]);
+  });
+
   test("a conversation with no activity time fails the inbox and keeps the cursor", async () => {
     const s: Scripted = {
       conversations: new Map([

@@ -272,7 +272,8 @@ async function reconcileInbox(p: InboxRead): Promise<void> {
       sameIds(pinned, pinnedAfter)
     )
       return;
-    previous = named;
+    // An overlapped read missed a row, so it cannot be what the next read is compared against.
+    previous = overlapped ? null : named;
   }
   throw new Error(
     `inbox ${p.inbox.chatwootInboxId} still shifted after ${MAX_LISTINGS_PER_INBOX} listings`,

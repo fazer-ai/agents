@@ -1,5 +1,11 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 
 // The fences in biome-plugins/ that were source sweeps in tests/api, client, graph and modules, run
@@ -268,9 +274,32 @@ const OWNERS = [
   `${SRC}/modules/webhooks/outbound/subscriptions.ts`,
   `${SRC}/modules/flowlog/channels.ts`,
   `${SRC}/client/pages/agents/ChannelRedirectTab.tsx`,
+  `${SRC}/client/pages/agents/PlaygroundChat.tsx`,
   "tests/utils/flowlog.ts",
   "tests/modules/flowlog-settle.test.ts",
 ];
+
+// Each exemption, and the rule it exempts from. The owner is copied to a probe path no exemption
+// covers, where its rule has to fire: an owner that stops doing what it is exempted for, or is gone,
+// makes its exemption stale, and the copy coming back clean is what says so.
+const EXEMPTED: Array<[string, Rule]> = [
+  [`${SRC}/modules/scheduler/service.ts`, "schedulerRow"],
+  [`${SRC}/modules/vault/service.ts`, "vault"],
+  [`${SRC}/modules/webhooks/outbound/subscriptions.ts`, "secretRef"],
+  [`${SRC}/modules/flowlog/channels.ts`, "secretRef"],
+  [`${SRC}/api/lib/step-up.ts`, "verify"],
+  [`${SRC}/api/features/auth/auth.service.ts`, "verify"],
+  [`${SRC}/api/features/auth/auth.controller.ts`, "verify"],
+  [`${SRC}/api/features/invitations/invitation.service.ts`, "verify"],
+  [`${SRC}/modules/documents/slug.ts`, "docTool"],
+  [`${SRC}/modules/chatwoot/gate-close.ts`, "gate"],
+  [`${SRC}/client/pages/agents/ChannelRedirectTab.tsx`, "textarea"],
+  [`${SRC}/client/pages/agents/PlaygroundChat.tsx`, "textarea"],
+  ["tests/utils/flowlog.ts", "clear"],
+  ["tests/modules/flowlog-settle.test.ts", "clear"],
+];
+const copyOf = (i: number, path: string) =>
+  P(`owner-copy-${i}${path.endsWith(".tsx") ? ".tsx" : ".ts"}`);
 
 let hits: Map<string, Partial<Record<Rule, number>>>;
 
@@ -279,6 +308,14 @@ beforeAll(() => {
     mkdirSync(join(ROOT, path, ".."), { recursive: true });
     writeFileSync(join(ROOT, path), body);
   }
+  EXEMPTED.forEach(([path], i) => {
+    if (existsSync(join(ROOT, path))) {
+      writeFileSync(
+        join(ROOT, copyOf(i, path)),
+        readFileSync(join(ROOT, path), "utf8"),
+      );
+    }
+  });
   const run = Bun.spawnSync({
     cmd: [
       "bun",
@@ -287,7 +324,10 @@ beforeAll(() => {
       "--max-diagnostics=none",
       "--reporter=github",
       ...Object.keys(PROBES),
-      ...OWNERS,
+      ...EXEMPTED.map(([path], i) => copyOf(i, path)).filter((p) =>
+        existsSync(join(ROOT, p)),
+      ),
+      ...OWNERS.filter((p) => existsSync(join(ROOT, p))),
     ],
     cwd: ROOT,
   });
@@ -407,4 +447,14 @@ describe("the module a fence exempts is not flagged by it", () => {
   test.each(OWNERS)("%s", (path) => {
     expect(hits.get(path) ?? {}).toEqual({});
   });
+});
+
+describe("each exempted module still does what it is exempted for", () => {
+  test.each(EXEMPTED.map(([path, rule], i) => [path, rule, i] as const))(
+    "%s (%s)",
+    (path, rule, i) => {
+      expect(existsSync(join(ROOT, path))).toBe(true);
+      expect(hits.get(copyOf(i, path))?.[rule] ?? 0).toBeGreaterThan(0);
+    },
+  );
 });

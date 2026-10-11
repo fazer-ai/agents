@@ -599,7 +599,7 @@ const baseAuthController = new Elysia({
     "/accept-invite",
     async ({ body, set, setAuthCookie, getSessionIdentity }) => {
       let user: Awaited<ReturnType<typeof acceptInvite>>;
-      // NOTE: a signed-in session only proves WHICH person it is, so it is read without the tenant
+      // A signed-in session only proves WHICH person it is, so it is read without the tenant
       // selector: a membership removed while the page was open must not sign the invitee out here.
       const session = await getSessionIdentity();
       try {
@@ -648,7 +648,7 @@ const baseAuthController = new Elysia({
         }
         throw error;
       }
-      // NOTE: the same test `acceptInvite` applies before a password: when the session was the proof,
+      // The same test `acceptInvite` applies before a password: when the session was the proof,
       // the re-issue is refused if a logout ended that session meanwhile.
       const provedBySession =
         session?.userId === user.id &&

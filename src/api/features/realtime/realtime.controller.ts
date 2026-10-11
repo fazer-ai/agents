@@ -66,7 +66,7 @@ async function registerAndRecheck(
     current = null;
   }
   if (!current) {
-    // NOTE: a logout signs the tab out (4401); a password change asks it to reconnect under the
+    // A logout signs the tab out (4401); a password change asks it to reconnect under the
     // re-issued cookie (4409), which the tab holding that cookie can.
     const loggedOut =
       user.sessionId !== undefined &&

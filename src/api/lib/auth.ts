@@ -299,7 +299,7 @@ export const authPlugin = new Elysia({ name: "auth" })
           if (replaced?.sessionId !== options.proofSessionId) {
             throw new UnauthorizedError();
           }
-          // NOTE: refused only when a logout DID end it. A failure to record is not a refusal: the
+          // Refused only when a logout DID end it. A failure to record is not a refusal: the
           // caller (accepting an invitation) has already committed, and a 503 would leave a used
           // invitation and no session; the replaced token then lives until it expires.
           const ended = await recordEnded(replaced, { replaced: true }).catch(

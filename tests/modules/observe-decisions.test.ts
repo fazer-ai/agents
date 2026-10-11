@@ -2253,11 +2253,27 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
         await triggerState.writeTriggerState(
           suDb,
           scope,
-          { latch: [], release: ["note"], keep: [] },
+          { latch: [], release: ["note"], undo: [], keep: [] },
           olderRead,
         );
         const keys = await triggerState.readLatchedRules(suDb, scope);
         expect([...keys]).toEqual(["note"]);
+      });
+
+      test("a tick undoes its own latch only up to when it wrote it", async () => {
+        const scope = { tenantId, agentId, conversationId: convRowId };
+        const mine = new Date(Date.now() - 60_000);
+        await triggerState.latchRules(suDb, scope, ["own"], mine);
+        await triggerState.latchRules(suDb, scope, ["other"]);
+        await triggerState.writeTriggerState(
+          suDb,
+          scope,
+          { latch: [], release: [], undo: ["own"], keep: ["own", "other"] },
+          mine,
+          new Map([["own", mine]]),
+        );
+        const keys = await triggerState.readLatchedRules(suDb, scope);
+        expect([...keys]).toEqual(["other"]);
       });
 
       test("an older tick finishing late does not latch again what a newer tick released", async () => {
@@ -2265,6 +2281,7 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
         await triggerState.writeTriggerState(suDb, scope, {
           latch: ["note"],
           release: [],
+          undo: [],
           keep: ["note"],
         });
         const keys = await triggerState.readLatchedRules(suDb, scope);

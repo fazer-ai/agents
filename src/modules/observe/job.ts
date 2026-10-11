@@ -1837,12 +1837,11 @@ export async function runObserve(
     const triggerScope =
       conv === null ? null : { tenantId, agentId, conversationId: conv.id };
     let latched: Set<string> = new Set();
-    // The state as read: a release after the tick ended touches only rows written up to then or by
-    // this tick's own latches, never one a later observation wrote.
-    const readAt = new Date();
-    // When this tick last wrote latches ahead (`readAt` until it does): the bound of what it may
-    // release or drop.
-    let latchedUpTo: Date = readAt;
+    // When the state was last read, and when this tick wrote each latch ahead: what it judged from
+    // the state touches only rows up to the read, and its own latches only rows up to its write, so
+    // a later observation's state is never this tick's to remove (writeTriggerState).
+    let readAt = new Date();
+    const latchedAt = new Map<string, Date>();
     if (triggerScope !== null) {
       try {
         latched = await readLatchedRules(base, triggerScope);
@@ -1872,7 +1871,7 @@ export async function runObserve(
     ): Promise<boolean> => {
       if (triggerScope === null) return true;
       try {
-        await writeTriggerState(base, triggerScope, change, latchedUpTo);
+        await writeTriggerState(base, triggerScope, change, readAt, latchedAt);
         return true;
       } catch (err) {
         logger.warn(
@@ -1947,7 +1946,7 @@ export async function runObserve(
       const at = new Date();
       try {
         latched = await readLatchedRules(base, triggerScope);
-        latchedUpTo = at;
+        readAt = at;
       } catch {
         // The first snapshot stands.
       }
@@ -1983,7 +1982,7 @@ export async function runObserve(
           if (triggerScope === null) return;
           const at = new Date();
           await latchRules(base, triggerScope, keys, at);
-          latchedUpTo = at;
+          for (const k of keys) latchedAt.set(k, at);
         },
       );
       applying = run;
@@ -2000,21 +1999,26 @@ export async function runObserve(
       // latched it anew (a member deferred after its group and stopped before it ran).
       const released = new Map<string, number>();
       const release = async () => {
-        const upTo = latchedUpTo;
-        const keys = (progress.undo ?? []).filter(
-          (k) => (released.get(k) ?? -1) < upTo.getTime(),
-        );
-        if (triggerScope === null || keys.length === 0) return;
-        try {
-          await unlatchRules(base, triggerScope, keys, upTo);
-          // Counted only once deleted, so a failed release is tried again by the next call.
-          for (const k of keys) released.set(k, upTo.getTime());
-        } catch (err) {
-          logger.warn(
-            { err, agentId: String(agentId) },
-            "observe: the rules' trigger state could not be written (conv=%s)",
-            String(conversationId),
-          );
+        if (triggerScope === null) return;
+        const due: [string, Date][] = [
+          ...(progress.release ?? []).map((k): [string, Date] => [k, readAt]),
+          ...(progress.undo ?? []).map((k): [string, Date] => [
+            k,
+            latchedAt.get(k) ?? readAt,
+          ]),
+        ].filter(([k, upTo]) => (released.get(k) ?? -1) < upTo.getTime());
+        for (const [k, upTo] of due) {
+          try {
+            await unlatchRules(base, triggerScope, [k], upTo);
+            // Counted only once deleted, so a failed release is tried again by the next call.
+            released.set(k, upTo.getTime());
+          } catch (err) {
+            logger.warn(
+              { err, agentId: String(agentId) },
+              "observe: the rules' trigger state could not be written (conv=%s)",
+              String(conversationId),
+            );
+          }
         }
       };
       progress.onChange = () => void release();

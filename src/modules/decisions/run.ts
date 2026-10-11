@@ -86,20 +86,22 @@ export interface ActionReport {
 
 // What the trigger state of this tick changes (decision_rule_states, by `ruleStateKey`): `latch`
 // the rules that acted and must not act again while they hold (or ever, for `once`), `release` the
-// `on_start` rules that did not hold, `keep` every key of the block that ran, so a key no rule has
-// any more (an edited or deleted rule) is dropped.
+// `on_start` rules that did not hold, `undo` this tick's own latches written ahead for actions that
+// wrote nothing or never started, `keep` every key of the block that ran, so a key no rule has any
+// more (an edited or deleted rule) is dropped. `release` and the drop judge the state the tick read;
+// `undo` judges only what the tick itself wrote.
 export interface TriggerStateChange {
   latch: string[];
   release: string[];
+  undo: string[];
   keep: string[];
 }
 
 // Kept current by `applyDecisions` as actions settle, for a caller whose call rejected (the
-// deadline met a later action): `undo` is what that caller releases, the `on_start` rules that did
-// not hold and the latches written ahead for actions that wrote nothing or never started. A handler
-// can still say it wrote nothing after the call was given up on, so `onChange` is called on every
-// change.
+// deadline met a later action): what that caller releases, as in TriggerStateChange. A handler can
+// still say it wrote nothing after the call was given up on, so `onChange` is called on every change.
 export interface DecisionProgress {
+  release?: string[];
   undo?: string[];
   onChange?: () => void;
 }
@@ -197,7 +199,8 @@ export async function applyDecisions(
       triggers[rule] === "on_start" && keys[rule] ? [keys[rule]] : [],
     );
   const settled = () => {
-    progress.undo = [...new Set([...missedReleases(), ...undone()])];
+    progress.release = missedReleases();
+    progress.undo = [...new Set(undone())];
     progress.onChange?.();
   };
   // Before anything is awaited: a deadline that ends the tick with nothing dispatched still owes the
@@ -256,8 +259,12 @@ export async function applyDecisions(
           for (const k of latchKeys(at)) latch.add(k);
       }
     }
-    const release = [...missedReleases(), ...undone()];
-    return { latch: [...latch], release, keep: [...new Set(keys)] };
+    return {
+      latch: [...latch],
+      release: missedReleases(),
+      undo: [...new Set(undone())],
+      keep: [...new Set(keys)],
+    };
   };
   // A group is a RUN of consecutive actions whose tool commits calls that arrive together as one
   // write: dispatched together, each after its own fence, and awaited as one. Only neighbours are

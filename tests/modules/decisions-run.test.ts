@@ -615,7 +615,7 @@ describe("applyDecisions and the trigger state", () => {
     expect(order).toEqual(["latch", "fence"]);
     expect(t.ran).toEqual([]);
     expect(r.withdrawn).toBe(true);
-    expect(r.triggerState.release).toEqual([noteKey]);
+    expect(r.triggerState.undo).toEqual([noteKey]);
   });
 
   test("a call given up on at the deadline that then says it wrote nothing is undone, and the caller is told", async () => {
@@ -772,7 +772,7 @@ describe("applyDecisions and the trigger state", () => {
       new Set(),
       progress,
     );
-    expect(progress.undo).toEqual([ruleStateKey(offRule)]);
+    expect(progress.release).toEqual([ruleStateKey(offRule)]);
   });
 
   test("an on_start rule that did not hold is released even when another action ends the tick", async () => {
@@ -808,7 +808,7 @@ describe("applyDecisions and the trigger state", () => {
         progress,
       ),
     ).rejects.toThrow();
-    expect(progress.undo).toEqual([ruleStateKey(offRule)]);
+    expect(progress.release).toEqual([ruleStateKey(offRule)]);
   });
 
   test("a latch that cannot be written ahead stops the tick before anything is dispatched", async () => {
@@ -891,7 +891,7 @@ describe("applyDecisions and the trigger state", () => {
       10,
     );
     expect(r.triggerState.latch).toEqual([noteKey]);
-    expect(r.triggerState.release).toEqual([handoffKey]);
+    expect(r.triggerState.undo).toEqual([handoffKey]);
   });
 
   test("a call that threw may have written: its rule stays latched", async () => {
@@ -911,7 +911,7 @@ describe("applyDecisions and the trigger state", () => {
       10,
     );
     expect(r.triggerState.latch).toEqual([noteKey]);
-    expect(r.triggerState.release).toEqual([]);
+    expect(r.triggerState.undo).toEqual([]);
   });
 
   test("a write the client refused before it left is released", async () => {
@@ -931,7 +931,7 @@ describe("applyDecisions and the trigger state", () => {
       10,
     );
     expect(r.triggerState.latch).toEqual([]);
-    expect(r.triggerState.release).toEqual([noteKey]);
+    expect(r.triggerState.undo).toEqual([noteKey]);
   });
 
   test("a call withdrawn after a fence allowed part of it is no_effect, not a partial run", async () => {

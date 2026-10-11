@@ -97,13 +97,15 @@ export async function unlatchRules(
 // What a tick that finished releases, and the keys no rule of the block has any more (an edited or
 // deleted rule's state goes with it). Its `latch` is not written here: every latch went out ahead
 // of its action (latchRules), and writing it again at the end would undo a newer tick's release.
-// Only rows written up to `upTo` (when the tick read the state, or last latched) are touched: two
-// ticks can finish out of order, and a newer one's latch is not the older one's to remove.
+// Two ticks can finish out of order, so each deletion is bounded: what the tick judged from the
+// state it read (`release`, the drop) touches only rows written up to that read, and its own
+// latches (`undo`) only rows written up to when it wrote each one.
 export async function writeTriggerState(
   base: PrismaClient,
   scope: TriggerScope,
   change: TriggerStateChange,
-  upTo: Date = new Date(),
+  readAt: Date = new Date(),
+  latchedAt: ReadonlyMap<string, Date> = new Map(),
 ): Promise<void> {
   const where = {
     agentId: scope.agentId,
@@ -113,7 +115,7 @@ export async function writeTriggerState(
     await db.decisionRuleState.deleteMany({
       where: {
         ...where,
-        createdAt: { lte: upTo },
+        createdAt: { lte: readAt },
         OR: [
           { ruleKey: { notIn: change.keep } },
           ...(change.release.length > 0
@@ -122,5 +124,14 @@ export async function writeTriggerState(
         ],
       },
     });
+    for (const ruleKey of change.undo) {
+      await db.decisionRuleState.deleteMany({
+        where: {
+          ...where,
+          ruleKey,
+          createdAt: { lte: latchedAt.get(ruleKey) ?? readAt },
+        },
+      });
+    }
   });
 }

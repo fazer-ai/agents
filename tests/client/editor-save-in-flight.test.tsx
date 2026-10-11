@@ -323,3 +323,47 @@ test("memory saved while Behavior was edited is kept by the next save on questio
     `${stored.includes("openai")} ${JSON.stringify(second.body.settings?.memory) === stored}`,
   ).toBe("true true");
 });
+
+// The recording warning reads what the server records, so it follows a save even when the save's
+// answer was kept off the form because Behavior was edited while it was out.
+test("logging turned on and saved while Behavior was edited raises the recording warning", async () => {
+  const stub = stubEditorApi({});
+  await renderEditor(stub, "behavior");
+  fireEvent.click(
+    screen.getByRole("switch", { name: "Log the values sent to tools" }),
+  );
+  const writes = holdWrites();
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(writes.held()).toBe(true));
+  const warned = () =>
+    (document.body.textContent ?? "").includes(
+      "Recording more than the default right now",
+    );
+  const before = warned();
+  change(panel().querySelector('input[type="number"]'), "9");
+  writes.release();
+  await screen.findByText("Agent saved.");
+  await waitFor(() => expect(warned()).toBe(true));
+  expect(before).toBe(false);
+});
+
+// An unrelated save re-reads the agent; a debug window that closed meanwhile is not re-read into the
+// baseline while Behavior still shows the window it loaded, or Behavior would read as edited.
+test("a General save after the debug window closed does not mark Behavior unsaved", async () => {
+  setSystemTime(new Date("2026-03-01T12:00:00.000Z"));
+  try {
+    const stub = stubEditorApi({
+      settings: {
+        observability: { fullDetailUntil: "2026-03-01T12:30:00.000Z" },
+      },
+    });
+    await renderEditor(stub, "general");
+    setSystemTime(new Date("2026-03-01T13:00:00.000Z"));
+    change(screen.getByLabelText(/^Name/), "Ana");
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByText("Agent saved.");
+    expect(`${dot(/^General/)} ${dot(/^Behavior/)}`).toBe("false false");
+  } finally {
+    setSystemTime();
+  }
+});

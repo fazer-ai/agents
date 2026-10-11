@@ -768,6 +768,9 @@ type RefusalSection =
   | "decisions";
 
 // A refusal about the decision setup, under either spelling the server uses for it.
+// The observability of an agent with nothing stored: the default, read once.
+const NO_OBSERVABILITY = observabilityToForm({});
+
 const DECISIONS_REFUSAL_FIELD = /^(settings\.)?monitoring\.decisions(\.|$)/;
 
 // Keyed by the record: the route element is REUSED when `:id` changes (cloning lands straight on the
@@ -930,14 +933,6 @@ function AgentEditor() {
     boolean | null
   >(null);
   const [observability, setObservability] = useState(observabilityToForm({}));
-  // What the SERVER is doing, as opposed to what the form is about to ask it to do. The "recording
-  // more than the default" warning reads this one, never the form: a switch flipped off stops
-  // recording when the save lands, not when the operator touches it, and a warning that goes quiet
-  // on the touch tells them recording stopped while it is still running. Set only where a server
-  // read set the form (load, post-save refresh, discard), never by a switch.
-  const [savedObservability, setSavedObservability] = useState(
-    observabilityToForm({}),
-  );
   // Whether an attendance that ended is folded into a summary, and which model writes it. Seeded
   // from the reader over an empty bag rather than a literal: the pre-load state is the same shape
   // the round-trip pair produces, so a field added to `compaction` cannot default differently here
@@ -1558,7 +1553,6 @@ function AgentEditor() {
     setVision(b.vision);
     setLimits(b.limits);
     setObservability(b.observability);
-    setSavedObservability(b.observability);
     setMemory(b.memory);
     setObservation(b.observation);
     setModelFallback(b.modelFallback);
@@ -1608,7 +1602,6 @@ function AgentEditor() {
     setVision(b.vision);
     setLimits(b.limits);
     setObservability(b.observability);
-    setSavedObservability(b.observability);
     if (chat) setMemory(b.memory);
     // NOTE: The timing only: the decision setup is its own section (General and Questions and
     // rules), and a Behavior save writes it back as stored, so its pending edits stay.
@@ -2249,12 +2242,31 @@ function AgentEditor() {
     (syncedFormRef.current?.agent !== syncedForChat ||
       syncedFormRef.current.grants !== syncedGrantsRef.current)
   ) {
+    const prev = syncedFormRef.current;
+    const form = formOfSynced(syncedForChat, syncedGrantsRef.current);
+    // A block the sync did not change keeps the reading taken when it was first read: the debug
+    // window is derived from the clock, and re-reading it after an unrelated save would close it on
+    // the baseline while the form still shows it open.
+    if (
+      prev &&
+      JSON.stringify(prev.agent.settings?.observability ?? null) ===
+        JSON.stringify(syncedForChat.settings?.observability ?? null)
+    ) {
+      form.observability = prev.form.observability;
+    }
     syncedFormRef.current = {
       agent: syncedForChat,
       grants: syncedGrantsRef.current,
-      form: formOfSynced(syncedForChat, syncedGrantsRef.current),
+      form,
     };
   }
+  // What the SERVER is doing, as opposed to what the form is about to ask it to do. The "recording
+  // more than the default" warning reads this one, never the form: a switch flipped off stops
+  // recording when the save lands, not when the operator touches it, and a warning that goes quiet
+  // on the touch tells them recording stopped while it is still running. It follows every sync,
+  // including a save whose answer was kept off an edited form.
+  const savedObservability =
+    syncedFormRef.current?.form.observability ?? NO_OBSERVABILITY;
   const baseline =
     syncedForChat && syncedFormRef.current
       ? snapshotOf(syncedFormRef.current.form)
@@ -3260,7 +3272,6 @@ function AgentEditor() {
     setVision(b.vision);
     setLimits(b.limits);
     setObservability(b.observability);
-    setSavedObservability(b.observability);
     setMemory(b.memory);
     setObservation((prev) => withDecisionsOf(b.observation, prev));
     setModelFallback(b.modelFallback);

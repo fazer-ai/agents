@@ -9,6 +9,11 @@ import { clearTurnInFlight, markTurnInFlight } from "@/graph/inflight";
 import { drainPendingIngest } from "@/graph/ingest-drain";
 import { armIngest, ingestDedupeKey, ingestHandler } from "@/graph/ingest-job";
 import { stampedSentAt } from "@/graph/markers";
+import {
+  currentPoolClass,
+  type PoolClass,
+  runInPoolClass,
+} from "@/lib/pool-class";
 import { runScopedOn } from "@/lib/tenancy";
 import {
   type ClaimedJob,
@@ -17,7 +22,11 @@ import {
   rescheduleJob,
   revokeJobsByKeyPrefixOn,
 } from "@/modules/scheduler/service";
-import { runClaimed } from "@/modules/scheduler/worker";
+import {
+  getJobHandler,
+  registerJobHandler,
+  runClaimed,
+} from "@/modules/scheduler/worker";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // Continuous ingestion is a job because a LangGraph invoke is a read-modify-write of the WHOLE
@@ -786,6 +795,46 @@ describe.skipIf(!dbUp)("the ingestion job defers to a turn in flight", () => {
           []) as BaseMessage[]
       ).map((m) => String(m.content)),
     ).toContain("ficou pronto?");
+  });
+
+  // INGEST_MESSAGE is a background kind, but a turn that drains its thread waits on the drain, so the
+  // drain runs on the turn's pool: behind a held background pool the turn would answer without the
+  // messages it was waiting for.
+  test("a turn's drain runs the ingestion on the turn's own pool", async () => {
+    const contactInboxId = 12510;
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    await armIngest({
+      tenantId,
+      instanceId,
+      conversationId: 990,
+      contactInboxId,
+      graphThreadId,
+      messageId: 900,
+      text: "e mais uma coisa",
+      role: "customer",
+      agentId: 1n,
+      compactionEnabled: false,
+      base: appDb,
+    });
+    const real = getJobHandler("INGEST_MESSAGE");
+    const seen: PoolClass[] = [];
+    registerJobHandler("INGEST_MESSAGE", (job, base, ctl) => {
+      seen.push(currentPoolClass());
+      return (real as NonNullable<typeof real>)(job, base, ctl);
+    });
+    try {
+      await runInPoolClass("main", () =>
+        drainPendingIngest(tenantId, graphThreadId, appDb),
+      );
+    } finally {
+      registerJobHandler("INGEST_MESSAGE", real as NonNullable<typeof real>);
+    }
+    expect(seen.length).toBeGreaterThan(0);
+    expect(new Set(seen)).toEqual(new Set(["main"]));
   });
 
   test("a turn drains its thread first, deferred rows included", async () => {

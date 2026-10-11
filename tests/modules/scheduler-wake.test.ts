@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { currentPoolClass, runInPoolClass } from "@/lib/pool-class";
 import {
   startScheduler,
   stopScheduler,
@@ -70,4 +71,18 @@ test("with no worker started, a wake does nothing", () => {
   stopScheduler();
   wakeScheduler();
   expect(g.drains()).toBe(0);
+});
+
+// A wake comes from whatever armed the job, often background work (a follow-up whose turn asked for a
+// document approval). The drain it starts claims and writes outcomes on the main pool regardless.
+test("a wake from background work drains on the main pool", () => {
+  let drainedIn: string | undefined;
+  const g = gatedDrains();
+  start((...args: Parameters<typeof g.runTraffic>) => {
+    drainedIn = currentPoolClass();
+    return g.runTraffic(...args);
+  });
+  runInPoolClass("background", () => wakeScheduler());
+  expect(drainedIn).toBe("main");
+  g.release();
 });

@@ -1107,6 +1107,29 @@ describe.skipIf(!dbUp)("scheduler", () => {
     });
   });
 
+  test("a caller that runs a job inline keeps its own pool class", async () => {
+    let seen: PoolClass | undefined;
+    registerJobHandler("WEBHOOK_RETRY", async () => {
+      seen = currentPoolClass();
+      return { outcome: "done" };
+    });
+    const id = await enqueueJob({
+      rearm: "same-work",
+      tenantId,
+      kind: "WEBHOOK_RETRY",
+      dedupeKey: "dk-pool-inline",
+      runAt: past(),
+      base: appDb,
+    });
+    const claimed = (await claimDueJobs(10, appDb, new Date(), tenantId)).find(
+      (j) => j.id === id,
+    );
+    await runClaimed(claimed as NonNullable<typeof claimed>, appDb, {
+      poolClass: "main",
+    });
+    expect(seen).toBe("main");
+  });
+
   test("runClaimed dispatches to the registered handler", async () => {
     let seen = false;
     registerJobHandler("WEBHOOK_RETRY", async () => {

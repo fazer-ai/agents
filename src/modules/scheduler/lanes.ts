@@ -116,8 +116,9 @@ export const JOB_POOL: Record<SchedulerJobKind, PoolClass> = {
   APPOINTMENT_REMINDER: "background",
   // Background: it tells the customer what a person decided, minutes after the decision.
   DOCUMENT_APPROVAL_OUTCOME: "background",
-  // Background: a turn drains the ingestion it needs before invoking (../../graph/ingest-job.ts), on
-  // the turn's pool, so the scheduler's run is the backstop.
+  // Background: a turn drains the ingestion it needs before invoking (../../graph/ingest-drain.ts),
+  // inline and on the turn's own pool (RunClaimedOptions.poolClass), so the scheduler's run is the
+  // backstop.
   INGEST_MESSAGE: "background",
   // Background: sweeps, retention, compaction, the observer, syncs and polls. None answers anyone.
   FOLLOWUP_SWEEP: "background",

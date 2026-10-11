@@ -1,6 +1,7 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import { ingestKeyPrefix } from "@/graph/ingest-job";
+import { currentPoolClass } from "@/lib/pool-class";
 import {
   abandonClaimed,
   claimPendingByKeyPrefix,
@@ -75,8 +76,10 @@ export async function drainPendingIngest(
       for (const [i, job] of claimed.entries()) {
         seen.push(job.id);
         try {
+          // On the turn's own pool: the turn waits on it, so it must not queue behind background work.
           await runClaimed(job, base, {
             deadlineMs: jobDeadlineMs(STALE_CLAIM_MS),
+            poolClass: currentPoolClass(),
           });
         } catch (err) {
           // NOTE: the rows after this one are not run; they stop holding the shutdown drain open.

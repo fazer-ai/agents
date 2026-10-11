@@ -5,7 +5,7 @@ import type {
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
-import { runInPoolClass } from "@/lib/pool-class";
+import { type PoolClass, runInPoolClass } from "@/lib/pool-class";
 import { Semaphore } from "@/lib/semaphore";
 import { beginWork } from "@/lib/shutdown";
 import { emitDeadLetter } from "@/modules/flowlog/dead-letter";
@@ -84,6 +84,9 @@ export interface RunClaimedOptions {
   // Defaults to the deadline under the scheduler's own stale window. A lane whose reaper watches a
   // different window passes its own.
   deadlineMs?: number;
+  // The pool class the handler runs in. Defaults to its kind's (JOB_POOL); a caller that runs a job
+  // inline and waits on it (a turn draining its thread's ingestion) passes its own.
+  poolClass?: PoolClass;
 }
 
 // The reason a run's signal aborts with, and what the run is failed with.
@@ -328,13 +331,15 @@ async function runWithDeadline(
   markRunning(job.id);
   // The async wrapper turns a synchronous throw into a rejection, so the row always leaves the
   // running set.
-  const running = runInPoolClass(JOB_POOL[job.kind], async () =>
-    handler(job, base, {
-      signal: controller.signal,
-      commit: () => {
-        committed = true;
-      },
-    }),
+  const running = runInPoolClass(
+    opts.poolClass ?? JOB_POOL[job.kind],
+    async () =>
+      handler(job, base, {
+        signal: controller.signal,
+        commit: () => {
+          committed = true;
+        },
+      }),
   );
   const lateChain = running
     .catch(() => null)
@@ -838,8 +843,10 @@ const OBSERVE_WAKE_GRAIN_MS = 100;
 // Asks the observe drain to run when a row just armed becomes due, so the row does not also wait
 // for the drain's next interval on top of its own window. A hint from the process that armed the
 // row: with no drain running here it does nothing, and the interval still finds the row either way.
+// The drains it starts claim and write outcomes on the main pool whatever the caller's class (a
+// background follow-up arming a row): the control plane is never queued behind background work.
 export function wakeObserveDrainAt(runAt: Date): void {
-  holder().wakeObserve?.(runAt.getTime());
+  runInPoolClass("main", () => holder().wakeObserve?.(runAt.getTime()));
 }
 
 const KEY = Symbol.for("fazerai.scheduler.worker");
@@ -1036,5 +1043,6 @@ export function stopScheduler(): void {
 // after its claim is not left for the interval. Without a started worker in this process (an
 // API-only replica, a script) it does nothing, and the job runs on the worker's next drain anyway.
 export function wakeScheduler(): void {
-  holder().wakeTraffic?.();
+  // On main, as in wakeObserveDrainAt.
+  runInPoolClass("main", () => holder().wakeTraffic?.());
 }

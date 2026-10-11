@@ -305,7 +305,12 @@ export const authPlugin = new Elysia({ name: "auth" })
           const ended = await recordEnded(replaced, { replaced: true }).catch(
             () => true,
           );
-          if (!ended) throw new UnauthorizedError();
+          // A row already there may be another re-issue of this same cookie (two invitations
+          // accepted at once), which is no reason to refuse; only a logout's row is.
+          const loggedOut =
+            !ended &&
+            (await isSessionLoggedOut(replaced.sessionId).catch(() => false));
+          if (loggedOut) throw new UnauthorizedError();
         } else if (replaced) {
           // NOTE: best effort: failing to end the replaced session never refuses a sign-in that
           // proved itself; that token keeps working until it expires, as before sessions had ids.

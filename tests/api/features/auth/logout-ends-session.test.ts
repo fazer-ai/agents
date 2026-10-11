@@ -448,6 +448,20 @@ describe.skipIf(!dbUp)("logging out", () => {
     expect(await joined()).toBe(1);
   });
 
+  // Two invitations accepted at once on one cookie: the second re-issue finds the session already
+  // replaced by the first, not logged out, and is not refused.
+  test("a second re-issue proved by a session another re-issue just replaced is not refused", async () => {
+    const proof = await signIn();
+    await signIn(session(proof));
+    const res = await minter.handle(
+      new BunRequest("http://localhost/mint-proved", {
+        method: "POST",
+        headers: { cookie: session(proof), "x-proof": jtiOf(proof) ?? "" },
+      }),
+    );
+    expect(res.status).toBe(200);
+  });
+
   // Signed in, the session is the invitation's only proof: a logout landing after that proof was read
   // and before the cookie is re-issued refuses the re-issue instead of minting a session.
   test("an invitation accepted on a session that logs out meanwhile issues no session", async () => {

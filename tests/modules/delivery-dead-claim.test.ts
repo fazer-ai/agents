@@ -164,9 +164,18 @@ describe.skipIf(!dbUp)("deliveries claimed by a dead process", () => {
     });
   });
 
+  // Every test starts from no deliveries and no leases of this file: a pass reads every dead claim,
+  // so a fixture left behind (or a lease of one that lapses later) would be settled by the next test.
   afterEach(async () => {
     await releaseProcessLease();
     resetProcessLeaseForTest();
+    await suDb.$executeRawUnsafe(
+      `DELETE FROM scheduler_jobs WHERE tenant_id = ${tenantId}`,
+    );
+    await suDb.$executeRawUnsafe(
+      `DELETE FROM chatwoot_webhook_deliveries WHERE tenant_id = ${tenantId}`,
+    );
+    await suDb.$executeRaw`DELETE FROM process_leases WHERE id = ANY(${leases}::uuid[])`;
   });
 
   afterAll(async () => {
@@ -264,8 +273,6 @@ describe.skipIf(!dbUp)("deliveries claimed by a dead process", () => {
     ]);
     expect(await statusOf(row)).toBe("DEAD");
     expect(await recoveryJobs(row)).toBe(1);
-    // Each pass reads every dead row of this file still PROCESSING; only this one is left by now, so
-    // between them it is one loss and, at most, one lost race.
     expect(a.lost + b.lost).toBe(1);
   });
 
@@ -384,6 +391,46 @@ describe.skipIf(!dbUp)("deliveries claimed by a dead process", () => {
       await suDb.$executeRawUnsafe(`DROP FUNCTION ${PROBE}()`);
       await suDb.$executeRawUnsafe(`DROP TABLE ${PROBE}`);
     }
+  });
+
+  test("a renewal on the wire when the process exits does not write the lease back after its deletion", async () => {
+    // The exit's deletion has to land last, or the lease outlives the process by a whole lifetime.
+    const ops: string[] = [];
+    let unblock = () => {};
+    let renewing = () => {};
+    const secondRenewal = new Promise<void>((r) => {
+      renewing = r;
+    });
+    let inserts = 0;
+    const fake = {
+      $executeRaw: (sql: TemplateStringsArray) => {
+        const text = sql.join("?");
+        if (text.includes("INSERT")) {
+          inserts += 1;
+          if (inserts === 1) {
+            ops.push("renew");
+            return Promise.resolve(1);
+          }
+          renewing();
+          return new Promise((resolve) => {
+            unblock = () => {
+              ops.push("renew");
+              resolve(1);
+            };
+          });
+        }
+        ops.push("delete");
+        return Promise.resolve(1);
+      },
+    } as unknown as PrismaClient;
+    await startProcessLease(fake, 5);
+    await secondRenewal;
+    const released = releaseProcessLease(5_000);
+    // The renewal answers only after the release has had its chance to delete.
+    await Bun.sleep(1);
+    unblock();
+    await released;
+    expect(ops.at(-1)).toBe("delete");
   });
 
   test("a process stops naming itself on claims once its renewals stop committing, and its lease leaves with it", async () => {

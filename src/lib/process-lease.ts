@@ -32,13 +32,21 @@ interface Holder {
   timer: ReturnType<typeof setInterval> | null;
   // `performance.now()` of the last renewal that committed; null until the first one.
   lastRenewedAt: number | null;
+  // The renewal on the wire, if any: one at a time, and the release waits for it before deleting.
+  inflight: Promise<void> | null;
 }
 
 const KEY = Symbol.for("fazerai.processLease");
 
 function holder(): Holder {
   const g = globalThis as unknown as Record<symbol, Holder>;
-  g[KEY] ??= { id: randomUUID(), base: null, timer: null, lastRenewedAt: null };
+  g[KEY] ??= {
+    id: randomUUID(),
+    base: null,
+    timer: null,
+    lastRenewedAt: null,
+    inflight: null,
+  };
   return g[KEY];
 }
 
@@ -66,7 +74,16 @@ async function renew(base: PrismaClient, id: string): Promise<void> {
     ON CONFLICT (id) DO UPDATE SET heartbeat_at = now()`;
 }
 
-async function renewAndRecord(h: Holder): Promise<void> {
+function renewAndRecord(h: Holder): Promise<void> {
+  if (h.inflight !== null) return h.inflight;
+  const p = renewOnce(h).finally(() => {
+    if (h.inflight === p) h.inflight = null;
+  });
+  h.inflight = p;
+  return p;
+}
+
+async function renewOnce(h: Holder): Promise<void> {
   if (h.base === null) return;
   const before = h.lastRenewedAt;
   try {
@@ -119,16 +136,22 @@ export async function releaseProcessLease(boundMs = 1_000): Promise<void> {
   h.lastRenewedAt = null;
   if (base === null) return;
   const id = h.id;
+  // A renewal already on the wire would otherwise land after the deletion and write the lease back,
+  // and every other process would wait out its whole lifetime for what this one leaves behind.
+  const pending = h.inflight ?? Promise.resolve();
   let timer: ReturnType<typeof setTimeout> | undefined;
   await Promise.race([
-    base.$executeRaw`DELETE FROM process_leases WHERE id = ${id}::uuid`.catch(
-      (err: unknown) => {
+    pending
+      .then(
+        () =>
+          base.$executeRaw`DELETE FROM process_leases WHERE id = ${id}::uuid`,
+      )
+      .catch((err: unknown) => {
         logger.warn(
           { err },
           "process lease: could not delete the lease on exit; it lapses on its own",
         );
-      },
-    ),
+      }),
     new Promise((resolve) => {
       timer = setTimeout(resolve, boundMs);
     }),
@@ -151,4 +174,5 @@ export function resetProcessLeaseForTest(): void {
   h.base = null;
   h.timer = null;
   h.lastRenewedAt = null;
+  h.inflight = null;
 }

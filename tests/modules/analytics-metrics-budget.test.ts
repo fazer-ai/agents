@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
-import { metricsPoolOptions } from "@/api/lib/prisma-metrics";
+import { metricsPoolOptions } from "@/api/lib/pool-options";
 import config from "@/config";
 import { postgresCodeOf } from "@/lib/pg-error";
 import { runMetricsScoped } from "@/modules/analytics/budget";

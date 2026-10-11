@@ -537,3 +537,52 @@ test("a reviewer edited on the language model is a hidden draft on questions and
   );
   expect(asked.filter((a) => a.method !== "GET").length).toBe(0);
 });
+
+// A tool toggled on questions and rules while Save tools is in flight was not in the grants that
+// request wrote: the form keeps it, and the Tools tab still reads unsaved once the save lands.
+test("a tool toggled while Save tools is in flight stays unsaved on questions and rules", async () => {
+  const asked = stubApi(DECIDING);
+  const served = globalThis.fetch;
+  let release: () => void = () => {};
+  const held = new Promise<void>((r) => {
+    release = r;
+  });
+  let putSent = false;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if ((init?.method ?? "GET") === "PUT") {
+      putSent = true;
+      await held;
+    }
+    return served(input, init);
+  }) as typeof fetch;
+  renderAt("/agents/1/tools");
+  const privateNote = await waitFor(() => {
+    const el = document.getElementById(nativeToolAnchor("private_note"));
+    if (!el) throw new Error("the private_note card is not there yet");
+    return el;
+  });
+  // An edit so Save tools has something to write.
+  fireEvent.click(focusableIn(privateNote) ?? privateNote);
+  await waitFor(() => expect(Boolean(button("Discard"))).toBe(true));
+  fireEvent.click(button("Save tools"));
+  await waitFor(() => expect(putSent).toBe(true));
+  // While the grants PUT is held, enable handoff.
+  const handoff = document.getElementById(
+    nativeToolAnchor("handoff_to_human"),
+  ) as HTMLElement;
+  fireEvent.click(focusableIn(handoff) ?? handoff);
+  release();
+  await waitFor(() =>
+    expect(asked.some((a) => a.method === "PATCH")).toBe(true),
+  );
+  await waitFor(() => expect(text().includes("Tools updated.")).toBe(true));
+  const put = asked.find((a) => a.method === "PUT") as { body: unknown };
+  const sentHandoff = (
+    put.body as { grants: { source: string; enabledTools?: string[] }[] }
+  ).grants
+    .find((g) => g.source === "NATIVE")
+    ?.enabledTools?.includes("handoff_to_human");
+  expect(`${Boolean(sentHandoff)} ${Boolean(button("Discard"))}`).toBe(
+    "false true",
+  );
+});

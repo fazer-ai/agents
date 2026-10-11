@@ -2133,6 +2133,8 @@ function AgentEditor() {
   // Tools recapture then moves only the grants half of its baseline (see ./toolsBaseline).
   const toolGrantsOnlyRef = useRef(false);
   // With it, the grants an "Allow" wrote, canonical: that recapture takes them instead of the form.
+  // Set alone by a Tools save, the whole section is recaptured but its grants half is still the written
+  // set, so a grant toggled while the request ran stays unsaved.
   const toolGrantsWrittenRef = useRef<string | null>(null);
   // NOTE: Recapture each section's baseline during the render that follows ITS server sync (bumpSync for
   // that section); `sectionSnap` already reflects the freshly-synced state there. Per-section (not a
@@ -2155,7 +2157,9 @@ function AgentEditor() {
           ? written !== null
             ? rebaseToolGrantsOnto(baselineRef.current.tools, written)
             : rebaseToolGrants(baselineRef.current.tools, sectionSnap.tools)
-          : sectionSnap[k],
+          : written !== null
+            ? rebaseToolGrantsOnto(sectionSnap.tools, written)
+            : sectionSnap[k],
       };
     }
   }
@@ -3544,7 +3548,8 @@ function AgentEditor() {
       // would reset the Behavior sub-forms and drop their unsaved edits. Keep the local settings bag's
       // handoff in step so a later Behavior save (which spreads it) doesn't rewrite a stale value.
       syncedGrantsRef.current = grantsRes.data.grants;
-      // On questions and rules the form keeps its hidden grant drafts; what it draws was just written.
+      // On questions and rules the form keeps its hidden grant drafts and any toggle made while this
+      // request ran; the baseline takes the written grants, not the form.
       if (!decides) setGrants(mapGrants(grantsRes.data.grants));
       setCatalog(grantsRes.data.catalog);
       syncedAgentRef.current = agentRes.data.agent;
@@ -3579,6 +3584,10 @@ function AgentEditor() {
       const ragDraftHidden =
         canonicalGrants(grants.filter((g) => g.source === "RAG")) !==
         canonicalGrants(savedGrants.filter((g) => g.source === "RAG"));
+      // Set with the bump that consumes it, so a PATCH that fails after the PUT leaves nothing behind.
+      toolGrantsWrittenRef.current = canonicalGrants(
+        mapGrants(grantsRes.data.grants).filter((g) => g.source !== "RAG"),
+      );
       if (reviewPending || ragDraftHidden) bumpSync("tools");
       else bumpSync("tools", "knowledge");
       settleRefusalFor("tools");

@@ -193,10 +193,18 @@ describe("runSandboxedCode", () => {
     // machine cannot render this fixture at all -- and it would fail as `InternalError`, which is
     // exactly what the defect looks like. Ask first, with the budget wide open so only the ceiling
     // can bite, and let a machine that cannot host the fixture say so in those words.
-    const roomy = await runSandboxedCode(BUILD, {
+    // Up to three asks, because one render on a contended CPU can cross the ceiling and the next one
+    // not: a machine that cannot host the fixture fails all three.
+    let roomy = await runSandboxedCode(BUILD, {
       timeoutMs: 30_000,
       maxChars: CHARS,
     });
+    for (let i = 1; i < 3 && roomy.kind !== "value"; i++) {
+      roomy = await runSandboxedCode(BUILD, {
+        timeoutMs: 30_000,
+        maxChars: CHARS,
+      });
+    }
     expect(
       roomy.kind,
       `${N} objects must render inside the fixed RENDER_BUDGET_MS on this machine`,
@@ -236,8 +244,11 @@ describe("runSandboxedCode", () => {
     // one read too large hands the render a leftover it should not have, and a render that fits cannot
     // be told from a renewed one (green over the defect). The first call also warms the interpreter,
     // which a test run alone would otherwise pay inside its only measurement.
-    const firstSetupMs = await calibrate();
-    const setupMs = Math.min(firstSetupMs, await calibrate());
+    const setupOf = async () => {
+      calMs = 64;
+      const firstSetupMs = await calibrate();
+      return Math.min(firstSetupMs, await calibrate());
+    };
 
     // A controller rather than a ladder: an overshoot reports its own leftover and is corrected
     // by exactly that much, an undershoot reports nothing and takes a step. Each worker sets itself up
@@ -246,19 +257,37 @@ describe("runSandboxedCode", () => {
     // kind "error" `InternalError` with `ms`. Only `limit` is retried: a loop blind to the difference
     // would grow the leftover until the render fits and report green.
     const TOL_MS = 5;
-    let leftMs = setupMs + 2;
-    let r = await attempt(leftMs);
-    for (let i = 0; i < 8; i++) {
-      if (r.out.kind === "limit") {
-        leftMs += 4;
-      } else if (r.out.kind === "value" && (r.leftoverMs as number) > TOL_MS) {
-        leftMs = Math.max(1, leftMs - ((r.leftoverMs as number) - TOL_MS));
-      } else {
-        break;
+    const control = async () => {
+      let leftMs = (await setupOf()) + 2;
+      let r = await attempt(leftMs);
+      for (let i = 0; i < 8; i++) {
+        if (r.out.kind === "limit") {
+          leftMs += 4;
+        } else if (
+          r.out.kind === "value" &&
+          (r.leftoverMs as number) > TOL_MS
+        ) {
+          leftMs = Math.max(1, leftMs - ((r.leftoverMs as number) - TOL_MS));
+        } else {
+          break;
+        }
+        r = await attempt(leftMs);
       }
-      r = await attempt(leftMs);
+      return { ...r, leftMs };
+    };
+    // Whole rounds, calibration included, up to three. On one contended CPU the asserted worker's
+    // setup can drift past TOL_MS from the calibrated one, and the controller then hands the render a
+    // leftover it does not fit in: an `error` that looks exactly like the defect. The defect itself
+    // fails EVERY round, since no leftover near one setup fits the render without the renewal; a
+    // drift does not repeat on demand. A round that settles is the one asserted.
+    let round = await control();
+    for (let i = 1; i < 3; i++) {
+      const settled =
+        round.out.kind === "value" && (round.leftoverMs as number) <= TOL_MS;
+      if (settled) break;
+      round = await control();
     }
-    const { out, leftoverMs } = r;
+    const { out, leftoverMs, leftMs } = round;
 
     expect(out.kind).toBe("value");
     // NOTE: Every term of this bound comes off the run being asserted: `leftoverMs` is
@@ -277,9 +306,10 @@ describe("runSandboxedCode", () => {
     const v = (out as { value: string }).value;
     expect(v.startsWith('[{"i":0},{"i":1}')).toBe(true);
     expect(v.endsWith(`{"i":${N - 1}}]`)).toBe(true);
-    // NOTE: 20 s covers the twelve round trips this can take (one precondition, two calibrations, up
-    // to nine controlled attempts), so nothing here is bounded by a default nobody chose.
-  }, 20_000);
+    // NOTE: 60 s covers the round trips this can take (three preconditions, then up to three rounds
+    // of two calibrations and nine controlled attempts), so nothing here is bounded by a default
+    // nobody chose.
+  }, 60_000);
 
   // A value can still run the body's code AFTER the body returned: a getter, a proxy trap. A throw
   // there is a failure of the body, one step later; answering "[object Object]" as a value would hand

@@ -400,6 +400,7 @@ async function runRecovery(params: {
   let caughtUp: ReturnType<typeof parseChatwootMessages> = [];
   let live: ReturnType<typeof parseLiveConversation> = null;
   let liveRaw: unknown = null;
+  let canHandOverByRoute = false;
   let reconciled: Awaited<ReturnType<typeof reconcileMirrorFromLive>> | null =
     null;
   try {
@@ -433,10 +434,18 @@ async function runRecovery(params: {
     // team, which works without a mirror row too (`announceFailedTurn` takes the route's persona).
     // Asked after the reconcile, so the mirror the hand-over reads is current. Not on a snapshot that
     // did not parse: nothing was reconciled, and the guard below retries it as `unreachable`.
+    // Asked once, here, for both ceiling checks below: with no mirror inbox the hand-over posts as the
+    // route's persona, so the live channel may shorten the ceiling only when that persona exists.
+    canHandOverByRoute = conv?.inbox
+      ? false
+      : await routeHasPersona(params.tenantId, instanceId, row, base);
     if (
       live !== null &&
       params.now.getTime() - row.receivedAt.getTime() >
-        recoveryAgeCeilingMs(row, handOverChannel(row, conv?.inbox, liveRaw))
+        recoveryAgeCeilingMs(
+          row,
+          handOverChannel(conv?.inbox, canHandOverByRoute, liveRaw),
+        )
     ) {
       logger.warn(
         "chatwoot recovery: %s is past its channel's ceiling (conversation %d); left DEAD",
@@ -981,7 +990,7 @@ async function runRecovery(params: {
         // Off the mirror as it stands now: a null inbox was repaired above to the route's, and a
         // webhook may have created the row during the REST reads. A conversation still not mirrored,
         // or an inbox that never learned its channel, takes the one the live conversation names.
-        handOverChannel(row, mirrorNow?.inbox, liveRaw),
+        handOverChannel(mirrorNow?.inbox, canHandOverByRoute, liveRaw),
       )
   ) {
     return "unrecoverable";
@@ -1647,15 +1656,38 @@ function liveChannelOf(raw: unknown): string | null {
 
 // The channel the age ceiling reads: the mirror's inbox, or the live conversation's where that inbox
 // never learned it. With no inbox at all, the live channel only where a refusal can still be handed
-// over: the hand-over's persona is then the delivery's responder route (`respondingRouteBot`), and
-// a row without one keeps `MAX_RECOVERY_AGE_MS`.
+// over: the hand-over's persona is then the delivery's responder route, and a row whose route names
+// no current persona (`routeHasPersona`) keeps `MAX_RECOVERY_AGE_MS`.
 function handOverChannel(
-  row: Parameters<typeof respondingRouteBot>[0],
   inbox: { channelType: string | null } | null | undefined,
+  canHandOverByRoute: boolean,
   raw: unknown,
 ): string | null {
   if (inbox) return inbox.channelType ?? liveChannelOf(raw);
-  return respondingRouteBot(row) === null ? null : liveChannelOf(raw);
+  return canHandOverByRoute ? liveChannelOf(raw) : null;
+}
+
+// Whether the delivery's responder route still names a persona the hand-over can post as: the route
+// a row recorded can belong to a bot re-provisioned since, which `announceFailedTurn` would not find.
+async function routeHasPersona(
+  tenantId: bigint,
+  instanceId: bigint,
+  row: Parameters<typeof respondingRouteBot>[0],
+  base: PrismaClient,
+): Promise<boolean> {
+  const routeBotId = respondingRouteBot(row);
+  if (routeBotId === null) return false;
+  const bot = await runScopedOn(base, sysCtx(tenantId), (db) =>
+    db.chatwootAgentBot.findFirst({
+      where: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootAgentBotId: routeBotId,
+      },
+      select: { accessToken: true },
+    }),
+  );
+  return Boolean(bot?.accessToken);
 }
 
 // The bot a delivery arrived on, when the receiver recorded it as the RESPONDER's route; null for an

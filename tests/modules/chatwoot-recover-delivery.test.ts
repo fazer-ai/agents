@@ -694,7 +694,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       await suDb.conversation.deleteMany({
         where: {
           tenantId,
-          chatwootConversationId: { gte: 7310, lte: 7344 },
+          chatwootConversationId: { gte: 7310, lte: 7345 },
         },
       });
       await dropContact(77);
@@ -1256,39 +1256,47 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       },
     );
 
-    test("an unmirrored WhatsApp row an older build wrote, with no route, keeps six hours", async () => {
-      await keepingInboxChannel(async () => {
-        // Nothing could hand a refusal over (no inbox and no route bot to post as), so it is answered
-        // late rather than left with the bot.
-        const convId = 7344;
-        const messageId = 7844;
-        await dropContact(77);
-        const rowId = await seedDeadDelivery({
-          conversationId: convId,
-          inboundMessageId: messageId,
-          receivedAgoMs: 2 * 60 * 60 * 1000,
+    test.each([
+      ["an older build wrote, with no route", null],
+      ["whose route bot was re-provisioned since", 999],
+    ] as const)(
+      "an unmirrored WhatsApp row %s keeps six hours",
+      async (_, routeBot) => {
+        await keepingInboxChannel(async () => {
+          // Nothing could hand a refusal over (no inbox and no route bot to post as), so it is answered
+          // late rather than left with the bot.
+          const convId = routeBot === null ? 7344 : 7345;
+          const messageId = convId + 500;
+          await dropContact(77);
+          const rowId = await seedDeadDelivery({
+            conversationId: convId,
+            inboundMessageId: messageId,
+            receivedAgoMs: 2 * 60 * 60 * 1000,
+            routeAgentBotId: routeBot,
+            routeObserved: routeBot === null ? null : false,
+          });
+          const stub = stubChatwoot({
+            page: pageWith([
+              {
+                id: messageId,
+                content: "oi",
+                createdAt: Math.floor(Date.now() / 1000) - 2 * 60 * 60,
+              },
+            ]),
+            conv: { channel: "Channel::Whatsapp" },
+          });
+          expect(
+            await recoverStrandedDelivery({
+              tenantId,
+              deliveryRowId: rowId,
+              base: appDb,
+              deps: depsWith(stub),
+            }),
+          ).toBe("recovered");
+          expect(stub.sent).toEqual([[convId, REPLY]]);
         });
-        const stub = stubChatwoot({
-          page: pageWith([
-            {
-              id: messageId,
-              content: "oi",
-              createdAt: Math.floor(Date.now() / 1000) - 2 * 60 * 60,
-            },
-          ]),
-          conv: { channel: "Channel::Whatsapp" },
-        });
-        expect(
-          await recoverStrandedDelivery({
-            tenantId,
-            deliveryRowId: rowId,
-            base: appDb,
-            deps: depsWith(stub),
-          }),
-        ).toBe("recovered");
-        expect(stub.sent).toEqual([[convId, REPLY]]);
-      });
-    });
+      },
+    );
 
     test("refuses on the live channel a message the customer wrote two hours ago, unmirrored, though its webhook arrived late", async () => {
       await keepingInboxChannel(async () => {

@@ -50,7 +50,7 @@ export function ChoiceCards<T extends string>({
             key={o.value}
             data-clickable="true"
             className={cn(
-              "flex cursor-pointer flex-col gap-1 rounded-lg border p-3 text-left transition-colors has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-border-focus",
+              "flex cursor-pointer flex-col gap-1 rounded-lg border p-3 text-left transition-colors focus-within:ring-2 focus-within:ring-border-focus",
               on
                 ? "border-accent bg-accent-soft"
                 : "border-border bg-bg-secondary hover:bg-bg-hover",

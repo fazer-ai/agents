@@ -36,6 +36,7 @@ export async function latchRules(
   base: PrismaClient,
   scope: TriggerScope,
   keys: string[],
+  at: Date = new Date(),
 ): Promise<void> {
   if (keys.length === 0) return;
   await runScopedOn(base, sysCtx(scope.tenantId), (db) =>
@@ -45,6 +46,7 @@ export async function latchRules(
         agentId: scope.agentId,
         conversationId: scope.conversationId,
         ruleKey,
+        createdAt: at,
       })),
       skipDuplicates: true,
     }),
@@ -52,11 +54,13 @@ export async function latchRules(
 }
 
 // The latches written ahead for actions that then wrote nothing, released by a tick that ended
-// before it could write its whole state.
+// before it could write its whole state. Only rows written up to `upTo`: a later observation's
+// latch on the same rule is its own.
 export async function unlatchRules(
   base: PrismaClient,
   scope: TriggerScope,
   keys: string[],
+  upTo: Date,
 ): Promise<void> {
   if (keys.length === 0) return;
   await runScopedOn(base, sysCtx(scope.tenantId), (db) =>
@@ -65,6 +69,7 @@ export async function unlatchRules(
         agentId: scope.agentId,
         conversationId: scope.conversationId,
         ruleKey: { in: keys },
+        createdAt: { lte: upTo },
       },
     }),
   );

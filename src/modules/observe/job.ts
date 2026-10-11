@@ -1936,45 +1936,56 @@ export async function runObserve(
     // deadline and is retried whole, repeating what already committed.
     let report: Awaited<ReturnType<typeof applyDecisions>>;
     const progress: DecisionProgress = {};
+    // When this tick last wrote latches ahead: a release after the tick ended touches only rows
+    // written up to then, never one a later observation wrote.
+    let latchedUpTo: Date | null = null;
+    let applying: Promise<unknown> = Promise.resolve();
     try {
-      report = await underSignal(
-        applyDecisions(
-          config,
-          result.answers,
-          fencedTools,
-          [toolLogger],
-          deadline,
-          () => fence(),
-          cfg.maxToolCalls ?? DEFAULT_MAX_TOOL_CALLS,
-          // The label write and the attribute write touch different things on the conversation, so
-          // the two go out side by side as well, not one after the other. A tool with a precondition
-          // stays on its own: its condition reads what the rules before it wrote. Under a contact
-          // gate with conditions every action does, since the fence asks them of the same labels
-          // and attributes; the engine asks this again after the fences, which is when a gate
-          // saved during the provider call is first seen.
-          (action) =>
-            gatedByRule ||
-            Object.hasOwn(cfg.toolPreconditions, action.tool) ||
-            sharedWriteKey(action.tool, action.args) === null
-              ? null
-              : "conversation",
-          false,
-          latched,
-          progress,
-          async (keys) => {
-            if (triggerScope !== null)
-              await latchRules(base, triggerScope, keys);
-          },
-        ),
+      const run = applyDecisions(
+        config,
+        result.answers,
+        fencedTools,
+        [toolLogger],
         deadline,
+        () => fence(),
+        cfg.maxToolCalls ?? DEFAULT_MAX_TOOL_CALLS,
+        // The label write and the attribute write touch different things on the conversation, so
+        // the two go out side by side as well, not one after the other. A tool with a precondition
+        // stays on its own: its condition reads what the rules before it wrote. Under a contact
+        // gate with conditions every action does, since the fence asks them of the same labels
+        // and attributes; the engine asks this again after the fences, which is when a gate
+        // saved during the provider call is first seen.
+        (action) =>
+          gatedByRule ||
+          Object.hasOwn(cfg.toolPreconditions, action.tool) ||
+          sharedWriteKey(action.tool, action.args) === null
+            ? null
+            : "conversation",
+        false,
+        latched,
+        progress,
+        async (keys) => {
+          if (triggerScope === null) return;
+          const at = new Date();
+          await latchRules(base, triggerScope, keys, at);
+          latchedUpTo = at;
+        },
       );
+      applying = run;
+      report = await underSignal(run, deadline);
     } catch (err) {
       toolLogger.settle();
       // The latches written ahead stay: an action still in flight when the deadline ended the call
-      // may have written, and holding its rule is safer than repeating it. Those whose action has
-      // already settled without writing are released, so that rule tries again.
-      if (triggerScope !== null && (progress.undo?.length ?? 0) > 0) {
-        await unlatchRules(base, triggerScope, progress.undo ?? []).catch(
+      // may have written, and holding its rule is safer than repeating it. Those whose action
+      // settled without writing, or that were never dispatched, are released, now and again once
+      // the engine has stopped (it may still be between a latch and its fence).
+      const released = new Set<string>();
+      const release = async () => {
+        const keys = (progress.undo ?? []).filter((k) => !released.has(k));
+        if (triggerScope === null || latchedUpTo === null || keys.length === 0)
+          return;
+        for (const k of keys) released.add(k);
+        await unlatchRules(base, triggerScope, keys, latchedUpTo).catch(
           (err: unknown) =>
             logger.warn(
               { err, agentId: String(agentId) },
@@ -1982,7 +1993,9 @@ export async function runObserve(
               String(conversationId),
             ),
         );
-      }
+      };
+      await release();
+      void applying.then(release, release);
       if (refusal !== null) return endOnRefusal(refusal);
       // The same rule as the model-failure path: a dispatch that never settled counts as committed,
       // and a committed effect is never retried.

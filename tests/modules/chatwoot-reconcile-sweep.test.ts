@@ -687,6 +687,50 @@ describe.skipIf(!dbUp)("reconciling from Chatwoot", () => {
     ).toEqual([15000, 15002]);
   });
 
+  test("a lost reaction followed by a note on the page is still found", async () => {
+    await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: "answered-turn-1700",
+        event: "message_created",
+        status: "PROCESSED",
+        conversationId: 1700,
+        inboundMessageId: 17000,
+        routeAgentBotId: BOT,
+        routeObserved: false,
+      },
+    });
+    const s: Scripted = {
+      conversations: new Map([[INBOX, [conv(1700, minutesAgo(20))]]]),
+      messages: new Map([
+        [
+          1700,
+          [
+            incoming(17000, minutesAgo(30)),
+            {
+              ...incoming(17001, minutesAgo(21)),
+              content: "👍",
+              content_attributes: { is_reaction: true },
+              offPage: true,
+            },
+            { ...outgoing(17002, minutesAgo(20)), private: true },
+          ],
+        ],
+      ]),
+      listed: [],
+    };
+    await reconcileFromChatwoot({
+      tenantId,
+      base: appDb,
+      now: NOW,
+      makeClient: chatwoot(s),
+    });
+    expect(
+      (await ledgerFor(1700)).map((r) => r.inboundMessageId).sort(),
+    ).toEqual([17000, 17001]);
+  });
+
   test("the catch-up read is followed past a full page to the newest message", async () => {
     const reactions = Array.from({ length: 105 }, (_, i) => ({
       ...incoming(16_001 + i, minutesAgo(25 - i * 0.04)),

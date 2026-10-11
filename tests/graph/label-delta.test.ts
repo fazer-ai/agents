@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { StructuredToolInterface } from "@langchain/core/tools";
+import { type CallReport, withFenceReporter } from "@/graph/tools/fence-report";
 import { modelVisibleLabels } from "@/graph/tools/label-view";
 import { buildNativeTools } from "@/graph/tools/native";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
@@ -155,5 +156,43 @@ describe("set_labels takes a delta, not a replacement (issue #695)", () => {
       "vip",
       "cancelamento",
     ]);
+  });
+});
+
+// The decisions engine reads what each call did off its own config (fence-report.ts).
+describe("a refused call in a shared label write", () => {
+  test("is told its refusal before the write, so a failing write does not hide it", async () => {
+    const client = {
+      getConversationLabels: async () => {
+        await Bun.sleep(10);
+        return [];
+      },
+      setConversationLabels: async () => {
+        throw new Error("chatwoot down");
+      },
+    } as unknown as ChatwootClient;
+    const tool = byName(
+      buildNativeTools({
+        client,
+        conversationId: 7,
+        protectedLabels: ["vip"],
+      }),
+      "set_labels",
+    );
+    const refused: CallReport[] = [];
+    const free: CallReport[] = [];
+    const results = await Promise.allSettled([
+      tool.invoke(
+        { add: ["vip"] },
+        withFenceReporter({}, (r) => refused.push(r)),
+      ),
+      tool.invoke(
+        { add: ["novo"] },
+        withFenceReporter({}, (r) => free.push(r)),
+      ),
+    ]);
+    expect(results.map((r) => r.status)).toEqual(["rejected", "rejected"]);
+    expect(refused).toEqual([{ fence: "protected_label", partial: false }]);
+    expect(free).toEqual([]);
   });
 });

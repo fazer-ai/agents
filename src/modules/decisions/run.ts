@@ -410,8 +410,10 @@ export async function applyDecisions(
                 settled();
               },
               (err: unknown) => {
-                // Refused by the client before the request left: nothing was written.
+                // Refused before the handler ran (its arguments), or by the client before the request
+                // left: nothing was written.
                 if (
+                  err instanceof ToolInputParsingException ||
                   err instanceof ChatwootExpiredError ||
                   err instanceof ChatwootCalledOffError
                 ) {

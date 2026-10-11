@@ -1432,6 +1432,11 @@ function setLabelsTool(ctx: ToolCtx) {
           return;
         }
       }
+      // A call this write moves nothing for is told its refusal before the write, which can still
+      // fail for the others: what it asked for was refused whatever becomes of theirs.
+      for (const o of outcomes) {
+        if (!moved(o)) reportLabelFence(o.delta.fenced, o);
+      }
       // Forgotten before the write: a write that fails leaves nothing known about the set.
       ctx.conversationLabelsRead = undefined;
       const writtenAt = Date.now();
@@ -1446,10 +1451,10 @@ function setLabelsTool(ctx: ToolCtx) {
               acceptedOutside: o.acceptedOutside,
             }),
           );
+          reportLabelFence(o.delta.fenced, o);
         } else {
           ctx.onNoEffect?.("set_labels");
         }
-        reportLabelFence(o.delta.fenced, o);
         o.delta.resolve(report(o));
       }
     } catch (err) {

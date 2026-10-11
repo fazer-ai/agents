@@ -24,6 +24,7 @@ import {
   liveThreadMessages,
   openAttendanceStart,
 } from "@/modules/memory/attendance-start";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // Where the current attendance of a contact's thread starts, read off the thread with compaction's
@@ -172,8 +173,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const suDb = su as PrismaClient;

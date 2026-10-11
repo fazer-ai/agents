@@ -31,6 +31,7 @@ import {
   getDocumentTemplate,
   updateDocumentTemplate,
 } from "@/modules/documents/templates";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // A document an agent issues from a template that asks for approval: frozen on a request, numbered
 // only when a person approves it, and never when nobody does (docs/documents.md, Approval).
@@ -51,8 +52,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

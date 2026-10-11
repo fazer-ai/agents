@@ -23,6 +23,7 @@ import * as embeddings from "@/modules/rag/embeddings";
 import { EMBEDDING_DIM } from "@/modules/rag/embeddings";
 import { searchKnowledge } from "@/modules/rag/service";
 import { resolveInjectableCredentialEntry } from "@/modules/vault/injectable";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // The reads a tool makes before its request, against a pool that really is full. A failed read ends
@@ -43,8 +44,8 @@ if (appUrl && suUrl) {
     });
     await su.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 

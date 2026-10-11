@@ -6,6 +6,7 @@ import type { TenantContext } from "@/lib/tenancy";
 import { setConnectedAccounts } from "@/modules/chatwoot/management";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import { deploymentSetAccounts } from "@/modules/mcp/write-channels";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // `deployment_set_accounts` publishes `account_ids` with no maximum, and `setConnectedAccounts` gives
@@ -32,8 +33,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const suDb = su as PrismaClient;

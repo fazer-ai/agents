@@ -10,6 +10,7 @@ import {
   listVaultEntryInfos,
   vaultReferences,
 } from "@/modules/vault/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // An agent holding a ref to a vault entry that no longer exists, produced the way the product
 // produces it: the operator deletes the key. Nothing blocks that delete and nothing rewrites the
@@ -34,8 +35,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

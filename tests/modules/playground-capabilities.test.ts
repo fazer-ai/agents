@@ -4,6 +4,7 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { transcribePlaygroundAudio } from "@/modules/stt/service";
 import { extractPlaygroundFile } from "@/modules/vision/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // P8: the playground respects each capability's `enabled` toggle. The check runs before any DB
 // access, so a disabled feature reads as "not configured" without a database.
@@ -57,8 +58,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

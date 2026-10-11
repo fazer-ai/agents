@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { listExecutionLogs } from "@/modules/flowlog/read";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { clearFlowLog } from "../utils/flowlog";
 
 // The dashboard's health block opens the Logs page on one tool's failures in one inbox,
@@ -23,8 +24,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

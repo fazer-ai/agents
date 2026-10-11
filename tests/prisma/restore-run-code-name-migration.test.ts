@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { Client } from "pg";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // Runs the ACTUAL migration file against the test database. What it pins: a row the earlier upgrade
 // moved off `run_code` goes back, its audit line is written in the opposite direction, and the three
@@ -22,8 +23,8 @@ if (suUrl) {
     await su.query("SELECT 1");
     sql = await Bun.file(MIGRATION).text();
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const suDb = su as Client;

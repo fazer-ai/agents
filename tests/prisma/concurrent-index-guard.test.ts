@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { Client } from "pg";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // A `CREATE INDEX CONCURRENTLY` THAT DIES LEAVES AN INDEX POSTGRES REFUSES TO USE: `indisvalid =
 // false`, never chosen by the planner, still maintained on every write, and invisible to every
@@ -106,8 +107,8 @@ if (suUrl) {
     await su.connect();
     await su.query("SELECT 1");
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const suDb = su as Client;

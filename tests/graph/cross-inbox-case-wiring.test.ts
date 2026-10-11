@@ -19,6 +19,7 @@ import { HANDOFF_DEFAULTS } from "@/modules/handoff/settings";
 import { SEND_IMAGE_DEFAULTS } from "@/modules/images/settings";
 import { KANBAN_DEFAULTS } from "@/modules/kanban/settings";
 import { SIGNATURE_DEFAULTS } from "@/modules/signature/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // The destination config and the origin contact reach `open_case_in_inbox` through the
 // toolset the runtime builds, and an inbox picked in one Chatwoot account never reaches a
@@ -34,8 +35,8 @@ if (appUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 

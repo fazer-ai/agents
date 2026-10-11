@@ -9,6 +9,7 @@ import {
   createToolDefinition,
   updateToolDefinition,
 } from "@/modules/tool-definitions/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // A body authored as a plain JSON object is discarded at invocation: `parseBody` recognizes three
 // shapes and otherwise assembles the payload from the declared input fields, so the request goes
@@ -77,8 +78,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

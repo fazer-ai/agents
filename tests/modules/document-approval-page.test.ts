@@ -21,6 +21,7 @@ import { documentStarter } from "@/modules/documents/starters";
 import { createDocumentTemplate } from "@/modules/documents/templates";
 import { alertLinks, buildAlertBody } from "@/modules/flowlog/alert-send";
 import { settleFlowEvents } from "@/modules/flowlog/scheduled";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogRows } from "../utils/flowlog";
 import { outboundUrl } from "../utils/outbound";
@@ -45,8 +46,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

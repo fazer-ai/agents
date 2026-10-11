@@ -5,6 +5,7 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import config from "@/config";
 import type { TenantContext } from "@/lib/tenancy";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { mockFindUnique, setupPrismaMock } from "@/tests/utils/prisma-mock";
 
 // The knowledge family's trail, driven through the console's own doors.
@@ -32,8 +33,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 

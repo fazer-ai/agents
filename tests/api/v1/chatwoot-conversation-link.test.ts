@@ -3,6 +3,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { generateApiKey } from "@/modules/api-keys/verify";
 import type { LinkSearch } from "@/modules/conversations/chatwoot-link";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "@/tests/utils/chatwoot";
 import { setupPrismaMock } from "@/tests/utils/prisma-mock";
 
@@ -29,8 +30,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 

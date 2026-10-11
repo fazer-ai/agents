@@ -19,6 +19,7 @@ import {
   deleteToolDefinition,
   updateToolDefinition,
 } from "@/modules/tool-definitions/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { waitUntilBlocked } from "@/tests/utils/pg-waits";
 
 // An agent import takes the tenant's tool-name lock ONCE, before it touches any tool row
@@ -45,8 +46,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const suDb = su as PrismaClient;

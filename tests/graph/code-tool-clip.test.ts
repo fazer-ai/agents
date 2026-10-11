@@ -10,6 +10,7 @@ import { HANDOFF_DEFAULTS } from "@/modules/handoff/settings";
 import { SEND_IMAGE_DEFAULTS } from "@/modules/images/settings";
 import { KANBAN_DEFAULTS } from "@/modules/kanban/settings";
 import { MODEL_RESPONSE_CHAR_LIMIT } from "@/modules/tool-definitions/response-template";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { clearFlowLog, flowLogRows } from "../utils/flowlog";
 
 // A code tool that clips what it hands the model says so, the way an HTTP tool does: the same
@@ -147,8 +148,8 @@ if (appUrl && suUrl) {
     await app.$queryRaw`SELECT 1`;
     await su.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 

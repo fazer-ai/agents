@@ -5,6 +5,7 @@ import { decryptJson, encryptJson } from "@/api/lib/crypto";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // Besides the turn and the debounce flush there is a THIRD place that builds what the agent reads:
@@ -31,8 +32,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

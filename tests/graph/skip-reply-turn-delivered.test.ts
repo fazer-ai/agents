@@ -4,6 +4,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { ToolFlowLogger } from "@/graph/tool-flowlog";
 import type { FlowContext } from "@/modules/flowlog/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { clearFlowLog, flowLogRows } from "../utils/flowlog";
 
 // O rótulo de `skip_reply` precisa saber se o turno já pôs algo na frente do cliente, e a tela não
@@ -28,8 +29,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

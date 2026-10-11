@@ -34,6 +34,7 @@ import {
   createWebhookSubscription,
   updateWebhookSubscription,
 } from "@/modules/webhooks/outbound/subscriptions";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { outboundUrl } from "../../utils/outbound";
 
 // The context these calls take: the tenant id came from a row this test created, so it carries
@@ -65,8 +66,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

@@ -26,6 +26,7 @@ import {
   listToolDefinitions,
   updateToolDefinition,
 } from "@/modules/tool-definitions/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { outboundUrl } from "../utils/outbound";
 
 // FOUR REF COLUMNS HAND A READER ONLY A WELL-FORMED REFERENCE.
@@ -54,8 +55,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 

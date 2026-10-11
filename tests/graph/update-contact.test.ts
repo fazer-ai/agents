@@ -24,6 +24,7 @@ import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import { agentSettingsSet } from "@/modules/mcp/write";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // The agent's view of the contact's standard Chatwoot fields and the update_contact tool: the
@@ -389,8 +390,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

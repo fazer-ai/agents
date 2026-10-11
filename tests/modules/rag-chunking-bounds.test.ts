@@ -6,6 +6,7 @@ import {
   knowledgeCreate,
   knowledgeUpdate,
 } from "@/modules/mcp/write-knowledge";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // `chunkOverlap` is bounded by `floor(chunkSize/2)`, and a knowledge base carries BOTH values, so
 // the bound is a question about the resulting row, not the arguments: a single-field update is
@@ -29,8 +30,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const suDb = su as PrismaClient;

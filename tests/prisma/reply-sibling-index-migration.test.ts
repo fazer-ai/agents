@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Client } from "pg";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // The index behind the sibling lookup on a colleague's reply, and the assertion that it landed.
 // `responderSiblingRemembers` keys that lookup by `human_reply_message_id`; the fan-out has no order,
@@ -27,8 +28,8 @@ if (suUrl) {
     indexSql = await Bun.file(INDEX).text();
     assertSql = await Bun.file(ASSERT).text();
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const suDb = su as Client;

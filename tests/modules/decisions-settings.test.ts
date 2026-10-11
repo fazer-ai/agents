@@ -16,6 +16,7 @@ import { readDecisionsConfig } from "@/modules/decisions/config";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import { agentSettingsGet, agentSettingsSet } from "@/modules/mcp/write";
 import { readMonitoringConfig } from "@/modules/observe/settings";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // The `decisions` block at the write boundary: REST and MCP refuse a block the tick
 // could not run, naming the field; a valid one round-trips; the credential travels by name on MCP and
@@ -380,8 +381,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const suDb = su as PrismaClient;

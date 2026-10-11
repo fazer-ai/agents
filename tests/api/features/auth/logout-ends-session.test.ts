@@ -4,6 +4,7 @@ import { Elysia } from "elysia";
 import { SignJWT } from "jose";
 import { PrismaClient } from "@/../generated/prisma/client";
 import config from "@/config";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // Logging out ends the session on the server: a copy of the cookie taken before the logout is
 // refused after it, and only that session ends. Against real rows, through the app's own routes.
@@ -27,8 +28,8 @@ if (suUrl && appUrl) {
     });
     await appDb.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const suDb = su as PrismaClient;

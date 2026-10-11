@@ -31,6 +31,7 @@ import {
 } from "@/graph/markers";
 import { buildThreadStateGraph, THREAD_STATE_NODE } from "@/graph/thread-state";
 import { selectClosedPrefix } from "@/modules/memory/cut";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogRows } from "../utils/flowlog";
 
@@ -50,8 +51,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

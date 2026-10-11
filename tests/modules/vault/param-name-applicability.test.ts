@@ -19,6 +19,7 @@ import {
   createVaultEntry,
   updateVaultEntry,
 } from "@/modules/vault/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // A `paramName` is only ever read for the kinds whose catalog entry declares `needsParamName`
 // (`resolveSecretInjection` takes the name from there, and from nowhere else). Stored on any other
@@ -47,8 +48,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 

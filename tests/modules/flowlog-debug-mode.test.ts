@@ -34,6 +34,7 @@ import {
   experimentCreate,
   experimentUpdate,
 } from "@/modules/mcp/write-settings";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // The log debug mode: while it is armed, this agent's flow lines keep their `detail` strings whole
 // instead of cutting them at 2000, so an operator can read the audited system prompt past that point.
@@ -1113,8 +1114,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 

@@ -23,6 +23,7 @@ import {
   updateWebhookSubscription,
 } from "@/modules/webhooks/outbound/subscriptions";
 import { sendWebhookTest } from "@/modules/webhooks/outbound/test";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { countingBase } from "../utils/counting-base";
 import { outboundUrl } from "../utils/outbound";
 
@@ -53,8 +54,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 

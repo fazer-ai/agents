@@ -7,6 +7,7 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { runAgentNudge } from "@/graph/nudge";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
@@ -25,8 +26,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

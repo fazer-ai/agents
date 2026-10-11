@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { Client } from "pg";
 import { normalizeToolName } from "@/graph/tools/toolName";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // Runs the ACTUAL migration file against the test database (a copy pasted here would drift, and
 // $executeRawUnsafe rejects multiple statements). What it pins: a row named after a native is moved
@@ -23,8 +24,8 @@ if (suUrl) {
     await su.query("SELECT 1");
     sql = await Bun.file(MIGRATION).text();
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const suDb = su as Client;

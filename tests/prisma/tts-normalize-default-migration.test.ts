@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { Client } from "pg";
 import { ENTER_FLEET_ROLE_SQL } from "@/lib/tenancy/fleet-role";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // Runs the ACTUAL migration file from DISK (a copy would drift, and $executeRawUnsafe rejects
 // multiple statements, silently swallowing the `SET`) over the settings shapes an install can hold:
@@ -26,8 +27,8 @@ if (suUrl && appUrl) {
     await su.query("SELECT 1");
     sql = await Bun.file(MIGRATION).text();
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const suDb = su as Client;

@@ -1,0 +1,12 @@
+// Refuses a database probe that swallows its refusal: a `catch` that sets `dbUp = false`. The preload
+// (tests/setup.ts) proves the test database answered once; a guarded file probes again at load, and a
+// refusal there (Postgres at max_connections, SQLSTATE 53300) caught as `dbUp = false` skips every
+// `describe.skipIf(!dbUp)` block of the file and leaves the run at exit 0, with nothing in the log.
+// Hand the error to `dbProbeFailed` from tests/db-gate.ts instead (`catch (err) { dbUp =
+// dbProbeFailed(err); }`): it throws past the gate and returns false only under ALLOW_NO_DB=1.
+language js;
+
+JsCatchClause() as $catch where {
+    $catch <: contains `dbUp = false`,
+    register_diagnostic(span = $catch, message = "A database probe does not swallow its refusal: `catch (err) { dbUp = dbProbeFailed(err); }` (tests/db-gate.ts), so a refused connection fails the file instead of skipping it.")
+}

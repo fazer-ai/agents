@@ -15,6 +15,7 @@ import {
   updateLangfuse,
   updateSpendCeiling,
 } from "@/modules/tenant-settings/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { countingBase } from "../utils/counting-base";
 
 // The tenant / tenant-settings / branding trail, recorded by the services that perform the writes,
@@ -44,8 +45,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 

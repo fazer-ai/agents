@@ -8,6 +8,7 @@ import {
   UserNotInScopeError,
 } from "@/api/features/admin/admin.service";
 import type { TenantContext } from "@/lib/tenancy";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { personData } from "@/tests/utils/person";
 
 // The caller, as the principal the delete records itself under: its tenant is the scope
@@ -36,8 +37,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const suDb = su as PrismaClient;

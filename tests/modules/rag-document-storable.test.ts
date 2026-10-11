@@ -19,6 +19,7 @@ import {
   editApprovalItem,
   updateKnowledgeBase,
 } from "@/modules/rag/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // The context these calls take: the tenant id came from a row this test created, so it carries
 // TENANT_ADMIN, the role that tells `runScopedOn` the id never came from outside.
@@ -54,8 +55,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

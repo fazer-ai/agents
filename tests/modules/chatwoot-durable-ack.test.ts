@@ -19,6 +19,7 @@ import {
   generateRouteToken,
   hashRouteToken,
 } from "@/modules/webhooks/inbound/route-token";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // The ack writes the ledger row, payload included, and answers only after it committed: Chatwoot never
@@ -41,8 +42,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

@@ -12,6 +12,7 @@ import {
   webhookCreate,
   webhookDelete,
 } from "@/modules/mcp/write-webhooks";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { outboundUrl } from "../utils/outbound";
 
 // Webhook/alert/integration write tools: gate is DB-free; dry-run, secret-by-reference, and the
@@ -88,8 +89,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

@@ -22,6 +22,7 @@ import {
   experimentCreate,
   experimentUpdate,
 } from "@/modules/mcp/write-settings";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // Three write families refuse, in the CORE, input their own domain cannot use, so no transport (MCP
 // included) walks past rules the REST schema or the reading runtime already hold. Each test pins the
@@ -47,8 +48,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 afterAll(async () => {

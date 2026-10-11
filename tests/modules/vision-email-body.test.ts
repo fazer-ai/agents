@@ -26,6 +26,7 @@ import { renderInboundMessage } from "@/modules/chatwoot/render";
 import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
 import { reengageConversation } from "@/modules/conversations/reengage";
 import { extractMessageVisuals } from "@/modules/vision/extract-message";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { clearFlowLog, flowLogCount } from "../utils/flowlog";
 
@@ -53,8 +54,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

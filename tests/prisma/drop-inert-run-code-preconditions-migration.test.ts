@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { Client } from "pg";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // Runs the actual migration file against the test database. `run_code` is no longer a native name,
 // so a precondition keyed to it may name nothing, and an inert rule is worse than none: the console
@@ -24,8 +25,8 @@ if (suUrl) {
     await su.query("SELECT 1");
     sql = await Bun.file(MIGRATION).text();
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const suDb = su as Client;

@@ -29,6 +29,7 @@ import {
   setCompanyLogoKey,
   updateCompanySettings,
 } from "@/modules/tenant-settings/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // DB-backed: what the scoped writes and the RLS fence actually do. The rules themselves are a table
 // in document-blocks.test.ts; this file proves the persistence follows the decision — and covers the
@@ -61,8 +62,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

@@ -3,6 +3,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { mirrorChatwootEvent } from "@/modules/chatwoot/mirror";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // The mirrored contact is what the authorization gate sends to the operator's endpoint, so these
@@ -25,8 +26,8 @@ if (appUrl && suUrl) {
     });
     await su.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const suDb = su as PrismaClient;

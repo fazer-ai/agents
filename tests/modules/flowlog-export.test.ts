@@ -8,6 +8,7 @@ import {
   serializeLogItems,
 } from "@/modules/flowlog/export";
 import type { ExecutionLogItem } from "@/modules/flowlog/read";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { clearFlowLog } from "@/tests/utils/flowlog";
 
 // ── pure serialization (no DB) ──
@@ -95,8 +96,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

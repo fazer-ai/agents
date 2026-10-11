@@ -4,6 +4,7 @@ import { buildNativeTools } from "@/graph/tools/native";
 import { readToolGuidance } from "@/modules/agents/tool-guidance";
 import { readHandoffConfig } from "@/modules/handoff/settings";
 import { readKanbanConfig } from "@/modules/kanban/settings";
+import { dbProbeFailed } from "@/tests/db-gate";
 import {
   classOf,
   NAMES_AGENT_TOOLS,
@@ -32,8 +33,8 @@ if (suUrl) {
     await su.query("SELECT 1");
     sql = await Bun.file(MIGRATION).text();
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const suDb = su as Client;

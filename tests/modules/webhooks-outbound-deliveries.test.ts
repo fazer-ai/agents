@@ -10,6 +10,7 @@ import {
   requeueWebhookDelivery,
 } from "@/modules/webhooks/outbound/deliveries";
 import { processOutboundBatch } from "@/modules/webhooks/outbound/worker";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { clearFlowLog, flowLogRows } from "@/tests/utils/flowlog";
 import { POLL_DEADLINE_MS } from "@/tests/utils/poll";
 
@@ -38,8 +39,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

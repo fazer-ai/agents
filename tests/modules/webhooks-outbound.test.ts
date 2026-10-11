@@ -14,6 +14,7 @@ import {
   TIMESTAMP_HEADER,
   verifyOutboundSignature,
 } from "@/modules/webhooks/outbound/signing";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { outboundUrl } from "../utils/outbound";
 
 describe("outbound webhook signing", () => {
@@ -111,8 +112,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

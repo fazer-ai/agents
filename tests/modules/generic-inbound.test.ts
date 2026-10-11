@@ -33,6 +33,7 @@ import {
   processInboundDelivery,
   receiveInbound,
 } from "@/modules/webhooks/inbound/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // An external system of the operator's own speaking back into a conversation it was handed, through
 // the GENERIC integration and `{{conversation_ref}}`.
@@ -175,8 +176,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

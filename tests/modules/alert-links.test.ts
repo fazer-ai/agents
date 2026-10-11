@@ -8,6 +8,7 @@ import { processAlertBatch } from "@/modules/flowlog/alert-worker";
 import { dispatchAlertsForEvent } from "@/modules/flowlog/alerts";
 import { createAlertChannel } from "@/modules/flowlog/channels";
 import type { FlowContext } from "@/modules/flowlog/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { outboundUrl } from "../utils/outbound";
 import { POLL_DEADLINE_MS } from "../utils/poll";
@@ -200,8 +201,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

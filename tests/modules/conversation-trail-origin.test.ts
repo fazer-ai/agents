@@ -3,6 +3,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { type Prisma, PrismaClient } from "@/../generated/prisma/client";
 import type { TenantContext } from "@/lib/tenancy";
 import { getConversationDetail } from "@/modules/conversations/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { clearFlowLog } from "../utils/flowlog";
 
@@ -26,8 +27,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

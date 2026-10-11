@@ -15,6 +15,7 @@ import {
   tryResolveVaultSecret,
   updateVaultEntry,
 } from "@/modules/vault/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // ── DB-gated tests (real Postgres under a tenant-scoped tx) ──
 
@@ -36,8 +37,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 

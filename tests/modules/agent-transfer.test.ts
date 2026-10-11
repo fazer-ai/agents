@@ -25,6 +25,7 @@ import {
 } from "@/modules/agents/transfer";
 import { documentStarter } from "@/modules/documents/starters";
 import { createDocumentTemplate } from "@/modules/documents/templates";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -42,8 +43,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

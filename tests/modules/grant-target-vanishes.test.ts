@@ -8,6 +8,7 @@ import {
   replaceAgentToolSelections,
 } from "@/modules/agents/service";
 import { deleteCodeTool } from "@/modules/code-tools/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // The gap between "this grant names a tool that exists" and the insert that points at it.
 // `replaceAgentToolSelections` reads every target, then rewrites the selection rows, and nothing
@@ -41,8 +42,8 @@ if (appUrl && suUrl) {
     });
     await app2.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

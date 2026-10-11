@@ -7,6 +7,7 @@ import { getDashboardCosts } from "@/modules/analytics/costs";
 import { getInstanceMetrics } from "@/modules/analytics/service";
 import { updateLangfuse } from "@/modules/tenant-settings/service";
 import { formatVaultRef } from "@/modules/vault/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // THE DASHBOARD'S MONEY COMES FROM THE LEDGER: the same rows, tenant and filters as
 // the requests beside it. Langfuse sampled traces on the client and never re-priced, so its sum was a
@@ -28,8 +29,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const suDb = su as PrismaClient;

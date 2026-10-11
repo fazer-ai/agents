@@ -4,6 +4,7 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import type { TenantContext } from "@/lib/tenancy";
 import { dropUnusableImportedSettingsInPlace } from "@/modules/agents/service";
 import { exportAgent, importAgent } from "@/modules/agents/transfer";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // WHAT CREATE REFUSES, AN IMPORT NORMALIZES AND NAMES.
 //
@@ -28,8 +29,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const suDb = su as PrismaClient;

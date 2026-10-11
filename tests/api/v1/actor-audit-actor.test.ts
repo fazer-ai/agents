@@ -5,6 +5,7 @@ import { PrismaClient, type UserRole } from "@/../generated/prisma/client";
 import { hashPassword } from "@/api/features/auth/auth.service";
 import config from "@/config";
 import type { TenantContext } from "@/lib/tenancy";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { personData } from "@/tests/utils/person";
 import { mockFindUnique, setupPrismaMock } from "@/tests/utils/prisma-mock";
 
@@ -34,8 +35,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 

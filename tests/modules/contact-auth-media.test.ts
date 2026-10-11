@@ -26,6 +26,7 @@ import {
   clearContactAuthState,
   mediaRefusedHereThrough,
 } from "@/modules/contact-auth/state";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // With the contact authorization gate on, no media of an incoming message reaches the STT or vision
@@ -47,8 +48,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

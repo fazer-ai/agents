@@ -5,6 +5,7 @@ import { loadToolSelections } from "@/graph/tools/assemble";
 import { loadMcpToolsForAgent } from "@/graph/tools/mcp";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { exportAgent, importAgent } from "@/modules/agents/transfer";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // THE NAME A TOOL IS EXPOSED UNDER HAS TO SURVIVE AN EXPORT/IMPORT. The import reassigns ids, so
 // nothing id-derived may reach `mcp__<slug>__<tool>` (the slug fallback for a name with no ASCII, the
@@ -31,8 +32,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

@@ -25,6 +25,7 @@ import {
   startPlaygroundThread,
 } from "@/modules/playground/sessions";
 import { isValidPlaygroundThread } from "@/modules/playground/thread";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { expectFallbackLines, graphDepsOf } from "../utils/fallback-lines";
 import { clearFlowLog } from "../utils/flowlog";
 import { settlesDuring } from "../utils/tool-logger-settled";
@@ -50,8 +51,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

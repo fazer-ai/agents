@@ -7,6 +7,7 @@ import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { syncInboxes } from "@/modules/chatwoot/management";
 import { mirrorChatwootEvent } from "@/modules/chatwoot/mirror";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
+import { dbProbeFailed } from "@/tests/db-gate";
 import contactA from "../fixtures/chatwoot-row-clocks/001-message_created.json";
 import contactB from "../fixtures/chatwoot-row-clocks/003-conversation_status_changed.json";
 import inboxN2 from "../fixtures/chatwoot-row-clocks/007-message_created.json";
@@ -34,8 +35,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

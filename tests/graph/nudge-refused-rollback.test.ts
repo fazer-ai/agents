@@ -24,6 +24,7 @@ import {
 } from "@/graph/thread-claim";
 import { buildThreadStateGraph, THREAD_STATE_NODE } from "@/graph/thread-state";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // THE EFFECT ON the memory thread after a proactive turn is generated and then refused.
@@ -49,8 +50,8 @@ if (appUrl && suUrl) {
       adapter: new PrismaPg({ connectionString: appUrl }),
     });
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

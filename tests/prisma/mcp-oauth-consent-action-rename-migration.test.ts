@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { Client } from "pg";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // Runs the actual migration file: the two consent actions that predate the `<entity>.<verb>`
 // convention are rewritten on rows on BOTH sides of the tenant boundary, and nothing else moves. The
@@ -24,8 +25,8 @@ if (suUrl) {
     await su.connect();
     await su.query("SELECT 1");
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const suDb = su as Client;

@@ -18,6 +18,7 @@ import { agentSettingsSet } from "@/modules/mcp/write";
 import { agentUpdate } from "@/modules/mcp/write-agents";
 import { updateEmbeddingSettings } from "@/modules/tenant-settings/service";
 import { tryResolveApiKeyEntry } from "@/modules/vault/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // A credential reference names an entry that EXISTS, and that entry also has to produce what the
 // field reading it needs. The two shapes a vault entry can hold are declared in the catalog and
@@ -43,8 +44,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const suDb = su as PrismaClient;

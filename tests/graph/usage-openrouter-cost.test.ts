@@ -25,6 +25,7 @@ import {
 import { callCostUsd } from "@/modules/pricing/price";
 import { PRICE_TABLE_VERSION } from "@/modules/pricing/version";
 import { getVisionProvider } from "@/modules/vision/providers";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // WHAT OPENROUTER SAID A CALL COST, recorded instead of the table's estimate.
 //
@@ -396,8 +397,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 

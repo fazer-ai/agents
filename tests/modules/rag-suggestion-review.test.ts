@@ -28,6 +28,7 @@ import {
   runSuggestionReview,
 } from "@/modules/rag/suggestion-review";
 import type { ClaimedJob } from "@/modules/scheduler/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // The suggestion reviewer and the floor in front of it: a proposal from the agent waits in SCREENING
 // until a model has compared it with what the base, the queue and earlier rejections hold; every way
@@ -49,8 +50,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

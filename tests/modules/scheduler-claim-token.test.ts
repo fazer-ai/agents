@@ -11,6 +11,7 @@ import {
   rescheduleJob,
 } from "@/modules/scheduler/service";
 import { registerJobHandler, runClaimed } from "@/modules/scheduler/worker";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // A scheduler row is re-armed IN PLACE (`enqueueJob` upserts the same physical row back to
 // PENDING), so "the row is CLAIMED" does not say WHICH run holds the claim. A finishing write keyed
@@ -35,8 +36,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

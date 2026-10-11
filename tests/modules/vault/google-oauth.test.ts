@@ -21,6 +21,7 @@ import {
   validateScopes,
 } from "@/modules/vault/google-oauth";
 import { createVaultEntry } from "@/modules/vault/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // Stubs the global fetch for the Google token endpoint and records the form body of each call. The
 // google-oauth module calls fetch directly (no fetchImpl injection), so we swap globalThis.fetch.
@@ -276,8 +277,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Client } from "pg";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // Every DATA migration over a tenant-scoped table must set the RLS bypass, asked ONCE here rather
 // than per migration, since a per-migration test is one the next migration is born without. Those
@@ -22,8 +23,8 @@ if (suUrl) {
     forced = new Set(r.rows.map((row) => row.relname));
     await c.end();
     dbUp = forced.size > 0;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 

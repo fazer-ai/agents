@@ -8,6 +8,7 @@ import {
   ChatwootApiError,
   type ChatwootClient,
 } from "@/modules/chatwoot/client";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { mockFindUnique, setupPrismaMock } from "@/tests/utils/prisma-mock";
 
 // The channel family's trail, driven through the Channels page's own doors.
@@ -35,8 +36,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 

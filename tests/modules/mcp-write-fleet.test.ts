@@ -3,6 +3,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import { tenantCreate, tenantGet, tenantList } from "@/modules/mcp/write-fleet";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // Fleet/admin write tools: the admin gate (mcp:admin + SUPER_ADMIN role) is DB-free; cross-tenant
 // create/list/get need a real Postgres (skipIf). These run as the audited asSuperAdmin path.
@@ -54,8 +55,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

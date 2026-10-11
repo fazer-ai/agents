@@ -24,6 +24,7 @@ import {
   listWebhookSubscriptions,
   updateWebhookSubscription,
 } from "@/modules/webhooks/outbound/subscriptions";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { outboundUrl } from "../utils/outbound";
 
 // A whole-body client can only send back what the read gave it, and the service reads a null
@@ -53,8 +54,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 

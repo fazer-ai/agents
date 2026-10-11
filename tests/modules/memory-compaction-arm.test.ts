@@ -13,6 +13,7 @@ import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
 import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // The other half of the compaction tests, and the half that would otherwise be missing entirely:
@@ -39,8 +40,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

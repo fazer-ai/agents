@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { clearFlowLog, flowLogRow } from "@/tests/utils/flowlog";
 
 // `execution_logs.detail` is `jsonb`, and Postgres refuses an unpaired surrogate inside one (SQLSTATE
@@ -28,8 +29,8 @@ if (suUrl && appUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const suDb = su as PrismaClient;

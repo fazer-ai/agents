@@ -11,6 +11,7 @@ import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
 import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
 import { clearContactAuthState } from "@/modules/contact-auth/state";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogRows } from "../utils/flowlog";
 import { guardrailModel, UsageReportingModel } from "../utils/scripted-models";
@@ -38,8 +39,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

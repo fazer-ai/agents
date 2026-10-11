@@ -10,6 +10,7 @@ import {
   runReprice,
 } from "@/modules/pricing/reprice";
 import { PRICE_TABLE_VERSION } from "@/modules/pricing/version";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // An operator re-prices ledger rows with the table in the tree now, when the table that
 // priced them was wrong. Dry run by default; `apply` writes only the rows whose figure changes and
@@ -32,8 +33,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const suDb = su as PrismaClient;

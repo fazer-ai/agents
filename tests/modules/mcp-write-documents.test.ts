@@ -9,6 +9,7 @@ import {
   documentTemplateDelete,
   documentTemplateUpdate,
 } from "@/modules/mcp/write-documents";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // Authoring a rich document over MCP is the point of this surface, and the dry-run is what makes it
 // usable without a visual editor: it RENDERS. A preview that only diffed field counts would report
@@ -80,8 +81,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

@@ -5,6 +5,7 @@ import { encryptJson } from "@/api/lib/crypto";
 import { mirrorChatwootEvent } from "@/modules/chatwoot/mirror";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // The inbox and contact rows every delivery of a busy inbox names: an unchanged one is not written,
@@ -30,8 +31,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

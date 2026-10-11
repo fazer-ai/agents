@@ -15,6 +15,7 @@ import {
   updateVaultEntry,
   vaultReferences,
 } from "@/modules/vault/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { syntheticAction } from "../utils/audit-action";
 
 // Integration test for the Phase 2 primitives (vault round-trip, audit row, entity lock)
@@ -39,8 +40,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 

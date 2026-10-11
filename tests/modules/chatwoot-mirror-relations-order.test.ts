@@ -4,6 +4,7 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { mirrorChatwootEvent } from "@/modules/chatwoot/mirror";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // A delayed snapshot from the same `last_activity_at` second must not write back the contact, contact
@@ -28,8 +29,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

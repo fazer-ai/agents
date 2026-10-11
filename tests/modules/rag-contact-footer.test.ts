@@ -21,6 +21,7 @@ import {
   updateKnowledgeBase,
 } from "@/modules/rag/service";
 import { type ChunkRow, insertChunks, searchChunks } from "@/modules/rag/sql";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // A help-center article's closing "contact us" paragraph, retrieved into an agent, reads
 // as an order to hand the customer off. With the base's switch on, the passage a search returns
@@ -254,8 +255,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

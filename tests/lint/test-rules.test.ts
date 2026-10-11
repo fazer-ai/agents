@@ -2,8 +2,8 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-// The lint rules for test files (biome-plugins/no-test-reads-source.grit, no-test-real-wait.grit and
-// require-test-server-hostname.grit), run through the real Biome over probe files written under
+// The lint rules for test files (biome-plugins/no-test-reads-source.grit, no-test-real-wait.grit,
+// require-test-server-hostname.grit and no-swallowed-db-probe.grit), run through the real Biome over probe files written under
 // tests/. One Biome process lints every probe. The probes end in `.ts`, not `.test.ts`, so `bun test`
 // never collects them, and each run writes under its own pid.
 //
@@ -21,6 +21,8 @@ const DOCS = ["do", "cs"].join("");
 const LISTED_SOURCE = "tests/client/import-warnings-rendered.test.ts";
 const LISTED_WAIT = "tests/api/features/realtime/realtime.controller.test.ts";
 const APP = "declare const app: { listen: (...a: unknown[]) => unknown };\n";
+const PROBE_HEAD =
+  "declare const ping: () => Promise<boolean>;\nexport let dbUp = false;\n";
 
 const PROBES: Record<string, string> = {
   [`${PROBE}/src-path.ts`]: `import { readFileSync } from "node:fs";\nexport const a = readFileSync("${SRC}/config.ts", "utf8");\n`,
@@ -69,9 +71,13 @@ const PROBES: Record<string, string> = {
     'export const s = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("x") });\n',
   [`${PROBE}/listen-options-loopback.ts`]: `${APP}export const l = app.listen({ port: 0, hostname: "127.0.0.1" });\n`,
   [`${PROBE}/listen-node-loopback.ts`]: `${APP}export const l = app.listen(0, "127.0.0.1", () => {});\n`,
+  [`${PROBE}/probe-bare-catch.ts`]: `${PROBE_HEAD}try {\n  dbUp = await ping();\n} catch {\n  dbUp = false;\n}\n`,
+  [`${PROBE}/probe-named-catch.ts`]: `${PROBE_HEAD}try {\n  dbUp = await ping();\n} catch (e) {\n  console.error(e);\n  dbUp = false;\n}\n`,
+  [`${PROBE}/probe-hands-over.ts`]: `import { dbProbeFailed } from "@/tests/db-gate";\n${PROBE_HEAD}try {\n  dbUp = await ping();\n} catch (err) {\n  dbUp = dbProbeFailed(err);\n}\n`,
+  [`${PROBE}/probe-false-outside-catch.ts`]: `${PROBE_HEAD}if (!process.env.X) dbUp = false;\n`,
 };
 
-type Hits = { source: number; wait: number; server: number };
+type Hits = { source: number; wait: number; server: number; probe: number };
 let hits: Map<string, Hits>;
 
 beforeAll(() => {
@@ -98,10 +104,11 @@ beforeAll(() => {
     const m = line.match(/file=([^,]+),.*::(.*)$/);
     if (!m?.[1] || !m[2]) continue;
     const file = m[1].slice(m[1].indexOf("tests/"));
-    const h = hits.get(file) ?? { source: 0, wait: 0, server: 0 };
+    const h = hits.get(file) ?? { source: 0, wait: 0, server: 0, probe: 0 };
     if (m[2].includes("how its source reads")) h.source++;
     if (m[2].includes("does not wait real time")) h.wait++;
     if (m[2].includes("binds 127.0.0.1")) h.server++;
+    if (m[2].includes("does not swallow its refusal")) h.probe++;
     hits.set(file, h);
   }
 });
@@ -112,8 +119,8 @@ afterAll(() => {
 });
 
 const of = (path: string): Hits =>
-  hits.get(path) ?? { source: 0, wait: 0, server: 0 };
-const NONE: Hits = { source: 0, wait: 0, server: 0 };
+  hits.get(path) ?? { source: 0, wait: 0, server: 0, probe: 0 };
+const NONE: Hits = { source: 0, wait: 0, server: 0, probe: 0 };
 
 describe("no-test-reads-source", () => {
   test.each([
@@ -191,4 +198,20 @@ describe("require-test-server-hostname", () => {
   ])("one bound to 127.0.0.1 is allowed (%s)", (name) => {
     expect(of(`${PROBE}/${name}`)).toEqual(NONE);
   });
+});
+
+describe("no-swallowed-db-probe", () => {
+  test.each([["probe-bare-catch.ts"], ["probe-named-catch.ts"]])(
+    "a catch that sets dbUp = false is refused (%s)",
+    (name) => {
+      expect(of(`${PROBE}/${name}`).probe).toBe(1);
+    },
+  );
+
+  test.each([["probe-hands-over.ts"], ["probe-false-outside-catch.ts"]])(
+    "a catch that hands the error to dbProbeFailed, or a false set outside a catch, is allowed (%s)",
+    (name) => {
+      expect(of(`${PROBE}/${name}`)).toEqual(NONE);
+    },
+  );
 });

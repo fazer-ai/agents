@@ -11,6 +11,7 @@ import {
   createAlertChannel,
   updateAlertChannel,
 } from "@/modules/flowlog/channels";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { flowLogCount } from "../utils/flowlog";
 import { outboundUrl } from "../utils/outbound";
 import { POLL_DEADLINE_MS } from "../utils/poll";
@@ -42,8 +43,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 

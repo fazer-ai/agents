@@ -11,6 +11,7 @@ import {
   updateUserRole,
 } from "@/api/features/admin/admin.service";
 import type { TenantContext } from "@/lib/tenancy";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { personData } from "@/tests/utils/person";
 import { waitUntilBlocked } from "@/tests/utils/pg-waits";
 
@@ -45,8 +46,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const suDb = su as PrismaClient;

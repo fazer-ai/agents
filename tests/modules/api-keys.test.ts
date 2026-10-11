@@ -21,6 +21,7 @@ import {
   verifyApiKey,
 } from "@/modules/api-keys/verify";
 import { mcpPrincipalFromApiKey } from "@/modules/mcp/oauth/tokens";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 describe("api key token generation", () => {
   test("generateApiKey is prefixed and its hash round-trips", () => {
@@ -68,8 +69,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

@@ -14,6 +14,7 @@ import {
   runRedirectGate,
 } from "@/modules/channel-redirect/gate";
 import { readChannelRedirectConfig } from "@/modules/channel-redirect/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // The redirect gate stamps `redirectSentAt` and spends one of `maxResends` when the link goes out. The
@@ -38,8 +39,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

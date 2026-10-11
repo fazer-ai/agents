@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { Client } from "pg";
 import { INGEST_ID_WINDOW } from "@/graph/ingest-dedup";
 import { ENTER_FLEET_ROLE_SQL } from "@/lib/tenancy/fleet-role";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // Runs the ACTUAL backfill of MIGRATION against the test database, and pins three things:
 //   * FORCE ROW LEVEL SECURITY binds even the table OWNER: on managed Postgres (owner WITHOUT
@@ -46,8 +47,8 @@ if (suUrl && appUrl) {
     dataSql = parsed.sql;
     droppedDdl = parsed.dropped;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const suDb = su as Client;

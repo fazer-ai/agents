@@ -4,6 +4,7 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { loadAgentConfig } from "@/graph/prepare";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // NOTE: End-to-end wiring of the schedule variables: the agent's BusinessHours row → the system
@@ -28,8 +29,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

@@ -17,6 +17,7 @@ import * as writeFleet from "@/modules/mcp/write-fleet";
 import * as writeKnowledge from "@/modules/mcp/write-knowledge";
 import * as writeSettings from "@/modules/mcp/write-settings";
 import * as writeWebhooks from "@/modules/mcp/write-webhooks";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance, withRunNamespace } from "../../utils/chatwoot";
 
 // A write tool with `dry_run` answers its preview WITHOUT touching the core: cheap, and every rule
@@ -547,8 +548,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 afterAll(async () => {

@@ -8,6 +8,7 @@ import {
   parseAuditCursor,
   recordAudit,
 } from "@/modules/audit/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { syntheticAction } from "../utils/audit-action";
 
 // THE READ HALF. The console page is the only door most operators have to the trail, so what the
@@ -35,8 +36,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 

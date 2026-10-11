@@ -35,6 +35,7 @@ import {
   SCHEDULER_STALE_MS,
   unregisterJobHandler,
 } from "@/modules/scheduler/worker";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // The job lanes under the shutdown drain (src/lib/shutdown.ts). A run that ends inside the bound has
 // its outcome written before the process may exit; a run still going at the bound is ended the way
@@ -57,8 +58,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

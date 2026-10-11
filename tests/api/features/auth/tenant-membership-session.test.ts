@@ -4,6 +4,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { SignJWT } from "jose";
 import { PrismaClient } from "@/../generated/prisma/client";
 import config from "@/config";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // Through the app's own doors, against real rows: a person is ONE user with a membership per tenant.
 // One login, the tenant chosen per request among the person's memberships, a tenant they do not
@@ -30,8 +31,8 @@ if (suUrl && appUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const suDb = su as PrismaClient;

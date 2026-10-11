@@ -33,6 +33,7 @@ import {
   listIssuedDocuments,
   revokeIssuedDocument,
 } from "@/modules/documents/issue";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { syntheticAction } from "../utils/audit-action";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
@@ -52,8 +53,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

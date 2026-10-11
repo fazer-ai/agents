@@ -12,6 +12,7 @@ import {
   getTenantSettings,
   updateLangfuse,
 } from "@/modules/tenant-settings/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // A SUPER_ADMIN's target tenant comes from a selector the browser persists, so it can outlive the
 // tenant it names. Unchecked, RLS scopes to a tenant with no rows: a read answers with defaults and a
@@ -35,8 +36,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const suDb = su as PrismaClient;

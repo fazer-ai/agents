@@ -4,6 +4,7 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { EMBEDDING_DIM } from "@/modules/rag/embeddings";
 import { insertChunks, searchChunks } from "@/modules/rag/sql";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // Validates the raw pgvector SQL against the real DB: vector literal binding, KNN <=> ordering,
 // ef_search, ANY(ARRAY[...]::bigint[]), and the RLS fence on raw SQL.
@@ -24,8 +25,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

@@ -8,6 +8,7 @@ import {
   createToolDefinition,
   updateToolDefinition,
 } from "@/modules/tool-definitions/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // The assembly reserves every native name (src/graph/tools/unique-names.ts): another tool claiming
 // one is dropped, with a flow-log line. So the name is refused where it is TYPED, or an HTTP tool
@@ -31,8 +32,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

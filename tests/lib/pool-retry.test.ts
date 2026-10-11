@@ -6,6 +6,7 @@ import {
   isTransactionNeverStarted,
   retryWhileTransactionNeverStarted,
 } from "@/lib/pool-retry";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // Only a transaction that never started is retried, because only there did nothing run. The error
 // is taken from a real pool of one connection, not written by hand: the classifier matches Prisma's
@@ -21,8 +22,8 @@ if (appUrl) {
   try {
     await probe.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   } finally {
     await probe.$disconnect().catch(() => {});
   }

@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { type Prisma, PrismaClient } from "@/../generated/prisma/client";
 import { claimSql, laneFilter } from "@/modules/scheduler/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // Everything a lane budgets is the claim's one `LIMIT`. As `id IN (SELECT ... FOR UPDATE SKIP
 // LOCKED LIMIT n)` it is a semi-join whose inner side Postgres may re-execute per outer row, each
@@ -40,8 +41,8 @@ if (suUrl && pinnedUrl) {
     });
     await pinned.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const suDb = su as PrismaClient;

@@ -7,6 +7,7 @@ import {
   linkSearchFor,
   resolveChatwootConversation,
 } from "@/modules/conversations/chatwoot-link";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "@/tests/utils/chatwoot";
 
 // A Chatwoot conversation (account, the number in Chatwoot's URL, optionally the inbox) resolves to
@@ -70,8 +71,8 @@ if (appUrl && suUrl) {
     await app.$queryRaw`SELECT 1`;
     await su.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

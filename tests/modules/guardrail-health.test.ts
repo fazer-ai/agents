@@ -7,6 +7,7 @@ import {
   guardrailHealthWindowStart,
   readGuardrailHealth,
 } from "@/modules/guardrails/health";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { clearFlowLog, flowLogRow } from "@/tests/utils/flowlog";
 
 // What the guardrail screen actually did, read back from the flow log. Analysis is fail-open, so a
@@ -33,8 +34,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 // Seeding runs as the migration role (it writes rows for two tenants); every READ goes through the

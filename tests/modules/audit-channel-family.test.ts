@@ -25,6 +25,7 @@ import {
   unobserveInbox,
 } from "@/modules/chatwoot/management";
 import { routeTokenCacheGeneration } from "@/modules/chatwoot/route-token-cache";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // THE CHANNEL-MANAGEMENT FAMILY, recorded by the service (`src/modules/chatwoot/management.ts`), so
 // the Channels page's routes and MCP leave the same rows (docs/api-and-fleet.md, "A family moves
@@ -52,8 +53,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 

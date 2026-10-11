@@ -24,6 +24,7 @@ import {
   processChatwootDelivery,
   recordAndProcessChatwootDelivery,
 } from "@/modules/chatwoot/webhook";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { clearFlowLog, flowLogRows } from "@/tests/utils/flowlog";
 import { POLL_DEADLINE_MS } from "@/tests/utils/poll";
 import { HandoffThenThrowModel } from "@/tests/utils/scripted-models";
@@ -54,8 +55,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

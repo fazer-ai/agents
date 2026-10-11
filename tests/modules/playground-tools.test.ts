@@ -13,6 +13,7 @@ import {
   applyToolMocks,
   listPlaygroundTools,
 } from "@/modules/playground/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // A client whose every method throws if called — proves the simulated tools never touch Chatwoot.
 const explodingClient = new Proxy(
@@ -182,8 +183,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

@@ -446,6 +446,12 @@
       ],
       "plugins": ["./biome-plugins/require-tenant-on-scheduler-drain.grit"]
     },
+    // A database probe hands its refusal to `dbProbeFailed` (biome-plugins/no-swallowed-db-probe.grit).
+    // No file is listed: every probe under tests/ was moved to it with the rule.
+    {
+      "includes": ["tests/**/*.{ts,tsx}"],
+      "plugins": ["./biome-plugins/no-swallowed-db-probe.grit"]
+    },
     // A test server binds loopback (biome-plugins/require-test-server-hostname.grit). No file is
     // listed: every server under tests/ was moved to 127.0.0.1 with the rule.
     {

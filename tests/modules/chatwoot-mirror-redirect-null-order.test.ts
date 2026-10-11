@@ -5,6 +5,7 @@ import { encryptJson } from "@/api/lib/crypto";
 import { episodeOriginQuery } from "@/modules/channel-redirect/episode";
 import { mirrorChatwootEvent } from "@/modules/chatwoot/mirror";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // A stated null on a conversation that never had a pairing does not answer the pairing question (it
@@ -29,8 +30,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

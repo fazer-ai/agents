@@ -20,6 +20,7 @@ import type { TenantContext } from "@/lib/tenancy";
 import type { DocumentField } from "@/modules/documents/blocks";
 import { documentStarter } from "@/modules/documents/starters";
 import { createDocumentTemplate } from "@/modules/documents/templates";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // The tool an agent actually gets for a granted template: its arguments come from the template's own
 // declared fields, and it issues + queues in one call.
@@ -152,8 +153,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

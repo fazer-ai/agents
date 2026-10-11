@@ -1,6 +1,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { Client } from "pg";
 import { DEAD_LETTER_ANNOUNCED } from "@/modules/scheduler/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // A MIGRAÇÃO DE ROLLOUT DO CARIMBO `deadLetterAnnouncedFor`. Uma linha que já estava `DEAD` no
 // deploy foi anunciada pelo despachante anterior, que escrevia o log sem tocar no payload; sem a
@@ -29,8 +30,8 @@ if (suUrl) {
     await su.connect();
     await su.query("SELECT 1");
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 

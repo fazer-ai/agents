@@ -21,6 +21,7 @@ import {
 } from "@/modules/contact-auth/settings";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import { agentSettingsGet, agentSettingsSet } from "@/modules/mcp/write";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // The config reader's decision table (defaults, clamps, the strict switch) plus the shared
 // behavior-settings surface, so REST/UI/MCP all project the same normalized block.
@@ -249,8 +250,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

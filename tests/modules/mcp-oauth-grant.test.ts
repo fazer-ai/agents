@@ -8,6 +8,7 @@ import {
   refreshAccessToken,
 } from "@/modules/mcp/oauth/grant";
 import { verifyAccessToken } from "@/modules/mcp/oauth/tokens";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { personData } from "@/tests/utils/person";
 
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -20,8 +21,8 @@ if (suUrl) {
     });
     await su.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const suDb = su as PrismaClient;

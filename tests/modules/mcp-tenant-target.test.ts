@@ -7,6 +7,7 @@ import { NotFoundError } from "@/lib/errors";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import { agentGet } from "@/modules/mcp/read";
 import { resolveEffectivePrincipal } from "@/modules/mcp/tenant-target";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // MCP tenant targeting: a fleet-level SUPER_ADMIN token is tenant-less and picks the target per call
 // via a `tenant` selector (slug or id); a tenant-scoped token keeps its tenant implicit and any
@@ -64,8 +65,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

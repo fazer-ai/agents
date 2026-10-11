@@ -26,6 +26,7 @@ import {
   registerJobHandler,
   runSchedulerTick,
 } from "@/modules/scheduler/worker";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { POLL_DEADLINE_MS } from "@/tests/utils/poll";
 
 // The two halves of the rule in src/modules/scheduler/lanes.ts. The PARTITION, against the database
@@ -51,8 +52,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

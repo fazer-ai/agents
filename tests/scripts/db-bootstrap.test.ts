@@ -5,6 +5,7 @@ import {
   FLEET_ROLE_EXPR,
   FLEET_ROLE_RETAINED_MEMBER_ENV,
 } from "@/lib/tenancy/fleet-role";
+import { dbProbeFailed } from "@/tests/db-gate";
 import {
   assertFleetMembership,
   assertFleetRoleIsUnprivileged,
@@ -39,8 +40,8 @@ if (suUrl) {
     await su.connect();
     await su.query("SELECT 1");
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 

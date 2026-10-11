@@ -18,6 +18,7 @@ import {
   agentUpdate,
   toolCreate,
 } from "@/modules/mcp/write-agents";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // Agent-builder write tools: gate (scope + tenant target) is DB-free; dry-run/apply/audit, the
@@ -90,8 +91,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

@@ -8,6 +8,7 @@ import type { ResolvedModelConfig } from "@/graph/models";
 import { runAgentTurn } from "@/graph/runtime";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogRow } from "../utils/flowlog";
 import { UsageReportingModel } from "../utils/scripted-models";
@@ -35,8 +36,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

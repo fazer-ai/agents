@@ -19,6 +19,7 @@ import {
   enqueueJob,
   reapStaleJobs,
 } from "@/modules/scheduler/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // A DEBOUNCE job whose run never settles must not stop the lane from claiming the next due job, of
 // another tenant, and the row still in flight must not run a second time when it becomes claimable
@@ -42,8 +43,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

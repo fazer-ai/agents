@@ -4,6 +4,7 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { sanitizeErrorMessage } from "@/lib/redact";
 import { unstorableProblem } from "@/lib/text";
 import { claimDueJobs, enqueueJob, failJob } from "@/modules/scheduler/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 // Both ledgers below count through the shared scan, so prose that NAMES a column or the guard is not
 // counted as a use of it.
 import { countInSrc } from "@/tests/utils/source-text";
@@ -49,8 +50,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

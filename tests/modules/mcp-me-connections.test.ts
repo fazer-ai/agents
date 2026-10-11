@@ -11,6 +11,7 @@ import {
   issueAccessToken,
   verifyAccessToken,
 } from "@/modules/mcp/oauth/tokens";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { personData } from "@/tests/utils/person";
 
 // Self-service connections module (oauth/connections.ts): a user lists/disconnects only their OWN MCP
@@ -31,8 +32,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

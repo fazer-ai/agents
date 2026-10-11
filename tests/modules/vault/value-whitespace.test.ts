@@ -8,6 +8,7 @@ import {
   testVaultValue,
   updateVaultEntry,
 } from "@/modules/vault/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // A credential is stored as its exact bytes, and a paste out of a provider's panel routinely carries
 // a newline or a space. An HTTP field value has its surrounding whitespace stripped before any
@@ -33,8 +34,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 

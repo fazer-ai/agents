@@ -3,6 +3,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { contactInboxThreadId } from "@/graph/checkpointer";
 import { ingestDedupeKey } from "@/graph/ingest-job";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // ── "NENHUMA INGESTÃO FOI ARMADA PARA ESTA MENSAGEM" NÃO É UMA CONTAGEM ──
 // A população de linhas `INGEST_MESSAGE` do tenant não é estável (a linha é APAGADA ao concluir), então
@@ -22,8 +23,8 @@ if (appUrl && suUrl) {
     });
     await su.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 

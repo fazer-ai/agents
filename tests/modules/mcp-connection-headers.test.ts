@@ -22,6 +22,7 @@ import {
   updateMcpConnection,
 } from "@/modules/mcp-connections/service";
 import { createVaultEntry } from "@/modules/vault/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { outboundUrl } from "../utils/outbound";
 
 describe("mcpHeadersProblem", () => {
@@ -172,8 +173,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

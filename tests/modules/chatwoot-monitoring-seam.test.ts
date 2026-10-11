@@ -13,6 +13,7 @@ import { followUpDedupeKey } from "@/modules/channel-redirect/followup";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogRows } from "../utils/flowlog";
 
@@ -41,8 +42,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

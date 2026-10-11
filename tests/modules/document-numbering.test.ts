@@ -14,6 +14,7 @@ import {
   updateDocumentTemplate,
 } from "@/modules/documents/templates";
 import { documentTemplateUpdate } from "@/modules/mcp/write-documents";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // A printed number (prefix and counter, within a tenant) names one document and is never issued twice
 // (docs/documents.md, Numbering): the template shows where numbering continues, an operator can move
@@ -39,8 +40,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

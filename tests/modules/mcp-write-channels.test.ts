@@ -21,6 +21,7 @@ import {
   inboxRemove,
   instanceDisconnect,
 } from "@/modules/mcp/write-channels";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // A Chatwoot that answers the inbox-detail GET the way the fork does: 404 for an inbox that is not
@@ -128,8 +129,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

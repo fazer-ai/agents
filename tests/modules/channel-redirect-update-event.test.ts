@@ -6,6 +6,7 @@ import { chatwootThreadId } from "@/graph/checkpointer";
 import { followUpDedupeKey } from "@/modules/channel-redirect/followup";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // The fork emits a standalone `conversation_updated` for a new pairing, dispatched BEFORE the cloned
@@ -33,8 +34,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

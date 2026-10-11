@@ -6,6 +6,7 @@ import {
   classifyOutcome,
   RESOLUTION_ORIGINS,
 } from "@/modules/conversations/resolution-origin";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // The dashboard groups conversations by outcome in SQL, and the rule lives in TypeScript
@@ -22,8 +23,8 @@ if (suUrl) {
     });
     await su.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const suDb = su as PrismaClient;

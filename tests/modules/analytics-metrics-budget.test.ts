@@ -21,6 +21,7 @@ import { getHealth } from "@/modules/analytics/health";
 import { hashApiKey, verifyApiKey } from "@/modules/api-keys/verify";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import { metricsGet } from "@/modules/mcp/read";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { until } from "@/tests/utils/poll";
 
 // A metrics read that does not fit its time budget is refused as too slow (503, a sentence the
@@ -44,8 +45,8 @@ if (appUrl && suUrl) {
     await app.$queryRaw`SELECT 1`;
     await su.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 afterAll(async () => {

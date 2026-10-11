@@ -22,6 +22,7 @@ import {
   vaultList,
 } from "@/modules/mcp/read";
 import { MODEL_RESPONSE_CHAR_LIMIT } from "@/modules/tool-definitions/response-template";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // MCP read tools: the read gate (mcp:read scope + tenant target) is DB-free and always runs; the
@@ -205,8 +206,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

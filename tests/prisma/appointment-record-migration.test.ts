@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Client } from "pg";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // The backfill of 20260826220000_appointment_record, run against rows shaped like production's.
 // `startISO` comes from the model's own tool input, so unreadable values are real, and a cast that
@@ -21,8 +22,8 @@ if (suUrl) {
     await su.query("SELECT 1");
     sql = await Bun.file(MIGRATION).text();
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const db = su as Client;

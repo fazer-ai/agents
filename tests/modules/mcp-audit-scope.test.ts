@@ -9,6 +9,7 @@ import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import * as mcpRead from "@/modules/mcp/read";
 import { auditList } from "@/modules/mcp/read";
 import { buildMcpServer } from "@/modules/mcp/server";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { syntheticAction } from "../utils/audit-action";
 
 // THE SCOPE HAS TO SURVIVE THE TRANSPORT. `audit_list` goes through `registerTenantTool`, which makes
@@ -38,8 +39,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 

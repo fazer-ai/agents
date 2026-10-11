@@ -8,6 +8,7 @@ import {
   SecretLeakError,
 } from "@/modules/n8n-export/n8n";
 import { exportToolWorkflow } from "@/modules/n8n-export/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // Built at run time so the repo holds no literal that reads as a credential.
 const FAKE_TOKEN = ["abcd", "EFGH", "1234", "5678"].join("");
@@ -115,8 +116,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

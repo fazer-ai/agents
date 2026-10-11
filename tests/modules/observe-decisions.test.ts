@@ -19,6 +19,7 @@ import {
 import { __resetChatwootVocabCache } from "@/modules/chatwoot/vocab";
 import { decisionsBlockFingerprint } from "@/modules/decisions/config";
 import { runObserve } from "@/modules/observe/job";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogRows } from "../utils/flowlog";
 
@@ -44,8 +45,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

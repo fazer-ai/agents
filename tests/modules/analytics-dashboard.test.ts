@@ -17,6 +17,7 @@ import { getOutcomeTrend } from "@/modules/analytics/trends";
 import { recordResolutionOrigin } from "@/modules/conversations/record-resolution";
 import { listConversations } from "@/modules/conversations/service";
 import { listExecutionLogs } from "@/modules/flowlog/read";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // THE DASHBOARD READS ONE SET OF ROWS PER VIEW. A fixed fixture over two days, two
@@ -40,8 +41,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

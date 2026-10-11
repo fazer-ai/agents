@@ -10,6 +10,7 @@ import {
   codeToolDelete,
   codeToolUpdate,
 } from "@/modules/mcp/write-code-tools";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // The code tool's console tools, the twin of the HTTP tool_* ones: gate (scope + tenant target) is
 // DB-free; dry-run/apply/audit and the tenant fence need a real Postgres (skipIf).
@@ -132,8 +133,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

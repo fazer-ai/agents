@@ -11,6 +11,7 @@ import {
   createWebhookSubscription,
   deleteWebhookSubscription,
 } from "@/modules/webhooks/outbound/subscriptions";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { outboundUrl } from "../utils/outbound";
 
 // Heartbeat emitter: the per-tenant HEARTBEAT SchedulerJob is armed lazily by subscription mutations
@@ -33,8 +34,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

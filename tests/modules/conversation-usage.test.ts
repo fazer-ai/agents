@@ -5,6 +5,7 @@ import type { TenantContext } from "@/lib/tenancy";
 import { getConversationDetail } from "@/modules/conversations/service";
 import { CONVERSATION_USAGE_TURN_CAP } from "@/modules/conversations/usage";
 import { PRICE_TABLE_VERSION } from "@/modules/pricing/version";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // The conversation screen shows what the conversation has spent (header) and what each agent turn
@@ -28,8 +29,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

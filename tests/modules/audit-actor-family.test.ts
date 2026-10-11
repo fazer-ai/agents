@@ -17,6 +17,7 @@ import {
 import { disconnectClient } from "@/modules/mcp/oauth/connections";
 import { upsertApproval } from "@/modules/mcp/oauth/consent";
 import { issueAccessToken } from "@/modules/mcp/oauth/tokens";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { personData } from "@/tests/utils/person";
 import {
   underConcurrentEdit,
@@ -49,8 +50,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 

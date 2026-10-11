@@ -27,6 +27,7 @@ import {
   registerJobHandler,
   runClaimed,
 } from "@/modules/scheduler/worker";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // Continuous ingestion is a job because a LangGraph invoke is a read-modify-write of the WHOLE
@@ -55,8 +56,8 @@ if (!process.env.TEST_APP_DATABASE_URL) {
   });
   try {
     await suDb.$queryRaw`SELECT 1`;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 

@@ -19,6 +19,7 @@ import {
   rebuildPlaygroundTurns,
 } from "@/modules/playground/sessions";
 import { listThreadTurnNotes } from "@/modules/playground/turn-notes";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { flowLogRow } from "../utils/flowlog";
 import { guardrailModel } from "../utils/scripted-models";
 
@@ -49,8 +50,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

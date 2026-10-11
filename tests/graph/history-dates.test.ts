@@ -28,6 +28,7 @@ import { countMessageTokens } from "@/graph/token-count";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
 import { readMemoryConfig } from "@/modules/memory/settings";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // The history the model reads carries, in front of each message a person sent, the date it was
@@ -329,8 +330,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

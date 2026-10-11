@@ -16,6 +16,7 @@ import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
 import type { FlowContext } from "@/modules/flowlog/service";
 import { synthesizeReply } from "@/modules/tts/service";
 import { TTS_DEFAULTS, type TtsConfig } from "@/modules/tts/settings";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogRow } from "../utils/flowlog";
 
@@ -35,8 +36,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

@@ -53,6 +53,41 @@ export function unreachableDb(
   ].join("\n");
 }
 
+// THE GATE'S SECOND HALF, for a refusal that comes AFTER it. The preload proves the database answered
+// once; a guarded file probes again at load, and a refusal there (Postgres at max_connections, SQLSTATE
+// 53300) swallowed as `dbUp = false` skips every `describe.skipIf(!dbUp)` block and exits 0 with no
+// trace in the log. Past the gate the database is REQUIRED, so this throws, and a module that throws at
+// load fails its file; only the opt-out keeps the skip. Returns `false` so the call site stays one
+// assignment, `dbUp = dbProbeFailed(err)`; biome-plugins/no-swallowed-db-probe.grit refuses the rest.
+export function dbProbeFailed(
+  err: unknown,
+  env: { [k: string]: string | undefined } = process.env,
+): false {
+  if (env[DB_GATE_OPT_OUT] === "1") return false;
+  // `pg` puts the SQLSTATE on `code` and leaves it out of the message; Prisma writes it into the
+  // message and puts its own code (P2010) on `code`. `severity` is what only a server error from `pg`
+  // carries, so it tells the two apart.
+  const { code, severity } = (err ?? {}) as {
+    code?: unknown;
+    severity?: unknown;
+  };
+  const message = oneLine(err);
+  const sqlstate =
+    severity !== undefined &&
+    typeof code === "string" &&
+    !message.includes(code)
+      ? ` (SQLSTATE ${code})`
+      : "";
+  throw new Error(
+    [
+      `tests: the test database answered at setup and refused this file's probe, so its database-backed tests would be SKIPPED and the run would still exit 0.`,
+      `  ${message}${sqlstate}`,
+      `  If it says "too many clients" (53300), Postgres is at max_connections: close what holds them or raise the limit.`,
+      `  To skip database-backed tests on purpose: ${DB_GATE_OPT_OUT}=1 bun test`,
+    ].join("\n"),
+  );
+}
+
 // COLLAPSED, not truncated to the first line: Prisma's driver errors start with an empty line, so line
 // one would print nothing. None of the failures a reader hits (bad password, closed port, unknown
 // host, missing database) echo the connection string, so no credential travels in here.

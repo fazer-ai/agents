@@ -27,6 +27,7 @@ import {
   tryResolveVaultEntry,
   updateVaultEntry,
 } from "@/modules/vault/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { codeOnly } from "@/tests/utils/source-text";
 
 // A `baseUrl` is only meaningful for the kinds whose catalog entry declares one. The runtime reads it
@@ -55,8 +56,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 

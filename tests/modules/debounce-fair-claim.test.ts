@@ -16,6 +16,7 @@ import {
   claimSql,
   enqueueJob,
 } from "@/modules/scheduler/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // The debounce lane is cross-tenant, and its claim shares the slots: each due row ranks by what its
 // tenant already has in flight plus its place in that tenant's own queue, and ties go to the older
@@ -39,8 +40,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

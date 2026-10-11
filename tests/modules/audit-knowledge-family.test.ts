@@ -21,6 +21,7 @@ import {
   rejectApprovalItem,
   updateKnowledgeBase,
 } from "@/modules/rag/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // THE KNOWLEDGE FAMILY, recorded by the service, so the console's REST routes leave the same rows as
 // MCP.
@@ -49,8 +50,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 

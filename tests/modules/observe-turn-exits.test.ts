@@ -5,6 +5,7 @@ import { encryptJson } from "@/api/lib/crypto";
 import { chatwootThreadId } from "@/graph/checkpointer";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { type ObserveDeps, runObserve } from "@/modules/observe/job";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { expectFallbackLines, graphDepsOf } from "../utils/fallback-lines";
 import { UsageReportingModel } from "../utils/scripted-models";
@@ -30,8 +31,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

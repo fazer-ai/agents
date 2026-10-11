@@ -4,6 +4,7 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { lockTimeoutOption } from "@/api/lib/pool-options";
 import config from "@/config";
 import { runScopedOn } from "@/lib/tenancy";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // A transaction's `timeout` has to bound how long it holds its connection, not only whether it
 // commits. Prisma checks it when a statement returns, so without Postgres enforcing it a statement
@@ -26,8 +27,8 @@ if (appUrl && suUrl) {
     await app.$queryRaw`SELECT 1`;
     await su.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 afterAll(async () => {

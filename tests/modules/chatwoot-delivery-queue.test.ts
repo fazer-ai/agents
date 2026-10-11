@@ -39,6 +39,7 @@ import {
 import type { ClaimedJob } from "@/modules/scheduler/service";
 import { getJobHandler } from "@/modules/scheduler/worker";
 import { generateRouteToken } from "@/modules/webhooks/inbound/route-token";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { until } from "../utils/poll";
 
@@ -284,8 +285,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

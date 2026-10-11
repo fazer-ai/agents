@@ -21,6 +21,7 @@ import {
   upsertJobRows,
 } from "@/modules/scheduler/service";
 import { registerJobHandler, runClaimed } from "@/modules/scheduler/worker";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { burnSchedulerJobId } from "../utils/scheduler";
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
@@ -39,8 +40,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

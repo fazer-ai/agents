@@ -11,6 +11,7 @@ import {
   turnOwnsThread,
   turnWaitDeadline,
 } from "@/graph/thread-claim";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // A turn whose process dies stops renewing its claim on the thread, and the claim's lease is the only
@@ -40,8 +41,8 @@ if (!process.env.TEST_APP_DATABASE_URL) {
   });
   try {
     await suDb.$queryRaw`SELECT 1`;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 

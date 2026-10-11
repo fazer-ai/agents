@@ -23,6 +23,7 @@ import {
 } from "@/graph/thread-claim";
 import { runScopedOn } from "@/lib/tenancy";
 import { sysCtx } from "@/modules/documents/issue";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { until as pollUntil } from "../utils/poll";
 
@@ -52,8 +53,8 @@ if (!process.env.TEST_APP_DATABASE_URL) {
   });
   try {
     await suDb.$queryRaw`SELECT 1`;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 

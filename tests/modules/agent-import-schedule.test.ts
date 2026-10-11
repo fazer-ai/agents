@@ -15,6 +15,7 @@ import {
   scheduleCanClose,
 } from "@/modules/business-hours/hours";
 import { outOfHoursGate } from "@/modules/chatwoot/webhook";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // The import writes the two schedule JSON columns straight through (`exportedBusinessHoursSchema`
 // takes them as `z.array(z.unknown())`), so a hand-edited bundle never answers to
@@ -38,8 +39,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

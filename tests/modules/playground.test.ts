@@ -20,6 +20,7 @@ import {
   runPlaygroundTurn,
   toPlaygroundInvokeError,
 } from "@/modules/playground/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { flowLogRows } from "../utils/flowlog";
 import {
   ScriptedCaptureModel,
@@ -42,8 +43,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

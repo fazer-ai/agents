@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { Client } from "pg";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // `users` is one row per PERSON, with the tenants in `tenant_users`. The migration MERGES rows:
 // every email present in several tenants becomes one person, and the row that stays is the one that
@@ -25,8 +26,8 @@ if (suUrl) {
     await su.query(`DROP ROLE IF EXISTS ${PROBE_OWNER}`);
     await su.query(`CREATE ROLE ${PROBE_OWNER} NOLOGIN`);
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 

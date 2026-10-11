@@ -11,6 +11,7 @@ import {
 } from "@/modules/agents/service";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { bindInbox } from "@/modules/chatwoot/management";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { withAuditTriggerFixture } from "../utils/pg-waits";
 
@@ -41,8 +42,8 @@ if (appUrl && suUrl) {
       SELECT current_user::text AS role`;
     appRole = me?.role ?? "";
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

@@ -13,6 +13,7 @@ import {
   bindInbox,
   unbindNeedsNothingRemote,
 } from "@/modules/chatwoot/management";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // An inbox deleted in Chatwoot WHILE an agent is bound: the unbind's set_agent_bot call 404s, and
@@ -35,8 +36,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

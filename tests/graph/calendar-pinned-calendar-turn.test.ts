@@ -6,6 +6,7 @@ import { encryptJson } from "@/api/lib/crypto";
 import { runAgentTurn } from "@/graph/runtime";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // A Calendar integration with ONE allowed calendar and a pinned slot grid (1h visits on the half
@@ -35,8 +36,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

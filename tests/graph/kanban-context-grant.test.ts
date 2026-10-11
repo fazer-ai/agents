@@ -9,6 +9,7 @@ import { CROSS_INBOX_CASE_DEFAULTS } from "@/modules/cross-inbox-case/settings";
 import { HANDOFF_DEFAULTS } from "@/modules/handoff/settings";
 import { SEND_IMAGE_DEFAULTS } from "@/modules/images/settings";
 import { KANBAN_DEFAULTS } from "@/modules/kanban/settings";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { clearFlowLog } from "../utils/flowlog";
 
 // The card snapshot (`kanban` on the native tools' ctx) is what update_kanban_task reads as
@@ -32,8 +33,8 @@ if (appUrl && suUrl) {
     await app.$queryRaw`SELECT 1`;
     await su.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 

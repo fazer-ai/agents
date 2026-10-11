@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { Client } from "pg";
 import { PrismaClient } from "@/../generated/prisma/client";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // WHAT THE MIGRATION SHIPS, asked of the file and of the catalog. It carries no data statement, and
 // that is under test too: `classifyStrandedDelivery` reads a legacy row by its EVENT NAME, sees
@@ -29,8 +30,8 @@ if (suUrl) {
     await prisma.$queryRaw`SELECT 1`;
     sql = await Bun.file(MIGRATION).text();
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const suDb = su as Client;

@@ -6,6 +6,7 @@ import {
   enqueueJob,
   enqueueJobUnlessClaimed,
 } from "@/modules/scheduler/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // `enqueueJobUnlessClaimed`, estado por estado: uma linha CLAIMED fica intocada, e todo
 // outro estado se arma exatamente como `enqueueJob` arma, que é o contrato que a varredura do
@@ -26,8 +27,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

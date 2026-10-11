@@ -4,6 +4,7 @@ import { SignJWT } from "jose";
 import { PrismaClient } from "@/../generated/prisma/client";
 import config from "@/config";
 import type { TenantContext } from "@/lib/tenancy";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { outboundUrl } from "@/tests/utils/outbound";
 import { mockFindUnique, setupPrismaMock } from "@/tests/utils/prisma-mock";
 
@@ -35,8 +36,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 

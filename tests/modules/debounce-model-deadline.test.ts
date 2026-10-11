@@ -10,6 +10,7 @@ import config from "@/config";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { flushDebounceJob } from "@/modules/debounce/handler";
 import { claimDueDebounceJobs, enqueueJob } from "@/modules/scheduler/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // At the effect the customer feels: with no fallback configured, a primary model call that never
@@ -35,8 +36,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

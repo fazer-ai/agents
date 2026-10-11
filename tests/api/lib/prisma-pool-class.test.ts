@@ -3,6 +3,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { routeByPoolClass } from "@/api/lib/prisma";
 import { runInPoolClass } from "@/lib/pool-class";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // The client every module imports resolves, on each use, to the pool of the work running now: work
 // that entered as background holds at most the background pool, and a turn still starts while every
@@ -23,8 +24,8 @@ if (appUrl) {
     await main.$queryRaw`SELECT 1`;
     await background.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 afterAll(async () => {

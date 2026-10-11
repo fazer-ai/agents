@@ -19,6 +19,7 @@ import {
   setConversationStatus,
 } from "@/modules/conversations/service";
 import { isFollowUpLive } from "@/modules/followups/eligibility";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { POLL_DEADLINE_MS } from "@/tests/utils/poll";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogRows } from "../utils/flowlog";
@@ -48,8 +49,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

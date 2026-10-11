@@ -13,6 +13,7 @@ import {
   CHANNEL_REDIRECT_DEFAULTS,
   type ChannelRedirectConfig,
 } from "@/modules/channel-redirect/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 describe("conversationUrl", () => {
@@ -84,8 +85,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

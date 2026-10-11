@@ -12,6 +12,7 @@ import config from "@/config";
 import type { TenantContext } from "@/lib/tenancy";
 import { createAgent } from "@/modules/agents/service";
 import { exportAgent, importAgent } from "@/modules/agents/transfer";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // An agent created while the server runs in development logs tool values from birth, so a fresh
 // local database does not start every test round by switching it on, agent by agent. Created
@@ -34,8 +35,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

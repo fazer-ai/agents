@@ -5,6 +5,7 @@ import { encryptJson } from "@/api/lib/crypto";
 import type { TenantContext } from "@/lib/tenancy";
 import { SETTINGS_CREDENTIAL_PATHS } from "@/modules/agents/credential-paths";
 import { vaultReferences } from "@/modules/vault/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // The reverse index behind "is this key still in use?", which the vault UI and the MCP both read
 // before offering to delete an entry. A settings path missing from that query reads as UNUSED, so the
@@ -27,8 +28,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

@@ -22,6 +22,7 @@ import {
 import { listThreadTurnNotes } from "@/modules/playground/turn-notes";
 import { transcribePlaygroundAudio } from "@/modules/stt/service";
 import { extractPlaygroundFile } from "@/modules/vision/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // The playground takes the caller's `TenantContext` all the way down, so the unknown-tenant check at
 // `runScopedOn` applies to it (docs/playground.md, docs/tenancy.md rule 5). A selector naming a
@@ -45,8 +46,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const suDb = su as PrismaClient;

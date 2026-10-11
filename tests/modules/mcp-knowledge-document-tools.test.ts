@@ -8,6 +8,7 @@ import {
 } from "@/modules/mcp/read";
 import { knowledgeDocumentUpdate } from "@/modules/mcp/write-knowledge";
 import { listDocuments } from "@/modules/rag/documents";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // A document can be read whole and edited in place through the MCP, and the list honours its `limit`.
 
@@ -27,8 +28,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

@@ -26,6 +26,7 @@ import {
   agentToolsSet,
   agentUpdate,
 } from "@/modules/mcp/write-agents";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // The same warnings the console's editor panel computes, asked for by something that is not a
 // browser. The state under test is the one an onboarding driven through MCP produces: a credential
@@ -51,8 +52,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const suDb = su as PrismaClient;

@@ -15,6 +15,7 @@ import {
 } from "@/modules/webhooks/outbound/subscriptions";
 import { sendWebhookTest } from "@/modules/webhooks/outbound/test";
 import { processOutboundBatch } from "@/modules/webhooks/outbound/worker";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { outboundUrl } from "../utils/outbound";
 import { POLL_DEADLINE_MS } from "../utils/poll";
 
@@ -45,8 +46,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 

@@ -7,6 +7,7 @@ import * as documents from "@/modules/rag/documents";
 import * as embeddings from "@/modules/rag/embeddings";
 import { EMBEDDING_DIM } from "@/modules/rag/embeddings";
 import * as ragService from "@/modules/rag/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // A search whose query embedding had to be asked again says so, so the slow turn it held up is
 // attributed to the provider on its own tool line instead of guessed at. Through the real
@@ -29,8 +30,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 

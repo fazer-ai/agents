@@ -23,6 +23,7 @@ import {
   createToolDefinition,
   updateToolDefinition,
 } from "@/modules/tool-definitions/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { clearFlowLog, flowLogRows } from "../utils/flowlog";
 
 // A tool whose response is expected to be cut can stop paging about it: the clip line is still
@@ -239,8 +240,8 @@ if (appUrl && suUrl) {
     await app.$queryRaw`SELECT 1`;
     await su.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

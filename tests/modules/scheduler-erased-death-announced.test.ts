@@ -5,6 +5,7 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { runScopedOn } from "@/lib/tenancy";
 import { announceDeadRecovery } from "@/modules/chatwoot/recover-delivery";
 import { revokeJobsByKeyPrefixOn } from "@/modules/scheduler/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // Quem apaga uma morte deve o anúncio dela. `revokeJobsByKeyPrefixOn` deleta a linha `DEAD` de um
 // kind `JOB_DELETE_ON_DONE` e devolve as mortes que ninguém anunciou; quem chamou anuncia depois que
@@ -32,8 +33,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const suDb = su as PrismaClient;

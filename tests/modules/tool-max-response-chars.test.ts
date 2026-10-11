@@ -15,6 +15,7 @@ import {
   updateToolDefinition,
 } from "@/modules/tool-definitions/service";
 import { runToolTest } from "@/modules/tool-definitions/test-run";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // An HTTP tool's own ceiling on what the model receives. The shape that needs it: a
 // catalog tool whose one job is a long description, 12,000 characters, with a field after it.
@@ -168,8 +169,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

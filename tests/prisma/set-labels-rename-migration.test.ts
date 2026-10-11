@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { Client } from "pg";
 import { NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
 import { normalizeToolName } from "@/graph/tools/toolName";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // Runs the ACTUAL migration file (a copy here would drift, and $executeRawUnsafe rejects multiple
 // statements). `assign_label` becomes `set_labels`, and the OLD name is stored in tenant rows that
@@ -25,8 +26,8 @@ if (suUrl) {
     await su.query("SELECT 1");
     sql = await Bun.file(MIGRATION).text();
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const suDb = su as Client;

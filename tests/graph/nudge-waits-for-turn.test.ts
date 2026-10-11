@@ -13,6 +13,7 @@ import { clearTurnOwning, markTurnOwning } from "@/graph/thread-claim";
 import { buildThreadStateGraph } from "@/graph/thread-state";
 import { withKeyedQueue } from "@/lib/locks";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { clearFlowLog, flowLogRows } from "../utils/flowlog";
 import { SlowReplyModel } from "../utils/scripted-models";
@@ -40,8 +41,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

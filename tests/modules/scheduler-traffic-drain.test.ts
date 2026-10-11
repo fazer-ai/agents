@@ -28,6 +28,7 @@ import {
   stopScheduler,
   unregisterJobHandler,
 } from "@/modules/scheduler/worker";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { until } from "@/tests/utils/poll";
 
 // The traffic-proportional kinds' drain (src/modules/scheduler/worker.ts, runTrafficTick): how many
@@ -50,8 +51,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

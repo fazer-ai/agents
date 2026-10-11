@@ -3,6 +3,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { Client } from "pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { ENTER_FLEET_ROLE_SQL } from "@/lib/tenancy/fleet-role";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // Runs the ACTUAL migration file against the test database. The dashboard's "N conversations predate
@@ -37,8 +38,8 @@ if (suUrl && appUrl) {
     await prisma.$queryRaw`SELECT 1`;
     sql = await Bun.file(MIGRATION).text();
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const suDb = su as Client;

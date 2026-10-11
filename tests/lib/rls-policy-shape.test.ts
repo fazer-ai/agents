@@ -7,6 +7,7 @@ import {
   FLEET_ROLE_FN,
 } from "@/lib/tenancy/fleet-role";
 import { asSuperAdminOn, runScopedOn } from "@/lib/tenancy/multi-tenant";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // The policy every tenant-scoped table carries decides whether a tenant index is reachable at all:
 // a column-free branch ORed with the tenant predicate keeps the planner from turning either side
@@ -32,8 +33,8 @@ if (appUrl && suUrl) {
     app = makeClient(appUrl);
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 

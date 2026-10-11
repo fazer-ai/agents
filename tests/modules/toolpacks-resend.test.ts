@@ -7,6 +7,7 @@ import type {
   IntegrationSelection,
   ToolpackCtx,
 } from "@/modules/integrations/toolpacks/types";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // A fetch stub that records the request and returns a canned JSON response.
 function stubFetch(status: number, json: unknown) {
@@ -167,8 +168,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

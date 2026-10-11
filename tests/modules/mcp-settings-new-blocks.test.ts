@@ -3,6 +3,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import { agentSettingsGet, agentSettingsSet } from "@/modules/mcp/write";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // The blocks MCP writes, end to end: WRITTEN through it and read back. Asserted against the stored
 // bag and against agent_settings_get, not against the write's return value: a set that answers ok
@@ -26,8 +27,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const suDb = su as PrismaClient;

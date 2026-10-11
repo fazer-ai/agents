@@ -6,6 +6,7 @@ import {
   settleFlowEvents,
 } from "@/modules/flowlog/scheduled";
 import { emitFlowEvent } from "@/modules/flowlog/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { POLL_DEADLINE_MS } from "@/tests/utils/poll";
 
 // EMPTYING THE TABLE IS NOT THE SAME AS IT STAYING EMPTY. `emitFlowEvent` is fire-and-forget
@@ -27,8 +28,8 @@ if (appUrl && suUrl) {
     });
     await su.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const suDb = su as PrismaClient;

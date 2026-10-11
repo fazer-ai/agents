@@ -13,6 +13,7 @@ import {
   verifyOutboundSignature,
 } from "@/modules/webhooks/outbound/signing";
 import { processOutboundBatch } from "@/modules/webhooks/outbound/worker";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // ── integration (real DB) ──
 // Uses the non-superuser app role for processOutboundBatch (realistic RLS: the claim runs
@@ -35,8 +36,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

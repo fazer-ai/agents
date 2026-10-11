@@ -5,6 +5,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { SKIP_REPLY_MARK, SKIP_REPLY_REASON_KEY } from "@/graph/silence";
 import { ToolFlowLogger } from "@/graph/tool-flowlog";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { clearFlowLog, flowLogRows } from "../utils/flowlog";
 
 // The dashboard counts the agent's silences by the reason it picked. The reason is a
@@ -27,8 +28,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

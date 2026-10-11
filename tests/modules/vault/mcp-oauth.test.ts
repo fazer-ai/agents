@@ -18,6 +18,7 @@ import {
   registerClient,
 } from "@/modules/vault/mcp-oauth";
 import { createVaultEntry } from "@/modules/vault/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 const OPTS: OAuthNetOpts = { allowPrivate: true, allowHttp: true };
 
@@ -288,8 +289,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 

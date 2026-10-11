@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { Client } from "pg";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // What the migration ships, which no behavioural test reaches: the FILE for what the data statement
 // says, the CATALOG for what a database built from it holds. `docs/deploy.md` supports a rolling
@@ -21,8 +22,8 @@ if (suUrl) {
     await su.query("SELECT 1");
     sql = await Bun.file(MIGRATION).text();
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const suDb = su as Client;

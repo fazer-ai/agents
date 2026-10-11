@@ -13,6 +13,7 @@ import {
 import { listExecutionLogs } from "@/modules/flowlog/read";
 import type { FlowContext } from "@/modules/flowlog/service";
 import { withFlowStage } from "@/modules/flowlog/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { flowLogRow } from "../utils/flowlog";
 import { outboundUrl } from "../utils/outbound";
 
@@ -48,8 +49,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

@@ -10,6 +10,7 @@ import { mirroredContactIdentifier } from "@/modules/chatwoot/contact-identifier
 import { mirrorChatwootEvent } from "@/modules/chatwoot/mirror";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
 import { normalizeToolShapes } from "@/modules/tool-definitions/normalize";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // The Chatwoot contact `identifier`, from the webhook through the contact mirror to the variables
@@ -31,8 +32,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

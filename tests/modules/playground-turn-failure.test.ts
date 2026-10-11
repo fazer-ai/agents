@@ -14,6 +14,7 @@ import {
   runPlaygroundFollowup,
   runPlaygroundTurn,
 } from "@/modules/playground/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { clearFlowLog, flowLogRows } from "../utils/flowlog";
 
 // A playground turn that fails says why, or where the reason is, even for an error raised while the
@@ -37,8 +38,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

@@ -9,6 +9,7 @@ import {
   processChatwootDelivery,
   turnHadTheWords,
 } from "@/modules/chatwoot/webhook";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // The one question the late-media gate asks of a turn: did its input carry the customer's WORDS, or
@@ -58,8 +59,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

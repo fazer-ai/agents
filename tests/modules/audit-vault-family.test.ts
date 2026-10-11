@@ -10,6 +10,7 @@ import {
   persistRefreshedOAuthSecret,
   updateVaultEntry,
 } from "@/modules/vault/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { underConcurrentEdit } from "@/tests/utils/pg-waits";
 
 // THE VAULT FAMILY: creating, replacing the value behind a live reference (`PUT /v1/vault/:id`) and
@@ -39,8 +40,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 

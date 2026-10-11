@@ -5,6 +5,7 @@ import config from "@/config";
 import { registerFlowlogRetentionHandler } from "@/modules/flowlog/retention";
 import type { ClaimedJob } from "@/modules/scheduler/service";
 import { getJobHandler, type JobResult } from "@/modules/scheduler/worker";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { clearFlowLog, flowLogRows } from "@/tests/utils/flowlog";
 import { burnSchedulerJobId } from "../utils/scheduler";
 
@@ -27,8 +28,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { ENTER_FLEET_ROLE_SQL } from "@/lib/tenancy/fleet-role";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // The original `follow_up_armed_at` backfill (20260807032257) ends in a bare
 // `UPDATE "agents" SET "follow_up_armed_at" = NOW()`. `agents` carries FORCE ROW LEVEL SECURITY, which
@@ -26,8 +27,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

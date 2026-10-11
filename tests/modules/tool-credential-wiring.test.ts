@@ -16,6 +16,7 @@ import {
   readVaultRefId,
   updateVaultEntry,
 } from "@/modules/vault/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // An HTTP tool may reference a `generic` credential no template interpolates (it may not be wired
 // yet), but the request then goes out UNAUTHENTICATED and the 401/403 reads as a bad credential, so
@@ -1363,8 +1364,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 

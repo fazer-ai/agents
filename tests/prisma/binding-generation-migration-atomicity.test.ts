@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { Client } from "pg";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // Two migrations leave an invariant half-applied if they stop in the middle, and `migrate deploy`
 // runs a migration OUTSIDE a transaction, so each opens its own. Half of COLUMNS_MIGRATION makes the
@@ -25,8 +26,8 @@ if (suUrl) {
     await su.connect();
     await su.query("SELECT 1");
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 

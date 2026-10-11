@@ -8,6 +8,7 @@ import {
   createMcpConnection,
   discoverMcpTools,
 } from "@/modules/mcp-connections/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // The console's discovery, end to end through the stored connection: a server it cannot reach
 // comes back as the 502 the route answers, with the reason by kind, not as an unhandled error.
@@ -33,8 +34,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

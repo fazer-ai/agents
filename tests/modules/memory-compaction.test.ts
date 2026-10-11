@@ -40,6 +40,7 @@ import { runScopedOn } from "@/lib/tenancy";
 import { type CompactPayload, runCompaction } from "@/modules/memory/compact";
 import { MEMORY_HEAD_MAX_ATTENDANCES } from "@/modules/memory/cut";
 import type { JobResult } from "@/modules/scheduler/worker";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { withJobHandler } from "@/tests/utils/job-registry";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogCount, flowLogRow } from "../utils/flowlog";
@@ -62,8 +63,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

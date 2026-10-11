@@ -3,6 +3,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { authorizeContact } from "@/modules/contact-auth/service";
 import type { ContactAuthConfig } from "@/modules/contact-auth/settings";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // `timeoutMs` says it covers every step that waits. The credential is resolved BEFORE the request,
@@ -26,8 +27,8 @@ if (appUrl && suUrl) {
     });
     await su.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const suDb = su as PrismaClient;

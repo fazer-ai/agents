@@ -28,6 +28,7 @@ import {
   SCHEDULER_STALE_MS,
   unregisterJobHandler,
 } from "@/modules/scheduler/worker";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // A scheduler job runs under a deadline below the stale window: the reaper re-pends a CLAIMED row
 // once its claim is older than that window, and a hung handler would otherwise hold its slot and run
@@ -52,8 +53,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

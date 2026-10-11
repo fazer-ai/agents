@@ -10,6 +10,7 @@ import { getCheckpointer } from "@/graph/checkpointer";
 import { owesHandbackNote } from "@/graph/handback";
 import { buildThreadStateGraph, THREAD_STATE_NODE } from "@/graph/thread-state";
 import { HANDOFF_DONE_PREFIX, HANDOFF_TOOL_NAME } from "@/graph/tools/catalog";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // THE DECISION READS A PERSISTED MESSAGE, not the one it was handed. `owesHandbackNote` matches the
 // tool NAME as well as the result's prefix, and the name is a constructor field that must survive
@@ -26,8 +27,8 @@ if (appUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 

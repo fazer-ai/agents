@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Client } from "pg";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // The eight Langfuse-era columns of `spend_cost_snapshots` are gone: nothing writes or reads them, and
 // the snapshot table keeps only what the poll and the console use. History in docs/spend-ceiling.md.
@@ -39,8 +40,8 @@ if (suUrl) {
     await su.connect();
     await su.query("SELECT 1");
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const suDb = su as Client;

@@ -11,6 +11,7 @@ import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { reengageConversation } from "@/modules/conversations/reengage";
 import { flushDebounceJob } from "@/modules/debounce/handler";
 import type { ClaimedJob } from "@/modules/scheduler/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { clearFlowLog, flowLogRows } from "@/tests/utils/flowlog";
 import {
   assistantCalling,
@@ -41,8 +42,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

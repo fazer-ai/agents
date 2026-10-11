@@ -8,6 +8,7 @@ import {
   normalizeChatwootBaseUrl,
   setConnectedAccounts,
 } from "@/modules/chatwoot/management";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance, withRunNamespace } from "../utils/chatwoot";
 
 // A Chatwoot ACCOUNT (server + accountId) is globally unique to one tenant, even though a server can
@@ -28,8 +29,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

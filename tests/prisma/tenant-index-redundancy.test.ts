@@ -1,6 +1,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { Client } from "pg";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // A BARE `@@index([tenantId])` BESIDE A COMPOSITE THAT LEADS WITH `tenantId` is refused. A btree
 // serves any leading prefix of its columns, so `(tenant_id, x)` already answers
@@ -118,8 +119,8 @@ if (suUrl) {
     await su.connect();
     await su.query("SELECT 1");
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const suDb = su as Client;

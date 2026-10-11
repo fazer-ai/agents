@@ -18,6 +18,7 @@ import {
   registerInboundSweepHandlers,
   sweepStrandedInbound,
 } from "@/modules/webhooks/inbound/sweep";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { clearFlowLog, flowLogRows } from "@/tests/utils/flowlog";
 
 // The receptor acks first and dispatches detached, so a death in between leaves the row PENDING or
@@ -42,8 +43,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

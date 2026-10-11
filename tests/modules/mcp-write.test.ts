@@ -21,6 +21,7 @@ import {
   tenantUpdate,
 } from "@/modules/mcp/write";
 import { langfuseConnect } from "@/modules/mcp/write-settings";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // MCP write tools: the security gate (scope + tenant target) is DB-free and always runs; the
 // dry-run/apply/audit path and cross-tenant fencing need a real Postgres (skipIf).
@@ -392,8 +393,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

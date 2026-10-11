@@ -15,6 +15,7 @@ import {
   readRouteTokenCache,
   writeRouteTokenCache,
 } from "@/modules/chatwoot/route-token-cache";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // WHO CHANGES WHAT A ROUTE TOKEN RESOLVES TO? That is the question this file polices, and the answer
@@ -38,8 +39,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

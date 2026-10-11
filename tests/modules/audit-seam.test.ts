@@ -16,6 +16,7 @@ import {
   businessHoursDelete,
   businessHoursUpdate,
 } from "@/modules/mcp/write-settings";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { countingBase } from "../utils/counting-base";
 
 // The audit trail belongs to the service, not to a transport: a row written by a transport after the
@@ -44,8 +45,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 

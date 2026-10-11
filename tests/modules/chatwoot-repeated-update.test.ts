@@ -15,6 +15,7 @@ import {
   generateRouteToken,
   hashRouteToken,
 } from "@/modules/webhooks/inbound/route-token";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // A delivery-status change (source_id, delivered, read) re-sends the whole message as
@@ -38,8 +39,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

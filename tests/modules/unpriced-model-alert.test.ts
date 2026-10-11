@@ -13,6 +13,7 @@ import {
   announceUnpricedModel,
   resetUnpricedAnnouncements,
 } from "@/modules/pricing/unpriced-alert";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { clearFlowLog, flowLogRows } from "../utils/flowlog";
 
 // A MODEL THE LEDGER COULD NOT PRICE IS SAID OUT LOUD, once per model per month per
@@ -36,8 +37,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const suDb = su as PrismaClient;

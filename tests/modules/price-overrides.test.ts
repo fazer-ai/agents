@@ -20,6 +20,7 @@ import {
   getTenantSettings,
   updatePriceOverrides,
 } from "@/modules/tenant-settings/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // A tenant's own prices for model calls, consulted before the price table when a ledger
 // row is priced, and recorded in the row so a price corrected later can find the rows it wrote.
@@ -233,8 +234,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

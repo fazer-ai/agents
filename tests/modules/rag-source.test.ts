@@ -35,6 +35,7 @@ import {
   syncKnowledgeSource,
 } from "@/modules/rag/source";
 import { insertChunks, searchChunks } from "@/modules/rag/sql";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // A knowledge base mirrors a Chatwoot help center portal, keyed by article id, with the
 // link owned by the platform. The portal here is a fake `fetch` that answers the public listing the
@@ -56,8 +57,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

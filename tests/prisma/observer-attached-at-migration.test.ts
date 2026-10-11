@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Client } from "pg";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // The attach window's column, and its backfill, which no behavioural test sees. Every
 // `inbox_observers` row that predates the column was written after Chatwoot agreed, so it must
@@ -22,8 +23,8 @@ if (suUrl) {
     await su.query("SELECT 1");
     sql = await Bun.file(MIGRATION).text();
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const suDb = su as Client;

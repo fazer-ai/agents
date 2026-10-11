@@ -46,6 +46,7 @@ import { keyedQueueTail, withKeyedQueue } from "@/lib/locks";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { settleFlowEvents } from "@/modules/flowlog/scheduled";
 import { selectClosedPrefix } from "@/modules/memory/cut";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { withJobHandler } from "@/tests/utils/job-registry";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { expectFallbackLines, graphDepsOf } from "../utils/fallback-lines";
@@ -294,8 +295,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

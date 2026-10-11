@@ -9,6 +9,7 @@ import {
   updateLangfuse,
 } from "@/modules/tenant-settings/service";
 import { formatVaultRef } from "@/modules/vault/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // ── unit: schema parser ignores legacy baseUrl in stored JSON ──
 describe("parseLangfuseSettings", () => {
@@ -68,8 +69,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const suDb = su as PrismaClient;

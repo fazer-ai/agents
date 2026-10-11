@@ -4,6 +4,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { SignJWT } from "jose";
 import { PrismaClient, type UserRole } from "@/../generated/prisma/client";
 import config from "@/config";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { personData } from "@/tests/utils/person";
 
 // The consent DECISION, driven through its own door.
@@ -31,8 +32,8 @@ if (suUrl && appUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const suDb = su as PrismaClient;

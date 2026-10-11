@@ -21,6 +21,7 @@ import {
   scopesForRole,
   verifyAccessToken,
 } from "@/modules/mcp/oauth/tokens";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { personData } from "@/tests/utils/person";
 
 // The fleet principal these SUPER_ADMIN-only functions take. It names the actor on the row each of
@@ -73,8 +74,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

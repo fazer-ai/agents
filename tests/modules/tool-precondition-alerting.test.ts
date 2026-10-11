@@ -9,6 +9,7 @@ import {
 import type { ToolPrecondition } from "@/modules/agents/tool-preconditions";
 import type { FlowContext } from "@/modules/flowlog/service";
 import { writeFlowEvent } from "@/modules/flowlog/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { flowLogCount } from "../utils/flowlog";
 
 // A precondition refusing a call does NOT page an alert channel: the rule doing its job is not an
@@ -27,8 +28,8 @@ if (appUrl && suUrl) {
     });
     await su.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const suDb = su as PrismaClient;

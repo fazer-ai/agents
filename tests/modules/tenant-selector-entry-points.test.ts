@@ -47,6 +47,7 @@ import {
   searchKnowledge,
   updateKnowledgeBase,
 } from "@/modules/rag/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { withoutComments } from "@/tests/utils/source-text";
 
 // The console's knowledge/RAG, experiments, integrations and documents controllers hand their modules
@@ -72,8 +73,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const suDb = su as PrismaClient;

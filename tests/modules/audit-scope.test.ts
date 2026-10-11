@@ -4,6 +4,7 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { ForbiddenError } from "@/lib/errors";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { listAudit, recordAudit } from "@/modules/audit/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { syntheticAction } from "../utils/audit-action";
 
 // WHICH TRAIL THE READ ANSWERS FOR. Rows keyed to no tenant (`tenant.create`, `mcp_token.revoke`,
@@ -33,8 +34,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 

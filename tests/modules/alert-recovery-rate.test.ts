@@ -10,6 +10,7 @@ import {
   type FlowEvent,
   writeFlowEvent,
 } from "@/modules/flowlog/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { outboundUrl } from "../utils/outbound";
 
 // A RECOVERY THAT ENDED WELL IS A RATE, NOT A PAGE. On a healthy day a stranded delivery is rare, and
@@ -98,8 +99,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

@@ -15,6 +15,7 @@ import { HANDOFF_DEFAULTS } from "@/modules/handoff/settings";
 import { SEND_IMAGE_DEFAULTS } from "@/modules/images/settings";
 import { registerToolpack } from "@/modules/integrations/toolpacks";
 import { KANBAN_DEFAULTS } from "@/modules/kanban/settings";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // The slow-tool ack is the one customer-facing write a tool makes on its own, and its send is a wait
 // after the graph's ask at the tool boundary. A run called off inside it (e.g. the operator's flip
@@ -30,8 +31,8 @@ if (appUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

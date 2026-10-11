@@ -43,6 +43,7 @@ import {
   enqueueJob,
   retireJobsByDedupeKey,
 } from "@/modules/scheduler/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 import {
   clearFlowLog,
   flowLogCount,
@@ -78,8 +79,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

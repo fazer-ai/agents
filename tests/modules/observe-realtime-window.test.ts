@@ -28,6 +28,7 @@ import {
   stopScheduler,
   unregisterJobHandler,
 } from "@/modules/scheduler/worker";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { POLL_DEADLINE_MS } from "@/tests/utils/poll";
 
 // The observer's burst window down to ZERO: what the reader keeps, what the write
@@ -151,8 +152,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

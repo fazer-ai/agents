@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   DB_GATE_OPT_OUT,
+  dbProbeFailed,
   missingDbConfig,
   PROBE_BACKSTOP_MS,
   PROBE_DEADLINE_MS,
@@ -208,6 +209,58 @@ describe("the probe's deadline", () => {
   });
 });
 
+// A guarded file's own probe runs AFTER the gate, at module load, where a swallowed refusal (Postgres
+// at max_connections) skips the file in silence. The decision is proved here; the run below proves a
+// refused probe fails its file.
+describe("a probe refused after the gate", () => {
+  // Shaped like what each driver throws for SQLSTATE 53300: `pg` keeps the code off the message,
+  // Prisma writes it into the message and puts its own P2010 on `code`.
+  const pgRefusal = Object.assign(
+    new Error("sorry, too many clients already"),
+    { code: "53300", severity: "FATAL" },
+  );
+  const prismaRefusal = Object.assign(
+    new Error(
+      "\nInvalid `prisma.$queryRaw()` invocation:\n\n\nRaw query failed. Code: `53300`. Message: `sorry, too many clients already`",
+    ),
+    { code: "P2010" },
+  );
+
+  test("past the gate it throws, saying the run would have been green", () => {
+    expect(() => dbProbeFailed(pgRefusal, {})).toThrow("would still exit 0");
+    expect(() => dbProbeFailed(prismaRefusal, {})).toThrow(
+      "refused this file's probe",
+    );
+  });
+
+  test("the refusal's code reaches the message, from either driver, once", () => {
+    const thrown = (err: unknown) => {
+      try {
+        dbProbeFailed(err, {});
+      } catch (e) {
+        return (e as Error).message;
+      }
+      throw new Error("dbProbeFailed did not throw");
+    };
+    const fromPg = thrown(pgRefusal);
+    expect(fromPg).toContain(
+      "sorry, too many clients already (SQLSTATE 53300)",
+    );
+    const fromPrisma = thrown(prismaRefusal);
+    expect(fromPrisma).toContain("Code: `53300`");
+    expect(fromPrisma).not.toContain("SQLSTATE P2010");
+    expect(fromPrisma).not.toContain("\n\n");
+  });
+
+  test("under the opt-out it keeps the skip", () => {
+    expect(dbProbeFailed(pgRefusal, { [DB_GATE_OPT_OUT]: "1" })).toBe(false);
+    // NOTE: only the exact value, as for the gate itself.
+    expect(() =>
+      dbProbeFailed(pgRefusal, { [DB_GATE_OPT_OUT]: "0" }),
+    ).toThrow();
+  });
+});
+
 // The gate is a PRELOAD, so the tests above prove the decision and these prove what ships: a real
 // `bun test` invocation with a broken environment refusing to run. Only this level sees the preload
 // asking a different question than the guarded files do.
@@ -219,12 +272,12 @@ describe("the gate, as a run", () => {
   const suUrl = process.env.MIGRATION_DATABASE_URL as string;
   const appUrl = process.env.TEST_APP_DATABASE_URL as string;
 
-  async function run(env: Record<string, string>) {
+  async function run(env: Record<string, string>, file = noop) {
     // The opt-out is stripped from the INHERITED environment and only set by a caller that
     // means it. Otherwise a parent run started with ALLOW_NO_DB=1 would hand it to every child, and
     // the refusal these tests watch for would never happen.
     const { [DB_GATE_OPT_OUT]: _optOut, ...inherited } = process.env;
-    const proc = Bun.spawn(["bun", "test", noop], {
+    const proc = Bun.spawn(["bun", "test", file], {
       cwd: repoRoot,
       env: { ...inherited, ...env },
       stdout: "pipe",
@@ -257,6 +310,46 @@ describe("the gate, as a run", () => {
     },
     60_000,
   );
+
+  // THE REFUSAL AFTER THE GATE, as a run: the gate passes on this run's own database, and the fixture
+  // file's probe is pointed where nothing listens, standing in for a Postgres that answered at setup
+  // and is at max_connections by the time the file loads.
+  const refusedFixture = new URL(
+    "../utils/db-probe-refused.ts",
+    import.meta.url,
+  ).pathname;
+  const nothingListens = "postgresql://u:p@127.0.0.1:1/nothing_test";
+
+  test.skipIf(process.env[DB_GATE_OPT_OUT] === "1")(
+    "a probe refused after the gate fails its file instead of skipping it",
+    async () => {
+      const { code, output } = await run(
+        {
+          TEST_MIGRATION_DATABASE_URL: suUrl,
+          TEST_APP_DATABASE_URL: appUrl,
+          DB_PROBE_REFUSED_URL: nothingListens,
+        },
+        refusedFixture,
+      );
+      expect(code).not.toBe(0);
+      expect(output).toContain("refused this file's probe");
+      expect(output).not.toContain("1 skip");
+    },
+    60_000,
+  );
+
+  test("under the opt-out the same refusal still skips, and the run is green", async () => {
+    const { code, output } = await run(
+      {
+        [DB_GATE_OPT_OUT]: "1",
+        DB_PROBE_REFUSED_URL: nothingListens,
+      },
+      refusedFixture,
+    );
+    expect(code).toBe(0);
+    expect(output).toContain("1 skip");
+    expect(output).toContain("0 fail");
+  }, 60_000);
 
   test("the opt-out disarms the probe too, not only the variable check", async () => {
     const { code, output } = await run({

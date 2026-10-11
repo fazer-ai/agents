@@ -7,6 +7,7 @@ import { getKpis } from "@/modules/analytics/service";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // Chatwoot's first-response SLA, asked where it is WRITTEN FROM: the real receiver
@@ -33,8 +34,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

@@ -70,6 +70,7 @@ import { GuardrailHandoffFailedError } from "@/modules/guardrails/handoff";
 import { readGuardrailHealth } from "@/modules/guardrails/health";
 import { selectClosedPrefix } from "@/modules/memory/cut";
 import { SPOKEN_NOTICE_DEFAULT } from "@/modules/tts/settings-shared";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { expectFallbackLines, graphDepsOf } from "../utils/fallback-lines";
 import { flowLogRow, flowLogRows } from "../utils/flowlog";
@@ -120,8 +121,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

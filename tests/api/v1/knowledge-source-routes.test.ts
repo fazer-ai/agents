@@ -4,6 +4,7 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import type { TenantContext } from "@/lib/tenancy";
 import { generateApiKey } from "@/modules/api-keys/verify";
 import type { SourceInput } from "@/modules/rag/source";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { setupPrismaMock } from "@/tests/utils/prisma-mock";
 
 // The three REST routes of a knowledge base source, exercised at the door: who may call
@@ -31,8 +32,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 

@@ -12,6 +12,7 @@ import { reconcileMirrorFromLive } from "@/modules/chatwoot/reconcile";
 import { recoverStrandedDelivery } from "@/modules/chatwoot/recover-delivery";
 import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
 import { setConversationStatus } from "@/modules/conversations/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // The hooks a transition to `resolved` owes (memory compaction, the redirect ladder's cancel) run from
@@ -36,8 +37,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

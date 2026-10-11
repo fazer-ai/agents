@@ -14,6 +14,7 @@ import { encryptJson } from "@/api/lib/crypto";
 import { OPERATOR_EVENT_NOTE_PREFIX, runAgentNudge } from "@/graph/nudge";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { clearContactAuthState } from "@/modules/contact-auth/state";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { countingBase } from "../utils/counting-base";
 import { PromptCapturingModel } from "../utils/scripted-models";
@@ -39,8 +40,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

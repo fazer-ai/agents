@@ -3,6 +3,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { SignJWT } from "jose";
 import { PrismaClient } from "@/../generated/prisma/client";
 import config from "@/config";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { mockFindUnique, setupPrismaMock } from "@/tests/utils/prisma-mock";
 
 // The REST read of an agent answers the execution limits the runtime enforces, next to the stored
@@ -29,8 +30,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 

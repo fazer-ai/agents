@@ -4,6 +4,7 @@ import {
   OUTLIVES_SET_ROLE,
   RLS_DEFEATING,
 } from "@/lib/tenancy/privileged-reach";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // `scripts/db-bootstrap.ts` and `scripts/db-bootstrap.sql` provision the same thing by two routes:
 // the first runs unattended on every container boot, the second is the by-hand psql equivalent for
@@ -231,8 +232,8 @@ if (suUrl) {
   try {
     pg = new Client({ connectionString: suUrl });
     await pg.connect();
-  } catch {
-    pg = undefined;
+  } catch (err) {
+    pg = dbProbeFailed(err) || undefined;
   }
 }
 afterAll(async () => {

@@ -15,6 +15,7 @@ import type { FlowContext } from "@/modules/flowlog/service";
 import { HANDOFF_DEFAULTS } from "@/modules/handoff/settings";
 import { SEND_IMAGE_DEFAULTS } from "@/modules/images/settings";
 import { KANBAN_DEFAULTS } from "@/modules/kanban/settings";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { clearFlowLog, flowLogRows } from "../utils/flowlog";
 
 // ── A TOOL DROPPED FOR A DUPLICATE NAME HAS TO SAY SO WHERE THE OPERATOR LOOKS ──
@@ -41,8 +42,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

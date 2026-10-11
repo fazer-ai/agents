@@ -12,6 +12,7 @@ import {
   revokeJobsByKeyPrefixOn,
 } from "@/modules/scheduler/service";
 import { announceReaped } from "@/modules/scheduler/worker";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { clearFlowLog, flowLogRows } from "@/tests/utils/flowlog";
 
 // A morte que outro apagou (docs/logs.md, "A missing job row cannot say whether its death was
@@ -37,8 +38,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

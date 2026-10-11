@@ -4,6 +4,7 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { buildApp } from "@/app";
 import config from "@/config";
 import { runMetricsScoped } from "@/modules/analytics/budget";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // A metrics request has one budget, counted from when the request arrived: whatever it spent before
 // the read (authentication waiting on the metrics pool, an earlier read of the same request) is gone
@@ -20,8 +21,8 @@ if (appUrl) {
     });
     await db.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 afterAll(async () => {

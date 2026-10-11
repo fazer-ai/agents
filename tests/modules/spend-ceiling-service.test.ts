@@ -20,6 +20,7 @@ import {
   spendUsedInMonth,
 } from "@/modules/spend-ceiling/service";
 import { updateSpendCeiling } from "@/modules/tenant-settings/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // What the gate READS: the month's cost as the poll last summed it from the ledger, one row per
 // (tenant, source, month), never the ledger itself. The rule is proved without a database in
@@ -45,8 +46,8 @@ if (!process.env.TEST_APP_DATABASE_URL) {
   });
   try {
     await suDb.$queryRaw`SELECT 1`;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 

@@ -16,6 +16,7 @@ import { exportAgent, importAgent } from "@/modules/agents/transfer";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import { agentSettingsSet, promptSet } from "@/modules/mcp/write";
 import { agentUpdate } from "@/modules/mcp/write-agents";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { underConcurrentEdit } from "@/tests/utils/pg-waits";
 
 // The agent-configuration trail, recorded by the service, so every transport (console REST, MCP,
@@ -44,8 +45,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 

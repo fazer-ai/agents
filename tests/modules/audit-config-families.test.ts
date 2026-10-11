@@ -42,6 +42,7 @@ import {
   updateToolDefinition,
 } from "@/modules/tool-definitions/service";
 import { createVaultEntry, updateVaultEntry } from "@/modules/vault/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { outboundUrl } from "../utils/outbound";
 import { until } from "../utils/poll";
 
@@ -71,8 +72,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 

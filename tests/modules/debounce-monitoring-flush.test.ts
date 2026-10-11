@@ -9,6 +9,7 @@ import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { flushDebounceJob } from "@/modules/debounce/handler";
 import { debounceDedupeKey } from "@/modules/debounce/service";
 import { monthStart } from "@/modules/spend-ceiling/decide";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // A DEBOUNCE job armed for a PRODUCTION agent, flushed after the operator flipped the agent to
@@ -34,8 +35,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

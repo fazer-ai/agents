@@ -5,6 +5,7 @@ import { loadToolSelections } from "@/graph/tools/assemble";
 import { loadMcpToolsForAgent } from "@/graph/tools/mcp";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { replaceAgentToolSelections } from "@/modules/agents/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // Which of two tools contesting one name gets the plain name (and which toolpack instance survives
 // `dropDuplicateToolNames`) must not move when the operator re-saves the grants: the read is
@@ -29,8 +30,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

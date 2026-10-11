@@ -1,6 +1,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { Client } from "pg";
 import { FLEET_ROLE_FN } from "@/lib/tenancy/fleet-role";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // The tenant-policy split migration is driven off the CATALOG rather than a list of tables, since a
 // list goes stale. The cost is one failure mode: a loop over a catalog that does not look the way it
@@ -22,8 +23,8 @@ if (suUrl) {
     await su.connect();
     await su.query("SELECT 1");
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 

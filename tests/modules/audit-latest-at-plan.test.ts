@@ -1,6 +1,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // `latestAt` IN CONSTANT TIME ON ALL THREE TRAILS: every audit read reports the newest row of its
 // trail on every page. The tenant trail walks `audit_logs_tenant_id_created_at_idx` backwards (RLS
@@ -21,8 +22,8 @@ if (suUrl) {
     });
     await su.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const suDb = su as PrismaClient;

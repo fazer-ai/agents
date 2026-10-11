@@ -9,6 +9,7 @@ import {
   readOutOfOfficeInboxes,
 } from "@/modules/chatwoot/management";
 import { chatwootAutoRepliesOutOfHours } from "@/modules/chatwoot/out-of-office";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // Two products can both answer out of hours on the same inbox, on schedules neither console shows;
 // this reading surfaces Chatwoot's side of it.
@@ -60,8 +61,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const suDb = su as PrismaClient;

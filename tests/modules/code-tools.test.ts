@@ -22,6 +22,7 @@ import {
 } from "@/modules/documents/templates";
 import { lockToolNames } from "@/modules/tool-definitions/namespace";
 import { createToolDefinition } from "@/modules/tool-definitions/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { waitUntilBlocked } from "@/tests/utils/pg-waits";
 
 // The operator-authored code tool's service: the row is the operator's, invalid code SAVES with a
@@ -44,8 +45,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

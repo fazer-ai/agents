@@ -13,6 +13,7 @@ import {
   updateDocumentTemplate,
 } from "@/modules/documents/templates";
 import { issuedDocumentList } from "@/modules/mcp/read";
+import { dbProbeFailed } from "@/tests/db-gate";
 
 // The issued list answers "the customer is calling about ORC-0005": a search over the printed number
 // (as the customer reads it) or the title, across every document of the tenant and not the page on
@@ -37,8 +38,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

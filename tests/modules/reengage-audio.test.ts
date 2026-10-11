@@ -18,6 +18,7 @@ import type { TenantContext } from "@/lib/tenancy";
 import { clearMediaAnnotations } from "@/modules/chatwoot/annotations";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { reengageConversation } from "@/modules/conversations/reengage";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // The re-engage transcribes the voice notes nobody transcribed. The arrival pass only runs when the
@@ -39,8 +40,8 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     dbUp = true;
-  } catch {
-    dbUp = false;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
   }
 }
 const appDb = app as PrismaClient;

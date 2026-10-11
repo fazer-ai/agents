@@ -342,6 +342,58 @@ describe.skipIf(!dbUp)("an image over Anthropic's dimension limit", () => {
     expect(out?.text).toBe(EXTRACTED);
   });
 
+  test("on OpenAI a photo too large to fit here is sent as received, since the model may resize it itself", async () => {
+    // A header declaring 8000x7000 (56 MP, over the converter's pixel cap) on a tiny JPEG body.
+    const forged = Buffer.from(photo(32, 32));
+    let sof = 2;
+    while (!(forged[sof] === 0xff && forged[sof + 1] === 0xc0))
+      sof += 2 + forged.readUInt16BE(sof + 2);
+    forged.writeUInt16BE(7000, sof + 5);
+    forged.writeUInt16BE(8000, sof + 7);
+    const sent: string[] = [];
+    const impl = (async (_url: string | URL, init?: RequestInit) => {
+      const body = JSON.parse((init?.body as string) ?? "{}") as {
+        messages?: Array<{
+          content?: Array<{ type?: string; image_url?: { url?: string } }>;
+        }>;
+      };
+      const url =
+        body.messages?.[0]?.content?.find((c) => c.type === "image_url")
+          ?.image_url?.url ?? "";
+      sent.push(url.slice(url.indexOf(",") + 1));
+      return new Response(
+        JSON.stringify({
+          choices: [{ message: { content: EXTRACTED }, finish_reason: "stop" }],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }) as unknown as typeof fetch;
+    const cfg = (await resolveVisionConfig(
+      tenantId,
+      instanceId,
+      CHATWOOT_INBOX_ID,
+      appDb,
+    )) as VisionConfig;
+    nextId += 1;
+    const out = await extractInboundFile({
+      tenantId,
+      instanceId,
+      conversationId: 910,
+      messageId: nextId,
+      attachmentId: nextId,
+      dataUrl: "https://vision-limit.example.com/IMG_0005.jpg",
+      cfg: { ...cfg, provider: "openai", model: "gpt-4o" },
+      base: appDb,
+      deps: {
+        makeClient: stubClient(forged),
+        fetchImpl: impl,
+        sleep: async () => {},
+      },
+    });
+    expect(sent).toEqual([forged.toString("base64")]);
+    expect(out?.text).toBe(EXTRACTED);
+  });
+
   test("a WebP over the limit, which nothing here can fit, is not sent and its line says why", async () => {
     let calls = 0;
     const impl = (async () => {
@@ -453,6 +505,7 @@ describe.skipIf(!dbUp)("an image over Anthropic's dimension limit", () => {
         )) as VisionConfig
       ).credentialRef,
     };
+    const turnId = `vision-playground-${process.pid}-${nextId}`;
     const run = (baseURL?: string) =>
       extractPlaygroundFile({
         ctx: { tenantId, userId: null, role: "TENANT_ADMIN" },
@@ -462,9 +515,23 @@ describe.skipIf(!dbUp)("an image over Anthropic's dimension limit", () => {
         settings: { vision: baseURL ? { ...vision, baseURL } : vision },
         base: appDb,
         deps: { fetchImpl: impl, sleep: async () => {} },
+        flow: { tenantId, turnId, source: "playground", base: appDb },
       });
     expect(await run()).toEqual({ kind: "unsupported", text: "" });
     expect(calls).toBe(0);
+    const rows = await flowLogRows(suDb, {
+      where: { turnId, stage: "vision" },
+      select: { level: true, status: true, detail: true },
+    });
+    expect(
+      rows.map((r) => ({ level: r.level, status: r.status, detail: r.detail })),
+    ).toEqual([
+      {
+        level: "info",
+        status: "skipped",
+        detail: { reason: "over_provider_limit" },
+      },
+    ]);
     expect((await run("https://llm-proxy.example.com/v1")).text).toBe(
       EXTRACTED,
     );

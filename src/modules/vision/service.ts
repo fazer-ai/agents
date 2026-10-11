@@ -353,6 +353,16 @@ async function convertForProvider(args: {
     return { ok: true, bytes, mimeType: plan.to };
   } catch (err) {
     const why = err instanceof Error ? err.message : String(err);
+    // NOTE: A fit that was only prudent (a soft limit) and could not run leaves the original, which
+    // the provider may still read; skipping it would turn a readable file into an unread one.
+    if (!plan.required) {
+      logger.info(
+        "vision: %s — the original goes as received (provider=%s)",
+        why,
+        args.provider,
+      );
+      return { ok: true, bytes: args.bytes, mimeType: args.mimeType };
+    }
     // NOTE: A mismatch stopped NOTHING (the bytes go untouched and are read), so it logs that the
     // declared type was wrong, at info, not a conversion failure at warn. These are application log
     // lines only: the Logs page gets the caller's `convert_failed`, and nothing for a mismatch.
@@ -797,7 +807,19 @@ export async function extractPlaygroundFile(
     baseURL: entry.baseUrl ?? cfg.baseURL,
     flow: params.flow,
   });
-  if (!converted.ok) return { kind: "unsupported", text: "" };
+  if (!converted.ok) {
+    // The inbound path writes this line through its `skip`; the playground has no marker to leave,
+    // so the line is what tells the operator why the file was not read.
+    if (params.flow)
+      emitFlowEvent(params.flow, {
+        stage: "vision",
+        level: skipLevel(converted.reason),
+        status: "skipped",
+        provider: cfg.provider,
+        detail: { reason: converted.reason },
+      });
+    return { kind: "unsupported", text: "" };
+  }
 
   // The playground's own ceiling, asked once the file is known to be extractable AND convertible,
   // and before the provider round trip. It throws (see `assertPlaygroundSpendCeiling`), so an

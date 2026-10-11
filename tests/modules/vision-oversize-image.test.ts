@@ -177,14 +177,24 @@ describe("planImageConversion with the provider's dimension limit", () => {
         mimeType: "image/jpeg",
         dimensions: over,
       }),
-    ).toEqual({ action: "convert", converter: "jpeg-fit", to: "image/jpeg" });
+    ).toEqual({
+      action: "convert",
+      converter: "jpeg-fit",
+      to: "image/jpeg",
+      required: true,
+    });
     expect(
       planImageConversion({
         provider: "anthropic",
         mimeType: "image/png",
         dimensions: { width: 9000, height: 300 },
       }),
-    ).toEqual({ action: "convert", converter: "png-fit", to: "image/jpeg" });
+    ).toEqual({
+      action: "convert",
+      converter: "png-fit",
+      to: "image/jpeg",
+      required: true,
+    });
   });
 
   test("at the limit, below it, or with no dimensions, it goes as it came", () => {
@@ -241,7 +251,12 @@ describe("planImageConversion with the provider's dimension limit", () => {
         mimeType: "image/jpeg",
         dimensions: { width: 4536, height: 8064 },
       }),
-    ).toEqual({ action: "convert", converter: "jpeg-fit", to: "image/jpeg" });
+    ).toEqual({
+      action: "convert",
+      converter: "jpeg-fit",
+      to: "image/jpeg",
+      required: false,
+    });
     // 150 x 200 patches is the limit itself; one pixel more opens a 151st column.
     expect(
       planImageConversion({
@@ -287,7 +302,39 @@ describe("planImageConversion with the provider's dimension limit", () => {
       action: "convert",
       converter: "heic-to-jpeg",
       to: "image/jpeg",
+      required: true,
     });
+  });
+
+  test("Gemini refuses only what cannot fit its 20 MB request, and fits what crowds out the prompt", () => {
+    // 14,400,000 bytes is 19,200,000 as base64: past the fit line, under the ceiling.
+    expect(
+      planImageConversion({
+        provider: "gemini",
+        mimeType: "image/webp",
+        byteLength: 14_400_000,
+      }).action,
+    ).toBe("as-is");
+    expect(
+      planImageConversion({
+        provider: "gemini",
+        mimeType: "image/jpeg",
+        byteLength: 14_400_000,
+      }),
+    ).toEqual({
+      action: "convert",
+      converter: "jpeg-fit",
+      to: "image/jpeg",
+      required: false,
+    });
+    // 15,728,641 bytes is 20,971,524 as base64, over 20 MiB.
+    expect(
+      planImageConversion({
+        provider: "gemini",
+        mimeType: "image/webp",
+        byteLength: 15_728_641,
+      }).action,
+    ).toBe("over-limit");
   });
 
   test("a type there is no decoder for, over the limit, is refused before the call instead of sent to a 400", () => {

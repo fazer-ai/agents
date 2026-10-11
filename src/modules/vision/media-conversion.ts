@@ -53,8 +53,11 @@ export const MEDIA_CONVERTERS: readonly MediaConverterSpec[] = [
 export type ImageLimits = {
   // Longest side, in px.
   readonly maxEdge: number | null;
-  // The image as SENT, base64 included.
+  // The image as SENT, base64 included: over it the request cannot succeed.
   readonly maxBase64Bytes: number | null;
+  // Where fitting starts, below the ceiling when the ceiling is the whole request's and the prompt
+  // needs room. Null: at the ceiling.
+  readonly fitBase64Bytes: number | null;
   // The total area, counted the way the vendor counts it: `edge`-px patches per image.
   readonly maxPatches: { readonly edge: number; readonly count: number } | null;
   // The vendor's own API host. A base URL elsewhere is an endpoint we cannot speak for, so its
@@ -65,6 +68,7 @@ export type ImageLimits = {
 export const NO_IMAGE_LIMITS: ImageLimits = {
   maxEdge: null,
   maxBase64Bytes: null,
+  fitBase64Bytes: null,
   maxPatches: null,
   host: null,
 };
@@ -76,6 +80,7 @@ export const IMAGE_LIMITS: Readonly<Record<string, ImageLimits>> = {
   anthropic: {
     maxEdge: 8000,
     maxBase64Bytes: 10 * 1024 * 1024,
+    fitBase64Bytes: null,
     maxPatches: null,
     host: "api.anthropic.com",
   },
@@ -89,15 +94,18 @@ export const IMAGE_LIMITS: Readonly<Record<string, ImageLimits>> = {
   openai: {
     maxEdge: null,
     maxBase64Bytes: null,
+    fitBase64Bytes: null,
     maxPatches: { edge: 32, count: 30_000 },
     host: "api.openai.com",
   },
   // ai.google.dev/gemini-api/docs/image-understanding: inline data caps the WHOLE request at 20 MB,
-  // prompt included, so the image gets 19 MB and the prompt the rest. No dimension limit is
-  // documented; larger images are tiled on the vendor's side.
+  // prompt included. An image over 20 MiB alone cannot fit under either reading of "MB"; one over
+  // 19 MB is fitted, leaving the prompt its room. No dimension limit is documented; larger images
+  // are tiled on the vendor's side.
   gemini: {
     maxEdge: null,
-    maxBase64Bytes: 19 * 1000 * 1000,
+    maxBase64Bytes: 20 * 1024 * 1024,
+    fitBase64Bytes: 19 * 1000 * 1000,
     maxPatches: null,
     host: "generativelanguage.googleapis.com",
   },
@@ -111,30 +119,34 @@ function base64Length(byteLength: number): number {
   return Math.ceil(byteLength / 3) * 4;
 }
 
-// The limits an image of this size and weight is over: `hard` are the ones the vendor enforces for
-// every model (side, bytes), `patches` the one that depends on the model. Unknown dimensions or bytes
-// count as within: the provider's answer is the fallback, never a guess here.
+// The limits an image of this size and weight is over: `hard` means the call cannot succeed on any
+// model (the side, the byte ceiling), `soft` that fitting is wise but the original may still be read
+// (a patch count that depends on the model, the room kept for the prompt). Unknown dimensions or
+// bytes count as within: the provider's answer is the fallback, never a guess here.
 function overLimits(
   limits: ImageLimits,
   dimensions: { width: number; height: number } | null | undefined,
   byteLength: number | undefined,
-): { hard: boolean; patches: boolean } {
+): { hard: boolean; soft: boolean } {
   const d = dimensions;
   const wide =
     !!d &&
     limits.maxEdge !== null &&
     Math.max(d.width, d.height) > limits.maxEdge;
+  const sent = byteLength === undefined ? null : base64Length(byteLength);
   const heavy =
     limits.maxBase64Bytes !== null &&
-    byteLength !== undefined &&
-    base64Length(byteLength) > limits.maxBase64Bytes;
+    sent !== null &&
+    sent > limits.maxBase64Bytes;
+  const fitFrom = limits.fitBase64Bytes ?? limits.maxBase64Bytes;
+  const nearHeavy = fitFrom !== null && sent !== null && sent > fitFrom;
   const patches =
     !!d &&
     limits.maxPatches !== null &&
     Math.ceil(d.width / limits.maxPatches.edge) *
       Math.ceil(d.height / limits.maxPatches.edge) >
       limits.maxPatches.count;
-  return { hard: wide || heavy, patches };
+  return { hard: wide || heavy, soft: nearHeavy || patches };
 }
 
 // A blank base URL is the adapter's own default, the vendor's endpoint. Anything else must be https
@@ -180,6 +192,9 @@ export type ImagePlan =
       readonly action: "convert";
       readonly converter: MediaConverterId;
       readonly to: string;
+      // Whether the original cannot be sent at all. False when the fit is only prudent (a soft
+      // limit): a conversion that fails then sends the original instead of skipping it.
+      readonly required: boolean;
     };
 
 // A type we cannot convert goes as-is and the vendor answers for itself: refusing on a table of TYPES
@@ -204,7 +219,7 @@ export function planImageConversion(args: {
   if (native?.has(mediaSubtype(mime))) {
     const limits = imageLimitsFor(args.provider);
     const over = overLimits(limits, args.dimensions, args.byteLength);
-    if (!over.hard && !over.patches) return { action: "as-is" };
+    if (!over.hard && !over.soft) return { action: "as-is" };
     // A HEIC that Gemini reads natively but is over its ceiling is fitted by the HEIC converter,
     // which outputs the same fitted JPEG.
     const fit =
@@ -214,7 +229,12 @@ export function planImageConversion(args: {
       return over.hard && isVendorEndpoint(limits.host, args.baseURL ?? null)
         ? { action: "over-limit" }
         : { action: "as-is" };
-    return { action: "convert", converter: fit.id, to: fit.to };
+    return {
+      action: "convert",
+      converter: fit.id,
+      to: fit.to,
+      required: over.hard,
+    };
   }
   const converter = MEDIA_CONVERTERS.find((c) => c.from.has(mime));
   if (converter === undefined) return { action: "as-is" };
@@ -224,5 +244,10 @@ export function planImageConversion(args: {
   // target. A branch for it would be unreachable code that no test can kill, so the invariant is
   // asserted in the battery instead ("every converter's target is native to every listed provider"),
   // where adding a converter with an unread target fails immediately and visibly.
-  return { action: "convert", converter: converter.id, to: converter.to };
+  return {
+    action: "convert",
+    converter: converter.id,
+    to: converter.to,
+    required: true,
+  };
 }

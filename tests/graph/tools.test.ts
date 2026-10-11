@@ -2574,6 +2574,17 @@ describe("native tools", () => {
     expect(reports).toEqual([{ noEffect: true }]);
   });
 
+  test("set_custom_attribute tells the call its write stays before it mirrors it", async () => {
+    const { client } = recordingClient();
+    const tools = buildNativeTools({ client, conversationId: 7 });
+    const reports: CallReport[] = [];
+    await byName(tools, "set_custom_attribute").invoke(
+      { key: "plano", value: "Pro" },
+      withFenceReporter({}, (r) => reports.push(r)),
+    );
+    expect(reports).toEqual([{ committed: true }]);
+  });
+
   test("set_labels on a contact that is not in scope tells the call it wrote nothing", async () => {
     const { client } = recordingClient();
     const tools = buildNativeTools({ client, conversationId: 7 });

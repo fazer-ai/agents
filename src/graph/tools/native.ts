@@ -939,6 +939,8 @@ function setCustomAttributeTool(ctx: ToolCtx) {
           }
           throw e;
         }
+        // Written: said now, before the mirror, which a deadline can still interrupt.
+        fenceReporterOf(config)?.({ committed: true });
         await mirrorAttributeWrite(ctx, "task", key, value);
         return `Task attribute ${key} set.`;
       }
@@ -983,6 +985,7 @@ function setCustomAttributeTool(ctx: ToolCtx) {
           }
           throw e;
         }
+        fenceReporterOf(config)?.({ committed: true });
         await mirrorAttributeWrite(ctx, "contact", key, value);
         return `Contact attribute ${key} set.`;
       }
@@ -1005,6 +1008,7 @@ function setCustomAttributeTool(ctx: ToolCtx) {
         }
         throw e;
       }
+      fenceReporterOf(config)?.({ committed: true });
       await mirrorAttributeWrite(ctx, "conversation", key, value);
       return `Conversation attribute ${key} set.`;
     },

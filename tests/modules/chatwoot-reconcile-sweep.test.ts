@@ -1160,16 +1160,25 @@ describe.skipIf(!dbUp)("reconciling from Chatwoot", () => {
   test("a message from before the responder was bound is not made the responder's work", async () => {
     await suDb.inbox.updateMany({
       where: { tenantId, chatwootInboxId: INBOX },
-      data: { responderBoundAt: minutesAgo(22) },
+      // Bound 600 ms into a second: a message stamped with that whole second may have followed it.
+      data: { responderBoundAt: new Date(minutesAgo(22).getTime() + 600) },
     });
     try {
       const s: Scripted = {
         conversations: new Map([
-          [INBOX, [conv(590, minutesAgo(20)), conv(591, minutesAgo(20))]],
+          [
+            INBOX,
+            [
+              conv(590, minutesAgo(20)),
+              conv(591, minutesAgo(20)),
+              conv(589, minutesAgo(20)),
+            ],
+          ],
         ]),
         messages: new Map([
           [590, [incoming(9090, minutesAgo(25))]],
           [591, [incoming(9091, minutesAgo(20))]],
+          [589, [incoming(9089, minutesAgo(22))]],
         ]),
         listed: [],
       };
@@ -1179,8 +1188,11 @@ describe.skipIf(!dbUp)("reconciling from Chatwoot", () => {
         now: NOW,
         makeClient: chatwoot(s),
       });
-      expect(counts.handedToRecovery).toBe(1);
+      expect(counts.handedToRecovery).toBe(2);
       expect(await ledgerFor(590)).toHaveLength(0);
+      expect((await ledgerFor(589)).map((r) => r.inboundMessageId)).toEqual([
+        9089,
+      ]);
       expect((await ledgerFor(591)).map((r) => r.inboundMessageId)).toEqual([
         9091,
       ]);
@@ -1278,6 +1290,36 @@ describe.skipIf(!dbUp)("reconciling from Chatwoot", () => {
       9096,
     ]);
     expect(await ledgerFor(597)).toHaveLength(0);
+  });
+
+  test("a listing that keeps growing past its budget fails the inbox and keeps the cursor", async () => {
+    let next = 20_000;
+    const endless = async () =>
+      ({
+        async listPinnedConversationIds() {
+          return new Set<number>();
+        },
+        async listInboxConversations() {
+          await Bun.sleep(5);
+          return Array.from({ length: 25 }, () => conv(next++, minutesAgo(20)));
+        },
+        async getMessages() {
+          return [];
+        },
+      }) as unknown as ChatwootClient;
+    const counts = await reconcileFromChatwoot({
+      tenantId,
+      base: appDb,
+      now: NOW,
+      makeClient: endless,
+      listingBudgetMs: 50,
+    });
+    expect(counts.inboxesFailed).toBe(1);
+    const kept = await suDb.chatwootInstance.findUniqueOrThrow({
+      where: { id: instanceId },
+      select: { reconciledUntil: true },
+    });
+    expect(kept.reconciledUntil?.getTime()).toBe(minutesAgo(40).getTime());
   });
 
   test("a conversation with no activity time fails the inbox and keeps the cursor", async () => {

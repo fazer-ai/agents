@@ -317,8 +317,13 @@ interface InboxRead {
   since: Date;
   settledBefore: Date;
   now: Date;
+  listingBudgetMs: number;
   counts: ReconcileCounts;
 }
+
+// One read of a listing that outlasts this is not converging (conversations arriving faster than the
+// pages are read): the inbox fails the pass with its cursor held, and the other inboxes still run.
+const LISTING_BUDGET_MS = 2 * 60 * 1000;
 
 async function reconcileInbox(p: InboxRead): Promise<void> {
   p.counts.inboxesRead += 1;
@@ -372,7 +377,12 @@ async function readListing(
   // number of conversations that moved inside it, and a cap would freeze the cursor on a busy inbox.
   // A server that ignores `page` would never end it, which is what the repeated first id catches.
   let previousFirst: number | null = null;
+  const startedAt = Date.now();
   for (let page = 1; ; page++) {
+    if (Date.now() - startedAt > p.listingBudgetMs)
+      throw new Error(
+        `inbox ${inbox.chatwootInboxId}: listing still going after ${page - 1} pages`,
+      );
     const rows = await client.listInboxConversations(
       inbox.chatwootInboxId,
       "pending",
@@ -413,9 +423,12 @@ async function readListing(
         continue;
       // A message from before the responder was bound was received for another role (an observer
       // promoted since keeps its bot), and the row written here would name today's binding.
+      // NOTE: Chatwoot's `created_at` is whole seconds and the binding is stamped in milliseconds, so the
+      // binding is compared at its second: a message in the same second may have followed it.
       if (
         inbox.responderBoundAt !== null &&
-        message.createdAt < inbox.responderBoundAt
+        message.createdAt.getTime() <
+          Math.floor(inbox.responderBoundAt.getTime() / 1000) * 1000
       )
         continue;
       if (await handOver(base, tenantId, instanceId, inbox, c.id, message)) {
@@ -506,6 +519,8 @@ export interface ReconcileParams {
   base?: PrismaClient;
   now?: Date;
   makeClient?: LoadChatwootClientDeps["makeClient"];
+  // How long one read of an inbox's listing may take before the inbox is given up for the pass.
+  listingBudgetMs?: number;
 }
 
 // One pass over every connected account of the tenant. The cursor of an account advances (to the
@@ -564,6 +579,7 @@ export async function reconcileFromChatwoot(
           since,
           settledBefore,
           now,
+          listingBudgetMs: params.listingBudgetMs ?? LISTING_BUDGET_MS,
           counts,
         });
       } catch (err) {

@@ -5,7 +5,11 @@ import basePrisma from "@/api/lib/prisma";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { writeFlowEvent } from "@/modules/flowlog/service";
 import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
-import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
+import {
+  type JobContext,
+  type JobResult,
+  registerJobHandler,
+} from "@/modules/scheduler/worker";
 import type { ChatwootClient, ChatwootInboxConversation } from "./client";
 import { type LoadChatwootClientDeps, loadChatwootClient } from "./instance";
 import { type ChatwootMessageRow, parseChatwootMessages } from "./messages";
@@ -191,6 +195,9 @@ async function reconcileInbox(p: {
   // No page cap: the read ends at the first page with nothing recent, so its length is the number of
   // conversations that moved inside the window, and a cap would freeze the cursor on a busy inbox.
   // A server that ignores `page` would never end it, which is what the repeated first id catches.
+  // Conversations the token's user pinned lead the listing whatever their age, possibly for whole
+  // pages, so the activity order only starts after them and only an unpinned row can end the read.
+  const pinned = await client.listPinnedConversationIds();
   let previousFirst: number | null = null;
   for (let page = 1; ; page++) {
     const rows = await client.listInboxConversations(
@@ -205,15 +212,17 @@ async function reconcileInbox(p: {
         `inbox ${inbox.chatwootInboxId} page ${page} repeats the previous page`,
       );
     previousFirst = first;
-    let anyRecent = false;
+    let reachedOld = false;
     for (const c of rows) {
-      if (c.lastActivityAt === null || c.lastActivityAt < since) continue;
-      anyRecent = true;
+      if (c.lastActivityAt === null || c.lastActivityAt < since) {
+        if (!pinned.has(c.id)) reachedOld = true;
+        continue;
+      }
       // A person holds it: whatever the customer wrote is theirs to answer.
       if (c.assigneeType === "User") continue;
       counts.conversationsRead += 1;
       const message = owedCustomerMessage(
-        parseChatwootMessages(await client.getMessages(c.id)),
+        readMessagePage(await client.getMessages(c.id), c.id),
       );
       if (
         !message?.createdAt ||
@@ -226,10 +235,31 @@ async function reconcileInbox(p: {
         await lineFor(base, tenantId, instanceId, inbox, c.id, message.id);
       }
     }
-    // Newest activity first, so a page with nothing recent ends the read. Pinned conversations lead
-    // page one whatever their age, which is why the whole page is read before deciding.
-    if (!anyRecent) return;
+    // Past the pinned prefix the listing is newest activity first, so an unpinned row older than the
+    // window means every later page is older too.
+    if (reachedOld) return;
   }
+}
+
+// A conversation's newest page, refusing what cannot say which message is newest: read as empty, an
+// unreadable answer would owe nothing and let the cursor pass a message it never saw.
+function readMessagePage(
+  raw: unknown,
+  conversationId: number,
+): ChatwootMessageRow[] {
+  const list = Array.isArray(raw)
+    ? raw
+    : raw !== null &&
+        typeof raw === "object" &&
+        Array.isArray((raw as { payload?: unknown }).payload)
+      ? (raw as { payload: unknown[] }).payload
+      : null;
+  if (list === null)
+    throw new Error(`conversation ${conversationId}: no message array`);
+  const rows = parseChatwootMessages(list);
+  if (rows.length !== list.length)
+    throw new Error(`conversation ${conversationId}: unreadable message row`);
+  return rows;
 }
 
 // The per-conversation line: `info`, since the recovery writes the outcome (an answer, or the
@@ -389,10 +419,14 @@ export async function reconcileFromChatwoot(
   return counts;
 }
 
-async function reconcileSweepHandler(
+export async function reconcileSweepHandler(
   job: ClaimedJob,
   base: PrismaClient,
+  ctx?: JobContext,
 ): Promise<JobResult> {
+  // Committed from the start: every write a pass makes is idempotent, so a pass on a busy account
+  // that outruns the run's deadline still has its reschedule written instead of spending retries.
+  ctx?.commit();
   await reconcileFromChatwoot({ tenantId: job.tenantId, base });
   return {
     outcome: "reschedule",

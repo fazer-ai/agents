@@ -18,6 +18,7 @@ import {
   owedCustomerMessage,
   reconciledDeliveryId,
   reconcileFromChatwoot,
+  reconcileSweepHandler,
 } from "@/modules/chatwoot/reconcile-sweep";
 import { deliveryRecoveryDedupeKey } from "@/modules/chatwoot/recover-delivery";
 import { seedChatwootInstance } from "../utils/chatwoot";
@@ -65,6 +66,7 @@ interface Scripted {
   conversations: Map<number, ChatwootInboxConversation[]>;
   // Every page of an inbox's listing, for a read longer than one page.
   pages?: Map<number, ChatwootInboxConversation[][]>;
+  pinned?: number[];
   messages: Map<number, unknown[]>;
   failInbox?: number;
   listed: number[];
@@ -84,6 +86,9 @@ function chatwoot(s: Scripted) {
         const pages = s.pages?.get(inboxId);
         if (pages) return pages[page - 1] ?? [];
         return page === 1 ? (s.conversations.get(inboxId) ?? []) : [];
+      },
+      async listPinnedConversationIds() {
+        return new Set(s.pinned ?? []);
       },
       async getMessages(conversationId: number) {
         return s.messages.get(conversationId) ?? [];
@@ -505,6 +510,86 @@ describe.skipIf(!dbUp)("reconciling from Chatwoot", () => {
     expect((await ledgerFor(lost)).map((r) => r.inboundMessageId)).toEqual([
       lost * 10,
     ]);
+  });
+
+  test("pinned conversations filling a whole page do not end the read before the recent ones", async () => {
+    const pinnedPage = [1, 2, 3, 4, 5].map((i) =>
+      conv(530 + i, minutesAgo(600)),
+    );
+    const s: Scripted = {
+      conversations: new Map(),
+      pages: new Map([[INBOX, [pinnedPage, [conv(540, minutesAgo(20))]]]]),
+      pinned: pinnedPage.map((c) => c.id),
+      messages: new Map([[540, [incoming(9040, minutesAgo(20))]]]),
+      listed: [],
+    };
+    const counts = await reconcileFromChatwoot({
+      tenantId,
+      base: appDb,
+      now: NOW,
+      makeClient: chatwoot(s),
+    });
+    expect(counts.handedToRecovery).toBe(1);
+    expect((await ledgerFor(540)).map((r) => r.inboundMessageId)).toEqual([
+      9040,
+    ]);
+  });
+
+  test("an unreadable message page fails the inbox and keeps the cursor", async () => {
+    const s: Scripted = {
+      conversations: new Map([[INBOX, [conv(550, minutesAgo(20))]]]),
+      messages: new Map([[550, { meta: {} } as unknown as unknown[]]]),
+      listed: [],
+    };
+    // And a page whose newest row cannot be read: the older customer message would read as owed or
+    // not depending on what that row was.
+    const unreadableRow: Scripted = {
+      conversations: new Map([[INBOX, [conv(551, minutesAgo(20))]]]),
+      messages: new Map([
+        [551, [incoming(9051, minutesAgo(25)), { message_type: 1 }]],
+      ]),
+      listed: [],
+    };
+    const rowCounts = await reconcileFromChatwoot({
+      tenantId,
+      base: appDb,
+      now: NOW,
+      makeClient: chatwoot(unreadableRow),
+    });
+    expect(rowCounts.inboxesFailed).toBe(1);
+    expect(await ledgerFor(551)).toHaveLength(0);
+    const counts = await reconcileFromChatwoot({
+      tenantId,
+      base: appDb,
+      now: NOW,
+      makeClient: chatwoot(s),
+    });
+    expect(counts.inboxesFailed).toBe(1);
+    const kept = await suDb.chatwootInstance.findUniqueOrThrow({
+      where: { id: instanceId },
+      select: { reconciledUntil: true },
+    });
+    expect(kept.reconciledUntil?.getTime()).toBe(minutesAgo(40).getTime());
+  });
+
+  test("the handler commits its run, so a pass past the deadline still reschedules", async () => {
+    let committed = false;
+    const result = await reconcileSweepHandler(
+      {
+        id: 1n,
+        tenantId: -1n,
+        kind: "RECONCILE_SWEEP",
+      } as unknown as Parameters<typeof reconcileSweepHandler>[0],
+      appDb,
+      {
+        signal: new AbortController().signal,
+        commit: () => {
+          committed = true;
+        },
+      },
+    );
+    expect(committed).toBe(true);
+    expect(result.outcome).toBe("reschedule");
   });
 
   test("a listing that repeats its page fails the inbox and keeps the cursor", async () => {

@@ -1774,6 +1774,36 @@ export class ChatwootClient {
     });
   }
 
+  // The display ids of the conversations the admin token's user pinned, which the fork's listing puts
+  // first whatever their activity. A Chatwoot without pins answers 404 and orders by activity alone.
+  async listPinnedConversationIds(): Promise<Set<number>> {
+    let res: unknown;
+    try {
+      res = await this.request(
+        this.config.adminToken,
+        "GET",
+        "/conversations/pins",
+      );
+    } catch (err) {
+      if (err instanceof ChatwootApiError && err.status === 404)
+        return new Set();
+      throw err;
+    }
+    if (!Array.isArray(res))
+      throw new Error("GET /conversations/pins: no array");
+    const ids = new Set<number>();
+    for (const row of res) {
+      const id =
+        typeof row === "object" && row !== null
+          ? (row as { conversation_id?: unknown }).conversation_id
+          : undefined;
+      if (typeof id !== "number")
+        throw new Error("GET /conversations/pins: unreadable row");
+      ids.add(id);
+    }
+    return ids;
+  }
+
   // The contact's conversations as `{ id: display_id, inboxId, status }`.
   async listContactConversations(
     contactId: number,

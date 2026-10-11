@@ -81,8 +81,9 @@ written before the alert existed claim nothing. A line that did not land deletes
 call tries again.
 
 The snapshot's eight Langfuse-era columns (the reconciliation counters, the unpriced list and the
-project-switch carry) stay in the table with `@ignore` for one release, so the previous image keeps
-querying them through a rolling deploy and a rollback; the next release drops them.
+project-switch carry) stayed in the table with `@ignore` for one release, so the previous image kept
+querying them through a rolling deploy and a rollback, and `20261011050000_drop_langfuse_snapshot_columns`
+dropped them (issue #1066). Rolling back past that release is no longer supported.
 
 **The dashboard's cost reads the same ledger** (`src/modules/analytics/costs.ts`), under the same
 filters as the requests beside it (period, segment, and the operator's timezone for day buckets), and

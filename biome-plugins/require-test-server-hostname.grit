@@ -1,0 +1,32 @@
+// Refuses a test server that listens on every address: `Bun.serve(...)` whose options name no
+// `hostname`, and a `.listen(...)` that names no host (Elysia's `app.listen(0)`, node's
+// `server.listen(0, callback)`). Bound to every address, the port is only half taken: on macOS another
+// process can bind 127.0.0.1 on the same number and receive the requests the test sends there, which
+// reads as a request that never arrived, a 404 from a stranger or a socket hang-up. Bind loopback
+// (`hostname: "127.0.0.1"`, `listen({ port: 0, hostname: "127.0.0.1" })`, `listen(0, "127.0.0.1", cb)`)
+// and call the server at that same address, `server.url` or `http://127.0.0.1:${port}`, never
+// `localhost`, which may resolve to ::1. A wildcard host (`"0.0.0.0"`, `"::"`, an empty string) counts as
+// none. GritQL binds a lone metavariable to the whole argument list, so a positional host is recognised
+// by the exact shapes node's `listen` takes.
+language js;
+
+or {
+    `Bun.serve($opts)` as $call where {
+        or {
+            $opts <: not contains `hostname: $_`,
+            $opts <: contains `hostname: $host` where { $host <: r"^[\"'`](?:0\.0\.0\.0|::|\[::\])?[\"'`]$" }
+        }
+    },
+    `$server.listen($args)` as $call where {
+        $call <: not or {
+            `$_.listen($_, "127.0.0.1", $_)`,
+            `$_.listen($_, "127.0.0.1")`
+        },
+        or {
+            $args <: not contains `hostname: $_`,
+            $args <: contains `hostname: $host` where { $host <: r"^[\"'`](?:0\.0\.0\.0|::|\[::\])?[\"'`]$" }
+        }
+    }
+} where {
+    register_diagnostic(span = $call, message = "A test server binds 127.0.0.1, not every address: give it a `hostname` (or the host argument of `listen`) of 127.0.0.1 and call it at that address, never at `localhost`, which may resolve to the IPv6 loopback instead.")
+}

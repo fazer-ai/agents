@@ -305,6 +305,48 @@ describe("route token cache", () => {
     expect(routeTokenRefreshDue("h")).toBe(true);
   });
 
+  // AND A RETIRED REFRESH NO LONGER SPEAKS FOR THE TOKEN when it finally settles. The invalidation
+  // detached it, a later delivery started its own, and that one failed: the backoff now belongs to
+  // the replacement. The retired lookup succeeding afterwards (a slow but healthy read of the world
+  // before the change) must not lift it, or the next delivery opens another lookup against the pool
+  // that just refused.
+  test("a retired refresh that succeeds late does not lift its replacement's backoff", async () => {
+    let releaseOld = () => {};
+    const old = trackRouteTokenRefresh(
+      "h",
+      () =>
+        new Promise<void>((r) => {
+          releaseOld = r;
+        }),
+    );
+    invalidateRouteTokenCache("h");
+    await trackRouteTokenRefresh("h", () =>
+      Promise.reject(new Error("down")),
+    ).catch(() => {});
+    expect(routeTokenRefreshDue("h")).toBe(false);
+
+    releaseOld();
+    await old;
+    expect(routeTokenRefreshDue("h")).toBe(false);
+  });
+
+  // The other direction: a retired lookup that fails late is about the world before the change, and
+  // holds nothing back after it.
+  test("a retired refresh that fails late starts no backoff", async () => {
+    let failOld: (err: Error) => void = () => {};
+    const old = trackRouteTokenRefresh(
+      "h",
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          failOld = reject;
+        }),
+    );
+    invalidateRouteTokenCache("h");
+    failOld(new Error("down"));
+    await old.catch(() => {});
+    expect(routeTokenRefreshDue("h")).toBe(true);
+  });
+
   test("an invalidation lifts a refresh backoff with the entry", async () => {
     writeRouteTokenCache("h", bot, { now: T0 });
     await trackRouteTokenRefresh("h", () =>

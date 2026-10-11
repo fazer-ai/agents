@@ -85,6 +85,7 @@ describe("the header this reads is one the server actually sends", () => {
       globalThis as unknown as { BunResponse: typeof Response }
     ).BunResponse;
     const server = Bun.serve({
+      hostname: "127.0.0.1",
       port: 0,
       fetch: (req) =>
         req.method === "OPTIONS"
@@ -92,7 +93,7 @@ describe("the header this reads is one the server actually sends", () => {
           : new BunResponse("ok", { headers: CORS }),
     });
     try {
-      const res = await fetch(`http://localhost:${server.port}/`);
+      const res = await fetch(`http://127.0.0.1:${server.port}/`);
       const raw = res.headers.get("date");
       expect(raw).toBeTruthy();
       expect(Number.isNaN(Date.parse(raw ?? ""))).toBe(false);

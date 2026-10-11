@@ -37,10 +37,13 @@ let baseUrl = "";
 beforeAll(() => {
   (globalThis as { Response: typeof Response }).Response = BunResponse;
   const app = new Elysia().group("/api", (a) => a.use(realtimeController));
-  const listening = app.listen(0) as unknown as ListeningApp;
+  const listening = app.listen({
+    port: 0,
+    hostname: "127.0.0.1",
+  }) as unknown as ListeningApp;
   server = listening.server;
   if (!server?.port) throw new Error("Failed to start test server");
-  baseUrl = `ws://localhost:${server.port}/api/realtime/echo`;
+  baseUrl = `ws://127.0.0.1:${server.port}/api/realtime/echo`;
 });
 
 afterAll(() => {

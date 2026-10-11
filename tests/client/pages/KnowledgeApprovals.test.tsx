@@ -173,7 +173,9 @@ describe("KnowledgeApprovals — reviewing before approving", () => {
     await screen.findByText(HEDGED);
     fireEvent.click(screen.getByRole("button", { name: /edit/i }));
     fireEvent.click(screen.getByRole("button", { name: /save/i }));
-    await waitFor(() => expect(screen.queryByLabelText(/content/i)).toBeNull());
+    await waitFor(() =>
+      expect(screen.queryAllByLabelText(/content/i).length).toBe(0),
+    );
     expect(patchCalls.length).toBe(0);
     expect(screen.queryByText("Edited")).toBeNull();
   });
@@ -190,9 +192,7 @@ describe("KnowledgeApprovals — reviewing before approving", () => {
   });
 
   // NOTE: the endpoint reports a lost race inside a 200, so checking only `error` would mark the
-  // card EDITED over a revision that was never stored. The explicit budget: the test asserts a
-  // BEHAVIOUR, not a speed, and the awaited PATCH here swings across the default 5s between
-  // identical runs.
+  // card EDITED over a revision that was never stored.
   test("a suggestion reviewed elsewhere meanwhile leaves the queue instead of claiming EDITED", async () => {
     patchResult = "not-pending";
     renderQueue();
@@ -201,10 +201,13 @@ describe("KnowledgeApprovals — reviewing before approving", () => {
     const box = await screen.findByLabelText(/content/i);
     fireEvent.change(box, { target: { value: CLEAN } });
     fireEvent.click(screen.getByRole("button", { name: /save/i }));
-    await waitFor(() => expect(screen.queryByText(CLEAN)).toBeNull());
+    // A COUNT, not the node: every check that fails while the card is still there formats its
+    // message, and a message holding a happy-dom node serializes the whole tree. That cost seconds
+    // per attempt, and is what used to blow this test's budget in large runs.
+    await waitFor(() => expect(screen.queryAllByText(CLEAN).length).toBe(0));
     expect(screen.queryByText("Edited")).toBeNull();
     expect(screen.queryByText(HEDGED)).toBeNull();
-  }, 20000);
+  });
 
   // NOTE: the draft is single, so a second Edit would replace it and the first card's unsaved
   // rewrite would vanish with no warning.
@@ -282,9 +285,6 @@ describe("KnowledgeApprovals — reviewing before approving", () => {
 
 const DOC_TEXT = "O prazo de entrega é de 3 dias úteis.";
 
-// NOTE: the tests below await one or two POSTs through the real treaty, and on the CI runner that
-// swings across the default 5s between identical runs, so each carries the same explicit budget as
-// the lost-race test above: they assert behaviour, not speed.
 describe("KnowledgeApprovals — what the suggestion reviewer decided", () => {
   beforeEach(() => {
     patchCalls.length = 0;
@@ -328,7 +328,7 @@ describe("KnowledgeApprovals — what the suggestion reviewer decided", () => {
     await waitFor(() => expect(postCalls.length).toBe(1));
     expect(postCalls[0]?.url).toContain("/approvals/7/approve");
     expect(postCalls[0]?.body).toEqual({ asNew: true });
-  }, 20000);
+  });
 
   test("approve and replace sends no asNew", async () => {
     seed({
@@ -346,7 +346,7 @@ describe("KnowledgeApprovals — what the suggestion reviewer decided", () => {
     );
     await waitFor(() => expect(postCalls.length).toBe(1));
     expect(postCalls[0]?.body).toEqual({});
-  }, 20000);
+  });
 
   // NOTE: nothing was claimed when the document is gone, so the card stays and offers only a plain
   // approval, which the server stores as a new document.
@@ -365,7 +365,7 @@ describe("KnowledgeApprovals — what the suggestion reviewer decided", () => {
     fireEvent.click(
       screen.getByRole("button", { name: /approve and replace/i }),
     );
-    await waitFor(() => expect(screen.queryByText(DOC_TEXT)).toBeNull());
+    await waitFor(() => expect(screen.queryAllByText(DOC_TEXT).length).toBe(0));
     expect(screen.getByText(HEDGED)).toBeDefined();
     // NOTE: a plain Approve would send `{}` and be answered `replace-unavailable` again, forever.
     expect(screen.queryByRole("button", { name: /^approve$/i })).toBeNull();
@@ -375,7 +375,7 @@ describe("KnowledgeApprovals — what the suggestion reviewer decided", () => {
     );
     await waitFor(() => expect(postCalls.length).toBe(2));
     expect(postCalls[1]?.body).toEqual({ asNew: true });
-  }, 20000);
+  });
 
   test("a replacement the queue already knows is unavailable offers only approval as new", async () => {
     seed({ replacesDocument: null, replaceUnavailable: true });
@@ -390,7 +390,7 @@ describe("KnowledgeApprovals — what the suggestion reviewer decided", () => {
     );
     await waitFor(() => expect(postCalls.length).toBe(1));
     expect(postCalls[0]?.body).toEqual({ asNew: true });
-  }, 20000);
+  });
 
   test("rejecting asks for an optional reason and sends it trimmed", async () => {
     postResult = "rejected";
@@ -405,7 +405,7 @@ describe("KnowledgeApprovals — what the suggestion reviewer decided", () => {
     await waitFor(() => expect(postCalls.length).toBe(1));
     expect(postCalls[0]?.url).toContain("/approvals/7/reject");
     expect(postCalls[0]?.body).toEqual({ reason: "prazo errado, são 3 dias" });
-  }, 20000);
+  });
 
   // NOTE: the draft is single, so acting on another card would close it and drop what was typed.
   test("with a rejection reason open, the other cards wait", async () => {
@@ -433,7 +433,7 @@ describe("KnowledgeApprovals — what the suggestion reviewer decided", () => {
     expect(
       (screen.getByLabelText(/reason/i) as HTMLTextAreaElement).value,
     ).toBe("prazo errado");
-  }, 20000);
+  });
 
   test("rejecting with no reason sends an empty body", async () => {
     postResult = "rejected";
@@ -444,7 +444,7 @@ describe("KnowledgeApprovals — what the suggestion reviewer decided", () => {
     fireEvent.click(screen.getByRole("button", { name: /^reject$/i }));
     await waitFor(() => expect(postCalls.length).toBe(1));
     expect(postCalls[0]?.body).toEqual({});
-  }, 20000);
+  });
 
   test("the discarded tab shows what it matched and sends it back to the queue", async () => {
     approvalsPayload = [];
@@ -482,5 +482,5 @@ describe("KnowledgeApprovals — what the suggestion reviewer decided", () => {
     expect(postCalls[0]?.url).toContain("/approvals/9/requeue");
     await screen.findByText("Prazo repetido");
     expect(screen.queryByRole("tab", { name: /discarded/i })).toBeNull();
-  }, 20000);
+  });
 });

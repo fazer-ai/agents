@@ -1,4 +1,12 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  test,
+} from "bun:test";
 import {
   cpSync,
   mkdirSync,
@@ -57,8 +65,14 @@ const BAD = "export function f() {\n  debugger;\n}\n";
 const GOOD = "export const y = 1;\n";
 const WARN = 'export const A = () => <div className="p-2 flex" />;\n';
 
-beforeEach(() => {
-  repo = mkdtempSync(join(tmpdir(), "check-staged-"));
+// The base repository is built ONCE and copied per test. Built per test it cost three git processes
+// (init, add, commit) before every case, which is most of what this file spends on a loaded
+// machine; a copy of the same directory is the same repository, made without a process.
+let template = "";
+
+beforeAll(() => {
+  template = mkdtempSync(join(tmpdir(), "check-staged-base-"));
+  repo = template;
   git("init", "-q");
   cpSync(join(ROOT, "biome.jsonc"), join(repo, "biome.jsonc"));
   cpSync(join(ROOT, "package.json"), join(repo, "package.json"));
@@ -75,6 +89,13 @@ beforeEach(() => {
   write("tests/kept.test.ts", GOOD);
   git("add", "-A");
   git("commit", "-qm", "base");
+});
+
+afterAll(() => rmSync(template, { recursive: true, force: true }));
+
+beforeEach(() => {
+  repo = mkdtempSync(join(tmpdir(), "check-staged-"));
+  cpSync(template, repo, { recursive: true, verbatimSymlinks: true });
 });
 
 afterEach(() => rmSync(repo, { recursive: true, force: true }));

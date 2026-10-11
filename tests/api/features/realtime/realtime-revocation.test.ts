@@ -58,9 +58,12 @@ beforeAll(async () => {
       token: await setAuthCookie(mockUser, OLD_HASH),
     }))
     .group("/api", (a) => a.use(realtimeController));
-  const listening = app.listen(0) as unknown as ListeningApp;
+  const listening = app.listen({
+    port: 0,
+    hostname: "127.0.0.1",
+  }) as unknown as ListeningApp;
   server = listening.server;
-  base = `localhost:${server.port}`;
+  base = `127.0.0.1:${server.port}`;
   mintFor = async () =>
     (
       (await (

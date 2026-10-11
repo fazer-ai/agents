@@ -61,6 +61,7 @@ let refuseConstrained = false;
 let refuseWith = 400;
 
 const openaiServer = Bun.serve({
+  hostname: "127.0.0.1",
   port: 0,
   async fetch(req) {
     const pre = preflight(req);
@@ -108,7 +109,7 @@ const openaiModel = new ChatOpenAI({
   model: "gpt-5.4-nano",
   apiKey: "sk-test",
   maxRetries: 0,
-  configuration: { baseURL: `http://localhost:${openaiServer.port}/v1` },
+  configuration: { baseURL: `http://127.0.0.1:${openaiServer.port}/v1` },
 });
 
 // ── an Anthropic endpoint ───────────────────────────────────────────────────
@@ -116,6 +117,7 @@ const openaiModel = new ChatOpenAI({
 let anthropicContent: unknown[] = [];
 
 const anthropicServer = Bun.serve({
+  hostname: "127.0.0.1",
   port: 0,
   async fetch(req) {
     const pre = preflight(req);
@@ -141,7 +143,7 @@ const anthropicModel = new ChatAnthropic({
   model: "claude-haiku-4-5",
   apiKey: "sk-ant-test",
   maxRetries: 0,
-  anthropicApiUrl: `http://localhost:${anthropicServer.port}`,
+  anthropicApiUrl: `http://127.0.0.1:${anthropicServer.port}`,
 });
 
 afterAll(() => {
@@ -284,6 +286,7 @@ describe("the schema dialect Gemini speaks", () => {
   test("nullability reaches the wire as a flag, not as a type union", async () => {
     let wire = "";
     const server = Bun.serve({
+      hostname: "127.0.0.1",
       port: 0,
       async fetch(req) {
         const pre = preflight(req);
@@ -313,7 +316,7 @@ describe("the schema dialect Gemini speaks", () => {
     const gemini = new ChatGoogleGenerativeAI({
       model: "gemini-3.5-flash",
       apiKey: "x",
-      baseUrl: `http://localhost:${server.port}`,
+      baseUrl: `http://127.0.0.1:${server.port}`,
     });
     try {
       await analyzeGuardrail(gemini, BASE, "openapi");

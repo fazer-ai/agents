@@ -155,6 +155,7 @@ const BunResponse = (globalThis as unknown as { BunResponse: typeof Response })
 type InputItem = { type?: string; call_id?: string; role?: string };
 const responsesRequests: InputItem[][] = [];
 const responsesServer = Bun.serve({
+  hostname: "127.0.0.1",
   port: 0,
   async fetch(req) {
     if (req.method === "OPTIONS")
@@ -229,7 +230,7 @@ function responsesModel() {
     apiKey: "sk-test",
     useResponsesApi: true,
     maxRetries: 0,
-    configuration: { baseURL: `http://localhost:${responsesServer.port}/v1` },
+    configuration: { baseURL: `http://127.0.0.1:${responsesServer.port}/v1` },
   });
 }
 

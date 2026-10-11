@@ -34,10 +34,13 @@ beforeAll(async () => {
     nativeGlobals.BunResponse;
   (globalThis as { Headers: typeof Headers }).Headers =
     nativeGlobals.BunHeaders;
-  const listening = (await buildApp()).listen(0) as unknown as {
+  const listening = (await buildApp()).listen({
+    port: 0,
+    hostname: "127.0.0.1",
+  }) as unknown as {
     server: { port: number; stop(force: boolean): void };
   };
-  base = `http://localhost:${listening.server.port}`;
+  base = `http://127.0.0.1:${listening.server.port}`;
   stopServer = () => listening.server.stop(true);
 });
 afterAll(() => {

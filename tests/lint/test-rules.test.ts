@@ -2,10 +2,10 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-// The two lint rules for test files (biome-plugins/no-test-reads-source.grit and
-// no-test-real-wait.grit), run through the real Biome over probe files written under tests/. One
-// Biome process lints every probe. The probes end in `.ts`, not `.test.ts`, so `bun test` never
-// collects them, and each run writes under its own pid.
+// The lint rules for test files (biome-plugins/no-test-reads-source.grit, no-test-real-wait.grit and
+// require-test-server-hostname.grit), run through the real Biome over probe files written under
+// tests/. One Biome process lints every probe. The probes end in `.ts`, not `.test.ts`, so `bun test`
+// never collects them, and each run writes under its own pid.
 
 const ROOT = join(import.meta.dir, "../..");
 const PROBE = `tests/lint/.probe-${process.pid}`;
@@ -14,6 +14,7 @@ const TOOLING_PROBE = `tests/tooling/.probe-${process.pid}`;
 const SRC = ["s", "rc"].join("");
 const DOCS = ["do", "cs"].join("");
 const LISTED = "tests/graph/runtime.test.ts";
+const APP = "declare const app: { listen: (...a: unknown[]) => unknown };\n";
 
 const PROBES: Record<string, string> = {
   [`${PROBE}/src-path.ts`]: `import { readFileSync } from "node:fs";\nexport const a = readFileSync("${SRC}/config.ts", "utf8");\n`,
@@ -39,9 +40,25 @@ const PROBES: Record<string, string> = {
   [`${PROBE}/timeout-10.ts`]:
     "export const a = (fn: () => void) => setTimeout(fn, 10);\n",
   [`${PROBE}/listed-copy.ts`]: readFileSync(join(ROOT, LISTED), "utf8"),
+  [`${PROBE}/serve-no-hostname.ts`]:
+    'export const s = Bun.serve({ port: 0, fetch: () => new Response("x") });\n',
+  [`${PROBE}/serve-reads-hostname.ts`]:
+    "export const s = Bun.serve({ port: 0, fetch: (r: Request) => new Response(new URL(r.url).hostname) });\n",
+  [`${PROBE}/listen-port-only.ts`]: `${APP}export const l = app.listen(0);\n`,
+  [`${PROBE}/listen-port-callback.ts`]: `${APP}export const l = app.listen(0, () => {});\n`,
+  [`${PROBE}/listen-other-host.ts`]: `${APP}export const l = app.listen(0, "0.0.0.0", () => {});\n`,
+  [`${PROBE}/serve-wildcard-host.ts`]:
+    'export const s = Bun.serve({ hostname: "0.0.0.0", port: 0, fetch: () => new Response("x") });\n',
+  [`${PROBE}/serve-ipv6-wildcard.ts`]:
+    'export const s = Bun.serve({ hostname: "::", port: 0, fetch: () => new Response("x") });\n',
+  [`${PROBE}/listen-options-wildcard.ts`]: `${APP}export const l = app.listen({ port: 0, hostname: "0.0.0.0" });\n`,
+  [`${PROBE}/serve-loopback.ts`]:
+    'export const s = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("x") });\n',
+  [`${PROBE}/listen-options-loopback.ts`]: `${APP}export const l = app.listen({ port: 0, hostname: "127.0.0.1" });\n`,
+  [`${PROBE}/listen-node-loopback.ts`]: `${APP}export const l = app.listen(0, "127.0.0.1", () => {});\n`,
 };
 
-type Hits = { source: number; wait: number };
+type Hits = { source: number; wait: number; server: number };
 let hits: Map<string, Hits>;
 
 beforeAll(() => {
@@ -67,9 +84,10 @@ beforeAll(() => {
     const m = line.match(/file=([^,]+),.*::(.*)$/);
     if (!m?.[1] || !m[2]) continue;
     const file = m[1].slice(m[1].indexOf("tests/"));
-    const h = hits.get(file) ?? { source: 0, wait: 0 };
+    const h = hits.get(file) ?? { source: 0, wait: 0, server: 0 };
     if (m[2].includes("how its source reads")) h.source++;
     if (m[2].includes("does not wait real time")) h.wait++;
+    if (m[2].includes("binds 127.0.0.1")) h.server++;
     hits.set(file, h);
   }
 });
@@ -79,7 +97,9 @@ afterAll(() => {
   rmSync(join(ROOT, TOOLING_PROBE), { recursive: true, force: true });
 });
 
-const of = (path: string): Hits => hits.get(path) ?? { source: 0, wait: 0 };
+const of = (path: string): Hits =>
+  hits.get(path) ?? { source: 0, wait: 0, server: 0 };
+const NONE: Hits = { source: 0, wait: 0, server: 0 };
 
 describe("no-test-reads-source", () => {
   test.each([
@@ -93,14 +113,11 @@ describe("no-test-reads-source", () => {
   });
 
   test("a path that only contains the word is not", () => {
-    expect(of(`${PROBE}/not-a-source-path.ts`)).toEqual({ source: 0, wait: 0 });
+    expect(of(`${PROBE}/not-a-source-path.ts`)).toEqual(NONE);
   });
 
   test("tests/tooling handles paths as data and is out of scope", () => {
-    expect(of(`${TOOLING_PROBE}/path-as-data.ts`)).toEqual({
-      source: 0,
-      wait: 0,
-    });
+    expect(of(`${TOOLING_PROBE}/path-as-data.ts`)).toEqual(NONE);
   });
 });
 
@@ -131,5 +148,28 @@ describe("no-test-real-wait", () => {
 test("a file on the list is exempt, and the same content anywhere else is not", () => {
   const copy = of(`${PROBE}/listed-copy.ts`);
   expect(copy.source + copy.wait).toBeGreaterThan(0);
-  expect(of(LISTED)).toEqual({ source: 0, wait: 0 });
+  expect(of(LISTED)).toEqual(NONE);
+});
+
+describe("require-test-server-hostname", () => {
+  test.each([
+    ["serve-no-hostname.ts"],
+    ["serve-reads-hostname.ts"],
+    ["listen-port-only.ts"],
+    ["listen-port-callback.ts"],
+    ["listen-other-host.ts"],
+    ["serve-wildcard-host.ts"],
+    ["serve-ipv6-wildcard.ts"],
+    ["listen-options-wildcard.ts"],
+  ])("a test server that names no loopback host is refused (%s)", (name) => {
+    expect(of(`${PROBE}/${name}`).server).toBe(1);
+  });
+
+  test.each([
+    ["serve-loopback.ts"],
+    ["listen-options-loopback.ts"],
+    ["listen-node-loopback.ts"],
+  ])("one bound to 127.0.0.1 is allowed (%s)", (name) => {
+    expect(of(`${PROBE}/${name}`)).toEqual(NONE);
+  });
 });

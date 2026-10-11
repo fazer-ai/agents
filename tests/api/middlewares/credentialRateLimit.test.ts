@@ -27,10 +27,13 @@ let server: ListeningApp["server"] | undefined;
 // shard then get a 500 from it (tests/api/v1/mcp-dcr.test.ts is one).
 beforeAll(async () => {
   (globalThis as { Response: typeof Response }).Response = BunResponse;
-  const listening = (await buildApp()).listen(0) as unknown as ListeningApp;
+  const listening = (await buildApp()).listen({
+    port: 0,
+    hostname: "127.0.0.1",
+  }) as unknown as ListeningApp;
   if (!listening.server?.port) throw new Error("Failed to start the app");
   server = listening.server;
-  base = `http://localhost:${listening.server.port}`;
+  base = `http://127.0.0.1:${listening.server.port}`;
 });
 
 afterAll(() => {

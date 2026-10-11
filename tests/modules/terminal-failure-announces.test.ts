@@ -110,6 +110,7 @@ const BunRes = (globalThis as { BunResponse?: typeof Response })
 describe.skipIf(!dbUp)("a terminal failure announces itself", () => {
   beforeAll(async () => {
     embedServer = Bun.serve({
+      hostname: "127.0.0.1",
       port: 0,
       async fetch(req) {
         if (req.method === "OPTIONS")

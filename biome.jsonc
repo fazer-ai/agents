@@ -393,6 +393,12 @@
       ],
       "plugins": ["./biome-plugins/require-tenant-on-scheduler-drain.grit"]
     },
+    // A test server binds loopback (biome-plugins/require-test-server-hostname.grit). No file is
+    // listed: every server under tests/ was moved to 127.0.0.1 with the rule.
+    {
+      "includes": ["tests/**/*.{ts,tsx}"],
+      "plugins": ["./biome-plugins/require-test-server-hostname.grit"]
+    },
     {
       "includes": ["tests/**/*.{ts,tsx}"],
       "linter": {

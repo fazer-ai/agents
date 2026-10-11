@@ -9,9 +9,11 @@ import {
   readBehaviorSettings,
 } from "@/modules/agents/behavior-settings";
 import {
+  createAgent,
   SettingsTextTooLongError,
   updateAgent,
 } from "@/modules/agents/service";
+import { exportAgent, importAgent } from "@/modules/agents/transfer";
 import {
   CONTACT_AUTH_DEFAULTS,
   readContactAuthConfig,
@@ -412,5 +414,223 @@ describe.skipIf(!dbUp)("contactAuth on the write surfaces", () => {
     expect(ca.noticeCooldownSeconds).toBe(120);
     // The rest of the block survived the partial patch.
     expect(ca.url).toBe("https://api.example.com/check?tenant=t1");
+  });
+
+  // The reader compares a phone by its digits, so `+55 (11) 98888-7777` and `5511988887777` are one
+  // person. Stored as typed, the two spellings differ in the row while reading the same, and the
+  // audit trail reads that difference as unread configuration on every save that touches the list.
+  const typedRule = {
+    kind: "any",
+    conditions: [
+      {
+        kind: "allowlist",
+        phones: ["+55 (11) 98888-7777", "5511988887777"],
+        identifiers: [" cli-1 "],
+      },
+      { kind: "label", label: "VIP" },
+    ],
+  };
+  const readRule = {
+    kind: "any",
+    conditions: [
+      { kind: "allowlist", phones: ["5511988887777"], identifiers: ["cli-1"] },
+      { kind: "label", label: "vip" },
+    ],
+  };
+  const storedRule = async (id: bigint) => {
+    const row = await suDb.agent.findUniqueOrThrow({
+      where: { id },
+      select: { settings: true },
+    });
+    return (
+      (row.settings as Record<string, unknown>).contactAuth as Record<
+        string,
+        unknown
+      >
+    ).rule;
+  };
+  const settingsRows = () =>
+    suDb.auditLog.findMany({
+      where: {
+        tenantId,
+        action: "agent.settings_set",
+        target: `agent:${agentId}`,
+      },
+      orderBy: { id: "asc" },
+      select: { before: true, after: true },
+    });
+
+  test("REST stores the rule as the reader reads it, and a save that rewrites the spelling only is no edit", async () => {
+    await updateAgent(
+      ctx(),
+      agentId,
+      { settings: { contactAuth: { enabled: true, rule: typedRule } } },
+      appDb,
+      { settingsMode: "replace" },
+    );
+    expect(await storedRule(agentId)).toEqual(readRule);
+    // Only the rule is rewritten: the rest of the block is stored as sent.
+    const stored = await suDb.agent.findUniqueOrThrow({
+      where: { id: agentId },
+      select: { settings: true },
+    });
+    expect(readContactAuthConfig(stored.settings).enabled).toBe(true);
+    const rows = (await settingsRows()).length;
+    await updateAgent(
+      ctx(),
+      agentId,
+      { settings: { contactAuth: { enabled: true, rule: typedRule } } },
+      appDb,
+      { settingsMode: "replace" },
+    );
+    expect((await settingsRows()).length).toBe(rows);
+  });
+
+  test("a swap typed with a plus sign is recorded as a list edit, not as unread configuration", async () => {
+    const swapped = structuredClone(typedRule);
+    swapped.conditions[0] = {
+      kind: "allowlist",
+      phones: ["+55 11 97777-6666"],
+      identifiers: ["cli-1"],
+    };
+    await updateAgent(
+      ctx(),
+      agentId,
+      { settings: { contactAuth: { enabled: true, rule: swapped } } },
+      appDb,
+      { settingsMode: "replace" },
+    );
+    const last = (await settingsRows()).at(-1);
+    const text = JSON.stringify(last);
+    expect(text).toContain('"entriesChanged":true');
+    expect(text).not.toContain("unreadConfigChanged");
+    expect(text).not.toContain("6666");
+  });
+
+  // A row written before the rule was stored this way still holds the `+`. The gate reads it as the
+  // digits, and the save that rewrites it as those digits is no edit.
+  test("a rule stored with a plus sign is rewritten as digits by the next save, which records nothing", async () => {
+    const legacy = {
+      contactAuth: {
+        enabled: true,
+        rule: {
+          kind: "allowlist",
+          phones: ["+5511977776666"],
+          identifiers: [],
+        },
+      },
+    };
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: { settings: legacy },
+    });
+    const rows = (await settingsRows()).length;
+    const digits = structuredClone(legacy);
+    digits.contactAuth.rule.phones = ["5511977776666"];
+    await updateAgent(ctx(), agentId, { settings: digits }, appDb, {
+      settingsMode: "replace",
+    });
+    expect(await storedRule(agentId)).toEqual({
+      kind: "allowlist",
+      phones: ["5511977776666"],
+      identifiers: [],
+    });
+    expect((await settingsRows()).length).toBe(rows);
+  });
+
+  // Only the values the reader reads are rewritten: a key it does not know (a newer field, written by
+  // a newer console) is stored as sent, and taking it out is still an edit the trail records.
+  test("a key the reader does not know stays in the rule, and removing it is recorded", async () => {
+    const withExtra = {
+      contactAuth: {
+        enabled: true,
+        rule: { kind: "label", label: "VIP", futureFlag: true },
+      },
+    };
+    await updateAgent(ctx(), agentId, { settings: withExtra }, appDb, {
+      settingsMode: "replace",
+    });
+    expect(await storedRule(agentId)).toEqual({
+      kind: "label",
+      label: "vip",
+      futureFlag: true,
+    });
+    const rows = (await settingsRows()).length;
+    await updateAgent(
+      ctx(),
+      agentId,
+      {
+        settings: {
+          contactAuth: { enabled: true, rule: { kind: "label", label: "vip" } },
+        },
+      },
+      appDb,
+      { settingsMode: "replace" },
+    );
+    const after = await settingsRows();
+    expect(after.length).toBe(rows + 1);
+    expect(JSON.stringify(after.at(-1))).toContain("unreadConfigChanged");
+  });
+
+  // `İ` lowercases to two characters, so a label at the cap is read as a label past it. Stored in
+  // that form, the next read would drop the rule and the gate with it.
+  test("a rule whose read form would not read back is stored as sent, and the gate still reads it", async () => {
+    const label = `${"a".repeat(254)}İ`;
+    const rule = { kind: "label", label };
+    await updateAgent(
+      ctx(),
+      agentId,
+      { settings: { contactAuth: { enabled: true, rule } } },
+      appDb,
+      { settingsMode: "replace" },
+    );
+    expect(await storedRule(agentId)).toEqual(rule);
+    const row = await suDb.agent.findUniqueOrThrow({
+      where: { id: agentId },
+      select: { settings: true },
+    });
+    expect(readContactAuthConfig(row.settings).rule).not.toBeNull();
+  });
+
+  test("MCP, create and import store the same form", async () => {
+    const r = await agentSettingsSet(
+      principal(),
+      {
+        agent_id: String(agentId),
+        contactAuth: { rule: typedRule },
+        dry_run: false,
+      },
+      { base: appDb },
+    );
+    expect(r.ok).toBe(true);
+    expect(await storedRule(agentId)).toEqual(readRule);
+
+    const created = await createAgent(
+      ctx(),
+      {
+        name: "Gate",
+        settings: { contactAuth: { enabled: true, rule: typedRule } },
+      },
+      appDb,
+    );
+    expect(await storedRule(BigInt(created.id))).toEqual(readRule);
+
+    const exp = await exportAgent(ctx(), BigInt(created.id), appDb);
+    const { agent } = await importAgent(
+      ctx(),
+      {
+        ...exp,
+        agent: {
+          ...exp.agent,
+          name: "Gate importado",
+          settings: {
+            ...exp.agent.settings,
+            contactAuth: { enabled: true, rule: typedRule },
+          },
+        },
+      },
+      appDb,
+    );
+    expect(await storedRule(BigInt(agent.id))).toEqual(readRule);
   });
 });

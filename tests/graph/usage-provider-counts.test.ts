@@ -29,6 +29,7 @@ const preflight = (req: Request) =>
 
 function serving(body: () => unknown) {
   return Bun.serve({
+    hostname: "127.0.0.1",
     port: 0,
     async fetch(req) {
       const pre = preflight(req);
@@ -89,7 +90,7 @@ const gemini = () =>
   new ChatGoogleGenerativeAI({
     model: "gemini-3.5-flash",
     apiKey: "x",
-    baseUrl: `http://localhost:${geminiServer.port}`,
+    baseUrl: `http://127.0.0.1:${geminiServer.port}`,
   });
 
 // ── Anthropic ───────────────────────────────────────────────────────────────
@@ -165,7 +166,7 @@ describe("the ledger records what the provider billed", () => {
       new ChatAnthropic({
         model: "claude-haiku-4-5",
         apiKey: "x",
-        clientOptions: { baseURL: `http://localhost:${anthropicServer.port}` },
+        clientOptions: { baseURL: `http://127.0.0.1:${anthropicServer.port}` },
       }),
       "claude-haiku-4-5",
     );
@@ -182,7 +183,7 @@ describe("the ledger records what the provider billed", () => {
       new ChatOpenAI({
         model: "gpt-5.4-nano",
         apiKey: "x",
-        configuration: { baseURL: `http://localhost:${openaiServer.port}` },
+        configuration: { baseURL: `http://127.0.0.1:${openaiServer.port}` },
       }),
       "gpt-5.4-nano",
     );

@@ -64,14 +64,71 @@ function fieldOf(schema: ArgSchema, arg: string): unknown {
   if (schema.zod !== undefined) {
     return (schema.zod as { shape?: Record<string, unknown> }).shape?.[arg];
   }
-  return (schema.json as { properties?: Record<string, unknown> } | null)
-    ?.properties?.[arg];
+  return jsonProperty(schema.json, schema.json, arg);
 }
 
-function enumOf(field: unknown): unknown[] | null {
-  const f = field as { options?: unknown; enum?: unknown } | null | undefined;
-  if (Array.isArray(f?.enum)) return f.enum;
-  if (isInteropZodSchema(field) && Array.isArray(f?.options)) return f.options;
+// A property as the server declares it, also when the arguments object itself is a `$ref` or a
+// composition (`allOf`, `anyOf`, `oneOf`) of objects.
+function jsonProperty(
+  root: unknown,
+  node: unknown,
+  arg: string,
+  depth = 0,
+): unknown {
+  if (depth > 16) return undefined;
+  const n = (deref(root, node) ?? {}) as {
+    properties?: Record<string, unknown>;
+    allOf?: unknown;
+    anyOf?: unknown;
+    oneOf?: unknown;
+  };
+  const own = n.properties?.[arg];
+  if (own !== undefined) return own;
+  for (const members of [n.allOf, n.anyOf, n.oneOf]) {
+    if (!Array.isArray(members)) continue;
+    for (const m of members) {
+      const found = jsonProperty(root, m, arg, depth + 1);
+      if (found !== undefined) return found;
+    }
+  }
+  return undefined;
+}
+
+// A zod field under its wrappers (optional, nullable, default): an argument the rule may leave out
+// still takes only the values of the schema inside.
+function zodInner(field: unknown): unknown {
+  let at = field;
+  for (let i = 0; i < 8; i++) {
+    const def = (at as { _zod?: { def?: { innerType?: unknown } } } | null)
+      ?._zod?.def;
+    if (!def?.innerType) break;
+    at = def.innerType;
+  }
+  return at;
+}
+
+// The allowed values of a field, under zod wrappers or JSON references and compositions (a
+// nullable enum is `anyOf: [{enum}, {type: "null"}]`).
+function enumOf(root: unknown, field: unknown, depth = 0): unknown[] | null {
+  if (depth > 16) return null;
+  if (isInteropZodSchema(field)) {
+    const options = (zodInner(field) as { options?: unknown }).options;
+    return Array.isArray(options) ? options : null;
+  }
+  const f = (deref(root, field) ?? {}) as {
+    enum?: unknown;
+    anyOf?: unknown;
+    oneOf?: unknown;
+    allOf?: unknown;
+  };
+  if (Array.isArray(f.enum)) return f.enum;
+  for (const members of [f.anyOf, f.oneOf, f.allOf]) {
+    if (!Array.isArray(members)) continue;
+    for (const m of members) {
+      const found = enumOf(root, m, depth + 1);
+      if (found) return found;
+    }
+  }
   return null;
 }
 
@@ -206,7 +263,7 @@ export async function sampleArgsUnfit(
     const type = fieldSourceType(source);
     // A text field into a list of allowed values may hold any of them: one of them stands in.
     const allowed =
-      type === "string" ? enumOf(deref(schema.json, fieldOf(schema, k))) : null;
+      type === "string" ? enumOf(schema.json, fieldOf(schema, k)) : null;
     args[k] = allowed?.[0] ?? (await fitValue(schema, k, SAMPLE[type]));
   }
   if (

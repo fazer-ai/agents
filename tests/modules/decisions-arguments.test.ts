@@ -6,6 +6,7 @@ import {
 import { buildCodeTool } from "@/graph/tools/code";
 import { buildHttpTool } from "@/graph/tools/http";
 import { adoptServerTool } from "@/graph/tools/mcp";
+import { argSchemaOf, sampleArgsUnfit } from "@/modules/decisions/arguments";
 import { ruleStateKey } from "@/modules/decisions/config";
 import { applyDecisions } from "@/modules/decisions/run";
 import type { FillContext } from "@/modules/decisions/tool-args";
@@ -30,7 +31,7 @@ const SERVER = {
     motivo: { type: "string" },
     telefone: { anyOf: [{ type: "string" }, { type: "null" }] },
     prioridade: { type: "number" },
-    canal: { enum: ["whatsapp", "email"] },
+    canal: { anyOf: [{ enum: ["whatsapp", "email"] }, { type: "null" }] },
     codigo: { $ref: "#/$defs/id" },
   },
   required: ["motivo", "telefone"],
@@ -158,6 +159,16 @@ for (const kind of ["http", "code", "mcp"] as const) {
       expect(after).toEqual([]);
     });
 
+    test("an optional list of allowed values filled from a text field can be saved", async () => {
+      const { tool } = build(kind);
+      expect(
+        await sampleArgsUnfit(argSchemaOf(tool), {
+          args: { motivo: "x", telefone: "1" },
+          fill: { canal: "contact.attribute.canal" },
+        }),
+      ).toBeNull();
+    });
+
     for (const [why, action, failure] of [
       [
         "a required one the observation has no value for",
@@ -200,4 +211,62 @@ test("an MCP argument declared through a $ref is fitted as the type it refers to
   });
   expect(r.actions[0]?.outcome).toBe("ran");
   expect(sent[0]?.codigo).toBe("42");
+});
+
+// The arguments object itself declared through a reference and a composition: the field is still found.
+test("an MCP argument under a root $ref and allOf is fitted as text", async () => {
+  const sent: Record<string, unknown>[] = [];
+  const tool = new DynamicStructuredTool({
+    name: "mcp__crm__caso",
+    description: "x",
+    schema: {
+      allOf: [{ $ref: "#/$defs/base" }],
+      $defs: {
+        base: {
+          type: "object",
+          properties: { codigo: { type: "string" } },
+          required: ["codigo"],
+        },
+      },
+    } as never,
+    func: async (input) => {
+      sent.push(input as Record<string, unknown>);
+      return "ok";
+    },
+  });
+  adoptServerTool(tool);
+  const r = await applyDecisions(
+    {
+      rules: [
+        {
+          when,
+          action: {
+            tool: tool.name,
+            args: {},
+            fill: { codigo: "conversation.display_id" },
+          },
+        },
+      ],
+    },
+    answers,
+    [tool as unknown as StructuredToolInterface],
+    [],
+    new AbortController().signal,
+    async () => true,
+    1,
+    undefined,
+    false,
+    new Set(),
+    {},
+    async () => true,
+    { context: ctx, questions: [], logValues: true },
+  );
+  expect(r.actions[0]?.outcome).toBe("ran");
+  expect(sent[0]?.codigo).toBe("42");
+  expect(
+    await sampleArgsUnfit(
+      argSchemaOf(tool as unknown as StructuredToolInterface),
+      { args: {}, fill: { codigo: "conversation.display_id" } },
+    ),
+  ).toBeNull();
 });

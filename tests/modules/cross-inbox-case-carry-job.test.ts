@@ -627,6 +627,30 @@ describe.skipIf(!dbUp)("the late carry into the case", () => {
     expect(f.originAttrs[KEY]).toBeUndefined();
   });
 
+  test("a case unreadable before the upload on the last attempt ends with a warn line naming the files", async () => {
+    await setAgent({});
+    await seed(131);
+    const f = fakeChatwoot({
+      messages: [fromContact(9002, [7002])],
+      originAttrs: { [KEY]: CASE },
+      caseReadFailsAfterDownload: true,
+    });
+    const r = await caseCarryHandler(
+      jobFor(131, { attempts: 4 }),
+      appDb,
+      f.deps,
+    );
+    expect(r).toEqual({ outcome: "done" });
+    expect(f.named("sendFilesAsAdmin")).toHaveLength(0);
+    const warn = (await carryLines(131)).find((l) => l.level === "warn");
+    expect(warn?.detail).toMatchObject({
+      caseId: CASE,
+      unread: "case",
+      notCarried: [7002],
+      retry: false,
+    });
+  });
+
   test("a case the team closes while its files come down gets no upload", async () => {
     await setAgent({});
     await seed(116);
@@ -834,6 +858,30 @@ describe.skipIf(!dbUp)("the late carry into the case", () => {
         armedAtMessageId: 9002,
         owedSince: Math.floor(early.getTime() / 1000),
       });
+    });
+
+    test("two files arming at once still keep the earlier owed instant", async () => {
+      await setAgent({});
+      await seed(130);
+      const early = new Date(Date.now() - 600_000);
+      const arm = (owedSince: Date, armedAtMessageId: number) =>
+        armCaseCarry({
+          tenantId,
+          instanceId,
+          originConversationId: 130,
+          caseId: CASE,
+          armedAtMessageId,
+          owedSince,
+          base: appDb,
+        });
+      await Promise.all([
+        arm(new Date(), 9003),
+        arm(early, 9002),
+        arm(new Date(), 9004),
+      ]);
+      expect(
+        (await rowOf(130))?.payload as { owedSince?: number },
+      ).toMatchObject({ owedSince: Math.floor(early.getTime() / 1000) });
     });
 
     test("nothing is armed under a reset, a switched-off agent, a person, or the block off", async () => {

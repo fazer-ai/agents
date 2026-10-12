@@ -13,6 +13,7 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import { chatwootThreadId, getCheckpointer } from "@/graph/checkpointer";
 import { resetLandedAfter } from "@/graph/reset-episode";
 import { parseDbId } from "@/lib/db-id";
+import { withEntityLock } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { isMonitoring } from "@/modules/agents/mode";
 import { isTestSilenced } from "@/modules/agents/test-mode";
@@ -31,9 +32,9 @@ import { emitFlowEvent } from "@/modules/flowlog/service";
 import { attendanceStartedAt } from "@/modules/memory/attendance-start";
 import {
   type ClaimedJob,
-  enqueueJob,
   jobRetired,
   jobRetriesAfterFailure,
+  upsertJobRow,
 } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 import { carryCaseAttachments } from "./carry-attachments";
@@ -200,40 +201,42 @@ export async function armCaseCarry(
   const dedupeKey = caseCarryDedupeKey(
     chatwootThreadId(p.tenantId, p.instanceId, p.originConversationId),
   );
-  // A row still waiting (or retrying) owes files from its own instant on: the new arm keeps the
-  // earlier of the two, or a file that failed before this one would fall outside the boundary.
-  const waiting = await runScopedOn(p.base, sysCtx(p.tenantId), (db) =>
-    db.schedulerJob.findFirst({
-      where: {
-        kind: "CASE_CARRY",
-        dedupeKey,
-        status: { in: ["PENDING", "CLAIMED"] },
-      },
-      select: { payload: true },
-    }),
-  );
-  const earlier = positiveInt(field(waiting?.payload, "owedSince"));
   const owed =
     p.owedSince === null ? null : Math.floor(p.owedSince.getTime() / 1000);
-  await enqueueJob({
-    tenantId: p.tenantId,
-    kind: "CASE_CARRY",
-    dedupeKey,
-    runAt: new Date(Date.now() + CASE_CARRY_DELAY_MS),
-    payload: {
-      instanceId: String(p.instanceId),
-      originConversationId: p.originConversationId,
-      caseId: p.caseId,
-      armedAtMessageId: p.armedAtMessageId,
-      owedSince:
-        owed === null || earlier === null
-          ? (owed ?? earlier)
-          : Math.min(owed, earlier),
-    },
-    // A new file is new work: a failure budget spent on an older one does not carry over.
-    rearm: "new-work",
-    base: p.base,
-  });
+  // A row still waiting (or retrying) owes files from its own instant on: the new arm keeps the
+  // earlier of the two, or a file that failed before this one would fall outside the boundary. Read
+  // and re-armed under one lock per origin, so two files arming at once cannot both read the old row.
+  await runScopedOn(p.base, sysCtx(p.tenantId), (db) =>
+    withEntityLock(db, dedupeKey, async () => {
+      const waiting = await db.schedulerJob.findFirst({
+        where: {
+          kind: "CASE_CARRY",
+          dedupeKey,
+          status: { in: ["PENDING", "CLAIMED"] },
+        },
+        select: { payload: true },
+      });
+      const earlier = positiveInt(field(waiting?.payload, "owedSince"));
+      await upsertJobRow(db, {
+        tenantId: p.tenantId,
+        kind: "CASE_CARRY",
+        dedupeKey,
+        runAt: new Date(Date.now() + CASE_CARRY_DELAY_MS),
+        payload: {
+          instanceId: String(p.instanceId),
+          originConversationId: p.originConversationId,
+          caseId: p.caseId,
+          armedAtMessageId: p.armedAtMessageId,
+          owedSince:
+            owed === null || earlier === null
+              ? (owed ?? earlier)
+              : Math.min(owed, earlier),
+        },
+        // A new file is new work: a failure budget spent on an older one does not carry over.
+        rearm: "new-work",
+      });
+    }),
+  );
   return "armed";
 }
 
@@ -437,8 +440,22 @@ export async function caseCarryHandler(
     failureNote: lastAttempt,
   });
   if (!outcome) return { outcome: "done" };
-  if (outcome.calledOff && caseUnread && !lastAttempt) {
-    return { outcome: "fail", error: "case carry: could not read the case" };
+  if (outcome.calledOff && caseUnread) {
+    const left = outcome.notCarried ?? [];
+    line(
+      "warn",
+      {
+        caseId: into,
+        unread: "case",
+        notCarried: left,
+        attempt: job.attempts + 1,
+        retry: !lastAttempt,
+      },
+      `customer files not carried to case ${into}: the case could not be read before the upload${left.length > 0 ? ` (attachments ${left.join(", ")})` : ""}${lastAttempt ? "" : "; trying again"}`,
+    );
+    return lastAttempt
+      ? { outcome: "done" }
+      : { outcome: "fail", error: "case carry: could not read the case" };
   }
   if (outcome.calledOff) {
     line("info", { caseId: into, stoodDown: "withdrawn" });

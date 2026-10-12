@@ -880,7 +880,7 @@ function fillContextOf(
   context: Record<string, string>,
   conv: {
     customAttributes?: unknown;
-    contact: { customAttributes?: unknown } | null;
+    contact?: { customAttributes?: unknown } | null;
   } | null,
   displayId: number,
   client: Pick<ChatwootClient, "conversationUrl">,
@@ -984,7 +984,10 @@ export async function runObserve(
         // (decisions/tool-args.ts): refreshed by the event that queued this tick. Unbounded, so read
         // only when a rule fills from them.
         customAttributes: fills.conversation,
-        contact: { select: { customAttributes: fills.contact } },
+        // Left out whole when unused: Prisma refuses a nested select with nothing selected.
+        ...(fills.contact
+          ? { contact: { select: { customAttributes: true } } }
+          : {}),
       },
     });
     const cfg = await loadAgentConfig(

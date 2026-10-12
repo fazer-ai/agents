@@ -582,7 +582,7 @@ const config = {
       MAX_DURATION_MS,
     ),
     // How many turns the lane runs at once. Unset (null) it follows the model permits at a multiple,
-    // read through `debounceTurnSlots` (issue #1397).
+    // read through `debounceTurnSlots`.
     slots: DEBOUNCE_TURN_SLOTS?.trim()
       ? parseIntSetting(
           DEBOUNCE_TURN_SLOTS,
@@ -934,11 +934,10 @@ if (config.env === "production") {
 }
 
 // Turn slots per model permit when DEBOUNCE_TURN_SLOTS is unset. A slot is held for the whole turn
-// (history, tools, the reply, the flow log) and a permit only for the model call inside it: on 07/10
-// a turn took ~17 s around a ~6 s call, and a lane sized at the permits sat full while the semaphore
-// never queued (issue #1397). Twice keeps the semaphore fed without letting a lane of slow turns
-// open far more database work than the permits would; past the turn-to-call ratio the extra slots
-// only queue on the semaphore.
+// (history, tools, the reply, the flow log) and a permit only for the model call inside it, so a lane
+// sized at the permits fills while the semaphore sits idle. Twice keeps the semaphore fed without
+// letting a lane of slow turns open far more database work than the permits would; past the
+// turn-to-call ratio the extra slots only queue on the semaphore (docs/deploy.md).
 export const TURN_SLOTS_PER_PERMIT = 2;
 
 // The debounce lane's size: the explicit setting, else the permits times the multiple above, capped

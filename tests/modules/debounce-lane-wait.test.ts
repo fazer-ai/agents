@@ -196,7 +196,7 @@ describe("a flush waiting for a slot of a full lane", () => {
   });
 });
 
-// The line says which of the two limits held the reply (issue #1397): a lane full of turns that are
+// The line says which of the two limits held the reply: a lane full of turns that are
 // not on the model is the slots' doing, and more of them would help; a lane full while the model has
 // no free permit is the permits' doing, and more slots would only queue on the semaphore.
 describe("a lane wait names the limit that is binding", () => {

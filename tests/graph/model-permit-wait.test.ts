@@ -61,7 +61,7 @@ describe("a model call waiting for a permit", () => {
     expect(seen).toHaveLength(1);
     expect(seen[0]?.waitedMs).toBeGreaterThanOrEqual(THRESHOLD_MS - 5);
     expect(seen[0]?.thresholdMs).toBe(THRESHOLD_MS);
-    // It names the limit that held it, with the semaphore as it stood (issue #1397).
+    // It names the limit that held it, with the semaphore as it stood.
     const cap = config.agent.modelConcurrency;
     expect(seen[0]?.occupancy).toEqual({
       limit: "AGENT_MODEL_CONCURRENCY",

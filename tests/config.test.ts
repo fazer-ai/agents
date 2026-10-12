@@ -345,7 +345,7 @@ describe("database pools and budgets", () => {
     expect(refusal).not.toContain("the flow log");
   });
 
-  test("every deploy compose forwards the pool sizes and budgets, empty for the app default", () => {
+  test("every deploy compose forwards the pool sizes, budgets and turn capacities, empty for the app default", () => {
     for (const file of [
       "docker-compose.prod.yml",
       "docker-compose.coolify.yml",
@@ -361,6 +361,8 @@ describe("database pools and budgets", () => {
         "DB_TX_MAX_WAIT_MS",
         "DB_TX_TIMEOUT_MS",
         "DB_LOCK_TIMEOUT_MS",
+        "AGENT_MODEL_CONCURRENCY",
+        "DEBOUNCE_TURN_SLOTS",
       ]) {
         expect(compose).toContain(`${v}=\${${v}:-}`);
       }
@@ -369,7 +371,7 @@ describe("database pools and budgets", () => {
 });
 
 // A turn slot is held for the whole turn and a model permit only for the model call inside it, so the
-// two are sized apart (issue #1397). Unset, the lane follows the permits at a multiple, so an upgrade
+// two are sized apart. Unset, the lane follows the permits at a multiple, so an upgrade
 // without the new variable still moves both with AGENT_MODEL_CONCURRENCY.
 describe("debounce turn slots", () => {
   async function slotsOf(env: Record<string, string | undefined>) {

@@ -26,7 +26,7 @@ import { debounceDedupeKey } from "./service";
 // correct if briefly doubled. SLOTS, NOT BATCHES: each tick fills only the free slots without awaiting
 // the jobs it started. The lane is sized by DEBOUNCE_TURN_SLOTS (`debounceTurnSlots`), apart from the
 // model permits: a slot is held for the whole turn and a permit only for the model call inside it
-// (issue #1397). A claimed row that waits for a permit is still bounded by its run's deadline, which
+// A claimed row that waits for a permit is still bounded by its run's deadline, which
 // takes it out of the semaphore's queue (runModelCall's `signal`). See docs/debounce.md.
 
 // The rows this process is executing RIGHT NOW, kept out of the claim itself. Without the batch

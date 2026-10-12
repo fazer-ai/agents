@@ -27,7 +27,7 @@ function sem(): Semaphore {
   return g[KEY];
 }
 
-// The semaphore as it stands, for a `capacity` line to say which limit held a reply (issue #1397).
+// The semaphore as it stands, for a `capacity` line to say which limit held a reply.
 export interface ModelPermitReading {
   permits: number;
   inFlight: number;

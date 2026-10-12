@@ -309,7 +309,7 @@ describe.skipIf(!dbUp)("a reply waiting for capacity (issue #812)", () => {
       expect(line?.source).toBe("inbox");
       expect(line?.conversationId).toBe(waiter.id);
       expect(line?.conversationId).not.toBe(holder.id);
-      // The lane's own reading rides on the line, so it says which limit bound (issue #1397).
+      // The lane's own reading rides on the line, so it says which limit bound.
       expect(line?.detail).toMatchObject({
         waitedOn: "debounce_lane",
         thresholdMs: THRESHOLD_MS,

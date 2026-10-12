@@ -249,10 +249,9 @@ describe("startDebounceWorker", () => {
     expect(await until(() => ran.includes(2n))).toBe(true);
   });
 
-  // NOTE: the lane used to be sized by the model permits, and a slot is held for the whole turn while the
-  // model call inside it is a fraction of it: on 07/10 the lane sat full for 50 min with the semaphore
-  // at 8-17 of 20 and no queue (issue #1397). Not 20, which is also the semaphore's default: a test on
-  // the default would pass with a lane that hard-codes it.
+  // A slot is held for the whole turn and the model call inside it is a fraction of it, so the lane is
+  // sized apart from the permits. Not 20, which is also the semaphore's default: a test on the default
+  // would pass with a lane that hard-codes it.
   async function peakOf(): Promise<{ peak: number; limit?: number }> {
     const q = dueQueue([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
     let active = 0;

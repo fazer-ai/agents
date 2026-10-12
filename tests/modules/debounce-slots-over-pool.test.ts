@@ -6,7 +6,7 @@ import { runDebounceTick } from "@/modules/debounce/worker";
 import type { ClaimedJob } from "@/modules/scheduler/service";
 import { dbProbeFailed } from "@/tests/db-gate";
 
-// The lane can run more turns than the main pool has connections (issue #1397, docs/deploy.md
+// The lane can run more turns than the main pool has connections (docs/deploy.md
 // "Connection budget"), because a turn holds a connection per transaction and never across its model
 // call: transactions are DB-only by rule (multi-tenant.ts). So six turns on a pool of two take turns
 // on the connections, each transaction waiting well inside its `maxWait`, and none fails for want of

@@ -9,8 +9,7 @@ import { emitFlowEvent, type FlowContext } from "./service";
 // at least the threshold and not the whole wait.
 export type CapacityLimit = "debounce_lane" | "model_semaphore";
 
-// Which limit held the reply, by the variable that sizes it, and the readings that say so (issue
-// #1397). A lane full of turns that are not on the model is the slots' doing; a lane full while the
+// Which limit held the reply, by the variable that sizes it, and the readings that say so. A lane full of turns that are not on the model is the slots' doing; a lane full while the
 // model has no free permit is the permits' doing, and more slots would only queue on the semaphore.
 // The lane's two numbers are on the lane's line only: a model call does not know the lane.
 export interface CapacityOccupancy {

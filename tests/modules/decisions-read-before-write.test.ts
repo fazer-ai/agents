@@ -221,4 +221,41 @@ describe("the client's sentNothing contract", () => {
     expect(r.triggerState.latch).toEqual([ruleStateKey(rule)]);
     expect(r.triggerState.undo).toEqual([]);
   });
+
+  test("the same at the deadline: the write the call reported keeps the rule latched", async () => {
+    const controller = new AbortController();
+    const progress: DecisionProgress = {};
+    const rule: DecisionRule = {
+      when,
+      action: { tool: "handoff_to_human", args: {} },
+      trigger: "once",
+    };
+    await expect(
+      applyDecisions(
+        { rules: [rule] },
+        answers,
+        [
+          new DynamicStructuredTool({
+            name: "handoff_to_human",
+            description: "handoff",
+            schema: z.object({}).passthrough(),
+            func: async (_args, _run, config) => {
+              fenceReporterOf(config)?.({ committed: true });
+              controller.abort(new Error("deadline"));
+              throw new ChatwootExpiredError("POST toggle_status");
+            },
+          }),
+        ],
+        [],
+        controller.signal,
+        async () => true,
+        10,
+        () => null,
+        false,
+        new Set(),
+        progress,
+      ),
+    ).rejects.toThrow();
+    expect(progress.undo).toEqual([]);
+  });
 });

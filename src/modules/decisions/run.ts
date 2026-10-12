@@ -461,7 +461,17 @@ export async function applyDecisions(
         running.push(
           member.tool
             .invoke(
-              callArgs.get(member.at) ?? f.args,
+              // A custom tool is called as a tool call, so a failure it answers with (an HTTP 503,
+              // a code tool's sandbox error) comes back as an error result instead of plain text
+              // (failure.ts), and is read as one below.
+              isNativeDecisionTool(f.tool)
+                ? (callArgs.get(member.at) ?? f.args)
+                : {
+                    type: "tool_call" as const,
+                    id: `decision-${f.rule}`,
+                    name: f.tool,
+                    args: callArgs.get(member.at) ?? f.args,
+                  },
               // Without the tick's signal: given it, the call would reject the moment the deadline
               // passes while its handler goes on, and what the handler then did would be lost. The
               // handlers keep their own deadline (the Chatwoot client's).
@@ -476,7 +486,24 @@ export async function applyDecisions(
               }),
             )
             .then(
-              () => {
+              (result: unknown) => {
+                if (
+                  (result as { status?: unknown } | null)?.status === "error"
+                ) {
+                  // Answered with a failure after it ran: it may have reached the other side.
+                  slots[member.at] = {
+                    rule: f.rule,
+                    tool: f.tool,
+                    outcome: reports.some((r) => "noEffect" in r)
+                      ? "no_effect"
+                      : "failed",
+                    ...(reports.some((r) => "noEffect" in r)
+                      ? {}
+                      : { failure: "tool_error" }),
+                  };
+                  settled();
+                  return;
+                }
                 const fences = reports.filter(
                   (r): r is FenceReport => "fence" in r,
                 );

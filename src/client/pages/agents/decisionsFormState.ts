@@ -459,7 +459,8 @@ export function customToolsOf(
 ): { all: Map<string, CustomToolOffer>; granted: Set<string> } {
   const all = new Map<string, CustomToolOffer>();
   const granted = new Set<string>();
-  const mcp = new Map<string, CustomToolOffer[]>();
+  const mcp: { m: CustomCatalog["mcpConnections"][number]; tools: string[] }[] =
+    [];
   for (const d of catalog.toolDefinitions) {
     all.set(d.toolName, {
       name: d.toolName,
@@ -489,25 +490,27 @@ export function customToolsOf(
       const m = catalog.mcpConnections.find(
         (x) => x.id === g.mcpServerConnectionId,
       );
-      if (!m) continue;
-      for (const tool of g.enabledTools ?? []) {
-        const name = mcpToolName(m.slug, tool);
-        if (name === null) continue;
-        mcp.set(name, [
-          ...(mcp.get(name) ?? []),
-          { name, label: `${m.name}: ${tool}`, kind: "mcp", args: null },
-        ]);
-      }
+      if (m) mcp.push({ m, tools: g.enabledTools ?? [] });
     }
   }
-  // Two servers whose names reduce to one slug give one name to two tools, and the assembly tells
-  // them apart with a suffix that depends on its order: neither is offered, so a rule never names
-  // the other server's tool.
-  for (const [name, offers] of mcp) {
-    const [only] = offers;
-    if (offers.length !== 1 || !only || all.has(name)) continue;
-    all.set(name, only);
-    granted.add(name);
+  // Two servers whose names reduce to one slug share the namespace, and the assembly tells their
+  // tools apart with a suffix that depends on its discovery order (which can also land on a tool
+  // already named `_2`). No tool of such a server is offered, so a rule never names another's.
+  const bySlug = new Map<string, number>();
+  for (const { m } of mcp) bySlug.set(m.slug, (bySlug.get(m.slug) ?? 0) + 1);
+  for (const { m, tools } of mcp) {
+    if ((bySlug.get(m.slug) ?? 0) > 1) continue;
+    for (const tool of tools) {
+      const name = mcpToolName(m.slug, tool);
+      if (name === null || all.has(name)) continue;
+      all.set(name, {
+        name,
+        label: `${m.name}: ${tool}`,
+        kind: "mcp",
+        args: null,
+      });
+      granted.add(name);
+    }
   }
   return { all, granted };
 }

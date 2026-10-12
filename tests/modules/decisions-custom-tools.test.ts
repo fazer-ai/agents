@@ -4,12 +4,14 @@ import {
   type StructuredToolInterface,
 } from "@langchain/core/tools";
 import { z } from "zod";
+import { failableTool, toolFailure } from "@/graph/tools/failure";
 import { AppError } from "@/lib/errors";
 import type { ScopedDb } from "@/lib/tenancy";
 import {
   assertDecisionActionArgs,
   DecisionToolUnknownError,
 } from "@/modules/agents/service";
+import { renameDecisionActionTools } from "@/modules/agents/transfer";
 import {
   type DecisionQuestion,
   decisionsIssues,
@@ -731,6 +733,37 @@ describe("the tick fills a custom tool's arguments and records them", () => {
     expect(r.triggerState.latch).toHaveLength(1);
   });
 
+  test("a custom tool that answers with a failure (an HTTP 503) is failed, not ran", async () => {
+    const tool = failableTool(async () => toolFailure("HTTP 503"), {
+      name: "abrir_ticket",
+      description: "x",
+      schema: z.object({ motivo: z.string(), telefone: z.string() }),
+    });
+    const r = await once(tool, { telefone: "contact.phone" });
+    expect(r.actions[0]).toMatchObject({
+      outcome: "failed",
+      failure: "tool_error",
+    });
+    // It may have reached the other side: the rule stays latched.
+    expect(r.triggerState.latch).toHaveLength(1);
+  });
+
+  test("a fixed value its tool's schema refuses fails the action and leaves the rule free", async () => {
+    const seen: Record<string, unknown>[] = [];
+    const tool = customTool(
+      "abrir_ticket",
+      z.object({ motivo: z.number(), telefone: z.string() }),
+      seen,
+    );
+    const r = await once(tool, { telefone: "contact.phone" });
+    expect(seen).toEqual([]);
+    expect(r.actions[0]).toMatchObject({
+      outcome: "failed",
+      failure: "invalid_arguments",
+    });
+    expect(r.triggerState.latch).toEqual([]);
+  });
+
   test("a custom tool the agent was not granted reports not_granted and calls nothing", async () => {
     const r = await applyDecisions(
       { rules: [rule] },
@@ -771,5 +804,33 @@ describe("the tick fills a custom tool's arguments and records them", () => {
     );
     expect(seen).toEqual([]);
     expect(r.held).toEqual([{ rule: 0, trigger: "on_start" }]);
+  });
+});
+
+// A bundled tool the import stores under another name (a code tool already holds it) takes its
+// rules with it, or they would name a tool the restored agent was not granted.
+describe("an imported rule on a renamed tool", () => {
+  test("follows the tool to its stored name; other rules are left as they are", () => {
+    const bag = {
+      monitoring: {
+        engine: "decisions",
+        decisions: {
+          rules: [
+            { when: [], action: { tool: "lookup", args: {} } },
+            { when: [], action: { tool: "set_labels", args: { add: ["x"] } } },
+          ],
+        },
+      },
+    };
+    const out = renameDecisionActionTools(
+      bag,
+      new Map([["Lookup", "lookup_2"]]),
+    );
+    const rules = (
+      (out.monitoring as Record<string, unknown>).decisions as {
+        rules: { action: { tool: string } }[];
+      }
+    ).rules;
+    expect(rules.map((r) => r.action.tool)).toEqual(["lookup_2", "set_labels"]);
   });
 });

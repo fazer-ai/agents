@@ -961,7 +961,7 @@ describe("a threshold on screen", () => {
 // tells apart by order with a suffix: a rule must not be offered either, or it may call the other
 // server's tool (agents#1223).
 describe("the custom tools a rule is offered", () => {
-  test("an MCP name two servers share is offered for neither; a unique one is", () => {
+  test("no tool of two servers sharing a slug is offered, suffixed ones included; another server's is", () => {
     const { all, granted } = customToolsOf(
       {
         toolDefinitions: [],
@@ -974,7 +974,12 @@ describe("the custom tools a rule is offered", () => {
       },
       [
         { source: "MCP", mcpServerConnectionId: "1", enabledTools: ["abrir"] },
-        { source: "MCP", mcpServerConnectionId: "2", enabledTools: ["abrir"] },
+        // `abrir_2` is the name the assembly may give the other server's `abrir`.
+        {
+          source: "MCP",
+          mcpServerConnectionId: "2",
+          enabledTools: ["abrir", "abrir_2"],
+        },
         { source: "MCP", mcpServerConnectionId: "3", enabledTools: ["append"] },
       ],
     );

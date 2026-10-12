@@ -1,7 +1,14 @@
 import { describe, expect, test } from "bun:test";
+import { DynamicStructuredTool } from "@langchain/core/tools";
+import { z } from "zod";
 import type { PrismaClient } from "@/../generated/prisma/client";
+import { fenceReporterOf } from "@/graph/tools/fence-report";
 import { buildNativeTools } from "@/graph/tools/native";
-import { ChatwootClient } from "@/modules/chatwoot/client";
+import {
+  ChatwootClient,
+  ChatwootExpiredError,
+  sentNothing,
+} from "@/modules/chatwoot/client";
 import { type DecisionRule, ruleStateKey } from "@/modules/decisions/config";
 import { applyDecisions, type DecisionProgress } from "@/modules/decisions/run";
 
@@ -164,5 +171,54 @@ describe("an action whose read before its first write fails", () => {
         "POST /api/v1/accounts/1/conversations/7/messages",
       );
     }
+  });
+});
+
+describe("the client's sentNothing contract", () => {
+  test("a failed read sent nothing; a failed write may have landed", async () => {
+    const fetchImpl = (async () =>
+      new Response("boom", { status: 500 })) as unknown as typeof fetch;
+    const client = new ChatwootClient(
+      {
+        baseUrl: "https://chat.example",
+        accountId: 1,
+        adminToken: "admin",
+        botToken: "bot",
+      },
+      fetchImpl,
+    );
+    const read = await client.getConversationLabels(7).catch((e) => e);
+    const write = await client.setConversationLabels(7, ["x"]).catch((e) => e);
+    expect(sentNothing(read)).toBe(true);
+    expect(sentNothing(write)).toBe(false);
+  });
+
+  test("an error that sent nothing after a write the call reported keeps the rule latched", async () => {
+    const rule: DecisionRule = {
+      when,
+      action: { tool: "handoff_to_human", args: {} },
+      trigger: "once",
+    };
+    const r = await applyDecisions(
+      { rules: [rule] },
+      answers,
+      [
+        new DynamicStructuredTool({
+          name: "handoff_to_human",
+          description: "handoff",
+          schema: z.object({}).passthrough(),
+          func: async (_args, _run, config) => {
+            fenceReporterOf(config)?.({ committed: true });
+            throw new ChatwootExpiredError("POST toggle_status");
+          },
+        }),
+      ],
+      [],
+      new AbortController().signal,
+      async () => true,
+      10,
+    );
+    expect(r.triggerState.latch).toEqual([ruleStateKey(rule)]);
+    expect(r.triggerState.undo).toEqual([]);
   });
 });

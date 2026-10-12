@@ -239,6 +239,16 @@ describe("which message a conversation owes", () => {
     expect(maxIncomingId(rows, 0)).toBe(2);
     expect(owedCustomerMessage(rows)?.id).toBe(2);
   });
+  test("an imported incoming message is no lost delivery: nothing is owed", () => {
+    const rows = parseChatwootMessages([
+      incoming(1, minutesAgo(30)),
+      {
+        ...incoming(2, minutesAgo(20)),
+        content_attributes: { imported: true },
+      },
+    ]);
+    expect(owedCustomerMessage(rows)).toBeNull();
+  });
   test("a sender-less outgoing message after the customer (an automation, an away message) does not answer them", () => {
     const { sender: _, ...automation } = outgoing(2, minutesAgo(20));
     const rows = parseChatwootMessages([
@@ -1709,6 +1719,41 @@ describe.skipIf(!dbUp)("reconciling from Chatwoot", () => {
       makeClient: chatwoot(s),
     });
     expect(counts.handedToRecovery).toBe(1);
+  });
+
+  test("a monitoring agent's lost message is owed memory only", async () => {
+    const inbox = await suDb.inbox.findFirstOrThrow({
+      where: { tenantId, chatwootInboxId: INBOX },
+      select: { agentId: true },
+    });
+    const agentId = inbox.agentId as bigint;
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: { mode: "monitoring" },
+    });
+    try {
+      const s: Scripted = {
+        conversations: new Map([[INBOX, [conv(2000, minutesAgo(20))]]]),
+        messages: new Map([[2000, [incoming(20000, minutesAgo(20))]]]),
+        listed: [],
+      };
+      await reconcileFromChatwoot({
+        tenantId,
+        base: appDb,
+        now: NOW,
+        makeClient: chatwoot(s),
+      });
+      const row = await suDb.chatwootWebhookDelivery.findFirstOrThrow({
+        where: { chatwootInstanceId: instanceId, conversationId: 2000 },
+        select: { owesMemoryOnly: true },
+      });
+      expect(row.owesMemoryOnly).toBe(true);
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { mode: "production" },
+      });
+    }
   });
 
   test("a conversation with no activity time fails the inbox and keeps the cursor", async () => {

@@ -84,8 +84,11 @@ function newestTurn(
     // the one the recovery will find newest, or it refuses the row as behind a newer one and the loss
     // closes unanswered. A blank incoming message runs no turn, so it is not that message.
     if (m.messageType === "incoming") {
-      if (hasAnswerableContent(m)) return m;
-      continue;
+      if (!hasAnswerableContent(m)) continue;
+      // Imported history produces no webhook, so its missing row is no outage, and the recovery would
+      // refuse anything older behind it.
+      if (m.imported) return "answered";
+      return m;
     }
     if (m.isReaction || m.imported) continue;
     if (
@@ -207,6 +210,8 @@ interface BoundInbox {
   agentId: bigint;
   bindingGeneration: number;
   responderBoundAt: Date | null;
+  // A monitoring agent never replies here, so what its lost message is owed is memory only.
+  owesMemoryOnly: boolean;
   routeBotId: number | null;
   managedBotIds: ReadonlySet<number>;
 }
@@ -227,6 +232,11 @@ async function boundInboxes(
         responderBoundAt: true,
       },
     });
+    const agents = await db.agent.findMany({
+      where: { id: { in: inboxes.map((i) => i.agentId as bigint) } },
+      select: { id: true, mode: true },
+    });
+    const modeOf = new Map(agents.map((a) => [a.id, a.mode]));
     const bots = await db.chatwootAgentBot.findMany({
       where: { chatwootInstanceId: instanceId },
       select: { agentId: true, chatwootAgentBotId: true },
@@ -239,6 +249,7 @@ async function boundInboxes(
       agentId: i.agentId as bigint,
       bindingGeneration: i.bindingGeneration,
       responderBoundAt: i.responderBoundAt,
+      owesMemoryOnly: modeOf.get(i.agentId as bigint) === "monitoring",
       routeBotId: botOf.get(i.agentId as bigint) ?? null,
       managedBotIds,
     }));
@@ -351,6 +362,7 @@ async function handOver(
           routeAgentBotId: inbox.routeBotId,
           routeObserved: false,
           bindingGeneration: inbox.bindingGeneration,
+          ...(inbox.owesMemoryOnly ? { owesMemoryOnly: true } : {}),
         },
         select: { id: true },
       });

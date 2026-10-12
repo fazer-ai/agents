@@ -137,6 +137,11 @@ import {
   returnConversationToAgent,
 } from "@/modules/conversations/service";
 import {
+  armCaseCarry,
+  caseCarryDedupeKey,
+} from "@/modules/cross-inbox-case/carry-job";
+import { readCrossInboxCaseConfig } from "@/modules/cross-inbox-case/settings";
+import {
   armDebounce,
   debounceDedupeKey,
   resolveDebounceConfig,
@@ -3084,6 +3089,18 @@ async function maybeConsumeCommandOrGate(params: {
         base,
       ),
     );
+    // The carry of late files into a case this conversation opened: a claimed one would still post
+    // the customer's files to the case after the command took the conversation back.
+    await step("cancel case carry", "cópia de anexos para o caso", () =>
+      retireJobsByDedupeKey(
+        tenantId,
+        "CASE_CARRY",
+        caseCarryDedupeKey(
+          chatwootThreadId(tenantId, instanceId, conversationId),
+        ),
+        base,
+      ),
+    );
     await step(
       "cancel redirect follow-up",
       "follow-up de redirecionamento",
@@ -5165,6 +5182,48 @@ export async function processChatwootDelivery(
         convLabel,
         err instanceof Error ? err.message : String(err),
       );
+    }
+    // A FILE FROM THE CONTACT on a conversation that names its case goes to the case too, whether or
+    // not a turn runs over it (../cross-inbox-case/carry-job.ts). The case number rides on the payload,
+    // so a message without a file of a carried type, or a conversation without a case, costs nothing.
+    // The arm reads its own fences (a /reset, the agent off, a person on the origin) and arms nothing
+    // under any of them.
+    const carry = responderRt
+      ? readCrossInboxCaseConfig(responderRt.settings)
+      : null;
+    const caseId = carry
+      ? Number(n.customAttributes?.[carry.caseAttributeKey])
+      : Number.NaN;
+    if (
+      responderRt &&
+      carry &&
+      carry.carryAttachments.mode !== "off" &&
+      Number.isInteger(caseId) &&
+      caseId > 0 &&
+      caseId !== n.conversationId &&
+      (n.message?.attachments ?? []).some((a) =>
+        (carry.carryAttachments.fileTypes as readonly string[]).includes(
+          a.fileType ?? "",
+        ),
+      )
+    ) {
+      try {
+        await armCaseCarry({
+          tenantId: params.tenantId,
+          instanceId: params.instanceId,
+          originConversationId: n.conversationId,
+          caseId,
+          armedAtMessageId: n.message?.id ?? null,
+          base,
+        });
+      } catch (err) {
+        logger.warn(
+          "failed to arm the case carry for a contact file (conv=%s case=%d): %s",
+          convLabel,
+          caseId,
+          errMsg(err),
+        );
+      }
     }
   }
 

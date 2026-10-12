@@ -493,7 +493,12 @@ describe("carryCaseAttachments", () => {
       download: { 13: "fail" },
     });
     const out = await carryCaseAttachments(f.client, carryInput({}));
-    expect(out).toEqual({ carried: 2, skipped: 0, failed: 1 });
+    expect(out).toEqual({
+      carried: 2,
+      skipped: 0,
+      failed: 1,
+      failedIds: [13],
+    });
     const o = uploads(f.calls)[0]?.args[2] as { content: string };
     expect(o.content).toContain("1 anexo não pôde ser copiado");
     // The failed one is not recorded, so a later call tries it again.
@@ -506,7 +511,7 @@ describe("carryCaseAttachments", () => {
       uploadFails: true,
     });
     const out = await carryCaseAttachments(f.client, carryInput({}));
-    expect(out).toEqual({ carried: 0, skipped: 0, failed: 1 });
+    expect(out).toEqual({ carried: 0, skipped: 0, failed: 1, failedIds: [11] });
     const notes = f.calls.filter((c) => c.fn === "sendMessageAsAdmin");
     expect(notes).toHaveLength(1);
     expect(notes[0]?.args[1]).toContain("1 anexo não pôde ser copiado");

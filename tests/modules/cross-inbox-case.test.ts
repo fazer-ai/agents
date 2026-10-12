@@ -2527,6 +2527,117 @@ describe("the tool", () => {
     });
   });
 
+  test("a case note withdrawn after the case opened is named, and the later walk is armed", async () => {
+    const f = fakeChatwoot();
+    let wanted = true;
+    const armed: number[] = [];
+    const reports: Array<{ phase: string; detail?: Record<string, unknown> }> =
+      [];
+    const client = {
+      ...f.client,
+      muted: false,
+      // The customer writes right after the case is created: the turn's fence answers no from then on.
+      createConversation: async (p: unknown) => {
+        const out = await (
+          f.client as unknown as {
+            createConversation: (p: unknown) => Promise<unknown>;
+          }
+        ).createConversation(p);
+        wanted = false;
+        return out;
+      },
+    } as unknown as ChatwootClient;
+    const [t] = buildNativeTools(
+      {
+        client,
+        conversationId: 7,
+        stillWanted: async () => wanted,
+        crossInboxCase: {
+          config: {
+            ...CROSS_INBOX_CASE_DEFAULTS,
+            targetInboxId: 40,
+            carryAttachments: {
+              mode: "conversation",
+              fileTypes: ["image"],
+              maxFiles: 5,
+            },
+          },
+          contactId: 5,
+          armCarry: async (caseId: number) => {
+            armed.push(caseId);
+            return "armed";
+          },
+        },
+        onSideEffectError: (e) => reports.push(e),
+      },
+      ["open_case_in_inbox"],
+    );
+    if (!t) throw new Error("tool not built");
+    await t.invoke({ reason: "segunda via do boleto" });
+    expect(
+      f.calls.some(
+        (c) =>
+          c.fn === "sendMessageAsAdmin" &&
+          String(c.args[1]).includes("segunda via do boleto"),
+      ),
+    ).toBe(false);
+    const line = reports.find((r) => r.phase === "follow_up_writes");
+    expect(line?.detail).toMatchObject({ caseId: 100, failed: ["called_off"] });
+    expect(line?.detail?.notWritten).toEqual(
+      expect.arrayContaining([
+        "origin_attribute",
+        "destination_note",
+        "case_attachments",
+        "origin_link_note",
+      ]),
+    );
+    expect(armed).toEqual([100]);
+  });
+
+  test("with the files block off, nothing is armed and no file is named as not written", async () => {
+    const f = fakeChatwoot();
+    let wanted = true;
+    const armed: number[] = [];
+    const reports: Array<{ phase: string; detail?: Record<string, unknown> }> =
+      [];
+    const client = {
+      ...f.client,
+      muted: false,
+      createConversation: async (p: unknown) => {
+        const out = await (
+          f.client as unknown as {
+            createConversation: (p: unknown) => Promise<unknown>;
+          }
+        ).createConversation(p);
+        wanted = false;
+        return out;
+      },
+    } as unknown as ChatwootClient;
+    const [t] = buildNativeTools(
+      {
+        client,
+        conversationId: 7,
+        stillWanted: async () => wanted,
+        crossInboxCase: {
+          config: { ...CROSS_INBOX_CASE_DEFAULTS, targetInboxId: 40 },
+          contactId: 5,
+          armCarry: async (caseId: number) => {
+            armed.push(caseId);
+            return "armed";
+          },
+        },
+        onSideEffectError: (e) => reports.push(e),
+      },
+      ["open_case_in_inbox"],
+    );
+    if (!t) throw new Error("tool not built");
+    await t.invoke({ reason: "x" });
+    expect(armed).toEqual([]);
+    const line = reports.find((r) => r.phase === "follow_up_writes");
+    expect(line?.detail?.notWritten).not.toContain("case_attachments");
+    expect(line?.detail?.notWritten).toContain("destination_note");
+  });
+
   test("opened: the model is told to tell the customer, and that the origin is not closed", async () => {
     const { t, toggles } = toolFor(fakeChatwoot());
     const out = String(await t.invoke({ reason: "x" }));

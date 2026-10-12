@@ -470,6 +470,10 @@ export interface ToolCtx {
     interpolate?: (template: string) => string;
     // Where the origin's current attendance starts, for `carryAttachments.mode = attendance`.
     attendanceStartedAt?: () => Promise<Date | null>;
+    // Arms the later walk that carries the files this turn's own walk did not reach (a file sent
+    // during the opening, or a walk the turn withdrew), modules/cross-inbox-case/carry-job.ts. Answers
+    // "armed" or why it stood down. Absent ⇒ no conversation to walk (the playground).
+    armCarry?: (caseId: number) => Promise<string>;
   };
   // The turn's OUTPUT guardrail, for customer-facing text a tool sends itself (the opening message of
   // `open_case_in_inbox`). Bound by the runtime that owns the gate, so this file does not import it,
@@ -2825,8 +2829,14 @@ function openCaseInInboxTool(ctx: ToolCtx) {
           ctx.onSideEffectError?.({
             tool: OPEN_CASE_TOOL_NAME,
             phase: "follow_up_writes",
-            detail: { caseId: result.caseId, failed: result.partial },
-            err: new Error(`writes did not land: ${result.partial.join(", ")}`),
+            detail: {
+              caseId: result.caseId,
+              failed: result.partial,
+              ...(result.notWritten ? { notWritten: result.notWritten } : {}),
+            },
+            err: new Error(
+              `writes did not land: ${result.partial.join(", ")}${result.notWritten ? ` (withdrawn: ${result.notWritten.join(", ")})` : ""}`,
+            ),
           });
         }
         if (
@@ -2894,6 +2904,24 @@ function openCaseInInboxTool(ctx: ToolCtx) {
           result.kind === "continued" ||
           result.kind === "already_open" ||
           result.kind === "appended";
+        // THE LATER WALK, armed once the case exists, whatever this turn's own walk did: a file the
+        // customer sends while the case opens, or after it, reaches the case without another call.
+        if (
+          caseOpen &&
+          cic.armCarry &&
+          cic.config.carryAttachments.mode !== "off"
+        ) {
+          try {
+            await cic.armCarry(result.caseId);
+          } catch (err) {
+            ctx.onSideEffectError?.({
+              tool: OPEN_CASE_TOOL_NAME,
+              phase: "case_carry_arm",
+              detail: { caseId: result.caseId },
+              err,
+            });
+          }
+        }
         // THE OPERATOR'S CLOSE RIDES THE SAME DEFERRED PATH `resolve_conversation` USES: after the
         // reply that tells the customer where the case went, and dropped when they write again
         // first. Only with a turn to defer to; a proactive turn has none, and closing immediately

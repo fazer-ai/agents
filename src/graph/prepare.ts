@@ -72,6 +72,7 @@ import {
   readContactAuthConfig,
 } from "@/modules/contact-auth/settings";
 import type { ObservedConversation } from "@/modules/conversations/record-resolution";
+import { armCaseCarry } from "@/modules/cross-inbox-case/carry-job";
 import type {
   CaseInbox,
   CustomerTextVerdict,
@@ -1273,6 +1274,7 @@ export interface ToolBuildDeps {
         renderSubject?: (summary: string | null) => string | null;
         interpolate?: (template: string) => string;
         attendanceStartedAt?: () => Promise<Date | null>;
+        armCarry?: (caseId: number) => Promise<string>;
       };
       screenCustomerText?: (text: string) => Promise<CustomerTextVerdict>;
       fetchImpl?: typeof fetch;
@@ -1702,6 +1704,24 @@ export async function buildToolset(
                           contactInboxId: cfg.contactInboxId as number,
                         },
                       ),
+                  }
+                : {}),
+              // NOTE: Only on a real conversation, which is what the later walk reads.
+              ...(ctx.conversationId > 0 &&
+              cfg.crossInboxCaseConfig.carryAttachments.mode !== "off"
+                ? {
+                    armCarry: (caseId: number) =>
+                      armCaseCarry({
+                        tenantId: ctx.tenantId,
+                        instanceId: ctx.instanceId,
+                        originConversationId: ctx.conversationId,
+                        caseId,
+                        armedAtMessageId:
+                          ctx.messageId && ctx.messageId > 0
+                            ? ctx.messageId
+                            : null,
+                        base: ctx.base,
+                      }),
                   }
                 : {}),
               renderSubject: (summary: string | null) =>

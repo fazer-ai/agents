@@ -89,6 +89,8 @@ export const JOB_LANE: Record<SchedulerJobKind, SchedulerLane> = {
   DOCUMENT_APPROVAL_OUTCOME: "shared",
   // The snoozed ladder is the same kind of work as FOLLOWUP: one nudge per row.
   SNOOZED_FOLLOWUP: "shared",
+  // Shared: a few Chatwoot reads, downloads and one upload per case, no model.
+  CASE_CARRY: "shared",
 };
 
 // Which pool each kind's handler draws its connections from (src/lib/pool-class.ts). "main" is the
@@ -115,6 +117,8 @@ export const JOB_POOL: Record<SchedulerJobKind, PoolClass> = {
   // sweep can arm many at once, which is the burst that must not take the turns' connections.
   FOLLOWUP: "background",
   SNOOZED_FOLLOWUP: "background",
+  // Background: it copies files into a case the team reads; nobody waits on it this second.
+  CASE_CARRY: "background",
   REDIRECT_FOLLOWUP: "background",
   APPOINTMENT_REMINDER: "background",
   // Background: it tells the customer what a person decided, minutes after the decision.
@@ -201,6 +205,8 @@ export const JOB_SPENDS_PROVIDER: Record<SchedulerJobKind, boolean> = {
   DOCUMENT_APPROVAL_OUTCOME: true,
   // The snoozed ladder is the same kind of work as FOLLOWUP: one nudge per row.
   SNOOZED_FOLLOWUP: true,
+  // Chatwoot reads, downloads and one upload. No model, no embedding.
+  CASE_CARRY: false,
 };
 
 // How many OBSERVE rows one SHARED tick claims, when it is the one draining the lane (a caller of
@@ -288,6 +294,9 @@ export const JOB_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
   DOCUMENT_APPROVAL_OUTCOME: true,
   // The snoozed ladder is the same kind of work as FOLLOWUP: one nudge per row.
   SNOOZED_FOLLOWUP: false,
+  // One row per conversation that holds a case, re-armed by each file the contact sends there. A
+  // finished row is the record of the last carry, and the next file reuses it.
+  CASE_CARRY: false,
 };
 
 // Whether the NUMBER of rows of this kind follows inbound traffic rather than a population the
@@ -357,6 +366,8 @@ export const JOB_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
   DOCUMENT_APPROVAL_OUTCOME: true,
   // The snoozed ladder is the same kind of work as FOLLOWUP: one nudge per row.
   SNOOZED_FOLLOWUP: false,
+  // One row per origin conversation with a case, whatever the traffic on it.
+  CASE_CARRY: false,
 };
 
 // The order the traffic drain claims in, lowest first and oldest by created_at within a rank. It only
@@ -381,6 +392,8 @@ export const JOB_TRAFFIC_RANK: Record<SchedulerJobKind, number> = {
   FOLLOWUP: 1,
   FOLLOWUP_SWEEP: 1,
   SNOOZED_FOLLOWUP: 1,
+  // Not traffic-proportional, so the rank is never read; beside the snoozed ladder.
+  CASE_CARRY: 1,
   WEBHOOK_RETRY: 1,
   DEBOUNCE: 1,
   RAG_INGEST: 1,
@@ -485,6 +498,9 @@ export const JOB_DEATH_LEVEL: Record<SchedulerJobKind, FlowLevel> = {
   DOCUMENT_APPROVAL_OUTCOME: "error",
   // The snoozed ladder is the same kind of work as FOLLOWUP: one nudge per row.
   SNOOZED_FOLLOWUP: "error",
+  // `warn`: the files are still on the origin, which the case links to, and the last attempt left a
+  // note on the case saying a file could not be copied.
+  CASE_CARRY: "warn",
 };
 
 // The base of `backoffMs` in ./service.ts for one kind's retries. With `MAX_ATTEMPTS` 5 a failing
@@ -527,6 +543,9 @@ export const JOB_RETRY_BASE_MS: Record<SchedulerJobKind, number> = {
   DOCUMENT_APPROVAL_OUTCOME: 2_000,
   // The snoozed ladder is the same kind of work as FOLLOWUP: one nudge per row.
   SNOOZED_FOLLOWUP: 2_000,
+  // Half a minute: a Chatwoot upload that failed is most often the instance restarting, and five
+  // attempts at this base span about seven minutes.
+  CASE_CARRY: 30_000,
 };
 
 export function kindsInLane(

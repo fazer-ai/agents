@@ -42,6 +42,10 @@ export interface CarryInput {
   // The per-file ceiling. Absent ⇒ CARRY_MAX_FILE_BYTES.
   maxFileBytes?: number;
   stillWanted?: () => Promise<boolean>;
+  // Whether a failure that left no file on the case writes the note saying so. Absent ⇒ it does. A
+  // carry that will be tried again (./carry-job.ts) passes false until its last attempt, or every
+  // retry would leave the same warning on the case.
+  failureNote?: boolean;
 }
 
 export interface CarryOutcome {
@@ -57,6 +61,8 @@ export interface CarryOutcome {
   // On `calledOff`: the files that came down and were about to be posted, by attachment id, oldest
   // first. A failed download is not here: it stays counted in `failed`.
   notCarried?: number[];
+  // The files counted in `failed`, by attachment id: a download or the upload that did not land.
+  failedIds?: number[];
   // The walk stopped at its page limit, so older files were never seen.
   truncated?: boolean;
 }
@@ -322,6 +328,7 @@ async function carryLocked(
     .slice(config.maxFiles)
     .filter((c) => !done.has(c.attachmentId)).length;
   const ceiling = input.maxFileBytes ?? CARRY_MAX_FILE_BYTES;
+  const failedIds: number[] = [];
   const files: Array<{
     candidate: Candidate;
     bytes: ArrayBuffer;
@@ -356,6 +363,7 @@ async function carryLocked(
         outcome.skipped += 1;
       } else {
         outcome.failed += 1;
+        failedIds.push(c.attachmentId);
       }
     }
   }
@@ -366,6 +374,7 @@ async function carryLocked(
       carried: 0,
       calledOff: true,
       notCarried: files.map((f) => f.candidate.attachmentId),
+      ...(failedIds.length > 0 ? { failedIds } : {}),
     };
   }
 
@@ -394,14 +403,17 @@ async function carryLocked(
       posted = true;
     } catch {
       outcome.failed += files.length;
+      failedIds.push(...files.map((f) => f.candidate.attachmentId));
     }
   }
+  if (failedIds.length > 0) outcome.failedIds = failedIds;
   // Nothing made it into a note with files, but something failed: the team still learns there were
   // files, and where to see them. Asked again first: the upload was a wait, and a run withdrawn during
   // it writes nothing more.
   if (
     !posted &&
     outcome.failed > 0 &&
+    input.failureNote !== false &&
     !(input.stillWanted && !(await input.stillWanted()))
   ) {
     try {

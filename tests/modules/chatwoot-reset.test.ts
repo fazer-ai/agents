@@ -2420,6 +2420,40 @@ describe.skipIf(!dbUp)(
       }
     });
 
+    // The late carry of the customer's files into a case: a claimed one would still post them to the
+    // case after the command took the conversation back.
+    test("a case carry pending or claimed is tombstoned too", async () => {
+      const dedupeKey = `case-carry:${tenantId}:${instanceId}:${CONV_ID}`;
+      await suDb.schedulerJob.create({
+        data: {
+          tenantId,
+          kind: "CASE_CARRY",
+          dedupeKey,
+          runAt: new Date(Date.now() + 5_000),
+          status: "CLAIMED",
+          payload: { originConversationId: CONV_ID, caseId: 202 },
+        },
+      });
+      const cw = fakeChatwoot();
+      globalThis.fetch = cw.impl as typeof fetch;
+      try {
+        await sendReset();
+
+        const row = await suDb.schedulerJob.findFirstOrThrow({
+          where: { tenantId, kind: "CASE_CARRY", dedupeKey },
+          select: { payload: true, claimSeq: true, status: true },
+        });
+        expect(
+          (row.payload as { cancelledAt?: string })?.cancelledAt,
+        ).toBeString();
+        expect(row.claimSeq).toBe(1);
+        expect(row.status).toBe("DONE");
+      } finally {
+        globalThis.fetch = originalFetch;
+        await suDb.schedulerJob.deleteMany({ where: { tenantId } });
+      }
+    });
+
     // The one writer this step's lock does not hold back: a turn already inside `graph.invoke`. It
     // saves what it LOADED plus its own messages, so a clear landing mid-invoke is undone the moment
     // it finishes — and the half that is NOT undone is the summary rows and the marker, which nothing

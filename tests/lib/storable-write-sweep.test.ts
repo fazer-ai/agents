@@ -319,6 +319,8 @@ const ERROR_COLUMN_LINES: Record<string, [number, ErrorSite | string]> = {
   "src/modules/contact-auth/service.ts": [1, "flow-event"],
   "src/modules/conversations/error.ts": [3, "guarded + cleared"],
   "src/modules/conversations/service.ts": [12, "read"],
+  // The late-file carry's line: a fixed sentence with the case and the attachment ids.
+  "src/modules/cross-inbox-case/carry-job.ts": [1, "flow-event"],
   // The line a dead debounce flush writes: a fixed sentence and a count, never the job's error.
   "src/modules/debounce/handler.ts": [1, "flow-event"],
   // Both roads to DEAD write through one `finalizeDead`.

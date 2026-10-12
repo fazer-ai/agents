@@ -111,6 +111,9 @@ export type OpenCaseResult =
       // Writes after the case existed that did not land. The case is open either way. On an
       // already-open case, only the owner writes (`case_assignee`, `case_team`) and the note can appear.
       partial: string[];
+      // With `called_off` in `partial`: the writes the withdrawal kept from landing, by the same
+      // names, so the flow log says WHICH (the case note, the files) and not only that something was.
+      notWritten?: string[];
       // The opening message the output guardrail refused, so it was not sent.
       openingBlocked?: boolean;
       // The destination's reply window was closed (Chatwoot's `can_reply`), so the opening went to
@@ -473,7 +476,8 @@ async function run(
         } else {
           partial.push("called_off");
         }
-        const attachments = partial.includes("called_off")
+        const withdrawnHere = partial.includes("called_off");
+        const attachments = withdrawnHere
           ? null
           : await carryInto(client, input, known);
         return {
@@ -483,6 +487,14 @@ async function run(
           identity: null,
           partial,
           additionDelivered,
+          ...(withdrawnHere
+            ? {
+                notWritten:
+                  config.carryAttachments.mode === "off"
+                    ? ["destination_note"]
+                    : ["destination_note", "case_attachments"],
+              }
+            : {}),
           ...(caseOwnerUnread ? { caseOwnerUnread } : {}),
           ...(attachments ? { attachments } : {}),
         };
@@ -685,8 +697,12 @@ async function run(
         }
         return calledOff;
       };
+      const notWritten: string[] = [];
       const attempt = async (name: string, fn: () => Promise<unknown>) => {
-        if (await withdrawn()) return;
+        if (await withdrawn()) {
+          notWritten.push(name);
+          return;
+        }
         try {
           await fn();
         } catch {
@@ -786,9 +802,11 @@ async function run(
         noteDelivered = true;
       });
       // Right after the case's own note, so the team reads the reason and then the files.
-      const attachments = (await withdrawn())
-        ? null
-        : await carryInto(client, input, caseId);
+      let attachments: CarryOutcome | null = null;
+      if (await withdrawn()) {
+        if (config.carryAttachments.mode !== "off")
+          notWritten.push("case_attachments");
+      } else attachments = await carryInto(client, input, caseId);
       await attempt("origin_link_note", () =>
         client.sendPrivateNote(origin, originLinkNote(caseUrl, inboxName)),
       );
@@ -817,7 +835,10 @@ async function run(
             const current = await client.getConversationLabels(caseId);
             // Asked again after the queue's wait and the read: a reset queued ahead of this write clears
             // the labels and withdraws the turn, and this write must not put them back.
-            if (await withdrawn()) return;
+            if (await withdrawn()) {
+              notWritten.push("destination_labels");
+              return;
+            }
             // Only what is missing: a continued case that already carries every label is not written.
             const missing = wanted.filter((l) => !current.includes(l));
             if (missing.length === 0) return;
@@ -837,7 +858,10 @@ async function run(
           withConversationLabels(input.tenantId, origin, async () => {
             const current = await client.getConversationLabels(origin);
             if (current.includes(originLabel)) return;
-            if (await withdrawn()) return;
+            if (await withdrawn()) {
+              notWritten.push("origin_label");
+              return;
+            }
             await client.setConversationLabels(origin, [
               ...current,
               originLabel,
@@ -852,6 +876,7 @@ async function run(
         caseUrl,
         identity,
         partial,
+        ...(notWritten.length > 0 ? { notWritten } : {}),
         ...(openingBlocked ? { openingBlocked } : {}),
         ...(openingOutsideWindow ? { openingOutsideWindow } : {}),
         ...(unknownCaseLabels.length > 0 ? { unknownCaseLabels } : {}),

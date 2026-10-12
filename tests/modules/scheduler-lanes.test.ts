@@ -67,6 +67,7 @@ const past = () => new Date(Date.now() - 60_000);
 // green while APPOINTMENT_REMINDER quietly drains on the debounce tick. Stated here, the source and
 // the expectation have to be changed by two separate deliberate edits.
 const EXPECTED_LANE: Record<SchedulerJobKind, SchedulerLane> = {
+  CASE_CARRY: "shared",
   FOLLOWUP: "shared",
   SNOOZED_FOLLOWUP: "shared",
   FOLLOWUP_SWEEP: "shared",
@@ -113,6 +114,7 @@ const EXPECTED_LANE: Record<SchedulerJobKind, SchedulerLane> = {
 // all. RAG_INGEST's provider has NO other limiter (`embedTexts` never touches the model semaphore),
 // so a silent demotion means twenty embedding batches at once on a bulk import.
 const EXPECTED_SPENDS_PROVIDER: Record<SchedulerJobKind, boolean> = {
+  CASE_CARRY: false,
   FOLLOWUP: true,
   SNOOZED_FOLLOWUP: true,
   APPOINTMENT_REMINDER: true,
@@ -159,6 +161,7 @@ const EXPECTED_SPENDS_PROVIDER: Record<SchedulerJobKind, boolean> = {
 // and is drained at a quarter of the rate; a kind marked delete-on-done stops leaving a completed
 // row behind, and the rows nothing sweeps are simply gone.
 const EXPECTED_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
+  CASE_CARRY: false,
   INGEST_MESSAGE: true,
   FOLLOWUP: false,
   SNOOZED_FOLLOWUP: false,
@@ -201,6 +204,7 @@ const EXPECTED_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
 };
 
 const EXPECTED_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
+  CASE_CARRY: false,
   INGEST_MESSAGE: true,
   FOLLOWUP: false,
   SNOOZED_FOLLOWUP: false,
@@ -243,6 +247,7 @@ const EXPECTED_DEATH_LEVEL: Record<
   SchedulerJobKind,
   "info" | "warn" | "error"
 > = {
+  CASE_CARRY: "warn",
   FOLLOWUP: "error",
   SNOOZED_FOLLOWUP: "error",
   FOLLOWUP_SWEEP: "error",

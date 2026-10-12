@@ -28,6 +28,7 @@ import { registerDeliveryRecoveryHandler } from "@/modules/chatwoot/recover-deli
 import { registerHumanReplyRecoveryHandler } from "@/modules/chatwoot/recover-human-reply";
 import { registerTakeoverRecoveryHandler } from "@/modules/chatwoot/recover-takeover";
 import { enableRouteTokenRewarm } from "@/modules/chatwoot/webhook";
+import { registerCaseCarryHandler } from "@/modules/cross-inbox-case/carry-job";
 import { registerDebounceHandler } from "@/modules/debounce/handler";
 import {
   startDebounceWorker,
@@ -206,6 +207,7 @@ if (config.schedulerWorker.enabled) {
   registerSpendPollHandler();
   registerKnowledgeSourceHandler();
   registerInboundSweepHandlers();
+  registerCaseCarryHandler();
   startScheduler();
   // Arm the per-tenant execution-log retention sweep for every existing tenant (best-effort: a
   // boot-time DB outage just means the sweep arms on the next restart).

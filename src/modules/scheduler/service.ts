@@ -80,7 +80,8 @@ export type SchedulerJobKind =
   | "SUGGESTION_REVIEW"
   | "DOCUMENT_APPROVAL_EXPIRY"
   | "DOCUMENT_APPROVAL_OUTCOME"
-  | "SNOOZED_FOLLOWUP";
+  | "SNOOZED_FOLLOWUP"
+  | "CASE_CARRY";
 
 export interface ClaimedJob {
   id: bigint;

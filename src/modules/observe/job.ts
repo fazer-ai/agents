@@ -79,6 +79,7 @@ import {
   type TriggerClaim,
   writeTriggerState,
 } from "@/modules/decisions/trigger-state";
+import { emitCapacityWait } from "@/modules/flowlog/capacity";
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
 import {
   type ClaimedJob,
@@ -1541,6 +1542,12 @@ export async function runObserve(
         // NOTE: the tick's frame says the model answers nobody, so the tool budget's wrap-up says the
         // same: finish with a tool, or stop, never "responda ao cliente".
         noReplyChannel: true,
+        // NOTE: nobody waits on an observation this second, so its model call yields to replies under
+        // contention, within the background's share and aging bound; a wait past the threshold is
+        // written, at info, so a starved observer shows in the Logs.
+        modelPriority: "background",
+        onModelPermitWait: (wait) =>
+          emitCapacityWait(flow, "model_semaphore", wait),
         // NOTE: Written before the retry runs, so `info` with `willRetry`: a second empty answer fails
         // the tick, and that failure is the line.
         onModelRetry: ({ attempt, provider, model }) =>

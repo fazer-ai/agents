@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { parseIntSetting } from "@/config";
+import { modelSemaphorePolicy } from "@/graph/model-limit";
 
 // Every numeric environment variable goes through one validated parser. An unchecked `Number(RAW)`
 // turns "15s" into NaN and "1e309" into Infinity: a `setInterval` worker then ticks about every
@@ -363,6 +364,8 @@ describe("database pools and budgets", () => {
         "DB_LOCK_TIMEOUT_MS",
         "AGENT_MODEL_CONCURRENCY",
         "DEBOUNCE_TURN_SLOTS",
+        "AGENT_MODEL_BACKGROUND_SHARE_PERCENT",
+        "AGENT_MODEL_BACKGROUND_MAX_WAIT_MS",
       ]) {
         expect(compose).toContain(`${v}=\${${v}:-}`);
       }
@@ -436,6 +439,54 @@ describe("debounce turn slots", () => {
     for (const raw of ["0", "-3", "abc", "2.5", "1000001"]) {
       const refusal = await refusalOf({ DEBOUNCE_TURN_SLOTS: raw });
       expect(refusal).toContain("DEBOUNCE_TURN_SLOTS must be");
+      expect(refusal).toContain(`"${raw}"`);
+    }
+  });
+});
+
+// Under contention the model semaphore serves replies first; the background keeps a share of the
+// permits held at once and an aging bound, both process knobs.
+describe("the model semaphore's background share and aging bound", () => {
+  async function policyOf(env: Record<string, string | undefined>) {
+    const cfg = (await loadConfig(env)) as unknown as Parameters<
+      typeof modelSemaphorePolicy
+    >[0];
+    return modelSemaphorePolicy(cfg);
+  }
+
+  test("the share is a count of permits, rounded down, and the bound is the setting", async () => {
+    expect(
+      await policyOf({
+        AGENT_MODEL_CONCURRENCY: "40",
+        AGENT_MODEL_BACKGROUND_SHARE_PERCENT: undefined,
+        AGENT_MODEL_BACKGROUND_MAX_WAIT_MS: undefined,
+      }),
+    ).toEqual({ backgroundMin: 4, agingMs: 60_000 });
+    expect(
+      await policyOf({
+        AGENT_MODEL_CONCURRENCY: "7",
+        AGENT_MODEL_BACKGROUND_SHARE_PERCENT: "25",
+        AGENT_MODEL_BACKGROUND_MAX_WAIT_MS: "5000",
+      }),
+    ).toEqual({ backgroundMin: 1, agingMs: 5_000 });
+    expect(
+      await policyOf({
+        AGENT_MODEL_CONCURRENCY: "1",
+        AGENT_MODEL_BACKGROUND_SHARE_PERCENT: undefined,
+      }),
+    ).toMatchObject({ backgroundMin: 0 });
+  });
+
+  test("a value that is not a whole number in range refuses by name", async () => {
+    for (const [env, raw] of [
+      ["AGENT_MODEL_BACKGROUND_SHARE_PERCENT", "abc"],
+      ["AGENT_MODEL_BACKGROUND_SHARE_PERCENT", "-1"],
+      ["AGENT_MODEL_BACKGROUND_SHARE_PERCENT", "101"],
+      ["AGENT_MODEL_BACKGROUND_MAX_WAIT_MS", "abc"],
+      ["AGENT_MODEL_BACKGROUND_MAX_WAIT_MS", "-1"],
+    ] as const) {
+      const refusal = await refusalOf({ [env]: raw });
+      expect(refusal).toContain(`${env} must be`);
       expect(refusal).toContain(`"${raw}"`);
     }
   });

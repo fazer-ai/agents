@@ -67,6 +67,9 @@ services:
       # app default.
       - AGENT_MODEL_CONCURRENCY=${AGENT_MODEL_CONCURRENCY:-}
       - DEBOUNCE_TURN_SLOTS=${DEBOUNCE_TURN_SLOTS:-}
+      # The background share and aging bound of the model permits (docs/deploy.md).
+      - AGENT_MODEL_BACKGROUND_SHARE_PERCENT=${AGENT_MODEL_BACKGROUND_SHARE_PERCENT:-}
+      - AGENT_MODEL_BACKGROUND_MAX_WAIT_MS=${AGENT_MODEL_BACKGROUND_MAX_WAIT_MS:-}
       # First-run: disable the /setup token in this trusted, TLS-fronted onboarding window (the
       # advisory lock still caps /setup at one admin). Set to `true` to require it.
       - SETUP_TOKEN_REQUIRED=${SETUP_TOKEN_REQUIRED:-false}

@@ -5,7 +5,11 @@ import {
   markReportedElsewhere,
   providerFailure,
 } from "@/lib/provider-failure";
-import { Semaphore } from "@/lib/semaphore";
+import {
+  type PermitClass,
+  Semaphore,
+  type SemaphorePolicy,
+} from "@/lib/semaphore";
 import type { CapacityOccupancy } from "@/modules/flowlog/capacity";
 import {
   EMPTY_COMPLETION_MESSAGE,
@@ -21,9 +25,23 @@ import { isFallbackWorthy } from "./model-fallback";
 
 const KEY = Symbol.for("fazerai.model.semaphore");
 
+// The background's share is a count of permits held at once, the percentage of the permits rounded
+// down, so a semaphore too small for a share relies on the aging bound alone.
+export function modelSemaphorePolicy(c: typeof config): SemaphorePolicy {
+  return {
+    backgroundMin: Math.floor(
+      (c.agent.modelConcurrency * c.agent.backgroundSharePercent) / 100,
+    ),
+    agingMs: c.agent.backgroundMaxWaitMs,
+  };
+}
+
 function sem(): Semaphore {
   const g = globalThis as unknown as Record<symbol, Semaphore>;
-  g[KEY] ??= new Semaphore(config.agent.modelConcurrency);
+  g[KEY] ??= new Semaphore(
+    config.agent.modelConcurrency,
+    modelSemaphorePolicy(config),
+  );
   return g[KEY];
 }
 
@@ -32,14 +50,22 @@ export interface ModelPermitReading {
   permits: number;
   inFlight: number;
   waiting: number;
+  // The queue split by class: a background count that only grows is a starved background.
+  waitingReply: number;
+  waitingBackground: number;
+  heldBackground: number;
 }
 
 export function modelPermitReading(): ModelPermitReading {
   const s = sem();
+  const byClass = s.classReading();
   return {
     permits: s.permits,
     inFlight: s.permits - s.free,
     waiting: s.waiting,
+    waitingReply: byClass.reply.waiting,
+    waitingBackground: byClass.background.waiting,
+    heldBackground: byClass.background.held,
   };
 }
 
@@ -115,6 +141,10 @@ export type ModelCallOptions<T> = {
   // does not reach `fn`, which is handed the call's own deadline; a caller that wants the model call
   // itself ended joins the two there, as the agent turn does.
   signal?: AbortSignal;
+  // Who is waiting on this call (src/lib/semaphore.ts): `reply` (the default) is a customer's turn,
+  // `background` is work nobody waits on this second, which yields its permit to replies under
+  // contention, within its share and its aging bound.
+  priority?: PermitClass;
 } & (
   | ReportingModelCallOptions<T>
   | {
@@ -197,6 +227,7 @@ export async function runModelCall<T>(
   // granted in the next microtask, long before any timer can fire, so an uncontended call reports
   // nothing.
   const onPermitWait = opts?.onPermitWait;
+  const priority = opts?.priority ?? "reply";
   let waitTimer: ReturnType<typeof setTimeout> | undefined;
   if (onPermitWait) {
     const thresholdMs = config.agent.capacityWaitAlertMs;
@@ -209,9 +240,12 @@ export async function runModelCall<T>(
           thresholdMs,
           occupancy: {
             limit: "AGENT_MODEL_CONCURRENCY",
+            class: priority,
             modelInFlight: model.inFlight,
             modelPermits: model.permits,
             modelWaiting: model.waiting,
+            modelWaitingReply: model.waitingReply,
+            modelWaitingBackground: model.waitingBackground,
           },
         });
       } catch (err) {
@@ -224,48 +258,52 @@ export async function runModelCall<T>(
   // NOTE: cleared on every way out of the wait, a call that left the queue included: a wait that
   // ended is not one to report.
   try {
-    return await sem().run(async () => {
-      clearTimeout(waitTimer);
-      // Reached with the error the PROVIDER raised, which is why the decision lives here and
-      // not at the call site: after `describeProviderFault`, "timeout" is a message on an Error named
-      // "Error", so a predicate asking the SDK's question would answer no to the case it exists for.
-      const failed = async (err: unknown): Promise<T> => {
-        const described = describeProviderFault(err);
-        if (!fallback || !isFallbackWorthy(err)) throw described;
-        const reason =
-          described instanceof Error ? described.message : "provider error";
-        logger.warn(
-          { err },
-          "primary model provider failed; handing the turn to the fallback",
-        );
-        fallback.onFallback?.({ reason, failure: providerFailure(err) });
-        try {
-          return await attemptOn(
-            fallback.run,
-            fallback.labels,
-            fallback.deadlineMs,
+    return await sem().run(
+      async () => {
+        clearTimeout(waitTimer);
+        // Reached with the error the PROVIDER raised, which is why the decision lives here and
+        // not at the call site: after `describeProviderFault`, "timeout" is a message on an Error named
+        // "Error", so a predicate asking the SDK's question would answer no to the case it exists for.
+        const failed = async (err: unknown): Promise<T> => {
+          const described = describeProviderFault(err);
+          if (!fallback || !isFallbackWorthy(err)) throw described;
+          const reason =
+            described instanceof Error ? described.message : "provider error";
+          logger.warn(
+            { err },
+            "primary model provider failed; handing the turn to the fallback",
           );
-        } catch (fallbackErr) {
-          // The fallback is the last thing there is, so what it failed with is what the turn
-          // reports. Redacted the same way: a second vendor's prose is no safer than the first's.
-          const out = describeProviderFault(fallbackErr);
-          if (fallback.onFallbackFailed) {
-            const failure = providerFailure(fallbackErr);
-            fallback.onFallbackFailed({
-              reason: out instanceof Error ? out.message : "provider error",
-              failure,
-            });
-            markReportedElsewhere(out, failure);
+          fallback.onFallback?.({ reason, failure: providerFailure(err) });
+          try {
+            return await attemptOn(
+              fallback.run,
+              fallback.labels,
+              fallback.deadlineMs,
+            );
+          } catch (fallbackErr) {
+            // The fallback is the last thing there is, so what it failed with is what the turn
+            // reports. Redacted the same way: a second vendor's prose is no safer than the first's.
+            const out = describeProviderFault(fallbackErr);
+            if (fallback.onFallbackFailed) {
+              const failure = providerFailure(fallbackErr);
+              fallback.onFallbackFailed({
+                reason: out instanceof Error ? out.message : "provider error",
+                failure,
+              });
+              markReportedElsewhere(out, failure);
+            }
+            throw out;
           }
-          throw out;
+        };
+        try {
+          return await attemptOn(fn, opts?.primary, deadlineMs);
+        } catch (err) {
+          return failed(err);
         }
-      };
-      try {
-        return await attemptOn(fn, opts?.primary, deadlineMs);
-      } catch (err) {
-        return failed(err);
-      }
-    }, opts?.signal);
+      },
+      opts?.signal,
+      priority,
+    );
   } finally {
     clearTimeout(waitTimer);
   }

@@ -16,7 +16,11 @@ import {
   isNudgeTurn,
 } from "@/graph/markers";
 import { contentToText } from "@/graph/message-text";
-import { runModelCall } from "@/graph/model-limit";
+import {
+  type ModelLabels,
+  type PermitWaitInfo,
+  runModelCall,
+} from "@/graph/model-limit";
 import { DATA_FENCE } from "@/graph/nudge";
 import { providerFailure } from "@/lib/provider-failure";
 import { clipText, clipTextEnd } from "@/lib/text";
@@ -173,6 +177,8 @@ export async function summarizeAttendance(
   callbacks?: BaseCallbackHandler[],
   // The agent's declared history ceiling (null = none). See TRANSCRIPT_MAX_CHARS.
   maxHistoryTokens: number | null = null,
+  // A wait for a model permit past the capacity threshold, with the model it was for.
+  permitWait?: PermitWaitReport,
 ): Promise<AttendanceSummaryResult> {
   return summarizeTranscript(
     model,
@@ -180,7 +186,15 @@ export async function summarizeAttendance(
     renderTranscript(messages, maxHistoryTokens),
     ATTENDANCE_SUMMARY_MAX,
     callbacks,
+    undefined,
+    undefined,
+    permitWait,
   );
+}
+
+export interface PermitWaitReport {
+  primary: ModelLabels;
+  onPermitWait: (info: PermitWaitInfo) => void;
 }
 
 // A transcript the caller rendered, wrapped in the transcription fence the system prompt names. The
@@ -213,6 +227,8 @@ export async function summarizeTranscript(
   deadlineMs: number = SUMMARIZE_TIMEOUT_MS,
   // The caller's own cancellation (a scheduler run past its deadline), joined to each attempt's.
   abort?: AbortSignal,
+  // A wait for a model permit past the capacity threshold, with the model it was for.
+  permitWait?: PermitWaitReport,
 ): Promise<AttendanceSummaryResult> {
   // NOTE: An attendance whose messages carry no text at all (only tool traffic) has nothing to
   // remember. That is a legitimate empty summary, not a failure, so it must not carry `error`.
@@ -248,8 +264,18 @@ export async function summarizeTranscript(
         return abort ? raceAbort(call, abort) : call;
       },
       // The abort also ends the wait for a permit: a run past its deadline leaves the queue instead
-      // of calling once capacity frees, which some adapters would not stop mid-call.
-      { deadlineMs, signal: abort },
+      // of calling once capacity frees, which some adapters would not stop mid-call. Nobody waits on a
+      // summary, so it yields its permit to replies under contention, within the background's share
+      // and aging bound.
+      permitWait
+        ? {
+            deadlineMs,
+            signal: abort,
+            priority: "background",
+            primary: permitWait.primary,
+            onPermitWait: permitWait.onPermitWait,
+          }
+        : { deadlineMs, signal: abort, priority: "background" },
     );
     const text = contentToText(res.content).trim();
     if (!text) return { summary: "", error: "empty completion" };

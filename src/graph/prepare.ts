@@ -21,6 +21,7 @@ import {
   unmatchedPreconditionEvent,
 } from "@/graph/tools/precondition";
 import { parseDbId } from "@/lib/db-id";
+import type { PermitClass } from "@/lib/semaphore";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { readLimitsConfig } from "@/modules/agents/limits";
 import { isMonitoring } from "@/modules/agents/mode";
@@ -2129,6 +2130,8 @@ export interface GraphBuildDeps {
   onModelRetry?: (info: ModelRetryInfo) => void;
   // A model call that waited past the capacity threshold for a permit.
   onModelPermitWait?: (info: PermitWaitInfo) => void;
+  // See BuildAgentGraphParams.modelPriority.
+  modelPriority?: PermitClass;
   // The scheduler job's signal; see BuildAgentGraphParams.signal.
   signal?: AbortSignal;
   // Fired when the configured second provider took the turn, so the runtime can put it on the trail.
@@ -2308,6 +2311,7 @@ export async function buildModelAndGraph(
     onToolLimit: deps.onToolLimit,
     onModelRetry: deps.onModelRetry,
     onModelPermitWait: deps.onModelPermitWait,
+    modelPriority: deps.modelPriority,
     signal: deps.signal,
     onModelFallback: deps.onModelFallback,
     onModelFallbackFailed: deps.onModelFallbackFailed,

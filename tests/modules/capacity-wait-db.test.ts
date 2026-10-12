@@ -14,6 +14,7 @@ import {
   type DebounceTickDeps,
   runDebounceTick,
 } from "@/modules/debounce/worker";
+import { emitCapacityWait } from "@/modules/flowlog/capacity";
 import { settleFlowEvents } from "@/modules/flowlog/scheduled";
 import {
   claimDueDebounceJobs,
@@ -334,6 +335,46 @@ describe.skipIf(!dbUp)("a reply waiting for capacity (issue #812)", () => {
       // NOTE: the waiting row is still PENDING, and the next case's FIFO claim would take it.
       await suDb.schedulerJob.deleteMany({ where: { tenantId } });
     }
+  });
+
+  // A background call that waited is the design under a peak of replies: the line shows it in the
+  // Logs, at info, and a channel subscribed at warn is not paged for it.
+  test("a background call's wait is written at info, naming its class", async () => {
+    const conv = await seedConversation(4301);
+    emitCapacityWait(
+      {
+        tenantId,
+        turnId: crypto.randomUUID(),
+        source: "inbox",
+        conversationId: conv.id,
+        base: appDb,
+      },
+      "model_semaphore",
+      {
+        waitedMs: THRESHOLD_MS + 5,
+        thresholdMs: THRESHOLD_MS,
+        occupancy: {
+          limit: "AGENT_MODEL_CONCURRENCY",
+          class: "background",
+          modelInFlight: 2,
+          modelPermits: 2,
+          modelWaiting: 3,
+          modelWaitingReply: 2,
+          modelWaitingBackground: 1,
+        },
+      },
+    );
+    await settleFlowEvents();
+    const lines = await capacityLines(conv.id);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]?.level).toBe("info");
+    expect(lines[0]?.detail).toMatchObject({
+      waitedOn: "model_semaphore",
+      class: "background",
+      modelWaitingBackground: 1,
+    });
+    expect(await deliveriesFor()).toEqual([]);
+    await clearFlowLog(suDb, { tenantId });
   });
 
   test("a flush whose model call queues on the semaphore is announced on its conversation, naming the semaphore", async () => {

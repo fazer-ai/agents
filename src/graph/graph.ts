@@ -32,6 +32,7 @@ import {
   USAGE_PROVIDER_METADATA_KEY,
 } from "@/graph/usage";
 import { markReportedElsewhere, providerFailure } from "@/lib/provider-failure";
+import type { PermitClass } from "@/lib/semaphore";
 import {
   calledOffToolResult,
   droppedCallCount,
@@ -77,6 +78,9 @@ export interface BuildAgentGraphParams {
   // Fired when this node's model call has waited past the capacity threshold for a permit of the
   // process-wide semaphore, so the runtime can put a `capacity` warn on the trail.
   onModelPermitWait?: (info: PermitWaitInfo) => void;
+  // Whose call this node makes on the model semaphore: `reply` (absent) for a customer's turn,
+  // `background` for a run nobody is waiting on (the observer).
+  modelPriority?: PermitClass;
   // The second provider, already built and already bounded (see ./model-fallback). Absent when the
   // agent configured none, and then the node never falls back.
   fallback?: FallbackModel;
@@ -642,6 +646,7 @@ export function buildAgentGraph({
   onToolLimit,
   onModelRetry,
   onModelPermitWait,
+  modelPriority,
   primary,
   fallback,
   onModelFallback,
@@ -896,6 +901,7 @@ export function buildAgentGraph({
             primary: second.labels,
             onRetry: onModelRetry,
             onPermitWait: onModelPermitWait,
+            priority: modelPriority,
           });
         } catch (err) {
           // NOTE: a call the job's deadline ended failed on the job, not on the provider.
@@ -933,6 +939,7 @@ export function buildAgentGraph({
           primary,
           onRetry: onModelRetry,
           onPermitWait: onModelPermitWait,
+          priority: modelPriority,
           fallback: second
             ? {
                 labels: second.labels,

@@ -65,9 +65,12 @@ describe("a model call waiting for a permit", () => {
     const cap = config.agent.modelConcurrency;
     expect(seen[0]?.occupancy).toEqual({
       limit: "AGENT_MODEL_CONCURRENCY",
+      class: "reply",
       modelInFlight: cap,
       modelPermits: cap,
       modelWaiting: 1,
+      modelWaitingReply: 1,
+      modelWaitingBackground: 0,
     });
     release();
     expect(await call).toBe("ok");

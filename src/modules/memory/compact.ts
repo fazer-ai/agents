@@ -18,6 +18,7 @@ import { buildThreadStateGraph, THREAD_STATE_NODE } from "@/graph/thread-state";
 import { withKeyedQueue } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { isMonitoring } from "@/modules/agents/mode";
+import { emitCapacityWait } from "@/modules/flowlog/capacity";
 import { emitFlowEvent } from "@/modules/flowlog/service";
 import { readMonitoringConfig } from "@/modules/observe/settings";
 import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
@@ -439,6 +440,24 @@ export async function runCompaction(
         base,
       }),
       cfg.maxHistoryTokens,
+      {
+        primary: { provider: mc.provider, model: mc.model },
+        onPermitWait: (wait) =>
+          emitCapacityWait(
+            {
+              tenantId,
+              turnId: crypto.randomUUID(),
+              source: "inbox",
+              agentId,
+              threadId: graphThreadId,
+              conversationId: segment?.id ?? cfg.conversationDbId,
+              inboxId: cfg.inboxDbId,
+              base,
+            },
+            "model_semaphore",
+            wait,
+          ),
+      },
     );
     if (result.error) return { outcome: "fail", error: result.error };
     summary = result.summary;

@@ -5,6 +5,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { chatwootThreadId } from "@/graph/checkpointer";
+import { modelPermitReading } from "@/graph/model-limit";
 import {
   clearMediaAnnotations,
   stashMediaAnnotation,
@@ -1995,6 +1996,33 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     );
     expect(log.labelsWritten).toEqual([]);
     expect(res.outcome).toBe("fail");
+  });
+
+  // Nobody waits on an observation this second, so its model call queues as background and yields
+  // to customer replies under contention.
+  test("the observer's model call holds a background permit", async () => {
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    const heldBackground: number[] = [];
+    const model = new LabellingModel(["cancelamento"], async () => {
+      heldBackground.push(modelPermitReading().heldBackground);
+    });
+    await runObserve(
+      tenantId,
+      {
+        instanceId,
+        conversationId: CONV,
+        agentId,
+        reason: "burst",
+        atMessageId: null,
+      },
+      appDb,
+      {
+        makeClient: async () =>
+          stubClient([message(1, "quero cancelar")], [], log),
+        makeModel: () => model as unknown as BaseChatModel,
+      },
+    );
+    expect(heldBackground).toEqual([1]);
   });
 
   test("a refused EFFECT-FREE tool does not cancel out a real write", async () => {

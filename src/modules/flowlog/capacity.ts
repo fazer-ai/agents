@@ -14,6 +14,10 @@ export type CapacityLimit = "debounce_lane" | "model_semaphore";
 // The lane's two numbers are on the lane's line only: a model call does not know the lane.
 export interface CapacityOccupancy {
   limit: "DEBOUNCE_TURN_SLOTS" | "AGENT_MODEL_CONCURRENCY";
+  // On the semaphore's line: whose call waited, and the queue split by class.
+  class?: "reply" | "background";
+  modelWaitingReply?: number;
+  modelWaitingBackground?: number;
   laneInFlight?: number;
   laneSlots?: number;
   modelInFlight: number;
@@ -33,7 +37,9 @@ export function emitCapacityWait(
 ): void {
   emitFlowEvent(flow, {
     stage: "capacity",
-    level: "warn",
+    // A background call that waited is the design under a peak of replies, not a customer waiting:
+    // written so a starved background shows in the Logs, not paged.
+    level: wait.occupancy.class === "background" ? "info" : "warn",
     status: "ok",
     durationMs: wait.waitedMs,
     detail: {

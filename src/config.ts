@@ -68,6 +68,8 @@ const {
   AGENT_MODEL_CONCURRENCY,
   AGENT_MODEL_CALL_TIMEOUT_MS,
   AGENT_CAPACITY_WAIT_ALERT_MS,
+  AGENT_MODEL_BACKGROUND_SHARE_PERCENT,
+  AGENT_MODEL_BACKGROUND_MAX_WAIT_MS,
   AGENT_PROMPT_MAX_CHARS,
   HTTP_TOOL_TIMEOUT_MS,
   DB_POOL_MAX,
@@ -482,6 +484,24 @@ const config = {
       "AGENT_CAPACITY_WAIT_ALERT_MS",
       30_000,
       "It is how long a reply may wait for a debounce slot or a model permit before a capacity warning is logged.",
+      MAX_DURATION_MS,
+    ),
+    // Under contention the model semaphore serves replies before background calls (observation,
+    // memory compaction), except that the background is served first while it holds fewer than this
+    // percentage of the permits (rounded down, so a small semaphore may have no share), and once one
+    // of its calls has waited `backgroundMaxWaitMs`. Without contention neither applies.
+    backgroundSharePercent: parseIntSetting(
+      AGENT_MODEL_BACKGROUND_SHARE_PERCENT,
+      "AGENT_MODEL_BACKGROUND_SHARE_PERCENT",
+      10,
+      "It is the share of the model permits that observation and compaction keep under a peak of replies.",
+      100,
+    ),
+    backgroundMaxWaitMs: parseIntSetting(
+      AGENT_MODEL_BACKGROUND_MAX_WAIT_MS,
+      "AGENT_MODEL_BACKGROUND_MAX_WAIT_MS",
+      60_000,
+      "It is how long an observation or compaction call yields its model permit to replies before it is served ahead of them.",
       MAX_DURATION_MS,
     ),
     // NOTE: Hard cap (characters) on an agent's system prompt, enforced at the service layer for

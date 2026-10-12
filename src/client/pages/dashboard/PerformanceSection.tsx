@@ -448,9 +448,10 @@ export function PerformanceSection({
               />
             }
           />
-          {/* The human half of an attendance: Chatwoot's own first-response SLA, mirrored onto the
-            conversation. The median and the 90th percentile, and an empty period says so rather than
-            showing 0 s. */}
+          {/* The human half of an attendance: Chatwoot's first_reply_created_at minus the conversation's
+            creation, so a stretch the agent handled before a handoff counts against the team (Chatwoot's
+            own report starts at the last handoff or reopening instead). The median and the 90th percentile, and an empty
+            period says so rather than showing 0 s. */}
           <KpiTile
             className={KPI_SPANS[4]}
             icon={Timer}
@@ -480,7 +481,7 @@ export function PerformanceSection({
             }
             help={t(
               "dashboard.kpi.firstResponseHelp",
-              "Measures the time from conversation creation to the first reply from a person. Agent replies appear in the funnel above, not here.\n\nIf the business started the conversation, its opening message counts as the first reply, just as it does in the Chatwoot dashboard.\n\nOlder conversations only appear after Chatwoot sends another event for them. An empty period means there is no data.",
+              "Measures the time from conversation creation to the first reply from a person. The agent's replies do not count, but its time does: if it answered before a handoff, the clock includes that stretch. Chatwoot counts from the last handoff or reopening and shows the average, so its number differs.\n\nIf a person at the business started the conversation, the opening message counts as the first reply, at close to zero. An opening by a campaign, an automation or the agent does not count, and a case the agent opens in another inbox is left out, since Chatwoot records its opening as a reply.\n\nOlder conversations only appear after Chatwoot sends another event for them. An empty period means there is no data.",
             )}
             delta={
               <Delta

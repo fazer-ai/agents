@@ -928,7 +928,7 @@
     "kpi": {
       "automation": "Automation",
       "firstResponse": "First response",
-      "firstResponseHelp": "Measures the time from conversation creation to the first reply from a person. Agent replies appear in the funnel above, not here.\n\nIf the business started the conversation, its opening message counts as the first reply, just as it does in the Chatwoot dashboard.\n\nOlder conversations only appear after Chatwoot sends another event for them. An empty period means there is no data.",
+      "firstResponseHelp": "Measures the time from conversation creation to the first reply from a person. The agent's replies do not count, but its time does: if it answered before a handoff, the clock includes that stretch. Chatwoot counts from the last handoff or reopening and shows the average, so its number differs.\n\nIf a person at the business started the conversation, the opening message counts as the first reply, at close to zero. An opening by a campaign, an automation or the agent does not count, and a case the agent opens in another inbox is left out, since Chatwoot records its opening as a reply.\n\nOlder conversations only appear after Chatwoot sends another event for them. An empty period means there is no data.",
       "firstResponseHint3": "median; p90 {{p90}}, over {{sampled}} answered conversations",
       "firstResponseNone": "no data for this period yet",
       "handoff": "Handoffs",

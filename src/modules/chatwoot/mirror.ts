@@ -186,6 +186,32 @@ export async function mirrorChatwootEvent(
     slaWrites.chatwootCreatedAt = n.conversationCreatedAt;
   if (n.firstReplyCreatedAt != null)
     slaWrites.chatwootFirstReplyAt = n.firstReplyCreatedAt;
+  // A public message the platform posted as a user, which Chatwoot takes for a person's reply. The
+  // KPI leaves out the conversation whose first reply it is; see `chatwootPlatformReplyAt`.
+  const platformReplyAt =
+    n.message?.platformSent === true && !n.message.private
+      ? (n.message.createdAt ?? null)
+      : null;
+  // The REST partial spells the first reply in whole seconds (`.to_i`) and the webhook with
+  // milliseconds. The coarse spelling of a reading already stored finely is the same reading, and
+  // keeping the milliseconds is what lets the KPI tell apart two messages sent in the same second.
+  const firstReplyWrite = (stored: Date | null | undefined) => {
+    const incoming = slaWrites.chatwootFirstReplyAt;
+    const coarser =
+      incoming != null &&
+      stored != null &&
+      Math.floor(stored.getTime() / 1000) * 1000 === incoming.getTime();
+    return incoming != null &&
+      !coarser &&
+      incoming.getTime() !== stored?.getTime()
+      ? { chatwootFirstReplyAt: incoming }
+      : {};
+  };
+  const platformReplyWrite = (stored: Date | null | undefined) =>
+    platformReplyAt != null &&
+    (stored == null || platformReplyAt.getTime() < stored.getTime())
+      ? { chatwootPlatformReplyAt: platformReplyAt }
+      : {};
 
   // The contact and the inbox are resolved in a transaction of their own, committed BEFORE the
   // conversation's. Every conversation of an inbox shares its row, and a row lock taken inside the
@@ -251,6 +277,7 @@ export async function mirrorChatwootEvent(
             // skip the UPDATE in the common case rather than rewriting the same two values.
             chatwootCreatedAt: true,
             chatwootFirstReplyAt: true,
+            chatwootPlatformReplyAt: true,
             chatwootRedirectOriginAt: true,
             chatwootLabelsAt: true,
             chatwootCustomAttributesAt: true,
@@ -424,12 +451,10 @@ export async function mirrorChatwootEvent(
               existing.chatwootCreatedAt?.getTime()
           )
             staleSla.chatwootCreatedAt = slaWrites.chatwootCreatedAt;
-          if (
-            slaWrites.chatwootFirstReplyAt != null &&
-            slaWrites.chatwootFirstReplyAt.getTime() !==
-              existing.chatwootFirstReplyAt?.getTime()
-          )
-            staleSla.chatwootFirstReplyAt = slaWrites.chatwootFirstReplyAt;
+          Object.assign(
+            staleSla,
+            firstReplyWrite(existing.chatwootFirstReplyAt),
+          );
           const staleWrites = {
             ...(dropsResolutionOrigin && existing.resolvedBy != null
               ? { resolvedBy: null, resolvedByAt: null }
@@ -448,6 +473,7 @@ export async function mirrorChatwootEvent(
               : {}),
             ...episodeRelease,
             ...staleSla,
+            ...platformReplyWrite(existing.chatwootPlatformReplyAt),
             ...(decision.ownershipChangedAt != null
               ? { chatwootOwnershipChangedAt: decision.ownershipChangedAt }
               : {}),
@@ -529,6 +555,7 @@ export async function mirrorChatwootEvent(
               // A row created mid-dialogue needs no special case here: what it stores is what
               // Chatwoot measured over the whole conversation, not what we happened to witness.
               ...slaWrites,
+              ...platformReplyWrite(null),
 
               ...(n.customAttributes
                 ? {
@@ -621,7 +648,11 @@ export async function mirrorChatwootEvent(
               : {}),
             ...(inboundAt != null ? { lastInboundAt: inboundAt } : {}),
             ...forwardInboundId(existing.lastInboundMessageId, inboundId),
-            ...slaWrites,
+            ...(slaWrites.chatwootCreatedAt != null
+              ? { chatwootCreatedAt: slaWrites.chatwootCreatedAt }
+              : {}),
+            ...firstReplyWrite(existing.chatwootFirstReplyAt),
+            ...platformReplyWrite(existing.chatwootPlatformReplyAt),
             // NOTE: The bags are ASSIGNED (the payload always ships the whole jsonb), but only when the
             // event carried one: a payload without them must not wipe the stored snapshot.
             // A recovery's body states them for the row it CREATES only (`factsOnCreateOnly`): read

@@ -441,3 +441,267 @@ describe.skipIf(!dbUp)("the first-response KPI", () => {
     expect(kpis.firstResponseSeconds).toBe(60);
   });
 });
+
+// A case the agent opens in another inbox is posted on the admin token (`sendMessageAsAdmin`), so
+// Chatwoot signs the opening with a user and records it as the conversation's first reply. No person
+// answered, and the reply that does come from the team is never recorded, so the conversation leaves
+// the sample. The message carries `fazer_ai_platform_sent`, which is how the mirror tells it apart.
+describe.skipIf(!dbUp)("a first reply the platform posted", () => {
+  let tenantId: bigint;
+  let instanceId: bigint;
+  const deliver = makeDeliver(() => ({ tenantId, instanceId }));
+  const base = Math.floor(Date.now() / 1000) - 86_400;
+  const at = (offset: number, ms = 0) => new Date((base + offset) * 1000 + ms);
+
+  function outgoing(
+    convId: number,
+    msgId: number,
+    sentAt: Date,
+    firstReplyAt: Date | null,
+    opts: { platform: boolean; private?: boolean },
+  ) {
+    return {
+      event: "message_created",
+      id: msgId,
+      content: "Olá, abrimos um atendimento para o seu pedido.",
+      message_type: "outgoing",
+      private: opts.private === true,
+      created_at: sentAt.toISOString(),
+      sender: { id: 1, name: "Admin", type: "user" },
+      content_attributes: opts.platform ? { fazer_ai_platform_sent: true } : {},
+      conversation: convPayload(convId, { createdAt: base, firstReplyAt }),
+    };
+  }
+
+  async function sampled() {
+    const kpis = await getKpis(
+      { tenantId, userId: null, role: "TENANT_ADMIN" } satisfies TenantContext,
+      {},
+      appDb,
+    );
+    return kpis.firstResponseSampled;
+  }
+
+  // How many conversations the deliveries add to the sample, so each test stands on its own.
+  async function added(run: () => Promise<void>) {
+    const before = await sampled();
+    await run();
+    return (await sampled()) - before;
+  }
+
+  beforeAll(async () => {
+    ({ tenantId, instanceId } = await seedTenant(
+      `sla-platform-${process.pid}`,
+    ));
+    // Answered by a person after 60s: the control that stays in the sample throughout.
+    await deliver(
+      outgoing(9951, 99510, at(60), at(60), { platform: false }),
+      "9951-person",
+    );
+  });
+  afterAll(async () => {
+    await dropTenant(tenantId);
+  });
+
+  test("a case opening the platform posted leaves the sample", async () => {
+    expect(
+      await added(async () => {
+        await deliver(
+          outgoing(9952, 99520, at(1, 250), at(1, 250), { platform: true }),
+          "9952-opening",
+        );
+      }),
+    ).toBe(0);
+  });
+
+  test("the reading the REST path spells in whole seconds still matches the opening", async () => {
+    expect(
+      await added(async () => {
+        // The opening is stamped with milliseconds, and a later payload carries the first reply truncated
+        // to the second, as the conversation partial renders it (`.to_i`).
+        await deliver(
+          outgoing(9953, 99530, at(2, 730), at(2, 730), { platform: true }),
+          "9953-opening",
+        );
+        await deliver(
+          {
+            event: "conversation_updated",
+            ...convPayload(
+              9953,
+              {},
+              { created_at: base, first_reply_created_at: base + 2 },
+            ),
+          },
+          "9953-seconds",
+        );
+      }),
+    ).toBe(0);
+  });
+
+  test("the earliest platform message is the one compared, whatever order they arrive in", async () => {
+    expect(
+      await added(async () => {
+        // A later platform message lands first; the opening it follows lands after it.
+        await deliver(
+          outgoing(9954, 99542, at(300), at(3), { platform: true }),
+          "9954-later",
+        );
+        await deliver(
+          outgoing(9954, 99541, at(3), at(3), { platform: true }),
+          "9954-opening",
+        );
+      }),
+    ).toBe(0);
+  });
+
+  test("an opening delivered after a newer event, and refused as stale, still takes the conversation out", async () => {
+    expect(
+      await added(async () => {
+        // The newer event lands first, already carrying the first reply.
+        await deliver(
+          {
+            event: "conversation_updated",
+            ...convPayload(
+              9957,
+              { createdAt: base, firstReplyAt: at(4) },
+              { last_activity_at: base + 600 },
+            ),
+          },
+          "9957-newer",
+        );
+        await deliver(
+          {
+            ...outgoing(9957, 99570, at(4), at(4), { platform: true }),
+            conversation: convPayload(
+              9957,
+              { createdAt: base, firstReplyAt: at(4) },
+              { last_activity_at: base + 4 },
+            ),
+          },
+          "9957-opening",
+        );
+      }),
+    ).toBe(0);
+  });
+
+  test("a person's reply in the same second as a later platform message stays in", async () => {
+    expect(
+      await added(async () => {
+        await deliver(
+          outgoing(9958, 99580, at(5, 100), at(5, 100), { platform: false }),
+          "9958-person",
+        );
+        await deliver(
+          outgoing(9958, 99581, at(5, 800), at(5, 100), { platform: true }),
+          "9958-platform",
+        );
+      }),
+    ).toBe(1);
+  });
+
+  test("a first reply known only in whole seconds still matches the opening", async () => {
+    expect(
+      await added(async () => {
+        // The REST partial is the only source of the reading here, and the opening's own event
+        // carries none.
+        await deliver(
+          {
+            event: "conversation_updated",
+            ...convPayload(
+              9959,
+              {},
+              { created_at: base, first_reply_created_at: base + 6 },
+            ),
+          },
+          "9959-seconds",
+        );
+        await deliver(
+          {
+            ...outgoing(9959, 99590, at(6, 450), null, { platform: true }),
+            conversation: convPayload(9959, { createdAt: base }),
+          },
+          "9959-opening",
+        );
+      }),
+    ).toBe(0);
+  });
+
+  test("a reading in whole seconds does not overwrite the same reading with its milliseconds", async () => {
+    await deliver(
+      outgoing(9960, 99600, at(7, 640), at(7, 640), { platform: false }),
+      "9960-person",
+    );
+    await deliver(
+      {
+        event: "conversation_updated",
+        ...convPayload(
+          9960,
+          {},
+          { created_at: base, first_reply_created_at: base + 7 },
+        ),
+      },
+      "9960-seconds",
+    );
+    const row = await suDb.conversation.findFirst({
+      where: { tenantId, chatwootConversationId: 9960 },
+      select: { chatwootFirstReplyAt: true },
+    });
+    expect(row?.chatwootFirstReplyAt?.getTime()).toBe(at(7, 640).getTime());
+  });
+
+  test("a different reading still replaces the stored one", async () => {
+    await deliver(
+      outgoing(9961, 99610, at(8, 640), at(8, 640), { platform: false }),
+      "9961-person",
+    );
+    await deliver(
+      {
+        event: "conversation_updated",
+        ...convPayload(
+          9961,
+          {},
+          { created_at: base, first_reply_created_at: base + 9 },
+        ),
+      },
+      "9961-other",
+    );
+    const row = await suDb.conversation.findFirst({
+      where: { tenantId, chatwootConversationId: 9961 },
+      select: { chatwootFirstReplyAt: true },
+    });
+    expect(row?.chatwootFirstReplyAt?.getTime()).toBe(at(9).getTime());
+  });
+
+  test("a platform message after a person's first reply does not take the conversation out", async () => {
+    expect(
+      await added(async () => {
+        await deliver(
+          outgoing(9955, 99550, at(40), at(40), { platform: false }),
+          "9955-person",
+        );
+        await deliver(
+          outgoing(9955, 99551, at(900), at(40), { platform: true }),
+          "9955-platform-later",
+        );
+      }),
+    ).toBe(1);
+  });
+
+  test("a private note the platform posted is not a reply, even in the same second as one", async () => {
+    expect(
+      await added(async () => {
+        await deliver(
+          outgoing(9956, 99560, at(20), null, {
+            platform: true,
+            private: true,
+          }),
+          "9956-note",
+        );
+        await deliver(
+          outgoing(9956, 99561, at(20, 400), at(20, 400), { platform: false }),
+          "9956-person",
+        );
+      }),
+    ).toBe(1);
+  });
+});

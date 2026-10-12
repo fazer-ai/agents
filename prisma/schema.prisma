@@ -1077,6 +1077,12 @@ model Conversation {
   // of its sample beside the median so a partial backfill can be seen instead of assumed away.
   chatwootCreatedAt            DateTime? @map("chatwoot_created_at")
   chatwootFirstReplyAt         DateTime? @map("chatwoot_first_reply_at")
+  // When the earliest PUBLIC outgoing message the platform posted on the admin token
+  // (`fazer_ai_platform_sent`, such as a cross-inbox case opening) was created. Chatwoot signs that
+  // message with a user, so when it is the first one it becomes `first_reply_created_at` although
+  // no person answered, and the KPI leaves the conversation out. Earliest wins, whatever order the
+  // deliveries land in.
+  chatwootPlatformReplyAt      DateTime? @map("chatwoot_platform_reply_at")
   // Watermark for follow-up single-shot semantics: set after each follow-up (sent or silenced).
   // Another follow-up can only fire once the client speaks again (lastInboundAt > lastFollowUpAt).
   // NULL = no follow-up has ever been attempted for this conversation.

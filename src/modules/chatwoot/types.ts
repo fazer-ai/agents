@@ -96,6 +96,9 @@ export interface NormalizedChatwootMessage {
   replyText?: string | null;
   // content_attributes.fazer_ai_reply_by_operator: that voice note's words are the operator's.
   replyByOperator?: boolean;
+  // content_attributes.fazer_ai_platform_sent: the platform posted this on the admin token, so the
+  // user Chatwoot names as sender is not a person typing.
+  platformSent?: boolean;
   // Filled by the eager STT pass (NOT from the payload): the audio transcription, used by the direct
   // (no-debounce) path. The debounce flush instead reads it back from the attachment meta on re-fetch.
   transcribedText?: string | null;

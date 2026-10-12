@@ -953,7 +953,7 @@
     "kpi": {
       "automation": "Automação",
       "firstResponse": "Primeira resposta",
-      "firstResponseHelp": "Mede o tempo entre a criação da conversa e a primeira resposta de uma pessoa. As respostas do agente aparecem no funil acima, não aqui.\n\nSe a empresa iniciou a conversa, a mensagem de abertura conta como a primeira resposta, assim como no painel do Chatwoot.\n\nConversas antigas só entram quando o Chatwoot envia um novo evento. Um período vazio significa que não há dados.",
+      "firstResponseHelp": "Mede o tempo entre a criação da conversa e a primeira resposta de uma pessoa. A resposta do agente não conta, mas o tempo dele sim: o atendimento antes de transferir entra no relógio. O Chatwoot mede desde a última transferência ou reabertura e mostra a média, por isso o número dele é outro.\n\nSe uma pessoa da empresa iniciou a conversa, a mensagem de abertura conta como a primeira resposta, com tempo perto de zero. Abertura por campanha, automação ou pelo agente não conta, e o caso que o agente abre em outra caixa fica de fora, porque o Chatwoot registra essa abertura como resposta.\n\nConversas antigas só entram quando o Chatwoot envia um novo evento. Um período vazio significa que não há dados.",
       "firstResponseHint3": "mediana; p90 {{p90}}, de {{sampled}} conversas respondidas",
       "firstResponseNone": "ainda sem dado para este período",
       "handoff": "Transferências",

@@ -4,6 +4,7 @@ import {
 } from "@/modules/chatwoot/contact-fields";
 import { closedByTheAgentSide } from "@/modules/conversations/resolution-origin";
 import {
+  CHATWOOT_PLATFORM_SENT_KEY,
   CHATWOOT_REPLY_BY_OPERATOR_KEY,
   CHATWOOT_REPLY_TEXT_KEY,
 } from "./constants";
@@ -249,6 +250,7 @@ export function normalizeChatwootEvent(
       externalError: ca ? str(ca.external_error) || null : null,
       replyText: ca ? str(ca[CHATWOOT_REPLY_TEXT_KEY]) || null : null,
       replyByOperator: ca?.[CHATWOOT_REPLY_BY_OPERATOR_KEY] === true,
+      platformSent: ca?.[CHATWOOT_PLATFORM_SENT_KEY] === true,
     };
   }
   if ("changed_attributes" in payload) {

@@ -4,6 +4,7 @@ import type { Client } from "pg";
 import { FLEET_ROLE_EXPR } from "@/lib/tenancy/fleet-role";
 import { DB_GATE_OPT_OUT, PROBE_DEADLINE_MS } from "./db-gate";
 import { isWorkerCloneOf, testDbNameFor, withDbName } from "./db-name";
+import { ROLE_CATALOG_LOCK } from "./utils/role-catalog-lock";
 
 // ONE DATABASE PER WORKER UNDER `bun test --parallel`: files running at once on one database
 // collide, so each worker runs on a `CREATE DATABASE … TEMPLATE` copy of the checkout's test database
@@ -181,7 +182,9 @@ async function newClient(
 }
 
 // The lock is per checkout (the root's hash is in every name it guards), held for the session, and
-// released with the connection if the holder dies.
+// released with the connection if the holder dies. Under it the copy's fleet role is created and
+// dropped, so the role catalog lock is taken too, in the same `postgres` session the suites that write
+// roles take it in (tests/utils/role-catalog-lock.ts), always after the clone lock.
 async function withCloneLock<T>(
   maint: Client,
   root: string,
@@ -191,7 +194,14 @@ async function withCloneLock<T>(
     `fazerai-test-clone:${testDbNameFor("x_test", root)}`,
   ]);
   try {
-    return await fn();
+    await maint.query("SELECT pg_advisory_lock($1)", [ROLE_CATALOG_LOCK]);
+    try {
+      return await fn();
+    } finally {
+      await maint
+        .query("SELECT pg_advisory_unlock($1)", [ROLE_CATALOG_LOCK])
+        .catch(() => {});
+    }
   } finally {
     await maint
       .query("SELECT pg_advisory_unlock(hashtextextended($1, 0))", [

@@ -13,6 +13,7 @@ import {
 } from "@/lib/db-guard";
 import { FLEET_ROLE_FN } from "@/lib/tenancy/fleet-role";
 import { dbProbeFailed } from "@/tests/db-gate";
+import { withRoleCatalogLock as withCatalogLock } from "@/tests/utils/role-catalog-lock";
 
 // MIGRATION_DATABASE_URL connects as the Postgres superuser (the migration/owner role).
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -34,17 +35,15 @@ const suDb = su as PrismaClient;
 const SAFE_ROLE = `fazerai_guard_safe_${process.pid}`;
 let tmp: PrismaClient | undefined;
 
-// Roles and database grants live in CLUSTER-WIDE catalogs (pg_authid, pg_database), which Postgres
-// does not serialize for concurrent DDL: two suites at once against the same server hit `XX000: tuple
-// concurrently updated` even with pid-suffixed role names. This advisory lock makes each run take its
-// turn through the catalog writes.
+// Role DDL takes its turn on the cluster-wide catalogs (tests/utils/role-catalog-lock.ts).
 async function withRoleCatalogLock(
   statements: (db: PrismaClient) => Promise<void>,
 ): Promise<void> {
-  await suDb.$transaction(async (tx) => {
-    await tx.$executeRaw`SELECT pg_advisory_xact_lock(729104553)`;
-    await statements(tx as unknown as PrismaClient);
-  });
+  await withCatalogLock(suUrl as string, () =>
+    suDb.$transaction(async (tx) => {
+      await statements(tx as unknown as PrismaClient);
+    }),
+  );
 }
 
 // Needs no database: it is about the SHAPE of the refusals. `src/index.ts` rethrows on the base

@@ -15,6 +15,7 @@ import {
   parseAppRole,
   planRoleProvisioning,
 } from "../../scripts/db-bootstrap";
+import { holdRoleCatalogLock } from "../utils/role-catalog-lock";
 
 // The failures this file covers exist only on a database whose ADMINISTRATIVE role is not a real
 // superuser, which is every managed Postgres (RDS, Coolify, EasyPanel) and no local docker one. So
@@ -805,6 +806,7 @@ describe("planRoleProvisioning", () => {
 describe.skipIf(!dbUp)(
   "db-bootstrap against a non-superuser admin role",
   () => {
+    let releaseCatalog: (() => Promise<void>) | undefined;
     // NOTE: these run in order and share state on purpose — they walk one install's lifecycle
     // (first boot, later boot, a rotated password, a privileged role, a role we did not create, a
     // schema we do not own), which is the shape the failures actually come in. Running one alone
@@ -812,12 +814,9 @@ describe.skipIf(!dbUp)(
     // behaviour under test.
     beforeAll(async () => {
       const db = su as Client;
-      // NOTE: roles and databases are CLUSTER-WIDE catalogs that Postgres does not serialize for
-      // concurrent DDL. tests/lib/db-guard.test.ts takes this same advisory lock id for the same
-      // reason; a SESSION-level lock is what covers the subprocess, whose own role DDL we do not
-      // control. Both suites therefore take their turn instead of racing to `tuple concurrently
-      // updated`.
-      await db.query("SELECT pg_advisory_lock(729104553)");
+      // NOTE: held for the whole suite, so it also covers the subprocess, whose own role DDL we do not
+      // control (tests/utils/role-catalog-lock.ts).
+      releaseCatalog = await holdRoleCatalogLock(suUrl as string);
       await db.query(`DROP DATABASE IF EXISTS ${SOLO_DB}`);
       await db.query(`DROP DATABASE IF EXISTS ${NOINH_DB}`);
       await db.query(`DROP DATABASE IF EXISTS ${PROBE_DB}`);
@@ -891,7 +890,7 @@ describe.skipIf(!dbUp)(
       await db.query(`DROP ROLE IF EXISTS ${SIDE_ROLE}`);
       await db.query(`DROP ROLE IF EXISTS ${PRIV_ROLE}`);
       await db.query(`DROP ROLE IF EXISTS ${ADMIN_ROLE}`);
-      await db.query("SELECT pg_advisory_unlock(729104553)");
+      await releaseCatalog?.();
       await db.end();
     });
 

@@ -139,6 +139,36 @@ describe("an HTTP tool that renders {{conversation_ref}}", () => {
     expect(reports).toEqual([{ noEffect: true }]);
   });
 
+  test("a throw before the request leaves (the credential) is reported as sending nothing", async () => {
+    const sent: string[] = [];
+    const tool = buildHttpTool(
+      def({
+        credentialRef: "vault:1",
+        conversationRefIntegrationId: null,
+        body: { mode: "kv", rows: [] },
+      }),
+      {
+        resolveCredential: async () => {
+          throw new Error("vault down");
+        },
+        fetchImpl: (async (url: string) => {
+          sent.push(String(url));
+          return new Response("{}");
+        }) as unknown as typeof fetch,
+        context: {},
+      },
+    );
+    const reports: CallReport[] = [];
+    await expect(
+      tool.invoke(
+        {},
+        withFenceReporter({}, (r) => reports.push(r)),
+      ),
+    ).rejects.toThrow("vault down");
+    expect(sent).toHaveLength(0);
+    expect(reports).toEqual([{ noEffect: true }]);
+  });
+
   test("an instance that is gone or not GENERIC refuses and sends nothing", async () => {
     for (const reason of [
       "instance_missing",

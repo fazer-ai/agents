@@ -1193,6 +1193,27 @@ describe("a rule on a custom tool", () => {
     expect(rules[0]?.action.args.prioridade).toBe(1.2);
   });
 
+  test("a fixed text emptied is stored as the empty text, not left out", async () => {
+    stubApi();
+    const { state } = renderSection(
+      { monitoring: { engine: "decisions", decisions: BLOCK } },
+      { granted: GRANTED, customTools: TOOLS },
+    );
+    openAll();
+    const action = screen.getAllByTestId("decisions-rule-action")[0];
+    if (!action) throw new Error("no action select");
+    fireEvent.change(action, { target: { value: "abrir_ticket" } });
+    const input = screen
+      .getByTestId("decisions-arg-motivo")
+      .querySelector("input") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "x" } });
+    fireEvent.change(input, { target: { value: "" } });
+    const rules = observationToStored(state()).decisions?.rules as {
+      action: { args: Record<string, unknown> };
+    }[];
+    expect(rules[0]?.action.args).toEqual({ motivo: "" });
+  });
+
   test("a hand-named MCP argument is stored as the type picked for it", async () => {
     stubApi();
     const mcp: CustomTools = new Map([

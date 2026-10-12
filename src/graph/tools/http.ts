@@ -1,4 +1,7 @@
-import type { StructuredToolInterface } from "@langchain/core/tools";
+import type {
+  StructuredToolInterface,
+  ToolRunnableConfig,
+} from "@langchain/core/tools";
 import { z } from "zod";
 import config, { type InternalTarget } from "@/config";
 import { DEFAULT_TIMEZONE, partsInTimezone } from "@/graph/time";
@@ -617,444 +620,457 @@ export function buildHttpTool(
     ? `${def.credentialBaseUrl}${urlTemplate}`
     : urlTemplate;
 
-  return failableTool(
-    async (rawInput: Record<string, unknown>, callConfig) => {
-      let input = rawInput;
-      // The call sent nothing: said to the caller that asked on this call's config (a decisions
-      // rule, whose latch is released), besides the turn's own count where the step counts it.
-      const sentNothing = (count: boolean) => {
-        if (count) deps.onNoEffect?.(def.name);
-        fenceReporterOf(callConfig)?.({ noEffect: true });
+  // Whether the request left: a throw before it (the credential, the SSRF check) sent nothing.
+  const handle = async (
+    rawInput: Record<string, unknown>,
+    callConfig: ToolRunnableConfig,
+    sent: { request: boolean },
+  ) => {
+    let input = rawInput;
+    // The call sent nothing: said to the caller that asked on this call's config (a decisions
+    // rule, whose latch is released), besides the turn's own count where the step counts it.
+    const sentNothing = (count: boolean) => {
+      if (count) deps.onNoEffect?.(def.name);
+      fenceReporterOf(callConfig)?.({ noEffect: true });
+    };
+    // 0a. `{{conversation_ref}}`, minted BEFORE anything is sent (the ack included)
+    // and before the request, because the receiver may call back while this call is still running
+    // and the ref has to correlate by then. Every refusal here sends nothing, and says why in the
+    // words the model can pass on.
+    let context = baseContext;
+    if (usesConversationRef) {
+      const refused = (why: string): string => {
+        sentNothing(true);
+        return `Could not call the tool (${why}).`;
       };
-      // 0a. `{{conversation_ref}}`, minted BEFORE anything is sent (the ack included)
-      // and before the request, because the receiver may call back while this call is still running
-      // and the ref has to correlate by then. Every refusal here sends nothing, and says why in the
-      // words the model can pass on.
-      let context = baseContext;
-      if (usesConversationRef) {
-        const refused = (why: string): string => {
-          sentNothing(true);
-          return `Could not call the tool (${why}).`;
-        };
-        if (def.conversationRefIntegrationId == null) {
-          return refused(
-            "it sends a conversation reference but names no integration to hand it for",
-          );
-        }
-        if (!deps.conversationRef) {
-          return refused(
-            "there is no conversation here to hand a reference for",
-          );
-        }
-        const minted = await deps.conversationRef(
-          def.conversationRefIntegrationId,
+      if (def.conversationRefIntegrationId == null) {
+        return refused(
+          "it sends a conversation reference but names no integration to hand it for",
         );
-        if (!minted.ok) {
-          return refused(
-            minted.reason === "instance_missing"
-              ? "the integration it hands the conversation reference for no longer exists"
-              : "the integration it hands the conversation reference for is not a generic webhook",
-          );
-        }
-        context = { ...baseContext, [CONVERSATION_REF_VAR]: minted.ref };
-        // The mint is a transaction, and the ack below asks the send fence only AFTER it has sent. So
-        // the wait the mint adds is fenced here, before anything can leave: an agent switched off,
-        // flipped to monitoring or taken over during it sends neither the ack nor the request. The ref
-        // stays minted, which costs nothing: it is stable per conversation and correlates nothing new.
-        if (deps.stillWanted && !(await deps.stillWanted().catch(() => true))) {
-          return refused("the run was called off before the request was sent");
-        }
-        // The minted ref is the only value the name can have. The write refuses a field of that name,
-        // and this covers a row that reached the table another way: every renderer reads the input
-        // before the context, so a model-filled `conversation_ref` would otherwise go out instead.
-        if (CONVERSATION_REF_VAR in input) {
-          const { [CONVERSATION_REF_VAR]: _shadow, ...rest } = input;
-          input = rest;
-        }
       }
-
-      // 0. Ack (the model-written holding message): required when an ack is configured. The schema
-      // already enforces non-empty, so this is a defensive guard — if a provider somehow let an empty
-      // value through, return an error string (and DON'T run the request) so the model retries the
-      // call WITH a message, instead of sending a blank/placeholder ack. Best-effort emit — a failed
-      // ack send must never block the actual tool call. Only wired on a real conversation (deps.emitAck
-      // is undefined in the playground, where the arg is still required but simply not sent).
-      if (def.ackMessage) {
-        const dyn = input[WAIT_MESSAGE_ARG];
-        const msg = typeof dyn === "string" ? dyn.trim() : "";
-        if (!msg) {
-          sentNothing(false);
-          return "Error: a wait message is required. Call this tool again with a short __wait_message to send to the user before it runs.";
-        }
-        if (deps.emitAck && (await deps.emitAck(msg)) === false) {
-          sentNothing(false);
-          return "The run was called off after the acknowledgement; the tool did not run.";
-        }
+      if (!deps.conversationRef) {
+        return refused("there is no conversation here to hand a reference for");
       }
-
-      // Resolve the credential up front. It flows ONLY via {{secret}} into the request the operator
-      // wrote (headers, the URL path/query, a raw body, a fixed value) and via the typed auto-injection
-      // below — never into the model-visible schema/return or a trace. The origin pin keeps {{secret}}
-      // out of the host, so it can only land in the path/query.
-      let secret: string | null = null;
-      if (def.credentialRef) {
-        secret = await deps.resolveCredential(def.credentialRef);
+      const minted = await deps.conversationRef(
+        def.conversationRefIntegrationId,
+      );
+      if (!minted.ok) {
+        return refused(
+          minted.reason === "instance_missing"
+            ? "the integration it hands the conversation reference for no longer exists"
+            : "the integration it hands the conversation reference for is not a generic webhook",
+        );
       }
-
-      // Precompute fixed-field values (interpolated with CONTEXT + {{secret}} — never model input).
-      // NOTE: unresolved dependencies interpolate to "" (headers/body semantics) but are tracked
-      // per field, so the URL guard below can refuse to fetch with an incomplete URL segment.
-      const ctxLookup = (n: string) => (n in context ? context[n] : undefined);
-      const fixedValues: Record<string, string> = {};
-      const fixedMissingDeps = new Map<string, Set<string>>();
-      for (const f of fields) {
-        if (f.source === "fixed" && f.name !== CONVERSATION_REF_VAR) {
-          const missing = new Set<string>();
-          fixedValues[f.name] = interpolate(f.value, (n) => {
-            const v = n === "secret" ? secret : ctxLookup(n);
-            if (v == null) missing.add(n);
-            return v ?? undefined;
-          });
-          if (missing.size > 0) fixedMissingDeps.set(f.name, missing);
-        }
+      context = { ...baseContext, [CONVERSATION_REF_VAR]: minted.ref };
+      // The mint is a transaction, and the ack below asks the send fence only AFTER it has sent. So
+      // the wait the mint adds is fenced here, before anything can leave: an agent switched off,
+      // flipped to monitoring or taken over during it sends neither the ack nor the request. The ref
+      // stays minted, which costs nothing: it is stable per conversation and correlates nothing new.
+      if (deps.stillWanted && !(await deps.stillWanted().catch(() => true))) {
+        return refused("the run was called off before the request was sent");
       }
-
-      // Resolver for URL / body / query (NO secret): AI input → fixed value → context.
-      const valueLookup = (n: string): string | undefined => {
-        if (n in input && input[n] != null) return String(input[n]);
-        if (n in fixedValues) return fixedValues[n];
-        if (n in context) return context[n];
-        return undefined;
-      };
-
-      // 1. Build the URL by interpolating the RAW template (values URL-encoded so a hostile value
-      // cannot break out of its path/query segment), then assert the origin is unchanged — the
-      // origin is NEVER interpolatable. A probe with neutral placeholders gives the expected
-      // origin; if the real interpolation differs, a placeholder tried to alter the host.
-      let expectedOrigin: string;
-      try {
-        expectedOrigin = new URL(effectiveTemplate.replace(PLACEHOLDER, "_"))
-          .origin;
-      } catch {
-        throw new AppError(`tool ${def.name}: invalid urlTemplate`, 400);
+      // The minted ref is the only value the name can have. The write refuses a field of that name,
+      // and this covers a row that reached the table another way: every renderer reads the input
+      // before the context, so a model-filled `conversation_ref` would otherwise go out instead.
+      if (CONVERSATION_REF_VAR in input) {
+        const { [CONVERSATION_REF_VAR]: _shadow, ...rest } = input;
+        input = rest;
       }
-      const pathFields = placeholderNames(effectiveTemplate);
-      const isAiFieldName = (n: string): boolean =>
-        fields.some((f) => f.name === n && f.source !== "fixed");
-      // A URL placeholder that resolves to nothing produces a request that cannot be right (an
-      // empty path segment / dangling query value). Instead of silently sending it, tell the model
-      // which value is missing so it can retry with the field (or explain what it needs).
-      const missingUrlNames = new Set<string>();
-      const interpolated = interpolate(effectiveTemplate, (n) => {
-        const v = n === "secret" ? secret : valueLookup(n);
-        if (v == null) {
-          missingUrlNames.add(n);
-          return undefined;
-        }
-        // A fixed field whose own {{secret}}/context dependency was unavailable resolved to
-        // "" above; surface the missing dependency instead of fetching an incomplete URL. AI input
-        // never shadows a fixed name (the schema excludes fixed fields), so the map lookup is safe.
-        const missingDeps = !(n in input && input[n] != null)
-          ? fixedMissingDeps.get(n)
-          : undefined;
-        if (missingDeps) {
-          for (const d of missingDeps) missingUrlNames.add(d);
-          return undefined;
-        }
-        return encodeURIComponent(v);
-      });
-      if (missingUrlNames.size > 0) {
-        // NOTE: an unresolved {{secret}} is an operator/config problem (missing or unresolvable
-        // credential): the model can never supply it, so a retry hint would just loop. Throw like
-        // the other config errors in this file.
-        if (missingUrlNames.has("secret")) {
-          throw new AppError(
-            `tool ${def.name}: the URL requires {{secret}} (directly or via a fixed field) but no credential resolved`,
-            400,
-          );
-        }
-        // Context variables, fixed-field dependencies and unknown tokens are injected by the
-        // platform, never supplied by the model, so those also throw; the retry message is reserved
-        // for placeholders the model can actually provide (AI-source input fields).
-        const nonInput = [...missingUrlNames].filter((n) => !isAiFieldName(n));
-        if (nonInput.length > 0) {
-          sentNothing(false);
-          throw new AppError(
-            `tool ${def.name}: no value available for URL placeholder(s) ${nonInput
-              .map((n) => `{{${n}}}`)
-              .join(", ")} (resolved from context/config, not model input)`,
-            400,
-          );
-        }
+    }
+
+    // 0. Ack (the model-written holding message): required when an ack is configured. The schema
+    // already enforces non-empty, so this is a defensive guard — if a provider somehow let an empty
+    // value through, return an error string (and DON'T run the request) so the model retries the
+    // call WITH a message, instead of sending a blank/placeholder ack. Best-effort emit — a failed
+    // ack send must never block the actual tool call. Only wired on a real conversation (deps.emitAck
+    // is undefined in the playground, where the arg is still required but simply not sent).
+    if (def.ackMessage) {
+      const dyn = input[WAIT_MESSAGE_ARG];
+      const msg = typeof dyn === "string" ? dyn.trim() : "";
+      if (!msg) {
         sentNothing(false);
-        return `Error: no value available for URL placeholder(s): ${[
-          ...missingUrlNames,
-        ]
-          .map((n) => `{{${n}}}`)
-          .join(
-            ", ",
-          )}. Call the tool again providing the missing input field(s).`;
+        return "Error: a wait message is required. Call this tool again with a short __wait_message to send to the user before it runs.";
       }
-      let url: URL;
-      try {
-        url = new URL(interpolated);
-      } catch {
-        throw new AppError(`tool ${def.name}: invalid urlTemplate`, 400);
+      if (deps.emitAck && (await deps.emitAck(msg)) === false) {
+        sentNothing(false);
+        return "The run was called off after the acknowledgement; the tool did not run.";
       }
-      if (url.origin !== expectedOrigin) {
+    }
+
+    // Resolve the credential up front. It flows ONLY via {{secret}} into the request the operator
+    // wrote (headers, the URL path/query, a raw body, a fixed value) and via the typed auto-injection
+    // below — never into the model-visible schema/return or a trace. The origin pin keeps {{secret}}
+    // out of the host, so it can only land in the path/query.
+    let secret: string | null = null;
+    if (def.credentialRef) {
+      secret = await deps.resolveCredential(def.credentialRef);
+    }
+
+    // Precompute fixed-field values (interpolated with CONTEXT + {{secret}} — never model input).
+    // NOTE: unresolved dependencies interpolate to "" (headers/body semantics) but are tracked
+    // per field, so the URL guard below can refuse to fetch with an incomplete URL segment.
+    const ctxLookup = (n: string) => (n in context ? context[n] : undefined);
+    const fixedValues: Record<string, string> = {};
+    const fixedMissingDeps = new Map<string, Set<string>>();
+    for (const f of fields) {
+      if (f.source === "fixed" && f.name !== CONVERSATION_REF_VAR) {
+        const missing = new Set<string>();
+        fixedValues[f.name] = interpolate(f.value, (n) => {
+          const v = n === "secret" ? secret : ctxLookup(n);
+          if (v == null) missing.add(n);
+          return v ?? undefined;
+        });
+        if (missing.size > 0) fixedMissingDeps.set(f.name, missing);
+      }
+    }
+
+    // Resolver for URL / body / query (NO secret): AI input → fixed value → context.
+    const valueLookup = (n: string): string | undefined => {
+      if (n in input && input[n] != null) return String(input[n]);
+      if (n in fixedValues) return fixedValues[n];
+      if (n in context) return context[n];
+      return undefined;
+    };
+
+    // 1. Build the URL by interpolating the RAW template (values URL-encoded so a hostile value
+    // cannot break out of its path/query segment), then assert the origin is unchanged — the
+    // origin is NEVER interpolatable. A probe with neutral placeholders gives the expected
+    // origin; if the real interpolation differs, a placeholder tried to alter the host.
+    let expectedOrigin: string;
+    try {
+      expectedOrigin = new URL(effectiveTemplate.replace(PLACEHOLDER, "_"))
+        .origin;
+    } catch {
+      throw new AppError(`tool ${def.name}: invalid urlTemplate`, 400);
+    }
+    const pathFields = placeholderNames(effectiveTemplate);
+    const isAiFieldName = (n: string): boolean =>
+      fields.some((f) => f.name === n && f.source !== "fixed");
+    // A URL placeholder that resolves to nothing produces a request that cannot be right (an
+    // empty path segment / dangling query value). Instead of silently sending it, tell the model
+    // which value is missing so it can retry with the field (or explain what it needs).
+    const missingUrlNames = new Set<string>();
+    const interpolated = interpolate(effectiveTemplate, (n) => {
+      const v = n === "secret" ? secret : valueLookup(n);
+      if (v == null) {
+        missingUrlNames.add(n);
+        return undefined;
+      }
+      // A fixed field whose own {{secret}}/context dependency was unavailable resolved to
+      // "" above; surface the missing dependency instead of fetching an incomplete URL. AI input
+      // never shadows a fixed name (the schema excludes fixed fields), so the map lookup is safe.
+      const missingDeps = !(n in input && input[n] != null)
+        ? fixedMissingDeps.get(n)
+        : undefined;
+      if (missingDeps) {
+        for (const d of missingDeps) missingUrlNames.add(d);
+        return undefined;
+      }
+      return encodeURIComponent(v);
+    });
+    if (missingUrlNames.size > 0) {
+      // NOTE: an unresolved {{secret}} is an operator/config problem (missing or unresolvable
+      // credential): the model can never supply it, so a retry hint would just loop. Throw like
+      // the other config errors in this file.
+      if (missingUrlNames.has("secret")) {
         throw new AppError(
-          `tool ${def.name}: interpolation altered the origin`,
+          `tool ${def.name}: the URL requires {{secret}} (directly or via a fixed field) but no credential resolved`,
           400,
         );
       }
-
-      // For relative templates the host comes from the credential's baseUrl, which is implicitly
-      // trusted — the check passes when the list is empty OR the host is listed OR the host
-      // matches the credential base host. For absolute templates the current strict behavior
-      // (must be in the non-empty allowlist) is unchanged.
-      const credHost =
-        isRelative && def.credentialBaseUrl
-          ? new URL(def.credentialBaseUrl).hostname
-          : null;
-      if (
-        def.allowedHosts.length > 0 &&
-        !def.allowedHosts.includes(url.hostname) &&
-        !(isRelative && credHost === url.hostname)
-      ) {
+      // Context variables, fixed-field dependencies and unknown tokens are injected by the
+      // platform, never supplied by the model, so those also throw; the retry message is reserved
+      // for placeholders the model can actually provide (AI-source input fields).
+      const nonInput = [...missingUrlNames].filter((n) => !isAiFieldName(n));
+      if (nonInput.length > 0) {
         throw new AppError(
-          `tool ${def.name}: host ${url.hostname} not in allowlist`,
+          `tool ${def.name}: no value available for URL placeholder(s) ${nonInput
+            .map((n) => `{{${n}}}`)
+            .join(", ")} (resolved from context/config, not model input)`,
           400,
         );
       }
+      sentNothing(false);
+      return `Error: no value available for URL placeholder(s): ${[
+        ...missingUrlNames,
+      ]
+        .map((n) => `{{${n}}}`)
+        .join(
+          ", ",
+        )}. Call the tool again providing the missing input field(s).`;
+    }
+    let url: URL;
+    try {
+      url = new URL(interpolated);
+    } catch {
+      throw new AppError(`tool ${def.name}: invalid urlTemplate`, 400);
+    }
+    if (url.origin !== expectedOrigin) {
+      throw new AppError(
+        `tool ${def.name}: interpolation altered the origin`,
+        400,
+      );
+    }
 
-      // 2. Headers: the credential is available here via {{secret}}, alongside context + field values
-      // (e.g. an {{conversation_id}} header).
-      const headers: Record<string, string> = {};
-      for (const [k, v] of Object.entries(headerTemplates)) {
-        headers[k] = interpolate(String(v), (n) =>
-          n === "secret" ? (secret ?? "") : valueLookup(n),
-        );
-      }
+    // For relative templates the host comes from the credential's baseUrl, which is implicitly
+    // trusted — the check passes when the list is empty OR the host is listed OR the host
+    // matches the credential base host. For absolute templates the current strict behavior
+    // (must be in the non-empty allowlist) is unchanged.
+    const credHost =
+      isRelative && def.credentialBaseUrl
+        ? new URL(def.credentialBaseUrl).hostname
+        : null;
+    if (
+      def.allowedHosts.length > 0 &&
+      !def.allowedHosts.includes(url.hostname) &&
+      !(isRelative && credHost === url.hostname)
+    ) {
+      throw new AppError(
+        `tool ${def.name}: host ${url.hostname} not in allowlist`,
+        400,
+      );
+    }
 
-      // 3. Query params (any method), then the body (write methods). Context + {{secret}} resolve in
-      // query values, fixed values and the raw body; {{aiField}} resolves from model input.
-      const lookupWithSecret = (n: string): string | undefined =>
-        n === "secret" ? (secret ?? "") : valueLookup(n);
+    // 2. Headers: the credential is available here via {{secret}}, alongside context + field values
+    // (e.g. an {{conversation_id}} header).
+    const headers: Record<string, string> = {};
+    for (const [k, v] of Object.entries(headerTemplates)) {
+      headers[k] = interpolate(String(v), (n) =>
+        n === "secret" ? (secret ?? "") : valueLookup(n),
+      );
+    }
 
-      // Query: explicit Record<string,string> templates, applied for ANY method. Interpolated but NOT
-      // pre-encoded (searchParams.set encodes once — pre-encoding would double-encode). A param already
-      // on the URL (hand-written) wins; an empty resolution is skipped.
-      const queryMap = parseQuery(shapes.query);
-      const hasExplicitQuery = Object.keys(queryMap).length > 0;
-      for (const [k, tpl] of Object.entries(queryMap)) {
-        const v = interpolate(tpl, lookupWithSecret);
-        if (v !== "" && !url.searchParams.has(k)) url.searchParams.set(k, v);
-      }
+    // 3. Query params (any method), then the body (write methods). Context + {{secret}} resolve in
+    // query values, fixed values and the raw body; {{aiField}} resolves from model input.
+    const lookupWithSecret = (n: string): string | undefined =>
+      n === "secret" ? (secret ?? "") : valueLookup(n);
 
-      let body: string | undefined;
-      if (isBodyMethod) {
-        const hasContentType = Object.keys(headers).some(
-          (h) => h.toLowerCase() === "content-type",
-        );
-        if (!hasContentType) headers["Content-Type"] = "application/json";
-        if (bodyCfg.mode === "raw") {
-          body = interpolate(bodyCfg.raw, lookupWithSecret);
-        } else if (bodyCfg.mode === "kv") {
-          // Explicit key/value rows. A LONE {{aiField}} the model supplied keeps its original
-          // type; a known aiField the model OMITTED is skipped (never emit ""); anything else
-          // interpolates to a string. Null-prototype because `payload[k] = v` with k "__proto__" on
-          // a plain object hits the inherited setter and JSON.stringify silently drops the row.
-          const payload: Record<string, unknown> = Object.create(null);
-          for (const { key, value } of bodyCfg.rows) {
-            const k = key.trim();
-            if (!k) continue;
-            const ph = value.match(LONE_PLACEHOLDER)?.[1];
-            if (ph && ph in input) {
-              if (input[ph] != null) payload[k] = input[ph];
-            } else if (
-              ph &&
-              isAiFieldName(ph) &&
-              !(ph === CONVERSATION_REF_VAR && CONVERSATION_REF_VAR in context)
-            ) {
-              // known aiField the model omitted → omit the key
-            } else {
-              payload[k] = interpolate(value, lookupWithSecret);
-            }
+    // Query: explicit Record<string,string> templates, applied for ANY method. Interpolated but NOT
+    // pre-encoded (searchParams.set encodes once — pre-encoding would double-encode). A param already
+    // on the URL (hand-written) wins; an empty resolution is skipped.
+    const queryMap = parseQuery(shapes.query);
+    const hasExplicitQuery = Object.keys(queryMap).length > 0;
+    for (const [k, tpl] of Object.entries(queryMap)) {
+      const v = interpolate(tpl, lookupWithSecret);
+      if (v !== "" && !url.searchParams.has(k)) url.searchParams.set(k, v);
+    }
+
+    let body: string | undefined;
+    if (isBodyMethod) {
+      const hasContentType = Object.keys(headers).some(
+        (h) => h.toLowerCase() === "content-type",
+      );
+      if (!hasContentType) headers["Content-Type"] = "application/json";
+      if (bodyCfg.mode === "raw") {
+        body = interpolate(bodyCfg.raw, lookupWithSecret);
+      } else if (bodyCfg.mode === "kv") {
+        // Explicit key/value rows. A LONE {{aiField}} the model supplied keeps its original
+        // type; a known aiField the model OMITTED is skipped (never emit ""); anything else
+        // interpolates to a string. Null-prototype because `payload[k] = v` with k "__proto__" on
+        // a plain object hits the inherited setter and JSON.stringify silently drops the row.
+        const payload: Record<string, unknown> = Object.create(null);
+        for (const { key, value } of bodyCfg.rows) {
+          const k = key.trim();
+          if (!k) continue;
+          const ph = value.match(LONE_PLACEHOLDER)?.[1];
+          if (ph && ph in input) {
+            if (input[ph] != null) payload[k] = input[ph];
+          } else if (
+            ph &&
+            isAiFieldName(ph) &&
+            !(ph === CONVERSATION_REF_VAR && CONVERSATION_REF_VAR in context)
+          ) {
+            // known aiField the model omitted → omit the key
+          } else {
+            payload[k] = interpolate(value, lookupWithSecret);
           }
-          body = JSON.stringify(payload);
-        } else {
-          // Legacy "fields": assemble JSON from the non-path input fields (AI input keeps its
-          // type; a fixed field contributes its interpolated value). Null-prototype, same "__proto__" silent-drop reason as the kv branch above.
-          const payload: Record<string, unknown> = Object.create(null);
-          for (const f of fields) {
-            if (pathFields.has(f.name)) continue;
-            if (f.source === "fixed") payload[f.name] = fixedValues[f.name];
-            else if (input[f.name] != null) payload[f.name] = input[f.name];
-          }
-          body = JSON.stringify(payload);
         }
-      } else if (bodyCfg.mode === "fields" && !hasExplicitQuery) {
-        // Legacy derivation: non-path fields → query, ONLY for a legacy "fields" body with no explicit
-        // query (a new tool sets kv/raw + explicit query, so it never double-adds its params here).
+        body = JSON.stringify(payload);
+      } else {
+        // Legacy "fields": assemble JSON from the non-path input fields (AI input keeps its
+        // type; a fixed field contributes its interpolated value). Null-prototype, same "__proto__" silent-drop reason as the kv branch above.
+        const payload: Record<string, unknown> = Object.create(null);
         for (const f of fields) {
           if (pathFields.has(f.name)) continue;
-          const v = f.source === "fixed" ? fixedValues[f.name] : input[f.name];
-          if (v != null && !url.searchParams.has(f.name)) {
-            url.searchParams.set(f.name, String(v));
-          }
+          if (f.source === "fixed") payload[f.name] = fixedValues[f.name];
+          else if (input[f.name] != null) payload[f.name] = input[f.name];
+        }
+        body = JSON.stringify(payload);
+      }
+    } else if (bodyCfg.mode === "fields" && !hasExplicitQuery) {
+      // Legacy derivation: non-path fields → query, ONLY for a legacy "fields" body with no explicit
+      // query (a new tool sets kv/raw + explicit query, so it never double-adds its params here).
+      for (const f of fields) {
+        if (pathFields.has(f.name)) continue;
+        const v = f.source === "fixed" ? fixedValues[f.name] : input[f.name];
+        if (v != null && !url.searchParams.has(f.name)) {
+          url.searchParams.set(f.name, String(v));
         }
       }
+    }
 
-      // NOTE: 3b. Auto-inject the credential per its predefined secret type, so a typed
-      // credential needs no hand-written header. Skips if the operator already set the target header/
-      // param manually (their explicit value wins, including a {{secret}} they wrote themselves).
-      if (secret && def.credentialKind) {
-        const inj = resolveSecretInjection(
-          def.credentialKind,
-          secret,
-          def.credentialParamName,
-        );
-        if (inj?.target === "header") {
-          const already = Object.keys(headers).some(
-            (h) => h.toLowerCase() === inj.name.toLowerCase(),
-          );
-          if (!already) headers[inj.name] = inj.value;
-        } else if (inj?.target === "query" && !url.searchParams.has(inj.name)) {
-          url.searchParams.set(inj.name, inj.value);
-        }
-      }
-
-      // 4. SSRF guard on the FINAL URL, immediately before the fetch.
-      await assertSafeOutboundUrl(url.toString(), {
-        allowHttp: deps.allowHttp,
-        ...(def.allowedHosts.includes(url.hostname)
-          ? {
-              internalTargets:
-                deps.internalTargets ?? config.ssrf.internalTargets,
-            }
-          : {}),
-      });
-
-      // NOTE: 5. Fetch, no redirects, with one bound over the WHOLE exchange: `fetchBounded` reads
-      // the body under the same timer (a provider can stall mid-body) and caps what it retains.
-      // The budget is checked HERE, not at handler entry, to catch it running out during the waits
-      // above (DB read, ack). Refused rather than thrown so the model is told the tool did not run.
-      if (deps.expiresOn?.aborted) {
-        sentNothing(false);
-        return "Could not call the tool (the run's time budget ran out before the request was sent).";
-      }
-      // Asked HERE, past every wait this handler makes (the ack, the credential, the SSRF lookup)
-      // and immediately before the send. See `stillWanted` on the deps.
-      if (deps.stillWanted && !(await deps.stillWanted().catch(() => true))) {
-        // NOTE: Nothing left the process here: the acknowledgement, when there is one, went out
-        // ABOVE and is a message the customer already got.
-        sentNothing(true);
-        return "Could not call the tool (the run was called off before the request was sent).";
-      }
-      const { res, body: responseBody } = await fetchBounded(
-        url.toString(),
-        // NOTE: The deadline rides in `init.signal`, which `bounded` relays onto its own
-        // controller, so a sent request is cancelled when the budget ends. Not a new option: that
-        // timer must also cut the BODY read, and two controllers racing for it lose the body bound.
-        { method, headers, body, redirect: "error", signal: deps.expiresOn },
-        { timeoutMs, fetchImpl: doFetch },
+    // NOTE: 3b. Auto-inject the credential per its predefined secret type, so a typed
+    // credential needs no hand-written header. Skips if the operator already set the target header/
+    // param manually (their explicit value wins, including a {{secret}} they wrote themselves).
+    if (secret && def.credentialKind) {
+      const inj = resolveSecretInjection(
+        def.credentialKind,
+        secret,
+        def.credentialParamName,
       );
+      if (inj?.target === "header") {
+        const already = Object.keys(headers).some(
+          (h) => h.toLowerCase() === inj.name.toLowerCase(),
+        );
+        if (!already) headers[inj.name] = inj.value;
+      } else if (inj?.target === "query" && !url.searchParams.has(inj.name)) {
+        url.searchParams.set(inj.name, inj.value);
+      }
+    }
 
-      const text = responseBody.text;
-      // THE PROJECTION runs BEFORE the clip: the fields a template wants can sit past the
-      // clip point, where rendering after the cut could never reach them. The clip still applies
-      // to the rendered text as a backstop (many tokens, or one long value, can overrun).
-      const rendered = projectResponse(def, deps, res.status, text, maxChars);
-      const modelBody = rendered.text ?? text;
-      const trimmed = clipToModelLimit(modelBody, maxChars).text;
-      // A TRIM THE TOOL'S SERVER MADE. An integration that fits its answer to the limit returns a
-      // body under it, so the clip below never fires and the model still lost the tail; the header
-      // is how it says so. Its value is the original size in characters, when it gives one.
-      const declared = declaredTrim(res.headers);
-      const reportClip = (detail: Record<string, unknown>, err: Error) =>
-        deps.onSideEffectError?.({
-          tool: def.name,
-          phase: "response_clipped",
-          ...(def.silenceTruncationAlert
-            ? { level: "info" as const, detail: { ...detail, silenced: true } }
-            : { detail }),
-          err,
-        });
-      // NOTE: The clip is otherwise invisible from both ends: the model reads `…[truncated]` as an
-      // end, the operator a plausible answer. Reported for a TEMPLATED response too (same lost
-      // tail), with different ADVICE: "did not render" splits into no template versus a template
-      // that deliberately does not apply here, where "declare a template" would be wrong.
-      if (modelBody.length > maxChars) {
-        const templated = rendered.text !== null;
-        // A SECOND CUT, upstream: past the read cap the body arrives truncated, so JSON stops
-        // parsing and the template reports "not JSON". Without this branch the advice would blame
-        // a sound template and report the cap instead of the provider's real size.
-        const capped = responseBody.chars > text.length;
-        const advice =
-          rendered.skipped === null
-            ? "shorten it or point it at fewer fields"
-            : rendered.skipped === "no-template"
-              ? "declare a response template so it gets the fields you want instead of the beginning of the body"
-              : rendered.skipped === "not-2xx"
-                ? "this tool's response template does not apply outside 2xx, where the body is the error the model has to read"
-                : capped
-                  ? `only the first ${text.length} characters of the body were read, so it could not be parsed as JSON and this tool's response template was not applied`
-                  : "this tool's response template could not be applied because the body is not JSON";
-        reportClip(
-          {
-            chars: templated ? modelBody.length : responseBody.chars,
-            limit: maxChars,
-            templated,
-            ...(capped ? { readCap: text.length } : {}),
-            ...(rendered.skipped ? { skipped: rendered.skipped } : {}),
-            ...(declared
-              ? {
-                  declared: true,
-                  ...(declared.chars !== undefined
-                    ? { declaredChars: declared.chars }
-                    : {}),
-                }
-              : {}),
-          },
-          new Error(
-            `${
-              templated
-                ? `the response template rendered ${modelBody.length} characters`
-                : `the response was ${responseBody.chars} characters`
-            } and the model was given the first ${maxChars}; ${advice}`,
-          ),
-        );
-      } else if (declared) {
-        // NOTE: One line per call: when the platform cut too, the line above carries the declaration.
-        reportClip(
-          {
-            declared: true,
-            ...(declared.chars !== undefined ? { chars: declared.chars } : {}),
-            limit: maxChars,
-            templated: rendered.text !== null,
-          },
-          new Error(
-            `the tool's server reported that it trimmed its response${
-              declared.chars !== undefined
-                ? ` from ${declared.chars} characters`
-                : ""
-            } to fit this tool's limit of ${maxChars}; raise the tool's response limit or have the server return less`,
-          ),
-        );
+    // 4. SSRF guard on the FINAL URL, immediately before the fetch.
+    await assertSafeOutboundUrl(url.toString(), {
+      allowHttp: deps.allowHttp,
+      ...(def.allowedHosts.includes(url.hostname)
+        ? {
+            internalTargets:
+              deps.internalTargets ?? config.ssrf.internalTargets,
+          }
+        : {}),
+    });
+
+    // NOTE: 5. Fetch, no redirects, with one bound over the WHOLE exchange: `fetchBounded` reads
+    // the body under the same timer (a provider can stall mid-body) and caps what it retains.
+    // The budget is checked HERE, not at handler entry, to catch it running out during the waits
+    // above (DB read, ack). Refused rather than thrown so the model is told the tool did not run.
+    if (deps.expiresOn?.aborted) {
+      sentNothing(false);
+      return "Could not call the tool (the run's time budget ran out before the request was sent).";
+    }
+    // Asked HERE, past every wait this handler makes (the ack, the credential, the SSRF lookup)
+    // and immediately before the send. See `stillWanted` on the deps.
+    if (deps.stillWanted && !(await deps.stillWanted().catch(() => true))) {
+      // NOTE: Nothing left the process here: the acknowledgement, when there is one, went out
+      // ABOVE and is a message the customer already got.
+      sentNothing(true);
+      return "Could not call the tool (the run was called off before the request was sent).";
+    }
+    sent.request = true;
+    const { res, body: responseBody } = await fetchBounded(
+      url.toString(),
+      // NOTE: The deadline rides in `init.signal`, which `bounded` relays onto its own
+      // controller, so a sent request is cancelled when the budget ends. Not a new option: that
+      // timer must also cut the BODY read, and two controllers racing for it lose the body bound.
+      { method, headers, body, redirect: "error", signal: deps.expiresOn },
+      { timeoutMs, fetchImpl: doFetch },
+    );
+
+    const text = responseBody.text;
+    // THE PROJECTION runs BEFORE the clip: the fields a template wants can sit past the
+    // clip point, where rendering after the cut could never reach them. The clip still applies
+    // to the rendered text as a backstop (many tokens, or one long value, can overrun).
+    const rendered = projectResponse(def, deps, res.status, text, maxChars);
+    const modelBody = rendered.text ?? text;
+    const trimmed = clipToModelLimit(modelBody, maxChars).text;
+    // A TRIM THE TOOL'S SERVER MADE. An integration that fits its answer to the limit returns a
+    // body under it, so the clip below never fires and the model still lost the tail; the header
+    // is how it says so. Its value is the original size in characters, when it gives one.
+    const declared = declaredTrim(res.headers);
+    const reportClip = (detail: Record<string, unknown>, err: Error) =>
+      deps.onSideEffectError?.({
+        tool: def.name,
+        phase: "response_clipped",
+        ...(def.silenceTruncationAlert
+          ? { level: "info" as const, detail: { ...detail, silenced: true } }
+          : { detail }),
+        err,
+      });
+    // NOTE: The clip is otherwise invisible from both ends: the model reads `…[truncated]` as an
+    // end, the operator a plausible answer. Reported for a TEMPLATED response too (same lost
+    // tail), with different ADVICE: "did not render" splits into no template versus a template
+    // that deliberately does not apply here, where "declare a template" would be wrong.
+    if (modelBody.length > maxChars) {
+      const templated = rendered.text !== null;
+      // A SECOND CUT, upstream: past the read cap the body arrives truncated, so JSON stops
+      // parsing and the template reports "not JSON". Without this branch the advice would blame
+      // a sound template and report the cap instead of the provider's real size.
+      const capped = responseBody.chars > text.length;
+      const advice =
+        rendered.skipped === null
+          ? "shorten it or point it at fewer fields"
+          : rendered.skipped === "no-template"
+            ? "declare a response template so it gets the fields you want instead of the beginning of the body"
+            : rendered.skipped === "not-2xx"
+              ? "this tool's response template does not apply outside 2xx, where the body is the error the model has to read"
+              : capped
+                ? `only the first ${text.length} characters of the body were read, so it could not be parsed as JSON and this tool's response template was not applied`
+                : "this tool's response template could not be applied because the body is not JSON";
+      reportClip(
+        {
+          chars: templated ? modelBody.length : responseBody.chars,
+          limit: maxChars,
+          templated,
+          ...(capped ? { readCap: text.length } : {}),
+          ...(rendered.skipped ? { skipped: rendered.skipped } : {}),
+          ...(declared
+            ? {
+                declared: true,
+                ...(declared.chars !== undefined
+                  ? { declaredChars: declared.chars }
+                  : {}),
+              }
+            : {}),
+        },
+        new Error(
+          `${
+            templated
+              ? `the response template rendered ${modelBody.length} characters`
+              : `the response was ${responseBody.chars} characters`
+          } and the model was given the first ${maxChars}; ${advice}`,
+        ),
+      );
+    } else if (declared) {
+      // NOTE: One line per call: when the platform cut too, the line above carries the declaration.
+      reportClip(
+        {
+          declared: true,
+          ...(declared.chars !== undefined ? { chars: declared.chars } : {}),
+          limit: maxChars,
+          templated: rendered.text !== null,
+        },
+        new Error(
+          `the tool's server reported that it trimmed its response${
+            declared.chars !== undefined
+              ? ` from ${declared.chars} characters`
+              : ""
+          } to fit this tool's limit of ${maxChars}; raise the tool's response limit or have the server return less`,
+        ),
+      );
+    }
+    // By default every non-2xx is an integration failure worth alerting on (a broken
+    // credential, an outage, a rejected payload) unless the operator declared this status a result
+    // for this tool. The model sees the same "HTTP <status>" body either way.
+    const resultText = `HTTP ${res.status}\n${trimmed}`;
+    // NOTE: THE REGISTRATION hangs off 2xx alone, not `isExpectedResult`: a lookup may declare its
+    // 404 a result ("no record"), and registering on it would record an appointment out of the
+    // response that says there is none.
+    if (res.status >= 200 && res.status < 300) {
+      await registerDeclaredAppointment(def, deps, text);
+    }
+    return isExpectedResult(res.status, expectedStatuses)
+      ? resultText
+      : toolFailure(resultText);
+  };
+
+  return failableTool(
+    async (rawInput: Record<string, unknown>, callConfig) => {
+      const sent = { request: false };
+      try {
+        return await handle(rawInput, callConfig, sent);
+      } catch (err) {
+        if (!sent.request) fenceReporterOf(callConfig)?.({ noEffect: true });
+        throw err;
       }
-      // By default every non-2xx is an integration failure worth alerting on (a broken
-      // credential, an outage, a rejected payload) unless the operator declared this status a result
-      // for this tool. The model sees the same "HTTP <status>" body either way.
-      const resultText = `HTTP ${res.status}\n${trimmed}`;
-      // NOTE: THE REGISTRATION hangs off 2xx alone, not `isExpectedResult`: a lookup may declare its
-      // 404 a result ("no record"), and registering on it would record an appointment out of the
-      // response that says there is none.
-      if (res.status >= 200 && res.status < 300) {
-        await registerDeclaredAppointment(def, deps, text);
-      }
-      return isExpectedResult(res.status, expectedStatuses)
-        ? resultText
-        : toolFailure(resultText);
     },
     {
       name: sanitizeToolName(def.name),

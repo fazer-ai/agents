@@ -604,7 +604,13 @@ function CustomToolArgs({
       ...(specs === null ? Object.keys(modes) : []),
     ].filter((n) => !(specs ?? []).some((s) => s.name === n)),
   ].filter((n, i, all) => all.indexOf(n) === i);
-  const setValue = (name: string, mode: "fixed" | "fill", value: unknown) => {
+  // An emptied text is a value ("" is what the tool gets), not an omission: `keepEmpty` keeps it.
+  const setValue = (
+    name: string,
+    mode: "fixed" | "fill",
+    value: unknown,
+    keepEmpty = false,
+  ) => {
     const args = { ...rule.args };
     const fill = { ...rule.fill };
     delete args[name];
@@ -615,7 +621,7 @@ function CustomToolArgs({
       mode === "fixed" &&
       value !== undefined &&
       // A row named by hand (no schema) keeps its name while its value is emptied.
-      (value !== "" || specs === null)
+      (value !== "" || keepEmpty || specs === null)
     ) {
       args[name] = value;
     }
@@ -779,7 +785,12 @@ function CustomToolArgs({
                   onChange={(e) => {
                     const raw = e.target.value;
                     setDrafts((d) => ({ ...d, [name]: raw }));
-                    setValue(name, "fixed", fixedFromInput(spec, raw));
+                    setValue(
+                      name,
+                      "fixed",
+                      fixedFromInput(spec, raw),
+                      spec?.type === "string",
+                    );
                   }}
                   onBlur={() => setDrafts(({ [name]: _, ...rest }) => rest)}
                 />

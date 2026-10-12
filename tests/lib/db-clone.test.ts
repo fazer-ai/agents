@@ -7,12 +7,13 @@ import {
   type CloneOwner,
   clonesToDrop,
   cloneVerdict,
+  ensureWorkerClone,
   ownerComment,
   processStart,
   reapClones,
   workerCloneTarget,
 } from "../db-clone";
-import { DB_GATE_OPT_OUT } from "../db-gate";
+import { DB_GATE_OPT_OUT, withDeadline } from "../db-gate";
 import { checkoutRootFrom, testDbNameFor, withDbName } from "../db-name";
 
 // Under `bun test --parallel` every worker runs on its own copy of the checkout's test database
@@ -337,4 +338,36 @@ describe("a run nested inside a worker", () => {
     },
     120_000,
   );
+});
+
+// The clone runs before the gate, so nothing else bounds it: an endpoint that takes the socket and
+// never answers has to be refused, not waited on.
+describe("the clone's deadlines", () => {
+  test("an endpoint that accepts and never answers is refused, not waited on", async () => {
+    const server = Bun.listen({
+      hostname: "127.0.0.1",
+      port: 0,
+      socket: { data() {} },
+    });
+    try {
+      // NOTE: the outer bound turns a client with no deadline into a failure with another message,
+      // instead of a test that hangs.
+      await expect(
+        withDeadline(
+          ensureWorkerClone({
+            suUrl: `postgres://postgres:x@127.0.0.1:${server.port}/silent_test`,
+            appRole: "app",
+            root: ROOT,
+            template: "silent_test",
+            clone: "silent_w1_test",
+            deadlines: { connectMs: 200, queryMs: 200 },
+          }),
+          5_000,
+          "the clone client",
+        ),
+      ).rejects.toThrow("timeout expired");
+    } finally {
+      server.stop(true);
+    }
+  });
 });

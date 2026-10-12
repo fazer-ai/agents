@@ -2,7 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type { Client } from "pg";
 import { FLEET_ROLE_EXPR } from "@/lib/tenancy/fleet-role";
-import { DB_GATE_OPT_OUT } from "./db-gate";
+import { DB_GATE_OPT_OUT, PROBE_DEADLINE_MS } from "./db-gate";
 import { isWorkerCloneOf, testDbNameFor, withDbName } from "./db-name";
 
 // ONE DATABASE PER WORKER UNDER `bun test --parallel`: files running at once on one database
@@ -157,9 +157,25 @@ function fleetRoleSql(): string {
 const OBJECT_IN_USE = "55006";
 const TEMPLATE_BUSY_DEADLINE_MS = 60_000;
 
-async function newClient(url: string): Promise<Client> {
+// This runs before the gate, so its deadlines are the only ones in force: `pg` waits forever by default,
+// and an endpoint that accepts the socket and never answers would hang the run before any file loads.
+// A statement's wait has to cover the lock while other workers clone, hence the template window, twice.
+export type CloneDeadlines = { connectMs: number; queryMs: number };
+export const CLONE_DEADLINES: CloneDeadlines = {
+  connectMs: PROBE_DEADLINE_MS,
+  queryMs: TEMPLATE_BUSY_DEADLINE_MS * 2,
+};
+
+async function newClient(
+  url: string,
+  deadlines: CloneDeadlines = CLONE_DEADLINES,
+): Promise<Client> {
   const { Client } = await import("pg");
-  const c = new Client({ connectionString: url });
+  const c = new Client({
+    connectionString: url,
+    connectionTimeoutMillis: deadlines.connectMs,
+    query_timeout: deadlines.queryMs,
+  });
   await c.connect();
   return c;
 }
@@ -238,8 +254,9 @@ export async function reapClones(opts: {
   maintUrl: string;
   root: string;
   template: string;
+  deadlines?: CloneDeadlines;
 }): Promise<string[]> {
-  const maint = await newClient(opts.maintUrl);
+  const maint = await newClient(opts.maintUrl, opts.deadlines);
   try {
     return await withCloneLock(maint, opts.root, () =>
       reapUnderLock(maint, opts.root, opts.template),
@@ -254,8 +271,12 @@ export async function reapClones(opts: {
 // `db-guard` prints for a database restored under another name, done up front: the copy's own role,
 // the template role's privileges moved to it, its policies pointed at it, and the runtime role made a
 // member that may SET ROLE to it without inheriting it, as `scripts/db-bootstrap.ts` provisions.
-async function provisionClone(cloneUrl: string, appRole: string) {
-  const c = await newClient(cloneUrl);
+async function provisionClone(
+  cloneUrl: string,
+  appRole: string,
+  deadlines?: CloneDeadlines,
+) {
+  const c = await newClient(cloneUrl, deadlines);
   try {
     const fleet = (
       await c.query<{ role: string }>(
@@ -419,10 +440,11 @@ export async function ensureWorkerClone(opts: {
   root: string;
   template: string;
   clone: string;
+  deadlines?: CloneDeadlines;
 }): Promise<void> {
   const { root, template, clone } = opts;
   const maintUrl = withDbName(opts.suUrl, "postgres");
-  const maint = await newClient(maintUrl);
+  const maint = await newClient(maintUrl, opts.deadlines);
   try {
     const current = async (): Promise<CloneOwner | null | undefined> => {
       const { rows } = await maint.query<{ comment: string | null }>(
@@ -484,7 +506,11 @@ export async function ensureWorkerClone(opts: {
         ready: false,
       };
       await createClone(maint, template, clone, owner);
-      await provisionClone(withDbName(opts.suUrl, clone), opts.appRole);
+      await provisionClone(
+        withDbName(opts.suUrl, clone),
+        opts.appRole,
+        opts.deadlines,
+      );
       await maint.query(
         `COMMENT ON DATABASE ${maint.escapeIdentifier(clone)} IS ${maint.escapeLiteral(ownerComment({ ...owner, ready: true }))}`,
       );

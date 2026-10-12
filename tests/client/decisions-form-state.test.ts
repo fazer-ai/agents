@@ -1083,4 +1083,22 @@ describe("the custom tools a rule is offered", () => {
     );
     expect([...all.keys()]).toEqual(["mcp__crm__search"]);
   });
+
+  test("a server sharing a slug but enabling no tool hides none of the other's", () => {
+    const { all } = customToolsOf(
+      {
+        toolDefinitions: [],
+        codeTools: [],
+        mcpConnections: [
+          { id: "1", name: "CRM A", slug: "crm_a" },
+          { id: "2", name: "CRM_A", slug: "crm_a" },
+        ],
+      },
+      [
+        { source: "MCP", mcpServerConnectionId: "1", enabledTools: ["search"] },
+        { source: "MCP", mcpServerConnectionId: "2", enabledTools: [] },
+      ],
+    );
+    expect([...all.keys()]).toEqual(["mcp__crm_a__search"]);
+  });
 });

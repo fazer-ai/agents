@@ -21,12 +21,14 @@ export function mcpRuntimeBase(slug: string, tool: string): string {
 export function ambiguousMcpNames(
   servers: readonly { slug: string; tools: readonly string[] }[],
 ): Set<string> {
+  // A grant with no tool enabled exposes nothing (the assembly skips it), so it shares no name.
+  const live = servers.filter((s) => s.tools.length > 0);
   const bySlug = new Map<string, number>();
-  for (const s of servers) bySlug.set(s.slug, (bySlug.get(s.slug) ?? 0) + 1);
+  for (const s of live) bySlug.set(s.slug, (bySlug.get(s.slug) ?? 0) + 1);
   const byBase = new Map<string, number>();
   const out = new Set<string>();
   let total = 0;
-  for (const s of servers) {
+  for (const s of live) {
     // A tool listed twice in one grant is exposed once (filterAllowed).
     for (const tool of new Set(s.tools)) {
       total += 1;

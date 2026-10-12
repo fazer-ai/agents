@@ -19,7 +19,6 @@ import {
   retireCoveredFallbacks,
 } from "@/graph/ingest-job";
 import { stampedSentAt } from "@/graph/markers";
-import { withKeyedQueue } from "@/lib/locks";
 import {
   currentPoolClass,
   type PoolClass,

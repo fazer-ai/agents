@@ -144,6 +144,7 @@ const FLOWLOG_READERS: Record<string, number> = {
   "tests/graph/code-tool-clip.test.ts": 1,
   "tests/graph/duplicate-tool-name-visible.test.ts": 1,
   "tests/graph/history-ceiling-turn.test.ts": 1,
+  "tests/graph/ingest-job.test.ts": 1,
   "tests/graph/ingest.test.ts": 2,
   "tests/graph/label-allowed-wiring.test.ts": 1,
   // NOTE: A turn a gate stopped writes no closing line, which only a read can show.

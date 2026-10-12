@@ -13,6 +13,7 @@ import { mapWithConcurrency } from "@/modules/flowlog/alert-worker";
 import { nextBackoffMs } from "@/modules/webhooks/outbound/service";
 import { instanceSecretResolver } from "./channels";
 import { asFleetForInstanceHealth } from "./fleet-tx";
+import { SIGNALS } from "./signals";
 
 // Delivers instance alerts with the tenant alert worker's shape (src/modules/flowlog/alert-worker.ts):
 // reap stale SENDING rows, claim due PENDING rows (a fresh one only after the coalesce window, so a
@@ -25,6 +26,9 @@ const MAX_ATTEMPTS = 8;
 const CLAIM_LIMIT = 20;
 const DELIVERY_CONCURRENCY = 10;
 const STALE_SENDING_MS = 60_000;
+const MUTED_BY_DEFAULT = SIGNALS.filter((d) => d.defaultEnabled === false).map(
+  (d) => d.name,
+);
 
 export interface InstanceAlertWorkerOptions {
   base?: PrismaClient;
@@ -69,14 +73,16 @@ async function claim(
       data: { status: "PENDING" },
     });
     // What is still queued for a signal muted since, or one the channel no longer takes, is never
-    // sent: dropping it leaves the channel's record at what it was actually told.
+    // sent: dropping it leaves the channel's record at what it was actually told. Muted is the stored
+    // override, or the signal's default when none is stored.
     await db.$executeRaw`
       DELETE FROM instance_alert_deliveries d
        WHERE d.status = 'PENDING'
          AND (
-           EXISTS (
-             SELECT 1 FROM instance_alert_thresholds t
-              WHERE t.signal = d.signal AND t.enabled = false)
+           coalesce(
+             (SELECT NOT t.enabled FROM instance_alert_thresholds t
+               WHERE t.signal = d.signal),
+             d.signal = ANY(${MUTED_BY_DEFAULT}::text[]))
            OR EXISTS (
              SELECT 1 FROM instance_alert_channels c
               WHERE c.id = d.channel_id

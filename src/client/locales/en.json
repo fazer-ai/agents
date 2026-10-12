@@ -2514,6 +2514,7 @@
     "kindDraining": "draining",
     "kindFailed": "{{kind}}: failed per minute",
     "kindFailedHelp": "Runs of this kind that failed in the last minute, retries included, and claims taken back after a crash. Not alerting by default: a job that runs out of retries already reaches the tenant's alerts.",
+    "kindFiring": "{{measure}} above threshold",
     "kindIdle": "nothing due",
     "kindMeasureDone": "Completed",
     "kindMeasureFailed": "Failed",

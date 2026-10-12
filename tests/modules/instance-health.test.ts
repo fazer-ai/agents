@@ -838,6 +838,35 @@ describe.skipIf(!dbUp)("instance alert order, signing and retention", () => {
     expect(await deliveries()).toEqual([]);
   });
 
+  test("what is queued for a rate turned on and then reset to its muted default is never sent, and one still turned on is (catches a reset that does not stop pending sends)", async () => {
+    await channel();
+    const reset = "scheduler_failed_per_min:TAKEOVER_RECOVERY";
+    const kept = "scheduler_failed_per_min:DELIVERY_RECOVERY";
+    for (const signal of [reset, kept]) {
+      await setInstanceThreshold(
+        FLEET,
+        signal,
+        { threshold: 0, durationSeconds: 0, enabled: true },
+        appDb,
+      );
+    }
+    await evaluateSample({ [reset]: 4, [kept]: 4 }, 9_500_000);
+    await age();
+    await resetInstanceThreshold(FLEET, reset, appDb);
+    const sent: string[] = [];
+    const record = (async (_u: string, init: RequestInit) => {
+      sent.push(JSON.parse(String(init.body)).summary);
+      return new Response(null, { status: 204 });
+    }) as unknown as typeof fetch;
+    await processInstanceAlertBatch({
+      base: appDb,
+      coalesceWindowMs: 0,
+      send: { assertSafe: allowAll, fetchImpl: record },
+    });
+    expect(sent.length).toBe(1);
+    expect((await deliveries()).map((r) => r.signal)).toEqual([kept]);
+  });
+
   test("a recovery waits for the firing before it, even while that one retries (catches deliveries out of order)", async () => {
     await channel();
     await evaluateSample({ ingress_lag_p95_ms: 90_000 }, 9_100_000);

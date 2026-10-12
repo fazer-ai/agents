@@ -301,13 +301,19 @@ function SignalCard({
   signal,
   detail,
   onEdit,
+  alerts,
 }: {
   signal: Signal;
   // A line under the value: a pool's connections, or a lane's jobs by kind.
   detail?: string | null;
   onEdit: () => void;
+  // The signals this card speaks for, when it is more than its own: a kind's card carries its two
+  // rates, and its badge says which one is firing, and that it is not alerting only when none is on.
+  alerts?: Signal[];
 }) {
   const { t } = useTranslation();
+  const firing = (alerts ?? [signal]).find((s) => s.firing);
+  const alerting = (alerts ?? [signal]).some((s) => s.enabled);
   const help = signalHelp(signal.signal, t);
   return (
     <Card className="flex flex-col gap-2">
@@ -324,11 +330,15 @@ function SignalCard({
               time: signal.at ? new Date(signal.at).toLocaleTimeString() : "",
             })}
           </Badge>
-        ) : signal.firing ? (
+        ) : firing ? (
           <Badge variant="error">
-            {t("instanceHealth.firing", "Above threshold")}
+            {alerts && firing.signal !== signal.signal
+              ? t("instanceHealth.kindFiring", "{{measure}} above threshold", {
+                  measure: kindMeasureLabel(firing.signal, t),
+                })
+              : t("instanceHealth.firing", "Above threshold")}
           </Badge>
-        ) : !signal.enabled ? (
+        ) : !alerting ? (
           <Badge variant="secondary">
             {t("instanceHealth.muted", "Not alerting")}
           </Badge>
@@ -585,6 +595,7 @@ export function InstanceHealthPage({ pollMs = POLL_MS }: { pollMs?: number }) {
                     key={s.signal}
                     signal={s}
                     detail={kindDetail(tp.kind, health, t)}
+                    alerts={choices}
                     onEdit={() => thresholdModal.open({ signal: s, choices })}
                   />
                 );

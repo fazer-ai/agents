@@ -122,6 +122,8 @@ const DRAINING: KindReading = {
   state: "draining",
 };
 let kindReading = DRAINING;
+// The failure rate turned on and firing while the stall is muted.
+let kindRateFiring = false;
 const KIND = {
   signals: [
     kindSignal(
@@ -203,6 +205,7 @@ beforeEach(() => {
   withExtra = false;
   withKind = false;
   kindReading = DRAINING;
+  kindRateFiring = false;
   puts = [];
   laneNeverRead = false;
   healthReads = 0;
@@ -257,7 +260,18 @@ beforeEach(() => {
             ...HEALTH.health,
             schedulerKinds: { DELIVERY_RECOVERY: 480_000 },
             schedulerThroughput: { DELIVERY_RECOVERY: kindReading },
-            signals: [...signals, ...KIND.signals],
+            signals: [
+              ...signals,
+              ...KIND.signals.map((k) =>
+                !kindRateFiring
+                  ? k
+                  : k.signal.startsWith("scheduler_failed_per_min:")
+                    ? { ...k, enabled: true, firing: true }
+                    : k.signal.startsWith("scheduler_stalled_ms:")
+                      ? { ...k, enabled: false }
+                      : k,
+              ),
+            ],
           },
         });
       }
@@ -797,6 +811,26 @@ describe("instance health screen", () => {
       path: "/api/v1/instance-health/thresholds/scheduler_failed_per_min:DELIVERY_RECOVERY",
       body: { threshold: 9, durationSeconds: 0, enabled: true },
     });
+  });
+
+  test("a kind's card says which of its rates is firing, and is not 'not alerting' while one is on (catches a rate paging from a card that looks quiet)", async () => {
+    withKind = true;
+    kindRateFiring = true;
+    render(
+      <MemoryRouter initialEntries={["/admin/instance-health"]}>
+        <ThemeProvider>
+          <TooltipProvider>
+            <ToastProvider>
+              <NavGuardProvider>
+                <InstanceHealthPage pollMs={20} />
+              </NavGuardProvider>
+            </ToastProvider>
+          </TooltipProvider>
+        </ThemeProvider>
+      </MemoryRouter>,
+    );
+    await screen.findByText("Failed above threshold");
+    expect(Boolean(screen.queryByText("Not alerting"))).toBe(false);
   });
 
   test("a lane never read says nothing about its jobs (catches 'no job overdue' with no reading behind it)", async () => {

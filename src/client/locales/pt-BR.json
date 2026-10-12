@@ -2579,6 +2579,7 @@
     "kindDraining": "drenando",
     "kindFailed": "{{kind}}: falhas por minuto",
     "kindFailedHelp": "Execuções deste tipo que falharam no último minuto, contando as tentativas, e jobs retomados depois de um crash. Sem alerta por padrão: um job que esgota as tentativas já chega aos alertas do tenant.",
+    "kindFiring": "{{measure}} acima do limite",
     "kindIdle": "nada pendente",
     "kindMeasureDone": "Concluídos",
     "kindMeasureFailed": "Falhas",

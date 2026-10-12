@@ -223,8 +223,9 @@ describe("what a worker does with the clone it is about to use", () => {
 });
 
 // The decisions above, against a real cluster: a database left by a dead run is dropped together with
-// the fleet role named after it, and one whose run is alive stays. The template is a scratch name of
-// this checkout that no database carries, so nothing here can match a real run's copies.
+// the fleet role named after it, and one whose run is alive stays. The copies belong to a checkout
+// that does not exist, because a worker of a real `--parallel` run reaps its own checkout's leftovers,
+// unmarked ones included, and would take these between their CREATE and the reap under test.
 describe("removing leftovers, on the database", () => {
   const suUrl = process.env.MIGRATION_DATABASE_URL;
   const live = process.env[DB_GATE_OPT_OUT] !== "1" && Boolean(suUrl);
@@ -232,9 +233,10 @@ describe("removing leftovers, on the database", () => {
   test.skipIf(!live)(
     "a dead run's clone and its fleet role go, a live run's clone stays",
     async () => {
-      const template = testDbNameFor(`fzclone1384_p${process.pid}_test`, ROOT);
-      const dead = testDbNameFor(template, ROOT, "1");
-      const kept = testDbNameFor(template, ROOT, "2");
+      const root = `/nonexistent/fzclone1384-p${process.pid}`;
+      const template = testDbNameFor(`fzclone1384_p${process.pid}_test`, root);
+      const dead = testDbNameFor(template, root, "1");
+      const kept = testDbNameFor(template, root, "2");
       const finished = Bun.spawn(["true"]);
       await finished.exited;
       const maintUrl = withDbName(suUrl as string, "postgres");
@@ -249,7 +251,7 @@ describe("removing leftovers, on the database", () => {
         ).rows[0]?.role as string;
       const deadRole = await fleetOf(dead);
       try {
-        for (const [db, o] of [
+        const owners = [
           [dead, owner({ template, pid: finished.pid, start: "gone" })],
           [
             kept,
@@ -259,15 +261,22 @@ describe("removing leftovers, on the database", () => {
               start: processStart(process.pid) as string,
             }),
           ],
-        ] as const) {
-          await maint.query(`CREATE DATABASE "${db}"`);
+        ] as const;
+        for (const [db] of owners) await maint.query(`CREATE DATABASE "${db}"`);
+        // NOTE: unmarked, these are what a worker of this checkout would reap; it must not reach them.
+        await reapClones({
+          maintUrl,
+          root: ROOT,
+          template: testDbNameFor("fzclone1384_none_test", ROOT),
+        });
+        for (const [db, o] of owners) {
           await maint.query(
             `COMMENT ON DATABASE "${db}" IS ${maint.escapeLiteral(ownerComment(o))}`,
           );
         }
         await maint.query(`CREATE ROLE "${deadRole}" NOLOGIN`);
 
-        const dropped = await reapClones({ maintUrl, root: ROOT, template });
+        const dropped = await reapClones({ maintUrl, root, template });
 
         expect(dropped).toEqual([dead]);
         const { rows } = await maint.query<{ datname: string }>(

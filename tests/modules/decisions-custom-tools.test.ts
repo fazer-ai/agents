@@ -5,6 +5,7 @@ import {
 } from "@langchain/core/tools";
 import { z } from "zod";
 import { failableTool, toolFailure } from "@/graph/tools/failure";
+import { SERVER_INPUT_SCHEMA } from "@/graph/tools/mcp";
 import { AppError } from "@/lib/errors";
 import type { ScopedDb } from "@/lib/tenancy";
 import {
@@ -762,6 +763,93 @@ describe("the tick fills a custom tool's arguments and records them", () => {
       failure: "invalid_arguments",
     });
     expect(r.triggerState.latch).toEqual([]);
+  });
+
+  // What the adapter checks is the server's schema, kept beside the simplified declaration.
+  const mcpTool = (
+    server: Record<string, unknown>,
+    seen: Record<string, unknown>[],
+    name = "mcp__crm__abrir",
+  ) => {
+    const tool = new DynamicStructuredTool({
+      name,
+      description: "x",
+      schema: { type: "object", properties: {} },
+      func: async (input) => {
+        seen.push(input as Record<string, unknown>);
+        return "ok";
+      },
+    });
+    (tool as unknown as Record<string, unknown>)[SERVER_INPUT_SCHEMA] = server;
+    return tool as unknown as StructuredToolInterface;
+  };
+
+  test("a number fits an anyOf text argument of the server's schema as its digits", async () => {
+    const seen: Record<string, unknown>[] = [];
+    await once(
+      mcpTool(
+        {
+          type: "object",
+          properties: {
+            motivo: { type: "string" },
+            telefone: { anyOf: [{ type: "string" }, { type: "null" }] },
+          },
+        },
+        seen,
+      ),
+      { telefone: "conversation.display_id" },
+    );
+    expect(seen[0]?.telefone).toBe("42");
+  });
+
+  test("an MCP argument the server requires and the observation lacks is not called and spends no budget", async () => {
+    const seen: Record<string, unknown>[] = [];
+    const lacking = mcpTool(
+      {
+        type: "object",
+        properties: { motivo: { type: "string" }, email: { type: "string" } },
+        required: ["motivo", "email"],
+      },
+      seen,
+    );
+    const other = customTool(
+      "avisar_slack",
+      z.object({ texto: z.string() }),
+      seen,
+    );
+    const r = await applyDecisions(
+      {
+        rules: [
+          {
+            when,
+            action: {
+              tool: "mcp__crm__abrir",
+              args: { motivo: "x" },
+              fill: { email: "contact.email" },
+            },
+          },
+          { when, action: { tool: "avisar_slack", args: { texto: "oi" } } },
+        ],
+      },
+      answers,
+      [lacking, other],
+      [],
+      new AbortController().signal,
+      async () => true,
+      1,
+      undefined,
+      false,
+      new Set(),
+      {},
+      async () => true,
+      { context: ctx, questions, logValues: true },
+    );
+    expect(r.actions.map((a) => [a.tool, a.outcome])).toEqual([
+      ["mcp__crm__abrir", "failed"],
+      ["avisar_slack", "ran"],
+    ]);
+    expect(r.actions[0]?.failure).toBe("missing_value");
+    expect(seen).toEqual([{ texto: "oi" }]);
   });
 
   test("a custom tool the agent was not granted reports not_granted and calls nothing", async () => {

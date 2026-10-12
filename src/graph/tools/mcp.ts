@@ -439,6 +439,8 @@ function withDraft2020Tuples(client: Client): void {
 // THE ADAPTER'S OWN ARGUMENT CHECK, which runs against the server's full schema before the server is
 // reached: a call it refuses sent nothing, said on the call's reporter (fence-report.ts) so a caller
 // that asks per call (a decisions rule) does not count it as a call that may have written.
+export const SERVER_INPUT_SCHEMA = "fazeraiServerInputSchema";
+
 // Told apart by the adapter's own sentence: a response the SDK cannot parse also throws a wrapped
 // `ZodError`, after the request was sent ("Error calling tool ..."), and may have written.
 const ARGUMENT_REFUSAL = "Invalid arguments for MCP tool ";
@@ -496,6 +498,10 @@ async function connectClient(
         }),
       });
       for (const tool of tools) {
+        // The server's own schema stays readable beside the declaration the model gets: a caller
+        // that fills arguments itself (a decisions rule) fits them to what the adapter will check.
+        (tool as { [SERVER_INPUT_SCHEMA]?: unknown })[SERVER_INPUT_SCHEMA] =
+          tool.schema;
         (tool as { schema: unknown }).schema = declarationSchema(tool.schema);
         reportArgumentRefusals(tool);
       }

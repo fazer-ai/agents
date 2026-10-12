@@ -19,7 +19,7 @@ import {
   withFenceReporter,
 } from "@/graph/tools/fence-report";
 import { WAIT_MESSAGE_ARG } from "@/graph/tools/http";
-import { isMcpArgumentRefusal } from "@/graph/tools/mcp";
+import { isMcpArgumentRefusal, SERVER_INPUT_SCHEMA } from "@/graph/tools/mcp";
 import { sentNothing } from "@/modules/chatwoot/client";
 import {
   type DecisionQuestion,
@@ -280,11 +280,7 @@ export async function applyDecisions(
     }
     // A field with no value is left out of the call, and a tool that needs it is not called: what
     // it would refuse is said by the arguments the rule could not fill, not by its schema.
-    if (
-      resolved.missing.length > 0 &&
-      isInteropZodSchema(tool.schema) &&
-      !(await interopSafeParseAsync(tool.schema, args)).success
-    ) {
+    if (resolved.missing.length > 0 && (await lacksRequired(tool, args))) {
       slots[at] = {
         rule: f.rule,
         tool: f.tool,
@@ -625,9 +621,8 @@ async function fitToField(
     return (await interopSafeParseAsync(field, text)).success ? text : value;
   }
   // An MCP tool carries its server's JSON Schema.
-  // A nullable or union type (`["string", "null"]`) takes text when it takes no number.
-  const raw = (field as { type?: unknown } | null)?.type;
-  const types = Array.isArray(raw) ? raw : [raw];
+  // A nullable or union type (`["string", "null"]`, `anyOf`) takes text when it takes no number.
+  const types = jsonTypes(field);
   return typeof value !== "string" &&
     types.includes("string") &&
     !types.includes(typeof value === "number" ? "number" : "") &&
@@ -636,15 +631,55 @@ async function fitToField(
     : value;
 }
 
+function jsonTypes(field: unknown): unknown[] {
+  const f = (field ?? {}) as {
+    type?: unknown;
+    anyOf?: unknown;
+    oneOf?: unknown;
+  };
+  const own = Array.isArray(f.type) ? f.type : [f.type];
+  const members = [
+    ...(Array.isArray(f.anyOf) ? f.anyOf : []),
+    ...(Array.isArray(f.oneOf) ? f.oneOf : []),
+  ];
+  return [...own, ...members.flatMap(jsonTypes)];
+}
+
 // One argument's schema: a zod object's field, or a JSON Schema property.
 function fieldOf(tool: StructuredToolInterface, arg: string): unknown {
-  const schema = tool.schema as {
+  const schema = inputSchemaOf(tool) as {
     shape?: Record<string, unknown>;
     properties?: Record<string, unknown>;
   };
-  return isInteropZodSchema(tool.schema)
+  return isInteropZodSchema(schema)
     ? schema.shape?.[arg]
     : schema.properties?.[arg];
+}
+
+// The schema the tool checks its input against: an MCP tool's server schema, which the adapter
+// validates with, rather than the simplified declaration the model reads (graph/tools/mcp.ts).
+function inputSchemaOf(tool: StructuredToolInterface): unknown {
+  return (
+    (tool as { [SERVER_INPUT_SCHEMA]?: unknown })[SERVER_INPUT_SCHEMA] ??
+    tool.schema
+  );
+}
+
+// Whether the arguments leave out one the tool requires, asked of a zod schema by parsing and of a
+// JSON Schema by its `required` list.
+async function lacksRequired(
+  tool: StructuredToolInterface,
+  args: Record<string, unknown>,
+): Promise<boolean> {
+  const schema = inputSchemaOf(tool);
+  if (isInteropZodSchema(schema)) {
+    return !(await interopSafeParseAsync(schema, args)).success;
+  }
+  const required = (schema as { required?: unknown } | null)?.required;
+  return (
+    Array.isArray(required) &&
+    required.some((name) => typeof name === "string" && !(name in args))
+  );
 }
 
 // The answers as the flow line carries them: numbers and the operator's own option names, never the

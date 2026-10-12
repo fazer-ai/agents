@@ -440,6 +440,21 @@ export async function applyDecisions(
                   settled();
                   return;
                 }
+                // A refusal the tool already said stands, as on success: what failed after it (a
+                // write shared with other calls) was not this call's.
+                const whole = reports.find(
+                  (r): r is FenceReport => "fence" in r && !r.partial,
+                );
+                if (whole) {
+                  slots[member.at] = {
+                    rule: f.rule,
+                    tool: f.tool,
+                    outcome: "refused",
+                    fence: whole.fence,
+                  };
+                  settled();
+                  return;
+                }
                 slots[member.at] = {
                   rule: f.rule,
                   tool: f.tool,

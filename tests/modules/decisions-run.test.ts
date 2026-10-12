@@ -919,6 +919,39 @@ describe("applyDecisions and the trigger state", () => {
     expect(r.triggerState.undo).toEqual([handoffKey]);
   });
 
+  test("a call refused whole that then throws (its shared write failed) is still refused, by that fence", async () => {
+    const rules = [
+      {
+        when,
+        action: { tool: "set_labels" as const, args: {} },
+        trigger: "once" as const,
+      },
+    ];
+    const r = await applyDecisions(
+      { rules },
+      answers,
+      [
+        reporting("set_labels", async (report) => {
+          report?.({ fence: "protected_label", partial: false });
+          throw new Error("shared write failed");
+        }),
+      ],
+      [],
+      new AbortController().signal,
+      async () => true,
+      10,
+    );
+    expect(r.actions).toEqual([
+      {
+        rule: 0,
+        tool: "set_labels",
+        outcome: "refused",
+        fence: "protected_label",
+      },
+    ]);
+    expect(r.triggerState.latch).toEqual([]);
+  });
+
   test("a call that threw may have written: its rule stays latched", async () => {
     const r = await applyDecisions(
       {

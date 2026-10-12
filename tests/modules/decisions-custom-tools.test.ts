@@ -513,6 +513,44 @@ describe("the tick fills a custom tool's arguments and records them", () => {
     expect(seen).toEqual([{ motivo: "cancelamento" }]);
   });
 
+  test("two rules on the same tool filled from different fields are two calls, not one", async () => {
+    const seen: Record<string, unknown>[] = [];
+    const action = (from: string) => ({
+      when,
+      action: {
+        tool: "abrir_ticket",
+        args: { motivo: "cancelamento" },
+        fill: { telefone: from },
+      },
+    });
+    const r = await applyDecisions(
+      { rules: [action("contact.phone"), action("conversation.link")] },
+      answers,
+      [
+        customTool(
+          "abrir_ticket",
+          z.object({ motivo: z.string(), telefone: z.string() }),
+          seen,
+        ),
+      ],
+      [],
+      new AbortController().signal,
+      async () => true,
+      10,
+      undefined,
+      false,
+      new Set(),
+      {},
+      async () => true,
+      { context: ctx, questions, logValues: true },
+    );
+    expect(seen.map((s) => s.telefone)).toEqual([
+      "+5511999990001",
+      "https://cw/app/accounts/1/conversations/42",
+    ]);
+    expect(r.actions.map((a) => a.merged)).toEqual([undefined, undefined]);
+  });
+
   test("a custom tool the agent was not granted reports not_granted and calls nothing", async () => {
     const r = await applyDecisions(
       { rules: [rule] },

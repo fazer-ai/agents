@@ -850,9 +850,6 @@ async function agentStillOnInbox(
   }
 }
 
-// What a rule's custom tool may fill an argument from (decisions/tool-args.ts): the contact and inbox
-// as the HTTP tools' context carries them, the conversation by the number its link shows, and the
-// mirror's attribute bags.
 // Which attribute bags the decisions rules fill an argument from.
 export function attributeFillsOf(mon: {
   engine: string;
@@ -876,6 +873,9 @@ export function attributeFillsOf(mon: {
   return out;
 }
 
+// What a rule's custom tool may fill an argument from (decisions/tool-args.ts): the contact and inbox
+// as the HTTP tools' context carries them, the conversation by the number its link shows, and the
+// mirror's attribute bags.
 function fillContextOf(
   context: Record<string, string>,
   conv: {

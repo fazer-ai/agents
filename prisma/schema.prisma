@@ -2606,6 +2606,72 @@ model ExecutionLog {
 
 // External alert sink (Discord / generic webhook) for execution-flow warnings/errors. `url` is an
 // encryptJson blob (a Discord URL embeds a token) — never stored or returned in the clear.
+// An alert channel of the INSTANCE (docs/logs.md, instance alerts): no tenant, fleet-only RLS.
+model InstanceAlertChannel {
+  id        BigInt   @id @default(autoincrement())
+  name      String
+  // discord|webhook, the same types as a tenant channel.
+  type      String
+  // encryptJson blob, masked in every DTO, decrypted only at delivery.
+  // Null for a channel created over MCP and still waiting for its URL in the console (fillAt).
+  url       String?
+  enabled   Boolean  @default(true)
+  // Signal allowlist; empty = all signals.
+  signals   String[] @default([])
+  // encryptJson blob of the HMAC signing secret (webhook type only). Kept on the row because the
+  // vault is per tenant and this channel has none.
+  secret    String?
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  deliveries InstanceAlertDelivery[]
+
+  @@map("instance_alert_channels")
+}
+
+// One firing or recovery of an instance signal on one channel. While PENDING, a repeat of the same
+// (channel, signal, kind) bumps `count` instead of inserting.
+model InstanceAlertDelivery {
+  id            BigInt                @id @default(autoincrement())
+  channelId     BigInt                @map("channel_id")
+  signal        String
+  // firing|recovered
+  kind          String
+  level         String
+  summary       String
+  count         Int                   @default(1)
+  status        WebhookDeliveryStatus @default(PENDING)
+  attempts      Int                   @default(0)
+  nextAttemptAt DateTime?             @map("next_attempt_at")
+  deliveredAt   DateTime?             @map("delivered_at")
+  lastError     String?               @map("last_error")
+  // Set when a signing secret was stored but this attempt went out unsigned: the reason why.
+  unsignedReason String?              @map("unsigned_reason")
+  // The channel's updated_at when this row was last claimed: a delivery that died on a configuration
+  // edited since was never heard by the repaired channel.
+  channelVersion DateTime?            @map("channel_version")
+  createdAt     DateTime              @default(now()) @map("created_at")
+  updatedAt     DateTime              @updatedAt @map("updated_at")
+
+  channel InstanceAlertChannel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+
+  @@index([status, nextAttemptAt])
+  @@index([channelId, signal, status])
+  @@map("instance_alert_deliveries")
+}
+
+// A super admin's override of one signal's default threshold. A signal with no row uses the default
+// from src/modules/instance-health/signals.ts.
+model InstanceAlertThreshold {
+  signal          String   @id
+  threshold       Float
+  durationSeconds Int      @map("duration_seconds")
+  enabled         Boolean  @default(true)
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  @@map("instance_alert_thresholds")
+}
+
 model AlertChannel {
   id              BigInt   @id @default(autoincrement())
   tenantId        BigInt   @map("tenant_id")

@@ -14,6 +14,7 @@ import * as writeCodeTools from "@/modules/mcp/write-code-tools";
 import * as writeConversations from "@/modules/mcp/write-conversations";
 import * as writeDocuments from "@/modules/mcp/write-documents";
 import * as writeFleet from "@/modules/mcp/write-fleet";
+import * as writeInstanceHealth from "@/modules/mcp/write-instance-health";
 import * as writeKnowledge from "@/modules/mcp/write-knowledge";
 import * as writeSettings from "@/modules/mcp/write-settings";
 import * as writeWebhooks from "@/modules/mcp/write-webhooks";
@@ -293,6 +294,22 @@ const TABLE: Record<string, Row> = {
     why: "instance does not exist",
     pastOwnership:
       "read, not measurable here: past the existence check the sync's refusals are Chatwoot's, behind a network call.",
+  },
+  instance_alert_channel_delete: {
+    args: { id: NOPE },
+    why: "channel does not exist",
+  },
+  instance_alert_channel_update: {
+    args: { id: NOPE, name: "x" },
+    why: "channel does not exist",
+  },
+  instance_alert_channel_create: {
+    args: { name: "x", type: "webhook", signals: ["no_such_signal"] },
+    why: "unknown signal",
+  },
+  instance_threshold_set: {
+    args: { signal: "no_such_signal", threshold: 1 },
+    why: "unknown signal",
   },
   integration_create: {
     args: { catalog_type: "not_a_provider", name: "n" },
@@ -576,6 +593,7 @@ const FNS = {
   ...writeConversations,
   ...writeDocuments,
   ...writeFleet,
+  ...writeInstanceHealth,
   ...writeKnowledge,
   ...writeSettings,
   ...writeWebhooks,

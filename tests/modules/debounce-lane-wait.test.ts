@@ -4,6 +4,7 @@ import config from "@/config";
 import { modelPermitReading, runModelCall } from "@/graph/model-limit";
 import {
   type DebounceTickDeps,
+  debounceLaneFullMs,
   type LaneWait,
   runDebounceTick,
 } from "@/modules/debounce/worker";
@@ -110,6 +111,41 @@ const row = (id: number, runAtMs: number, tenantId = 1n): Row => ({
   tenantId,
   runAt: at(runAtMs),
   dedupeKey: `debounce:t:${id}`,
+});
+
+describe("how long the lane has been full, for the instance sampler", () => {
+  beforeEach(emptyLane);
+
+  test("counts while every slot runs a job, and drops to zero once one finishes between ticks (catches saturation reported with nothing in flight)", async () => {
+    const w = world();
+    w.claimable.push(job(1), job(2));
+    const out = await tick(2, w.deps);
+    expect(out.claimed).toBe(2);
+    expect(debounceLaneFullMs(Date.now() + 10_000)).toBeGreaterThan(0);
+    for (const release of hung.splice(0)) release();
+    await out.settled;
+    expect(debounceLaneFullMs(Date.now() + 10_000)).toBe(0);
+  });
+});
+
+describe("how long the lane has been full, counted from when it filled", () => {
+  beforeEach(emptyLane);
+
+  test("a slow claim is not counted as time full (catches a premature lane-full alert)", async () => {
+    const w = world();
+    w.claimable.push(job(1));
+    const claim = w.deps.claim;
+    const deps: DebounceTickDeps = {
+      ...w.deps,
+      claim: async (...args) => {
+        // The claim itself takes 20 s, with the slot free the whole time.
+        w.set(20_000);
+        return claim ? claim(...args) : [];
+      },
+    };
+    await tick(1, deps);
+    expect(debounceLaneFullMs(T0 + 25_000)).toBe(5_000);
+  });
 });
 
 describe("a flush waiting for a slot of a full lane", () => {

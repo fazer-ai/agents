@@ -27,6 +27,10 @@ import {
 } from "@/modules/chatwoot/webhook";
 import { chatwootOutgoingUrl } from "@/modules/chatwoot/webhook-mount";
 import {
+  ingressLagP95,
+  resetIngressLag,
+} from "@/modules/instance-health/ingress";
+import {
   generateRouteToken,
   hashRouteToken,
 } from "@/modules/webhooks/inbound/route-token";
@@ -377,6 +381,33 @@ describe.skipIf(!dbUp)("chatwoot webhook receiver", () => {
         base: appDb,
       }),
     ).rejects.toMatchObject({ statusCode: 401 });
+  });
+
+  test("a verified delivery records its ingress lag, a refused one does not (catches the lag signal fed by forged timestamps)", async () => {
+    resetIngressLag();
+    const body = JSON.stringify({ event: "conversation_updated", id: 77 });
+    await expect(
+      receiveChatwootWebhook({
+        routeToken,
+        rawBody: body,
+        getHeader: headersFrom({
+          "x-chatwoot-signature": "sha256=deadbeef",
+          "x-chatwoot-timestamp": String(NOW - 200),
+          "x-chatwoot-delivery": "uuid-lag-bad",
+        }),
+        nowSeconds: NOW,
+        base: appDb,
+      }),
+    ).rejects.toMatchObject({ statusCode: 401 });
+    expect(ingressLagP95(NOW * 1000)).toBe(0);
+    await receiveChatwootWebhook({
+      routeToken,
+      rawBody: body,
+      getHeader: signedHeaders(body, NOW - 45, "uuid-lag-ok"),
+      nowSeconds: NOW,
+      base: appDb,
+    });
+    expect(ingressLagP95(NOW * 1000)).toBe(45_000);
   });
 
   test("queues a signed event and processes it to PROCESSED", async () => {

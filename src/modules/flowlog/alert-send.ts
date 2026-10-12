@@ -144,6 +144,13 @@ export interface AlertSendDeps {
   assertSafe?: (url: string) => Promise<URL>;
   now?: () => number;
   requestTimeoutMs?: number;
+  // The signing secret of a channel with no tenant, whose secret lives on its own row and not in a
+  // tenant's vault (src/modules/instance-health/channels.ts). When set, `secretRef` and the vault
+  // are not read.
+  resolveSecret?: () => Promise<{
+    secret: string | null;
+    unsignedReason: string | null;
+  }>;
 }
 
 // Where the send stopped. `url` and `secret` mean NOTHING left the process, which is the distinction
@@ -185,6 +192,10 @@ type AlertBodyInput = Pick<
   | "agentId"
 >;
 
+// The cause key of an instance alert is this prefix plus the signal (src/modules/instance-health).
+export const INSTANCE_CAUSE_PREFIX = "instance:";
+export const INSTANCE_HEALTH_PATH = "/admin/instance-health";
+
 // Where the operator goes from the alert. The ids name the FIRST event of the window, and a burst's
 // members can be unrelated conversations, so a burst links to the stage+level list and a single
 // event links to its own turn (plus its conversation when the mirror knew one). No `source`: only
@@ -195,6 +206,12 @@ export function alertLinks(
   a: AlertBodyInput,
 ): { label: string; url: string }[] {
   const opts = { tenantId: a.tenantId };
+  // An instance alert is about the process, not a tenant: its one link is the screen that shows it.
+  if (a.causeKey?.startsWith(INSTANCE_CAUSE_PREFIX)) {
+    return [
+      { label: "Instance health", url: consoleUrl(INSTANCE_HEALTH_PATH) },
+    ];
+  }
   // A document approval links to the request's page, where the decision is made, and to the
   // conversation it came from. The link is the page and nothing else: the session is the credential.
   const approvalId = approvalRequestOfCause(a.causeKey);
@@ -283,7 +300,8 @@ export function buildAlertBody(a: AlertBodyInput): {
 } {
   const times = a.count > 1 ? ` (×${a.count})` : "";
   if (a.type === "discord") {
-    const icon = a.level === "error" ? "🔴" : "🟠";
+    // `info` reaches a destination only as an instance signal's recovery (or a probe).
+    const icon = a.level === "error" ? "🔴" : a.level === "info" ? "🟢" : "🟠";
     const c = a.context ?? null;
     // The tenant first: one channel often serves several, and it is the first question an alert
     // raises. Without one (a send that resolved no context), the product name as before.
@@ -370,9 +388,10 @@ function stopped(
 
 // `ctx` scopes the vault read (RLS active). The worker passes a synthetic TENANT_ADMIN context for
 // the delivery's own tenant (it claims cross-tenant and has no user); the route passes the caller's.
+// An instance channel has no tenant: it passes null and its own `deps.resolveSecret`.
 export async function sendAlert(
   base: PrismaClient,
-  ctx: TenantContext,
+  ctx: TenantContext | null,
   a: AlertSendTarget,
   deps: AlertSendDeps = {},
 ): Promise<AlertSendResult> {
@@ -400,9 +419,11 @@ export async function sendAlert(
   if (a.type === "webhook") {
     try {
       const ref = a.secretRef;
-      const resolved = await runScopedOn(base, ctx, (db) =>
-        resolveSigningSecret(db, ref),
-      );
+      const resolved = deps.resolveSecret
+        ? await deps.resolveSecret()
+        : ctx === null
+          ? { secret: null, unsignedReason: null }
+          : await runScopedOn(base, ctx, (db) => resolveSigningSecret(db, ref));
       secret = resolved.secret;
       unsignedReason = resolved.unsignedReason;
     } catch (err) {

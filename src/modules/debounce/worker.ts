@@ -58,6 +58,21 @@ const lane: {
   claimedWhileAsking: new Set(),
 };
 
+// Since when every slot has been running a job, for the instance sampler. Not `lane.fullSince`,
+// which only a tick that claims less than it could clears: jobs that finish between ticks free their
+// slots without a tick seeing it.
+const occupancy: { slots: number; fullSince: number | null } = {
+  slots: 0,
+  fullSince: null,
+};
+
+// How long every slot has been busy, in ms; 0 when one is free.
+export function debounceLaneFullMs(now: number = Date.now()): number {
+  return occupancy.fullSince === null
+    ? 0
+    : Math.max(0, now - occupancy.fullSince);
+}
+
 // A row announced as waiting for a slot. `waitedMs` is measured when it is announced, so it is at
 // least the threshold and not the whole wait.
 export interface LaneWait {
@@ -232,6 +247,11 @@ export async function runDebounceTick(
     lane.announced.delete(job.id);
     if (lane.asking) lane.claimedWhileAsking.add(job.id);
   }
+  occupancy.slots = slots;
+  // Read the clock again: a slow claim ran with slots free, and that time is not saturation.
+  if (inFlight.size >= slots) {
+    occupancy.fullSince ??= (deps.now?.() ?? new Date()).getTime();
+  }
   // allSettled: runClaimed never re-throws (it fails the job internally), but a stray throw must not
   // strand a slot. The async wrapper turns a synchronous throw into a rejection, so `finally` runs.
   const settled = Promise.allSettled(
@@ -241,6 +261,7 @@ export async function runDebounceTick(
           deadlineMs: deps.deadlineMs ?? jobDeadlineMs(SCHEDULER_STALE_MS),
         }))().finally(() => {
         inFlight.delete(job.id);
+        if (inFlight.size < occupancy.slots) occupancy.fullSince = null;
       }),
     ),
   ).then(() => {});

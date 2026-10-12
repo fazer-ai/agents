@@ -4,7 +4,7 @@ The operator console is a React 19 SPA (`src/client/`) projecting over the REST 
 
 ## Navigation (`src/client/lib/navigation.tsx`)
 
-`Dashboard` (`/`, admin) · `Conversations` (`/conversations`) · `Agents` (`/agents`, admin) · `Building blocks` (`/resources`, admin) · `Channels` (`/channels`, admin) · `Approvals` (`/approvals`, admin) · `Audit` (`/audit`, admin) · `Admin` (`/admin`, admin) · `Settings` (`/settings`). `filterNavItems` hides admin items for `AGENT`.
+`Dashboard` (`/`, admin) · `Conversations` (`/conversations`) · `Agents` (`/agents`, admin) · `Building blocks` (`/resources`, admin) · `Channels` (`/channels`, admin) · `Approvals` (`/approvals`, admin) · `Audit` (`/audit`, admin) · `Admin` (`/admin`, admin; a SUPER_ADMIN also gets Tenants, Branding and Instance health, the last described in `docs/logs.md`) · `Settings` (`/settings`). `filterNavItems` hides admin items for `AGENT`.
 
 ## Screens
 

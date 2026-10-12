@@ -3,6 +3,7 @@ import { Pool } from "pg";
 import { lockTimeoutOption } from "@/api/lib/pool-options";
 import config from "@/config";
 import { parseDbId } from "@/lib/db-id";
+import { instrumentPool } from "@/lib/pool-stats";
 
 // LangGraph checkpointer: a PostgresSaver in the dedicated `langgraph` schema (created by
 // scripts/db-bootstrap.sql, owned by the non-superuser runtime role). The thread_id prefix
@@ -28,11 +29,14 @@ async function init(): Promise<PostgresSaver> {
   // headroom of the main pool or it becomes the bottleneck under concurrent turns
   // (config.langgraphPoolMax, which follows DB_POOL_MAX unless set).
   const saver = new PostgresSaver(
-    new Pool({
-      connectionString: config.langgraphDatabaseUrl ?? "",
-      max: config.langgraphPoolMax,
-      ...lockTimeoutOption(),
-    }),
+    instrumentPool(
+      "checkpointer",
+      new Pool({
+        connectionString: config.langgraphDatabaseUrl ?? "",
+        max: config.langgraphPoolMax,
+        ...lockTimeoutOption(),
+      }),
+    ),
     undefined,
     { schema: "langgraph" },
   );

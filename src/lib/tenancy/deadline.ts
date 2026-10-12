@@ -1,3 +1,5 @@
+import { lockTimeoutUnder } from "./lock-timeout";
+
 // A transaction whose budget is a deadline (TxBudget.deadline): `statement_timeout` restarts with each
 // statement, so a first statement of 14 s and a second of 14 s under a 15 s budget hold the connection
 // 28 s. Every statement issued through the returned client, raw or through a model, first sets the
@@ -25,7 +27,12 @@ export function untilDeadline<D extends object>(db: D, deadline: number): D {
     async (...args: unknown[]) => {
       const left = Math.ceil(deadline - Date.now());
       if (left <= 0) throw new DeadlinePassedError();
-      await setLeft`SELECT set_config('statement_timeout', ${String(left)}, true)`;
+      const lock = lockTimeoutUnder(left);
+      if (lock === null) {
+        await setLeft`SELECT set_config('statement_timeout', ${String(left)}, true)`;
+      } else {
+        await setLeft`SELECT set_config('statement_timeout', ${String(left)}, true), set_config('lock_timeout', ${String(lock)}, true)`;
+      }
       return call.apply(self, args);
     };
   return new Proxy(db, {

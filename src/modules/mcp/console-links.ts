@@ -1,5 +1,9 @@
 import config from "@/config";
-import { CONSOLE_ROUTES, SWITCH_TENANT_PARAM } from "@/lib/console-params";
+import {
+  CONSOLE_ROUTES,
+  FILL_CHANNEL_PARAM,
+  SWITCH_TENANT_PARAM,
+} from "@/lib/console-params";
 
 // The console links an MCP answer hands back to the operator. A link names its TENANT, because the
 // console resolves the tenant from `localStorage`, not the URL, and a fleet-level MCP session picks
@@ -34,6 +38,14 @@ export function vaultFillUrl(
 // Open the vault list for this tenant, so the operator can create the entry the tool asked for.
 export function vaultCreateUrl(tenantId: bigint | null) {
   return consoleUrl(CONSOLE_ROUTES.vault, { tenantId });
+}
+
+// Open the instance health screen with one instance channel's dialog open, to fill its URL and
+// secret. No tenant: instance channels belong to none.
+export function instanceChannelFillUrl(channelId: bigint | number | string) {
+  return consoleUrl(
+    `${CONSOLE_ROUTES.instanceHealth}?${FILL_CHANNEL_PARAM}=${channelId}`,
+  );
 }
 
 export function integrationsUrl(tenantId: bigint | null) {

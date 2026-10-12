@@ -146,6 +146,15 @@ export class Semaphore {
     return { reply: of("reply"), background: of("background") };
   }
 
+  // How long the longest-waiting caller has waited, in ms, whatever its class; 0 with nobody queued.
+  oldestWaitMs(now: number = this.now()): number {
+    const heads = [this.queues.reply[0], this.queues.background[0]].filter(
+      (w): w is Waiter => w !== undefined,
+    );
+    if (heads.length === 0) return 0;
+    return Math.max(0, now - Math.min(...heads.map((w) => w.joinedAt)));
+  }
+
   // Calls `listener` each time a permit becomes free with nobody queued for it, until the returned
   // function is called. For a caller that only ever `tryAcquire`s and must learn when to try again.
   onFree(listener: () => void): () => void {

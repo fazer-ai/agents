@@ -281,6 +281,14 @@ describe("authPlugin", () => {
         expect(authPoolFor("/api/v1/metrics").budget?.maxWait).toBeDefined();
         expect(authPoolFor("/api/v1/metricsx").budget).toBeUndefined();
         expect(authPoolFor("/api/v1/agents").budget).toBeUndefined();
+        // The screen an instance alert links to authenticates off the main pool too.
+        expect(
+          authPoolFor("/api/v1/instance-health").budget?.maxWait,
+        ).toBeDefined();
+        expect(
+          authPoolFor("/api/v1/instance-health/channels").budget,
+        ).toBeDefined();
+        expect(authPoolFor("/api/v1/instance-healthx").budget).toBeUndefined();
       });
 
       test("a metrics route whose session lookup fails after the request's budget is spent answers the metrics refusal", async () => {

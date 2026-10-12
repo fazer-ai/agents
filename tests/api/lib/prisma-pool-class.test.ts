@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
-import { routeByPoolClass } from "@/api/lib/prisma";
+import { routeByPoolClass } from "@/api/lib/pool-route";
 import { runInPoolClass } from "@/lib/pool-class";
 import { dbProbeFailed } from "@/tests/db-gate";
 

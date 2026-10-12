@@ -22,6 +22,7 @@ import { documentApprovalsController } from "@/api/v1/document-approvals.control
 import { documentTemplatesController } from "@/api/v1/document-templates.controller";
 import { documentsController } from "@/api/v1/documents.controller";
 import { experimentsController } from "@/api/v1/experiments.controller";
+import { instanceHealthController } from "@/api/v1/instance-health.controller";
 import { integrationsController } from "@/api/v1/integrations.controller";
 import { integrationsAdminController } from "@/api/v1/integrations-admin.controller";
 import { knowledgeController } from "@/api/v1/knowledge.controller";
@@ -210,6 +211,11 @@ const api = new Elysia()
           },
           { name: "Audit", description: "Audit log." },
           {
+            name: "Instance health",
+            description:
+              "The instance's own load (pools, queues, ingress lag, event loop) and its alert channels. SUPER_ADMIN only.",
+          },
+          {
             name: "Logs",
             description: "Execution-flow logs & external alert channels.",
           },
@@ -249,6 +255,7 @@ const api = new Elysia()
   .use(dashboardController)
   .use(logsController)
   .use(alertChannelsController)
+  .use(instanceHealthController)
   .use(integrationsController)
   .use(integrationsAdminController)
   .use(knowledgeController)

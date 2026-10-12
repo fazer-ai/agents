@@ -288,6 +288,28 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   "PATCH /v1/tools/:id": { tool: "tool_update" },
   "DELETE /v1/tools/:id": { tool: "tool_delete" },
   "GET /v1/meta": { none: META },
+  "GET /v1/instance-health/": { tool: "instance_health_get" },
+  "GET /v1/instance-health/channels": { tool: "instance_alert_channel_list" },
+  // Without the url and secret, filled in the console from the answer's fillAt link.
+  "POST /v1/instance-health/channels": {
+    tool: "instance_alert_channel_create",
+  },
+  "PATCH /v1/instance-health/channels/:id": {
+    tool: "instance_alert_channel_update",
+  },
+  "DELETE /v1/instance-health/channels/:id": {
+    tool: "instance_alert_channel_delete",
+  },
+  "POST /v1/instance-health/channels/:id/test": {
+    tool: "instance_alert_channel_test",
+  },
+  "GET /v1/instance-health/thresholds": { tool: "instance_health_get" },
+  "PUT /v1/instance-health/thresholds/:signal": {
+    tool: "instance_threshold_set",
+  },
+  "DELETE /v1/instance-health/thresholds/:signal": {
+    tool: "instance_threshold_set",
+  },
   "GET /v1/tenants": { tool: "tenant_list" },
   "GET /v1/tenants/:id": { tool: "tenant_get" },
   "PATCH /v1/tenants/:id": { tool: "tenant_update" },

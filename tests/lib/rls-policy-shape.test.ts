@@ -83,6 +83,12 @@ async function planOf(setup: (tx: PrismaClient) => Promise<void>) {
   });
 }
 
+const FLEET_ONLY_TABLES = [
+  "instance_alert_channels",
+  "instance_alert_deliveries",
+  "instance_alert_thresholds",
+];
+
 describe.skipIf(!dbUp)("RLS policy shape", () => {
   beforeAll(async () => {
     if (!su) return;
@@ -399,7 +405,21 @@ describe.skipIf(!dbUp)("RLS policy shape", () => {
       roles: string[];
     }>;
 
-    const tables = [...new Set(policies.map((p) => p.table_name))];
+    // The instance's own tables carry no tenant_id, so they have the fleet policy and nothing else:
+    // the runtime role reaches them only as the fleet role (docs/logs.md, instance health).
+    const fleetOnly = policies.filter((p) =>
+      FLEET_ONLY_TABLES.includes(p.table_name),
+    );
+    expect(fleetOnly.map((p) => `${p.table_name}:${p.policy}`).sort()).toEqual(
+      FLEET_ONLY_TABLES.map((t) => `${t}:fleet_super_admin`).sort(),
+    );
+    const tables = [
+      ...new Set(
+        policies
+          .map((p) => p.table_name)
+          .filter((t) => !FLEET_ONLY_TABLES.includes(t)),
+      ),
+    ];
     // Positive control: a broken query and a schema with nothing left to check both answer with an
     // empty array, and only this line tells them apart.
     expect(tables.length).toBeGreaterThan(30);
@@ -408,11 +428,13 @@ describe.skipIf(!dbUp)("RLS policy shape", () => {
       (p) => p.policy === "tenant_isolation",
     );
     const fleetPolicies = policies.filter(
-      (p) => p.policy === "fleet_super_admin",
+      (p) =>
+        p.policy === "fleet_super_admin" &&
+        !FLEET_ONLY_TABLES.includes(p.table_name),
     );
     expect(tenantPolicies.length).toBe(tables.length);
     expect(fleetPolicies.length).toBe(tables.length);
-    expect(policies.length).toBe(tables.length * 2);
+    expect(policies.length - fleetOnly.length).toBe(tables.length * 2);
 
     // NOTE: The tenant policy applies to everyone (no TO clause), so the migration never has to know
     // the deployment's configurable app-role name. Only the fleet policy names a role.

@@ -27,6 +27,7 @@ import { AdminBrandingPage } from "@/client/pages/admin/AdminBrandingPage";
 import { AdminLayout } from "@/client/pages/admin/AdminLayout";
 import { AdminTenantsPage } from "@/client/pages/admin/AdminTenantsPage";
 import { AdminUsersPage } from "@/client/pages/admin/AdminUsersPage";
+import { InstanceHealthPage } from "@/client/pages/admin/instance-health/InstanceHealthPage";
 import { AgentEditorPage } from "@/client/pages/agents/AgentEditorPage";
 import { ChannelsPage } from "@/client/pages/ChannelsPage";
 import { ChatwootConversationLinkPage } from "@/client/pages/ChatwootConversationLinkPage";
@@ -267,6 +268,10 @@ export function App() {
                                   <Route
                                     path="branding"
                                     element={<AdminBrandingPage />}
+                                  />
+                                  <Route
+                                    path="instance-health"
+                                    element={<InstanceHealthPage />}
                                   />
                                 </Route>
                                 <Route

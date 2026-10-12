@@ -1,3 +1,4 @@
+import type { TFunction } from "i18next";
 import { BellRing, Pencil, Plus, Send, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -578,6 +579,62 @@ const ALERT_FIELDS = ["name", "type", "url"] as const;
 // touched is omitted instead, so switching type leaves the stored one alone rather than clearing it.
 const ALERT_WEBHOOK_FIELDS = [...ALERT_FIELDS, "secretRef"] as const;
 
+// What a channel test answered, as one toast: the destination's refusal, a delivery that went out
+// unsigned, or a delivery, saying whether the channel is enabled. Shared with the instance's own
+// channels (pages/admin/instance-health), whose test answers the same shape.
+export function toastAlertTestResult(
+  result: {
+    ok: boolean;
+    status: number | null;
+    error: string | null;
+    enabled: boolean;
+    warning: string | null;
+  },
+  showToast: (
+    message: string,
+    type: "success" | "error" | "warning" | "info",
+  ) => void,
+  t: TFunction,
+): void {
+  if (!result.ok) {
+    // NOTE: a 200 carrying the DESTINATION's refusal, not a refusal of ours: the caller already handled
+    // `err`, and `result.error` is the reason. Saying only "failed" here would leave the operator unable
+    // to tell a bad URL from a dead endpoint.
+    showToast(
+      t("alerts.testFailedReason", "Test failed: {{reason}}", {
+        reason: result.error ?? String(result.status ?? "unknown"),
+      }),
+      "error",
+    );
+    return;
+  }
+  // Delivered, and then the two things a bare success would let the operator believe wrongly:
+  // that the channel is already watching, and that it is signing.
+  if (result.warning) {
+    showToast(
+      t(
+        "alerts.testDeliveredUnsigned",
+        "Delivered ({{status}}), but UNSIGNED: the configured signing secret did not resolve",
+        { status: result.status ?? 200 },
+      ),
+      "warning",
+    );
+    return;
+  }
+  showToast(
+    result.enabled
+      ? t("alerts.testDelivered", "Test alert delivered ({{status}})", {
+          status: result.status ?? 200,
+        })
+      : t(
+          "alerts.testDeliveredDisabled",
+          "Test alert delivered ({{status}}), but this channel is still disabled",
+          { status: result.status ?? 200 },
+        ),
+    result.enabled ? "success" : "info",
+  );
+}
+
 export function AlertChannelsSection() {
   const { t } = useTranslation();
   const { showToast } = useToast();
@@ -658,43 +715,7 @@ export function AlertChannelsSection() {
         );
         return;
       }
-      if (!result.ok) {
-        // NOTE: a 200 carrying the DESTINATION's refusal, not a refusal of ours: `err` is null by the guard
-        // above, and `result.error` is the reason. Saying only "failed" here would leave the operator unable
-        // to tell a bad URL from a dead endpoint.
-        showToast(
-          t("alerts.testFailedReason", "Test failed: {{reason}}", {
-            reason: result.error ?? String(result.status ?? "unknown"),
-          }),
-          "error",
-        );
-        return;
-      }
-      // Delivered, and then the two things a bare success would let the operator believe wrongly:
-      // that the channel is already watching, and that it is signing.
-      if (result.warning) {
-        showToast(
-          t(
-            "alerts.testDeliveredUnsigned",
-            "Delivered ({{status}}), but UNSIGNED: the configured signing secret did not resolve",
-            { status: result.status ?? 200 },
-          ),
-          "warning",
-        );
-        return;
-      }
-      showToast(
-        result.enabled
-          ? t("alerts.testDelivered", "Test alert delivered ({{status}})", {
-              status: result.status ?? 200,
-            })
-          : t(
-              "alerts.testDeliveredDisabled",
-              "Test alert delivered ({{status}}), but this channel is still disabled",
-              { status: result.status ?? 200 },
-            ),
-        result.enabled ? "success" : "info",
-      );
+      toastAlertTestResult(result, showToast, t);
     } catch {
       showToast(t("alerts.testFailed", "Test alert failed"), "error");
     } finally {

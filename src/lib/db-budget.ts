@@ -45,6 +45,14 @@ export function poolShares(): PoolShare[] {
       size: config.metrics.poolMax,
       url: config.databaseUrl ?? "",
     },
+    // The instance health sampler's own connection (src/api/lib/prisma-instance-health.ts), on the
+    // replica that runs it.
+    {
+      env: "ALERT_WORKER_ENABLED",
+      size: config.alertWorker.enabled ? 1 : 0,
+      url: config.databaseUrl ?? "",
+      note: "instance health sampler",
+    },
   ];
 }
 

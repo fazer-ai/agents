@@ -82,6 +82,10 @@ const CENSUS: Record<string, string> = {
     "an outbound delivery the bus gave up on (#325)",
   "src/modules/flowlog/alert-worker.ts:finalizeDead":
     "an alert the bus gave up on — the one that cannot alert about itself (#356)",
+  // No tenant flow log to land in: the channel itself is listed as failing, with the error, on the
+  // instance screen that owns it.
+  "src/modules/instance-health/worker.ts:finalizeDead":
+    "ANNOUNCES ELSEWHERE: listInstanceAlertChannels marks the channel failing on /admin/instance-health (#1331)",
   "src/modules/webhooks/inbound/service.ts:persistFailed":
     "an authenticated payload the receptor cannot process (#356)",
   "src/modules/webhooks/inbound/service.ts:processInboundDelivery":
@@ -119,6 +123,7 @@ const CENSUS: Record<string, string> = {
     "ANNOUNCES ELSEWHERE: ../scheduler/worker.ts dispatchDeadLetter, via announceReaped",
 };
 const ANNOUNCES_ELSEWHERE = new Set([
+  "src/modules/instance-health/worker.ts:finalizeDead",
   "src/modules/scheduler/service.ts:failJob",
   "src/modules/scheduler/service.ts:reapStaleJobs",
   // Not "announces elsewhere" but "was announced ALREADY", which lands in the same set because the

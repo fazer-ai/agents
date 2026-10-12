@@ -139,6 +139,15 @@ import {
   documentTemplateUpdate,
 } from "./write-documents";
 import { tenantCreate, tenantGet, tenantList } from "./write-fleet";
+import {
+  instanceAlertChannelCreate,
+  instanceAlertChannelDelete,
+  instanceAlertChannelList,
+  instanceAlertChannelTest,
+  instanceAlertChannelUpdate,
+  instanceHealthGet,
+  instanceThresholdSet,
+} from "./write-instance-health";
 
 // `input_schema`, with the one field name that cannot survive being parsed. `z.record` rebuilds the
 // map by assignment, so an own `__proto__` key hits the prototype setter and is GONE before any
@@ -3536,6 +3545,125 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       },
       async (args: { base_url: string; admin_token: string }, eff) =>
         writeContent(await instanceListAccounts(eff, args)),
+    );
+
+    // ── fleet: the instance's own load and its alert channels (SUPER_ADMIN only) ──
+
+    server.registerTool(
+      "instance_health_get",
+      {
+        description:
+          "Read the instance's own load: every signal (scheduler queue age per lane, model permit waiters, debounce lane, ingress lag, event-loop delay, pending Chatwoot deliveries) with its last value, the last hour sampled every 5 s, its threshold (\"above X for Y seconds\") and whether it is firing, plus each signal's default. In memory: a restart starts the history empty. SUPER_ADMIN only.",
+        inputSchema: {},
+      },
+      async () => writeContent(await instanceHealthGet(principal)),
+    );
+
+    server.registerTool(
+      "instance_alert_channel_list",
+      {
+        description:
+          "List the instance's alert channels (not a tenant's): url masked, secret never shown; a channel with urlMasked null is waiting for its URL in the console. SUPER_ADMIN only.",
+        inputSchema: {},
+      },
+      async () => writeContent(await instanceAlertChannelList(principal)),
+    );
+
+    server.registerTool(
+      "instance_alert_channel_create",
+      {
+        description:
+          "Create an instance alert channel (Discord or webhook) WITHOUT its URL or signing secret, which never pass through MCP: it is created disabled, and the answer's fillAt is a console link where the operator sets the URL, the optional secret, and enables it. Hand that link to the user. Previews and creates NOTHING unless dry_run is false. SUPER_ADMIN only.",
+        inputSchema: {
+          name: z.string(),
+          type: z.enum(["discord", "webhook"]),
+          signals: z.array(z.string()).optional(),
+          // Declared only to be refused: an undeclared argument would be dropped silently and the
+          // channel created as if the URL had been taken. No `secret` here: no tool declares a
+          // secret argument outside docs/mcp.md's exceptions, and the description already says
+          // it is set in the console.
+          url: z
+            .unknown()
+            .optional()
+            .describe("Not accepted: the URL is set in the console (fillAt)."),
+          dry_run: z.boolean().optional(),
+        },
+      },
+      async (args: {
+        name: string;
+        type: "discord" | "webhook";
+        signals?: string[];
+        url?: unknown;
+        dry_run?: boolean;
+      }) => writeContent(await instanceAlertChannelCreate(principal, args)),
+    );
+
+    server.registerTool(
+      "instance_alert_channel_update",
+      {
+        description:
+          "Rename, enable/disable, or change the signal allowlist (empty = all signals) of an instance alert channel. Previews and applies NOTHING unless dry_run is false. SUPER_ADMIN only.",
+        inputSchema: {
+          id: z.string(),
+          name: z.string().optional(),
+          signals: z.array(z.string()).optional(),
+          enabled: z.boolean().optional(),
+          dry_run: z.boolean().optional(),
+        },
+      },
+      async (args: {
+        id: string;
+        name?: string;
+        signals?: string[];
+        enabled?: boolean;
+        dry_run?: boolean;
+      }) => writeContent(await instanceAlertChannelUpdate(principal, args)),
+    );
+
+    server.registerTool(
+      "instance_alert_channel_delete",
+      {
+        description:
+          "Delete an instance alert channel. Previews and deletes NOTHING unless dry_run is false. SUPER_ADMIN only.",
+        inputSchema: { id: z.string(), dry_run: z.boolean().optional() },
+      },
+      async (args: { id: string; dry_run?: boolean }) =>
+        writeContent(await instanceAlertChannelDelete(principal, args)),
+    );
+
+    server.registerTool(
+      "instance_alert_channel_test",
+      {
+        description:
+          "Post a sample alert to an instance alert channel through the same send a real alert takes, and return the outcome. Writes no delivery. SUPER_ADMIN only.",
+        inputSchema: { id: z.string() },
+      },
+      async (args: { id: string }) =>
+        writeContent(await instanceAlertChannelTest(principal, args)),
+    );
+
+    server.registerTool(
+      "instance_threshold_set",
+      {
+        description:
+          "Set one instance signal's threshold (in the signal's unit) and duration_seconds (how long above before it alerts; 0 = first sample), or enabled=false to never alert on it; reset=true returns it to the default. Previews and applies NOTHING unless dry_run is false. SUPER_ADMIN only.",
+        inputSchema: {
+          signal: z.string(),
+          threshold: z.number().min(0).optional(),
+          duration_seconds: z.number().int().min(0).max(3600).optional(),
+          enabled: z.boolean().optional(),
+          reset: z.boolean().optional(),
+          dry_run: z.boolean().optional(),
+        },
+      },
+      async (args: {
+        signal: string;
+        threshold?: number;
+        duration_seconds?: number;
+        enabled?: boolean;
+        reset?: boolean;
+        dry_run?: boolean;
+      }) => writeContent(await instanceThresholdSet(principal, args)),
     );
 
     // ── fleet: tenants across the whole instance (cross-tenant; SUPER_ADMIN only) ──

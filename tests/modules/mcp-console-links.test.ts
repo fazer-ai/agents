@@ -17,7 +17,11 @@ const BASE = config.publicUrl.replace(/\/+$/, "");
 
 // The routes as the router spells them (`src/client/App.tsx`), written out here rather than imported
 // so that a rename has to be made in two places on purpose instead of agreeing with itself.
-const ROUTER_PATHS: string[] = ["/resources/vault", "/resources/integrations"];
+const ROUTER_PATHS: string[] = [
+  "/resources/vault",
+  "/resources/integrations",
+  "/admin/instance-health",
+];
 
 describe("console links", () => {
   test("every named destination is a route the console actually has", () => {

@@ -1,4 +1,4 @@
-import { Building2, Palette, Users } from "lucide-react";
+import { Activity, Building2, Palette, Users } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Outlet } from "react-router";
 import { SectionLayout } from "@/client/components";
@@ -10,10 +10,16 @@ import { useAuth } from "@/client/contexts/AuthContext";
 // t('admin.tabUsers', 'Users')
 // t('admin.tabTenants', 'Tenants')
 // t('admin.tabBranding', 'Branding')
+// t('admin.tabInstanceHealth', 'Instance health')
 const TABS = [
   { to: "/admin/users", labelKey: "admin.tabUsers", icon: Users },
   { to: "/admin/tenants", labelKey: "admin.tabTenants", icon: Building2 },
   { to: "/admin/branding", labelKey: "admin.tabBranding", icon: Palette },
+  {
+    to: "/admin/instance-health",
+    labelKey: "admin.tabInstanceHealth",
+    icon: Activity,
+  },
 ];
 
 export function AdminLayout() {
@@ -26,7 +32,10 @@ export function AdminLayout() {
       title={t("admin.title", "Admin Panel")}
       subtitle={
         isSuperAdmin
-          ? t("admin.subtitleFleet", "Manage users, tenants and branding")
+          ? t(
+              "admin.subtitleFleet",
+              "Manage users, tenants, branding and the instance's health",
+            )
           : t("admin.subtitleTenant", "Manage who has access to this tenant")
       }
       navLabel={t("admin.sections", "Admin sections")}

@@ -260,8 +260,12 @@ export interface AuthPool {
   unavailable: () => Error;
 }
 
+// The instance health routes too: an instance alert links to them, and they must answer during the
+// saturation the alert is about (docs/logs.md, instance alerts).
+const OFF_MAIN_POOL = ["/api/v1/metrics", "/api/v1/instance-health"];
+
 export function authPoolFor(path: string): AuthPool {
-  if (path !== "/api/v1/metrics" && !path.startsWith("/api/v1/metrics/")) {
+  if (!OFF_MAIN_POOL.some((p) => path === p || path.startsWith(`${p}/`))) {
     return {
       db: mainPrisma,
       lookup: (fn) => fn(mainPrisma),

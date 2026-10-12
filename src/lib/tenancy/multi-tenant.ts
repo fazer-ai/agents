@@ -8,6 +8,7 @@ import {
 import type { ScopedDb, TenantContext } from "./context";
 import { untilDeadline } from "./deadline";
 import { FLEET_ROLE_FN } from "./fleet-role";
+import { lockTimeoutUnder } from "./lock-timeout";
 
 // The closure-extended `$extends` client is not the bare PrismaClient type, but it
 // still exposes `$transaction`. Accept anything transaction-capable for the *On helpers so
@@ -161,9 +162,13 @@ export const SCOPED_TX_OPTIONS: TxBudget = {
 // statement, so a transaction of several statements is bounded by Prisma's own check between them.
 // Not `transaction_timeout`: it terminates the session, and a pooled connection killed under a
 // transaction that was idle failed the next request that drew it. Set in the statement that opens
-// the scope, which costs no round trip.
+// the scope, which costs no round trip. With it, the lock timeout just under it (./lock-timeout.ts).
 function budgetSql(budget: TxBudget): Prisma.Sql {
-  return Prisma.sql`set_config('statement_timeout', ${String(budget.timeout)}, true)`;
+  const statement = Prisma.sql`set_config('statement_timeout', ${String(budget.timeout)}, true)`;
+  const lock = lockTimeoutUnder(budget.timeout);
+  return lock === null
+    ? statement
+    : Prisma.sql`${statement}, set_config('lock_timeout', ${String(lock)}, true)`;
 }
 
 // Under a deadline, every statement gets only what is left of it, not the time left when the

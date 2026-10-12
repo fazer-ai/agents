@@ -592,6 +592,8 @@ const WAIVED: Record<string, string> = {
 const UNASKED: Record<string, string> = {
   "components/TenantDeepLink.tsx :: tenant.deepLinkUnavailable":
     'An effect over the tenant list already loaded: `action.kind === "unavailable"` is decided here, and no request was made to reach it.',
+  "pages/admin/instance-health/InstanceAlertChannels.tsx :: instanceHealth.fillNotFound":
+    "An effect over the channel list already read once: the link names a channel the list does not have, and no request was made to reach it. A failed read never gets here (the effect waits for a successful one).",
   "pages/resources/VaultPanel.tsx :: vault.fillLinkNotHere":
     "An effect over `entries` already loaded. The comment above it says why a failed load says nothing instead: an empty list is not the same claim as `the tenant does not have it`.",
 };
@@ -1052,7 +1054,7 @@ describe("an error toast shows what the server said", () => {
   });
 
   test("the abstention ledger is pinned to its size", () => {
-    expectWaiverLedger("UNASKED", UNASKED, 2);
+    expectWaiverLedger("UNASKED", UNASKED, 3);
   });
 
   test("no toast reads a binding a guard above already killed", () => {

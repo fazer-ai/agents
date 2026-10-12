@@ -16,7 +16,11 @@ export const SWITCH_TENANT_PARAM = "switchTenant";
 export const CONSOLE_ROUTES = {
   vault: "/resources/vault",
   integrations: "/resources/integrations",
+  instanceHealth: "/admin/instance-health",
 } as const;
+
+// Asks the instance health screen to open one channel's dialog, to fill the URL a tool left out.
+export const FILL_CHANNEL_PARAM = "fill";
 
 // Names the id on the 404 that refuses the tenant SELECTOR a request was carrying (the console's
 // stored `X-Tenant-Id`), separated by `ActiveTenantNotFoundError` from every other 404 (src/lib/errors.ts).

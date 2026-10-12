@@ -155,6 +155,7 @@ import { emitFlowEvent, writeFlowEvent } from "@/modules/flowlog/service";
 import { emitUnroutedMessage } from "@/modules/flowlog/unrouted";
 import { snoozedDedupeKey } from "@/modules/followups/snoozed-settings";
 import { readTakeoverConfig } from "@/modules/handoff/settings";
+import { recordIngressLag } from "@/modules/instance-health/ingress";
 import { armCompaction } from "@/modules/memory/compact";
 import { clearContactMemory } from "@/modules/memory/reset";
 import { readMemoryConfig } from "@/modules/memory/settings";
@@ -996,6 +997,10 @@ export async function receiveChatwootWebhook(
     nowSeconds: params.nowSeconds,
   });
   if (!authOk) throw new UnauthorizedError();
+  recordIngressLag(
+    Number(params.getHeader(CHATWOOT_TIMESTAMP_HEADER)),
+    params.nowSeconds === undefined ? Date.now() : params.nowSeconds * 1000,
+  );
 
   // Authenticated past this point — a malformed body is a 400, not a 401.
   let parsed: unknown;

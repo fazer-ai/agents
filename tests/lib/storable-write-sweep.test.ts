@@ -323,6 +323,8 @@ const ERROR_COLUMN_LINES: Record<string, [number, ErrorSite | string]> = {
   "src/modules/debounce/handler.ts": [1, "flow-event"],
   // Both roads to DEAD write through one `finalizeDead`.
   "src/modules/flowlog/alert-worker.ts": [3, "guarded + cleared"],
+  // The instance alert worker's three writes: `sendAlert`'s error, already through `alertErrMsg`.
+  "src/modules/instance-health/worker.ts": [3, "guarded + cleared"],
   // The follow-up sweep's reading of the failure backoff: the type of the row it is handed. And the
   // line a lost follow-up sequence writes, a fixed English sentence.
   "src/modules/followups/handlers.ts": [2, "read + flow-event"],

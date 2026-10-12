@@ -36,6 +36,10 @@ export function modelSemaphorePolicy(c: typeof config): SemaphorePolicy {
   };
 }
 
+export function modelSemaphore(): Semaphore {
+  return sem();
+}
+
 function sem(): Semaphore {
   const g = globalThis as unknown as Record<symbol, Semaphore>;
   g[KEY] ??= new Semaphore(

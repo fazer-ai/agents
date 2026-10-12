@@ -66,6 +66,11 @@ export const AUDIT_ACTIONS = [
   "instance.reconnect",
   "instance.remove",
   "instance.sync_inboxes",
+  "instance_alert_channel.create",
+  "instance_alert_channel.delete",
+  "instance_alert_channel.update",
+  "instance_alert_threshold.reset",
+  "instance_alert_threshold.set",
   "integration.create",
   "integration.delete",
   "integration.rotate_token",
@@ -144,6 +149,11 @@ export function canonicalAuditAction(action: string): string {
 // "no entries match". `api_key.*` and `mcp_oauth_consent.*` are absent on purpose: they write `null`
 // only for a fleet-scoped key or consent, so on a tenant trail they do match.
 export const FLEET_LEVEL_ACTIONS: readonly AuditAction[] = [
+  "instance_alert_channel.create",
+  "instance_alert_channel.delete",
+  "instance_alert_channel.update",
+  "instance_alert_threshold.reset",
+  "instance_alert_threshold.set",
   "mcp_approval.revoke",
   "mcp_client.create",
   "mcp_client.delete",

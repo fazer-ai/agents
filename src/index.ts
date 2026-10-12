@@ -47,6 +47,10 @@ import {
   ensureAllTenantSweeps,
   registerFollowUpHandlers,
 } from "@/modules/followups/handlers";
+import {
+  startInstanceHealthSampler,
+  stopInstanceHealthSampler,
+} from "@/modules/instance-health/sampler";
 import { registerMemoryHandlers } from "@/modules/memory/compact";
 import {
   startCompactionWorker,
@@ -249,6 +253,11 @@ if (config.schedulerWorker.enabled) {
 // Single-replica discipline (globalThis singleton + reentrancy guard); off on extra replicas.
 if (config.alertWorker.enabled) {
   startAlertWorker();
+  // NOTE: The instance health sampler rides the same flag: it is what enqueues instance alerts, and
+  // two replicas sampling would alert twice.
+  void startInstanceHealthSampler().catch((error) =>
+    logger.warn({ error }, "Failed to start the instance health sampler"),
+  );
 }
 
 // NOTE: Dedicated fast worker for DEBOUNCE jobs (inbound message coalescing). Separate cadence from
@@ -299,6 +308,7 @@ installShutdownHandlers({
     stopCompactionWorker();
     stopAlertWorker();
     stopDeadClaimSweep();
+    stopInstanceHealthSampler();
   },
   boundMs: config.shutdown.drainMs,
   // The lease goes last, after the drain: what this process still holds will not finish, and deleting

@@ -161,3 +161,52 @@ describe.skipIf(!dbUp)("transaction budget", () => {
     }
   });
 });
+
+describe.skipIf(!dbUp)("a lock wait inside a budgeted transaction", () => {
+  // DB_LOCK_TIMEOUT_MS not shorter than the budget (both 5 s by default): the wait must still end as
+  // a lock timeout, 55P03, which the instance health signal counts, and not as 57014.
+  async function failureCode(b: {
+    maxWait: number;
+    timeout: number;
+    deadline?: number;
+  }): Promise<string> {
+    const before = config.dbLockTimeoutMs;
+    (config as { dbLockTimeoutMs: number }).dbLockTimeoutMs = 5_000;
+    try {
+      let code = "";
+      await (su as PrismaClient).$transaction(
+        async (tx) => {
+          await tx.$queryRaw`SELECT pg_advisory_xact_lock(919192)::text`;
+          const err = await runScopedOn(
+            app as PrismaClient,
+            ctx,
+            (db) => db.$queryRaw`SELECT pg_advisory_xact_lock(919192)::text`,
+            b,
+          ).then(
+            () => null,
+            (e: unknown) => e,
+          );
+          code = JSON.stringify(err).match(/(55P03|57014)/)?.[1] ?? String(err);
+        },
+        { timeout: 10_000 },
+      );
+      return code;
+    } finally {
+      (config as { dbLockTimeoutMs: number }).dbLockTimeoutMs = before;
+    }
+  }
+
+  test("ends as a lock timeout under a plain budget (catches lock pile-ups reported as slow statements)", async () => {
+    expect(await failureCode({ maxWait: 1_000, timeout: 500 })).toBe("55P03");
+  });
+
+  test("ends as a lock timeout under a deadline too (catches the per-statement budget dropping the lock timeout)", async () => {
+    expect(
+      await failureCode({
+        maxWait: 1_000,
+        timeout: 5_000,
+        deadline: Date.now() + 600,
+      }),
+    ).toBe("55P03");
+  });
+});

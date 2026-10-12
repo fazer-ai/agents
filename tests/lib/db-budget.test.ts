@@ -30,6 +30,22 @@ const limits = (byServer: Record<string, number>) => async (url: string) => {
 };
 
 describe("connection budget", () => {
+  test("the instance health sampler's connection counts on the replica that runs it, and only there", () => {
+    const saved = config.alertWorker.enabled;
+    try {
+      config.alertWorker.enabled = true;
+      expect(
+        poolShares().find((p) => p.env === "ALERT_WORKER_ENABLED")?.size,
+      ).toBe(1);
+      config.alertWorker.enabled = false;
+      expect(
+        poolShares().find((p) => p.env === "ALERT_WORKER_ENABLED")?.size,
+      ).toBe(0);
+    } finally {
+      config.alertWorker.enabled = saved;
+    }
+  });
+
   test("a sum equal to what the server accepts fits, one more is refused naming every pool", async () => {
     // 45 + 45 + 4 + 3 = 97 = 100 - 3 reserved
     const fit = await assertConnectionBudget(

@@ -514,6 +514,14 @@ export class DecisionToolUnknownError extends AppError {
   }
 }
 
+// An action as it runs: an omitted `args` or `fill` is an empty one, so a rule an API wrote without
+// `args` is the same rule once the console writes it back with `args: {}`.
+function effectiveAction(a: unknown): unknown {
+  if (!a || typeof a !== "object") return a;
+  const action = a as Record<string, unknown>;
+  return { ...action, args: action.args ?? {}, fill: action.fill ?? {} };
+}
+
 function storedDecisionActions(settings: unknown): unknown[] {
   const rules = (
     (
@@ -547,7 +555,12 @@ export async function assertDecisionActionArgs(
     const tool = action.tool;
     if (typeof tool !== "string" || isNativeDecisionTool(tool)) return [];
     if (tool.startsWith("mcp__")) return [];
-    if (before.some((b) => isDeepStrictEqual(b, a))) return [];
+    if (
+      before.some((b) =>
+        isDeepStrictEqual(effectiveAction(b), effectiveAction(a)),
+      )
+    )
+      return [];
     return [{ rule: i, tool, action }];
   });
   if (changed.length === 0) return;

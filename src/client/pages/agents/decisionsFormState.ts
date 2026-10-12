@@ -376,14 +376,18 @@ export function decisionsFormIssues(
   // for a rule the save changes against the stored block, and a tool whose arguments the console knows.
   if (tools) {
     const storedActions = list(bag(saved)?.rules).map((r) =>
-      JSON.stringify(canonAction(bag(r)?.action)),
+      JSON.stringify(canonAction(effectiveAction(bag(bag(r)?.action)))),
     );
     for (const [ri, raw] of list(block.rules).entries()) {
       const action = bag(bag(raw)?.action);
       const tool = text(action?.tool);
       const specs = tools.get(tool)?.args;
       if (!action || !specs || isNativeDecisionTool(tool)) continue;
-      if (storedActions.includes(JSON.stringify(canonAction(action)))) {
+      if (
+        storedActions.includes(
+          JSON.stringify(canonAction(effectiveAction(action))),
+        )
+      ) {
         continue;
       }
       for (const issue of actionArgIssues(
@@ -403,6 +407,10 @@ export function decisionsFormIssues(
   }
   return out;
 }
+
+// An action as it runs: an omitted `args` or `fill` is an empty one (the server compares the same).
+const effectiveAction = (a: Record<string, unknown> | null | undefined) =>
+  a ? { ...a, args: a.args ?? {}, fill: a.fill ?? {} } : a;
 
 const canonAction = (v: unknown): unknown =>
   Array.isArray(v)

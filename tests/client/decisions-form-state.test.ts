@@ -1161,4 +1161,40 @@ describe("a rule on a custom tool as stored", () => {
     const hidden = { ...form, engine: "llm" as const, decisionsEdited: true };
     expect(decisionsBlockToStore(hidden, true, tools)).toEqual(BLOCK);
   });
+
+  test("an action stored without args is the same action written back with empty ones", () => {
+    const apiBlock = {
+      ...block,
+      rules: [
+        {
+          when: [{ question: "pede_reembolso", minProbability: 0.7 }],
+          action: { tool: "abrir_ticket", fill: { motivo: "contact.name" } },
+        },
+      ],
+    };
+    const form = observationToForm({
+      monitoring: { engine: "decisions", decisions: apiBlock },
+    });
+    if (!form.decisions) throw new Error("fixture");
+    form.decisions.model = "gpt-6-sol";
+    const gained = new Map([
+      [
+        "abrir_ticket",
+        {
+          name: "abrir_ticket",
+          label: "Abrir ticket",
+          kind: "http" as const,
+          args: [
+            { name: "motivo", type: "string" as const, required: true },
+            { name: "canal", type: "string" as const, required: true },
+          ],
+        },
+      ],
+    ]);
+    expect(
+      [
+        ...decisionsFormIssues(form.decisions, null, gained, apiBlock).keys(),
+      ].filter((k) => k.includes(".action.")),
+    ).toEqual([]);
+  });
 });

@@ -850,16 +850,37 @@ async function agentStillOnInbox(
   }
 }
 
-// Whether these settings carry a contact gate with conditions, the ones the fence asks of the
-// conversation's labels and attributes.
 // What a rule's custom tool may fill an argument from (decisions/tool-args.ts): the contact and inbox
 // as the HTTP tools' context carries them, the conversation by the number its link shows, and the
 // mirror's attribute bags.
+// Which attribute bags the decisions rules fill an argument from.
+export function attributeFillsOf(mon: {
+  engine: string;
+  decisions?: unknown;
+}): {
+  conversation: boolean;
+  contact: boolean;
+} {
+  const out = { conversation: false, contact: false };
+  if (mon.engine !== "decisions") return out;
+  const rules = (mon.decisions as { rules?: unknown } | null)?.rules;
+  for (const r of Array.isArray(rules) ? rules : []) {
+    const fill = (r as { action?: { fill?: unknown } } | null)?.action?.fill;
+    if (!fill || typeof fill !== "object") continue;
+    for (const v of Object.values(fill)) {
+      if (typeof v !== "string") continue;
+      if (v.startsWith("conversation.attribute.")) out.conversation = true;
+      if (v.startsWith("contact.attribute.")) out.contact = true;
+    }
+  }
+  return out;
+}
+
 function fillContextOf(
   context: Record<string, string>,
   conv: {
-    customAttributes: unknown;
-    contact: { customAttributes: unknown } | null;
+    customAttributes?: unknown;
+    contact: { customAttributes?: unknown } | null;
   } | null,
   displayId: number,
   client: Pick<ChatwootClient, "conversationUrl">,
@@ -893,6 +914,8 @@ function fillContextOf(
   };
 }
 
+// Whether these settings carry a contact gate with conditions, the ones the fence asks of the
+// conversation's labels and attributes.
 function hasGateRule(settings: unknown): boolean {
   const gate = readContactAuthConfig(settings);
   return gate.enabled && contactAuthHasRuleStage(gate);
@@ -938,6 +961,7 @@ export async function runObserve(
     // NOTE: THE ARM'S OWN REFUSAL, asked again against the configuration now: a burst queued while
     // the agent was `incremental` outlives a flip to `on_resolve`, which does not retire the row.
     if (p.reason === "burst" && mon.analysis !== "incremental") return null;
+    const fills = attributeFillsOf(mon);
     const conv = await db.conversation.findUnique({
       where: {
         tenantId_chatwootInstanceId_chatwootConversationId: {
@@ -957,9 +981,10 @@ export async function runObserve(
         // Whether a phone-echo marker can be trusted to name a person (`providerReservesEchoIds`).
         inbox: { select: { provider: true } },
         // The mirror's attribute bags, which a rule's custom tool may fill an argument from
-        // (decisions/tool-args.ts): refreshed by the event that queued this tick.
-        customAttributes: true,
-        contact: { select: { customAttributes: true } },
+        // (decisions/tool-args.ts): refreshed by the event that queued this tick. Unbounded, so read
+        // only when a rule fills from them.
+        customAttributes: fills.conversation,
+        contact: { select: { customAttributes: fills.contact } },
       },
     });
     const cfg = await loadAgentConfig(

@@ -28,6 +28,7 @@ import {
   argSpecsFrom,
   type FillContext,
 } from "@/modules/decisions/tool-args";
+import { attributeFillsOf } from "@/modules/observe/job";
 
 // A decisions rule calling one of the tenant's own tools (agents#1223): the arguments are fixed or
 // filled from what the observation knows, checked against the tool's schema when the rule is saved,
@@ -946,4 +947,44 @@ describe("an imported rule on a renamed tool", () => {
     ).rules;
     expect(rules.map((r) => r.action.tool)).toEqual(["lookup_2", "set_labels"]);
   });
+});
+
+// The attribute bags are unbounded: the observation reads one only when a rule fills from it.
+describe("the attribute bags an observation reads", () => {
+  test("only those a decisions rule fills an argument from", () => {
+    const rules = (fill: Record<string, string>) => ({
+      engine: "decisions",
+      decisions: {
+        rules: [{ action: { tool: "abrir_ticket", args: {}, fill } }],
+      },
+    });
+    expect(attributeFillsOf({ engine: "llm" })).toEqual({
+      conversation: false,
+      contact: false,
+    });
+    expect(attributeFillsOf(rules({ telefone: "contact.phone" }))).toEqual({
+      conversation: false,
+      contact: false,
+    });
+    expect(
+      attributeFillsOf(
+        rules({ pedido: "conversation.attribute.numero_pedido" }),
+      ),
+    ).toEqual({ conversation: true, contact: false });
+    expect(attributeFillsOf(rules({ cpf: "contact.attribute.cpf" }))).toEqual({
+      conversation: false,
+      contact: true,
+    });
+  });
+});
+
+// An action an API wrote without `args` is the same action the console writes back with `args: {}`.
+test("an untouched action written back with an empty args is not asked again", async () => {
+  const db = fakeDb([]);
+  const apiWritten = { tool: "sumiu", fill: { telefone: "contact.phone" } };
+  await assertDecisionActionArgs(
+    db,
+    settingsWith({ ...apiWritten, args: {} }),
+    settingsWith(apiWritten),
+  );
 });

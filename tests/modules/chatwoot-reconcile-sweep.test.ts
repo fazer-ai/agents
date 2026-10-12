@@ -779,6 +779,41 @@ describe.skipIf(!dbUp)("reconciling from Chatwoot", () => {
     ).toEqual([18000, 18001]);
   });
 
+  test("a backdated import the catch-up read brings in does not move the history cursor", async () => {
+    const notes = Array.from({ length: 20 }, (_, i) => ({
+      ...outgoing(19_001 + i, minutesAgo(29 - i * 0.1)),
+      private: true,
+    }));
+    const s: Scripted = {
+      conversations: new Map([[INBOX, [conv(1900, minutesAgo(20))]]]),
+      messages: new Map([
+        [
+          1900,
+          [
+            incoming(19_000, minutesAgo(30)),
+            ...notes,
+            // Imported with a higher id but dated before the request.
+            {
+              ...outgoing(19_500, minutesAgo(40)),
+              private: true,
+              content_attributes: { imported: true },
+            },
+          ],
+        ],
+      ]),
+      listed: [],
+    };
+    await reconcileFromChatwoot({
+      tenantId,
+      base: appDb,
+      now: NOW,
+      makeClient: chatwoot(s),
+    });
+    expect((await ledgerFor(1900)).map((r) => r.inboundMessageId)).toEqual([
+      19_000,
+    ]);
+  });
+
   test("the catch-up read is followed past a full page to the newest message", async () => {
     const reactions = Array.from({ length: 105 }, (_, i) => ({
       ...incoming(16_001 + i, minutesAgo(25 - i * 0.04)),

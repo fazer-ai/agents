@@ -154,37 +154,38 @@ async function owedOf(
   managedBotIds: ReadonlySet<number>,
 ): Promise<ChatwootMessageRow | null> {
   const seen = new Set<number>();
-  let rows = await completePage(
-    client,
+  let page = readMessagePage(
+    await client.getMessages(conversationId),
     conversationId,
-    readMessagePage(await client.getMessages(conversationId), conversationId),
-    seen,
   );
-  for (let page = 0; page < MAX_MESSAGE_PAGES; page++) {
+  for (let read = 0; read < MAX_MESSAGE_PAGES; read++) {
+    // The next `before` cursor comes from the page as Chatwoot returned it: a catch-up row can be an
+    // import dated far back with a higher id, and paging from it would skip the history between.
+    const cursor = earliest(page);
+    const rows = await completePage(client, conversationId, page, seen);
     const turn = newestTurn(rows, managedBotIds);
     if (turn === "answered") return null;
     if (turn !== "undecided") return turn;
-    if (rows.length === 0) return null;
-    // Chatwoot pages by `(created_at, id)`, and an import can number old messages above new ones, so
-    // the cursor is the earliest row by that pair rather than the smallest id.
-    const oldest = rows.reduce((a, b) => {
-      const at = (a.createdAt as Date).getTime();
-      const bt = (b.createdAt as Date).getTime();
-      return bt < at || (bt === at && b.id < a.id) ? b : a;
-    });
-    rows = await completePage(
-      client,
+    if (cursor === null) return null;
+    page = readMessagePage(
+      await client.getMessages(conversationId, { before: cursor.id }),
       conversationId,
-      readMessagePage(
-        await client.getMessages(conversationId, { before: oldest.id }),
-        conversationId,
-      ),
-      seen,
     );
   }
   throw new Error(
     `conversation ${conversationId}: no public message in ${MAX_MESSAGE_PAGES} pages`,
   );
+}
+
+// The page's earliest row by `(created_at, id)`, the pair the fork's `before` compares: an import can
+// number old messages above new ones, so the smallest id is not the earliest.
+function earliest(rows: ChatwootMessageRow[]): ChatwootMessageRow | null {
+  if (rows.length === 0) return null;
+  return rows.reduce((a, b) => {
+    const at = (a.createdAt as Date).getTime();
+    const bt = (b.createdAt as Date).getTime();
+    return bt < at || (bt === at && b.id < a.id) ? b : a;
+  });
 }
 
 export interface ReconcileCounts {

@@ -138,6 +138,7 @@ model Tenant {
   messageReplyClaims            MessageReplyClaim[]
   agentTurnDeliveries           AgentTurnDelivery[]
   decisionRuleStates            DecisionRuleState[]
+  decisionRuleClaims            DecisionRuleClaim[]
   replyDispensals               ReplyDispensal[]
   agentThreads                  AgentThread[]
   attendanceSummaries           AttendanceSummary[]
@@ -1223,6 +1224,7 @@ model Conversation {
   turnDeliveries  AgentTurnDelivery[]
   replyDispensals ReplyDispensal[]
   ruleStates      DecisionRuleState[]
+  ruleClaims      DecisionRuleClaim[]
 
   @@unique([tenantId, chatwootInstanceId, chatwootConversationId])
   @@index([threadId])
@@ -1468,6 +1470,7 @@ model Agent {
   contactAuthGrants ContactAuthGrant[]
   observedInboxes   InboxObserver[]
   ruleStates        DecisionRuleState[]
+  ruleClaims        DecisionRuleClaim[]
 
   @@index([tenantId])
   @@map("agents")
@@ -2382,6 +2385,25 @@ model DecisionRuleState {
   @@index([conversationId])
   @@index([tenantId])
   @@map("decision_rule_states")
+}
+
+// The generation of a conversation's trigger state for one agent (decision_rule_states): each
+// observation that reads the state takes the next one, and only the holder of the current one may
+// write it.
+model DecisionRuleClaim {
+  tenantId       BigInt @map("tenant_id")
+  agentId        BigInt @map("agent_id")
+  conversationId BigInt @map("conversation_id")
+  generation     BigInt @default(0)
+
+  tenant       Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  agent        Agent        @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@id([agentId, conversationId])
+  @@index([conversationId])
+  @@index([tenantId])
+  @@map("decision_rule_claims")
 }
 
 // The account-wide proactive breaker's STATE (docs/proactive-breaker.md); its configuration is the

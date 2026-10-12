@@ -1,7 +1,9 @@
-// The decisions engine's trigger state (docs/decisions.md, "When a rule acts"): which rules already
-// acted in a conversation and are held back until their conditions stop holding (`on_start`) or for
-// good (`once`). One row per such rule, keyed by `ruleStateKey`, read before the actions and written
-// after them by the observation that decided.
+// The decisions engine's trigger state (docs/decisions.md, "When a rule acts"): one row per rule
+// that acted and is held back, keyed by `ruleStateKey`. THE INVARIANT: an older observation never
+// changes the state a newer one read. Every read takes the next generation of (agent, conversation)
+// in decision_rule_claims; every write or deletion first moves the claim row `WHERE generation =
+// <its own>` in the same transaction, which also locks it until commit. A tick a newer observation
+// has read past writes nothing (`false`): no latch, release, undo or drop.
 
 import type { PrismaClient } from "@/../generated/prisma/client";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
@@ -17,121 +19,123 @@ export interface TriggerScope {
   conversationId: bigint;
 }
 
-export async function readLatchedRules(
-  base: PrismaClient,
-  scope: TriggerScope,
-): Promise<Set<string>> {
-  const rows = await runScopedOn(base, sysCtx(scope.tenantId), (db) =>
-    db.decisionRuleState.findMany({
-      where: { agentId: scope.agentId, conversationId: scope.conversationId },
-      select: { ruleKey: true },
-    }),
-  );
-  return new Set(rows.map((r) => r.ruleKey));
+export interface TriggerClaim {
+  generation: bigint;
+  latched: Set<string>;
 }
 
-// Latches written by the tick before it dispatches the actions they answer for (run.ts,
-// LatchAhead): only added, never released or pruned.
-export async function latchRules(
+// Takes the next generation and reads the state under it, in one transaction.
+export async function claimTriggerState(
   base: PrismaClient,
   scope: TriggerScope,
-  keys: string[],
-  at: Date = new Date(),
-): Promise<void> {
-  if (keys.length === 0) return;
-  await runScopedOn(base, sysCtx(scope.tenantId), (db) =>
-    writeLatches(db, scope, keys, at),
-  );
-}
-
-// A row already there takes this write's time when it is older: the release bounded by `upTo`
-// (unlatchRules) belongs to whoever latched last, so an older tick's late cleanup cannot remove a
-// latch a newer one wrote over it.
-async function writeLatches(
-  db: ScopedDb,
-  scope: TriggerScope,
-  keys: string[],
-  at: Date,
-): Promise<void> {
+): Promise<TriggerClaim> {
   const where = {
     agentId: scope.agentId,
     conversationId: scope.conversationId,
   };
-  await db.decisionRuleState.createMany({
-    data: keys.map((ruleKey) => ({
-      tenantId: scope.tenantId,
-      ...where,
-      ruleKey,
-      createdAt: at,
-    })),
-    skipDuplicates: true,
-  });
-  await db.decisionRuleState.updateMany({
-    where: { ...where, ruleKey: { in: keys }, createdAt: { lt: at } },
-    data: { createdAt: at },
+  return runScopedOn(base, sysCtx(scope.tenantId), async (db) => {
+    await db.decisionRuleClaim.createMany({
+      data: [{ tenantId: scope.tenantId, ...where, generation: 0n }],
+      skipDuplicates: true,
+    });
+    const claim = await db.decisionRuleClaim.update({
+      where: { agentId_conversationId: where },
+      data: { generation: { increment: 1n } },
+      select: { generation: true },
+    });
+    const rows = await db.decisionRuleState.findMany({
+      where,
+      select: { ruleKey: true },
+    });
+    return {
+      generation: claim.generation,
+      latched: new Set(rows.map((r) => r.ruleKey)),
+    };
   });
 }
 
-// The latches written ahead for actions that then wrote nothing, released by a tick that ended
-// before it could write its whole state. Only rows written up to `upTo`: a later observation's
-// latch on the same rule is its own.
+// Runs `write` only while `generation` is still the current one; false when a newer observation
+// has read the state since.
+async function owned(
+  base: PrismaClient,
+  scope: TriggerScope,
+  generation: bigint,
+  write: (db: ScopedDb) => Promise<unknown>,
+): Promise<boolean> {
+  return runScopedOn(base, sysCtx(scope.tenantId), async (db) => {
+    const held = await db.decisionRuleClaim.updateMany({
+      where: {
+        agentId: scope.agentId,
+        conversationId: scope.conversationId,
+        generation,
+      },
+      data: { generation },
+    });
+    if (held.count === 0) return false;
+    await write(db);
+    return true;
+  });
+}
+
+// Latches written by the tick before it dispatches the actions they answer for (run.ts,
+// LatchAhead).
+export async function latchRules(
+  base: PrismaClient,
+  scope: TriggerScope,
+  generation: bigint,
+  keys: string[],
+): Promise<boolean> {
+  return owned(base, scope, generation, (db) =>
+    db.decisionRuleState.createMany({
+      data: keys.map((ruleKey) => ({
+        tenantId: scope.tenantId,
+        agentId: scope.agentId,
+        conversationId: scope.conversationId,
+        ruleKey,
+      })),
+      skipDuplicates: true,
+    }),
+  );
+}
+
+// Releases, by a tick the deadline ended, of what it owes (DecisionProgress).
 export async function unlatchRules(
   base: PrismaClient,
   scope: TriggerScope,
+  generation: bigint,
   keys: string[],
-  upTo: Date,
-): Promise<void> {
-  if (keys.length === 0) return;
-  await runScopedOn(base, sysCtx(scope.tenantId), (db) =>
+): Promise<boolean> {
+  return owned(base, scope, generation, (db) =>
     db.decisionRuleState.deleteMany({
       where: {
         agentId: scope.agentId,
         conversationId: scope.conversationId,
         ruleKey: { in: keys },
-        createdAt: { lte: upTo },
       },
     }),
   );
 }
 
-// What a tick that finished releases, and the keys no rule of the block has any more (an edited or
-// deleted rule's state goes with it). Its `latch` is not written here: every latch went out ahead
-// of its action (latchRules), and writing it again at the end would undo a newer tick's release.
-// Two ticks can finish out of order, so each deletion is bounded: what the tick judged from the
-// state it read (`release`, the drop) touches only rows written up to that read, and its own
-// latches (`undo`) only rows written up to when it wrote each one.
+// What a tick that finished releases (`release`, `undo`), and the keys no rule of the block has any
+// more (an edited or deleted rule's state goes with it). Its `latch` is not written here: every
+// latch went out ahead of its action (latchRules).
 export async function writeTriggerState(
   base: PrismaClient,
   scope: TriggerScope,
+  generation: bigint,
   change: TriggerStateChange,
-  readAt: Date = new Date(),
-  latchedAt: ReadonlyMap<string, Date> = new Map(),
-): Promise<void> {
-  const where = {
-    agentId: scope.agentId,
-    conversationId: scope.conversationId,
-  };
-  await runScopedOn(base, sysCtx(scope.tenantId), async (db) => {
-    await db.decisionRuleState.deleteMany({
+): Promise<boolean> {
+  const gone = [...change.release, ...change.undo];
+  return owned(base, scope, generation, (db) =>
+    db.decisionRuleState.deleteMany({
       where: {
-        ...where,
-        createdAt: { lte: readAt },
+        agentId: scope.agentId,
+        conversationId: scope.conversationId,
         OR: [
           { ruleKey: { notIn: change.keep } },
-          ...(change.release.length > 0
-            ? [{ ruleKey: { in: change.release } }]
-            : []),
+          ...(gone.length > 0 ? [{ ruleKey: { in: gone } }] : []),
         ],
       },
-    });
-    for (const ruleKey of change.undo) {
-      await db.decisionRuleState.deleteMany({
-        where: {
-          ...where,
-          ruleKey,
-          createdAt: { lte: latchedAt.get(ruleKey) ?? readAt },
-        },
-      });
-    }
-  });
+    }),
+  );
 }

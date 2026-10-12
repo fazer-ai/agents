@@ -580,6 +580,7 @@ describe("applyDecisions and the trigger state", () => {
         progress,
         async (keys) => {
           order.push(`latched ${keys.join(",")}`);
+          return true;
         },
       ),
     ).rejects.toThrow();
@@ -610,6 +611,7 @@ describe("applyDecisions and the trigger state", () => {
       async () => {
         order.push("latch");
         withdrawn = true;
+        return true;
       },
     );
     expect(order).toEqual(["latch", "fence"]);
@@ -747,6 +749,7 @@ describe("applyDecisions and the trigger state", () => {
         {},
         async (keys) => {
           latchedAhead.push(keys);
+          return true;
         },
       ),
     ).rejects.toThrow();
@@ -811,6 +814,27 @@ describe("applyDecisions and the trigger state", () => {
     expect(progress.release).toEqual([ruleStateKey(offRule)]);
   });
 
+  test("a latch refused because a newer observation owns the state withdraws the tick, and nothing runs", async () => {
+    const t = tools(async () => "ok");
+    const r = await applyDecisions(
+      { rules: config.rules.slice(0, 1) },
+      answers,
+      t.list,
+      [],
+      t.controller.signal,
+      async () => true,
+      10,
+      () => null,
+      false,
+      new Set(),
+      {},
+      async () => false,
+    );
+    expect(t.ran).toEqual([]);
+    expect(r.withdrawn).toBe(true);
+    expect(r.actions).toEqual([]);
+  });
+
   test("a latch that cannot be written ahead stops the tick before anything is dispatched", async () => {
     const t = tools(async () => "ok");
     await expect(
@@ -862,6 +886,7 @@ describe("applyDecisions and the trigger state", () => {
         progress,
         async (keys) => {
           latchedAhead.push(...keys);
+          return true;
         },
       ),
     ).rejects.toThrow();

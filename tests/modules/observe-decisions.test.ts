@@ -367,7 +367,10 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
   // note cut off by its deadline stays latched, docs/decisions.md).
   beforeEach(async () => {
     __resetChatwootVocabCache();
-    if (dbUp) await suDb.decisionRuleState.deleteMany({ where: { tenantId } });
+    if (dbUp) {
+      await suDb.decisionRuleState.deleteMany({ where: { tenantId } });
+      await suDb.decisionRuleClaim.deleteMany({ where: { tenantId } });
+    }
   });
 
   afterAll(async () => {
@@ -377,6 +380,7 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
       "llm_usage",
       "scheduler_jobs",
       "decision_rule_states",
+      "decision_rule_claims",
       "conversations",
       "inbox_observers",
       "inboxes",
@@ -1931,8 +1935,6 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
       rules: unknown[],
       holds: boolean,
       extra: Record<string, unknown> = {},
-      // Runs while the provider is being asked, before it answers.
-      duringProvider: () => Promise<void> = async () => {},
     ) {
       await suDb.agent.update({
         where: { id: agentId },
@@ -1962,10 +1964,7 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
           makeClient: async (cfg) =>
             new ChatwootClient(cfg, chatwoot.fetchImpl),
           makeModel: () => new CountingModel() as never,
-          decisionFetch: (async (...args: Parameters<typeof fetch>) => {
-            await duringProvider();
-            return p.fetchImpl(...args);
-          }) as typeof fetch,
+          decisionFetch: p.fetchImpl,
         },
       );
       return detail();
@@ -2218,95 +2217,92 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
         await suDb.agent.delete({ where: { id: neighbour.id } });
       });
 
-      test("a latch written ahead is only added: the state already there stays", async () => {
-        const scope = { tenantId, agentId, conversationId: convRowId };
-        await triggerState.latchRules(suDb, scope, ["newer"]);
-        await triggerState.latchRules(suDb, scope, ["ahead", "newer"]);
-        const keys = await triggerState.readLatchedRules(suDb, scope);
-        expect([...keys].sort()).toEqual(["ahead", "newer"]);
-      });
-
-      test("a release after the tick ended leaves a latch a later observation wrote", async () => {
-        const scope = { tenantId, agentId, conversationId: convRowId };
-        const ours = new Date(Date.now() - 60_000);
-        await triggerState.latchRules(suDb, scope, ["mine"], ours);
-        await triggerState.latchRules(suDb, scope, ["later"]);
-        await triggerState.unlatchRules(suDb, scope, ["mine", "later"], ours);
-        const keys = await triggerState.readLatchedRules(suDb, scope);
-        expect([...keys]).toEqual(["later"]);
-      });
-
-      test("a latch written over an older one takes its time, so the older tick's late release leaves it", async () => {
-        const scope = { tenantId, agentId, conversationId: convRowId };
-        const older = new Date(Date.now() - 60_000);
-        await triggerState.latchRules(suDb, scope, ["shared"], older);
-        await triggerState.latchRules(suDb, scope, ["shared"]);
-        await triggerState.unlatchRules(suDb, scope, ["shared"], older);
-        const keys = await triggerState.readLatchedRules(suDb, scope);
-        expect([...keys]).toEqual(["shared"]);
-      });
-
-      test("an older tick finishing late does not release a newer tick's latch", async () => {
-        const scope = { tenantId, agentId, conversationId: convRowId };
-        const olderRead = new Date(Date.now() - 60_000);
-        await triggerState.latchRules(suDb, scope, ["note"]);
-        await triggerState.writeTriggerState(
-          suDb,
-          scope,
-          { latch: [], release: ["note"], undo: [], keep: [] },
-          olderRead,
-        );
-        const keys = await triggerState.readLatchedRules(suDb, scope);
-        expect([...keys]).toEqual(["note"]);
-      });
-
-      test("a tick undoes its own latch only up to when it wrote it", async () => {
-        const scope = { tenantId, agentId, conversationId: convRowId };
-        const mine = new Date(Date.now() - 60_000);
-        await triggerState.latchRules(suDb, scope, ["own"], mine);
-        await triggerState.latchRules(suDb, scope, ["other"]);
-        await triggerState.writeTriggerState(
-          suDb,
-          scope,
-          { latch: [], release: [], undo: ["own"], keep: ["own", "other"] },
-          mine,
-          new Map([["own", mine]]),
-        );
-        const keys = await triggerState.readLatchedRules(suDb, scope);
-        expect([...keys]).toEqual(["other"]);
-      });
-
-      test("an older tick finishing late does not latch again what a newer tick released", async () => {
-        const scope = { tenantId, agentId, conversationId: convRowId };
-        await triggerState.writeTriggerState(suDb, scope, {
-          latch: ["note"],
-          release: [],
-          undo: [],
-          keep: ["note"],
+      // THE INVARIANT (trigger-state.ts): an older observation never changes the state a newer one
+      // read. A reads, B reads after it; whatever A then writes is refused, in every shape a tick
+      // writes (latch ahead, release after the deadline, release, undo or drop at the end), whether
+      // B left the rule latched or clear.
+      describe("two observations of the same conversation", () => {
+        const scope = () => ({ tenantId, agentId, conversationId: convRowId });
+        const change = (
+          c: Partial<Record<"release" | "undo" | "keep", string[]>>,
+        ) => ({
+          latch: [],
+          release: c.release ?? [],
+          undo: c.undo ?? [],
+          keep: c.keep ?? ["k"],
         });
-        const keys = await triggerState.readLatchedRules(suDb, scope);
-        expect([...keys]).toEqual([]);
-      });
+        const writes: Record<string, (g: bigint) => Promise<boolean>> = {
+          latch: (g) => triggerState.latchRules(suDb, scope(), g, ["k"]),
+          "late release": (g) =>
+            triggerState.unlatchRules(suDb, scope(), g, ["k"]),
+          release: (g) =>
+            triggerState.writeTriggerState(
+              suDb,
+              scope(),
+              g,
+              change({ release: ["k"] }),
+            ),
+          undo: (g) =>
+            triggerState.writeTriggerState(
+              suDb,
+              scope(),
+              g,
+              change({ undo: ["k"] }),
+            ),
+          drop: (g) =>
+            triggerState.writeTriggerState(
+              suDb,
+              scope(),
+              g,
+              change({ keep: [] }),
+            ),
+        };
+        const state = async () => [
+          ...(await triggerState.claimTriggerState(suDb, scope())).latched,
+        ];
+        for (const [name, write] of Object.entries(writes)) {
+          for (const newer of ["latched", "clear"] as const) {
+            test(`the older one's ${name} leaves the newer one's state ${newer}`, async () => {
+              const a = await triggerState.claimTriggerState(suDb, scope());
+              const b = await triggerState.claimTriggerState(suDb, scope());
+              if (newer === "latched") {
+                expect(
+                  await triggerState.latchRules(suDb, scope(), b.generation, [
+                    "k",
+                  ]),
+                ).toBe(true);
+              }
+              expect(await write(a.generation)).toBe(false);
+              expect(await state()).toEqual(newer === "latched" ? ["k"] : []);
+            });
+          }
+        }
 
-      test("a latch released while the provider is asked does not hold the rule back", async () => {
-        const chatwoot = fakeChatwoot({ labels: [], attributes: {} });
-        const rule = note("Supervisor");
-        const scope = { tenantId, agentId, conversationId: convRowId };
-        await triggerState.latchRules(suDb, scope, [
-          ruleStateKey(rule as never),
-        ]);
-        const d = await observeWith(chatwoot, [rule], true, {}, async () => {
-          await suDb.decisionRuleState.deleteMany({ where: { tenantId } });
+        test("the newer one writes, and a read between a tick's own writes supersedes the rest", async () => {
+          const a = await triggerState.claimTriggerState(suDb, scope());
+          expect(
+            await triggerState.latchRules(suDb, scope(), a.generation, ["k"]),
+          ).toBe(true);
+          const b = await triggerState.claimTriggerState(suDb, scope());
+          expect([...b.latched]).toEqual(["k"]);
+          expect(
+            await triggerState.unlatchRules(suDb, scope(), a.generation, ["k"]),
+          ).toBe(false);
+          expect(
+            await triggerState.writeTriggerState(
+              suDb,
+              scope(),
+              b.generation,
+              change({ release: ["k"] }),
+            ),
+          ).toBe(true);
+          expect(await state()).toEqual([]);
         });
-        expect(d.actions).toEqual([
-          { rule: 0, tool: "private_note", outcome: "ran" },
-        ]);
-        expect(notesOf(chatwoot, "Supervisor")).toBe(1);
       });
 
       test("a trigger state it cannot read fails the tick before any action", async () => {
         const chatwoot = fakeChatwoot({ labels: [], attributes: {} });
-        const read = spyOn(triggerState, "readLatchedRules").mockRejectedValue(
+        const read = spyOn(triggerState, "claimTriggerState").mockRejectedValue(
           new Error("db down"),
         );
         try {

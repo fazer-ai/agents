@@ -108,8 +108,9 @@ export interface DecisionProgress {
 
 // Writes, before an action is dispatched, the latches of the rules it answers for: a call the
 // deadline ends while in flight may or may not have written, and a rule that might have acted is
-// held rather than run twice. Throwing stops the tick before anything is dispatched.
-export type LatchAhead = (keys: string[]) => Promise<void>;
+// held rather than run twice. Throwing stops the tick before anything is dispatched; `false` says a
+// newer observation owns the state now (trigger-state.ts), and the tick is withdrawn.
+export type LatchAhead = (keys: string[]) => Promise<boolean>;
 
 export interface DecisionTickReport {
   fired: FiredAction[];
@@ -141,7 +142,7 @@ export async function applyDecisions(
   dryRun = false,
   latched: ReadonlySet<string> = new Set(),
   progress: DecisionProgress = {},
-  latchAhead: LatchAhead = async () => {},
+  latchAhead: LatchAhead = async () => true,
 ): Promise<DecisionTickReport> {
   const keys = config.rules.map(ruleStateKey);
   const triggers = config.rules.map(triggerOf);
@@ -319,8 +320,10 @@ export async function applyDecisions(
         // A tick whose deadline has passed starts nothing more, its latches included.
         signal.throwIfAborted();
         const all = due.flatMap(([, k]) => k);
-        if (all.length > 0) await latchAhead(all);
-        for (const [at, k] of due) {
+        if (all.length > 0 && !(await latchAhead(all))) {
+          withdrawnAt = head.at;
+        }
+        for (const [at, k] of withdrawnAt === null ? due : []) {
           if (k.length === 0) continue;
           ahead.set(at, k);
           for (const key of k) dropped.delete(key);
@@ -330,7 +333,9 @@ export async function applyDecisions(
       }
     }
     const admitted: typeof group = [];
-    for (const member of fenceError === null ? group : []) {
+    for (const member of fenceError === null && withdrawnAt === null
+      ? group
+      : []) {
       try {
         signal.throwIfAborted();
         if (!(await stillWanted())) {

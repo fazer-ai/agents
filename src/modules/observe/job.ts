@@ -75,8 +75,8 @@ import {
   type DecisionProgress,
 } from "@/modules/decisions/run";
 import {
+  claimTriggerState,
   latchRules,
-  readLatchedRules,
   unlatchRules,
   writeTriggerState,
 } from "@/modules/decisions/trigger-state";
@@ -1837,14 +1837,12 @@ export async function runObserve(
     const triggerScope =
       conv === null ? null : { tenantId, agentId, conversationId: conv.id };
     let latched: Set<string> = new Set();
-    // When the state was last read, and when this tick wrote each latch ahead: what it judged from
-    // the state touches only rows up to the read, and its own latches only rows up to its write, so
-    // a later observation's state is never this tick's to remove (writeTriggerState).
-    let readAt = new Date();
-    const latchedAt = new Map<string, Date>();
+    // The generation this read took (trigger-state.ts): every write below carries it, and one that a
+    // newer observation has read past is refused, so an older tick never changes a newer one's state.
+    let generation = 0n;
     if (triggerScope !== null) {
       try {
-        latched = await readLatchedRules(base, triggerScope);
+        ({ generation, latched } = await claimTriggerState(base, triggerScope));
       } catch (err) {
         const failure = uncommittedFailure();
         decisionLine(
@@ -1865,21 +1863,22 @@ export async function runObserve(
     }
     // Written for what ran, the withdrawn tick's actions included: a note that left is one the next
     // observation must not post again. A write that fails is said on the line and does not undo the
-    // tick, which already committed.
+    // tick, which already committed; one a newer observation superseded is not a failure.
     const persistTriggerState = async (
       change: Awaited<ReturnType<typeof applyDecisions>>["triggerState"],
-    ): Promise<boolean> => {
-      if (triggerScope === null) return true;
+    ): Promise<"written" | "superseded" | "failed"> => {
+      if (triggerScope === null) return "written";
       try {
-        await writeTriggerState(base, triggerScope, change, readAt, latchedAt);
-        return true;
+        return (await writeTriggerState(base, triggerScope, generation, change))
+          ? "written"
+          : "superseded";
       } catch (err) {
         logger.warn(
           { err, agentId: String(agentId) },
           "observe: the rules' trigger state could not be written (conv=%s)",
           String(conversationId),
         );
-        return false;
+        return "failed";
       }
     };
     let result: DecisionResult;
@@ -1939,20 +1938,10 @@ export async function runObserve(
     // UNDER THE TICK'S DEADLINE, as the graph is: a native write can wait in a keyed queue that the
     // signal does not cancel, and a tick that outlives its budget reaches the scheduler's outer
     // deadline and is retried whole, repeating what already committed.
-    // Read again now that the provider has answered: a tick the deadline ended may have released a
-    // latch since the first read, and a rule must not be held on a snapshot older than that. A read
-    // that fails keeps the first one, which holds at least as much.
-    if (triggerScope !== null) {
-      const at = new Date();
-      try {
-        latched = await readLatchedRules(base, triggerScope);
-        readAt = at;
-      } catch {
-        // The first snapshot stands.
-      }
-    }
     let report: Awaited<ReturnType<typeof applyDecisions>>;
     const progress: DecisionProgress = {};
+    // Keys released after the deadline (below), forgotten when the engine latches one again.
+    const released = new Set<string>();
     let applying: Promise<unknown> = Promise.resolve();
     try {
       const run = applyDecisions(
@@ -1979,10 +1968,10 @@ export async function runObserve(
         latched,
         progress,
         async (keys) => {
-          if (triggerScope === null) return;
-          const at = new Date();
-          await latchRules(base, triggerScope, keys, at);
-          for (const k of keys) latchedAt.set(k, at);
+          if (triggerScope === null) return true;
+          const held = await latchRules(base, triggerScope, generation, keys);
+          for (const k of keys) released.delete(k);
+          return held;
         },
       );
       applying = run;
@@ -1995,30 +1984,23 @@ export async function runObserve(
       // not hold, are released: now, on every later change (a handler that says after the deadline
       // it wrote nothing) and once the engine has stopped (it may still be between a latch and its
       // fence).
-      // By key, up to which latch: a key released once is released again when the engine has since
-      // latched it anew (a member deferred after its group and stopped before it ran).
-      const released = new Map<string, number>();
       const release = async () => {
         if (triggerScope === null) return;
-        const due: [string, Date][] = [
-          ...(progress.release ?? []).map((k): [string, Date] => [k, readAt]),
-          ...(progress.undo ?? []).map((k): [string, Date] => [
-            k,
-            latchedAt.get(k) ?? readAt,
-          ]),
-        ].filter(([k, upTo]) => (released.get(k) ?? -1) < upTo.getTime());
-        for (const [k, upTo] of due) {
-          try {
-            await unlatchRules(base, triggerScope, [k], upTo);
-            // Counted only once deleted, so a failed release is tried again by the next call.
-            released.set(k, upTo.getTime());
-          } catch (err) {
-            logger.warn(
-              { err, agentId: String(agentId) },
-              "observe: the rules' trigger state could not be written (conv=%s)",
-              String(conversationId),
-            );
-          }
+        const due = [
+          ...new Set([...(progress.release ?? []), ...(progress.undo ?? [])]),
+        ].filter((k) => !released.has(k));
+        if (due.length === 0) return;
+        try {
+          // Superseded is as final as written: the newer observation owns the state now.
+          await unlatchRules(base, triggerScope, generation, due);
+          // Counted only once done, so a failed release is tried again by the next call.
+          for (const k of due) released.add(k);
+        } catch (err) {
+          logger.warn(
+            { err, agentId: String(agentId) },
+            "observe: the rules' trigger state could not be written (conv=%s)",
+            String(conversationId),
+          );
         }
       };
       progress.onChange = () => void release();
@@ -2063,7 +2045,10 @@ export async function runObserve(
         // Rules whose conditions held and that did not act because their trigger holds them back,
         // so "did not fire" (`notFired`) and "fired and was held" read apart.
         ...(report.held.length > 0 ? { held: report.held } : {}),
-        ...(stateWritten ? {} : { triggerStateWritten: false }),
+        ...(stateWritten === "failed" ? { triggerStateWritten: false } : {}),
+        ...(stateWritten === "superseded"
+          ? { triggerStateSuperseded: true }
+          : {}),
         messagesRead: transcript.length,
         labelsBefore: current === null ? null : current.length,
       },

@@ -5183,11 +5183,15 @@ export async function processChatwootDelivery(
         err instanceof Error ? err.message : String(err),
       );
     }
+  }
+
+  if ((isNewIncoming || hasLateMedia) && n.conversationId !== null) {
     // A FILE FROM THE CONTACT on a conversation that names its case goes to the case too, whether or
     // not a turn runs over it (../cross-inbox-case/carry-job.ts). The case number rides on the payload,
     // so a message without a file of a carried type, or a conversation without a case, costs nothing.
-    // The arm reads its own fences (a /reset, the agent off, a person on the origin) and arms nothing
-    // under any of them.
+    // An audio that arrives later, on message_updated (hasPendingInboundMediaUpdate), arms it too. The
+    // arm reads its own fences (a /reset, the agent off, a person on the origin) and arms nothing under
+    // any of them.
     const carry = responderRt
       ? readCrossInboxCaseConfig(responderRt.settings)
       : null;

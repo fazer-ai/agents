@@ -64,12 +64,13 @@ async function deliver(
     files?: Array<{ id: number; file_type: string }>;
     messageType?: string;
     private?: boolean;
+    event?: string;
     sender?: { type: string; id: number };
   } = {},
 ): Promise<void> {
   const now = Math.floor(Date.now() / 1000);
   const n = normalizeChatwootEvent({
-    event: "message_created",
+    event: over.event ?? "message_created",
     id: over.messageId ?? 900_000 + convId,
     created_at: now,
     content: "",
@@ -104,7 +105,7 @@ async function deliver(
       tenantId,
       chatwootInstanceId: instanceId,
       deliveryId: `case-carry-hook-${convId}-${Date.now()}-${Math.random()}`,
-      event: "message_created",
+      event: over.event ?? "message_created",
       status: "PENDING",
     },
     select: { id: true },
@@ -264,6 +265,37 @@ describe.skipIf(!dbUp)("the webhook arms the late carry", () => {
     });
     for (const c of [97_002, 97_003, 97_004, 97_005, 97_006]) {
       expect(await rowOf(c)).toBeNull();
+    }
+  });
+
+  test("an audio that arrives on message_updated arms the carry too", async () => {
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: {
+        settings: {
+          crossInboxCase: {
+            targetInboxId: CASE_INBOX,
+            carryAttachments: { mode: "conversation", fileTypes: ["audio"] },
+          },
+        },
+      },
+    });
+    try {
+      await seedConv(97_008);
+      await deliver(97_008, {
+        event: "message_updated",
+        messageId: 9008,
+        files: [{ id: 7008, file_type: "audio" }],
+      });
+      expect((await rowOf(97_008))?.payload).toMatchObject({
+        caseId: CASE,
+        armedAtMessageId: 9008,
+      });
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { settings: CARRY_ON },
+      });
     }
   });
 

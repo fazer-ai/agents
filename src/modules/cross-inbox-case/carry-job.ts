@@ -309,7 +309,7 @@ export async function caseCarryHandler(
       await client.setConversationCustomAttributes(
         originConversationId,
         { [config.caseAttributeKey]: caseId },
-        { stillWanted },
+        { stillWanted, asAdmin: true },
       );
     } catch (err) {
       logger.warn(
@@ -341,7 +341,7 @@ export async function caseCarryHandler(
         }
       : undefined;
 
-  const lastAttempt = !jobRetriesAfterFailure({ attempts: job.attempts + 1 });
+  const lastAttempt = !jobRetriesAfterFailure(job);
   const outcome = await carryCaseAttachments(client, {
     config: config.carryAttachments,
     originConversationId,

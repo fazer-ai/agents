@@ -158,8 +158,12 @@ function fakeChatwoot(opts: {
     setConversationCustomAttributes: async (
       id: number,
       attrs: Record<string, unknown>,
+      opts?: { asAdmin?: boolean },
     ) => {
-      calls.push({ fn: "setConversationCustomAttributes", args: [id, attrs] });
+      calls.push({
+        fn: "setConversationCustomAttributes",
+        args: [id, attrs, opts],
+      });
       if (id === CASE) Object.assign(caseAttrs, attrs);
       else Object.assign(originAttrs, attrs);
     },
@@ -371,6 +375,11 @@ describe.skipIf(!dbUp)("the late carry into the case", () => {
       f.deps,
     );
     expect(f.originAttrs[KEY]).toBe(CASE);
+    // The bot token is not loaded here, and the origin may be in an inbox the bot does not serve.
+    expect(
+      f.named("setConversationCustomAttributes").find((c) => c.args[0] === 103)
+        ?.args[2],
+    ).toMatchObject({ asAdmin: true });
     expect(f.uploaded()).toEqual([["foto-7001.jpg"]]);
   });
 
@@ -454,6 +463,23 @@ describe.skipIf(!dbUp)("the late carry into the case", () => {
     expect(f.caseAttrs[CROSS_INBOX_CASE_CARRIED_ATTRIBUTE]).toBe(
       "9001:7001,9002:7002",
     );
+  });
+
+  test("the fourth attempt that fails is still retried, with no note", async () => {
+    await setAgent({});
+    await seed(109);
+    const f = fakeChatwoot({
+      messages: [fromContact(9002, [7002])],
+      originAttrs: { [KEY]: CASE },
+      uploadFailures: 1,
+    });
+    const r = await caseCarryHandler(
+      jobFor(109, { attempts: 3 }),
+      appDb,
+      f.deps,
+    );
+    expect(r.outcome).toBe("fail");
+    expect(f.named("sendMessageAsAdmin")).toHaveLength(0);
   });
 
   test("the last attempt that fails leaves the note on the case and ends", async () => {

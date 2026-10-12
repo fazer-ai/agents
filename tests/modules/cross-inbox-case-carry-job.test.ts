@@ -89,6 +89,10 @@ function fakeChatwoot(opts: {
   carried?: string;
   originAttrs?: Record<string, unknown>;
   caseStatus?: string;
+  // Per case, over `caseStatus`.
+  caseStatusOf?: Record<number, string>;
+  // The team closes the case while its files come down.
+  closeOnDownload?: boolean;
   caseInbox?: number;
   // How many uploads fail before one is accepted.
   uploadFailures?: number;
@@ -99,6 +103,7 @@ function fakeChatwoot(opts: {
     : {};
   const originAttrs: Record<string, unknown> = { ...(opts.originAttrs ?? {}) };
   let failures = opts.uploadFailures ?? 0;
+  let closed = false;
   const client = {
     conversationUrl: (id: number) =>
       `https://chat.example.com/app/accounts/1/conversations/${id}`,
@@ -109,7 +114,9 @@ function fakeChatwoot(opts: {
         return {
           id,
           inbox_id: opts.caseInbox ?? CASE_INBOX,
-          status: opts.caseStatus ?? "open",
+          status: closed
+            ? "resolved"
+            : (opts.caseStatusOf?.[id] ?? opts.caseStatus ?? "open"),
           created_at: 1,
           custom_attributes: { ...caseAttrs },
         };
@@ -142,6 +149,7 @@ function fakeChatwoot(opts: {
     },
     downloadAttachment: async (url: string) => {
       calls.push({ fn: "downloadAttachment", args: [url] });
+      if (opts.closeOnDownload) closed = true;
       return { bytes: new Uint8Array(8).buffer, contentType: "image/jpeg" };
     },
     sendFilesAsAdmin: async (...args: unknown[]) => {
@@ -535,6 +543,33 @@ describe.skipIf(!dbUp)("the late carry into the case", () => {
     );
     expect(r).toEqual({ outcome: "done" });
     expect(f.named("sendMessageAsAdmin")).toHaveLength(1);
+  });
+
+  test("an opening withdrawn before relinking the origin to its replacement case is recovered", async () => {
+    await setAgent({});
+    await seed(115);
+    // The origin still names the closed case this opening replaced.
+    const f = fakeChatwoot({
+      messages: [fromContact(9001, [7001])],
+      originAttrs: { [KEY]: OTHER_CASE },
+      caseStatusOf: { [OTHER_CASE]: "resolved" },
+    });
+    await caseCarryHandler(jobFor(115), appDb, f.deps);
+    expect(f.named("sendFilesAsAdmin").map((c) => c.args[0])).toEqual([CASE]);
+    expect(f.originAttrs[KEY]).toBe(CASE);
+  });
+
+  test("a case the team closes while its files come down gets no upload", async () => {
+    await setAgent({});
+    await seed(116);
+    const f = fakeChatwoot({
+      messages: [fromContact(9002, [7002])],
+      originAttrs: { [KEY]: CASE },
+      closeOnDownload: true,
+    });
+    await caseCarryHandler(jobFor(116), appDb, f.deps);
+    expect(f.named("downloadAttachment")).toHaveLength(1);
+    expect(f.named("sendFilesAsAdmin")).toHaveLength(0);
   });
 
   test("a closed case gets nothing, and nothing is opened", async () => {

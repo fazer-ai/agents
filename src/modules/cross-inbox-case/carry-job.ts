@@ -271,11 +271,11 @@ export async function caseCarryHandler(
       makeClient: deps.makeClient,
     },
   );
-  // The case must still be the open case of the destination inbox: a closed or moved one is not
-  // reopened, and no case is ever created here.
-  // THE CASE IS THE ONE THE ORIGIN NAMES NOW. The row is keyed by the origin and the last arm wins, so
-  // an arm from before the origin moved to another case carries into that one, not the stale one. The
-  // armed case stands only for an origin with no case number (an opening withdrawn before writing it).
+  // WHICH CASE. The one the origin names, while it is still open in the destination inbox: the row
+  // is keyed by the origin and the last arm wins, so an arm from before the origin moved on carries
+  // into the case it moved to. Otherwise the armed case, when it is open: an opening withdrawn before
+  // writing the origin's case number (none, or a closed case it replaced). A closed or moved case is
+  // never reopened, and no case is ever created here.
   let originConv: unknown;
   try {
     originConv = await client.getConversation(originConversationId);
@@ -286,35 +286,55 @@ export async function caseCarryHandler(
   const named = positiveInt(
     field(field(originConv, "custom_attributes"), config.caseAttributeKey),
   );
-  const target = named ?? caseId;
-  let caseConv: unknown;
+  const openCase = (conv: unknown) => {
+    const status = field(conv, "status");
+    return (
+      Number(field(conv, "inbox_id")) === config.targetInboxId &&
+      (status === "open" || status === "pending")
+    );
+  };
+  let target: number | null = null;
+  let caseConv: unknown = null;
   try {
-    caseConv = await client.getConversation(target);
+    for (const id of [...new Set([named, caseId])]) {
+      if (id === null || id === originConversationId) continue;
+      const conv = await client.getConversation(id);
+      if (openCase(conv)) {
+        target = id;
+        caseConv = conv;
+        break;
+      }
+    }
   } catch {
     return { outcome: "fail", error: "case carry: could not read the case" };
   }
-  const status = field(caseConv, "status");
-  if (
-    target === originConversationId ||
-    Number(field(caseConv, "inbox_id")) !== config.targetInboxId ||
-    (status !== "open" && status !== "pending")
-  ) {
-    line("info", { caseId: target, stoodDown: "case_closed" });
+  if (target === null) {
+    line("info", { caseId: named ?? caseId, stoodDown: "case_closed" });
     return { outcome: "done" };
   }
+  const into = target;
 
-  const stillWanted = async () =>
-    !(await jobRetired(job, base)) && (await read())?.hold === null;
+  // Asked before the origin write and the upload: the conversation is still the agent's to act on,
+  // and the case is still open where it was (the team can close or move it while the files come down).
+  const stillWanted = async () => {
+    if (await jobRetired(job, base)) return false;
+    if ((await read())?.hold !== null) return false;
+    try {
+      return openCase(await client.getConversation(into));
+    } catch {
+      // NOTE: unreadable is not closed: the upload's own failure is what retries
+      return true;
+    }
+  };
   const lastAttempt = !jobRetriesAfterFailure(job);
-  // The origin's case number, when the turn that opened the case was withdrawn before writing it:
-  // without it, the contact's next file would not find its way here. A write that failed is retried
-  // with the job, after the files.
+  // The origin's case number, when it does not name this case: without it, the contact's next file
+  // would not find its way here. A write that failed is retried with the job, after the files.
   let originUnlinked = false;
-  if (named === null && (await stillWanted())) {
+  if (named !== into && (await stillWanted())) {
     try {
       await client.setConversationCustomAttributes(
         originConversationId,
-        { [config.caseAttributeKey]: target },
+        { [config.caseAttributeKey]: into },
         { stillWanted, asAdmin: true },
       );
     } catch {
@@ -346,14 +366,14 @@ export async function caseCarryHandler(
     config: config.carryAttachments,
     originConversationId,
     originContactId: state.chatwootContactId,
-    caseId: target,
+    caseId: into,
     attendanceStartedAt: attendance,
     stillWanted,
     failureNote: lastAttempt,
   });
   if (!outcome) return { outcome: "done" };
   if (outcome.calledOff) {
-    line("info", { caseId: target, stoodDown: "withdrawn" });
+    line("info", { caseId: into, stoodDown: "withdrawn" });
     return { outcome: "done" };
   }
   if (outcome.unread || outcome.failed > 0) {
@@ -361,7 +381,7 @@ export async function caseCarryHandler(
     line(
       "warn",
       {
-        caseId: target,
+        caseId: into,
         carried: outcome.carried,
         skipped: outcome.skipped,
         failed: outcome.failed,
@@ -371,8 +391,8 @@ export async function caseCarryHandler(
         ...(outcome.unread ? { unread: outcome.unread } : {}),
       },
       outcome.unread
-        ? `customer files not carried to case ${target}: the ${outcome.unread === "attendance" ? "attendance boundary" : "case"} could not be read`
-        : `customer files not carried to case ${target}${ids.length > 0 ? ` (attachments ${ids.join(", ")})` : ""}${lastAttempt ? "" : "; trying again"}`,
+        ? `customer files not carried to case ${into}: the ${outcome.unread === "attendance" ? "attendance boundary" : "case"} could not be read`
+        : `customer files not carried to case ${into}${ids.length > 0 ? ` (attachments ${ids.join(", ")})` : ""}${lastAttempt ? "" : "; trying again"}`,
     );
     return lastAttempt
       ? { outcome: "done" }
@@ -382,12 +402,12 @@ export async function caseCarryHandler(
     line(
       "warn",
       {
-        caseId: target,
+        caseId: into,
         originAttribute: "not_written",
         attempt: job.attempts + 1,
         retry: !lastAttempt,
       },
-      `the origin's case number (case ${target}) could not be written${lastAttempt ? "" : "; trying again"}`,
+      `the origin's case number (case ${into}) could not be written${lastAttempt ? "" : "; trying again"}`,
     );
     if (!lastAttempt) {
       return {
@@ -398,7 +418,7 @@ export async function caseCarryHandler(
   }
   if (outcome.carried + outcome.skipped > 0 || outcome.truncated) {
     line("info", {
-      caseId: target,
+      caseId: into,
       carried: outcome.carried,
       skipped: outcome.skipped,
       ...(outcome.truncated ? { truncated: true } : {}),

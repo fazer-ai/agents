@@ -1,6 +1,7 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
+import { runScopedOn } from "@/lib/tenancy";
 import {
   kindThroughputState,
   readInstanceHealth,
@@ -23,6 +24,7 @@ import {
   claimDueTrafficJobs,
   enqueueJob,
   reapStaleJobs,
+  revokeJobsByKeyPrefixOn,
   type SchedulerJobKind,
 } from "@/modules/scheduler/service";
 import {
@@ -347,6 +349,37 @@ describe.skipIf(!dbUp)("the scheduler worker counts what it settles", () => {
     );
     expect(muted?.enabled).toBe(false);
     resetSamplerState();
+  });
+
+  test("rows a reset revokes count as nothing, even the one already running when it lands (catches erased work read as completed)", async () => {
+    await enqueueJob({
+      rearm: "same-work",
+      tenantId,
+      kind: "INGEST_MESSAGE",
+      dedupeKey: "ingest:tp-thread:2",
+      runAt: new Date(Date.now() + 3_600_000),
+      base: appDb,
+    });
+    const running = await claimOne("INGEST_MESSAGE", "ingest:tp-thread:1");
+    await runScopedOn(
+      appDb,
+      { tenantId, userId: null, role: "TENANT_ADMIN" },
+      (db) =>
+        revokeJobsByKeyPrefixOn(db, "INGEST_MESSAGE", "ingest:tp-thread:"),
+    );
+    expect(
+      await suDb.schedulerJob.count({
+        where: { tenantId, dedupeKey: { startsWith: "ingest:tp-thread:" } },
+      }),
+    ).toBe(0);
+    await withJobHandler(
+      "INGEST_MESSAGE",
+      async () => ({ outcome: "done" }),
+      () => runClaimed(running, appDb),
+    );
+    expect(jobsPerMinute("INGEST_MESSAGE", "done")).toBe(0);
+    expect(jobsPerMinute("INGEST_MESSAGE", "failed")).toBe(0);
+    expect(lastCompletedAt("INGEST_MESSAGE")).toBeNull();
   });
 
   test("a claim the reaper takes back counts as failed (catches a crashed run vanishing from the rate)", async () => {

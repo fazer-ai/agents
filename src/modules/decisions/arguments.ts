@@ -208,21 +208,40 @@ function withWaitMessage(
   return args;
 }
 
-// The call with the filled values fitted field by field, then as they came, then each as its text: a
-// schema whose branches type one argument apart (text when `kind` is one value, a number when
-// another) is fitted by the whole call, not by the first branch that names it.
+// Filled values that are not text, up to this many, are tried in every mix of as-given and as-text;
+// past it only the per-field fit, all as given and all as text are tried.
+const MIXES_UP_TO = 8;
+
+// The call with the filled values fitted field by field, then in each mix of as-given and as-text: a
+// schema whose branches type arguments apart (`id` text and `n` a number in one, the other way round
+// in the other) is fitted by the whole call, not by the first branch that names each argument.
 async function fitCall(
   schema: ArgSchema,
   fixed: Record<string, unknown>,
   values: Record<string, unknown>,
 ): Promise<{ ok: boolean; args: Record<string, unknown> }> {
   const fitted: Record<string, unknown> = {};
-  const text: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(values)) {
     fitted[k] = await fitValue(schema, k, v);
-    text[k] = typeof v === "string" ? v : String(v);
   }
-  for (const each of [fitted, values, text]) {
+  const loose = Object.keys(values).filter(
+    (k) => typeof values[k] !== "string",
+  );
+  const masks =
+    loose.length <= MIXES_UP_TO
+      ? Array.from({ length: 2 ** loose.length }, (_, m) => m)
+      : [0, 2 ** loose.length - 1];
+  const tries = [
+    fitted,
+    ...masks.map((m) => {
+      const mix = { ...values };
+      loose.forEach((k, i) => {
+        if (m & (1 << i)) mix[k] = String(values[k]);
+      });
+      return mix;
+    }),
+  ];
+  for (const each of tries) {
     const args = withWaitMessage(schema, { ...fixed, ...each });
     if (await argsFit(schema, args)) return { ok: true, args };
   }

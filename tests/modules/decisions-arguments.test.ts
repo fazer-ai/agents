@@ -102,7 +102,7 @@ function build(kind: Kind) {
 const ctx: FillContext = {
   contact: { name: "Ana", phone: "+5511999990001" },
   contactAttributes: {},
-  conversation: { display_id: 42 },
+  conversation: { display_id: 42, inbox_id: 3 },
   conversationAttributes: {},
 };
 const when = [{ question: "q", minProbability: 0.5 }];
@@ -325,6 +325,64 @@ for (const [kind, expected] of [
     );
     expect(r.actions[0]?.outcome).toBe("ran");
     expect(sent[0]?.value).toBe(expected);
+    expect(
+      await sampleArgsUnfit(
+        argSchemaOf(tool as unknown as StructuredToolInterface),
+        action,
+      ),
+    ).toBeNull();
+  });
+}
+
+// Branches that type two arguments crosswise: the call is found in a mix of as-given and as-text.
+for (const [kind, expected] of [
+  ["a", { id: "42", n: 3 }],
+  ["b", { id: 42, n: "3" }],
+] as const) {
+  test(`MCP arguments typed crosswise by branch are sent as branch ${kind} takes them`, async () => {
+    const sent: Record<string, unknown>[] = [];
+    const branch = (k: string, id: string, n: string) => ({
+      properties: { kind: { const: k }, id: { type: id }, n: { type: n } },
+      required: ["kind", "id", "n"],
+    });
+    const tool = new DynamicStructuredTool({
+      name: "mcp__crm__cruzado",
+      description: "x",
+      schema: {
+        type: "object",
+        oneOf: [
+          branch("a", "string", "integer"),
+          branch("b", "integer", "string"),
+        ],
+      } as never,
+      func: async (input) => {
+        sent.push(input as Record<string, unknown>);
+        return "ok";
+      },
+    });
+    adoptServerTool(tool);
+    const action = {
+      tool: tool.name,
+      args: { kind },
+      fill: { id: "conversation.display_id", n: "conversation.inbox_id" },
+    };
+    const r = await applyDecisions(
+      { rules: [{ when, action }] },
+      answers,
+      [tool as unknown as StructuredToolInterface],
+      [],
+      new AbortController().signal,
+      async () => true,
+      1,
+      undefined,
+      false,
+      new Set(),
+      {},
+      async () => true,
+      { context: ctx, questions: [], logValues: true },
+    );
+    expect(r.actions[0]?.outcome).toBe("ran");
+    expect(sent[0]).toMatchObject(expected);
     expect(
       await sampleArgsUnfit(
         argSchemaOf(tool as unknown as StructuredToolInterface),

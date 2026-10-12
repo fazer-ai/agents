@@ -6,6 +6,7 @@ import {
   providerFailure,
 } from "@/lib/provider-failure";
 import { Semaphore } from "@/lib/semaphore";
+import type { CapacityOccupancy } from "@/modules/flowlog/capacity";
 import {
   EMPTY_COMPLETION_MESSAGE,
   isEmptyCompletionFault,
@@ -24,6 +25,22 @@ function sem(): Semaphore {
   const g = globalThis as unknown as Record<symbol, Semaphore>;
   g[KEY] ??= new Semaphore(config.agent.modelConcurrency);
   return g[KEY];
+}
+
+// The semaphore as it stands, for a `capacity` line to say which limit held a reply (issue #1397).
+export interface ModelPermitReading {
+  permits: number;
+  inFlight: number;
+  waiting: number;
+}
+
+export function modelPermitReading(): ModelPermitReading {
+  const s = sem();
+  return {
+    permits: s.permits,
+    inFlight: s.permits - s.free,
+    waiting: s.waiting,
+  };
 }
 
 // Short on purpose: a customer is waiting on the other end of this call.
@@ -82,6 +99,7 @@ export interface ModelRetryInfo extends ModelLabels {
 export interface PermitWaitInfo {
   waitedMs: number;
   thresholdMs: number;
+  occupancy: CapacityOccupancy;
 }
 
 // Every call has a deadline. `runModelCall` applies it itself, through
@@ -185,9 +203,16 @@ export async function runModelCall<T>(
     const queuedAt = performance.now();
     waitTimer = setTimeout(() => {
       try {
+        const model = modelPermitReading();
         onPermitWait({
           waitedMs: Math.round(performance.now() - queuedAt),
           thresholdMs,
+          occupancy: {
+            limit: "AGENT_MODEL_CONCURRENCY",
+            modelInFlight: model.inFlight,
+            modelPermits: model.permits,
+            modelWaiting: model.waiting,
+          },
         });
       } catch (err) {
         logger.warn({ err }, "reporting a model permit wait failed");

@@ -309,9 +309,15 @@ describe.skipIf(!dbUp)("a reply waiting for capacity (issue #812)", () => {
       expect(line?.source).toBe("inbox");
       expect(line?.conversationId).toBe(waiter.id);
       expect(line?.conversationId).not.toBe(holder.id);
+      // The lane's own reading rides on the line, so it says which limit bound (issue #1397).
       expect(line?.detail).toMatchObject({
         waitedOn: "debounce_lane",
         thresholdMs: THRESHOLD_MS,
+        limit: "DEBOUNCE_TURN_SLOTS",
+        laneInFlight: 1,
+        laneSlots: 1,
+        modelInFlight: 0,
+        modelWaiting: 0,
       });
       expect(
         (line?.detail as { waitedMs?: number } | undefined)?.waitedMs ?? 0,
@@ -364,6 +370,9 @@ describe.skipIf(!dbUp)("a reply waiting for capacity (issue #812)", () => {
       expect(lines[0]?.detail).toMatchObject({
         waitedOn: "model_semaphore",
         thresholdMs: THRESHOLD_MS,
+        limit: "AGENT_MODEL_CONCURRENCY",
+        modelInFlight: config.agent.modelConcurrency,
+        modelWaiting: 1,
       });
       release();
       await flush;

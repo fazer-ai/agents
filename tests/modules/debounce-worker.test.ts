@@ -249,34 +249,54 @@ describe("startDebounceWorker", () => {
     expect(await until(() => ran.includes(2n))).toBe(true);
   });
 
-  test("without an explicit slot count the lane is sized by the model semaphore", async () => {
+  // NOTE: the lane used to be sized by the model permits, and a slot is held for the whole turn while the
+  // model call inside it is a fraction of it: on 07/10 the lane sat full for 50 min with the semaphore
+  // at 8-17 of 20 and no queue (issue #1397). Not 20, which is also the semaphore's default: a test on
+  // the default would pass with a lane that hard-codes it.
+  async function peakOf(): Promise<{ peak: number; limit?: number }> {
+    const q = dueQueue([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    let active = 0;
+    let peak = 0;
+    const run = async () => {
+      active += 1;
+      peak = Math.max(peak, active);
+      await hang();
+      active -= 1;
+    };
+    startDebounceWorker({
+      base,
+      intervalMs: 5,
+      deps: { claim: q.claim, run },
+    });
+    await until(() => peak >= 9, 300);
+    await sleep(50);
+    return { peak, limit: q.calls[0]?.limit };
+  }
+
+  test("without an explicit slot count the lane holds twice the model permits", async () => {
     const saved = config.agent.modelConcurrency;
-    // NOTE: not 20, which is also the semaphore's default: a test on the default would pass with a
-    // lane that hard-codes it.
+    const savedSlots = config.debounceWorker.slots;
     config.agent.modelConcurrency = 3;
+    config.debounceWorker.slots = null;
     try {
-      const q = dueQueue([1, 2, 3, 4, 5, 6]);
-      let active = 0;
-      let peak = 0;
-      const run = async () => {
-        active += 1;
-        peak = Math.max(peak, active);
-        await hang();
-        active -= 1;
-      };
-
-      startDebounceWorker({
-        base,
-        intervalMs: 5,
-        deps: { claim: q.claim, run },
-      });
-      expect(await until(() => peak >= 3)).toBe(true);
-      await sleep(50);
-
-      expect(q.calls[0]?.limit).toBe(3);
-      expect(peak).toBe(3);
+      expect(await peakOf()).toEqual({ peak: 6, limit: 6 });
     } finally {
       config.agent.modelConcurrency = saved;
+      config.debounceWorker.slots = savedSlots;
+    }
+  });
+
+  test("an explicit slot count sizes the lane and leaves the model permits alone", async () => {
+    const saved = config.agent.modelConcurrency;
+    const savedSlots = config.debounceWorker.slots;
+    config.agent.modelConcurrency = 3;
+    config.debounceWorker.slots = 5;
+    try {
+      expect(await peakOf()).toEqual({ peak: 5, limit: 5 });
+      expect(config.agent.modelConcurrency).toBe(3);
+    } finally {
+      config.agent.modelConcurrency = saved;
+      config.debounceWorker.slots = savedSlots;
     }
   });
 });

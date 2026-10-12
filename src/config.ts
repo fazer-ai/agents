@@ -32,6 +32,7 @@ const {
   COMPACTION_WORKER_ENABLED,
   COMPACTION_WORKER_INTERVAL_MS,
   DEBOUNCE_WORKER_INTERVAL_MS,
+  DEBOUNCE_TURN_SLOTS,
   SHUTDOWN_DRAIN_MS,
   ALERT_WORKER_ENABLED,
   ALERT_WORKER_INTERVAL_MS,
@@ -580,6 +581,17 @@ const config = {
       "It is how often the debounce lane drains inbound message coalescing.",
       MAX_DURATION_MS,
     ),
+    // How many turns the lane runs at once. Unset (null) it follows the model permits at a multiple,
+    // read through `debounceTurnSlots` (issue #1397).
+    slots: DEBOUNCE_TURN_SLOTS?.trim()
+      ? parseIntSetting(
+          DEBOUNCE_TURN_SLOTS,
+          "DEBOUNCE_TURN_SLOTS",
+          1,
+          "It is how many customer turns the debounce lane runs at once.",
+          MAX_COUNT,
+        )
+      : (null as number | null),
   },
   // NOTE: Dedicated tick that drains only MEMORY_COMPACT jobs. Separate from the scheduler for the
   // mirror image of the debounce reason: the scheduler awaits its jobs one at a time, a summary is a
@@ -919,6 +931,23 @@ if (config.env === "production") {
       "⚠️  ENCRYPTION_KEY must be set in production to something other than the default.",
     );
   }
+}
+
+// Turn slots per model permit when DEBOUNCE_TURN_SLOTS is unset. A slot is held for the whole turn
+// (history, tools, the reply, the flow log) and a permit only for the model call inside it: on 07/10
+// a turn took ~17 s around a ~6 s call, and a lane sized at the permits sat full while the semaphore
+// never queued (issue #1397). Twice keeps the semaphore fed without letting a lane of slow turns
+// open far more database work than the permits would; past the turn-to-call ratio the extra slots
+// only queue on the semaphore.
+export const TURN_SLOTS_PER_PERMIT = 2;
+
+// The debounce lane's size: the explicit setting, else the permits times the multiple above, capped
+// where every count is so the largest accepted permit count still boots.
+export function debounceTurnSlots(c: typeof config = config): number {
+  return (
+    c.debounceWorker.slots ??
+    Math.min(c.agent.modelConcurrency * TURN_SLOTS_PER_PERMIT, MAX_COUNT)
+  );
 }
 
 export default config;

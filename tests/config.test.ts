@@ -367,3 +367,74 @@ describe("database pools and budgets", () => {
     }
   });
 });
+
+// A turn slot is held for the whole turn and a model permit only for the model call inside it, so the
+// two are sized apart (issue #1397). Unset, the lane follows the permits at a multiple, so an upgrade
+// without the new variable still moves both with AGENT_MODEL_CONCURRENCY.
+describe("debounce turn slots", () => {
+  async function slotsOf(env: Record<string, string | undefined>) {
+    const saved = Object.fromEntries(
+      Object.keys(env).map((key) => [key, process.env[key]]),
+    );
+    try {
+      for (const [key, value] of Object.entries(env)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      loads += 1;
+      const mod = await import(`${CONFIG_MODULE}?load=${loads}`);
+      return {
+        slots: mod.debounceTurnSlots(mod.default) as number,
+        permits: mod.default.agent.modelConcurrency as number,
+      };
+    } finally {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  }
+
+  test("unset, the lane holds twice the permits, and the permits are what they were", async () => {
+    expect(
+      await slotsOf({
+        AGENT_MODEL_CONCURRENCY: "20",
+        DEBOUNCE_TURN_SLOTS: undefined,
+      }),
+    ).toEqual({ slots: 40, permits: 20 });
+    expect(
+      await slotsOf({
+        AGENT_MODEL_CONCURRENCY: "7",
+        DEBOUNCE_TURN_SLOTS: undefined,
+      }),
+    ).toEqual({ slots: 14, permits: 7 });
+  });
+
+  test("set, it wins over the derived default and does not move the permits", async () => {
+    expect(
+      await slotsOf({
+        AGENT_MODEL_CONCURRENCY: "10",
+        DEBOUNCE_TURN_SLOTS: "15",
+      }),
+    ).toEqual({ slots: 15, permits: 10 });
+  });
+
+  // NOTE: the derived default is capped where every count is, so the largest permit count the base
+  // accepted still boots, with no fewer slots than permits.
+  test("the largest permit count still boots, with as many slots as permits", async () => {
+    expect(
+      await slotsOf({
+        AGENT_MODEL_CONCURRENCY: "1000000",
+        DEBOUNCE_TURN_SLOTS: undefined,
+      }),
+    ).toEqual({ slots: 1_000_000, permits: 1_000_000 });
+  });
+
+  test("a value that is not a whole number in range refuses by name", async () => {
+    for (const raw of ["0", "-3", "abc", "2.5", "1000001"]) {
+      const refusal = await refusalOf({ DEBOUNCE_TURN_SLOTS: raw });
+      expect(refusal).toContain("DEBOUNCE_TURN_SLOTS must be");
+      expect(refusal).toContain(`"${raw}"`);
+    }
+  });
+});

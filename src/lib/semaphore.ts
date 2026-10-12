@@ -4,11 +4,14 @@
 
 export class Semaphore {
   private available: number;
+  // The permits it was built with, so a reading can say how many are taken.
+  readonly permits: number;
   private readonly waiters: Array<() => void> = [];
   private readonly freed = new Set<() => void>();
 
   constructor(permits: number) {
-    this.available = Math.max(1, Math.floor(permits));
+    this.permits = Math.max(1, Math.floor(permits));
+    this.available = this.permits;
   }
 
   // A waiter whose `signal` aborts leaves the queue with the signal's reason and takes no permit:
@@ -49,6 +52,11 @@ export class Semaphore {
   // How many permits a `tryAcquire` would get right now.
   get free(): number {
     return this.available;
+  }
+
+  // How many callers are queued for a permit right now.
+  get waiting(): number {
+    return this.waiters.length;
   }
 
   // Calls `listener` each time a permit becomes free with nobody queued for it, until the returned

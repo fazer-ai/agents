@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import config from "@/config";
+import { modelPermitReading, runModelCall } from "@/graph/model-limit";
 import {
   type DebounceTickDeps,
   type LaneWait,
@@ -192,6 +193,86 @@ describe("a flush waiting for a slot of a full lane", () => {
     w.set(31_000);
     await tick(1, w.deps);
     expect(w.asked.at(-1)?.exclude).toContain(1n);
+  });
+});
+
+// The line says which of the two limits held the reply (issue #1397): a lane full of turns that are
+// not on the model is the slots' doing, and more of them would help; a lane full while the model has
+// no free permit is the permits' doing, and more slots would only queue on the semaphore.
+describe("a lane wait names the limit that is binding", () => {
+  beforeEach(emptyLane);
+
+  async function fullLaneOfTwo() {
+    const w = world();
+    w.claimable.push(job(1), job(2));
+    await tick(2, w.deps);
+    w.waitingRows.push(row(3, 0));
+    w.set(31_000);
+    await tick(2, w.deps);
+    return w;
+  }
+
+  test("turns off the model: the slots bind, with the lane and the semaphore read", async () => {
+    const w = await fullLaneOfTwo();
+    expect(w.announced).toHaveLength(1);
+    expect(w.announced[0]?.occupancy).toEqual({
+      limit: "DEBOUNCE_TURN_SLOTS",
+      laneInFlight: 2,
+      laneSlots: 2,
+      modelInFlight: 0,
+      modelPermits: modelPermitReading().permits,
+      modelWaiting: 0,
+    });
+  });
+
+  // NOTE: a turn that ends while the lane asks who is waiting has freed its slot by the time the line
+  // is written, and the line describes the lane then.
+  test("the lane is read when the line is written", async () => {
+    const w = world();
+    const ask = w.deps.waiting;
+    w.deps.waiting = async (dueBefore, exclude, b) => {
+      hung.shift()?.();
+      await new Promise((r) => setTimeout(r, 0));
+      return ask ? ask(dueBefore, exclude, b) : [];
+    };
+    w.claimable.push(job(1), job(2));
+    await tick(2, w.deps);
+    w.waitingRows.push(row(3, 0));
+    w.set(31_000);
+    await tick(2, w.deps);
+    expect(w.announced[0]?.occupancy).toMatchObject({
+      laneInFlight: 1,
+      laneSlots: 2,
+    });
+  });
+
+  test("every permit taken: the permits bind", async () => {
+    const { permits } = modelPermitReading();
+    const releases: Array<() => void> = [];
+    for (let i = 0; i < permits + 1; i++) {
+      void runModelCall(
+        () =>
+          new Promise<void>((resolve) => {
+            releases.push(resolve);
+          }),
+      ).catch(() => {});
+    }
+    try {
+      while (releases.length < permits)
+        await new Promise((r) => setTimeout(r, 1));
+      const w = await fullLaneOfTwo();
+      expect(w.announced[0]?.occupancy).toMatchObject({
+        limit: "AGENT_MODEL_CONCURRENCY",
+        modelInFlight: permits,
+        modelPermits: permits,
+        modelWaiting: 1,
+      });
+    } finally {
+      for (let i = 0; i < 4 && releases.length > 0; i++) {
+        for (const r of releases.splice(0)) r();
+        await new Promise((r) => setTimeout(r, 0));
+      }
+    }
   });
 });
 

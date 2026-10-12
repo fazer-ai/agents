@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import config from "@/config";
-import { runModelCall } from "@/graph/model-limit";
+import { type PermitWaitInfo, runModelCall } from "@/graph/model-limit";
 
 // A model call that waits for a permit of the process-wide semaphore past the threshold
 // says so ONCE, while it is still waiting. Exercises the real singleton: the permits are taken by
@@ -49,7 +49,7 @@ const LABELS = { provider: "openai", model: "gpt-test" };
 describe("a model call waiting for a permit", () => {
   test("is reported once it has waited past the threshold, while it still waits", async () => {
     const release = await holdEveryPermit();
-    const seen: Array<{ waitedMs: number; thresholdMs: number }> = [];
+    const seen: PermitWaitInfo[] = [];
     const call = runModelCall(async () => "ok", {
       primary: LABELS,
       onPermitWait: (info) => seen.push(info),
@@ -61,6 +61,14 @@ describe("a model call waiting for a permit", () => {
     expect(seen).toHaveLength(1);
     expect(seen[0]?.waitedMs).toBeGreaterThanOrEqual(THRESHOLD_MS - 5);
     expect(seen[0]?.thresholdMs).toBe(THRESHOLD_MS);
+    // It names the limit that held it, with the semaphore as it stood (issue #1397).
+    const cap = config.agent.modelConcurrency;
+    expect(seen[0]?.occupancy).toEqual({
+      limit: "AGENT_MODEL_CONCURRENCY",
+      modelInFlight: cap,
+      modelPermits: cap,
+      modelWaiting: 1,
+    });
     release();
     expect(await call).toBe("ok");
     await sleep(THRESHOLD_MS);

@@ -8,6 +8,7 @@ import {
   type StructuredToolInterface,
   ToolInputParsingException,
 } from "@langchain/core/tools";
+import { isEffectFreeTool } from "@/graph/tools/effect-free";
 import {
   type CallReport,
   type FenceName,
@@ -454,7 +455,11 @@ export async function applyDecisions(
                 if (
                   (result as { status?: unknown } | null)?.status === "error"
                 ) {
-                  // Answered with a failure after it ran: it may have reached the other side.
+                  // Answered with a failure after it ran: it may have reached the other side,
+                  // unless the tool leaves nothing behind by construction (a code tool).
+                  if (isEffectFreeTool(member.tool)) {
+                    quiet.add(member.at);
+                  }
                   slots[member.at] = {
                     rule: f.rule,
                     tool: f.tool,
@@ -501,7 +506,8 @@ export async function applyDecisions(
                 // reported before it (`committed`), the call wrote nothing.
                 if (
                   err instanceof ToolInputParsingException ||
-                  sentNothing(err)
+                  sentNothing(err) ||
+                  isEffectFreeTool(member.tool)
                 ) {
                   quiet.add(member.at);
                 }

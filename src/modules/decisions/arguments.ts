@@ -44,7 +44,20 @@ export function argSchemaOf(tool: StructuredToolInterface): ArgSchema {
     : { json: tool.schema };
 }
 
+// A schema that cannot be checked (one the validator cannot compile, such as an external `$ref`)
+// fits nothing: the call is not sent, and the other rules of the tick still run.
 export async function argsFit(
+  schema: ArgSchema,
+  args: Record<string, unknown>,
+): Promise<boolean> {
+  try {
+    return await checkArgs(schema, args);
+  } catch {
+    return false;
+  }
+}
+
+async function checkArgs(
   schema: ArgSchema,
   args: Record<string, unknown>,
 ): Promise<boolean> {

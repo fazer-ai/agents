@@ -3,7 +3,7 @@ import {
   DynamicStructuredTool,
   type StructuredToolInterface,
 } from "@langchain/core/tools";
-import { buildCodeTool } from "@/graph/tools/code";
+import { buildCodeTool, buildCodeTools } from "@/graph/tools/code";
 import { buildHttpTool } from "@/graph/tools/http";
 import { AMBIGUOUS_MCP_NAME, adoptServerTool } from "@/graph/tools/mcp";
 import { argSchemaOf, sampleArgsUnfit } from "@/modules/decisions/arguments";
@@ -433,4 +433,100 @@ test("a rule on an ambiguous MCP name is not called, spends no call and holds no
   });
   expect(r.triggerState.latch).not.toContain(ruleStateKey(rule));
   expect(after).toEqual(["ran"]);
+});
+
+// A schema the validator cannot compile fits nothing: that rule is not sent, the others still run.
+test("an MCP tool whose schema cannot be compiled is not called, and the next rule runs", async () => {
+  const sent: Record<string, unknown>[] = [];
+  const tool = new DynamicStructuredTool({
+    name: "mcp__crm__externo",
+    description: "x",
+    schema: {
+      type: "object",
+      properties: { codigo: { $ref: "https://example.com/id.json" } },
+    } as never,
+    func: async (input) => {
+      sent.push(input as Record<string, unknown>);
+      return "ok";
+    },
+  });
+  adoptServerTool(tool);
+  const after: string[] = [];
+  const next = new DynamicStructuredTool({
+    name: "avisar_slack",
+    description: "x",
+    schema: { type: "object" as const, properties: {} },
+    func: async () => {
+      after.push("ran");
+      return "ok";
+    },
+  });
+  const r = await applyDecisions(
+    {
+      rules: [
+        { when, action: { tool: tool.name, args: { codigo: "1" } } },
+        { when, action: { tool: "avisar_slack", args: {} } },
+      ],
+    },
+    answers,
+    [tool as unknown as StructuredToolInterface, next],
+    [],
+    new AbortController().signal,
+    async () => true,
+    1,
+    undefined,
+    false,
+    new Set(),
+    {},
+    async () => true,
+    { context: ctx, questions: [], logValues: true },
+  );
+  expect(sent).toEqual([]);
+  expect(r.actions[0]).toMatchObject({
+    outcome: "failed",
+    failure: "invalid_arguments",
+  });
+  expect(after).toEqual(["ran"]);
+});
+
+// A code tool leaves nothing behind: a sandbox that could not start fails the call and frees its latch.
+test("a code tool that fails releases its latch and still reports the failure", async () => {
+  const [tool] = buildCodeTools(
+    [
+      {
+        name: "registrar_caso",
+        description: "x",
+        inputSchema: COMPACT,
+        code: "return input;",
+      },
+    ] as never,
+    {
+      run: (async () => ({ kind: "unavailable", reason: "down" })) as never,
+    },
+  );
+  if (!tool) throw new Error("no tool");
+  const rule = {
+    when,
+    action: { tool: tool.name, args: { motivo: "x", telefone: "1" } },
+  };
+  const r = await applyDecisions(
+    { rules: [rule] },
+    answers,
+    [tool],
+    [],
+    new AbortController().signal,
+    async () => true,
+    1,
+    undefined,
+    false,
+    new Set(),
+    {},
+    async () => true,
+    { context: ctx, questions: [], logValues: true },
+  );
+  expect(r.actions[0]).toMatchObject({
+    outcome: "failed",
+    failure: "tool_error",
+  });
+  expect(r.triggerState.latch).not.toContain(ruleStateKey(rule));
 });

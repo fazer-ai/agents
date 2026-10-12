@@ -27,7 +27,8 @@ export function ambiguousMcpNames(
   const out = new Set<string>();
   let total = 0;
   for (const s of servers) {
-    for (const tool of s.tools) {
+    // A tool listed twice in one grant is exposed once (filterAllowed).
+    for (const tool of new Set(s.tools)) {
       total += 1;
       const base = mcpRuntimeBase(s.slug, tool);
       byBase.set(base, (byBase.get(base) ?? 0) + 1);

@@ -1065,4 +1065,22 @@ describe("the custom tools a rule is offered", () => {
     expect([...granted]).toEqual(["mcp__crm__abrir"]);
     expect(all.get("mcp__crm__abrir")?.label).toBe("crm: abrir");
   });
+
+  test("a tool listed twice in one grant is still one server's", () => {
+    const { all } = customToolsOf(
+      {
+        toolDefinitions: [],
+        codeTools: [],
+        mcpConnections: [{ id: "1", name: "crm", slug: "crm" }],
+      },
+      [
+        {
+          source: "MCP",
+          mcpServerConnectionId: "1",
+          enabledTools: ["search", "search"],
+        },
+      ],
+    );
+    expect([...all.keys()]).toEqual(["mcp__crm__search"]);
+  });
 });

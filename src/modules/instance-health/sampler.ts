@@ -9,6 +9,11 @@ import {
 } from "@/lib/pool-stats";
 import { JOB_LANE, type SchedulerLane } from "@/modules/scheduler/lanes";
 import type { SchedulerJobKind } from "@/modules/scheduler/service";
+import {
+  type JobOutcome,
+  jobsPerMinute,
+  lastCompletedAt,
+} from "@/modules/scheduler/throughput";
 import { evaluateSample, judge } from "./evaluator";
 import { asFleetForInstanceHealth } from "./fleet-tx";
 import { ingressLagP95 } from "./ingress";
@@ -16,7 +21,11 @@ import {
   POOL_NAMES,
   poolWaitersSignal,
   SIGNALS,
+  schedulerDoneSignal,
+  schedulerFailedSignal,
   schedulerQueueSignal,
+  schedulerStalledSignal,
+  THROUGHPUT_KINDS,
 } from "./signals";
 import { startInstanceAlertWorker, stopInstanceAlertWorker } from "./worker";
 
@@ -59,6 +68,14 @@ export interface SamplerSources {
   // Absent in a test that does not exercise them: no pools, no lock timeouts.
   pools?: (now: number) => PoolStat[];
   lockTimeoutsPerMinute?: (now: number) => number;
+  // What the scheduler finished and failed per kind (../scheduler/throughput.ts). Absent in a test
+  // that does not exercise them: every kind reads as never having run.
+  jobsPerMinute?: (
+    kind: SchedulerJobKind,
+    outcome: JobOutcome,
+    now: number,
+  ) => number;
+  lastCompletedAt?: (kind: SchedulerJobKind) => number | null;
   readDatabase: () => Promise<DatabaseReading>;
 }
 
@@ -140,6 +157,22 @@ export function laneAgesOf(
   return out;
 }
 
+// How long a kind's due work has gone without a completion: 0 with nothing due, otherwise the time
+// since the last completion, never longer than the oldest due row has waited (work that came due
+// after the last completion has only waited since then) nor than this process has been sampling (a
+// restart does not know what finished before it). A slow queue keeps it short however old its oldest
+// row gets; a stuck one makes it grow with that row.
+export function stalledMs(
+  oldestDueMs: number | undefined,
+  lastDoneAt: number | null,
+  firstTickAt: number,
+  now: number,
+): number {
+  if (oldestDueMs === undefined) return 0;
+  const since = now - Math.max(lastDoneAt ?? firstTickAt, firstTickAt);
+  return Math.max(0, Math.min(oldestDueMs, since));
+}
+
 // The in-process half of a tick: read, recorded and judged at once, never behind a database await.
 function sampleProcess(
   sources: SamplerSources,
@@ -155,6 +188,12 @@ function sampleProcess(
     ingress_lag_p95_ms: sources.ingressLagP95Ms(now),
     lock_timeouts_per_min: sources.lockTimeoutsPerMinute?.(now) ?? 0,
   };
+  for (const kind of THROUGHPUT_KINDS) {
+    values[schedulerDoneSignal(kind)] =
+      sources.jobsPerMinute?.(kind, "done", now) ?? 0;
+    values[schedulerFailedSignal(kind)] =
+      sources.jobsPerMinute?.(kind, "failed", now) ?? 0;
+  }
   if (sources.pools) {
     const reported = new Map(sources.pools(now).map((p) => [p.name, p]));
     for (const name of POOL_NAMES) {
@@ -198,6 +237,14 @@ async function sampleDatabase(
       const lanes = laneAgesOf(db.kindAges);
       for (const [lane, age] of Object.entries(lanes)) {
         values[schedulerQueueSignal(lane as SchedulerLane)] = age;
+      }
+      for (const kind of THROUGHPUT_KINDS) {
+        values[schedulerStalledSignal(kind)] = stalledMs(
+          db.kindAges[kind],
+          sources.lastCompletedAt?.(kind) ?? null,
+          s.firstTickAt ?? now,
+          now,
+        );
       }
     } catch (err) {
       // An unreadable database leaves those signals at their last point; the gap is the evidence.
@@ -320,6 +367,8 @@ function defaultSources(histogram: IntervalHistogram): SamplerSources {
     ingressLagP95Ms: (now) => ingressLagP95(now),
     pools: (now) => poolStats(now),
     lockTimeoutsPerMinute: (now) => lockTimeoutsPerMinute(now),
+    jobsPerMinute: (kind, outcome, now) => jobsPerMinute(kind, outcome, now),
+    lastCompletedAt: (kind) => lastCompletedAt(kind),
     readDatabase: () => readDatabaseSignals(),
   };
 }

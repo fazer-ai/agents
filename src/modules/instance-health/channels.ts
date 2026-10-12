@@ -14,7 +14,7 @@ import {
   sendAlert,
 } from "@/modules/flowlog/alert-send";
 import { invalidateThresholds } from "./evaluator";
-import { isSignalKey, SIGNALS } from "./signals";
+import { isSignalKey, SIGNALS, signalDef } from "./signals";
 
 // The instance's alert channels and thresholds (docs/logs.md, instance alerts). Same shape as a
 // tenant's channel (Discord or webhook, URL encrypted and only ever shown masked), with no tenant:
@@ -514,6 +514,7 @@ export interface InstanceThresholdDto {
   isDefault: boolean;
   defaultThreshold: number;
   defaultDurationSeconds: number;
+  defaultEnabled: boolean;
 }
 
 export async function listInstanceThresholds(
@@ -530,10 +531,11 @@ export async function listInstanceThresholds(
       unit: s.unit,
       threshold: r?.threshold ?? s.defaultThreshold,
       durationSeconds: r?.durationSeconds ?? s.defaultDurationSeconds,
-      enabled: r?.enabled ?? true,
+      enabled: r?.enabled ?? s.defaultEnabled ?? true,
       isDefault: r === undefined,
       defaultThreshold: s.defaultThreshold,
       defaultDurationSeconds: s.defaultDurationSeconds,
+      defaultEnabled: s.defaultEnabled ?? true,
     };
   });
 }
@@ -571,7 +573,11 @@ export async function setInstanceThreshold(
     const data = {
       threshold: parsed.threshold,
       durationSeconds: parsed.durationSeconds,
-      enabled: parsed.enabled ?? before?.enabled ?? true,
+      enabled:
+        parsed.enabled ??
+        before?.enabled ??
+        signalDef(signal)?.defaultEnabled ??
+        true,
     };
     await db.instanceAlertThreshold.upsert({
       where: { signal },

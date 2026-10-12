@@ -98,7 +98,7 @@ async function thresholds(now: number): Promise<Map<string, Threshold>> {
     out.set(def.name, {
       threshold: r?.threshold ?? def.defaultThreshold,
       durationSeconds: r?.durationSeconds ?? def.defaultDurationSeconds,
-      enabled: r?.enabled ?? true,
+      enabled: r?.enabled ?? def.defaultEnabled ?? true,
     });
   }
   // A breach measured against the old limit says nothing about the new one: it restarts.

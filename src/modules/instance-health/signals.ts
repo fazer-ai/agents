@@ -1,4 +1,9 @@
-import type { SchedulerLane } from "@/modules/scheduler/lanes";
+import {
+  JOB_DELETE_ON_DONE,
+  JOB_LANE,
+  type SchedulerLane,
+} from "@/modules/scheduler/lanes";
+import type { SchedulerJobKind } from "@/modules/scheduler/service";
 
 // The instance's own load, as a closed list of signals (docs/logs.md, instance alerts). Each one is
 // a number sampled by ./sampler.ts and compared, "above X for Y seconds", against its threshold: the
@@ -13,6 +18,8 @@ export interface SignalDef {
   defaultDurationSeconds: number;
   // How often the sampler refreshes it. A database read is slower than an in-process counter.
   source: "process" | "database";
+  // Whether it alerts before a super admin says otherwise; absent means it does.
+  defaultEnabled?: boolean;
 }
 
 const LANES: SchedulerLane[] = ["shared", "debounce", "compaction", "observe"];
@@ -28,6 +35,43 @@ const LANE_DEFAULT_MS: Record<SchedulerLane, number> = {
 
 export function schedulerQueueSignal(lane: SchedulerLane): string {
   return `scheduler_queue_age_ms:${lane}`;
+}
+
+// The kinds whose row is deleted on DONE, so the table keeps no record that they ran:
+// for these the process counts what finished and failed, and how long due work has gone without a
+// completion. A kind that keeps its DONE row is not here: its rows already say what ran.
+export const THROUGHPUT_KINDS = (
+  Object.entries(JOB_DELETE_ON_DONE) as [SchedulerJobKind, boolean][]
+)
+  .filter(([, deleted]) => deleted)
+  .map(([kind]) => kind);
+
+export function schedulerDoneSignal(kind: SchedulerJobKind): string {
+  return `scheduler_done_per_min:${kind}`;
+}
+
+export function schedulerFailedSignal(kind: SchedulerJobKind): string {
+  return `scheduler_failed_per_min:${kind}`;
+}
+
+export function schedulerStalledSignal(kind: SchedulerJobKind): string {
+  return `scheduler_stalled_ms:${kind}`;
+}
+
+// The kind a throughput signal is about, and which of the three it is.
+export function throughputOfSignal(
+  key: string,
+): { kind: SchedulerJobKind; measure: "done" | "failed" | "stalled" } | null {
+  const m =
+    /^scheduler_(done_per_min|failed_per_min|stalled_ms):([A-Z_]+)$/.exec(key);
+  if (!m || !THROUGHPUT_KINDS.includes(m[2] as SchedulerJobKind)) return null;
+  const measure =
+    m[1] === "done_per_min"
+      ? "done"
+      : m[1] === "failed_per_min"
+        ? "failed"
+        : "stalled";
+  return { kind: m[2] as SchedulerJobKind, measure };
 }
 
 // The database pools the process opens (src/lib/pool-stats.ts registers them under these names). The
@@ -122,6 +166,35 @@ export const SIGNALS: readonly SignalDef[] = [
       source: "database",
     }),
   ),
+  // Per kind deleted on DONE: the two rates are there to read, not to page on (a busy queue completes
+  // a lot, and a failure already reaches the tenant's dead-letter line once retries run out), so they
+  // start muted. The stall is what tells a stuck queue from a slow one, and it alerts at the ceiling
+  // of the kind's lane.
+  ...THROUGHPUT_KINDS.flatMap((kind): SignalDef[] => [
+    {
+      name: schedulerDoneSignal(kind),
+      unit: "per_minute",
+      defaultThreshold: 0,
+      defaultDurationSeconds: 0,
+      source: "process",
+      defaultEnabled: false,
+    },
+    {
+      name: schedulerFailedSignal(kind),
+      unit: "per_minute",
+      defaultThreshold: 0,
+      defaultDurationSeconds: 0,
+      source: "process",
+      defaultEnabled: false,
+    },
+    {
+      name: schedulerStalledSignal(kind),
+      unit: "ms",
+      defaultThreshold: LANE_DEFAULT_MS[JOB_LANE[kind]],
+      defaultDurationSeconds: 0,
+      source: "database",
+    },
+  ]),
 ];
 
 const BY_KEY = new Map(SIGNALS.map((s) => [s.name, s]));

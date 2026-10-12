@@ -282,6 +282,63 @@ describe.skipIf(!dbUp)("above X for Y seconds", () => {
     expect(rows[0]?.summary).toContain("above 200 ms for 30 s");
   });
 
+  test("a kind's completion and failure rates never page by default, its stall does, once (catches a busy queue paging for working)", async () => {
+    await channel();
+    const t0 = 3_000_000;
+    // A failing, busy kind: rates far above 0, and due work stalled past the shared lane's 5 min.
+    for (let s = 0; s <= 30; s += 15) {
+      await evaluateSample(
+        {
+          "scheduler_done_per_min:INGEST_MESSAGE": 400,
+          "scheduler_failed_per_min:INGEST_MESSAGE": 12,
+          "scheduler_stalled_ms:DELIVERY_RECOVERY": 301_000 + s * 1000,
+        },
+        t0 + s * 1000,
+      );
+    }
+    await evaluateSample(
+      { "scheduler_stalled_ms:DELIVERY_RECOVERY": 2_000 },
+      t0 + 45_000,
+    );
+    const rows = await deliveries();
+    expect(rows.map((r) => [r.signal, r.kind])).toEqual([
+      ["scheduler_stalled_ms:DELIVERY_RECOVERY", "firing"],
+      ["scheduler_stalled_ms:DELIVERY_RECOVERY", "recovered"],
+    ]);
+    const listed = await listInstanceThresholds(appDb);
+    const done = listed.find(
+      (t) => t.signal === "scheduler_done_per_min:INGEST_MESSAGE",
+    );
+    expect([done?.enabled, done?.defaultEnabled, done?.isDefault]).toEqual([
+      false,
+      false,
+      true,
+    ]);
+  });
+
+  test("a muted-by-default rate turned on alerts, and a threshold saved without the switch keeps it muted (catches an edit silently unmuting a rate)", async () => {
+    await channel();
+    const signal = "scheduler_failed_per_min:TAKEOVER_RECOVERY";
+    await setInstanceThreshold(
+      FLEET,
+      signal,
+      { threshold: 5, durationSeconds: 0 },
+      appDb,
+    );
+    await evaluateSample({ [signal]: 9 }, 4_000_000);
+    expect(await deliveries()).toEqual([]);
+    await setInstanceThreshold(
+      FLEET,
+      signal,
+      { threshold: 5, durationSeconds: 0, enabled: true },
+      appDb,
+    );
+    await evaluateSample({ [signal]: 9 }, 4_005_000);
+    expect((await deliveries()).map((r) => [r.signal, r.kind])).toEqual([
+      [signal, "firing"],
+    ]);
+  });
+
   test("an alert whose write failed is retried on the next sample (catches a firing marked but never sent)", async () => {
     await channel();
     await evaluateSample({ ingress_lag_p95_ms: 0 }, 7_000_000);

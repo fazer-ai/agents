@@ -35,6 +35,7 @@ import {
   rescheduleJob,
 } from "./service";
 import { StartWindow } from "./start-window";
+import { recordJobOutcome } from "./throughput";
 
 // Single-replica worker that drains the scheduler. The handler registry decouples the scheduler
 // from feature logic; a job kind with no handler fails (and eventually goes DEAD) rather than
@@ -239,6 +240,8 @@ export async function announceReaped(
   base: PrismaClient,
 ): Promise<void> {
   for (const job of reaped) {
+    // A claim that never finished is a failed attempt of its kind, whichever process held it.
+    recordJobOutcome(job.kind, "failed");
     if (job.status === "DEAD") {
       await dispatchDeadLetter(job, REAPED_DEATH_ERROR, base);
     }
@@ -262,6 +265,7 @@ async function fail(
     base,
   );
   if (!applied) await supersededWarning(job, "fail", base);
+  else recordJobOutcome(job.kind, "failed");
   if (deadLettered) await dispatchDeadLetter(job, error, base);
 }
 
@@ -392,6 +396,7 @@ async function settle(
       base,
     );
     if (!applied) await supersededWarning(job, "done", base);
+    else recordJobOutcome(job.kind, "done");
   } else if (result.outcome === "reschedule") {
     const { applied } = await rescheduleJob(
       job.tenantId,

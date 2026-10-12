@@ -11,7 +11,13 @@ import {
   type SamplePoint,
   snapshot,
 } from "./sampler";
-import { signalDef } from "./signals";
+import {
+  schedulerDoneSignal,
+  schedulerFailedSignal,
+  schedulerStalledSignal,
+  signalDef,
+  THROUGHPUT_KINDS,
+} from "./signals";
 
 // What the "Instance health" screen, the REST route and the MCP tool read: every signal's last
 // value, its last hour, and the threshold it is held to.
@@ -44,6 +50,34 @@ export interface InstanceHealthDto {
     string,
     { inUse: number; idle: number; waiting: number; oldestWaitMs: number }
   >;
+  // Per kind deleted on DONE: what it finished and failed in the last minute, how
+  // overdue its oldest due job is (null with none due), how long that due work has gone without a
+  // completion, and the reading of the three together.
+  schedulerThroughput: Record<string, KindThroughputDto>;
+}
+
+export type KindThroughputState = "idle" | "draining" | "stuck" | "unknown";
+
+export interface KindThroughputDto {
+  donePerMin: number | null;
+  failedPerMin: number | null;
+  oldestDueMs: number | null;
+  stalledMs: number | null;
+  state: KindThroughputState;
+}
+
+// A kind is stuck once due work has gone a whole rate window (the minute the per-minute counts cover)
+// without a completion: zero completions with jobs due. Whether that alerts is the stalled signal's
+// threshold, which waits longer by default.
+export const STUCK_AFTER_MS = 60_000;
+
+export function kindThroughputState(
+  oldestDueMs: number | null,
+  stalledMs: number | null,
+): KindThroughputState {
+  if (stalledMs === null) return "unknown";
+  if (oldestDueMs === null) return "idle";
+  return stalledMs >= STUCK_AFTER_MS ? "stuck" : "draining";
 }
 
 // A signal is stale after this many of its own refreshes went by without a new value.
@@ -110,5 +144,24 @@ export async function readInstanceHealth(
       ]),
     ),
     pools: snap.pools,
+    schedulerThroughput: Object.fromEntries(
+      THROUGHPUT_KINDS.map((kind) => {
+        const value = (signal: string) =>
+          snap.signals.find((s) => s.signal === signal)?.value ?? null;
+        const stalledMs = value(schedulerStalledSignal(kind));
+        const age = snap.schedulerKinds[kind];
+        const oldestDueMs = age === undefined ? null : Math.round(age);
+        return [
+          kind,
+          {
+            donePerMin: value(schedulerDoneSignal(kind)),
+            failedPerMin: value(schedulerFailedSignal(kind)),
+            oldestDueMs,
+            stalledMs,
+            state: kindThroughputState(oldestDueMs, stalledMs),
+          },
+        ];
+      }),
+    ),
   };
 }

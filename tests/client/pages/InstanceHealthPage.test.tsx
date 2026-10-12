@@ -86,6 +86,67 @@ const EXTRA = {
   ],
 };
 let withExtra = false;
+// One kind deleted on DONE, with its three signals and its reading.
+let withKind = false;
+let puts: { path: string; body: unknown }[] = [];
+const kindSignal = (
+  signal: string,
+  unit: string,
+  value: number,
+  threshold: number,
+  enabled: boolean,
+) => ({
+  signal,
+  unit,
+  value,
+  at: new Date().toISOString(),
+  threshold,
+  durationSeconds: 0,
+  enabled,
+  firing: false,
+  stale: false,
+  history: [{ at: Date.now(), value }],
+});
+type KindReading = {
+  donePerMin: number;
+  failedPerMin: number;
+  oldestDueMs: number | null;
+  stalledMs: number;
+  state: string;
+};
+const DRAINING: KindReading = {
+  donePerMin: 12,
+  failedPerMin: 3,
+  oldestDueMs: 480_000,
+  stalledMs: 10_000,
+  state: "draining",
+};
+let kindReading = DRAINING;
+const KIND = {
+  signals: [
+    kindSignal(
+      "scheduler_done_per_min:DELIVERY_RECOVERY",
+      "per_minute",
+      12,
+      0,
+      false,
+    ),
+    kindSignal(
+      "scheduler_failed_per_min:DELIVERY_RECOVERY",
+      "per_minute",
+      3,
+      7,
+      false,
+    ),
+    kindSignal(
+      "scheduler_stalled_ms:DELIVERY_RECOVERY",
+      "ms",
+      10_000,
+      300_000,
+      true,
+    ),
+  ],
+};
 // The shared lane as a database half failing since boot leaves it: no value, no kinds.
 let laneNeverRead = false;
 let healthOk = true;
@@ -140,6 +201,9 @@ beforeEach(() => {
   channelReads = 0;
   channelPending = false;
   withExtra = false;
+  withKind = false;
+  kindReading = DRAINING;
+  puts = [];
   laneNeverRead = false;
   healthReads = 0;
   slowChannels = null;
@@ -153,6 +217,13 @@ beforeEach(() => {
     ).toUpperCase();
     if (url.pathname.startsWith("/api/v1/instance-health/thresholds/")) {
       if (method === "PUT") {
+        const body =
+          input instanceof Request ? await input.clone().text() : init?.body;
+        puts.push({
+          path: url.pathname,
+          body: JSON.parse(String(body ?? "null")),
+        });
+        if (withKind) return json({ signal: url.pathname, threshold: 9 });
         await new Promise<void>((resolve) => {
           releaseSave = resolve;
         });
@@ -179,6 +250,17 @@ beforeEach(() => {
         value,
         stale: signalStale,
       }));
+      if (withKind) {
+        return json({
+          ...HEALTH,
+          health: {
+            ...HEALTH.health,
+            schedulerKinds: { DELIVERY_RECOVERY: 480_000 },
+            schedulerThroughput: { DELIVERY_RECOVERY: kindReading },
+            signals: [...signals, ...KIND.signals],
+          },
+        });
+      }
       if (withExtra) {
         return json({
           ...HEALTH,
@@ -639,6 +721,82 @@ describe("instance health screen", () => {
     if (!card) throw new Error("no card around the lock timeouts signal");
     fireEvent.click(within(card).getByLabelText("Edit threshold"));
     await screen.findByLabelText("Alert when above (per minute)");
+  });
+
+  test("a kind deleted on DONE is one card: its stall, with its rates and reading beside it, and its dialog edits each of the three (catches a slow queue and a stuck one looking the same)", async () => {
+    withKind = true;
+    render(
+      <MemoryRouter initialEntries={["/admin/instance-health"]}>
+        <ThemeProvider>
+          <TooltipProvider>
+            <ToastProvider>
+              <NavGuardProvider>
+                <InstanceHealthPage pollMs={20} />
+              </NavGuardProvider>
+            </ToastProvider>
+          </TooltipProvider>
+        </ThemeProvider>
+      </MemoryRouter>,
+    );
+    await screen.findByText(
+      "12/min completed · 3/min failed · oldest due 8.0 min · draining",
+    );
+    expect(
+      Boolean(screen.queryByText("DELIVERY_RECOVERY: no progress for")),
+    ).toBe(true);
+    // The same card reads the other two states the server sends.
+    kindReading = {
+      donePerMin: 0,
+      failedPerMin: 3,
+      oldestDueMs: 480_000,
+      stalledMs: 480_000,
+      state: "stuck",
+    };
+    await screen.findByText(
+      "0/min completed · 3/min failed · oldest due 8.0 min · stuck",
+    );
+    kindReading = {
+      donePerMin: 0,
+      failedPerMin: 0,
+      oldestDueMs: null,
+      stalledMs: 0,
+      state: "idle",
+    };
+    await screen.findByText("0/min completed · 0/min failed · nothing due");
+    // The rates ride on that card, not on cards of their own.
+    expect(
+      Boolean(screen.queryByText("DELIVERY_RECOVERY: completed per minute")),
+    ).toBe(false);
+    let card: HTMLElement | null = screen.getByText(
+      "DELIVERY_RECOVERY: no progress for",
+    );
+    while (card && !within(card).queryByLabelText("Edit threshold")) {
+      card = card.parentElement;
+    }
+    if (!card) throw new Error("no card around the kind");
+    fireEvent.click(within(card).getByLabelText("Edit threshold"));
+    await screen.findByText("Thresholds: DELIVERY_RECOVERY");
+    const field = () =>
+      screen.getByLabelText(/Alert when above/) as HTMLInputElement;
+    expect([field().value, field().labels?.[0]?.textContent]).toEqual([
+      "300000",
+      "Alert when above (milliseconds)",
+    ]);
+    fireEvent.click(screen.getByLabelText("Failed"));
+    await waitFor(() => expect(field().value).toBe("7"));
+    expect(field().labels?.[0]?.textContent).toBe(
+      "Alert when above (per minute)",
+    );
+    const sw = screen.getByLabelText("Alert on this signal");
+    expect(sw.getAttribute("aria-checked")).toBe("false");
+    fireEvent.change(field(), { target: { value: "9" } });
+    fireEvent.click(sw);
+    fireEvent.click(screen.getByText("Save"));
+    await waitFor(() => expect(puts.length).toBe(1));
+    expect(puts[0]).toEqual({
+      path: "/api/v1/instance-health/thresholds/scheduler_failed_per_min:DELIVERY_RECOVERY",
+      body: { threshold: 9, durationSeconds: 0, enabled: true },
+    });
   });
 
   test("a lane never read says nothing about its jobs (catches 'no job overdue' with no reading behind it)", async () => {

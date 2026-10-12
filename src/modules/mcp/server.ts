@@ -3553,7 +3553,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "instance_health_get",
       {
         description:
-          "Read the instance's own load: every signal (scheduler queue age per lane, model permit waiters, debounce lane, ingress lag, event-loop delay, pending Chatwoot deliveries) with its last value, the last hour sampled every 5 s, its threshold (\"above X for Y seconds\") and whether it is firing, plus each signal's default. In memory: a restart starts the history empty. SUPER_ADMIN only.",
+          "Read the instance's own load: every signal (scheduler queue age per lane, model permit waiters, debounce lane, ingress lag, event-loop delay, pending Chatwoot deliveries, pool waiters, lock timeouts, and per job kind deleted on completion its completions and failures per minute and how long its due jobs have gone without a completion) with its last value, the last hour sampled every 5 s, its threshold (\"above X for Y seconds\") and whether it is firing, plus each signal's default. `schedulerThroughput` reads each of those kinds as idle, draining or stuck. In memory: a restart starts the history empty. SUPER_ADMIN only.",
         inputSchema: {},
       },
       async () => writeContent(await instanceHealthGet(principal)),

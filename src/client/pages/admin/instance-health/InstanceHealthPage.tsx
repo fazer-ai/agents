@@ -21,6 +21,7 @@ import {
   Modal,
   ModalCancelButton,
   type ModalController,
+  SegmentedControl,
   Skeleton,
   Switch,
   useModalController,
@@ -30,6 +31,7 @@ import {
 import { useAuth } from "@/client/contexts/AuthContext";
 import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
+import { throughputOfSignal } from "@/modules/instance-health/signals";
 import { JOB_LANE } from "@/modules/scheduler/lanes";
 import type { SchedulerJobKind } from "@/modules/scheduler/service";
 import { InstanceAlertChannels } from "./InstanceAlertChannels";
@@ -52,6 +54,8 @@ const CARD_SKELETON_KEYS = ["s-0", "s-1", "s-2", "s-3", "s-4", "s-5"];
 
 interface ThresholdPayload {
   signal: Signal;
+  // A kind's card edits its three signals from one dialog: the stall, and the two rates.
+  choices?: Signal[];
 }
 
 function ThresholdModal({
@@ -65,20 +69,23 @@ function ThresholdModal({
   const enabledId = useId();
   const thresholdId = useId();
   const durationId = useId();
-  const signal = modal.payload?.signal;
+  const [signal, setSignal] = useState<Signal | undefined>(undefined);
+  const choices = modal.payload?.choices;
   const [threshold, setThreshold] = useState("");
   const [duration, setDuration] = useState("");
   const [enabled, setEnabled] = useState(true);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
-  useOnModalOpen(modal, () => {
-    const s = modal.payload?.signal;
+  const fill = (s: Signal | undefined) => {
+    setSignal(s);
     setThreshold(String(s?.threshold ?? 0));
     setDuration(String(s?.durationSeconds ?? 0));
     setEnabled(s?.enabled ?? true);
     setError("");
-  });
+  };
+
+  useOnModalOpen(modal, () => fill(modal.payload?.signal));
 
   const thresholdNum = Number(threshold);
   const durationNum = Number(duration);
@@ -150,9 +157,13 @@ function ThresholdModal({
       onCloseRequest={loading ? () => undefined : undefined}
       title={
         signal
-          ? t("instanceHealth.thresholdTitle", "Threshold: {{signal}}", {
-              signal: signalLabel(signal.signal, t),
-            })
+          ? choices
+            ? t("instanceHealth.kindThresholdTitle", "Thresholds: {{kind}}", {
+                kind: throughputOfSignal(signal.signal)?.kind ?? "",
+              })
+            : t("instanceHealth.thresholdTitle", "Threshold: {{signal}}", {
+                signal: signalLabel(signal.signal, t),
+              })
           : ""
       }
     >
@@ -167,6 +178,20 @@ function ThresholdModal({
           <div className="rounded-lg border border-error bg-error-soft px-4 py-2 text-error text-sm">
             {error}
           </div>
+        )}
+        {choices && signal && (
+          <SegmentedControl
+            aria-label={t("instanceHealth.kindSignalPick", "Signal")}
+            value={signal.signal}
+            onChange={(key) => {
+              if (loading) return;
+              fill(choices.find((c) => c.signal === key));
+            }}
+            options={choices.map((c) => ({
+              value: c.signal,
+              label: kindMeasureLabel(c.signal, t),
+            }))}
+          />
         )}
         <div>
           <label
@@ -352,6 +377,53 @@ function SignalCard({
   );
 }
 
+// The segment names in a kind's dialog: which of its three signals the fields below edit.
+function kindMeasureLabel(
+  signal: string,
+  t: ReturnType<typeof useTranslation>["t"],
+): string {
+  const measure = throughputOfSignal(signal)?.measure;
+  if (measure === "done") {
+    return t("instanceHealth.kindMeasureDone", "Completed");
+  }
+  if (measure === "failed") {
+    return t("instanceHealth.kindMeasureFailed", "Failed");
+  }
+  return t("instanceHealth.kindMeasureStalled", "No progress");
+}
+
+// The line under a kind's card: its two rates, how overdue its oldest due job is, and the reading of
+// the three.
+function kindDetail(
+  kind: string,
+  health: Health,
+  t: ReturnType<typeof useTranslation>["t"],
+): string | null {
+  const k = health.schedulerThroughput[kind];
+  if (!k || k.state === "unknown") return null;
+  const parts = [
+    t("instanceHealth.kindRates", "{{done}} completed · {{failed}} failed", {
+      done: formatSignalValue(k.donePerMin ?? 0, "per_minute"),
+      failed: formatSignalValue(k.failedPerMin ?? 0, "per_minute"),
+    }),
+  ];
+  if (k.oldestDueMs !== null) {
+    parts.push(
+      t("instanceHealth.kindOldestDue", "oldest due {{age}}", {
+        age: formatSignalValue(k.oldestDueMs, "ms"),
+      }),
+    );
+  }
+  parts.push(
+    k.state === "stuck"
+      ? t("instanceHealth.kindStuck", "stuck")
+      : k.state === "draining"
+        ? t("instanceHealth.kindDraining", "draining")
+        : t("instanceHealth.kindIdle", "nothing due"),
+  );
+  return parts.join(" · ");
+}
+
 // The line under a card's value: a pool's connections, or each kind of a scheduler lane with its age.
 function signalDetail(
   signal: string,
@@ -500,14 +572,32 @@ export function InstanceHealthPage({ pollMs = POLL_MS }: { pollMs?: number }) {
           }
         >
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
-            {health?.signals.map((s) => (
-              <SignalCard
-                key={s.signal}
-                signal={s}
-                detail={signalDetail(s.signal, health, t)}
-                onEdit={() => thresholdModal.open({ signal: s })}
-              />
-            ))}
+            {health?.signals.map((s) => {
+              const tp = throughputOfSignal(s.signal);
+              // A kind's rates ride on its stall card, which edits all three.
+              if (tp && tp.measure !== "stalled") return null;
+              if (tp) {
+                const choices = health.signals.filter(
+                  (o) => throughputOfSignal(o.signal)?.kind === tp.kind,
+                );
+                return (
+                  <SignalCard
+                    key={s.signal}
+                    signal={s}
+                    detail={kindDetail(tp.kind, health, t)}
+                    onEdit={() => thresholdModal.open({ signal: s, choices })}
+                  />
+                );
+              }
+              return (
+                <SignalCard
+                  key={s.signal}
+                  signal={s}
+                  detail={signalDetail(s.signal, health, t)}
+                  onEdit={() => thresholdModal.open({ signal: s })}
+                />
+              );
+            })}
           </div>
         </DataBoundary>
       </section>

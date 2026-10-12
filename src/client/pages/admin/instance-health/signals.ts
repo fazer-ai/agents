@@ -1,4 +1,5 @@
 import type { TFunction } from "i18next";
+import { throughputOfSignal } from "@/modules/instance-health/signals";
 
 // The screen's names for each instance signal. The key carries a `:` (the scheduler lane), which
 // i18next reads as a namespace separator, so the label key spells it with `_`.
@@ -43,12 +44,57 @@ export function signalI18nKey(signal: string): string {
   return signal.replace(/:/g, "_");
 }
 
+// The three signals of a kind deleted on DONE are named from the kind, so the eight
+// kinds share one phrase per measure instead of a key each.
+function throughputLabel(signal: string, t: TFunction): string | null {
+  const tp = throughputOfSignal(signal);
+  if (!tp) return null;
+  if (tp.measure === "done") {
+    return t("instanceHealth.kindDone", "{{kind}}: completed per minute", {
+      kind: tp.kind,
+    });
+  }
+  if (tp.measure === "failed") {
+    return t("instanceHealth.kindFailed", "{{kind}}: failed per minute", {
+      kind: tp.kind,
+    });
+  }
+  return t("instanceHealth.kindStalled", "{{kind}}: no progress for", {
+    kind: tp.kind,
+  });
+}
+
+function throughputHelp(signal: string, t: TFunction): string | null {
+  const tp = throughputOfSignal(signal);
+  if (!tp) return null;
+  if (tp.measure === "done") {
+    return t(
+      "instanceHealth.kindDoneHelp",
+      "Jobs of this kind this process finished in the last minute. Their rows are deleted when they finish, so this is the only record that they ran. Not alerting by default.",
+    );
+  }
+  if (tp.measure === "failed") {
+    return t(
+      "instanceHealth.kindFailedHelp",
+      "Runs of this kind that failed in the last minute, retries included, and claims taken back after a crash. Not alerting by default: a job that runs out of retries already reaches the tenant's alerts.",
+    );
+  }
+  return t(
+    "instanceHealth.kindStalledHelp",
+    "How long jobs of this kind have been due with none finishing. A slow queue keeps it short, since each completion resets it; a stuck one makes it grow. 0 when nothing is due.",
+  );
+}
+
 export function signalLabel(signal: string, t: TFunction): string {
+  const tp = throughputLabel(signal, t);
+  if (tp) return tp;
   // biome-ignore lint/plugin/no-dynamic-i18n-key: extracted via magic comments above
   return t(`instanceHealth.signal.${signalI18nKey(signal)}`, signal);
 }
 
 export function signalHelp(signal: string, t: TFunction): string {
+  const tp = throughputHelp(signal, t);
+  if (tp) return tp;
   // biome-ignore lint/plugin/no-dynamic-i18n-key: extracted via magic comments above
   return t(`instanceHealth.help.${signalI18nKey(signal)}`, "");
 }

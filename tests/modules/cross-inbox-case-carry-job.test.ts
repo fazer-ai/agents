@@ -19,6 +19,7 @@ import {
 import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogRows } from "../utils/flowlog";
+import { until } from "../utils/poll";
 import { burnSchedulerJobId } from "../utils/scheduler";
 
 // The files that reach the origin after the case opened: the job the tool and the webhook arm, which
@@ -882,6 +883,67 @@ describe.skipIf(!dbUp)("the late carry into the case", () => {
       expect(
         (await rowOf(130))?.payload as { owedSince?: number },
       ).toMatchObject({ owedSince: Math.floor(early.getTime() / 1000) });
+    });
+
+    test("an arm that read the origin before a /reset does not replace the arm that came after it", async () => {
+      await setAgent({});
+      await seed(141);
+      const key = caseCarryDedupeKey(
+        chatwootThreadId(tenantId, instanceId, 141),
+      );
+      let stale: Promise<unknown> = Promise.resolve();
+      // The lock held while the stale arm (9002) waits for it, having read the origin with no reset:
+      // in the meantime the reset (9003) lands and a file after it (9004) arms the row.
+      await suDb.$transaction(
+        async (tx) => {
+          await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${key})::bigint)`;
+          stale = arm(141, 9002);
+          // The stale arm has read the origin and waits on this key's lock.
+          await until("the stale arm waiting on the lock", async () => {
+            const [w] = await suDb.$queryRaw<{ n: bigint }[]>`
+              SELECT count(*)::bigint AS n FROM pg_locks
+              WHERE locktype = 'advisory' AND NOT granted AND objsubid = 1
+                AND objid::bigint = (hashtext(${key})::bigint & 4294967295)
+                AND classid::bigint = ((hashtext(${key})::bigint >> 32) & 4294967295)`;
+            return Number(w?.n ?? 0) > 0;
+          });
+          await tx.conversation.updateMany({
+            where: { tenantId, chatwootConversationId: 141 },
+            data: { resetAtMessageId: 9003 },
+          });
+          await tx.schedulerJob.create({
+            data: {
+              tenantId,
+              kind: "CASE_CARRY",
+              dedupeKey: key,
+              status: "PENDING",
+              runAt: new Date(Date.now() + CASE_CARRY_DELAY_MS),
+              payload: {
+                instanceId: String(instanceId),
+                originConversationId: 141,
+                caseId: CASE,
+                armedAtMessageId: 9004,
+                owedSince: null,
+              },
+            },
+          });
+        },
+        { timeout: 10_000 },
+      );
+      expect(await stale).toBe("reset");
+      expect((await rowOf(141))?.payload).toMatchObject({
+        armedAtMessageId: 9004,
+      });
+    });
+
+    test("an arm that lands out of order keeps the newer arming message", async () => {
+      await setAgent({});
+      await seed(142);
+      await arm(142, 9005);
+      await arm(142, 9004);
+      expect((await rowOf(142))?.payload).toMatchObject({
+        armedAtMessageId: 9005,
+      });
     });
 
     test("nothing is armed under a reset, a switched-off agent, a person, or the block off", async () => {

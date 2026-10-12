@@ -303,6 +303,16 @@ describe.skipIf(!dbUp)("the webhook arms the late carry", () => {
     }
   });
 
+  test("an image that arrives on message_updated arms the carry too", async () => {
+    // UAZAPI may create the message bare and attach the image on the update.
+    await seedConv(97_010);
+    await deliver(97_010, { event: "message_updated", messageId: 9010 });
+    expect((await rowOf(97_010))?.payload).toMatchObject({
+      caseId: CASE,
+      armedAtMessageId: 9010,
+    });
+  });
+
   test("with the files block off nothing is armed", async () => {
     await suDb.agent.update({
       where: { id: agentId },

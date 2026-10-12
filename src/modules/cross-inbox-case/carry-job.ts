@@ -206,8 +206,16 @@ export async function armCaseCarry(
   // A row still waiting (or retrying) owes files from its own instant on: the new arm keeps the
   // earlier of the two, or a file that failed before this one would fall outside the boundary. Read
   // and re-armed under one lock per origin, so two files arming at once cannot both read the old row.
-  await runScopedOn(p.base, sysCtx(p.tenantId), (db) =>
-    withEntityLock(db, dedupeKey, async () => {
+  // The reset is read AGAIN under the lock: the read above may predate a /reset, and an arm from
+  // before it would replace a row a file after it armed, which then stands down as withdrawn.
+  return runScopedOn(p.base, sysCtx(p.tenantId), (db) =>
+    withEntityLock(db, dedupeKey, async (): Promise<"armed" | "reset"> => {
+      const conv = await db.conversation.findUnique({
+        where: { id: state.conversationRowId },
+        select: { resetAtMessageId: true },
+      });
+      const reset = conv?.resetAtMessageId ?? null;
+      if (resetLandedAfter(p.armedAtMessageId, reset)) return "reset";
       const waiting = await db.schedulerJob.findFirst({
         where: {
           kind: "CASE_CARRY",
@@ -216,7 +224,20 @@ export async function armCaseCarry(
         },
         select: { payload: true },
       });
-      const earlier = positiveInt(field(waiting?.payload, "owedSince"));
+      // A waiting row from before the reset owes nothing any more.
+      const waitingArmed = positiveInt(
+        field(waiting?.payload, "armedAtMessageId"),
+      );
+      const live = waiting && !resetLandedAfter(waitingArmed, reset);
+      const earlier = live
+        ? positiveInt(field(waiting.payload, "owedSince"))
+        : null;
+      // The newest arming message wins: arms can land out of order, and the older one would let a
+      // reset between the two withdraw the newer file.
+      const armedAtMessageId =
+        live && waitingArmed !== null && p.armedAtMessageId !== null
+          ? Math.max(waitingArmed, p.armedAtMessageId)
+          : p.armedAtMessageId;
       await upsertJobRow(db, {
         tenantId: p.tenantId,
         kind: "CASE_CARRY",
@@ -226,7 +247,7 @@ export async function armCaseCarry(
           instanceId: String(p.instanceId),
           originConversationId: p.originConversationId,
           caseId: p.caseId,
-          armedAtMessageId: p.armedAtMessageId,
+          armedAtMessageId,
           owedSince:
             owed === null || earlier === null
               ? (owed ?? earlier)
@@ -235,9 +256,9 @@ export async function armCaseCarry(
         // A new file is new work: a failure budget spent on an older one does not carry over.
         rearm: "new-work",
       });
+      return "armed";
     }),
   );
-  return "armed";
 }
 
 function positiveInt(v: unknown): number | null {

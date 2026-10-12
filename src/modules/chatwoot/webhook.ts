@@ -1669,6 +1669,19 @@ function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+// A contact message that gained a file after its creation, of ANY type: what the late case carry
+// (../cross-inbox-case/carry-job.ts) arms on. Wider than `hasPendingInboundMediaUpdate`, which is
+// STT's and audio only: on UAZAPI an image arrives the same way (docs/stt.md).
+export function hasInboundAttachmentUpdate(
+  n: NormalizedChatwootEvent,
+): boolean {
+  return (
+    n.event === "message_updated" &&
+    isIncomingMessage(n) &&
+    (n.message?.attachments?.length ?? 0) > 0
+  );
+}
+
 // Whether a turn on this message would have its WORDS, narrower than whether a turn ran over it. A
 // voice note is a placeholder until STT writes back, and a flush can invoke in that window
 // (docs/stt.md, "Known limits"); recording that turn as covered would suppress the ingest the
@@ -5185,21 +5198,48 @@ export async function processChatwootDelivery(
     }
   }
 
-  if ((isNewIncoming || hasLateMedia) && n.conversationId !== null) {
+  const lateAttachment = hasInboundAttachmentUpdate(n);
+  if (
+    (isNewIncoming || hasLateMedia || lateAttachment) &&
+    n.conversationId !== null
+  ) {
     // A FILE FROM THE CONTACT on a conversation that names its case goes to the case too, whether or
     // not a turn runs over it (../cross-inbox-case/carry-job.ts). The case number rides on the payload,
     // so a message without a file of a carried type, or a conversation without a case, costs nothing.
-    // An audio that arrives later, on message_updated (hasPendingInboundMediaUpdate), arms it too. The
+    // A file that arrives later, on message_updated, arms it too, of any type: the route resolved no
+    // runtime for an update STT does not want, so the carry resolves the inbox's agent itself. The
     // arm reads its own fences (a /reset, the agent off, a person on the origin) and arms nothing under
     // any of them.
-    const carry = responderRt
-      ? readCrossInboxCaseConfig(responderRt.settings)
-      : null;
+    let carryRt = responderRt;
+    if (!carryRt && lateAttachment) {
+      try {
+        carryRt =
+          n.inboxId != null
+            ? await inboxAgentRuntime(
+                params.tenantId,
+                params.instanceId,
+                n.inboxId,
+                base,
+              )
+            : await conversationInboxRuntime(
+                params.tenantId,
+                params.instanceId,
+                n.conversationId,
+                base,
+              );
+      } catch (err) {
+        logger.warn(
+          "failed to resolve the inbox's agent for a late contact file (conv=%s): %s",
+          convLabel,
+          errMsg(err),
+        );
+      }
+    }
+    const carry = carryRt ? readCrossInboxCaseConfig(carryRt.settings) : null;
     const caseId = carry
       ? Number(n.customAttributes?.[carry.caseAttributeKey])
       : Number.NaN;
     if (
-      responderRt &&
       carry &&
       carry.carryAttachments.mode !== "off" &&
       // A person holding the conversation per this payload, before the mirror heard of it.

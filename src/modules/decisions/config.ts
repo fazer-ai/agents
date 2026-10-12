@@ -428,7 +428,7 @@ function crossFieldProblems(v: RawDecisions): Problem[] {
         ? (action.args as Bag)
         : {};
     for (const [arg, raw] of Object.entries(fill as Bag)) {
-      if (arg in args) {
+      if (Object.hasOwn(args, arg)) {
         out.push({
           path: [...at, arg],
           message: `argument "${arg}" is both fixed and filled`,

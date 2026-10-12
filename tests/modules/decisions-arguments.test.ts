@@ -530,3 +530,51 @@ test("a code tool that fails releases its latch and still reports the failure", 
   });
   expect(r.triggerState.latch).not.toContain(ruleStateKey(rule));
 });
+
+// Argument names that are also Object.prototype's: read as the rule's own, never inherited.
+test("an argument named like an object's own member is filled, fitted and sent", async () => {
+  const sent: Record<string, unknown>[] = [];
+  const tool = new DynamicStructuredTool({
+    name: "mcp__crm__proto",
+    description: "x",
+    schema: {
+      type: "object",
+      properties: {
+        constructor: { type: "string" },
+        toString: { type: "string" },
+      },
+      required: ["constructor", "toString"],
+    } as never,
+    func: async (input) => {
+      sent.push(input as Record<string, unknown>);
+      return "ok";
+    },
+  });
+  adoptServerTool(tool);
+  const action = {
+    tool: tool.name,
+    args: { toString: "x" },
+    fill: { constructor: "conversation.display_id" },
+  };
+  const r = await applyDecisions(
+    { rules: [{ when, action }] },
+    answers,
+    [tool as unknown as StructuredToolInterface],
+    [],
+    new AbortController().signal,
+    async () => true,
+    1,
+    undefined,
+    false,
+    new Set(),
+    {},
+    async () => true,
+    { context: ctx, questions: [], logValues: false },
+  );
+  expect(r.actions[0]?.outcome).toBe("ran");
+  expect(sent[0]).toEqual({ constructor: "42", toString: "x" });
+  expect(r.actions[0]?.args).toEqual({
+    toString: "x",
+    constructor: { from: "conversation.display_id" },
+  });
+});

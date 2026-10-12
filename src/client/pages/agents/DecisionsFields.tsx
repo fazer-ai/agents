@@ -569,6 +569,12 @@ function fixedToInput(spec: ToolArgSpec | null, v: unknown): string {
   return String(v);
 }
 
+// A value the bag holds itself: an argument named `constructor` or `toString` is not read off the
+// object's prototype.
+function own<T>(bag: Record<string, T>, key: string): T | undefined {
+  return Object.hasOwn(bag, key) ? bag[key] : undefined;
+}
+
 function CustomToolArgs({
   ri,
   rule,
@@ -628,11 +634,11 @@ function CustomToolArgs({
     setRule({ args, fill });
   };
   const modeOf = (name: string): "fixed" | "fill" =>
-    name in rule.fill
+    Object.hasOwn(rule.fill, name)
       ? "fill"
-      : name in rule.args
+      : Object.hasOwn(rule.args, name)
         ? "fixed"
-        : (modes[name] ?? "fixed");
+        : (own(modes, name) ?? "fixed");
   const [newName, setNewName] = useState("");
   return (
     <div className="flex flex-col gap-3" data-testid="decisions-custom-args">
@@ -652,7 +658,7 @@ function CustomToolArgs({
       {names.map((name) => {
         const handType: ArgType | null =
           specs === null
-            ? (handTypes[name] ?? handTypeOf(rule.args[name]))
+            ? (own(handTypes, name) ?? handTypeOf(own(rule.args, name)))
             : null;
         const spec: ToolArgSpec | null =
           specs?.find((s) => s.name === name) ??
@@ -667,7 +673,7 @@ function CustomToolArgs({
           attributes,
           spec?.type ?? null,
         );
-        const fixed = rule.args[name];
+        const fixed = own(rule.args, name);
         const label = spec
           ? `${name} (${typeText(t, spec)}${spec.required ? `, ${t("editor.decisionsArgRequired", "required")}` : ""})`
           : name;
@@ -707,7 +713,7 @@ function CustomToolArgs({
               </Select>
               {mode === "fill" ? (
                 <Select
-                  value={rule.fill[name] ?? ""}
+                  value={own(rule.fill, name) ?? ""}
                   data-testid={`decisions-arg-source-${name}`}
                   aria-label={t(
                     "editor.decisionsArgSource",
@@ -721,11 +727,13 @@ function CustomToolArgs({
                   <option value="">
                     {t("editor.decisionsArgPickField", "Pick a field…")}
                   </option>
-                  {rule.fill[name] &&
+                  {own(rule.fill, name) &&
                     !groups.some((g) =>
-                      g.options.some((o) => o.value === rule.fill[name]),
+                      g.options.some((o) => o.value === own(rule.fill, name)),
                     ) && (
-                      <option value={rule.fill[name]}>{rule.fill[name]}</option>
+                      <option value={own(rule.fill, name)}>
+                        {own(rule.fill, name)}
+                      </option>
                     )}
                   {groups.map((g) => (
                     <optgroup key={g.label} label={g.label}>
@@ -775,7 +783,7 @@ function CustomToolArgs({
                 </Select>
               ) : (
                 <Input
-                  value={drafts[name] ?? fixedToInput(spec, fixed)}
+                  value={own(drafts, name) ?? fixedToInput(spec, fixed)}
                   inputMode={
                     spec?.type === "integer" || spec?.type === "number"
                       ? "decimal"
@@ -809,7 +817,7 @@ function CustomToolArgs({
                   onChange={(e) => {
                     const type = e.target.value as ArgType;
                     setHandTypes((h) => ({ ...h, [name]: type }));
-                    const raw = drafts[name] ?? fixedToInput(spec, fixed);
+                    const raw = own(drafts, name) ?? fixedToInput(spec, fixed);
                     setValue(
                       name,
                       "fixed",

@@ -65,6 +65,23 @@ const block = (action: Record<string, unknown>) => ({
 });
 
 describe("the block names a custom tool and fills its arguments", () => {
+  test("an argument named like an object's own member is the rule's, not inherited", () => {
+    expect(
+      decisionsIssues(
+        block({
+          tool: "abrir_ticket",
+          args: {},
+          fill: { constructor: "contact.name" },
+        }),
+      ),
+    ).toEqual([]);
+    expect(
+      actionArgIssues({ args: {}, fill: {} }, [
+        { name: "toString", type: "string", required: true },
+      ]),
+    ).toEqual([{ arg: "toString", in: "args", code: "arg_required" }]);
+  });
+
   test("a custom tool with fixed and filled arguments saves, and defaults to acting when it starts holding", () => {
     const b = block({
       tool: "abrir_ticket",

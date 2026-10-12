@@ -584,8 +584,8 @@ export async function assertDecisionActionArgs(
     if (unfit !== null) {
       throw decisionActionArgError(rule, tool, {
         arg: unfit,
-        in: unfit in parts.fill ? "fill" : "args",
-        code: unfit in parts.fill ? "arg_source_type" : "arg_type",
+        in: Object.hasOwn(parts.fill, unfit) ? "fill" : "args",
+        code: Object.hasOwn(parts.fill, unfit) ? "arg_source_type" : "arg_type",
       });
     }
   }

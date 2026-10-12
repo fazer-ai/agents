@@ -1288,6 +1288,37 @@ describe("a rule on a custom tool", () => {
     expect(count("decisions-rule-grant")).toBe(0);
   });
 
+  test("an argument named like an object's own member reads as the rule stores it", async () => {
+    stubApi();
+    const tools: CustomTools = new Map([
+      [
+        "proto",
+        {
+          name: "proto",
+          label: "Proto",
+          kind: "code" as const,
+          args: [
+            { name: "constructor", type: "string" as const, required: true },
+          ],
+        },
+      ],
+    ]);
+    renderSection(
+      { monitoring: { engine: "decisions", decisions: BLOCK } },
+      { granted: [...GRANTED, "proto"], customTools: tools },
+    );
+    await waitFor(() => expect(logQueries.length).toBeGreaterThan(0));
+    openAll();
+    const action = screen.getAllByTestId("decisions-rule-action")[0];
+    if (!action) throw new Error("no action select");
+    fireEvent.change(action, { target: { value: "proto" } });
+    const row = screen.getByTestId("decisions-arg-constructor");
+    expect((row.querySelector("select") as HTMLSelectElement).value).toBe(
+      "fixed",
+    );
+    expect((row.querySelector("input") as HTMLInputElement).value).toBe("");
+  });
+
   test("a tool picked in place of another shows its own arguments as the action stores them", async () => {
     stubApi();
     renderSection(

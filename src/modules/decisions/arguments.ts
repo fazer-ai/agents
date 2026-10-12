@@ -69,13 +69,14 @@ async function checkArgs(
   const required = (schema.json as { required?: unknown } | null)?.required;
   return !(
     Array.isArray(required) &&
-    required.some((n) => typeof n === "string" && !(n in args))
+    required.some((n) => typeof n === "string" && !Object.hasOwn(args, n))
   );
 }
 
 function fieldOf(schema: ArgSchema, arg: string): unknown {
   if (schema.zod !== undefined) {
-    return (schema.zod as { shape?: Record<string, unknown> }).shape?.[arg];
+    const shape = (schema.zod as { shape?: Record<string, unknown> }).shape;
+    return shape && Object.hasOwn(shape, arg) ? shape[arg] : undefined;
   }
   return jsonProperty(schema.json, arg);
 }
@@ -93,7 +94,10 @@ function jsonProperty(root: unknown, arg: string): unknown {
       anyOf?: unknown;
       oneOf?: unknown;
     };
-    const own = n.properties?.[arg];
+    const own =
+      n.properties && Object.hasOwn(n.properties, arg)
+        ? n.properties[arg]
+        : undefined;
     if (own !== undefined) found.push(own);
     for (const members of [n.allOf, n.anyOf, n.oneOf]) {
       if (Array.isArray(members)) for (const m of members) walk(m, depth + 1);
@@ -214,7 +218,7 @@ function withWaitMessage(
 ): Record<string, unknown> {
   if (
     fieldOf(schema, WAIT_MESSAGE_ARG) !== undefined &&
-    !(WAIT_MESSAGE_ARG in args)
+    !Object.hasOwn(args, WAIT_MESSAGE_ARG)
   ) {
     args[WAIT_MESSAGE_ARG] = "-";
   }

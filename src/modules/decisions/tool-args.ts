@@ -243,7 +243,11 @@ export function actionArgIssues(
   const fill = action.fill ?? {};
   const byName = new Map(specs.map((s) => [s.name, s]));
   for (const s of specs) {
-    if (s.required && !(s.name in args) && !(s.name in fill)) {
+    if (
+      s.required &&
+      !Object.hasOwn(args, s.name) &&
+      !Object.hasOwn(fill, s.name)
+    ) {
       out.push({ arg: s.name, in: "args", code: "arg_required" });
     }
   }
@@ -359,10 +363,10 @@ export function argsForLog(
   if (logValues) return args;
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(args)) {
-    out[k] = k in fill ? { from: fill[k] } : v;
+    out[k] = Object.hasOwn(fill, k) ? { from: fill[k] } : v;
   }
   for (const [k, from] of Object.entries(fill)) {
-    if (!(k in out)) out[k] = { from };
+    if (!Object.hasOwn(out, k)) out[k] = { from };
   }
   return out;
 }

@@ -15,7 +15,10 @@ import { resetLandedAfter } from "@/graph/reset-episode";
 import { parseDbId } from "@/lib/db-id";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { isMonitoring } from "@/modules/agents/mode";
-import type { ChatwootClient } from "@/modules/chatwoot/client";
+import {
+  ChatwootApiError,
+  type ChatwootClient,
+} from "@/modules/chatwoot/client";
 import {
   type LoadChatwootClientDeps,
   loadChatwootClient,
@@ -298,8 +301,12 @@ export async function caseCarryHandler(
   try {
     for (const id of [...new Set([named, caseId])]) {
       if (id === null || id === originConversationId) continue;
-      const conv = await client.getConversation(id);
-      if (openCase(conv)) {
+      // A deleted case is not one to carry into: the next candidate is read.
+      const conv = await client.getConversation(id).catch((err: unknown) => {
+        if (err instanceof ChatwootApiError && err.status === 404) return null;
+        throw err;
+      });
+      if (conv && openCase(conv)) {
         target = id;
         caseConv = conv;
         break;

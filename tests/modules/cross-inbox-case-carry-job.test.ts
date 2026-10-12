@@ -93,6 +93,8 @@ function fakeChatwoot(opts: {
   caseStatusOf?: Record<number, string>;
   // The team closes the case while its files come down.
   closeOnDownload?: boolean;
+  // Cases Chatwoot answers 404 for.
+  deleted?: number[];
   caseInbox?: number;
   // How many uploads fail before one is accepted.
   uploadFailures?: number;
@@ -110,6 +112,7 @@ function fakeChatwoot(opts: {
     isInstanceUrl: (url: string) => url.startsWith("https://chat.example.com/"),
     getConversation: async (id: number) => {
       calls.push({ fn: "getConversation", args: [id] });
+      if (opts.deleted?.includes(id)) throw new ChatwootApiError(404, "GET");
       if (id === CASE || id === OTHER_CASE) {
         return {
           id,
@@ -555,6 +558,21 @@ describe.skipIf(!dbUp)("the late carry into the case", () => {
       caseStatusOf: { [OTHER_CASE]: "resolved" },
     });
     await caseCarryHandler(jobFor(115), appDb, f.deps);
+    expect(f.named("sendFilesAsAdmin").map((c) => c.args[0])).toEqual([CASE]);
+    expect(f.originAttrs[KEY]).toBe(CASE);
+  });
+
+  test("an origin naming a deleted case falls back to the armed one", async () => {
+    await setAgent({});
+    await seed(117);
+    const f = fakeChatwoot({
+      messages: [fromContact(9001, [7001])],
+      originAttrs: { [KEY]: OTHER_CASE },
+      deleted: [OTHER_CASE],
+    });
+    expect(await caseCarryHandler(jobFor(117), appDb, f.deps)).toEqual({
+      outcome: "done",
+    });
     expect(f.named("sendFilesAsAdmin").map((c) => c.args[0])).toEqual([CASE]);
     expect(f.originAttrs[KEY]).toBe(CASE);
   });

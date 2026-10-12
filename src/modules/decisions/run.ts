@@ -17,10 +17,7 @@ import {
   type FenceReport,
   withFenceReporter,
 } from "@/graph/tools/fence-report";
-import {
-  ChatwootCalledOffError,
-  ChatwootExpiredError,
-} from "@/modules/chatwoot/client";
+import { sentNothing } from "@/modules/chatwoot/client";
 import {
   type DecisionsConfig,
   type DecisionTrigger,
@@ -425,12 +422,12 @@ export async function applyDecisions(
                 settled();
               },
               (err: unknown) => {
-                // Refused before the handler ran (its arguments), or by the client before the request
-                // left: nothing was written.
+                // Refused before the handler ran (its arguments), or an error the Chatwoot client says
+                // sent nothing (sentNothing: a read, or a refusal before dialing). With no write
+                // reported before it (`committed`), the call wrote nothing.
                 if (
                   err instanceof ToolInputParsingException ||
-                  err instanceof ChatwootExpiredError ||
-                  err instanceof ChatwootCalledOffError
+                  sentNothing(err)
                 ) {
                   quiet.add(member.at);
                 }

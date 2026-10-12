@@ -188,6 +188,29 @@ export class ChatwootCalledOffError extends Error {
   }
 }
 
+// THE "SENT NOTHING" CONTRACT: an error this client throws says whether a mutating request may have
+// left for it. `sentNothing` is true for the refusals raised before dialing (expired, called off,
+// muted, missing token) and for every failure of a read (`request` marks a GET's error, whatever it
+// is: a status, a timeout, a dropped socket), since a read changes nothing. A write that failed is
+// never marked: it may have landed. A caller that wrote earlier in the same work keeps its own record
+// of that (the decisions engine's `committed`), since the error only speaks for its own call.
+const sentNothingErrors = new WeakSet<object>();
+
+function markSentNothing(err: unknown): unknown {
+  if (typeof err === "object" && err !== null) sentNothingErrors.add(err);
+  return err;
+}
+
+export function sentNothing(err: unknown): boolean {
+  return (
+    err instanceof ChatwootExpiredError ||
+    err instanceof ChatwootCalledOffError ||
+    err instanceof ChatwootMutedError ||
+    err instanceof ChatwootMissingTokenError ||
+    (typeof err === "object" && err !== null && sentNothingErrors.has(err))
+  );
+}
+
 // Everything the customer perceives, a bigger set than "everything that sends a message":
 //   messages: every sender, current and future. A PRIVATE note is the one exemption (isPrivateSend).
 //   .../reactions: addMessageReaction, an emoji on the customer's own message.
@@ -515,6 +538,23 @@ export class ChatwootClient {
     path: string,
     body?: unknown,
     timeoutMs: number = REQUEST_TIMEOUT_MS,
+  ): Promise<unknown> {
+    if (method !== "GET") {
+      return this.send(token, method, path, body, timeoutMs);
+    }
+    try {
+      return await this.send(token, method, path, body, timeoutMs);
+    } catch (err) {
+      throw markSentNothing(err);
+    }
+  }
+
+  private async send(
+    token: string,
+    method: string,
+    path: string,
+    body: unknown,
+    timeoutMs: number,
   ): Promise<unknown> {
     this.assertToken(token, `${method} ${path}`);
     const res = await this.fetchImpl(`${this.accountBase}${path}`, {

@@ -628,6 +628,7 @@ function handoffTool(ctx: ToolCtx) {
       await ownStatusChange(ctx, () =>
         ctx.client.toggleStatus(ctx.conversationId, "open"),
       );
+      fenceReporterOf(config)?.({ committed: true });
       // NOTE: Only here: everything above can throw, and a handoff that did not reach this line has
       // not happened; the assignment below is best-effort, as the conversation is already out of
       // `pending`. The closing line comes from THIS invocation's argument: a model whose first
@@ -1358,8 +1359,6 @@ function setLabelsTool(ctx: ToolCtx) {
     // From here on nobody joins: a call that arrives now queues an entry of its own.
     const close = () =>
       closeConversationLabelsTail(ctx.tenantId, ctx.conversationId, batch);
-    // Whether the write was attempted: a failure before it (the read) wrote nothing for any call.
-    let writing = false;
     try {
       const known = ctx.conversationLabelsRead;
       let current: string[];
@@ -1447,12 +1446,13 @@ function setLabelsTool(ctx: ToolCtx) {
       // Forgotten before the write: a write that fails leaves nothing known about the set.
       ctx.conversationLabelsRead = undefined;
       const writtenAt = Date.now();
-      writing = true;
       await ctx.client.setConversationLabels(ctx.conversationId, state);
       if (known) ctx.conversationLabelsRead = { labels: state, at: writtenAt };
       recordShown(ctx, "conversation", state);
       for (const o of outcomes) {
         if (moved(o)) {
+          // Written: said to the call (fence-report.ts), as every write a rule can run says it.
+          o.delta.fenced?.({ committed: true });
           ctx.onLabelsWritten?.(
             describeLabelWrite("conversation", o.added, o.removed, o.next, {
               allowed: allowedList,
@@ -1467,8 +1467,6 @@ function setLabelsTool(ctx: ToolCtx) {
       }
     } catch (err) {
       close();
-      if (!writing)
-        for (const d of batch.deltas) d.fenced?.({ noEffect: true });
       // Settling twice is a no-op, so the calls already answered are not disturbed.
       for (const d of batch.deltas) d.reject(err);
     }
@@ -1576,6 +1574,7 @@ function setLabelsTool(ctx: ToolCtx) {
           return "Could not set the card labels (the run was called off while this write waited).";
         }
         await ctx.client.setKanbanTaskLabels(ctx.kanban.taskId, next);
+        fenced?.({ committed: true });
         ctx.onLabelsWritten?.(
           describeLabelWrite("task", added, removed, next, {
             allowed: allowedList,
@@ -1605,7 +1604,8 @@ function setLabelsTool(ctx: ToolCtx) {
         }
         const tenantId = ctx.tenantId;
         const contactDbId = ctx.contactDbId;
-        // Reads only: a failure here wrote nothing, and the call says so before it propagates.
+        // A database read: the Chatwoot client's own reads say for themselves that they sent nothing
+        // (sentNothing), this one says it here before it propagates.
         const readOnly = async <T>(read: () => Promise<T>): Promise<T> => {
           try {
             return await read();
@@ -1627,9 +1627,7 @@ function setLabelsTool(ctx: ToolCtx) {
           return "Could not set the contact labels (contact not linked to Chatwoot).";
         }
         const chatwootContactId = contact.chatwootContactId;
-        const current = await readOnly(() =>
-          ctx.client.getContactLabels(chatwootContactId),
-        );
+        const current = await ctx.client.getContactLabels(chatwootContactId);
         const {
           next,
           added,
@@ -1669,6 +1667,7 @@ function setLabelsTool(ctx: ToolCtx) {
           return "Could not set the contact labels (the run was called off while this write waited).";
         }
         await ctx.client.setContactLabels(contact.chatwootContactId, next);
+        fenced?.({ committed: true });
         ctx.onLabelsWritten?.(
           describeLabelWrite("contact", added, removed, next, {
             allowed: allowedList,

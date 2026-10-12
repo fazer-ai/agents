@@ -1611,6 +1611,16 @@ export function DecisionsFields({
       );
     }
     if (rule.tool !== "" && !isNativeDecisionTool(rule.tool)) {
+      // Drawn by the rows below, which render after this pass counts what it drew: named here so the
+      // banner does not repeat them.
+      for (const name of [
+        ...(customTools?.get(rule.tool)?.args ?? []).map((s) => s.name),
+        ...Object.keys(rule.args),
+        ...Object.keys(rule.fill),
+      ]) {
+        field(`rules.${ri}.action.args.${name}`);
+        field(`rules.${ri}.action.fill.${name}`);
+      }
       return (
         <CustomToolArgs
           ri={ri}

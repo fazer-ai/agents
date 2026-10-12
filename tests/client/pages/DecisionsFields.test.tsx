@@ -1145,6 +1145,10 @@ describe("a rule on a custom tool", () => {
     expect(count("decisions-problems")).toBe(1);
     const shown = document.body.textContent ?? "";
     expect(shown.includes('"telefone" is required by the tool')).toBe(true);
+    // Said once, at its row: the banner only counts it.
+    expect(shown.split('"telefone" is required by the tool').length - 1).toBe(
+      1,
+    );
     expect(shown.includes('"motivo" is required by the tool')).toBe(false);
     fireEvent.change(row("telefone").querySelector("select") as HTMLElement, {
       target: { value: "fill" },

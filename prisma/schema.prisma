@@ -2377,6 +2377,7 @@ model DecisionRuleState {
   ruleKey        String   @map("rule_key")
   createdAt      DateTime @default(now()) @map("created_at")
   // The claim generation that wrote it (DecisionRuleClaim).
+  jobId          BigInt   @default(0) @map("job_id")
   generation     BigInt   @default(0)
 
   tenant       Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
@@ -2396,6 +2397,9 @@ model DecisionRuleClaim {
   tenantId       BigInt @map("tenant_id")
   agentId        BigInt @map("agent_id")
   conversationId BigInt @map("conversation_id")
+  // The observe job's (row id, claim_seq) that last read the state; 0 and a counter for a run
+  // with no scheduler claim (tests).
+  jobId          BigInt @default(0) @map("job_id")
   generation     BigInt @default(0)
 
   tenant       Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)

@@ -1,9 +1,10 @@
 // The decisions engine's trigger state (docs/decisions.md, "When a rule acts"): one row per rule
 // that acted and is held back, keyed by `ruleStateKey`. THE INVARIANT: an older observation never
-// changes the state a newer one read, except to withdraw its own reservation. Every read takes the
-// next generation of (agent, conversation) in decision_rule_claims. A tick adds, releases or drops
-// rows only while that generation is still its own (checked and locked in the same transaction),
-// and otherwise deletes only rows it wrote itself for actions that never wrote (`undo`).
+// changes the state a newer one read, except to withdraw its own reservation. Every read takes a
+// generation of (agent, conversation) in decision_rule_claims, in the scheduler's order: the observe
+// job's (row id, claim_seq), refused when a newer run took one first. A tick adds, releases or drops
+// rows only while that generation is still the current one (checked and locked in the same
+// transaction), and otherwise deletes only rows it wrote itself for actions that never wrote.
 
 import type { PrismaClient } from "@/../generated/prisma/client";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
@@ -19,38 +20,62 @@ export interface TriggerScope {
   conversationId: bigint;
 }
 
+export interface Generation {
+  jobId: bigint;
+  seq: bigint;
+}
+
 export interface TriggerClaim {
-  generation: bigint;
+  generation: Generation;
   latched: Set<string>;
 }
 
-// Takes the next generation and reads the state under it, in one transaction.
+// Takes a generation and reads the state under it, in one transaction. `run` is the scheduler's
+// claim on the observe job: its (row id, claim_seq) is the generation, taken only when no newer run
+// holds one (`null`: this run is superseded). Without one (a direct run) the counter advances.
 export async function claimTriggerState(
   base: PrismaClient,
   scope: TriggerScope,
-): Promise<TriggerClaim> {
+  run?: { jobId: bigint; claimSeq: number },
+): Promise<TriggerClaim | null> {
   const where = {
     agentId: scope.agentId,
     conversationId: scope.conversationId,
   };
   return runScopedOn(base, sysCtx(scope.tenantId), async (db) => {
     await db.decisionRuleClaim.createMany({
-      data: [{ tenantId: scope.tenantId, ...where, generation: 0n }],
+      data: [{ tenantId: scope.tenantId, ...where }],
       skipDuplicates: true,
     });
-    const claim = await db.decisionRuleClaim.update({
-      where: { agentId_conversationId: where },
-      data: { generation: { increment: 1n } },
-      select: { generation: true },
-    });
+    let generation: Generation;
+    if (run) {
+      // biome-ignore lint/plugin/no-bigint-cast: the scheduler's own claim counter, not a caller's id
+      const seq = BigInt(run.claimSeq);
+      const took = await db.decisionRuleClaim.updateMany({
+        where: {
+          ...where,
+          OR: [
+            { jobId: { lt: run.jobId } },
+            { jobId: run.jobId, generation: { lte: seq } },
+          ],
+        },
+        data: { jobId: run.jobId, generation: seq },
+      });
+      if (took.count === 0) return null;
+      generation = { jobId: run.jobId, seq };
+    } else {
+      const claim = await db.decisionRuleClaim.update({
+        where: { agentId_conversationId: where },
+        data: { generation: { increment: 1n } },
+        select: { jobId: true, generation: true },
+      });
+      generation = { jobId: claim.jobId, seq: claim.generation };
+    }
     const rows = await db.decisionRuleState.findMany({
       where,
       select: { ruleKey: true },
     });
-    return {
-      generation: claim.generation,
-      latched: new Set(rows.map((r) => r.ruleKey)),
-    };
+    return { generation, latched: new Set(rows.map((r) => r.ruleKey)) };
   });
 }
 
@@ -59,7 +84,7 @@ export async function claimTriggerState(
 async function owned(
   base: PrismaClient,
   scope: TriggerScope,
-  generation: bigint,
+  generation: Generation,
   write: (db: ScopedDb) => Promise<unknown>,
 ): Promise<boolean> {
   return runScopedOn(base, sysCtx(scope.tenantId), async (db) => {
@@ -67,9 +92,10 @@ async function owned(
       where: {
         agentId: scope.agentId,
         conversationId: scope.conversationId,
-        generation,
+        jobId: generation.jobId,
+        generation: generation.seq,
       },
-      data: { generation },
+      data: { generation: generation.seq },
     });
     if (held.count === 0) return false;
     await write(db);
@@ -82,7 +108,7 @@ async function owned(
 export async function latchRules(
   base: PrismaClient,
   scope: TriggerScope,
-  generation: bigint,
+  generation: Generation,
   keys: string[],
 ): Promise<boolean> {
   return owned(base, scope, generation, (db) =>
@@ -92,7 +118,8 @@ export async function latchRules(
         agentId: scope.agentId,
         conversationId: scope.conversationId,
         ruleKey,
-        generation,
+        jobId: generation.jobId,
+        generation: generation.seq,
       })),
       skipDuplicates: true,
     }),
@@ -104,7 +131,7 @@ export async function latchRules(
 async function undoOwn(
   db: ScopedDb,
   scope: TriggerScope,
-  generation: bigint,
+  generation: Generation,
   keys: string[],
 ): Promise<void> {
   if (keys.length === 0) return;
@@ -113,7 +140,8 @@ async function undoOwn(
       agentId: scope.agentId,
       conversationId: scope.conversationId,
       ruleKey: { in: keys },
-      generation,
+      jobId: generation.jobId,
+      generation: generation.seq,
     },
   });
 }
@@ -125,7 +153,7 @@ async function undoOwn(
 export async function writeTriggerState(
   base: PrismaClient,
   scope: TriggerScope,
-  generation: bigint,
+  generation: Generation,
   change: Pick<TriggerStateChange, "release" | "undo"> & { keep?: string[] },
 ): Promise<boolean> {
   const held = await owned(base, scope, generation, (db) =>

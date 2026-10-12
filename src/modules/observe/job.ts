@@ -76,7 +76,9 @@ import {
 } from "@/modules/decisions/run";
 import {
   claimTriggerState,
+  type Generation,
   latchRules,
+  type TriggerClaim,
   writeTriggerState,
 } from "@/modules/decisions/trigger-state";
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
@@ -1836,12 +1838,14 @@ export async function runObserve(
     const triggerScope =
       conv === null ? null : { tenantId, agentId, conversationId: conv.id };
     let latched: Set<string> = new Set();
-    // The generation this read took (trigger-state.ts): every write below carries it, and one that a
-    // newer observation has read past is refused, so an older tick never changes a newer one's state.
-    let generation = 0n;
+    // The generation this read took, in the scheduler's order (trigger-state.ts): every write below
+    // carries it, and one a newer observation holds is refused, so an older tick never changes a
+    // newer one's state. A run the scheduler already superseded gets none and ends here.
+    let generation: Generation = { jobId: 0n, seq: 0n };
+    let claimed: TriggerClaim | null = null;
     if (triggerScope !== null) {
       try {
-        ({ generation, latched } = await claimTriggerState(base, triggerScope));
+        claimed = await claimTriggerState(base, triggerScope, deps.claim);
       } catch (err) {
         const failure = uncommittedFailure();
         decisionLine(
@@ -1859,6 +1863,10 @@ export async function runObserve(
           error: "observe: the rules' trigger state could not be read",
         };
       }
+    }
+    if (triggerScope !== null) {
+      if (claimed === null) return endOnRefusal("superseded");
+      ({ generation, latched } = claimed);
     }
     // Written for what ran, the withdrawn tick's actions included: a note that left is one the next
     // observation must not post again. A write that fails is said on the line and does not undo the

@@ -2231,7 +2231,10 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
           undo: c.undo ?? [],
           keep: c.keep ?? ["k"],
         });
-        const writes: Record<string, (g: bigint) => Promise<boolean>> = {
+        const writes: Record<
+          string,
+          (g: triggerState.Generation) => Promise<boolean>
+        > = {
           latch: (g) => triggerState.latchRules(suDb, scope(), g, ["k"]),
           "release after the deadline": (g) =>
             triggerState.writeTriggerState(suDb, scope(), g, {
@@ -2260,14 +2263,26 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
               change({ keep: [] }),
             ),
         };
-        const state = async () => [
-          ...(await triggerState.claimTriggerState(suDb, scope())).latched,
-        ];
+        // In the scheduler's order, as production claims: one observe job row, claim_seq 1, 2, ...
+        let seq = 0;
+        const claim = async () => {
+          seq += 1;
+          const c = await triggerState.claimTriggerState(suDb, scope(), {
+            jobId: 1n,
+            claimSeq: seq,
+          });
+          if (c === null) throw new Error("superseded");
+          return c;
+        };
+        beforeEach(() => {
+          seq = 0;
+        });
+        const state = async () => [...(await claim()).latched];
         for (const [name, write] of Object.entries(writes)) {
           for (const newer of ["latched", "clear"] as const) {
             test(`the older one's ${name} leaves the newer one's state ${newer}`, async () => {
-              const a = await triggerState.claimTriggerState(suDb, scope());
-              const b = await triggerState.claimTriggerState(suDb, scope());
+              const a = await claim();
+              const b = await claim();
               if (newer === "latched") {
                 expect(
                   await triggerState.latchRules(suDb, scope(), b.generation, [
@@ -2281,16 +2296,27 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
           }
         }
 
+        // The generation follows the scheduler, not the order the reads land: a run the scheduler
+        // already superseded gets none, and a newer job row outranks any claim_seq of an older one.
+        test("a run the scheduler superseded takes no generation", async () => {
+          const run = (jobId: bigint, claimSeq: number) =>
+            triggerState.claimTriggerState(suDb, scope(), { jobId, claimSeq });
+          expect(await run(1n, 2)).not.toBeNull();
+          expect(await run(1n, 1)).toBeNull();
+          expect(await run(2n, 1)).not.toBeNull();
+          expect(await run(1n, 9)).toBeNull();
+        });
+
         // The one exception: a reservation the older tick wrote itself, for an action it never ran,
         // is still its to withdraw. The newer one held the rule on it and changes nothing for it.
         test("the older one withdraws its own reservation, and only that", async () => {
-          const a = await triggerState.claimTriggerState(suDb, scope());
+          const a = await claim();
           expect(
             await triggerState.latchRules(suDb, scope(), a.generation, [
               "mine",
             ]),
           ).toBe(true);
-          const b = await triggerState.claimTriggerState(suDb, scope());
+          const b = await claim();
           expect([...b.latched]).toEqual(["mine"]);
           expect(
             await triggerState.latchRules(suDb, scope(), b.generation, [
@@ -2307,8 +2333,8 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
         });
 
         test("the newer one writes after the older one read", async () => {
-          const a = await triggerState.claimTriggerState(suDb, scope());
-          const b = await triggerState.claimTriggerState(suDb, scope());
+          const a = await claim();
+          const b = await claim();
           expect(
             await triggerState.latchRules(suDb, scope(), b.generation, ["k"]),
           ).toBe(true);
@@ -2321,7 +2347,7 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
             ),
           ).toBe(true);
           expect(await state()).toEqual([]);
-          expect(a.generation < b.generation).toBe(true);
+          expect(a.generation.seq < b.generation.seq).toBe(true);
         });
       });
 

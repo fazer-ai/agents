@@ -17,6 +17,7 @@ import {
   type FenceReport,
   withFenceReporter,
 } from "@/graph/tools/fence-report";
+import { WAIT_MESSAGE_ARG } from "@/graph/tools/http";
 import { sentNothing } from "@/modules/chatwoot/client";
 import {
   type DecisionQuestion,
@@ -249,6 +250,14 @@ export async function applyDecisions(
     const args = { ...f.args };
     for (const [k, v] of Object.entries(resolved.values)) {
       args[k] = await fitToField(tool, k, v);
+    }
+    // An HTTP tool with an acknowledgement asks the model for the holding message it sends the
+    // customer. A watcher's client is muted and sends none, so a rule is not asked to write one.
+    if (
+      fieldOf(tool, WAIT_MESSAGE_ARG) !== undefined &&
+      !(WAIT_MESSAGE_ARG in args)
+    ) {
+      args[WAIT_MESSAGE_ARG] = "-";
     }
     callArgs.set(at, args);
     if (!isNativeDecisionTool(f.tool)) {
@@ -564,12 +573,27 @@ async function fitToField(
   arg: string,
   value: unknown,
 ): Promise<unknown> {
-  const shape = (tool.schema as { shape?: Record<string, unknown> }).shape;
-  const field = shape?.[arg];
-  if (!field || !isInteropZodSchema(field)) return value;
-  if ((await interopSafeParseAsync(field, value)).success) return value;
-  const text = String(value);
-  return (await interopSafeParseAsync(field, text)).success ? text : value;
+  const field = fieldOf(tool, arg);
+  if (field === undefined) return value;
+  if (isInteropZodSchema(field)) {
+    if ((await interopSafeParseAsync(field, value)).success) return value;
+    const text = String(value);
+    return (await interopSafeParseAsync(field, text)).success ? text : value;
+  }
+  // An MCP tool carries its server's JSON Schema.
+  const type = (field as { type?: unknown } | null)?.type;
+  return type === "string" && typeof value !== "string" ? String(value) : value;
+}
+
+// One argument's schema: a zod object's field, or a JSON Schema property.
+function fieldOf(tool: StructuredToolInterface, arg: string): unknown {
+  const schema = tool.schema as {
+    shape?: Record<string, unknown>;
+    properties?: Record<string, unknown>;
+  };
+  return isInteropZodSchema(tool.schema)
+    ? schema.shape?.[arg]
+    : schema.properties?.[arg];
 }
 
 // The answers as the flow line carries them: numbers and the operator's own option names, never the

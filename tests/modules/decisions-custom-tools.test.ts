@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { DynamicStructuredTool } from "@langchain/core/tools";
+import {
+  DynamicStructuredTool,
+  type StructuredToolInterface,
+} from "@langchain/core/tools";
 import { z } from "zod";
 import { AppError } from "@/lib/errors";
 import type { ScopedDb } from "@/lib/tenancy";
@@ -550,6 +553,72 @@ describe("the tick fills a custom tool's arguments and records them", () => {
       "https://cw/app/accounts/1/conversations/42",
     ]);
     expect(r.actions.map((a) => a.merged)).toEqual([undefined, undefined]);
+  });
+
+  const once = (tool: StructuredToolInterface, fill: Record<string, string>) =>
+    applyDecisions(
+      {
+        rules: [
+          {
+            when,
+            action: { tool: tool.name, args: { motivo: "cancelamento" }, fill },
+          },
+        ],
+      },
+      answers,
+      [tool],
+      [],
+      new AbortController().signal,
+      async () => true,
+      10,
+      undefined,
+      false,
+      new Set(),
+      {},
+      async () => true,
+      { context: ctx, questions, logValues: true },
+    );
+
+  test("an MCP tool's JSON Schema fits a number into a text argument as well", async () => {
+    const seen: Record<string, unknown>[] = [];
+    const tool = new DynamicStructuredTool({
+      name: "mcp__crm__abrir",
+      description: "x",
+      schema: {
+        type: "object",
+        properties: {
+          motivo: { type: "string" },
+          telefone: { type: "string" },
+        },
+        required: ["motivo", "telefone"],
+      },
+      func: async (input) => {
+        seen.push(input as Record<string, unknown>);
+        return "ok";
+      },
+    });
+    await once(tool as unknown as StructuredToolInterface, {
+      telefone: "conversation.display_id",
+    });
+    expect(seen).toEqual([{ motivo: "cancelamento", telefone: "42" }]);
+  });
+
+  test("a tool that asks the model for a holding message runs from a rule, which writes none", async () => {
+    const seen: Record<string, unknown>[] = [];
+    const r = await once(
+      customTool(
+        "abrir_ticket",
+        z.object({
+          motivo: z.string(),
+          telefone: z.string(),
+          __wait_message: z.string().min(1),
+        }),
+        seen,
+      ),
+      { telefone: "contact.phone" },
+    );
+    expect(r.actions[0]?.outcome).toBe("ran");
+    expect(seen[0]?.telefone).toBe("+5511999990001");
   });
 
   test("a custom tool the agent was not granted reports not_granted and calls nothing", async () => {

@@ -552,6 +552,14 @@ function fixedFromInput(spec: ToolArgSpec | null, raw: string): unknown {
   return raw;
 }
 
+// What a hand-named argument's stored value reads as, before the operator picks a type.
+function handTypeOf(v: unknown): ArgType {
+  if (typeof v === "number") return "number";
+  if (typeof v === "boolean") return "boolean";
+  if (v !== null && typeof v === "object") return "object";
+  return "string";
+}
+
 function fixedToInput(spec: ToolArgSpec | null, v: unknown): string {
   if (v === undefined) return "";
   if (typeof v === "string") return v;
@@ -583,6 +591,11 @@ function CustomToolArgs({
   // The rows: the schema's arguments in its order, then any the rule holds that the schema lacks
   // (shown so they can be removed: the save refuses them). Without a schema, the rule's own.
   const [modes, setModes] = useState<Record<string, "fixed" | "fill">>({});
+  // The text of a fixed value as typed, so a value on its way ("1.", "-") is not rewritten under the
+  // cursor while what is stored is already the number it reads as.
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  // The type of a hand-named argument (no schema to say it): what its typed value is stored as.
+  const [handTypes, setHandTypes] = useState<Record<string, ArgType>>({});
   const names = [
     ...(specs ?? []).map((s) => s.name),
     ...[
@@ -631,7 +644,13 @@ function CustomToolArgs({
         </p>
       )}
       {names.map((name) => {
-        const spec = specs?.find((s) => s.name === name) ?? null;
+        const handType: ArgType | null =
+          specs === null
+            ? (handTypes[name] ?? handTypeOf(rule.args[name]))
+            : null;
+        const spec: ToolArgSpec | null =
+          specs?.find((s) => s.name === name) ??
+          (handType ? { name, type: handType, required: false } : null);
         const mode = modeOf(name);
         const error =
           field(`rules.${ri}.action.args.${name}`) ??
@@ -669,6 +688,7 @@ function CustomToolArgs({
                 onChange={(e) => {
                   const next = e.target.value as "fixed" | "fill";
                   setModes((m) => ({ ...m, [name]: next }));
+                  setDrafts(({ [name]: _, ...rest }) => rest);
                   setValue(name, next, undefined);
                 }}
               >
@@ -749,21 +769,56 @@ function CustomToolArgs({
                 </Select>
               ) : (
                 <Input
-                  value={fixedToInput(spec, fixed)}
+                  value={drafts[name] ?? fixedToInput(spec, fixed)}
                   inputMode={
                     spec?.type === "integer" || spec?.type === "number"
                       ? "decimal"
                       : undefined
                   }
                   aria-label={name}
-                  onChange={(e) =>
+                  onChange={(e) => {
+                    const raw = e.target.value;
+                    setDrafts((d) => ({ ...d, [name]: raw }));
+                    setValue(name, "fixed", fixedFromInput(spec, raw));
+                  }}
+                  onBlur={() => setDrafts(({ [name]: _, ...rest }) => rest)}
+                />
+              )}
+              {specs === null && mode === "fixed" && (
+                <Select
+                  value={handType ?? "string"}
+                  wrapperClassName="sm:max-w-36"
+                  aria-label={t(
+                    "editor.decisionsArgHandType",
+                    "Type of {{arg}}",
+                    {
+                      arg: name,
+                    },
+                  )}
+                  onChange={(e) => {
+                    const type = e.target.value as ArgType;
+                    setHandTypes((h) => ({ ...h, [name]: type }));
+                    const raw = drafts[name] ?? fixedToInput(spec, fixed);
                     setValue(
                       name,
                       "fixed",
-                      fixedFromInput(spec, e.target.value),
-                    )
-                  }
-                />
+                      fixedFromInput({ name, type, required: false }, raw),
+                    );
+                  }}
+                >
+                  <option value="string">
+                    {typeText(t, { name, type: "string", required: false })}
+                  </option>
+                  <option value="number">
+                    {typeText(t, { name, type: "number", required: false })}
+                  </option>
+                  <option value="boolean">
+                    {typeText(t, { name, type: "boolean", required: false })}
+                  </option>
+                  <option value="object">
+                    {t("editor.decisionsArgTypeJson", "JSON (object or list)")}
+                  </option>
+                </Select>
               )}
               {(specs === null || !spec) && (
                 <IconButton

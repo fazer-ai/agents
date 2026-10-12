@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import { sendsConversationRef } from "@/client/pages/resources/ToolEditModal";
+import { type CallReport, withFenceReporter } from "@/graph/tools/fence-report";
 import { buildHttpTool, type HttpToolDef } from "@/graph/tools/http";
 import { unusedCredentialWarning } from "@/modules/tool-definitions/credential-wiring";
 import { runToolTest } from "@/modules/tool-definitions/test-run";
@@ -120,6 +121,22 @@ describe("an HTTP tool that renders {{conversation_ref}}", () => {
     expect(out).toContain("no conversation here");
     expect(h.sent).toHaveLength(0);
     expect(h.noEffect).toEqual(["schedule_report"]);
+  });
+
+  // A decisions rule asks per call (fence-report.ts): a refusal that sent nothing has to reach it
+  // there, or the rule latches as if it had run and a `once` rule never tries again.
+  test("a refusal that sent nothing is reported on the call's own reporter", async () => {
+    const h = harness({}, async () => ({
+      ok: false,
+      reason: "instance_missing",
+    }));
+    const reports: CallReport[] = [];
+    await h.tool.invoke(
+      {},
+      withFenceReporter({}, (r) => reports.push(r)),
+    );
+    expect(h.sent).toHaveLength(0);
+    expect(reports).toEqual([{ noEffect: true }]);
   });
 
   test("an instance that is gone or not GENERIC refuses and sends nothing", async () => {

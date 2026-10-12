@@ -3,6 +3,7 @@ import {
   actionScope,
   conditionFor,
   conditionSummary,
+  customToolsOf,
   DECISION_TEXT_FIELD_MAX,
   decisionsFormIssues,
   decisionsRefusalFrom,
@@ -953,5 +954,31 @@ describe("a threshold on screen", () => {
     expect([...decisionsFormIssues(form).keys()]).toContain(
       "rules.0.when.0.minProbability",
     );
+  });
+});
+
+// Two MCP servers whose names reduce to one slug give their tools one name, which the assembly
+// tells apart by order with a suffix: a rule must not be offered either, or it may call the other
+// server's tool (agents#1223).
+describe("the custom tools a rule is offered", () => {
+  test("an MCP name two servers share is offered for neither; a unique one is", () => {
+    const { all, granted } = customToolsOf(
+      {
+        toolDefinitions: [],
+        codeTools: [],
+        mcpConnections: [
+          { id: "1", name: "CRM", slug: "crm" },
+          { id: "2", name: "crm", slug: "crm" },
+          { id: "3", name: "Sheets", slug: "sheets" },
+        ],
+      },
+      [
+        { source: "MCP", mcpServerConnectionId: "1", enabledTools: ["abrir"] },
+        { source: "MCP", mcpServerConnectionId: "2", enabledTools: ["abrir"] },
+        { source: "MCP", mcpServerConnectionId: "3", enabledTools: ["append"] },
+      ],
+    );
+    expect([...all.keys()]).toEqual(["mcp__sheets__append"]);
+    expect([...granted]).toEqual(["mcp__sheets__append"]);
   });
 });

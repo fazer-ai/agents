@@ -3,6 +3,7 @@ import { z } from "zod";
 import config, { type InternalTarget } from "@/config";
 import { DEFAULT_TIMEZONE, partsInTimezone } from "@/graph/time";
 import { failableTool, toolFailure } from "@/graph/tools/failure";
+import { fenceReporterOf } from "@/graph/tools/fence-report";
 import {
   isExpectedResult,
   normalizeExpectedStatuses,
@@ -357,7 +358,7 @@ const PLACEHOLDER = /\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g;
 // AI-supplied value's original type instead of coercing it to a string.
 const LONE_PLACEHOLDER = /^\{\{\s*([a-zA-Z0-9_]+)\s*\}\}$/;
 // The model-supplied (optional) holding message arg; consumed for the ack, NEVER sent in the request.
-const WAIT_MESSAGE_ARG = "__wait_message";
+export const WAIT_MESSAGE_ARG = "__wait_message";
 
 function interpolate(
   template: string,
@@ -617,8 +618,14 @@ export function buildHttpTool(
     : urlTemplate;
 
   return failableTool(
-    async (rawInput: Record<string, unknown>) => {
+    async (rawInput: Record<string, unknown>, callConfig) => {
       let input = rawInput;
+      // The call sent nothing: said to the caller that asked on this call's config (a decisions
+      // rule, whose latch is released), besides the turn's own count where the step counts it.
+      const sentNothing = (count: boolean) => {
+        if (count) deps.onNoEffect?.(def.name);
+        fenceReporterOf(callConfig)?.({ noEffect: true });
+      };
       // 0a. `{{conversation_ref}}`, minted BEFORE anything is sent (the ack included)
       // and before the request, because the receiver may call back while this call is still running
       // and the ref has to correlate by then. Every refusal here sends nothing, and says why in the
@@ -626,7 +633,7 @@ export function buildHttpTool(
       let context = baseContext;
       if (usesConversationRef) {
         const refused = (why: string): string => {
-          deps.onNoEffect?.(def.name);
+          sentNothing(true);
           return `Could not call the tool (${why}).`;
         };
         if (def.conversationRefIntegrationId == null) {
@@ -676,9 +683,11 @@ export function buildHttpTool(
         const dyn = input[WAIT_MESSAGE_ARG];
         const msg = typeof dyn === "string" ? dyn.trim() : "";
         if (!msg) {
+          sentNothing(false);
           return "Error: a wait message is required. Call this tool again with a short __wait_message to send to the user before it runs.";
         }
         if (deps.emitAck && (await deps.emitAck(msg)) === false) {
+          sentNothing(false);
           return "The run was called off after the acknowledgement; the tool did not run.";
         }
       }
@@ -769,6 +778,7 @@ export function buildHttpTool(
         // for placeholders the model can actually provide (AI-source input fields).
         const nonInput = [...missingUrlNames].filter((n) => !isAiFieldName(n));
         if (nonInput.length > 0) {
+          sentNothing(false);
           throw new AppError(
             `tool ${def.name}: no value available for URL placeholder(s) ${nonInput
               .map((n) => `{{${n}}}`)
@@ -776,6 +786,7 @@ export function buildHttpTool(
             400,
           );
         }
+        sentNothing(false);
         return `Error: no value available for URL placeholder(s): ${[
           ...missingUrlNames,
         ]
@@ -929,6 +940,7 @@ export function buildHttpTool(
       // The budget is checked HERE, not at handler entry, to catch it running out during the waits
       // above (DB read, ack). Refused rather than thrown so the model is told the tool did not run.
       if (deps.expiresOn?.aborted) {
+        sentNothing(false);
         return "Could not call the tool (the run's time budget ran out before the request was sent).";
       }
       // Asked HERE, past every wait this handler makes (the ack, the credential, the SSRF lookup)
@@ -936,7 +948,7 @@ export function buildHttpTool(
       if (deps.stillWanted && !(await deps.stillWanted().catch(() => true))) {
         // NOTE: Nothing left the process here: the acknowledgement, when there is one, went out
         // ABOVE and is a message the customer already got.
-        deps.onNoEffect?.(def.name);
+        sentNothing(true);
         return "Could not call the tool (the run was called off before the request was sent).";
       }
       const { res, body: responseBody } = await fetchBounded(

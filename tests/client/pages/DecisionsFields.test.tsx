@@ -1170,6 +1170,73 @@ describe("a rule on a custom tool", () => {
     });
   });
 
+  test("a decimal is typed through its unfinished steps, and stored as the number", async () => {
+    stubApi();
+    const { state } = renderSection(
+      { monitoring: { engine: "decisions", decisions: BLOCK } },
+      { granted: GRANTED, customTools: TOOLS },
+    );
+    openAll();
+    const action = screen.getAllByTestId("decisions-rule-action")[0];
+    if (!action) throw new Error("no action select");
+    fireEvent.change(action, { target: { value: "abrir_ticket" } });
+    const input = screen
+      .getByTestId("decisions-arg-prioridade")
+      .querySelector("input") as HTMLInputElement;
+    for (const typed of ["1", "1.", "1.2"]) {
+      fireEvent.change(input, { target: { value: typed } });
+      expect(input.value).toBe(typed);
+    }
+    const rules = observationToStored(state()).decisions?.rules as {
+      action: { args: Record<string, unknown> };
+    }[];
+    expect(rules[0]?.action.args.prioridade).toBe(1.2);
+  });
+
+  test("a hand-named MCP argument is stored as the type picked for it", async () => {
+    stubApi();
+    const mcp: CustomTools = new Map([
+      [
+        "mcp__crm__abrir",
+        {
+          name: "mcp__crm__abrir",
+          label: "CRM: abrir",
+          kind: "mcp" as const,
+          args: null,
+        },
+      ],
+    ]);
+    const { state } = renderSection(
+      {
+        monitoring: {
+          engine: "decisions",
+          decisions: {
+            ...BLOCK,
+            rules: [
+              {
+                when: [{ question: "pede_reembolso", minProbability: 0.7 }],
+                action: { tool: "mcp__crm__abrir", args: { prioridade: "" } },
+              },
+            ],
+          },
+        },
+      },
+      { granted: ["mcp__crm__abrir"], customTools: mcp },
+    );
+    openAll();
+    const row = screen.getByTestId("decisions-arg-prioridade");
+    const [, type] = Array.from(row.querySelectorAll("select"));
+    if (!type) throw new Error("no type select");
+    fireEvent.change(type, { target: { value: "number" } });
+    fireEvent.change(row.querySelector("input") as HTMLElement, {
+      target: { value: "3" },
+    });
+    const rules = observationToStored(state()).decisions?.rules as {
+      action: { args: Record<string, unknown> };
+    }[];
+    expect(rules[0]?.action.args.prioridade).toBe(3);
+  });
+
   test("a custom tool the agent does not have points to Tools instead of granting it here", async () => {
     stubApi();
     renderSection(

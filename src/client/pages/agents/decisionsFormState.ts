@@ -459,6 +459,7 @@ export function customToolsOf(
 ): { all: Map<string, CustomToolOffer>; granted: Set<string> } {
   const all = new Map<string, CustomToolOffer>();
   const granted = new Set<string>();
+  const mcp = new Map<string, CustomToolOffer[]>();
   for (const d of catalog.toolDefinitions) {
     all.set(d.toolName, {
       name: d.toolName,
@@ -492,15 +493,21 @@ export function customToolsOf(
       for (const tool of g.enabledTools ?? []) {
         const name = mcpToolName(m.slug, tool);
         if (name === null) continue;
-        all.set(name, {
-          name,
-          label: `${m.name}: ${tool}`,
-          kind: "mcp",
-          args: null,
-        });
-        granted.add(name);
+        mcp.set(name, [
+          ...(mcp.get(name) ?? []),
+          { name, label: `${m.name}: ${tool}`, kind: "mcp", args: null },
+        ]);
       }
     }
+  }
+  // Two servers whose names reduce to one slug give one name to two tools, and the assembly tells
+  // them apart with a suffix that depends on its order: neither is offered, so a rule never names
+  // the other server's tool.
+  for (const [name, offers] of mcp) {
+    const [only] = offers;
+    if (offers.length !== 1 || !only || all.has(name)) continue;
+    all.set(name, only);
+    granted.add(name);
   }
   return { all, granted };
 }

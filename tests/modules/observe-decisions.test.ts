@@ -2339,6 +2339,21 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
         }
       });
 
+      test("a final write a newer observation superseded is said on the line, not as a failure", async () => {
+        const chatwoot = fakeChatwoot({ labels: [], attributes: {} });
+        const write = spyOn(
+          triggerState,
+          "writeTriggerState",
+        ).mockResolvedValue(false);
+        try {
+          const d = await observeWith(chatwoot, [note("Supervisor")], true);
+          expect(d.triggerStateSuperseded).toBe(true);
+          expect(d.triggerStateWritten).toBeUndefined();
+        } finally {
+          write.mockRestore();
+        }
+      });
+
       test("a trigger state it cannot write is said on the line, and the action stands", async () => {
         const chatwoot = fakeChatwoot({ labels: [], attributes: {} });
         const write = spyOn(

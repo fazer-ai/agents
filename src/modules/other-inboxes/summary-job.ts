@@ -8,10 +8,7 @@ import { parseDbId } from "@/lib/db-id";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { loadChatwootClient } from "@/modules/chatwoot/instance";
-import {
-  clipTranscript,
-  summarizeTranscript,
-} from "@/modules/memory/summarize";
+import { fitTranscript, summarizeTranscript } from "@/modules/memory/summarize";
 import { buildSummaryModel } from "@/modules/memory/summary-model";
 import type { ClaimedJob } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
@@ -249,7 +246,7 @@ export async function runOtherInboxSummary(
     built.model,
     SYSTEM_PROMPT,
     // The agent's history budget bounds what this model is handed, as it does for compaction.
-    clipTranscript(read.transcript, cfg.maxHistoryTokens),
+    fitTranscript(read.renderWithin, cfg.maxHistoryTokens),
     OTHER_INBOX_SUMMARY_MAX,
     // The inbox comes from the payload's inbox row, not the conversation mirror: a conversation only
     // people handle has no mirror, and its summary's cost still belongs to that inbox on the dashboard.
@@ -269,9 +266,10 @@ export async function runOtherInboxSummary(
     config.agent.modelCallTimeoutMs,
     deps.signal,
   );
-  if (result.error) return { outcome: "fail", error: result.error };
-  // Nor writes: the retry reads the conversation again and produces the row itself.
+  // Nor writes: the retry reads the conversation again and produces the row itself. Asked first,
+  // since the abort also ends the call with an error of its own.
   if (deps.signal?.aborted) return { outcome: "fail", error: "deadline" };
+  if (result.error) return { outcome: "fail", error: result.error };
 
   const generatedAt = new Date(now());
   const coveredMessageId = read.newestPublicId;

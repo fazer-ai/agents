@@ -35,6 +35,8 @@ export interface OtherConversationRead {
   // so the newest id alone would not show it changed. `<hash as Chatwoot returned>:<id.hash of each
   // message the in-process annotations changed, comma-separated>`, read by `fingerprintMoved`.
   recentFingerprint: string;
+  // The same read rendered under a smaller character budget, for a caller with a token budget.
+  renderWithin: (maxChars: number) => string;
 }
 
 // Chatwoot's message page: twenty rows. A page that brings fewer holds the first message.
@@ -136,6 +138,8 @@ export async function readOtherConversation(p: {
     newestPublicId,
     complete,
     recentFingerprint,
+    renderWithin: (maxChars) =>
+      render(all, Math.min(maxChars, TRANSCRIPT_MAX_CHARS)),
   };
 
   function withdrawn(r: ChatwootMessageRow): boolean {
@@ -145,14 +149,17 @@ export async function readOtherConversation(p: {
     );
   }
 
-  function render(rows: ChatwootMessageRow[]): string {
+  function render(
+    rows: ChatwootMessageRow[],
+    maxChars: number = TRANSCRIPT_MAX_CHARS,
+  ): string {
     return renderTranscript(
       transcriptFromRows(rows, rows.length, {
         ownBotIds,
         trustPhoneEcho: providerReservesEchoIds(p.provider),
         dated: true,
       }),
-      TRANSCRIPT_MAX_CHARS,
+      maxChars,
       p.timezone,
     );
   }

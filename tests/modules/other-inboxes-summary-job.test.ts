@@ -351,6 +351,16 @@ describe.skipIf(!dbUp)("the summary of a conversation in another inbox", () => {
     expect(model.calls[0]).not.toContain("TOKEN-ANTIGA");
   });
 
+  test("a message longer than the history budget keeps its sender on the cut line", async () => {
+    await setAgent({ ...on(), limits: { maxHistoryTokens: 2000 } });
+    const model = new UsageReportingModel(["R"]);
+    await runWith(model, {
+      msgs: [incoming(1, `TOKEN-INICIO ${"palavra ".repeat(3000)}TOKEN-FIM`)],
+    });
+    expect(model.calls[0]).toContain("TOKEN-FIM");
+    expect(model.calls[0]).toContain("Cliente: […] ");
+  });
+
   test("an edit under the same id is summarized again past the interval", async () => {
     await runWith(new UsageReportingModel(["R1"]));
     const edited = [
@@ -587,6 +597,25 @@ describe.skipIf(!dbUp)("the summary of a conversation in another inbox", () => {
       signal: ac.signal,
     });
     expect(result.outcome).toBe("fail");
+    expect(await suDb.otherInboxSummary.count({ where: { tenantId } })).toBe(0);
+  });
+
+  // A model whose adapter does not end its call on the signal: the deadline still ends the run.
+  test("a deadline during a call the adapter does not stop ends the run", async () => {
+    const ac = new AbortController();
+    class DeafToSignal extends UsageReportingModel {
+      override async _generate(): Promise<never> {
+        ac.abort();
+        return new Promise<never>(() => {});
+      }
+    }
+    const result = await runOtherInboxSummary(job(), suDb, {
+      now: () => NOW,
+      loadClient: async () => chatwoot(messages),
+      makeModel: () => new DeafToSignal(["R"]),
+      signal: ac.signal,
+    });
+    expect(result).toEqual({ outcome: "fail", error: "deadline" });
     expect(await suDb.otherInboxSummary.count({ where: { tenantId } })).toBe(0);
   });
 

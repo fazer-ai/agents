@@ -44,7 +44,7 @@ const TRANSCRIPT_MAX_CHARS = 60_000;
 // estimate does not fall is a bug, not a reason to loop.
 const CLIP_PASSES = 6;
 
-export function clipTranscript(
+function clipTranscript(
   joined: string,
   maxHistoryTokens: number | null,
 ): string {
@@ -56,6 +56,25 @@ export function clipTranscript(
     const keep = Math.floor((text.length * maxHistoryTokens) / estimate);
     if (keep <= 0) return "";
     text = clipTextEnd(text, keep);
+  }
+  return text;
+}
+
+// The same budget for a transcript that can be rendered again under a smaller character budget:
+// the renderer keeps whole lines from the newest and writes the date and sender on the one it cuts,
+// where clipping the finished text from the front would leave its oldest line with neither.
+export function fitTranscript(
+  render: (maxChars: number) => string,
+  maxHistoryTokens: number | null,
+): string {
+  let text = render(TRANSCRIPT_MAX_CHARS);
+  if (!maxHistoryTokens || maxHistoryTokens <= 0) return text;
+  for (let pass = 0; pass < CLIP_PASSES; pass++) {
+    const estimate = estimateTokenCount(text);
+    if (estimate <= maxHistoryTokens) break;
+    const keep = Math.floor((text.length * maxHistoryTokens) / estimate);
+    if (keep <= 0) return "";
+    text = render(keep);
   }
   return text;
 }
@@ -171,6 +190,17 @@ export function stripTranscriptFence(text: string): string {
   return text.replace(FENCE_TAG, "");
 }
 
+function raceAbort<T>(call: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    if (signal.aborted) return onAbort();
+    signal.addEventListener("abort", onAbort, { once: true });
+    call
+      .then(resolve, reject)
+      .finally(() => signal.removeEventListener("abort", onAbort));
+  });
+}
+
 // One summarizer call over an already-rendered transcript, with the timeout and the explicit
 // "could not be produced" state every summary needs.
 export async function summarizeTranscript(
@@ -198,7 +228,7 @@ export async function summarizeTranscript(
       (attempt) => {
         const signal = abort ? AbortSignal.any([attempt, abort]) : attempt;
         attemptSignal = attempt;
-        return model.invoke(
+        const call = model.invoke(
           [
             new SystemMessage(systemPrompt),
             // NOTE: The transcript is never interpolated into the system prompt. Everything in a
@@ -213,6 +243,9 @@ export async function summarizeTranscript(
             ...(callbacks ? { callbacks } : {}),
           },
         );
+        // Not every adapter ends its call on the signal, so the caller's abort is raced as the
+        // attempt's deadline is (`callWithDeadline`): the permit is given back when it fires.
+        return abort ? raceAbort(call, abort) : call;
       },
       // The abort also ends the wait for a permit: a run past its deadline leaves the queue instead
       // of calling once capacity frees, which some adapters would not stop mid-call.

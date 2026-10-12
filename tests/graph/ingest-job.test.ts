@@ -2068,6 +2068,137 @@ describe.skipIf(!dbUp)("the ingestion job defers to a turn in flight", () => {
     ).toBe(true);
   });
 
+  // Two `message_updated` of one voice note, each delivered on both routes: the first carried no words
+  // and the owner settled it remembering, the second carried them. `ownerSettled` says how many of the
+  // owner's two it settled; the watcher settled both, the second by arming the fallback.
+  async function twoUpdatesFallback(
+    contactInboxId: number,
+    messageId: number,
+    text: string,
+    ownerSettled: 1 | 2,
+  ) {
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    await armIngest({
+      tenantId,
+      instanceId,
+      conversationId: 999,
+      contactInboxId,
+      graphThreadId,
+      messageId,
+      text,
+      role: "customer",
+      agentId: 2n,
+      compactionEnabled: false,
+      fallbackAfterMs: 10 * 60_000,
+      event: "message_updated",
+      routes: { owner: 71, watcher: 72 },
+      base: appDb,
+    });
+    for (const [n, route, settled] of [
+      [1, 71, true],
+      [2, 71, ownerSettled === 2],
+      [1, 72, true],
+      [2, 72, true],
+    ] as const) {
+      await suDb.chatwootWebhookDelivery.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          deliveryId: `ij-upd-${process.pid}-${messageId}-${route}-${n}`,
+          event: "message_updated",
+          conversationId: 999,
+          inboundMessageId: messageId,
+          routeAgentBotId: route,
+          routeRemembers: route === 71 ? (settled ? true : null) : false,
+          status: settled ? "PROCESSED" : "PENDING",
+        },
+      });
+    }
+    const job = (
+      await claimDueTrafficJobs(
+        50,
+        appDb,
+        new Date(Date.now() + 11 * 60_000),
+        tenantId,
+      )
+    ).find((j) => j.dedupeKey === ingestFallbackKey(graphThreadId, messageId));
+    if (!job) throw new Error("the fallback was not claimed once due");
+    return { job, graphThreadId };
+  }
+
+  test("an owner's earlier update settled with nothing to append does not stand in for the later update that brought the words", async () => {
+    const { job, graphThreadId } = await twoUpdatesFallback(
+      12631,
+      851,
+      "as palavras do segundo update",
+      1,
+    );
+    const saver = new MemorySaver();
+    expect((await fallbackHandler(job, appDb, saver)).outcome).toBe("done");
+    expect(
+      (await appendedTexts(saver, graphThreadId)).some((t) =>
+        t.includes("as palavras do segundo update"),
+      ),
+    ).toBe(true);
+  });
+
+  test("with neither route's delivery in the ledger, a fallback that names its routes appends its message", async () => {
+    const contactInboxId = 12633;
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    await armIngest({
+      tenantId,
+      instanceId,
+      conversationId: 999,
+      contactInboxId,
+      graphThreadId,
+      messageId: 853,
+      text: "nenhuma entrega registrada",
+      role: "customer",
+      agentId: 2n,
+      compactionEnabled: false,
+      fallbackAfterMs: 10 * 60_000,
+      event: "message_updated",
+      routes: { owner: 71, watcher: 72 },
+      base: appDb,
+    });
+    const job = (
+      await claimDueTrafficJobs(
+        50,
+        appDb,
+        new Date(Date.now() + 11 * 60_000),
+        tenantId,
+      )
+    ).find((j) => j.dedupeKey === ingestFallbackKey(graphThreadId, 853));
+    if (!job) throw new Error("the fallback was not claimed once due");
+    const saver = new MemorySaver();
+    expect((await fallbackHandler(job, appDb, saver)).outcome).toBe("done");
+    expect(
+      (await appendedTexts(saver, graphThreadId)).some((t) =>
+        t.includes("nenhuma entrega registrada"),
+      ),
+    ).toBe(true);
+  });
+
+  test("an owner that settled every update this route received stands in for the fallback", async () => {
+    const { job, graphThreadId } = await twoUpdatesFallback(
+      12632,
+      852,
+      "o dono já gravou as duas",
+      2,
+    );
+    const saver = new MemorySaver();
+    expect((await fallbackHandler(job, appDb, saver)).outcome).toBe("done");
+    expect(await appendedTexts(saver, graphThreadId)).toEqual([]);
+  });
+
   // A client that runs `before` ahead of every call on one model, inside transactions too, so a test
   // can land a concurrent write at the exact point a function reads.
   function onModel(

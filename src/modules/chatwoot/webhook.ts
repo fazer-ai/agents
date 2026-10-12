@@ -2225,6 +2225,9 @@ async function ingestUnhandledMessage(args: {
   retryArm: boolean;
   // Armed as the memory owner's fallback (`armIngest`), for a watcher that left the append to it.
   fallbackAfterMs?: number;
+  // The Chatwoot bot routes of the owner and of this watcher, so the fallback weighs the owner's
+  // deliveries of the event against this route's own (`ArmIngestParams.routes`).
+  fallbackRoutes?: { owner: number; watcher: number };
   sleep?: (ms: number) => Promise<void>;
   base: PrismaClient;
 }): Promise<IngestOutcome> {
@@ -2324,7 +2327,11 @@ async function ingestUnhandledMessage(args: {
         compactionEnabled: args.compactionEnabled,
         ...(args.fallbackAfterMs === undefined
           ? {}
-          : { fallbackAfterMs: args.fallbackAfterMs, event: n.event }),
+          : {
+              fallbackAfterMs: args.fallbackAfterMs,
+              event: n.event,
+              routes: args.fallbackRoutes,
+            }),
         base,
       });
       return "queued";
@@ -4741,7 +4748,11 @@ export async function processChatwootDelivery(
   // its media pass, for its own observation. Only where the owner ACTUALLY HAS this message, by the
   // responder's rule (`responderCoversMessage`, against the owner's attach and its bot's sibling):
   // an owner attached after the emission never got it. See docs/chatwoot.md, "Observer binding".
-  const coveringOwner: { agentId: bigint; settings: unknown } | null =
+  const coveringOwner: {
+    agentId: bigint;
+    settings: unknown;
+    botId: number;
+  } | null =
     observer !== null &&
     responderRt !== null &&
     !responderRemembers &&
@@ -4815,7 +4826,11 @@ export async function processChatwootDelivery(
             base,
           )) === false
             ? null
-            : owner;
+            : {
+                agentId: owner.agentId,
+                settings: owner.settings,
+                botId: ownerBotId,
+              };
         })()
       : null;
   const ownerCovers = coveringOwner !== null;
@@ -6149,7 +6164,19 @@ export async function processChatwootDelivery(
       // owner's append retires once it lands: an owner switched off, gone, or failing between the
       // deliveries leaves it remembered rather than lost, and the delivery settles only once the
       // message is queued, as every observer's does.
-      ...(ownerCovers ? { fallbackAfterMs: OWNER_APPEND_FALLBACK_MS } : {}),
+      ...(coveringOwner !== null
+        ? {
+            fallbackAfterMs: OWNER_APPEND_FALLBACK_MS,
+            ...(params.agentBotId === null
+              ? {}
+              : {
+                  fallbackRoutes: {
+                    owner: coveringOwner.botId,
+                    watcher: params.agentBotId,
+                  },
+                }),
+          }
+        : {}),
       retryArm:
         observing ||
         handedToObserver ||

@@ -81,6 +81,11 @@ export interface ArmIngestParams {
   // it, since a creation the owner settled with nothing to append (an empty message whose audio comes
   // in a `message_updated`) says nothing about the content that came later.
   event?: string;
+  // The Chatwoot bot routes of the owner and of the watcher that armed the fallback. A message can
+  // take several `message_updated`, and the owner settles the ones with nothing to append just as it
+  // settles the one with the words, so one settled delivery of the event proves nothing about the
+  // later update: the fallback stands down only once the owner settled as many as this route received.
+  routes?: { owner: number; watcher: number };
   base?: PrismaClient;
 }
 
@@ -100,6 +105,12 @@ export async function armIngest(params: ArmIngestParams): Promise<void> {
     agentId: String(params.agentId),
     compactionEnabled: params.compactionEnabled,
     ...(fallback && params.event !== undefined ? { event: params.event } : {}),
+    ...(fallback && params.routes !== undefined
+      ? {
+          ownerBotId: params.routes.owner,
+          watcherBotId: params.routes.watcher,
+        }
+      : {}),
   };
   await enqueueJob({
     tenantId: params.tenantId,
@@ -371,19 +382,46 @@ async function fallbackCovered(
   const messageId = typeof p.messageId === "number" ? p.messageId : null;
   if (instanceId === null || conversationId === null || messageId === null)
     return false;
+  const ofMessage = {
+    tenantId,
+    chatwootInstanceId: instanceId,
+    conversationId,
+    inboundMessageId: messageId,
+    ...(typeof p.event === "string" ? { event: p.event } : {}),
+  };
+  // Settled, not just claimed: the flag is written just before the append is armed, and a delivery
+  // settles only once its message is queued. A crash in between leaves PROCESSING.
+  const settledRemembering = {
+    routeRemembers: true,
+    status: "PROCESSED" as const,
+  };
+  if (typeof p.ownerBotId === "number" && typeof p.watcherBotId === "number") {
+    const ownerBotId = p.ownerBotId;
+    const watcherBotId = p.watcherBotId;
+    // Counted per route, one row per Chatwoot delivery: an owner that settled the update without the
+    // words and stranded the one carrying them has settled fewer than this route received.
+    const [settled, received] = await runScopedOn(
+      base,
+      sysCtx(tenantId),
+      (db) =>
+        Promise.all([
+          db.chatwootWebhookDelivery.count({
+            where: {
+              ...ofMessage,
+              routeAgentBotId: ownerBotId,
+              ...settledRemembering,
+            },
+          }),
+          db.chatwootWebhookDelivery.count({
+            where: { ...ofMessage, routeAgentBotId: watcherBotId },
+          }),
+        ]),
+    );
+    return settled > 0 && settled >= received;
+  }
   const stated = await runScopedOn(base, sysCtx(tenantId), (db) =>
     db.chatwootWebhookDelivery.findFirst({
-      where: {
-        tenantId,
-        chatwootInstanceId: instanceId,
-        conversationId,
-        inboundMessageId: messageId,
-        ...(typeof p.event === "string" ? { event: p.event } : {}),
-        routeRemembers: true,
-        // Settled, not just claimed: the flag is written just before the append is armed, and a
-        // delivery settles only once its message is queued. A crash in between leaves PROCESSING.
-        status: "PROCESSED",
-      },
+      where: { ...ofMessage, ...settledRemembering },
       select: { id: true },
     }),
   );

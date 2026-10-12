@@ -48,6 +48,8 @@ const SHARED_INBOX = 84;
 const OBSERVED_ONLY_INBOX = 85;
 const RESPONDER_BOT = 24;
 const OBSERVER_BOT = 25;
+// The bot of the watcher `withSecondWatcher` adds beside the observer, which stays the memory owner.
+const SECOND_WATCHER_BOT = 963;
 let tenantId = 0n;
 let instanceId = 0n;
 let responderId = 0n;
@@ -349,11 +351,20 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
       },
       select: { runAt: true, payload: true },
     });
-    // It names the event that armed it: the ledger stands in for it only with that same event settled.
+    // It names the event that armed it and the two routes: the ledger stands in for it only once the
+    // owner's route settled that event as often as the arming route received it.
+    const p = (row?.payload ?? {}) as {
+      event?: unknown;
+      ownerBotId?: unknown;
+      watcherBotId?: unknown;
+    };
     return (
       row !== null &&
       row.runAt.getTime() > Date.now() + 60_000 &&
-      typeof (row.payload as { event?: unknown }).event === "string"
+      typeof p.event === "string" &&
+      // Every fallback here is the second watcher's, beside the first as owner.
+      p.ownerBotId === OBSERVER_BOT &&
+      p.watcherBotId === SECOND_WATCHER_BOT
     );
   }
 
@@ -649,7 +660,7 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
     body: (ctx: { secondBot: number; secondId: bigint }) => Promise<void>,
     settings: { owner?: object; second?: object } = {},
   ) {
-    const SECOND_BOT = 963;
+    const SECOND_BOT = SECOND_WATCHER_BOT;
     const second = await suDb.agent.create({
       data: {
         tenantId,
@@ -4070,7 +4081,7 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
   };
 
   test("two observers on one inbox, the second refused by its own gate: only the first arms, nothing remembered or posted", async () => {
-    const SECOND_BOT = 963;
+    const SECOND_BOT = SECOND_WATCHER_BOT;
     const second = await suDb.agent.create({
       data: {
         tenantId,

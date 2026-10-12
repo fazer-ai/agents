@@ -953,12 +953,17 @@ function setCustomAttributeTool(ctx: ToolCtx) {
         }
         const tenantId = ctx.tenantId;
         const contactDbId = ctx.contactDbId;
-        const contact = await runScopedOn(ctx.base, sysCtx(tenantId), (db) =>
+        const base = ctx.base;
+        // A failed lookup wrote nothing, and the call says so before it propagates.
+        const contact = await runScopedOn(base, sysCtx(tenantId), (db) =>
           db.contact.findUnique({
             where: { id: contactDbId },
             select: { chatwootContactId: true },
           }),
-        );
+        ).catch((e: unknown) => {
+          fenceReporterOf(config)?.({ noEffect: true });
+          throw e;
+        });
         if (!contact?.chatwootContactId) {
           noEffect();
           return "Could not set the contact attribute (contact not linked to Chatwoot).";
@@ -1353,6 +1358,8 @@ function setLabelsTool(ctx: ToolCtx) {
     // From here on nobody joins: a call that arrives now queues an entry of its own.
     const close = () =>
       closeConversationLabelsTail(ctx.tenantId, ctx.conversationId, batch);
+    // Whether the write was attempted: a failure before it (the read) wrote nothing for any call.
+    let writing = false;
     try {
       const known = ctx.conversationLabelsRead;
       let current: string[];
@@ -1440,6 +1447,7 @@ function setLabelsTool(ctx: ToolCtx) {
       // Forgotten before the write: a write that fails leaves nothing known about the set.
       ctx.conversationLabelsRead = undefined;
       const writtenAt = Date.now();
+      writing = true;
       await ctx.client.setConversationLabels(ctx.conversationId, state);
       if (known) ctx.conversationLabelsRead = { labels: state, at: writtenAt };
       recordShown(ctx, "conversation", state);
@@ -1459,6 +1467,8 @@ function setLabelsTool(ctx: ToolCtx) {
       }
     } catch (err) {
       close();
+      if (!writing)
+        for (const d of batch.deltas) d.fenced?.({ noEffect: true });
       // Settling twice is a no-op, so the calls already answered are not disturbed.
       for (const d of batch.deltas) d.reject(err);
     }
@@ -1595,18 +1605,30 @@ function setLabelsTool(ctx: ToolCtx) {
         }
         const tenantId = ctx.tenantId;
         const contactDbId = ctx.contactDbId;
-        const contact = await runScopedOn(ctx.base, sysCtx(tenantId), (db) =>
-          db.contact.findUnique({
-            where: { id: contactDbId },
-            select: { chatwootContactId: true },
-          }),
+        // Reads only: a failure here wrote nothing, and the call says so before it propagates.
+        const readOnly = async <T>(read: () => Promise<T>): Promise<T> => {
+          try {
+            return await read();
+          } catch (e) {
+            fenced?.({ noEffect: true });
+            throw e;
+          }
+        };
+        const contact = await readOnly(() =>
+          runScopedOn(ctx.base as PrismaClient, sysCtx(tenantId), (db) =>
+            db.contact.findUnique({
+              where: { id: contactDbId },
+              select: { chatwootContactId: true },
+            }),
+          ),
         );
         if (!contact?.chatwootContactId) {
           noEffect();
           return "Could not set the contact labels (contact not linked to Chatwoot).";
         }
-        const current = await ctx.client.getContactLabels(
-          contact.chatwootContactId,
+        const chatwootContactId = contact.chatwootContactId;
+        const current = await readOnly(() =>
+          ctx.client.getContactLabels(chatwootContactId),
         );
         const {
           next,

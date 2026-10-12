@@ -196,3 +196,26 @@ describe("a refused call in a shared label write", () => {
     expect(free).toEqual([]);
   });
 });
+
+describe("a label call whose read fails", () => {
+  test("is told it wrote nothing before the failure propagates", async () => {
+    const client = {
+      getConversationLabels: async () => {
+        throw new Error("chatwoot down");
+      },
+      setConversationLabels: async () => ({}),
+    } as unknown as ChatwootClient;
+    const tool = byName(
+      buildNativeTools({ client, conversationId: 7 }),
+      "set_labels",
+    );
+    const reports: CallReport[] = [];
+    await expect(
+      tool.invoke(
+        { add: ["novo"] },
+        withFenceReporter({}, (r) => reports.push(r)),
+      ),
+    ).rejects.toThrow("chatwoot down");
+    expect(reports).toEqual([{ noEffect: true }]);
+  });
+});

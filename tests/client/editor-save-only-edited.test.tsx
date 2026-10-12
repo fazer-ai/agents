@@ -164,6 +164,19 @@ describe("Behavior writes the sections the operator edited (agents#1304)", () =>
     expect(split?.maxChars).toBe(450);
   });
 
+  test("switching on the other inboxes writes that block and nothing else", async () => {
+    const { after } = await saveBehavior({ settings: {} }, () =>
+      fireEvent.click(
+        screen.getByRole("switch", {
+          name: /Read this contact's conversations in other inboxes/,
+        }),
+      ),
+    );
+    expect(Object.keys(after ?? {})).toEqual(["otherInboxes"]);
+    const other = after?.otherInboxes as Record<string, unknown> | undefined;
+    expect(other?.enabled).toBe(true);
+  });
+
   const monitoring = {
     engine: "decisions",
     analysis: "incremental",

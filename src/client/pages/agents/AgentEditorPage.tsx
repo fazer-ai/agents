@@ -1897,6 +1897,7 @@ function AgentEditor() {
       attributeContext: f.attributeContext,
       contactFields: f.contactFields,
       takeover: f.takeover,
+      otherInboxes: f.otherInboxes,
     };
   }
 
@@ -1928,6 +1929,7 @@ function AgentEditor() {
       attributeContext,
       contactFields,
       takeover,
+      otherInboxes,
     } = f;
     return {
       availability: { enabled: awayEnabled, awayMessage: awayMessage.trim() },

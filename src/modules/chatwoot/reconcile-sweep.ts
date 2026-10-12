@@ -121,8 +121,12 @@ async function completePage(
   rows: ChatwootMessageRow[],
   seen: Set<number>,
 ): Promise<ChatwootMessageRow[]> {
-  if (rows.length === 0) return rows;
+  const floor = earliest(rows);
+  if (floor === null) return rows;
   for (const m of rows) seen.add(m.id);
+  // Only rows at or after the page's earliest, by the pair `before` compares: an import dated
+  // earlier with a higher id belongs to an older page, which returns it in its own turn.
+  const atOrAfterFloor = (m: ChatwootMessageRow) => !isEarlier(m, floor);
   let after = Math.min(...rows.map((m) => m.id)) - 1;
   for (let read = 0; ; read++) {
     if (read >= MAX_MESSAGE_PAGES)
@@ -134,7 +138,7 @@ async function completePage(
       conversationId,
     );
     for (const m of more) {
-      if (!seen.has(m.id)) {
+      if (!seen.has(m.id) && atOrAfterFloor(m)) {
         seen.add(m.id);
         rows.push(m);
       }
@@ -181,11 +185,13 @@ async function owedOf(
 // number old messages above new ones, so the smallest id is not the earliest.
 function earliest(rows: ChatwootMessageRow[]): ChatwootMessageRow | null {
   if (rows.length === 0) return null;
-  return rows.reduce((a, b) => {
-    const at = (a.createdAt as Date).getTime();
-    const bt = (b.createdAt as Date).getTime();
-    return bt < at || (bt === at && b.id < a.id) ? b : a;
-  });
+  return rows.reduce((a, b) => (isEarlier(b, a) ? b : a));
+}
+
+function isEarlier(a: ChatwootMessageRow, b: ChatwootMessageRow): boolean {
+  const at = (a.createdAt as Date).getTime();
+  const bt = (b.createdAt as Date).getTime();
+  return at < bt || (at === bt && a.id < b.id);
 }
 
 export interface ReconcileCounts {

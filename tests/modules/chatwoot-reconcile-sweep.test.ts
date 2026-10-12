@@ -814,6 +814,37 @@ describe.skipIf(!dbUp)("reconciling from Chatwoot", () => {
     ]);
   });
 
+  test("a backdated incoming import the catch-up read brings in is not taken as the owed message", async () => {
+    const notes = Array.from({ length: 20 }, (_, i) => ({
+      ...outgoing(19_601 + i, minutesAgo(29 - i * 0.1)),
+      private: true,
+    }));
+    const s: Scripted = {
+      conversations: new Map([[INBOX, [conv(1960, minutesAgo(20))]]]),
+      messages: new Map([
+        [
+          1960,
+          [
+            incoming(19_600, minutesAgo(30)),
+            ...notes,
+            // An incoming history import from yesterday, numbered above everything else.
+            { ...incoming(19_900, minutesAgo(24 * 60)) },
+          ],
+        ],
+      ]),
+      listed: [],
+    };
+    await reconcileFromChatwoot({
+      tenantId,
+      base: appDb,
+      now: NOW,
+      makeClient: chatwoot(s),
+    });
+    expect((await ledgerFor(1960)).map((r) => r.inboundMessageId)).toEqual([
+      19_600,
+    ]);
+  });
+
   test("the catch-up read is followed past a full page to the newest message", async () => {
     const reactions = Array.from({ length: 105 }, (_, i) => ({
       ...incoming(16_001 + i, minutesAgo(25 - i * 0.04)),

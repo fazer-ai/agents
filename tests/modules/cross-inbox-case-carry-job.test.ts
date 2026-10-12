@@ -95,6 +95,8 @@ function fakeChatwoot(opts: {
   closeOnDownload?: boolean;
   // The origin's holder, as Chatwoot answers it.
   originAssignee?: string;
+  // How many case reads answer before every later one fails.
+  caseReadsBeforeFailure?: number;
   // Every case read after the first download fails.
   caseReadFailsAfterDownload?: boolean;
   // Cases Chatwoot answers 404 for.
@@ -111,6 +113,7 @@ function fakeChatwoot(opts: {
   let failures = opts.uploadFailures ?? 0;
   let closed = false;
   let downloaded = false;
+  let caseReads = 0;
   const client = {
     conversationUrl: (id: number) =>
       `https://chat.example.com/app/accounts/1/conversations/${id}`,
@@ -118,6 +121,11 @@ function fakeChatwoot(opts: {
     getConversation: async (id: number) => {
       calls.push({ fn: "getConversation", args: [id] });
       if (opts.deleted?.includes(id)) throw new ChatwootApiError(404, "GET");
+      if (id === CASE && opts.caseReadsBeforeFailure !== undefined) {
+        caseReads += 1;
+        if (caseReads > opts.caseReadsBeforeFailure)
+          throw new ChatwootApiError(502, "GET");
+      }
       if (
         id !== 0 &&
         id >= 200 &&
@@ -604,6 +612,19 @@ describe.skipIf(!dbUp)("the late carry into the case", () => {
     const r = await caseCarryHandler(jobFor(120), appDb, f.deps);
     expect(r.outcome).toBe("fail");
     expect(f.named("sendFilesAsAdmin")).toHaveLength(0);
+  });
+
+  test("an origin link left unwritten because the case could not be read is retried", async () => {
+    await setAgent({});
+    await seed(129);
+    const f = fakeChatwoot({
+      messages: [fromContact(9001, [7001])],
+      carried: "9001:7001",
+      caseReadsBeforeFailure: 1,
+    });
+    const r = await caseCarryHandler(jobFor(129), appDb, f.deps);
+    expect(r.outcome).toBe("fail");
+    expect(f.originAttrs[KEY]).toBeUndefined();
   });
 
   test("a case the team closes while its files come down gets no upload", async () => {

@@ -1710,7 +1710,9 @@ export async function buildToolset(
               ...(ctx.conversationId > 0 &&
               cfg.crossInboxCaseConfig.carryAttachments.mode !== "off"
                 ? {
-                    armCarry: (caseId: number) =>
+                    // The files this opening's attendance holds are owed to the case: the walk starts
+                    // where that attendance started, not where a later one does.
+                    armCarry: async (caseId: number) =>
                       armCaseCarry({
                         tenantId: ctx.tenantId,
                         instanceId: ctx.instanceId,
@@ -1720,7 +1722,24 @@ export async function buildToolset(
                           ctx.messageId && ctx.messageId > 0
                             ? ctx.messageId
                             : null,
-                        owedSince: new Date(),
+                        owedSince:
+                          cfg.contactInboxId != null &&
+                          cfg.crossInboxCaseConfig.carryAttachments.mode ===
+                            "attendance"
+                            ? await attendanceStartedAt(
+                                {
+                                  checkpointer:
+                                    ctx.checkpointer ??
+                                    (await getCheckpointer()),
+                                  base: ctx.base,
+                                },
+                                {
+                                  tenantId: ctx.tenantId,
+                                  instanceId: ctx.instanceId,
+                                  contactInboxId: cfg.contactInboxId,
+                                },
+                              ).catch(() => new Date())
+                            : new Date(),
                         base: ctx.base,
                       }),
                   }

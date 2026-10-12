@@ -387,14 +387,18 @@ export async function caseCarryHandler(
   // The origin's case number, when it does not name this case: without it, the contact's next file
   // would not find its way here. A write that failed is retried with the job, after the files.
   let originUnlinked = false;
-  if (named !== into && (await stillWanted())) {
-    try {
-      await client.setConversationCustomAttributes(
-        originConversationId,
-        { [config.caseAttributeKey]: into },
-        { stillWanted, asAdmin: true },
-      );
-    } catch {
+  if (named !== into) {
+    if (await stillWanted()) {
+      try {
+        await client.setConversationCustomAttributes(
+          originConversationId,
+          { [config.caseAttributeKey]: into },
+          { stillWanted, asAdmin: true },
+        );
+      } catch {
+        originUnlinked = true;
+      }
+    } else if (caseUnread) {
       originUnlinked = true;
     }
   }
@@ -414,7 +418,11 @@ export async function caseCarryHandler(
               contactInboxId: state.contactInboxId as number,
             },
           );
-          if (started === null || owedSince === null) return started;
+          // NOTE: no open attendance left (closed and compacted since) is not the whole conversation:
+          // the owed instant bounds it
+          if (started === null)
+            return owedSince === null ? null : new Date(owedSince * 1000);
+          if (owedSince === null) return started;
           return new Date(Math.min(started.getTime(), owedSince * 1000));
         }
       : undefined;

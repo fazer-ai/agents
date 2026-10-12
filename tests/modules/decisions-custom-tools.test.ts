@@ -5,7 +5,7 @@ import {
 } from "@langchain/core/tools";
 import { z } from "zod";
 import { failableTool, toolFailure } from "@/graph/tools/failure";
-import { SERVER_INPUT_SCHEMA } from "@/graph/tools/mcp";
+import { adoptServerTool } from "@/graph/tools/mcp";
 import { AppError } from "@/lib/errors";
 import type { ScopedDb } from "@/lib/tenancy";
 import {
@@ -774,13 +774,13 @@ describe("the tick fills a custom tool's arguments and records them", () => {
     const tool = new DynamicStructuredTool({
       name,
       description: "x",
-      schema: { type: "object", properties: {} },
+      schema: server,
       func: async (input) => {
         seen.push(input as Record<string, unknown>);
         return "ok";
       },
     });
-    (tool as unknown as Record<string, unknown>)[SERVER_INPUT_SCHEMA] = server;
+    adoptServerTool(tool);
     return tool as unknown as StructuredToolInterface;
   };
 
@@ -910,9 +910,14 @@ describe("an imported rule on a renamed tool", () => {
         },
       },
     };
+    // A bundled custom tool named after a native is stored under another name; the native's own
+    // rules keep naming the native.
     const out = renameDecisionActionTools(
       bag,
-      new Map([["Lookup", "lookup_2"]]),
+      new Map([
+        ["Lookup", "lookup_2"],
+        ["set_labels", "set_labels_2"],
+      ]),
     );
     const rules = (
       (out.monitoring as Record<string, unknown>).decisions as {

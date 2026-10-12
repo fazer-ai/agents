@@ -57,7 +57,10 @@ import {
   type ScheduleException,
   type WindowSpec,
 } from "@/modules/business-hours/hours";
-import { withoutRemovedDecisionFields } from "@/modules/decisions/config";
+import {
+  isNativeDecisionTool,
+  withoutRemovedDecisionFields,
+} from "@/modules/decisions/config";
 import { parseDocumentStyle } from "@/modules/documents/blocks";
 import { documentToolName } from "@/modules/documents/slug";
 import {
@@ -2977,7 +2980,11 @@ export function renameDecisionActionTools(
       action && typeof action === "object"
         ? (action as Record<string, unknown>).tool
         : undefined;
-    const to = typeof tool === "string" ? byModelName.get(tool) : undefined;
+    // A native action names the watcher's own write, never a bundled tool that shared its name.
+    const to =
+      typeof tool === "string" && !isNativeDecisionTool(tool)
+        ? byModelName.get(tool)
+        : undefined;
     if (to === undefined || to === tool) return rule;
     touched = true;
     return {

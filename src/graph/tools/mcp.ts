@@ -7,9 +7,11 @@ import type {
 import { type Connection, loadMcpTools } from "@langchain/mcp-adapters";
 import {
   Client,
+  fromJsonSchema,
   SSEClientTransport,
   StreamableHTTPClientTransport,
 } from "@modelcontextprotocol/client";
+import { DefaultJsonSchemaValidator } from "@modelcontextprotocol/client/_shims";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import logger from "@/api/lib/logger";
 import config from "@/config";
@@ -439,7 +441,11 @@ function withDraft2020Tuples(client: Client): void {
 // THE ADAPTER'S OWN ARGUMENT CHECK, which runs against the server's full schema before the server is
 // reached: a call it refuses sent nothing, said on the call's reporter (fence-report.ts) so a caller
 // that asks per call (a decisions rule) does not count it as a call that may have written.
-export const SERVER_INPUT_SCHEMA = "fazeraiServerInputSchema";
+export const SERVER_INPUT_VALIDATOR = "fazeraiServerInput";
+export interface ServerInputValidator {
+  schema: unknown;
+  validate: (args: Record<string, unknown>) => Promise<boolean>;
+}
 
 // Told apart by the adapter's own sentence: a response the SDK cannot parse also throws a wrapped
 // `ZodError`, after the request was sent ("Error calling tool ..."), and may have written.
@@ -471,6 +477,30 @@ function reportArgumentRefusals(tool: StructuredToolInterface): void {
   };
 }
 
+// AN ADAPTER TOOL AS THE AGENT EXPOSES IT: the model reads a simplified declaration of the server's
+// schema (mcp-schema.ts), while the server's own schema stays beside it with the adapter's check, so
+// a caller that fills arguments itself (a decisions rule, decisions/arguments.ts) fits and checks
+// them against what the adapter will check; and an argument refusal is reported as sending nothing.
+export function adoptServerTool(tool: StructuredToolInterface): void {
+  const server = tool.schema;
+  let validator: ReturnType<typeof fromJsonSchema> | undefined;
+  (tool as { [SERVER_INPUT_VALIDATOR]?: ServerInputValidator })[
+    SERVER_INPUT_VALIDATOR
+  ] = {
+    schema: server,
+    // Compiled the same way as the adapter's and, like it, on first use.
+    validate: async (args) => {
+      validator ??= fromJsonSchema(
+        server as never,
+        new DefaultJsonSchemaValidator(),
+      );
+      return !(await validator["~standard"].validate(args)).issues;
+    },
+  };
+  (tool as { schema: unknown }).schema = declarationSchema(server);
+  reportArgumentRefusals(tool);
+}
+
 // One connection on its own SDK client, for every transport. An SDK 2 `Client` negotiates the legacy
 // protocol by default, so no elicitation request can turn into an interrupt no turn resumes. Its HTTP
 // transports get a `fetch` that adds the declared headers of the tool call in flight.
@@ -497,14 +527,7 @@ async function connectClient(
           result: withStructuredContent(result) as typeof result,
         }),
       });
-      for (const tool of tools) {
-        // The server's own schema stays readable beside the declaration the model gets: a caller
-        // that fills arguments itself (a decisions rule) fits them to what the adapter will check.
-        (tool as { [SERVER_INPUT_SCHEMA]?: unknown })[SERVER_INPUT_SCHEMA] =
-          tool.schema;
-        (tool as { schema: unknown }).schema = declarationSchema(tool.schema);
-        reportArgumentRefusals(tool);
-      }
+      for (const tool of tools) adoptServerTool(tool);
       return { client, tools };
     } catch (err) {
       void client.close().catch(() => {});

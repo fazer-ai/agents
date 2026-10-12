@@ -9,18 +9,14 @@ import {
   ToolInputParsingException,
 } from "@langchain/core/tools";
 import {
-  interopSafeParseAsync,
-  isInteropZodSchema,
-} from "@langchain/core/utils/types";
-import {
   type CallReport,
   type FenceName,
   type FenceReport,
   withFenceReporter,
 } from "@/graph/tools/fence-report";
-import { WAIT_MESSAGE_ARG } from "@/graph/tools/http";
-import { isMcpArgumentRefusal, SERVER_INPUT_SCHEMA } from "@/graph/tools/mcp";
+import { isMcpArgumentRefusal } from "@/graph/tools/mcp";
 import { sentNothing } from "@/modules/chatwoot/client";
+import { prepareArgs } from "./arguments";
 import {
   type DecisionQuestion,
   type DecisionsConfig,
@@ -35,7 +31,7 @@ import {
   type DecisionResult,
 } from "./providers";
 import { type ConditionMiss, evaluateRules, type FiredAction } from "./rules";
-import { argsForLog, type FillContext, resolveFill } from "./tool-args";
+import { argsForLog, type FillContext } from "./tool-args";
 
 export async function askProvider(
   config: DecisionsConfig,
@@ -241,24 +237,32 @@ export async function applyDecisions(
       slots[at] = { rule: f.rule, tool: f.tool, outcome: "not_granted" };
       continue;
     }
-    const filled = f.fill ?? {};
-    const resolved =
-      Object.keys(filled).length === 0
-        ? { values: {}, missing: [] as string[] }
-        : fill
-          ? resolveFill(filled, fill.context, answers, fill.questions)
-          : { values: {}, missing: Object.keys(filled) };
-    const args = { ...f.args };
-    for (const [k, v] of Object.entries(resolved.values)) {
-      args[k] = await fitToField(tool, k, v);
+    // THE ARGUMENTS FIRST (./arguments.ts): resolved, fitted and checked against the tool's
+    // original schema before anything is charged or latched. One that does not fit is not called, so
+    // it spends no call of the budget and holds no latch.
+    const prepared = await prepareArgs(
+      tool,
+      f,
+      fill
+        ? { context: fill.context, answers, questions: fill.questions }
+        : null,
+    );
+    const args = prepared.args;
+    if (!isNativeDecisionTool(f.tool)) {
+      loggedArgs.set(
+        at,
+        argsForLog(args, f.fill ?? {}, fill?.logValues ?? false),
+      );
     }
-    // An HTTP tool with an acknowledgement asks the model for the holding message it sends the
-    // customer. A watcher's client is muted and sends none, so a rule is not asked to write one.
-    if (
-      fieldOf(tool, WAIT_MESSAGE_ARG) !== undefined &&
-      !(WAIT_MESSAGE_ARG in args)
-    ) {
-      args[WAIT_MESSAGE_ARG] = "-";
+    if (!prepared.ok) {
+      slots[at] = {
+        rule: f.rule,
+        tool: f.tool,
+        outcome: "failed",
+        failure: prepared.failure,
+        ...(prepared.missing ? { missing: prepared.missing } : {}),
+      };
+      continue;
     }
     // Two rules written differently can call with the same arguments (one fixed, one filled with the
     // same value): one call answers for both, as rules.ts merges identical actions as written.
@@ -267,6 +271,7 @@ export async function applyDecisions(
     );
     const into = same ? fired[same.at] : undefined;
     if (into) {
+      loggedArgs.delete(at);
       into.merged.push(f.rule, ...f.merged);
       continue;
     }
@@ -275,38 +280,10 @@ export async function applyDecisions(
       continue;
     }
     callArgs.set(at, args);
-    if (!isNativeDecisionTool(f.tool)) {
-      loggedArgs.set(at, argsForLog(args, filled, fill?.logValues ?? false));
-    }
-    // A field with no value is left out of the call, and a tool that needs it is not called: what
-    // it would refuse is said by the arguments the rule could not fill, not by its schema.
-    if (resolved.missing.length > 0 && (await lacksRequired(tool, args))) {
-      slots[at] = {
-        rule: f.rule,
-        tool: f.tool,
-        outcome: "failed",
-        failure: "missing_value",
-        missing: resolved.missing,
-      };
-      continue;
-    }
     calls += 1;
     sent.push({ at, tool: f.tool, args });
     if (dryRun) {
-      // The arguments are asked of the tool's own schema without running it, so a dry run shows the
-      // `invalid_arguments` a run would hit. The watcher's writes are native tools, schema'd in zod.
-      const fits =
-        !isInteropZodSchema(tool.schema) ||
-        (await interopSafeParseAsync(tool.schema, callArgs.get(at) ?? f.args))
-          .success;
-      slots[at] = fits
-        ? { rule: f.rule, tool: f.tool, outcome: "decided" }
-        : {
-            rule: f.rule,
-            tool: f.tool,
-            outcome: "failed",
-            failure: "invalid_arguments",
-          };
+      slots[at] = { rule: f.rule, tool: f.tool, outcome: "decided" };
       continue;
     }
     toRun.push({ at, tool });
@@ -345,35 +322,14 @@ export async function applyDecisions(
     const action = fired[r.at];
     return action ? together(action) : null;
   };
-  // An action whose arguments its tool's schema refuses is dispatched like any other and fails
-  // before its handler runs, so it writes nothing: it rides inside the run it sits in instead of
-  // parting the valid actions around it.
-  const inert = new Set<number>();
-  for (const r of toRun) {
-    const action = fired[r.at];
-    if (
-      action &&
-      isInteropZodSchema(r.tool.schema) &&
-      !(
-        await interopSafeParseAsync(
-          r.tool.schema,
-          callArgs.get(r.at) ?? action.args,
-        )
-      ).success
-    ) {
-      inert.add(r.at);
-    }
-  }
   for (let i = 0; i < toRun.length; ) {
     const head = toRun[i];
     if (!head) break;
-    const key = inert.has(head.at) ? null : keyOf(head);
+    const key = keyOf(head);
     let end = i + 1;
-    // The run ends on its last member that shares the write, never on an inert one.
     for (let j = end; key !== null && j < toRun.length; j++) {
       const next = toRun[j];
       if (!next) break;
-      if (inert.has(next.at)) continue;
       if (keyOf(next) !== key) break;
       end = j + 1;
     }
@@ -603,83 +559,6 @@ export async function applyDecisions(
     triggerState: triggerState(),
     withdrawn: false,
   };
-}
-
-// A filled value as the argument takes it: as given when the tool's schema for that argument accepts
-// it, else as its text when that is accepted (a display id into a text argument). A tool with no
-// zod schema of its own gets the value as given.
-async function fitToField(
-  tool: StructuredToolInterface,
-  arg: string,
-  value: unknown,
-): Promise<unknown> {
-  const field = fieldOf(tool, arg);
-  if (field === undefined) return value;
-  if (isInteropZodSchema(field)) {
-    if ((await interopSafeParseAsync(field, value)).success) return value;
-    const text = String(value);
-    return (await interopSafeParseAsync(field, text)).success ? text : value;
-  }
-  // An MCP tool carries its server's JSON Schema.
-  // A nullable or union type (`["string", "null"]`, `anyOf`) takes text when it takes no number.
-  const types = jsonTypes(field);
-  return typeof value !== "string" &&
-    types.includes("string") &&
-    !types.includes(typeof value === "number" ? "number" : "") &&
-    !(Number.isInteger(value) && types.includes("integer"))
-    ? String(value)
-    : value;
-}
-
-function jsonTypes(field: unknown): unknown[] {
-  const f = (field ?? {}) as {
-    type?: unknown;
-    anyOf?: unknown;
-    oneOf?: unknown;
-  };
-  const own = Array.isArray(f.type) ? f.type : [f.type];
-  const members = [
-    ...(Array.isArray(f.anyOf) ? f.anyOf : []),
-    ...(Array.isArray(f.oneOf) ? f.oneOf : []),
-  ];
-  return [...own, ...members.flatMap(jsonTypes)];
-}
-
-// One argument's schema: a zod object's field, or a JSON Schema property.
-function fieldOf(tool: StructuredToolInterface, arg: string): unknown {
-  const schema = inputSchemaOf(tool) as {
-    shape?: Record<string, unknown>;
-    properties?: Record<string, unknown>;
-  };
-  return isInteropZodSchema(schema)
-    ? schema.shape?.[arg]
-    : schema.properties?.[arg];
-}
-
-// The schema the tool checks its input against: an MCP tool's server schema, which the adapter
-// validates with, rather than the simplified declaration the model reads (graph/tools/mcp.ts).
-function inputSchemaOf(tool: StructuredToolInterface): unknown {
-  return (
-    (tool as { [SERVER_INPUT_SCHEMA]?: unknown })[SERVER_INPUT_SCHEMA] ??
-    tool.schema
-  );
-}
-
-// Whether the arguments leave out one the tool requires, asked of a zod schema by parsing and of a
-// JSON Schema by its `required` list.
-async function lacksRequired(
-  tool: StructuredToolInterface,
-  args: Record<string, unknown>,
-): Promise<boolean> {
-  const schema = inputSchemaOf(tool);
-  if (isInteropZodSchema(schema)) {
-    return !(await interopSafeParseAsync(schema, args)).success;
-  }
-  const required = (schema as { required?: unknown } | null)?.required;
-  return (
-    Array.isArray(required) &&
-    required.some((name) => typeof name === "string" && !(name in args))
-  );
 }
 
 // The answers as the flow line carries them: numbers and the operator's own option names, never the

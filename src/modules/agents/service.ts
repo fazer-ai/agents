@@ -16,6 +16,7 @@ import {
   NATIVE_TOOL_NAMES,
   RAG_TOOL_NAMES,
 } from "@/graph/tools/catalog";
+import { parseToolInputSchema } from "@/graph/tools/http";
 import { mcpServerSlug } from "@/graph/tools/mcp";
 import { normalizeToolName } from "@/graph/tools/toolName";
 import { parseDbId, requireDbId } from "@/lib/db-id";
@@ -53,6 +54,7 @@ import { isOutOfHoursNow, parseSchedule } from "@/modules/business-hours/hours";
 import { renameAgentBots } from "@/modules/chatwoot/provisioning";
 import { invalidateRouteTokenCache } from "@/modules/chatwoot/route-token-cache";
 import { invalidContactAuthRule } from "@/modules/contact-auth/settings";
+import { sampleArgsUnfit } from "@/modules/decisions/arguments";
 import { isNativeDecisionTool } from "@/modules/decisions/config";
 import {
   type ArgIssueCode,
@@ -565,11 +567,27 @@ export async function assertDecisionActionArgs(
       v && typeof v === "object" && !Array.isArray(v)
         ? (v as Record<string, unknown>)
         : {};
-    const issue = actionArgIssues(
-      { args: bag(action.args), fill: bag(action.fill) },
-      argSpecsFrom(schemas.get(tool)),
-    )[0];
+    const parts = { args: bag(action.args), fill: bag(action.fill) };
+    const issue = actionArgIssues(parts, argSpecsFrom(schemas.get(tool)))[0];
     if (issue) throw decisionActionArgError(rule, tool, issue);
+    // The tick's own check (decisions/arguments.ts), against the schema the tool is built from, with
+    // a sample of each field's type: what it would refuse at every observation is refused here.
+    const unfit = await sampleArgsUnfit(
+      { zod: parseToolInputSchema(schemas.get(tool)) },
+      {
+        args: parts.args,
+        fill: Object.fromEntries(
+          Object.entries(parts.fill).map(([k, v]) => [k, String(v)]),
+        ),
+      },
+    );
+    if (unfit !== null) {
+      throw decisionActionArgError(rule, tool, {
+        arg: unfit,
+        in: unfit in parts.fill ? "fill" : "args",
+        code: unfit in parts.fill ? "arg_source_type" : "arg_type",
+      });
+    }
   }
 }
 

@@ -343,7 +343,8 @@ describe("applyDecisions dispatching the actions that share a write", () => {
       10,
       key,
     );
-    expect(fences).toBe(3);
+    // The invalid note is checked before dispatch (decisions/arguments.ts) and asks no fence.
+    expect(fences).toBe(2);
   });
 
   test("without a grouping every action runs alone, in rule order", async () => {

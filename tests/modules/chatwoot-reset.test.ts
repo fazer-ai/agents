@@ -17,6 +17,7 @@ import {
   getCheckpointer,
 } from "@/graph/checkpointer";
 import { clearTurnInFlight, markTurnInFlight } from "@/graph/inflight";
+import { ingestFallbackKey } from "@/graph/ingest-job";
 import { buildThreadStateGraph, THREAD_STATE_NODE } from "@/graph/thread-state";
 import { withKeyedQueue } from "@/lib/locks";
 import { CHATWOOT_AUTH_HEADER } from "@/modules/chatwoot/constants";
@@ -666,6 +667,37 @@ describe.skipIf(!dbUp)(
           .map((l) => (l.detail as Record<string, unknown>).dedupeKey)
           .filter((k) => String(k).startsWith(`ingest:${threadId}:`)),
       ).toEqual([`ingest:${threadId}:903`]);
+    });
+
+    // A watcher that left the append to the memory owner keeps a fallback with the same encrypted body
+    // (src/graph/ingest-job.ts), so a reset that spared it would leave a stored copy of the
+    // conversation, and its run would arm the append again.
+    test("a queued fallback for the owner's append is revoked too, up to the command", async () => {
+      const threadId = contactInboxThreadId(tenantId, instanceId, 301);
+      for (const messageId of [904, 99_004]) {
+        await suDb.schedulerJob.create({
+          data: {
+            tenantId,
+            kind: "INGEST_FALLBACK",
+            dedupeKey: ingestFallbackKey(threadId, messageId),
+            runAt: new Date(Date.now() + 10 * 60_000),
+            status: "PENDING",
+            payload: { messageId },
+          },
+        });
+      }
+
+      const cw = fakeChatwoot();
+      globalThis.fetch = cw.impl;
+      await sendReset();
+
+      const rows = await suDb.schedulerJob.findMany({
+        where: { tenantId, kind: "INGEST_FALLBACK" },
+        select: { dedupeKey: true },
+      });
+      const keys = rows.map((r) => r.dedupeKey);
+      expect(keys).not.toContain(ingestFallbackKey(threadId, 904));
+      expect(keys).toContain(ingestFallbackKey(threadId, 99_004));
     });
 
     // NOTE: the revoke stops at the episode boundary. It runs early in the command, but the command

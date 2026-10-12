@@ -346,7 +346,6 @@ async function runRecovery(params: {
   // reply is coming, the newest page and the freshness fence (which reasons about a reply arriving
   // late) are neither asked nor paid for. Decided off the ledger's event rather than the rebuild,
   // because the rebuild is two REST reads further down and one of them is what this decides.
-  const replayPosts = owesAReply(row);
 
   const conv = await runScopedOn(base, sysCtx(params.tenantId), (db) =>
     db.conversation.findUnique({
@@ -371,6 +370,7 @@ async function runRecovery(params: {
         assigneeName: true,
         inbox: {
           select: {
+            id: true,
             chatwootInboxId: true,
             name: true,
             agentId: true,
@@ -380,6 +380,29 @@ async function runRecovery(params: {
       },
     }),
   );
+  // ...and an observer's role the row never stated, where the evidence states it: an observer's replay
+  // posts nothing, so the reply-only reads and refusals below (the newest page, the freshness fence)
+  // must not end the recovery of its append. Read off the MIRROR's inbox, the one the route is
+  // re-derived against below.
+  let roleRow = {
+    ...row,
+    routeObserved:
+      row.routeObserved ??
+      (row.routeAgentBotId !== null &&
+      conv?.inbox?.id != null &&
+      (await observedByEvidence({
+        tenantId: params.tenantId,
+        instanceId,
+        routeBotId: row.routeAgentBotId,
+        inboxDbId: conv.inbox.id,
+        receivedAt: row.receivedAt,
+        holders: [conv],
+        base,
+      }))
+        ? true
+        : null),
+  };
+  let replayPosts = owesAReply(roleRow);
   // NOTE: a conversation with no mirror row is still recovered. The mirror failing is how a first
   // message strands, so those are exactly the customers this exists for. Everything below reads the
   // conversation from Chatwoot; the mirror row is created by the delivery path from the rebuilt body,
@@ -429,6 +452,49 @@ async function runRecovery(params: {
           base,
         })
       : null;
+    // The observer's role again where the mirror named no inbox to derive it from above: the live
+    // conversation names one, and it is read before the ceiling and the newest page, the two checks
+    // only a reply owes.
+    const liveInboxId =
+      liveRaw !== null &&
+      typeof liveRaw === "object" &&
+      typeof (liveRaw as { inbox_id?: unknown }).inbox_id === "number"
+        ? (liveRaw as { inbox_id: number }).inbox_id
+        : null;
+    if (
+      roleRow.routeObserved === null &&
+      row.routeAgentBotId !== null &&
+      conv?.inbox == null &&
+      liveInboxId !== null
+    ) {
+      const liveInbox = await runScopedOn(base, sysCtx(params.tenantId), (db) =>
+        db.inbox.findUnique({
+          where: {
+            tenantId_chatwootInstanceId_chatwootInboxId: {
+              tenantId: params.tenantId,
+              chatwootInstanceId: instanceId,
+              chatwootInboxId: liveInboxId,
+            },
+          },
+          select: { id: true },
+        }),
+      );
+      if (
+        liveInbox !== null &&
+        (await observedByEvidence({
+          tenantId: params.tenantId,
+          instanceId,
+          routeBotId: row.routeAgentBotId,
+          inboxDbId: liveInbox.id,
+          receivedAt: row.receivedAt,
+          holders: [conv, live],
+          base,
+        }))
+      ) {
+        roleRow = { ...row, routeObserved: true };
+        replayPosts = owesAReply(roleRow);
+      }
+    }
     // NOTE: the channel's ceiling, on the row's receipt: the mirror's inbox, or the channel the live
     // conversation names when the mirror has none. A refusal ends with the conversation handed to the
     // team, which works without a mirror row too (`announceFailedTurn` takes the route's persona).
@@ -443,7 +509,7 @@ async function runRecovery(params: {
       live !== null &&
       params.now.getTime() - row.receivedAt.getTime() >
         recoveryAgeCeilingMs(
-          row,
+          roleRow,
           handOverChannel(conv?.inbox, canHandOverByRoute, liveRaw),
         )
     ) {
@@ -718,6 +784,33 @@ async function runRecovery(params: {
     }
     observerRouteBotId = routeBotId;
   }
+  // A role the receiver never stated, recovered from what survives the way the human-reply recovery
+  // does (./recover-human-reply.ts): the bot the delivery arrived on belongs to an agent whose
+  // observer row on this inbox is OLDER than the delivery, and the conversation is not held by that
+  // bot (a held conversation takes the responder's path live). One agent cannot both answer and
+  // watch an inbox, so that route was an observer's, and replaying it as one answers nothing. It
+  // matters beside other watchers: one that left the append to this route's agent, the memory owner,
+  // trusts a delivery that stranded before its claim to come back here (docs/chatwoot.md).
+  if (
+    row.routeObserved === null &&
+    routeBotId !== null &&
+    inbox !== null &&
+    (await observedByEvidence({
+      tenantId: params.tenantId,
+      instanceId,
+      routeBotId,
+      inboxDbId: inbox.id,
+      receivedAt: row.receivedAt,
+      holders: [conv, live, reconciled?.state],
+      base,
+    }))
+  ) {
+    observerRouteBotId = routeBotId;
+    // NOTE: ...derived only here when the mirror named no inbox above: from this point the replay is
+    // the observer's, posts nothing, and settles on its append like any other observer's replay.
+    roleRow = { ...row, routeObserved: true };
+    replayPosts = owesAReply(roleRow);
+  }
   // Which bot answers, derived rather than stored: Chatwoot fans one message to up to two bot
   // routes (the conversation's assignee bot and the inbox's), so the route it came from is not who
   // should answer now; if the conversation moved to another bot, the ownership gate closes on that.
@@ -738,6 +831,7 @@ async function runRecovery(params: {
   // DEAD for an operator, as with the re-provisioned bot above.
   if (
     row.routeObserved === null &&
+    observerRouteBotId === null &&
     routeBotId !== null &&
     routeBotId !== responderBotId
   ) {
@@ -761,6 +855,7 @@ async function runRecovery(params: {
       : true;
   if (
     row.routeObserved === null &&
+    observerRouteBotId === null &&
     routeBotId !== null &&
     inbox?.responderBoundAt != null &&
     inbox.responderBoundAt > row.receivedAt &&
@@ -986,7 +1081,7 @@ async function runRecovery(params: {
     row.event === TURN_BEARING_EVENT &&
     params.now.getTime() - sentAt * 1000 >
       recoveryAgeCeilingMs(
-        row,
+        roleRow,
         // Off the mirror as it stands now: a null inbox was repaired above to the route's, and a
         // webhook may have created the row during the REST reads. A conversation still not mirrored,
         // or an inbox that never learned its channel, takes the one the live conversation names.
@@ -1697,6 +1792,58 @@ function respondingRouteBot(row: {
   routeObserved: boolean | null;
 }): number | null {
   return row.routeObserved === false ? row.routeAgentBotId : null;
+}
+
+// Whether a delivery that stated no role came in on an OBSERVER's route, from what survives: the bot
+// it arrived on belongs to an agent whose observer row on this inbox is OLDER than the delivery, and
+// the conversation is not held by that bot (a held conversation takes the responder's path live). One
+// agent cannot both answer and watch an inbox, so that route was an observer's. The rule the
+// human-reply recovery follows (./recover-human-reply.ts).
+async function observedByEvidence(params: {
+  tenantId: bigint;
+  instanceId: bigint;
+  routeBotId: number;
+  inboxDbId: bigint;
+  receivedAt: Date;
+  // Every reading of who holds the conversation (the mirror, the live snapshot): any one saying the
+  // route's bot holds it is enough to refuse the observer's role.
+  holders: Array<
+    | { assigneeType: string | null; assigneeId: number | null }
+    | null
+    | undefined
+  >;
+  base: PrismaClient;
+}): Promise<boolean> {
+  if (
+    params.holders.some(
+      (h) =>
+        h?.assigneeType === "AgentBot" &&
+        h.assigneeId !== null &&
+        h.assigneeId === params.routeBotId,
+    )
+  )
+    return false;
+  return runScopedOn(params.base, sysCtx(params.tenantId), async (db) => {
+    const bot = await db.chatwootAgentBot.findFirst({
+      where: {
+        tenantId: params.tenantId,
+        chatwootInstanceId: params.instanceId,
+        chatwootAgentBotId: params.routeBotId,
+      },
+      select: { agentId: true },
+    });
+    if (bot === null) return false;
+    return (
+      (await db.inboxObserver.count({
+        where: {
+          tenantId: params.tenantId,
+          inboxId: params.inboxDbId,
+          agentId: bot.agentId,
+          createdAt: { lte: params.receivedAt },
+        },
+      })) > 0
+    );
+  });
 }
 
 // Whether the delivery owed the customer a reply, or only the agent's memory: an observer's route, a

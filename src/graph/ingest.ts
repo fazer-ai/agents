@@ -232,6 +232,15 @@ export async function ingestMessageIntoThread(
         }),
       );
 
+      // NOTE: revoked while we waited. Checked here and not before the lock, for the same reason the
+      // deferral above is: /reset does its clearing while holding this lock, so a check made outside
+      // it answers about a thread that may be cleared a microsecond later. "Skipped" and not
+      // "deferred": the work is not owed later, it is not wanted at all. Before the boundary and the dedup
+      // verdict, so a job nobody wants any more is not reported as an append that could not land.
+      if (params.stillWanted && !(await params.stillWanted())) {
+        return { outcome: "skipped" as const, closedConversationId: null };
+      }
+
       // The episode boundary, asked in here for the same reason as the stand-down. `/reset`
       // revokes every queued `INGEST_MESSAGE` for the thread in its critical section, but cannot revoke
       // a job armed AFTER that (the receiver's own arm racing the command, or a stranded reply's
@@ -310,14 +319,6 @@ export async function ingestMessageIntoThread(
             },
           );
         }
-        return { outcome: "skipped" as const, closedConversationId: null };
-      }
-
-      // NOTE: revoked while we waited. Checked here and not before the lock, for the same reason the
-      // deferral above is: /reset does its clearing while holding this lock, so a check made outside
-      // it answers about a thread that may be cleared a microsecond later. "Skipped" and not
-      // "deferred": the work is not owed later, it is not wanted at all.
-      if (params.stillWanted && !(await params.stillWanted())) {
         return { outcome: "skipped" as const, closedConversationId: null };
       }
 

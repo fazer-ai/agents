@@ -82,6 +82,7 @@ const EXPECTED_LANE: Record<SchedulerJobKind, SchedulerLane> = {
   // correctness, and the debounce lane can be switched off entirely, which would have
   // stranded every queued message on an install that does not use debounce.
   INGEST_MESSAGE: "shared",
+  INGEST_FALLBACK: "shared",
   // Shared: a sweep with a cadence of minutes and one indexed query per tenant.
   DELIVERY_SWEEP: "shared",
   RECONCILE_SWEEP: "shared",
@@ -125,6 +126,7 @@ const EXPECTED_SPENDS_PROVIDER: Record<SchedulerJobKind, boolean> = {
   DEBOUNCE: false,
   MEMORY_COMPACT: false,
   INGEST_MESSAGE: false,
+  INGEST_FALLBACK: false,
   // Reads and writes rows, emits log lines, invokes nothing: the sweep reports a stranded delivery
   // and arms the recovery, rather than answering it itself.
   DELIVERY_SWEEP: false,
@@ -160,6 +162,7 @@ const EXPECTED_SPENDS_PROVIDER: Record<SchedulerJobKind, boolean> = {
 // row behind, and the rows nothing sweeps are simply gone.
 const EXPECTED_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
   INGEST_MESSAGE: true,
+  INGEST_FALLBACK: true,
   FOLLOWUP: false,
   SNOOZED_FOLLOWUP: false,
   FOLLOWUP_SWEEP: false,
@@ -202,6 +205,7 @@ const EXPECTED_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
 
 const EXPECTED_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
   INGEST_MESSAGE: true,
+  INGEST_FALLBACK: true,
   FOLLOWUP: false,
   SNOOZED_FOLLOWUP: false,
   FOLLOWUP_SWEEP: false,
@@ -255,6 +259,7 @@ const EXPECTED_DEATH_LEVEL: Record<
   REDIRECT_FOLLOWUP: "error",
   MEMORY_COMPACT: "error",
   INGEST_MESSAGE: "error",
+  INGEST_FALLBACK: "error",
   DELIVERY_SWEEP: "error",
   RECONCILE_SWEEP: "error",
   // The only kind whose death is not an `error` for the customer's sake, which is why writing it out
@@ -458,6 +463,7 @@ describe.skipIf(!dbUp)("scheduler lanes", () => {
     const ran = { INGEST_MESSAGE: 0, OBSERVE: 0 };
     const previous = {
       INGEST_MESSAGE: getJobHandler("INGEST_MESSAGE"),
+      INGEST_FALLBACK: getJobHandler("INGEST_FALLBACK"),
       OBSERVE: getJobHandler("OBSERVE"),
     };
     for (const kind of ["INGEST_MESSAGE", "OBSERVE"] as const) {
@@ -746,6 +752,7 @@ describe.skipIf(!dbUp)("scheduler lanes", () => {
     const previous = {
       WEBHOOK_RETRY: getJobHandler("WEBHOOK_RETRY"),
       INGEST_MESSAGE: getJobHandler("INGEST_MESSAGE"),
+      INGEST_FALLBACK: getJobHandler("INGEST_FALLBACK"),
     };
     for (const kind of ["WEBHOOK_RETRY", "INGEST_MESSAGE"] as const) {
       registerJobHandler(kind, async () => {

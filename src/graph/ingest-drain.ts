@@ -1,9 +1,15 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
-import { ingestKeyPrefix } from "@/graph/ingest-job";
+import {
+  ingestFallbackKeyPrefix,
+  ingestKeyPrefix,
+  retireCoveredFallbacks,
+} from "@/graph/ingest-job";
 import { currentPoolClass } from "@/lib/pool-class";
 import {
   abandonClaimed,
+  type ClaimedJob,
+  claimDueByKeyPrefix,
   claimPendingByKeyPrefix,
   countOwedByKeyPrefix,
   reapStaleJobs,
@@ -48,31 +54,26 @@ export async function drainPendingIngest(
     // worker): with the shared scheduler off nothing else re-pends a row a dead process left CLAIMED,
     // and a CLAIMED row counts as owed below, so one crash would make every later compaction on the
     // thread reschedule forever. Reaping from two places is harmless: the second finds it re-pended.
-    const reaped = await reapStaleJobs(
-      STALE_CLAIM_MS,
-      base,
-      new Date(),
-      tenantId,
-      "INGEST_MESSAGE",
-    );
-    // NOTE: no hook is registered for this kind, so this loops over an empty list. It is here so a
+    const reaped = [
+      ...(await reapStaleJobs(
+        STALE_CLAIM_MS,
+        base,
+        new Date(),
+        tenantId,
+        "INGEST_MESSAGE",
+      )),
+      ...(await reapStaleJobs(
+        STALE_CLAIM_MS,
+        base,
+        new Date(),
+        tenantId,
+        "INGEST_FALLBACK",
+      )),
+    ];
+    // NOTE: no hook is registered for these kinds, so this loops over an empty list. It is here so a
     // kind that later says what its own loss means does not have to find this line first.
     await announceReaped(reaped, base);
-    // Every row this drain touched, kept out of the next pass. The claim already honours backoff
-    // for a failed row (../modules/scheduler/service.ts), but a job that DEFERRED for a turn carries
-    // no error and stays claimable, so without this it would be claimed and deferred once per pass,
-    // five times over, inside a customer's turn.
-    const seen: bigint[] = [];
-    for (let pass = 0; pass < 5; pass++) {
-      const claimed = await claimPendingByKeyPrefix(
-        "INGEST_MESSAGE",
-        prefix,
-        50,
-        base,
-        tenantId,
-        seen,
-      );
-      if (claimed.length === 0) break;
+    const run = async (claimed: ClaimedJob[], seen: bigint[]) => {
       for (const [i, job] of claimed.entries()) {
         seen.push(job.id);
         try {
@@ -87,13 +88,60 @@ export async function drainPendingIngest(
           throw err;
         }
       }
+    };
+    // A watcher's fallback whose time has come appends its message itself. One still waiting is left
+    // to the append it stands in for, and counted as owed below, unless some route already queued it.
+    // Asked again before every pass: an append in the pass brings an older fallback due
+    // (`dueOlderFallbacks`), and a pass is smaller than the dedup window (INGEST_ID_WINDOW), so the
+    // window cannot move past that fallback before the next pass runs it.
+    const fallbackPrefix = ingestFallbackKeyPrefix(graphThreadId);
+    await retireCoveredFallbacks(tenantId, graphThreadId, base);
+    // Every due fallback, not one batch: a batch of them followed by a pass of newer appends would let
+    // the window move past the fallbacks left for the next pass. A fallback that deferred for a turn is
+    // rescheduled into the future, so it is not claimed again here.
+    const runDueFallbacks = async () => {
+      const ran: bigint[] = [];
+      for (;;) {
+        const due = await claimDueByKeyPrefix(
+          "INGEST_FALLBACK",
+          fallbackPrefix,
+          50,
+          base,
+          tenantId,
+          ran,
+        );
+        if (due.length === 0) return;
+        await run(due, ran);
+      }
+    };
+    // Every row this drain touched, kept out of the next pass. The claim already honours backoff
+    // for a failed row (../modules/scheduler/service.ts), but a job that DEFERRED for a turn carries
+    // no error and stays claimable, so without this it would be claimed and deferred once per pass,
+    // five times over, inside a customer's turn.
+    const seen: bigint[] = [];
+    for (let pass = 0; pass < 5; pass++) {
+      await runDueFallbacks();
+      const claimed = await claimPendingByKeyPrefix(
+        "INGEST_MESSAGE",
+        prefix,
+        50,
+        base,
+        tenantId,
+        seen,
+      );
+      if (claimed.length === 0) break;
+      await run(claimed, seen);
     }
-    const owed = await countOwedByKeyPrefix(
-      "INGEST_MESSAGE",
-      prefix,
-      base,
-      tenantId,
-    );
+    // A waiting fallback is a message that may still be the thread's only copy, so compaction waits
+    // for it as it waits for a queued append.
+    const owed =
+      (await countOwedByKeyPrefix("INGEST_MESSAGE", prefix, base, tenantId)) +
+      (await countOwedByKeyPrefix(
+        "INGEST_FALLBACK",
+        fallbackPrefix,
+        base,
+        tenantId,
+      ));
     return owed === 0 ? "drained" : "incomplete";
   } catch (err) {
     logger.warn(

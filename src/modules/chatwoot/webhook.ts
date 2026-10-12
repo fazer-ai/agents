@@ -16,7 +16,11 @@ import {
 } from "@/graph/checkpointer";
 import { isTurnInFlight } from "@/graph/inflight";
 import type { IngestRole } from "@/graph/ingest";
-import { armIngest, ingestKeyPrefix } from "@/graph/ingest-job";
+import {
+  armIngest,
+  ingestFallbackKeyPrefix,
+  ingestKeyPrefix,
+} from "@/graph/ingest-job";
 import { loadAgentConfig } from "@/graph/prepare";
 import { type RuntimeDeps, runAgentTurn } from "@/graph/runtime";
 import { threadBusyForResetOn, turnOwnsThread } from "@/graph/thread-claim";
@@ -1956,6 +1960,11 @@ async function mediaAdmitted(
 // Idempotent and cheap on text (touches only unset fields, fetches config only with an attachment),
 // so the before-gate and answer-path double call never transcribes twice. The CALLER decides whether
 // to run it (production+enabled always, test only on the answer path, disabled never).
+// How long a fallback append waits for the memory owner's own (see `ingestUnhandledMessage`): far
+// past a live delivery of the same message, and short enough that a lost one is in memory within the
+// attendance.
+const OWNER_APPEND_FALLBACK_MS = 10 * 60_000;
+
 export async function runEagerMedia(
   tenantId: bigint,
   instanceId: bigint,
@@ -2214,6 +2223,8 @@ async function ingestUnhandledMessage(args: {
   // Whether the enqueue is retried before it is reported failed: yes under an observer, whose
   // memory the append is for (see INGEST_ARM_ATTEMPTS).
   retryArm: boolean;
+  // Armed as the memory owner's fallback (`armIngest`), for a watcher that left the append to it.
+  fallbackAfterMs?: number;
   sleep?: (ms: number) => Promise<void>;
   base: PrismaClient;
 }): Promise<IngestOutcome> {
@@ -2311,6 +2322,9 @@ async function ingestUnhandledMessage(args: {
         sentAt: n.message.createdAt ?? null,
         agentId: args.agentId,
         compactionEnabled: args.compactionEnabled,
+        ...(args.fallbackAfterMs === undefined
+          ? {}
+          : { fallbackAfterMs: args.fallbackAfterMs, event: n.event }),
         base,
       });
       return "queued";
@@ -3232,6 +3246,18 @@ async function maybeConsumeCommandOrGate(params: {
                     db,
                     "INGEST_MESSAGE",
                     ingestKeyPrefix(graphThreadId),
+                    commandMessageId ?? undefined,
+                  )
+                ).erasedDeaths,
+              );
+              // NOTE: A watcher's fallback for the owner's append carries the same body, and would
+              // otherwise keep it stored after the reset said the memory was cleared.
+              erasedDeaths.push(
+                ...(
+                  await revokeJobsByKeyPrefixOn(
+                    db,
+                    "INGEST_FALLBACK",
+                    ingestFallbackKeyPrefix(graphThreadId),
                     commandMessageId ?? undefined,
                   )
                 ).erasedDeaths,
@@ -4370,6 +4396,12 @@ export async function processChatwootDelivery(
         (observer !== null
           ? responderRt !== null
           : ingestsContinuously(rt.mode));
+  // What the claim STATES, which other routes read as this one's append (a watcher beside it, the
+  // strand recoveries). An observer's route may still leave the append to the responder or to the
+  // memory owner, decided only after the claim, so it states null ("not decided"), then `false` the
+  // moment it leaves the message to another route and `true` just before it appends.
+  const claimedRemembers: boolean | null =
+    observer !== null && routeRemembers ? null : routeRemembers;
   // Window 1: the binding moved between receipt and this resolution, and the new reading
   // resolves NO runtime, so claiming would settle PROCESSED having looked at nothing. The row's receipt
   // generation makes this exact. Refuse instead of re-resolving (both readings are about now): the row
@@ -4412,7 +4444,7 @@ export async function processChatwootDelivery(
         routeObserved: observer !== null,
         // NOTE: ...and what it does with an unanswered message, in the same statement: the observer beside
         // it stands down on this, and the responder's mode may have been flipped since.
-        routeRemembers,
+        routeRemembers: claimedRemembers,
         ...(claimFrom === "DEAD" ? { attempts: { increment: 1 } } : {}),
       },
     }),
@@ -4704,6 +4736,109 @@ export async function processChatwootDelivery(
     responderCovers &&
     (siblingRemembers ??
       (responderRt?.enabled === true && ingestsContinuously(responderRt.mode)));
+  // Beside other watchers and a responder that does not remember, one writer: only the memory owner's
+  // route (`watcherMemoryOwner`) appends the customer's message; another watcher's route still runs
+  // its media pass, for its own observation. Only where the owner ACTUALLY HAS this message, by the
+  // responder's rule (`responderCoversMessage`, against the owner's attach and its bot's sibling):
+  // an owner attached after the emission never got it. See docs/chatwoot.md, "Observer binding".
+  const coveringOwner: { agentId: bigint; settings: unknown } | null =
+    observer !== null &&
+    responderRt !== null &&
+    !responderRemembers &&
+    coveredMessage?.column === "inbound"
+      ? await (async () => {
+          const owner = (await watchers())?.[0];
+          if (owner === undefined || owner.agentId === observer.agentId)
+            return null;
+          const ownerBot = await runScopedOn(
+            base,
+            sysCtx(params.tenantId),
+            (db) =>
+              db.chatwootAgentBot.findFirst({
+                where: {
+                  tenantId: params.tenantId,
+                  chatwootInstanceId: params.instanceId,
+                  agentId: owner.agentId,
+                },
+                select: { chatwootAgentBotId: true, updatedAt: true },
+              }),
+          );
+          if (ownerBot === null) return null;
+          const ownerBotId = ownerBot.chatwootAgentBotId;
+          // Dated by the later of the attach and the bot row's last write: a bot re-provisioned
+          // since (a new Chatwoot id, reattached without moving `attachedAt`) never got an event emitted
+          // before it. Any other write to the row only sends the question to the ledger.
+          const ownerBoundAt =
+            owner.attachedAt === null || ownerBot.updatedAt > owner.attachedAt
+              ? ownerBot.updatedAt
+              : owner.attachedAt;
+          // A conversation the owner's bot HOLDS sends its delivery down the responder's path
+          // (`observerRuntimeForRoute`), which beside a responder that does not remember folds nothing
+          // in. Any witness saying so is enough: standing down on the other reading loses the message.
+          const heldBy = (type: string | null | undefined, id: unknown) =>
+            type === "AgentBot" && id === ownerBotId;
+          if (
+            heldBy(n.assigneeType, n.assigneeId) ||
+            heldBy(mirror.assigneeType, mirror.assigneeId) ||
+            heldBy(effectiveAssigneeType, effectiveAssigneeId)
+          )
+            return null;
+          if (
+            !(await responderCoversMessage(
+              params.tenantId,
+              params.instanceId,
+              params.deliveryRowId,
+              ownerBoundAt,
+              ownerBotId,
+              n.conversationId,
+              coveredMessage,
+              n.lastActivityAt == null
+                ? null
+                : new Date(n.lastActivityAt * 1000),
+              base,
+              n.event,
+            ))
+          )
+            return null;
+          // ...and what the owner's own delivery of this event decided, read from its claim: an owner
+          // switched off when its delivery ran, or one that left the message to the responder, states
+          // `false`. Undecided (null, its route still between the claim and the decision) or no claim
+          // yet is the list's answer, the same fallback the responder's sibling read makes.
+          return (await responderSiblingRemembers(
+            params.tenantId,
+            params.instanceId,
+            params.deliveryRowId,
+            ownerBotId,
+            n.conversationId,
+            coveredMessage,
+            n.event,
+            base,
+          )) === false
+            ? null
+            : owner;
+        })()
+      : null;
+  const ownerCovers = coveringOwner !== null;
+  // An observer's route that leaves the message to another route says so at once, so a watcher
+  // electing it as owner meanwhile does not read its undecided claim as an append.
+  if (
+    observer !== null &&
+    claimedRemembers === null &&
+    (ownerCovers || responderRemembers)
+  ) {
+    await runScopedOn(base, sysCtx(params.tenantId), (db) =>
+      db.chatwootWebhookDelivery.updateMany({
+        where: { id: params.deliveryRowId, routeRemembers: null },
+        data: { routeRemembers: false },
+      }),
+    ).catch((err) => {
+      logger.warn(
+        "chatwoot: could not record that this delivery left the message to another route (conv=%s): %s",
+        n.conversationId === null ? "?" : String(n.conversationId),
+        errMsg(err),
+      );
+    });
+  }
   // The mark stays the responder's whenever there is one, deliberately NOT asked of
   // `responderCovers`: an absent sibling may be in transit (the emission clock is second-granular),
   // and moving the mark would suppress its reply. Coverage may cost a duplicate memory line, never an
@@ -4907,8 +5042,7 @@ export async function processChatwootDelivery(
   // its own contact gate lets it observe. Another watcher of the inbox stands down on its pass
   // only when that is known to happen: the bound watcher's conditions allow the conversation and no
   // endpoint follows them. Otherwise this route analyses for itself, under its own gate, since one
-  // watcher's refusal decides only what that watcher observes. The conditions are asked without a
-  // line: the bound watcher's own route leaves it.
+  // watcher's refusal decides only what that watcher observes.
   const boundWatcherMayRefuseMedia =
     responderRemembers &&
     observer !== null &&
@@ -5935,12 +6069,23 @@ export async function processChatwootDelivery(
       (rt.enabled && params.owesMemoryOnly === true));
   // NOTE: The record follows the hand-over: a claim that recorded `false` and then handed the message
   // to a watcher must say `true`, or the observer beside it, trusting the record, appends a duplicate.
+  // An observer's route states null at the claim and says `true` here only when it is about to
+  // append; one that leaves the message to the responder or to the owner said `false` above.
   // Guarded on the value it corrects (only `false` to `true`); best-effort, since failing the delivery
   // would trade a duplicate line for a missing one.
-  if (routeIngests && !routeRemembers) {
+  if (
+    routeIngests &&
+    claimedRemembers !== true &&
+    !responderRemembers &&
+    !responderCommand &&
+    !ownerCovers
+  ) {
     await runScopedOn(base, sysCtx(params.tenantId), (db) =>
       db.chatwootWebhookDelivery.updateMany({
-        where: { id: params.deliveryRowId, routeRemembers: false },
+        where: {
+          id: params.deliveryRowId,
+          OR: [{ routeRemembers: false }, { routeRemembers: null }],
+        },
         data: { routeRemembers: true },
       }),
     ).catch((err) => {
@@ -5998,6 +6143,13 @@ export async function processChatwootDelivery(
         )),
       // NOTE: ...and a LATE TRANSCRIPTION on any route: the words come around once, on the write-back,
       // and no turn will cover them.
+      // NOTE: A watcher that left the append to the memory owner still queues the message, as a
+      // fallback (`OWNER_APPEND_FALLBACK_MS`) that drops itself on durable proof the owner queued it (a
+      // settled owner delivery, read when it comes due and by the ingestion barrier) and that the
+      // owner's append retires once it lands: an owner switched off, gone, or failing between the
+      // deliveries leaves it remembered rather than lost, and the delivery settles only once the
+      // message is queued, as every observer's does.
+      ...(ownerCovers ? { fallbackAfterMs: OWNER_APPEND_FALLBACK_MS } : {}),
       retryArm:
         observing ||
         handedToObserver ||
@@ -6029,8 +6181,8 @@ export async function processChatwootDelivery(
       });
     }
   } else if (routeIngests) {
-    // NOTE: A route that INGESTS, standing down on purpose (the responder has the message or will
-    // consume it as a command). Reported: a deliberate stand-down answers the recovery's "did anything
+    // NOTE: A route that INGESTS, standing down on purpose (the responder or the memory owner has the
+    // message, or the responder will consume it as a command). Reported: a deliberate stand-down answers the recovery's "did anything
     // look at this message", and silence would requeue a handled row until its attempts ran out.
     params.onIngest?.("covered");
   } else if (observer?.enabled === true && responderRt === null) {

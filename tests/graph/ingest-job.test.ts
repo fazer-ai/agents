@@ -4,11 +4,21 @@ import { MemorySaver } from "@langchain/langgraph-checkpoint";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { decryptJson, encryptJson } from "@/api/lib/crypto";
-import { contactInboxThreadId } from "@/graph/checkpointer";
+import { contactInboxThreadId, getCheckpointer } from "@/graph/checkpointer";
 import { clearTurnInFlight, markTurnInFlight } from "@/graph/inflight";
+import { INGEST_ID_WINDOW } from "@/graph/ingest-dedup";
 import { drainPendingIngest } from "@/graph/ingest-drain";
-import { armIngest, ingestDedupeKey, ingestHandler } from "@/graph/ingest-job";
+import {
+  armIngest,
+  fallbackHandler,
+  ingestDedupeKey,
+  ingestFallbackKey,
+  ingestFallbackKeyPrefix,
+  ingestHandler,
+  ingestKeyPrefix,
+} from "@/graph/ingest-job";
 import { stampedSentAt } from "@/graph/markers";
+import { withKeyedQueue } from "@/lib/locks";
 import {
   currentPoolClass,
   type PoolClass,
@@ -29,6 +39,7 @@ import {
 } from "@/modules/scheduler/worker";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { flowLogRows } from "../utils/flowlog";
 
 // Continuous ingestion is a job because a LangGraph invoke is a read-modify-write of the WHOLE
 // message channel: a message appended beside a running turn is undone when that turn saves. Appended
@@ -80,6 +91,7 @@ describe.skipIf(!dbUp)("the ingestion job defers to a turn in flight", () => {
     if (tenantId) {
       for (const table of [
         "scheduler_jobs",
+        "chatwoot_webhook_deliveries",
         "agent_threads",
         "chatwoot_instances",
       ]) {
@@ -1249,5 +1261,805 @@ describe.skipIf(!dbUp)("the ingestion job defers to a turn in flight", () => {
 
     clearTurnInFlight(graphThreadId);
     expect((await ingestHandler(job, appDb, saver)).outcome).toBe("done");
+  });
+
+  // A watcher that left the append to the memory owner arms a fallback of its own kind: no memory line
+  // while it waits, and when it runs it arms the ordinary append only where the message has none.
+  async function armFallbackAndClaim(
+    contactInboxId: number,
+    messageId: number,
+    text: string,
+  ): Promise<{ job: ClaimedJob; graphThreadId: string }> {
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    await armIngest({
+      tenantId,
+      instanceId,
+      conversationId: 990,
+      contactInboxId,
+      graphThreadId,
+      messageId,
+      text,
+      role: "customer",
+      agentId: 2n,
+      compactionEnabled: false,
+      fallbackAfterMs: 10 * 60_000,
+      base: appDb,
+    });
+    const notYet = await claimDueTrafficJobs(50, appDb, new Date(), tenantId);
+    expect(notYet.some((j) => j.kind === "INGEST_FALLBACK")).toBe(false);
+    const job = (
+      await claimDueTrafficJobs(
+        50,
+        appDb,
+        new Date(Date.now() + 11 * 60_000),
+        tenantId,
+      )
+    ).find(
+      (j) =>
+        j.kind === "INGEST_FALLBACK" &&
+        j.dedupeKey === ingestFallbackKey(graphThreadId, messageId),
+    );
+    if (!job) throw new Error("the fallback was not claimed once due");
+    return { job, graphThreadId };
+  }
+
+  // What a fallback's own run wrote into the thread, read off the checkpointer it was given.
+  async function appendedTexts(saver: MemorySaver, graphThreadId: string) {
+    const saved = await saver.get({
+      configurable: { thread_id: graphThreadId },
+    });
+    return (
+      (saved?.channel_values as { messages?: BaseMessage[] })?.messages ?? []
+    )
+      .filter((m) => !String(m.id).endsWith(":divider"))
+      .map((m) => String(m.content));
+  }
+
+  test("a fallback that comes due with no append queued appends its message itself, with the same body", async () => {
+    const { job, graphThreadId } = await armFallbackAndClaim(
+      12601,
+      820,
+      "o dono não gravou",
+    );
+    // The deferring watcher's own claim, which stated it leaves the append: no statement that anyone
+    // queued it.
+    await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `ij-watcher-${process.pid}-820`,
+        event: "message_created",
+        conversationId: 990,
+        inboundMessageId: 820,
+        routeRemembers: false,
+        status: "PROCESSED",
+      },
+    });
+    // Armed, the fallback wrote no append of its own.
+    expect(
+      await suDb.schedulerJob.findFirst({
+        where: {
+          tenantId,
+          kind: "INGEST_MESSAGE",
+          dedupeKey: ingestDedupeKey(graphThreadId, 820),
+        },
+      }),
+    ).toBeNull();
+    const saver = new MemorySaver();
+    expect((await fallbackHandler(job, appDb, saver)).outcome).toBe("done");
+    expect(
+      (await appendedTexts(saver, graphThreadId)).some((t) =>
+        t.includes("o dono não gravou"),
+      ),
+    ).toBe(true);
+  });
+
+  test("a fallback that comes due beside the owner's queued append leaves that append as it was", async () => {
+    const contactInboxId = 12602;
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    // The owner's own append, with its own rendering of the message.
+    await armIngest({
+      tenantId,
+      instanceId,
+      conversationId: 990,
+      contactInboxId,
+      graphThreadId,
+      messageId: 821,
+      text: "a transcrição do dono",
+      role: "customer",
+      agentId: 1n,
+      compactionEnabled: false,
+      base: appDb,
+    });
+    await suDb.schedulerJob.updateMany({
+      where: {
+        tenantId,
+        kind: "INGEST_MESSAGE",
+        dedupeKey: ingestDedupeKey(graphThreadId, 821),
+      },
+      data: { runAt: new Date(Date.now() + 60 * 60_000) },
+    });
+    const { job } = await armFallbackAndClaim(
+      contactInboxId,
+      821,
+      "[áudio não lido]",
+    );
+    const saver = new MemorySaver();
+    expect((await fallbackHandler(job, appDb, saver)).outcome).toBe("done");
+    // Nothing of its own written either: the owner's queued append is the one that writes.
+    expect(
+      await appendedTexts(
+        saver,
+        contactInboxThreadId(tenantId, instanceId, 12602),
+      ),
+    ).toEqual([]);
+    const rows = await suDb.schedulerJob.findMany({
+      where: {
+        tenantId,
+        kind: "INGEST_MESSAGE",
+        dedupeKey: ingestDedupeKey(graphThreadId, 821),
+      },
+      select: { payload: true, payloadSecret: true },
+    });
+    expect(rows).toHaveLength(1);
+    expect(decryptJson<string>(String(rows[0]?.payloadSecret))).toBe(
+      "a transcrição do dono",
+    );
+    expect(
+      (rows[0]?.payload as { agentId?: string } | undefined)?.agentId,
+    ).toBe("1");
+  });
+
+  test("a later arm of a waiting fallback refreshes its body and leaves its run time as it was", async () => {
+    const contactInboxId = 12603;
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    const arm = (text: string) =>
+      armIngest({
+        tenantId,
+        instanceId,
+        conversationId: 990,
+        contactInboxId,
+        graphThreadId,
+        messageId: 822,
+        text,
+        role: "customer",
+        agentId: 2n,
+        compactionEnabled: false,
+        fallbackAfterMs: 10 * 60_000,
+        base: appDb,
+      });
+    await arm("[áudio não lido]");
+    const due = new Date(Date.now() + 60_000);
+    await suDb.schedulerJob.updateMany({
+      where: {
+        tenantId,
+        kind: "INGEST_FALLBACK",
+        dedupeKey: ingestFallbackKey(graphThreadId, 822),
+      },
+      data: { runAt: due },
+    });
+    // The transcription arrives as an update while the fallback still waits.
+    await arm("a transcrição que chegou depois");
+    const row = await suDb.schedulerJob.findFirstOrThrow({
+      where: {
+        tenantId,
+        kind: "INGEST_FALLBACK",
+        dedupeKey: ingestFallbackKey(graphThreadId, 822),
+      },
+      select: { runAt: true, payloadSecret: true },
+    });
+    expect(row.runAt.getTime()).toBe(due.getTime());
+    expect(decryptJson<string>(String(row.payloadSecret))).toBe(
+      "a transcrição que chegou depois",
+    );
+  });
+
+  // The barrier and the fallback. A fallback still waiting may be the thread's only copy of a
+  // message, so compaction must not read past it; one whose time has come is folded in by the drain
+  // itself, which with the shared scheduler off is the only thing that would ever run it.
+  async function fallbackFixture(contactInboxId: number, messageId: number) {
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    const arm = (fallbackAfterMs?: number) =>
+      armIngest({
+        tenantId,
+        instanceId,
+        conversationId: 991,
+        contactInboxId,
+        graphThreadId,
+        messageId,
+        text: "a mensagem que só a reserva guarda",
+        role: "customer",
+        agentId: 1n,
+        compactionEnabled: false,
+        ...(fallbackAfterMs === undefined ? {} : { fallbackAfterMs }),
+        base: appDb,
+      });
+    const synced = async () =>
+      (
+        await suDb.agentThread.findUnique({
+          where: {
+            tenantId_chatwootInstanceId_contactInboxId: {
+              tenantId,
+              chatwootInstanceId: instanceId,
+              contactInboxId,
+            },
+          },
+          select: { recentSyncedMessageIds: true },
+        })
+      )?.recentSyncedMessageIds ?? [];
+    const fallbackLeft = () =>
+      suDb.schedulerJob.count({
+        where: {
+          tenantId,
+          kind: "INGEST_FALLBACK",
+          dedupeKey: ingestFallbackKey(graphThreadId, messageId),
+        },
+      });
+    return { graphThreadId, arm, synced, fallbackLeft };
+  }
+
+  test("a waiting fallback holds the barrier open, and is not run early", async () => {
+    const f = await fallbackFixture(12604, 830);
+    await f.arm(10 * 60_000);
+    expect(await drainPendingIngest(tenantId, f.graphThreadId, appDb)).toBe(
+      "incomplete",
+    );
+    expect(await f.synced()).toEqual([]);
+    expect(await f.fallbackLeft()).toBe(1);
+  });
+
+  test("a fallback whose time has come is folded in by the drain", async () => {
+    const f = await fallbackFixture(12605, 831);
+    await f.arm(10 * 60_000);
+    await suDb.schedulerJob.updateMany({
+      where: {
+        tenantId,
+        kind: "INGEST_FALLBACK",
+        dedupeKey: ingestFallbackKey(f.graphThreadId, 831),
+      },
+      data: { runAt: new Date(Date.now() - 1000) },
+    });
+    expect(await drainPendingIngest(tenantId, f.graphThreadId, appDb)).toBe(
+      "drained",
+    );
+    expect(await f.synced()).toEqual([831]);
+    expect(await f.fallbackLeft()).toBe(0);
+  });
+
+  test("the owner's append, once in memory, retires the fallback still waiting for it", async () => {
+    const f = await fallbackFixture(12606, 832);
+    await f.arm(10 * 60_000);
+    await f.arm();
+    expect(await drainPendingIngest(tenantId, f.graphThreadId, appDb)).toBe(
+      "drained",
+    );
+    expect(await f.synced()).toEqual([832]);
+    expect(await f.fallbackLeft()).toBe(0);
+  });
+
+  // The owner's statement on the ledger, which outlives the dedup window: a delivery that stated it
+  // appends the message and settled, which it does only once the append is queued.
+  async function ownerStatedAppend(conversationId: number, messageId: number) {
+    await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `ij-owner-${process.pid}-${messageId}`,
+        event: "message_updated",
+        conversationId,
+        inboundMessageId: messageId,
+        routeRemembers: true,
+        status: "PROCESSED",
+      },
+    });
+  }
+
+  test("a fallback that comes due for a message the owner queued writes nothing", async () => {
+    const { job, graphThreadId } = await armFallbackAndClaim(
+      12607,
+      833,
+      "o dono já gravou, a janela já esqueceu",
+    );
+    await ownerStatedAppend(990, 833);
+    const saver = new MemorySaver();
+    expect((await fallbackHandler(job, appDb, saver)).outcome).toBe("done");
+    expect(await appendedTexts(saver, graphThreadId)).toEqual([]);
+  });
+
+  test("a waiting fallback for a message the owner stated it appends does not hold the barrier", async () => {
+    const f = await fallbackFixture(12608, 834);
+    await f.arm(10 * 60_000);
+    await ownerStatedAppend(991, 834);
+    expect(await drainPendingIngest(tenantId, f.graphThreadId, appDb)).toBe(
+      "drained",
+    );
+    expect(await f.fallbackLeft()).toBe(0);
+    expect(await f.synced()).toEqual([]);
+  });
+
+  test("a later arm while the fallback is already claimed re-arms it with the newer text, and the claimed run stands down", async () => {
+    const { job, graphThreadId } = await armFallbackAndClaim(
+      12609,
+      835,
+      "[áudio não lido]",
+    );
+    // The transcription arrives while the claimed run has not appended yet.
+    await armIngest({
+      tenantId,
+      instanceId,
+      conversationId: 990,
+      contactInboxId: 12609,
+      graphThreadId,
+      messageId: 835,
+      text: "a transcrição que chegou no meio",
+      role: "customer",
+      agentId: 2n,
+      compactionEnabled: false,
+      fallbackAfterMs: 10 * 60_000,
+      base: appDb,
+    });
+    const saver = new MemorySaver();
+    expect((await fallbackHandler(job, appDb, saver)).outcome).toBe("done");
+    expect(await appendedTexts(saver, graphThreadId)).toEqual([]);
+    const again = (
+      await claimDueTrafficJobs(50, appDb, new Date(), tenantId)
+    ).find((j) => j.dedupeKey === ingestFallbackKey(graphThreadId, 835));
+    if (!again) throw new Error("the re-armed fallback was not claimed");
+    expect((await fallbackHandler(again, appDb, saver)).outcome).toBe("done");
+    const texts = await appendedTexts(saver, graphThreadId);
+    expect(
+      texts.some((t) => t.includes("a transcrição que chegou no meio")),
+    ).toBe(true);
+    expect(texts.some((t) => t.includes("[áudio não lido]"))).toBe(false);
+  });
+
+  test("a later arm while the fallback is claimed re-arms nothing where the owner queued the message", async () => {
+    const { graphThreadId } = await armFallbackAndClaim(
+      12610,
+      836,
+      "[áudio não lido]",
+    );
+    await ownerStatedAppend(990, 836);
+    await armIngest({
+      tenantId,
+      instanceId,
+      conversationId: 990,
+      contactInboxId: 12610,
+      graphThreadId,
+      messageId: 836,
+      text: "a transcrição deste watcher",
+      role: "customer",
+      agentId: 2n,
+      compactionEnabled: false,
+      fallbackAfterMs: 10 * 60_000,
+      base: appDb,
+    });
+    const row = await suDb.schedulerJob.findFirstOrThrow({
+      where: {
+        tenantId,
+        kind: "INGEST_FALLBACK",
+        dedupeKey: ingestFallbackKey(graphThreadId, 836),
+      },
+      select: { status: true, payloadSecret: true },
+    });
+    expect(row.status).toBe("CLAIMED");
+    expect(decryptJson<string>(String(row.payloadSecret))).toBe(
+      "[áudio não lido]",
+    );
+  });
+
+  test("an owner that stated it appends but never settled does not stand in for the fallback", async () => {
+    const { job, graphThreadId } = await armFallbackAndClaim(
+      12611,
+      837,
+      "o dono caiu antes de enfileirar",
+    );
+    // The flag is written just before the owner arms its append; a crash there leaves the row here.
+    await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `ij-owner-crashed-${process.pid}-837`,
+        event: "message_created",
+        conversationId: 990,
+        inboundMessageId: 837,
+        routeRemembers: true,
+        status: "PROCESSING",
+      },
+    });
+    const saver = new MemorySaver();
+    expect((await fallbackHandler(job, appDb, saver)).outcome).toBe("done");
+    expect(
+      (await appendedTexts(saver, graphThreadId)).some((t) =>
+        t.includes("o dono caiu antes de enfileirar"),
+      ),
+    ).toBe(true);
+  });
+
+  test("a newer message folded in brings an older waiting fallback due at once, and leaves a newer one waiting", async () => {
+    const contactInboxId = 12612;
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    const arm = (messageId: number, fallbackAfterMs?: number) =>
+      armIngest({
+        tenantId,
+        instanceId,
+        conversationId: 992,
+        contactInboxId,
+        graphThreadId,
+        messageId,
+        text: `mensagem ${messageId}`,
+        role: "customer",
+        agentId: 1n,
+        compactionEnabled: false,
+        ...(fallbackAfterMs === undefined ? {} : { fallbackAfterMs }),
+        base: appDb,
+      });
+    await arm(840, 10 * 60_000);
+    await arm(842, 10 * 60_000);
+    await arm(841);
+    const job = (
+      await claimDueTrafficJobs(50, appDb, new Date(), tenantId)
+    ).find((j) => j.dedupeKey === ingestDedupeKey(graphThreadId, 841));
+    if (!job) throw new Error("the append was not claimed");
+    expect((await ingestHandler(job, appDb, new MemorySaver())).outcome).toBe(
+      "done",
+    );
+    const runAt = async (messageId: number) =>
+      (
+        await suDb.schedulerJob.findFirstOrThrow({
+          where: {
+            tenantId,
+            kind: "INGEST_FALLBACK",
+            dedupeKey: ingestFallbackKey(graphThreadId, messageId),
+          },
+          select: { runAt: true },
+        })
+      ).runAt.getTime();
+    expect(await runAt(840)).toBeLessThanOrEqual(Date.now());
+    expect(await runAt(842)).toBeGreaterThan(Date.now() + 60_000);
+  });
+
+  // With the shared scheduler off, the barrier is the only thing that runs either kind. More newer
+  // appends queued than the dedup window holds must not push a waiting fallback's message out of it.
+  test("a barrier draining more newer appends than the dedup window holds still folds in the older fallback", async () => {
+    const contactInboxId = 12613;
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    const arm = (messageId: number, sentAt: Date, fallbackAfterMs?: number) =>
+      armIngest({
+        tenantId,
+        instanceId,
+        conversationId: 993,
+        contactInboxId,
+        graphThreadId,
+        messageId,
+        text: `mensagem ${messageId}`,
+        role: "customer",
+        sentAt,
+        agentId: 1n,
+        compactionEnabled: false,
+        ...(fallbackAfterMs === undefined ? {} : { fallbackAfterMs }),
+        base: appDb,
+      });
+    const t0 = Date.now() - 60 * 60_000;
+    await arm(1000, new Date(t0), 10 * 60_000);
+    for (let i = 1; i <= INGEST_ID_WINDOW + 6; i++)
+      await arm(1000 + i, new Date(t0 + i * 1000));
+    expect(await drainPendingIngest(tenantId, graphThreadId, appDb)).toBe(
+      "drained",
+    );
+    const saved = await (await getCheckpointer()).get({
+      configurable: { thread_id: graphThreadId },
+    });
+    const ids = (
+      (saved?.channel_values as { messages?: BaseMessage[] })?.messages ?? []
+    ).map((m) => m.id);
+    expect(ids).toContain("ingest:1000");
+    expect(ids).toHaveLength(INGEST_ID_WINDOW + 7);
+  }, 180_000);
+
+  test("a barrier draining more newer appends than the dedup window holds still folds in an older fallback with no send time", async () => {
+    const contactInboxId = 12614;
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    const arm = (
+      messageId: number,
+      sentAt: Date | null,
+      fallbackAfterMs?: number,
+    ) =>
+      armIngest({
+        tenantId,
+        instanceId,
+        conversationId: 994,
+        contactInboxId,
+        graphThreadId,
+        messageId,
+        text: `mensagem ${messageId}`,
+        role: "customer",
+        ...(sentAt === null ? {} : { sentAt }),
+        agentId: 1n,
+        compactionEnabled: false,
+        ...(fallbackAfterMs === undefined ? {} : { fallbackAfterMs }),
+        base: appDb,
+      });
+    const t0 = Date.now() - 60 * 60_000;
+    await arm(1000, null, 10 * 60_000);
+    for (let i = 1; i <= INGEST_ID_WINDOW + 6; i++)
+      await arm(1000 + i, new Date(t0 + i * 1000));
+    expect(await drainPendingIngest(tenantId, graphThreadId, appDb)).toBe(
+      "drained",
+    );
+    const saved = await (await getCheckpointer()).get({
+      configurable: { thread_id: graphThreadId },
+    });
+    const ids = (
+      (saved?.channel_values as { messages?: BaseMessage[] })?.messages ?? []
+    ).map((m) => m.id);
+    expect(ids).toContain("ingest:1000");
+    expect(ids).toHaveLength(INGEST_ID_WINDOW + 7);
+  }, 180_000);
+
+  // The shared tick claims by rank and creation, not by run time. A fallback appends in its own run,
+  // so its row, created when the message arrived, is reached before the newer appends queued after it.
+  test("the shared tick draining more newer appends than the dedup window holds still folds in the older fallback", async () => {
+    const contactInboxId = 12615;
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    const arm = (messageId: number, fallbackAfterMs?: number) =>
+      armIngest({
+        tenantId,
+        instanceId,
+        conversationId: 995,
+        contactInboxId,
+        graphThreadId,
+        messageId,
+        text: `mensagem ${messageId}`,
+        role: "customer",
+        agentId: 1n,
+        compactionEnabled: false,
+        ...(fallbackAfterMs === undefined ? {} : { fallbackAfterMs }),
+        base: appDb,
+      });
+    await arm(3000, 10 * 60_000);
+    for (let i = 1; i <= INGEST_ID_WINDOW + 6; i++) await arm(3000 + i);
+    const ours = (key: string) =>
+      key.startsWith(ingestKeyPrefix(graphThreadId)) ||
+      key.startsWith(ingestFallbackKeyPrefix(graphThreadId));
+    const saver = new MemorySaver();
+    for (let tick = 0; tick < 10; tick++) {
+      const claimed = (
+        await claimDueTrafficJobs(50, appDb, new Date(), tenantId)
+      ).filter((j) => ours(j.dedupeKey ?? ""));
+      if (claimed.length === 0) break;
+      for (const job of claimed) {
+        if (job.kind === "INGEST_FALLBACK")
+          await fallbackHandler(job, appDb, saver);
+        else await ingestHandler(job, appDb, saver);
+      }
+    }
+    const saved = await saver.get({
+      configurable: { thread_id: graphThreadId },
+    });
+    const ids = (
+      (saved?.channel_values as { messages?: BaseMessage[] })?.messages ?? []
+    ).map((m) => m.id);
+    expect(ids).toContain("ingest:3000");
+  }, 180_000);
+
+  test("a barrier with more due fallbacks than one batch folds them all in before the newer appends move on", async () => {
+    const contactInboxId = 12616;
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    const arm = (messageId: number, fallbackAfterMs?: number) =>
+      armIngest({
+        tenantId,
+        instanceId,
+        conversationId: 996,
+        contactInboxId,
+        graphThreadId,
+        messageId,
+        text: `mensagem ${messageId}`,
+        role: "customer",
+        agentId: 1n,
+        compactionEnabled: false,
+        ...(fallbackAfterMs === undefined ? {} : { fallbackAfterMs }),
+        base: appDb,
+      });
+    for (let i = 0; i < 60; i++) await arm(4000 + i, 10 * 60_000);
+    for (let i = 0; i < INGEST_ID_WINDOW + 6; i++) await arm(4100 + i);
+    expect(await drainPendingIngest(tenantId, graphThreadId, appDb)).toBe(
+      "drained",
+    );
+    const saved = await (await getCheckpointer()).get({
+      configurable: { thread_id: graphThreadId },
+    });
+    const ids = new Set(
+      (
+        (saved?.channel_values as { messages?: BaseMessage[] })?.messages ?? []
+      ).map((m) => m.id),
+    );
+    const missing = Array.from(
+      { length: 60 },
+      (_, i) => `ingest:${4000 + i}`,
+    ).filter((id) => !ids.has(id));
+    expect(missing).toEqual([]);
+  }, 180_000);
+
+  test("a fallback the owner covered, for a message already below the window's floor, stands down without reporting a lost append", async () => {
+    const contactInboxId = 12617;
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    for (let i = 1; i <= INGEST_ID_WINDOW + 6; i++)
+      await armIngest({
+        tenantId,
+        instanceId,
+        conversationId: 990,
+        contactInboxId,
+        graphThreadId,
+        messageId: 5000 + i,
+        text: `mensagem ${5000 + i}`,
+        role: "customer",
+        agentId: 1n,
+        compactionEnabled: false,
+        base: appDb,
+      });
+    expect(await drainPendingIngest(tenantId, graphThreadId, appDb)).toBe(
+      "drained",
+    );
+    const { job } = await armFallbackAndClaim(
+      contactInboxId,
+      5000,
+      "o dono gravou esta há muito tempo",
+    );
+    await ownerStatedAppend(990, 5000);
+    expect((await fallbackHandler(job, appDb)).outcome).toBe("done");
+    const undecidable = (
+      await flowLogRows(suDb, {
+        // flowlog-scope: tenant-wide. The line names the message in its detail.
+        where: { tenantId, stage: "memory" },
+      })
+    ).filter((l) =>
+      JSON.stringify(l.detail ?? {}).includes("ingest_append_undecidable"),
+    );
+    expect(undecidable).toEqual([]);
+  }, 180_000);
+
+  test("a newer message folded in leaves a fallback in failure backoff at its retry time", async () => {
+    const contactInboxId = 12618;
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    const arm = (messageId: number, fallbackAfterMs?: number) =>
+      armIngest({
+        tenantId,
+        instanceId,
+        conversationId: 997,
+        contactInboxId,
+        graphThreadId,
+        messageId,
+        text: `mensagem ${messageId}`,
+        role: "customer",
+        agentId: 1n,
+        compactionEnabled: false,
+        ...(fallbackAfterMs === undefined ? {} : { fallbackAfterMs }),
+        base: appDb,
+      });
+    await arm(6000, 10 * 60_000);
+    const retryAt = new Date(Date.now() + 5 * 60_000);
+    await suDb.schedulerJob.updateMany({
+      where: {
+        tenantId,
+        kind: "INGEST_FALLBACK",
+        dedupeKey: ingestFallbackKey(graphThreadId, 6000),
+      },
+      data: { runAt: retryAt, attempts: 1 },
+    });
+    await arm(6001);
+    const job = (
+      await claimDueTrafficJobs(50, appDb, new Date(), tenantId)
+    ).find((j) => j.dedupeKey === ingestDedupeKey(graphThreadId, 6001));
+    if (!job) throw new Error("the append was not claimed");
+    expect((await ingestHandler(job, appDb, new MemorySaver())).outcome).toBe(
+      "done",
+    );
+    const row = await suDb.schedulerJob.findFirstOrThrow({
+      where: {
+        tenantId,
+        kind: "INGEST_FALLBACK",
+        dedupeKey: ingestFallbackKey(graphThreadId, 6000),
+      },
+      select: { runAt: true },
+    });
+    expect(row.runAt.getTime()).toBe(retryAt.getTime());
+  });
+
+  test("an owner's creation settled with nothing to append does not stand in for a fallback armed by the update that brought the audio", async () => {
+    const contactInboxId = 12620;
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    await armIngest({
+      tenantId,
+      instanceId,
+      conversationId: 998,
+      contactInboxId,
+      graphThreadId,
+      messageId: 839,
+      text: "a transcrição do áudio anexado depois",
+      role: "customer",
+      agentId: 2n,
+      compactionEnabled: false,
+      fallbackAfterMs: 10 * 60_000,
+      event: "message_updated",
+      base: appDb,
+    });
+    // The owner settled the empty creation; its update delivery never came.
+    await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `ij-owner-empty-${process.pid}-839`,
+        event: "message_created",
+        conversationId: 998,
+        inboundMessageId: 839,
+        routeRemembers: true,
+        status: "PROCESSED",
+      },
+    });
+    const job = (
+      await claimDueTrafficJobs(
+        50,
+        appDb,
+        new Date(Date.now() + 11 * 60_000),
+        tenantId,
+      )
+    ).find((j) => j.dedupeKey === ingestFallbackKey(graphThreadId, 839));
+    if (!job) throw new Error("the fallback was not claimed once due");
+    const saver = new MemorySaver();
+    expect((await fallbackHandler(job, appDb, saver)).outcome).toBe("done");
+    expect(
+      (await appendedTexts(saver, graphThreadId)).some((t) =>
+        t.includes("a transcrição do áudio anexado depois"),
+      ),
+    ).toBe(true);
   });
 });

@@ -82,6 +82,7 @@ enum SchedulerJobKind {
   DOCUMENT_APPROVAL_OUTCOME
   SNOOZED_FOLLOWUP
   RECONCILE_SWEEP
+  INGEST_FALLBACK
 }
 
 enum SchedulerJobStatus {

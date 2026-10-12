@@ -30,6 +30,7 @@ export const JOB_LANE: Record<SchedulerJobKind, SchedulerLane> = {
   // drainPendingIngest), so cadence does not matter, and the debounce worker can be switched off
   // (DEBOUNCE_WORKER_ENABLED), which would leave a kind parked in that lane never drained.
   INGEST_MESSAGE: "shared",
+  INGEST_FALLBACK: "shared",
   // Shared: it is a sweep, and neither reason applies. Its cadence is minutes by design (a delivery
   // is not stranded until nothing has moved it for ten), and the work it does is one indexed query
   // per tenant — the arming it may do costs nothing, and the flush that follows is a DEBOUNCE job
@@ -123,6 +124,7 @@ export const JOB_POOL: Record<SchedulerJobKind, PoolClass> = {
   // inline and on the turn's own pool (RunClaimedOptions.poolClass), so the scheduler's run is the
   // backstop.
   INGEST_MESSAGE: "background",
+  INGEST_FALLBACK: "background",
   // Background: sweeps, retention, compaction, the observer, syncs and polls. None answers anyone.
   FOLLOWUP_SWEEP: "background",
   WEBHOOK_RETRY: "background",
@@ -165,6 +167,7 @@ export const JOB_SPENDS_PROVIDER: Record<SchedulerJobKind, boolean> = {
   MEMORY_COMPACT: false,
   // No model, no embedding: it appends to a checkpointer channel and writes one row.
   INGEST_MESSAGE: false,
+  INGEST_FALLBACK: false,
   // It reads and writes rows and emits log lines. Answering the stranded message would make this
   // true, which is why the sweep arms a DELIVERY_RECOVERY per lost row and that kind carries the spend.
   DELIVERY_SWEEP: false,
@@ -245,6 +248,9 @@ export const JOB_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
   DEBOUNCE: false,
   MEMORY_COMPACT: false,
   INGEST_MESSAGE: true,
+  // Its key names one message too. A redelivery after it ran arms it again, which only arms an append
+  // the ingest dedupe refuses.
+  INGEST_FALLBACK: true,
   DELIVERY_SWEEP: false,
   RECONCILE_SWEEP: false,
   SPEND_CEILING_POLL: false,
@@ -309,6 +315,7 @@ export const JOB_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
   REDIRECT_FOLLOWUP: false,
   MEMORY_COMPACT: false,
   INGEST_MESSAGE: true,
+  INGEST_FALLBACK: true,
   // One row per tenant, re-armed forever. Bounded by the install's tenant count, not by traffic.
   DELIVERY_SWEEP: false,
   RECONCILE_SWEEP: false,
@@ -371,6 +378,7 @@ export const JOB_TRAFFIC_RANK: Record<SchedulerJobKind, number> = {
   MEDIA_TEXT_FALLBACK: 0,
   INBOUND_REDISPATCH: 0,
   INGEST_MESSAGE: 1,
+  INGEST_FALLBACK: 1,
   SUGGESTION_REVIEW: 1,
   NOTHING_TO_ANSWER: 2,
   // The expiry only moves a status the approval already enforces by `expiresAt`.
@@ -434,6 +442,7 @@ export const JOB_DEATH_LEVEL: Record<SchedulerJobKind, FlowLevel> = {
   MEMORY_COMPACT: "error",
   // A message the turn will never see. The customer wrote and is waiting.
   INGEST_MESSAGE: "error",
+  INGEST_FALLBACK: "error",
   // Self-rescheduling: its death is stranded deliveries going unreported from then on.
   DELIVERY_SWEEP: "error",
   RECONCILE_SWEEP: "error",
@@ -507,6 +516,7 @@ export const JOB_RETRY_BASE_MS: Record<SchedulerJobKind, number> = {
   REDIRECT_FOLLOWUP: 2_000,
   MEMORY_COMPACT: 2_000,
   INGEST_MESSAGE: 2_000,
+  INGEST_FALLBACK: 2_000,
   DELIVERY_SWEEP: 2_000,
   RECONCILE_SWEEP: 2_000,
   SPEND_CEILING_POLL: 2_000,

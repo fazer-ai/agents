@@ -14,6 +14,14 @@ function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+export type InboxWatcher = {
+  agentId: bigint;
+  settings: unknown;
+  // When the binding was confirmed, which `responderCoversMessage` dates a message against: a watcher
+  // attached after Chatwoot emitted the event never received it.
+  attachedAt: Date | null;
+};
+
 // The switched-on watchers of an inbox, Chatwoot-confirmed, in agent order: every route reads the
 // same list, so the first one is the same memory owner on all of them. Null when unreadable; callers
 // then keep the route's own agent, as a lone watcher does.
@@ -21,18 +29,23 @@ export async function inboxWatchers(
   tenantId: bigint,
   inboxId: bigint,
   base: PrismaClient,
-): Promise<{ agentId: bigint; settings: unknown }[] | null> {
+): Promise<InboxWatcher[] | null> {
   try {
     const rows = await runScopedOn(base, sysCtx(tenantId), (db) =>
       db.inboxObserver.findMany({
         where: { inboxId, attachedAt: { not: null }, agent: { enabled: true } },
-        select: { agentId: true, agent: { select: { settings: true } } },
+        select: {
+          agentId: true,
+          attachedAt: true,
+          agent: { select: { settings: true } },
+        },
         orderBy: { agentId: "asc" },
       }),
     );
     return rows.map((r) => ({
       agentId: r.agentId,
       settings: r.agent.settings,
+      attachedAt: r.attachedAt,
     }));
   } catch (err) {
     logger.warn(

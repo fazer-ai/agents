@@ -43,6 +43,10 @@ export async function responderCoversMessage(
   // wrong.
   emittedAt: Date | null,
   base: PrismaClient,
+  // The event the sibling must carry, when the caller needs evidence about THIS delivery and not the
+  // message: a watcher leaving the append to the memory owner, whose delivery of a later update says
+  // nothing about the creation it never received. The responder's own callers leave it out.
+  event?: string,
 ): Promise<boolean> {
   if (responderBoundAt === null) return true;
   // NOTE: only by a margin the clocks cannot invent: the two stamps come from different hosts, so
@@ -74,6 +78,7 @@ export async function responderCoversMessage(
           ? { inboundMessageId: message.id }
           : { humanReplyMessageId: message.id }),
         routeAgentBotId: responderBotId,
+        ...(event === undefined ? {} : { event }),
         // NOTE: only a sibling that can still see the binding: never claimed (it runs after this read,
         // binding committed), or claimed at or after the binding. `bindInbox` calls Chatwoot BEFORE it
         // commits `agentId`, so a delivery in that gap resolves no runtime and settles, and counting it

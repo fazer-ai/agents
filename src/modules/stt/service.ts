@@ -100,6 +100,10 @@ export interface TranscribeInboundParams {
 export async function transcribeInboundAudio(
   params: TranscribeInboundParams,
 ): Promise<string | null> {
+  // NOTE: a route whose own STT cannot run takes nothing another route transcribed: the memory owner's
+  // settings decide what memory holds (docs/chatwoot.md, "Observer binding"). Run directly so the
+  // skip still reaches the turn trail.
+  if (!(await sttRunnable(params))) return transcribeOnce(params);
   const stashed = mediaAnnotationFor(
     params.tenantId,
     params.instanceId,
@@ -112,6 +116,21 @@ export async function transcribeInboundAudio(
     (signal) => transcribeOnce({ ...params, signal }),
     params.signal,
   );
+}
+
+// The config checks `transcribeOnce` makes before any network call, asked without reporting: whether
+// this route could transcribe at all.
+async function sttRunnable(params: TranscribeInboundParams): Promise<boolean> {
+  const { cfg } = params;
+  const provider = getSttProvider(cfg.provider);
+  if (!provider || !cfg.credentialRef) return false;
+  const entry = await runScopedOn(
+    params.base ?? basePrisma,
+    sysCtx(params.tenantId),
+    (db) => tryResolveApiKeyEntry(db, cfg.credentialRef as string),
+  );
+  if (entry.state !== "ok") return false;
+  return !provider.requiresBaseURL || Boolean(entry.baseUrl ?? cfg.baseURL);
 }
 
 async function transcribeOnce(

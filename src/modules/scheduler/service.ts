@@ -80,7 +80,8 @@ export type SchedulerJobKind =
   | "SUGGESTION_REVIEW"
   | "DOCUMENT_APPROVAL_EXPIRY"
   | "DOCUMENT_APPROVAL_OUTCOME"
-  | "SNOOZED_FOLLOWUP";
+  | "SNOOZED_FOLLOWUP"
+  | "INGEST_FALLBACK";
 
 export interface ClaimedJob {
   id: bigint;
@@ -1231,6 +1232,30 @@ export function claimPendingByKeyPrefix(
     base,
     new Date(),
     Prisma.sql`kind = ${kind}::"SchedulerJobKind"`,
+    tenantId,
+    excludeIds,
+    prefix,
+  );
+}
+
+// The same claim, of DUE rows only: the barrier runs a fallback whose time has come, and leaves one
+// still waiting for the append it stands in for.
+export function claimDueByKeyPrefix(
+  kind: SchedulerJobKind,
+  prefix: string,
+  limit: number,
+  base: PrismaClient = basePrisma,
+  tenantId?: bigint,
+  excludeIds?: bigint[],
+): Promise<ClaimedJob[]> {
+  // Due by this process's clock, the one that stamped the run time (`dueOlderFallbacks`), not
+  // the database's: a few milliseconds of skew would leave a fallback just brought due unclaimed.
+  const now = new Date();
+  return claimWhere(
+    limit,
+    base,
+    now,
+    Prisma.sql`kind = ${kind}::"SchedulerJobKind" AND run_at <= ${now}`,
     tenantId,
     excludeIds,
     prefix,

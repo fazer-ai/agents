@@ -439,10 +439,14 @@ function withDraft2020Tuples(client: Client): void {
 // THE ADAPTER'S OWN ARGUMENT CHECK, which runs against the server's full schema before the server is
 // reached: a call it refuses sent nothing, said on the call's reporter (fence-report.ts) so a caller
 // that asks per call (a decisions rule) does not count it as a call that may have written.
+// Told apart by the adapter's own sentence: a response the SDK cannot parse also throws a wrapped
+// `ZodError`, after the request was sent ("Error calling tool ..."), and may have written.
+const ARGUMENT_REFUSAL = "Invalid arguments for MCP tool ";
 export function isMcpArgumentRefusal(err: unknown): boolean {
   return (
     err instanceof Error &&
     err.name === "ToolException" &&
+    err.message.startsWith(ARGUMENT_REFUSAL) &&
     (err.cause as { name?: unknown } | undefined)?.name === "ZodError"
   );
 }

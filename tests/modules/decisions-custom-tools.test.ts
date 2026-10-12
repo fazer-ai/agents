@@ -710,6 +710,27 @@ describe("the tick fills a custom tool's arguments and records them", () => {
     expect(r.triggerState.latch).toEqual([]);
   });
 
+  test("an MCP response the SDK cannot parse was sent, and keeps the rule latched", async () => {
+    const malformed = Object.assign(
+      new Error("Error calling tool abrir: ZodError: invalid response"),
+      { name: "ToolException", cause: { name: "ZodError" } },
+    );
+    const tool = new DynamicStructuredTool({
+      name: "mcp__crm__abrir",
+      description: "x",
+      schema: z.object({}).passthrough(),
+      func: async () => {
+        throw malformed;
+      },
+    });
+    const r = await once(tool, { telefone: "contact.phone" });
+    expect(r.actions[0]).toMatchObject({
+      outcome: "failed",
+      failure: "tool_error",
+    });
+    expect(r.triggerState.latch).toHaveLength(1);
+  });
+
   test("a custom tool the agent was not granted reports not_granted and calls nothing", async () => {
     const r = await applyDecisions(
       { rules: [rule] },

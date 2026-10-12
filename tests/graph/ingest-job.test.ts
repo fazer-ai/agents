@@ -16,6 +16,7 @@ import {
   ingestFallbackKeyPrefix,
   ingestHandler,
   ingestKeyPrefix,
+  retireCoveredFallbacks,
 } from "@/graph/ingest-job";
 import { stampedSentAt } from "@/graph/markers";
 import { withKeyedQueue } from "@/lib/locks";
@@ -1855,11 +1856,12 @@ describe.skipIf(!dbUp)("the ingestion job defers to a turn in flight", () => {
       key.startsWith(ingestKeyPrefix(graphThreadId)) ||
       key.startsWith(ingestFallbackKeyPrefix(graphThreadId));
     const saver = new MemorySaver();
-    for (let tick = 0; tick < 10; tick++) {
-      const claimed = (
-        await claimDueTrafficJobs(50, appDb, new Date(), tenantId)
-      ).filter((j) => ours(j.dedupeKey ?? ""));
-      if (claimed.length === 0) break;
+    for (let tick = 0; tick < 20; tick++) {
+      // The claim is tenant-wide, and earlier cases leave rows of their own: stop on an empty claim,
+      // not on one with nothing of this thread in it.
+      const all = await claimDueTrafficJobs(50, appDb, new Date(), tenantId);
+      if (all.length === 0) break;
+      const claimed = all.filter((j) => ours(j.dedupeKey ?? ""));
       for (const job of claimed) {
         if (job.kind === "INGEST_FALLBACK")
           await fallbackHandler(job, appDb, saver);
@@ -1953,9 +1955,13 @@ describe.skipIf(!dbUp)("the ingestion job defers to a turn in flight", () => {
         // flowlog-scope: tenant-wide. The line names the message in its detail.
         where: { tenantId, stage: "memory" },
       })
-    ).filter((l) =>
-      JSON.stringify(l.detail ?? {}).includes("ingest_append_undecidable"),
-    );
+    ).filter((l) => {
+      const detail = JSON.stringify(l.detail ?? {});
+      return (
+        detail.includes("ingest_append_undecidable") &&
+        detail.includes(`"messageId":5000,`)
+      );
+    });
     expect(undecidable).toEqual([]);
   }, 180_000);
 
@@ -2061,5 +2067,135 @@ describe.skipIf(!dbUp)("the ingestion job defers to a turn in flight", () => {
         t.includes("a transcrição do áudio anexado depois"),
       ),
     ).toBe(true);
+  });
+
+  // A client that runs `before` ahead of every call on one model, inside transactions too, so a test
+  // can land a concurrent write at the exact point a function reads.
+  function onModel(
+    real: PrismaClient,
+    model: string,
+    before: () => Promise<void>,
+  ): PrismaClient {
+    const wrap = (c: Record<string, unknown>): never =>
+      new Proxy(c, {
+        get(t, p: string) {
+          if (p === "$transaction")
+            return (fn: unknown, opts?: unknown) =>
+              typeof fn === "function"
+                ? (t.$transaction as (f: unknown, o?: unknown) => unknown).call(
+                    t,
+                    (tx: Record<string, unknown>) =>
+                      (fn as (x: unknown) => unknown)(wrap(tx)),
+                    opts,
+                  )
+                : (t.$transaction as (f: unknown, o?: unknown) => unknown).call(
+                    t,
+                    fn,
+                    opts,
+                  );
+          if (p === "$extends")
+            return (...a: unknown[]) =>
+              wrap(
+                (
+                  t.$extends as (...x: unknown[]) => Record<string, unknown>
+                ).apply(t, a),
+              );
+          const v = Reflect.get(t, p);
+          if (p === model && v && typeof v === "object")
+            return new Proxy(v as Record<string, unknown>, {
+              get(d, op: string) {
+                const f = Reflect.get(d, op);
+                if (typeof f !== "function") return f;
+                return async (...a: unknown[]) => {
+                  await before();
+                  return (f as (...x: unknown[]) => unknown).apply(d, a);
+                };
+              },
+            });
+          return typeof v === "function"
+            ? (v as (...x: unknown[]) => unknown).bind(t)
+            : v;
+        },
+      }) as never;
+    return wrap(real as unknown as Record<string, unknown>);
+  }
+
+  test("a fallback refreshed while the barrier asks the ledger about its older body is not retired", async () => {
+    const contactInboxId = 12621;
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    const arm = (text: string, event: string) =>
+      armIngest({
+        tenantId,
+        instanceId,
+        conversationId: 999,
+        contactInboxId,
+        graphThreadId,
+        messageId: 840,
+        text,
+        role: "customer",
+        agentId: 2n,
+        compactionEnabled: false,
+        fallbackAfterMs: 10 * 60_000,
+        event,
+        base: appDb,
+      });
+    await arm("[áudio não lido]", "message_created");
+    // The owner settled the creation; the update that brings the words has no owner delivery.
+    await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `ij-owner-creation-${process.pid}-840`,
+        event: "message_created",
+        conversationId: 999,
+        inboundMessageId: 840,
+        routeRemembers: true,
+        status: "PROCESSED",
+      },
+    });
+    let refreshed = false;
+    const racing = onModel(appDb, "chatwootWebhookDelivery", async () => {
+      if (refreshed) return;
+      refreshed = true;
+      await arm("as palavras que chegaram no update", "message_updated");
+    });
+    await retireCoveredFallbacks(tenantId, graphThreadId, racing);
+    const row = await suDb.schedulerJob.findFirst({
+      where: {
+        tenantId,
+        kind: "INGEST_FALLBACK",
+        dedupeKey: ingestFallbackKey(graphThreadId, 840),
+      },
+      select: { payloadSecret: true },
+    });
+    expect(refreshed).toBe(true);
+    expect(row).not.toBeNull();
+    expect(decryptJson<string>(String(row?.payloadSecret))).toBe(
+      "as palavras que chegaram no update",
+    );
+  });
+
+  test("a fallback asks whether the owner queued its message once it holds the thread, not before", async () => {
+    const { job, graphThreadId } = await armFallbackAndClaim(
+      12622,
+      841,
+      "o dono enfileirou enquanto a reserva esperava a vez",
+    );
+    // The owner's delivery settles exactly when the fallback's append re-reads its own claim, inside
+    // the critical section: a check made before entering it would have missed it.
+    let settled = false;
+    const racing = onModel(appDb, "schedulerJob", async () => {
+      if (settled) return;
+      settled = true;
+      await ownerStatedAppend(990, 841);
+    });
+    const saver = new MemorySaver();
+    expect((await fallbackHandler(job, racing, saver)).outcome).toBe("done");
+    expect(settled).toBe(true);
+    expect(await appendedTexts(saver, graphThreadId)).toEqual([]);
   });
 });

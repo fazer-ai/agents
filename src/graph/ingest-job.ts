@@ -447,7 +447,7 @@ export async function retireCoveredFallbacks(
         status: "PENDING",
         dedupeKey: { startsWith: ingestFallbackKeyPrefix(graphThreadId) },
       },
-      select: { id: true, payload: true },
+      select: { id: true, payload: true, payloadSecret: true },
     }),
   );
   for (const row of waiting) {
@@ -459,8 +459,17 @@ export async function retireCoveredFallbacks(
       ))
     )
       continue;
+    // NOTE: only the body that was checked: a later arm refreshes the row in place (a transcription
+    // update, another event), and the ledger answered about the event read above. Each arm encrypts
+    // anew, so the ciphertext names the version.
     await runScopedOn(base, sysCtx(tenantId), (db) =>
-      db.schedulerJob.deleteMany({ where: { id: row.id, status: "PENDING" } }),
+      db.schedulerJob.deleteMany({
+        where: {
+          id: row.id,
+          status: "PENDING",
+          payloadSecret: row.payloadSecret,
+        },
+      }),
     );
   }
 }

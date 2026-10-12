@@ -554,6 +554,8 @@ export async function assertDecisionActionArgs(
     const action = a as Record<string, unknown>;
     const tool = action.tool;
     if (typeof tool !== "string" || isNativeDecisionTool(tool)) return [];
+    // An MCP server's tool. No HTTP or code tool shares the prefix: their names go through
+    // normalizeToolName, which collapses every run of underscores, so `mcp__` is never theirs.
     if (tool.startsWith("mcp__")) return [];
     if (
       before.some((b) =>

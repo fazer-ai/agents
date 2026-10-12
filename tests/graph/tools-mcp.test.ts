@@ -10,6 +10,7 @@ import {
   mcpServerSlug,
   namespacedToolName,
 } from "@/graph/tools/mcp";
+import { normalizeToolName } from "@/graph/tools/toolName";
 
 const PUBLIC = "8.8.8.8"; // public IP literal: no DNS lookup, not SSRF-blocked
 
@@ -409,5 +410,23 @@ describe("loadMcpToolsForAgent", () => {
       label: "Hub",
       instructions: "Manages licenses and instances.",
     });
+  });
+});
+
+// THE NAMESPACE IS THE SERVERS' ALONE: an HTTP or code tool's name goes through normalizeToolName,
+// which collapses runs of underscores, so no local tool can take an `mcp__` name. The decisions save
+// and the rule editor rely on it to read such a name as a server's (agents#1223).
+describe("an HTTP or code tool never takes an MCP name", () => {
+  test("whatever the operator types", () => {
+    for (const typed of [
+      "mcp__crm__open",
+      "MCP__CRM__OPEN",
+      "mcp___crm",
+      "mcp  crm",
+      "mcp_ _crm",
+      "mcp.-_crm",
+    ]) {
+      expect(normalizeToolName(typed).startsWith("mcp__"), typed).toBe(false);
+    }
   });
 });

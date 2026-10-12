@@ -523,7 +523,8 @@ export function customToolsOf(
   for (const { m, tools } of mcp) {
     for (const tool of tools) {
       const name = mcpToolName(m.slug, tool);
-      if (name === null || all.has(name) || ambiguous.has(name)) continue;
+      // No HTTP or code tool takes an `mcp__` name (normalizeToolName collapses `__`).
+      if (name === null || ambiguous.has(name)) continue;
       all.set(name, {
         name,
         label: `${m.name}: ${tool}`,

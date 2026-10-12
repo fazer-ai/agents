@@ -2,6 +2,11 @@ import "@testing-library/jest-dom";
 import { afterEach, beforeEach, jest } from "bun:test";
 import { configure } from "@testing-library/dom";
 import {
+  CLONE_MARKER_ENV,
+  ensureWorkerClone,
+  workerCloneTarget,
+} from "./db-clone";
+import {
   DB_GATE_OPT_OUT,
   localMigrations,
   type MigrationRow,
@@ -75,7 +80,26 @@ if (testSuUrl) {
   // so a constant name would put them all on one database, where a migration applied from any of them
   // stays applied under all the others (./db-name.ts, tests/lib/test-db-identity.test.ts). The guard
   // above still reads the DECLARED name: it is a statement about what the developer pointed at.
-  const dbName = testDbNameFor(declared, REPO_ROOT);
+  const checkoutDb = testDbNameFor(declared, REPO_ROOT);
+  // Under `bun test --parallel` each worker moves onto its own copy of that database, and every URL
+  // below follows it (./db-clone.ts). The copy is made before anything connects, because Postgres
+  // refuses to copy a database somebody is connected to; the gate further down then checks the copy.
+  const clone = process.env.TEST_APP_DATABASE_URL
+    ? workerCloneTarget(process.env, checkoutDb, REPO_ROOT)
+    : null;
+  if (clone && process.env.TEST_APP_DATABASE_URL) {
+    await ensureWorkerClone({
+      suUrl: withDbName(testSuUrl, checkoutDb),
+      appRole: decodeURIComponent(
+        new URL(process.env.TEST_APP_DATABASE_URL).username,
+      ),
+      root: REPO_ROOT,
+      template: checkoutDb,
+      clone,
+    });
+    process.env[CLONE_MARKER_ENV] = clone;
+  }
+  const dbName = clone ?? checkoutDb;
   const testDbPath = `/${dbName}`;
   process.env.MIGRATION_DATABASE_URL = withDbName(testSuUrl, dbName);
   // NOTE: BOTH spellings, which is what makes the derivation safe: some test files build their

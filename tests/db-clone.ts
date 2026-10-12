@@ -1,0 +1,505 @@
+import { spawn, spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import type { Client } from "pg";
+import { FLEET_ROLE_EXPR } from "@/lib/tenancy/fleet-role";
+import { DB_GATE_OPT_OUT } from "./db-gate";
+import { isWorkerCloneOf, testDbNameFor, withDbName } from "./db-name";
+
+// ONE DATABASE PER WORKER UNDER `bun test --parallel`: files running at once on one database
+// collide, so each worker runs on a `CREATE DATABASE … TEMPLATE` copy of the checkout's test database
+// (serial runs and CI keep the checkout's). `--parallel` isolates each file, globals and `process.env`
+// included, so the copy itself is the worker's only memory: each file asks Postgres whether it is
+// there and whose it is. No `exit` handler runs in a worker, so ownership is recorded on the copy
+// (the `bun test` pid and start time) and a copy whose owner is gone is dropped by the next worker
+// that takes the lock, or by the reaper below. Copies are made one at a time under an advisory lock in
+// `postgres`, because Postgres refuses to copy a database that has connections.
+
+export const CLONE_MARKER_ENV = "TEST_DB_WORKER_CLONE";
+
+const OWNER_MARK = "fazerai-test-clone";
+
+export type CloneOwner = {
+  template: string;
+  pid: number;
+  start: string;
+  workerPid: number;
+  ready: boolean;
+};
+
+export function ownerComment(o: CloneOwner): string {
+  return JSON.stringify({ [OWNER_MARK]: 1, ...o });
+}
+
+export function parseOwner(comment: string | null): CloneOwner | null {
+  if (!comment) return null;
+  try {
+    const o = JSON.parse(comment) as Partial<CloneOwner> & {
+      [OWNER_MARK]?: unknown;
+    };
+    if (
+      o[OWNER_MARK] !== 1 ||
+      typeof o.template !== "string" ||
+      typeof o.pid !== "number" ||
+      typeof o.start !== "string" ||
+      typeof o.workerPid !== "number" ||
+      typeof o.ready !== "boolean"
+    ) {
+      return null;
+    }
+    return {
+      template: o.template,
+      pid: o.pid,
+      start: o.start,
+      workerPid: o.workerPid,
+      ready: o.ready,
+    };
+  } catch {
+    return null;
+  }
+}
+
+// The copy this process should run on, or null to stay on `checkoutDb`. Only a worker clones
+// (BUN_TEST_WORKER_ID is unset in a serial run). A run nested inside a worker inherits the worker's
+// variables: with the marker it keeps whatever database its caller handed it, which may be a scratch
+// database a test built on purpose, and without it the derivation lands on the worker's copy anyway.
+export function workerCloneTarget(
+  env: { [k: string]: string | undefined },
+  checkoutDb: string,
+  root: string,
+): string | null {
+  const worker = env.BUN_TEST_WORKER_ID;
+  if (!worker || env[DB_GATE_OPT_OUT] === "1" || env[CLONE_MARKER_ENV]) {
+    return null;
+  }
+  const clone = testDbNameFor(checkoutDb, root, worker);
+  return clone === checkoutDb ? null : clone;
+}
+
+// `startOf(pid)` is the process's start time, or null when there is none: the pid alone is not the
+// run, because the kernel hands a dead run's pid to the next process.
+function ownerAlive(
+  o: CloneOwner,
+  startOf: (pid: number) => string | null,
+): boolean {
+  return startOf(o.pid) === o.start;
+}
+
+// Which of this checkout's copies are left over. Only names of THIS checkout's shape are candidates,
+// so another checkout's copies are never touched; among them, one made from another template is that
+// template's run's business. Called under the clone lock, so a copy with no record is one whose
+// worker died between CREATE and COMMENT, not one being created.
+export function clonesToDrop(
+  rows: { name: string; comment: string | null }[],
+  scope: { root: string; template: string },
+  startOf: (pid: number) => string | null,
+): string[] {
+  return rows
+    .filter((r) => isWorkerCloneOf(r.name, scope.root))
+    .filter((r) => {
+      const o = parseOwner(r.comment);
+      if (o === null) return true;
+      if (o.template !== scope.template) return false;
+      return !ownerAlive(o, startOf);
+    })
+    .map((r) => r.name);
+}
+
+export type CloneVerdict = "use" | "create" | "recreate" | "refuse";
+
+// What a worker does with its copy once it holds the lock and the leftovers are gone. `existing` is
+// undefined when there is no such database and null when it carries no record. The owner is the
+// `bun test` that started this worker, or one further up when this run is nested inside a worker.
+export function cloneVerdict(
+  existing: CloneOwner | null | undefined,
+  me: { pid: number; ancestors: number[] },
+  startOf: (pid: number) => string | null,
+): CloneVerdict {
+  if (existing === undefined) return "create";
+  if (existing === null || !existing.ready) return "recreate";
+  if (!ownerAlive(existing, startOf)) return "recreate";
+  return me.ancestors.includes(existing.pid) ? "use" : "refuse";
+}
+
+export function processStart(pid: number): string | null {
+  const r = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+    env: { ...process.env, LC_ALL: "C" },
+    encoding: "utf8",
+  });
+  const out = r.status === 0 ? r.stdout.trim() : "";
+  return out.length > 0 ? out : null;
+}
+
+function ancestorsOf(pid: number): { pids: number[]; parentCmd: string } {
+  const r = spawnSync("ps", ["-A", "-o", "pid=,ppid=,comm="], {
+    encoding: "utf8",
+  });
+  const parent = new Map<number, { ppid: number; comm: string }>();
+  for (const line of r.stdout.split("\n")) {
+    const m = line.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/);
+    if (m) parent.set(Number(m[1]), { ppid: Number(m[2]), comm: m[3] ?? "" });
+  }
+  const pids: number[] = [];
+  let cur = parent.get(pid)?.ppid;
+  while (cur !== undefined && cur > 1 && pids.length < 16) {
+    pids.push(cur);
+    cur = parent.get(cur)?.ppid;
+  }
+  return {
+    pids,
+    parentCmd: parent.get(parent.get(pid)?.ppid ?? -1)?.comm ?? "",
+  };
+}
+
+function fleetRoleSql(): string {
+  return `SELECT ${FLEET_ROLE_EXPR.replaceAll("current_database()::text", "$1::text")} AS role`;
+}
+
+const OBJECT_IN_USE = "55006";
+const TEMPLATE_BUSY_DEADLINE_MS = 60_000;
+
+async function newClient(url: string): Promise<Client> {
+  const { Client } = await import("pg");
+  const c = new Client({ connectionString: url });
+  await c.connect();
+  return c;
+}
+
+// The lock is per checkout (the root's hash is in every name it guards), held for the session, and
+// released with the connection if the holder dies.
+async function withCloneLock<T>(
+  maint: Client,
+  root: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  await maint.query("SELECT pg_advisory_lock(hashtextextended($1, 0))", [
+    `fazerai-test-clone:${testDbNameFor("x_test", root)}`,
+  ]);
+  try {
+    return await fn();
+  } finally {
+    await maint
+      .query("SELECT pg_advisory_unlock(hashtextextended($1, 0))", [
+        `fazerai-test-clone:${testDbNameFor("x_test", root)}`,
+      ])
+      .catch(() => {});
+  }
+}
+
+async function listClones(
+  maint: Client,
+  root: string,
+): Promise<{ name: string; comment: string | null }[]> {
+  const { rows } = await maint.query<{ name: string; comment: string | null }>(
+    `SELECT datname AS name, shobj_description(oid, 'pg_database') AS comment
+       FROM pg_database WHERE datname LIKE '%x%'`,
+  );
+  return rows.filter((r) => isWorkerCloneOf(r.name, root));
+}
+
+// A copy goes with the fleet role named after it (cluster-wide, see `provisionClone`). FORCE ends the
+// connections of a run killed mid-way whose workers outlived it.
+async function dropClone(maint: Client, name: string): Promise<void> {
+  const role = (await maint.query<{ role: string }>(fleetRoleSql(), [name]))
+    .rows[0]?.role as string;
+  await maint.query(
+    `DROP DATABASE IF EXISTS ${maint.escapeIdentifier(name)} WITH (FORCE)`,
+  );
+  // NOTE: a role that cannot go yet (it was granted something elsewhere) is reported, not thrown: a
+  // throw here fails the test file that happened to reap, on every run until someone drops it.
+  await maint
+    .query(`DROP ROLE IF EXISTS ${maint.escapeIdentifier(role)}`)
+    .catch((err: unknown) =>
+      console.warn(
+        `tests: could not drop the fleet role "${role}" of the removed database copy "${name}": ${err instanceof Error ? err.message : err}`,
+      ),
+    );
+}
+
+async function reapUnderLock(
+  maint: Client,
+  root: string,
+  template: string,
+): Promise<string[]> {
+  const starts = new Map<number, string | null>();
+  const startOf = (pid: number) => {
+    if (!starts.has(pid)) starts.set(pid, processStart(pid));
+    return starts.get(pid) ?? null;
+  };
+  const doomed = clonesToDrop(
+    await listClones(maint, root),
+    { root, template },
+    startOf,
+  );
+  for (const name of doomed) await dropClone(maint, name);
+  return doomed;
+}
+
+export async function reapClones(opts: {
+  maintUrl: string;
+  root: string;
+  template: string;
+}): Promise<string[]> {
+  const maint = await newClient(opts.maintUrl);
+  try {
+    return await withCloneLock(maint, opts.root, () =>
+      reapUnderLock(maint, opts.root, opts.template),
+    );
+  } finally {
+    await maint.end().catch(() => {});
+  }
+}
+
+// The fleet role's name derives from the database's (src/lib/tenancy/fleet-role.ts), so a copy
+// resolves to a role nobody created and its policies still name the template's. This is the repair
+// `db-guard` prints for a database restored under another name, done up front: the copy's own role,
+// the template role's privileges moved to it, its policies pointed at it, and the runtime role made a
+// member that may SET ROLE to it without inheriting it, as `scripts/db-bootstrap.ts` provisions.
+async function provisionClone(cloneUrl: string, appRole: string) {
+  const c = await newClient(cloneUrl);
+  try {
+    const fleet = (
+      await c.query<{ role: string }>(
+        "SELECT public.fazerai_fleet_role() AS role",
+      )
+    ).rows[0]?.role as string;
+    const { rows: policies } = await c.query<{ nsp: string; rel: string }>(
+      `SELECT n.nspname AS nsp, cl.relname AS rel FROM pg_policy p
+         JOIN pg_class cl ON cl.oid = p.polrelid
+         JOIN pg_namespace n ON n.oid = cl.relnamespace
+        WHERE p.polname = 'fleet_super_admin'`,
+    );
+    const { rows: olds } = await c.query<{ rolname: string }>(
+      `SELECT DISTINCT r.rolname FROM pg_policy p
+         CROSS JOIN LATERAL unnest(p.polroles) AS pr(oid)
+         JOIN pg_roles r ON r.oid = pr.oid
+        WHERE p.polname = 'fleet_super_admin' AND r.rolname <> $1`,
+      [fleet],
+    );
+    const version = Number(
+      (
+        await c.query<{ v: string }>(
+          "SELECT current_setting('server_version_num') AS v",
+        )
+      ).rows[0]?.v,
+    );
+    const id = (s: string) => c.escapeIdentifier(s);
+    const f = id(fleet);
+    const exists = (
+      await c.query("SELECT 1 FROM pg_roles WHERE rolname = $1", [fleet])
+    ).rowCount;
+    const statements = [
+      exists
+        ? null
+        : `CREATE ROLE ${f} NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE`,
+      ...olds.flatMap(({ rolname }) => [
+        `REVOKE ALL ON ALL TABLES IN SCHEMA public FROM ${id(rolname)}`,
+        `REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM ${id(rolname)}`,
+        `REVOKE ALL ON SCHEMA public FROM ${id(rolname)}`,
+        `ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON TABLES FROM ${id(rolname)}`,
+        `ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON SEQUENCES FROM ${id(rolname)}`,
+      ]),
+      ...policies.map(
+        (p) =>
+          `ALTER POLICY fleet_super_admin ON ${id(p.nsp)}.${id(p.rel)} TO ${f}`,
+      ),
+      `GRANT USAGE ON SCHEMA public TO ${f}`,
+      `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ${f}`,
+      `GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO ${f}`,
+      `ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO ${f}`,
+      `ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO ${f}`,
+      version >= 160000
+        ? `GRANT ${f} TO ${id(appRole)} WITH INHERIT FALSE, SET TRUE`
+        : `GRANT ${f} TO ${id(appRole)}`,
+    ].filter((s): s is string => s !== null);
+    await c.query(`BEGIN; ${statements.join(";\n")}; COMMIT;`);
+  } finally {
+    await c.end().catch(() => {});
+  }
+}
+
+async function createClone(
+  maint: Client,
+  template: string,
+  clone: string,
+  owner: CloneOwner,
+) {
+  const meta = (
+    await maint.query<{
+      owner: string;
+      acl: { grantee: string; priv: string }[] | null;
+    }>(
+      `SELECT pg_get_userbyid(d.datdba) AS owner,
+              (SELECT json_agg(json_build_object(
+                        'grantee', CASE WHEN a.grantee = 0 THEN 'PUBLIC'
+                                        ELSE pg_get_userbyid(a.grantee) END,
+                        'priv', a.privilege_type))
+                 FROM aclexplode(d.datacl) a) AS acl
+         FROM pg_database d WHERE d.datname = $1`,
+      [template],
+    )
+  ).rows[0];
+  if (!meta) {
+    throw new Error(
+      `the test database "${template}" does not exist, so there is nothing to copy for this worker. Run: bun run db:test:setup`,
+    );
+  }
+  const id = (s: string) => maint.escapeIdentifier(s);
+  const stopAt = Date.now() + TEMPLATE_BUSY_DEADLINE_MS;
+  let pause = 100;
+  for (;;) {
+    try {
+      await maint.query(
+        `CREATE DATABASE ${id(clone)} TEMPLATE ${id(template)} OWNER ${id(meta.owner)}`,
+      );
+      break;
+    } catch (err) {
+      if ((err as { code?: string }).code !== OBJECT_IN_USE) throw err;
+      if (Date.now() >= stopAt) {
+        const { rows } = await maint.query<{ who: string }>(
+          `SELECT format('pid %s, %s, %s', pid, usename, coalesce(nullif(application_name, ''), '?')) AS who
+             FROM pg_stat_activity WHERE datname = $1`,
+          [template],
+        );
+        throw new Error(
+          `could not copy "${template}" for this worker: it stayed open by other connections for ${TEMPLATE_BUSY_DEADLINE_MS / 1000}s (${rows.map((r) => r.who).join("; ") || "none listed"}). Under --parallel nothing may connect to the checkout's own test database; a serial \`bun test\` of this checkout running at the same time does.`,
+        );
+      }
+      await Bun.sleep(pause);
+      pause = Math.min(pause * 2, 2_000);
+    }
+  }
+  await maint.query(
+    `COMMENT ON DATABASE ${id(clone)} IS ${maint.escapeLiteral(ownerComment(owner))}`,
+  );
+  // NOTE: CREATE DATABASE does not copy the database's own ACL, and the template's grants (the
+  // runtime role's CONNECT and CREATE) are what the suite runs with.
+  if (meta.acl) {
+    const grants = meta.acl.map(
+      (a) =>
+        `GRANT ${a.priv} ON DATABASE ${id(clone)} TO ${a.grantee === "PUBLIC" ? "PUBLIC" : id(a.grantee)}`,
+    );
+    await maint.query(
+      `REVOKE ALL ON DATABASE ${id(clone)} FROM PUBLIC; ${grants.join("; ")}`,
+    );
+  }
+}
+
+// Watches the `bun test` parent and, once it is gone, removes the copies whose owner is gone: the
+// normal end of a run, and a killed one. Detached, so a signal to the run's process group does not
+// reach it, and backgrounded by the `sh` it starts, because a parallel worker ends by killing its own
+// children, detached or not. The loop costs nothing while it waits; Bun only starts once there is work.
+function spawnReaper(opts: {
+  ppid: number;
+  maintUrl: string;
+  root: string;
+  template: string;
+}) {
+  const script = `(while kill -0 ${opts.ppid} 2>/dev/null; do sleep 2; done; exec "$REAP_BUN" "$REAP_FILE") </dev/null >/dev/null 2>&1 &`;
+  const child = spawn("sh", ["-c", script], {
+    cwd: opts.root,
+    detached: true,
+    stdio: "ignore",
+    env: {
+      PATH: process.env.PATH ?? "",
+      REAP_BUN: process.execPath,
+      REAP_FILE: fileURLToPath(import.meta.url),
+      TEST_DB_REAP_URL: opts.maintUrl,
+      TEST_DB_REAP_ROOT: opts.root,
+      TEST_DB_REAP_TEMPLATE: opts.template,
+    },
+  });
+  child.unref();
+}
+
+// The worker's copy of `template`, created if needed. `suUrl` is the superuser URL of the template;
+// `appRole` is the runtime role the suite's app URL logs in as.
+export async function ensureWorkerClone(opts: {
+  suUrl: string;
+  appRole: string;
+  root: string;
+  template: string;
+  clone: string;
+}): Promise<void> {
+  const { root, template, clone } = opts;
+  const maintUrl = withDbName(opts.suUrl, "postgres");
+  const maint = await newClient(maintUrl);
+  try {
+    const current = async (): Promise<CloneOwner | null | undefined> => {
+      const { rows } = await maint.query<{ comment: string | null }>(
+        "SELECT shobj_description(oid, 'pg_database') AS comment FROM pg_database WHERE datname = $1",
+        [clone],
+      );
+      return rows.length === 0
+        ? undefined
+        : parseOwner(rows[0]?.comment ?? null);
+    };
+    // Every file but the worker's first ends here, without the lock or a `ps`.
+    const seen = await current();
+    if (
+      seen?.ready &&
+      seen.workerPid === process.pid &&
+      (seen.pid === process.ppid || seen.pid === process.pid)
+    ) {
+      return;
+    }
+
+    // The run is the parent when this is a spawned worker, and this very process when Bun runs
+    // the files in-process (`--parallel=1`) or when the parent is gone and the worker was adopted; a
+    // copy owned by the process itself is removed when it ends.
+    const { pids: ancestors, parentCmd } = ancestorsOf(process.pid);
+    const ownerPid = /(^|\/)bun$/.test(parentCmd) ? process.ppid : process.pid;
+    const start = processStart(ownerPid);
+    if (start === null)
+      throw new Error(`the \`bun test\` run (pid ${ownerPid}) is gone`);
+    const me = { pid: process.pid, ancestors: [process.pid, ...ancestors] };
+    let created = false;
+    await withCloneLock(maint, root, async () => {
+      await reapUnderLock(maint, root, template);
+      const starts = new Map<number, string | null>([[ownerPid, start]]);
+      const verdict = cloneVerdict(await current(), me, (pid) => {
+        if (!starts.has(pid)) starts.set(pid, processStart(pid));
+        return starts.get(pid) ?? null;
+      });
+      if (verdict === "use") {
+        const o = (await current()) as CloneOwner;
+        if (o.pid === ownerPid && o.workerPid !== process.pid) {
+          await maint.query(
+            `COMMENT ON DATABASE ${maint.escapeIdentifier(clone)} IS ${maint.escapeLiteral(ownerComment({ ...o, workerPid: process.pid }))}`,
+          );
+        }
+        return;
+      }
+      if (verdict === "refuse") {
+        const o = (await current()) as CloneOwner;
+        throw new Error(
+          `"${clone}" belongs to another \`bun test --parallel\` of this checkout that is still running (pid ${o.pid}). Two parallel runs of one checkout would share every worker's database; wait for it to end.`,
+        );
+      }
+      if (verdict === "recreate") await dropClone(maint, clone);
+      const owner: CloneOwner = {
+        template,
+        pid: ownerPid,
+        start,
+        workerPid: process.pid,
+        ready: false,
+      };
+      await createClone(maint, template, clone, owner);
+      await provisionClone(withDbName(opts.suUrl, clone), opts.appRole);
+      await maint.query(
+        `COMMENT ON DATABASE ${maint.escapeIdentifier(clone)} IS ${maint.escapeLiteral(ownerComment({ ...owner, ready: true }))}`,
+      );
+      created = true;
+    });
+    if (created) spawnReaper({ ppid: ownerPid, maintUrl, root, template });
+  } finally {
+    await maint.end().catch(() => {});
+  }
+}
+
+if (import.meta.main && process.env.TEST_DB_REAP_URL) {
+  await reapClones({
+    maintUrl: process.env.TEST_DB_REAP_URL,
+    root: process.env.TEST_DB_REAP_ROOT as string,
+    template: process.env.TEST_DB_REAP_TEMPLATE as string,
+  });
+}

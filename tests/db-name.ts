@@ -31,9 +31,40 @@ function shortHash(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, HASH_CHARS);
 }
 
-export function testDbNameFor(base: string, checkoutRoot: string): string {
+// A worker of `bun test --parallel` runs on its own copy of the checkout's database
+// (./db-clone.ts), and `worker` (BUN_TEST_WORKER_ID) names it. The worker goes INTO the hash rather
+// than onto the end, because the checkout's name already sits near the 63-byte limit. A copy's tail is
+// `_w<id>_<6 hex>x<6 hex root>_test`: the `x` is no hex digit, so no checkout name has that shape,
+// and a name that has it passes through unchanged, worker or not. That is what keeps a `bun test`
+// started from inside a worker, which inherits the worker id AND the URLs already switched, on the
+// same copy.
+export function testDbNameFor(
+  base: string,
+  checkoutRoot: string,
+  worker?: string,
+): string {
   const root = checkoutRoot.replace(/\/+$/, "");
   const hash = shortHash(root);
+  if (isWorkerCloneOf(base, root)) return base;
+  const checkout = checkoutDbNameFor(base, root, hash);
+  return worker === undefined ? checkout : cloneNameFor(checkout, hash, worker);
+}
+
+export function isWorkerCloneOf(name: string, checkoutRoot: string): boolean {
+  const hash = shortHash(checkoutRoot.replace(/\/+$/, ""));
+  return new RegExp(`_[0-9a-f]{${HASH_CHARS}}x${hash}${SUFFIX}$`).test(name);
+}
+
+function cloneNameFor(checkout: string, hash: string, worker: string): string {
+  const label = `w${identifierSafe(worker).slice(0, 8)}`;
+  const tail = `_${label}_${shortHash(`${checkout}\u0000${worker}`)}x${hash}${SUFFIX}`;
+  const readable = checkout
+    .replace(new RegExp(`_[0-9a-f]{${HASH_CHARS * 2}}${SUFFIX}$`), "")
+    .slice(0, MAX_IDENTIFIER_BYTES - tail.length);
+  return `${readable}${tail}`.replace(/__+/g, "_").replace(/^_+/, "");
+}
+
+function checkoutDbNameFor(base: string, root: string, hash: string): string {
   // NOTE: IDEMPOTENT, because a second suite started from a running suite's derived URL would
   // otherwise derive AGAIN onto a name no database has. The match is on the whole tail
   // (`_<6 hex base><6 hex root>_test`, a shape only this function produces), so a hand-written name

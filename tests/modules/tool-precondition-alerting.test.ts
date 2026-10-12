@@ -16,23 +16,31 @@ import { flowLogCount } from "../utils/flowlog";
 // incident. The CHANNEL's minLevel gate alone suggests otherwise (`info` ranks 0), but the EMITTER
 // decides first (`level === "warn" || level === "error"`), so an info event never reaches the
 // dispatcher. Run against a real database with a channel at minLevel `info`, below what the console
-// offers but creatable through MCP (`z.enum(FLOW_LEVELS)`): the strongest case.
+// offers but creatable through MCP (`z.enum(FLOW_LEVELS)`): the strongest case. The dispatcher runs
+// on the APP role, as in production, so RLS fences the channels it reads to this file's tenant; the
+// superuser only seeds and counts.
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
 let dbUp = false;
 let su: PrismaClient | undefined;
+let app: PrismaClient | undefined;
 if (appUrl && suUrl) {
   try {
     su = new PrismaClient({
       adapter: new PrismaPg({ connectionString: suUrl }),
     });
+    app = new PrismaClient({
+      adapter: new PrismaPg({ connectionString: appUrl }),
+    });
     await su.$queryRaw`SELECT 1`;
+    await app.$queryRaw`SELECT 1`;
     dbUp = true;
   } catch (err) {
     dbUp = dbProbeFailed(err);
   }
 }
 const suDb = su as PrismaClient;
+const appDb = app as PrismaClient;
 
 describe.skipIf(!dbUp)("a precondition refusal does not page anyone", () => {
   let tenantId = 0n;
@@ -62,6 +70,7 @@ describe.skipIf(!dbUp)("a precondition refusal does not page anyone", () => {
       await suDb.tenant.delete({ where: { id: tenantId } }).catch(() => {});
     }
     await su?.$disconnect();
+    await app?.$disconnect();
   });
 
   const flow = (): FlowContext => ({
@@ -70,7 +79,7 @@ describe.skipIf(!dbUp)("a precondition refusal does not page anyone", () => {
     // NOTE: `inbox`, not `playground`: real traffic is the only source that pages at all, so
     // playground would prove nothing about the claim.
     source: "inbox",
-    base: suDb,
+    base: appDb,
   });
 
   // Built by the PRODUCTION constructor, not written out here. A hand-written literal would keep

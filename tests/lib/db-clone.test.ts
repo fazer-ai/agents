@@ -1,0 +1,340 @@
+import { describe, expect, test } from "bun:test";
+import { fileURLToPath } from "node:url";
+import { Client } from "pg";
+import { FLEET_ROLE_EXPR } from "@/lib/tenancy/fleet-role";
+import {
+  CLONE_MARKER_ENV,
+  type CloneOwner,
+  clonesToDrop,
+  cloneVerdict,
+  ownerComment,
+  processStart,
+  reapClones,
+  workerCloneTarget,
+} from "../db-clone";
+import { DB_GATE_OPT_OUT } from "../db-gate";
+import { checkoutRootFrom, testDbNameFor, withDbName } from "../db-name";
+
+// Under `bun test --parallel` every worker runs on its own copy of the checkout's test database
+// (tests/db-clone.ts). These prove the name each worker gets, which leftover copies a run removes,
+// and that a `bun test` started from inside a worker stays on that worker's copy.
+
+const ROOT = checkoutRootFrom(import.meta.url, "../..");
+const LONG = `/dev/${"w".repeat(40)}/agents-master/1384-a-very-long-worktree-name-indeed`;
+
+describe("the worker's database name", () => {
+  const checkout = testDbNameFor("secretaria_v4_test", LONG);
+
+  // The checkout's own name is already close to 63 bytes, so appending the worker would push the
+  // hash past the limit, where Postgres cuts it silently and two workers share one database.
+  test("stays inside 63 bytes and distinct when two long checkouts share a prefix", () => {
+    const names = ["1", "18", "123456789012"].flatMap((w) =>
+      [LONG, `${LONG}-two`].map((root) =>
+        testDbNameFor(testDbNameFor("secretaria_v4_test", root), root, w),
+      ),
+    );
+    for (const n of names) {
+      expect(Buffer.byteLength(n, "utf8")).toBeLessThanOrEqual(63);
+      expect(n).toMatch(/^[a-z0-9_]+_test$/);
+    }
+    expect(new Set(names).size).toBe(names.length);
+  });
+
+  test("is a different database from the checkout's, and per worker", () => {
+    const one = testDbNameFor(checkout, LONG, "1");
+    expect(one).not.toBe(checkout);
+    expect(testDbNameFor(checkout, LONG, "2")).not.toBe(one);
+    // The readable label keeps eight characters of the id; past them only the hash tells two apart.
+    expect(testDbNameFor(checkout, LONG, "123456789012")).not.toBe(
+      testDbNameFor(checkout, LONG, "123456789013"),
+    );
+  });
+
+  // A `bun test` started by a test inside a worker inherits BUN_TEST_WORKER_ID and the URLs the
+  // worker already switched. Deriving again from the clone would name a database nobody created.
+  test("derived from a worker's name, with or without the worker, is that name", () => {
+    const clone = testDbNameFor(checkout, LONG, "3");
+    expect(testDbNameFor(clone, LONG, "3")).toBe(clone);
+    expect(testDbNameFor(clone, LONG)).toBe(clone);
+  });
+
+  // The idempotence above must not adopt ANOTHER checkout's clone: its name is not this one's.
+  test("another checkout's worker name is re-derived, not adopted", () => {
+    const theirs = testDbNameFor(
+      testDbNameFor("secretaria_v4_test", "/elsewhere"),
+      "/elsewhere",
+      "3",
+    );
+    expect(testDbNameFor(theirs, LONG, "3")).not.toBe(theirs);
+  });
+});
+
+describe("whether this process runs on a clone", () => {
+  const checkout = testDbNameFor("secretaria_v4_test", ROOT);
+
+  test("only a worker of a parallel run clones, and never under the opt-out", () => {
+    expect(workerCloneTarget({}, checkout, ROOT)).toBeNull();
+    expect(workerCloneTarget({ BUN_TEST_WORKER_ID: "4" }, checkout, ROOT)).toBe(
+      testDbNameFor(checkout, ROOT, "4"),
+    );
+    expect(
+      workerCloneTarget(
+        { BUN_TEST_WORKER_ID: "4", [DB_GATE_OPT_OUT]: "1" },
+        checkout,
+        ROOT,
+      ),
+    ).toBeNull();
+  });
+
+  // A nested run handed the worker's environment keeps whatever database its caller pointed it at:
+  // tests/lib/test-db-identity.test.ts points one at a deliberately broken scratch database to watch
+  // the gate refuse it, and a copy of that scratch would be neither what it asked for nor ever removed.
+  test("a run nested in a worker that already switched does not clone again", () => {
+    const scratch = testDbNameFor("fzgate417_p1_test", ROOT);
+    expect(
+      workerCloneTarget(
+        { BUN_TEST_WORKER_ID: "4", [CLONE_MARKER_ENV]: "x" },
+        scratch,
+        ROOT,
+      ),
+    ).toBeNull();
+    // And one that arrives already on a clone, without the marker, has nothing left to clone.
+    const clone = testDbNameFor(checkout, ROOT, "4");
+    expect(
+      workerCloneTarget({ BUN_TEST_WORKER_ID: "4" }, clone, ROOT),
+    ).toBeNull();
+  });
+});
+
+const TEMPLATE = testDbNameFor("secretaria_v4_test", "/dev/agents/main");
+const owner = (o: Partial<CloneOwner>): CloneOwner => ({
+  template: TEMPLATE,
+  pid: 100,
+  start: "Sat Oct 11 10:00:00 2026",
+  workerPid: 200,
+  ready: true,
+  ...o,
+});
+const cloneName = (w: string, root = "/dev/agents/main") =>
+  testDbNameFor(testDbNameFor("secretaria_v4_test", root), root, w);
+const alive =
+  (running: Record<number, string>) =>
+  (pid: number): string | null =>
+    running[pid] ?? null;
+
+describe("which leftover clones a run removes", () => {
+  const scope = { root: "/dev/agents/main", template: TEMPLATE };
+
+  test.each([
+    ["the owner run is gone", owner({}), {}, true],
+    [
+      "the owner is running",
+      owner({}),
+      { 100: "Sat Oct 11 10:00:00 2026" },
+      false,
+    ],
+    // A pid the kernel handed to a new process after the owner died: alive by `kill -0`, and not
+    // the run that made the copy.
+    [
+      "the pid was reused",
+      owner({}),
+      { 100: "Sun Oct 12 09:00:00 2026" },
+      true,
+    ],
+    [
+      "the clone is another template's",
+      owner({ template: "other_test" }),
+      {},
+      false,
+    ],
+  ] as const)("%s", (_why, o, running, dropped) => {
+    const rows = [{ name: cloneName("1"), comment: ownerComment(o) }];
+    expect(clonesToDrop(rows, scope, alive(running))).toEqual(
+      dropped ? [cloneName("1")] : [],
+    );
+  });
+
+  // Created and not yet commented: a worker that died between the two statements. Run under the
+  // clone lock, so nobody is half-way through creating it.
+  test("a clone of this checkout with no ownership record is removed", () => {
+    expect(
+      clonesToDrop([{ name: cloneName("2"), comment: null }], scope, alive({})),
+    ).toEqual([cloneName("2")]);
+  });
+
+  // Names are tied to the checkout, so another checkout's leftovers are its own run's business,
+  // even when its record names this template and its owner is gone.
+  test("another checkout's clone, or a database that is no clone, is never touched", () => {
+    const rows = [
+      {
+        name: cloneName("1", "/dev/agents/other"),
+        comment: ownerComment(owner({})),
+      },
+      { name: TEMPLATE, comment: null },
+      {
+        name: testDbNameFor("fzgate417_p1_test", "/dev/agents/main"),
+        comment: null,
+      },
+    ];
+    expect(clonesToDrop(rows, scope, alive({}))).toEqual([]);
+  });
+});
+
+describe("what a worker does with the clone it is about to use", () => {
+  const me = { pid: 200, ancestors: [200, 100] };
+  const running = alive({ 100: "Sat Oct 11 10:00:00 2026" });
+
+  test("absent, it is created", () => {
+    expect(cloneVerdict(undefined, me, running)).toBe("create");
+  });
+
+  test("this run's, ready, is used", () => {
+    expect(cloneVerdict(owner({}), me, running)).toBe("use");
+  });
+
+  // A nested `bun test` whose worker is its parent: the worker's run owns the copy.
+  test("an ancestor run's is used", () => {
+    expect(
+      cloneVerdict(
+        owner({}),
+        { pid: 300, ancestors: [300, 200, 100] },
+        running,
+      ),
+    ).toBe("use");
+  });
+
+  test("half-provisioned, or with no record, it is rebuilt", () => {
+    expect(cloneVerdict(owner({ ready: false }), me, running)).toBe("recreate");
+    expect(cloneVerdict(null, me, running)).toBe("recreate");
+  });
+
+  // Two `bun test --parallel` from one checkout at once would share every worker's copy, which is the
+  // collision this exists to remove; the second refuses and names the first.
+  test("a live run that is not an ancestor makes this one refuse", () => {
+    expect(
+      cloneVerdict(
+        owner({ pid: 999 }),
+        me,
+        alive({ 999: "Sat Oct 11 10:00:00 2026" }),
+      ),
+    ).toBe("refuse");
+  });
+});
+
+// The decisions above, against a real cluster: a database left by a dead run is dropped together with
+// the fleet role named after it, and one whose run is alive stays. The template is a scratch name of
+// this checkout that no database carries, so nothing here can match a real run's copies.
+describe("removing leftovers, on the database", () => {
+  const suUrl = process.env.MIGRATION_DATABASE_URL;
+  const live = process.env[DB_GATE_OPT_OUT] !== "1" && Boolean(suUrl);
+
+  test.skipIf(!live)(
+    "a dead run's clone and its fleet role go, a live run's clone stays",
+    async () => {
+      const template = testDbNameFor(`fzclone1384_p${process.pid}_test`, ROOT);
+      const dead = testDbNameFor(template, ROOT, "1");
+      const kept = testDbNameFor(template, ROOT, "2");
+      const finished = Bun.spawn(["true"]);
+      await finished.exited;
+      const maintUrl = withDbName(suUrl as string, "postgres");
+      const maint = new Client({ connectionString: maintUrl });
+      await maint.connect();
+      const fleetOf = async (db: string) =>
+        (
+          await maint.query<{ role: string }>(
+            `SELECT ${FLEET_ROLE_EXPR.replaceAll("current_database()::text", "$1::text")} AS role`,
+            [db],
+          )
+        ).rows[0]?.role as string;
+      const deadRole = await fleetOf(dead);
+      try {
+        for (const [db, o] of [
+          [dead, owner({ template, pid: finished.pid, start: "gone" })],
+          [
+            kept,
+            owner({
+              template,
+              pid: process.pid,
+              start: processStart(process.pid) as string,
+            }),
+          ],
+        ] as const) {
+          await maint.query(`CREATE DATABASE "${db}"`);
+          await maint.query(
+            `COMMENT ON DATABASE "${db}" IS ${maint.escapeLiteral(ownerComment(o))}`,
+          );
+        }
+        await maint.query(`CREATE ROLE "${deadRole}" NOLOGIN`);
+
+        const dropped = await reapClones({ maintUrl, root: ROOT, template });
+
+        expect(dropped).toEqual([dead]);
+        const { rows } = await maint.query<{ datname: string }>(
+          "SELECT datname FROM pg_database WHERE datname = ANY($1)",
+          [[dead, kept]],
+        );
+        expect(rows.map((r) => r.datname)).toEqual([kept]);
+        const role = await maint.query(
+          "SELECT 1 FROM pg_roles WHERE rolname = $1",
+          [deadRole],
+        );
+        expect(role.rowCount).toBe(0);
+      } finally {
+        for (const db of [dead, kept]) {
+          await maint.query(`DROP DATABASE IF EXISTS "${db}"`).catch(() => {});
+        }
+        await maint.query(`DROP ROLE IF EXISTS "${deadRole}"`).catch(() => {});
+        await maint.end();
+      }
+    },
+    60_000,
+  );
+});
+
+// What only a real run shows: the preload of a `bun test` started from a test inside a worker, given
+// the worker's environment, lands on the worker's own copy for every connection URL. Only exists under
+// `--parallel`; a serial run has no copy for it to land on.
+describe("a run nested inside a worker", () => {
+  const inWorker =
+    Boolean(process.env.BUN_TEST_WORKER_ID) &&
+    process.env[DB_GATE_OPT_OUT] !== "1";
+  const fixture = fileURLToPath(
+    new URL("../utils/db-clone-nested.ts", import.meta.url),
+  );
+
+  test.skipIf(!inWorker)(
+    "stays on the worker's clone",
+    async () => {
+      const dbOf = (v: string) =>
+        new URL(process.env[v] as string).pathname.slice(1);
+      const clone = dbOf("MIGRATION_DATABASE_URL");
+      // This worker is on its own copy, not on the checkout's database.
+      expect(process.env[CLONE_MARKER_ENV]).toBe(clone);
+      expect(clone).toBe(
+        testDbNameFor(clone, ROOT, process.env.BUN_TEST_WORKER_ID),
+      );
+      // Without the marker: the inherited URL alone has to keep it on the copy.
+      const { [CLONE_MARKER_ENV]: _marker, ...env } = process.env;
+      const proc = Bun.spawn(["bun", "test", fixture], {
+        cwd: ROOT,
+        env,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const [code, out, err] = await Promise.all([
+        proc.exited,
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+      ]);
+      expect(code, err).toBe(0);
+      const line = `${out}\n${err}`.match(/NESTED_DBS (.*)/)?.[1];
+      expect(JSON.parse(line as string)).toEqual({
+        MIGRATION_DATABASE_URL: clone,
+        TEST_MIGRATION_DATABASE_URL: clone,
+        TEST_APP_DATABASE_URL: clone,
+        LANGGRAPH_DATABASE_URL: clone,
+      });
+    },
+    120_000,
+  );
+});

@@ -5,7 +5,7 @@ import {
 } from "@langchain/core/tools";
 import { buildCodeTool } from "@/graph/tools/code";
 import { buildHttpTool } from "@/graph/tools/http";
-import { adoptServerTool } from "@/graph/tools/mcp";
+import { AMBIGUOUS_MCP_NAME, adoptServerTool } from "@/graph/tools/mcp";
 import { argSchemaOf, sampleArgsUnfit } from "@/modules/decisions/arguments";
 import { ruleStateKey } from "@/modules/decisions/config";
 import { applyDecisions } from "@/modules/decisions/run";
@@ -391,3 +391,46 @@ for (const [kind, expected] of [
     ).toBeNull();
   });
 }
+
+// Not an argument failure, the same promise: a name two MCP servers may answer to is not called, and
+// spends neither the budget nor the latch.
+test("a rule on an ambiguous MCP name is not called, spends no call and holds no latch", async () => {
+  const { tool, sent } = build("mcp");
+  (tool as { [AMBIGUOUS_MCP_NAME]?: true })[AMBIGUOUS_MCP_NAME] = true;
+  const after: string[] = [];
+  const next = new DynamicStructuredTool({
+    name: "avisar_slack",
+    description: "x",
+    schema: { type: "object" as const, properties: {} },
+    func: async () => {
+      after.push("ran");
+      return "ok";
+    },
+  });
+  const rule = {
+    when,
+    action: { tool: tool.name, args: { motivo: "x", telefone: "1" } },
+  };
+  const r = await applyDecisions(
+    { rules: [rule, { when, action: { tool: "avisar_slack", args: {} } }] },
+    answers,
+    [tool, next],
+    [],
+    new AbortController().signal,
+    async () => true,
+    1,
+    undefined,
+    false,
+    new Set(),
+    {},
+    async () => true,
+    { context: ctx, questions: [], logValues: true },
+  );
+  expect(sent).toEqual([]);
+  expect(r.actions[0]).toMatchObject({
+    outcome: "failed",
+    failure: "ambiguous_tool",
+  });
+  expect(r.triggerState.latch).not.toContain(ruleStateKey(rule));
+  expect(after).toEqual(["ran"]);
+});

@@ -942,11 +942,7 @@ export function buildHttpTool(
     // NOTE: 5. Fetch, no redirects, with one bound over the WHOLE exchange: `fetchBounded` reads
     // the body under the same timer (a provider can stall mid-body) and caps what it retains.
     // The budget is checked HERE, not at handler entry, to catch it running out during the waits
-    // above (DB read, ack). Refused rather than thrown so the model is told the tool did not run.
-    if (deps.expiresOn?.aborted) {
-      sentNothing(false);
-      return "Could not call the tool (the run's time budget ran out before the request was sent).";
-    }
+    // above (DB read, ack, the withdrawal check). Refused rather than thrown so the model is told the tool did not run.
     // Asked HERE, past every wait this handler makes (the ack, the credential, the SSRF lookup)
     // and immediately before the send. See `stillWanted` on the deps.
     if (deps.stillWanted && !(await deps.stillWanted().catch(() => true))) {
@@ -954,6 +950,11 @@ export function buildHttpTool(
       // ABOVE and is a message the customer already got.
       sentNothing(true);
       return "Could not call the tool (the run was called off before the request was sent).";
+    }
+    // After the withdrawal check, which awaits: a budget that ran out during it sends nothing.
+    if (deps.expiresOn?.aborted) {
+      sentNothing(false);
+      return "Could not call the tool (the run's time budget ran out before the request was sent).";
     }
     sent.request = true;
     const { res, body: responseBody } = await fetchBounded(

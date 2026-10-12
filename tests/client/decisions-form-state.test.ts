@@ -13,7 +13,6 @@ import {
   decisionsUntouched,
   decisionTextCap,
   issuesUnder,
-  mcpRuntimeBase,
   ruleIsBroken,
   ruleTriggerShown,
   withActionScope,
@@ -26,6 +25,7 @@ import {
   observationToStored,
 } from "@/client/pages/agents/observationFormState";
 import { namespacedToolName } from "@/graph/tools/mcp";
+import { mcpRuntimeBase } from "@/graph/tools/mcp-names";
 import {
   CHOICE_OPTIONS_MAX,
   decisionsBlockFingerprint,

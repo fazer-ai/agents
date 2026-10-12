@@ -410,7 +410,9 @@ const BARE_SLICES: Record<
   "src/graph/graph.ts": [1, "array"],
   // The idempotency key's tail is a hex digest.
   "src/graph/tools/documents.ts": [1, "ascii"],
-  "src/graph/tools/mcp.ts": [5, "ascii"],
+  // A server slug and MCP tool names, sanitized to ASCII before they are cut.
+  "src/graph/tools/mcp-names.ts": [3, "ascii"],
+  "src/graph/tools/mcp.ts": [3, "ascii"],
   // Six: the fifth is the ceiling on what the model is SHOWN of a scope's labels, applied to the
   // write report, and the sixth is the same ceiling over the GUARDED list. Both cut arrays of label
   // titles, so neither cut can land inside one.

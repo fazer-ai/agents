@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import {
+  AMBIGUOUS_MCP_NAME,
   buildConnConfig,
   buildMcpContextSection,
   filterAllowed,
@@ -363,6 +364,34 @@ describe("loadMcpToolsForAgent", () => {
       "mcp__alpha__search",
       "mcp__beta__search",
     ]);
+  });
+
+  // A decisions rule names a tool by name alone: a name whose owner depends on the reading order is
+  // marked, and a rule on it does not run (agents#1223).
+  test("a name two servers may answer to is marked ambiguous; a name only one has is not", async () => {
+    const tools = await loadMcpToolsForAgent(
+      7n,
+      [
+        sel({ connId: 1n, name: "CRM", enabledTools: ["create"] }),
+        sel({ connId: 2n, name: "crm", enabledTools: ["create"] }),
+        sel({ connId: 3n, name: "sheets", enabledTools: ["append"] }),
+      ],
+      {
+        connect: async (s) =>
+          s.name === "sheets" ? [fakeTool("append")] : [fakeTool("create")],
+      },
+    );
+    const marked = Object.fromEntries(
+      tools.map((t) => [
+        t.name,
+        (t as { [AMBIGUOUS_MCP_NAME]?: true })[AMBIGUOUS_MCP_NAME] === true,
+      ]),
+    );
+    expect(marked).toEqual({
+      mcp__crm__create: true,
+      mcp__crm__create_2: true,
+      mcp__sheets__append: false,
+    });
   });
 
   test("stamps mcpServer metadata (label + instructions) for the prompt section", async () => {

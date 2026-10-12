@@ -14,7 +14,7 @@ import {
   type FenceReport,
   withFenceReporter,
 } from "@/graph/tools/fence-report";
-import { isMcpArgumentRefusal } from "@/graph/tools/mcp";
+import { AMBIGUOUS_MCP_NAME, isMcpArgumentRefusal } from "@/graph/tools/mcp";
 import { sentNothing } from "@/modules/chatwoot/client";
 import { prepareArgs } from "./arguments";
 import {
@@ -60,10 +60,10 @@ export interface ActionReport {
   // `decided`: decided and not run, only under `dryRun`. `ran`: the tool was invoked and returned.
   // `not_granted`: the agent does not have the tool (the operator grants it, as for the LLM path).
   // `failed`: the tool threw or was not called; `failure` says which way, never the tool's text:
-  // `invalid_arguments`, `tool_error` or `missing_value`. `over_budget`: the rules before it spent
-  // `limits.maxToolCalls`. `refused`: a fence inside the tool refused the whole call
-  // (`fence` names it: a protected label, a label outside the allowed list, the tool's
-  // precondition), so nothing was written. A call refused only in part ran, with `fence` and `partial`.
+  // `invalid_arguments`, `tool_error`, `missing_value` or `ambiguous_tool` (an MCP name two servers
+  // may answer to). `over_budget`: the rules before it spent `limits.maxToolCalls`. `refused`: a
+  // fence inside the tool refused the whole call (`fence` names it), so nothing was written; a call
+  // refused only in part ran, with `fence` and `partial`.
   // `no_effect`: the tool could not write (the contact or card it targets is not there).
   outcome:
     | "decided"
@@ -192,6 +192,7 @@ export async function applyDecisions(
     a.outcome === "failed"
       ? a.failure === "invalid_arguments" ||
         a.failure === "missing_value" ||
+        a.failure === "ambiguous_tool" ||
         (quiet.has(at) && !committed.has(at))
       : a.outcome !== "ran";
   // Latched ahead for an action that was then not dispatched.
@@ -235,6 +236,17 @@ export async function applyDecisions(
     const tool = tools.find((t) => t.name === f.tool);
     if (!tool) {
       slots[at] = { rule: f.rule, tool: f.tool, outcome: "not_granted" };
+      continue;
+    }
+    // An MCP name two servers may answer to, by the order the assembly reads them in: called, it
+    // may reach the other server's tool, so it is not called (ambiguousMcpNames).
+    if ((tool as { [AMBIGUOUS_MCP_NAME]?: true })[AMBIGUOUS_MCP_NAME]) {
+      slots[at] = {
+        rule: f.rule,
+        tool: f.tool,
+        outcome: "failed",
+        failure: "ambiguous_tool",
+      };
       continue;
     }
     // THE ARGUMENTS FIRST (./arguments.ts): resolved, fitted and checked against the tool's

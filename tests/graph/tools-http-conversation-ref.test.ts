@@ -169,6 +169,38 @@ describe("an HTTP tool that renders {{conversation_ref}}", () => {
     expect(reports).toEqual([{ noEffect: true }]);
   });
 
+  test("a budget that runs out during the withdrawal check sends nothing and says so", async () => {
+    const deadline = new AbortController();
+    const sent: string[] = [];
+    const tool = buildHttpTool(
+      def({
+        conversationRefIntegrationId: null,
+        body: { mode: "kv", rows: [] },
+      }),
+      {
+        resolveCredential: async () => null,
+        fetchImpl: (async (url: string) => {
+          sent.push(String(url));
+          return new Response("{}");
+        }) as unknown as typeof fetch,
+        context: {},
+        expiresOn: deadline.signal,
+        stillWanted: async () => {
+          deadline.abort();
+          return true;
+        },
+      },
+    );
+    const reports: CallReport[] = [];
+    const out = (await tool.invoke(
+      {},
+      withFenceReporter({}, (r) => reports.push(r)),
+    )) as unknown as string;
+    expect(out).toContain("time budget ran out");
+    expect(sent).toHaveLength(0);
+    expect(reports).toEqual([{ noEffect: true }]);
+  });
+
   test("an instance that is gone or not GENERIC refuses and sends nothing", async () => {
     for (const reason of [
       "instance_missing",

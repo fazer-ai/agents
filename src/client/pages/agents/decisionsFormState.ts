@@ -447,6 +447,16 @@ interface CustomGrantRow {
 
 // `mcp__<server>__<tool>`, as the assembly names an MCP tool (graph/tools/mcp.ts
 // `namespacedToolName`). A name past 64 characters, which the assembly trims, is not offered.
+// The name the assembly gives a server tool before any suffix: the slug trimmed to make room when the
+// whole name passes 64 characters (namespacedToolName in graph/tools/mcp.ts).
+export function mcpRuntimeBase(slug: string, tool: string): string {
+  const name = `mcp__${slug}__${tool}`;
+  if (name.length <= 64) return name;
+  const room = 64 - ("mcp".length + 4 + tool.length);
+  const trimmed = room > 0 ? slug.slice(0, room) : "";
+  return `mcp__${trimmed}__${tool}`.slice(0, 64);
+}
+
 export function mcpToolName(slug: string, tool: string): string | null {
   const name = `mcp__${slug}__${tool}`;
   return name.length <= 64 ? name : null;
@@ -495,14 +505,33 @@ export function customToolsOf(
   }
   // Two servers whose names reduce to one slug share the namespace, and the assembly tells their
   // tools apart with a suffix that depends on its discovery order (which can also land on a tool
-  // already named `_2`). No tool of such a server is offered, so a rule never names another's.
+  // already named `_2`). The same happens across slugs when a long tool name trims the slug down to
+  // a shared prefix. No such tool is offered, nor any name a suffix could land on, so a rule never
+  // names another server's tool.
   const bySlug = new Map<string, number>();
   for (const { m } of mcp) bySlug.set(m.slug, (bySlug.get(m.slug) ?? 0) + 1);
+  const byBase = new Map<string, number>();
+  for (const { m, tools } of mcp) {
+    for (const tool of tools) {
+      const base = mcpRuntimeBase(m.slug, tool);
+      byBase.set(base, (byBase.get(base) ?? 0) + 1);
+    }
+  }
+  const total = mcp.reduce((n, { tools }) => n + tools.length, 0);
+  const suffixed = new Set<string>();
+  for (const [base, count] of byBase) {
+    if (count < 2) continue;
+    for (let i = 2; i <= total + 1; i++) {
+      const suffix = `_${i}`;
+      suffixed.add(base.slice(0, 64 - suffix.length) + suffix);
+    }
+  }
   for (const { m, tools } of mcp) {
     if ((bySlug.get(m.slug) ?? 0) > 1) continue;
     for (const tool of tools) {
       const name = mcpToolName(m.slug, tool);
       if (name === null || all.has(name)) continue;
+      if ((byBase.get(name) ?? 0) > 1 || suffixed.has(name)) continue;
       all.set(name, {
         name,
         label: `${m.name}: ${tool}`,

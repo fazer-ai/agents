@@ -125,6 +125,23 @@ function conditionalShape(thenBranch: unknown, elseBranch: unknown): Schema {
   return out;
 }
 
+// A property two union branches declare apart takes either declaration: the last branch's alone
+// would refuse the calls only the first one accepts (`value` text when `kind` is "text", a number
+// when it is "number").
+function eitherOf(prev: unknown, next: unknown): unknown {
+  if (prev === undefined || JSON.stringify(prev) === JSON.stringify(next))
+    return next;
+  const variants =
+    isSchema(prev) &&
+    Array.isArray(prev.anyOf) &&
+    Object.keys(prev).length === 1
+      ? prev.anyOf
+      : [prev];
+  return variants.some((v) => JSON.stringify(v) === JSON.stringify(next))
+    ? prev
+    : { anyOf: [...variants, next] };
+}
+
 function isObjectSchema(s: unknown): s is Schema {
   return isSchema(s) && (s.type === "object" || isSchema(s.properties));
 }
@@ -166,8 +183,10 @@ function simplify(node: unknown): unknown {
     let common: unknown[] | undefined;
     for (const branch of union) {
       const simplified = simplify(branch) as Schema;
-      if (isSchema(simplified.properties))
-        Object.assign(properties, simplified.properties);
+      if (isSchema(simplified.properties)) {
+        for (const [name, prop] of Object.entries(simplified.properties))
+          properties[name] = eitherOf(properties[name], prop);
+      }
       const required = Array.isArray(simplified.required)
         ? simplified.required
         : [];

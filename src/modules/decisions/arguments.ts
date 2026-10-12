@@ -64,34 +64,31 @@ function fieldOf(schema: ArgSchema, arg: string): unknown {
   if (schema.zod !== undefined) {
     return (schema.zod as { shape?: Record<string, unknown> }).shape?.[arg];
   }
-  return jsonProperty(schema.json, schema.json, arg);
+  return jsonProperty(schema.json, arg);
 }
 
 // A property as the server declares it, also when the arguments object itself is a `$ref` or a
-// composition (`allOf`, `anyOf`, `oneOf`) of objects.
-function jsonProperty(
-  root: unknown,
-  node: unknown,
-  arg: string,
-  depth = 0,
-): unknown {
-  if (depth > 16) return undefined;
-  const n = (deref(root, node) ?? {}) as {
-    properties?: Record<string, unknown>;
-    allOf?: unknown;
-    anyOf?: unknown;
-    oneOf?: unknown;
-  };
-  const own = n.properties?.[arg];
-  if (own !== undefined) return own;
-  for (const members of [n.allOf, n.anyOf, n.oneOf]) {
-    if (!Array.isArray(members)) continue;
-    for (const m of members) {
-      const found = jsonProperty(root, m, arg, depth + 1);
-      if (found !== undefined) return found;
+// composition (`allOf`, `anyOf`, `oneOf`) of objects. Branches that each declare it give it the
+// union of their declarations.
+function jsonProperty(root: unknown, arg: string): unknown {
+  const found: unknown[] = [];
+  const walk = (node: unknown, depth: number) => {
+    if (depth > 16) return;
+    const n = (deref(root, node) ?? {}) as {
+      properties?: Record<string, unknown>;
+      allOf?: unknown;
+      anyOf?: unknown;
+      oneOf?: unknown;
+    };
+    const own = n.properties?.[arg];
+    if (own !== undefined) found.push(own);
+    for (const members of [n.allOf, n.anyOf, n.oneOf]) {
+      if (Array.isArray(members)) for (const m of members) walk(m, depth + 1);
     }
-  }
-  return undefined;
+  };
+  walk(root, 0);
+  if (found.length === 0) return undefined;
+  return found.length === 1 ? found[0] : { anyOf: found };
 }
 
 // A zod field under its wrappers (optional, nullable, default): an argument the rule may leave out
@@ -196,6 +193,42 @@ async function fitValue(
   return !takesValue && types.includes("string") ? String(value) : value;
 }
 
+// An HTTP tool with an acknowledgement asks the model for the holding message it sends the customer.
+// A watcher's client is muted and sends none, so a rule is not asked to write one.
+function withWaitMessage(
+  schema: ArgSchema,
+  args: Record<string, unknown>,
+): Record<string, unknown> {
+  if (
+    fieldOf(schema, WAIT_MESSAGE_ARG) !== undefined &&
+    !(WAIT_MESSAGE_ARG in args)
+  ) {
+    args[WAIT_MESSAGE_ARG] = "-";
+  }
+  return args;
+}
+
+// The call with the filled values fitted field by field, then as they came, then each as its text: a
+// schema whose branches type one argument apart (text when `kind` is one value, a number when
+// another) is fitted by the whole call, not by the first branch that names it.
+async function fitCall(
+  schema: ArgSchema,
+  fixed: Record<string, unknown>,
+  values: Record<string, unknown>,
+): Promise<{ ok: boolean; args: Record<string, unknown> }> {
+  const fitted: Record<string, unknown> = {};
+  const text: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(values)) {
+    fitted[k] = await fitValue(schema, k, v);
+    text[k] = typeof v === "string" ? v : String(v);
+  }
+  for (const each of [fitted, values, text]) {
+    const args = withWaitMessage(schema, { ...fixed, ...each });
+    if (await argsFit(schema, args)) return { ok: true, args };
+  }
+  return { ok: false, args: withWaitMessage(schema, { ...fixed, ...fitted }) };
+}
+
 export type PreparedArgs =
   | { ok: true; args: Record<string, unknown> }
   | {
@@ -226,19 +259,9 @@ export async function prepareArgs(
       : fill
         ? resolveFill(filled, fill.context, fill.answers, fill.questions)
         : { values: {}, missing: Object.keys(filled) };
-  const args = { ...action.args };
-  for (const [k, v] of Object.entries(resolved.values)) {
-    args[k] = await fitValue(schema, k, v);
-  }
-  // An HTTP tool with an acknowledgement asks the model for the holding message it sends the
-  // customer. A watcher's client is muted and sends none, so a rule is not asked to write one.
-  if (
-    fieldOf(schema, WAIT_MESSAGE_ARG) !== undefined &&
-    !(WAIT_MESSAGE_ARG in args)
-  ) {
-    args[WAIT_MESSAGE_ARG] = "-";
-  }
-  if (await argsFit(schema, args)) return { ok: true, args };
+  const found = await fitCall(schema, action.args, resolved.values);
+  if (found.ok) return { ok: true, args: found.args };
+  const args = found.args;
   return resolved.missing.length > 0
     ? { ok: false, failure: "missing_value", args, missing: resolved.missing }
     : { ok: false, failure: "invalid_arguments", args };
@@ -256,7 +279,7 @@ export async function sampleArgsUnfit(
   schema: ArgSchema,
   action: { args: Record<string, unknown>; fill?: Record<string, string> },
 ): Promise<string | null> {
-  const args = { ...action.args };
+  const samples: Record<string, unknown> = {};
   for (const [k, raw] of Object.entries(action.fill ?? {})) {
     const source = parseFieldSource(raw);
     if (!source) continue;
@@ -264,15 +287,10 @@ export async function sampleArgsUnfit(
     // A text field into a list of allowed values may hold any of them: one of them stands in.
     const allowed =
       type === "string" ? enumOf(schema.json, fieldOf(schema, k)) : null;
-    args[k] = allowed?.[0] ?? (await fitValue(schema, k, SAMPLE[type]));
+    samples[k] = allowed?.[0] ?? SAMPLE[type];
   }
-  if (
-    fieldOf(schema, WAIT_MESSAGE_ARG) !== undefined &&
-    !(WAIT_MESSAGE_ARG in args)
-  ) {
-    args[WAIT_MESSAGE_ARG] = "-";
-  }
-  if (await argsFit(schema, args)) return null;
+  const { ok, args } = await fitCall(schema, action.args, samples);
+  if (ok) return null;
   // Which argument, asked field by field where the schema has fields to ask.
   for (const [k, v] of Object.entries(args)) {
     const field = fieldOf(schema, k);

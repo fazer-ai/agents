@@ -270,3 +270,66 @@ test("an MCP argument under a root $ref and allOf is fitted as text", async () =
     ),
   ).toBeNull();
 });
+
+// Branches that type one argument apart: the whole call picks the branch, not the first one named.
+for (const [kind, expected] of [
+  ["number", 42],
+  ["text", "42"],
+] as const) {
+  test(`an MCP argument typed by branch is sent as the ${kind} branch takes it`, async () => {
+    const sent: Record<string, unknown>[] = [];
+    const tool = new DynamicStructuredTool({
+      name: "mcp__crm__valor",
+      description: "x",
+      schema: {
+        type: "object",
+        oneOf: [
+          {
+            properties: { kind: { const: "text" }, value: { type: "string" } },
+            required: ["kind", "value"],
+          },
+          {
+            properties: {
+              kind: { const: "number" },
+              value: { type: "number" },
+            },
+            required: ["kind", "value"],
+          },
+        ],
+      } as never,
+      func: async (input) => {
+        sent.push(input as Record<string, unknown>);
+        return "ok";
+      },
+    });
+    adoptServerTool(tool);
+    const action = {
+      tool: tool.name,
+      args: { kind },
+      fill: { value: "conversation.display_id" },
+    };
+    const r = await applyDecisions(
+      { rules: [{ when, action }] },
+      answers,
+      [tool as unknown as StructuredToolInterface],
+      [],
+      new AbortController().signal,
+      async () => true,
+      1,
+      undefined,
+      false,
+      new Set(),
+      {},
+      async () => true,
+      { context: ctx, questions: [], logValues: true },
+    );
+    expect(r.actions[0]?.outcome).toBe("ran");
+    expect(sent[0]?.value).toBe(expected);
+    expect(
+      await sampleArgsUnfit(
+        argSchemaOf(tool as unknown as StructuredToolInterface),
+        action,
+      ),
+    ).toBeNull();
+  });
+}

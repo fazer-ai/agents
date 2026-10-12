@@ -13,6 +13,7 @@ import {
   decisionsUntouched,
   decisionTextCap,
   issuesUnder,
+  mcpRuntimeBase,
   ruleIsBroken,
   ruleTriggerShown,
   withActionScope,
@@ -24,6 +25,7 @@ import {
   observationToForm,
   observationToStored,
 } from "@/client/pages/agents/observationFormState";
+import { namespacedToolName } from "@/graph/tools/mcp";
 import {
   CHOICE_OPTIONS_MAX,
   decisionsBlockFingerprint,
@@ -985,5 +987,43 @@ describe("the custom tools a rule is offered", () => {
     );
     expect([...all.keys()]).toEqual(["mcp__sheets__append"]);
     expect([...granted]).toEqual(["mcp__sheets__append"]);
+  });
+
+  // A long tool name trims the slug to make room, so `crm_extended` and `crm` meet on one name.
+  test("no tool whose name a trimmed slug reaches is offered, nor the suffix it may take", () => {
+    const long = "t".repeat(54);
+    const { all } = customToolsOf(
+      {
+        toolDefinitions: [],
+        codeTools: [],
+        mcpConnections: [
+          { id: "1", name: "CRM extended", slug: "crm_extended" },
+          { id: "2", name: "crm", slug: "crm" },
+          { id: "3", name: "Sheets", slug: "sheets" },
+        ],
+      },
+      [
+        { source: "MCP", mcpServerConnectionId: "1", enabledTools: [long] },
+        {
+          source: "MCP",
+          mcpServerConnectionId: "2",
+          enabledTools: [long, `${"t".repeat(52)}_2`, "abrir"],
+        },
+        { source: "MCP", mcpServerConnectionId: "3", enabledTools: ["append"] },
+      ],
+    );
+    expect([...all.keys()]).toEqual(["mcp__crm__abrir", "mcp__sheets__append"]);
+  });
+
+  test("the console's name before a suffix is the assembly's", () => {
+    for (const [slug, tool] of [
+      ["crm", "abrir"],
+      ["crm_extended", "t".repeat(54)],
+      ["a".repeat(28), "b".repeat(70)],
+    ] as const) {
+      expect(mcpRuntimeBase(slug, tool)).toBe(
+        namespacedToolName(slug, tool, new Set()),
+      );
+    }
   });
 });

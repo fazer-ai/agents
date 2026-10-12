@@ -1769,7 +1769,7 @@
     "decisionsRuleRefusedPrecondition": "recusada pela condição da ferramenta {{n}}",
     "decisionsRuleRefusedProtected": "recusada por uma etiqueta protegida {{n}}",
     "decisionsRules": "Regras",
-    "decisionsRulesHint": "Uma regra dispara quando todas as suas condições valem, e executa uma ferramenta, com argumentos fixos ou preenchidos pela conversa, pelo contato e pelas respostas. O agente precisa ter essa ferramenta liberada na aba Ferramentas, ou a regra não executa. Até {{max}}.",
+    "decisionsRulesHint": "Uma regra dispara quando todas as condições valem e executa uma ferramenta, com argumentos fixos ou preenchidos pela conversa. A ferramenta precisa estar liberada na aba Ferramentas, ou a regra não executa. Até {{max}}.",
     "decisionsRuleSummary": "Quando {{conditions}}, então {{action}}",
     "decisionsScope": "Gravado em",
     "decisionsScopeContact": "O contato",

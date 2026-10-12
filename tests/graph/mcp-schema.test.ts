@@ -320,6 +320,22 @@ describe("declarationSchema", () => {
         { v: "plain" },
       ),
     ).toBe("ok");
+    // Branches that type one property apart: either type is taken (agents#1223).
+    const byKind = {
+      type: "object",
+      oneOf: [
+        {
+          properties: { kind: { const: "text" }, value: { type: "string" } },
+          required: ["kind", "value"],
+        },
+        {
+          properties: { kind: { const: "number" }, value: { type: "number" } },
+          required: ["kind", "value"],
+        },
+      ],
+    };
+    expect(await accepts(byKind, { kind: "text", value: "42" })).toBe("ok");
+    expect(await accepts(byKind, { kind: "number", value: 42 })).toBe("ok");
   });
 
   test("instance data is copied as is, while a property named like a keyword is still a schema", () => {

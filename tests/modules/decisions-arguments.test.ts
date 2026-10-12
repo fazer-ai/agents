@@ -663,3 +663,20 @@ test("only an acknowledging HTTP tool gets the holding message filled", async ()
   expect(sent).toEqual([{ motivo: "x" }]);
   expect(code[0]).toEqual({});
 });
+
+// An argument the HTTP or code tool no longer declares (renamed after the rule was saved) would be
+// stripped in silence by its schema: the call is refused instead, as the save refuses it.
+for (const kind of ["http", "code"] as const) {
+  test(`an argument the ${kind} tool does not declare is not sent, spends no call and holds no latch`, async () => {
+    const { r, sent, after, key } = await decide(kind, {
+      args: { motivo: "x", telefone: "1", sumiu: "y" },
+    });
+    expect(sent).toEqual([]);
+    expect(r.actions[0]).toMatchObject({
+      outcome: "failed",
+      failure: "invalid_arguments",
+    });
+    expect(r.triggerState.latch).not.toContain(key);
+    expect(after).toEqual(["ran"]);
+  });
+}

@@ -12,7 +12,7 @@ import {
 } from "@langchain/core/utils/types";
 import { ASKS_WAIT_MESSAGE, WAIT_MESSAGE_ARG } from "@/graph/tools/http";
 import { SERVER_INPUT_VALIDATOR } from "@/graph/tools/mcp";
-import type { DecisionQuestion } from "./config";
+import { type DecisionQuestion, isNativeDecisionTool } from "./config";
 import type { DecisionAnswer } from "./providers";
 import {
   type FieldSourceType,
@@ -30,6 +30,8 @@ export interface ArgSchema {
   validate?: (args: Record<string, unknown>) => Promise<boolean>;
   // An HTTP tool with an acknowledgement: its holding message is filled for a rule (withWaitMessage).
   waitMessage?: boolean;
+  // A custom tool's zod schema: an argument it does not declare does not fit, as at the save.
+  closed?: boolean;
 }
 
 export function argSchemaOf(tool: StructuredToolInterface): ArgSchema {
@@ -44,12 +46,25 @@ export function argSchemaOf(tool: StructuredToolInterface): ArgSchema {
   const waitMessage =
     (tool as { [ASKS_WAIT_MESSAGE]?: true })[ASKS_WAIT_MESSAGE] === true;
   return isInteropZodSchema(tool.schema)
-    ? { zod: tool.schema, waitMessage }
+    ? {
+        zod: tool.schema,
+        waitMessage,
+        closed: !isNativeDecisionTool(tool.name) && strips(tool.schema),
+      }
     : { json: tool.schema, waitMessage };
 }
 
 // A schema that cannot be checked (one the validator cannot compile, such as an external `$ref`)
 // fits nothing: the call is not sent, and the other rules of the tick still run.
+// A zod object that drops the keys it does not declare (the default), rather than keeping them
+// (`passthrough`) or refusing them (`strict`, refused by the parse itself).
+function strips(schema: unknown): boolean {
+  const def = (
+    schema as { _zod?: { def?: { type?: unknown; catchall?: unknown } } }
+  )?._zod?.def;
+  return def?.type === "object" && def.catchall === undefined;
+}
+
 export async function argsFit(
   schema: ArgSchema,
   args: Record<string, unknown>,
@@ -67,6 +82,16 @@ async function checkArgs(
 ): Promise<boolean> {
   if (schema.validate) return schema.validate(args);
   if (schema.zod !== undefined && isInteropZodSchema(schema.zod)) {
+    // An HTTP or code tool's schema strips a key it does not have, so an argument the tool lost
+    // after the rule was saved would be dropped from the call in silence: refused instead.
+    const shape = (schema.zod as { shape?: Record<string, unknown> }).shape;
+    if (
+      schema.closed &&
+      shape &&
+      Object.keys(args).some((k) => !Object.hasOwn(shape, k))
+    ) {
+      return false;
+    }
     return (await interopSafeParseAsync(schema.zod, args)).success;
   }
   // A JSON Schema with no validator: its `required` list is what can be asked here.

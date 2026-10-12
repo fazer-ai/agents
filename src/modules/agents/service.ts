@@ -573,7 +573,7 @@ export async function assertDecisionActionArgs(
     // The tick's own check (decisions/arguments.ts), against the schema the tool is built from, with
     // a sample of each field's type: what it would refuse at every observation is refused here.
     const unfit = await sampleArgsUnfit(
-      { zod: parseToolInputSchema(schemas.get(tool)) },
+      { zod: parseToolInputSchema(schemas.get(tool)), closed: true },
       {
         args: parts.args,
         fill: Object.fromEntries(

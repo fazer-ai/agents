@@ -314,9 +314,12 @@ function sourceValue(
         return a.type === "choice" ? a.choice : undefined;
       }
       if (a.type !== "score") return undefined;
-      if (source.field === "level_index") return a.score;
+      // The score is a probability-weighted mean of the level indices: the level is the nearest
+      // one, as a rule's condition reads it (rules.ts).
+      const level = Math.round(a.score);
+      if (source.field === "level_index") return level;
       const q = questions.find((x) => x.name === source.question);
-      return q?.type === "score" ? q.levels[a.score]?.value : undefined;
+      return q?.type === "score" ? q.levels[level]?.value : undefined;
     }
   }
 }

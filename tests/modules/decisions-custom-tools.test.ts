@@ -320,9 +320,10 @@ function customTool(
 describe("the tick fills a custom tool's arguments and records them", () => {
   const answers = {
     quer_cancelar: { type: "yes_no" as const, probability: 0.9 },
+    // A mean of the level indices, as the providers answer: the nearest level is the one filled.
     irritacao: {
       type: "score" as const,
-      score: 2,
+      score: 1.99,
       confidence: 0.9,
       probabilities: {},
     },

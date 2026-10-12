@@ -33,10 +33,18 @@ import {
   DEFAULT_DECISION_MODEL,
   type DecisionProvider,
   type DecisionsIssue,
+  isNativeDecisionTool,
   QUESTIONS_MAX,
   RULES_MAX,
   SCORE_LEVELS_MAX,
 } from "@/modules/decisions/config";
+import {
+  type ArgType,
+  fieldSourceType,
+  parseFieldSource,
+  sourceFits,
+  type ToolArgSpec,
+} from "@/modules/decisions/tool-args";
 import {
   type AnswerSample,
   type DecisionLine,
@@ -47,6 +55,8 @@ import {
 import {
   actionGap,
   actionScope,
+  type CustomToolOffer,
+  type CustomTools,
   conditionFor,
   conditionSummary,
   type DecisionConditionForm,
@@ -190,6 +200,51 @@ function issueText(t: TFunction, issue: DecisionsIssue): string {
       return t("editor.decisionsIssueNumber", "Must be a number.");
     case "invalid_value":
       return t("editor.decisionsIssueValue", "Not an accepted value.");
+    case "arg_required":
+      return t(
+        "editor.decisionsIssueArgRequired",
+        '"{{arg}}" is required by the tool: give it a fixed value or a field.',
+        { arg: p.key },
+      );
+    case "arg_unknown":
+      return t(
+        "editor.decisionsIssueArgUnknown",
+        'The tool has no argument "{{arg}}". Remove it.',
+        { arg: p.key },
+      );
+    case "arg_type":
+      return t(
+        "editor.decisionsIssueArgType",
+        "Not the type the tool takes here.",
+      );
+    case "arg_source_type":
+      return t(
+        "editor.decisionsIssueArgSourceType",
+        "This field is not of the type the tool takes here.",
+      );
+    case "arg_twice":
+      return t(
+        "editor.decisionsIssueArgTwice",
+        '"{{arg}}" is both fixed and filled. Keep one.',
+        { arg: p.key },
+      );
+    case "unknown_field_source":
+      return t(
+        "editor.decisionsIssueFieldSource",
+        '"{{value}}" is not a field this observation knows.',
+        { value: p.value },
+      );
+    case "fill_question_type":
+      return t(
+        "editor.decisionsIssueFillQuestionType",
+        'The question "{{value}}" does not give this kind of answer anymore.',
+        { value: p.value },
+      );
+    case "fill_on_native":
+      return t(
+        "editor.decisionsIssueFillOnNative",
+        "This action takes its values as written.",
+      );
     default:
       return issue.message;
   }
@@ -325,6 +380,435 @@ function ruleActivityText(
 
 type CustomAttribute = { key: string; displayName: string; model: string };
 
+// WHERE A CUSTOM TOOL'S ARGUMENTS COME FROM (decisions/tool-args.ts): each one fixed, typed for what
+// the tool takes, or filled from a field of the observation, offered only among the fields of a type
+// the argument takes. The tool's own schema lists the arguments; an MCP tool's live on its server,
+// so its rows are named by hand.
+interface SourceOption {
+  value: string;
+  label: string;
+}
+interface SourceGroup {
+  label: string;
+  options: SourceOption[];
+}
+
+function fieldSourceGroups(
+  t: TFunction,
+  questions: DecisionQuestionForm[],
+  attributes: CustomAttribute[],
+  argType: ArgType | null,
+): SourceGroup[] {
+  const fits = (value: string) => {
+    const source = parseFieldSource(value);
+    return (
+      source !== null &&
+      (argType === null || sourceFits(fieldSourceType(source), argType))
+    );
+  };
+  const keep = (options: SourceOption[]) =>
+    options.filter((o) => fits(o.value));
+  const attrs = (model: string, prefix: string) =>
+    attributes
+      .filter((a) => a.model === model)
+      .map((a) => ({
+        value: `${prefix}.attribute.${a.key}`,
+        label: a.displayName || a.key,
+      }));
+  const groups: SourceGroup[] = [
+    {
+      label: t("editor.decisionsSourceContact", "Contact"),
+      options: keep([
+        {
+          value: "contact.name",
+          label: t("editor.decisionsSourceContactName", "Name"),
+        },
+        {
+          value: "contact.phone",
+          label: t("editor.decisionsSourceContactPhone", "Phone"),
+        },
+        {
+          value: "contact.email",
+          label: t("editor.decisionsSourceContactEmail", "Email"),
+        },
+        {
+          value: "contact.identifier",
+          label: t("editor.decisionsSourceContactIdentifier", "Identifier"),
+        },
+        ...attrs(SCOPE_MODEL.contact, "contact"),
+      ]),
+    },
+    {
+      label: t("editor.decisionsSourceConversation", "Conversation"),
+      options: keep([
+        {
+          value: "conversation.display_id",
+          label: t(
+            "editor.decisionsSourceConversationId",
+            "Conversation number",
+          ),
+        },
+        {
+          value: "conversation.inbox_id",
+          label: t("editor.decisionsSourceInboxId", "Inbox id"),
+        },
+        {
+          value: "conversation.link",
+          label: t("editor.decisionsSourceLink", "Link to the conversation"),
+        },
+        ...attrs(SCOPE_MODEL.conversation, "conversation"),
+      ]),
+    },
+    {
+      label: t("editor.decisionsSourceAnswers", "Answers of this observation"),
+      options: keep(
+        questions
+          .filter((q) => q.name)
+          .flatMap((q): SourceOption[] =>
+            q.type === "yes_no"
+              ? [
+                  {
+                    value: `answer.${q.name}.probability`,
+                    label: t(
+                      "editor.decisionsSourceProbability",
+                      "{{question}}: probability",
+                      { question: q.name },
+                    ),
+                  },
+                ]
+              : q.type === "choice"
+                ? [
+                    {
+                      value: `answer.${q.name}.choice`,
+                      label: t(
+                        "editor.decisionsSourceChoice",
+                        "{{question}}: option",
+                        { question: q.name },
+                      ),
+                    },
+                  ]
+                : q.type === "score"
+                  ? [
+                      {
+                        value: `answer.${q.name}.level`,
+                        label: t(
+                          "editor.decisionsSourceLevel",
+                          "{{question}}: level",
+                          { question: q.name },
+                        ),
+                      },
+                      {
+                        value: `answer.${q.name}.level_index`,
+                        label: t(
+                          "editor.decisionsSourceLevelIndex",
+                          "{{question}}: level number",
+                          { question: q.name },
+                        ),
+                      },
+                    ]
+                  : [],
+          ),
+      ),
+    },
+  ];
+  return groups.filter((g) => g.options.length > 0);
+}
+
+function typeText(t: TFunction, spec: ToolArgSpec): string {
+  switch (spec.type) {
+    case "integer":
+      return t("editor.decisionsArgTypeInteger", "whole number");
+    case "number":
+      return t("editor.decisionsArgTypeNumber", "number");
+    case "boolean":
+      return t("editor.decisionsArgTypeBoolean", "yes or no");
+    case "enum":
+      return t("editor.decisionsArgTypeEnum", "one of a list");
+    case "array":
+      return t("editor.decisionsArgTypeArray", "list");
+    case "object":
+      return t("editor.decisionsArgTypeObject", "object");
+    default:
+      return t("editor.decisionsArgTypeText", "text");
+  }
+}
+
+// A fixed value typed as the argument's type wants it. A number field left mid-typing ("1.") keeps
+// the text, which the check calls the wrong type until it is a number.
+function fixedFromInput(spec: ToolArgSpec | null, raw: string): unknown {
+  if (!spec) return raw;
+  if (spec.type === "integer" || spec.type === "number") {
+    const n = Number(raw);
+    return raw.trim() !== "" && Number.isFinite(n) ? n : raw;
+  }
+  if (spec.type === "boolean") return raw === "true";
+  if (spec.type === "array" || spec.type === "object") {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return raw;
+    }
+  }
+  return raw;
+}
+
+function fixedToInput(spec: ToolArgSpec | null, v: unknown): string {
+  if (v === undefined) return "";
+  if (typeof v === "string") return v;
+  if (spec && (spec.type === "array" || spec.type === "object")) {
+    return JSON.stringify(v);
+  }
+  return String(v);
+}
+
+function CustomToolArgs({
+  ri,
+  rule,
+  offer,
+  questions,
+  attributes,
+  setRule,
+  field,
+}: {
+  ri: number;
+  rule: DecisionRuleForm;
+  offer: CustomToolOffer | undefined;
+  questions: DecisionQuestionForm[];
+  attributes: CustomAttribute[];
+  setRule: (p: Partial<DecisionRuleForm>) => void;
+  field: (path: string) => string | null;
+}) {
+  const { t } = useTranslation();
+  const specs = offer?.args ?? null;
+  // The rows: the schema's arguments in its order, then any the rule holds that the schema lacks
+  // (shown so they can be removed: the save refuses them). Without a schema, the rule's own.
+  const [modes, setModes] = useState<Record<string, "fixed" | "fill">>({});
+  const names = [
+    ...(specs ?? []).map((s) => s.name),
+    ...[
+      ...Object.keys(rule.args),
+      ...Object.keys(rule.fill),
+      ...(specs === null ? Object.keys(modes) : []),
+    ].filter((n) => !(specs ?? []).some((s) => s.name === n)),
+  ].filter((n, i, all) => all.indexOf(n) === i);
+  const setValue = (name: string, mode: "fixed" | "fill", value: unknown) => {
+    const args = { ...rule.args };
+    const fill = { ...rule.fill };
+    delete args[name];
+    delete fill[name];
+    if (mode === "fill" && typeof value === "string" && value !== "") {
+      fill[name] = value;
+    } else if (
+      mode === "fixed" &&
+      value !== undefined &&
+      // A row named by hand (no schema) keeps its name while its value is emptied.
+      (value !== "" || specs === null)
+    ) {
+      args[name] = value;
+    }
+    setRule({ args, fill });
+  };
+  const modeOf = (name: string): "fixed" | "fill" =>
+    name in rule.fill
+      ? "fill"
+      : name in rule.args
+        ? "fixed"
+        : (modes[name] ?? "fixed");
+  const [newName, setNewName] = useState("");
+  return (
+    <div className="flex flex-col gap-3" data-testid="decisions-custom-args">
+      {specs === null && (
+        <p className="text-text-muted text-xs">
+          {t(
+            "editor.decisionsMcpArgsHint",
+            "This tool's arguments are on its server: name each one as the tool expects it. The tool checks them when the rule fires.",
+          )}
+        </p>
+      )}
+      {specs !== null && specs.length === 0 && (
+        <p className="text-text-muted text-xs">
+          {t("editor.decisionsNoArgs", "This tool takes no arguments.")}
+        </p>
+      )}
+      {names.map((name) => {
+        const spec = specs?.find((s) => s.name === name) ?? null;
+        const mode = modeOf(name);
+        const error =
+          field(`rules.${ri}.action.args.${name}`) ??
+          field(`rules.${ri}.action.fill.${name}`);
+        const groups = fieldSourceGroups(
+          t,
+          questions,
+          attributes,
+          spec?.type ?? null,
+        );
+        const fixed = rule.args[name];
+        const label = spec
+          ? `${name} (${typeText(t, spec)}${spec.required ? `, ${t("editor.decisionsArgRequired", "required")}` : ""})`
+          : name;
+        return (
+          <FormField
+            key={name}
+            group
+            label={label}
+            description={spec?.description}
+            error={error}
+          >
+            <div
+              className="flex flex-col gap-2 sm:flex-row sm:items-start"
+              data-testid={`decisions-arg-${name}`}
+            >
+              <Select
+                value={mode}
+                wrapperClassName="sm:max-w-52"
+                aria-label={t(
+                  "editor.decisionsArgMode",
+                  "Where {{arg}} comes from",
+                  { arg: name },
+                )}
+                onChange={(e) => {
+                  const next = e.target.value as "fixed" | "fill";
+                  setModes((m) => ({ ...m, [name]: next }));
+                  setValue(name, next, undefined);
+                }}
+              >
+                <option value="fixed">
+                  {t("editor.decisionsArgFixed", "Fixed value")}
+                </option>
+                <option value="fill">
+                  {t("editor.decisionsArgFill", "From the observation")}
+                </option>
+              </Select>
+              {mode === "fill" ? (
+                <Select
+                  value={rule.fill[name] ?? ""}
+                  data-testid={`decisions-arg-source-${name}`}
+                  aria-label={t(
+                    "editor.decisionsArgSource",
+                    "Field for {{arg}}",
+                    {
+                      arg: name,
+                    },
+                  )}
+                  onChange={(e) => setValue(name, "fill", e.target.value)}
+                >
+                  <option value="">
+                    {t("editor.decisionsArgPickField", "Pick a field…")}
+                  </option>
+                  {rule.fill[name] &&
+                    !groups.some((g) =>
+                      g.options.some((o) => o.value === rule.fill[name]),
+                    ) && (
+                      <option value={rule.fill[name]}>{rule.fill[name]}</option>
+                    )}
+                  {groups.map((g) => (
+                    <optgroup key={g.label} label={g.label}>
+                      {g.options.map((o) => (
+                        <option key={o.value} value={o.value}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </optgroup>
+                  ))}
+                </Select>
+              ) : spec?.type === "boolean" ? (
+                <Select
+                  value={fixed === undefined ? "" : String(fixed)}
+                  aria-label={name}
+                  onChange={(e) =>
+                    setValue(
+                      name,
+                      "fixed",
+                      e.target.value === ""
+                        ? undefined
+                        : fixedFromInput(spec, e.target.value),
+                    )
+                  }
+                >
+                  <option value="" />
+                  <option value="true">
+                    {t("editor.decisionsArgTrue", "Yes")}
+                  </option>
+                  <option value="false">
+                    {t("editor.decisionsArgFalse", "No")}
+                  </option>
+                </Select>
+              ) : spec?.type === "enum" &&
+                (spec.enumValues ?? []).length > 0 ? (
+                <Select
+                  value={typeof fixed === "string" ? fixed : ""}
+                  aria-label={name}
+                  onChange={(e) => setValue(name, "fixed", e.target.value)}
+                >
+                  <option value="" />
+                  {(spec.enumValues ?? []).map((v) => (
+                    <option key={v} value={v}>
+                      {v}
+                    </option>
+                  ))}
+                </Select>
+              ) : (
+                <Input
+                  value={fixedToInput(spec, fixed)}
+                  inputMode={
+                    spec?.type === "integer" || spec?.type === "number"
+                      ? "decimal"
+                      : undefined
+                  }
+                  aria-label={name}
+                  onChange={(e) =>
+                    setValue(
+                      name,
+                      "fixed",
+                      fixedFromInput(spec, e.target.value),
+                    )
+                  }
+                />
+              )}
+              {(specs === null || !spec) && (
+                <IconButton
+                  danger
+                  label={t("editor.decisionsArgRemove", "Remove argument")}
+                  onClick={() => {
+                    setModes(({ [name]: _, ...rest }) => rest);
+                    setValue(name, "fixed", undefined);
+                  }}
+                >
+                  <Trash2 className="h-4 w-4" aria-hidden="true" />
+                </IconButton>
+              )}
+            </div>
+          </FormField>
+        );
+      })}
+      {specs === null && (
+        <div className="flex items-center gap-2">
+          <Input
+            value={newName}
+            wrapperClassName="max-w-52"
+            placeholder={t("editor.decisionsArgName", "Argument name")}
+            aria-label={t("editor.decisionsArgName", "Argument name")}
+            onChange={(e) => setNewName(e.target.value.trim())}
+          />
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={newName === "" || names.includes(newName)}
+            onClick={() => {
+              setModes((m) => ({ ...m, [newName]: "fixed" }));
+              setRule({ args: { ...rule.args, [newName]: "" } });
+              setNewName("");
+            }}
+          >
+            <Plus aria-hidden="true" />
+            {t("editor.decisionsArgAdd", "Add argument")}
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function DecisionsFields({
   agentId,
   savedAt,
@@ -335,6 +819,7 @@ export function DecisionsFields({
   setDecisions,
   serverRefusal,
   granted,
+  customTools = null,
   grantsPending,
   grantWriting = false,
   onGrantTool,
@@ -355,8 +840,12 @@ export function DecisionsFields({
   decisions: DecisionsForm;
   setDecisions: (next: (prev: DecisionsForm) => DecisionsForm) => void;
   serverRefusal: DecisionsServerRefusal | null;
-  // The native tools the agent has AS SAVED (what the engine checks), or null until they are read.
+  // The tools the agent has AS SAVED (what the engine checks), native and custom, by the name the
+  // engine finds them by, or null until they are read.
   granted: ReadonlySet<string> | null;
+  // The tenant's own tools a rule may name (HTTP, code, and the MCP tools the agent's grants
+  // enable), with their arguments; null until the catalog is read.
+  customTools?: CustomTools | null;
   // Whether the Tools tab holds grant changes not saved yet: then granting one tool from a rule
   // would write it beside a selection nobody has confirmed, so the rule sends the operator there.
   grantsPending: boolean;
@@ -374,8 +863,8 @@ export function DecisionsFields({
   const { t } = useTranslation();
   const starterNames = useStarterNames();
   const issues = useMemo(
-    () => decisionsFormIssues(decisions, storedDecisions),
-    [decisions, storedDecisions],
+    () => decisionsFormIssues(decisions, storedDecisions, customTools),
+    [decisions, storedDecisions, customTools],
   );
 
   const [labels, setLabels] = useState<InboxLabelOption[]>([]);
@@ -587,13 +1076,20 @@ export function DecisionsFields({
         aria-hidden="true"
       />
       <span className="flex-1">
-        {t(
-          "editor.decisionsRuleNotGranted",
-          "This agent is not allowed to {{action}}, so this rule does not run.",
-          { action: toolLabel(rule.tool).toLowerCase() },
-        )}
+        {isNativeDecisionTool(rule.tool)
+          ? t(
+              "editor.decisionsRuleNotGranted",
+              "This agent is not allowed to {{action}}, so this rule does not run.",
+              { action: toolLabel(rule.tool).toLowerCase() },
+            )
+          : t(
+              "editor.decisionsRuleCustomNotGranted",
+              'This agent is not allowed to use "{{tool}}", so this rule does not run. Allow it on the Tools tab.',
+              { tool: toolLabel(rule.tool) },
+            )}
       </span>
-      {grantsPending ? (
+      {/* A custom tool is granted on its own card, with what it needs (an MCP server's tools). */}
+      {grantsPending || !isNativeDecisionTool(rule.tool) ? (
         <Button
           size="sm"
           variant="secondary"
@@ -626,9 +1122,13 @@ export function DecisionsFields({
       case "set_custom_attribute":
         return t("editor.decisionsToolAttribute", "Set a custom attribute");
       default:
-        return tool;
+        return customTools?.get(tool)?.label ?? tool;
     }
   };
+  // The custom tools a rule is offered: those the agent has as saved, by label.
+  const offeredCustom = [...(customTools?.values() ?? [])]
+    .filter((c) => granted?.has(c.name))
+    .sort((a, b) => a.label.localeCompare(b.label));
   const typeLabel = (type: string): string => {
     switch (type) {
       case "yes_no":
@@ -1110,6 +1610,19 @@ export function DecisionsFields({
         </FormField>
       );
     }
+    if (rule.tool !== "" && !isNativeDecisionTool(rule.tool)) {
+      return (
+        <CustomToolArgs
+          ri={ri}
+          rule={rule}
+          offer={customTools?.get(rule.tool)}
+          questions={decisions.questions}
+          attributes={attributes}
+          setRule={(p) => setRule(ri, p)}
+          field={field}
+        />
+      );
+    }
     if (rule.tool === "handoff_to_human") {
       return (
         <FormField
@@ -1204,7 +1717,15 @@ export function DecisionsFields({
           ? `${String(a.key ?? "")} = ${String(a.value ?? "")}`
           : rule.tool === "private_note"
             ? String(a.content ?? "")
-            : "";
+            : isNativeDecisionTool(rule.tool)
+              ? ""
+              : [
+                  ...Object.entries(a).map(
+                    ([k, v]) =>
+                      `${k} = ${typeof v === "string" ? v : JSON.stringify(v)}`,
+                  ),
+                  ...Object.entries(rule.fill).map(([k, v]) => `${k} ← ${v}`),
+                ].join(", ");
     const and = t("editor.decisionsAnd", " and ");
     return t(
       "editor.decisionsRuleSummary",
@@ -1713,6 +2234,7 @@ export function DecisionsFields({
                     >
                       <Select
                         value={rule.tool}
+                        data-testid="decisions-rule-action"
                         onChange={(e) =>
                           // The attribute tool's schema asks for `value` even when it is empty.
                           setRule(ri, {
@@ -1721,26 +2243,40 @@ export function DecisionsFields({
                               e.target.value === "set_custom_attribute"
                                 ? { value: "" }
                                 : {},
+                            fill: {},
                           })
                         }
                       >
-                        {!DECISION_ACTION_TOOLS.includes(
-                          rule.tool as "set_labels",
-                        ) && (
-                          <option value={rule.tool}>
-                            {rule.tool === ""
-                              ? t(
-                                  "editor.decisionsPickAction",
-                                  "Pick an action…",
-                                )
-                              : rule.tool}
-                          </option>
-                        )}
+                        {!isNativeDecisionTool(rule.tool) &&
+                          !offeredCustom.some((c) => c.name === rule.tool) && (
+                            <option value={rule.tool}>
+                              {rule.tool === ""
+                                ? t(
+                                    "editor.decisionsPickAction",
+                                    "Pick an action…",
+                                  )
+                                : toolLabel(rule.tool)}
+                            </option>
+                          )}
                         {DECISION_ACTION_TOOLS.map((tool) => (
                           <option key={tool} value={tool}>
                             {toolLabel(tool)}
                           </option>
                         ))}
+                        {offeredCustom.length > 0 && (
+                          <optgroup
+                            label={t(
+                              "editor.decisionsCustomTools",
+                              "Your tools",
+                            )}
+                          >
+                            {offeredCustom.map((c) => (
+                              <option key={c.name} value={c.name}>
+                                {c.label}
+                              </option>
+                            ))}
+                          </optgroup>
+                        )}
                       </Select>
                     </FormField>
                     {actionFields(ri, rule)}
@@ -1812,6 +2348,7 @@ export function DecisionsFields({
                     ],
                     tool: "set_labels",
                     args: {},
+                    fill: {},
                     trigger: "",
                   },
                 ],

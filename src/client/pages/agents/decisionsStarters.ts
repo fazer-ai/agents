@@ -74,6 +74,7 @@ function rule(
     when,
     tool,
     args,
+    fill: {},
     trigger: "",
   };
 }

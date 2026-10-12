@@ -1157,372 +1157,180 @@ export function ToolGrantsEditor({
 
   return (
     <div className="flex flex-col gap-4">
-      {/* Nothing here is a rule's action: questions and rules fire native tools only. */}
-      {!decides && (
-        <>
-          <Section
-            id="tools-http"
-            icon={Webhook}
-            title={t("editor.tools.http", "HTTP tools")}
-            description={t(
-              "editor.tools.httpDesc",
-              "Declarative tools you defined.",
+      {/* A rule runs these too (docs/decisions.md, "Custom tools"), so questions and rules draw them. */}
+      <Section
+        id="tools-http"
+        icon={Webhook}
+        title={t("editor.tools.http", "HTTP tools")}
+        description={t(
+          "editor.tools.httpDesc",
+          "Declarative tools you defined.",
+        )}
+        action={
+          <CreateButton
+            label={t("editor.tools.createNew", "New")}
+            onClick={() => toolModal.open({})}
+          />
+        }
+      >
+        {catalog.toolDefinitions.length === 0 ? (
+          <p className="text-text-muted text-xs">
+            {t(
+              "editor.tools.noHttp",
+              "No HTTP tools yet. Create some in Components.",
             )}
-            action={
-              <CreateButton
-                label={t("editor.tools.createNew", "New")}
-                onClick={() => toolModal.open({})}
-              />
-            }
-          >
-            {catalog.toolDefinitions.length === 0 ? (
-              <p className="text-text-muted text-xs">
-                {t(
-                  "editor.tools.noHttp",
-                  "No HTTP tools yet. Create some in Components.",
-                )}
-              </p>
-            ) : (
-              <div className="grid gap-2 sm:grid-cols-2">
-                {catalog.toolDefinitions.map((td) => (
-                  <EditableCard
-                    key={td.id}
-                    editLabel={t("common.edit", "Edit")}
-                    onEdit={() => toolModal.open({ id: td.id })}
-                  >
-                    <SelectableCard
-                      selected={nonRag.some(
-                        (g) =>
-                          g.source === "HTTP" && g.toolDefinitionId === td.id,
-                      )}
-                      onToggle={() => toggleHttp(td.id)}
-                      icon={Webhook}
-                      title={td.label}
-                      badge={
-                        !td.enabled ? (
-                          <Badge variant="secondary">
-                            {t("common.disabled", "Disabled")}
-                          </Badge>
-                        ) : undefined
-                      }
-                    />
-                  </EditableCard>
-                ))}
-              </div>
-            )}
-          </Section>
+          </p>
+        ) : (
+          <div className="grid gap-2 sm:grid-cols-2">
+            {catalog.toolDefinitions.map((td) => (
+              <EditableCard
+                key={td.id}
+                editLabel={t("common.edit", "Edit")}
+                onEdit={() => toolModal.open({ id: td.id })}
+              >
+                <SelectableCard
+                  selected={nonRag.some(
+                    (g) => g.source === "HTTP" && g.toolDefinitionId === td.id,
+                  )}
+                  onToggle={() => toggleHttp(td.id)}
+                  icon={Webhook}
+                  title={td.label}
+                  badge={
+                    !td.enabled ? (
+                      <Badge variant="secondary">
+                        {t("common.disabled", "Disabled")}
+                      </Badge>
+                    ) : undefined
+                  }
+                />
+              </EditableCard>
+            ))}
+          </div>
+        )}
+      </Section>
 
-          <Section
-            id="tools-code"
-            icon={Code2}
-            title={t("editor.tools.code", "Code tools")}
-            description={t(
-              "editor.tools.codeDesc",
-              "Small functions you wrote, called with typed arguments.",
+      <Section
+        id="tools-code"
+        icon={Code2}
+        title={t("editor.tools.code", "Code tools")}
+        description={t(
+          "editor.tools.codeDesc",
+          "Small functions you wrote, called with typed arguments.",
+        )}
+        action={
+          <CreateButton
+            label={t("editor.tools.createNew", "New")}
+            onClick={() => codeToolModal.open({})}
+          />
+        }
+      >
+        {catalog.codeTools.length === 0 ? (
+          <p className="text-text-muted text-xs">
+            {t(
+              "editor.tools.noCode",
+              "No code tools yet. Create some in Components.",
             )}
-            action={
-              <CreateButton
-                label={t("editor.tools.createNew", "New")}
-                onClick={() => codeToolModal.open({})}
-              />
-            }
-          >
-            {catalog.codeTools.length === 0 ? (
-              <p className="text-text-muted text-xs">
-                {t(
-                  "editor.tools.noCode",
-                  "No code tools yet. Create some in Components.",
-                )}
-              </p>
-            ) : (
-              <div className="grid gap-2 sm:grid-cols-2">
-                {catalog.codeTools.map((ct) => (
-                  <EditableCard
-                    key={ct.id}
-                    editLabel={t("common.edit", "Edit")}
-                    onEdit={() => codeToolModal.open({ id: ct.id })}
-                  >
-                    <SelectableCard
-                      selected={nonRag.some(
-                        (g) =>
-                          g.source === "CODE" &&
-                          g.codeToolDefinitionId === ct.id,
-                      )}
-                      onToggle={() => toggleCode(ct.id)}
-                      icon={Code2}
-                      title={ct.label}
-                      badge={
-                        !ct.enabled ? (
-                          <Badge variant="secondary">
-                            {t("common.disabled", "Disabled")}
-                          </Badge>
-                        ) : undefined
-                      }
-                    />
-                  </EditableCard>
-                ))}
-              </div>
-            )}
-          </Section>
+          </p>
+        ) : (
+          <div className="grid gap-2 sm:grid-cols-2">
+            {catalog.codeTools.map((ct) => (
+              <EditableCard
+                key={ct.id}
+                editLabel={t("common.edit", "Edit")}
+                onEdit={() => codeToolModal.open({ id: ct.id })}
+              >
+                <SelectableCard
+                  selected={nonRag.some(
+                    (g) =>
+                      g.source === "CODE" && g.codeToolDefinitionId === ct.id,
+                  )}
+                  onToggle={() => toggleCode(ct.id)}
+                  icon={Code2}
+                  title={ct.label}
+                  badge={
+                    !ct.enabled ? (
+                      <Badge variant="secondary">
+                        {t("common.disabled", "Disabled")}
+                      </Badge>
+                    ) : undefined
+                  }
+                />
+              </EditableCard>
+            ))}
+          </div>
+        )}
+      </Section>
 
-          <Section
-            id="tools-mcp"
-            icon={Plug}
-            title={t("editor.tools.mcp", "MCP servers")}
-            description={t(
-              "editor.tools.mcpDesc",
-              "Expose a chosen subset of an MCP server's tools.",
-            )}
-            action={
-              <CreateButton
-                label={t("editor.tools.createNew", "New")}
-                onClick={() => mcpModal.open({})}
-              />
-            }
-          >
-            {catalog.mcpConnections.length === 0 ? (
-              <p className="text-text-muted text-xs">
-                {t("editor.tools.noMcp", "No MCP servers connected yet.")}
-              </p>
-            ) : (
-              catalog.mcpConnections.map((m) => {
-                const grant = nonRag.find(
-                  (g) => g.source === "MCP" && g.mcpServerConnectionId === m.id,
-                );
-                const tools = mcpTools[m.id];
-                const hasTools = !!tools && tools.length > 0;
-                const collapsed = mcpCollapsed[m.id] ?? true;
-                return (
-                  <div key={m.id} className="flex flex-col gap-2">
-                    <EditableCard
-                      editLabel={t("common.edit", "Edit")}
-                      onEdit={() => mcpModal.open({ id: m.id })}
-                    >
-                      <SelectableCard
-                        selected={!!grant}
-                        onToggle={() => toggleMcp(m.id)}
-                        icon={Plug}
-                        title={m.name}
-                        badge={
-                          !m.enabled ? (
-                            <Badge variant="secondary">
-                              {t("common.disabled", "Disabled")}
-                            </Badge>
-                          ) : undefined
-                        }
-                      />
-                    </EditableCard>
-                    {grant && (
-                      <div className="ml-6 flex flex-col gap-2 border-border border-l pl-3">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <Button
-                            variant="secondary"
-                            size="sm"
-                            loading={discovering === m.id}
-                            onClick={() => discoverMcp(m.id)}
-                          >
-                            <RefreshCw
-                              className="h-3.5 w-3.5"
-                              aria-hidden="true"
-                            />
-                            {t("editor.tools.discover", "Discover tools")}
-                          </Button>
-                          {hasTools ? (
-                            <button
-                              type="button"
-                              aria-expanded={!collapsed}
-                              onClick={() =>
-                                setMcpCollapsed((prev) => ({
-                                  ...prev,
-                                  [m.id]: !collapsed,
-                                }))
-                              }
-                              className="flex flex-1 items-center gap-2 rounded-md px-2 py-1 text-left transition-colors hover:bg-bg-hover"
-                            >
-                              <ChevronDown
-                                className={cn(
-                                  "h-4 w-4 shrink-0 text-text-muted transition-transform",
-                                  { "rotate-180": !collapsed },
-                                )}
-                                aria-hidden="true"
-                              />
-                              <span className="font-medium text-text-secondary text-xs">
-                                {collapsed
-                                  ? t(
-                                      "editor.tools.mcpExpandList",
-                                      "Show tools",
-                                    )
-                                  : t(
-                                      "editor.tools.mcpCollapseList",
-                                      "Hide tools",
-                                    )}
-                              </span>
-                              <span className="text-text-muted text-xs">
-                                {t(
-                                  "editor.tools.mcpSelected",
-                                  "{{count}} selected",
-                                  {
-                                    count: grant.enabledTools?.length ?? 0,
-                                  },
-                                )}
-                              </span>
-                            </button>
-                          ) : (
-                            <span className="text-text-muted text-xs">
-                              {t(
-                                "editor.tools.mcpSelected",
-                                "{{count}} selected",
-                                {
-                                  count: grant.enabledTools?.length ?? 0,
-                                },
-                              )}
-                            </span>
-                          )}
-                          {hasTools && (
-                            <div className="flex items-center gap-3">
-                              <button
-                                type="button"
-                                className="text-accent text-xs hover:underline disabled:no-underline disabled:opacity-50"
-                                disabled={
-                                  (grant.enabledTools?.length ?? 0) ===
-                                  tools.length
-                                }
-                                onClick={() =>
-                                  setMcpEnabledTools(
-                                    m.id,
-                                    tools.map((tool) => tool.name),
-                                  )
-                                }
-                              >
-                                {t("editor.tools.selectAll", "Select all")}
-                              </button>
-                              <button
-                                type="button"
-                                className="text-accent text-xs hover:underline disabled:no-underline disabled:opacity-50"
-                                disabled={
-                                  (grant.enabledTools?.length ?? 0) === 0
-                                }
-                                onClick={() => setMcpEnabledTools(m.id, [])}
-                              >
-                                {t("editor.tools.clear", "Clear")}
-                              </button>
-                            </div>
-                          )}
-                        </div>
-                        <McpServerInstructions
-                          instructions={mcpInstructions[m.id]}
-                        />
-                        {hasTools && !collapsed && (
-                          <div className="flex flex-col gap-2">
-                            {tools.map((tool) => (
-                              <SelectableCard
-                                key={tool.name}
-                                selected={(grant.enabledTools ?? []).includes(
-                                  tool.name,
-                                )}
-                                onToggle={() => {
-                                  const cur = new Set(grant.enabledTools ?? []);
-                                  if (cur.has(tool.name)) cur.delete(tool.name);
-                                  else cur.add(tool.name);
-                                  setMcpEnabledTools(m.id, [...cur]);
-                                }}
-                                title={
-                                  <span className="font-mono text-xs">
-                                    {tool.name}
-                                  </span>
-                                }
-                                description={
-                                  <span className="flex flex-col gap-1.5">
-                                    {tool.description && (
-                                      <span>{tool.description}</span>
-                                    )}
-                                    <McpToolArgs args={tool.args} />
-                                  </span>
-                                }
-                              />
-                            ))}
-                          </div>
-                        )}
-                        {(grant.enabledTools?.length ?? 0) === 0 && (
-                          <p className="text-warning text-xs">
-                            {t(
-                              "editor.tools.mcpNoTools",
-                              "Select at least one tool, or this server does nothing.",
-                            )}
-                          </p>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                );
-              })
-            )}
-          </Section>
-
-          <Section
-            id="tools-integrations"
-            icon={Puzzle}
-            title={t("editor.tools.integrations", "Integrations")}
-            description={t(
-              "editor.tools.integrationsDesc",
-              "Toolpacks from activated catalog integrations.",
-            )}
-            action={
-              <CreateButton
-                label={t("editor.tools.createNew", "New")}
-                onClick={() => integrationModal.open({})}
-              />
-            }
-          >
-            {catalog.integrationInstances.length === 0 ? (
-              <p className="text-text-muted text-xs">
-                {t(
-                  "editor.tools.noIntegrations",
-                  "No integrations activated yet.",
-                )}
-              </p>
-            ) : (
-              catalog.integrationInstances.map((inst) => {
-                const grant = nonRag.find(
-                  (g) =>
-                    g.source === "INTEGRATION" &&
-                    g.integrationInstanceId === inst.id,
-                );
-                // What this agent can actually be offered from the pack. A watcher does not get the
-                // delivery tools, so granting the integration must not enable one either.
-                const offered = offeredPackTools(inst.tools, observing);
-                const allTools = offered.map((tool) => tool.name);
-                const collapsed = integrationCollapsed[inst.id] ?? true;
-                return (
-                  <div key={inst.id} className="flex flex-col gap-2">
-                    <EditableCard
-                      editLabel={t("common.edit", "Edit")}
-                      onEdit={() => integrationModal.open({ id: inst.id })}
-                    >
-                      <SelectableCard
-                        selected={!!grant}
-                        onToggle={() => toggleIntegration(inst.id, allTools)}
-                        icon={integrationIcon(inst.catalogType)}
-                        title={inst.name}
-                        badge={
-                          <Badge variant="info">
-                            {kindLabel(inst.kind ?? inst.catalogType)}
-                          </Badge>
-                        }
-                      />
-                    </EditableCard>
-                    {grant && offered.length > 0 && (
-                      <div className="ml-6 flex flex-col gap-2 border-border border-l pl-3">
+      <Section
+        id="tools-mcp"
+        icon={Plug}
+        title={t("editor.tools.mcp", "MCP servers")}
+        description={t(
+          "editor.tools.mcpDesc",
+          "Expose a chosen subset of an MCP server's tools.",
+        )}
+        action={
+          <CreateButton
+            label={t("editor.tools.createNew", "New")}
+            onClick={() => mcpModal.open({})}
+          />
+        }
+      >
+        {catalog.mcpConnections.length === 0 ? (
+          <p className="text-text-muted text-xs">
+            {t("editor.tools.noMcp", "No MCP servers connected yet.")}
+          </p>
+        ) : (
+          catalog.mcpConnections.map((m) => {
+            const grant = nonRag.find(
+              (g) => g.source === "MCP" && g.mcpServerConnectionId === m.id,
+            );
+            const tools = mcpTools[m.id];
+            const hasTools = !!tools && tools.length > 0;
+            const collapsed = mcpCollapsed[m.id] ?? true;
+            return (
+              <div key={m.id} className="flex flex-col gap-2">
+                <EditableCard
+                  editLabel={t("common.edit", "Edit")}
+                  onEdit={() => mcpModal.open({ id: m.id })}
+                >
+                  <SelectableCard
+                    selected={!!grant}
+                    onToggle={() => toggleMcp(m.id)}
+                    icon={Plug}
+                    title={m.name}
+                    badge={
+                      !m.enabled ? (
+                        <Badge variant="secondary">
+                          {t("common.disabled", "Disabled")}
+                        </Badge>
+                      ) : undefined
+                    }
+                  />
+                </EditableCard>
+                {grant && (
+                  <div className="ml-6 flex flex-col gap-2 border-border border-l pl-3">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        loading={discovering === m.id}
+                        onClick={() => discoverMcp(m.id)}
+                      >
+                        <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
+                        {t("editor.tools.discover", "Discover tools")}
+                      </Button>
+                      {hasTools ? (
                         <button
                           type="button"
                           aria-expanded={!collapsed}
                           onClick={() =>
-                            setIntegrationCollapsed((prev) => ({
+                            setMcpCollapsed((prev) => ({
                               ...prev,
-                              [inst.id]: !collapsed,
+                              [m.id]: !collapsed,
                             }))
                           }
-                          className="flex items-center gap-2 rounded-md px-2 py-1 text-left transition-colors hover:bg-bg-hover"
+                          className="flex flex-1 items-center gap-2 rounded-md px-2 py-1 text-left transition-colors hover:bg-bg-hover"
                         >
                           <ChevronDown
                             className={cn(
@@ -1533,14 +1341,8 @@ export function ToolGrantsEditor({
                           />
                           <span className="font-medium text-text-secondary text-xs">
                             {collapsed
-                              ? t(
-                                  "editor.tools.integrationExpandList",
-                                  "Show tools",
-                                )
-                              : t(
-                                  "editor.tools.integrationCollapseList",
-                                  "Hide tools",
-                                )}
+                              ? t("editor.tools.mcpExpandList", "Show tools")
+                              : t("editor.tools.mcpCollapseList", "Hide tools")}
                           </span>
                           <span className="text-text-muted text-xs">
                             {t(
@@ -1552,47 +1354,222 @@ export function ToolGrantsEditor({
                             )}
                           </span>
                         </button>
-                        {!collapsed &&
-                          offered.map((tool) => {
-                            const meta = toolpackToolMeta(tool.name, t);
-                            return (
-                              <SelectableCard
-                                key={tool.name}
-                                selected={(grant.enabledTools ?? []).includes(
-                                  tool.name,
-                                )}
-                                onToggle={() =>
-                                  toggleIntegrationTool(inst.id, tool.name)
-                                }
-                                icon={meta.icon}
-                                title={meta.label}
-                                description={
-                                  <span className="flex flex-col gap-1.5">
-                                    {meta.description && (
-                                      <span>{meta.description}</span>
-                                    )}
-                                    {tool.args.length > 0 && (
-                                      <ToolArgPills
-                                        args={withToolpackArgNotes(
-                                          tool.name,
-                                          tool.args,
-                                          t,
-                                        )}
-                                      />
-                                    )}
-                                  </span>
-                                }
-                              />
-                            );
+                      ) : (
+                        <span className="text-text-muted text-xs">
+                          {t("editor.tools.mcpSelected", "{{count}} selected", {
+                            count: grant.enabledTools?.length ?? 0,
                           })}
+                        </span>
+                      )}
+                      {hasTools && (
+                        <div className="flex items-center gap-3">
+                          <button
+                            type="button"
+                            className="text-accent text-xs hover:underline disabled:no-underline disabled:opacity-50"
+                            disabled={
+                              (grant.enabledTools?.length ?? 0) === tools.length
+                            }
+                            onClick={() =>
+                              setMcpEnabledTools(
+                                m.id,
+                                tools.map((tool) => tool.name),
+                              )
+                            }
+                          >
+                            {t("editor.tools.selectAll", "Select all")}
+                          </button>
+                          <button
+                            type="button"
+                            className="text-accent text-xs hover:underline disabled:no-underline disabled:opacity-50"
+                            disabled={(grant.enabledTools?.length ?? 0) === 0}
+                            onClick={() => setMcpEnabledTools(m.id, [])}
+                          >
+                            {t("editor.tools.clear", "Clear")}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                    <McpServerInstructions
+                      instructions={mcpInstructions[m.id]}
+                    />
+                    {hasTools && !collapsed && (
+                      <div className="flex flex-col gap-2">
+                        {tools.map((tool) => (
+                          <SelectableCard
+                            key={tool.name}
+                            selected={(grant.enabledTools ?? []).includes(
+                              tool.name,
+                            )}
+                            onToggle={() => {
+                              const cur = new Set(grant.enabledTools ?? []);
+                              if (cur.has(tool.name)) cur.delete(tool.name);
+                              else cur.add(tool.name);
+                              setMcpEnabledTools(m.id, [...cur]);
+                            }}
+                            title={
+                              <span className="font-mono text-xs">
+                                {tool.name}
+                              </span>
+                            }
+                            description={
+                              <span className="flex flex-col gap-1.5">
+                                {tool.description && (
+                                  <span>{tool.description}</span>
+                                )}
+                                <McpToolArgs args={tool.args} />
+                              </span>
+                            }
+                          />
+                        ))}
                       </div>
                     )}
+                    {(grant.enabledTools?.length ?? 0) === 0 && (
+                      <p className="text-warning text-xs">
+                        {t(
+                          "editor.tools.mcpNoTools",
+                          "Select at least one tool, or this server does nothing.",
+                        )}
+                      </p>
+                    )}
                   </div>
-                );
-              })
-            )}
-          </Section>
-        </>
+                )}
+              </div>
+            );
+          })
+        )}
+      </Section>
+
+      {/* An integration's toolpack is not something a rule runs. */}
+      {!decides && (
+        <Section
+          id="tools-integrations"
+          icon={Puzzle}
+          title={t("editor.tools.integrations", "Integrations")}
+          description={t(
+            "editor.tools.integrationsDesc",
+            "Toolpacks from activated catalog integrations.",
+          )}
+          action={
+            <CreateButton
+              label={t("editor.tools.createNew", "New")}
+              onClick={() => integrationModal.open({})}
+            />
+          }
+        >
+          {catalog.integrationInstances.length === 0 ? (
+            <p className="text-text-muted text-xs">
+              {t(
+                "editor.tools.noIntegrations",
+                "No integrations activated yet.",
+              )}
+            </p>
+          ) : (
+            catalog.integrationInstances.map((inst) => {
+              const grant = nonRag.find(
+                (g) =>
+                  g.source === "INTEGRATION" &&
+                  g.integrationInstanceId === inst.id,
+              );
+              // What this agent can actually be offered from the pack. A watcher does not get the
+              // delivery tools, so granting the integration must not enable one either.
+              const offered = offeredPackTools(inst.tools, observing);
+              const allTools = offered.map((tool) => tool.name);
+              const collapsed = integrationCollapsed[inst.id] ?? true;
+              return (
+                <div key={inst.id} className="flex flex-col gap-2">
+                  <EditableCard
+                    editLabel={t("common.edit", "Edit")}
+                    onEdit={() => integrationModal.open({ id: inst.id })}
+                  >
+                    <SelectableCard
+                      selected={!!grant}
+                      onToggle={() => toggleIntegration(inst.id, allTools)}
+                      icon={integrationIcon(inst.catalogType)}
+                      title={inst.name}
+                      badge={
+                        <Badge variant="info">
+                          {kindLabel(inst.kind ?? inst.catalogType)}
+                        </Badge>
+                      }
+                    />
+                  </EditableCard>
+                  {grant && offered.length > 0 && (
+                    <div className="ml-6 flex flex-col gap-2 border-border border-l pl-3">
+                      <button
+                        type="button"
+                        aria-expanded={!collapsed}
+                        onClick={() =>
+                          setIntegrationCollapsed((prev) => ({
+                            ...prev,
+                            [inst.id]: !collapsed,
+                          }))
+                        }
+                        className="flex items-center gap-2 rounded-md px-2 py-1 text-left transition-colors hover:bg-bg-hover"
+                      >
+                        <ChevronDown
+                          className={cn(
+                            "h-4 w-4 shrink-0 text-text-muted transition-transform",
+                            { "rotate-180": !collapsed },
+                          )}
+                          aria-hidden="true"
+                        />
+                        <span className="font-medium text-text-secondary text-xs">
+                          {collapsed
+                            ? t(
+                                "editor.tools.integrationExpandList",
+                                "Show tools",
+                              )
+                            : t(
+                                "editor.tools.integrationCollapseList",
+                                "Hide tools",
+                              )}
+                        </span>
+                        <span className="text-text-muted text-xs">
+                          {t("editor.tools.mcpSelected", "{{count}} selected", {
+                            count: grant.enabledTools?.length ?? 0,
+                          })}
+                        </span>
+                      </button>
+                      {!collapsed &&
+                        offered.map((tool) => {
+                          const meta = toolpackToolMeta(tool.name, t);
+                          return (
+                            <SelectableCard
+                              key={tool.name}
+                              selected={(grant.enabledTools ?? []).includes(
+                                tool.name,
+                              )}
+                              onToggle={() =>
+                                toggleIntegrationTool(inst.id, tool.name)
+                              }
+                              icon={meta.icon}
+                              title={meta.label}
+                              description={
+                                <span className="flex flex-col gap-1.5">
+                                  {meta.description && (
+                                    <span>{meta.description}</span>
+                                  )}
+                                  {tool.args.length > 0 && (
+                                    <ToolArgPills
+                                      args={withToolpackArgNotes(
+                                        tool.name,
+                                        tool.args,
+                                        t,
+                                      )}
+                                    />
+                                  )}
+                                </span>
+                              }
+                            />
+                          );
+                        })}
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          )}
+        </Section>
       )}
 
       {/* A DOCUMENT IS AN ATTACHMENT TO THE CUSTOMER, so the muted assembly does not build one: the

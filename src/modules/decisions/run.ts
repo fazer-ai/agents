@@ -19,8 +19,10 @@ import {
 } from "@/graph/tools/fence-report";
 import { sentNothing } from "@/modules/chatwoot/client";
 import {
+  type DecisionQuestion,
   type DecisionsConfig,
   type DecisionTrigger,
+  isNativeDecisionTool,
   ruleStateKey,
   triggerOf,
 } from "./config";
@@ -30,6 +32,7 @@ import {
   type DecisionResult,
 } from "./providers";
 import { type ConditionMiss, evaluateRules, type FiredAction } from "./rules";
+import { argsForLog, type FillContext, resolveFill } from "./tool-args";
 
 export async function askProvider(
   config: DecisionsConfig,
@@ -57,9 +60,9 @@ export interface ActionReport {
   tool: string;
   // `decided`: decided and not run, only under `dryRun`. `ran`: the tool was invoked and returned.
   // `not_granted`: the agent does not have the tool (the operator grants it, as for the LLM path).
-  // `failed`: the tool threw; `failure` says which way, never the tool's text: `invalid_arguments`
-  // (the rule's args do not fit the tool's schema) or `tool_error`. `over_budget`: the rules before
-  // it spent `limits.maxToolCalls`. `refused`: a fence inside the tool refused the whole call
+  // `failed`: the tool threw or was not called; `failure` says which way, never the tool's text:
+  // `invalid_arguments`, `tool_error` or `missing_value`. `over_budget`: the rules before it spent
+  // `limits.maxToolCalls`. `refused`: a fence inside the tool refused the whole call
   // (`fence` names it: a protected label, a label outside the allowed list, the tool's
   // precondition), so nothing was written. A call refused only in part ran, with `fence` and `partial`.
   // `no_effect`: the tool could not write (the contact or card it targets is not there).
@@ -79,6 +82,18 @@ export interface ActionReport {
   partial?: true;
   // Later rules whose identical action this one is (rules.ts): the outcome is theirs too.
   merged?: number[];
+  // A custom tool's arguments as resolved for the call, filled values as `argsForLog` gives them.
+  args?: Record<string, unknown>;
+  // `missing_value`: the arguments to be filled from a field the observation had no value for.
+  missing?: string[];
+}
+
+// What the arguments a rule fills come from (./tool-args.ts), and whether the observe line may carry
+// the filled values (`observability.logToolValues`).
+export interface DecisionFill {
+  context: FillContext;
+  questions: readonly DecisionQuestion[];
+  logValues: boolean;
 }
 
 // What the trigger state of this tick changes (decision_rule_states, by `ruleStateKey`): `latch`
@@ -140,6 +155,7 @@ export async function applyDecisions(
   latched: ReadonlySet<string> = new Set(),
   progress: DecisionProgress = {},
   latchAhead: LatchAhead = async () => true,
+  fill: DecisionFill | null = null,
 ): Promise<DecisionTickReport> {
   const keys = config.rules.map(ruleStateKey);
   const triggers = config.rules.map(triggerOf);
@@ -150,6 +166,10 @@ export async function applyDecisions(
   );
   const withMerged = (r: ActionReport, f: FiredAction): ActionReport =>
     f.merged.length > 0 ? { ...r, merged: [...f.merged] } : r;
+  // The arguments each fired action is called with: the fixed ones, and the filled ones resolved
+  // for this observation. And how the line records them, for a custom tool.
+  const callArgs = new Map<number, Record<string, unknown>>();
+  const loggedArgs = new Map<number, Record<string, unknown>>();
   // One slot per fired action, filled in whatever order the actions settle and read in rule order.
   const slots: (ActionReport | undefined)[] = fired.map(() => undefined);
   // The fired actions whose tool said it wrote something that stays (a handoff's note before its
@@ -172,6 +192,7 @@ export async function applyDecisions(
   const leftNothing = (a: ActionReport, at: number) =>
     a.outcome === "failed"
       ? a.failure === "invalid_arguments" ||
+        a.failure === "missing_value" ||
         (quiet.has(at) && !committed.has(at))
       : a.outcome !== "ran";
   // Latched ahead for an action that was then not dispatched.
@@ -218,13 +239,45 @@ export async function applyDecisions(
       slots[at] = { rule: f.rule, tool: f.tool, outcome: "over_budget" };
       continue;
     }
+    const filled = f.fill ?? {};
+    const resolved =
+      Object.keys(filled).length === 0
+        ? { values: {}, missing: [] as string[] }
+        : fill
+          ? resolveFill(filled, fill.context, answers, fill.questions)
+          : { values: {}, missing: Object.keys(filled) };
+    const args = { ...f.args };
+    for (const [k, v] of Object.entries(resolved.values)) {
+      args[k] = await fitToField(tool, k, v);
+    }
+    callArgs.set(at, args);
+    if (!isNativeDecisionTool(f.tool)) {
+      loggedArgs.set(at, argsForLog(args, filled, fill?.logValues ?? false));
+    }
+    // A field with no value is left out of the call, and a tool that needs it is not called: what
+    // it would refuse is said by the arguments the rule could not fill, not by its schema.
+    if (
+      resolved.missing.length > 0 &&
+      isInteropZodSchema(tool.schema) &&
+      !(await interopSafeParseAsync(tool.schema, args)).success
+    ) {
+      slots[at] = {
+        rule: f.rule,
+        tool: f.tool,
+        outcome: "failed",
+        failure: "missing_value",
+        missing: resolved.missing,
+      };
+      continue;
+    }
     calls += 1;
     if (dryRun) {
       // The arguments are asked of the tool's own schema without running it, so a dry run shows the
       // `invalid_arguments` a run would hit. The watcher's writes are native tools, schema'd in zod.
       const fits =
         !isInteropZodSchema(tool.schema) ||
-        (await interopSafeParseAsync(tool.schema, f.args)).success;
+        (await interopSafeParseAsync(tool.schema, callArgs.get(at) ?? f.args))
+          .success;
       slots[at] = fits
         ? { rule: f.rule, tool: f.tool, outcome: "decided" }
         : {
@@ -240,9 +293,9 @@ export async function applyDecisions(
   const reported = (upTo = fired.length): ActionReport[] =>
     slots.flatMap((a, at) => {
       const f = fired[at];
-      return a !== undefined && f !== undefined && at < upTo
-        ? [withMerged(a, f)]
-        : [];
+      if (a === undefined || f === undefined || at >= upTo) return [];
+      const logged = loggedArgs.get(at);
+      return [withMerged(logged ? { ...a, args: logged } : a, f)];
     });
   // A rule latches when its action RAN (in full or in part), or failed after writing something that
   // stays: one that could not run, wrote nothing, or that a fence refused, acts again on the next
@@ -280,7 +333,12 @@ export async function applyDecisions(
     if (
       action &&
       isInteropZodSchema(r.tool.schema) &&
-      !(await interopSafeParseAsync(r.tool.schema, action.args)).success
+      !(
+        await interopSafeParseAsync(
+          r.tool.schema,
+          callArgs.get(r.at) ?? action.args,
+        )
+      ).success
     ) {
       inert.add(r.at);
     }
@@ -378,7 +436,7 @@ export async function applyDecisions(
         running.push(
           member.tool
             .invoke(
-              f.args,
+              callArgs.get(member.at) ?? f.args,
               // Without the tick's signal: given it, the call would reject the moment the deadline
               // passes while its handler goes on, and what the handler then did would be lost. The
               // handlers keep their own deadline (the Chatwoot client's).
@@ -496,6 +554,22 @@ export async function applyDecisions(
     triggerState: triggerState(),
     withdrawn: false,
   };
+}
+
+// A filled value as the argument takes it: as given when the tool's schema for that argument accepts
+// it, else as its text when that is accepted (a display id into a text argument). A tool with no
+// zod schema of its own gets the value as given.
+async function fitToField(
+  tool: StructuredToolInterface,
+  arg: string,
+  value: unknown,
+): Promise<unknown> {
+  const shape = (tool.schema as { shape?: Record<string, unknown> }).shape;
+  const field = shape?.[arg];
+  if (!field || !isInteropZodSchema(field)) return value;
+  if ((await interopSafeParseAsync(field, value)).success) return value;
+  const text = String(value);
+  return (await interopSafeParseAsync(field, text)).success ? text : value;
 }
 
 // The answers as the flow line carries them: numbers and the operator's own option names, never the

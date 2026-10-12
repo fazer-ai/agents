@@ -5,7 +5,6 @@
 
 import { isDeepStrictEqual } from "node:util";
 import {
-  type DecisionActionTool,
   type DecisionCondition,
   type DecisionRule,
   type DecisionTrigger,
@@ -15,8 +14,10 @@ import type { DecisionAnswer } from "./providers";
 
 export interface FiredAction {
   rule: number;
-  tool: DecisionActionTool;
+  tool: string;
   args: Record<string, unknown>;
+  // The arguments filled from the observation (custom tools; ./tool-args.ts), resolved at dispatch.
+  fill?: Record<string, string>;
   // Later rules that fired the same tool with the same arguments: one write answers for all of them.
   merged: number[];
 }
@@ -78,7 +79,8 @@ export function evaluateRules(
     const dup = fired.find(
       (f) =>
         f.tool === rule.action.tool &&
-        isDeepStrictEqual(f.args, rule.action.args),
+        isDeepStrictEqual(f.args, rule.action.args) &&
+        isDeepStrictEqual(f.fill ?? {}, rule.action.fill ?? {}),
     );
     if (dup) {
       dup.merged.push(i);
@@ -87,6 +89,7 @@ export function evaluateRules(
         rule: i,
         tool: rule.action.tool,
         args: rule.action.args,
+        ...(rule.action.fill ? { fill: rule.action.fill } : {}),
         merged: [],
       });
     }

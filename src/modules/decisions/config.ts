@@ -8,6 +8,8 @@
 // path that skipped it, still reaches the tick and must stop there with a reason rather than act.
 
 import { z } from "zod";
+import { NATIVE_TOOL_NAMES, RAG_TOOL_NAMES } from "@/graph/tools/catalog";
+import { ANSWER_FIELD_QUESTION, parseFieldSource } from "./tool-args";
 
 export const DECISION_PROVIDERS = ["openai", "typesafe"] as const;
 export type DecisionProvider = (typeof DECISION_PROVIDERS)[number];
@@ -15,8 +17,11 @@ export type DecisionProvider = (typeof DECISION_PROVIDERS)[number];
 export const DECISION_QUESTION_TYPES = ["yes_no", "choice", "score"] as const;
 export type DecisionQuestionType = (typeof DECISION_QUESTION_TYPES)[number];
 
-// The tools a rule may run: the native writes a watcher already has, invoked through the same tool
-// object the LLM observer calls, so every protection they carry applies unchanged.
+// The NATIVE tools a rule may run: the writes a watcher already has, invoked through the same tool
+// object the LLM observer calls, so every protection they carry applies unchanged. A rule may also
+// run a custom tool granted to the agent (HTTP, code, MCP) by the name the model knows it by, its
+// arguments fixed or filled from the observation (./tool-args.ts); the write boundary checks the
+// name and the arguments against the tenant's tools (agents/service.ts).
 export const DECISION_ACTION_TOOLS = [
   "set_labels",
   "handoff_to_human",
@@ -24,6 +29,21 @@ export const DECISION_ACTION_TOOLS = [
   "set_custom_attribute",
 ] as const;
 export type DecisionActionTool = (typeof DECISION_ACTION_TOOLS)[number];
+
+export function isNativeDecisionTool(tool: string): tool is DecisionActionTool {
+  return (DECISION_ACTION_TOOLS as readonly string[]).includes(tool);
+}
+
+// A tool name as the model receives it (normalizeToolName, `mcp__<server>__<tool>`).
+export const TOOL_NAME = /^[a-zA-Z0-9_-]{1,64}$/;
+
+// The built-in tools a rule may NOT run: the natives that answer or deliver, and knowledge search.
+// A custom tool never carries one of these names: its service refuses a built-in's name.
+const BUILT_IN_NOT_A_RULE: ReadonlySet<string> = new Set(
+  [...NATIVE_TOOL_NAMES, ...RAG_TOOL_NAMES].filter(
+    (n) => !isNativeDecisionTool(n),
+  ),
+);
 
 // WHEN A RULE ACTS while its conditions keep holding. `each_time`: on every observation
 // in which they hold. `on_start`: on the observation where they start holding, and again only after
@@ -87,9 +107,17 @@ export type DecisionCondition =
       minConfidence?: number;
     };
 
+export interface DecisionAction {
+  tool: string;
+  // Fixed arguments, as written.
+  args: Record<string, unknown>;
+  // Filled arguments, custom tools only: argument name -> field source (./tool-args.ts).
+  fill?: Record<string, string>;
+}
+
 export interface DecisionRule {
   when: DecisionCondition[];
-  action: { tool: DecisionActionTool; args: Record<string, unknown> };
+  action: DecisionAction;
   // The stored choice; absent, the action's default (`triggerOf`).
   trigger?: DecisionTrigger;
 }
@@ -139,8 +167,16 @@ const rule = z.looseObject({
   when: z.array(condition).min(1).optional(),
   action: z
     .looseObject({
-      tool: z.enum(DECISION_ACTION_TOOLS).optional(),
+      tool: z
+        .string()
+        .regex(TOOL_NAME)
+        .refine((t) => !BUILT_IN_NOT_A_RULE.has(t), {
+          message: "a rule runs the watcher's writes or a custom tool",
+          params: { problem: "invalid_value" },
+        })
+        .optional(),
       args: z.record(z.string(), z.unknown()).optional(),
+      fill: z.record(z.string(), z.unknown()).optional(),
     })
     .optional(),
   trigger: z.enum(DECISION_TRIGGERS).optional(),
@@ -216,7 +252,11 @@ export type DecisionsProblemCode =
   | "needs_equals"
   | "unknown_option"
   | "needs_level_range"
-  | "level_out_of_range";
+  | "level_out_of_range"
+  | "fill_on_native"
+  | "arg_twice"
+  | "unknown_field_source"
+  | "fill_question_type";
 
 interface Problem {
   path: (string | number)[];
@@ -366,6 +406,65 @@ function crossFieldProblems(v: RawDecisions): Problem[] {
       }
     }
   }
+  for (const [r, rl] of (v.rules ?? []).entries()) {
+    const action = rl?.action;
+    const fill = action?.fill;
+    if (!fill || typeof fill !== "object") continue;
+    const at = ["rules", r, "action", "fill"];
+    if (
+      typeof action.tool === "string" &&
+      isNativeDecisionTool(action.tool) &&
+      Object.keys(fill).length > 0
+    ) {
+      out.push({
+        path: at,
+        message: `${action.tool} takes its arguments as written; only a custom tool fills them from the observation`,
+        code: "fill_on_native",
+      });
+      continue;
+    }
+    const args =
+      action.args && typeof action.args === "object"
+        ? (action.args as Bag)
+        : {};
+    for (const [arg, raw] of Object.entries(fill as Bag)) {
+      if (arg in args) {
+        out.push({
+          path: [...at, arg],
+          message: `argument "${arg}" is both fixed and filled`,
+          code: "arg_twice",
+          params: { key: arg },
+        });
+      }
+      const source = parseFieldSource(raw);
+      if (!source) {
+        out.push({
+          path: [...at, arg],
+          message: `"${String(raw)}" is not a field the observation knows`,
+          code: "unknown_field_source",
+          params: { key: arg, value: String(raw) },
+        });
+        continue;
+      }
+      if (source.kind !== "answer") continue;
+      const q = byName.get(source.question);
+      if (!q) {
+        out.push({
+          path: [...at, arg],
+          message: `no question named "${source.question}"`,
+          code: "unknown_question",
+          params: { key: arg, value: source.question },
+        });
+      } else if (q.type !== ANSWER_FIELD_QUESTION[source.field]) {
+        out.push({
+          path: [...at, arg],
+          message: `"${source.field}" is the answer of a ${ANSWER_FIELD_QUESTION[source.field]} question, and "${source.question}" is a ${String(q.type)} one`,
+          code: "fill_question_type",
+          params: { key: arg, value: source.question },
+        });
+      }
+    }
+  }
   return out;
 }
 
@@ -451,8 +550,12 @@ export function readDecisionsConfig(monitoring: unknown): DecisionsReading {
       ),
     ),
     action: {
-      tool: r.action?.tool as DecisionActionTool,
+      tool: r.action?.tool ?? "",
       args: (r.action?.args ?? {}) as Record<string, unknown>,
+      ...(r.action?.fill !== undefined && Object.keys(r.action.fill).length > 0
+        ? // Every value is a source the refinement parsed, so a string.
+          { fill: r.action.fill as Record<string, string> }
+        : {}),
     },
     ...(r.trigger !== undefined ? { trigger: r.trigger } : {}),
   }));
@@ -571,7 +674,8 @@ function conditionFor(
 // THE BLOCK AS EVERY REWRITE OF `monitoring` CARRIES IT (the MCP merge, the console's save, the audit
 // projection): the declared fields only, picked by name at every level. The schema is loose, so a
 // stored block may hold any key; one the engine does not read (an `apiKey` pasted beside the ref)
-// must not travel on into an audit row. `action.args` is the tool's own input and goes as written.
+// must not travel on into an audit row. `action.args` is the tool's own input and goes as written, and
+// `action.fill` names fields, never their values.
 const pick = (
   v: unknown,
   keys: readonly string[],
@@ -627,9 +731,10 @@ export function projectDecisionsBlock(
         );
       }
       if (o.action !== undefined) {
-        const a = pick(o.action, ["tool", "args"]);
+        const a = pick(o.action, ["tool", "args", "fill"]);
         if (a !== null) {
           if (a.args !== undefined) a.args = structuredClone(a.args);
+          if (a.fill !== undefined) a.fill = structuredClone(a.fill);
           o.action = a;
         }
       }

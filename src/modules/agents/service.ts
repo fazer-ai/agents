@@ -16,6 +16,8 @@ import {
   NATIVE_TOOL_NAMES,
   RAG_TOOL_NAMES,
 } from "@/graph/tools/catalog";
+import { mcpServerSlug } from "@/graph/tools/mcp";
+import { normalizeToolName } from "@/graph/tools/toolName";
 import { parseDbId, requireDbId } from "@/lib/db-id";
 import {
   AppError,
@@ -51,6 +53,13 @@ import { isOutOfHoursNow, parseSchedule } from "@/modules/business-hours/hours";
 import { renameAgentBots } from "@/modules/chatwoot/provisioning";
 import { invalidateRouteTokenCache } from "@/modules/chatwoot/route-token-cache";
 import { invalidContactAuthRule } from "@/modules/contact-auth/settings";
+import { isNativeDecisionTool } from "@/modules/decisions/config";
+import {
+  type ArgIssueCode,
+  actionArgIssues,
+  argSpecsFrom,
+  type ToolArgSpec,
+} from "@/modules/decisions/tool-args";
 import { documentToolName } from "@/modules/documents/slug";
 import { parseTemplateContent } from "@/modules/documents/validate";
 import {
@@ -443,6 +452,124 @@ export class InvalidToolPreconditionError extends AppError {
       { tool: toolName },
       `toolPreconditions.${toolName}`,
     );
+  }
+}
+
+// A decisions rule whose custom tool the write cannot run as written: a tool the tenant has no such
+// name for, or an argument its schema refuses (a required one with no value, one it does not have,
+// a value of the wrong type). Named down to the argument, at the field the editor draws it.
+function decisionActionArgError(
+  rule: number,
+  tool: string,
+  issue: { arg: string; in: "args" | "fill"; code: ArgIssueCode },
+): AppError {
+  const field = `monitoring.decisions.rules.${rule}.action.${issue.in}.${issue.arg}`;
+  switch (issue.code) {
+    case "arg_required":
+      return new AppError(
+        `monitoring.decisions.rules.${rule}.action: tool "${tool}" requires argument "${issue.arg}"`,
+        400,
+        "errors.decisionArgRequired",
+        { tool, arg: issue.arg, rule: rule + 1 },
+        field,
+      );
+    case "arg_unknown":
+      return new AppError(
+        `monitoring.decisions.rules.${rule}.action: tool "${tool}" has no argument "${issue.arg}"`,
+        400,
+        "errors.decisionArgUnknown",
+        { tool, arg: issue.arg, rule: rule + 1 },
+        field,
+      );
+    case "arg_type":
+      return new AppError(
+        `monitoring.decisions.rules.${rule}.action: tool "${tool}" takes another type for argument "${issue.arg}"`,
+        400,
+        "errors.decisionArgType",
+        { tool, arg: issue.arg, rule: rule + 1 },
+        field,
+      );
+    case "arg_source_type":
+      return new AppError(
+        `monitoring.decisions.rules.${rule}.action: tool "${tool}" takes another type than the field filling argument "${issue.arg}"`,
+        400,
+        "errors.decisionArgSourceType",
+        { tool, arg: issue.arg, rule: rule + 1 },
+        field,
+      );
+  }
+}
+
+export class DecisionToolUnknownError extends AppError {
+  constructor(rule: number, tool: string) {
+    super(
+      `monitoring.decisions.rules.${rule}.action.tool: no tool named "${tool}"`,
+      400,
+      "errors.decisionToolUnknown",
+      { tool, rule: rule + 1 },
+      `monitoring.decisions.rules.${rule}.action.tool`,
+    );
+  }
+}
+
+function storedDecisionActions(settings: unknown): unknown[] {
+  const rules = (
+    (
+      (settings as Record<string, unknown> | undefined)?.monitoring as
+        | Record<string, unknown>
+        | undefined
+    )?.decisions as Record<string, unknown> | undefined
+  )?.rules;
+  return Array.isArray(rules)
+    ? rules.map((r) =>
+        r && typeof r === "object" ? (r as Record<string, unknown>).action : r,
+      )
+    : [];
+}
+
+// A rule's custom tool and its arguments, asked of the tenant's own tools at save time: the schema
+// (decisions/config.ts) knows the grammar, not which tools this tenant has. Only an action the write
+// introduces or changes is asked, compared with every stored action by value: a tool edited after the
+// rule was saved does not make an unrelated save fail (the tick reports it, `invalid_arguments`).
+// An MCP tool's arguments live on its server, read at discovery: its name and arguments are asked at
+// the tick, as the model's calls are.
+export async function assertDecisionActionArgs(
+  db: ScopedDb,
+  settings: unknown,
+  stored: unknown,
+): Promise<void> {
+  const before = storedDecisionActions(stored);
+  const changed = storedDecisionActions(settings).flatMap((a, i) => {
+    if (!a || typeof a !== "object") return [];
+    const action = a as Record<string, unknown>;
+    const tool = action.tool;
+    if (typeof tool !== "string" || isNativeDecisionTool(tool)) return [];
+    if (tool.startsWith("mcp__")) return [];
+    if (before.some((b) => isDeepStrictEqual(b, a))) return [];
+    return [{ rule: i, tool, action }];
+  });
+  if (changed.length === 0) return;
+  const [http, code] = await Promise.all([
+    db.toolDefinition.findMany({ select: { name: true, inputSchema: true } }),
+    db.codeToolDefinition.findMany({
+      select: { name: true, inputSchema: true },
+    }),
+  ]);
+  const schemas = new Map<string, unknown>();
+  for (const t of [...http, ...code]) {
+    schemas.set(normalizeToolName(t.name), t.inputSchema);
+  }
+  for (const { rule, tool, action } of changed) {
+    if (!schemas.has(tool)) throw new DecisionToolUnknownError(rule, tool);
+    const bag = (v: unknown) =>
+      v && typeof v === "object" && !Array.isArray(v)
+        ? (v as Record<string, unknown>)
+        : {};
+    const issue = actionArgIssues(
+      { args: bag(action.args), fill: bag(action.fill) },
+      argSpecsFrom(schemas.get(tool)),
+    )[0];
+    if (issue) throw decisionActionArgError(rule, tool, issue);
   }
 }
 
@@ -1842,6 +1969,7 @@ export async function updateAgent(
       modelConfig: before?.model_config,
       settings: before?.settings,
     });
+    await assertDecisionActionArgs(db, rest.settings, before?.settings);
     // See settingsForStorage: what is STORED is normalized on the way in, on every write path, not
     // only when it is read back.
     const normalizedSettings = settingsForStorage(rest.settings);
@@ -2101,6 +2229,7 @@ export async function createAgent(
     // NOTE: Nothing is stored yet, so every ref the payload carries is one this write introduces.
     // Rewrites `data` in place; both bags below read from it.
     await assertCredentialRefsResolve(db, data, {});
+    await assertDecisionActionArgs(db, data.settings, undefined);
     const createShape = {
       enabled: data.enabled ?? true,
       // NOTE: New agents are born in test mode (operator opt-in before going live).
@@ -2337,13 +2466,23 @@ export interface ToolSelectionView {
     // reads it instead of keeping its own list of names.
     native: { name: string; deliversToCustomer?: boolean }[];
     rag: { name: string }[];
+    // `toolName` is the name the model calls it by, and `args` what it takes: a decisions rule names
+    // the tool by the first and fills the second (decisions/tool-args.ts).
     toolDefinitions: {
       id: string;
       name: string;
       label: string;
       enabled: boolean;
+      toolName: string;
+      args: ToolArgSpec[];
     }[];
-    mcpConnections: { id: string; name: string; enabled: boolean }[];
+    // `slug` is the server's part of its tools' names (`mcp__<slug>__<tool>`).
+    mcpConnections: {
+      id: string;
+      name: string;
+      enabled: boolean;
+      slug: string;
+    }[];
     integrationInstances: {
       id: string;
       catalogType: string;
@@ -2358,7 +2497,14 @@ export interface ToolSelectionView {
       }[];
     }[];
     // Operator-authored code tools; `name` is what the agent calls.
-    codeTools: { id: string; name: string; label: string; enabled: boolean }[];
+    codeTools: {
+      id: string;
+      name: string;
+      label: string;
+      enabled: boolean;
+      toolName: string;
+      args: ToolArgSpec[];
+    }[];
     documentTemplates: {
       id: string;
       name: string;
@@ -2727,6 +2873,7 @@ async function buildToolSelectionView(
       name: true,
       label: true,
       enabled: true,
+      inputSchema: true,
     },
     orderBy: { name: "asc" },
   });
@@ -2743,7 +2890,13 @@ async function buildToolSelectionView(
     orderBy: { name: "asc" },
   });
   const codeTools = await db.codeToolDefinition.findMany({
-    select: { id: true, name: true, label: true, enabled: true },
+    select: {
+      id: true,
+      name: true,
+      label: true,
+      enabled: true,
+      inputSchema: true,
+    },
     orderBy: { name: "asc" },
   });
   const documentTemplates = await db.documentTemplate.findMany({
@@ -2790,11 +2943,14 @@ async function buildToolSelectionView(
         name: t.name,
         label: t.label,
         enabled: t.enabled,
+        toolName: normalizeToolName(t.name),
+        args: argSpecsFrom(t.inputSchema),
       })),
       mcpConnections: mcpConnections.map((m) => ({
         id: String(m.id),
         name: m.name,
         enabled: m.enabled,
+        slug: mcpServerSlug(m.name),
       })),
       // NOTE: A WEBHOOK entry (GENERIC) has no tools to grant: offering it here would list a
       // selectable integration that gives the agent nothing.
@@ -2820,6 +2976,8 @@ async function buildToolSelectionView(
         name: c.name,
         label: c.label,
         enabled: c.enabled,
+        toolName: normalizeToolName(c.name),
+        args: argSpecsFrom(c.inputSchema),
       })),
       documentTemplates: documentTemplates.map((d) => ({
         id: String(d.id),

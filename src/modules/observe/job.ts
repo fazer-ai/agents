@@ -72,6 +72,7 @@ import {
   askProvider,
   type DecisionProgress,
 } from "@/modules/decisions/run";
+import type { FillContext } from "@/modules/decisions/tool-args";
 import {
   claimTriggerState,
   type Generation,
@@ -851,6 +852,47 @@ async function agentStillOnInbox(
 
 // Whether these settings carry a contact gate with conditions, the ones the fence asks of the
 // conversation's labels and attributes.
+// What a rule's custom tool may fill an argument from (decisions/tool-args.ts): the contact and inbox
+// as the HTTP tools' context carries them, the conversation by the number its link shows, and the
+// mirror's attribute bags.
+function fillContextOf(
+  context: Record<string, string>,
+  conv: {
+    customAttributes: unknown;
+    contact: { customAttributes: unknown } | null;
+  } | null,
+  displayId: number,
+  client: Pick<ChatwootClient, "conversationUrl">,
+): FillContext {
+  const bag = (v: unknown): Record<string, unknown> =>
+    v && typeof v === "object" && !Array.isArray(v)
+      ? (v as Record<string, unknown>)
+      : {};
+  const inbox = Number(context.inbox_id);
+  return {
+    contact: {
+      ...(context.contact_name ? { name: context.contact_name } : {}),
+      ...(context.contact_phone ? { phone: context.contact_phone } : {}),
+      ...(context.contact_email ? { email: context.contact_email } : {}),
+      ...(context.contact_identifier
+        ? { identifier: context.contact_identifier }
+        : {}),
+    },
+    contactAttributes: bag(conv?.contact?.customAttributes),
+    conversation: {
+      display_id: displayId,
+      ...(Number.isInteger(inbox) && context.inbox_id
+        ? { inbox_id: inbox }
+        : {}),
+      // A client without the dashboard's address (a test double) has no link to give.
+      ...(typeof client.conversationUrl === "function"
+        ? { link: client.conversationUrl(displayId) }
+        : {}),
+    },
+    conversationAttributes: bag(conv?.customAttributes),
+  };
+}
+
 function hasGateRule(settings: unknown): boolean {
   const gate = readContactAuthConfig(settings);
   return gate.enabled && contactAuthHasRuleStage(gate);
@@ -914,6 +956,10 @@ export async function runObserve(
         resetClearedLabels: true,
         // Whether a phone-echo marker can be trusted to name a person (`providerReservesEchoIds`).
         inbox: { select: { provider: true } },
+        // The mirror's attribute bags, which a rule's custom tool may fill an argument from
+        // (decisions/tool-args.ts): refreshed by the event that queued this tick.
+        customAttributes: true,
+        contact: { select: { customAttributes: true } },
       },
     });
     const cfg = await loadAgentConfig(
@@ -1780,6 +1826,16 @@ export async function runObserve(
           const held = await latchRules(base, triggerScope, generation, keys);
           for (const k of keys) released.delete(k);
           return held;
+        },
+        {
+          context: fillContextOf(
+            cfg.httpToolContext,
+            conv,
+            conversationId,
+            client,
+          ),
+          questions: config.questions,
+          logValues: cfg.logToolValues,
         },
       );
       applying = run;

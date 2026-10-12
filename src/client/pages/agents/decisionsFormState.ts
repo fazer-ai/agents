@@ -4,7 +4,12 @@ import {
   type DecisionTrigger,
   decisionsIssues,
   defaultTriggerFor,
+  isNativeDecisionTool,
 } from "@/modules/decisions/config";
+import {
+  actionArgIssues,
+  type ToolArgSpec,
+} from "@/modules/decisions/tool-args";
 
 // The decisions engine's block (`monitoring.decisions`, docs/decisions.md) as the agent editor edits
 // it: stored block → form → stored block, the same pair of pure functions every other block of the
@@ -73,6 +78,9 @@ export interface DecisionRuleForm {
   // The tool's own input, as stored: edited key by key, so an argument this form has no field for
   // (`scope` on set_labels) survives a save.
   args: Record<string, unknown>;
+  // A custom tool's arguments filled from the observation: argument name -> field source
+  // (decisions/tool-args.ts). An argument is in `args` (fixed) or here, never both.
+  fill: Record<string, string>;
   // When the rule acts (`each_time`, `on_start`, `once`). "" when the stored rule does not say, which
   // the engine reads as the action's default (`ruleTriggerShown`); kept apart so an untouched rule is
   // written back without one, and a rule whose action changes keeps following the new default.
@@ -194,6 +202,9 @@ export function decisionsToForm(raw: unknown): DecisionsForm | null {
         }),
         tool: text(action.tool),
         args: structuredClone(bag(action.args) ?? {}),
+        fill: Object.fromEntries(
+          Object.entries(bag(action.fill) ?? {}).map(([k, v]) => [k, text(v)]),
+        ),
         trigger: text(o.trigger),
       };
     }),
@@ -262,6 +273,7 @@ export function decisionsToStored(
       const action: Record<string, unknown> = {};
       put(action, "tool", r.tool);
       action.args = structuredClone(r.args);
+      if (Object.keys(r.fill).length > 0) action.fill = { ...r.fill };
       return {
         when: r.when.map((c) => {
           const o: Record<string, unknown> = {};
@@ -345,6 +357,7 @@ export type DecisionsIssueMap = ReadonlyMap<string, DecisionsIssue>;
 export function decisionsFormIssues(
   form: DecisionsForm,
   stored?: Record<string, unknown> | null,
+  tools?: CustomTools | null,
 ): DecisionsIssueMap {
   const out = new Map<string, DecisionsIssue>();
   const block =
@@ -355,7 +368,141 @@ export function decisionsFormIssues(
     const at = issueFieldPath(issue);
     if (!out.has(at)) out.set(at, issue);
   }
+  // A custom tool's arguments, asked as the server asks them on save (`assertDecisionActionArgs`):
+  // for a rule the save changes, and a tool whose arguments the console knows.
+  if (tools) {
+    const storedActions = list(bag(stored)?.rules).map((r) =>
+      JSON.stringify(canonAction(bag(r)?.action)),
+    );
+    for (const [ri, raw] of list(block.rules).entries()) {
+      const action = bag(bag(raw)?.action);
+      const tool = text(action?.tool);
+      const specs = tools.get(tool)?.args;
+      if (!action || !specs || isNativeDecisionTool(tool)) continue;
+      if (storedActions.includes(JSON.stringify(canonAction(action)))) {
+        continue;
+      }
+      for (const issue of actionArgIssues(
+        { args: bag(action.args) ?? {}, fill: bag(action.fill) ?? {} },
+        specs,
+      )) {
+        const at = `rules.${ri}.action.args.${issue.arg}`;
+        if (out.has(at)) continue;
+        out.set(at, {
+          path: ["rules", ri, "action", "args", issue.arg],
+          code: issue.code,
+          message: issue.code,
+          params: { key: issue.arg },
+        });
+      }
+    }
+  }
   return out;
+}
+
+const canonAction = (v: unknown): unknown =>
+  Array.isArray(v)
+    ? v.map(canonAction)
+    : v && typeof v === "object"
+      ? Object.fromEntries(
+          Object.entries(v as Record<string, unknown>)
+            .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+            .map(([k, x]) => [k, canonAction(x)]),
+        )
+      : v;
+
+// THE TENANT'S OWN TOOLS a rule may run, by the name the model calls them (the engine finds the tool
+// by it): the HTTP and code tools with the arguments their schemas declare, and the tools the agent's
+// MCP grants enable, whose arguments live on their server (`args` null).
+export interface CustomToolOffer {
+  name: string;
+  label: string;
+  kind: "http" | "code" | "mcp";
+  args: ToolArgSpec[] | null;
+}
+export type CustomTools = ReadonlyMap<string, CustomToolOffer>;
+
+interface CustomCatalog {
+  toolDefinitions: {
+    id: string;
+    label: string;
+    toolName: string;
+    args: ToolArgSpec[];
+  }[];
+  codeTools: {
+    id: string;
+    label: string;
+    toolName: string;
+    args: ToolArgSpec[];
+  }[];
+  mcpConnections: { id: string; name: string; slug: string }[];
+}
+interface CustomGrantRow {
+  source: string;
+  toolDefinitionId?: string | null;
+  codeToolDefinitionId?: string | null;
+  mcpServerConnectionId?: string | null;
+  enabledTools?: string[];
+}
+
+// `mcp__<server>__<tool>`, as the assembly names an MCP tool (graph/tools/mcp.ts
+// `namespacedToolName`). A name past 64 characters, which the assembly trims, is not offered.
+export function mcpToolName(slug: string, tool: string): string | null {
+  const name = `mcp__${slug}__${tool}`;
+  return name.length <= 64 ? name : null;
+}
+
+// Every custom tool the console knows (`all`), and the names of those the grants allow (`granted`).
+export function customToolsOf(
+  catalog: CustomCatalog,
+  grants: readonly CustomGrantRow[],
+): { all: Map<string, CustomToolOffer>; granted: Set<string> } {
+  const all = new Map<string, CustomToolOffer>();
+  const granted = new Set<string>();
+  for (const d of catalog.toolDefinitions) {
+    all.set(d.toolName, {
+      name: d.toolName,
+      label: d.label || d.toolName,
+      kind: "http",
+      args: d.args,
+    });
+  }
+  for (const c of catalog.codeTools) {
+    all.set(c.toolName, {
+      name: c.toolName,
+      label: c.label || c.toolName,
+      kind: "code",
+      args: c.args,
+    });
+  }
+  for (const g of grants) {
+    if (g.source === "HTTP") {
+      const d = catalog.toolDefinitions.find(
+        (x) => x.id === g.toolDefinitionId,
+      );
+      if (d) granted.add(d.toolName);
+    } else if (g.source === "CODE") {
+      const c = catalog.codeTools.find((x) => x.id === g.codeToolDefinitionId);
+      if (c) granted.add(c.toolName);
+    } else if (g.source === "MCP") {
+      const m = catalog.mcpConnections.find(
+        (x) => x.id === g.mcpServerConnectionId,
+      );
+      if (!m) continue;
+      for (const tool of g.enabledTools ?? []) {
+        const name = mcpToolName(m.slug, tool);
+        if (name === null) continue;
+        all.set(name, {
+          name,
+          label: `${m.name}: ${tool}`,
+          kind: "mcp",
+          args: null,
+        });
+        granted.add(name);
+      }
+    }
+  }
+  return { all, granted };
 }
 
 export function issuesUnder(

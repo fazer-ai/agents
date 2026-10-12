@@ -150,6 +150,7 @@ import {
 } from "./contactAuthRuleForm";
 import { ClassifierFields, DecisionsFields } from "./DecisionsFields";
 import {
+  customToolsOf,
   type DecisionsRefusalHeld,
   decisionsFormIssues,
   decisionsRefusalFrom,
@@ -987,15 +988,25 @@ function AgentEditor() {
   const decides = watcher && observation.engine === "decisions";
   // What keeps the decision setup from being written, asked of the write boundary's own schema. Only
   // where it is drawn: a draft left behind the language model is not this agent's to save.
+  // Declared here, ahead of the tool-selection state below, because the setup's problems ask it.
+  const [catalog, setCatalog] = useState<ToolCatalog | null>(null);
+  // The tenant's own tools a rule may run, and which of them the agent has AS SAVED (what the
+  // engine checks), from the grants the last sync read.
+  const syncedGrants = syncedGrantsRef.current;
+  const customTools = useMemo(
+    () => (catalog ? customToolsOf(catalog, syncedGrants) : null),
+    [catalog, syncedGrants],
+  );
   const decisionsSetupIssues = useMemo(
     () =>
       decides && observation.decisions
         ? decisionsFormIssues(
             observation.decisions,
             decisionsBaseline(observation),
+            customTools?.all ?? null,
           )
         : new Map(),
-    [decides, observation],
+    [decides, observation, customTools],
   );
   // A Save on either tab of the setup is never a silent click and never off for it: pressed with
   // something missing, it writes nothing, turns the "to save" lines into errors and goes to the first
@@ -1166,7 +1177,6 @@ function AgentEditor() {
 
   // Tool selection
   const [grants, setGrants] = useState<GrantState[]>([]);
-  const [catalog, setCatalog] = useState<ToolCatalog | null>(null);
   // Discovered MCP tools + per-connection collapse state, kept here (not in ToolGrantsEditor) so the
   // discovery survives switching agent tabs — the operator doesn't have to re-Discover.
   const [mcpTools, setMcpTools] = useState<Record<string, DiscoveredMcpTool[]>>(
@@ -4869,21 +4879,28 @@ function AgentEditor() {
                   )}
                   granted={
                     catalog
-                      ? nativeToolsGranted(
-                          syncedGrantsRef.current,
-                          catalog.native.map((n) => n.name),
-                        )
+                      ? new Set([
+                          ...nativeToolsGranted(
+                            syncedGrantsRef.current,
+                            catalog.native.map((n) => n.name),
+                          ),
+                          ...(customTools?.granted ?? []),
+                        ])
                       : null
                   }
+                  customTools={customTools?.all ?? null}
                   grantsPending={toolGrantsPending}
                   grantWriting={savingGrants}
                   onGrantTool={(tool) => void grantNativeTool(tool)}
-                  onOpenTools={(tool) =>
+                  onOpenTools={(tool) => {
+                    const custom = customTools?.all.get(tool);
                     goToEditorTarget({
                       tab: "tools",
-                      sectionId: nativeToolAnchor(tool),
-                    })
-                  }
+                      sectionId: custom
+                        ? `tools-${custom.kind}`
+                        : nativeToolAnchor(tool),
+                    });
+                  }}
                   onOpenGeneral={() => openTab("general")}
                   showErrors={decisionsAttempted}
                 />

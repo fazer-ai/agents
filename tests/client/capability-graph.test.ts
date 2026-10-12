@@ -167,7 +167,14 @@ describe("buildGroups — every grant source is drawn", () => {
     const disabled = {
       ...catalog,
       codeTools: [
-        { id: "8", name: "lookup_cpf", label: "Look up CPF", enabled: false },
+        {
+          id: "8",
+          name: "lookup_cpf",
+          label: "Look up CPF",
+          enabled: false,
+          toolName: "lookup_cpf",
+          args: [],
+        },
       ],
     };
     const groups = buildGroups(disabled, [grantFor.CODE as GrantState], t);

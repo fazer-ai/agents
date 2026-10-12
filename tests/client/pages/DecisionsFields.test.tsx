@@ -18,6 +18,7 @@ import {
   DecisionsFields,
   type DecisionsServerRefusal,
 } from "@/client/pages/agents/DecisionsFields";
+import type { CustomTools } from "@/client/pages/agents/decisionsFormState";
 import { EngineCards } from "@/client/pages/agents/EngineChoice";
 import { ObservationSection } from "@/client/pages/agents/ObservationSection";
 import {
@@ -153,6 +154,7 @@ function renderSection(
     granted?: string[] | null;
     grantsPending?: boolean;
     showErrors?: boolean;
+    customTools?: CustomTools | null;
   } = {},
 ): { state: () => ObservationState } {
   let latest = observationToForm(settings);
@@ -208,6 +210,7 @@ function renderSection(
                     ? null
                     : new Set(opts.granted)
               }
+              customTools={opts.customTools ?? null}
               grantsPending={opts.grantsPending ?? false}
               onGrantTool={(tool) => grantedTools.push(tool)}
               onOpenTools={(tool) => opened.push(`tools:${tool}`)}
@@ -596,7 +599,9 @@ describe("a problem the server would name", () => {
     [
       "an action that does not exist",
       (b) => {
-        rule(b, 0).action.tool = "apagar";
+        // A built-in no rule runs: any other name may be one of the tenant's own tools, which the
+        // server asks of its tools (agents#1223).
+        rule(b, 0).action.tool = "send_image";
       },
     ],
     [
@@ -1024,5 +1029,170 @@ describe("a threshold on a rule", () => {
       rules: { when: { minProbability?: number }[] }[];
     };
     expect(written.rules[0]?.when[0]?.minProbability).toBe(0.85);
+  });
+});
+
+// A RULE ON ONE OF THE TENANT'S OWN TOOLS (agents#1223): the action list carries the custom tools the
+// agent has beside the four natives, each argument is fixed or filled from a field of the type it
+// takes, and a required one left without either keeps the save from going, naming it.
+describe("a rule on a custom tool", () => {
+  const TOOLS: CustomTools = new Map([
+    [
+      "abrir_ticket",
+      {
+        name: "abrir_ticket",
+        label: "Abrir ticket",
+        kind: "http" as const,
+        args: [
+          { name: "motivo", type: "string" as const, required: true },
+          { name: "telefone", type: "string" as const, required: true },
+          { name: "prioridade", type: "number" as const, required: false },
+        ],
+      },
+    ],
+    [
+      "registrar_caso",
+      {
+        name: "registrar_caso",
+        label: "Registrar caso",
+        kind: "code" as const,
+        args: [{ name: "pedido", type: "string" as const, required: true }],
+      },
+    ],
+  ]);
+  const GRANTED = [
+    "set_labels",
+    "handoff_to_human",
+    "private_note",
+    "set_custom_attribute",
+    "abrir_ticket",
+    "registrar_caso",
+  ];
+  const openAll = () => {
+    for (const fold of Array.from(
+      document.querySelectorAll<HTMLElement>('[aria-expanded="false"]'),
+    )) {
+      fireEvent.click(fold);
+    }
+  };
+  const optionValues = (el: Element | null) =>
+    Array.from(el?.querySelectorAll("option") ?? []).map((o) => o.value);
+
+  test("lists the custom tools beside the natives, and offers per argument the fields of its type", async () => {
+    stubApi();
+    renderSection(
+      { monitoring: { engine: "decisions", decisions: BLOCK } },
+      { granted: GRANTED, customTools: TOOLS },
+    );
+    // The attribute definitions arrive with the labels.
+    await waitFor(() => expect(logQueries.length).toBeGreaterThan(0));
+    openAll();
+    const action = screen.getAllByTestId("decisions-rule-action")[0] ?? null;
+    const actions = optionValues(action);
+    for (const tool of [...GRANTED]) {
+      expect(actions.includes(tool), tool).toBe(true);
+    }
+    if (!action) throw new Error("no action select");
+    fireEvent.change(action, { target: { value: "abrir_ticket" } });
+    for (const arg of ["motivo", "telefone", "prioridade"]) {
+      expect(count(`decisions-arg-${arg}`), arg).toBe(1);
+    }
+    const modeOf = (arg: string) =>
+      screen
+        .getByTestId(`decisions-arg-${arg}`)
+        .querySelector("select") as HTMLSelectElement;
+    fireEvent.change(modeOf("telefone"), { target: { value: "fill" } });
+    fireEvent.change(modeOf("prioridade"), { target: { value: "fill" } });
+    const text = optionValues(
+      screen.getByTestId("decisions-arg-source-telefone"),
+    );
+    for (const source of [
+      "contact.phone",
+      "contact.name",
+      "conversation.display_id",
+      "conversation.link",
+      "conversation.attribute.sentimento",
+      "answer.assunto.choice",
+      "answer.pede_reembolso.probability",
+    ]) {
+      expect(text.includes(source), source).toBe(true);
+    }
+    // A number argument is offered numbers only.
+    const number = optionValues(
+      screen.getByTestId("decisions-arg-source-prioridade"),
+    );
+    expect(number.includes("conversation.display_id")).toBe(true);
+    expect(number.includes("answer.pede_reembolso.probability")).toBe(true);
+    expect(number.includes("contact.name")).toBe(false);
+    expect(number.includes("contact.phone")).toBe(false);
+    expect(number.includes("answer.assunto.choice")).toBe(false);
+  });
+
+  test("a required argument left without a value is a problem that names it, and the block saves what was chosen", async () => {
+    stubApi();
+    const { state } = renderSection(
+      { monitoring: { engine: "decisions", decisions: BLOCK } },
+      { granted: GRANTED, customTools: TOOLS, showErrors: true },
+    );
+    openAll();
+    const action = screen.getAllByTestId("decisions-rule-action")[0];
+    if (!action) throw new Error("no action select");
+    fireEvent.change(action, { target: { value: "abrir_ticket" } });
+    const row = (arg: string) => screen.getByTestId(`decisions-arg-${arg}`);
+    fireEvent.change(row("motivo").querySelector("input") as HTMLElement, {
+      target: { value: "cancelamento" },
+    });
+    expect(count("decisions-problems")).toBe(1);
+    const shown = document.body.textContent ?? "";
+    expect(shown.includes('"telefone" is required by the tool')).toBe(true);
+    expect(shown.includes('"motivo" is required by the tool')).toBe(false);
+    fireEvent.change(row("telefone").querySelector("select") as HTMLElement, {
+      target: { value: "fill" },
+    });
+    fireEvent.change(screen.getByTestId("decisions-arg-source-telefone"), {
+      target: { value: "contact.phone" },
+    });
+    fireEvent.change(row("prioridade").querySelector("input") as HTMLElement, {
+      target: { value: "2" },
+    });
+    expect(count("decisions-problems")).toBe(0);
+    const rules = observationToStored(state()).decisions?.rules as {
+      action: unknown;
+    }[];
+    expect(rules[0]?.action).toEqual({
+      tool: "abrir_ticket",
+      args: { motivo: "cancelamento", prioridade: 2 },
+      fill: { telefone: "contact.phone" },
+    });
+  });
+
+  test("a custom tool the agent does not have points to Tools instead of granting it here", async () => {
+    stubApi();
+    renderSection(
+      {
+        monitoring: {
+          engine: "decisions",
+          decisions: {
+            ...BLOCK,
+            rules: [
+              {
+                when: [{ question: "pede_reembolso", minProbability: 0.7 }],
+                action: {
+                  tool: "abrir_ticket",
+                  args: { motivo: "x" },
+                  fill: { telefone: "contact.phone" },
+                },
+              },
+            ],
+          },
+        },
+      },
+      {
+        granted: GRANTED.filter((n) => n !== "abrir_ticket"),
+        customTools: TOOLS,
+      },
+    );
+    expect(count("decisions-rule-not-granted")).toBeGreaterThan(0);
+    expect(count("decisions-rule-grant")).toBe(0);
   });
 });

@@ -209,11 +209,17 @@ export function ToolsTab({
       label: t("editor.tools.preconditions", "Preconditions"),
     },
   ];
-  // Questions and rules draw only the native tools and their preconditions.
+  // Questions and rules draw what a rule can run: the native tools with their preconditions, and the
+  // tenant's own HTTP, code and MCP tools.
+  const RULE_SECTIONS = new Set([
+    "tools-http",
+    "tools-code",
+    "tools-mcp",
+    "tools-native",
+    "tools-preconditions",
+  ]);
   const sections = decides
-    ? allSections.filter(
-        (sec) => sec.id === "tools-native" || sec.id === "tools-preconditions",
-      )
+    ? allSections.filter((sec) => RULE_SECTIONS.has(sec.id))
     : allSections;
 
   return (

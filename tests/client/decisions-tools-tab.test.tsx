@@ -209,21 +209,17 @@ test("each tool a rule can fire has its card's anchor, with a control to focus",
   }
 });
 
-// The list is what a rule can run: the four natives a rule names. The rest of the catalog (HTTP,
-// code, MCP, integrations, the natives of an agent that answers) is not drawn, and nothing about
-// the tools is written for a model to read.
+// The list is what a rule can run: the four natives a rule names and the tenant's own HTTP, code
+// and MCP tools (agents#1223). The rest of the catalog (integrations, the natives of an agent that
+// answers) is not drawn, and nothing about the tools is written for a model to read.
 test("on questions and rules, only what a rule can run is listed", async () => {
   stubAuth();
   renderEditor(true);
   const text = await openSettings();
-  for (const id of [
-    "tools-http",
-    "tools-code",
-    "tools-mcp",
-    "tools-integrations",
-  ]) {
-    expect(document.getElementById(id) === null, id).toBe(true);
+  for (const id of ["tools-http", "tools-code", "tools-mcp"]) {
+    expect(document.getElementById(id) === null, id).toBe(false);
   }
+  expect(document.getElementById("tools-integrations") === null).toBe(true);
   expect(text.includes("Skip reply")).toBe(false);
   expect(text.includes("Move kanban card")).toBe(false);
   expect(

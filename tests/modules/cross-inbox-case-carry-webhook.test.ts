@@ -140,7 +140,7 @@ const rowOf = (convId: number) =>
     where: {
       tenantId,
       kind: "CASE_CARRY",
-      dedupeKey: caseCarryDedupeKey(threadOf(convId)),
+      dedupeKey: caseCarryDedupeKey(threadOf(convId), CASE),
     },
   });
 

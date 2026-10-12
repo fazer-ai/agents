@@ -11,6 +11,7 @@ import {
   CASE_CARRY_DELAY_MS,
   caseCarryDedupeKey,
   caseCarryHandler,
+  caseCarryOriginKey,
 } from "@/modules/cross-inbox-case/carry-job";
 import {
   type ClaimedJob,
@@ -55,6 +56,8 @@ const CONTACT = 5;
 const CASE = 202;
 const KEY = "case_conversation_id";
 const OTHER_CASE = 303;
+// A case older than CASE, which an opening of CASE may have replaced.
+const OLD_CASE = 201;
 
 let tenantId = 0n;
 let instanceId = 0n;
@@ -134,7 +137,7 @@ function fakeChatwoot(opts: {
         downloaded
       )
         throw new ChatwootApiError(502, "GET");
-      if (id === CASE || id === OTHER_CASE) {
+      if (id === CASE || id === OTHER_CASE || id === OLD_CASE) {
         return {
           id,
           inbox_id: opts.caseInbox ?? CASE_INBOX,
@@ -199,7 +202,8 @@ function fakeChatwoot(opts: {
         fn: "setConversationCustomAttributes",
         args: [id, attrs, opts],
       });
-      if (id === CASE || id === OTHER_CASE) Object.assign(caseAttrs, attrs);
+      if (id === CASE || id === OTHER_CASE || id === OLD_CASE)
+        Object.assign(caseAttrs, attrs);
       else Object.assign(originAttrs, attrs);
     },
   } as unknown as ChatwootClient;
@@ -221,7 +225,12 @@ function fakeChatwoot(opts: {
 
 function jobFor(
   originConversationId: number,
-  over: { attempts?: number; armedAtMessageId?: number | null } = {},
+  over: {
+    attempts?: number;
+    armedAtMessageId?: number | null;
+    caseId?: number;
+    byTool?: boolean;
+  } = {},
 ): ClaimedJob {
   return {
     id: phantomJobId,
@@ -230,9 +239,10 @@ function jobFor(
     payload: {
       instanceId: String(instanceId),
       originConversationId,
-      caseId: CASE,
+      caseId: over.caseId ?? CASE,
       armedAtMessageId:
         over.armedAtMessageId === undefined ? 9002 : over.armedAtMessageId,
+      ...(over.byTool ? { byTool: true } : {}),
     },
     attempts: over.attempts ?? 0,
     claimSeq: 0,
@@ -407,7 +417,7 @@ describe.skipIf(!dbUp)("the late carry into the case", () => {
     await seed(103);
     const f = fakeChatwoot({ messages: [fromContact(9001, [7001])] });
     await caseCarryHandler(
-      jobFor(103, { armedAtMessageId: 9000 }),
+      jobFor(103, { armedAtMessageId: 9000, byTool: true }),
       appDb,
       f.deps,
     );
@@ -420,7 +430,7 @@ describe.skipIf(!dbUp)("the late carry into the case", () => {
     expect(f.uploaded()).toEqual([["foto-7001.jpg"]]);
   });
 
-  test("an arm from before the origin moved to another case carries into the case it names now", async () => {
+  test("an arm for a case the origin has since left stands down: the case it names has its own row", async () => {
     await setAgent({});
     await seed(104);
     const f = fakeChatwoot({
@@ -430,9 +440,24 @@ describe.skipIf(!dbUp)("the late carry into the case", () => {
     expect(await caseCarryHandler(jobFor(104), appDb, f.deps)).toEqual({
       outcome: "done",
     });
-    expect(f.named("sendFilesAsAdmin").map((c) => c.args[0])).toEqual([
-      OTHER_CASE,
-    ]);
+    expect(f.named("sendFilesAsAdmin")).toHaveLength(0);
+    expect((await carryLines(104)).at(-1)?.detail).toMatchObject({
+      caseId: CASE,
+      stoodDown: "superseded",
+    });
+  });
+
+  test("the case the origin left is not restored when the newer one closed before the run", async () => {
+    await setAgent({});
+    await seed(105);
+    const f = fakeChatwoot({
+      messages: [fromContact(9001, [7001])],
+      originAttrs: { [KEY]: OTHER_CASE },
+      caseStatusOf: { [OTHER_CASE]: "resolved" },
+    });
+    await caseCarryHandler(jobFor(105), appDb, f.deps);
+    expect(f.named("sendFilesAsAdmin")).toHaveLength(0);
+    expect(f.originAttrs[KEY]).toBe(OTHER_CASE);
   });
 
   test("a failed write of the origin's case number is retried, after the files went", async () => {
@@ -458,7 +483,7 @@ describe.skipIf(!dbUp)("the late carry into the case", () => {
         ).setConversationCustomAttributes(id, attrs, opts);
       },
     } as unknown as ChatwootClient;
-    const r = await caseCarryHandler(jobFor(110), appDb, {
+    const r = await caseCarryHandler(jobFor(110, { byTool: true }), appDb, {
       makeClient: async () => failing,
     });
     expect(r.outcome).toBe("fail");
@@ -579,23 +604,25 @@ describe.skipIf(!dbUp)("the late carry into the case", () => {
     // The origin still names the closed case this opening replaced.
     const f = fakeChatwoot({
       messages: [fromContact(9001, [7001])],
-      originAttrs: { [KEY]: OTHER_CASE },
-      caseStatusOf: { [OTHER_CASE]: "resolved" },
+      originAttrs: { [KEY]: OLD_CASE },
+      caseStatusOf: { [OLD_CASE]: "resolved" },
     });
-    await caseCarryHandler(jobFor(115), appDb, f.deps);
+    await caseCarryHandler(jobFor(115, { byTool: true }), appDb, f.deps);
     expect(f.named("sendFilesAsAdmin").map((c) => c.args[0])).toEqual([CASE]);
     expect(f.originAttrs[KEY]).toBe(CASE);
   });
 
-  test("an origin naming a deleted case falls back to the armed one", async () => {
+  test("an origin naming a deleted case falls back to the replacement the tool armed", async () => {
     await setAgent({});
     await seed(117);
     const f = fakeChatwoot({
       messages: [fromContact(9001, [7001])],
-      originAttrs: { [KEY]: OTHER_CASE },
-      deleted: [OTHER_CASE],
+      originAttrs: { [KEY]: OLD_CASE },
+      deleted: [OLD_CASE],
     });
-    expect(await caseCarryHandler(jobFor(117), appDb, f.deps)).toEqual({
+    expect(
+      await caseCarryHandler(jobFor(117, { byTool: true }), appDb, f.deps),
+    ).toEqual({
       outcome: "done",
     });
     expect(f.named("sendFilesAsAdmin").map((c) => c.args[0])).toEqual([CASE]);
@@ -623,7 +650,11 @@ describe.skipIf(!dbUp)("the late carry into the case", () => {
       carried: "9001:7001",
       caseReadsBeforeFailure: 1,
     });
-    const r = await caseCarryHandler(jobFor(129), appDb, f.deps);
+    const r = await caseCarryHandler(
+      jobFor(129, { byTool: true }),
+      appDb,
+      f.deps,
+    );
     expect(r.outcome).toBe("fail");
     expect(f.originAttrs[KEY]).toBeUndefined();
   });
@@ -748,7 +779,10 @@ describe.skipIf(!dbUp)("the late carry into the case", () => {
         },
       });
       await seed(119);
-      const f = files();
+      const f = fakeChatwoot({
+        messages: [fromContact(9001, [7001])],
+        originAttrs: { [KEY]: CASE },
+      });
       await caseCarryHandler(jobFor(119), appDb, f.deps);
       expect(f.named("sendFilesAsAdmin")).toHaveLength(1);
       await setAgent({});
@@ -790,13 +824,14 @@ describe.skipIf(!dbUp)("the late carry into the case", () => {
   });
 
   describe("arming", () => {
-    const rowOf = (convId: number) =>
+    const rowOf = (convId: number, caseId = CASE) =>
       suDb.schedulerJob.findFirst({
         where: {
           tenantId,
           kind: "CASE_CARRY",
           dedupeKey: caseCarryDedupeKey(
             chatwootThreadId(tenantId, instanceId, convId),
+            caseId,
           ),
         },
       });
@@ -888,23 +923,24 @@ describe.skipIf(!dbUp)("the late carry into the case", () => {
     test("an arm that read the origin before a /reset does not replace the arm that came after it", async () => {
       await setAgent({});
       await seed(141);
-      const key = caseCarryDedupeKey(
-        chatwootThreadId(tenantId, instanceId, 141),
-      );
+      const thread = chatwootThreadId(tenantId, instanceId, 141);
+      const key = caseCarryDedupeKey(thread, CASE);
+      // Arms of one origin take one lock, whatever their case.
+      const lockKey = caseCarryOriginKey(thread);
       let stale: Promise<unknown> = Promise.resolve();
       // The lock held while the stale arm (9002) waits for it, having read the origin with no reset:
       // in the meantime the reset (9003) lands and a file after it (9004) arms the row.
       await suDb.$transaction(
         async (tx) => {
-          await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${key})::bigint)`;
+          await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lockKey})::bigint)`;
           stale = arm(141, 9002);
           // The stale arm has read the origin and waits on this key's lock.
           await until("the stale arm waiting on the lock", async () => {
             const [w] = await suDb.$queryRaw<{ n: bigint }[]>`
               SELECT count(*)::bigint AS n FROM pg_locks
               WHERE locktype = 'advisory' AND NOT granted AND objsubid = 1
-                AND objid::bigint = (hashtext(${key})::bigint & 4294967295)
-                AND classid::bigint = ((hashtext(${key})::bigint >> 32) & 4294967295)`;
+                AND objid::bigint = (hashtext(${lockKey})::bigint & 4294967295)
+                AND classid::bigint = ((hashtext(${lockKey})::bigint >> 32) & 4294967295)`;
             return Number(w?.n ?? 0) > 0;
           });
           await tx.conversation.updateMany({
@@ -943,6 +979,82 @@ describe.skipIf(!dbUp)("the late carry into the case", () => {
       await arm(142, 9004);
       expect((await rowOf(142))?.payload).toMatchObject({
         armedAtMessageId: 9005,
+      });
+    });
+
+    const armFor = (
+      convId: number,
+      caseId: number,
+      armedAtMessageId: number,
+      over: { owedSince?: Date; byTool?: boolean } = {},
+    ) =>
+      armCaseCarry({
+        tenantId,
+        instanceId,
+        originConversationId: convId,
+        caseId,
+        armedAtMessageId,
+        owedSince: over.owedSince ?? new Date(),
+        byTool: over.byTool,
+        base: appDb,
+      });
+
+    test("a late webhook naming the closed case does not take the replacement the tool armed", async () => {
+      await setAgent({});
+      await seed(143);
+      // The opening of CASE, withdrawn before it wrote the origin's case number, armed its recovery; a
+      // file's webhook a moment later still names the closed case CASE replaced.
+      await armFor(143, CASE, 9003, { byTool: true });
+      await armFor(143, OLD_CASE, 9004);
+      const row = await rowOf(143);
+      expect(row?.payload).toMatchObject({ caseId: CASE, byTool: true });
+      if (!row) throw new Error("no row");
+      const f = fakeChatwoot({
+        messages: [fromContact(9001, [7001])],
+        originAttrs: { [KEY]: OLD_CASE },
+        caseStatusOf: { [OLD_CASE]: "resolved" },
+      });
+      await caseCarryHandler(
+        {
+          id: row.id,
+          tenantId,
+          kind: "CASE_CARRY",
+          payload: row.payload as Record<string, unknown>,
+          attempts: 0,
+          claimSeq: row.claimSeq,
+        },
+        appDb,
+        f.deps,
+      );
+      expect(f.named("sendFilesAsAdmin").map((c) => c.args[0])).toEqual([CASE]);
+      expect(f.originAttrs[KEY]).toBe(CASE);
+    });
+
+    test("an older arm for another case does not pair its case with the newer arming message", async () => {
+      await setAgent({});
+      await seed(144);
+      await armFor(144, CASE, 9005, { byTool: true });
+      await armFor(144, OLD_CASE, 9004);
+      expect((await rowOf(144))?.payload).toMatchObject({
+        caseId: CASE,
+        armedAtMessageId: 9005,
+      });
+      expect((await rowOf(144, OLD_CASE))?.payload).toMatchObject({
+        caseId: OLD_CASE,
+        armedAtMessageId: 9004,
+      });
+    });
+
+    test("an arm for another case owes files from its own instant, never the earlier case's", async () => {
+      await setAgent({});
+      await seed(145);
+      const early = new Date(Date.now() - 600_000);
+      const late = new Date();
+      await armFor(145, CASE, 9002, { owedSince: early });
+      await armFor(145, OTHER_CASE, 9003, { owedSince: late, byTool: true });
+      expect((await rowOf(145, OTHER_CASE))?.payload).toMatchObject({
+        caseId: OTHER_CASE,
+        owedSince: Math.floor(late.getTime() / 1000),
       });
     });
 

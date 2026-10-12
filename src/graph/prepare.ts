@@ -1740,6 +1740,7 @@ export async function buildToolset(
                                 },
                               ).catch(() => new Date())
                             : new Date(),
+                        byTool: true,
                         base: ctx.base,
                       }),
                   }

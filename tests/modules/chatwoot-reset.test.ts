@@ -2423,17 +2423,21 @@ describe.skipIf(!dbUp)(
     // The late carry of the customer's files into a case: a claimed one would still post them to the
     // case after the command took the conversation back.
     test("a case carry pending or claimed is tombstoned too", async () => {
-      const dedupeKey = `case-carry:${tenantId}:${instanceId}:${CONV_ID}`;
-      await suDb.schedulerJob.create({
-        data: {
-          tenantId,
-          kind: "CASE_CARRY",
-          dedupeKey,
-          runAt: new Date(Date.now() + 5_000),
-          status: "CLAIMED",
-          payload: { originConversationId: CONV_ID, caseId: 202 },
-        },
-      });
+      // One row per case of the conversation; another conversation's whose id starts the same is kept.
+      const dedupeKey = `case-carry:${tenantId}:${instanceId}:${CONV_ID}:202`;
+      const otherKey = `case-carry:${tenantId}:${instanceId}:${CONV_ID}0:202`;
+      for (const key of [dedupeKey, otherKey]) {
+        await suDb.schedulerJob.create({
+          data: {
+            tenantId,
+            kind: "CASE_CARRY",
+            dedupeKey: key,
+            runAt: new Date(Date.now() + 5_000),
+            status: "CLAIMED",
+            payload: { originConversationId: CONV_ID, caseId: 202 },
+          },
+        });
+      }
       const cw = fakeChatwoot();
       globalThis.fetch = cw.impl as typeof fetch;
       try {
@@ -2448,6 +2452,11 @@ describe.skipIf(!dbUp)(
         ).toBeString();
         expect(row.claimSeq).toBe(1);
         expect(row.status).toBe("DONE");
+        const other = await suDb.schedulerJob.findFirstOrThrow({
+          where: { tenantId, kind: "CASE_CARRY", dedupeKey: otherKey },
+          select: { status: true },
+        });
+        expect(other.status).toBe("CLAIMED");
       } finally {
         globalThis.fetch = originalFetch;
         await suDb.schedulerJob.deleteMany({ where: { tenantId } });

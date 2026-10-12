@@ -49,9 +49,42 @@ export const OPEN_CASE_TOOL = "open_case_in_inbox";
 // and one walk after the last of them carries them in one note.
 export const CASE_CARRY_DELAY_MS = 5_000;
 
-// One row per ORIGIN conversation, the unit /reset retires (../chatwoot/webhook.ts).
-export function caseCarryDedupeKey(threadId: string): string {
+// One row per (ORIGIN conversation, CASE): what a row owes (its case, its arming message, the instant
+// its files are owed from) never mixes with another case's. The origin's prefix is the unit /reset
+// retires (`retireCaseCarries`) and the lock arms take.
+export function caseCarryOriginKey(threadId: string): string {
   return `case-carry:${threadId}`;
+}
+
+export function caseCarryDedupeKey(threadId: string, caseId: number): string {
+  return `${caseCarryOriginKey(threadId)}:${caseId}`;
+}
+
+// Retires every carry of the origin, pending or claimed, whatever its case: /reset's step. Same
+// tombstone as `retireJobsByDedupeKeyOn` (DONE, `cancelledAt`, the claim bumped so a running handler's
+// `jobRetired` answers yes). The bare origin key is a row armed before the key named its case.
+export async function retireCaseCarries(
+  tenantId: bigint,
+  threadId: string,
+  base: PrismaClient,
+): Promise<number> {
+  const origin = caseCarryOriginKey(threadId);
+  const like = `${origin.replace(/[\\%_]/g, "\\$&")}:%`;
+  const stamp = JSON.stringify({ cancelledAt: new Date().toISOString() });
+  return runScopedOn(
+    base,
+    sysCtx(tenantId),
+    (db) => db.$executeRaw`
+      UPDATE scheduler_jobs
+         SET status = 'DONE',
+             payload = payload || ${stamp}::jsonb,
+             claim_seq = claim_seq + 1,
+             updated_at = now()
+       WHERE tenant_id = ${tenantId}
+         AND kind = 'CASE_CARRY'::"SchedulerJobKind"
+         AND (dedupe_key = ${origin} OR dedupe_key LIKE ${like})
+         AND status IN ('PENDING', 'CLAIMED')`,
+  );
 }
 
 // Why a carry stands down, or null when it may go on.
@@ -187,6 +220,9 @@ export interface CaseCarryArm {
   // When the file that armed it was sent (the contact's message, or the opening itself). Files from
   // then on are owed to the case even when the attendance boundary has moved past them since.
   owedSince: Date | null;
+  // The tool's arm, for the case it just opened or appended to: the only arm that may carry into a case
+  // the origin does not name yet (an opening withdrawn before it wrote the origin's case number).
+  byTool?: boolean;
   base: PrismaClient;
 }
 
@@ -198,66 +234,78 @@ export async function armCaseCarry(
   const state = await readCarryState(p);
   if (!state) return "not_mirrored";
   if (state.hold) return state.hold;
-  const dedupeKey = caseCarryDedupeKey(
-    chatwootThreadId(p.tenantId, p.instanceId, p.originConversationId),
+  const threadId = chatwootThreadId(
+    p.tenantId,
+    p.instanceId,
+    p.originConversationId,
   );
+  const dedupeKey = caseCarryDedupeKey(threadId, p.caseId);
   const owed =
     p.owedSince === null ? null : Math.floor(p.owedSince.getTime() / 1000);
-  // A row still waiting (or retrying) owes files from its own instant on: the new arm keeps the
-  // earlier of the two, or a file that failed before this one would fall outside the boundary. Read
-  // and re-armed under one lock per origin, so two files arming at once cannot both read the old row.
+  // A row still waiting (or retrying) for THIS case owes files from its own instant on: the new arm
+  // keeps the earlier of the two, or a file that failed before this one would fall outside the
+  // boundary. An arm for another case is that case's own row, owing from its own instant. Read and
+  // re-armed under one lock per origin, so two files arming at once cannot both read the old row.
   // The reset is read AGAIN under the lock: the read above may predate a /reset, and an arm from
   // before it would replace a row a file after it armed, which then stands down as withdrawn.
   return runScopedOn(p.base, sysCtx(p.tenantId), (db) =>
-    withEntityLock(db, dedupeKey, async (): Promise<"armed" | "reset"> => {
-      const conv = await db.conversation.findUnique({
-        where: { id: state.conversationRowId },
-        select: { resetAtMessageId: true },
-      });
-      const reset = conv?.resetAtMessageId ?? null;
-      if (resetLandedAfter(p.armedAtMessageId, reset)) return "reset";
-      const waiting = await db.schedulerJob.findFirst({
-        where: {
+    withEntityLock(
+      db,
+      caseCarryOriginKey(threadId),
+      async (): Promise<"armed" | "reset"> => {
+        const conv = await db.conversation.findUnique({
+          where: { id: state.conversationRowId },
+          select: { resetAtMessageId: true },
+        });
+        const reset = conv?.resetAtMessageId ?? null;
+        if (resetLandedAfter(p.armedAtMessageId, reset)) return "reset";
+        const waiting = await db.schedulerJob.findFirst({
+          where: {
+            kind: "CASE_CARRY",
+            dedupeKey,
+            status: { in: ["PENDING", "CLAIMED"] },
+          },
+          select: { payload: true },
+        });
+        // A waiting row from before the reset owes nothing any more.
+        const waitingArmed = positiveInt(
+          field(waiting?.payload, "armedAtMessageId"),
+        );
+        const live = waiting && !resetLandedAfter(waitingArmed, reset);
+        const earlier = live
+          ? positiveInt(field(waiting.payload, "owedSince"))
+          : null;
+        // The newest arming message wins: arms can land out of order, and the older one would let a
+        // reset between the two withdraw the newer file.
+        const armedAtMessageId =
+          live && waitingArmed !== null && p.armedAtMessageId !== null
+            ? Math.max(waitingArmed, p.armedAtMessageId)
+            : p.armedAtMessageId;
+        const byTool =
+          p.byTool === true ||
+          (live && field(waiting.payload, "byTool") === true);
+        await upsertJobRow(db, {
+          tenantId: p.tenantId,
           kind: "CASE_CARRY",
           dedupeKey,
-          status: { in: ["PENDING", "CLAIMED"] },
-        },
-        select: { payload: true },
-      });
-      // A waiting row from before the reset owes nothing any more.
-      const waitingArmed = positiveInt(
-        field(waiting?.payload, "armedAtMessageId"),
-      );
-      const live = waiting && !resetLandedAfter(waitingArmed, reset);
-      const earlier = live
-        ? positiveInt(field(waiting.payload, "owedSince"))
-        : null;
-      // The newest arming message wins: arms can land out of order, and the older one would let a
-      // reset between the two withdraw the newer file.
-      const armedAtMessageId =
-        live && waitingArmed !== null && p.armedAtMessageId !== null
-          ? Math.max(waitingArmed, p.armedAtMessageId)
-          : p.armedAtMessageId;
-      await upsertJobRow(db, {
-        tenantId: p.tenantId,
-        kind: "CASE_CARRY",
-        dedupeKey,
-        runAt: new Date(Date.now() + CASE_CARRY_DELAY_MS),
-        payload: {
-          instanceId: String(p.instanceId),
-          originConversationId: p.originConversationId,
-          caseId: p.caseId,
-          armedAtMessageId,
-          owedSince:
-            owed === null || earlier === null
-              ? (owed ?? earlier)
-              : Math.min(owed, earlier),
-        },
-        // A new file is new work: a failure budget spent on an older one does not carry over.
-        rearm: "new-work",
-      });
-      return "armed";
-    }),
+          runAt: new Date(Date.now() + CASE_CARRY_DELAY_MS),
+          payload: {
+            instanceId: String(p.instanceId),
+            originConversationId: p.originConversationId,
+            caseId: p.caseId,
+            armedAtMessageId,
+            byTool,
+            owedSince:
+              owed === null || earlier === null
+                ? (owed ?? earlier)
+                : Math.min(owed, earlier),
+          },
+          // A new file is new work: a failure budget spent on an older one does not carry over.
+          rearm: "new-work",
+        });
+        return "armed";
+      },
+    ),
   );
 }
 
@@ -342,11 +390,12 @@ export async function caseCarryHandler(
       makeClient: deps.makeClient,
     },
   );
-  // WHICH CASE. The one the origin names, while it is still open in the destination inbox: the row
-  // is keyed by the origin and the last arm wins, so an arm from before the origin moved on carries
-  // into the case it moved to. Otherwise the armed case, when it is open: an opening withdrawn before
-  // writing the origin's case number (none, or a closed case it replaced). A closed or moved case is
-  // never reopened, and no case is ever created here.
+  // WHICH CASE. Only the row's own case, while it is still open in the destination inbox, and only
+  // while the origin names it, or names nothing newer: the tool's arm recovers an opening withdrawn
+  // before it wrote the origin's case number (none, or the older closed case it replaced; a case
+  // opened later always has a greater id). An arm for a case the origin has since left stands down:
+  // the case it names now has its own row, and nothing is restored over a newer link. A closed or
+  // moved case is never reopened, and no case is ever created here.
   let originConv: unknown;
   try {
     originConv = await client.getConversation(originConversationId);
@@ -369,28 +418,28 @@ export async function caseCarryHandler(
       (status === "open" || status === "pending")
     );
   };
-  let target: number | null = null;
+  const recovery =
+    job.payload.byTool === true && (named === null || named < caseId);
+  if (named !== caseId && !recovery) {
+    line("info", { caseId, stoodDown: "superseded", namedCase: named });
+    return { outcome: "done" };
+  }
+  let caseOpen = false;
   try {
-    for (const id of [...new Set([named, caseId])]) {
-      if (id === null || id === originConversationId) continue;
-      // A deleted case is not one to carry into: the next candidate is read.
-      const conv = await client.getConversation(id).catch((err: unknown) => {
-        if (err instanceof ChatwootApiError && err.status === 404) return null;
-        throw err;
-      });
-      if (conv && openCase(conv)) {
-        target = id;
-        break;
-      }
-    }
+    // A deleted case is not one to carry into.
+    const conv = await client.getConversation(caseId).catch((err: unknown) => {
+      if (err instanceof ChatwootApiError && err.status === 404) return null;
+      throw err;
+    });
+    caseOpen = conv !== null && openCase(conv);
   } catch {
     return { outcome: "fail", error: "case carry: could not read the case" };
   }
-  if (target === null) {
-    line("info", { caseId: named ?? caseId, stoodDown: "case_closed" });
+  if (!caseOpen || caseId === originConversationId) {
+    line("info", { caseId, stoodDown: "case_closed" });
     return { outcome: "done" };
   }
-  const into = target;
+  const into = caseId;
 
   // Asked before the origin write and the upload: the conversation is still the agent's to act on,
   // and the case is still open where it was (the team can close or move it while the files come down).

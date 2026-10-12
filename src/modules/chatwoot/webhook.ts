@@ -138,7 +138,7 @@ import {
 } from "@/modules/conversations/service";
 import {
   armCaseCarry,
-  caseCarryDedupeKey,
+  retireCaseCarries,
 } from "@/modules/cross-inbox-case/carry-job";
 import { readCrossInboxCaseConfig } from "@/modules/cross-inbox-case/settings";
 import {
@@ -3105,12 +3105,9 @@ async function maybeConsumeCommandOrGate(params: {
     // The carry of late files into a case this conversation opened: a claimed one would still post
     // the customer's files to the case after the command took the conversation back.
     await step("cancel case carry", "cópia de anexos para o caso", () =>
-      retireJobsByDedupeKey(
+      retireCaseCarries(
         tenantId,
-        "CASE_CARRY",
-        caseCarryDedupeKey(
-          chatwootThreadId(tenantId, instanceId, conversationId),
-        ),
+        chatwootThreadId(tenantId, instanceId, conversationId),
         base,
       ),
     );

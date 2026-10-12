@@ -621,6 +621,95 @@ describe("the tick fills a custom tool's arguments and records them", () => {
     expect(seen[0]?.telefone).toBe("+5511999990001");
   });
 
+  test("a rule written fixed and one filled with the same value are one call", async () => {
+    const seen: Record<string, unknown>[] = [];
+    const tool = customTool(
+      "abrir_ticket",
+      z.object({ motivo: z.string(), telefone: z.string() }),
+      seen,
+    );
+    const fixed = {
+      when,
+      action: {
+        tool: "abrir_ticket",
+        args: { motivo: "cancelamento", telefone: "+5511999990001" },
+      },
+    };
+    const filled = {
+      when,
+      action: {
+        tool: "abrir_ticket",
+        args: { motivo: "cancelamento" },
+        fill: { telefone: "contact.phone" },
+      },
+    };
+    const r = await applyDecisions(
+      { rules: [fixed, filled] },
+      answers,
+      [tool],
+      [],
+      new AbortController().signal,
+      async () => true,
+      10,
+      undefined,
+      false,
+      new Set(),
+      {},
+      async () => true,
+      { context: ctx, questions, logValues: true },
+    );
+    expect(seen).toHaveLength(1);
+    expect(r.actions).toHaveLength(1);
+    expect(r.actions[0]?.merged).toEqual([1]);
+    expect(r.triggerState.latch.sort()).toEqual(
+      [ruleStateKey(fixed), ruleStateKey(filled)].sort(),
+    );
+  });
+
+  test("a nullable text argument of a JSON Schema takes a number as its digits", async () => {
+    const seen: Record<string, unknown>[] = [];
+    const tool = new DynamicStructuredTool({
+      name: "mcp__crm__abrir",
+      description: "x",
+      schema: {
+        type: "object",
+        properties: {
+          motivo: { type: "string" },
+          telefone: { type: ["string", "null"] },
+        },
+      },
+      func: async (input) => {
+        seen.push(input as Record<string, unknown>);
+        return "ok";
+      },
+    });
+    await once(tool as unknown as StructuredToolInterface, {
+      telefone: "conversation.display_id",
+    });
+    expect(seen[0]?.telefone).toBe("42");
+  });
+
+  test("an MCP call its adapter refuses for its arguments sent nothing, and leaves the rule free", async () => {
+    const refusal = Object.assign(
+      new Error('Invalid arguments for MCP tool "abrir"'),
+      { name: "ToolException", cause: { name: "ZodError" } },
+    );
+    const tool = new DynamicStructuredTool({
+      name: "mcp__crm__abrir",
+      description: "x",
+      schema: z.object({}).passthrough(),
+      func: async () => {
+        throw refusal;
+      },
+    });
+    const r = await once(tool, { telefone: "contact.phone" });
+    expect(r.actions[0]).toMatchObject({
+      outcome: "failed",
+      failure: "invalid_arguments",
+    });
+    expect(r.triggerState.latch).toEqual([]);
+  });
+
   test("a custom tool the agent was not granted reports not_granted and calls nothing", async () => {
     const r = await applyDecisions(
       { rules: [rule] },

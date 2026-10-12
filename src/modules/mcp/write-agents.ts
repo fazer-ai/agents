@@ -14,6 +14,7 @@ import {
   assertAgentToolGrantsResolvable,
   assertAgentUpdatable,
   assertCredentialRefsUsable,
+  assertDecisionActionArgsUsable,
   assertSchedulesExist,
   cloneAgent,
   createAgent,
@@ -157,6 +158,12 @@ export async function agentCreate(
       // `google_oauth` entry holds an object where most of these fields hand a string to a provider
       // SDK.
       await assertCredentialRefsUsable(ctx, input, base);
+      await assertDecisionActionArgsUsable(
+        ctx,
+        input.settings,
+        undefined,
+        base,
+      );
       return ok({
         dryRun: true,
         action: "create",

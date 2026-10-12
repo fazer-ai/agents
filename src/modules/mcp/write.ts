@@ -34,6 +34,7 @@ import {
 } from "@/modules/agents/credential-paths";
 import {
   assertCredentialRefsUsable,
+  assertDecisionActionArgsUsable,
   assertPromptSize,
   assertResolveLabelsNotProtected,
   assertSettingsClosedValues,
@@ -705,6 +706,12 @@ export async function agentSettingsSet(
       await assertCredentialRefsUsable(ctx, { settings: nextBag }, base, {
         settings: current.settings,
       });
+      await assertDecisionActionArgsUsable(
+        ctx,
+        nextBag,
+        current.settings,
+        base,
+      );
       return ok({ dryRun: true, target, diff });
     }
 

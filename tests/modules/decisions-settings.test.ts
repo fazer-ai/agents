@@ -545,6 +545,47 @@ describe.skipIf(!dbUp)("the decisions block through MCP", () => {
     },
   };
 
+  // agents#1223: the preview asks the tenant's tool as the apply does, so a dry run never approves a
+  // rule whose custom tool lacks a required argument.
+  test("a custom-tool rule missing a required argument is refused by the preview and the apply alike", async () => {
+    await suDb.toolDefinition.create({
+      data: {
+        tenantId,
+        name: "abrir_ticket",
+        label: "abrir_ticket",
+        urlTemplate: "https://example.com/t",
+        allowedHosts: ["example.com"],
+        method: "POST",
+        inputSchema: {
+          motivo: { type: "string", required: true },
+          telefone: { type: "string", required: true },
+        },
+      },
+    });
+    const custom = {
+      ...block,
+      decisions: {
+        ...block.decisions,
+        rules: [
+          {
+            when: RULES[0]?.when,
+            action: { tool: "abrir_ticket", args: { motivo: "cancelamento" } },
+          },
+        ],
+      },
+    };
+    for (const dry_run of [undefined, false]) {
+      const r = await agentSettingsSet(
+        principal(),
+        { agent_id: String(agentId), dry_run, monitoring: custom } as never,
+        { base: appDb },
+      );
+      expect(r.ok, String(dry_run)).toBe(false);
+      expect(JSON.stringify(r)).toContain("telefone");
+    }
+    await suDb.toolDefinition.deleteMany({ where: { tenantId } });
+  });
+
   test("the preview writes nothing; the apply stores the block with the credential as a ref", async () => {
     const before = await stored();
     const preview = await agentSettingsSet(

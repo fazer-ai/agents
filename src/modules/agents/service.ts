@@ -1751,6 +1751,19 @@ export async function assertCredentialRefsUsable(
   );
 }
 
+// The same question for a preview, which holds no transaction: what `assertDecisionActionArgs` would
+// refuse on the apply, asked so a dry run does not approve what the write then refuses.
+export async function assertDecisionActionArgsUsable(
+  ctx: TenantContext,
+  settings: unknown,
+  stored: unknown,
+  base: PrismaClient = basePrisma,
+): Promise<void> {
+  await runScopedOn(base, ctx, (db) =>
+    assertDecisionActionArgs(db, settings, stored),
+  );
+}
+
 // The EFFECTIVE follow-up state, in any mode (the sweep admits /teste conversations). Every OFF to ON
 // transition stamps Agent.followUpArmedAt, the sweep's backlog fence, meaning "from now on"; promotion
 // to production re-arms too, or the test-period watermark would expose the whole backlog.

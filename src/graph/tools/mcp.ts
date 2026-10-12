@@ -1,6 +1,9 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
-import type { StructuredToolInterface } from "@langchain/core/tools";
+import type {
+  StructuredToolInterface,
+  ToolRunnableConfig,
+} from "@langchain/core/tools";
 import { type Connection, loadMcpTools } from "@langchain/mcp-adapters";
 import {
   Client,
@@ -11,6 +14,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import logger from "@/api/lib/logger";
 import config from "@/config";
 import { normalizeTupleItems } from "@/graph/gemini-tools";
+import { fenceReporterOf } from "@/graph/tools/fence-report";
 import { declarationSchema } from "@/graph/tools/mcp-schema";
 import {
   hasSafeStdioCommandChars,
@@ -432,6 +436,35 @@ function withDraft2020Tuples(client: Client): void {
   }) as Client["listTools"];
 }
 
+// THE ADAPTER'S OWN ARGUMENT CHECK, which runs against the server's full schema before the server is
+// reached: a call it refuses sent nothing, said on the call's reporter (fence-report.ts) so a caller
+// that asks per call (a decisions rule) does not count it as a call that may have written.
+export function isMcpArgumentRefusal(err: unknown): boolean {
+  return (
+    err instanceof Error &&
+    err.name === "ToolException" &&
+    (err.cause as { name?: unknown } | undefined)?.name === "ZodError"
+  );
+}
+
+function reportArgumentRefusals(tool: StructuredToolInterface): void {
+  const t = tool as unknown as {
+    func?: (args: unknown, runManager: unknown, config: unknown) => unknown;
+  };
+  const call = t.func;
+  if (typeof call !== "function") return;
+  t.func = async (args, runManager, config) => {
+    try {
+      return await call.call(tool, args, runManager, config);
+    } catch (err) {
+      if (isMcpArgumentRefusal(err)) {
+        fenceReporterOf(config as ToolRunnableConfig)?.({ noEffect: true });
+      }
+      throw err;
+    }
+  };
+}
+
 // One connection on its own SDK client, for every transport. An SDK 2 `Client` negotiates the legacy
 // protocol by default, so no elicitation request can turn into an interrupt no turn resumes. Its HTTP
 // transports get a `fetch` that adds the declared headers of the tool call in flight.
@@ -458,8 +491,10 @@ async function connectClient(
           result: withStructuredContent(result) as typeof result,
         }),
       });
-      for (const tool of tools)
+      for (const tool of tools) {
         (tool as { schema: unknown }).schema = declarationSchema(tool.schema);
+        reportArgumentRefusals(tool);
+      }
       return { client, tools };
     } catch (err) {
       void client.close().catch(() => {});

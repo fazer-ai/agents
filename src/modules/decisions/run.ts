@@ -2,6 +2,7 @@
 // window, the ceiling, the flow line). Two steps, kept apart so the tick can gate between them and
 // log each: ask the provider, then turn the answers into tool calls by rule.
 
+import { isDeepStrictEqual } from "node:util";
 import type { Callbacks } from "@langchain/core/callbacks/manager";
 import {
   type StructuredToolInterface,
@@ -18,6 +19,7 @@ import {
   withFenceReporter,
 } from "@/graph/tools/fence-report";
 import { WAIT_MESSAGE_ARG } from "@/graph/tools/http";
+import { isMcpArgumentRefusal } from "@/graph/tools/mcp";
 import { sentNothing } from "@/modules/chatwoot/client";
 import {
   type DecisionQuestion,
@@ -229,15 +231,14 @@ export async function applyDecisions(
   const toRun: { at: number; tool: StructuredToolInterface }[] = [];
   // Every call the tick dispatches counts, a dry run's included, so it reports what a run would.
   let calls = 0;
+  // The calls this tick makes, by fired action, for the merge below.
+  const sent: { at: number; tool: string; args: Record<string, unknown> }[] =
+    [];
   for (const [at, f] of fired.entries()) {
     // The grant is checked first, so a dry run shows the same missing grant a run would hit.
     const tool = tools.find((t) => t.name === f.tool);
     if (!tool) {
       slots[at] = { rule: f.rule, tool: f.tool, outcome: "not_granted" };
-      continue;
-    }
-    if (calls >= maxCalls) {
-      slots[at] = { rule: f.rule, tool: f.tool, outcome: "over_budget" };
       continue;
     }
     const filled = f.fill ?? {};
@@ -258,6 +259,20 @@ export async function applyDecisions(
       !(WAIT_MESSAGE_ARG in args)
     ) {
       args[WAIT_MESSAGE_ARG] = "-";
+    }
+    // Two rules written differently can call with the same arguments (one fixed, one filled with the
+    // same value): one call answers for both, as rules.ts merges identical actions as written.
+    const same = sent.find(
+      (x) => x.tool === f.tool && isDeepStrictEqual(x.args, args),
+    );
+    const into = same ? fired[same.at] : undefined;
+    if (into) {
+      into.merged.push(f.rule, ...f.merged);
+      continue;
+    }
+    if (calls >= maxCalls) {
+      slots[at] = { rule: f.rule, tool: f.tool, outcome: "over_budget" };
+      continue;
     }
     callArgs.set(at, args);
     if (!isNativeDecisionTool(f.tool)) {
@@ -280,6 +295,7 @@ export async function applyDecisions(
       continue;
     }
     calls += 1;
+    sent.push({ at, tool: f.tool, args });
     if (dryRun) {
       // The arguments are asked of the tool's own schema without running it, so a dry run shows the
       // `invalid_arguments` a run would hit. The watcher's writes are native tools, schema'd in zod.
@@ -524,7 +540,8 @@ export async function applyDecisions(
                   tool: f.tool,
                   outcome: "failed",
                   failure:
-                    err instanceof ToolInputParsingException
+                    err instanceof ToolInputParsingException ||
+                    isMcpArgumentRefusal(err)
                       ? "invalid_arguments"
                       : "tool_error",
                   ...(committed.has(member.at)
@@ -581,8 +598,15 @@ async function fitToField(
     return (await interopSafeParseAsync(field, text)).success ? text : value;
   }
   // An MCP tool carries its server's JSON Schema.
-  const type = (field as { type?: unknown } | null)?.type;
-  return type === "string" && typeof value !== "string" ? String(value) : value;
+  // A nullable or union type (`["string", "null"]`) takes text when it takes no number.
+  const raw = (field as { type?: unknown } | null)?.type;
+  const types = Array.isArray(raw) ? raw : [raw];
+  return typeof value !== "string" &&
+    types.includes("string") &&
+    !types.includes(typeof value === "number" ? "number" : "") &&
+    !(Number.isInteger(value) && types.includes("integer"))
+    ? String(value)
+    : value;
 }
 
 // One argument's schema: a zod object's field, or a JSON Schema property.

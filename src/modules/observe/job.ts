@@ -77,7 +77,6 @@ import {
 import {
   claimTriggerState,
   latchRules,
-  unlatchRules,
   writeTriggerState,
 } from "@/modules/decisions/trigger-state";
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
@@ -1986,13 +1985,17 @@ export async function runObserve(
       // fence).
       const release = async () => {
         if (triggerScope === null) return;
-        const due = [
-          ...new Set([...(progress.release ?? []), ...(progress.undo ?? [])]),
-        ].filter((k) => !released.has(k));
+        const fresh = (keys: string[] | undefined) =>
+          (keys ?? []).filter((k) => !released.has(k));
+        const change = {
+          release: fresh(progress.release),
+          undo: fresh(progress.undo),
+        };
+        const due = [...change.release, ...change.undo];
         if (due.length === 0) return;
         try {
-          // Superseded is as final as written: the newer observation owns the state now.
-          await unlatchRules(base, triggerScope, generation, due);
+          // Superseded, only its own reservations go: the newer observation owns the rest.
+          await writeTriggerState(base, triggerScope, generation, change);
           // Counted only once done, so a failed release is tried again by the next call.
           for (const k of due) released.add(k);
         } catch (err) {

@@ -1,9 +1,9 @@
 // The decisions engine's trigger state (docs/decisions.md, "When a rule acts"): one row per rule
 // that acted and is held back, keyed by `ruleStateKey`. THE INVARIANT: an older observation never
-// changes the state a newer one read. Every read takes the next generation of (agent, conversation)
-// in decision_rule_claims; every write or deletion first moves the claim row `WHERE generation =
-// <its own>` in the same transaction, which also locks it until commit. A tick a newer observation
-// has read past writes nothing (`false`): no latch, release, undo or drop.
+// changes the state a newer one read, except to withdraw its own reservation. Every read takes the
+// next generation of (agent, conversation) in decision_rule_claims. A tick adds, releases or drops
+// rows only while that generation is still its own (checked and locked in the same transaction),
+// and otherwise deletes only rows it wrote itself for actions that never wrote (`undo`).
 
 import type { PrismaClient } from "@/../generated/prisma/client";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
@@ -92,50 +92,60 @@ export async function latchRules(
         agentId: scope.agentId,
         conversationId: scope.conversationId,
         ruleKey,
+        generation,
       })),
       skipDuplicates: true,
     }),
   );
 }
 
-// Releases, by a tick the deadline ended, of what it owes (DecisionProgress).
-export async function unlatchRules(
-  base: PrismaClient,
+// A tick's own latches for actions that wrote nothing or never started: deleted whoever holds the
+// claim now, since the row is this tick's and no newer one wrote it.
+async function undoOwn(
+  db: ScopedDb,
   scope: TriggerScope,
   generation: bigint,
   keys: string[],
-): Promise<boolean> {
-  return owned(base, scope, generation, (db) =>
-    db.decisionRuleState.deleteMany({
-      where: {
-        agentId: scope.agentId,
-        conversationId: scope.conversationId,
-        ruleKey: { in: keys },
-      },
-    }),
-  );
+): Promise<void> {
+  if (keys.length === 0) return;
+  await db.decisionRuleState.deleteMany({
+    where: {
+      agentId: scope.agentId,
+      conversationId: scope.conversationId,
+      ruleKey: { in: keys },
+      generation,
+    },
+  });
 }
 
-// What a tick that finished releases (`release`, `undo`), and the keys no rule of the block has any
-// more (an edited or deleted rule's state goes with it). Its `latch` is not written here: every
-// latch went out ahead of its action (latchRules).
+// What a tick that finished owes (`release`, `undo`), and the keys no rule of the block has any
+// more (an edited or deleted rule's state goes with it); also what a tick the deadline ended owes,
+// with `keep` left out. Its `latch` is not written here: every latch went out ahead of its action
+// (latchRules). `false` when a newer observation holds the claim: only `undo` was applied.
 export async function writeTriggerState(
   base: PrismaClient,
   scope: TriggerScope,
   generation: bigint,
-  change: TriggerStateChange,
+  change: Pick<TriggerStateChange, "release" | "undo"> & { keep?: string[] },
 ): Promise<boolean> {
-  const gone = [...change.release, ...change.undo];
-  return owned(base, scope, generation, (db) =>
+  const held = await owned(base, scope, generation, (db) =>
     db.decisionRuleState.deleteMany({
       where: {
         agentId: scope.agentId,
         conversationId: scope.conversationId,
         OR: [
-          { ruleKey: { notIn: change.keep } },
-          ...(gone.length > 0 ? [{ ruleKey: { in: gone } }] : []),
+          ...(change.keep ? [{ ruleKey: { notIn: change.keep } }] : []),
+          ...(change.release.length + change.undo.length > 0
+            ? [{ ruleKey: { in: [...change.release, ...change.undo] } }]
+            : []),
         ],
       },
     }),
   );
+  if (!held) {
+    await runScopedOn(base, sysCtx(scope.tenantId), (db) =>
+      undoOwn(db, scope, generation, change.undo),
+    );
+  }
+  return held;
 }

@@ -2376,6 +2376,8 @@ model DecisionRuleState {
   conversationId BigInt   @map("conversation_id")
   ruleKey        String   @map("rule_key")
   createdAt      DateTime @default(now()) @map("created_at")
+  // The claim generation that wrote it (DecisionRuleClaim).
+  generation     BigInt   @default(0)
 
   tenant       Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   agent        Agent        @relation(fields: [agentId], references: [id], onDelete: Cascade)

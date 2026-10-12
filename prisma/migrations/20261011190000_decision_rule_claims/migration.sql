@@ -1,9 +1,13 @@
 -- The generation of the decisions engine's trigger state, per agent and conversation
 -- (docs/decisions.md "When a rule acts"): every observation that reads the state takes the next
--- one, and a write to decision_rule_states applies only while the row still holds the writer's
--- own, so an older observation never changes the state a newer one read.
+-- one. A tick adds latches, releases and drops only while it holds the current one, and deletes a
+-- row it did not hold the claim for only when it wrote that row itself.
 -- Wrapped so a failure cannot leave the table without FORCE.
 BEGIN;
+
+-- The generation that wrote each latch, so a tick can withdraw its own reservation for an action
+-- it never ran even after a newer observation has read past it.
+ALTER TABLE "decision_rule_states" ADD COLUMN "generation" BIGINT NOT NULL DEFAULT 0;
 
 CREATE TABLE "decision_rule_claims" (
     "tenant_id" BIGINT NOT NULL,

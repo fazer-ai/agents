@@ -2233,8 +2233,11 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
         });
         const writes: Record<string, (g: bigint) => Promise<boolean>> = {
           latch: (g) => triggerState.latchRules(suDb, scope(), g, ["k"]),
-          "late release": (g) =>
-            triggerState.unlatchRules(suDb, scope(), g, ["k"]),
+          "release after the deadline": (g) =>
+            triggerState.writeTriggerState(suDb, scope(), g, {
+              release: ["k"],
+              undo: ["k"],
+            }),
           release: (g) =>
             triggerState.writeTriggerState(
               suDb,
@@ -2278,16 +2281,37 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
           }
         }
 
-        test("the newer one writes, and a read between a tick's own writes supersedes the rest", async () => {
+        // The one exception: a reservation the older tick wrote itself, for an action it never ran,
+        // is still its to withdraw. The newer one held the rule on it and changes nothing for it.
+        test("the older one withdraws its own reservation, and only that", async () => {
           const a = await triggerState.claimTriggerState(suDb, scope());
           expect(
-            await triggerState.latchRules(suDb, scope(), a.generation, ["k"]),
+            await triggerState.latchRules(suDb, scope(), a.generation, [
+              "mine",
+            ]),
           ).toBe(true);
           const b = await triggerState.claimTriggerState(suDb, scope());
-          expect([...b.latched]).toEqual(["k"]);
+          expect([...b.latched]).toEqual(["mine"]);
           expect(
-            await triggerState.unlatchRules(suDb, scope(), a.generation, ["k"]),
+            await triggerState.latchRules(suDb, scope(), b.generation, [
+              "theirs",
+            ]),
+          ).toBe(true);
+          expect(
+            await triggerState.writeTriggerState(suDb, scope(), a.generation, {
+              release: ["theirs"],
+              undo: ["mine", "theirs"],
+            }),
           ).toBe(false);
+          expect(await state()).toEqual(["theirs"]);
+        });
+
+        test("the newer one writes after the older one read", async () => {
+          const a = await triggerState.claimTriggerState(suDb, scope());
+          const b = await triggerState.claimTriggerState(suDb, scope());
+          expect(
+            await triggerState.latchRules(suDb, scope(), b.generation, ["k"]),
+          ).toBe(true);
           expect(
             await triggerState.writeTriggerState(
               suDb,
@@ -2297,6 +2321,7 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
             ),
           ).toBe(true);
           expect(await state()).toEqual([]);
+          expect(a.generation < b.generation).toBe(true);
         });
       });
 

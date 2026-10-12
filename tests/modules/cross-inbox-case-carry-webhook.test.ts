@@ -65,6 +65,7 @@ async function deliver(
     messageType?: string;
     private?: boolean;
     event?: string;
+    assigneeType?: string;
     sender?: { type: string; id: number };
   } = {},
 ): Promise<void> {
@@ -91,8 +92,8 @@ async function deliver(
       contact_inbox: { id: 80_000 + convId },
       custom_attributes: over.attrs ?? { [KEY]: CASE },
       meta: {
-        assignee_type: null,
-        assignee: null,
+        assignee_type: over.assigneeType ?? null,
+        assignee: over.assigneeType ? { id: 77, name: "Ana" } : null,
         sender: { id: 5, name: "Cliente" },
       },
       channel: "Channel::Api",
@@ -263,7 +264,10 @@ describe.skipIf(!dbUp)("the webhook arms the late carry", () => {
       private: true,
       sender: { type: "user", id: 77 },
     });
-    for (const c of [97_002, 97_003, 97_004, 97_005, 97_006]) {
+    // A person holding it per the payload, before the assignment reached the mirror.
+    await seedConv(97_009);
+    await deliver(97_009, { assigneeType: "User" });
+    for (const c of [97_002, 97_003, 97_004, 97_005, 97_006, 97_009]) {
       expect(await rowOf(c)).toBeNull();
     }
   });

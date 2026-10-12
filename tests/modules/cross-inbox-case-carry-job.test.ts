@@ -93,6 +93,10 @@ function fakeChatwoot(opts: {
   caseStatusOf?: Record<number, string>;
   // The team closes the case while its files come down.
   closeOnDownload?: boolean;
+  // The origin's holder, as Chatwoot answers it.
+  originAssignee?: string;
+  // Every case read after the first download fails.
+  caseReadFailsAfterDownload?: boolean;
   // Cases Chatwoot answers 404 for.
   deleted?: number[];
   caseInbox?: number;
@@ -106,6 +110,7 @@ function fakeChatwoot(opts: {
   const originAttrs: Record<string, unknown> = { ...(opts.originAttrs ?? {}) };
   let failures = opts.uploadFailures ?? 0;
   let closed = false;
+  let downloaded = false;
   const client = {
     conversationUrl: (id: number) =>
       `https://chat.example.com/app/accounts/1/conversations/${id}`,
@@ -113,6 +118,13 @@ function fakeChatwoot(opts: {
     getConversation: async (id: number) => {
       calls.push({ fn: "getConversation", args: [id] });
       if (opts.deleted?.includes(id)) throw new ChatwootApiError(404, "GET");
+      if (
+        id !== 0 &&
+        id >= 200 &&
+        opts.caseReadFailsAfterDownload &&
+        downloaded
+      )
+        throw new ChatwootApiError(502, "GET");
       if (id === CASE || id === OTHER_CASE) {
         return {
           id,
@@ -128,6 +140,7 @@ function fakeChatwoot(opts: {
         id,
         inbox_id: ORIGIN_INBOX,
         status: "open",
+        meta: { assignee_type: opts.originAssignee ?? null },
         custom_attributes: { ...originAttrs },
       };
     },
@@ -153,6 +166,7 @@ function fakeChatwoot(opts: {
     downloadAttachment: async (url: string) => {
       calls.push({ fn: "downloadAttachment", args: [url] });
       if (opts.closeOnDownload) closed = true;
+      downloaded = true;
       return { bytes: new Uint8Array(8).buffer, contentType: "image/jpeg" };
     },
     sendFilesAsAdmin: async (...args: unknown[]) => {
@@ -579,6 +593,19 @@ describe.skipIf(!dbUp)("the late carry into the case", () => {
     expect(f.originAttrs[KEY]).toBe(CASE);
   });
 
+  test("a case that cannot be read right before the upload gets nothing, and the run is retried", async () => {
+    await setAgent({});
+    await seed(120);
+    const f = fakeChatwoot({
+      messages: [fromContact(9002, [7002])],
+      originAttrs: { [KEY]: CASE },
+      caseReadFailsAfterDownload: true,
+    });
+    const r = await caseCarryHandler(jobFor(120), appDb, f.deps);
+    expect(r.outcome).toBe("fail");
+    expect(f.named("sendFilesAsAdmin")).toHaveLength(0);
+  });
+
   test("a case the team closes while its files come down gets no upload", async () => {
     await setAgent({});
     await seed(116);
@@ -681,6 +708,17 @@ describe.skipIf(!dbUp)("the late carry into the case", () => {
       await setAgent({});
     });
 
+    test("a person holding the origin per Chatwoot, before the mirror heard of it", async () => {
+      await setAgent({});
+      await seed(127);
+      const f = fakeChatwoot({
+        messages: [fromContact(9001, [7001])],
+        originAssignee: "User",
+      });
+      await caseCarryHandler(jobFor(127), appDb, f.deps);
+      quiet(f);
+    });
+
     test("a person holding the origin", async () => {
       await setAgent({});
       await seed(113, { assigneeType: "User" });
@@ -747,6 +785,34 @@ describe.skipIf(!dbUp)("the late carry into the case", () => {
           where: { tenantId, kind: "CASE_CARRY", dedupeKey: row?.dedupeKey },
         }),
       ).toBe(1);
+    });
+
+    test("a later arm keeps the earlier instant a waiting row still owes files from", async () => {
+      await setAgent({});
+      await seed(128);
+      const early = new Date(Date.now() - 600_000);
+      await armCaseCarry({
+        tenantId,
+        instanceId,
+        originConversationId: 128,
+        caseId: CASE,
+        armedAtMessageId: 9001,
+        owedSince: early,
+        base: appDb,
+      });
+      await armCaseCarry({
+        tenantId,
+        instanceId,
+        originConversationId: 128,
+        caseId: CASE,
+        armedAtMessageId: 9002,
+        owedSince: new Date(),
+        base: appDb,
+      });
+      expect((await rowOf(128))?.payload).toMatchObject({
+        armedAtMessageId: 9002,
+        owedSince: Math.floor(early.getTime() / 1000),
+      });
     });
 
     test("nothing is armed under a reset, a switched-off agent, a person, or the block off", async () => {

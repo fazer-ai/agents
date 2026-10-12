@@ -5202,6 +5202,8 @@ export async function processChatwootDelivery(
       responderRt &&
       carry &&
       carry.carryAttachments.mode !== "off" &&
+      // A person holding the conversation per this payload, before the mirror heard of it.
+      effectiveAssigneeType !== "User" &&
       Number.isInteger(caseId) &&
       caseId > 0 &&
       caseId !== n.conversationId &&

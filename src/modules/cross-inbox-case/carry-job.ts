@@ -197,12 +197,28 @@ export async function armCaseCarry(
   const state = await readCarryState(p);
   if (!state) return "not_mirrored";
   if (state.hold) return state.hold;
+  const dedupeKey = caseCarryDedupeKey(
+    chatwootThreadId(p.tenantId, p.instanceId, p.originConversationId),
+  );
+  // A row still waiting (or retrying) owes files from its own instant on: the new arm keeps the
+  // earlier of the two, or a file that failed before this one would fall outside the boundary.
+  const waiting = await runScopedOn(p.base, sysCtx(p.tenantId), (db) =>
+    db.schedulerJob.findFirst({
+      where: {
+        kind: "CASE_CARRY",
+        dedupeKey,
+        status: { in: ["PENDING", "CLAIMED"] },
+      },
+      select: { payload: true },
+    }),
+  );
+  const earlier = positiveInt(field(waiting?.payload, "owedSince"));
+  const owed =
+    p.owedSince === null ? null : Math.floor(p.owedSince.getTime() / 1000);
   await enqueueJob({
     tenantId: p.tenantId,
     kind: "CASE_CARRY",
-    dedupeKey: caseCarryDedupeKey(
-      chatwootThreadId(p.tenantId, p.instanceId, p.originConversationId),
-    ),
+    dedupeKey,
     runAt: new Date(Date.now() + CASE_CARRY_DELAY_MS),
     payload: {
       instanceId: String(p.instanceId),
@@ -210,7 +226,9 @@ export async function armCaseCarry(
       caseId: p.caseId,
       armedAtMessageId: p.armedAtMessageId,
       owedSince:
-        p.owedSince === null ? null : Math.floor(p.owedSince.getTime() / 1000),
+        owed === null || earlier === null
+          ? (owed ?? earlier)
+          : Math.min(owed, earlier),
     },
     // A new file is new work: a failure budget spent on an older one does not carry over.
     rearm: "new-work",
@@ -312,6 +330,11 @@ export async function caseCarryHandler(
     // NOTE: the client's error can carry a URL or a body; the row keeps a fixed sentence.
     return { outcome: "fail", error: "case carry: could not read the origin" };
   }
+  // A person on the origin per Chatwoot itself, before the mirror heard of it.
+  if (field(field(originConv, "meta"), "assignee_type") === "User") {
+    line("info", { caseId, stoodDown: "taken_over" });
+    return { outcome: "done" };
+  }
   const named = positiveInt(
     field(field(originConv, "custom_attributes"), config.caseAttributeKey),
   );
@@ -347,14 +370,17 @@ export async function caseCarryHandler(
 
   // Asked before the origin write and the upload: the conversation is still the agent's to act on,
   // and the case is still open where it was (the team can close or move it while the files come down).
+  let caseUnread = false;
   const stillWanted = async () => {
     if (await jobRetired(job, base)) return false;
     if ((await read())?.hold !== null) return false;
     try {
       return openCase(await client.getConversation(into));
     } catch {
-      // NOTE: unreadable is not closed: the upload's own failure is what retries
-      return true;
+      // NOTE: unreadable is not open: Chatwoot accepts a note on a closed case, so nothing is posted
+      // and the run is tried again
+      caseUnread = true;
+      return false;
     }
   };
   const lastAttempt = !jobRetriesAfterFailure(job);
@@ -403,6 +429,9 @@ export async function caseCarryHandler(
     failureNote: lastAttempt,
   });
   if (!outcome) return { outcome: "done" };
+  if (outcome.calledOff && caseUnread && !lastAttempt) {
+    return { outcome: "fail", error: "case carry: could not read the case" };
+  }
   if (outcome.calledOff) {
     line("info", { caseId: into, stoodDown: "withdrawn" });
     return { outcome: "done" };

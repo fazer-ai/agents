@@ -2081,7 +2081,7 @@ export function DecisionsFields({
           <p className="text-text-muted text-xs">
             {t(
               "editor.decisionsRulesHint",
-              "A rule fires when every one of its conditions holds, and runs one tool with fixed arguments. The agent needs that tool granted on the Tools tab, or the rule cannot run. Up to {{max}}.",
+              "A rule fires when every one of its conditions holds, and runs one tool, with arguments fixed or filled from the conversation, the contact and the answers. The agent needs that tool granted on the Tools tab, or the rule cannot run. Up to {{max}}.",
               { max: RULES_MAX },
             )}
           </p>

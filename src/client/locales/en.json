@@ -1724,7 +1724,7 @@
     "decisionsRuleRefusedPrecondition": "refused by the tool's condition {{n}}",
     "decisionsRuleRefusedProtected": "refused by a protected label {{n}}",
     "decisionsRules": "Rules",
-    "decisionsRulesHint": "A rule fires when every one of its conditions holds, and runs one tool with fixed arguments. The agent needs that tool granted on the Tools tab, or the rule cannot run. Up to {{max}}.",
+    "decisionsRulesHint": "A rule fires when every one of its conditions holds, and runs one tool, with arguments fixed or filled from the conversation, the contact and the answers. The agent needs that tool granted on the Tools tab, or the rule cannot run. Up to {{max}}.",
     "decisionsRuleSummary": "When {{conditions}}, then {{action}}",
     "decisionsScope": "Written to",
     "decisionsScopeContact": "The contact",

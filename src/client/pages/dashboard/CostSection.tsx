@@ -523,136 +523,130 @@ export function CostSection({
         )}
       </Block>
 
-      <div className="grid gap-4 lg:grid-cols-2">
-        <Block
-          error={cache.error}
-          errorStatus={cache.status}
-          errorField={cache.field}
-          loading={cache.loading && !cache.data}
-          onRetry={cache.reload}
-          icon={Database}
-          title={t("dashboard.cache.title", "Cached input by agent")}
-          help={t(
-            "dashboard.cache.help",
-            "The share of each agent's input tokens the provider served from its cache, which it bills at a discount. On a long prompt this is the biggest cost lever; an agent with no input in the period shows no figure.",
-          )}
-          table={cacheTable}
-        >
-          {cache.loading && !cache.data ? (
-            <Skeleton className="h-24 w-full" />
-          ) : cacheRows.length === 0 ? (
-            <p className="text-sm text-text-muted">
-              {t("dashboard.noData", "No data yet.")}
-            </p>
-          ) : (
-            <ul className="flex flex-col gap-2">
-              {cacheRows.map((r) => (
-                <li key={r.key} className="flex flex-col gap-1">
-                  <div className="flex items-center justify-between text-sm">
-                    <span className="truncate text-text-secondary">
-                      {r.label ?? r.key}
-                    </span>
-                    <span className="font-medium text-text-primary tabular-nums">
-                      {r.cacheShare === null ? "\u2014" : pf(r.cacheShare)}
-                    </span>
-                  </div>
-                  <div className="h-2 w-full overflow-hidden rounded-full bg-bg-tertiary">
-                    <div
-                      className="h-full rounded-full bg-accent-solid"
-                      style={{ width: `${(r.cacheShare ?? 0) * 100}%` }}
-                    />
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </Block>
+      <Block
+        error={cache.error}
+        errorStatus={cache.status}
+        errorField={cache.field}
+        loading={cache.loading && !cache.data}
+        onRetry={cache.reload}
+        icon={Database}
+        title={t("dashboard.cache.title", "Cached input by agent")}
+        help={t(
+          "dashboard.cache.help",
+          "The share of each agent's input tokens the provider served from its cache, which it bills at a discount. On a long prompt this is the biggest cost lever; an agent with no input in the period shows no figure.",
+        )}
+        table={cacheTable}
+      >
+        {cache.loading && !cache.data ? (
+          <Skeleton className="h-24 w-full" />
+        ) : cacheRows.length === 0 ? (
+          <p className="text-sm text-text-muted">
+            {t("dashboard.noData", "No data yet.")}
+          </p>
+        ) : (
+          <ul className="flex flex-col gap-2">
+            {cacheRows.map((r) => (
+              <li key={r.key} className="flex flex-col gap-1">
+                <div className="flex items-center justify-between text-sm">
+                  <span className="truncate text-text-secondary">
+                    {r.label ?? r.key}
+                  </span>
+                  <span className="font-medium text-text-primary tabular-nums">
+                    {r.cacheShare === null ? "\u2014" : pf(r.cacheShare)}
+                  </span>
+                </div>
+                <div className="h-2 w-full overflow-hidden rounded-full bg-bg-tertiary">
+                  <div
+                    className="h-full rounded-full bg-accent-solid"
+                    style={{ width: `${(r.cacheShare ?? 0) * 100}%` }}
+                  />
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Block>
 
-        {/* The month, against the ceiling: the calendar month in UTC (the ceiling's own window,
+      {/* The month, against the ceiling: the calendar month in UTC (the ceiling's own window,
             whatever the period above), the spend so far, and where the month ends at this pace. */}
-        <Card
-          id="month"
-          className="flex scroll-mt-4 flex-col gap-3 lg:scroll-mt-32"
-        >
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <h3 className="flex items-center gap-2 font-medium text-sm text-text-primary">
-              <Gauge className="h-4 w-4 text-accent" aria-hidden="true" />
-              {t("dashboard.ceiling.title", "Spend ceiling")}
-            </h3>
-            <div className="flex items-center gap-3">
-              {ceilingMonth && (
-                <span className="text-text-muted text-xs">
-                  {t(
-                    "dashboard.ceiling.period",
-                    "{{month}} · the calendar month, not the selected period",
-                    { month: ceilingMonth },
-                  )}
-                </span>
-              )}
-              <button
-                type="button"
-                onClick={() => navigate("/resources/advanced")}
-                className="text-accent text-xs hover:underline"
-              >
-                {t("dashboard.ceiling.cta", "Set the ceiling")}
-              </button>
-            </div>
+      <Card
+        id="month"
+        className="flex scroll-mt-4 flex-col gap-3 lg:scroll-mt-32"
+      >
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h3 className="flex items-center gap-2 font-medium text-sm text-text-primary">
+            <Gauge className="h-4 w-4 text-accent" aria-hidden="true" />
+            {t("dashboard.ceiling.title", "Spend ceiling")}
+          </h3>
+          <div className="flex items-center gap-3">
+            {ceilingMonth && (
+              <span className="text-text-muted text-xs">
+                {t(
+                  "dashboard.ceiling.period",
+                  "{{month}} · the calendar month, not the selected period",
+                  { month: ceilingMonth },
+                )}
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={() => navigate("/resources/advanced")}
+              className="text-accent text-xs hover:underline"
+            >
+              {t("dashboard.ceiling.cta", "Set the ceiling")}
+            </button>
           </div>
-          {ceiling.loading && !ceilingData ? (
-            <Skeleton className="h-16 w-full" />
-          ) : !ceilingData ? (
-            <p className="text-sm text-text-muted">
-              {t("dashboard.ceiling.unread", "The ceiling could not be read.")}
-            </p>
-          ) : (
-            <div className="flex flex-col gap-4">
-              {ceilingSources.map((src) => {
-                const entry = ceilingData.entries.find((e) => e.source === src);
-                return (
-                  <div key={src} className="flex flex-col gap-1">
-                    <SpendBar
-                      label={
-                        src === "playground"
-                          ? t("dashboard.source.playground", "Playground")
-                          : t("dashboard.source.inbox", "Real")
-                      }
-                      entry={entry}
-                      money={cfShort}
-                      enabled={ceilingData.enabled}
-                    />
-                    {entry && (
-                      <p className="text-text-muted text-xs">
-                        {t(
-                          "dashboard.ceiling.projection",
-                          "So far {{used}}; at this pace the month ends near {{projected}}",
-                          {
-                            used: cfShort.format(entry.usedUsd),
-                            projected: cfShort.format(entry.projectedUsd),
-                          },
-                        )}
-                        {entry.ceilingUsd !== null &&
-                          ` · ${t(
-                            "dashboard.ceiling.of",
-                            "ceiling {{ceiling}}",
-                            {
-                              ceiling: cfShort.format(entry.ceilingUsd),
-                            },
-                          )}`}
-                      </p>
-                    )}
-                    <SpendHealthLines
-                      entry={entry}
-                      when={ceilingWhen}
-                      enabled={ceilingData.enabled}
-                      briefUnpriced
-                    />
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </Card>
-      </div>
+        </div>
+        {ceiling.loading && !ceilingData ? (
+          <Skeleton className="h-16 w-full" />
+        ) : !ceilingData ? (
+          <p className="text-sm text-text-muted">
+            {t("dashboard.ceiling.unread", "The ceiling could not be read.")}
+          </p>
+        ) : (
+          <div className="flex flex-col gap-4">
+            {ceilingSources.map((src) => {
+              const entry = ceilingData.entries.find((e) => e.source === src);
+              return (
+                <div key={src} className="flex flex-col gap-1">
+                  <SpendBar
+                    label={
+                      src === "playground"
+                        ? t("dashboard.source.playground", "Playground")
+                        : t("dashboard.source.inbox", "Real")
+                    }
+                    entry={entry}
+                    money={cfShort}
+                    enabled={ceilingData.enabled}
+                  />
+                  {entry && (
+                    <p className="text-text-muted text-xs">
+                      {t(
+                        "dashboard.ceiling.projection",
+                        "So far {{used}}; at this pace the month ends near {{projected}}",
+                        {
+                          used: cfShort.format(entry.usedUsd),
+                          projected: cfShort.format(entry.projectedUsd),
+                        },
+                      )}
+                      {entry.ceilingUsd !== null &&
+                        ` · ${t("dashboard.ceiling.of", "ceiling {{ceiling}}", {
+                          ceiling: cfShort.format(entry.ceilingUsd),
+                        })}`}
+                    </p>
+                  )}
+                  <SpendHealthLines
+                    entry={entry}
+                    when={ceilingWhen}
+                    enabled={ceilingData.enabled}
+                    briefUnpriced
+                  />
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </Card>
     </section>
   );
 }

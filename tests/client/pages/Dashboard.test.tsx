@@ -748,3 +748,45 @@ describe("a screen reader gets a table for each chart", () => {
     expect(table?.querySelectorAll("tbody tr").length).toBe(7);
   });
 });
+
+// A section is a column of rows. Two cards whose heights grow apart (one row per agent or per model
+// beside a fixed card) each take a row of their own, so the short one is not stretched to the tall
+// one's height. The answer is which direct child of the section holds each card's title.
+describe("cards that grow apart each take their own row", () => {
+  function rowOf(sectionId: string, title: string): number {
+    const section = document.getElementById(sectionId);
+    if (!section) return -1;
+    return Array.from(section.children).findIndex((row) =>
+      Array.from(row.querySelectorAll("h3")).some(
+        // NOTE: The help button's "?" sits inside the heading.
+        (h) => h.textContent?.replace(/\?$/, "").trim() === title,
+      ),
+    );
+  }
+
+  test("cached input by agent and the spend ceiling, in the cost section", async () => {
+    await renderDash("/");
+    await waitFor(() => {
+      expect(rowOf("cost", "Spend ceiling")).toBeGreaterThan(-1);
+    });
+    const cache = rowOf("cost", "Cached input by agent");
+    expect(cache).toBeGreaterThan(-1);
+    expect(cache === rowOf("cost", "Spend ceiling")).toBe(false);
+  });
+
+  test("model call latency and warnings and errors, in the health section", async () => {
+    await renderDash("/");
+    const latency = rowOf("health", "Model call latency");
+    const problems = rowOf("health", "Warnings and errors");
+    expect(latency).toBeGreaterThan(-1);
+    expect(problems).toBeGreaterThan(-1);
+    expect(latency === problems).toBe(false);
+  });
+
+  test("follow-ups and knowledge suggestions, four figures each, still share a row", async () => {
+    await renderDash("/");
+    const followUps = rowOf("automation", "Follow-ups");
+    expect(followUps).toBeGreaterThan(-1);
+    expect(rowOf("automation", "Knowledge suggestions")).toBe(followUps);
+  });
+});

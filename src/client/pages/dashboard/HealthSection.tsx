@@ -90,122 +90,120 @@ export function HealthSection({
       <SectionHeading icon={Activity}>
         {t("dashboard.health.title", "Health")}
       </SectionHeading>
-      <div className="grid gap-4 lg:grid-cols-2">
-        <Block
-          error={health.error}
-          errorStatus={health.status}
-          errorField={health.field}
-          loading={health.loading && !health.data}
-          onRetry={health.reload}
-          icon={Clock}
-          title={t("dashboard.health.latency", "Model call latency")}
-          help={t(
-            "dashboard.health.latencyHelp",
-            "How long each model call took, as this app timed it: half of the calls took less than p50, nine in ten less than p90. Calls made before the timing was recorded are not counted.",
-          )}
-          table={latencyTable}
-        >
-          {health.loading && !h ? (
-            <Skeleton className="h-24 w-full" />
-          ) : !h || h.latency.length === 0 ? (
-            <p className="text-sm text-text-muted">
-              {t("dashboard.noData", "No data yet.")}
-            </p>
-          ) : (
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-left text-text-muted text-xs">
-                  {latencyTable.header.map((c, i) => (
-                    <th
-                      key={c}
-                      scope="col"
-                      className={
-                        i === 0
-                          ? "py-1.5 pr-3 font-normal"
-                          : "py-1.5 pl-3 text-right font-normal"
-                      }
-                    >
-                      {c}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {h.latency.map((r) => (
-                  <tr key={r.model} className="border-border border-t">
-                    <td className="truncate py-1.5 pr-3 text-text-secondary">
-                      {r.model}
-                    </td>
-                    <td className="py-1.5 pl-3 text-right tabular-nums">
-                      {nf.format(r.calls)}
-                    </td>
-                    <td className="py-1.5 pl-3 text-right tabular-nums">
-                      {ms(r.p50Ms)}
-                    </td>
-                    <td className="py-1.5 pl-3 text-right tabular-nums">
-                      {ms(r.p90Ms)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </Block>
-
-        <Block
-          error={health.error}
-          errorStatus={health.status}
-          errorField={health.field}
-          loading={health.loading && !health.data}
-          onRetry={health.reload}
-          icon={Activity}
-          title={t("dashboard.health.problems", "Warnings and errors")}
-          help={t(
-            "dashboard.health.problemsHelp",
-            "Lines of the execution log at warning or error level, by stage and, for a tool, by tool. Open a row to see those lines on the Logs page with the same filters.",
-          )}
-          table={problemsTable}
-        >
-          {health.loading && !h ? (
-            <Skeleton className="h-24 w-full" />
-          ) : !h || h.problems.length === 0 ? (
-            <p className="text-sm text-text-muted">
-              {t(
-                "dashboard.health.noProblems",
-                "No warnings or errors in this period.",
-              )}
-            </p>
-          ) : (
-            <ul className="flex flex-col gap-1.5">
-              {h.problems.map((r) => (
-                <li
-                  key={`${r.stage}|${r.tool ?? ""}|${r.level}`}
-                  className="flex items-center justify-between gap-4 text-sm"
-                >
-                  <Link
-                    to={logsHref(filters, win, r)}
-                    className="truncate text-text-secondary hover:text-accent hover:underline"
+      <Block
+        error={health.error}
+        errorStatus={health.status}
+        errorField={health.field}
+        loading={health.loading && !health.data}
+        onRetry={health.reload}
+        icon={Clock}
+        title={t("dashboard.health.latency", "Model call latency")}
+        help={t(
+          "dashboard.health.latencyHelp",
+          "How long each model call took, as this app timed it: half of the calls took less than p50, nine in ten less than p90. Calls made before the timing was recorded are not counted.",
+        )}
+        table={latencyTable}
+      >
+        {health.loading && !h ? (
+          <Skeleton className="h-24 w-full" />
+        ) : !h || h.latency.length === 0 ? (
+          <p className="text-sm text-text-muted">
+            {t("dashboard.noData", "No data yet.")}
+          </p>
+        ) : (
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-text-muted text-xs">
+                {latencyTable.header.map((c, i) => (
+                  <th
+                    key={c}
+                    scope="col"
+                    className={
+                      i === 0
+                        ? "py-1.5 pr-3 font-normal"
+                        : "py-1.5 pl-3 text-right font-normal"
+                    }
                   >
-                    {r.tool ? `${r.stage} · ${r.tool}` : r.stage}
-                    <span
-                      className={
-                        r.level === "error"
-                          ? "ml-2 text-error text-xs"
-                          : "ml-2 text-warning text-xs"
-                      }
-                    >
-                      {levelLabel(r.level)}
-                    </span>
-                  </Link>
-                  <span className="shrink-0 font-medium text-text-primary tabular-nums">
-                    {nf.format(r.lines)}
-                  </span>
-                </li>
+                    {c}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {h.latency.map((r) => (
+                <tr key={r.model} className="border-border border-t">
+                  <td className="truncate py-1.5 pr-3 text-text-secondary">
+                    {r.model}
+                  </td>
+                  <td className="py-1.5 pl-3 text-right tabular-nums">
+                    {nf.format(r.calls)}
+                  </td>
+                  <td className="py-1.5 pl-3 text-right tabular-nums">
+                    {ms(r.p50Ms)}
+                  </td>
+                  <td className="py-1.5 pl-3 text-right tabular-nums">
+                    {ms(r.p90Ms)}
+                  </td>
+                </tr>
               ))}
-            </ul>
-          )}
-        </Block>
-      </div>
+            </tbody>
+          </table>
+        )}
+      </Block>
+
+      <Block
+        error={health.error}
+        errorStatus={health.status}
+        errorField={health.field}
+        loading={health.loading && !health.data}
+        onRetry={health.reload}
+        icon={Activity}
+        title={t("dashboard.health.problems", "Warnings and errors")}
+        help={t(
+          "dashboard.health.problemsHelp",
+          "Lines of the execution log at warning or error level, by stage and, for a tool, by tool. Open a row to see those lines on the Logs page with the same filters.",
+        )}
+        table={problemsTable}
+      >
+        {health.loading && !h ? (
+          <Skeleton className="h-24 w-full" />
+        ) : !h || h.problems.length === 0 ? (
+          <p className="text-sm text-text-muted">
+            {t(
+              "dashboard.health.noProblems",
+              "No warnings or errors in this period.",
+            )}
+          </p>
+        ) : (
+          <ul className="flex flex-col gap-1.5">
+            {h.problems.map((r) => (
+              <li
+                key={`${r.stage}|${r.tool ?? ""}|${r.level}`}
+                className="flex items-center justify-between gap-4 text-sm"
+              >
+                <Link
+                  to={logsHref(filters, win, r)}
+                  className="truncate text-text-secondary hover:text-accent hover:underline"
+                >
+                  {r.tool ? `${r.stage} · ${r.tool}` : r.stage}
+                  <span
+                    className={
+                      r.level === "error"
+                        ? "ml-2 text-error text-xs"
+                        : "ml-2 text-warning text-xs"
+                    }
+                  >
+                    {levelLabel(r.level)}
+                  </span>
+                </Link>
+                <span className="shrink-0 font-medium text-text-primary tabular-nums">
+                  {nf.format(r.lines)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Block>
     </section>
   );
 }

@@ -15,6 +15,9 @@ import { resetLandedAfter } from "@/graph/reset-episode";
 import { parseDbId } from "@/lib/db-id";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { isMonitoring } from "@/modules/agents/mode";
+import { isTestSilenced } from "@/modules/agents/test-mode";
+import { episodeTestActivatedAt } from "@/modules/channel-redirect/episode";
+import { readChannelRedirectConfig } from "@/modules/channel-redirect/service";
 import {
   ChatwootApiError,
   type ChatwootClient,
@@ -100,6 +103,7 @@ async function readCarryState(p: {
         assigneeType: true,
         resetAtMessageId: true,
         testActivatedAt: true,
+        contactId: true,
         contact: { select: { chatwootContactId: true } },
       },
     });
@@ -121,7 +125,7 @@ async function readCarryState(p: {
     if (conv.assigneeType === "User") return { ...state, hold: "taken_over" };
     const inbox = await db.inbox.findUnique({
       where: { id: conv.inboxId },
-      select: { agentId: true },
+      select: { agentId: true, chatwootInboxId: true },
     });
     const agent = inbox?.agentId
       ? await db.agent.findUnique({
@@ -129,11 +133,28 @@ async function readCarryState(p: {
           select: { enabled: true, mode: true, settings: true },
         })
       : null;
+    if (!inbox?.agentId || !agent?.enabled || isMonitoring(agent.mode)) {
+      return { ...state, hold: "agent_off" };
+    }
+    // A test agent acts only on an activated conversation, where activation is the redirect episode's
+    // (either half), as the reactive gate reads it.
     if (
-      !inbox?.agentId ||
-      !agent?.enabled ||
-      isMonitoring(agent.mode) ||
-      (agent.mode === "test" && conv.testActivatedAt === null)
+      isTestSilenced(
+        agent.mode,
+        await episodeTestActivatedAt({
+          tenantId: p.tenantId,
+          instanceId: p.instanceId,
+          cfg: readChannelRedirectConfig(agent.settings),
+          agentMode: agent.mode,
+          conv: {
+            testActivatedAt: conv.testActivatedAt,
+            contactId: conv.contactId,
+            chatwootInboxId: inbox.chatwootInboxId,
+          },
+          base: p.base,
+          scoped: db,
+        }),
+      )
     ) {
       return { ...state, hold: "agent_off" };
     }
@@ -162,6 +183,9 @@ export interface CaseCarryArm {
   // A /reset typed after it withdraws the carry. Null ⇒ no message to order by; the reset's own
   // retirement of the row still applies.
   armedAtMessageId: number | null;
+  // When the file that armed it was sent (the contact's message, or the opening itself). Files from
+  // then on are owed to the case even when the attendance boundary has moved past them since.
+  owedSince: Date | null;
   base: PrismaClient;
 }
 
@@ -185,6 +209,8 @@ export async function armCaseCarry(
       originConversationId: p.originConversationId,
       caseId: p.caseId,
       armedAtMessageId: p.armedAtMessageId,
+      owedSince:
+        p.owedSince === null ? null : Math.floor(p.owedSince.getTime() / 1000),
     },
     // A new file is new work: a failure budget spent on an older one does not carry over.
     rearm: "new-work",
@@ -297,7 +323,6 @@ export async function caseCarryHandler(
     );
   };
   let target: number | null = null;
-  let caseConv: unknown = null;
   try {
     for (const id of [...new Set([named, caseId])]) {
       if (id === null || id === originConversationId) continue;
@@ -308,7 +333,6 @@ export async function caseCarryHandler(
       });
       if (conv && openCase(conv)) {
         target = id;
-        caseConv = conv;
         break;
       }
     }
@@ -349,9 +373,9 @@ export async function caseCarryHandler(
     }
   }
 
-  // The attendance boundary, never later than the case itself: a close after the case opened can move
-  // it past files the case is still owed.
-  const caseCreated = Number(field(caseConv, "created_at"));
+  // The attendance boundary, never later than when the file that armed this was sent: a close after
+  // that can move the boundary past a file the case is still owed.
+  const owedSince = positiveInt(job.payload.owedSince);
   const attendance =
     config.carryAttachments.mode === "attendance" &&
     state.contactInboxId !== null
@@ -364,8 +388,8 @@ export async function caseCarryHandler(
               contactInboxId: state.contactInboxId as number,
             },
           );
-          if (started === null || !Number.isFinite(caseCreated)) return started;
-          return new Date(Math.min(started.getTime(), caseCreated * 1000));
+          if (started === null || owedSince === null) return started;
+          return new Date(Math.min(started.getTime(), owedSince * 1000));
         }
       : undefined;
 

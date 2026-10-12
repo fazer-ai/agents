@@ -249,12 +249,14 @@ async function seed(
 async function setAgent(over: {
   settings?: Record<string, unknown>;
   enabled?: boolean;
+  mode?: string;
 }) {
   await suDb.agent.update({
     where: { id: agentId },
     data: {
       settings: (over.settings ?? CARRY_ON) as never,
       enabled: over.enabled ?? true,
+      mode: over.mode ?? "production",
     },
   });
 }
@@ -629,6 +631,56 @@ describe.skipIf(!dbUp)("the late carry into the case", () => {
       quiet(f);
     });
 
+    test("a test agent on a conversation nobody activated, here or on its redirect sibling", async () => {
+      await setAgent({ mode: "test" });
+      await seed(118);
+      const f = files();
+      await caseCarryHandler(jobFor(118), appDb, f.deps);
+      quiet(f);
+    });
+
+    test("a test agent whose redirect episode was activated on the sibling still carries", async () => {
+      const WIDGET = 4;
+      await setAgent({
+        mode: "test",
+        settings: {
+          ...CARRY_ON,
+          channelRedirect: {
+            enabled: true,
+            entryInboxId: ORIGIN_INBOX,
+            widgetInboxId: WIDGET,
+          },
+        },
+      });
+      const widget = await suDb.inbox.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootInboxId: WIDGET,
+          name: "Site",
+          agentId,
+          channelType: "Channel::WebWidget",
+        },
+      });
+      await suDb.conversation.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootConversationId: 1190,
+          threadId: chatwootThreadId(tenantId, instanceId, 1190),
+          status: "open",
+          inboxId: widget.id,
+          contactId: contactDbId,
+          testActivatedAt: new Date(),
+        },
+      });
+      await seed(119);
+      const f = files();
+      await caseCarryHandler(jobFor(119), appDb, f.deps);
+      expect(f.named("sendFilesAsAdmin")).toHaveLength(1);
+      await setAgent({});
+    });
+
     test("a person holding the origin", async () => {
       await setAgent({});
       await seed(113, { assigneeType: "User" });
@@ -671,6 +723,7 @@ describe.skipIf(!dbUp)("the late carry into the case", () => {
         originConversationId: convId,
         caseId: CASE,
         armedAtMessageId,
+        owedSince: new Date(),
         base: appDb,
       });
 

@@ -5218,6 +5218,7 @@ export async function processChatwootDelivery(
           originConversationId: n.conversationId,
           caseId,
           armedAtMessageId: n.message?.id ?? null,
+          owedSince: n.message?.createdAt ?? null,
           base,
         });
       } catch (err) {

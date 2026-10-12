@@ -1720,6 +1720,7 @@ export async function buildToolset(
                           ctx.messageId && ctx.messageId > 0
                             ? ctx.messageId
                             : null,
+                        owedSince: new Date(),
                         base: ctx.base,
                       }),
                   }

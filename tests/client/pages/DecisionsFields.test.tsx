@@ -1287,4 +1287,27 @@ describe("a rule on a custom tool", () => {
     expect(count("decisions-rule-not-granted")).toBeGreaterThan(0);
     expect(count("decisions-rule-grant")).toBe(0);
   });
+
+  test("a tool picked in place of another shows its own arguments as the action stores them", async () => {
+    stubApi();
+    renderSection(
+      { monitoring: { engine: "decisions", decisions: BLOCK } },
+      { granted: GRANTED, customTools: TOOLS },
+    );
+    await waitFor(() => expect(logQueries.length).toBeGreaterThan(0));
+    openAll();
+    const action = screen.getAllByTestId("decisions-rule-action")[0];
+    if (!action) throw new Error("no action select");
+    const modeOf = (arg: string) =>
+      screen
+        .getByTestId(`decisions-arg-${arg}`)
+        .querySelector("select") as HTMLSelectElement;
+    fireEvent.change(action, { target: { value: "abrir_ticket" } });
+    fireEvent.change(modeOf("telefone"), { target: { value: "fill" } });
+    expect(modeOf("telefone").value).toBe("fill");
+    // Away and back: the action cleared its arguments, so nothing of the first pick is shown.
+    fireEvent.change(action, { target: { value: "registrar_caso" } });
+    fireEvent.change(action, { target: { value: "abrir_ticket" } });
+    expect(modeOf("telefone").value).toBe("fixed");
+  });
 });

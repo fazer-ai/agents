@@ -428,14 +428,21 @@ interface CustomCatalog {
     label: string;
     toolName: string;
     args: ToolArgSpec[];
+    enabled?: boolean;
   }[];
   codeTools: {
     id: string;
     label: string;
     toolName: string;
     args: ToolArgSpec[];
+    enabled?: boolean;
   }[];
-  mcpConnections: { id: string; name: string; slug: string }[];
+  mcpConnections: {
+    id: string;
+    name: string;
+    slug: string;
+    enabled?: boolean;
+  }[];
 }
 interface CustomGrantRow {
   source: string;
@@ -487,20 +494,23 @@ export function customToolsOf(
       args: c.args,
     });
   }
+  // A disabled definition or connection is left out of the toolset (loadToolSelections): its grant
+  // runs nothing, and its tools take no name another server's could collide with.
   for (const g of grants) {
     if (g.source === "HTTP") {
       const d = catalog.toolDefinitions.find(
         (x) => x.id === g.toolDefinitionId,
       );
-      if (d) granted.add(d.toolName);
+      if (d && d.enabled !== false) granted.add(d.toolName);
     } else if (g.source === "CODE") {
       const c = catalog.codeTools.find((x) => x.id === g.codeToolDefinitionId);
-      if (c) granted.add(c.toolName);
+      if (c && c.enabled !== false) granted.add(c.toolName);
     } else if (g.source === "MCP") {
       const m = catalog.mcpConnections.find(
         (x) => x.id === g.mcpServerConnectionId,
       );
-      if (m) mcp.push({ m, tools: g.enabledTools ?? [] });
+      if (m && m.enabled !== false)
+        mcp.push({ m, tools: g.enabledTools ?? [] });
     }
   }
   // Two servers whose names reduce to one slug share the namespace, and the assembly tells their

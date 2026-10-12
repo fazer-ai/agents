@@ -1026,4 +1026,43 @@ describe("the custom tools a rule is offered", () => {
       );
     }
   });
+
+  // A disabled definition or connection is not in the toolset: not runnable, and no name taken.
+  test("a disabled tool is not granted, and a disabled server's tools collide with none", () => {
+    const { all, granted } = customToolsOf(
+      {
+        toolDefinitions: [
+          {
+            id: "1",
+            label: "",
+            toolName: "abrir_ticket",
+            args: [],
+            enabled: false,
+          },
+        ],
+        codeTools: [
+          {
+            id: "2",
+            label: "",
+            toolName: "registrar_caso",
+            args: [],
+            enabled: false,
+          },
+        ],
+        mcpConnections: [
+          { id: "3", name: "CRM", slug: "crm", enabled: false },
+          { id: "4", name: "crm", slug: "crm" },
+        ],
+      },
+      [
+        { source: "HTTP", toolDefinitionId: "1" },
+        { source: "CODE", codeToolDefinitionId: "2" },
+        { source: "MCP", mcpServerConnectionId: "3", enabledTools: ["abrir"] },
+        { source: "MCP", mcpServerConnectionId: "4", enabledTools: ["abrir"] },
+      ],
+    );
+    expect(all.has("abrir_ticket")).toBe(true);
+    expect([...granted]).toEqual(["mcp__crm__abrir"]);
+    expect(all.get("mcp__crm__abrir")?.label).toBe("crm: abrir");
+  });
 });

@@ -1688,7 +1688,9 @@ export function DecisionsFields({
         field(`rules.${ri}.action.fill.${name}`);
       }
       return (
+        // Keyed by tool: the modes and drafts it keeps belong to one tool's arguments.
         <CustomToolArgs
+          key={rule.tool}
           ri={ri}
           rule={rule}
           offer={customTools?.get(rule.tool)}

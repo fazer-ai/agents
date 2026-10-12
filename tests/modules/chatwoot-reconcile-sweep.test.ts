@@ -24,6 +24,7 @@ import {
   reconcileSweepHandler,
 } from "@/modules/chatwoot/reconcile-sweep";
 import { deliveryRecoveryDedupeKey } from "@/modules/chatwoot/recover-delivery";
+import { alertSummary } from "@/modules/flowlog/alerts";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { clearFlowLog, flowLogRows } from "../utils/flowlog";
 
@@ -1818,7 +1819,7 @@ describe.skipIf(!dbUp)("reconciling from Chatwoot", () => {
     // names no conversation; the tenant is this file's and every case clears it first.
     const lines = await flowLogRows(suDb, {
       where: { tenantId, stage: "delivery", createdAt: { gte: before } },
-      select: { level: true, detail: true },
+      select: { level: true, detail: true, errorMessage: true },
     });
     const reconciled = lines.filter(
       (l) => (l.detail as { outcome?: string })?.outcome === "reconciled",
@@ -1828,5 +1829,19 @@ describe.skipIf(!dbUp)("reconciling from Chatwoot", () => {
     expect(headline).toHaveLength(1);
     const detail = headline[0]?.detail as { handedToRecovery?: number } | null;
     expect(detail?.handedToRecovery).toBe(2);
+    // The alert's text is the line's message, so the count has to be in it.
+    const warn = headline[0] as unknown as {
+      level: string;
+      errorMessage: string | null;
+    };
+    expect(
+      alertSummary({
+        stage: "delivery",
+        level: "warn",
+        status: "error",
+        errorMessage: warn.errorMessage ?? undefined,
+        detail: { outcome: "reconciled" },
+      } as never),
+    ).toContain("2 customer messages");
   });
 });

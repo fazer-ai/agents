@@ -743,6 +743,8 @@ export async function reconcileFromChatwoot(
         stage: "delivery",
         level: "warn",
         status: "error",
+        // The alert's text is this message when one is set, and the count is what the operator reads.
+        errorMessage: `${counts.handedToRecovery} customer ${counts.handedToRecovery === 1 ? "message" : "messages"} the delivery ledger never received ${counts.handedToRecovery === 1 ? "was" : "were"} found in Chatwoot and handed to recovery`,
         detail: {
           outcome: "reconciled",
           handedToRecovery: counts.handedToRecovery,

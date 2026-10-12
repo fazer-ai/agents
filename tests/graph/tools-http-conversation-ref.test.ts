@@ -141,6 +141,7 @@ describe("an HTTP tool that renders {{conversation_ref}}", () => {
 
   test("a throw before the request leaves (the credential) is reported as sending nothing", async () => {
     const sent: string[] = [];
+    const counted: string[] = [];
     const tool = buildHttpTool(
       def({
         credentialRef: "vault:1",
@@ -151,6 +152,7 @@ describe("an HTTP tool that renders {{conversation_ref}}", () => {
         resolveCredential: async () => {
           throw new Error("vault down");
         },
+        onNoEffect: (name) => counted.push(name),
         fetchImpl: (async (url: string) => {
           sent.push(String(url));
           return new Response("{}");
@@ -167,6 +169,8 @@ describe("an HTTP tool that renders {{conversation_ref}}", () => {
     ).rejects.toThrow("vault down");
     expect(sent).toHaveLength(0);
     expect(reports).toEqual([{ noEffect: true }]);
+    // Counted for the turn too, once, so an observation that sent nothing retries.
+    expect(counted).toHaveLength(1);
   });
 
   test("a budget that runs out during the withdrawal check sends nothing and says so", async () => {

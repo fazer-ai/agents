@@ -578,3 +578,88 @@ test("an argument named like an object's own member is filled, fitted and sent",
     constructor: { from: "conversation.display_id" },
   });
 });
+
+// The holding message is filled only for an HTTP tool built with an acknowledgement; a code or MCP
+// tool's own argument of that name is the rule's to give.
+test("only an acknowledging HTTP tool gets the holding message filled", async () => {
+  const sent: Record<string, unknown>[] = [];
+  const http = buildHttpTool(
+    {
+      name: "avisar",
+      method: "POST",
+      urlTemplate: `https://${PUBLIC}/t`,
+      allowedHosts: [PUBLIC],
+      headers: {},
+      inputSchema: { motivo: { type: "string", required: true } },
+      credentialRef: null,
+      ackMessage: "Um instante.",
+      body: { mode: "kv", rows: [{ key: "motivo", value: "{{motivo}}" }] },
+    },
+    {
+      resolveCredential: async () => null,
+      fetchImpl: (async (_u: string, init?: RequestInit) => {
+        sent.push(JSON.parse(String(init?.body ?? "{}")));
+        return new Response("{}", { status: 200 });
+      }) as unknown as typeof fetch,
+      emitAck: async () => true,
+      context: {},
+    },
+  );
+  const code: Record<string, unknown>[] = [];
+  const [codeTool] = buildCodeTools(
+    [
+      {
+        name: "registrar",
+        description: "x",
+        inputSchema: { __wait_message: { type: "string" } },
+        code: "return input;",
+      },
+    ] as never,
+    {
+      run: (async (_c: string, opts?: { call?: { input?: unknown } }) => {
+        code.push((opts?.call?.input ?? {}) as Record<string, unknown>);
+        return { kind: "value", value: "ok", logs: [], ms: 1 };
+      }) as never,
+    },
+  );
+  const mcp = new DynamicStructuredTool({
+    name: "mcp__crm__espera",
+    description: "x",
+    schema: {
+      type: "object",
+      properties: { __wait_message: { type: "string" } },
+      required: ["__wait_message"],
+    } as never,
+    func: async () => "ok",
+  });
+  adoptServerTool(mcp);
+  if (!codeTool) throw new Error("no code tool");
+  const r = await applyDecisions(
+    {
+      rules: [
+        { when, action: { tool: "avisar", args: { motivo: "x" } } },
+        { when, action: { tool: "registrar", args: {} } },
+        { when, action: { tool: mcp.name, args: {} } },
+      ],
+    },
+    answers,
+    [http, codeTool, mcp as unknown as StructuredToolInterface],
+    [],
+    new AbortController().signal,
+    async () => true,
+    5,
+    undefined,
+    false,
+    new Set(),
+    {},
+    async () => true,
+    { context: ctx, questions: [], logValues: true },
+  );
+  expect(r.actions.map((a) => [a.tool, a.outcome, a.failure])).toEqual([
+    ["avisar", "ran", undefined],
+    ["registrar", "ran", undefined],
+    [mcp.name, "failed", "invalid_arguments"],
+  ]);
+  expect(sent).toEqual([{ motivo: "x" }]);
+  expect(code[0]).toEqual({});
+});

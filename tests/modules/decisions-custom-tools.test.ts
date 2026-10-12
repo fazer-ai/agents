@@ -5,6 +5,7 @@ import {
 } from "@langchain/core/tools";
 import { z } from "zod";
 import { failableTool, toolFailure } from "@/graph/tools/failure";
+import { ASKS_WAIT_MESSAGE } from "@/graph/tools/http";
 import { adoptServerTool } from "@/graph/tools/mcp";
 import { AppError } from "@/lib/errors";
 import type { ScopedDb } from "@/lib/tenancy";
@@ -625,18 +626,20 @@ describe("the tick fills a custom tool's arguments and records them", () => {
 
   test("a tool that asks the model for a holding message runs from a rule, which writes none", async () => {
     const seen: Record<string, unknown>[] = [];
-    const r = await once(
-      customTool(
-        "abrir_ticket",
-        z.object({
-          motivo: z.string(),
-          telefone: z.string(),
-          __wait_message: z.string().min(1),
-        }),
-        seen,
-      ),
-      { telefone: "contact.phone" },
+    const tool = customTool(
+      "abrir_ticket",
+      z.object({
+        motivo: z.string(),
+        telefone: z.string(),
+        __wait_message: z.string().min(1),
+      }),
+      seen,
     );
+    // As buildHttpTool marks a tool built with an acknowledgement.
+    (tool as { [ASKS_WAIT_MESSAGE]?: true })[ASKS_WAIT_MESSAGE] = true;
+    const r = await once(tool as unknown as StructuredToolInterface, {
+      telefone: "contact.phone",
+    });
     expect(r.actions[0]?.outcome).toBe("ran");
     expect(seen[0]?.telefone).toBe("+5511999990001");
   });

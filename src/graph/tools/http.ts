@@ -362,6 +362,10 @@ const PLACEHOLDER = /\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g;
 const LONE_PLACEHOLDER = /^\{\{\s*([a-zA-Z0-9_]+)\s*\}\}$/;
 // The model-supplied (optional) holding message arg; consumed for the ack, NEVER sent in the request.
 export const WAIT_MESSAGE_ARG = "__wait_message";
+// Marks an HTTP tool built with an acknowledgement, whose `__wait_message` is the holding message the
+// model writes. On the object rather than read off the schema: a code or MCP tool may declare an
+// argument of that name for its own use.
+export const ASKS_WAIT_MESSAGE = Symbol("asksWaitMessage");
 
 function interpolate(
   template: string,
@@ -624,7 +628,7 @@ export function buildHttpTool(
   const handle = async (
     rawInput: Record<string, unknown>,
     callConfig: ToolRunnableConfig,
-    sent: { request: boolean },
+    sent: { request: boolean; reported: boolean },
   ) => {
     let input = rawInput;
     // The call sent nothing: said to the caller that asked on this call's config (a decisions
@@ -632,6 +636,7 @@ export function buildHttpTool(
     const sentNothing = (count: boolean) => {
       if (count) deps.onNoEffect?.(def.name);
       fenceReporterOf(callConfig)?.({ noEffect: true });
+      sent.reported = true;
     };
     // 0a. `{{conversation_ref}}`, minted BEFORE anything is sent (the ack included)
     // and before the request, because the receiver may call back while this call is still running
@@ -1063,13 +1068,18 @@ export function buildHttpTool(
       : toolFailure(resultText);
   };
 
-  return failableTool(
+  const tool = failableTool(
     async (rawInput: Record<string, unknown>, callConfig) => {
-      const sent = { request: false };
+      const sent = { request: false, reported: false };
       try {
         return await handle(rawInput, callConfig, sent);
       } catch (err) {
-        if (!sent.request) fenceReporterOf(callConfig)?.({ noEffect: true });
+        // A throw before the request left (the credential, the SSRF lookup) sent nothing: said to
+        // the rule that asked and to the turn's count, so an observation with nothing sent retries.
+        if (!sent.request && !sent.reported) {
+          deps.onNoEffect?.(def.name);
+          fenceReporterOf(callConfig)?.({ noEffect: true });
+        }
         throw err;
       }
     },
@@ -1079,6 +1089,10 @@ export function buildHttpTool(
       schema,
     },
   );
+  if (def.ackMessage) {
+    (tool as { [ASKS_WAIT_MESSAGE]?: true })[ASKS_WAIT_MESSAGE] = true;
+  }
+  return tool;
 }
 
 // The header a tool's server sends when it trimmed its own response to fit. Present at all declares

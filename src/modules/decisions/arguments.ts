@@ -10,7 +10,7 @@ import {
   interopSafeParseAsync,
   isInteropZodSchema,
 } from "@langchain/core/utils/types";
-import { WAIT_MESSAGE_ARG } from "@/graph/tools/http";
+import { ASKS_WAIT_MESSAGE, WAIT_MESSAGE_ARG } from "@/graph/tools/http";
 import { SERVER_INPUT_VALIDATOR } from "@/graph/tools/mcp";
 import type { DecisionQuestion } from "./config";
 import type { DecisionAnswer } from "./providers";
@@ -28,6 +28,8 @@ export interface ArgSchema {
   zod?: unknown;
   json?: unknown;
   validate?: (args: Record<string, unknown>) => Promise<boolean>;
+  // An HTTP tool with an acknowledgement: its holding message is filled for a rule (withWaitMessage).
+  waitMessage?: boolean;
 }
 
 export function argSchemaOf(tool: StructuredToolInterface): ArgSchema {
@@ -39,9 +41,11 @@ export function argSchemaOf(tool: StructuredToolInterface): ArgSchema {
   };
   const server = t[SERVER_INPUT_VALIDATOR];
   if (server) return { json: server.schema, validate: server.validate };
+  const waitMessage =
+    (tool as { [ASKS_WAIT_MESSAGE]?: true })[ASKS_WAIT_MESSAGE] === true;
   return isInteropZodSchema(tool.schema)
-    ? { zod: tool.schema }
-    : { json: tool.schema };
+    ? { zod: tool.schema, waitMessage }
+    : { json: tool.schema, waitMessage };
 }
 
 // A schema that cannot be checked (one the validator cannot compile, such as an external `$ref`)
@@ -216,10 +220,7 @@ function withWaitMessage(
   schema: ArgSchema,
   args: Record<string, unknown>,
 ): Record<string, unknown> {
-  if (
-    fieldOf(schema, WAIT_MESSAGE_ARG) !== undefined &&
-    !Object.hasOwn(args, WAIT_MESSAGE_ARG)
-  ) {
+  if (schema.waitMessage && !Object.hasOwn(args, WAIT_MESSAGE_ARG)) {
     args[WAIT_MESSAGE_ARG] = "-";
   }
   return args;

@@ -311,6 +311,8 @@ const ERROR_COLUMN_LINES: Record<string, [number, ErrorSite | string]> = {
   "src/modules/playground/service.ts": [3, "flow-event"],
   // An upload row's own failure in the console, which never reaches a column.
   "src/client/pages/resources/useKnowledgeManager.tsx": [1, "unrelated"],
+  // The reconcile sweep's headline: a fixed sentence and a count, through writeFlowEvent.
+  "src/modules/chatwoot/reconcile-sweep.ts": [1, "flow-event"],
   // The line a recovery writes when it ends with the delivery still DEAD: a fixed sentence.
   "src/modules/chatwoot/recover-delivery.ts": [1, "flow-event"],
   "src/modules/chatwoot/webhook.ts": [1, "cleared"],

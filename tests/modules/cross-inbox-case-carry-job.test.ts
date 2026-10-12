@@ -53,6 +53,7 @@ const CASE_INBOX = 9;
 const CONTACT = 5;
 const CASE = 202;
 const KEY = "case_conversation_id";
+const OTHER_CASE = 303;
 
 let tenantId = 0n;
 let instanceId = 0n;
@@ -104,7 +105,7 @@ function fakeChatwoot(opts: {
     isInstanceUrl: (url: string) => url.startsWith("https://chat.example.com/"),
     getConversation: async (id: number) => {
       calls.push({ fn: "getConversation", args: [id] });
-      if (id === CASE) {
+      if (id === CASE || id === OTHER_CASE) {
         return {
           id,
           inbox_id: opts.caseInbox ?? CASE_INBOX,
@@ -164,7 +165,7 @@ function fakeChatwoot(opts: {
         fn: "setConversationCustomAttributes",
         args: [id, attrs, opts],
       });
-      if (id === CASE) Object.assign(caseAttrs, attrs);
+      if (id === CASE || id === OTHER_CASE) Object.assign(caseAttrs, attrs);
       else Object.assign(originAttrs, attrs);
     },
   } as unknown as ChatwootClient;
@@ -383,17 +384,54 @@ describe.skipIf(!dbUp)("the late carry into the case", () => {
     expect(f.uploaded()).toEqual([["foto-7001.jpg"]]);
   });
 
-  test("an origin that names another case leaves this one alone", async () => {
+  test("an arm from before the origin moved to another case carries into the case it names now", async () => {
     await setAgent({});
     await seed(104);
     const f = fakeChatwoot({
       messages: [fromContact(9001, [7001])],
-      originAttrs: { [KEY]: 999 },
+      originAttrs: { [KEY]: OTHER_CASE },
     });
     expect(await caseCarryHandler(jobFor(104), appDb, f.deps)).toEqual({
       outcome: "done",
     });
-    expect(f.named("downloadAttachment")).toHaveLength(0);
+    expect(f.named("sendFilesAsAdmin").map((c) => c.args[0])).toEqual([
+      OTHER_CASE,
+    ]);
+  });
+
+  test("a failed write of the origin's case number is retried, after the files went", async () => {
+    await setAgent({});
+    await seed(110);
+    const f = fakeChatwoot({ messages: [fromContact(9001, [7001])] });
+    const failing = {
+      ...f.client,
+      setConversationCustomAttributes: async (
+        id: number,
+        attrs: Record<string, unknown>,
+        opts?: unknown,
+      ) => {
+        if (id === 110) throw new ChatwootApiError(500, "POST");
+        return (
+          f.client as unknown as {
+            setConversationCustomAttributes: (
+              i: number,
+              a: Record<string, unknown>,
+              o?: unknown,
+            ) => Promise<unknown>;
+          }
+        ).setConversationCustomAttributes(id, attrs, opts);
+      },
+    } as unknown as ChatwootClient;
+    const r = await caseCarryHandler(jobFor(110), appDb, {
+      makeClient: async () => failing,
+    });
+    expect(r.outcome).toBe("fail");
+    expect(f.uploaded()).toEqual([["foto-7001.jpg"]]);
+    const warn = (await carryLines(110)).find((l) => l.level === "warn");
+    expect(warn?.detail).toMatchObject({
+      caseId: CASE,
+      originAttribute: "not_written",
+    });
   });
 
   test("files a person, a note or a bot left on the origin are not downloaded", async () => {

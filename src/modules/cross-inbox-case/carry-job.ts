@@ -10,7 +10,6 @@
 // new customer message is NOT one of them: it is what this job exists to carry.
 
 import type { PrismaClient } from "@/../generated/prisma/client";
-import logger from "@/api/lib/logger";
 import { chatwootThreadId, getCheckpointer } from "@/graph/checkpointer";
 import { resetLandedAfter } from "@/graph/reset-episode";
 import { parseDbId } from "@/lib/db-id";
@@ -274,50 +273,52 @@ export async function caseCarryHandler(
   );
   // The case must still be the open case of the destination inbox: a closed or moved one is not
   // reopened, and no case is ever created here.
-  let caseConv: unknown;
+  // THE CASE IS THE ONE THE ORIGIN NAMES NOW. The row is keyed by the origin and the last arm wins, so
+  // an arm from before the origin moved to another case carries into that one, not the stale one. The
+  // armed case stands only for an origin with no case number (an opening withdrawn before writing it).
   let originConv: unknown;
   try {
-    caseConv = await client.getConversation(caseId);
     originConv = await client.getConversation(originConversationId);
   } catch {
     // NOTE: the client's error can carry a URL or a body; the row keeps a fixed sentence.
-    return {
-      outcome: "fail",
-      error: "case carry: could not read the case or its origin",
-    };
+    return { outcome: "fail", error: "case carry: could not read the origin" };
   }
-  const status = field(caseConv, "status");
-  if (
-    Number(field(caseConv, "inbox_id")) !== config.targetInboxId ||
-    (status !== "open" && status !== "pending")
-  ) {
-    line("info", { caseId, stoodDown: "case_closed" });
-    return { outcome: "done" };
-  }
-  // An origin that names ANOTHER case moved on to it, and this row is stale.
   const named = positiveInt(
     field(field(originConv, "custom_attributes"), config.caseAttributeKey),
   );
-  if (named !== null && named !== caseId) return { outcome: "done" };
+  const target = named ?? caseId;
+  let caseConv: unknown;
+  try {
+    caseConv = await client.getConversation(target);
+  } catch {
+    return { outcome: "fail", error: "case carry: could not read the case" };
+  }
+  const status = field(caseConv, "status");
+  if (
+    target === originConversationId ||
+    Number(field(caseConv, "inbox_id")) !== config.targetInboxId ||
+    (status !== "open" && status !== "pending")
+  ) {
+    line("info", { caseId: target, stoodDown: "case_closed" });
+    return { outcome: "done" };
+  }
 
   const stillWanted = async () =>
     !(await jobRetired(job, base)) && (await read())?.hold === null;
+  const lastAttempt = !jobRetriesAfterFailure(job);
   // The origin's case number, when the turn that opened the case was withdrawn before writing it:
-  // without it, the contact's next file would not find its way here.
+  // without it, the contact's next file would not find its way here. A write that failed is retried
+  // with the job, after the files.
+  let originUnlinked = false;
   if (named === null && (await stillWanted())) {
     try {
       await client.setConversationCustomAttributes(
         originConversationId,
-        { [config.caseAttributeKey]: caseId },
+        { [config.caseAttributeKey]: target },
         { stillWanted, asAdmin: true },
       );
-    } catch (err) {
-      logger.warn(
-        "cross-inbox-case: could not write the case number back on the origin (conv=%d case=%d): %s",
-        originConversationId,
-        caseId,
-        err instanceof Error ? err.message : String(err),
-      );
+    } catch {
+      originUnlinked = true;
     }
   }
 
@@ -341,19 +342,18 @@ export async function caseCarryHandler(
         }
       : undefined;
 
-  const lastAttempt = !jobRetriesAfterFailure(job);
   const outcome = await carryCaseAttachments(client, {
     config: config.carryAttachments,
     originConversationId,
     originContactId: state.chatwootContactId,
-    caseId,
+    caseId: target,
     attendanceStartedAt: attendance,
     stillWanted,
     failureNote: lastAttempt,
   });
   if (!outcome) return { outcome: "done" };
   if (outcome.calledOff) {
-    line("info", { caseId, stoodDown: "withdrawn" });
+    line("info", { caseId: target, stoodDown: "withdrawn" });
     return { outcome: "done" };
   }
   if (outcome.unread || outcome.failed > 0) {
@@ -361,7 +361,7 @@ export async function caseCarryHandler(
     line(
       "warn",
       {
-        caseId,
+        caseId: target,
         carried: outcome.carried,
         skipped: outcome.skipped,
         failed: outcome.failed,
@@ -371,16 +371,34 @@ export async function caseCarryHandler(
         ...(outcome.unread ? { unread: outcome.unread } : {}),
       },
       outcome.unread
-        ? `customer files not carried to case ${caseId}: the ${outcome.unread === "attendance" ? "attendance boundary" : "case"} could not be read`
-        : `customer files not carried to case ${caseId}${ids.length > 0 ? ` (attachments ${ids.join(", ")})` : ""}${lastAttempt ? "" : "; trying again"}`,
+        ? `customer files not carried to case ${target}: the ${outcome.unread === "attendance" ? "attendance boundary" : "case"} could not be read`
+        : `customer files not carried to case ${target}${ids.length > 0 ? ` (attachments ${ids.join(", ")})` : ""}${lastAttempt ? "" : "; trying again"}`,
     );
     return lastAttempt
       ? { outcome: "done" }
       : { outcome: "fail", error: "case carry: files not carried" };
   }
+  if (originUnlinked) {
+    line(
+      "warn",
+      {
+        caseId: target,
+        originAttribute: "not_written",
+        attempt: job.attempts + 1,
+        retry: !lastAttempt,
+      },
+      `the origin's case number (case ${target}) could not be written${lastAttempt ? "" : "; trying again"}`,
+    );
+    if (!lastAttempt) {
+      return {
+        outcome: "fail",
+        error: "case carry: origin case number not written",
+      };
+    }
+  }
   if (outcome.carried + outcome.skipped > 0 || outcome.truncated) {
     line("info", {
-      caseId,
+      caseId: target,
       carried: outcome.carried,
       skipped: outcome.skipped,
       ...(outcome.truncated ? { truncated: true } : {}),

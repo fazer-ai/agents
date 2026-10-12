@@ -1102,3 +1102,63 @@ describe("the custom tools a rule is offered", () => {
     expect([...all.keys()]).toEqual(["mcp__crm_a__search"]);
   });
 });
+
+// A tool whose schema gained a required argument after its rule was saved: the server accepts the
+// rule as stored, so the console asks only what the save changes (agents#1223).
+describe("a rule on a custom tool as stored", () => {
+  const tools = new Map([
+    [
+      "abrir_ticket",
+      {
+        name: "abrir_ticket",
+        label: "Abrir ticket",
+        kind: "http" as const,
+        args: [{ name: "motivo", type: "string" as const, required: true }],
+      },
+    ],
+  ]);
+  const block = {
+    ...BLOCK,
+    rules: [
+      {
+        when: [{ question: "pede_reembolso", minProbability: 0.7 }],
+        action: { tool: "abrir_ticket", args: {} },
+      },
+    ],
+  };
+  const stored = { monitoring: { engine: "decisions", decisions: block } };
+
+  test("is not asked again when something else in the form is edited", () => {
+    const form = observationToForm(stored);
+    if (!form.decisions) throw new Error("fixture");
+    form.decisions.model = "gpt-6-sol";
+    const edited = { ...form, decisionsEdited: true };
+    expect(
+      [
+        ...decisionsFormIssues(
+          form.decisions,
+          decisionsBaseline(edited),
+          tools,
+          edited.storedDecisions,
+        ).keys(),
+      ].filter((k) => k.includes(".action.")),
+    ).toEqual([]);
+  });
+
+  test("a draft left missing an argument behind the language model is not stored over the block", () => {
+    const form = observationToForm({
+      monitoring: { engine: "decisions", decisions: BLOCK },
+    });
+    if (!form.decisions) throw new Error("fixture");
+    const rule = form.decisions.rules[0];
+    if (!rule) throw new Error("fixture");
+    form.decisions.rules[0] = {
+      ...rule,
+      tool: "abrir_ticket",
+      args: {},
+      fill: {},
+    };
+    const hidden = { ...form, engine: "llm" as const, decisionsEdited: true };
+    expect(decisionsBlockToStore(hidden, true, tools)).toEqual(BLOCK);
+  });
+});

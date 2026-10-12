@@ -359,6 +359,9 @@ export function decisionsFormIssues(
   form: DecisionsForm,
   stored?: Record<string, unknown> | null,
   tools?: CustomTools | null,
+  // The block as stored, edited or not: a rule the save leaves as it was is not asked again (the
+  // server accepts it), though `stored` is null once anything else in the form was edited.
+  saved: Record<string, unknown> | null | undefined = stored,
 ): DecisionsIssueMap {
   const out = new Map<string, DecisionsIssue>();
   const block =
@@ -370,9 +373,9 @@ export function decisionsFormIssues(
     if (!out.has(at)) out.set(at, issue);
   }
   // A custom tool's arguments, asked as the server asks them on save (`assertDecisionActionArgs`):
-  // for a rule the save changes, and a tool whose arguments the console knows.
+  // for a rule the save changes against the stored block, and a tool whose arguments the console knows.
   if (tools) {
-    const storedActions = list(bag(stored)?.rules).map((r) =>
+    const storedActions = list(bag(saved)?.rules).map((r) =>
       JSON.stringify(canonAction(bag(r)?.action)),
     );
     for (const [ri, raw] of list(block.rules).entries()) {

@@ -11,7 +11,9 @@ import {
   WINDOW_MESSAGES_MIN,
 } from "@/modules/observe/settings";
 import {
+  type CustomTools,
   type DecisionsForm,
+  decisionsFormIssues,
   decisionsToForm,
   decisionsToStored,
   decisionsUntouched,
@@ -94,9 +96,10 @@ function intOr(v: string, fallback: number): number {
 export function observationToStored(
   form: ObservationState,
   watcher = true,
+  tools: CustomTools | null = null,
 ): StoredMonitoring {
   const { decisions, ...rest } = readMonitoringConfig({
-    monitoring: draftFromForm(form, watcher),
+    monitoring: draftFromForm(form, watcher, tools),
   });
   // A negative window is REFUSED by the write boundary, so it travels as typed: read through the
   // reader it would become 0, the one value that changes what the agent costs, saved by a typo.
@@ -138,9 +141,10 @@ export function decisionsBaseline(
 export function monitoringPatch(
   form: ObservationState,
   watcher: boolean,
+  tools: CustomTools | null = null,
 ): { monitoring?: StoredMonitoring } {
   if (!watcher && !form.storedPresent) return {};
-  return { monitoring: observationToStored(form, watcher) };
+  return { monitoring: observationToStored(form, watcher, tools) };
 }
 
 // The decisions block a save writes: a form nobody touched writes the stored block back as it is; a
@@ -150,6 +154,7 @@ export function monitoringPatch(
 export function decisionsBlockToStore(
   form: ObservationState,
   watcher = true,
+  tools: CustomTools | null = null,
 ): Record<string, unknown> | null {
   // Hidden means the STORED pair goes back whole, engine and block: a block that runs under an
   // engine choice that was never saved is still half of a change nobody can see.
@@ -163,7 +168,15 @@ export function decisionsBlockToStore(
     return form.storedDecisions;
   }
   const block = decisionsToStored(form.decisions);
-  if (!drawn && decisionsIssues(block).length > 0) {
+  // A custom tool's missing argument counts too, asked as the save asks it (`tools`, when known):
+  // the server would refuse it the same way.
+  if (
+    !drawn &&
+    (decisionsIssues(block).length > 0 ||
+      (tools &&
+        decisionsFormIssues(form.decisions, null, tools, form.storedDecisions)
+          .size > 0))
+  ) {
     return form.storedDecisions;
   }
   return block;
@@ -172,6 +185,7 @@ export function decisionsBlockToStore(
 function draftFromForm(
   form: ObservationState,
   watcher: boolean,
+  tools: CustomTools | null,
 ): MonitoringConfig {
   const d = MONITORING_DEFAULTS;
   const windowSeconds = intOr(form.windowSeconds, d.debounce.windowSeconds);
@@ -180,7 +194,7 @@ function draftFromForm(
       (watcher ? form.engine : form.storedEngine) === "decisions"
         ? "decisions"
         : "llm",
-    decisions: decisionsBlockToStore(form, watcher),
+    decisions: decisionsBlockToStore(form, watcher, tools),
     analysis: form.analysis === "on_resolve" ? "on_resolve" : "incremental",
     window: { messages: intOr(form.windowMessages, d.window.messages) },
     debounce: {
@@ -263,10 +277,13 @@ export function timingOf(form: ObservationState): string {
   });
 }
 
-export function decisionsHeadOf(form: ObservationState): string {
+export function decisionsHeadOf(
+  form: ObservationState,
+  tools: CustomTools | null = null,
+): string {
   // Of the block the save would WRITE, not of the form: a draft left behind the language
   // model that could not run is not written, so switching back leaves nothing unsaved.
-  const d = decisionsBlockToStore(form);
+  const d = decisionsBlockToStore(form, true, tools);
   return JSON.stringify({
     engine: form.engine,
     provider: d?.provider ?? null,
@@ -275,8 +292,11 @@ export function decisionsHeadOf(form: ObservationState): string {
   });
 }
 
-export function decisionsBodyOf(form: ObservationState): string {
-  const d = decisionsBlockToStore(form);
+export function decisionsBodyOf(
+  form: ObservationState,
+  tools: CustomTools | null = null,
+): string {
+  const d = decisionsBlockToStore(form, true, tools);
   if (!d) return "null";
   const { provider: _p, model: _m, credentialRef: _c, ...body } = d;
   return JSON.stringify(body);

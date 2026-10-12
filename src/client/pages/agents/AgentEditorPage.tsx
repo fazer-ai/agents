@@ -1004,6 +1004,7 @@ function AgentEditor() {
             observation.decisions,
             decisionsBaseline(observation),
             customTools?.all ?? null,
+            observation.storedDecisions,
           )
         : new Map(),
     [decides, observation, customTools],
@@ -1349,6 +1350,7 @@ function AgentEditor() {
     "settings.monitoring.decisions.credentialRef": decisionsBlockToStore(
       observation,
       agentMode === "monitoring",
+      customTools?.all ?? null,
     )?.credentialRef,
     "settings.guardrails.credentialRef": guardrails.credentialRef,
     "availability.awayMessage": awayMessage.trim(),
@@ -2047,6 +2049,7 @@ function AgentEditor() {
       ...monitoringPatch(
         withDecisionsOf(observation, observationToForm(stored)),
         agentMode === "monitoring",
+        customTools?.all ?? null,
       ),
       attributeContext: {
         conversation: attributeContext.conversation,
@@ -2336,7 +2339,7 @@ function AgentEditor() {
       // NOTE: The decision setup, drawn on two tabs: the head (engine and classifier) on General, the
       // body (questions and rules) on Questions and rules. One section, since either save writes all
       // of it; the two halves light their own tab's dot.
-      decisions: `${decisionsHeadOf(f.observation)}\u0000${decisionsBodyOf(f.observation)}`,
+      decisions: `${decisionsHeadOf(f.observation, customTools?.all ?? null)}\u0000${decisionsBodyOf(f.observation, customTools?.all ?? null)}`,
       // NOTE: The WhatsApp→website-chat redirect (own Save button). widgetInboxId is excluded
       // (server-owned, persisted on provision), so provisioning the widget never lights up this tab's
       // unsaved-changes dot.
@@ -2408,15 +2411,19 @@ function AgentEditor() {
   );
   // Only a watcher draws the setup; an agent flipped to answering keeps the stored pair.
   const decisionsHeadDirty =
-    watcher && !!baseline && decisionsHeadOf(observation) !== baseHead;
+    watcher &&
+    !!baseline &&
+    decisionsHeadOf(observation, customTools?.all ?? null) !== baseHead;
   const decisionsBodyDirty =
-    watcher && !!baseline && decisionsBodyOf(observation) !== baseBody;
+    watcher &&
+    !!baseline &&
+    decisionsBodyOf(observation, customTools?.all ?? null) !== baseBody;
   // The setup edited while the agent is not a watcher: no save writes it, and it is still the operator's.
   const hiddenDecisionsPending =
     !watcher &&
     !!baseline &&
-    (decisionsHeadOf(observation) !== baseHead ||
-      decisionsBodyOf(observation) !== baseBody);
+    (decisionsHeadOf(observation, customTools?.all ?? null) !== baseHead ||
+      decisionsBodyOf(observation, customTools?.all ?? null) !== baseBody);
   // The form's sections as they stand now, read by a save when its answer lands: it puts the answer
   // into the form only for a section the operator has not touched since the request went out, so an
   // edit made meanwhile is neither overwritten nor read as saved.
@@ -3925,6 +3932,7 @@ function AgentEditor() {
       const merged = monitoringPatch(
         withDecisionsOf(observationToForm(syncedSettings), observation),
         true,
+        customTools?.all ?? null,
       );
       block = merged.monitoring?.decisions;
       const patch = {
@@ -4711,7 +4719,11 @@ function AgentEditor() {
                                 )}
                                 serverRefusal={decisionsRefusalStanding(
                                   decisionsRefused,
-                                  decisionsBlockToStore(observation, true),
+                                  decisionsBlockToStore(
+                                    observation,
+                                    true,
+                                    customTools?.all ?? null,
+                                  ),
                                 )}
                               />
                             </Card>
@@ -4864,6 +4876,7 @@ function AgentEditor() {
                     observation.storedDecisions,
                   )}
                   storedDecisions={decisionsBaseline(observation)}
+                  savedDecisions={observation.storedDecisions}
                   storedRuleCount={
                     Array.isArray(observation.storedDecisions?.rules)
                       ? observation.storedDecisions.rules.length
@@ -4875,7 +4888,11 @@ function AgentEditor() {
                   }
                   serverRefusal={decisionsRefusalStanding(
                     decisionsRefused,
-                    decisionsBlockToStore(observation, true),
+                    decisionsBlockToStore(
+                      observation,
+                      true,
+                      customTools?.all ?? null,
+                    ),
                   )}
                   granted={
                     catalog

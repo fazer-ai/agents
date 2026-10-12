@@ -889,6 +889,7 @@ export function DecisionsFields({
   storedBlock,
   storedRuleCount,
   storedDecisions,
+  savedDecisions,
   decisions,
   setDecisions,
   serverRefusal,
@@ -911,6 +912,8 @@ export function DecisionsFields({
   storedRuleCount: number;
   // The block as stored: an untouched form is judged by it, since it is what a save writes back.
   storedDecisions: Record<string, unknown> | null;
+  // The block as stored even after an edit: a rule the save leaves as it was is not asked again.
+  savedDecisions?: Record<string, unknown> | null;
   decisions: DecisionsForm;
   setDecisions: (next: (prev: DecisionsForm) => DecisionsForm) => void;
   serverRefusal: DecisionsServerRefusal | null;
@@ -937,8 +940,14 @@ export function DecisionsFields({
   const { t } = useTranslation();
   const starterNames = useStarterNames();
   const issues = useMemo(
-    () => decisionsFormIssues(decisions, storedDecisions, customTools),
-    [decisions, storedDecisions, customTools],
+    () =>
+      decisionsFormIssues(
+        decisions,
+        storedDecisions,
+        customTools,
+        savedDecisions ?? storedDecisions,
+      ),
+    [decisions, storedDecisions, customTools, savedDecisions],
   );
 
   const [labels, setLabels] = useState<InboxLabelOption[]>([]);

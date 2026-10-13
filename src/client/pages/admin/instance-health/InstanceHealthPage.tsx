@@ -403,20 +403,22 @@ function kindMeasureLabel(
 }
 
 // The line under a kind's card: its two rates, how overdue its oldest due job is, and the reading of
-// the three.
+// the three. The rates are counted in process, so they show even while the database half has never
+// answered; the oldest due job and the reading come from that half and are left out until it does.
 function kindDetail(
   kind: string,
   health: Health,
   t: ReturnType<typeof useTranslation>["t"],
 ): string | null {
   const k = health.schedulerThroughput[kind];
-  if (!k || k.state === "unknown") return null;
+  if (!k) return null;
   const parts = [
     t("instanceHealth.kindRates", "{{done}} completed · {{failed}} failed", {
       done: formatSignalValue(k.donePerMin ?? 0, "per_minute"),
       failed: formatSignalValue(k.failedPerMin ?? 0, "per_minute"),
     }),
   ];
+  if (k.state === "unknown") return parts.join(" · ");
   if (k.oldestDueMs !== null) {
     parts.push(
       t("instanceHealth.kindOldestDue", "oldest due {{age}}", {

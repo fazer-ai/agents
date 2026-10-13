@@ -111,7 +111,7 @@ type KindReading = {
   donePerMin: number;
   failedPerMin: number;
   oldestDueMs: number | null;
-  stalledMs: number;
+  stalledMs: number | null;
   state: string;
 };
 const DRAINING: KindReading = {
@@ -777,6 +777,15 @@ describe("instance health screen", () => {
       state: "idle",
     };
     await screen.findByText("0/min completed · 0/min failed · nothing due");
+    // Never read from the database: the in-process rates still show, the rest waits for a reading.
+    kindReading = {
+      donePerMin: 5,
+      failedPerMin: 1,
+      oldestDueMs: null,
+      stalledMs: null,
+      state: "unknown",
+    };
+    await screen.findByText("5/min completed · 1/min failed");
     // The rates ride on that card, not on cards of their own.
     expect(
       Boolean(screen.queryByText("DELIVERY_RECOVERY: completed per minute")),

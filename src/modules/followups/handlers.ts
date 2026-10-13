@@ -827,14 +827,16 @@ export async function followUpHandler(
   }
   if (delivery.state === "undelivered") {
     const lost = delivery;
-    await announceFailedTurn({
+    const handed = await announceFailedTurn({
       tenantId,
       instanceId,
       chatwootConversationId: conversationId,
-      // NOTE: asked again right before the hand-over: a resend or a new reply that landed since is
-      // the conversation answered after all.
+      // NOTE: asked again right before the hand-over: a /reset that retired this run withdrew the
+      // episode, and a resend or a new reply that landed since is the conversation answered after all.
       assess: async () => {
         try {
+          if (await jobRetiredStrict(job, base))
+            return { path: "direct", fence: "superseded" };
           const again = await lastReplyDelivery({
             tenantId,
             instanceId,
@@ -868,10 +870,19 @@ export async function followUpHandler(
       base,
       ...(deps?.makeClient ? { deps: { makeClient: deps.makeClient } } : {}),
     });
-    // NOTE: the episode is spent whatever the hand-over answered: a nudge about this reply is never
-    // right, and the stamp keeps the sweep from arming it again until the customer speaks.
-    await stampUnlessRetired();
-    return { outcome: "done" };
+    // NOTE: a hand-over that happened spends the episode, and the stamp keeps the sweep from arming
+    // it again until the customer speaks. One that did not (the reply landed meanwhile, a read or the
+    // post failed) is asked again shortly, unless the run was retired.
+    if (handed === "posted" || handed === "coalesced") {
+      await stampUnlessRetired();
+      return { outcome: "done" };
+    }
+    if (await jobRetired(job, base)) return { outcome: "done" };
+    return {
+      outcome: "reschedule",
+      runAt: new Date(Date.now() + IN_FLIGHT_BACKOFF_MS),
+      payload: { ...job.payload, deferredUnder: BACKOFF_DEFERRAL },
+    };
   }
 
   const idleMin = lastEventAt

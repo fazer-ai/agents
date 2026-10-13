@@ -66,10 +66,15 @@ function stubClient(
   over: {
     liveMeta?: Record<string, unknown>;
     // The latest page of the conversation, which the handler reads to tell whether the last reply
-    // arrived. Empty by default: no reply of ours on it reads as nothing refused.
+    // arrived. Empty by default: no reply of ours on it reads as nothing refused. Paged the way
+    // Chatwoot pages: the newest 20, or the 20 older than `before`.
     page?: Record<string, unknown>[];
+    // Called before each page read, with how many reads came before it; what it returns, when
+    // anything, is answered instead of the page.
+    onRead?: (n: number) => Promise<unknown> | unknown;
   } = {},
 ) {
+  let reads = 0;
   const sent: Array<[number, string]> = [];
   const notes: Array<[number, string]> = [];
   const labelSets: string[][] = [];
@@ -83,7 +88,14 @@ function stubClient(
       status: "pending",
       meta: over.liveMeta ?? {},
     }),
-    getMessages: async () => ({ payload: over.page ?? [] }),
+    getMessages: async (_c: number, o?: { before?: number }) => {
+      const instead = await over.onRead?.(reads++);
+      if (instead !== undefined) return instead;
+      const rows = [...(over.page ?? [])]
+        .sort((a, b) => Number(a.id) - Number(b.id))
+        .filter((m) => o?.before === undefined || Number(m.id) < o.before);
+      return { payload: rows.slice(-20) };
+    },
     sendMessage: async (c: number, t: string) => {
       sent.push([c, t]);
       return {};
@@ -765,7 +777,7 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
   // The agent's reply as it sits on the latest page: refused by the channel when `refused` is set.
   function replyRow(
     id: number,
-    opts: { refused?: boolean; botId?: number } = {},
+    opts: { refused?: boolean; botId?: number; sendId?: string } = {},
   ) {
     return {
       id,
@@ -774,11 +786,15 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
       private: false,
       created_at: Math.floor(Date.now() / 1000) - 600,
       sender: { type: "agent_bot", id: opts.botId ?? 5 },
-      content_attributes: opts.refused
-        ? { external_error: "(#131000) Something went wrong" }
-        : {},
+      content_attributes: {
+        ...(opts.refused
+          ? { external_error: "(#131000) Something went wrong" }
+          : {}),
+        ...(opts.sendId ? { fazer_ai_send_id: opts.sendId } : {}),
+      },
     };
   }
+  const note = (id: number) => ({ ...replyRow(id), private: true });
   const run = (convId: number, s: ReturnType<typeof stubClient>) =>
     followUpHandler(jobFor(convId), appDb, {
       makeModel: fakeModel,
@@ -868,6 +884,95 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     });
     expect(await run(1703, other)).toEqual({ outcome: "done" });
     expect(other.sent.length).toBeGreaterThan(0);
+  });
+
+  // The reply is every message of it: a voice note refused while the text after it landed did not
+  // arrive, and neither did a split reply whose first balloon was refused. A replacement that landed
+  // covers the message it replaces.
+  test("a reply is judged by all its messages and their replacements", async () => {
+    await seedConversation(1706, due());
+    const audio = stubClient({
+      page: [
+        replyRow(17061, { refused: true, sendId: "reply:k6:a" }),
+        replyRow(17062, { sendId: "reply:k6:b" }),
+      ],
+    });
+    expect(await run(1706, audio)).toEqual({ outcome: "done" });
+    expect(audio.sent).toEqual([]);
+    expect(audio.notes.map(([c]) => c)).toEqual([1706]);
+    await seedConversation(1707, due());
+    const replaced = stubClient({
+      page: [
+        replyRow(17071, { refused: true, sendId: "reply:k7:a" }),
+        replyRow(17072, { sendId: "reply:k7:b" }),
+        replyRow(17073, { sendId: "reply:k7:channel-resend:17071" }),
+      ],
+    });
+    expect(await run(1707, replaced)).toEqual({ outcome: "done" });
+    expect(replaced.sent.length).toBeGreaterThan(0);
+    expect(replaced.notes).toEqual([]);
+  });
+
+  // Notes and activity can push the reply off the newest page; not finding it there is not proof
+  // that it arrived.
+  test("a refused reply below a page of notes is still found", async () => {
+    await seedConversation(1708, due());
+    const s = stubClient({
+      page: [
+        replyRow(17080, { refused: true }),
+        ...Array.from({ length: 25 }, (_, i) => note(17081 + i)),
+      ],
+    });
+    expect(await run(1708, s)).toEqual({ outcome: "done" });
+    expect(s.sent).toEqual([]);
+    expect(s.notes.map(([c]) => c)).toEqual([1708]);
+  });
+
+  // A /reset during the reads withdrew the episode: nothing is handed over and nothing is stamped.
+  // A hand-over that could not be confirmed is asked again, without spending the episode.
+  test("a retired run or an unconfirmed hand-over leaves the episode unspent", async () => {
+    await seedConversation(1709, due());
+    const row = await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "FOLLOWUP",
+        dedupeKey: `fu-retire-${process.pid}`,
+        status: "CLAIMED",
+        runAt: new Date(),
+        payload: { threadId: threadOf(1709) },
+      },
+    });
+    const retired = stubClient({
+      page: [replyRow(17091, { refused: true })],
+      onRead: async (n) => {
+        if (n === 1)
+          await suDb.schedulerJob.update({
+            where: { id: row.id },
+            data: {
+              payload: { threadId: threadOf(1709), cancelledAt: Date.now() },
+            },
+          });
+      },
+    });
+    const job = { ...jobFor(1709), id: row.id, claimSeq: row.claimSeq };
+    expect(
+      await followUpHandler(job, appDb, {
+        makeModel: fakeModel,
+        makeClient: retired.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      }),
+    ).toEqual({ outcome: "done" });
+    expect(retired.notes).toEqual([]);
+    expect(await lastFollowUpOf(1709)).toBeNull();
+    await seedConversation(1710, due());
+    const unread = stubClient({
+      page: [replyRow(17101, { refused: true })],
+      onRead: (n) => (n > 0 ? {} : undefined),
+    });
+    expect(await run(1710, unread)).toMatchObject({ outcome: "reschedule" });
+    expect(unread.notes).toEqual([]);
+    expect(await lastFollowUpOf(1710)).toBeNull();
   });
 
   test("a page that does not read holds the step instead of nudging", async () => {

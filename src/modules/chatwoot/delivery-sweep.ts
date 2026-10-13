@@ -874,8 +874,11 @@ async function settleConversationEvents(
 ): Promise<void> {
   const down = new Map<string, unknown>();
   for (const g of groups) {
-    if (Date.now() >= readUntil) return;
     const instanceKey = `${g.tenantId}:${g.instanceId}`;
+    // The budget bounds network reads only: a failure already known for the instance still advances
+    // every one of its rows, or a timeout that outran the budget would leave all but the first row
+    // where they were, holding the scan pass after pass.
+    if (!down.has(instanceKey) && Date.now() >= readUntil) continue;
     const read: LiveRead = down.has(instanceKey)
       ? { kind: "unreadable", err: down.get(instanceKey) }
       : await readLive(g.tenantId, g.instanceId, g.conversationId, base, deps);
@@ -995,11 +998,11 @@ export async function reconcileUnconfirmedCloses(
       }),
     );
   for (const conv of rows) {
-    if (Date.now() >= readUntil) break;
     if (down.has(conv.chatwootInstanceId)) {
       await postpone(conv.id);
       continue;
     }
+    if (Date.now() >= readUntil) continue;
     const read = await readLive(
       tenantId,
       conv.chatwootInstanceId,

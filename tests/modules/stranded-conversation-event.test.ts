@@ -344,6 +344,26 @@ describe.skipIf(!dbUp)(
       });
     });
 
+    test("a failure that outran the read budget still advances the instance's other rows (catches a timeout leaving them where they were)", async () => {
+      await seedConversation(9017);
+      await seedConversation(9018);
+      const a = await strand(9017, "conversation_resolved");
+      const b = await strand(9018, "conversation_resolved");
+      live.set(9017, 503);
+      live.set(9018, 503);
+      // The read itself takes longer than the whole budget, as a request timeout would.
+      onRead = () => new Promise((r) => setTimeout(r, 60));
+      await sweepStrandedDeliveries({
+        tenantId,
+        base: appDb,
+        deps,
+        readBudgetMs: 30,
+      });
+      expect(reads).toHaveLength(1);
+      expect((await ledger(a)).attempts).toBe(1);
+      expect((await ledger(b)).attempts).toBe(1);
+    });
+
     test("an instance that failed a read is not asked again in the same pass, and its other rows count the failure (catches a down instance costing a timeout per conversation)", async () => {
       await seedConversation(9014);
       await seedConversation(9015);

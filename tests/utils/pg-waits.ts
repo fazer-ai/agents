@@ -14,7 +14,7 @@ export async function blockedByChain(
     WITH RECURSIVE waiting AS (
       SELECT a.pid, unnest(pg_blocking_pids(a.pid)) AS blocker
         FROM pg_stat_activity a
-       WHERE cardinality(pg_blocking_pids(a.pid)) > 0
+       WHERE a.datname = current_database() AND cardinality(pg_blocking_pids(a.pid)) > 0
     ),
     chain AS (
       SELECT pid FROM waiting WHERE blocker = ${pid}

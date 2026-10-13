@@ -90,8 +90,8 @@ describe.skipIf(!dbUp)("waiting on the role catalog lock", () => {
         expect((err as Error).message).toContain("role catalog lock");
         expect((err as Error).message).toContain(`pid ${holderPid} `);
         const left = await holder.query(
-          "SELECT pid FROM pg_stat_activity WHERE application_name = $1",
-          [app],
+          "SELECT pid FROM pg_stat_activity WHERE datname = $1 AND application_name = $2",
+          ["postgres", app],
         );
         expect(left.rowCount).toBe(0);
       } finally {

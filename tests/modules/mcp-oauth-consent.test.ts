@@ -205,7 +205,7 @@ describe.skipIf(!dbUp)("mcp oauth consent (pending + approvals)", () => {
     const blocked = async (): Promise<boolean> => {
       const rows = await suDb.$queryRaw<{ n: bigint }[]>`
         SELECT count(*) AS n FROM pg_stat_activity
-         WHERE wait_event_type = 'Lock'
+         WHERE datname = current_database() AND wait_event_type = 'Lock'
            AND query ILIKE '%mcp_oauth_client_approvals%'`;
       return (rows[0]?.n ?? 0n) > 0n;
     };

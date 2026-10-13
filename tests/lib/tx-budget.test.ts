@@ -42,7 +42,8 @@ const budget = { maxWait: 1_000, timeout: 500 };
 async function stillRunning(marker: string): Promise<number> {
   const [row] = await (su as PrismaClient).$queryRawUnsafe<{ n: number }[]>(
     `SELECT count(*)::int AS n FROM pg_stat_activity
-      WHERE state = 'active' AND query LIKE '%${marker}%' AND pid <> pg_backend_pid()`,
+      WHERE datname = current_database() AND state = 'active' AND query LIKE '%${marker}%'
+        AND pid <> pg_backend_pid()`,
   );
   return row?.n ?? -1;
 }

@@ -531,8 +531,12 @@ describe("a copy waiting on a busy template", () => {
           async () => {
             const { rows } = await maint.query<{ pid: number }>(
               `SELECT pid FROM pg_stat_activity
-              WHERE application_name = $1 AND query LIKE $2`,
-              [CLONE_APP, `CREATE DATABASE "${clone}" TEMPLATE "${template}"%`],
+              WHERE datname = $1 AND application_name = $2 AND query LIKE $3`,
+              [
+                "postgres",
+                CLONE_APP,
+                `CREATE DATABASE "${clone}" TEMPLATE "${template}"%`,
+              ],
             );
             return rows[0]?.pid;
           },

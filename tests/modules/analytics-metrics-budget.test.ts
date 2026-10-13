@@ -67,8 +67,8 @@ const principal: VerifiedToken = {
 async function waitingOnUsage(): Promise<number> {
   const [row] = await (su as PrismaClient).$queryRaw<{ n: number }[]>`
     SELECT count(*)::int AS n FROM pg_stat_activity
-     WHERE state = 'active' AND query ILIKE '%llm_usage%' AND pid <> pg_backend_pid()
-       AND usename <> current_user`;
+     WHERE datname = current_database() AND state = 'active' AND query ILIKE '%llm_usage%'
+       AND pid <> pg_backend_pid() AND usename <> current_user`;
   return row?.n ?? -1;
 }
 
@@ -185,7 +185,8 @@ describe.skipIf(!dbUp)("metrics time budget", () => {
     expect(elapsed).toBeLessThan(1_400);
     const [row] = await (su as PrismaClient).$queryRaw<{ n: number }[]>`
       SELECT count(*)::int AS n FROM pg_stat_activity
-       WHERE state = 'active' AND query LIKE '%mb_two%' AND pid <> pg_backend_pid()`;
+       WHERE datname = current_database() AND state = 'active' AND query LIKE '%mb_two%'
+         AND pid <> pg_backend_pid()`;
     expect(row?.n).toBe(0);
   });
 
@@ -217,7 +218,8 @@ describe.skipIf(!dbUp)("metrics time budget", () => {
       expect(elapsed).toBeLessThan(1_300);
       const [row] = await (su as PrismaClient).$queryRaw<{ n: number }[]>`
         SELECT count(*)::int AS n FROM pg_stat_activity
-         WHERE state = 'active' AND query LIKE '%mb_wait%' AND pid <> pg_backend_pid()`;
+         WHERE datname = current_database() AND state = 'active' AND query LIKE '%mb_wait%'
+           AND pid <> pg_backend_pid()`;
       expect(row?.n).toBe(0);
     } finally {
       await one.$disconnect();

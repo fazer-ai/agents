@@ -354,6 +354,19 @@ describe.skipIf(!dbUp)(
       });
     });
 
+    test("a failure about one conversation does not stand for its siblings (catches a healthy event closed unread behind one bad conversation)", async () => {
+      await seedConversation(9019);
+      await seedConversation(9020);
+      const bad = await strand(9019, "conversation_resolved");
+      await strand(9020, "conversation_resolved");
+      live.set(9019, 500);
+      live.set(9020, { status: "resolved", updatedAt: V2 });
+      await sweepStrandedDeliveries({ tenantId, base: appDb, deps });
+      expect(reads).toEqual([9019, 9020]);
+      expect((await mirror(9020)).status).toBe("resolved");
+      expect((await ledger(bad)).attempts).toBe(1);
+    });
+
     test("a failure that outran the read budget still advances the instance's other rows (catches a timeout leaving them where they were)", async () => {
       await seedConversation(9017);
       await seedConversation(9018);
@@ -695,6 +708,24 @@ describe.skipIf(!dbUp)("a close this side made converges", () => {
     };
     await reconcileUnconfirmedCloses({ tenantId, base: appDb, deps });
     expect((await mirror(9113)).resolvedBy).toBe("agent");
+  });
+
+  test("a close whose own conversation fails does not hold its siblings (catches healthy closes skipped behind one bad conversation)", async () => {
+    for (const [c, ago] of [
+      [9117, 120_000],
+      [9118, 60_000],
+    ] as const) {
+      await seedConversation(c, {
+        resolvedBy: "agent",
+        resolvedByAt: V1 - 1_000,
+        updatedAgoMs: STALE_MS + ago,
+      });
+    }
+    live.set(9117, 500);
+    live.set(9118, { status: "resolved", updatedAt: V2 });
+    await reconcileUnconfirmedCloses({ tenantId, base: appDb, deps });
+    expect(reads).toEqual([9117, 9118]);
+    expect((await mirror(9118)).status).toBe("resolved");
   });
 
   test("a close recorded while Chatwoot was being asked keeps its stamp (catches the pass erasing who closed a new episode)", async () => {

@@ -747,7 +747,12 @@ type LiveRead =
       live: NonNullable<ReturnType<typeof parseLiveConversation>>;
     }
   | { kind: "gone" }
-  | { kind: "unreadable"; err: unknown };
+  | { kind: "unreadable"; err: unknown; instanceWide: boolean };
+
+// The statuses that speak for the whole account rather than for one conversation: the token refused,
+// the rate limit, and the gateway or the server down. Any other HTTP status, or a body that does not
+// parse, is about the conversation asked for, and says nothing about its siblings.
+const INSTANCE_WIDE_STATUSES = new Set([401, 403, 429, 502, 503, 504]);
 
 async function readLive(
   tenantId: bigint,
@@ -767,12 +772,24 @@ async function readLive(
     );
     return live
       ? { kind: "state", live }
-      : { kind: "unreadable", err: new Error("unparseable conversation") };
+      : {
+          kind: "unreadable",
+          err: new Error("unparseable conversation"),
+          instanceWide: false,
+        };
   } catch (err) {
     if (err instanceof ChatwootApiError && err.status === 404) {
       return { kind: "gone" };
     }
-    return { kind: "unreadable", err };
+    // No answer at all (a timeout, a refused connection, a client that could not be built) is the
+    // instance's, like the statuses above.
+    return {
+      kind: "unreadable",
+      err,
+      instanceWide:
+        !(err instanceof ChatwootApiError) ||
+        INSTANCE_WIDE_STATUSES.has(err.status),
+    };
   }
 }
 
@@ -929,10 +946,10 @@ async function settleConversationEvents(
     // where they were, holding the scan pass after pass.
     if (!down.has(instanceKey) && readClock(deps) >= readUntil) continue;
     const read: LiveRead = down.has(instanceKey)
-      ? { kind: "unreadable", err: down.get(instanceKey) }
+      ? { kind: "unreadable", err: down.get(instanceKey), instanceWide: true }
       : await readLive(g.tenantId, g.instanceId, g.conversationId, base, deps);
     if (read.kind === "unreadable") {
-      down.set(instanceKey, read.err);
+      if (read.instanceWide) down.set(instanceKey, read.err);
       logger.warn(
         { err: read.err, conversationId: g.conversationId },
         "chatwoot delivery sweep: a stranded conversation event's state could not be read from Chatwoot",
@@ -1070,7 +1087,7 @@ export async function reconcileUnconfirmedCloses(
       params.deps,
     );
     if (read.kind === "unreadable") {
-      down.add(conv.chatwootInstanceId);
+      if (read.instanceWide) down.add(conv.chatwootInstanceId);
       logger.warn(
         { err: read.err, conversationId: conv.chatwootConversationId },
         "chatwoot delivery sweep: a close the mirror never confirmed could not be read from Chatwoot; left for a later pass",

@@ -381,6 +381,24 @@ describe.skipIf(!dbUp)(
       expect((await mirror(9022)).status).toBe("resolved");
     });
 
+    test("a backlog of conversation events does not fill the batch ahead of a customer's message (catches recovery waiting behind read-backs)", async () => {
+      await seedConversation(9023);
+      await strand(9023, "conversation_resolved", {
+        claimedAgoMs: STALE_MS + 120_000,
+      });
+      const msg = await strand(9024, "webwidget_triggered");
+      live.set(9023, { status: "resolved", updatedAt: V2 });
+      // Nothing read back this pass: the conversation event stays, and still the other row settles.
+      await sweepStrandedDeliveries({
+        tenantId,
+        base: appDb,
+        deps,
+        batch: 1,
+        readBudgetMs: 0,
+      });
+      expect((await ledger(msg)).status).toBe("PROCESSED");
+    });
+
     test("a failure that outran the read budget still advances the instance's other rows (catches a timeout leaving them where they were)", async () => {
       await seedConversation(9017);
       await seedConversation(9018);

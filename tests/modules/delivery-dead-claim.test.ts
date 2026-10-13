@@ -295,6 +295,22 @@ describe.skipIf(!dbUp)("deliveries claimed by a dead process", () => {
     expect(await recoveryJobs(row)).toBe(0);
   });
 
+  test("older conversation events do not fill a pass's batch ahead of a customer's message (catches recovery waiting behind read-backs)", async () => {
+    await claimed(randomUUID(), {
+      event: "conversation_status_changed",
+      inboundMessageId: null,
+      claimedAgoMs: 600_000,
+    });
+    await claimed(randomUUID(), {
+      event: "conversation_resolved",
+      inboundMessageId: null,
+      claimedAgoMs: 590_000,
+    });
+    const message = await claimed(randomUUID(), { claimedAgoMs: 1_000 });
+    await sweepDeadClaims({ base: appDb, batch: 1, deps: goneConversation });
+    expect(await statusOf(message)).toBe("DEAD");
+  });
+
   test("two passes at once settle a dead claim once", async () => {
     const row = await claimed(randomUUID());
     const [a, b] = await Promise.all([

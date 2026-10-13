@@ -602,50 +602,65 @@ export async function sweepStrandedDeliveries(
   // classifier's `claimedAt ?? receivedAt`, spelled for a nullable column.
   const cutoff = new Date(now.getTime() - STALE_AFTER_MS);
   const held = heldDeliveryRowIds();
-  const rows = (await runScopedOn(base, sysCtx(tenantId), (db) =>
-    db.chatwootWebhookDelivery.findMany({
-      where: {
-        status: { in: ["PENDING", "PROCESSING"] },
-        OR: [
-          { claimedAt: { not: null, lt: cutoff } },
-          { claimedAt: null, receivedAt: { lt: cutoff } },
-        ],
-        // A PENDING row that still holds its body is the drain's (delivery-queue.ts), which the
-        // handler ran just before this pass and which drops the body of every row it gives up on;
-        // and one this process holds in its admission queue is waiting, not stranded.
-        AND: [
-          { NOT: { status: "PENDING", payload: { not: null } } },
-          ...(held.length > 0
-            ? [{ NOT: { status: "PENDING" as const, id: { in: held } } }]
-            : []),
-        ],
-      },
-      // Neither of these decides a verdict, and a mutation of either leaves the suite green: the
-      // cutoff above already excluded every row a live attempt could be working, so ORDER is
-      // fairness under a backlog deeper than one batch, and the CAP is a bound on one pass's cost.
-      // Both are policy about how the work is spread, not about what any row means, and the passes
-      // are five minutes apart.
-      orderBy: { receivedAt: "asc" },
-      take: batch,
-      select: {
-        id: true,
-        status: true,
-        chatwootInstanceId: true,
-        deliveryId: true,
-        event: true,
-        receivedAt: true,
-        claimedAt: true,
-        attempts: true,
-        conversationId: true,
-        inboundMessageId: true,
-        humanReplyShape: true,
-        humanReplyMessageId: true,
-        routeObserved: true,
-        routeAgentBotId: true,
-        routeRemembers: true,
-      },
-    }),
-  )) as StrandedRow[];
+  // Two queries, each with its own cap: the conversation events this pass reads back from Chatwoot,
+  // and every other row. Selected together, a backlog of conversation events older than a customer's
+  // message fills the oldest-first batch, and with the read budget settling only some of them per
+  // pass, the message would wait pass after pass before its recovery is even armed.
+  const stateEvents = [...CONVERSATION_STATE_EVENTS];
+  const strandedOf = (readBack: boolean) =>
+    runScopedOn(base, sysCtx(tenantId), (db) =>
+      db.chatwootWebhookDelivery.findMany({
+        where: {
+          status: { in: ["PENDING", "PROCESSING"] },
+          OR: [
+            { claimedAt: { not: null, lt: cutoff } },
+            { claimedAt: null, receivedAt: { lt: cutoff } },
+          ],
+          // A PENDING row that still holds its body is the drain's (delivery-queue.ts), which the
+          // handler ran just before this pass and which drops the body of every row it gives up on;
+          // and one this process holds in its admission queue is waiting, not stranded.
+          AND: [
+            { NOT: { status: "PENDING", payload: { not: null } } },
+            ...(held.length > 0
+              ? [{ NOT: { status: "PENDING" as const, id: { in: held } } }]
+              : []),
+            readBack
+              ? { event: { in: stateEvents }, conversationId: { not: null } }
+              : {
+                  NOT: {
+                    event: { in: stateEvents },
+                    conversationId: { not: null },
+                  },
+                },
+          ],
+        },
+        // Neither of these decides a verdict, and a mutation of either leaves the suite green: the
+        // cutoff above already excluded every row a live attempt could be working, so ORDER is
+        // fairness under a backlog deeper than one batch, and the CAP is a bound on one pass's cost.
+        // Both are policy about how the work is spread, not about what any row means, and the passes
+        // are five minutes apart.
+        orderBy: { receivedAt: "asc" },
+        take: batch,
+        select: {
+          id: true,
+          status: true,
+          chatwootInstanceId: true,
+          deliveryId: true,
+          event: true,
+          receivedAt: true,
+          claimedAt: true,
+          attempts: true,
+          conversationId: true,
+          inboundMessageId: true,
+          humanReplyShape: true,
+          humanReplyMessageId: true,
+          routeObserved: true,
+          routeAgentBotId: true,
+          routeRemembers: true,
+        },
+      }),
+    ) as Promise<StrandedRow[]>;
+  const rows = [...(await strandedOf(false)), ...(await strandedOf(true))];
 
   const { groups, rest } = takeConversationEvents(
     rows.map((row) => ({ row, tenantId })),
@@ -1045,22 +1060,30 @@ export async function reconcileUnconfirmedCloses(
   const cutoff = new Date(now.getTime() - STALE_AFTER_MS);
   const readUntil =
     readClock(params.deps) + (params.readBudgetMs ?? SWEEP_READ_BUDGET_MS);
-  const rows = await runScopedOn(base, sysCtx(tenantId), (db) =>
-    db.conversation.findMany({
-      where: {
-        resolvedBy: { not: null },
-        status: { not: "resolved" },
-        updatedAt: { lt: cutoff },
-      },
-      orderBy: { updatedAt: "asc" },
-      take: params.batch ?? UNCONFIRMED_CLOSE_BATCH,
-      select: {
-        id: true,
-        chatwootInstanceId: true,
-        chatwootConversationId: true,
-        updatedAt: true,
-      },
-    }),
+  // Raw, with `'resolved'` as a literal: that is what lets the planner prove the partial index
+  // `conversations_unconfirmed_close_idx` applies (a bound parameter cannot imply its predicate in a
+  // generic plan), so a pass costs its worklist and not the tenant's whole history.
+  const rows = await runScopedOn(
+    base,
+    sysCtx(tenantId),
+    (db) =>
+      db.$queryRaw<
+        Array<{
+          id: bigint;
+          chatwootInstanceId: bigint;
+          chatwootConversationId: number;
+          updatedAt: Date;
+        }>
+      >`
+      SELECT id, chatwoot_instance_id AS "chatwootInstanceId",
+             chatwoot_conversation_id AS "chatwootConversationId", updated_at AS "updatedAt"
+        FROM conversations
+       WHERE tenant_id = ${tenantId}
+         AND resolved_by IS NOT NULL
+         AND status <> 'resolved'
+         AND updated_at < ${cutoff}
+       ORDER BY updated_at
+       LIMIT ${params.batch ?? UNCONFIRMED_CLOSE_BATCH}`,
   );
   let applied = 0;
   // As in `settleConversationEvents`: an instance that failed a read is not asked again this pass, so
@@ -1170,6 +1193,9 @@ export async function sweepDeadClaims(
   const { base } = params;
   const now = params.now ?? new Date();
   const self = params.self ?? processLeaseId();
+  // The rows a read-back settles sort after every other one (false before true): their reads are
+  // budgeted and may leave most of them for the next pass, so sorted by `claimed_at` alone a backlog
+  // of them would fill the capped batch ahead of a customer's message.
   const counts = emptyCounts();
   // One statement, one snapshot: a process commits its lease before it stamps a claim, so a claim
   // seen here names a lease seen here too unless that process is gone. Live claims are left out of the
@@ -1196,7 +1222,9 @@ export async function sweepDeadClaims(
                SELECT 1 FROM process_leases l
                 WHERE l.id = d.claimed_by
                   AND l.heartbeat_at > now() - make_interval(secs => ${ttlSeconds}))
-       ORDER BY d.claimed_at
+       ORDER BY (d.event = ANY(${[...CONVERSATION_STATE_EVENTS]}::text[])
+                 AND d.conversation_id IS NOT NULL),
+                d.claimed_at
        LIMIT ${params.batch ?? DEAD_CLAIM_BATCH}`,
   );
   // No window at all, not zero: `claimedAt` is the dead process's clock, and on a host a little ahead

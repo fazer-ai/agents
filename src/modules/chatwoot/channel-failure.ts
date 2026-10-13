@@ -135,9 +135,6 @@ export interface ChannelFailure {
   // The key the failed message's reply shares with its other messages, when it carries one: those are
   // the rest of the same reply, not a newer one.
   replyKey: string | null;
-  // When Chatwoot created the failed message. A customer message after it means the conversation
-  // moved on, and the resend is skipped.
-  sentAt: Date | null;
 }
 
 function classify(code: string | null): ChannelFailureClass {
@@ -194,7 +191,6 @@ export function channelFailureOf(
     rendered: spoken === null && content !== null,
     wasResend: isReplacement(sendId),
     replyKey: replyKeyOf(m.sendId),
-    sentAt: m.createdAt ?? null,
   };
 }
 
@@ -322,7 +318,6 @@ export async function handleChannelFailure(params: {
           ...(wants.mode === "resend" ? { resend: true } : {}),
           ...(f.rendered ? { rendered: true } : {}),
           ...(f.replyKey ? { replyKey: f.replyKey } : {}),
-          ...(f.sentAt ? { sentAt: f.sentAt.toISOString() } : {}),
         },
         ...(params.base ? { base: params.base } : {}),
       });
@@ -404,10 +399,6 @@ export async function mediaFallbackHandler(
   const text = decryptJson<string>(job.payloadSecret);
   const resend = p.resend === true;
   const replyKey = typeof p.replyKey === "string" ? p.replyKey : null;
-  const sentAt =
-    typeof p.sentAt === "string" && !Number.isNaN(Date.parse(p.sentAt))
-      ? new Date(p.sentAt)
-      : null;
   // A text reply's own content, as Chatwoot rendered it with the signature already on it: escaped,
   // so a second render prints it back as it was, and not signed again.
   const rendered = p.rendered === true;
@@ -524,6 +515,17 @@ export async function mediaFallbackHandler(
   if (!ours(live) || (reconciled.state !== null && !ours(reconciled.state))) {
     return stop("the conversation was handed off and is no longer the bot's");
   }
+  // AND THE LATEST PAGE AGAIN, after the live read and the reconcile: a customer message or a newer
+  // reply that landed while those ran is not on the pages read above. Read through the same rule, so
+  // a reaction or imported history does not count here either; a page that did not read THROWS.
+  if (resend) {
+    const raw = await client.getMessages(conversationId);
+    const rows = parseChatwootMessages(raw);
+    if (chatwootMessageListLength(raw) !== rows.length)
+      throw new Error("channel resend: the latest page did not read");
+    const moved = newerThanFailure(rows, messageId, replyKey);
+    if (moved !== null) return stop(moved);
+  }
   // LAST, and after every network read: the database answers for a `/reset` or a rebinding that
   // landed while Chatwoot was being asked, and nothing but the send follows it.
   //
@@ -548,15 +550,6 @@ export async function mediaFallbackHandler(
       },
     });
     if (!conv?.inboxId) return "the conversation is not mirrored here";
-    // NOTE: read again here, after every network read: a customer message that landed while Chatwoot
-    // was being asked is not on the pages read above, and the mirror has it.
-    if (
-      resend &&
-      sentAt !== null &&
-      conv.lastInboundAt !== null &&
-      conv.lastInboundAt > sentAt
-    )
-      return "the customer wrote after the failed reply";
     // NOTE: The reply belongs to the episode a `/reset` closed.
     if (resetLandedAfter(messageId, conv.resetAtMessageId))
       return "the conversation was reset after the failed reply";

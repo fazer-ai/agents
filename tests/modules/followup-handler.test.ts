@@ -1122,6 +1122,46 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     expect(s.notes).toEqual([]);
   });
 
+  // The same message handled in silence moved the conversation past the reply instead: the nudge is
+  // the usual one, not a hand-over pinned to the message before it.
+  test("a customer message between the balloons, handled in silence, supersedes the reply", async () => {
+    await seedConversation(1729, due());
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: 1729 },
+      data: { lastHandledMessageId: 17292 },
+    });
+    const s = stubClient({
+      page: [
+        customerRow(17290),
+        replyRow(17291, { refused: true, sendId: "reply:k29:a" }),
+        customerRow(17292),
+        replyRow(17293, { sendId: "reply:k29:b" }),
+      ],
+    });
+    expect(await run(1729, s)).toEqual({ outcome: "done" });
+    expect(s.sent.map(([c]) => c)).toEqual([1729]);
+    expect(s.notes).toEqual([]);
+  });
+
+  // A reply whose watermark write failed after the send is still recorded as the answer to its
+  // customer message, and that message marks where the reply starts, ahead of pages of notes.
+  test("the recorded reply marks where the reply starts when the watermark lags", async () => {
+    await seedConversation(1730, { ...due(), lastRepliedMessageId: 17410 });
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: 1730 },
+      data: { lastHandledMessageId: null },
+    });
+    const s = stubClient({
+      page: [
+        ...Array.from({ length: 110 }, (_, i) => note(17300 + i)),
+        customerRow(17410),
+        replyRow(17411, { sendId: "reply:k30:a" }),
+      ],
+    });
+    expect(await run(1730, s)).toEqual({ outcome: "done" });
+    expect(s.sent.map(([c]) => c)).toEqual([1730]);
+  });
+
   // An automation message the channel refused as well did not reach the customer either, so it does
   // not stand for the refused reply.
   test("a refused automation message after the reply does not supersede it", async () => {

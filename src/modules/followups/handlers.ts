@@ -529,6 +529,10 @@ async function reconcileFromChatwoot(
   }
 }
 
+function maxOrNull(a: number | null, b: number | null): number | null {
+  return a === null ? b : b === null ? a : Math.max(a, b);
+}
+
 // The Chatwoot ids of the agent's own bots on this instance.
 async function agentBotIdsOf(
   base: PrismaClient,
@@ -919,6 +923,13 @@ export async function followUpHandler(
   // never reached them, so a nudge about it is a question about nothing: while its resend is queued
   // the step waits for it, and once nothing more will send it the conversation goes to the team, as
   // a turn the agent could not complete does. docs/tts.md, "An inactivity follow-up never nudges".
+
+  // A reply recorded with no handled watermark after it (the write after the send failed) still
+  // answered its customer message, so that message marks where the reply starts too.
+  const handledThrough = maxOrNull(
+    ctx.conv.lastHandledMessageId,
+    ctx.conv.lastRepliedMessageId,
+  );
   // The flush's own answer to "is this customer message still owed a reply", so the follow-up
   // waits for exactly the turns the flush would run.
   const stillOpen = async (rows: Row[]): Promise<Set<number>> => {
@@ -934,14 +945,10 @@ export async function followUpHandler(
       messageIds: pendingIncoming(rows, null).map((m) => m.id),
       base,
     });
-    const handled = [
-      ctx.conv.lastHandledMessageId,
-      ctx.conv.lastRepliedMessageId,
-    ].filter((v): v is number => v !== null);
     return new Set(
       selectOpenMessages({
         page: rows,
-        scalarFloor: handled.length > 0 ? Math.max(...handled) : null,
+        scalarFloor: handledThrough,
         state,
         purpose: "reply",
         managedBotId: agentBotIds[0] ?? null,
@@ -956,7 +963,7 @@ export async function followUpHandler(
       instanceId,
       chatwootConversationId: conversationId,
       agentBotIds: await agentBotIdsOf(base, tenantId, instanceId, ctx.agentId),
-      handledThrough: ctx.conv.lastHandledMessageId,
+      handledThrough,
       stillOpen,
       base,
       ...(deps?.makeClient ? { deps: { makeClient: deps.makeClient } } : {}),
@@ -1011,7 +1018,7 @@ export async function followUpHandler(
               instanceId,
               ctx.agentId,
             ),
-            handledThrough: ctx.conv.lastHandledMessageId,
+            handledThrough,
             stillOpen,
             base,
             ...(deps?.makeClient

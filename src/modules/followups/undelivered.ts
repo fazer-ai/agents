@@ -157,17 +157,20 @@ export async function lastReplyDelivery(params: {
   // NOTE: from where the reply starts, so one written between its balloons counts too.
   if (read.some((m) => m.id > start && customer(m) && open.has(m.id)))
     return { state: "customer_spoke" };
+  // A customer message from where the reply starts that is no longer owed a reply was handled, in
+  // silence or by a gate, and moved the conversation past the reply.
+  if (read.some((m) => m.id > start && customer(m)))
+    return { state: "delivered" };
   if (
     read.some(
       (m) =>
         m.id > last.id &&
         !m.private &&
-        (customer(m) ||
-          ((m.messageType === "outgoing" || m.messageType === "template") &&
-            !m.isReaction &&
-            !m.imported &&
-            !m.externalError &&
-            !ours(m))),
+        (m.messageType === "outgoing" || m.messageType === "template") &&
+        !m.isReaction &&
+        !m.imported &&
+        !m.externalError &&
+        !ours(m),
     )
   )
     return { state: "delivered" };

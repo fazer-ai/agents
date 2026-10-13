@@ -588,6 +588,63 @@ describe("the expanded tick", () => {
   });
 });
 
+describe("a line that ran another block", () => {
+  test("a score names no level, since the stored probabilities do not say which index is which", async () => {
+    const d = await expand(
+      entry("1", {
+        decision: tick({
+          block: null,
+          answers: {
+            anger: {
+              type: "score",
+              score: 1,
+              confidence: 0.7,
+              probabilities: { furious: 0.2, calm: 0.3, upset: 0.5 },
+            },
+          },
+        }),
+      }),
+    );
+    const q = within(d).getByTestId("decision-question-anger");
+    expect(q.textContent).toContain("level 1 (score 1.00)");
+    expect(
+      within(q)
+        .getAllByTestId("decision-option")
+        .map((r) => [r.textContent, r.dataset.chosen]),
+    ).toEqual([
+      ["furious20%", "false"],
+      ["calm30%", "false"],
+      ["upset50%", "false"],
+    ]);
+  });
+
+  test("a choice whose probability was not given still shows what was chosen", async () => {
+    const d = await expand(
+      entry("1", {
+        decision: tick({
+          block: null,
+          answers: {
+            topic: {
+              type: "choice",
+              choice: "exchange",
+              confidence: 0.9,
+              probabilities: { damaged: 0.1 },
+            },
+          },
+        }),
+      }),
+    );
+    expect(
+      within(within(d).getByTestId("decision-question-topic"))
+        .getAllByTestId("decision-option")
+        .map((r) => [r.textContent, r.dataset.chosen]),
+    ).toEqual([
+      ["damaged10%", "false"],
+      ["exchangechosen—", "true"],
+    ]);
+  });
+});
+
 describe("where a tick sits on the timeline", () => {
   test("right before the action markers of its own turn, though its line is newer", () => {
     const tool = (id: string, atMs: number, turnId: string): TrailEntry =>

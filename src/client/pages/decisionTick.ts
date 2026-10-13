@@ -107,19 +107,31 @@ function questionView(
         }));
   if (a.type === "choice") {
     const choice = str(a.choice);
+    const rows = rowsFor(choice);
+    // A provider may answer a choice with partial probabilities, or none: the choice is still the
+    // answer, shown with no number rather than dropped.
+    if (choice !== null && !rows.some((r) => r.chosen)) {
+      rows.push({
+        value: choice,
+        description: null,
+        probability: null,
+        chosen: true,
+      });
+    }
     return {
       name,
       kind: "choice",
       confidence: num(a.confidence),
-      rows: rowsFor(choice),
+      rows,
     };
   }
   if (a.type === "score") {
     const score = num(a.score);
     if (score === null) return { name, kind: "unanswered" };
     const level = Math.round(score);
-    const keys = options ? options.map((o) => o.value) : Object.keys(probs);
-    const levelName = keys[level] ?? null;
+    // A level's name comes from the block's order only: the stored probabilities keep the order the
+    // provider answered in, which says nothing about which level is which index.
+    const levelName = options?.[level]?.value ?? null;
     return {
       name,
       kind: "score",

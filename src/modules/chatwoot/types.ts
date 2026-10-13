@@ -96,6 +96,9 @@ export interface NormalizedChatwootMessage {
   replyText?: string | null;
   // content_attributes.fazer_ai_reply_by_operator: that voice note's words are the operator's.
   replyByOperator?: boolean;
+  // content_attributes.fazer_ai_send_id: the name a send of ours gave itself, so a failure on a resend
+  // is known to be one. Null on everything else.
+  sendId?: string | null;
   // content_attributes.fazer_ai_platform_sent: the platform posted this on the admin token, so the
   // user Chatwoot names as sender is not a person typing.
   platformSent?: boolean;

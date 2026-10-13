@@ -7,6 +7,7 @@ import {
   CHATWOOT_PLATFORM_SENT_KEY,
   CHATWOOT_REPLY_BY_OPERATOR_KEY,
   CHATWOOT_REPLY_TEXT_KEY,
+  CHATWOOT_SEND_ID_KEY,
 } from "./constants";
 import { bodyImagesBesides, emailBodyImageUrlsFrom } from "./email-body-images";
 import type { RenderableLocation, RenderableMessage } from "./render";
@@ -250,6 +251,10 @@ export function normalizeChatwootEvent(
       externalError: ca ? str(ca.external_error) || null : null,
       replyText: ca ? str(ca[CHATWOOT_REPLY_TEXT_KEY]) || null : null,
       replyByOperator: ca?.[CHATWOOT_REPLY_BY_OPERATOR_KEY] === true,
+      sendId:
+        typeof ca?.[CHATWOOT_SEND_ID_KEY] === "string"
+          ? (ca[CHATWOOT_SEND_ID_KEY] as string)
+          : null,
       platformSent: ca?.[CHATWOOT_PLATFORM_SENT_KEY] === true,
     };
   }

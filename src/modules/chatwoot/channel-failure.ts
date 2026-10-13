@@ -28,38 +28,103 @@ import type { NormalizedChatwootEvent } from "./types";
 
 // A reply the channel refused after Chatwoot accepted it: the failure arrives minutes later as a
 // `message_updated` carrying `external_error`, and what is done depends on the code's class. `media`
-// resends the same reply as text, once (the voice note carries its words, so no model runs);
-// `delivery` (the recipient cannot be reached) and `unknown` send nothing, because a text hits the
-// same wall, and log the code so the table grows from evidence rather than from a guess. Only the
-// route's own bot's messages are acted on: a human's or another bot's failure is theirs to resend.
+// resends the same reply as text, once (the voice note carries its words, so no model runs).
+// `delivery` (the recipient cannot be reached) and `account` (the sender is restricted) are the codes
+// the channel documents as permanent: a resend hits the same wall, so nothing is sent. EVERY OTHER
+// code, `unknown` included, resends the same reply once after a short delay, `rate_limit` after a
+// longer one, because a missing guess costs the customer's answer and a wrong one costs a refused
+// call. A failure on a message that was itself a resend is not resent again. Only the route's own
+// bot's messages are acted on: a human's or another bot's failure is theirs to resend.
 // docs/tts.md, "When the channel refuses the voice note after Chatwoot accepted it".
 
 const MEDIA_ERROR_CODES = new Set(["131052", "131053"]);
 
-export type ChannelFailureClass = "media" | "delivery" | "unknown";
+// WhatsApp Cloud's codes for a message the recipient cannot be sent at all, whatever is retried
+// (developers.facebook.com/docs/whatsapp/cloud-api/support/error-codes: "fix first" or "do not
+// retry"). Named so the log can tell "a known wall" from "a code nobody has classified yet".
+const DELIVERY_ERROR_CODES = new Set([
+  "100", // a parameter the request should not carry
+  "130403", // the user blocked the business
+  "131008", // a required parameter is missing
+  "131009", // a parameter value is invalid
+  "131021", // sender and recipient are the same number
+  "131026", // not a WhatsApp number, terms not accepted, or an old client
+  "131047", // more than 24h since the customer last wrote
+  "131049", // held back for engagement: no resend before 24h
+  "131050", // the user opted out
+  "131051", // an unsupported message type
+]);
+
+// The same, for the SENDER: the account, its token or its number is what the channel refuses, and
+// no message goes out until a person fixes it (the cause alert of docs/logs.md is what reaches them).
+const ACCOUNT_ERROR_CODES = new Set([
+  "0", // the app user could not be authenticated
+  "3", // a capability or permission is missing
+  "10", // permission not granted or removed
+  "190", // the access token expired
+  "200", // no access token
+  "368", // restricted for a policy violation
+  "130497", // restricted from messaging this country
+  "131005", // permission not granted or removed
+  "131031", // the account is restricted or locked
+  "131042", // a payment method error
+  "131045", // the number is not registered
+  "131048", // sending restricted for spam
+  "133010", // the number is not registered
+]);
+
+// Throughput ceilings: the reply is resent too, after a wait long enough for the window to move.
+const RATE_LIMIT_ERROR_CODES = new Set(["4", "80007", "130429", "131056"]);
+
+export type ChannelFailureClass =
+  | "media"
+  | "delivery"
+  | "account"
+  | "rate_limit"
+  | "unknown";
+
+// The delay before a resend: short for a generic refusal, which Meta answers with "try again", and
+// longer for a throughput ceiling, which needs time to pass before the same send can land.
+export const RESEND_DELAY_MS = 30_000;
+export const RATE_LIMITED_RESEND_DELAY_MS = 180_000;
+
+// The prefixes of the send ids a resend of ours carries, so the failure of one is known to be the
+// second refusal of the same reply and is not resent a third time.
+const MEDIA_FALLBACK_SEND_ID = "media-fallback:";
+const RESEND_SEND_ID = "channel-resend:";
 
 export interface ChannelFailure {
   messageId: number;
   conversationId: number;
-  // The leading number of `external_error` ("131053: Media upload error" → "131053"), or null when
-  // there is none to read.
+  // The number of `external_error`, read from both forms WhatsApp Cloud sends: a leading number
+  // ("131053: Media upload error" → "131053") or a parenthesised one ("(#131000) Something went
+  // wrong" → "131000"). Null when there is none to read.
   code: string | null;
   kind: ChannelFailureClass;
-  // The reply as text, when the message carries it. Only meaningful for `media`.
+  // The reply as text, when the message carries it: the voice note's words, or a text message's own
+  // content. Null for a message with a file other than a voice note, whose text alone is not the reply.
   text: string | null;
   // The text is the operator's, which keeps Chatwoot's Liquid; a model's is escaped.
   byOperator: boolean;
+  // The text is the message's own content as Chatwoot rendered it, signature included, rather than
+  // the words a voice note was spoken from: it goes out escaped and is not signed a second time.
+  rendered: boolean;
+  // The failed message was itself a resend of ours, so it is not resent again.
+  wasResend: boolean;
 }
 
-// The codes whose failure is known NOT to be answerable by resending as text. Named so the log can
-// tell "a known wall" from "a code nobody has classified yet", which is what widening the media table
-// is decided on.
-const DELIVERY_ERROR_CODES = new Set(["131026", "131047"]);
-
 function classify(code: string | null): ChannelFailureClass {
-  if (code !== null && MEDIA_ERROR_CODES.has(code)) return "media";
-  if (code !== null && DELIVERY_ERROR_CODES.has(code)) return "delivery";
+  if (code === null) return "unknown";
+  if (MEDIA_ERROR_CODES.has(code)) return "media";
+  if (DELIVERY_ERROR_CODES.has(code)) return "delivery";
+  if (ACCOUNT_ERROR_CODES.has(code)) return "account";
+  if (RATE_LIMIT_ERROR_CODES.has(code)) return "rate_limit";
   return "unknown";
+}
+
+export function channelErrorCode(externalError: string): string | null {
+  const m = externalError.match(/^\s*(?:\(#(\d+)\)|(\d+)\b)/);
+  return m?.[1] ?? m?.[2] ?? null;
 }
 
 // Whether this event is a channel failure on a message THIS route's bot sent, and what it is. Null for
@@ -76,16 +141,22 @@ export function channelFailureOf(
   if (m.sender?.type !== "agent_bot" || m.sender.id !== routeAgentBotId)
     return null;
   if (m.id === null || n.conversationId === null) return null;
-  const code = m.externalError.match(/^\s*(\d+)\b/)?.[1] ?? null;
+  const code = channelErrorCode(m.externalError);
   // The whole reply when the voice note carries it, which is when its speech had a URL or an
   // address taken out and the transcription reads with holes. The items then reach the customer
   // twice, which costs less than a sentence that stops mid-way.
-  const text =
+  const spoken =
     m.replyText?.trim() ||
     (m.attachments
       ?.map((a) => a.transcribedText?.trim() ?? "")
       .find((t) => t.length > 0) ??
       null);
+  // A text message is its own content, as Chatwoot rendered it. A message with any file is not: an
+  // image or a document resent as its caption alone is a different reply.
+  const content =
+    !m.attachments?.length && m.content?.trim() ? m.content : null;
+  const text = spoken ?? content;
+  const sendId = m.sendId ?? "";
   return {
     messageId: m.id,
     conversationId: n.conversationId,
@@ -93,6 +164,10 @@ export function channelFailureOf(
     kind: classify(code),
     text,
     byOperator: m.replyByOperator === true,
+    rendered: spoken === null && content !== null,
+    wasResend:
+      sendId.startsWith(MEDIA_FALLBACK_SEND_ID) ||
+      sendId.startsWith(RESEND_SEND_ID),
   };
 }
 
@@ -150,7 +225,7 @@ export async function handleChannelFailure(params: {
   // Chatwoot drops that metadata, and then the text this process stashed when it sent the audio is
   // the one place it still is.
   const f: ChannelFailure =
-    params.failure.kind === "media" && params.failure.text === null
+    params.failure.text === null
       ? {
           ...params.failure,
           text:
@@ -175,12 +250,30 @@ export async function handleChannelFailure(params: {
             params.base,
           ),
         };
-  let action: "text_fallback" | "no_text" | "none" = "none";
-  if (f.kind === "media") {
-    if (f.text === null) {
+  // What the class asks for: the media text now, a resend after its delay, or nothing for a wall.
+  const wants: { mode: "media" | "resend"; delayMs: number } | null =
+    f.kind === "media"
+      ? { mode: "media", delayMs: 0 }
+      : f.kind === "delivery" || f.kind === "account"
+        ? null
+        : {
+            mode: "resend",
+            delayMs:
+              f.kind === "rate_limit"
+                ? RATE_LIMITED_RESEND_DELAY_MS
+                : RESEND_DELAY_MS,
+          };
+  let action: "text_fallback" | "resend" | "not_resent" | "no_text" | "none" =
+    "none";
+  if (wants !== null) {
+    if (f.wasResend) {
+      // NOTE: the second refusal of the same reply: the channel has had two chances at it, and a
+      // third would only add a refusal to the conversation.
+      action = "not_resent";
+    } else if (f.text === null) {
       action = "no_text";
     } else {
-      action = "text_fallback";
+      action = wants.mode === "media" ? "text_fallback" : "resend";
       await enqueueJob({
         tenantId: params.tenantId,
         kind: "MEDIA_TEXT_FALLBACK",
@@ -189,7 +282,7 @@ export async function handleChannelFailure(params: {
         // text goes out one time whatever the channel repeats.
         dedupeKey: mediaFallbackDedupeKey(params.instanceId, f.messageId),
         rearm: "once",
-        runAt: new Date(),
+        runAt: new Date(Date.now() + wants.delayMs),
         // NOTE: the reply in its own column, never in the Json payload: it is text the customer will read,
         // and it can carry their data.
         payloadSecret: encryptJson(f.text),
@@ -199,6 +292,8 @@ export async function handleChannelFailure(params: {
           messageId: f.messageId,
           agentBotId: params.agentBotId,
           byOperator: f.byOperator,
+          ...(wants.mode === "resend" ? { resend: true } : {}),
+          ...(f.rendered ? { rendered: true } : {}),
         },
         ...(params.base ? { base: params.base } : {}),
       });
@@ -216,6 +311,24 @@ export async function handleChannelFailure(params: {
       action,
     },
   });
+}
+
+// Why a resend would arrive after the conversation moved on, or null when nothing came after the
+// failed reply. Private notes and activity lines are not something the customer received.
+export function newerThanFailure(
+  rows: ReturnType<typeof parseChatwootMessages>,
+  messageId: number,
+): string | null {
+  const after = rows.filter((m) => m.id > messageId && !m.private);
+  if (after.some((m) => m.messageType === "incoming"))
+    return "the customer wrote after the failed reply";
+  const sent = after.filter(
+    (m) => m.messageType === "outgoing" || m.messageType === "template",
+  );
+  if (sent.some((m) => m.senderType === "agent_bot"))
+    return "the bot already sent something newer";
+  if (sent.length > 0) return "a person already sent something newer";
+  return null;
 }
 
 export async function mediaFallbackHandler(
@@ -249,6 +362,10 @@ export async function mediaFallbackHandler(
     return { outcome: "done" };
   }
   const text = decryptJson<string>(job.payloadSecret);
+  const resend = p.resend === true;
+  // A text reply's own content, as Chatwoot rendered it with the signature already on it: escaped,
+  // so a second render prints it back as it was, and not signed again.
+  const rendered = p.rendered === true;
   const literal = p.byOperator === true ? (t: string) => t : literalForChatwoot;
   // STILL ALLOWED TO SPEAK HERE, asked again at send time: the job can sit queued while the operator
   // switches the agent off, flips it to monitoring, disconnects the account or `/reset`s the
@@ -269,7 +386,8 @@ export async function mediaFallbackHandler(
   );
   const stop = (why: string): JobResult => {
     logger.warn(
-      "media fallback: %s (conv=%s msg=%s), the text is not sent",
+      "%s: %s (conv=%s msg=%s), the text is not sent",
+      resend ? "channel resend" : "media fallback",
       why,
       String(conversationId),
       String(messageId),
@@ -289,8 +407,12 @@ export async function mediaFallbackHandler(
   // stale-claim interval, so the read pages back to the FAILED message. A failed read THROWS; a
   // conversation too busy to reach that boundary within the page ceiling sends nothing, because a
   // text that late is worth less than a duplicate costs.
-  const sendId = `media-fallback:${messageId}`;
+  const sendId = `${resend ? RESEND_SEND_ID : MEDIA_FALLBACK_SEND_ID}${messageId}`;
   let before: number | undefined;
+  // What the conversation received after the failed reply, read on the same pages. A resend is
+  // skipped when anything did: the customer's newer message is answered by the next turn with fresh
+  // context, and a newer reply (a person's or the bot's) already moved the conversation past it.
+  let newer: string | null = null;
   for (let page = 0; ; page++) {
     if (page === FALLBACK_READBACK_MAX_PAGES) {
       logger.warn(
@@ -316,10 +438,12 @@ export async function mediaFallbackHandler(
     if (page === 0 && rows.length === 0)
       throw new Error("media fallback: the conversation read back empty");
     if (rows.some((m) => m.sendId === sendId)) return { outcome: "done" };
+    if (resend && newer === null) newer = newerThanFailure(rows, messageId);
     const oldest = rows[0]?.id;
     if (oldest === undefined || oldest <= messageId) break;
     before = oldest;
   }
+  if (newer !== null) return stop(newer);
   // WHO OWNS IT NOW, read live. The audio went out under the bot, but minutes can pass between that
   // send and this one, and a person may have taken the conversation in between: posting as the bot
   // over them is the one thing no send path here does. An unreadable conversation THROWS, so the job
@@ -348,11 +472,7 @@ export async function mediaFallbackHandler(
   }) => shouldBotHandle(c, { ourAgentBotId: agentBotId });
   // NOTE: With THIS bot's id: a conversation handed to another bot is not ours either.
   if (!ours(live) || (reconciled.state !== null && !ours(reconciled.state))) {
-    logger.info(
-      "media fallback: conversation %s is no longer the bot's, the text is not sent",
-      String(conversationId),
-    );
-    return { outcome: "done" };
+    return stop("the conversation was handed off and is no longer the bot's");
   }
   // LAST, and after every network read: the database answers for a `/reset` or a rebinding that
   // landed while Chatwoot was being asked, and nothing but the send follows it.
@@ -460,7 +580,9 @@ export async function mediaFallbackHandler(
 
   // SIGNED, as the text path signs a reply: the audio is exempt from the signature, its text
   // replacement is not (docs/signature.md).
-  const sig = signatureFor(cfg.signatureConfig, cfg.promptVars, cfg.promptOpts);
+  const sig = rendered
+    ? null
+    : signatureFor(cfg.signatureConfig, cfg.promptVars, cfg.promptOpts);
   const [signed = text] = sig
     ? attachSignature([text], sig, cfg.signatureConfig)
     : [text];

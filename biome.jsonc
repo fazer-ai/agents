@@ -458,6 +458,13 @@
       "includes": ["tests/**/*.{ts,tsx}"],
       "plugins": ["./biome-plugins/require-test-server-hostname.grit"]
     },
+    // A test reads pg_stat_activity for its own database or backends only
+    // (biome-plugins/no-unscoped-pg-stat-activity.grit). No file is listed: every read under tests/
+    // was narrowed with the rule.
+    {
+      "includes": ["tests/**/*.{ts,tsx}"],
+      "plugins": ["./biome-plugins/no-unscoped-pg-stat-activity.grit"]
+    },
     {
       "includes": ["tests/**/*.{ts,tsx}"],
       "linter": {

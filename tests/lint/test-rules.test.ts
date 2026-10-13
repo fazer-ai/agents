@@ -3,9 +3,9 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 // The lint rules for test files (biome-plugins/no-test-reads-source.grit, no-test-real-wait.grit,
-// require-test-server-hostname.grit and no-swallowed-db-probe.grit), run through the real Biome over probe files written under
-// tests/. One Biome process lints every probe. The probes end in `.ts`, not `.test.ts`, so `bun test`
-// never collects them, and each run writes under its own pid.
+// require-test-server-hostname.grit, no-swallowed-db-probe.grit, no-unscoped-pg-stat-activity.grit)
+// through the real Biome: one process lints every probe, written under tests/ as `.ts` (not
+// `.test.ts`, so `bun test` never collects them) in a directory named after the run's pid.
 //
 // The exemption is proven with the SMALLEST listed file of each rule, linted in place and as a copy.
 // Biome's time grows with the lines it reads: the 11,772-line tests/graph/runtime.test.ts, linted twice,
@@ -14,9 +14,12 @@ import { join } from "node:path";
 const ROOT = join(import.meta.dir, "../..");
 const PROBE = `tests/lint/.probe-${process.pid}`;
 const TOOLING_PROBE = `tests/tooling/.probe-${process.pid}`;
-// Built rather than written: a literal path in this file is exactly what the first rule refuses.
+// Built rather than written: a literal path in this file is exactly what the first rule refuses, and
+// the view's name in an unscoped probe is what the last one refuses.
 const SRC = ["s", "rc"].join("");
 const DOCS = ["do", "cs"].join("");
+const VIEW = ["pg_stat", "activity"].join("_");
+const DB = "declare const db: { $queryRaw: (...a: unknown[]) => unknown };\n";
 // On the no-test-reads-source list, and on the no-test-real-wait list, in biome.jsonc.
 const LISTED_SOURCE = "tests/client/import-warnings-rendered.test.ts";
 const LISTED_WAIT = "tests/api/features/realtime/realtime.controller.test.ts";
@@ -75,9 +78,23 @@ const PROBES: Record<string, string> = {
   [`${PROBE}/probe-named-catch.ts`]: `${PROBE_HEAD}try {\n  dbUp = await ping();\n} catch (e) {\n  console.error(e);\n  dbUp = false;\n}\n`,
   [`${PROBE}/probe-hands-over.ts`]: `import { dbProbeFailed } from "@/tests/db-gate";\n${PROBE_HEAD}try {\n  dbUp = await ping();\n} catch (err) {\n  dbUp = dbProbeFailed(err);\n}\n`,
   [`${PROBE}/probe-false-outside-catch.ts`]: `${PROBE_HEAD}if (!process.env.X) dbUp = false;\n`,
+  [`${PROBE}/activity-string.ts`]: `export const q = "SELECT count(*) FROM ${VIEW} WHERE query LIKE '%llm_usage%'";\n`,
+  [`${PROBE}/activity-own-backend-excluded.ts`]: `export const q = \`SELECT count(*) FROM ${VIEW}\n  WHERE state = 'active' AND pid <> pg_backend_pid()\`;\n`,
+  [`${PROBE}/activity-tagged-by-name.ts`]: `${DB}const app = "x";\nexport const q = db.$queryRaw\`SELECT pid FROM ${VIEW} WHERE application_name = \${app}\`;\n`,
+  [`${PROBE}/activity-own-database.ts`]: `${DB}export const q = db.$queryRaw\`SELECT count(*) FROM ${VIEW}\n  WHERE datname = current_database() AND pid <> pg_backend_pid()\`;\n`,
+  [`${PROBE}/activity-target-database.ts`]: `export const q = "SELECT pid FROM ${VIEW} WHERE datname = $1";\n`,
+  [`${PROBE}/activity-blocked-by-own-pid.ts`]: `${DB}const pid = 1;\nexport const q = db.$queryRaw\`SELECT pid FROM ${VIEW} WHERE \${pid} = ANY(pg_blocking_pids(pid))\`;\n`,
+  [`${PROBE}/activity-joined-on-pid.ts`]: `export const q = "SELECT a.pid FROM pg_locks l JOIN ${VIEW} a ON a.pid = l.pid";\n`,
+  [`${PROBE}/activity-in-regex.ts`]: `export const r = /${VIEW}[^.]*WHERE/;\n`,
 };
 
-type Hits = { source: number; wait: number; server: number; probe: number };
+type Hits = {
+  source: number;
+  wait: number;
+  server: number;
+  probe: number;
+  activity: number;
+};
 let hits: Map<string, Hits>;
 
 beforeAll(() => {
@@ -104,11 +121,18 @@ beforeAll(() => {
     const m = line.match(/file=([^,]+),.*::(.*)$/);
     if (!m?.[1] || !m[2]) continue;
     const file = m[1].slice(m[1].indexOf("tests/"));
-    const h = hits.get(file) ?? { source: 0, wait: 0, server: 0, probe: 0 };
+    const h = hits.get(file) ?? {
+      source: 0,
+      wait: 0,
+      server: 0,
+      probe: 0,
+      activity: 0,
+    };
     if (m[2].includes("how its source reads")) h.source++;
     if (m[2].includes("does not wait real time")) h.wait++;
     if (m[2].includes("binds 127.0.0.1")) h.server++;
     if (m[2].includes("does not swallow its refusal")) h.probe++;
+    if (m[2].includes("for its own database or its own backends")) h.activity++;
     hits.set(file, h);
   }
 });
@@ -119,8 +143,8 @@ afterAll(() => {
 });
 
 const of = (path: string): Hits =>
-  hits.get(path) ?? { source: 0, wait: 0, server: 0, probe: 0 };
-const NONE: Hits = { source: 0, wait: 0, server: 0, probe: 0 };
+  hits.get(path) ?? { source: 0, wait: 0, server: 0, probe: 0, activity: 0 };
+const NONE: Hits = { source: 0, wait: 0, server: 0, probe: 0, activity: 0 };
 
 describe("no-test-reads-source", () => {
   test.each([
@@ -210,6 +234,32 @@ describe("no-swallowed-db-probe", () => {
 
   test.each([["probe-hands-over.ts"], ["probe-false-outside-catch.ts"]])(
     "a catch that hands the error to dbProbeFailed, or a false set outside a catch, is allowed (%s)",
+    (name) => {
+      expect(of(`${PROBE}/${name}`)).toEqual(NONE);
+    },
+  );
+});
+
+describe("no-unscoped-pg-stat-activity", () => {
+  test.each([
+    ["activity-string.ts"],
+    ["activity-own-backend-excluded.ts"],
+    ["activity-tagged-by-name.ts"],
+  ])(
+    "a read of the view narrowed to neither its database nor its own pids is refused (%s)",
+    (name) => {
+      expect(of(`${PROBE}/${name}`).activity).toBe(1);
+    },
+  );
+
+  test.each([
+    ["activity-own-database.ts"],
+    ["activity-target-database.ts"],
+    ["activity-blocked-by-own-pid.ts"],
+    ["activity-joined-on-pid.ts"],
+    ["activity-in-regex.ts"],
+  ])(
+    "one narrowed by database or pid, or a regex over SQL text, is allowed (%s)",
     (name) => {
       expect(of(`${PROBE}/${name}`)).toEqual(NONE);
     },

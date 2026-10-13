@@ -358,22 +358,36 @@ describe.skipIf(!dbUp)("code tools service", () => {
     const gotIt = new Promise<number>((r) => {
       announce = r;
     });
-    const holding = runScopedOn(suDb, ctx(), async (db) => {
-      await lockToolNames(db);
-      const [me] = await db.$queryRaw<Array<{ pid: number }>>`
-        SELECT pg_backend_pid()::int AS pid`;
-      announce(me?.pid as number);
-      await held;
-    });
+    // The holder stays open until the import is seen parked, so its lifetime is the rendezvous, not
+    // a request's: on the default 5 s budget an import slow to reach the lock expires the HOLDER,
+    // and the test fails on its commit instead of saying whether the import queued. Its budget is
+    // the wait's own, which `waitUntilBlocked` bounds well inside it.
+    const holding = runScopedOn(
+      suDb,
+      ctx(),
+      async (db) => {
+        await lockToolNames(db);
+        const [me] = await db.$queryRaw<Array<{ pid: number }>>`
+          SELECT pg_backend_pid()::int AS pid`;
+        announce(me?.pid as number);
+        await held;
+      },
+      { maxWait: 10_000, timeout: 30_000 },
+    );
     const holder = await gotIt;
     const importing = importAgent(ctx(), doc, appDb);
+    let blockedAt = -1;
     try {
-      expect(await waitUntilBlocked(suDb, holder, 1)).toBeGreaterThanOrEqual(0);
+      blockedAt = await waitUntilBlocked(suDb, holder, 1);
     } finally {
       release();
-      await holding;
-      await importing;
+      // Both settle before anything is asserted, so a failure names its cause and no import is still
+      // writing when the file's cleanup deletes the tenant.
+      const [holderResult, imported] = await Promise.allSettled([holding, importing]);
+      expect(holderResult.status).toBe("fulfilled");
+      expect(imported.status).toBe("fulfilled");
     }
+    expect(blockedAt).toBeGreaterThanOrEqual(0);
   });
 
   test("blank metadata and a reserved field name are refused where they are typed", async () => {

@@ -1364,6 +1364,39 @@ describe.skipIf(!dbUp)("a channel failure reported to the bot", () => {
     expect(reacted.sent).toHaveLength(1);
   });
 
+  // The latest page is read again after the live read; a person taking the conversation while that
+  // read is in flight is caught by the mirror, read after it.
+  test("a takeover landing during the resend's last page read stops it", async () => {
+    await deliver(updated(9020, { error: "(#131000) x", content: "x" }));
+    let live = false;
+    const cw = fakeChatwoot({
+      failedId: 9020,
+      onLive: async () => {
+        live = true;
+      },
+      onRead: async () => {
+        if (!live) return;
+        await suDb.conversation.updateMany({
+          where: { tenantId, chatwootConversationId: CONV_ID },
+          data: {
+            assigneeType: "User",
+            assigneeId: 3,
+            lastEventAt: new Date(Date.now() + 3_600_000),
+          },
+        });
+      },
+    });
+    try {
+      await mediaFallbackHandler(await claimed(9020), appDb, cw.makeClient);
+      expect(cw.sent).toEqual([]);
+    } finally {
+      await suDb.conversation.updateMany({
+        where: { tenantId, chatwootConversationId: CONV_ID },
+        data: { assigneeType: null, assigneeId: null, lastEventAt: new Date() },
+      });
+    }
+  });
+
   // The next turn answers a customer who wrote again, with fresh context; a newer reply already
   // moved the conversation on. Either way the old reply would arrive out of place.
   test("a resend is skipped when the conversation received anything after the failure", async () => {
@@ -1377,6 +1410,21 @@ describe.skipIf(!dbUp)("a channel failure reported to the bot", () => {
       await mediaFallbackHandler(await claimed(9014), appDb, cw.makeClient);
       expect(cw.sent).toEqual([]);
     }
+    // A customer message pushed off the latest page by the team's notes is still found: the read-back
+    // pages down to the failed reply, not only the newest page.
+    const buried = fakeChatwoot({
+      failedId: 9014,
+      after: [
+        { messageType: 0, sender: { type: "contact", id: 31 } },
+        ...Array.from({ length: 25 }, () => ({
+          messageType: 1,
+          sender: { type: "user", id: 3 },
+          private: true,
+        })),
+      ],
+    });
+    await mediaFallbackHandler(await claimed(9014), appDb, buried.makeClient);
+    expect(buried.sent).toEqual([]);
     // A private note and an activity line are not something the customer received.
     const quiet = fakeChatwoot({
       failedId: 9014,

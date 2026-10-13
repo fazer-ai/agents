@@ -22,11 +22,9 @@ const REPLY_SEND_ID_PREFIX = "reply:";
 export function replySendId(replyKey: string): string {
   return `${REPLY_SEND_ID_PREFIX}${replyKey}:${crypto.randomUUID()}`;
 }
+const REPLY_KEY = /^reply:([^:]+):/;
 export function replyKeyOf(sendId: string | null | undefined): string | null {
-  if (!sendId?.startsWith(REPLY_SEND_ID_PREFIX)) return null;
-  const rest = sendId.slice(REPLY_SEND_ID_PREFIX.length);
-  const end = rest.indexOf(":");
-  return end > 0 ? rest.slice(0, end) : null;
+  return (sendId && REPLY_KEY.exec(sendId)?.[1]) || null;
 }
 
 // Set on everything the platform sends on the ADMIN token (a cross-inbox case opening and its

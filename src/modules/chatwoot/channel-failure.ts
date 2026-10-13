@@ -31,12 +31,13 @@ import type { NormalizedChatwootEvent } from "./types";
 // `message_updated` carrying `external_error`, and what is done depends on the code's class. `media`
 // resends the same reply as text, once (the voice note carries its words, so no model runs).
 // `delivery` (the recipient cannot be reached) and `account` (the sender is restricted) are the codes
-// the channel documents as permanent: a resend hits the same wall, so nothing is sent. EVERY OTHER
-// code, `unknown` included, resends the same reply once after a short delay, `rate_limit` after a
-// longer one, because a missing guess costs the customer's answer and a wrong one costs a refused
-// call. A failure on a message that was itself a resend is not resent again. Only the route's own
-// bot's messages are acted on: a human's or another bot's failure is theirs to resend.
-// docs/tts.md, "When the channel refuses the voice note after Chatwoot accepted it".
+// the channel documents as permanent: a resend hits the same wall, so nothing is sent.
+
+// EVERY OTHER code, `unknown` included, resends the same reply once after a short delay, `rate_limit`
+// after a longer one: a missing guess costs the customer's answer, a wrong one a refused call. A
+// failure on a message that was itself a resend is not resent again. Only the route's own bot's
+// messages are acted on: a human's or another bot's failure is theirs to resend. docs/tts.md, "When
+// the channel refuses the voice note after Chatwoot accepted it".
 
 const MEDIA_ERROR_CODES = new Set(["131052", "131053"]);
 
@@ -118,8 +119,8 @@ export interface ChannelFailure {
   messageId: number;
   conversationId: number;
   // The number of `external_error`, read from both forms WhatsApp Cloud sends: a leading number
-  // ("131053: Media upload error" → "131053") or a parenthesised one ("(#131000) Something went
-  // wrong" → "131000"). Null when there is none to read.
+  // ("131053: Media upload error" → "131053") or one in parentheses after a hash, the form 131000
+  // ("Something went wrong") takes. Null when there is none to read.
   code: string | null;
   kind: ChannelFailureClass;
   // The reply as text, when the message carries it: the voice note's words, or a text message's own
@@ -494,6 +495,18 @@ export async function mediaFallbackHandler(
   );
   if (!live)
     throw new Error("media fallback: the conversation could not be read");
+  // AND THE LATEST PAGE AGAIN, after the live read: a customer message or a newer reply that landed
+  // while it ran is not on the pages read above. Read through the same rule, so a reaction or imported
+  // history does not count here either; a page that did not read THROWS. BEFORE the reconcile, which
+  // is local: a takeover landing during this read is still in the mirror it reads.
+  if (resend) {
+    const raw = await client.getMessages(conversationId);
+    const rows = parseChatwootMessages(raw);
+    if (chatwootMessageListLength(raw) !== rows.length)
+      throw new Error("channel resend: the latest page did not read");
+    const moved = newerThanFailure(rows, messageId, replyKey);
+    if (moved !== null) return stop(moved);
+  }
   // AND THE MIRROR, read through the reconcile: a local status claim (a colleague's reply claimed
   // `open` before Chatwoot's toggle landed) and a takeover webhook committed after this snapshot are
   // both newer than the live read, and the reconcile returns the row as its own ordering left it. A
@@ -514,17 +527,6 @@ export async function mediaFallbackHandler(
   // NOTE: With THIS bot's id: a conversation handed to another bot is not ours either.
   if (!ours(live) || (reconciled.state !== null && !ours(reconciled.state))) {
     return stop("the conversation was handed off and is no longer the bot's");
-  }
-  // AND THE LATEST PAGE AGAIN, after the live read and the reconcile: a customer message or a newer
-  // reply that landed while those ran is not on the pages read above. Read through the same rule, so
-  // a reaction or imported history does not count here either; a page that did not read THROWS.
-  if (resend) {
-    const raw = await client.getMessages(conversationId);
-    const rows = parseChatwootMessages(raw);
-    if (chatwootMessageListLength(raw) !== rows.length)
-      throw new Error("channel resend: the latest page did not read");
-    const moved = newerThanFailure(rows, messageId, replyKey);
-    if (moved !== null) return stop(moved);
   }
   // LAST, and after every network read: the database answers for a `/reset` or a rebinding that
   // landed while Chatwoot was being asked, and nothing but the send follows it.

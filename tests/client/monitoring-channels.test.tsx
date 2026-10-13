@@ -294,8 +294,13 @@ describe("the Channels tab of a watcher", () => {
         checked: true,
       });
       if (caller === "switch") {
+        // Counted inside the toast list: Radix repeats a toast's text in a visually hidden live
+        // region from two animation frames after it opens until a second later, so a page-wide count
+        // reads 2 whenever the worker is slow enough to reach this line inside that window.
+        const toasts = screen.getByRole("region", { name: /notifications/i });
         expect(
-          screen.queryAllByText(/was bound as the inbox's responder/).length,
+          within(toasts).queryAllByText(/was bound as the inbox's responder/)
+            .length,
         ).toBe(1);
       }
       cleanup();

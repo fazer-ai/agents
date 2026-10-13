@@ -4,6 +4,7 @@ import { Link } from "react-router";
 import { Skeleton } from "@/client/components";
 import { Block, type BlockTable, SectionHeading } from "./Block";
 import type { DashboardFilters, Window } from "./filters";
+import { hasNoData } from "./Provisional";
 import { useStreamBlock } from "./useStream";
 
 // IS IT HEALTHY, AND WHAT ELSE DOES IT DO. Latency by model from the ledger, the flow log's warnings
@@ -168,10 +169,15 @@ export function HealthSection({
           <Skeleton className="h-24 w-full" />
         ) : !problems.data || problems.data.length === 0 ? (
           <p className="text-sm text-text-muted">
-            {t(
-              "dashboard.health.noProblems",
-              "No warnings or errors in this period.",
-            )}
+            {hasNoData(problems.coverage)
+              ? t(
+                  "dashboard.health.noProblemsKept",
+                  "No warnings or errors on the days with data.",
+                )
+              : t(
+                  "dashboard.health.noProblems",
+                  "No warnings or errors in this period.",
+                )}
           </p>
         ) : (
           <ul className="flex flex-col gap-1.5">

@@ -927,6 +927,7 @@
       "latency": "Model call latency",
       "latencyHelp": "How long each model call took, as this app timed it: half of the calls took less than p50, nine in ten less than p90. Calls made before the timing was recorded are not counted.",
       "noProblems": "No warnings or errors in this period.",
+      "noProblemsKept": "No warnings or errors on the days with data.",
       "problems": "Warnings and errors",
       "problemsHelp": "Lines of the execution log at warning or error level, by stage and, for a tool, by tool. Open a row to see those lines on the Logs page with the same filters.",
       "title": "Health",

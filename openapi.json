@@ -6875,7 +6875,7 @@
     "/v1/metrics/kpis": {
       "get": {
         "summary": "Dashboard KPIs",
-        "description": "Returns the headline dashboard KPIs since an optional start time.",
+        "description": "Returns the headline dashboard KPIs since an optional start time. Answers once every day of the window is computed. A window with days not computed before that does not fit one METRICS_TIMEOUT_MS is refused with a 503 naming `since`; the days computed before the refusal are kept, so the same request again goes on from them. The console reads the same figures from `GET /v1/metrics/stream`, which sends them as they are computed.",
         "tags": [
           "Dashboard"
         ],
@@ -7247,7 +7247,7 @@
     "/v1/metrics/costs": {
       "get": {
         "summary": "Cost metrics",
-        "description": "Returns the tenant's LLM cost from its own usage ledger since an optional start time: total, per local day, per model, the calls no price covered, and the Langfuse link when configured.",
+        "description": "Returns the tenant's LLM cost from its own usage ledger since an optional start time: total, per local day, per model, the calls no price covered, and the Langfuse link when configured. Answers once every day of the window is computed. A window with days not computed before that does not fit one METRICS_TIMEOUT_MS is refused with a 503 naming `since`; the days computed before the refusal are kept, so the same request again goes on from them. The console reads the same figures from `GET /v1/metrics/stream`, which sends them as they are computed.",
         "tags": [
           "Dashboard"
         ],
@@ -30508,7 +30508,7 @@
           "Dashboard"
         ],
         "summary": "Outcome trend",
-        "description": "Involvement, resolution and handoff counts per local day over the conversations of the view, with totals, optionally repeated per agent or inbox.",
+        "description": "Involvement, resolution and handoff counts per local day over the conversations of the view, with totals, optionally repeated per agent or inbox. Answers once every day of the window is computed. A window with days not computed before that does not fit one METRICS_TIMEOUT_MS is refused with a 503 naming `since`; the days computed before the refusal are kept, so the same request again goes on from them. The console reads the same figures from `GET /v1/metrics/stream`, which sends them as they are computed.",
         "parameters": [
           {
             "name": "since",
@@ -30729,7 +30729,7 @@
           "Dashboard"
         ],
         "summary": "Usage breakdown",
-        "description": "The view's ledger rows grouped by agent, inbox, model or call type: conversations, requests, cost, cost per conversation, resolution rate and cache share.",
+        "description": "The view's ledger rows grouped by agent, inbox, model or call type: conversations, requests, cost, cost per conversation, resolution rate and cache share. Answers once every day of the window is computed. A window with days not computed before that does not fit one METRICS_TIMEOUT_MS is refused with a 503 naming `since`; the days computed before the refusal are kept, so the same request again goes on from them. The console reads the same figures from `GET /v1/metrics/stream`, which sends them as they are computed.",
         "parameters": [
           {
             "name": "since",
@@ -30950,7 +30950,7 @@
           "Dashboard"
         ],
         "summary": "Handoff reasons",
-        "description": "Conversations handed over per cause per local day (the agent, a skip_reply by reason, a guardrail, a person), and skip_reply calls by reason.",
+        "description": "Conversations handed over per cause per local day (the agent, a skip_reply by reason, a guardrail, a person), and skip_reply calls by reason. Answers once every day of the window is computed. A window with days not computed before that does not fit one METRICS_TIMEOUT_MS is refused with a 503 naming `since`; the days computed before the refusal are kept, so the same request again goes on from them. The console reads the same figures from `GET /v1/metrics/stream`, which sends them as they are computed.",
         "parameters": [
           {
             "name": "since",
@@ -31162,7 +31162,7 @@
           "Dashboard"
         ],
         "summary": "Outcome by label",
-        "description": "Volume and outcome of the view's conversations per Chatwoot label, and how many carry none.",
+        "description": "Volume and outcome of the view's conversations per Chatwoot label, and how many carry none. Answers once every day of the window is computed. A window with days not computed before that does not fit one METRICS_TIMEOUT_MS is refused with a 503 naming `since`; the days computed before the refusal are kept, so the same request again goes on from them. The console reads the same figures from `GET /v1/metrics/stream`, which sends them as they are computed.",
         "parameters": [
           {
             "name": "since",
@@ -31374,7 +31374,7 @@
           "Dashboard"
         ],
         "summary": "Health",
-        "description": "Model call latency p50/p90 by model, and warn/error flow-log lines by stage and tool.",
+        "description": "Model call latency p50/p90 by model, and warn/error flow-log lines by stage and tool. Answers once every day of the window is computed. A window with days not computed before that does not fit one METRICS_TIMEOUT_MS is refused with a 503 naming `since`; the days computed before the refusal are kept, so the same request again goes on from them. The console reads the same figures from `GET /v1/metrics/stream`, which sends them as they are computed.",
         "parameters": [
           {
             "name": "since",
@@ -31586,7 +31586,7 @@
           "Dashboard"
         ],
         "summary": "Follow-up activity",
-        "description": "Follow-up steps delivered in the window, the conversations they reached, how many customers wrote back and how many the last step closed.",
+        "description": "Follow-up steps delivered in the window, the conversations they reached, how many customers wrote back and how many the last step closed. Answers once every day of the window is computed. A window with days not computed before that does not fit one METRICS_TIMEOUT_MS is refused with a 503 naming `since`; the days computed before the refusal are kept, so the same request again goes on from them. The console reads the same figures from `GET /v1/metrics/stream`, which sends them as they are computed.",
         "parameters": [
           {
             "name": "since",
@@ -32019,7 +32019,7 @@
           "Dashboard"
         ],
         "summary": "Knowledge suggestions",
-        "description": "Knowledge suggestions proposed in the window and where each stands: waiting, discarded by the reviewer, approved, rejected.",
+        "description": "Knowledge suggestions proposed in the window and where each stands: waiting, discarded by the reviewer, approved, rejected. Answers once every day of the window is computed. A window with days not computed before that does not fit one METRICS_TIMEOUT_MS is refused with a 503 naming `since`; the days computed before the refusal are kept, so the same request again goes on from them. The console reads the same figures from `GET /v1/metrics/stream`, which sends them as they are computed.",
         "parameters": [
           {
             "name": "since",

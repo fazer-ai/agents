@@ -17,6 +17,12 @@ export function isProvisional(
   return !!coverage && coverage.total > 0 && !coverage.done && coverage.graced;
 }
 
+// Whether some of the window's days have no figures for good (the retention sweep emptied them before
+// they were kept): an empty result over them is unknown, never "none in the period".
+export function hasNoData(coverage: BlockCoverage | null | undefined): boolean {
+  return !!coverage && coverage.noData > 0;
+}
+
 // Every card's pulse on one clock: the animation is the same with no delay of its own, and a card
 // whose pulse starts mid-cycle (mounted, or turned provisional, after the others) starts where the
 // others are rather than at the faint end. The offset is taken when the pulse starts, which is when

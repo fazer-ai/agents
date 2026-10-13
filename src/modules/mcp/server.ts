@@ -263,6 +263,8 @@ function registerTenantTool(
     // biome-ignore lint/suspicious/noExplicitAny: each call site narrows `args` to its own tool shape; `any` lets those narrower handler signatures bind without a per-tool generic.
     args: any,
     eff: VerifiedToken,
+    // The MCP request's own: aborted when the client cancels the call or goes away.
+    signal: AbortSignal,
   ) => CallToolResult | Promise<CallToolResult>,
 ): void {
   const inputSchema =
@@ -277,9 +279,9 @@ function registerTenantTool(
   server.registerTool(
     name,
     { description: def.description, inputSchema },
-    async (args: Record<string, unknown>) => {
+    async (args: Record<string, unknown>, extra) => {
       if (principal.role === "SUPER_ADMIN" && def.targetless?.(args)) {
-        return handler(args, principal);
+        return handler(args, principal, extra.signal);
       }
       const resolved = await resolveEffectivePrincipal(principal, args);
       if (!resolved.ok) {
@@ -288,7 +290,7 @@ function registerTenantTool(
           isError: true,
         };
       }
-      return handler(args, resolved.eff);
+      return handler(args, resolved.eff, extra.signal);
     },
   );
 }
@@ -1325,14 +1327,14 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "metrics_get",
       {
         description:
-          "Get the dashboard KPIs (conversation involvement/resolution/automation rates) plus consolidated LLM usage (tokens/calls by agent/inbox/model/source) and conversation counts by status. Optional since (ISO) and source (inbox|playground).",
+          "Get the dashboard KPIs (conversation involvement/resolution/automation rates) plus consolidated LLM usage (tokens/calls by agent/inbox/model/source) and conversation counts by status. Optional since (ISO) and source (inbox|playground). A long cold period may be refused as too slow; calling again resumes.",
         inputSchema: {
           since: z.string().optional(),
           source: z.enum(["inbox", "playground"]).optional(),
         },
       },
-      async (args: { since?: string; source?: string }, eff) =>
-        writeContent(await metricsGet(eff, args)),
+      async (args: { since?: string; source?: string }, eff, signal) =>
+        writeContent(await metricsGet(eff, args, { signal })),
     );
 
     registerTenantTool(

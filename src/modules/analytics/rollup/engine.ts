@@ -192,13 +192,15 @@ interface Part {
 }
 
 // One transaction of the kept days on its own METRICS_TIMEOUT_MS, refused as too slow past it. Each
-// part gets the whole budget: a long window is many parts, never one long statement.
+// part gets the whole budget: a long window is many parts, never one long statement. A caller that
+// answers once also passes its own deadline, and no part runs past it.
 export async function budgeted<T>(
   base: PrismaClient,
   ctx: TenantContext,
   fn: (db: ScopedDb) => Promise<T>,
+  until = Number.POSITIVE_INFINITY,
 ): Promise<T> {
-  const deadline = Date.now() + config.metrics.timeoutMs;
+  const deadline = Math.min(Date.now() + config.metrics.timeoutMs, until);
   try {
     return await runScopedOn(base, ctx, fn, metricsBudget(deadline));
   } catch (error) {
@@ -230,6 +232,8 @@ export class WindowLoad implements DayStore {
   private refused = new Map<Family, AppError>();
   private queue: Part[] = [];
   private current: Part | null = null;
+  // The one deadline of a caller that answers once (`complete`); a stream has none.
+  private deadline = Number.POSITIVE_INFINITY;
   private base: PrismaClient;
   private window: { tz: string; first: string | null; last: string | null };
 
@@ -254,7 +258,12 @@ export class WindowLoad implements DayStore {
   }
 
   private scoped<T>(fn: (db: ScopedDb) => Promise<T>): Promise<T> {
-    return budgeted(this.base, this.ctx, fn);
+    return budgeted(this.base, this.ctx, fn, this.deadline);
+  }
+
+  // Past the caller's own deadline nothing is cut smaller or tried again: the whole request is refused.
+  private overdue(): boolean {
+    return Date.now() >= this.deadline;
   }
 
   private sectionsOf(fam: Family): Section[] {
@@ -376,7 +385,12 @@ export class WindowLoad implements DayStore {
           settleDirty(db, this.settleKey(), batch),
         );
       } catch (error) {
-        if (!(error instanceof MetricsTooSlowError) || batch === 1) throw error;
+        if (
+          !(error instanceof MetricsTooSlowError) ||
+          batch === 1 ||
+          this.overdue()
+        )
+          throw error;
         batch = Math.max(1, Math.floor(batch / 4));
         continue;
       }
@@ -636,7 +650,8 @@ export class WindowLoad implements DayStore {
     try {
       await this.runPart(part, signal);
     } catch (error) {
-      if (!(error instanceof MetricsTooSlowError)) throw error;
+      if (!(error instanceof MetricsTooSlowError) || this.overdue())
+        throw error;
       this.refused.set(part.family, error);
       this.queue = this.queue.filter((p) => p.family !== part.family);
     }
@@ -648,7 +663,11 @@ export class WindowLoad implements DayStore {
         (await this.scoped((db) => this.compute(db, part, false)))();
       else await this.computeKept(part, signal);
     } catch (error) {
-      if (!(error instanceof MetricsTooSlowError) || part.first === part.last)
+      if (
+        !(error instanceof MetricsTooSlowError) ||
+        part.first === part.last ||
+        this.overdue()
+      )
         throw error;
       const days = daysBetween(part.first, part.last);
       const mid = days[Math.floor(days.length / 2)] ?? part.last;
@@ -682,6 +701,7 @@ export class WindowLoad implements DayStore {
       });
       // In memory once kept: a part whose transaction fails is computed again, and kept, on the retry.
       if (state !== "busy") return state();
+      if (this.overdue()) throw metricsTooSlow(this.deadline);
       await new Promise((r) => setTimeout(r, 250));
     }
   }
@@ -760,10 +780,21 @@ export class WindowLoad implements DayStore {
     return apply;
   }
 
-  // Compute every part, for a caller that answers once (the REST routes, the MCP tools).
-  async complete(): Promise<this> {
-    await this.prepare();
-    while (await this.step());
+  // Compute every part, for a caller that answers once (the REST routes, the MCP tools), within one
+  // METRICS_TIMEOUT_MS for the whole request: nothing reaches the caller until every part is in, so
+  // a cold window longer than that is refused as too slow, with the parts already kept for the next
+  // call to read. A caller that goes away (`signal`) stops it at the next part or batch.
+  async complete(signal?: AbortSignal): Promise<this> {
+    this.deadline = Date.now() + config.metrics.timeoutMs;
+    try {
+      await this.prepare(signal);
+      while (!signal?.aborted && (await this.step(signal)));
+    } catch (error) {
+      if (error instanceof MetricsTooSlowError && this.overdue())
+        throw metricsTooSlow(this.deadline);
+      throw error;
+    }
+    signal?.throwIfAborted();
     // One answer for the caller's blocks: a family that stopped refuses it.
     const [refused] = this.refused.values();
     if (refused) throw refused;
@@ -805,8 +836,9 @@ export async function loadAligned(
   filter: DashboardFilter,
   sections: Section[],
   base?: PrismaClient,
+  signal?: AbortSignal,
 ): Promise<WindowLoad | null> {
   const w = alignedDays(filter);
   if (!w) return null;
-  return new WindowLoad(ctx, filter, sections, w, base).complete();
+  return new WindowLoad(ctx, filter, sections, w, base).complete(signal);
 }

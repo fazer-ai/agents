@@ -23,6 +23,7 @@ import { getBreakdown } from "@/modules/analytics/breakdown";
 import { getDashboardCosts } from "@/modules/analytics/costs";
 import type { DashboardFilter } from "@/modules/analytics/filter";
 import { getHealth } from "@/modules/analytics/health";
+import { fromKeptDays } from "@/modules/analytics/rollup/answer";
 import {
   addDays,
   dayCount,
@@ -1568,6 +1569,18 @@ describe.skipIf(!dbUp)("the kept days of the dashboard", () => {
         SELECT ${tenantId}, 'know', TIMESTAMP '2000-01-03', (now() AT TIME ZONE 'UTC') - interval '1 hour'
           FROM generate_series(1, 25000)`;
       const f = windowOf("UTC", 9, 0);
+      // Prepared as the stream prepares it, with no deadline of its own: a caller that answers once
+      // is refused at its one budget instead, keeping the batches it settled.
+      const w = alignedDays(f);
+      if (!w) throw new Error("not aligned");
+      await new WindowLoad(
+        ctx(),
+        f,
+        BLOCK_SECTIONS.knowledge,
+        w,
+        appDb,
+      ).prepare();
+      config.metrics.timeoutMs = timeout;
       expect(canon(await kept("knowledge", f))).toEqual(
         canon(await live("knowledge", f)),
       );
@@ -1998,6 +2011,82 @@ describe.skipIf(!dbUp)("the kept days of the dashboard", () => {
     const [left] = await suDb.$queryRaw<{ n: number }[]>`
       SELECT COUNT(*)::int AS n FROM dashboard_dirty WHERE tenant_id = ${t.id}`;
     expect(left?.n).toBe(0);
+  });
+
+  // A caller that answers once (a REST route, an MCP tool) sends nothing until every part is in, so
+  // a cold window longer than one budget would outlive the server's idle timeout.
+  async function slowConv(seconds: number, onCall?: () => void) {
+    // The version hash runs the sections once, on a recorder: before the stub counts.
+    await rollupVersion();
+    const conv = COMPUTE.conv;
+    COMPUTE.conv = async (db, ...rest) => {
+      onCall?.();
+      await db.$executeRaw`SELECT pg_sleep(${seconds})`;
+      return conv(db, ...rest);
+    };
+    return () => {
+      COMPUTE.conv = conv;
+    };
+  }
+
+  function answerOnce(f: DashboardFilter, signal?: AbortSignal) {
+    return fromKeptDays(
+      ctx(),
+      f,
+      "kpis",
+      (x) => x.kpis,
+      () => getKpis(ctx(), f, appDb),
+      appDb,
+      signal,
+    );
+  }
+
+  test("a caller that answers once is refused within one budget on a cold window, and the next call goes on from the parts kept", async () => {
+    // Earlier tests' changes are minutes old, and a day changed that recently is computed but not kept.
+    await suDb.$executeRaw`UPDATE dashboard_dirty SET created_at = created_at - interval '1 hour' WHERE tenant_id = ${tenantId}`;
+    await clearKept();
+    const f = windowOf("UTC", 44, 0);
+    // Three steps of two seconds each (today and yesterday, then two parts), on a budget of five: the
+    // third does not fit in what is left.
+    const restore = await slowConv(2);
+    const timeout = config.metrics.timeoutMs;
+    config.metrics.timeoutMs = 5_000;
+    try {
+      const started = Date.now();
+      const refused = await answerOnce(f).catch((e: unknown) => e);
+      expect(refused).toBeInstanceOf(MetricsTooSlowError);
+      expect((refused as MetricsTooSlowError).statusCode).toBe(503);
+      expect((refused as MetricsTooSlowError).field).toBe("since");
+      expect(Date.now() - started).toBeLessThan(5_000 + 1_500);
+      const [first] = await suDb.$queryRaw<{ n: number }[]>`
+        SELECT COUNT(DISTINCT day)::int AS n FROM dashboard_days
+         WHERE tenant_id = ${tenantId} AND section LIKE 'conv.%'`;
+      expect(first?.n).toBeGreaterThan(0);
+      // The part kept is read back, so the rest fits: today and yesterday, then one part.
+      expect(canon(await answerOnce(f))).toEqual(canon(await live("kpis", f)));
+    } finally {
+      config.metrics.timeoutMs = timeout;
+      restore();
+    }
+  }, 120_000);
+
+  test("a caller that answers once and goes away stops the load at the next part", async () => {
+    await clearKept();
+    const abort = new AbortController();
+    let computed = 0;
+    const restore = await slowConv(0, () => {
+      computed++;
+      abort.abort();
+    });
+    try {
+      await expect(
+        answerOnce(windowOf("UTC", 44, 0), abort.signal),
+      ).rejects.toBeDefined();
+      // Today and yesterday ran when it left, and no part after them.
+      expect(computed).toBe(1);
+    } finally {
+      restore();
+    }
   });
 
   test("every section the console reads has a block", () => {

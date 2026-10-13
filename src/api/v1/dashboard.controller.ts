@@ -46,6 +46,11 @@ function ctxOrThrow(ctx: TenantContext | null): TenantContext {
   return ctx;
 }
 
+// A route answers once every day of its window is in, so a cold window has a ceiling the console's
+// stream does not (docs/dashboard.md, "How the console fills").
+export const KEPT_DAYS_NOTE =
+  "Answers once every day of the window is computed. A window with days not computed before that does not fit one METRICS_TIMEOUT_MS is refused with a 503 naming `since`; the days computed before the refusal are kept, so the same request again goes on from them. The console reads the same figures from `GET /v1/metrics/stream`, which sends them as they are computed.";
+
 const INSTANT =
   "ISO instant (2026-01-01T00:00:00Z). A value that is not one is refused with a 400 naming the parameter.";
 
@@ -129,7 +134,7 @@ export const dashboardController = new Elysia({
   )
   .get(
     "/outcomes",
-    async ({ tenantContext, query }) => ({
+    async ({ tenantContext, query, request }) => ({
       instance: instanceIdentity,
       trend: await (async () => {
         const ctx = ctxOrThrow(tenantContext);
@@ -147,6 +152,8 @@ export const dashboardController = new Elysia({
               ? { ...f.trend, series: f.series[breakdown] }
               : (f.trend as NonNullable<typeof f.trend>),
           () => getOutcomeTrend(ctx, filter, breakdown),
+          undefined,
+          request.signal,
         );
       })(),
     }),
@@ -163,14 +170,14 @@ export const dashboardController = new Elysia({
       }),
       detail: doc(
         "Outcome trend",
-        "Involvement, resolution and handoff counts per local day over the conversations of the view, with totals, optionally repeated per agent or inbox.",
+        `Involvement, resolution and handoff counts per local day over the conversations of the view, with totals, optionally repeated per agent or inbox. ${KEPT_DAYS_NOTE}`,
       ),
       response: errors(400, 401, 403, 404, 422),
     },
   )
   .get(
     "/breakdown",
-    async ({ tenantContext, query }) => ({
+    async ({ tenantContext, query, request }) => ({
       instance: instanceIdentity,
       rows: await (async () => {
         const ctx = ctxOrThrow(tenantContext);
@@ -184,6 +191,8 @@ export const dashboardController = new Elysia({
           "breakdown",
           (f) => f.breakdown?.[dimension] ?? [],
           () => getBreakdown(ctx, filter, dimension),
+          undefined,
+          request.signal,
         );
       })(),
     }),
@@ -200,14 +209,14 @@ export const dashboardController = new Elysia({
       }),
       detail: doc(
         "Usage breakdown",
-        "The view's ledger rows grouped by agent, inbox, model or call type: conversations, requests, cost, cost per conversation, resolution rate and cache share.",
+        `The view's ledger rows grouped by agent, inbox, model or call type: conversations, requests, cost, cost per conversation, resolution rate and cache share. ${KEPT_DAYS_NOTE}`,
       ),
       response: errors(400, 401, 403, 404, 422),
     },
   )
   .get(
     "/handoffs",
-    async ({ tenantContext, query }) => ({
+    async ({ tenantContext, query, request }) => ({
       instance: instanceIdentity,
       handoffs: await (async () => {
         const ctx = ctxOrThrow(tenantContext);
@@ -218,6 +227,8 @@ export const dashboardController = new Elysia({
           "handoffs",
           (f) => f.handoffs as NonNullable<typeof f.handoffs>,
           () => getHandoffReasons(ctx, filter),
+          undefined,
+          request.signal,
         );
       })(),
     }),
@@ -226,14 +237,14 @@ export const dashboardController = new Elysia({
       query: filterOnly,
       detail: doc(
         "Handoff reasons",
-        "Conversations handed over per cause per local day (the agent, a skip_reply by reason, a guardrail, a person), and skip_reply calls by reason.",
+        `Conversations handed over per cause per local day (the agent, a skip_reply by reason, a guardrail, a person), and skip_reply calls by reason. ${KEPT_DAYS_NOTE}`,
       ),
       response: errors(400, 401, 403, 404, 422),
     },
   )
   .get(
     "/labels",
-    async ({ tenantContext, query }) => ({
+    async ({ tenantContext, query, request }) => ({
       instance: instanceIdentity,
       labels: await (async () => {
         const ctx = ctxOrThrow(tenantContext);
@@ -244,6 +255,8 @@ export const dashboardController = new Elysia({
           "labels",
           (f) => f.labels as NonNullable<typeof f.labels>,
           () => getLabelOutcomes(ctx, filter),
+          undefined,
+          request.signal,
         );
       })(),
     }),
@@ -252,14 +265,14 @@ export const dashboardController = new Elysia({
       query: filterOnly,
       detail: doc(
         "Outcome by label",
-        "Volume and outcome of the view's conversations per Chatwoot label, and how many carry none.",
+        `Volume and outcome of the view's conversations per Chatwoot label, and how many carry none. ${KEPT_DAYS_NOTE}`,
       ),
       response: errors(400, 401, 403, 404, 422),
     },
   )
   .get(
     "/health",
-    async ({ tenantContext, query }) => ({
+    async ({ tenantContext, query, request }) => ({
       instance: instanceIdentity,
       health: await (async () => {
         const ctx = ctxOrThrow(tenantContext);
@@ -270,6 +283,8 @@ export const dashboardController = new Elysia({
           "health",
           (f) => f.health as HealthReport,
           () => getHealth(ctx, filter),
+          undefined,
+          request.signal,
         );
       })(),
     }),
@@ -278,14 +293,14 @@ export const dashboardController = new Elysia({
       query: filterOnly,
       detail: doc(
         "Health",
-        "Model call latency p50/p90 by model, and warn/error flow-log lines by stage and tool.",
+        `Model call latency p50/p90 by model, and warn/error flow-log lines by stage and tool. ${KEPT_DAYS_NOTE}`,
       ),
       response: errors(400, 401, 403, 404, 422),
     },
   )
   .get(
     "/follow-ups",
-    async ({ tenantContext, query }) => ({
+    async ({ tenantContext, query, request }) => ({
       instance: instanceIdentity,
       followUps: await (async () => {
         const ctx = ctxOrThrow(tenantContext);
@@ -296,6 +311,8 @@ export const dashboardController = new Elysia({
           "followUps",
           (f) => f.followUps as NonNullable<typeof f.followUps>,
           () => getFollowUpActivity(ctx, filter),
+          undefined,
+          request.signal,
         );
       })(),
     }),
@@ -304,7 +321,7 @@ export const dashboardController = new Elysia({
       query: filterOnly,
       detail: doc(
         "Follow-up activity",
-        "Follow-up steps delivered in the window, the conversations they reached, how many customers wrote back and how many the last step closed.",
+        `Follow-up steps delivered in the window, the conversations they reached, how many customers wrote back and how many the last step closed. ${KEPT_DAYS_NOTE}`,
       ),
       response: errors(400, 401, 403, 404, 422),
     },
@@ -372,7 +389,7 @@ export const dashboardController = new Elysia({
   )
   .get(
     "/knowledge",
-    async ({ tenantContext, query }) => ({
+    async ({ tenantContext, query, request }) => ({
       instance: instanceIdentity,
       knowledge: await (async () => {
         const ctx = ctxOrThrow(tenantContext);
@@ -383,6 +400,8 @@ export const dashboardController = new Elysia({
           "knowledge",
           (f) => f.knowledge as NonNullable<typeof f.knowledge>,
           () => getKnowledgeActivity(ctx, filter),
+          undefined,
+          request.signal,
         );
       })(),
     }),
@@ -391,7 +410,7 @@ export const dashboardController = new Elysia({
       query: filterOnly,
       detail: doc(
         "Knowledge suggestions",
-        "Knowledge suggestions proposed in the window and where each stands: waiting, discarded by the reviewer, approved, rejected.",
+        `Knowledge suggestions proposed in the window and where each stands: waiting, discarded by the reviewer, approved, rejected. ${KEPT_DAYS_NOTE}`,
       ),
       response: errors(400, 401, 403, 404, 422),
     },

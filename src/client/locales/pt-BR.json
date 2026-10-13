@@ -958,6 +958,7 @@
       "latency": "Latência das chamadas de modelo",
       "latencyHelp": "Quanto tempo cada chamada de modelo levou, medido pelo próprio app: metade das chamadas levou menos que o p50, nove em cada dez menos que o p90. Chamadas feitas antes de o tempo ser registrado não entram.",
       "noProblems": "Nenhum aviso ou erro neste período.",
+      "noProblemsKept": "Nenhum aviso ou erro nos dias com dados.",
       "problems": "Avisos e erros",
       "problemsHelp": "Linhas do log de execução em nível de aviso ou erro, por etapa e, numa ferramenta, por ferramenta. Abra uma linha para ver esses registros na página de Logs com os mesmos filtros.",
       "title": "Saúde",

@@ -149,6 +149,9 @@ let logNone: [string, string][] = [];
 let convGaps: [string, string][] = [];
 // The ledger stopped on a day past the time budget; every other family is in.
 let ledgerRefused = false;
+// A whole view whose flow-log days are all past retention and were never kept: no handoffs, no
+// silences and no problems, because there is no data, not because there were none.
+let logExpired = false;
 let optionsFail = false;
 
 // What the per-block routes would answer, as the page's stream carries it: one snapshot with every
@@ -226,7 +229,15 @@ async function streamOf(url: URL): Promise<Response> {
                 refused: { status: 503, field: "since" },
               }
             : c,
-          log: c,
+          log: logExpired
+            ? {
+                total: 7,
+                ready: 0,
+                noData: 7,
+                gaps: [["2000-01-01", "2100-12-31"]],
+                none: [["2000-01-01", "2100-12-31"]],
+              }
+            : c,
           know: c,
         },
       };
@@ -324,6 +335,17 @@ const stubFetch = (async (input: unknown) => {
     return new Promise<Response>(() => {});
   if (p.endsWith("/metrics/breakdown"))
     return json({ instance: "i", rows: BREAKDOWN });
+  if (p.endsWith("/metrics/handoffs") && logExpired)
+    return json({
+      instance: "i",
+      handoffs: {
+        days: [],
+        totals: [],
+        silences: [],
+        silenceDays: [],
+        targets: [],
+      },
+    });
   if (p.endsWith("/metrics/handoffs"))
     return json({
       instance: "i",
@@ -462,6 +484,7 @@ beforeEach(() => {
   logNone = [];
   convGaps = [];
   ledgerRefused = false;
+  logExpired = false;
   computedAhead = false;
 });
 afterEach(cleanup);
@@ -983,6 +1006,19 @@ describe("a view still filling", () => {
     expect(screen.queryAllByText("complete", { exact: true })).toEqual([]);
     expect(has("partial ·")).toBe(false);
     expect(has("days ready")).toBe(false);
+  });
+});
+
+describe("a whole view whose flow-log days are past retention and were never kept", () => {
+  test("handoffs, silences and problems read as no data, never as none in the period", async () => {
+    logExpired = true;
+    await renderDash("/?range=7d");
+    await waitFor(() => {
+      expect(screen.queryAllByText(/no data · 7 days/).length).toBe(2);
+    });
+    expect(has("No handoffs in this period.")).toBe(false);
+    expect(has("No silences in this period.")).toBe(false);
+    expect(has("No warnings or errors in this period.")).toBe(false);
   });
 });
 

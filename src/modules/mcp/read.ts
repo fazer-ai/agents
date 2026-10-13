@@ -1200,7 +1200,7 @@ function metricsFilter(args: {
 export async function metricsGet(
   principal: VerifiedToken,
   args: { since?: string; source?: string },
-  deps: WriteDeps = {},
+  deps: WriteDeps & { signal?: AbortSignal } = {},
 ): Promise<WriteResult> {
   const base = deps.base ?? metricsPrisma;
   const ctx = readGate(principal);
@@ -1215,6 +1215,7 @@ export async function metricsGet(
         (f) => f.kpis as NonNullable<typeof f.kpis>,
         () => getKpis(ctx, filter, base),
         base,
+        deps.signal,
       ),
       getInstanceMetrics(ctx, filter, base),
     ]);

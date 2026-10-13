@@ -5,7 +5,7 @@ import { Skeleton } from "@/client/components";
 import { Block, type BlockTable, SectionHeading } from "./Block";
 import type { ChartRow } from "./charts";
 import { daysOf, type Window } from "./filters";
-import { isProvisional } from "./Provisional";
+import { hasNoData, isProvisional } from "./Provisional";
 import { dayState, inGap, useStreamBlock } from "./useStream";
 
 const StackedBars = lazy(() =>
@@ -225,7 +225,9 @@ export function ReasonsSection({ win }: { win: Window }) {
       >
         {handoffs.loading && !h && !isProvisional(handoffs.coverage) ? (
           <Skeleton className="h-56 w-full" />
-        ) : series.length === 0 && !isProvisional(handoffs.coverage) ? (
+        ) : series.length === 0 &&
+          !isProvisional(handoffs.coverage) &&
+          !hasNoData(handoffs.coverage) ? (
           <p className="py-8 text-center text-sm text-text-muted">
             {t("dashboard.handoffs.none", "No handoffs in this period.")}
           </p>
@@ -280,7 +282,9 @@ export function ReasonsSection({ win }: { win: Window }) {
       >
         {handoffs.loading && !h && !isProvisional(handoffs.coverage) ? (
           <Skeleton className="h-48 w-full" />
-        ) : silenceSeries.length === 0 && !isProvisional(handoffs.coverage) ? (
+        ) : silenceSeries.length === 0 &&
+          !isProvisional(handoffs.coverage) &&
+          !hasNoData(handoffs.coverage) ? (
           <p className="py-8 text-center text-sm text-text-muted">
             {t("dashboard.silences.none", "No silences in this period.")}
           </p>

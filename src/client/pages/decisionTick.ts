@@ -192,6 +192,9 @@ export type RuleView =
     }
   | { rule: number; kind: "held"; trigger: string | null }
   | { rule: number; kind: "not_fired"; miss: Record<string, unknown> }
+  // A rule of the block the line names in none of its lists: a line written before `merged` existed
+  // left out a rule that fired the same action as an earlier one, so it fired, with no outcome of its
+  // own (docs/decisions.md, "What it has been doing").
   | { rule: number; kind: "unknown" };
 
 // Every rule with its outcome, in rule order: fired (with the action and what became of it), held by
@@ -319,9 +322,11 @@ export function isNearMiss(miss: Record<string, unknown>): boolean {
 export function ruleGroups(tick: DecisionTickView): RuleGroups {
   const groups: RuleGroups = { fired: [], near: [], rest: [] };
   for (const r of ruleViews(tick)) {
-    if (r.kind === "fired" || r.kind === "held") groups.fired.push(r);
-    else if (r.kind === "not_fired" && isNearMiss(r.miss)) groups.near.push(r);
-    else groups.rest.push(r);
+    if (r.kind === "fired" || r.kind === "held" || r.kind === "unknown") {
+      groups.fired.push(r);
+    } else if (r.kind === "not_fired" && isNearMiss(r.miss)) {
+      groups.near.push(r);
+    } else groups.rest.push(r);
   }
   return groups;
 }
@@ -373,11 +378,15 @@ export function answerChanges(
   const out: AnswerChange[] = [];
   for (const name of names) {
     if (!(name in before) || !(name in now)) continue;
-    const from = answerWord(
-      before[name],
-      name,
-      previous.block ?? current.block,
-    );
+    // A score is a level index, and an index means a level only under the block that wrote it: two
+    // ticks are compared on a score only when both ran the block shown, since an edit in between can
+    // reorder the levels and turn an unchanged answer into a move.
+    const isScore =
+      bag(before[name])?.type === "score" || bag(now[name])?.type === "score";
+    if (isScore && (previous.block === null || current.block === null)) {
+      continue;
+    }
+    const from = answerWord(before[name], name, previous.block);
     const to = answerWord(now[name], name, current.block);
     if (from !== null && to !== null && from !== to) {
       out.push({

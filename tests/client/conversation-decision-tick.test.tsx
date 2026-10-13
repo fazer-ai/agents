@@ -556,7 +556,9 @@ describe("the expanded tick", () => {
             },
           },
           held: [{ rule: 3, trigger: "on_start" }],
-          notFired: [],
+          notFired: tick().notFired.filter(
+            (n) => (n as { rule: number }).rule !== 3,
+          ),
           actions: [
             { rule: 0, tool: "set_labels", outcome: "ran", merged: [] },
           ],
@@ -841,6 +843,47 @@ describe("reading a large block (the operator's review of #1417)", () => {
     cleanup();
     await inLanguage("en", <DecisionTickMarker entry={entry("2")} />);
     expect(screen.queryByTestId("decision-changes")).toBeNull();
+  });
+
+  test("a score is compared only between ticks of the block shown, since an edit can reorder its levels", async () => {
+    const previous = tick({
+      block: null,
+      answers: {
+        ...ANSWERS,
+        topic: { ...ANSWERS.topic, choice: "damaged" },
+        anger: { ...ANSWERS.anger, score: 2.1 },
+      },
+    });
+    await inLanguage(
+      "en",
+      <DecisionTickMarker entry={entry("2")} previous={previous} />,
+    );
+    expect(screen.getByTestId("decision-changes").textContent).toBe(
+      "topic: damaged → exchange",
+    );
+  });
+
+  test("a rule a legacy line names nowhere fired with an earlier rule's action, not among the misses", async () => {
+    await inLanguage(
+      "en",
+      <DecisionTickMarker
+        entry={entry("1", {
+          decision: tick({
+            actions: [{ rule: 0, tool: "set_labels", outcome: "ran" }],
+            notFired: [],
+          }),
+        })}
+      />,
+    );
+    fireEvent.click(screen.getAllByRole("button")[0] as HTMLElement);
+    const fired = within(screen.getByTestId("decision-rules-fired"))
+      .getAllByTestId("decision-rule")
+      .map((r) => r.textContent ?? "");
+    expect(fired).toHaveLength(5);
+    expect(fired[1]).toContain(
+      "fired with an earlier rule's identical action, no outcome of its own",
+    );
+    expect(screen.queryByTestId("decision-rules-rest")).toBeNull();
   });
 
   test("the previous tick is the same agent's last decided one; the first has none", () => {

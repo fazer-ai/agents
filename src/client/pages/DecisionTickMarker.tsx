@@ -636,7 +636,10 @@ function CauseText({ rule, tick }: { rule: number; tick: DecisionTickView }) {
 
 function ruleText(r: RuleView, tick: DecisionTickView, t: T): string {
   if (r.kind === "unknown") {
-    return t("conversation.trail.decision.noOutcome", "no outcome recorded");
+    return t(
+      "conversation.trail.decision.firedNoOutcome",
+      "fired with an earlier rule's identical action, no outcome of its own",
+    );
   }
   if (r.kind === "held") {
     const trigger =

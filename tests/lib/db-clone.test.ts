@@ -390,27 +390,43 @@ describe("the clone's deadlines", () => {
 // learn that again at CREATE, and a run of a thousand files does that a thousand times.
 describe("what a worker decides before taking the lock", () => {
   const me = { pid: 200, ppid: 100 };
+  const live = alive({ 100: "Sat Oct 11 10:00:00 2026" });
 
   test("its own ready copy is used, with or without the template", () => {
-    expect(fastPath({ template: true, clone: owner({}) }, me)).toBe("use");
+    expect(fastPath({ template: true, clone: owner({}) }, me, live)).toBe(
+      "use",
+    );
     // NOTE: a template reprovisioned mid-run does not take the copy away from the worker using it.
-    expect(fastPath({ template: false, clone: owner({}) }, me)).toBe("use");
+    expect(fastPath({ template: false, clone: owner({}) }, me, live)).toBe(
+      "use",
+    );
   });
 
   test("with no template and no copy of its own, it stops there", () => {
-    expect(fastPath({ template: false, clone: undefined }, me)).toBe(
+    expect(fastPath({ template: false, clone: undefined }, me, live)).toBe(
       "no-template",
     );
     expect(
-      fastPath({ template: false, clone: owner({ workerPid: 999 }) }, me),
+      fastPath({ template: false, clone: owner({ workerPid: 999 }) }, me, live),
     ).toBe("no-template");
   });
 
   test("with the template and no copy of its own, it goes on to make one", () => {
-    expect(fastPath({ template: true, clone: undefined }, me)).toBe("slow");
+    expect(fastPath({ template: true, clone: undefined }, me, live)).toBe(
+      "slow",
+    );
     expect(
-      fastPath({ template: true, clone: owner({ ready: false }) }, me),
+      fastPath({ template: true, clone: owner({ ready: false }) }, me, live),
     ).toBe("slow");
+  });
+
+  test("a copy whose pids match but whose owner started at another time is not its own", () => {
+    // NOTE: after a reboot the kernel can hand a dead run's pids to the new run; only the start time
+    // tells them apart, and the slow path is where the leftover is dropped.
+    const recycled = alive({ 100: "Mon Oct 13 09:00:00 2026" });
+    expect(fastPath({ template: true, clone: owner({}) }, me, recycled)).toBe(
+      "slow",
+    );
   });
 });
 

@@ -125,18 +125,22 @@ export function cloneVerdict(
   return me.ancestors.includes(existing.pid) ? "use" : "refuse";
 }
 
-// What a worker decides from one query, before the lock or the process table: its own ready copy is
-// used (even if the template went away mid-run, the copy is still whole); with no template to copy, the
-// file stops here with the command that provisions it; anything else takes the slow path.
+// What a worker decides from one query, before the lock: its own ready copy is used (even if the
+// template went away mid-run, the copy is still whole); with no template to copy, the file stops here
+// with the command that provisions it; anything else takes the slow path. "Its own" is the pids AND
+// the owner's start time, since a copy left by a run whose pids came back after a reboot matches on
+// pids alone.
 export function fastPath(
   state: { template: boolean; clone: CloneOwner | null | undefined },
   me: { pid: number; ppid: number },
+  startOf: (pid: number) => string | null,
 ): "use" | "no-template" | "slow" {
   const c = state.clone;
   if (
     c?.ready &&
     c.workerPid === me.pid &&
-    (c.pid === me.ppid || c.pid === me.pid)
+    (c.pid === me.ppid || c.pid === me.pid) &&
+    ownerAlive(c, startOf)
   ) {
     return "use";
   }
@@ -527,8 +531,8 @@ export async function ensureWorkerClone(opts: {
         ? undefined
         : parseOwner(rows[0]?.comment ?? null);
     };
-    // Every file but the worker's first ends here, without the lock or a `ps`, and so does every file
-    // of a checkout that has no test database.
+    // Every file but the worker's first ends here, without the lock and with one `ps` for the owner's
+    // start time, and so does every file of a checkout that has no test database.
     const { rows: probe } = await maint.query<{
       comment: string | null;
       cloned: boolean;
@@ -540,12 +544,11 @@ export async function ensureWorkerClone(opts: {
       [clone, template],
     );
     const p = probe[0];
+    const recorded = p?.cloned ? parseOwner(p.comment) : undefined;
     const decided = fastPath(
-      {
-        template: Boolean(p?.template),
-        clone: p?.cloned ? parseOwner(p.comment) : undefined,
-      },
+      { template: Boolean(p?.template), clone: recorded },
       { pid: process.pid, ppid: process.ppid },
+      await startsOf(recorded?.workerPid === process.pid ? [recorded.pid] : []),
     );
     if (decided === "use") return;
     if (decided === "no-template") throw noTemplate(template);

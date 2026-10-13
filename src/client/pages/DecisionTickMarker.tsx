@@ -541,19 +541,29 @@ function missText(
         : null;
     const name = (i: number | null) =>
       i !== null && levels?.[i] ? ` (${levels[i]?.value})` : "";
-    const got = n(miss.got);
+    // The line stores the score itself (a weighted mean of level indices); the rule read it as the
+    // nearest level, so that is the level named, with the score beside it when it fell between two.
+    const score = n(miss.got);
+    const level = score === null ? null : Math.round(score);
     const min = n(miss.minLevel);
     const max = n(miss.maxLevel);
-    return t(
-      "conversation.trail.decision.outsideLevels",
-      "not fired: {{question}} reached level {{got}}, the rule asks {{min}} to {{max}}",
-      {
-        question,
-        got: `${got ?? "—"}${name(got)}`,
-        min: `${min ?? "—"}${name(min)}`,
-        max: `${max ?? "—"}${name(max)}`,
-      },
-    );
+    const vars = {
+      question,
+      got: `${level ?? "—"}${name(level)}`,
+      min: `${min ?? "—"}${name(min)}`,
+      max: `${max ?? "—"}${name(max)}`,
+    };
+    return score !== null && score !== level
+      ? t(
+          "conversation.trail.decision.outsideLevelsScore",
+          "not fired: {{question}} reached level {{got}} (score {{score}}), the rule asks {{min}} to {{max}}",
+          { ...vars, score: score.toFixed(2) },
+        )
+      : t(
+          "conversation.trail.decision.outsideLevels",
+          "not fired: {{question}} reached level {{got}}, the rule asks {{min}} to {{max}}",
+          vars,
+        );
   }
   if (miss.why === "unanswered") {
     return t(

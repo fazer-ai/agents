@@ -762,6 +762,7 @@
         "otherChoice": "not fired: {{question}} answered {{got}}, the rule expects {{expected}}",
         "otherReason": "Reason: {{code}}",
         "outsideLevels": "not fired: {{question}} reached level {{got}}, the rule asks {{min}} to {{max}}",
+        "outsideLevelsScore": "not fired: {{question}} reached level {{got}} (score {{score}}), the rule asks {{min}} to {{max}}",
         "overBudget": "over the tool call limit",
         "questions": "Questions",
         "ran": "ran",

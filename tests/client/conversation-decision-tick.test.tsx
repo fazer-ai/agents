@@ -459,6 +459,30 @@ describe("the expanded tick", () => {
     ]);
   });
 
+  test("a score between two levels names the nearest one, as the rule read it, and the score", async () => {
+    await expand(
+      entry("1", {
+        decision: tick({
+          notFired: [
+            {
+              rule: 3,
+              miss: {
+                question: "anger",
+                why: "outside_levels",
+                got: 1.46,
+                minLevel: 2,
+                maxLevel: 2,
+              },
+            },
+          ],
+        }),
+      }),
+    );
+    expect(ruleLines()[3]).toBe(
+      "Rule 4set_labelsnot fired: anger reached level 1 (upset) (score 1.46), the rule asks 2 (furious) to 2 (furious)",
+    );
+  });
+
   test("a held rule reads apart from one that did not fire, with its trigger", async () => {
     await expand(
       entry("1", {

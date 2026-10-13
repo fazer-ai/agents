@@ -786,6 +786,7 @@
         "otherChoice": "não disparou: {{question}} respondeu {{got}}, a regra espera {{expected}}",
         "otherReason": "Motivo: {{code}}",
         "outsideLevels": "não disparou: {{question}} ficou no nível {{got}}, a regra pede de {{min}} a {{max}}",
+        "outsideLevelsScore": "não disparou: {{question}} ficou no nível {{got}} (nota {{score}}), a regra pede de {{min}} a {{max}}",
         "overBudget": "passou do limite de chamadas de ferramenta",
         "questions": "Perguntas",
         "ran": "executou",

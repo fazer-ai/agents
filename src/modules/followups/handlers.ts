@@ -24,6 +24,8 @@ import {
   parseLiveConversation,
   shouldBotHandle,
 } from "@/modules/chatwoot/normalize";
+import { reconcileMirrorFromLive } from "@/modules/chatwoot/reconcile";
+import { STATUS_CLAIM_TTL_MS } from "@/modules/chatwoot/status-claim";
 import { announceFailedTurn } from "@/modules/conversations/failure-note";
 import { readDebugModes } from "@/modules/flowlog/debug-mode";
 import { emitFlowEvent } from "@/modules/flowlog/service";
@@ -475,6 +477,43 @@ async function handedToTeam(
   }
 }
 
+// How long past the hand-over's status claim the retry runs, so the claim has run out by then.
+const HANDOVER_RETRY_SLACK_MS = 5_000;
+
+// The mirror brought to Chatwoot's word, best-effort: a read or a reconcile that fails leaves the
+// mirror as it was, and the gate that follows decides on it.
+async function reconcileFromChatwoot(
+  base: PrismaClient,
+  tenantId: bigint,
+  instanceId: bigint,
+  conversationId: number,
+  deps?: RuntimeDeps,
+): Promise<void> {
+  try {
+    const client = await loadChatwootClient(tenantId, instanceId, {
+      base,
+      ...(deps?.makeClient ? { makeClient: deps.makeClient } : {}),
+    });
+    const live = parseLiveConversation(
+      await client.getConversation(conversationId),
+    );
+    if (live)
+      await reconcileMirrorFromLive({
+        tenantId,
+        instanceId,
+        conversationId,
+        live,
+        base,
+      });
+  } catch (e) {
+    logger.warn(
+      "followUpHandler: could not reconcile the conversation before a hand-over retry (conv=%s): %s",
+      String(conversationId),
+      e instanceof Error ? e.message : String(e),
+    );
+  }
+}
+
 // The Chatwoot ids of the agent's own bots on this instance.
 async function agentBotIdsOf(
   base: PrismaClient,
@@ -566,6 +605,21 @@ export async function followUpHandler(
   if (!parsed || parsed.tenantId !== job.tenantId) return { outcome: "done" };
   const { instanceId, conversationId } = parsed;
   const tenantId = job.tenantId;
+
+  // A hand-over whose toggle did not land leaves the mirror's claim saying `open` while Chatwoot
+  // still has the bot holding the conversation, and the liveness gate below would end the episode on
+  // it. The retry runs past the claim's life and reconciles the mirror from Chatwoot first.
+  if (job.payload.handoverRetry === true) {
+    const { handoverRetry: _retry, ...payload } = job.payload;
+    job = { ...job, payload };
+    await reconcileFromChatwoot(
+      base,
+      tenantId,
+      instanceId,
+      conversationId,
+      deps,
+    );
+  }
 
   const ctx = await runScopedOn(base, sysCtx(tenantId), async (db) => {
     const conv = await db.conversation.findUnique({
@@ -925,8 +979,14 @@ export async function followUpHandler(
     if (await jobRetired(job, base)) return { outcome: "done" };
     return {
       outcome: "reschedule",
-      runAt: new Date(Date.now() + IN_FLIGHT_BACKOFF_MS),
-      payload: { ...job.payload, deferredUnder: BACKOFF_DEFERRAL },
+      runAt: new Date(
+        Date.now() + STATUS_CLAIM_TTL_MS + HANDOVER_RETRY_SLACK_MS,
+      ),
+      payload: {
+        ...job.payload,
+        deferredUnder: BACKOFF_DEFERRAL,
+        handoverRetry: true,
+      },
     };
   }
 

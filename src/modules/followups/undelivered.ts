@@ -11,6 +11,7 @@ import {
 } from "@/modules/chatwoot/instance";
 import {
   chatwootMessageListLength,
+  hasAnswerableContent,
   parseChatwootMessages,
 } from "@/modules/chatwoot/messages";
 
@@ -81,7 +82,11 @@ export async function lastReplyDelivery(params: {
     m.senderId !== null &&
     bots.has(m.senderId);
   const customer = (m: Row) =>
-    m.messageType === "incoming" && !m.private && !m.isReaction && !m.imported;
+    m.messageType === "incoming" &&
+    !m.private &&
+    !m.isReaction &&
+    !m.imported &&
+    hasAnswerableContent(m);
   const read: Row[] = [];
   let newest: Row | null = null;
   let before: number | undefined;

@@ -72,6 +72,8 @@ function stubClient(
     // Called before each page read, with how many reads came before it; what it returns, when
     // anything, is answered instead of the page.
     onRead?: (n: number) => Promise<unknown> | unknown;
+    // The status toggle fails while this is set (Chatwoot refusing the hand-over).
+    toggleFails?: { on: boolean };
   } = {},
 ) {
   let reads = 0;
@@ -113,6 +115,7 @@ function stubClient(
       return {};
     },
     toggleStatus: async (c: number, to: string) => {
+      if (over.toggleFails?.on) throw new Error("toggle refused");
       resolved.push(c);
       status = to;
       return {};
@@ -1075,6 +1078,55 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     expect(await run(1716, s)).toMatchObject({ outcome: "reschedule" });
     expect(s.sent).toEqual([]);
     expect(s.notes).toEqual([]);
+  });
+
+  // A message that renders to nothing is never answered, so it is not a turn coming.
+  test("a blank customer message after the refusal does not hold the step", async () => {
+    await seedConversation(1717, due());
+    const s = stubClient({
+      page: [
+        replyRow(17171, { refused: true }),
+        { ...customerRow(17172), content: "  " },
+      ],
+    });
+    expect(await run(1717, s)).toEqual({ outcome: "done" });
+    expect(s.notes.map(([c]) => c)).toEqual([1717]);
+  });
+
+  // A refused toggle leaves the mirror's claim saying `open`; the retry runs past the claim's life,
+  // reconciles the mirror from Chatwoot and hands over, instead of ending on the stale `open`.
+  test("a hand-over whose toggle failed is retried after the mirror is reconciled", async () => {
+    await seedConversation(1718, due());
+    const fails = { on: true };
+    const s = stubClient({
+      page: [replyRow(17181, { refused: true })],
+      toggleFails: fails,
+    });
+    const first = await run(1718, s);
+    expect(first).toMatchObject({ outcome: "reschedule" });
+    const again = first as { runAt: Date; payload: Record<string, unknown> };
+    expect(again.payload.handoverRetry).toBe(true);
+    expect(again.runAt.getTime()).toBeGreaterThan(Date.now() + 40_000);
+    expect(await lastFollowUpOf(1718)).toBeNull();
+    // NOTE: the claim's life, run out as the reschedule waits for it to.
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: 1718 },
+      data: { statusClaimUntil: new Date(Date.now() - 1_000) },
+    });
+    fails.on = false;
+    const second = await followUpHandler(
+      { ...jobFor(1718), payload: again.payload },
+      appDb,
+      {
+        makeModel: fakeModel,
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    );
+    expect(second).toEqual({ outcome: "done" });
+    expect(s.resolved).toEqual([1718]);
+    expect(await lastFollowUpOf(1718)).not.toBeNull();
   });
 
   test("a page that does not read holds the step instead of nudging", async () => {

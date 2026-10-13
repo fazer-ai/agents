@@ -599,14 +599,32 @@ function CauseText({ rule, tick }: { rule: number; tick: DecisionTickView }) {
         },
       );
     }
+    // The confidence a choice or score condition asks for, beside the one the tick had, so the
+    // operator sees every bar the rule cleared and not only the answer it read.
+    const sure =
+      c.minConfidence === undefined
+        ? ""
+        : `, ${t(
+            "conversation.trail.decision.causeSure",
+            "{{confidence}} sure (needs {{min}})",
+            {
+              confidence:
+                num(a?.confidence) === null
+                  ? "—"
+                  : percent(num(a?.confidence) as number),
+              min: percent(c.minConfidence),
+            },
+          )}`;
     if ("equals" in c) {
-      return t(
-        "conversation.trail.decision.causeChoice",
-        "{{question}} is {{value}}",
-        {
-          question: c.question,
-          value: c.equals,
-        },
+      return (
+        t(
+          "conversation.trail.decision.causeChoice",
+          "{{question}} is {{value}}",
+          {
+            question: c.question,
+            value: c.equals,
+          },
+        ) + sure
       );
     }
     const score = num(a?.score);
@@ -616,13 +634,24 @@ function CauseText({ rule, tick }: { rule: number; tick: DecisionTickView }) {
       level !== null && q?.type === "score"
         ? q.levels[level]?.value
         : undefined;
-    return t(
-      "conversation.trail.decision.causeLevel",
-      "{{question}} level {{level}}",
-      {
-        question: c.question,
-        level: `${level ?? "—"}${name ? ` (${name})` : ""}`,
-      },
+    const vars = {
+      question: c.question,
+      level: `${level ?? "—"}${name ? ` (${name})` : ""}`,
+      min: c.minLevel,
+      max: c.maxLevel,
+    };
+    return (
+      (c.minLevel === c.maxLevel
+        ? t(
+            "conversation.trail.decision.causeLevelExact",
+            "{{question}} level {{level}} (needs {{min}})",
+            vars,
+          )
+        : t(
+            "conversation.trail.decision.causeLevelRange",
+            "{{question}} level {{level}} (needs {{min}} to {{max}})",
+            vars,
+          )) + sure
     );
   });
   return (

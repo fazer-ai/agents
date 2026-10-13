@@ -564,7 +564,7 @@ describe("the expanded tick", () => {
       }),
     );
     expect(ruleLines()[3]).toBe(
-      "Rule 4set_labelsconditions held, but it already acted (When the conditions start holding)because anger level 2 (furious)",
+      "Rule 4set_labelsconditions held, but it already acted (When the conditions start holding)because anger level 2 (furious) (needs 2)",
     );
     // Its conditions held, so it sits with the rules that fired, not among the misses.
     expect(
@@ -608,8 +608,8 @@ describe("the expanded tick", () => {
     expect(ruleLines()).toEqual([
       "Rule 1set_labelsfired: refused by a protected labelbecause asks_refund yes 82% (at least 70%)",
       "Rule 2handoff_to_humanfired: not allowed for this agentbecause asks_refund yes 82% (at least 90%)",
-      "Rule 3set_custom_attributefired: failed (tool_error)because topic is exchange",
-      "Rule 4set_labelsfired, same action as rule 1: refused by a protected labelbecause anger level 1 (upset)",
+      "Rule 3set_custom_attributefired: failed (tool_error)because topic is exchange, 51% sure (needs 60%)",
+      "Rule 4set_labelsfired, same action as rule 1: refused by a protected labelbecause anger level 1 (upset) (needs 2)",
       "Rule 5private_notefired: ranbecause topic is damaged",
     ]);
   });
@@ -767,6 +767,49 @@ describe("reading a large block (the operator's review of #1417)", () => {
     );
     fireEvent.click(screen.getAllByRole("button")[0] as HTMLElement);
     expect(screen.queryByTestId("decision-close-call")).toBeNull();
+  });
+
+  test("a fired rule's cause names every bar it cleared: the level range and the confidence it asks for", async () => {
+    await inLanguage(
+      "en",
+      <DecisionTickMarker
+        entry={entry("1", {
+          decision: tick({
+            block: {
+              ...BLOCK,
+              rules: [
+                {
+                  when: [
+                    {
+                      question: "anger",
+                      minLevel: 1,
+                      maxLevel: 2,
+                      minConfidence: 0.6,
+                    },
+                    {
+                      question: "topic",
+                      equals: "exchange",
+                      minConfidence: 0.5,
+                    },
+                  ],
+                  tool: "set_labels",
+                  trigger: "each_time",
+                },
+              ],
+            },
+            notFired: [],
+          }),
+        })}
+      />,
+    );
+    fireEvent.click(screen.getAllByRole("button")[0] as HTMLElement);
+    expect(
+      within(screen.getByTestId("decision-rules-fired")).getByTestId(
+        "decision-rule-cause",
+      ).textContent,
+    ).toBe(
+      "because anger level 1 (upset) (needs 1 to 2), 70% sure (needs 60%), topic is exchange, 51% sure (needs 50%)",
+    );
   });
 
   test("rules sit in three groups: fired with their cause, almost fired, and the rest folded", async () => {

@@ -75,6 +75,8 @@ function stubClient(
   } = {},
 ) {
   let reads = 0;
+  // What a toggle set, so the live read after a hand-over sees it.
+  let status = "pending";
   const sent: Array<[number, string]> = [];
   const notes: Array<[number, string]> = [];
   const labelSets: string[][] = [];
@@ -85,7 +87,7 @@ function stubClient(
     // with the mirrored assignee it seeded — the default `{}` reads as unassigned.
     getConversation: async (c: number) => ({
       id: c,
-      status: "pending",
+      status,
       meta: over.liveMeta ?? {},
     }),
     getMessages: async (_c: number, o?: { before?: number }) => {
@@ -110,8 +112,9 @@ function stubClient(
       labelSets.push(labels);
       return {};
     },
-    toggleStatus: async (c: number, _status: string) => {
+    toggleStatus: async (c: number, to: string) => {
       resolved.push(c);
+      status = to;
       return {};
     },
   } as unknown as ChatwootClient;
@@ -973,6 +976,62 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     expect(await run(1710, unread)).toMatchObject({ outcome: "reschedule" });
     expect(unread.notes).toEqual([]);
     expect(await lastFollowUpOf(1710)).toBeNull();
+  });
+
+  const customerRow = (id: number) => ({
+    id,
+    content: "Quanto custa?",
+    message_type: 0,
+    private: false,
+    created_at: Math.floor(Date.now() / 1000) - 900,
+    sender: { type: "contact", id: 31 },
+    content_attributes: {},
+  });
+
+  // A note at the bottom of the newest page does not end the reply: its refused first balloon sits a
+  // page further back, and the delivered balloon on the newest page does not stand for it.
+  test("notes inside a reply do not cut the read short", async () => {
+    await seedConversation(1711, due());
+    const s = stubClient({
+      page: [
+        customerRow(17110),
+        replyRow(17111, { refused: true, sendId: "reply:k11:a" }),
+        ...Array.from({ length: 25 }, (_, i) => note(17112 + i)),
+        replyRow(17140, { sendId: "reply:k11:b" }),
+      ],
+    });
+    expect(await run(1711, s)).toEqual({ outcome: "done" });
+    expect(s.sent).toEqual([]);
+    expect(s.notes.map(([c]) => c)).toEqual([1711]);
+  });
+
+  // The customer already wrote after the refused reply: their turn is coming, so nothing is handed
+  // over and nothing is nudged; the next run reads the episode's end from the mirror.
+  test("a customer message after the refused reply holds the step", async () => {
+    await seedConversation(1712, due());
+    const s = stubClient({
+      page: [replyRow(17121, { refused: true }), customerRow(17122)],
+    });
+    expect(await run(1712, s)).toMatchObject({ outcome: "reschedule" });
+    expect(s.sent).toEqual([]);
+    expect(s.notes).toEqual([]);
+  });
+
+  // The hand-over is pinned to the customer message the reply answered: one the mirror recorded past
+  // it is a turn still owed, so the conversation is not opened, and the episode is not spent on a
+  // hand-over that did not happen.
+  test("the hand-over yields to a newer customer message the mirror already has", async () => {
+    await seedConversation(1713, due());
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: 1713 },
+      data: { lastInboundMessageId: 17135 },
+    });
+    const s = stubClient({
+      page: [customerRow(17130), replyRow(17131, { refused: true })],
+    });
+    expect(await run(1713, s)).toMatchObject({ outcome: "reschedule" });
+    expect(s.resolved).toEqual([]);
+    expect(await lastFollowUpOf(1713)).toBeNull();
   });
 
   test("a page that does not read holds the step instead of nudging", async () => {

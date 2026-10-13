@@ -19,18 +19,26 @@ import {
 // the message (`external_error`). The reply is every message carrying the newest one's reply key
 // (balloons, a voice note and the text after it, their replacements): it arrived when each refused
 // message of it has a replacement that was not refused. Otherwise it is about to be resent (the job
-// of channel-failure.ts is still queued) or lost.
+// of channel-failure.ts is still queued) or lost. A customer message after the reply supersedes
+// the question: a turn is coming for it, whatever became of the reply.
 export type LastReplyDelivery =
   | { state: "delivered" }
+  | { state: "customer_spoke" }
   | { state: "resend_pending"; until: Date }
-  | { state: "undelivered"; messageId: number; code: string | null };
+  | {
+      state: "undelivered";
+      messageId: number;
+      code: string | null;
+      // The customer message the reply was answering, when the pages read reach it.
+      answeredId: number | null;
+    };
 
 // How long after the resend's own instant the follow-up asks again: the send and the webhook that
 // mirrors it take a moment, and asking at the exact instant would find the job still claimed.
 export const RESEND_SETTLE_MS = 60_000;
 
-// How far back the read looks for the agent's newest reply. A conversation whose last reply sits
-// past this many pages of notes and activity has moved on from it.
+// How far back the read looks for the agent's newest reply and where it starts. A conversation whose
+// last reply sits past this many pages of notes and activity has moved on from it.
 const MAX_PAGES = 5;
 
 type Row = ReturnType<typeof parseChatwootMessages>[number];
@@ -68,6 +76,8 @@ export async function lastReplyDelivery(params: {
     m.senderType === "agent_bot" &&
     m.senderId !== null &&
     bots.has(m.senderId);
+  const customer = (m: Row) =>
+    m.messageType === "incoming" && !m.private && !m.isReaction && !m.imported;
   const read: Row[] = [];
   let newest: Row | null = null;
   let before: number | undefined;
@@ -89,13 +99,27 @@ export async function lastReplyDelivery(params: {
       null,
     );
     if (oldest === null) break;
-    // The newest reply's key: past that reply, one more page is read only while the reply may
-    // start on it.
+    // The newest reply's key. Past that reply, paging goes on until something older than it ends
+    // it: the customer message it answered, or a message of ours from another reply. Notes and
+    // activity in between say nothing about where it starts.
     const key = newest ? replyKeyOf(newest.sendId) : null;
-    if (newest && (key === null || replyKeyOf(oldest.sendId) !== key)) break;
+    const found = newest;
+    if (
+      found &&
+      (key === null ||
+        read.some(
+          (m) =>
+            m.id < found.id &&
+            (customer(m) || (ours(m) && replyKeyOf(m.sendId) !== key)),
+        ))
+    )
+      break;
     before = oldest.id;
   }
   if (newest === null) return { state: "delivered" };
+  const last = newest;
+  if (read.some((m) => customer(m) && m.id > last.id))
+    return { state: "customer_spoke" };
   const key = replyKeyOf(newest.sendId);
   const reply = read.filter(
     (m) =>
@@ -124,16 +148,21 @@ export async function lastReplyDelivery(params: {
   );
   if (jobs.length > 0) {
     const now = params.now ?? new Date();
-    const last = jobs.reduce((a, j) => (j.runAt > a ? j.runAt : a), now);
+    const latest = jobs.reduce((a, j) => (j.runAt > a ? j.runAt : a), now);
     return {
       state: "resend_pending",
-      until: new Date(last.getTime() + RESEND_SETTLE_MS),
+      until: new Date(latest.getTime() + RESEND_SETTLE_MS),
     };
   }
   const lost = missing.reduce((a, m) => (m.id > a.id ? m : a));
+  const start = reply.reduce((a, m) => (m.id < a ? m.id : a), last.id);
+  const answered = read
+    .filter((m) => customer(m) && m.id < start)
+    .reduce<number | null>((a, m) => (a === null || m.id > a ? m.id : a), null);
   return {
     state: "undelivered",
     messageId: lost.id,
     code: lost.externalError ? channelErrorCode(lost.externalError) : null,
+    answeredId: answered,
   };
 }

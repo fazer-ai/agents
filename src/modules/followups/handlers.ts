@@ -19,6 +19,11 @@ import {
   parseSchedule,
 } from "@/modules/business-hours/hours";
 import { readChannelRedirectConfig } from "@/modules/channel-redirect/service";
+import { loadChatwootClient } from "@/modules/chatwoot/instance";
+import {
+  parseLiveConversation,
+  shouldBotHandle,
+} from "@/modules/chatwoot/normalize";
 import { announceFailedTurn } from "@/modules/conversations/failure-note";
 import { readDebugModes } from "@/modules/flowlog/debug-mode";
 import { emitFlowEvent } from "@/modules/flowlog/service";
@@ -447,6 +452,29 @@ export function followUpConfigVersion(
   return `${agentUpdatedAt.getTime()}:${hoursUpdatedAt?.getTime() ?? 0}`;
 }
 
+// Whether Chatwoot has the conversation out of the bot's hands, read live. Unreadable answers no, so
+// the hand-over is asked again rather than taken for done.
+async function handedToTeam(
+  base: PrismaClient,
+  tenantId: bigint,
+  instanceId: bigint,
+  conversationId: number,
+  deps?: RuntimeDeps,
+): Promise<boolean> {
+  try {
+    const client = await loadChatwootClient(tenantId, instanceId, {
+      base,
+      ...(deps?.makeClient ? { makeClient: deps.makeClient } : {}),
+    });
+    const live = parseLiveConversation(
+      await client.getConversation(conversationId),
+    );
+    return live !== null && !shouldBotHandle(live);
+  } catch {
+    return false;
+  }
+}
+
 // The Chatwoot ids of the agent's own bots on this instance.
 async function agentBotIdsOf(
   base: PrismaClient,
@@ -818,6 +846,15 @@ export async function followUpHandler(
       payload: { ...job.payload, deferredUnder: BACKOFF_DEFERRAL },
     };
   }
+  // NOTE: a customer message Chatwoot has and the mirror has not reached yet: the turn it starts
+  // ends this episode, and the next run reads that from the mirror.
+  if (delivery.state === "customer_spoke") {
+    return {
+      outcome: "reschedule",
+      runAt: new Date(Date.now() + IN_FLIGHT_BACKOFF_MS),
+      payload: { ...job.payload, deferredUnder: BACKOFF_DEFERRAL },
+    };
+  }
   if (delivery.state === "resend_pending") {
     return {
       outcome: "reschedule",
@@ -827,7 +864,7 @@ export async function followUpHandler(
   }
   if (delivery.state === "undelivered") {
     const lost = delivery;
-    const handed = await announceFailedTurn({
+    await announceFailedTurn({
       tenantId,
       instanceId,
       chatwootConversationId: conversationId,
@@ -864,6 +901,9 @@ export async function followUpHandler(
           return { path: "direct", fence: "unknown" };
         }
       },
+      // NOTE: pinned to the customer message the reply answered: a newer one mirrored meanwhile is a
+      // turn still owed, and the hand-over stands down for it.
+      aboutMessageId: lost.answeredId,
       error: new Error(
         `the channel refused the agent's last reply (code ${lost.code ?? "unknown"}) and it was not resent`,
       ),
@@ -871,9 +911,11 @@ export async function followUpHandler(
       ...(deps?.makeClient ? { deps: { makeClient: deps.makeClient } } : {}),
     });
     // NOTE: a hand-over that happened spends the episode, and the stamp keeps the sweep from arming
-    // it again until the customer speaks. One that did not (the reply landed meanwhile, a read or the
-    // post failed) is asked again shortly, unless the run was retired.
-    if (handed === "posted" || handed === "coalesced") {
+    // it again until the customer speaks. Happened is Chatwoot no longer having the bot hold it, not
+    // the note: the note can be posted, or coalesced, with the toggle refused. One that did not (the
+    // reply landed meanwhile, a read or the toggle failed) is asked again shortly, unless the run
+    // was retired.
+    if (await handedToTeam(base, tenantId, instanceId, conversationId, deps)) {
       await stampUnlessRetired();
       return { outcome: "done" };
     }

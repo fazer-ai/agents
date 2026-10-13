@@ -178,7 +178,17 @@ async function streamOf(url: URL): Promise<Response> {
     figures.kpis = await body("/api/v1/metrics/kpis", "kpis");
   if (blocks.includes("outcomes")) {
     figures.trend = await body("/api/v1/metrics/outcomes", "trend");
-    figures.series = { agent: [], inbox: [] };
+    figures.series = {
+      agent: [
+        {
+          key: "1",
+          label: "Ana",
+          totals: { total: 4, involved: 3, resolvedByBot: 2, handoff: 1 },
+          days: [],
+        },
+      ],
+      inbox: [],
+    };
   }
   if (blocks.includes("costs") && !costsHang)
     figures.costs = await body("/api/v1/metrics/costs", "costs");
@@ -1019,6 +1029,31 @@ describe("a whole view whose flow-log days are past retention and were never kep
     expect(has("No handoffs in this period.")).toBe(false);
     expect(has("No silences in this period.")).toBe(false);
     expect(has("No warnings or errors in this period.")).toBe(false);
+  });
+});
+
+describe("the funnel split by agent while the view fills", () => {
+  test("reads each agent's figure in the period as provisional, as the funnel does", async () => {
+    partialFlag = true;
+    await renderDash("/?range=7d");
+    await waitFor(() => {
+      expect(screen.queryAllByRole("radio", { name: "By agent" }).length).toBe(
+        1,
+      );
+    });
+    fireEvent.click(screen.getByRole("radio", { name: "By agent" }));
+    const card = await waitFor(() => {
+      const heading = screen
+        .getAllByRole("heading", { level: 3 })
+        .find((h) => /in the period/.test(h.textContent ?? ""));
+      // The card: the nearest box around the heading that holds the agents' rows.
+      let box: HTMLElement | null = heading ?? null;
+      while (box && !box.textContent?.includes("Ana")) box = box.parentElement;
+      if (!box) throw new Error("no per-agent card yet");
+      return box;
+    });
+    expect(card.querySelector("[data-provisional]")).not.toBeNull();
+    expect(card.textContent).toContain("partial · 3 of 7 days");
   });
 });
 

@@ -5,6 +5,7 @@ import {
   expect,
   setDefaultTimeout,
   setSystemTime,
+  spyOn,
   test,
 } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
@@ -12,6 +13,7 @@ import { type Prisma, PrismaClient } from "@/../generated/prisma/client";
 import { requestContext } from "@/api/lib/i18n";
 import config from "@/config";
 import { MetricsTooSlowError } from "@/lib/errors";
+import * as tenancy from "@/lib/tenancy";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import {
   getFollowUpActivity,
@@ -2145,6 +2147,42 @@ describe.skipIf(!dbUp)("the kept days of the dashboard", () => {
     } finally {
       COMPUTE.conv = conv;
     }
+  });
+
+  test("the costs of a caller that answers once, Langfuse link included, end by its request's deadline", async () => {
+    await suDb.$executeRaw`UPDATE dashboard_dirty SET created_at = created_at - interval '1 hour' WHERE tenant_id = ${tenantId}`;
+    const f = windowOf("UTC", 20, 0);
+    await kept("costs", f);
+    // Arrived three seconds ago: every transaction it opens has to end where its budget does.
+    const arrived = Date.now() - 3_000;
+    const ends: number[] = [];
+    // The real one, held before the spy replaces the binding every import reads.
+    const real = tenancy.runScopedOn;
+    const spy = spyOn(tenancy, "runScopedOn").mockImplementation(((
+      ...args: Parameters<typeof runScopedOn>
+    ) => {
+      const budget = args[3] as { deadline?: number } | undefined;
+      if (budget?.deadline !== undefined) ends.push(budget.deadline);
+      return real(...args);
+    }) as typeof runScopedOn);
+    try {
+      await requestContext.run({ locale: "en", startedAt: arrived }, () =>
+        fromKeptDays(
+          ctx(),
+          f,
+          "costs",
+          (x) => x.costs,
+          () => getDashboardCosts(ctx(), f, appDb),
+          appDb,
+        ),
+      );
+    } finally {
+      spy.mockRestore();
+    }
+    expect(ends.length).toBeGreaterThan(0);
+    expect(Math.max(...ends)).toBeLessThanOrEqual(
+      arrived + config.metrics.timeoutMs,
+    );
   });
 
   test("every section the console reads has a block", () => {

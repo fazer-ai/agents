@@ -140,14 +140,16 @@ export async function figuresOf(
   }
 }
 
+// On its own budget for a stream, whose request may have spent its own on the days computed before
+// it; a caller that answers once reads it first, on its request's (`until`), before any day.
 export async function costsLink(
   ctx: TenantContext,
   base: PrismaClient = metricsPrisma,
+  until?: number,
 ): Promise<DashboardCosts["langfuse"]> {
   return ctx.tenantId === null
     ? null
-    : // Its own budget: the request's may be spent on the days computed before it.
-      langfuseLink(base, ctx, ctx.tenantId, fetch, (fn) =>
-        budgeted(base, ctx, fn),
+    : langfuseLink(base, ctx, ctx.tenantId, fetch, (fn) =>
+        budgeted(base, ctx, fn, until),
       );
 }

@@ -643,46 +643,53 @@ export function PerformanceSection({
 
       {breakdown !== "none" && tr?.series && tr.series.length > 0 && (
         <Card className="flex flex-col gap-2">
-          <h3 className="font-medium text-sm text-text-primary">
-            {t("dashboard.trend.perSeries", "{{metric}} in the period", {
-              metric: metricLabel[metric],
-            })}
-          </h3>
-          <ul className="flex flex-col gap-1.5">
-            {tr.series.map((s) => (
-              <li
-                key={s.key}
-                className="flex items-center justify-between gap-4 text-sm"
-              >
-                <button
-                  type="button"
-                  className="truncate text-left text-text-secondary hover:text-accent hover:underline"
-                  onClick={() =>
-                    onFilter(
-                      breakdown === "agent"
-                        ? { agentId: s.key }
-                        : { inboxId: s.key },
-                    )
-                  }
+          <div className="flex items-center justify-between gap-2">
+            <h3 className="font-medium text-sm text-text-primary">
+              {t("dashboard.trend.perSeries", "{{metric}} in the period", {
+                metric: metricLabel[metric],
+              })}
+            </h3>
+            <PartialBadge coverage={trend.coverage} />
+          </div>
+          {/* The period's figures of each agent or inbox, as partial as the trend they come from. */}
+          <ProvisionalValue coverage={trend.coverage}>
+            <ul className="flex flex-col gap-1.5">
+              {tr.series.map((s) => (
+                <li
+                  key={s.key}
+                  className="flex items-center justify-between gap-4 text-sm"
                 >
-                  {s.label}
-                </button>
-                <span className="shrink-0 font-medium text-text-primary tabular-nums">
-                  {fmtRate(rate(s.totals, metric))}
-                  <span className="ml-1.5 text-text-muted text-xs">
-                    {t(
-                      "dashboard.trend.ofConversations",
-                      "{{n}} conversations",
-                      {
-                        count: s.totals.total,
-                        n: nf.format(s.totals.total),
-                      },
-                    )}
+                  <button
+                    type="button"
+                    className="truncate text-left text-text-secondary hover:text-accent hover:underline"
+                    onClick={() =>
+                      onFilter(
+                        breakdown === "agent"
+                          ? { agentId: s.key }
+                          : { inboxId: s.key },
+                      )
+                    }
+                  >
+                    {s.label}
+                  </button>
+                  <span className="shrink-0 font-medium text-text-primary tabular-nums">
+                    {fmtRate(rate(s.totals, metric))}
+                    <span className="ml-1.5 text-text-muted text-xs">
+                      {t(
+                        "dashboard.trend.ofConversations",
+                        "{{n}} conversations",
+                        {
+                          count: s.totals.total,
+                          n: nf.format(s.totals.total),
+                        },
+                      )}
+                    </span>
                   </span>
-                </span>
-              </li>
-            ))}
-          </ul>
+                </li>
+              ))}
+            </ul>
+          </ProvisionalValue>
+          <CoverageBar coverage={trend.coverage} />
         </Card>
       )}
     </section>

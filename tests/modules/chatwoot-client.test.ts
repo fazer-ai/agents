@@ -103,6 +103,7 @@ describe("ChatwootClient", () => {
     expect(calls[0]?.headers["api-access-token"]).toBe("ADMIN_TOK");
     expect(calls[0]?.body).toEqual({
       page: 1,
+      per_page: 25,
       sort_by: "last_activity_at_desc",
       payload: [
         {

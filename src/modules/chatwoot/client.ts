@@ -1937,6 +1937,7 @@ export class ChatwootClient {
         "/conversations/filter",
         {
           page,
+          per_page: CONTACT_FILTER_PAGE,
           sort_by: "last_activity_at_desc",
           payload: [
             {

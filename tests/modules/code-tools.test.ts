@@ -383,7 +383,10 @@ describe.skipIf(!dbUp)("code tools service", () => {
       release();
       // Both settle before anything is asserted, so a failure names its cause and no import is still
       // writing when the file's cleanup deletes the tenant.
-      const [holderResult, imported] = await Promise.allSettled([holding, importing]);
+      const [holderResult, imported] = await Promise.allSettled([
+        holding,
+        importing,
+      ]);
       expect(holderResult.status).toBe("fulfilled");
       expect(imported.status).toBe("fulfilled");
     }

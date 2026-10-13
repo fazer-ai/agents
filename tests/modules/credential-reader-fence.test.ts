@@ -3,6 +3,7 @@ import { cp, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Glob } from "bun";
+import { withoutComments } from "@/tests/utils/source-text";
 
 // Who is allowed to read a vault secret RAW, and who has to go through a resolver that answers for
 // the pairing. `tryResolveVaultEntry` hands back `secret: unknown` plus the entry's `kind`, and a
@@ -35,20 +36,16 @@ const ALLOWED: Record<string, string> = {
 // Comments are not usage, and a fence that counts them lies in the direction that matters: it lets a
 // file stay on the list for a MENTION and then covers a real raw read added there later.
 //
-// Line and block comments are stripped, string literals are not: a file that names the resolver
-// inside a string is doing something worth listing.
-function stripComments(src: string): string {
-  return src
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .replace(/(^|[^:])\/\/[^\n]*/g, "$1");
-}
-
+// Comments are stripped, string literals are not: a file that names the resolver inside a string is
+// doing something worth listing. `withoutComments` is the shared lexer, so a `//` inside a string or
+// a URL is not taken for a comment.
+//
 // Paths come back relative to `root` (`src/...`), the spelling ALLOWED uses, so the same scan reads
 // the checkout and a scratch tree laid out like it.
 async function rawReaders(root = "."): Promise<string[]> {
   const out: string[] = [];
   for await (const rel of new Glob("src/**/*.{ts,tsx}").scan(root)) {
-    const code = stripComments(await Bun.file(join(root, rel)).text());
+    const code = withoutComments(await Bun.file(join(root, rel)).text());
     if (code.includes(RAW_READER)) out.push(rel);
   }
   return out.sort();
@@ -123,7 +120,7 @@ describe("who may read a vault secret without asking what it is for", () => {
     ];
     for (const path of expected) {
       // Stripped for the same reason as above: a comment naming the resolver is not a call to it.
-      expect(stripComments(await Bun.file(path).text())).toContain(
+      expect(withoutComments(await Bun.file(path).text())).toContain(
         "tryResolveApiKeyEntry",
       );
     }

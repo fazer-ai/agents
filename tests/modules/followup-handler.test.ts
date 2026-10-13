@@ -1098,6 +1098,89 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     expect(s.notes.map(([c]) => c)).toEqual([1719]);
   });
 
+  // A customer message written between two balloons of the reply is a turn still owed too.
+  test("a customer message between the reply's balloons holds the step", async () => {
+    await seedConversation(1720, due());
+    const s = stubClient({
+      page: [
+        replyRow(17201, { refused: true, sendId: "reply:k20:a" }),
+        customerRow(17202),
+        replyRow(17203, { sendId: "reply:k20:b" }),
+      ],
+    });
+    expect(await run(1720, s)).toMatchObject({ outcome: "reschedule" });
+    expect(s.notes).toEqual([]);
+  });
+
+  // An automation message the channel refused as well did not reach the customer either, so it does
+  // not stand for the refused reply.
+  test("a refused automation message after the reply does not supersede it", async () => {
+    await seedConversation(1721, due());
+    const s = stubClient({
+      page: [
+        replyRow(17211, { refused: true }),
+        { ...replyRow(17212, { refused: true }), sender: null },
+      ],
+    });
+    expect(await run(1721, s)).toEqual({ outcome: "done" });
+    expect(s.notes.map(([c]) => c)).toEqual([1721]);
+  });
+
+  // The hand-over landed but its confirming read failed: the retry finds the conversation with the
+  // team, and spends the episode then instead of leaving it to be handed over again.
+  test("a retry that finds the hand-over done spends the episode", async () => {
+    await seedConversation(1722, due());
+    const blind = { on: false };
+    const s = stubClient({
+      page: [replyRow(17221, { refused: true })],
+      liveFails: blind,
+    });
+    const confirmations = s.makeClient;
+    let toggled = false;
+    const client = await confirmations();
+    const toggle = (
+      client as unknown as {
+        toggleStatus: (c: number, t: string) => Promise<unknown>;
+      }
+    ).toggleStatus;
+    (client as unknown as { toggleStatus: unknown }).toggleStatus = async (
+      c: number,
+      t: string,
+    ) => {
+      const r = await toggle(c, t);
+      toggled = true;
+      blind.on = true;
+      return r;
+    };
+    const first = await run(1722, s);
+    expect(toggled).toBe(true);
+    expect(first).toMatchObject({
+      outcome: "reschedule",
+      payload: { handoverRetry: true },
+    });
+    expect(await lastFollowUpOf(1722)).toBeNull();
+    blind.on = false;
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: 1722 },
+      data: { statusClaimUntil: new Date(Date.now() - 1_000) },
+    });
+    const second = await followUpHandler(
+      {
+        ...jobFor(1722),
+        payload: (first as { payload: Record<string, unknown> }).payload,
+      },
+      appDb,
+      {
+        makeModel: fakeModel,
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    );
+    expect(second).toEqual({ outcome: "done" });
+    expect(await lastFollowUpOf(1722)).not.toBeNull();
+  });
+
   // A message that renders to nothing is never answered, so it is not a turn coming.
   test("a blank customer message after the refusal does not hold the step", async () => {
     await seedConversation(1717, due());

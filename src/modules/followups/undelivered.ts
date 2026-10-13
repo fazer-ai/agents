@@ -138,32 +138,37 @@ export async function lastReplyDelivery(params: {
   if (!bounded)
     throw new Error("follow-up: the reply's start is past the pages read");
   const last = newest;
-  const later = read.filter((m) => m.id > last.id && !m.private);
-  if (
-    later.some(
-      (m) =>
-        customer(m) &&
-        (params.handledThrough === null || m.id > params.handledThrough),
-    )
-  )
-    return { state: "customer_spoke" };
-  if (
-    later.some(
-      (m) =>
-        customer(m) ||
-        (m.messageType === "outgoing" &&
-          !m.isReaction &&
-          !m.imported &&
-          !ours(m)),
-    )
-  )
-    return { state: "delivered" };
   const key = replyKeyOf(newest.sendId);
   const reply = read.filter(
     (m) =>
       ours(m) &&
       (m.id === newest.id || (key !== null && replyKeyOf(m.sendId) === key)),
   );
+  const start = reply.reduce((a, m) => (m.id < a ? m.id : a), last.id);
+  // NOTE: from where the reply starts, so one written between its balloons counts too.
+  if (
+    read.some(
+      (m) =>
+        m.id > start &&
+        customer(m) &&
+        (params.handledThrough === null || m.id > params.handledThrough),
+    )
+  )
+    return { state: "customer_spoke" };
+  if (
+    read.some(
+      (m) =>
+        m.id > last.id &&
+        !m.private &&
+        (customer(m) ||
+          (m.messageType === "outgoing" &&
+            !m.isReaction &&
+            !m.imported &&
+            !m.externalError &&
+            !ours(m))),
+    )
+  )
+    return { state: "delivered" };
   const missing = reply.filter(
     (m) =>
       m.externalError &&
@@ -193,7 +198,6 @@ export async function lastReplyDelivery(params: {
     };
   }
   const lost = missing.reduce((a, m) => (m.id > a.id ? m : a));
-  const start = reply.reduce((a, m) => (m.id < a ? m.id : a), last.id);
   const answered = read
     .filter((m) => customer(m) && m.id < start)
     .reduce<number | null>((a, m) => (a === null || m.id > a ? m.id : a), null);

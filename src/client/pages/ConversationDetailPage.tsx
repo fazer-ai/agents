@@ -75,6 +75,7 @@ import {
   type TrailEntry,
   type TurnUsageEntry,
 } from "./conversationTimeline";
+import { DecisionTickMarker } from "./DecisionTickMarker";
 
 // Eden-derived types for the dynamic /conversations/:id routes (metadata shell + the separate
 // thread, fetched independently so a slow Chatwoot only spins the messages area).
@@ -444,6 +445,11 @@ function TurnUsageMarker({ turn }: { turn: TurnUsageEntry }) {
 // marker that captured args/result is EXPANDABLE: clicking it reveals the arguments and the result
 // (same rendering as the playground trace, via ToolCallDetails).
 function TrailMarker({ entry }: { entry: TrailEntry }) {
+  if (entry.kind === "decision") return <DecisionTickMarker entry={entry} />;
+  return <ActivityTrailMarker entry={entry} />;
+}
+
+function ActivityTrailMarker({ entry }: { entry: TrailEntry }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   const toolPhrase = useToolLabel(entry.kind === "tool" ? entry.name : null, {

@@ -1,0 +1,129 @@
+import {
+  type DecisionsConfig,
+  decisionsFingerprint,
+  readDecisionsConfig,
+  triggerOf,
+} from "@/modules/decisions/config";
+import { readMonitoringConfig } from "@/modules/observe/settings";
+
+// A decision tick of a "Questions and rules" observer, as the conversation page draws it (agents#1401).
+// Read off the `observe` line the engine already writes (observe/job.ts, docs/decisions.md): every
+// answer with its probabilities, and what became of each rule. The line holds option names and numbers
+// only, never the conversation's text, so it is shown whatever `observability.logToolValues` says.
+
+// What the line stored, passed through as stored: the screen reads the same fields the line has, and a
+// field this build does not know is not dropped on the way.
+export interface DecisionTick {
+  // `decided`: the classifier answered and the rules ran. `failed`: the tick did not finish, or could
+  // not start for a reason only the operator can fix (a warn or error line). `skipped`: the tick had
+  // nothing to do (no customer message yet, a reopened conversation), which nobody needs to fix.
+  outcome: "decided" | "failed" | "skipped";
+  provider: string | null;
+  model: string | null;
+  // The model the provider says answered (TypeSafe resolves `jev-latest` to a version).
+  modelVersion: string | null;
+  reason: string | null;
+  messagesRead: number | null;
+  // Why a tick was skipped or failed, as the line names it: `skipped` (decisions_config_invalid, ...),
+  // `failed` (decision_call, decision_actions, ...), the provider `failure` and the config `problem`.
+  skipped: string | null;
+  failed: string | null;
+  failure: string | null;
+  problem: string | null;
+  // Keyed by question name; absent on a tick that never asked.
+  answers: Record<string, unknown> | null;
+  actions: unknown[];
+  notFired: unknown[];
+  held: unknown[];
+  // The questions and rules of the block the line ran, from the agent's current settings, ONLY when
+  // the line's `block` mark is the current block's: an edited block would pair an old answer with a
+  // new option's text, or a rule index with another rule. Null otherwise, and the screen then shows
+  // what the line stored and nothing else.
+  block: DecisionTickBlock | null;
+}
+
+export interface DecisionTickBlock {
+  questions: DecisionsConfig["questions"];
+  rules: {
+    when: DecisionsConfig["rules"][number]["when"];
+    tool: string;
+    trigger: ReturnType<typeof triggerOf>;
+  }[];
+}
+
+const bag = (v: unknown): Record<string, unknown> | null =>
+  v && typeof v === "object" && !Array.isArray(v)
+    ? (v as Record<string, unknown>)
+    : null;
+const str = (v: unknown): string | null => (typeof v === "string" ? v : null);
+const num = (v: unknown): number | null =>
+  typeof v === "number" && Number.isFinite(v) ? v : null;
+const list = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
+
+// The current block of each agent, with its mark, so a line is matched against it once per agent.
+export interface CurrentBlock {
+  mark: string;
+  block: DecisionTickBlock;
+}
+
+export function currentBlockOf(settings: unknown): CurrentBlock | null {
+  const mon = readMonitoringConfig(settings);
+  const read = readDecisionsConfig({ decisions: mon.decisions });
+  if (!read.ok) return null;
+  return {
+    mark: decisionsFingerprint(read.config),
+    block: {
+      questions: read.config.questions,
+      rules: read.config.rules.map((r) => ({
+        when: r.when,
+        tool: r.action.tool,
+        trigger: triggerOf(r),
+      })),
+    },
+  };
+}
+
+// Null when the line is not a decisions tick this screen can draw: another engine's line, or one whose
+// answers are not an object (a line this build did not write).
+export function decisionTickOf(
+  line: {
+    status: string | null;
+    level: string;
+    provider: string | null;
+    model: string | null;
+    detail: unknown;
+  },
+  current: CurrentBlock | null,
+): DecisionTick | null {
+  const d = bag(line.detail);
+  if (d?.engine !== "decisions") return null;
+  const answers = d.answers === undefined ? null : bag(d.answers);
+  if (d.answers !== undefined && answers === null) return null;
+  const outcome: DecisionTick["outcome"] =
+    line.status === "ok"
+      ? "decided"
+      : line.status === "skipped" && line.level === "info"
+        ? "skipped"
+        : "failed";
+  const mark = str(d.block);
+  return {
+    outcome,
+    provider: line.provider,
+    model: line.model,
+    modelVersion: str(d.modelVersion),
+    reason: str(d.reason),
+    messagesRead: num(d.messagesRead),
+    skipped: str(d.skipped),
+    failed: str(d.failed),
+    failure: str(d.failure),
+    problem: str(d.problem),
+    answers,
+    actions: list(d.actions),
+    notFired: list(d.notFired),
+    held: list(d.held),
+    block:
+      current !== null && mark !== null && mark === current.mark
+        ? current.block
+        : null,
+  };
+}

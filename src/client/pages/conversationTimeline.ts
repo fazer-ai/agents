@@ -177,15 +177,36 @@ export function buildTimeline(
     items.push({ kind: "message", at, seq: i, key: messageKey(m, i), m });
   });
   // Tool markers + any follow-up sends we couldn't pin to a bubble.
-  [...otherEntries, ...unmatched].forEach((e, i) => {
-    items.push({
-      kind: "trail",
-      at: Date.parse(e.at),
-      seq: messages.length + i,
-      key: `t-${e.id}`,
-      entry: e,
-    });
-  });
+  const drawn = [...otherEntries, ...unmatched];
+  const trailItems = drawn.map((e, i) => ({
+    kind: "trail" as const,
+    at: Date.parse(e.at),
+    seq: messages.length + i,
+    key: `t-${e.id}`,
+    entry: e,
+  }));
+  // A decision tick's line is written when the tick ENDS, after the actions its rules ran, which
+  // share its turn. The cause reads before its effects: the tick is drawn right before the first
+  // action marker of its turn, wherever its own time would put it.
+  const firstActionOfTurn = new Map<string, { at: number; seq: number }>();
+  for (const it of trailItems) {
+    if (it.entry.kind !== "tool") continue;
+    const seen = firstActionOfTurn.get(it.entry.turnId);
+    if (!seen || it.at < seen.at || (it.at === seen.at && it.seq < seen.seq)) {
+      firstActionOfTurn.set(it.entry.turnId, { at: it.at, seq: it.seq });
+    }
+  }
+  for (const it of trailItems) {
+    const first =
+      it.entry.kind === "decision"
+        ? firstActionOfTurn.get(it.entry.turnId)
+        : undefined;
+    if (first && first.at <= it.at) {
+      items.push({ ...it, at: first.at, seq: first.seq - 0.5 });
+    } else {
+      items.push(it);
+    }
+  }
   // What each turn spent sits at the foot of the last message the turn created that is on
   // screen; a turn with none (silent, messages not loaded or never recorded) keeps its own line at the
   // time of its last billed call, so the header's total stays accounted for. While older messages are

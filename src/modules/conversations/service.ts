@@ -50,6 +50,12 @@ import { reconcileMirrorFromLive } from "@/modules/chatwoot/reconcile";
 import { announceStatusChange } from "@/modules/chatwoot/status-announce";
 import { runResolutionHooks } from "@/modules/chatwoot/webhook";
 import { recordConversationAction } from "@/modules/conversations/audit";
+import {
+  type CurrentBlock,
+  currentBlockOf,
+  type DecisionTick,
+  decisionTickOf,
+} from "@/modules/conversations/decision-trail";
 import { recordResolutionOrigin } from "@/modules/conversations/record-resolution";
 import {
   type ConversationUsage,
@@ -548,6 +554,9 @@ export interface ConversationDetail {
   usage: ConversationUsage;
 }
 
+// How many decision ticks the trail carries, newest first, on top of the 60 tool and proactive rows.
+export const DECISION_TRAIL_CAP = 60;
+
 // A compact, PII-free activity marker drawn inline in the conversation timeline. Derived from the
 // ExecutionLog: a tool call (kind "tool") or a proactive turn, by where it came from: an inactivity
 // follow-up ("followup"), an appointment reminder ("reminder"), a channel-redirect follow-up
@@ -555,7 +564,11 @@ export interface ConversationDetail {
 // approved ("approval").
 export interface ConversationTrailEntry {
   id: string;
+  // The turn the line belongs to: a decision tick and the action markers its rules wrote share it, so
+  // the screen can draw the cause right before its effects.
+  turnId: string;
   kind:
+    | "decision"
     | "tool"
     | "followup"
     | "snoozed"
@@ -593,6 +606,9 @@ export interface ConversationTrailEntry {
   // cannot tell. null on every other row, and on a `skip_reply` line that does not record it
   // (unknown, so the screen keeps the plain label).
   turnDelivered: boolean | null;
+  // "decision" rows only: the tick of a "Questions and rules" observer (decision-trail.ts). null on
+  // every other row.
+  decision: DecisionTick | null;
   at: string;
 }
 
@@ -1529,6 +1545,7 @@ export async function getConversationDetail(
       const rawOutput = detail?.output;
       trail.push({
         id: String(r.id),
+        turnId: r.turnId,
         kind: "tool",
         name: typeof detail?.tool === "string" ? detail.tool : null,
         status: r.status,
@@ -1554,6 +1571,7 @@ export async function getConversationDetail(
               deliveredByTurn.get(r.turnId) ??
               null)
             : null,
+        decision: null,
         at: r.createdAt.toISOString(),
       });
     } else if (
@@ -1568,6 +1586,7 @@ export async function getConversationDetail(
         (detail.trigger === "appointment_reminder" ? "reminder" : "followup");
       trail.push({
         id: String(r.id),
+        turnId: r.turnId,
         kind,
         originRecorded: recorded !== null,
         messageId:
@@ -1588,12 +1607,96 @@ export async function getConversationDetail(
         output: null,
         errorMessage: null,
         turnDelivered: null,
+        decision: null,
         at: r.createdAt.toISOString(),
       });
     }
   }
-  // Rows came newest-first (id desc); the timeline wants oldest → newest.
-  trail.reverse();
+  // Decision ticks of a "Questions and rules" observer (agents#1401): the `observe` line its engine
+  // writes, with every answer's probabilities and each rule's outcome. A cap of their own, so an
+  // observer deciding on every customer message does not push the tool rows out of the 60 above.
+  const decisionRows = await runScopedOn(base, ctx, (db) =>
+    db.executionLog.findMany({
+      where: {
+        conversationId: id,
+        source: "inbox",
+        stage: "observe",
+        detail: { path: ["engine"], equals: "decisions" },
+      },
+      orderBy: { id: "desc" },
+      take: DECISION_TRAIL_CAP,
+      select: {
+        id: true,
+        turnId: true,
+        agentId: true,
+        status: true,
+        level: true,
+        provider: true,
+        model: true,
+        durationMs: true,
+        detail: true,
+        createdAt: true,
+      },
+    }),
+  );
+  // Each observer's current block, read once: the option and level descriptions are shown only beside
+  // a line that ran this very block.
+  const blockAgentIds = [
+    ...new Set(
+      decisionRows.flatMap((r) => (r.agentId === null ? [] : [r.agentId])),
+    ),
+  ];
+  const currentBlocks = new Map<string, CurrentBlock | null>();
+  if (blockAgentIds.length > 0) {
+    const agents = await runScopedOn(base, ctx, (db) =>
+      db.agent.findMany({
+        where: { id: { in: blockAgentIds } },
+        select: { id: true, settings: true },
+      }),
+    );
+    for (const a of agents) {
+      currentBlocks.set(String(a.id), currentBlockOf(a.settings));
+    }
+  }
+  for (const r of decisionRows) {
+    const decision = decisionTickOf(
+      r,
+      r.agentId === null
+        ? null
+        : (currentBlocks.get(String(r.agentId)) ?? null),
+    );
+    if (decision === null) continue;
+    trail.push({
+      id: String(r.id),
+      turnId: r.turnId,
+      kind: "decision",
+      name: null,
+      status: r.status,
+      durationMs: r.durationMs,
+      step: null,
+      args: null,
+      output: null,
+      errorMessage: null,
+      originRecorded: null,
+      messageId: null,
+      integrationName: null,
+      turnDelivered: null,
+      decision,
+      at: r.createdAt.toISOString(),
+    });
+  }
+  // Newest-first reads from two queries; the timeline wants oldest → newest, by id (the write order).
+  // Ids are decimal strings of one bigint column: the shorter is the smaller, and equal lengths
+  // compare as text.
+  trail.sort((a, b) =>
+    a.id.length !== b.id.length
+      ? a.id.length - b.id.length
+      : a.id < b.id
+        ? -1
+        : a.id > b.id
+          ? 1
+          : 0,
+  );
 
   // Pending appointment reminders for this conversation's thread (soonest first). Exact times — these
   // are armed scheduler jobs, not estimates. Read under the same tenant scope as the trail.

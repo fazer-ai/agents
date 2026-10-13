@@ -1,0 +1,602 @@
+/// <reference lib="dom" />
+
+import { afterEach, describe, expect, test } from "bun:test";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  within,
+} from "@testing-library/react";
+import i18next from "i18next";
+import type { ReactNode } from "react";
+import { I18nextProvider } from "react-i18next";
+import clientEn from "@/client/locales/en.json";
+import clientPt from "@/client/locales/pt-BR.json";
+import {
+  buildTimeline,
+  type Message,
+  type TrailEntry,
+} from "@/client/pages/conversationTimeline";
+import { DecisionTickMarker } from "@/client/pages/DecisionTickMarker";
+
+// A decision tick of a "Questions and rules" observer on the conversation page (agents#1401):
+// collapsed it says what the tick did; expanded it shows each question's answer with its
+// probabilities and each rule's outcome; a tick that did not decide says why in the error style. On
+// the timeline it sits right before the action markers its rules wrote, though its line is newer.
+
+afterEach(() => {
+  cleanup();
+});
+
+async function inLanguage(lng: "en" | "pt-BR", ui: ReactNode) {
+  const i = i18next.createInstance();
+  await i.init({
+    lng,
+    resources: {
+      en: { translation: clientEn },
+      "pt-BR": { translation: clientPt },
+    },
+    interpolation: { escapeValue: false },
+  });
+  return render(<I18nextProvider i18n={i}>{ui}</I18nextProvider>);
+}
+
+const T0 = Date.parse("2026-10-12T10:00:00Z");
+
+type Tick = NonNullable<TrailEntry["decision"]>;
+
+const BLOCK: NonNullable<Tick["block"]> = {
+  questions: [
+    { name: "asks_refund", type: "yes_no", instructions: "" },
+    {
+      name: "topic",
+      type: "choice",
+      instructions: "",
+      options: [
+        { value: "exchange", description: "exchange or return" },
+        { value: "damaged", description: "arrived damaged" },
+        { value: "other", description: "something else" },
+      ],
+    },
+    {
+      name: "anger",
+      type: "score",
+      instructions: "",
+      levels: [
+        { value: "calm", description: "calm" },
+        { value: "upset", description: "complaining" },
+        { value: "furious", description: "threatens to leave" },
+      ],
+    },
+  ],
+  rules: [
+    {
+      when: [{ question: "asks_refund", minProbability: 0.7 }],
+      tool: "set_labels",
+      trigger: "each_time",
+    },
+    {
+      when: [{ question: "asks_refund", minProbability: 0.9 }],
+      tool: "handoff_to_human",
+      trigger: "on_start",
+    },
+    {
+      when: [{ question: "topic", equals: "exchange", minConfidence: 0.6 }],
+      tool: "set_custom_attribute",
+      trigger: "each_time",
+    },
+    {
+      when: [{ question: "anger", minLevel: 2, maxLevel: 2 }],
+      tool: "set_labels",
+      trigger: "on_start",
+    },
+    {
+      when: [{ question: "topic", equals: "damaged" }],
+      tool: "private_note",
+      trigger: "on_start",
+    },
+  ],
+};
+
+const ANSWERS = {
+  asks_refund: { type: "yes_no", probability: 0.82 },
+  topic: {
+    type: "choice",
+    choice: "exchange",
+    confidence: 0.51,
+    probabilities: { exchange: 0.59, damaged: 0.41, other: 0 },
+  },
+  anger: {
+    type: "score",
+    score: 1.2,
+    confidence: 0.7,
+    probabilities: { calm: 0.1, upset: 0.6, furious: 0.3 },
+  },
+};
+
+function tick(over: Partial<Tick> = {}): Tick {
+  return {
+    outcome: "decided",
+    provider: "typesafe",
+    model: "jev-latest",
+    modelVersion: "jev-1.13.0",
+    reason: "burst",
+    messagesRead: 4,
+    skipped: null,
+    failed: null,
+    failure: null,
+    problem: null,
+    answers: ANSWERS,
+    actions: [{ rule: 0, tool: "set_labels", outcome: "ran", merged: [] }],
+    notFired: [
+      {
+        rule: 1,
+        miss: {
+          question: "asks_refund",
+          why: "below_threshold",
+          got: 0.82,
+          threshold: 0.9,
+          measure: "probability",
+        },
+      },
+      {
+        rule: 2,
+        miss: {
+          question: "topic",
+          why: "below_threshold",
+          got: 0.51,
+          threshold: 0.6,
+          measure: "confidence",
+        },
+      },
+      {
+        rule: 3,
+        miss: {
+          question: "anger",
+          why: "outside_levels",
+          got: 1,
+          minLevel: 2,
+          maxLevel: 2,
+        },
+      },
+      {
+        rule: 4,
+        miss: {
+          question: "topic",
+          why: "other_choice",
+          got: "exchange",
+          expected: "damaged",
+        },
+      },
+    ],
+    held: [],
+    block: BLOCK,
+    ...over,
+  };
+}
+
+function entry(
+  id: string,
+  over: Partial<TrailEntry> & { atMs?: number } = {},
+): TrailEntry {
+  const { atMs, ...rest } = over;
+  return {
+    id,
+    turnId: `turn-${id}`,
+    kind: "decision",
+    name: null,
+    status: "ok",
+    durationMs: 700,
+    step: null,
+    args: null,
+    output: null,
+    errorMessage: null,
+    turnDelivered: null,
+    originRecorded: null,
+    messageId: null,
+    integrationName: null,
+    decision: tick(),
+    at: new Date(atMs ?? T0).toISOString(),
+    ...rest,
+  } as TrailEntry;
+}
+
+function msg(id: number, atMs: number): Message {
+  return {
+    id,
+    content: `m${id}`,
+    messageType: 0,
+    createdAt: Math.floor(atMs / 1000),
+    attachments: [],
+  } as unknown as Message;
+}
+
+async function expand(e: TrailEntry, lng: "en" | "pt-BR" = "en") {
+  await inLanguage(lng, <DecisionTickMarker entry={e} />);
+  fireEvent.click(screen.getByRole("button"));
+  return screen.getByTestId("decision-details");
+}
+
+const ruleLines = () =>
+  screen.getAllByTestId("decision-rule").map((r) => r.textContent ?? "");
+
+describe("the collapsed marker", () => {
+  test("names the classifier version, the duration and what ran, counted by kind", async () => {
+    await inLanguage(
+      "en",
+      <DecisionTickMarker
+        entry={entry("1", {
+          decision: tick({
+            actions: [
+              { rule: 0, tool: "set_labels", outcome: "ran", merged: [] },
+              { rule: 3, tool: "set_labels", outcome: "ran", merged: [] },
+              {
+                rule: 2,
+                tool: "set_custom_attribute",
+                outcome: "ran",
+                merged: [],
+              },
+              { rule: 1, tool: "handoff_to_human", outcome: "ran", merged: [] },
+            ],
+          }),
+        })}
+      />,
+    );
+    const m = screen.getByTestId("decision-marker").textContent ?? "";
+    expect(m).toContain("Classified");
+    expect(m).toContain("jev-1.13.0");
+    expect(m).toContain("700ms");
+    expect(m).toContain("2 labels, 1 attribute, handed off");
+    expect(m).toContain("✓");
+  });
+
+  test("says no rule fired when none did, without the error style", async () => {
+    await inLanguage(
+      "en",
+      <DecisionTickMarker
+        entry={entry("1", { decision: tick({ actions: [] }) })}
+      />,
+    );
+    const m = screen.getByTestId("decision-marker");
+    expect(m.textContent).toContain("no rule fired");
+    expect(m.querySelector(".text-error")).toBeNull();
+  });
+
+  test("speaks the screen's language", async () => {
+    await inLanguage("pt-BR", <DecisionTickMarker entry={entry("1")} />);
+    expect(screen.getByTestId("decision-marker").textContent).toContain(
+      "1 etiqueta",
+    );
+  });
+
+  test.each([
+    [
+      {
+        outcome: "failed",
+        skipped: "decisions_config_invalid",
+        problem: "monitoring.decisions.questions",
+      },
+      "The questions and rules are not valid: monitoring.decisions.questions",
+    ],
+    [
+      { outcome: "failed", skipped: "decisions_credential_unresolved" },
+      "The classifier's credential could not be read from the vault",
+    ],
+    [
+      { outcome: "failed", failed: "decision_call", failure: "HTTP 503" },
+      "The call to the classifier failed: HTTP 503",
+    ],
+  ] as const)(
+    "a tick that did not decide says why, as an error: %o",
+    async (over, why) => {
+      await inLanguage(
+        "en",
+        <DecisionTickMarker
+          entry={entry("1", {
+            status: "error",
+            decision: tick({
+              ...over,
+              answers: null,
+              actions: [],
+              notFired: [],
+            } as Partial<Tick>),
+          })}
+        />,
+      );
+      const m = screen.getByTestId("decision-marker");
+      expect(m.textContent).toContain("Classification failed");
+      expect(m.querySelector(".text-error")?.textContent).toBe("✗");
+      expect(screen.getByText(why)).toBeTruthy();
+      expect(screen.queryByRole("button")).toBeNull();
+    },
+  );
+});
+
+describe("what the collapsed marker counts and how a skip looks", () => {
+  test("an action that did not run is not counted as done", async () => {
+    await inLanguage(
+      "en",
+      <DecisionTickMarker
+        entry={entry("1", {
+          decision: tick({
+            actions: [
+              {
+                rule: 0,
+                tool: "set_labels",
+                outcome: "refused",
+                fence: "protected_label",
+                merged: [],
+              },
+              {
+                rule: 1,
+                tool: "handoff_to_human",
+                outcome: "not_granted",
+                merged: [],
+              },
+            ],
+          }),
+        })}
+      />,
+    );
+    const m = screen.getByTestId("decision-marker").textContent ?? "";
+    expect(m).toContain("no action ran");
+    expect(m).not.toContain("label");
+    expect(m).not.toContain("handed off");
+  });
+
+  test("a tick with nothing to do is skipped, not failed, and says why", async () => {
+    await inLanguage(
+      "en",
+      <DecisionTickMarker
+        entry={entry("1", {
+          status: "skipped",
+          decision: tick({
+            outcome: "skipped",
+            skipped: "no_customer_message",
+            answers: null,
+            actions: [],
+            notFired: [],
+          }),
+        })}
+      />,
+    );
+    const m = screen.getByTestId("decision-marker");
+    expect(m.textContent).toContain("Classification skipped");
+    expect(m.querySelector(".text-error")).toBeNull();
+    expect(screen.getByText("No customer message to read yet")).toBeTruthy();
+  });
+});
+
+describe("the expanded tick", () => {
+  test("a choice shows every option with its probability, the chosen one and the confidence", async () => {
+    const d = await expand(entry("1"));
+    const q = within(d).getByTestId("decision-question-topic");
+    const rows = within(q).getAllByTestId("decision-option");
+    expect(rows.map((r) => [r.textContent, r.dataset.chosen])).toEqual([
+      ["exchangechosenexchange or return59%", "true"],
+      ["damagedarrived damaged41%", "false"],
+      ["othersomething else0%", "false"],
+    ]);
+    expect(q.textContent).toContain("confidence 51%");
+  });
+
+  test("questions follow the block's order", async () => {
+    const d = await expand(entry("1"));
+    expect(
+      within(d)
+        .getAllByTestId(/^decision-question-/)
+        .map((q) => q.dataset.testid),
+    ).toEqual([
+      "decision-question-asks_refund",
+      "decision-question-topic",
+      "decision-question-anger",
+    ]);
+  });
+
+  test("a score shows the level reached, the probability per level and the confidence", async () => {
+    const d = await expand(entry("1"));
+    const q = within(d).getByTestId("decision-question-anger");
+    expect(q.textContent).toContain("level 1 · upset (score 1.20)");
+    expect(q.textContent).toContain("confidence 70%");
+    expect(
+      within(q)
+        .getAllByTestId("decision-option")
+        .map((r) => [r.textContent, r.dataset.chosen]),
+    ).toEqual([
+      ["calmcalm10%", "false"],
+      ["upsetchosencomplaining60%", "true"],
+      ["furiousthreatens to leave30%", "false"],
+    ]);
+  });
+
+  test("a yes/no shows its probability and the threshold of each rule that reads it", async () => {
+    // A second yes/no question with a rule of its own, whose threshold is not the first one's.
+    const block = {
+      ...BLOCK,
+      questions: [
+        ...BLOCK.questions,
+        { name: "wants_human", type: "yes_no" as const, instructions: "" },
+      ],
+      rules: [
+        ...BLOCK.rules,
+        {
+          when: [{ question: "wants_human", minProbability: 0.5 }],
+          tool: "handoff_to_human",
+          trigger: "on_start" as const,
+        },
+      ],
+    };
+    const d = await expand(
+      entry("1", {
+        decision: tick({
+          block,
+          answers: {
+            ...ANSWERS,
+            wants_human: { type: "yes_no", probability: 0.3 },
+          },
+        }),
+      }),
+    );
+    expect(
+      within(d).getByTestId("decision-question-wants_human").textContent,
+    ).toBe("wants_humanyes: 30%Rule 6 asks at least 50%");
+    const q = within(d).getByTestId("decision-question-asks_refund");
+    expect(q.textContent).toContain("yes: 82%");
+    expect(q.textContent).toContain(
+      "Rule 1 asks at least 70% · Rule 2 asks at least 90%",
+    );
+  });
+
+  test("every rule has its outcome: fired, and each reason a rule did not fire", async () => {
+    await expand(entry("1"));
+    expect(ruleLines()).toEqual([
+      "Rule 1set_labelsfired: ran",
+      "Rule 2handoff_to_humannot fired: asks_refund probability 82% is below 90%",
+      "Rule 3set_custom_attributenot fired: topic confidence 51% is below 60%",
+      "Rule 4set_labelsnot fired: anger reached level 1 (upset), the rule asks 2 (furious) to 2 (furious)",
+      "Rule 5private_notenot fired: topic answered exchange, the rule expects damaged",
+    ]);
+  });
+
+  test("a held rule reads apart from one that did not fire, with its trigger", async () => {
+    await expand(
+      entry("1", {
+        decision: tick({
+          held: [{ rule: 3, trigger: "on_start" }],
+          notFired: [],
+          actions: [
+            { rule: 0, tool: "set_labels", outcome: "ran", merged: [] },
+          ],
+        }),
+      }),
+    );
+    expect(ruleLines()[3]).toBe(
+      "Rule 4set_labelsconditions held, but it already acted (When the conditions start holding)",
+    );
+  });
+
+  test("each outcome of a fired rule, and a merged rule takes the outcome of the action it shares", async () => {
+    await expand(
+      entry("1", {
+        decision: tick({
+          notFired: [],
+          actions: [
+            {
+              rule: 0,
+              tool: "set_labels",
+              outcome: "refused",
+              fence: "protected_label",
+              merged: [3],
+            },
+            {
+              rule: 1,
+              tool: "handoff_to_human",
+              outcome: "not_granted",
+              merged: [],
+            },
+            {
+              rule: 2,
+              tool: "set_custom_attribute",
+              outcome: "failed",
+              failure: "tool_error",
+              merged: [],
+            },
+            { rule: 4, tool: "private_note", outcome: "ran", merged: [] },
+          ],
+        }),
+      }),
+    );
+    expect(ruleLines()).toEqual([
+      "Rule 1set_labelsfired: refused by a protected label",
+      "Rule 2handoff_to_humanfired: not allowed for this agent",
+      "Rule 3set_custom_attributefired: failed (tool_error)",
+      "Rule 4set_labelsfired, same action as rule 1: refused by a protected label",
+      "Rule 5private_notefired: ran",
+    ]);
+  });
+
+  test("a question left unanswered gets no invented numbers, and the rule says why it did not fire", async () => {
+    const { anger: _, ...answers } = ANSWERS;
+    const d = await expand(
+      entry("1", {
+        decision: tick({
+          answers,
+          notFired: [
+            { rule: 3, miss: { question: "anger", why: "unanswered" } },
+          ],
+        }),
+      }),
+    );
+    const q = within(d).getByTestId("decision-question-anger");
+    expect(q.textContent).toBe("angernot answered");
+    expect(within(q).queryAllByTestId("decision-option")).toEqual([]);
+    expect(ruleLines()[3]).toBe(
+      "Rule 4set_labelsnot fired: anger was not answered",
+    );
+  });
+
+  test("a line that ran another block shows what it stored and none of the current descriptions", async () => {
+    const d = await expand(
+      entry("1", {
+        decision: tick({
+          block: null,
+          answers: {
+            ...ANSWERS,
+            topic: {
+              type: "choice",
+              choice: "exchange",
+              confidence: 0.51,
+              probabilities: { exchange: 0.59, damaged: 0.31, cancel: 0.1 },
+            },
+          },
+        }),
+      }),
+    );
+    expect(
+      within(within(d).getByTestId("decision-question-topic"))
+        .getAllByTestId("decision-option")
+        .map((r) => r.textContent),
+    ).toEqual(["exchangechosen59%", "damaged31%", "cancel10%"]);
+    for (const text of ["exchange or return", "complaining", "Rule 1 asks"]) {
+      expect(d.textContent).not.toContain(text);
+    }
+  });
+});
+
+describe("where a tick sits on the timeline", () => {
+  test("right before the action markers of its own turn, though its line is newer", () => {
+    const tool = (id: string, atMs: number, turnId: string): TrailEntry =>
+      entry(id, {
+        kind: "tool",
+        name: "set_labels",
+        decision: null,
+        atMs,
+        turnId,
+      });
+    const tl = buildTimeline(
+      [msg(1, T0)],
+      [
+        tool("10", T0 + 9_000, "other"),
+        tool("11", T0 + 9_400, "U"),
+        tool("12", T0 + 9_600, "U"),
+        entry("13", { atMs: T0 + 10_000, turnId: "U" }),
+      ],
+      0,
+    );
+    expect(
+      tl.items.map((i) => (i.kind === "trail" ? i.entry.id : `m${i.kind}`)),
+    ).toEqual(["mmessage", "10", "13", "11", "12"]);
+  });
+
+  test("a tick with no action marker keeps its own time among the messages", () => {
+    const tl = buildTimeline(
+      [msg(1, T0), msg(2, T0 + 20_000)],
+      [entry("13", { atMs: T0 + 5_000 })],
+      0,
+    );
+    expect(
+      tl.items.map((i) => (i.kind === "trail" ? i.entry.id : `m${i.kind}`)),
+    ).toEqual(["mmessage", "13", "mmessage"]);
+  });
+});

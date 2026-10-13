@@ -318,7 +318,7 @@ const ERROR_COLUMN_LINES: Record<string, [number, ErrorSite | string]> = {
   "src/modules/chatwoot/webhook.ts": [1, "cleared"],
   "src/modules/contact-auth/service.ts": [1, "flow-event"],
   "src/modules/conversations/error.ts": [3, "guarded + cleared"],
-  "src/modules/conversations/service.ts": [12, "read"],
+  "src/modules/conversations/service.ts": [13, "read"],
   // The line a dead debounce flush writes: a fixed sentence and a count, never the job's error.
   "src/modules/debounce/handler.ts": [1, "flow-event"],
   // Both roads to DEAD write through one `finalizeDead`.

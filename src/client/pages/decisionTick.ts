@@ -209,9 +209,14 @@ export function ruleViews(tick: DecisionTickView): RuleView[] {
   return [...byRule.values()].sort((x, y) => x.rule - y.rule);
 }
 
-// What the tick did, counted by kind of action, for the collapsed marker: only actions that ran.
+// What the tick did, counted by kind of action, for the collapsed marker: only actions that ran. A
+// label write is counted by what it changed when the line says (`labels`, one entry per write): one
+// `set_labels` call can add several labels, or none. A line without it counts the writes.
 export interface ActionSummary {
-  labels: number;
+  // Null when the line does not record what its label writes changed.
+  labelsAdded: number | null;
+  labelsRemoved: number | null;
+  labelWrites: number;
   attributes: number;
   notes: number;
   handedOff: boolean;
@@ -220,7 +225,9 @@ export interface ActionSummary {
 
 export function actionSummary(tick: DecisionTickView): ActionSummary {
   const s: ActionSummary = {
-    labels: 0,
+    labelsAdded: null,
+    labelsRemoved: null,
+    labelWrites: 0,
     attributes: 0,
     notes: 0,
     handedOff: false,
@@ -229,11 +236,21 @@ export function actionSummary(tick: DecisionTickView): ActionSummary {
   for (const raw of tick.actions) {
     const a = bag(raw);
     if (a?.outcome !== "ran") continue;
-    if (a.tool === "set_labels") s.labels++;
+    if (a.tool === "set_labels") s.labelWrites++;
     else if (a.tool === "set_custom_attribute") s.attributes++;
     else if (a.tool === "private_note") s.notes++;
     else if (a.tool === "handoff_to_human") s.handedOff = true;
     else s.tools++;
+  }
+  const writes = tick.labels.flatMap((raw) => {
+    const w = bag(raw);
+    const added = num(w?.added);
+    const removed = num(w?.removed);
+    return added === null || removed === null ? [] : [{ added, removed }];
+  });
+  if (writes.length > 0) {
+    s.labelsAdded = writes.reduce((n, w) => n + w.added, 0);
+    s.labelsRemoved = writes.reduce((n, w) => n + w.removed, 0);
   }
   return s;
 }

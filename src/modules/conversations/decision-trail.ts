@@ -35,6 +35,10 @@ export interface DecisionTick {
   actions: unknown[];
   notFired: unknown[];
   held: unknown[];
+  // What the tick's label writes changed, per write (graph/tools/label-writes.ts): counts, and the
+  // titles only when the agent declares a list. Empty on a tick that wrote no label, and on a line
+  // written before the field existed.
+  labels: unknown[];
   // The questions and rules of the block the line ran, from the agent's current settings, ONLY when
   // the line's `block` mark is the current block's: an edited block would pair an old answer with a
   // new option's text, or a rule index with another rule. Null otherwise, and the screen then shows
@@ -121,6 +125,7 @@ export function decisionTickOf(
     actions: list(d.actions),
     notFired: list(d.notFired),
     held: list(d.held),
+    labels: list(d.labels),
     block:
       current !== null && mark !== null && mark === current.mark
         ? current.block

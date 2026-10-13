@@ -129,10 +129,32 @@ function summaryText(tick: DecisionTickView, t: T): string {
   }
   const s = actionSummary(tick);
   const parts: string[] = [];
-  if (s.labels > 0) {
+  if (s.labelsAdded !== null && s.labelsRemoved !== null) {
+    if (s.labelsAdded > 0) {
+      parts.push(
+        t("conversation.trail.decision.labelsAdded", "{{count}} labels added", {
+          count: s.labelsAdded,
+        }),
+      );
+    }
+    if (s.labelsRemoved > 0) {
+      parts.push(
+        t(
+          "conversation.trail.decision.labelsRemoved",
+          "{{count}} labels removed",
+          { count: s.labelsRemoved },
+        ),
+      );
+    }
+    if (s.labelsAdded === 0 && s.labelsRemoved === 0 && s.labelWrites > 0) {
+      parts.push(
+        t("conversation.trail.decision.labelsUnchanged", "labels unchanged"),
+      );
+    }
+  } else if (s.labelWrites > 0) {
     parts.push(
-      t("conversation.trail.decision.labels", "{{count}} labels", {
-        count: s.labels,
+      t("conversation.trail.decision.labelWrites", "{{count}} label writes", {
+        count: s.labelWrites,
       }),
     );
   }

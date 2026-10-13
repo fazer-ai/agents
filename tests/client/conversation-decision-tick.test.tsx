@@ -171,6 +171,7 @@ function tick(over: Partial<Tick> = {}): Tick {
       },
     ],
     held: [],
+    labels: [],
     block: BLOCK,
     ...over,
   };
@@ -247,8 +248,49 @@ describe("the collapsed marker", () => {
     expect(m).toContain("Classified");
     expect(m).toContain("jev-1.13.0");
     expect(m).toContain("700ms");
-    expect(m).toContain("2 labels, 1 attribute, handed off");
+    expect(m).toContain("2 label writes, 1 attribute, handed off");
     expect(m).toContain("✓");
+  });
+
+  test("label writes are counted by what they changed when the line says, not by calls", async () => {
+    const ran = (rule: number) => ({
+      rule,
+      tool: "set_labels",
+      outcome: "ran",
+      merged: [],
+    });
+    await inLanguage(
+      "en",
+      <DecisionTickMarker
+        entry={entry("1", {
+          decision: tick({
+            actions: [ran(0), ran(3)],
+            labels: [
+              { scope: "conversation", added: 3, removed: 1, after: 4 },
+              { scope: "conversation", added: 0, removed: 1, after: 3 },
+            ],
+          }),
+        })}
+      />,
+    );
+    expect(screen.getByTestId("decision-marker").textContent).toContain(
+      "3 labels added, 2 labels removed",
+    );
+    cleanup();
+    await inLanguage(
+      "en",
+      <DecisionTickMarker
+        entry={entry("1", {
+          decision: tick({
+            actions: [ran(0)],
+            labels: [{ scope: "conversation", added: 0, removed: 0, after: 2 }],
+          }),
+        })}
+      />,
+    );
+    const m = screen.getByTestId("decision-marker").textContent ?? "";
+    expect(m).toContain("labels unchanged");
+    expect(m).not.toContain("1 label");
   });
 
   test("says no rule fired when none did, without the error style", async () => {
@@ -266,7 +308,7 @@ describe("the collapsed marker", () => {
   test("speaks the screen's language", async () => {
     await inLanguage("pt-BR", <DecisionTickMarker entry={entry("1")} />);
     expect(screen.getByTestId("decision-marker").textContent).toContain(
-      "1 etiqueta",
+      "1 escrita de etiqueta",
     );
   });
 

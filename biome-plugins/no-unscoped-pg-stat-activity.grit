@@ -3,14 +3,15 @@
 // `… = ANY(pg_blocking_pids(pid))`). The view lists every backend of the CLUSTER, and the development
 // Postgres is shared by every checkout, dev server and session on the machine: a count or a wait over
 // it reads their queries as the test's own. `pid <> pg_backend_pid()` excludes one backend and owns
-// none, so it does not count. A literal assembled from pieces is judged piece by piece.
+// none, so it does not count. A literal assembled from pieces is judged piece by piece, and the name
+// in any case, since Postgres folds an unquoted identifier.
 language js;
 
 or {
     JsStringLiteralExpression() as $hit,
     JsTemplateExpression() as $hit
 } where {
-    $hit <: r"[\s\S]*pg_stat_activity[\s\S]*",
+    $hit <: r"(?i)[\s\S]*pg_stat_activity[\s\S]*",
     not $hit <: r"(?i)[\s\S]*(?:datname\s*(?:=|in\b)|current_database\s*\(\s*\)|\bpid\s*(?:=|in\b)|=\s*any\s*\(\s*pg_blocking_pids)[\s\S]*",
     register_diagnostic(span = $hit, message = "A test reads pg_stat_activity only for its own database or its own backends: add `datname = current_database()` (or the target database's name, from a connection elsewhere), or narrow by a pid the test holds.")
 }

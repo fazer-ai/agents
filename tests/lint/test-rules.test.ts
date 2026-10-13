@@ -79,6 +79,7 @@ const PROBES: Record<string, string> = {
   [`${PROBE}/probe-hands-over.ts`]: `import { dbProbeFailed } from "@/tests/db-gate";\n${PROBE_HEAD}try {\n  dbUp = await ping();\n} catch (err) {\n  dbUp = dbProbeFailed(err);\n}\n`,
   [`${PROBE}/probe-false-outside-catch.ts`]: `${PROBE_HEAD}if (!process.env.X) dbUp = false;\n`,
   [`${PROBE}/activity-string.ts`]: `export const q = "SELECT count(*) FROM ${VIEW} WHERE query LIKE '%llm_usage%'";\n`,
+  [`${PROBE}/activity-upper-case.ts`]: `export const q = "SELECT count(*) FROM ${VIEW.toUpperCase()}";\n`,
   [`${PROBE}/activity-own-backend-excluded.ts`]: `export const q = \`SELECT count(*) FROM ${VIEW}\n  WHERE state = 'active' AND pid <> pg_backend_pid()\`;\n`,
   [`${PROBE}/activity-tagged-by-name.ts`]: `${DB}const app = "x";\nexport const q = db.$queryRaw\`SELECT pid FROM ${VIEW} WHERE application_name = \${app}\`;\n`,
   [`${PROBE}/activity-own-database.ts`]: `${DB}export const q = db.$queryRaw\`SELECT count(*) FROM ${VIEW}\n  WHERE datname = current_database() AND pid <> pg_backend_pid()\`;\n`,
@@ -243,6 +244,7 @@ describe("no-swallowed-db-probe", () => {
 describe("no-unscoped-pg-stat-activity", () => {
   test.each([
     ["activity-string.ts"],
+    ["activity-upper-case.ts"],
     ["activity-own-backend-excluded.ts"],
     ["activity-tagged-by-name.ts"],
   ])(

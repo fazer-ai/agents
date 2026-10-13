@@ -124,6 +124,7 @@ const DRAINING: KindReading = {
 let kindReading = DRAINING;
 // The failure rate turned on and firing while the stall is muted.
 let kindRateFiring = false;
+let kindStallStale = false;
 const KIND = {
   signals: [
     kindSignal(
@@ -206,6 +207,7 @@ beforeEach(() => {
   withKind = false;
   kindReading = DRAINING;
   kindRateFiring = false;
+  kindStallStale = false;
   puts = [];
   laneNeverRead = false;
   healthReads = 0;
@@ -268,7 +270,7 @@ beforeEach(() => {
                   : k.signal.startsWith("scheduler_failed_per_min:")
                     ? { ...k, enabled: true, firing: true }
                     : k.signal.startsWith("scheduler_stalled_ms:")
-                      ? { ...k, enabled: false }
+                      ? { ...k, enabled: false, stale: kindStallStale }
                       : k,
               ),
             ],
@@ -840,6 +842,10 @@ describe("instance health screen", () => {
     );
     await screen.findByText("Failed above threshold");
     expect(Boolean(screen.queryByText("Not alerting"))).toBe(false);
+    // The stall's database read goes stale; the rate is counted in process and is still firing.
+    kindStallStale = true;
+    await screen.findByText(/^Not updated since/);
+    expect(Boolean(screen.queryByText("Failed above threshold"))).toBe(true);
   });
 
   test("a lane never read says nothing about its jobs (catches 'no job overdue' with no reading behind it)", async () => {

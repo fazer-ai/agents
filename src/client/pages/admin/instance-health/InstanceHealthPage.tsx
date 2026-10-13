@@ -312,7 +312,9 @@ function SignalCard({
   alerts?: Signal[];
 }) {
   const { t } = useTranslation();
-  const firing = (alerts ?? [signal]).find((s) => s.firing);
+  const firing = (alerts ?? [signal]).find(
+    (s) => s.firing && (s.signal === signal.signal || !s.stale),
+  );
   const alerting = (alerts ?? [signal]).some((s) => s.enabled);
   const help = signalHelp(signal.signal, t);
   return (
@@ -324,25 +326,35 @@ function SignalCard({
           </span>
           {help && <HelpPopover content={help} />}
         </div>
-        {signal.stale ? (
-          <Badge variant="warning">
-            {t("instanceHealth.signalStale", "Not updated since {{time}}", {
-              time: signal.at ? new Date(signal.at).toLocaleTimeString() : "",
-            })}
-          </Badge>
-        ) : firing ? (
-          <Badge variant="error">
-            {alerts && firing.signal !== signal.signal
-              ? t("instanceHealth.kindFiring", "{{measure}} above threshold", {
-                  measure: kindMeasureLabel(firing.signal, t),
-                })
-              : t("instanceHealth.firing", "Above threshold")}
-          </Badge>
-        ) : !alerting ? (
-          <Badge variant="secondary">
-            {t("instanceHealth.muted", "Not alerting")}
-          </Badge>
-        ) : null}
+        <div className="flex flex-wrap justify-end gap-1">
+          {signal.stale && (
+            <Badge variant="warning">
+              {t("instanceHealth.signalStale", "Not updated since {{time}}", {
+                time: signal.at ? new Date(signal.at).toLocaleTimeString() : "",
+              })}
+            </Badge>
+          )}
+          {/* A stale reading says nothing about whether it is still above; a rate it carries is read
+              on its own, so a firing one shows beside the stall's warning. */}
+          {firing && !(firing.signal === signal.signal && signal.stale) ? (
+            <Badge variant="error">
+              {firing.signal !== signal.signal
+                ? t(
+                    "instanceHealth.kindFiring",
+                    "{{measure}} above threshold",
+                    { measure: kindMeasureLabel(firing.signal, t) },
+                  )
+                : t("instanceHealth.firing", "Above threshold")}
+            </Badge>
+          ) : (
+            !signal.stale &&
+            !alerting && (
+              <Badge variant="secondary">
+                {t("instanceHealth.muted", "Not alerting")}
+              </Badge>
+            )
+          )}
+        </div>
       </div>
       <div className="font-semibold text-2xl text-text-primary tabular-nums">
         {signal.value === null

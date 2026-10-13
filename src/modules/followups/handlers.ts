@@ -586,6 +586,7 @@ export async function followUpHandler(
         inboxId: true,
         testActivatedAt: true,
         lastRepliedMessageId: true,
+        lastHandledMessageId: true,
         // NOTE: The fence's own axis; see the note beside it below.
         lastRepliedAt: true,
         chatwootFirstReplyAt: true,
@@ -831,6 +832,7 @@ export async function followUpHandler(
       instanceId,
       chatwootConversationId: conversationId,
       agentBotIds: await agentBotIdsOf(base, tenantId, instanceId, ctx.agentId),
+      handledThrough: ctx.conv.lastHandledMessageId,
       base,
       ...(deps?.makeClient ? { deps: { makeClient: deps.makeClient } } : {}),
     });
@@ -884,6 +886,7 @@ export async function followUpHandler(
               instanceId,
               ctx.agentId,
             ),
+            handledThrough: ctx.conv.lastHandledMessageId,
             base,
             ...(deps?.makeClient
               ? { deps: { makeClient: deps.makeClient } }

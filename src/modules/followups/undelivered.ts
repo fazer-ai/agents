@@ -19,8 +19,9 @@ import {
 // the message (`external_error`). The reply is every message carrying the newest one's reply key
 // (balloons, a voice note and the text after it, their replacements): it arrived when each refused
 // message of it has a replacement that was not refused. Otherwise it is about to be resent (the job
-// of channel-failure.ts is still queued) or lost. A customer message after the reply supersedes
-// the question: a turn is coming for it, whatever became of the reply.
+// of channel-failure.ts is still queued) or lost. Something public after the reply supersedes the
+// question: a customer message not yet handled has a turn coming for it, and a handled one or a
+// person's reply has already moved the conversation past the reply.
 export type LastReplyDelivery =
   | { state: "delivered" }
   | { state: "customer_spoke" }
@@ -60,6 +61,9 @@ export async function lastReplyDelivery(params: {
   // The Chatwoot ids of the agent's own bots on this instance: another bot's message is not this
   // agent's reply.
   agentBotIds: number[];
+  // The newest customer message already handled (answered or deliberately skipped): the mirror's
+  // watermark. A customer message past it is a turn still coming.
+  handledThrough: number | null;
   base: PrismaClient;
   deps?: LoadChatwootClientDeps;
   now?: Date;
@@ -81,6 +85,8 @@ export async function lastReplyDelivery(params: {
   const read: Row[] = [];
   let newest: Row | null = null;
   let before: number | undefined;
+  // Whether the read reached where the newest reply starts, or the start of the conversation.
+  let bounded = false;
   for (let page = 0; page < MAX_PAGES; page++) {
     const raw = await client.getMessages(
       params.chatwootConversationId,
@@ -98,7 +104,10 @@ export async function lastReplyDelivery(params: {
       (a, m) => (a === null || m.id < a.id ? m : a),
       null,
     );
-    if (oldest === null) break;
+    if (oldest === null) {
+      bounded = true;
+      break;
+    }
     // The newest reply's key. Past that reply, paging goes on until something older than it ends
     // it: the customer message it answered, or a message of ours from another reply. Notes and
     // activity in between say nothing about where it starts.
@@ -112,14 +121,35 @@ export async function lastReplyDelivery(params: {
             m.id < found.id &&
             (customer(m) || (ours(m) && replyKeyOf(m.sendId) !== key)),
         ))
-    )
+    ) {
+      bounded = true;
       break;
+    }
     before = oldest.id;
   }
   if (newest === null) return { state: "delivered" };
+  // NOTE: the newest reply was found and the pages ran out before where it starts: its earlier
+  // messages are unread, and an unread one may be the refused one.
+  if (!bounded)
+    throw new Error("follow-up: the reply's start is past the pages read");
   const last = newest;
-  if (read.some((m) => customer(m) && m.id > last.id))
+  const later = read.filter((m) => m.id > last.id && !m.private);
+  if (
+    later.some(
+      (m) =>
+        customer(m) &&
+        (params.handledThrough === null || m.id > params.handledThrough),
+    )
+  )
     return { state: "customer_spoke" };
+  if (
+    later.some(
+      (m) =>
+        customer(m) ||
+        (m.messageType === "outgoing" && !m.isReaction && !ours(m)),
+    )
+  )
+    return { state: "delivered" };
   const key = replyKeyOf(newest.sendId);
   const reply = read.filter(
     (m) =>

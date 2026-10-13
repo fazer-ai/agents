@@ -1034,6 +1034,49 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     expect(await lastFollowUpOf(1713)).toBeNull();
   });
 
+  // A customer message the agent already handled in silence (a skip) moved the conversation past the
+  // refused reply, and so did a person answering after it: the follow-up is the usual one, neither
+  // held forever nor handed over.
+  test("a handled customer message or a person's reply after the refusal supersedes it", async () => {
+    await seedConversation(1714, due());
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: 1714 },
+      data: { lastHandledMessageId: 17142 },
+    });
+    const handled = stubClient({
+      page: [replyRow(17141, { refused: true }), customerRow(17142)],
+    });
+    expect(await run(1714, handled)).toEqual({ outcome: "done" });
+    expect(handled.notes).toEqual([]);
+    expect(handled.sent.length).toBeGreaterThan(0);
+    await seedConversation(1715, due());
+    const person = stubClient({
+      page: [
+        replyRow(17151, { refused: true }),
+        { ...replyRow(17152), sender: { type: "user", id: 3 } },
+      ],
+    });
+    expect(await run(1715, person)).toEqual({ outcome: "done" });
+    expect(person.notes).toEqual([]);
+    expect(person.sent.length).toBeGreaterThan(0);
+  });
+
+  // The newest balloon is found, but the pages run out before the reply starts: an unread balloon
+  // may be the refused one, so the step holds instead of calling the reply delivered.
+  test("a reply whose start lies past the pages read holds the step", async () => {
+    await seedConversation(1716, due());
+    const s = stubClient({
+      page: [
+        replyRow(17160, { refused: true, sendId: "reply:k16:a" }),
+        ...Array.from({ length: 110 }, (_, i) => note(17161 + i)),
+        replyRow(17300, { sendId: "reply:k16:b" }),
+      ],
+    });
+    expect(await run(1716, s)).toMatchObject({ outcome: "reschedule" });
+    expect(s.sent).toEqual([]);
+    expect(s.notes).toEqual([]);
+  });
+
   test("a page that does not read holds the step instead of nudging", async () => {
     await seedConversation(1704, due());
     const s = stubClient();

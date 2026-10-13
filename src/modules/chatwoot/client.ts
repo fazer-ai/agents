@@ -651,6 +651,8 @@ export class ChatwootClient {
       transcribedText?: string;
       replyText?: string;
       byOperator?: boolean;
+      // The send's name, as `sendMessage` takes it.
+      sendId?: string;
     } = {},
   ): Promise<unknown> {
     this.assertToken(this.config.botToken, "POST audio message");
@@ -672,7 +674,7 @@ export class ChatwootClient {
     // NOTE: The whole reply, only when the speech is not it: the text that replaces a refused voice
     // note reads it from here. A JSON string, which is how the builder takes the bag on a multipart
     // create.
-    if (opts.replyText || opts.byOperator) {
+    if (opts.replyText || opts.byOperator || opts.sendId) {
       form.append(
         "content_attributes",
         JSON.stringify({
@@ -682,6 +684,7 @@ export class ChatwootClient {
           ...(opts.byOperator
             ? { [CHATWOOT_REPLY_BY_OPERATOR_KEY]: true }
             : {}),
+          ...(opts.sendId ? { [CHATWOOT_SEND_ID_KEY]: opts.sendId } : {}),
         }),
       );
     }

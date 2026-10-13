@@ -4,6 +4,7 @@ import {
   type ChatwootClient,
   ChatwootMissingTokenError,
 } from "@/modules/chatwoot/client";
+import { replySendId } from "@/modules/chatwoot/constants";
 import { asRendered, literalForChatwoot } from "@/modules/chatwoot/liquid";
 import {
   chatwootMessageListLength,
@@ -229,6 +230,9 @@ export async function deliverReply(
   // False when the text is the operator's (a guardrail's template or hand-over message standing in
   // for the reply): it keeps Chatwoot's Liquid. The model's text is escaped.
   modelText = true,
+  // The key every message of this reply carries in its send id (`replySendId`). A voice note's
+  // caller passes its own, so the text that follows the audio reads as the same reply.
+  replyKey: string = crypto.randomUUID(),
 ): Promise<ReplyDelivery> {
   const literal = modelText ? literalForChatwoot : (text: string) => text;
   return withFlowStage(
@@ -241,7 +245,7 @@ export async function deliverReply(
     },
     async () => {
       if (!cfg.enabled) {
-        const sendId = crypto.randomUUID();
+        const sendId = replySendId(replyKey);
         // The same function on a one-element array: split off is one chunk, not a second rule.
         // NOTE: the model's text is escaped for Chatwoot's Liquid and the signature is not.
         const [single = literal(reply)] = signature
@@ -308,7 +312,7 @@ export async function deliverReply(
           await sleep(typingDelayMs(asRendered(chunk), cfg));
           if (await calledOff()) break;
           // Minted before the request, because the send that times out never returns anything.
-          const sendId = crypto.randomUUID();
+          const sendId = replySendId(replyKey);
           try {
             const res = await client.sendMessage(conversationId, chunk, {
               sendId,
@@ -368,7 +372,7 @@ export async function deliverReply(
                   )[0] ?? literal(owedRaw))
                 : literal(owedRaw);
             // Same 15s deadline, so it can be rejected after being accepted like any other send.
-            const retrySendId = crypto.randomUUID();
+            const retrySendId = replySendId(replyKey);
             try {
               noteDelivered(
                 createdMessageId(

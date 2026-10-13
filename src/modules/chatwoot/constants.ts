@@ -15,6 +15,20 @@ export const CHATWOOT_AUTH_HEADER = "api-access-token";
 // Chatwoot's own keys (`in_reply_to`, `is_reaction`) and with the operator's own automations.
 export const CHATWOOT_SEND_ID_KEY = "fazer_ai_send_id";
 
+// The send ids of one reply's messages (its balloons, a voice note and the text that follows it)
+// share a key, so a later reader can tell the rest of the same reply from a newer one: a refused
+// balloon is not superseded by the balloon sent right after it.
+const REPLY_SEND_ID_PREFIX = "reply:";
+export function replySendId(replyKey: string): string {
+  return `${REPLY_SEND_ID_PREFIX}${replyKey}:${crypto.randomUUID()}`;
+}
+export function replyKeyOf(sendId: string | null | undefined): string | null {
+  if (!sendId?.startsWith(REPLY_SEND_ID_PREFIX)) return null;
+  const rest = sendId.slice(REPLY_SEND_ID_PREFIX.length);
+  const end = rest.indexOf(":");
+  return end > 0 ? rest.slice(0, end) : null;
+}
+
 // Set on everything the platform sends on the ADMIN token (a cross-inbox case opening and its
 // notes). Chatwoot files those under the token's owner, a user, so without it the AI agent's own
 // words read as a person's to whoever reads the conversation back. The owner typing by hand in

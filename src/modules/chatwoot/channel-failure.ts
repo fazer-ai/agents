@@ -19,6 +19,7 @@ import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 import { proactiveSendMode } from "@/modules/service-window/service";
 import { attachSignature, signatureFor } from "@/modules/signature/service";
 import { mediaAnnotationFor } from "./annotations";
+import { replyKeyOf } from "./constants";
 import { type LoadChatwootClientDeps, loadChatwootClient } from "./instance";
 import { literalForChatwoot } from "./liquid";
 import { chatwootMessageListLength, parseChatwootMessages } from "./messages";
@@ -111,6 +112,12 @@ export interface ChannelFailure {
   rendered: boolean;
   // The failed message was itself a resend of ours, so it is not resent again.
   wasResend: boolean;
+  // The key the failed message's reply shares with its other messages, when it carries one: those are
+  // the rest of the same reply, not a newer one.
+  replyKey: string | null;
+  // When Chatwoot created the failed message. A customer message after it means the conversation
+  // moved on, and the resend is skipped.
+  sentAt: Date | null;
 }
 
 function classify(code: string | null): ChannelFailureClass {
@@ -168,6 +175,8 @@ export function channelFailureOf(
     wasResend:
       sendId.startsWith(MEDIA_FALLBACK_SEND_ID) ||
       sendId.startsWith(RESEND_SEND_ID),
+    replyKey: replyKeyOf(m.sendId),
+    sentAt: m.createdAt ?? null,
   };
 }
 
@@ -294,6 +303,8 @@ export async function handleChannelFailure(params: {
           byOperator: f.byOperator,
           ...(wants.mode === "resend" ? { resend: true } : {}),
           ...(f.rendered ? { rendered: true } : {}),
+          ...(f.replyKey ? { replyKey: f.replyKey } : {}),
+          ...(f.sentAt ? { sentAt: f.sentAt.toISOString() } : {}),
         },
         ...(params.base ? { base: params.base } : {}),
       });
@@ -318,8 +329,16 @@ export async function handleChannelFailure(params: {
 export function newerThanFailure(
   rows: ReturnType<typeof parseChatwootMessages>,
   messageId: number,
+  // The failed message's reply key: the other messages of the same reply (the balloon after it, the
+  // text that follows a voice note) are not newer than it.
+  replyKey: string | null = null,
 ): string | null {
-  const after = rows.filter((m) => m.id > messageId && !m.private);
+  const after = rows.filter(
+    (m) =>
+      m.id > messageId &&
+      !m.private &&
+      (replyKey === null || replyKeyOf(m.sendId) !== replyKey),
+  );
   if (after.some((m) => m.messageType === "incoming"))
     return "the customer wrote after the failed reply";
   const sent = after.filter(
@@ -363,6 +382,10 @@ export async function mediaFallbackHandler(
   }
   const text = decryptJson<string>(job.payloadSecret);
   const resend = p.resend === true;
+  const sentAt =
+    typeof p.sentAt === "string" && !Number.isNaN(Date.parse(p.sentAt))
+      ? new Date(p.sentAt)
+      : null;
   // A text reply's own content, as Chatwoot rendered it with the signature already on it: escaped,
   // so a second render prints it back as it was, and not signed again.
   const rendered = p.rendered === true;
@@ -438,7 +461,12 @@ export async function mediaFallbackHandler(
     if (page === 0 && rows.length === 0)
       throw new Error("media fallback: the conversation read back empty");
     if (rows.some((m) => m.sendId === sendId)) return { outcome: "done" };
-    if (resend && newer === null) newer = newerThanFailure(rows, messageId);
+    if (resend && newer === null)
+      newer = newerThanFailure(
+        rows,
+        messageId,
+        typeof p.replyKey === "string" ? p.replyKey : null,
+      );
     const oldest = rows[0]?.id;
     if (oldest === undefined || oldest <= messageId) break;
     before = oldest;
@@ -498,6 +526,15 @@ export async function mediaFallbackHandler(
       },
     });
     if (!conv?.inboxId) return "the conversation is not mirrored here";
+    // NOTE: read again here, after every network read: a customer message that landed while Chatwoot
+    // was being asked is not on the pages read above, and the mirror has it.
+    if (
+      resend &&
+      sentAt !== null &&
+      conv.lastInboundAt !== null &&
+      conv.lastInboundAt > sentAt
+    )
+      return "the customer wrote after the failed reply";
     // NOTE: The reply belongs to the episode a `/reset` closed.
     if (resetLandedAfter(messageId, conv.resetAtMessageId))
       return "the conversation was reset after the failed reply";

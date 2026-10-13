@@ -4,6 +4,7 @@ import {
   type ChatwootClient,
   ChatwootMissingTokenError,
 } from "@/modules/chatwoot/client";
+import { replyKeyOf } from "@/modules/chatwoot/constants";
 import { recordSends } from "@/modules/chatwoot/record-sends";
 import {
   deliverReply,
@@ -181,6 +182,44 @@ describe("deliverReply", () => {
     expect(n.delivered).toBe(1);
     expect(rec.sent).toEqual(["oi\n\ntudo bem?"]);
     expect(rec.typing).toEqual([]);
+  });
+
+  // A refused balloon is not superseded by the balloon after it (channel-failure.ts reads the key).
+  test("every balloon of one reply carries the reply's key, and a caller's key is kept", async () => {
+    const ids: (string | undefined)[] = [];
+    const client = {
+      sendMessage: async (_c: number, _t: string, o?: { sendId?: string }) => {
+        ids.push(o?.sendId);
+        return {};
+      },
+      toggleTyping: async () => ({}),
+    } as unknown as ChatwootClient;
+    await deliverReply(
+      client,
+      1,
+      "Olá!\n\nComo vai?",
+      { ...SPLIT_DEFAULTS, enabled: true },
+      noSleep,
+    );
+    const keys = ids.map((id) => replyKeyOf(id));
+    expect(keys[0]).not.toBeNull();
+    expect(keys).toEqual([keys[0] ?? null, keys[0] ?? null]);
+    expect(new Set(ids).size).toBe(2);
+    ids.length = 0;
+    await deliverReply(
+      client,
+      1,
+      "oi",
+      { ...SPLIT_DEFAULTS, enabled: false },
+      noSleep,
+      undefined,
+      undefined,
+      null,
+      null,
+      true,
+      "voz-1",
+    );
+    expect(ids.map((id) => replyKeyOf(id))).toEqual(["voz-1"]);
   });
 
   test("enabled → one send per balloon, with typing toggles", async () => {

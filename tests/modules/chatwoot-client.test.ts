@@ -843,11 +843,22 @@ describe("ChatwootClient", () => {
         transcribedText: "Confirmei para quinta",
       },
     );
+    await client.sendAudioMessage(
+      42,
+      new ArrayBuffer(4),
+      "t.ogg",
+      "audio/ogg",
+      { transcribedText: "Confirmei para quinta", sendId: "reply:k:1" },
+    );
     const forms = bodies as FormData[];
     expect(forms[0]?.get("content_attributes")).toBe(
       JSON.stringify({ fazer_ai_reply_text: whole }),
     );
     expect(forms[1]?.has("content_attributes")).toBe(false);
+    // The voice note's name, so its refusal can tell the text after it is the same reply.
+    expect(forms[2]?.get("content_attributes")).toBe(
+      JSON.stringify({ fazer_ai_send_id: "reply:k:1" }),
+    );
   });
 
   // A voice note of the operator's words says so in the same bag, with or without the whole reply.

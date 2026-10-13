@@ -17,6 +17,7 @@ import {
   stashMediaAnnotation,
 } from "@/modules/chatwoot/annotations";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
+import { replySendId } from "@/modules/chatwoot/constants";
 import {
   describeClosedGate,
   type GateCloseDetail,
@@ -1481,6 +1482,8 @@ async function runTurnBody(
         if (await writeCalledOff()) return "stale";
         if (tts) {
           if (!(await claimBeforeSend())) return "superseded";
+          // One reply: the voice note and the text that follows it share the key.
+          const replyKey = crypto.randomUUID();
           const sent = await client.sendAudioMessage(
             conversationId,
             tts.audio,
@@ -1493,6 +1496,7 @@ async function runTurnBody(
               ...(spoken.speech === text ? {} : { replyText: text }),
               // NOTE: The operator's words keep Chatwoot's Liquid in that text.
               ...(modelText ? {} : { byOperator: true }),
+              sendId: replySendId(replyKey),
             },
           );
           // Upstream Chatwoot drops `attachments_metadata` and `content` cannot carry a caption
@@ -1532,6 +1536,7 @@ async function runTurnBody(
             Number.isSafeInteger(sentId) ? sentId : null,
             null,
             modelText,
+            replyKey,
           );
           return { ...items, delivered: 1 + items.delivered };
         }

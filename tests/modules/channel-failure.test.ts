@@ -197,6 +197,8 @@ describe("channelFailureOf", () => {
       byOperator: false,
       rendered: false,
       wasResend: false,
+      replyKey: null,
+      sentAt: null,
     });
     expect(
       channelFailureOf(updated(2, { error: "131052: x" }), BOT_ID)?.kind,
@@ -341,6 +343,25 @@ test("what came after a failed reply names why its resend is skipped", () => {
   expect(after([{ message_type: 1, sender: { type: "user", id: 3 } }])).toBe(
     "a person already sent something newer",
   );
+  // The rest of the same reply (the balloon after it, the text after a voice note) is not newer.
+  const bot = (sendId: string) => ({
+    message_type: 1,
+    sender: { type: "agent_bot", id: BOT_ID },
+    content_attributes: { fazer_ai_send_id: sendId },
+  });
+  const rows = parseChatwootMessages({
+    payload: [
+      { id: 1, content: "x", message_type: 1, private: false },
+      { id: 2, content: "y", private: false, ...bot("reply:k1:b") },
+    ],
+  });
+  expect(newerThanFailure(rows, 1, "k1")).toBeNull();
+  expect(newerThanFailure(rows, 1, "k2")).toBe(
+    "the bot already sent something newer",
+  );
+  expect(newerThanFailure(rows, 1, null)).toBe(
+    "the bot already sent something newer",
+  );
 });
 
 test("the fallback's key names the Chatwoot instance, so a replaced server cannot collide", () => {
@@ -469,6 +490,7 @@ describe.skipIf(!dbUp)("a channel failure reported to the bot", () => {
       messageType: number;
       sender: { type: string; id: number } | null;
       private?: boolean;
+      sendId?: string;
     }[];
   }) {
     const sent: {
@@ -515,9 +537,9 @@ describe.skipIf(!dbUp)("a channel failure reported to the bot", () => {
           const thread: Row[] = [
             { id: failedId, sendId: null },
             ...(opts.after ?? []).map((m, i) => ({
-              id: failedId + 1 + i,
-              sendId: null,
               ...m,
+              id: failedId + 1 + i,
+              sendId: m.sendId ?? null,
             })),
             ...Array.from({ length: opts.filler ?? 0 }, (_, i) => ({
               id: 10_000 + i,
@@ -1215,6 +1237,80 @@ describe.skipIf(!dbUp)("a channel failure reported to the bot", () => {
       await suDb.agent.update({
         where: { id: agentId },
         data: { settings: {} },
+      });
+    }
+  });
+
+  // A voice note refused while the text after it landed: that text is the rest of the same reply,
+  // and the spoken part still has to reach the customer.
+  test("the rest of the same reply does not cancel the resend, a newer reply does", async () => {
+    await deliver(
+      updated(9017, { error: "(#131000) x", sendId: "reply:k17:audio" }),
+    );
+    const sameReply = fakeChatwoot({
+      failedId: 9017,
+      after: [
+        {
+          messageType: 1,
+          sender: { type: "agent_bot", id: BOT_ID },
+          sendId: "reply:k17:text",
+        },
+      ],
+    });
+    await mediaFallbackHandler(
+      await claimed(9017),
+      appDb,
+      sameReply.makeClient,
+    );
+    expect(sameReply.sent).toHaveLength(1);
+    const newer = fakeChatwoot({
+      failedId: 9017,
+      after: [
+        {
+          messageType: 1,
+          sender: { type: "agent_bot", id: BOT_ID },
+          sendId: "reply:k99:text",
+        },
+      ],
+    });
+    await mediaFallbackHandler(await claimed(9017), appDb, newer.makeClient);
+    expect(newer.sent).toEqual([]);
+  });
+
+  // A customer message that lands while the job reads Chatwoot is not on the pages it read; the
+  // mirror, read last, has it.
+  test("a customer message mirrored after the failed reply stops the resend at the last gate", async () => {
+    const sentAt = new Date(Date.now() - 60_000);
+    const n = updated(9016, { error: "(#131000) x", content: "x" });
+    if (n.message) n.message.createdAt = sentAt;
+    await deliver(n);
+    expect((await claimed(9016)).payload).toMatchObject({
+      sentAt: sentAt.toISOString(),
+    });
+    const cw = fakeChatwoot({
+      failedId: 9016,
+      onLive: async () => {
+        await suDb.conversation.updateMany({
+          where: { tenantId, chatwootConversationId: CONV_ID },
+          data: { lastInboundAt: new Date(sentAt.getTime() + 1_000) },
+        });
+      },
+    });
+    try {
+      await mediaFallbackHandler(await claimed(9016), appDb, cw.makeClient);
+      expect(cw.sent).toEqual([]);
+      // ...and one from before the failed reply does not.
+      await suDb.conversation.updateMany({
+        where: { tenantId, chatwootConversationId: CONV_ID },
+        data: { lastInboundAt: new Date(sentAt.getTime() - 1_000) },
+      });
+      const ok = fakeChatwoot({ failedId: 9016 });
+      await mediaFallbackHandler(await claimed(9016), appDb, ok.makeClient);
+      expect(ok.sent).toHaveLength(1);
+    } finally {
+      await suDb.conversation.updateMany({
+        where: { tenantId, chatwootConversationId: CONV_ID },
+        data: { lastInboundAt: new Date() },
       });
     }
   });

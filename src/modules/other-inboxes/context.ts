@@ -6,9 +6,10 @@ import { auditedSection } from "@/graph/prompt-audit";
 import { formatParts, partsInTimezone } from "@/graph/time";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { xmlAttr, xmlEscape } from "@/lib/xml";
-import type {
-  ChatwootClient,
-  ChatwootConversationRef,
+import {
+  ChatwootApiError,
+  type ChatwootClient,
+  type ChatwootConversationRef,
 } from "@/modules/chatwoot/client";
 import { loadChatwootClient } from "@/modules/chatwoot/instance";
 import type { FlowEvent } from "@/modules/flowlog/service";
@@ -174,6 +175,23 @@ export function buildOtherInboxesSection(
   ].join("\n");
 }
 
+// The contact's conversations by activity, or the contact listing on a fork that refuses the filter
+// (`contact_id` became a filter attribute in v4.14.2; an older one answers 422). The listing is the
+// 25 created last, which is what the block read before the filter.
+async function listByActivity(
+  client: ChatwootClient,
+  p: { contactId: number; inboxIds: readonly number[]; activeSince: Date },
+): Promise<ChatwootConversationRef[]> {
+  try {
+    return await client.listContactConversationsByActivity(p);
+  } catch (err) {
+    if (err instanceof ChatwootApiError && err.status === 422) {
+      return client.listContactConversations(p.contactId);
+    }
+    throw err;
+  }
+}
+
 // The turn's config with the block appended, and the report the flow line is written from. The
 // same config, untouched and with no report, when the feature does not apply to this turn.
 export async function withOtherInboxesContext(
@@ -227,12 +245,11 @@ export async function withOtherInboxesContext(
       let pending = listingInFlight.get(listingKey);
       if (!pending) {
         const at = now();
-        pending = client
-          .listContactConversationsByActivity({
-            contactId,
-            inboxIds,
-            activeSince: new Date(since),
-          })
+        pending = listByActivity(client, {
+          contactId,
+          inboxIds,
+          activeSince: new Date(since),
+        })
           .then((r) => {
             remember(listingCache, listingKey, { at, refs: r });
             return r;

@@ -14,9 +14,10 @@ import {
   clearMediaAnnotations,
   stashMediaAnnotation,
 } from "@/modules/chatwoot/annotations";
-import type {
-  ChatwootClient,
-  ChatwootConversationRef,
+import {
+  ChatwootApiError,
+  type ChatwootClient,
+  type ChatwootConversationRef,
 } from "@/modules/chatwoot/client";
 import {
   CHATWOOT_SEND_ID_KEY,
@@ -113,6 +114,9 @@ function fakeChatwoot(
   convs: (ChatwootConversationRef & { messages?: RawMessage[] })[],
   opts: {
     listingFails?: boolean;
+    // A fork older than v4.14.2, where `contact_id` is not a filter attribute.
+    filterRefused?: boolean;
+    filterFails?: boolean;
     messagesFail?: boolean;
     onMessages?: (conversationId: number) => Promise<void>;
     // The inbox Chatwoot answers for a conversation NOW, when it is not the listing's.
@@ -146,6 +150,10 @@ function fakeChatwoot(
       calls.listing += 1;
       calls.asked.push({ inboxIds: p.inboxIds, activeSince: p.activeSince });
       if (opts.listingFails) throw new Error("HTTP 500");
+      if (opts.filterRefused)
+        throw new ChatwootApiError(422, "POST /conversations/filter");
+      if (opts.filterFails)
+        throw new ChatwootApiError(500, "POST /conversations/filter");
       expect(p.contactId).toBe(CONTACT);
       const day = new Date(p.activeSince.getTime() - DAY)
         .toISOString()
@@ -1457,6 +1465,31 @@ describe.skipIf(!dbUp)("the contact's conversations in other inboxes", () => {
     expect(cw.calls.asked).toEqual([
       { inboxIds: [INBOX_B, INBOX_D], activeSince: new Date(NOW - 30 * DAY) },
     ]);
+  });
+
+  test("a fork that refuses the contact filter falls back to the contact listing", async () => {
+    const cw = fakeChatwoot(
+      [
+        conv(10, INBOX_B, 1, [incoming(1, "TOKEN-B1")]),
+        conv(11, INBOX_C, 2, [incoming(2, "TOKEN-C1")]),
+      ],
+      { filterRefused: true },
+    );
+    const out = await run(config(), cw);
+    expect(cw.calls.listing).toBe(2);
+    expect(out.systemPrompt).toContain("TOKEN-B1");
+    expect(out.systemPrompt).not.toContain("TOKEN-C1");
+    expect(out.otherInboxesReport?.unreadable).toEqual([]);
+  });
+
+  test("a filter that fails for another reason is an unreadable listing, not the contact listing", async () => {
+    const cw = fakeChatwoot([conv(10, INBOX_B, 1, [incoming(1, "TOKEN-B1")])], {
+      filterFails: true,
+    });
+    const out = await run(config(), cw);
+    expect(cw.calls.listing).toBe(1);
+    expect(out.systemPrompt).not.toContain("TOKEN-B1");
+    expect(out.otherInboxesReport?.unreadable).toEqual(["listing"]);
   });
 
   test("the listing asks only the picked inboxes other than the current one", async () => {

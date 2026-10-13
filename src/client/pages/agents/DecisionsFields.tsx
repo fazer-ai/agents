@@ -675,6 +675,19 @@ function CustomToolArgs({
         );
         const fixed = own(rule.args, name);
         const numeric = spec?.type === "integer" || spec?.type === "number";
+        // Text a numeric input cannot read ("1e", "-") reaches here as "", flagged bad input, while
+        // the box still shows it. Kept as the empty text, which the check calls the wrong type, so
+        // it is not dropped as if the box were emptied.
+        const typed = (el: HTMLInputElement) => {
+          const raw = el.value;
+          setDrafts((d) => ({ ...d, [name]: raw }));
+          setValue(
+            name,
+            "fixed",
+            fixedFromInput(spec, raw),
+            spec?.type === "string" || el.validity.badInput,
+          );
+        };
         const label = spec
           ? `${name} (${typeText(t, spec)}${spec.required ? `, ${t("editor.decisionsArgRequired", "required")}` : ""})`
           : name;
@@ -789,19 +802,15 @@ function CustomToolArgs({
                   // the check holds the value to, not the browser's step.
                   {...(numeric ? { type: "number", step: "any" } : {})}
                   aria-label={name}
-                  onChange={(e) => {
-                    const raw = e.target.value;
-                    setDrafts((d) => ({ ...d, [name]: raw }));
-                    // Text a numeric input cannot read ("1e", "-") reaches here as "", flagged bad
-                    // input, while the box still shows it. Kept as the empty text, which the check
-                    // calls the wrong type, so it is not dropped as if the box were emptied.
-                    setValue(
-                      name,
-                      "fixed",
-                      fixedFromInput(spec, raw),
-                      spec?.type === "string" || e.target.validity.badInput,
-                    );
-                  }}
+                  onChange={(e) => typed(e.target)}
+                  // A numeric input that goes between "" and text it cannot read ("-" in an empty
+                  // box, or "1e" cleared) changes its validity and not its value, and React's
+                  // onChange skips an unchanged value: the input event still comes.
+                  onInput={
+                    numeric
+                      ? (e) => typed(e.currentTarget as HTMLInputElement)
+                      : undefined
+                  }
                   onBlur={() => setDrafts(({ [name]: _, ...rest }) => rest)}
                 />
               )}

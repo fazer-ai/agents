@@ -1282,6 +1282,46 @@ describe("a rule on a custom tool", () => {
     expect(typeof rules[0]?.action.args.prioridade).not.toBe("number");
   });
 
+  test("a numeric input that only changes its validity, its value staying empty, is still read", async () => {
+    stubApi();
+    const { state } = renderSection(
+      { monitoring: { engine: "decisions", decisions: BLOCK } },
+      { granted: GRANTED, customTools: TOOLS, showErrors: true },
+    );
+    openAll();
+    const action = screen.getAllByTestId("decisions-rule-action")[0];
+    if (!action) throw new Error("no action select");
+    fireEvent.change(action, { target: { value: "abrir_ticket" } });
+    const row = (arg: string) => screen.getByTestId(`decisions-arg-${arg}`);
+    fireEvent.change(row("motivo").querySelector("input") as HTMLElement, {
+      target: { value: "cancelamento" },
+    });
+    fireEvent.change(row("telefone").querySelector("input") as HTMLElement, {
+      target: { value: "+5511999990000" },
+    });
+    const input = row("prioridade").querySelector("input") as HTMLInputElement;
+    let bad = true;
+    Object.defineProperty(input, "validity", {
+      configurable: true,
+      get: () => ({ badInput: bad, valid: !bad }),
+    });
+    const args = () => {
+      const rules = observationToStored(state()).decisions?.rules as
+        | { action: { args: Record<string, unknown> } }[]
+        | undefined;
+      return rules?.[0]?.action.args ?? {};
+    };
+    // "-" typed in the empty box: the value stays "", only the validity changes.
+    fireEvent.input(input);
+    expect(count("decisions-problems")).toBe(1);
+    expect(Object.hasOwn(args(), "prioridade")).toBe(true);
+    // And cleared again: still "", valid now, so the argument is left out and the problem goes.
+    bad = false;
+    fireEvent.input(input);
+    expect(count("decisions-problems")).toBe(0);
+    expect(Object.hasOwn(args(), "prioridade")).toBe(false);
+  });
+
   test("an optional number emptied is left out, neither 0 nor the empty text", async () => {
     stubApi();
     const { state } = renderSection(

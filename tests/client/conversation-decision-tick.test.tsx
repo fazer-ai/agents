@@ -845,6 +845,47 @@ describe("reading a large block (the operator's review of #1417)", () => {
     expect(screen.queryByTestId("decision-changes")).toBeNull();
   });
 
+  test("a score's level need not be the likeliest: a runner-up far above it is not a close call", async () => {
+    await inLanguage(
+      "en",
+      <DecisionTickMarker
+        entry={entry("1", {
+          decision: tick({
+            answers: {
+              anger: {
+                type: "score",
+                score: 0.8,
+                confidence: 0.5,
+                probabilities: { calm: 0.6, upset: 0, furious: 0.4 },
+              },
+            },
+          }),
+        })}
+      />,
+    );
+    fireEvent.click(screen.getAllByRole("button")[0] as HTMLElement);
+    expect(screen.queryByTestId("decision-close-call")).toBeNull();
+  });
+
+  test("a question whose type changed between ticks reports no move", async () => {
+    const previous = tick({
+      answers: {
+        ...ANSWERS,
+        asks_refund: {
+          type: "choice",
+          choice: "refund",
+          confidence: 1,
+          probabilities: { refund: 1 },
+        },
+      },
+    });
+    await inLanguage(
+      "en",
+      <DecisionTickMarker entry={entry("2")} previous={previous} />,
+    );
+    expect(screen.queryByTestId("decision-changes")).toBeNull();
+  });
+
   test("a score is compared only between ticks of the block shown, since an edit can reorder its levels", async () => {
     const previous = tick({
       block: null,

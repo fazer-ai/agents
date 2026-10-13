@@ -173,7 +173,10 @@ function closeCallOf(rows: ProbabilityRow[]): CloseCall | null {
       runner = { value: r.value, probability: r.probability };
     }
   }
-  return runner && chosen.probability - runner.probability <= NEAR + 1e-9
+  // The gap in either direction: a score's level is the rounded weighted mean, so the level shown
+  // need not be the likeliest, and a runner-up far above it is not a close call.
+  return runner &&
+    Math.abs(chosen.probability - runner.probability) <= NEAR + 1e-9
     ? runner
     : null;
 }
@@ -381,8 +384,10 @@ export function answerChanges(
     // A score is a level index, and an index means a level only under the block that wrote it: two
     // ticks are compared on a score only when both ran the block shown, since an edit in between can
     // reorder the levels and turn an unchanged answer into a move.
-    const isScore =
-      bag(before[name])?.type === "score" || bag(now[name])?.type === "score";
+    // A question whose type changed in between has no "before" in the same terms.
+    const type = bag(now[name])?.type;
+    if (bag(before[name])?.type !== type) continue;
+    const isScore = type === "score";
     if (isScore && (previous.block === null || current.block === null)) {
       continue;
     }

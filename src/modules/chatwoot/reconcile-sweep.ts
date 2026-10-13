@@ -453,8 +453,8 @@ async function readListing(
   const { counts } = p;
   const named = new Set<number>();
   // Every row of this read, to see two pages overlap: the listing has a fixed length, so a row named
-  // twice means another was named on no page (conversations sharing a last activity have no stable
-  // order across offset pages), and such a read cannot prove the window was covered.
+  // twice means another was named on no page (a conversation that moves to the top between two pages
+  // pushes every row behind it down one), and such a read cannot prove the window was covered.
   const listed = new Set<number>();
   let overlapped = false;
   // No page cap: the read ends at the first unpinned row older than the window, so its length is the

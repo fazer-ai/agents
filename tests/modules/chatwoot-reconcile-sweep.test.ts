@@ -1310,7 +1310,7 @@ describe.skipIf(!dbUp)("reconciling from Chatwoot", () => {
         outgoing(c.id * 10 + 1, minutesAgo(20)),
       ]);
     messages.set(975, [incoming(9750, minutesAgo(20))]);
-    // Ties ordered differently per request: page two repeats 974 and never names 975, every time.
+    // A row pushed down between the pages on every read: page two repeats 974 and never names 975.
     const overlapping = [all.slice(0, 25), [all[24], ...all.slice(26, 50)], []];
     const s: Scripted = {
       conversations: new Map(),

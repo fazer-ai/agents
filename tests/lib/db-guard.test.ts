@@ -13,7 +13,10 @@ import {
 } from "@/lib/db-guard";
 import { FLEET_ROLE_FN } from "@/lib/tenancy/fleet-role";
 import { dbProbeFailed } from "@/tests/db-gate";
-import { withRoleCatalogLock as withCatalogLock } from "@/tests/utils/role-catalog-lock";
+import {
+  ROLE_CATALOG_HOOK_MS,
+  withRoleCatalogLock as withCatalogLock,
+} from "@/tests/utils/role-catalog-lock";
 
 // MIGRATION_DATABASE_URL connects as the Postgres superuser (the migration/owner role).
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -114,7 +117,7 @@ describe.skipIf(!dbUp)("assertRuntimeRoleIsNotSuperuser", () => {
       adapter: new PrismaPg({ connectionString: tmpUrl }),
     });
     await tmp.$queryRaw`SELECT 1`;
-  });
+  }, ROLE_CATALOG_HOOK_MS);
 
   afterAll(async () => {
     if (tmp) await tmp.$disconnect();
@@ -129,7 +132,7 @@ describe.skipIf(!dbUp)("assertRuntimeRoleIsNotSuperuser", () => {
       await db.$executeRawUnsafe(`DROP ROLE IF EXISTS ${SAFE_ROLE}`);
     });
     await suDb.$disconnect();
-  });
+  }, ROLE_CATALOG_HOOK_MS);
 
   test("throws for a superuser runtime role (RLS would be a no-op)", async () => {
     expect(assertRuntimeRoleIsNotSuperuser(suDb)).rejects.toBeInstanceOf(
@@ -183,74 +186,82 @@ describe.skipIf(!dbUp)("assertRuntimeRoleIsNotSuperuser", () => {
     // it. That flag accepts that RLS may be a no-op, a statement about isolation. Not being able to
     // enter the fleet role is different: every authenticated request would fail, because that is how
     // an API key is verified.
-    test("a runtime that cannot enter the fleet role is refused, flag or no flag", async () => {
-      const fleetRole = (
-        (await suDb.$queryRawUnsafe(
-          `SELECT ${FLEET_ROLE_FN} AS role`,
-        )) as Array<{ role: string }>
-      )[0]?.role as string;
-      await withRoleCatalogLock(async (db) => {
-        await db.$executeRawUnsafe(`REVOKE "${fleetRole}" FROM ${SAFE_ROLE}`);
-      });
-      const err = await assertRuntimeRoleIsNotSuperuser(tmp as PrismaClient, {
-        allow: true,
-      }).then(
-        () => null,
-        (e: unknown) => e as Error,
-      );
-      expect(err).toBeInstanceOf(FleetRoleUnreachableError);
-      expect(err?.message).toContain("API key");
-      expect(err?.message).toContain("WITH INHERIT FALSE, SET TRUE;");
-      await withRoleCatalogLock(async (db) => {
-        await db.$executeRawUnsafe(
-          `GRANT "${fleetRole}" TO ${SAFE_ROLE} WITH INHERIT FALSE, SET TRUE`,
+    test(
+      "a runtime that cannot enter the fleet role is refused, flag or no flag",
+      async () => {
+        const fleetRole = (
+          (await suDb.$queryRawUnsafe(
+            `SELECT ${FLEET_ROLE_FN} AS role`,
+          )) as Array<{ role: string }>
+        )[0]?.role as string;
+        await withRoleCatalogLock(async (db) => {
+          await db.$executeRawUnsafe(`REVOKE "${fleetRole}" FROM ${SAFE_ROLE}`);
+        });
+        const err = await assertRuntimeRoleIsNotSuperuser(tmp as PrismaClient, {
+          allow: true,
+        }).then(
+          () => null,
+          (e: unknown) => e as Error,
         );
-      });
-    });
+        expect(err).toBeInstanceOf(FleetRoleUnreachableError);
+        expect(err?.message).toContain("API key");
+        expect(err?.message).toContain("WITH INHERIT FALSE, SET TRUE;");
+        await withRoleCatalogLock(async (db) => {
+          await db.$executeRawUnsafe(
+            `GRANT "${fleetRole}" TO ${SAFE_ROLE} WITH INHERIT FALSE, SET TRUE`,
+          );
+        });
+      },
+      ROLE_CATALOG_HOOK_MS,
+    );
 
-    test("SET ROLE is fine; INHERITING it is refused, and the message says which GRANT repairs it", async () => {
-      // Resolved from the database: the name carries the database (see `@/lib/tenancy/fleet-role`),
-      // so writing it here would be a second spelling of the thing under test.
-      const fleetRole = (
-        (await suDb.$queryRawUnsafe(
-          `SELECT ${FLEET_ROLE_FN} AS role`,
-        )) as Array<{ role: string }>
-      )[0]?.role as string;
-      await withRoleCatalogLock(async (db) => {
-        await db.$executeRawUnsafe(
-          `GRANT "${fleetRole}" TO ${SAFE_ROLE} WITH INHERIT FALSE, SET TRUE`,
+    test(
+      "SET ROLE is fine; INHERITING it is refused, and the message says which GRANT repairs it",
+      async () => {
+        // Resolved from the database: the name carries the database (see `@/lib/tenancy/fleet-role`),
+        // so writing it here would be a second spelling of the thing under test.
+        const fleetRole = (
+          (await suDb.$queryRawUnsafe(
+            `SELECT ${FLEET_ROLE_FN} AS role`,
+          )) as Array<{ role: string }>
+        )[0]?.role as string;
+        await withRoleCatalogLock(async (db) => {
+          await db.$executeRawUnsafe(
+            `GRANT "${fleetRole}" TO ${SAFE_ROLE} WITH INHERIT FALSE, SET TRUE`,
+          );
+        });
+        await expect(
+          assertRuntimeRoleIsNotSuperuser(tmp as PrismaClient),
+        ).resolves.toBeUndefined();
+
+        await withRoleCatalogLock(async (db) => {
+          await db.$executeRawUnsafe(
+            `GRANT "${fleetRole}" TO ${SAFE_ROLE} WITH INHERIT TRUE`,
+          );
+        });
+        const err = await assertRuntimeRoleIsNotSuperuser(
+          tmp as PrismaClient,
+        ).then(
+          () => null,
+          (e: unknown) => e as Error,
         );
-      });
-      await expect(
-        assertRuntimeRoleIsNotSuperuser(tmp as PrismaClient),
-      ).resolves.toBeUndefined();
+        expect(err).toBeInstanceOf(SuperuserRuntimeError);
+        expect(err?.message).toContain(FLEET_INHERITED_REASON);
+        expect(err?.message).toContain("WITH INHERIT FALSE, SET TRUE");
 
-      await withRoleCatalogLock(async (db) => {
-        await db.$executeRawUnsafe(
-          `GRANT "${fleetRole}" TO ${SAFE_ROLE} WITH INHERIT TRUE`,
-        );
-      });
-      const err = await assertRuntimeRoleIsNotSuperuser(
-        tmp as PrismaClient,
-      ).then(
-        () => null,
-        (e: unknown) => e as Error,
-      );
-      expect(err).toBeInstanceOf(SuperuserRuntimeError);
-      expect(err?.message).toContain(FLEET_INHERITED_REASON);
-      expect(err?.message).toContain("WITH INHERIT FALSE, SET TRUE");
+        // The role never became privileged in the pg_roles sense, which is why this is asked
+        // separately.
+        const attrs = (await (tmp as PrismaClient).$queryRawUnsafe(
+          `SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user`,
+        )) as Array<{ rolsuper: boolean; rolbypassrls: boolean }>;
+        expect(attrs[0]).toEqual({ rolsuper: false, rolbypassrls: false });
 
-      // The role never became privileged in the pg_roles sense, which is why this is asked
-      // separately.
-      const attrs = (await (tmp as PrismaClient).$queryRawUnsafe(
-        `SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user`,
-      )) as Array<{ rolsuper: boolean; rolbypassrls: boolean }>;
-      expect(attrs[0]).toEqual({ rolsuper: false, rolbypassrls: false });
-
-      await withRoleCatalogLock(async (db) => {
-        await db.$executeRawUnsafe(`REVOKE "${fleetRole}" FROM ${SAFE_ROLE}`);
-      });
-    });
+        await withRoleCatalogLock(async (db) => {
+          await db.$executeRawUnsafe(`REVOKE "${fleetRole}" FROM ${SAFE_ROLE}`);
+        });
+      },
+      ROLE_CATALOG_HOOK_MS,
+    );
   });
 });
 

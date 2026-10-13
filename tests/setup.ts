@@ -20,6 +20,7 @@ import {
   withDeadline,
 } from "./db-gate";
 import { checkoutRootFrom, testDbNameFor, withDbName } from "./db-name";
+import { TEST_TIMEOUT_MS } from "./utils/timeouts";
 
 // NOTE: happy-dom registration and the Bun-native global capture live in
 // ./dom-setup.ts, which bunfig.toml preloads BEFORE this file. The DOM must
@@ -34,7 +35,7 @@ import { checkoutRootFrom, testDbNameFor, withDbName } from "./db-name";
 // of a real failure gets slower. NOT the answer for a window a test's own SETUP must fit inside,
 // paid on every run: see the overflow-drain test in tests/modules/contact-auth-grant.test.ts, which
 // holds the clock still instead, and the per-test cost note in tests/tooling/stale-base-guard.test.ts.
-jest.setTimeout(30_000);
+jest.setTimeout(TEST_TIMEOUT_MS);
 configure({ asyncUtilTimeout: 5_000 });
 
 // A TIMED-OUT TEST KEEPS RUNNING, and Bun moves on without waiting for its body. A `globalThis.fetch`

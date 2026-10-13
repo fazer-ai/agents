@@ -1,4 +1,12 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  test,
+} from "bun:test";
 import { readFileSync } from "node:fs";
 import { Client } from "pg";
 import {
@@ -15,7 +23,11 @@ import {
   parseAppRole,
   planRoleProvisioning,
 } from "../../scripts/db-bootstrap";
-import { holdRoleCatalogLock } from "../utils/role-catalog-lock";
+import {
+  holdRoleCatalogLock,
+  ROLE_CATALOG_HOOK_MS,
+  withRoleCatalogLock,
+} from "../utils/role-catalog-lock";
 
 // The failures this file covers exist only on a database whose ADMINISTRATIVE role is not a real
 // superuser, which is every managed Postgres (RDS, Coolify, EasyPanel) and no local docker one. So
@@ -812,87 +824,98 @@ describe.skipIf(!dbUp)(
     // schema we do not own), which is the shape the failures actually come in. Running one alone
     // with `-t` skips the boot that created the role and fails on a missing role, not on the
     // behaviour under test.
+    // The role catalog lock is held per test, so it covers the subprocess, whose own role DDL we do
+    // not control, without making every other suite that writes roles wait for this whole one
+    // (tests/utils/role-catalog-lock.ts). Each hook that takes it has a timeout above the wait.
+    beforeEach(async () => {
+      releaseCatalog = await holdRoleCatalogLock(suUrl as string);
+    }, ROLE_CATALOG_HOOK_MS);
+    afterEach(async () => {
+      await releaseCatalog?.();
+      releaseCatalog = undefined;
+    });
+
     beforeAll(async () => {
       const db = su as Client;
-      // NOTE: held for the whole suite, so it also covers the subprocess, whose own role DDL we do not
-      // control (tests/utils/role-catalog-lock.ts).
-      releaseCatalog = await holdRoleCatalogLock(suUrl as string);
-      await db.query(`DROP DATABASE IF EXISTS ${SOLO_DB}`);
-      await db.query(`DROP DATABASE IF EXISTS ${NOINH_DB}`);
-      await db.query(`DROP DATABASE IF EXISTS ${PROBE_DB}`);
-      await db.query(`DROP ROLE IF EXISTS ${APP_ROLE}`);
-      await db.query(`DROP ROLE IF EXISTS ${STRAY_ROLE}`);
-      await db.query(`DROP ROLE IF EXISTS ${FOREIGN_ROLE}`);
-      await db.query(`DROP ROLE IF EXISTS ${UNREACHABLE_ROLE}`);
-      await db.query(`DROP ROLE IF EXISTS ${ROT_A_ROLE}`);
-      await db.query(`DROP ROLE IF EXISTS ${ROT_B_ROLE}`);
-      await db.query(`DROP ROLE IF EXISTS ${SOLO_ROLE}`);
-      await db.query(`DROP ROLE IF EXISTS ${SPLIT_OWNER}`);
-      await db.query(`DROP ROLE IF EXISTS ${NOINH_ADMIN}`);
-      await db.query(`DROP ROLE IF EXISTS ${NOINH_APP}`);
-      await db.query(`DROP ROLE IF EXISTS ${HEIR_ROLE}`);
-      await db.query(`DROP ROLE IF EXISTS ${SETONLY_ROLE}`);
-      await db.query(`DROP ROLE IF EXISTS ${PRIV_PARENT}`);
-      await db.query(`DROP ROLE IF EXISTS ${SU_PARENT}`);
-      await db.query(`DROP ROLE IF EXISTS ${TEAM_ROLE}`);
-      await db.query(`DROP ROLE IF EXISTS ${SIDE_ROLE}`);
-      await db.query(`DROP ROLE IF EXISTS ${PRIV_ROLE}`);
-      await db.query(`DROP ROLE IF EXISTS ${ADMIN_ROLE}`);
-      // NOTE: the shape of an RDS master user / a Coolify-provisioned owner: it can create roles and owns
-      // the database, and `rolsuper` is false.
-      await db.query(
-        `CREATE ROLE ${ADMIN_ROLE} LOGIN PASSWORD '${ADMIN_PW}' CREATEROLE NOSUPERUSER NOBYPASSRLS`,
-      );
-      await db.query(`CREATE DATABASE ${PROBE_DB} OWNER ${ADMIN_ROLE}`);
-      // Pgvector is installed here by the SUPERUSER on purpose. `CREATE EXTENSION` is a separate
-      // privilege question with a separate answer (on RDS the master user may install it; a
-      // non-superuser on a plain server may not), and not what this file measures. Leaving it out would
-      // fail the script one statement earlier, on something unrelated.
-      const admin = new URL(suUrl as string);
-      await onProbe(urlFor(admin.username, admin.password, PROBE_DB), (c) =>
-        c.query("CREATE EXTENSION IF NOT EXISTS vector"),
-      );
-    });
+      await withRoleCatalogLock(suUrl as string, async () => {
+        await db.query(`DROP DATABASE IF EXISTS ${SOLO_DB}`);
+        await db.query(`DROP DATABASE IF EXISTS ${NOINH_DB}`);
+        await db.query(`DROP DATABASE IF EXISTS ${PROBE_DB}`);
+        await db.query(`DROP ROLE IF EXISTS ${APP_ROLE}`);
+        await db.query(`DROP ROLE IF EXISTS ${STRAY_ROLE}`);
+        await db.query(`DROP ROLE IF EXISTS ${FOREIGN_ROLE}`);
+        await db.query(`DROP ROLE IF EXISTS ${UNREACHABLE_ROLE}`);
+        await db.query(`DROP ROLE IF EXISTS ${ROT_A_ROLE}`);
+        await db.query(`DROP ROLE IF EXISTS ${ROT_B_ROLE}`);
+        await db.query(`DROP ROLE IF EXISTS ${SOLO_ROLE}`);
+        await db.query(`DROP ROLE IF EXISTS ${SPLIT_OWNER}`);
+        await db.query(`DROP ROLE IF EXISTS ${NOINH_ADMIN}`);
+        await db.query(`DROP ROLE IF EXISTS ${NOINH_APP}`);
+        await db.query(`DROP ROLE IF EXISTS ${HEIR_ROLE}`);
+        await db.query(`DROP ROLE IF EXISTS ${SETONLY_ROLE}`);
+        await db.query(`DROP ROLE IF EXISTS ${PRIV_PARENT}`);
+        await db.query(`DROP ROLE IF EXISTS ${SU_PARENT}`);
+        await db.query(`DROP ROLE IF EXISTS ${TEAM_ROLE}`);
+        await db.query(`DROP ROLE IF EXISTS ${SIDE_ROLE}`);
+        await db.query(`DROP ROLE IF EXISTS ${PRIV_ROLE}`);
+        await db.query(`DROP ROLE IF EXISTS ${ADMIN_ROLE}`);
+        // NOTE: the shape of an RDS master user / a Coolify-provisioned owner: it can create roles and owns
+        // the database, and `rolsuper` is false.
+        await db.query(
+          `CREATE ROLE ${ADMIN_ROLE} LOGIN PASSWORD '${ADMIN_PW}' CREATEROLE NOSUPERUSER NOBYPASSRLS`,
+        );
+        await db.query(`CREATE DATABASE ${PROBE_DB} OWNER ${ADMIN_ROLE}`);
+        // Pgvector is installed here by the SUPERUSER on purpose. `CREATE EXTENSION` is a separate
+        // privilege question with a separate answer (on RDS the master user may install it; a
+        // non-superuser on a plain server may not), and not what this file measures. Leaving it out would
+        // fail the script one statement earlier, on something unrelated.
+        const admin = new URL(suUrl as string);
+        await onProbe(urlFor(admin.username, admin.password, PROBE_DB), (c) =>
+          c.query("CREATE EXTENSION IF NOT EXISTS vector"),
+        );
+      });
+    }, ROLE_CATALOG_HOOK_MS);
 
     afterAll(async () => {
       const db = su as Client;
-      await db.query(`DROP DATABASE IF EXISTS ${SOLO_DB}`);
-      await db.query(`DROP DATABASE IF EXISTS ${NOINH_DB}`);
-      await db.query(`DROP DATABASE IF EXISTS ${PROBE_DB}`);
-      // The fleet roles those databases provisioned, whose NAMES carry them. Dropped before the
-      // administrators are, because the membership each administrator granted onward is a
-      // dependency of that administrator: without this the DROP ROLE below fails with
-      // `privileges for membership of role … in role …` and the cluster keeps one role per run.
-      for (const { rolname } of (
-        await db.query<{ rolname: string }>(
-          "SELECT rolname FROM pg_roles WHERE rolname LIKE $1",
-          [`fazerai_fleet_%${process.pid}%`],
-        )
-      ).rows) {
-        await db.query(`DROP OWNED BY "${rolname}" CASCADE`);
-        await db.query(`DROP ROLE IF EXISTS "${rolname}"`);
-      }
-      await db.query(`DROP ROLE IF EXISTS ${APP_ROLE}`);
-      await db.query(`DROP ROLE IF EXISTS ${STRAY_ROLE}`);
-      await db.query(`DROP ROLE IF EXISTS ${FOREIGN_ROLE}`);
-      await db.query(`DROP ROLE IF EXISTS ${UNREACHABLE_ROLE}`);
-      await db.query(`DROP ROLE IF EXISTS ${ROT_A_ROLE}`);
-      await db.query(`DROP ROLE IF EXISTS ${ROT_B_ROLE}`);
-      await db.query(`DROP ROLE IF EXISTS ${SOLO_ROLE}`);
-      await db.query(`DROP ROLE IF EXISTS ${SPLIT_OWNER}`);
-      await db.query(`DROP ROLE IF EXISTS ${NOINH_ADMIN}`);
-      await db.query(`DROP ROLE IF EXISTS ${NOINH_APP}`);
-      await db.query(`DROP ROLE IF EXISTS ${HEIR_ROLE}`);
-      await db.query(`DROP ROLE IF EXISTS ${SETONLY_ROLE}`);
-      await db.query(`DROP ROLE IF EXISTS ${PRIV_PARENT}`);
-      await db.query(`DROP ROLE IF EXISTS ${SU_PARENT}`);
-      await db.query(`DROP ROLE IF EXISTS ${TEAM_ROLE}`);
-      await db.query(`DROP ROLE IF EXISTS ${SIDE_ROLE}`);
-      await db.query(`DROP ROLE IF EXISTS ${PRIV_ROLE}`);
-      await db.query(`DROP ROLE IF EXISTS ${ADMIN_ROLE}`);
-      await releaseCatalog?.();
+      await withRoleCatalogLock(suUrl as string, async () => {
+        await db.query(`DROP DATABASE IF EXISTS ${SOLO_DB}`);
+        await db.query(`DROP DATABASE IF EXISTS ${NOINH_DB}`);
+        await db.query(`DROP DATABASE IF EXISTS ${PROBE_DB}`);
+        // The fleet roles those databases provisioned, whose NAMES carry them. Dropped before the
+        // administrators are, because the membership each administrator granted onward is a
+        // dependency of that administrator: without this the DROP ROLE below fails with
+        // `privileges for membership of role … in role …` and the cluster keeps one role per run.
+        for (const { rolname } of (
+          await db.query<{ rolname: string }>(
+            "SELECT rolname FROM pg_roles WHERE rolname LIKE $1",
+            [`fazerai_fleet_%${process.pid}%`],
+          )
+        ).rows) {
+          await db.query(`DROP OWNED BY "${rolname}" CASCADE`);
+          await db.query(`DROP ROLE IF EXISTS "${rolname}"`);
+        }
+        await db.query(`DROP ROLE IF EXISTS ${APP_ROLE}`);
+        await db.query(`DROP ROLE IF EXISTS ${STRAY_ROLE}`);
+        await db.query(`DROP ROLE IF EXISTS ${FOREIGN_ROLE}`);
+        await db.query(`DROP ROLE IF EXISTS ${UNREACHABLE_ROLE}`);
+        await db.query(`DROP ROLE IF EXISTS ${ROT_A_ROLE}`);
+        await db.query(`DROP ROLE IF EXISTS ${ROT_B_ROLE}`);
+        await db.query(`DROP ROLE IF EXISTS ${SOLO_ROLE}`);
+        await db.query(`DROP ROLE IF EXISTS ${SPLIT_OWNER}`);
+        await db.query(`DROP ROLE IF EXISTS ${NOINH_ADMIN}`);
+        await db.query(`DROP ROLE IF EXISTS ${NOINH_APP}`);
+        await db.query(`DROP ROLE IF EXISTS ${HEIR_ROLE}`);
+        await db.query(`DROP ROLE IF EXISTS ${SETONLY_ROLE}`);
+        await db.query(`DROP ROLE IF EXISTS ${PRIV_PARENT}`);
+        await db.query(`DROP ROLE IF EXISTS ${SU_PARENT}`);
+        await db.query(`DROP ROLE IF EXISTS ${TEAM_ROLE}`);
+        await db.query(`DROP ROLE IF EXISTS ${SIDE_ROLE}`);
+        await db.query(`DROP ROLE IF EXISTS ${PRIV_ROLE}`);
+        await db.query(`DROP ROLE IF EXISTS ${ADMIN_ROLE}`);
+      });
       await db.end();
-    });
+    }, ROLE_CATALOG_HOOK_MS);
 
     test("the first boot provisions the runtime role and the langgraph schema", async () => {
       const { exitCode, stdout, stderr } = await runBootstrap();

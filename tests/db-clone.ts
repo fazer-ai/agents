@@ -4,7 +4,10 @@ import type { Client } from "pg";
 import { FLEET_ROLE_EXPR } from "@/lib/tenancy/fleet-role";
 import { CONNECT_ATTEMPT_MS, DB_GATE_OPT_OUT, retryConnect } from "./db-gate";
 import { isWorkerCloneOf, testDbNameFor, withDbName } from "./db-name";
-import { ROLE_CATALOG_LOCK } from "./utils/role-catalog-lock";
+import {
+  acquireRoleCatalogLock,
+  ROLE_CATALOG_LOCK,
+} from "./utils/role-catalog-lock";
 
 // ONE DATABASE PER WORKER UNDER `bun test --parallel`: files running at once on one database
 // collide, so each worker runs on a `CREATE DATABASE … TEMPLATE` copy of the checkout's test database
@@ -248,7 +251,7 @@ async function withCloneLock<T>(
     `fazerai-test-clone:${testDbNameFor("x_test", root)}`,
   ]);
   try {
-    await maint.query("SELECT pg_advisory_lock($1)", [ROLE_CATALOG_LOCK]);
+    await acquireRoleCatalogLock(maint);
     try {
       return await fn();
     } finally {

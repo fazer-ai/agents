@@ -4,7 +4,7 @@ import type { ScopedDb } from "@/lib/tenancy";
 import { FAMILIES, type Family } from "./sections";
 
 // WHERE THE KEPT DAYS LIVE AND WHAT DROPS THEM (docs/dashboard.md, "Kept days"). The triggers of
-// migration 20261012000000 queue every late change to `dashboard_dirty`; `settleDirty` turns the queue
+// migration 20261013170000 queue every late change to `dashboard_dirty`; `settleDirty` turns the queue
 // into the kept rows it invalidates, across every filter and zone, before a request reads any.
 
 export interface KeptRow {

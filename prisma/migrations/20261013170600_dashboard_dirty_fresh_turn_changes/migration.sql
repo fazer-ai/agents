@@ -1,7 +1,7 @@
 -- Whether the agent ran on a conversation is read over its whole ledger, so a fresh billed call
 -- deleted, or moved to another conversation, agent, source or node, changes the kept figures of the
 -- day an older conversation started, as a fresh call written does (migration
--- 20261012190300_dashboard_dirty_fresh_turns). The row is too recent to queue for itself: the
+-- 20261013170300_dashboard_dirty_fresh_turns). The row is too recent to queue for itself: the
 -- creation days of the conversations it leaves and joins are queued instead.
 BEGIN;
 

@@ -74,6 +74,11 @@ beforeAll(() => {
   template = mkdtempSync(join(tmpdir(), "check-staged-base-"));
   repo = template;
   git("init", "-q");
+  // A commit may start git's automatic maintenance in the background, which creates and removes
+  // `objects/maintenance.lock` while `beforeEach` copies the directory: the copy then fails on a file
+  // that vanished between listing and reading it.
+  git("config", "maintenance.auto", "false");
+  git("config", "gc.auto", "0");
   cpSync(join(ROOT, "biome.jsonc"), join(repo, "biome.jsonc"));
   cpSync(join(ROOT, "package.json"), join(repo, "package.json"));
   cpSync(join(ROOT, "biome-plugins"), join(repo, "biome-plugins"), {

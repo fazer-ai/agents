@@ -61,6 +61,7 @@ import {
   type ConversationUsage,
   getConversationUsage,
 } from "@/modules/conversations/usage";
+import { readDebugModes } from "@/modules/flowlog/debug-mode";
 import { appointmentPauseApplies } from "@/modules/followups/appointment-pause";
 import {
   isFollowUpLive,
@@ -1647,6 +1648,7 @@ export async function getConversationDetail(
     ),
   ];
   const currentBlocks = new Map<string, CurrentBlock | null>();
+  const logsValues = new Map<string, boolean>();
   if (blockAgentIds.length > 0) {
     const agents = await runScopedOn(base, ctx, (db) =>
       db.agent.findMany({
@@ -1656,6 +1658,10 @@ export async function getConversationDetail(
     );
     for (const a of agents) {
       currentBlocks.set(String(a.id), currentBlockOf(a.settings));
+      logsValues.set(
+        String(a.id),
+        readDebugModes(a.settings, null).logToolValues,
+      );
     }
   }
   for (const r of decisionRows) {
@@ -1664,6 +1670,7 @@ export async function getConversationDetail(
       r.agentId === null
         ? null
         : (currentBlocks.get(String(r.agentId)) ?? null),
+      r.agentId !== null && logsValues.get(String(r.agentId)) === true,
     );
     if (decision === null) continue;
     trail.push({

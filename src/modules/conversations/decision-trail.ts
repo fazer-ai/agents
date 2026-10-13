@@ -106,6 +106,32 @@ export function currentBlockOf(settings: unknown): CurrentBlock | null {
   };
 }
 
+// What the marker reads of an action: which rule, which tool and what became of it. `args` and
+// `missing` only under the agent's `observability.logToolValues`, the switch that already decides
+// whether the trail's tool markers carry values: a rule's fixed arguments are the administrator's
+// payload, written on the line whatever the switch says, and reading a conversation does not open
+// the agent's configuration.
+const ACTION_FIELDS = [
+  "rule",
+  "tool",
+  "outcome",
+  "failure",
+  "error",
+  "fence",
+  "partial",
+  "committed",
+  "merged",
+] as const;
+
+function actionOutcome(raw: unknown, logValues: boolean): unknown {
+  const a = bag(raw);
+  if (!a) return raw;
+  if (logValues) return a;
+  const out: Record<string, unknown> = {};
+  for (const k of ACTION_FIELDS) if (k in a) out[k] = a[k];
+  return out;
+}
+
 // Null when the line is not a decisions tick this screen can draw: another engine's line, or one whose
 // answers are not an object (a line this build did not write).
 export function decisionTickOf(
@@ -118,6 +144,9 @@ export function decisionTickOf(
     detail: unknown;
   },
   current: CurrentBlock | null,
+  // The agent's `observability.logToolValues`, read now: off (the default) keeps the actions'
+  // arguments off the screen.
+  logValues = false,
 ): DecisionTick | null {
   const d = bag(line.detail);
   if (d?.engine !== "decisions") return null;
@@ -143,7 +172,7 @@ export function decisionTickOf(
     failure: str(d.failure),
     problem: str(d.problem),
     answers,
-    actions: list(d.actions),
+    actions: list(d.actions).map((a) => actionOutcome(a, logValues)),
     notFired: list(d.notFired),
     held: list(d.held),
     labels: list(d.labels),

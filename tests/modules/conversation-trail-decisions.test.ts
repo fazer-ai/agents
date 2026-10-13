@@ -92,7 +92,6 @@ const ACTIONS = [
   {
     rule: 0,
     tool: "set_labels",
-    args: { add: ["refund"] },
     outcome: "ran",
     merged: [],
   },
@@ -282,6 +281,57 @@ describe.skipIf(!dbUp)(
         notFired: NOT_FIRED,
         held: [],
       });
+    });
+
+    test("an action reaches the screen as its rule, tool and outcome, never a custom tool's arguments", async () => {
+      await tick({
+        actions: [
+          {
+            rule: 0,
+            tool: "registrar_pedido",
+            args: {
+              token: "admin-payload",
+              telefone: { from: "contact.phone" },
+            },
+            missing: ["telefone"],
+            outcome: "failed",
+            failure: "missing_value",
+            merged: [1],
+          },
+        ],
+      });
+      const [e] = (await trail()).filter((x) => x.kind === "decision");
+      expect(e?.decision?.actions).toEqual([
+        {
+          rule: 0,
+          tool: "registrar_pedido",
+          outcome: "failed",
+          failure: "missing_value",
+          merged: [1],
+        },
+      ]);
+    });
+
+    test("an agent that logs tool values shows the action's arguments as stored", async () => {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: {
+          settings: {
+            monitoring: { engine: "decisions", decisions: BLOCK },
+            observability: { logToolValues: true },
+          },
+        },
+      });
+      const action = {
+        rule: 0,
+        tool: "registrar_pedido",
+        args: { telefone: "+5511999990000" },
+        missing: [],
+        outcome: "ok",
+      };
+      await tick({ actions: [action] });
+      const [e] = (await trail()).filter((x) => x.kind === "decision");
+      expect(e?.decision?.actions).toEqual([action]);
     });
 
     test("the line that ran the current block carries its questions and rules; one that ran another does not", async () => {

@@ -480,15 +480,15 @@ async function handedToTeam(
 // How long past the hand-over's status claim the retry runs, so the claim has run out by then.
 const HANDOVER_RETRY_SLACK_MS = 5_000;
 
-// The mirror brought to Chatwoot's word, best-effort: a read or a reconcile that fails leaves the
-// mirror as it was, and the gate that follows decides on it.
+// The mirror brought to Chatwoot's word, answering whether it was: a read or a reconcile that
+// fails leaves the mirror as it was.
 async function reconcileFromChatwoot(
   base: PrismaClient,
   tenantId: bigint,
   instanceId: bigint,
   conversationId: number,
   deps?: RuntimeDeps,
-): Promise<void> {
+): Promise<boolean> {
   try {
     const client = await loadChatwootClient(tenantId, instanceId, {
       base,
@@ -497,20 +497,23 @@ async function reconcileFromChatwoot(
     const live = parseLiveConversation(
       await client.getConversation(conversationId),
     );
-    if (live)
-      await reconcileMirrorFromLive({
-        tenantId,
-        instanceId,
-        conversationId,
-        live,
-        base,
-      });
+    if (!live) return false;
+    const done = await reconcileMirrorFromLive({
+      tenantId,
+      instanceId,
+      conversationId,
+      live,
+      base,
+    });
+    // NOTE: a claim still alive outranks Chatwoot's word, and the mirror keeps its `open`.
+    return !done.refusedByStatusClaim;
   } catch (e) {
     logger.warn(
       "followUpHandler: could not reconcile the conversation before a hand-over retry (conv=%s): %s",
       String(conversationId),
       e instanceof Error ? e.message : String(e),
     );
+    return false;
   }
 }
 
@@ -610,15 +613,25 @@ export async function followUpHandler(
   // still has the bot holding the conversation, and the liveness gate below would end the episode on
   // it. The retry runs past the claim's life and reconciles the mirror from Chatwoot first.
   if (job.payload.handoverRetry === true) {
+    // NOTE: a reconcile that did not happen leaves the claim's `open` for the gate to end on, so the
+    // retry waits for one instead.
+    if (
+      !(await reconcileFromChatwoot(
+        base,
+        tenantId,
+        instanceId,
+        conversationId,
+        deps,
+      ))
+    ) {
+      return {
+        outcome: "reschedule",
+        runAt: new Date(Date.now() + IN_FLIGHT_BACKOFF_MS),
+        payload: { ...job.payload, deferredUnder: BACKOFF_DEFERRAL },
+      };
+    }
     const { handoverRetry: _retry, ...payload } = job.payload;
     job = { ...job, payload };
-    await reconcileFromChatwoot(
-      base,
-      tenantId,
-      instanceId,
-      conversationId,
-      deps,
-    );
   }
 
   const ctx = await runScopedOn(base, sysCtx(tenantId), async (db) => {

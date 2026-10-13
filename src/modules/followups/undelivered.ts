@@ -151,7 +151,10 @@ export async function lastReplyDelivery(params: {
     later.some(
       (m) =>
         customer(m) ||
-        (m.messageType === "outgoing" && !m.isReaction && !ours(m)),
+        (m.messageType === "outgoing" &&
+          !m.isReaction &&
+          !m.imported &&
+          !ours(m)),
     )
   )
     return { state: "delivered" };

@@ -74,6 +74,8 @@ function stubClient(
     onRead?: (n: number) => Promise<unknown> | unknown;
     // The status toggle fails while this is set (Chatwoot refusing the hand-over).
     toggleFails?: { on: boolean };
+    // The live conversation read fails while this is set.
+    liveFails?: { on: boolean };
   } = {},
 ) {
   let reads = 0;
@@ -87,11 +89,10 @@ function stubClient(
   const client = {
     // NOTE: `liveMeta` lets a test make the LIVE state (the requireLiveBotOwnership probe) agree
     // with the mirrored assignee it seeded — the default `{}` reads as unassigned.
-    getConversation: async (c: number) => ({
-      id: c,
-      status,
-      meta: over.liveMeta ?? {},
-    }),
+    getConversation: async (c: number) => {
+      if (over.liveFails?.on) throw new Error("Chatwoot unreachable");
+      return { id: c, status, meta: over.liveMeta ?? {} };
+    },
     getMessages: async (_c: number, o?: { before?: number }) => {
       const instead = await over.onRead?.(reads++);
       if (instead !== undefined) return instead;
@@ -1080,6 +1081,23 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     expect(s.notes).toEqual([]);
   });
 
+  // Imported history lands with new ids above the refused reply; it is old, not a newer answer.
+  test("an imported outgoing message does not stand for the refused reply", async () => {
+    await seedConversation(1719, due());
+    const s = stubClient({
+      page: [
+        replyRow(17191, { refused: true }),
+        {
+          ...replyRow(17192),
+          sender: { type: "user", id: 3 },
+          content_attributes: { imported: true },
+        },
+      ],
+    });
+    expect(await run(1719, s)).toEqual({ outcome: "done" });
+    expect(s.notes.map(([c]) => c)).toEqual([1719]);
+  });
+
   // A message that renders to nothing is never answered, so it is not a turn coming.
   test("a blank customer message after the refusal does not hold the step", async () => {
     await seedConversation(1717, due());
@@ -1108,12 +1126,49 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     expect(again.payload.handoverRetry).toBe(true);
     expect(again.runAt.getTime()).toBeGreaterThan(Date.now() + 40_000);
     expect(await lastFollowUpOf(1718)).toBeNull();
+    // Run while the claim still lives, the retry cannot reconcile past it and waits again.
+    const early = await followUpHandler(
+      { ...jobFor(1718), payload: again.payload },
+      appDb,
+      {
+        makeModel: fakeModel,
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    );
+    expect(early).toMatchObject({
+      outcome: "reschedule",
+      payload: { handoverRetry: true },
+    });
+    expect(s.resolved).toEqual([]);
     // NOTE: the claim's life, run out as the reschedule waits for it to.
     await suDb.conversation.updateMany({
       where: { tenantId, chatwootConversationId: 1718 },
       data: { statusClaimUntil: new Date(Date.now() - 1_000) },
     });
     fails.on = false;
+    // A retry that cannot read Chatwoot keeps waiting for the reconcile, marker and all, rather than
+    // ending on the mirror's stale `open`.
+    const live = { on: true };
+    const blind = stubClient({
+      page: [replyRow(17181, { refused: true })],
+      liveFails: live,
+    });
+    const held = await followUpHandler(
+      { ...jobFor(1718), payload: again.payload },
+      appDb,
+      {
+        makeModel: fakeModel,
+        makeClient: blind.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    );
+    expect(held).toMatchObject({
+      outcome: "reschedule",
+      payload: { handoverRetry: true },
+    });
     const second = await followUpHandler(
       { ...jobFor(1718), payload: again.payload },
       appDb,

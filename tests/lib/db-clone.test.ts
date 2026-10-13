@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { Client } from "pg";
 import { FLEET_ROLE_EXPR } from "@/lib/tenancy/fleet-role";
 import {
+  CLONE_APP,
   CLONE_MARKER_ENV,
   type CloneOwner,
   clonesToDrop,
@@ -16,6 +17,8 @@ import {
 } from "../db-clone";
 import { DB_GATE_OPT_OUT, withDeadline } from "../db-gate";
 import { checkoutRootFrom, testDbNameFor, withDbName } from "../db-name";
+import { until } from "../utils/poll";
+import { ROLE_CATALOG_LOCK } from "../utils/role-catalog-lock";
 
 // Under `bun test --parallel` every worker runs on its own copy of the checkout's test database
 // (tests/db-clone.ts). These prove the name each worker gets, which leftover copies a run removes,
@@ -456,5 +459,69 @@ describe("a worker whose checkout has no test database", () => {
       }
     },
     60_000,
+  );
+});
+
+// WAITING FOR A BUSY TEMPLATE DOES NOT HOLD THE ROLE CATALOG LOCK. A copy waits up to a minute for the
+// template's connections to close, and every suite that writes roles allows less than that to take
+// the catalog lock, so the lock is taken only around the copy's role DDL, never around the wait.
+describe("a copy waiting on a busy template", () => {
+  const suUrl = process.env.MIGRATION_DATABASE_URL;
+  const live = process.env[DB_GATE_OPT_OUT] !== "1" && Boolean(suUrl);
+
+  test.skipIf(!live)(
+    "leaves the role catalog lock to everyone else while it waits",
+    async () => {
+      const root = `/nonexistent/fzbusy1384-p${process.pid}`;
+      const template = testDbNameFor(`fzbusy1384_p${process.pid}_test`, root);
+      const clone = testDbNameFor(template, root, "1");
+      const maint = new Client({
+        connectionString: withDbName(suUrl as string, "postgres"),
+      });
+      await maint.connect();
+      await maint.query(`CREATE DATABASE "${template}"`);
+      const busy = new Client({
+        connectionString: withDbName(suUrl as string, template),
+      });
+      await busy.connect();
+      let copying: Promise<unknown> | undefined;
+      try {
+        copying = ensureWorkerClone({
+          suUrl: withDbName(suUrl as string, template),
+          appRole: "app",
+          root,
+          template,
+          clone,
+        }).catch((e) => e);
+        const waiter = await until(
+          "the copy to be retrying its CREATE",
+          async () => {
+            const { rows } = await maint.query<{ pid: number }>(
+              `SELECT pid FROM pg_stat_activity
+              WHERE application_name = $1 AND query LIKE $2`,
+              [CLONE_APP, `CREATE DATABASE "${clone}" TEMPLATE "${template}"%`],
+            );
+            return rows[0]?.pid;
+          },
+        );
+        const { rowCount } = await maint.query(
+          `SELECT 1 FROM pg_locks
+            WHERE locktype = 'advisory' AND objid = $1 AND granted AND pid = $2`,
+          [ROLE_CATALOG_LOCK, waiter],
+        );
+        expect(rowCount).toBe(0);
+      } finally {
+        await busy.end();
+        await copying;
+        await maint
+          .query(`DROP DATABASE IF EXISTS "${clone}" WITH (FORCE)`)
+          .catch(() => {});
+        await maint
+          .query(`DROP DATABASE IF EXISTS "${template}" WITH (FORCE)`)
+          .catch(() => {});
+        await maint.end();
+      }
+    },
+    90_000,
   );
 });

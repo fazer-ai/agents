@@ -19,6 +19,7 @@ import {
 // `postgres`, because Postgres refuses to copy a database that has connections.
 
 export const CLONE_MARKER_ENV = "TEST_DB_WORKER_CLONE";
+export const CLONE_APP = "fazerai-test-clone";
 
 const OWNER_MARK = "fazerai-test-clone";
 
@@ -226,6 +227,7 @@ async function newClient(
       connectionString: url,
       connectionTimeoutMillis: deadlines.connectMs,
       query_timeout: deadlines.queryMs,
+      application_name: CLONE_APP,
     });
     c.on("error", () => {});
     try {
@@ -239,9 +241,7 @@ async function newClient(
 }
 
 // The lock is per checkout (the root's hash is in every name it guards), held for the session, and
-// released with the connection if the holder dies. Under it the copy's fleet role is created and
-// dropped, so the role catalog lock is taken too, in the same `postgres` session the suites that write
-// roles take it in (tests/utils/role-catalog-lock.ts), always after the clone lock.
+// released with the connection if the holder dies.
 async function withCloneLock<T>(
   maint: Client,
   root: string,
@@ -251,19 +251,30 @@ async function withCloneLock<T>(
     `fazerai-test-clone:${testDbNameFor("x_test", root)}`,
   ]);
   try {
-    await acquireRoleCatalogLock(maint);
-    try {
-      return await fn();
-    } finally {
-      await maint
-        .query("SELECT pg_advisory_unlock($1)", [ROLE_CATALOG_LOCK])
-        .catch(() => {});
-    }
+    return await fn();
   } finally {
     await maint
       .query("SELECT pg_advisory_unlock(hashtextextended($1, 0))", [
         `fazerai-test-clone:${testDbNameFor("x_test", root)}`,
       ])
+      .catch(() => {});
+  }
+}
+
+// The copy's fleet role is created, granted and dropped under the role catalog lock the suites that
+// write roles take (tests/utils/role-catalog-lock.ts), in the same `postgres` session and always after
+// the clone lock. Only around that DDL: the wait for a busy template lasts up to a minute, longer than
+// any other suite allows itself to wait for this lock.
+async function withRoleCatalogLockOn<T>(
+  maint: Client,
+  fn: () => Promise<T>,
+): Promise<T> {
+  await acquireRoleCatalogLock(maint);
+  try {
+    return await fn();
+  } finally {
+    await maint
+      .query("SELECT pg_advisory_unlock($1)", [ROLE_CATALOG_LOCK])
       .catch(() => {});
   }
 }
@@ -289,13 +300,13 @@ async function dropClone(maint: Client, name: string): Promise<void> {
   );
   // NOTE: a role that cannot go yet (it was granted something elsewhere) is reported, not thrown: a
   // throw here fails the test file that happened to reap, on every run until someone drops it.
-  await maint
-    .query(`DROP ROLE IF EXISTS ${maint.escapeIdentifier(role)}`)
-    .catch((err: unknown) =>
-      console.warn(
-        `tests: could not drop the fleet role "${role}" of the removed database copy "${name}": ${err instanceof Error ? err.message : err}`,
-      ),
-    );
+  await withRoleCatalogLockOn(maint, () =>
+    maint.query(`DROP ROLE IF EXISTS ${maint.escapeIdentifier(role)}`),
+  ).catch((err: unknown) =>
+    console.warn(
+      `tests: could not drop the fleet role "${role}" of the removed database copy "${name}": ${err instanceof Error ? err.message : err}`,
+    ),
+  );
 }
 
 async function reapUnderLock(
@@ -580,10 +591,12 @@ export async function ensureWorkerClone(opts: {
         ready: false,
       };
       await createClone(maint, template, clone, owner);
-      await provisionClone(
-        withDbName(opts.suUrl, clone),
-        opts.appRole,
-        opts.deadlines,
+      await withRoleCatalogLockOn(maint, () =>
+        provisionClone(
+          withDbName(opts.suUrl, clone),
+          opts.appRole,
+          opts.deadlines,
+        ),
       );
       await maint.query(
         `COMMENT ON DATABASE ${maint.escapeIdentifier(clone)} IS ${maint.escapeLiteral(ownerComment({ ...owner, ready: true }))}`,

@@ -28,6 +28,7 @@ import {
   ROLE_CATALOG_HOOK_MS,
   withRoleCatalogLock,
 } from "../utils/role-catalog-lock";
+import { SubprocessTracker } from "../utils/subprocess-tracker";
 
 // The failures this file covers exist only on a database whose ADMINISTRATIVE role is not a real
 // superuser, which is every managed Postgres (RDS, Coolify, EasyPanel) and no local docker one. So
@@ -171,6 +172,10 @@ async function clearFleetMembers(migrationUrl: string, appRole: string) {
   }
 }
 
+// Every bootstrap a test started, so the suite holding the role catalog lock for them can stop one a
+// timed-out test left running before it lets the lock go.
+const bootstraps = new SubprocessTracker();
+
 async function runBootstrap(
   appPassword = APP_PW,
   appRole = APP_ROLE,
@@ -186,12 +191,14 @@ async function runBootstrap(
   if (!keepStrays) {
     await clearFleetMembers(env.MIGRATION_DATABASE_URL as string, appRole);
   }
-  const proc = Bun.spawn(["bun", "scripts/db-bootstrap.ts"], {
-    cwd: REPO_ROOT,
-    env,
-    stdout: "pipe",
-    stderr: "pipe",
-  });
+  const proc = bootstraps.track(
+    Bun.spawn(["bun", "scripts/db-bootstrap.ts"], {
+      cwd: REPO_ROOT,
+      env,
+      stdout: "pipe",
+      stderr: "pipe",
+    }),
+  );
   const [stdout, stderr, exitCode] = await Promise.all([
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),
@@ -831,6 +838,9 @@ describe.skipIf(!dbUp)(
       releaseCatalog = await holdRoleCatalogLock(suUrl as string);
     }, ROLE_CATALOG_HOOK_MS);
     afterEach(async () => {
+      // NOTE: a test that timed out leaves its bootstrap running, and its role DDL is what the lock is
+      // held for, so it is stopped, and seen gone, first.
+      await bootstraps.stopAll();
       await releaseCatalog?.();
       releaseCatalog = undefined;
     });

@@ -38,6 +38,8 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 
 tmp/*
 !tmp/.keep
+# Throwaway scripts at the root (benchmarks, profiles)
+.tmp-*
 
 /generated/prisma
 

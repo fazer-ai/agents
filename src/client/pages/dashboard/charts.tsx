@@ -345,6 +345,8 @@ export function LineTrend({
             />
             {stateBands(data, ids, p, text)}
             <Tooltip
+              // Every series is null on a day under a band, and the tooltip is what says why.
+              filterNull={false}
               contentStyle={{
                 background: p.tooltipBg,
                 border: `1px solid ${p.tooltipBorder}`,
@@ -478,6 +480,8 @@ export function StackedBars({
             />
             {stateBands(data, ids, p, text)}
             <Tooltip
+              // Every series is null on a day under a band, and the tooltip is what says why.
+              filterNull={false}
               cursor={{ fill: p.grid, opacity: 0.4 }}
               contentStyle={{
                 background: p.tooltipBg,

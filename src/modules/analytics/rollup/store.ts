@@ -151,7 +151,7 @@ export async function settleDirty(
        AND k.section LIKE h.fam || '.%'
        AND NOT (h.fam = 'log' AND (k.day::timestamp AT TIME ZONE k.tz) < now() - ${retention}::interval)`);
   await db.$executeRaw(Prisma.sql`
-    UPDATE dashboard_dirty SET processed_at = now() AT TIME ZONE 'UTC'
+    UPDATE dashboard_dirty SET processed_at = clock_timestamp() AT TIME ZONE 'UTC'
      WHERE id = ANY(${ids}::bigint[])`);
   await db.$executeRaw(Prisma.sql`
     DELETE FROM dashboard_dirty
@@ -159,23 +159,27 @@ export async function settleDirty(
   return picked.length;
 }
 
-// The (family, local day) pairs that changed since `since`, processed or not: a part computed from a
-// snapshot that may predate them keeps none of these days. The margin covers a writer whose
-// transaction began before the part's and committed after it.
+// The (family, local day) pairs that changed since `since`, processed or not, or that a batch settled
+// since `settledSince` (the part's start): a part computed from a snapshot that may predate them keeps
+// none of these days. The margin covers a writer whose transaction began before the part's and
+// committed after it; a row carries its transaction's start, so a writer that began earlier still is
+// caught by when its row was settled, which the batch stamps by the clock, after the writer committed.
 export async function changedSince(
   db: ScopedDb,
   since: Date,
   tz: string,
   fam: Family,
+  settledSince: Date = since,
 ): Promise<Set<string>> {
   const rows = await db.$queryRaw<
     { fam: Family | "conv-all"; day: string | null }[]
   >(Prisma.sql`
-    WITH inst AS (${instantsSql(Prisma.sql`created_at >= ${since}`, [fam])})
+    WITH inst AS (${instantsSql(Prisma.sql`(created_at >= ${since} OR processed_at >= ${settledSince})`, [fam])})
     SELECT fam, to_char(((at AT TIME ZONE 'UTC') AT TIME ZONE ${tz}::text)::date, 'YYYY-MM-DD') AS day
       FROM inst
     UNION ALL
-    SELECT 'conv-all', NULL FROM dashboard_dirty WHERE created_at >= ${since} AND section = 'conv-all'`);
+    SELECT 'conv-all', NULL FROM dashboard_dirty
+     WHERE (created_at >= ${since} OR processed_at >= ${settledSince}) AND section = 'conv-all'`);
   return new Set(
     rows.map((r) => (r.fam === "conv-all" ? "conv-all" : `${r.fam}|${r.day}`)),
   );

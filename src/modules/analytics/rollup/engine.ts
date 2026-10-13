@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { Prisma, PrismaClient } from "@/../generated/prisma/client";
+import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import metricsPrisma from "@/api/lib/prisma-metrics";
 import config from "@/config";
 import { type AppError, MetricsTooSlowError } from "@/lib/errors";
@@ -694,6 +694,12 @@ export class WindowLoad implements DayStore {
     store: boolean,
   ): Promise<() => void> {
     const startedAt = Date.now();
+    // When the part began by the database's clock, the one a settling batch stamps its rows with.
+    const [began] = store
+      ? await db.$queryRaw<{ t: Date }[]>(
+          Prisma.sql`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS t`,
+        )
+      : [];
     const range: Range = {
       first: part.first,
       last: part.last,
@@ -733,6 +739,7 @@ export class WindowLoad implements DayStore {
       new Date(startedAt - SNAPSHOT_MARGIN_MS),
       this.tz,
       part.family,
+      began?.t ?? new Date(startedAt),
     );
     const keepable = rows.filter(
       (r) =>

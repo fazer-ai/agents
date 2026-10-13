@@ -40,7 +40,7 @@ import {
 import { costsLink, figuresOf } from "@/modules/analytics/rollup/figures";
 import { learnPgLerp, pgLerp } from "@/modules/analytics/rollup/lerp";
 import { COMPUTE, SECTIONS } from "@/modules/analytics/rollup/sections";
-import { SETTLE_BATCH } from "@/modules/analytics/rollup/store";
+import { SETTLE_BATCH, settleDirty } from "@/modules/analytics/rollup/store";
 import {
   heartbeat,
   type StreamEvent,
@@ -785,6 +785,46 @@ describe.skipIf(!dbUp)("the kept days of the dashboard", () => {
     expect(days).not.toContain(conv.day);
     // The other days are kept (less any an earlier test of this file changed in the same minutes).
     expect(days.length).toBeGreaterThan(30);
+  });
+
+  test("a change from a writer that began long before the part, settled while the part ran, is not kept stale", async () => {
+    await suDb.$executeRaw`UPDATE dashboard_dirty SET created_at = created_at - interval '1 hour' WHERE tenant_id = ${tenantId}`;
+    await clearKept();
+    const f = windowOf("UTC", 44, 0);
+    const [conv] = await suDb.$queryRaw<{ id: bigint; day: string }[]>`
+      SELECT id, to_char(created_at::date, 'YYYY-MM-DD') AS day FROM conversations
+       WHERE tenant_id = ${tenantId}
+         AND created_at BETWEEN now() - interval '30 days' AND now() - interval '3 days'
+       ORDER BY created_at DESC LIMIT 1 OFFSET 2`;
+    if (!conv) throw new Error("no conversation");
+    const compute = COMPUTE.conv;
+    let raced = false;
+    COMPUTE.conv = async (...args) => {
+      await compute(...args);
+      const range = args[4];
+      if (raced || range.first > conv.day || range.last < conv.day) return;
+      raced = true;
+      // After the part read: a maintenance transaction that began ten minutes ago commits its change,
+      // and another request settles it before the part publishes.
+      await suDb.$executeRaw`UPDATE conversations SET labels = ARRAY['manutencao'] WHERE id = ${conv.id}`;
+      await suDb.$executeRaw`UPDATE dashboard_dirty SET created_at = created_at - interval '10 minutes' WHERE tenant_id = ${tenantId} AND processed_at IS NULL`;
+      await runScopedOn(appDb, ctx(), (db) =>
+        settleDirty(db, `dashboard-settle|${tenantId}`),
+      );
+    };
+    try {
+      await kept("labels", f);
+    } finally {
+      COMPUTE.conv = compute;
+    }
+    expect(raced).toBe(true);
+    const stored = await suDb.$queryRaw<{ day: string }[]>`
+      SELECT to_char(day, 'YYYY-MM-DD') AS day FROM dashboard_days
+       WHERE tenant_id = ${tenantId} AND section = 'conv.labels' AND tz = 'UTC'`;
+    expect(stored.map((r) => r.day)).not.toContain(conv.day);
+    expect(canon(await kept("labels", f))).toEqual(
+      canon(await live("labels", f)),
+    );
   });
 
   test("a percentile repeats the server's own interpolation to the last digit", async () => {

@@ -70,7 +70,8 @@ interface LiveConv {
   assignee?: { type: "AgentBot" | "User"; id: number; name: string } | null;
 }
 // What the fake account answers per conversation; a number is an HTTP error status.
-let live = new Map<number, LiveConv | number>();
+// "garbled" is a 200 whose body does not decode.
+let live = new Map<number, LiveConv | number | "garbled">();
 let reads: number[] = [];
 // Runs inside a read, to put the database where a concurrent writer would have left it.
 let onRead: (id: number) => Promise<void> = async () => {};
@@ -81,6 +82,7 @@ const client = {
     reads.push(id);
     await onRead(id);
     const c = live.get(id);
+    if (c === "garbled") throw new SyntaxError("Unexpected token < in JSON");
     if (c === undefined || typeof c === "number") {
       throw new ChatwootApiError(
         typeof c === "number" ? c : 404,
@@ -365,6 +367,18 @@ describe.skipIf(!dbUp)(
       expect(reads).toEqual([9019, 9020]);
       expect((await mirror(9020)).status).toBe("resolved");
       expect((await ledger(bad)).attempts).toBe(1);
+
+      // And a 200 whose body does not decode.
+      await seedConversation(9021);
+      await seedConversation(9022);
+      await strand(9021, "conversation_resolved");
+      await strand(9022, "conversation_resolved");
+      live.set(9021, "garbled");
+      live.set(9022, { status: "resolved", updatedAt: V2 });
+      reads = [];
+      await sweepStrandedDeliveries({ tenantId, base: appDb, deps });
+      expect(reads).toContain(9022);
+      expect((await mirror(9022)).status).toBe("resolved");
     });
 
     test("a failure that outran the read budget still advances the instance's other rows (catches a timeout leaving them where they were)", async () => {

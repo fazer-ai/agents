@@ -782,7 +782,10 @@ async function readLive(
       return { kind: "gone" };
     }
     // No answer at all (a timeout, a refused connection, a client that could not be built) is the
-    // instance's, like the statuses above.
+    // instance's, like the statuses above. A 200 whose body does not decode is the conversation's.
+    if (err instanceof SyntaxError) {
+      return { kind: "unreadable", err, instanceWide: false };
+    }
     return {
       kind: "unreadable",
       err,

@@ -1033,7 +1033,7 @@ describe.skipIf(!dbUp)("the kept days of the dashboard", () => {
           async () => {
             const [w] = await suDb.$queryRaw<{ n: number }[]>`
             SELECT COUNT(*)::int AS n FROM pg_stat_activity
-             WHERE wait_event_type = 'Lock' AND query LIKE '%FROM dashboard_dirty%'`;
+             WHERE datname = current_database() AND wait_event_type = 'Lock' AND query LIKE '%FROM dashboard_dirty%'`;
             return (w?.n ?? 0) > 0;
           },
         );
@@ -1150,7 +1150,7 @@ describe.skipIf(!dbUp)("the kept days of the dashboard", () => {
         await until("the batch waiting for the part", async () => {
           const [w] = await suDb.$queryRaw<{ n: number }[]>`
             SELECT COUNT(*)::int AS n FROM pg_stat_activity
-             WHERE wait_event_type = 'Lock' AND wait_event = 'advisory'`;
+             WHERE datname = current_database() AND wait_event_type = 'Lock' AND wait_event = 'advisory'`;
           return (w?.n ?? 0) > 0;
         });
       },
@@ -1310,7 +1310,7 @@ describe.skipIf(!dbUp)("the kept days of the dashboard", () => {
           await until("the batch waiting", async () => {
             const [w] = await suDb.$queryRaw<{ n: number }[]>`
               SELECT COUNT(*)::int AS n FROM pg_stat_activity
-               WHERE wait_event_type = 'Lock' AND wait_event = 'advisory'`;
+               WHERE datname = current_database() AND wait_event_type = 'Lock' AND wait_event = 'advisory'`;
             return (w?.n ?? 0) > 0;
           });
           await until("a heartbeat armed", () => ticks.length > 0);

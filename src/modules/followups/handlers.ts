@@ -20,6 +20,7 @@ import {
 } from "@/modules/business-hours/hours";
 import { readChannelRedirectConfig } from "@/modules/channel-redirect/service";
 import { loadChatwootClient } from "@/modules/chatwoot/instance";
+import { pendingIncoming } from "@/modules/chatwoot/messages";
 import {
   parseLiveConversation,
   shouldBotHandle,
@@ -27,6 +28,10 @@ import {
 import { reconcileMirrorFromLive } from "@/modules/chatwoot/reconcile";
 import { STATUS_CLAIM_TTL_MS } from "@/modules/chatwoot/status-claim";
 import { announceFailedTurn } from "@/modules/conversations/failure-note";
+import {
+  readSelectionState,
+  selectOpenMessages,
+} from "@/modules/debounce/watermark";
 import { readDebugModes } from "@/modules/flowlog/debug-mode";
 import { emitFlowEvent } from "@/modules/flowlog/service";
 import { appointmentPauseApplies } from "@/modules/followups/appointment-pause";
@@ -58,7 +63,11 @@ import {
 } from "./settings";
 import { snoozedFollowUpHandler, sweepSnoozedFollowUps } from "./snoozed";
 import { readSnoozedFollowUpConfig } from "./snoozed-settings";
-import { type LastReplyDelivery, lastReplyDelivery } from "./undelivered";
+import {
+  type LastReplyDelivery,
+  lastReplyDelivery,
+  type Row,
+} from "./undelivered";
 
 // Follow-up handlers for the scheduler. The SWEEP is coarse: it enqueues a FOLLOWUP per inactive,
 // bot-handled conversation and re-arms itself. The FOLLOWUP is precise: it re-checks the gate
@@ -507,8 +516,9 @@ async function reconcileFromChatwoot(
       base,
     });
     // NOTE: a claim still alive outranks Chatwoot's word, and the mirror keeps its `open`.
-    if (done.refusedByStatusClaim) return "unread";
-    return shouldBotHandle(live) ? "bot" : "handed";
+    if (done.refusedByStatusClaim || !done.state) return "unread";
+    // The row as the reconcile left it, not the snapshot: a webhook newer than the read outranks it.
+    return shouldBotHandle(done.state) ? "bot" : "handed";
   } catch (e) {
     logger.warn(
       "followUpHandler: could not reconcile the conversation before a hand-over retry (conv=%s): %s",
@@ -679,7 +689,7 @@ export async function followUpHandler(
     if (!conv?.inboxId) return null;
     const inbox = await db.inbox.findUnique({
       where: { id: conv.inboxId },
-      select: { agentId: true, chatwootInboxId: true },
+      select: { agentId: true, chatwootInboxId: true, provider: true },
     });
     if (!inbox?.agentId) return null;
     const agent = await db.agent.findUnique({
@@ -739,6 +749,7 @@ export async function followUpHandler(
     return {
       conv,
       agentId: inbox.agentId,
+      whatsappProvider: inbox.provider,
       // Through the shared derivation: only the agent's own switch matters to a line this short.
       fullDetail: readDebugModes(agent.settings, null).fullDetail,
       followUpCfg,
@@ -908,6 +919,36 @@ export async function followUpHandler(
   // never reached them, so a nudge about it is a question about nothing: while its resend is queued
   // the step waits for it, and once nothing more will send it the conversation goes to the team, as
   // a turn the agent could not complete does. docs/tts.md, "An inactivity follow-up never nudges".
+  // The flush's own answer to "is this customer message still owed a reply", so the follow-up
+  // waits for exactly the turns the flush would run.
+  const stillOpen = async (rows: Row[]): Promise<Set<number>> => {
+    const agentBotIds = await agentBotIdsOf(
+      base,
+      tenantId,
+      instanceId,
+      ctx.agentId,
+    );
+    const state = await readSelectionState({
+      tenantId,
+      conversationDbId: ctx.conv.id,
+      messageIds: pendingIncoming(rows, null).map((m) => m.id),
+      base,
+    });
+    const handled = [
+      ctx.conv.lastHandledMessageId,
+      ctx.conv.lastRepliedMessageId,
+    ].filter((v): v is number => v !== null);
+    return new Set(
+      selectOpenMessages({
+        page: rows,
+        scalarFloor: handled.length > 0 ? Math.max(...handled) : null,
+        state,
+        purpose: "reply",
+        managedBotId: agentBotIds[0] ?? null,
+        whatsappProvider: ctx.whatsappProvider,
+      }).map((m) => m.id),
+    );
+  };
   let delivery: LastReplyDelivery;
   try {
     delivery = await lastReplyDelivery({
@@ -916,6 +957,7 @@ export async function followUpHandler(
       chatwootConversationId: conversationId,
       agentBotIds: await agentBotIdsOf(base, tenantId, instanceId, ctx.agentId),
       handledThrough: ctx.conv.lastHandledMessageId,
+      stillOpen,
       base,
       ...(deps?.makeClient ? { deps: { makeClient: deps.makeClient } } : {}),
     });
@@ -970,6 +1012,7 @@ export async function followUpHandler(
               ctx.agentId,
             ),
             handledThrough: ctx.conv.lastHandledMessageId,
+            stillOpen,
             base,
             ...(deps?.makeClient
               ? { deps: { makeClient: deps.makeClient } }

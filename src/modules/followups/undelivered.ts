@@ -43,7 +43,7 @@ export const RESEND_SETTLE_MS = 60_000;
 // last reply sits past this many pages of notes and activity has moved on from it.
 const MAX_PAGES = 5;
 
-type Row = ReturnType<typeof parseChatwootMessages>[number];
+export type Row = ReturnType<typeof parseChatwootMessages>[number];
 
 function replaces(row: Row, messageId: number): boolean {
   return new RegExp(
@@ -63,8 +63,11 @@ export async function lastReplyDelivery(params: {
   // agent's reply.
   agentBotIds: number[];
   // The newest customer message already handled (answered or deliberately skipped): the mirror's
-  // watermark. A customer message past it is a turn still coming.
+  // watermark. A customer message at or below it marks where a reply starts.
   handledThrough: number | null;
+  // Which of the customer messages read are still owed a reply: the flush's own selection
+  // (`selectOpenMessages`), so a message a gate dispensed is not read as a turn coming.
+  stillOpen: (rows: Row[]) => Promise<Set<number>>;
   base: PrismaClient;
   deps?: LoadChatwootClientDeps;
   now?: Date;
@@ -150,15 +153,9 @@ export async function lastReplyDelivery(params: {
       (m.id === newest.id || (key !== null && replyKeyOf(m.sendId) === key)),
   );
   const start = reply.reduce((a, m) => (m.id < a ? m.id : a), last.id);
+  const open = await params.stillOpen(read);
   // NOTE: from where the reply starts, so one written between its balloons counts too.
-  if (
-    read.some(
-      (m) =>
-        m.id > start &&
-        customer(m) &&
-        (params.handledThrough === null || m.id > params.handledThrough),
-    )
-  )
+  if (read.some((m) => m.id > start && customer(m) && open.has(m.id)))
     return { state: "customer_spoke" };
   if (
     read.some(

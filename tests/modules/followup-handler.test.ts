@@ -65,6 +65,9 @@ function fakeModel() {
 function stubClient(
   over: {
     liveMeta?: Record<string, unknown>;
+    // More of the live conversation for the first read: its status and version, when a test needs
+    // a read that a later change in Chatwoot made stale.
+    firstLive?: Record<string, unknown>;
     // The latest page of the conversation, which the handler reads to tell whether the last reply
     // arrived. Empty by default: no reply of ours on it reads as nothing refused. Paged the way
     // Chatwoot pages: the newest 20, or the 20 older than `before`.
@@ -81,6 +84,7 @@ function stubClient(
   let reads = 0;
   // What a toggle set, so the live read after a hand-over sees it.
   let status = "pending";
+  let liveReads = 0;
   const sent: Array<[number, string]> = [];
   const notes: Array<[number, string]> = [];
   const labelSets: string[][] = [];
@@ -91,7 +95,13 @@ function stubClient(
     // with the mirrored assignee it seeded — the default `{}` reads as unassigned.
     getConversation: async (c: number) => {
       if (over.liveFails?.on) throw new Error("Chatwoot unreachable");
-      return { id: c, status, meta: over.liveMeta ?? {} };
+      const first = liveReads++ === 0 ? over.firstLive : undefined;
+      return {
+        ...first,
+        id: c,
+        status: first?.status ?? status,
+        meta: over.liveMeta ?? {},
+      };
     },
     getMessages: async (_c: number, o?: { before?: number }) => {
       const instead = await over.onRead?.(reads++);
@@ -1334,6 +1344,68 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     expect(second).toEqual({ outcome: "done" });
     expect(s.resolved).toEqual([1718]);
     expect(await lastFollowUpOf(1718)).not.toBeNull();
+  });
+
+  // A gate already dispensed the customer message: no turn will run for it, so it does not hold the
+  // step. Like a message answered, it moved the conversation past the reply, and the nudge goes.
+  test("a customer message a gate dispensed does not hold the step", async () => {
+    await seedConversation(1727, due());
+    const conv = await suDb.conversation.update({
+      where: {
+        tenantId_chatwootInstanceId_chatwootConversationId: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootConversationId: 1727,
+        },
+      },
+      data: { replyClaimFloorMessageId: 17270 },
+    });
+    await suDb.replyDispensal.create({
+      data: {
+        tenantId,
+        conversationId: conv.id,
+        fromMessageId: 17270,
+        toMessageId: 17272,
+      },
+    });
+    const s = stubClient({
+      page: [replyRow(17271, { refused: true }), customerRow(17272)],
+    });
+    expect(await run(1727, s)).toEqual({ outcome: "done" });
+    expect(s.sent.map(([c]) => c)).toEqual([1727]);
+    expect(s.notes).toEqual([]);
+  });
+
+  // The live read says the conversation is with the team, but the mirror holds a newer version that
+  // gave it back to the bot: the retry goes by the newer one and hands over again, instead of
+  // spending the episode on a hand-over that was undone.
+  test("a hand-over retry goes by the mirror's newer status, not the older live read", async () => {
+    await seedConversation(1728, due());
+    const version = Math.floor(Date.now() / 1000);
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: 1728 },
+      data: { status: "pending", chatwootStatusAt: version },
+    });
+    const s = stubClient({
+      page: [replyRow(17281, { refused: true })],
+      firstLive: { status: "open", updated_at: version - 60 },
+    });
+    const done = await followUpHandler(
+      {
+        ...jobFor(1728),
+        payload: { ...jobFor(1728).payload, handoverRetry: true },
+      },
+      appDb,
+      {
+        makeModel: fakeModel,
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    );
+    expect(done).toEqual({ outcome: "done" });
+    expect(s.resolved).toEqual([1728]);
+    expect(s.notes.map(([c]) => c)).toEqual([1728]);
   });
 
   test("a page that does not read holds the step instead of nudging", async () => {

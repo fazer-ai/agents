@@ -1,12 +1,17 @@
 import { describe, expect, test } from "bun:test";
 import {
+  CONNECT_ATTEMPT_MS,
+  CONNECT_ATTEMPTS,
   DB_GATE_OPT_OUT,
   dbProbeFailed,
+  type MigrationRow,
   missingDbConfig,
   PROBE_BACKSTOP_MS,
   PROBE_DEADLINE_MS,
   probePoolConfig,
   probeTargets,
+  readMigrationLedger,
+  retryConnect,
   unreachableDb,
   withDeadline,
 } from "../db-gate";
@@ -161,7 +166,7 @@ describe("what cancels a probe that will not answer", () => {
   test("the driver is given both limits, not just a connection string", () => {
     const config = probePoolConfig("postgresql://u@localhost/x_test");
     expect(config.connectionString).toContain("x_test");
-    expect(config.connectionTimeoutMillis).toBe(PROBE_DEADLINE_MS);
+    expect(config.connectionTimeoutMillis).toBe(CONNECT_ATTEMPT_MS);
     expect(config.query_timeout).toBe(PROBE_DEADLINE_MS);
   });
 
@@ -363,4 +368,92 @@ describe("the gate, as a run", () => {
     expect(output).toContain("1 pass");
     expect(output).toContain("0 fail");
   }, 60_000);
+});
+
+// A connect from this machine to the test Postgres can stall before the server ever sees it, while
+// every other connection is answered in milliseconds. One stalled attempt must cost a retry, not the
+// file: the preload's connections are the ones no test can retry for itself.
+describe("a connection attempt that stalls", () => {
+  const stalled = () => new Error("timeout expired");
+
+  test("is made again, and the run goes on with the one that answers", async () => {
+    let calls = 0;
+    const got = await retryConnect(async () => {
+      calls++;
+      if (calls === 1) throw stalled();
+      return "connected";
+    });
+    expect(got).toBe("connected");
+    expect(calls).toBe(2);
+  });
+
+  // Prisma's pool words the same lapse differently, and it is the probe's.
+  test("worded as the pool words it, too", async () => {
+    let calls = 0;
+    await retryConnect(async () => {
+      calls++;
+      if (calls === 1)
+        throw new Error("Connection terminated due to connection timeout");
+      return 1;
+    });
+    expect(calls).toBe(2);
+  });
+
+  test("gives up after its attempts, with the last error", async () => {
+    let calls = 0;
+    const err = await retryConnect(async () => {
+      calls++;
+      throw stalled();
+    }).catch((e) => e);
+    expect((err as Error).message).toBe("timeout expired");
+    expect(calls).toBe(CONNECT_ATTEMPTS);
+  });
+
+  // A refusal is an answer: retrying a bad password only delays the message that names it.
+  test("a refusal is not retried", async () => {
+    let calls = 0;
+    await retryConnect(async () => {
+      calls++;
+      throw new Error('password authentication failed for user "x"');
+    }).catch(() => {});
+    expect(calls).toBe(1);
+  });
+});
+
+// THE LEDGER READ, which decides "this database matches the tree". A database never migrated has no
+// `_prisma_migrations` and that is a real state; a read that FAILED is not, and reading it as an
+// empty ledger names every migration as never applied, on a database that has them all.
+describe("reading which migrations a database has", () => {
+  const row: MigrationRow = {
+    migration_name: "20260101000000_x",
+    checksum: "c",
+    finished_at: new Date(0),
+    rolled_back_at: null,
+  };
+
+  test("a database with no ledger table has applied nothing, and the ledger is not read", async () => {
+    const asked: string[] = [];
+    const rows = await readMigrationLedger(async (sql) => {
+      asked.push(sql);
+      return [{ present: false }];
+    });
+    expect(rows).toEqual([]);
+    expect(asked).toHaveLength(1);
+  });
+
+  test("a database with the table answers with its rows", async () => {
+    const rows = await readMigrationLedger(async (sql) =>
+      sql.includes("to_regclass") ? [{ present: true }] : [row],
+    );
+    expect(rows).toEqual([row]);
+  });
+
+  test("a read that fails is a failure, never an empty ledger", async () => {
+    const err = await readMigrationLedger(async (sql) => {
+      if (sql.includes("to_regclass")) return [{ present: true }];
+      throw new Error("Query read timeout");
+    }).catch((e) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toBe("Query read timeout");
+  });
 });

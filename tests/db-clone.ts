@@ -2,7 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type { Client } from "pg";
 import { FLEET_ROLE_EXPR } from "@/lib/tenancy/fleet-role";
-import { DB_GATE_OPT_OUT, PROBE_DEADLINE_MS } from "./db-gate";
+import { CONNECT_ATTEMPT_MS, DB_GATE_OPT_OUT, retryConnect } from "./db-gate";
 import { isWorkerCloneOf, testDbNameFor, withDbName } from "./db-name";
 import { ROLE_CATALOG_LOCK } from "./utils/role-catalog-lock";
 
@@ -163,7 +163,7 @@ const TEMPLATE_BUSY_DEADLINE_MS = 60_000;
 // A statement's wait has to cover the lock while other workers clone, hence the template window, twice.
 export type CloneDeadlines = { connectMs: number; queryMs: number };
 export const CLONE_DEADLINES: CloneDeadlines = {
-  connectMs: PROBE_DEADLINE_MS,
+  connectMs: CONNECT_ATTEMPT_MS,
   queryMs: TEMPLATE_BUSY_DEADLINE_MS * 2,
 };
 
@@ -172,13 +172,23 @@ async function newClient(
   deadlines: CloneDeadlines = CLONE_DEADLINES,
 ): Promise<Client> {
   const { Client } = await import("pg");
-  const c = new Client({
-    connectionString: url,
-    connectionTimeoutMillis: deadlines.connectMs,
-    query_timeout: deadlines.queryMs,
+  // A connect that lapses is tried again on a fresh client (see `retryConnect`); the abandoned one
+  // keeps a listener, so its socket closing late is not an unhandled error in whichever file runs next.
+  return retryConnect(async () => {
+    const c = new Client({
+      connectionString: url,
+      connectionTimeoutMillis: deadlines.connectMs,
+      query_timeout: deadlines.queryMs,
+    });
+    c.on("error", () => {});
+    try {
+      await c.connect();
+      return c;
+    } catch (err) {
+      void c.end().catch(() => {});
+      throw err;
+    }
   });
-  await c.connect();
-  return c;
 }
 
 // The lock is per checkout (the root's hash is in every name it guards), held for the session, and

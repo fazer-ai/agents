@@ -573,8 +573,14 @@ describe.skipIf(!dbUp)("metrics time budget", () => {
   });
 
   test("a read inside the budget answers with its figures", async () => {
+    // A tenant no row names: tenant 1 is the first one a fresh database hands out, and the files that
+    // share this database may have billed usage to it.
     const costs = await withMetricsTimeout(5_000, () =>
-      getDashboardCosts(ctx, {}, app as PrismaClient),
+      getDashboardCosts(
+        { ...ctx, tenantId: 9_000_000_000_000n },
+        {},
+        app as PrismaClient,
+      ),
     );
     expect(costs.requests).toBe(0);
   });

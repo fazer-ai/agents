@@ -128,9 +128,56 @@ export const PROBE_DEADLINE_MS = 10_000;
 export function probePoolConfig(url: string) {
   return {
     connectionString: url,
-    connectionTimeoutMillis: PROBE_DEADLINE_MS,
+    connectionTimeoutMillis: CONNECT_ATTEMPT_MS,
     query_timeout: PROBE_DEADLINE_MS,
   };
+}
+
+// ONE STALLED CONNECT IS NOT AN ANSWER. A connect from this machine to the test Postgres can stall
+// before the server ever sees it while every other connection is answered in milliseconds, and the
+// preload's connections are the ones no test can retry for itself. So a connect that lapses is made
+// again, fresh, a bounded number of times; anything else the server says (a refused password, a
+// missing database) is an answer and goes straight through. A connect that is healthy takes
+// milliseconds, so a few seconds per attempt is wide, and three of them still name a dead endpoint
+// within PROBE_BACKSTOP_MS and a half.
+export const CONNECT_ATTEMPTS = 3;
+export const CONNECT_ATTEMPT_MS = 5_000;
+
+const CONNECT_LAPSED = [
+  "timeout expired",
+  "Connection terminated due to connection timeout",
+];
+
+export function connectLapsed(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return CONNECT_LAPSED.some((m) => message.includes(m));
+}
+
+export async function retryConnect<T>(attempt: () => Promise<T>): Promise<T> {
+  for (let i = 1; ; i++) {
+    try {
+      return await attempt();
+    } catch (err) {
+      if (i >= CONNECT_ATTEMPTS || !connectLapsed(err)) throw err;
+    }
+  }
+}
+
+// What `_prisma_migrations` holds, asked in two steps because the absent table is a real state (a
+// database never migrated) that a single SELECT can only report as an error, and an error is also
+// what a timeout or a dropped connection looks like. So absence is asked for by name, and every
+// failure of the read itself propagates: an empty answer names all of prisma/migrations as never
+// applied, on a database that may hold every one of them.
+export async function readMigrationLedger(
+  query: (sql: string) => Promise<unknown[]>,
+): Promise<MigrationRow[]> {
+  const [table] = (await query(
+    "SELECT to_regclass('_prisma_migrations') IS NOT NULL AS present",
+  )) as { present: boolean }[];
+  if (!table?.present) return [];
+  return (await query(
+    "SELECT migration_name, checksum, finished_at, rolled_back_at FROM _prisma_migrations",
+  )) as MigrationRow[];
 }
 
 export const PROBE_BACKSTOP_MS = PROBE_DEADLINE_MS + 2_000;

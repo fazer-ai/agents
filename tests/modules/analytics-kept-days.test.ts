@@ -2089,6 +2089,64 @@ describe.skipIf(!dbUp)("the kept days of the dashboard", () => {
     }
   });
 
+  test("a caller that answers once has the one budget its request arrived with, for its days and its merge", async () => {
+    await suDb.$executeRaw`UPDATE dashboard_dirty SET created_at = created_at - interval '1 hour' WHERE tenant_id = ${tenantId}`;
+    const f = windowOf("UTC", 20, 0);
+    await kept("kpis", f);
+    // Arrived a whole budget ago (its authentication, its wait for a connection): nothing is left.
+    const late = await requestContext
+      .run(
+        { locale: "en", startedAt: Date.now() - config.metrics.timeoutMs - 1 },
+        () => answerOnce(f),
+      )
+      .catch((e: unknown) => e);
+    expect(late).toBeInstanceOf(MetricsTooSlowError);
+    // Its days in within the budget, the merge after them is on what is left of it, not on a new one.
+    const timeout = config.metrics.timeoutMs;
+    config.metrics.timeoutMs = 2_000;
+    try {
+      const w = alignedDays(f);
+      if (!w) throw new Error("not aligned");
+      const load = await requestContext.run(
+        { locale: "en", startedAt: Date.now() },
+        () =>
+          new WindowLoad(ctx(), f, BLOCK_SECTIONS.kpis, w, appDb).complete(),
+      );
+      const passed = Date.now() + config.metrics.timeoutMs;
+      await until("the request's budget to run out", () => Date.now() > passed);
+      await expect(
+        figuresOf(ctx(), load, ["kpis"], null, appDb),
+      ).rejects.toBeInstanceOf(MetricsTooSlowError);
+    } finally {
+      config.metrics.timeoutMs = timeout;
+    }
+  }, 120_000);
+
+  test("today's computation cut in halves after its viewer left starts no half", async () => {
+    await clearKept();
+    const abort = new AbortController();
+    let computed = 0;
+    // The version hash runs the sections once, on a recorder: before the stub counts.
+    await rollupVersion();
+    const conv = COMPUTE.conv;
+    COMPUTE.conv = async () => {
+      computed++;
+      abort.abort();
+      throw new MetricsTooSlowError(15_000);
+    };
+    try {
+      const f = windowOf("UTC", 20, 0);
+      const w = alignedDays(f);
+      if (!w) throw new Error("not aligned");
+      await new WindowLoad(ctx(), f, BLOCK_SECTIONS.kpis, w, appDb)
+        .prepare(abort.signal)
+        .catch(() => {});
+      expect(computed).toBe(1);
+    } finally {
+      COMPUTE.conv = conv;
+    }
+  });
+
   test("every section the console reads has a block", () => {
     const covered = new Set(Object.values(BLOCK_SECTIONS).flat());
     expect([...SECTIONS].filter((s) => !covered.has(s))).toEqual([]);

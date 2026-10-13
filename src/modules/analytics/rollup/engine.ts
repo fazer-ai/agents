@@ -4,7 +4,12 @@ import metricsPrisma from "@/api/lib/prisma-metrics";
 import config from "@/config";
 import { type AppError, MetricsTooSlowError } from "@/lib/errors";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
-import { isOverMetricsBudget, metricsBudget, metricsTooSlow } from "../budget";
+import {
+  isOverMetricsBudget,
+  metricsBudget,
+  metricsDeadline,
+  metricsTooSlow,
+} from "../budget";
 import type { DashboardFilter } from "../filter";
 import { normalizeTimeZone } from "../service";
 import {
@@ -232,8 +237,9 @@ export class WindowLoad implements DayStore {
   private refused = new Map<Family, AppError>();
   private queue: Part[] = [];
   private current: Part | null = null;
-  // The one deadline of a caller that answers once (`complete`); a stream has none.
-  private deadline = Number.POSITIVE_INFINITY;
+  // The one deadline of a caller that answers once (`complete`), counted from its request's arrival
+  // and shared by the merge after it (`figuresOf`); a stream has none, and each part its own budget.
+  deadline = Number.POSITIVE_INFINITY;
   private base: PrismaClient;
   private window: { tz: string; first: string | null; last: string | null };
 
@@ -484,7 +490,7 @@ export class WindowLoad implements DayStore {
     const computing = (async () => {
       for (let i = 0; i < eager.length && !signal?.aborted; i += 2)
         await Promise.all(
-          eager.slice(i, i + 2).map((p) => this.runFamilyPart(p)),
+          eager.slice(i, i + 2).map((p) => this.runFamilyPart(p, signal)),
         );
     })();
     const [keep] = await Promise.all([reading, computing]);
@@ -663,6 +669,8 @@ export class WindowLoad implements DayStore {
         (await this.scoped((db) => this.compute(db, part, false)))();
       else await this.computeKept(part, signal);
     } catch (error) {
+      // A viewer who left gets no half started in its place.
+      if (error instanceof MetricsTooSlowError && signal?.aborted) return;
       if (
         !(error instanceof MetricsTooSlowError) ||
         part.first === part.last ||
@@ -785,7 +793,7 @@ export class WindowLoad implements DayStore {
   // a cold window longer than that is refused as too slow, with the parts already kept for the next
   // call to read. A caller that goes away (`signal`) stops it at the next part or batch.
   async complete(signal?: AbortSignal): Promise<this> {
-    this.deadline = Date.now() + config.metrics.timeoutMs;
+    this.deadline = metricsDeadline();
     try {
       await this.prepare(signal);
       while (!signal?.aborted && (await this.step(signal)));

@@ -65,15 +65,21 @@ export async function figuresOf(
   const out: DashboardFigures = {};
   // A kept day changed under a percentile is computed again in memory; the merge then starts over, so
   // no figure mixes the day's old histogram with its new cells.
-  await budgeted(base, ctx, async (db) => {
-    for (;;) {
-      try {
-        return await merge(db);
-      } catch (error) {
-        if (!(error instanceof StaleDayError)) throw error;
+  // On what is left of a one-answer caller's budget (`load.deadline`); a stream's merge has its own.
+  await budgeted(
+    base,
+    ctx,
+    async (db) => {
+      for (;;) {
+        try {
+          return await merge(db);
+        } catch (error) {
+          if (!(error instanceof StaleDayError)) throw error;
+        }
       }
-    }
-  });
+    },
+    load.deadline,
+  );
   return out;
 
   async function merge(db: ScopedDb) {

@@ -474,24 +474,119 @@ describe.skipIf(!dbUp)("a close this side made converges", () => {
     expect((await mirror(9103)).status).toBe("pending");
   });
 
-  test("a close Chatwoot reopened since is left reopened, and is not read again (catches the pass closing a customer's new episode, or reading it forever)", async () => {
+  test("a close Chatwoot reopened since is left reopened, its stamp cleared once nothing else writes the row, and is then not read again (catches the pass closing a customer's new episode, or reading it forever)", async () => {
     await seedConversation(9104, {
       resolvedBy: "followup_abandonment",
       resolvedByAt: V1 - 1_000,
       updatedAgoMs: STALE_MS + 60_000,
     });
     live.set(9104, { status: "pending", updatedAt: V3 });
+    const age = () =>
+      suDb.$executeRaw`UPDATE conversations SET updated_at = now() - interval '2 hours' WHERE tenant_id = ${tenantId}`;
     await reconcileUnconfirmedCloses({ tenantId, base: appDb, deps });
     const m = await mirror(9104);
-    expect([m.status, m.chatwootStatusAt, m.resolvedBy]).toEqual([
-      "pending",
-      V3,
-      null,
-    ]);
+    expect([m.status, m.chatwootStatusAt]).toEqual(["pending", V3]);
+    // The reconcile wrote the row, so this pass leaves the stamp; the next stale pass clears it.
+    await age();
+    await reconcileUnconfirmedCloses({ tenantId, base: appDb, deps });
+    expect((await mirror(9104)).resolvedBy).toBeNull();
     reads = [];
-    await suDb.$executeRaw`UPDATE conversations SET updated_at = now() - interval '2 hours' WHERE tenant_id = ${tenantId}`;
+    await age();
     await reconcileUnconfirmedCloses({ tenantId, base: appDb, deps });
     expect(reads).toEqual([]);
+  });
+
+  test("closes that could not be read go to the back, so a down instance cannot hold the batch (catches healthy closes never reached)", async () => {
+    await seedConversation(9109, {
+      resolvedBy: "agent",
+      resolvedByAt: V1 - 1_000,
+      updatedAgoMs: STALE_MS + 120_000,
+    });
+    await seedConversation(9110, {
+      resolvedBy: "agent",
+      resolvedByAt: V1 - 1_000,
+      updatedAgoMs: STALE_MS + 60_000,
+    });
+    live.set(9109, 503);
+    live.set(9110, { status: "resolved", updatedAt: V2 });
+    const now = new Date(Date.now() + STALE_MS + 180_000);
+    await reconcileUnconfirmedCloses({
+      tenantId,
+      base: appDb,
+      deps,
+      batch: 1,
+      now,
+    });
+    await reconcileUnconfirmedCloses({
+      tenantId,
+      base: appDb,
+      deps,
+      batch: 1,
+      now,
+    });
+    expect(reads).toEqual([9109, 9110]);
+    expect((await mirror(9110)).status).toBe("resolved");
+  });
+
+  test("closes skipped behind a failed read go to the back too (catches a down instance's unread closes holding the batch)", async () => {
+    for (const [c, ago] of [
+      [9114, 180_000],
+      [9115, 120_000],
+      [9116, 60_000],
+    ] as const) {
+      await seedConversation(c, {
+        resolvedBy: "agent",
+        resolvedByAt: V1 - 1_000,
+        updatedAgoMs: STALE_MS + ago,
+      });
+    }
+    live.set(9114, 503);
+    live.set(9115, 503);
+    live.set(9116, { status: "resolved", updatedAt: V2 });
+    const now = new Date(Date.now() + STALE_MS + 240_000);
+    await reconcileUnconfirmedCloses({
+      tenantId,
+      base: appDb,
+      deps,
+      batch: 2,
+      now,
+    });
+    reads = [];
+    await reconcileUnconfirmedCloses({
+      tenantId,
+      base: appDb,
+      deps,
+      batch: 2,
+      now,
+    });
+    expect(reads[0]).toBe(9116);
+  });
+
+  test("a pass reads nothing past its budget, and leaves what it did not read as it was (catches a backlog running the sweep job past its deadline)", async () => {
+    await seedConversation(9111, {
+      resolvedBy: "agent",
+      resolvedByAt: V1 - 1_000,
+      updatedAgoMs: STALE_MS + 60_000,
+    });
+    await seedConversation(9112);
+    const row = await strand(9112, "conversation_resolved");
+    live.set(9111, { status: "resolved", updatedAt: V2 });
+    live.set(9112, { status: "resolved", updatedAt: V2 });
+    await sweepStrandedDeliveries({
+      tenantId,
+      base: appDb,
+      deps,
+      readBudgetMs: 0,
+    });
+    await reconcileUnconfirmedCloses({
+      tenantId,
+      base: appDb,
+      deps,
+      readBudgetMs: 0,
+    });
+    expect(reads).toEqual([]);
+    expect(await ledger(row)).toEqual({ status: "PROCESSING", attempts: 0 });
+    expect((await mirror(9111)).resolvedBy).toBe("agent");
   });
 
   test("the repaired close is announced to open consoles (catches a list left showing pending after the repair)", async () => {
@@ -520,6 +615,23 @@ describe.skipIf(!dbUp)("a close this side made converges", () => {
     await reconcileUnconfirmedCloses({ tenantId, base: appDb, deps });
     expect(reads).toHaveLength(1);
     expect((await mirror(9108)).resolvedBy).toBe("agent");
+  });
+
+  test("a close recorded during the read keeps its stamp on a Chatwoot that sends no version either (catches the guard trusting a null version)", async () => {
+    const id = await seedConversation(9113, {
+      resolvedBy: "followup_abandonment",
+      resolvedByAt: null,
+      updatedAgoMs: STALE_MS + 60_000,
+    });
+    live.set(9113, { status: "pending", updatedAt: V1 - 500 });
+    onRead = async () => {
+      await suDb.conversation.update({
+        where: { id },
+        data: { resolvedBy: "agent", resolvedByAt: null },
+      });
+    };
+    await reconcileUnconfirmedCloses({ tenantId, base: appDb, deps });
+    expect((await mirror(9113)).resolvedBy).toBe("agent");
   });
 
   test("a close recorded while Chatwoot was being asked keeps its stamp (catches the pass erasing who closed a new episode)", async () => {

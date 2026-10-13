@@ -570,6 +570,8 @@ export interface SweepStrandedDeliveriesParams {
   now?: Date;
   // One pass's ceiling, overridable so the batch's fairness can be asked with a handful of rows.
   batch?: number;
+  // The wall-clock time the pass may spend reading conversations back (see `settleConversationEvents`).
+  readBudgetMs?: number;
 }
 
 // One pass for one tenant. Exported for the tests, which drive it directly rather than through the
@@ -653,7 +655,13 @@ export async function sweepStrandedDeliveries(
   for (const { row } of rest) {
     await settleStranded(row, tenantId, base, now, STALE_AFTER_MS, counts);
   }
-  await settleConversationEvents(groups, base, counts, params.deps);
+  await settleConversationEvents(
+    groups,
+    base,
+    counts,
+    Date.now() + (params.readBudgetMs ?? SWEEP_READ_BUDGET_MS),
+    params.deps,
+  );
   return counts;
 }
 
@@ -845,6 +853,14 @@ async function announceReconciled(
   });
 }
 
+// The wall-clock time one pass spends reading conversations back. The reads are sequential and each
+// can take a request timeout, so without a ceiling a backlog of distinct conversations runs the sweep
+// job past its scheduler deadline (and the dead-claim pass past its interval, holding its running
+// flag). What the ceiling leaves unread stays as it was for the next pass: a stranded row is still
+// PROCESSING, and an unconfirmed close is still selected.
+export const SWEEP_READ_BUDGET_MS = 60_000;
+export const DEAD_CLAIM_READ_BUDGET_MS = 10_000;
+
 // Settles the groups `takeConversationEvents` took, AFTER the pass's ordinary verdicts: those are the
 // customers waiting on a recovery, and a read here can take a request timeout. An instance that failed
 // one read is not asked again in the same pass; its other conversations count the failure too, so an
@@ -853,10 +869,12 @@ async function settleConversationEvents(
   groups: ConversationEventGroup[],
   base: PrismaClient,
   counts: SweepCounts,
+  readUntil: number,
   deps?: ConversationStateDeps,
 ): Promise<void> {
   const down = new Map<string, unknown>();
   for (const g of groups) {
+    if (Date.now() >= readUntil) return;
     const instanceKey = `${g.tenantId}:${g.instanceId}`;
     const read: LiveRead = down.has(instanceKey)
       ? { kind: "unreadable", err: down.get(instanceKey) }
@@ -934,6 +952,8 @@ export interface ReconcileUnconfirmedClosesParams {
   base: PrismaClient;
   now?: Date;
   deps?: ConversationStateDeps;
+  batch?: number;
+  readBudgetMs?: number;
 }
 
 export async function reconcileUnconfirmedCloses(
@@ -942,6 +962,7 @@ export async function reconcileUnconfirmedCloses(
   const { tenantId, base } = params;
   const now = params.now ?? new Date();
   const cutoff = new Date(now.getTime() - STALE_AFTER_MS);
+  const readUntil = Date.now() + (params.readBudgetMs ?? SWEEP_READ_BUDGET_MS);
   const rows = await runScopedOn(base, sysCtx(tenantId), (db) =>
     db.conversation.findMany({
       where: {
@@ -950,12 +971,12 @@ export async function reconcileUnconfirmedCloses(
         updatedAt: { lt: cutoff },
       },
       orderBy: { updatedAt: "asc" },
-      take: UNCONFIRMED_CLOSE_BATCH,
+      take: params.batch ?? UNCONFIRMED_CLOSE_BATCH,
       select: {
         id: true,
         chatwootInstanceId: true,
         chatwootConversationId: true,
-        resolvedByAt: true,
+        updatedAt: true,
       },
     }),
   );
@@ -964,8 +985,21 @@ export async function reconcileUnconfirmedCloses(
   // one that is down costs a single request timeout and not one per row, which the job's deadline
   // could not hold.
   const down = new Set<bigint>();
+  // A row that could not be read goes to the back of the list (its `updated_at` is touched), so the
+  // closes of an instance that is down cannot hold the whole oldest-first batch pass after pass.
+  const postpone = (id: bigint) =>
+    runScopedOn(base, sysCtx(tenantId), (db) =>
+      db.conversation.updateMany({
+        where: { id },
+        data: { updatedAt: new Date() },
+      }),
+    );
   for (const conv of rows) {
-    if (down.has(conv.chatwootInstanceId)) continue;
+    if (Date.now() >= readUntil) break;
+    if (down.has(conv.chatwootInstanceId)) {
+      await postpone(conv.id);
+      continue;
+    }
     const read = await readLive(
       tenantId,
       conv.chatwootInstanceId,
@@ -977,8 +1011,9 @@ export async function reconcileUnconfirmedCloses(
       down.add(conv.chatwootInstanceId);
       logger.warn(
         { err: read.err, conversationId: conv.chatwootConversationId },
-        "chatwoot delivery sweep: a close the mirror never confirmed could not be read from Chatwoot; left for the next pass",
+        "chatwoot delivery sweep: a close the mirror never confirmed could not be read from Chatwoot; left for a later pass",
       );
+      await postpone(conv.id);
       continue;
     }
     if (read.kind === "state") {
@@ -994,14 +1029,16 @@ export async function reconcileUnconfirmedCloses(
         await announceReconciled(tenantId, base, { id: conv.id }, r.state);
       }
     }
-    // Only the stamp this pass read: a close recorded while Chatwoot was being asked stamps a newer
-    // `resolved_by_at`, and its own webhook, still on the way, is what confirms it.
+    // Only a row nothing has written since this pass selected it. A close recorded while Chatwoot was
+    // being asked carries a stamp of its own, which its webhook (still on the way) confirms, and the
+    // stamp's version cannot tell the two apart on a Chatwoot that sends none. A row the reconcile
+    // above wrote is left too, and cleared on a later pass once it is stale again.
     await runScopedOn(base, sysCtx(tenantId), (db) =>
       db.conversation.updateMany({
         where: {
           id: conv.id,
+          updatedAt: conv.updatedAt,
           resolvedBy: { not: null },
-          resolvedByAt: conv.resolvedByAt,
           status: { not: "resolved" },
         },
         data: { resolvedBy: null, resolvedByAt: null },
@@ -1028,6 +1065,7 @@ export interface SweepDeadClaimsParams {
   batch?: number;
   ttlMs?: number;
   deps?: ConversationStateDeps;
+  readBudgetMs?: number;
 }
 
 // Settles the PROCESSING rows whose claim names a process that is no longer alive: the
@@ -1087,7 +1125,13 @@ export async function sweepDeadClaims(
       counts,
     );
   }
-  await settleConversationEvents(groups, base, counts, params.deps);
+  await settleConversationEvents(
+    groups,
+    base,
+    counts,
+    Date.now() + (params.readBudgetMs ?? DEAD_CLAIM_READ_BUDGET_MS),
+    params.deps,
+  );
   return counts;
 }
 

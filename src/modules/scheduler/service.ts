@@ -1240,7 +1240,8 @@ export function claimPendingByKeyPrefix(
 }
 
 // The same claim, of DUE rows only: the barrier runs a fallback whose time has come, and leaves one
-// still waiting for the append it stands in for.
+// still waiting for the append it stands in for. With `rank`, the rows taken are the due ones lowest
+// on it (ties to the older row) instead of the earliest `run_at`; the returned array is in no order.
 export function claimDueByKeyPrefix(
   kind: SchedulerJobKind,
   prefix: string,
@@ -1248,6 +1249,7 @@ export function claimDueByKeyPrefix(
   base: PrismaClient = basePrisma,
   tenantId?: bigint,
   excludeIds?: bigint[],
+  rank?: Prisma.Sql,
 ): Promise<ClaimedJob[]> {
   // Due by this process's clock, the one that stamped the run time (`dueOlderFallbacks`), not
   // the database's: a few milliseconds of skew would leave a fallback just brought due unclaimed.
@@ -1260,6 +1262,8 @@ export function claimDueByKeyPrefix(
     tenantId,
     excludeIds,
     prefix,
+    undefined,
+    rank === undefined ? undefined : { rank, spends: Prisma.sql`0` },
   );
 }
 

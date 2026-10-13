@@ -1,4 +1,4 @@
-import type { PrismaClient } from "@/../generated/prisma/client";
+import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import {
   ingestFallbackKeyPrefix,
@@ -31,6 +31,19 @@ import {
 // refuses to read on it, since there the message would be summarised away for good. Asked of the
 // QUEUE, not the jobs this call ran: a row another process's tick claimed owes just as much.
 export type IngestDrainOutcome = "drained" | "incomplete";
+
+// The message id the fallback appends (the handler reads the same payload field), in SQL for the claim
+// and in code for the batch it returns, which `UPDATE ... RETURNING` hands back in no promised order.
+// A row without a numeric id sorts last in both; its handler retires it without appending.
+const FALLBACK_MESSAGE_ORDER = Prisma.sql`CASE WHEN jsonb_typeof(payload->'messageId') = 'number' THEN (payload->>'messageId')::numeric END`;
+
+export function byMessageId(a: ClaimedJob, b: ClaimedJob): number {
+  const id = (job: ClaimedJob) =>
+    typeof job.payload.messageId === "number"
+      ? job.payload.messageId
+      : Number.POSITIVE_INFINITY;
+  return id(a) - id(b) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+}
 
 // How long a claim may sit before it is presumed crashed. The same value the compaction lane uses for
 // its own reap; shorter would re-pend a row an ingestion is still legitimately working on.
@@ -97,8 +110,11 @@ export async function drainPendingIngest(
     const fallbackPrefix = ingestFallbackKeyPrefix(graphThreadId);
     await retireCoveredFallbacks(tenantId, graphThreadId, base);
     // Every due fallback, not one batch: a batch of them followed by a pass of newer appends would let
-    // the window move past the fallbacks left for the next pass. A fallback that deferred for a turn is
-    // rescheduled into the future, so it is not claimed again here.
+    // the window move past the fallbacks left for the next pass. And by message id, across batches:
+    // the claim takes the lowest ids still due and the batch runs sorted, since a fallback run after a
+    // newer one can find the window already past it. One batch held at a time, so a row does not sit
+    // claimed and unstarted toward the stale reap while the whole backlog runs ahead of it. A fallback
+    // that deferred for a turn is rescheduled into the future, so it is not claimed again here.
     const runDueFallbacks = async () => {
       const ran: bigint[] = [];
       for (;;) {
@@ -109,9 +125,10 @@ export async function drainPendingIngest(
           base,
           tenantId,
           ran,
+          FALLBACK_MESSAGE_ORDER,
         );
         if (due.length === 0) return;
-        await run(due, ran);
+        await run(due.sort(byMessageId), ran);
       }
     };
     // Every row this drain touched, kept out of the next pass. The claim already honours backoff

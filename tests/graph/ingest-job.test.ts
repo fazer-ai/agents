@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import type { BaseMessage } from "@langchain/core/messages";
 import { MemorySaver } from "@langchain/langgraph-checkpoint";
 import { PrismaPg } from "@prisma/adapter-pg";
@@ -7,7 +7,7 @@ import { decryptJson, encryptJson } from "@/api/lib/crypto";
 import { contactInboxThreadId, getCheckpointer } from "@/graph/checkpointer";
 import { clearTurnInFlight, markTurnInFlight } from "@/graph/inflight";
 import { INGEST_ID_WINDOW } from "@/graph/ingest-dedup";
-import { drainPendingIngest } from "@/graph/ingest-drain";
+import { byMessageId, drainPendingIngest } from "@/graph/ingest-drain";
 import {
   armIngest,
   fallbackHandler,
@@ -25,6 +25,7 @@ import {
   runInPoolClass,
 } from "@/lib/pool-class";
 import { runScopedOn } from "@/lib/tenancy";
+import * as scheduler from "@/modules/scheduler/service";
 import {
   type ClaimedJob,
   claimDueTrafficJobs,
@@ -1918,6 +1919,72 @@ describe.skipIf(!dbUp)("the ingestion job defers to a turn in flight", () => {
     expect(missing).toEqual([]);
   }, 180_000);
 
+  // The fallbacks come due with their run times in the OPPOSITE order of their ids, and each claimed
+  // batch comes back reversed, as `UPDATE ... RETURNING` is free to. The window starts with 50 ids, so
+  // 14 free slots decide it: run by run time, everything after the first 14 falls below the floor;
+  // sorted only within a batch of 50, the ten oldest land in the second batch, below the floor the
+  // first one moved. The ids are read in the order they were folded in.
+  test("due fallbacks across more than one batch are folded in by message id, not by run time", async () => {
+    const contactInboxId = 12640;
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    const arm = (messageId: number, fallbackAfterMs?: number) =>
+      armIngest({
+        tenantId,
+        instanceId,
+        conversationId: 997,
+        contactInboxId,
+        graphThreadId,
+        messageId,
+        text: `mensagem ${messageId}`,
+        role: "customer",
+        agentId: 1n,
+        compactionEnabled: false,
+        ...(fallbackAfterMs === undefined ? {} : { fallbackAfterMs }),
+        base: appDb,
+      });
+    for (let i = 0; i < 50; i++) await arm(6100 + i);
+    expect(await drainPendingIngest(tenantId, graphThreadId, appDb)).toBe(
+      "drained",
+    );
+    for (let i = 59; i >= 0; i--) await arm(6000 + i, 10 * 60_000);
+    const longAgo = Date.now() - 3_600_000;
+    for (let i = 0; i < 60; i++)
+      await suDb.schedulerJob.updateMany({
+        where: {
+          tenantId,
+          kind: "INGEST_FALLBACK",
+          dedupeKey: ingestFallbackKey(graphThreadId, 6000 + i),
+        },
+        data: { runAt: new Date(longAgo - i * 1000) },
+      });
+    const claimDue = scheduler.claimDueByKeyPrefix;
+    const reversed = spyOn(scheduler, "claimDueByKeyPrefix").mockImplementation(
+      async (...args) => (await claimDue(...args)).reverse(),
+    );
+    try {
+      expect(await drainPendingIngest(tenantId, graphThreadId, appDb)).toBe(
+        "drained",
+      );
+    } finally {
+      reversed.mockRestore();
+    }
+    const saved = await (await getCheckpointer()).get({
+      configurable: { thread_id: graphThreadId },
+    });
+    const ids = (
+      (saved?.channel_values as { messages?: BaseMessage[] })?.messages ?? []
+    )
+      .map((m) => m.id ?? "")
+      .filter((id) => /^ingest:60\d\d$/.test(id));
+    expect(ids).toEqual(
+      Array.from({ length: 60 }, (_, i) => `ingest:${6000 + i}`),
+    );
+  }, 180_000);
+
   test("a fallback the owner covered, for a message already below the window's floor, stands down without reporting a lost append", async () => {
     const contactInboxId = 12617;
     const graphThreadId = contactInboxThreadId(
@@ -2327,5 +2394,38 @@ describe.skipIf(!dbUp)("the ingestion job defers to a turn in flight", () => {
     expect((await fallbackHandler(job, racing, saver)).outcome).toBe("done");
     expect(settled).toBe(true);
     expect(await appendedTexts(saver, graphThreadId)).toEqual([]);
+  });
+});
+
+// What the drain's sort does with a payload the claim's SQL also has to rank: a missing or non-numeric
+// id goes last, and equal ids keep the row order.
+describe("a claimed batch of fallbacks runs in message id order", () => {
+  test("lowest id first, a row without a numeric id last, ties by row", () => {
+    const job = (id: bigint, messageId: unknown): ClaimedJob => ({
+      id,
+      tenantId: 1n,
+      kind: "INGEST_FALLBACK",
+      payload: { messageId },
+      attempts: 0,
+      claimSeq: 1,
+    });
+    const batch = [
+      job(1n, 7002),
+      job(2n, "7000"),
+      job(3n, 7000),
+      job(4n, 6999),
+      job(5n, 7001),
+      job(6n, undefined),
+      job(7n, 7000),
+    ];
+    expect(batch.sort(byMessageId).map((j) => j.id)).toEqual([
+      4n,
+      3n,
+      7n,
+      5n,
+      1n,
+      2n,
+      6n,
+    ]);
   });
 });

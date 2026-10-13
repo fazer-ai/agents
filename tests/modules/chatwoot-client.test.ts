@@ -102,6 +102,7 @@ describe("ChatwootClient", () => {
     );
     expect(calls[0]?.headers["api-access-token"]).toBe("ADMIN_TOK");
     expect(calls[0]?.body).toEqual({
+      page: 1,
       sort_by: "last_activity_at_desc",
       payload: [
         {
@@ -129,6 +130,72 @@ describe("ChatwootClient", () => {
       [7, 3],
     ]);
     expect(refs[0]?.lastActivityAt?.getTime()).toBe(1791800000 * 1000);
+  });
+
+  // The filter leads with the admin token's pinned conversations, so a full first page of old pinned
+  // ones does not end the read: the recently active one on the next page is still returned.
+  test("listContactConversationsByActivity reads past a full page until one comes back short", async () => {
+    const pinned = Array.from({ length: 25 }, (_, i) => ({
+      id: 100 + i,
+      inbox_id: 2,
+      last_activity_at: 1791000000,
+    }));
+    const pages: unknown[][] = [
+      pinned,
+      [{ id: 7, inbox_id: 2, last_activity_at: 1791800000 }, pinned[0]],
+    ];
+    const bodies: unknown[] = [];
+    const fetchImpl = (async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(init?.body as string) as { page: number };
+      bodies.push(body.page);
+      return {
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({ payload: pages[body.page - 1] ?? [] }),
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const client = await createChatwootClient(baseConfig, {
+      fetchImpl,
+      assertSafe: passthroughSafe,
+    });
+    const refs = await client.listContactConversationsByActivity({
+      contactId: 77,
+      inboxIds: [2],
+      activeSince: new Date("2026-09-12T00:30:00Z"),
+    });
+    expect(bodies).toEqual([1, 2]);
+    expect(refs).toHaveLength(26);
+    expect(refs.some((r) => r.id === 7)).toBe(true);
+  });
+
+  test("listContactConversationsByActivity stops at four full pages", async () => {
+    const bodies: number[] = [];
+    const fetchImpl = (async (_url: string, init?: RequestInit) => {
+      const page = (JSON.parse(init?.body as string) as { page: number }).page;
+      bodies.push(page);
+      const payload = Array.from({ length: 25 }, (_, i) => ({
+        id: page * 100 + i,
+        inbox_id: 2,
+        last_activity_at: 1791000000,
+      }));
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ payload }),
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const client = await createChatwootClient(baseConfig, {
+      fetchImpl,
+      assertSafe: passthroughSafe,
+    });
+    const refs = await client.listContactConversationsByActivity({
+      contactId: 77,
+      inboxIds: [2],
+      activeSince: new Date("2026-09-12T00:30:00Z"),
+    });
+    expect(bodies).toEqual([1, 2, 3, 4]);
+    expect(refs).toHaveLength(100);
   });
 
   // A filter answer without a list is not "no conversations": the block reports the listing unread.

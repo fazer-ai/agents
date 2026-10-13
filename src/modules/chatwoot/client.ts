@@ -415,6 +415,10 @@ function parseContact(raw: unknown): ChatwootContact | null {
   };
 }
 
+// The conversation filter's default page, and how many of its pages one contact's read walks.
+const CONTACT_FILTER_PAGE = 25;
+const CONTACT_FILTER_MAX_PAGES = 4;
+
 function epochSecondsToDate(v: unknown): Date | null {
   const n = typeof v === "string" && v.trim() !== "" ? Number(v) : v;
   return typeof n === "number" && Number.isFinite(n) && n > 0
@@ -1911,11 +1915,12 @@ export class ChatwootClient {
     });
   }
 
-  // The contact's conversations in the given inboxes active since `activeSince`, newest activity
-  // first, through the conversation filter: the contact listing answers the 25 most recently CREATED,
-  // so a long-lived conversation still in use falls off it. The filter compares `last_activity_at`
-  // with a whole date, so the bound sent is the day before `activeSince` and the caller cuts at the
-  // instant. First page only, which the filter sorts by `last_activity_at` desc in every fork version.
+  // The contact's conversations in the given inboxes active since `activeSince`, through the
+  // conversation filter: the contact listing answers the 25 most recently CREATED, so a long-lived
+  // conversation still in use falls off it. The filter compares `last_activity_at` with a whole date,
+  // so the bound sent is the day before `activeSince` and the caller cuts at the instant. The filter
+  // puts the admin token's pinned conversations ahead of the activity order, so pages are read until
+  // one comes back short, at most `CONTACT_FILTER_MAX_PAGES`, and the caller sorts what was read.
   async listContactConversationsByActivity(p: {
     contactId: number;
     inboxIds: readonly number[];
@@ -1924,41 +1929,47 @@ export class ChatwootClient {
     const dayBefore = new Date(p.activeSince.getTime() - 86_400_000)
       .toISOString()
       .slice(0, 10);
-    const res = (await this.request(
-      this.config.adminToken,
-      "POST",
-      "/conversations/filter",
-      {
-        sort_by: "last_activity_at_desc",
-        payload: [
-          {
-            attribute_key: "contact_id",
-            filter_operator: "equal_to",
-            values: [p.contactId],
-            query_operator: "and",
-          },
-          {
-            attribute_key: "inbox_id",
-            filter_operator: "equal_to",
-            values: [...p.inboxIds],
-            query_operator: "and",
-          },
-          {
-            attribute_key: "last_activity_at",
-            filter_operator: "is_greater_than",
-            values: [dayBefore],
-            query_operator: null,
-          },
-        ],
-      },
-    )) as { payload?: unknown } | null;
-    if (!Array.isArray(res?.payload)) {
-      throw new Error("POST /conversations/filter: no payload array");
+    const byId = new Map<number, ChatwootConversationRef>();
+    for (let page = 1; page <= CONTACT_FILTER_MAX_PAGES; page++) {
+      const res = (await this.request(
+        this.config.adminToken,
+        "POST",
+        "/conversations/filter",
+        {
+          page,
+          sort_by: "last_activity_at_desc",
+          payload: [
+            {
+              attribute_key: "contact_id",
+              filter_operator: "equal_to",
+              values: [p.contactId],
+              query_operator: "and",
+            },
+            {
+              attribute_key: "inbox_id",
+              filter_operator: "equal_to",
+              values: [...p.inboxIds],
+              query_operator: "and",
+            },
+            {
+              attribute_key: "last_activity_at",
+              filter_operator: "is_greater_than",
+              values: [dayBefore],
+              query_operator: null,
+            },
+          ],
+        },
+      )) as { payload?: unknown } | null;
+      if (!Array.isArray(res?.payload)) {
+        throw new Error("POST /conversations/filter: no payload array");
+      }
+      for (const row of res.payload) {
+        const ref = parseConversationRef(row);
+        if (ref) byId.set(ref.id, ref);
+      }
+      if (res.payload.length < CONTACT_FILTER_PAGE) break;
     }
-    return res.payload.flatMap((row) => {
-      const ref = parseConversationRef(row);
-      return ref ? [ref] : [];
-    });
+    return [...byId.values()];
   }
 
   // Opens (or, when the inbox is set to continue the contact's open case, continues) a conversation

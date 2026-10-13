@@ -898,7 +898,9 @@ async function settleConversationEvents(
         live: read.live,
         base,
       });
-      if (r.applied && r.state) {
+      // The returned state, not only a full application: one field can land while the other loses
+      // to its own ordering mark, and the one that landed is still news to an open list.
+      if (r.state) {
         await announceReconciled(
           g.tenantId,
           base,
@@ -958,7 +960,12 @@ export async function reconcileUnconfirmedCloses(
     }),
   );
   let applied = 0;
+  // As in `settleConversationEvents`: an instance that failed a read is not asked again this pass, so
+  // one that is down costs a single request timeout and not one per row, which the job's deadline
+  // could not hold.
+  const down = new Set<bigint>();
   for (const conv of rows) {
+    if (down.has(conv.chatwootInstanceId)) continue;
     const read = await readLive(
       tenantId,
       conv.chatwootInstanceId,
@@ -967,6 +974,7 @@ export async function reconcileUnconfirmedCloses(
       params.deps,
     );
     if (read.kind === "unreadable") {
+      down.add(conv.chatwootInstanceId);
       logger.warn(
         { err: read.err, conversationId: conv.chatwootConversationId },
         "chatwoot delivery sweep: a close the mirror never confirmed could not be read from Chatwoot; left for the next pass",
@@ -982,7 +990,7 @@ export async function reconcileUnconfirmedCloses(
         base,
       });
       if (r.applied) applied += 1;
-      if (r.applied && r.state) {
+      if (r.state) {
         await announceReconciled(tenantId, base, { id: conv.id }, r.state);
       }
     }

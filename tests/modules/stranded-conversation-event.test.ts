@@ -110,6 +110,7 @@ async function seedConversation(
     statusAt?: number | null;
     resolvedBy?: string | null;
     resolvedByAt?: number | null;
+    assigneeAt?: number | null;
     updatedAgoMs?: number;
   } = {},
 ) {
@@ -127,6 +128,7 @@ async function seedConversation(
       chatwootStatusAt: over.statusAt === undefined ? V1 : over.statusAt,
       resolvedBy: over.resolvedBy ?? null,
       resolvedByAt: over.resolvedByAt ?? null,
+      chatwootAssigneeAt: over.assigneeAt ?? null,
       contactInboxId: 71_000 + convId,
     },
     select: { id: true },
@@ -291,6 +293,23 @@ describe.skipIf(!dbUp)(
       await strand(9010, "conversation_resolved");
       live.set(9010, { status: "resolved", updatedAt: V2 });
       await sweepStrandedDeliveries({ tenantId, base: appDb, deps });
+      expect(published).toContainEqual({
+        conversationId: String(id),
+        status: "resolved",
+      });
+    });
+
+    test("a status that lands while the holder loses to a newer mark is still announced (catches a partial repair left off open consoles)", async () => {
+      const id = await seedConversation(9016, { assigneeAt: V3 });
+      await strand(9016, "conversation_resolved");
+      live.set(9016, {
+        status: "resolved",
+        updatedAt: V2,
+        assignee: { type: "User", id: 4, name: "Ana" },
+      });
+      await sweepStrandedDeliveries({ tenantId, base: appDb, deps });
+      const m = await mirror(9016);
+      expect([m.status, m.assigneeType]).toEqual(["resolved", "AgentBot"]);
       expect(published).toContainEqual({
         conversationId: String(id),
         status: "resolved",
@@ -487,6 +506,20 @@ describe.skipIf(!dbUp)("a close this side made converges", () => {
       conversationId: String(id),
       status: "resolved",
     });
+  });
+
+  test("an instance that failed a read is not asked again for its other closes in the same pass (catches a down instance running the job past its deadline)", async () => {
+    for (const c of [9107, 9108]) {
+      await seedConversation(c, {
+        resolvedBy: "agent",
+        resolvedByAt: V1 - 1_000,
+        updatedAgoMs: STALE_MS + 60_000,
+      });
+      live.set(c, 503);
+    }
+    await reconcileUnconfirmedCloses({ tenantId, base: appDb, deps });
+    expect(reads).toHaveLength(1);
+    expect((await mirror(9108)).resolvedBy).toBe("agent");
   });
 
   test("a close recorded while Chatwoot was being asked keeps its stamp (catches the pass erasing who closed a new episode)", async () => {

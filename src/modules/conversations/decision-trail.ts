@@ -1,4 +1,5 @@
 import {
+  type DecisionOption,
   type DecisionsConfig,
   decisionsFingerprint,
   readDecisionsConfig,
@@ -49,8 +50,16 @@ export interface DecisionTick {
   block: DecisionTickBlock | null;
 }
 
+// What the screen needs of a question: its name, type and the options or levels with their
+// descriptions. Never its `instructions`, the classifier prompt the administrator wrote: reading a
+// conversation does not need the agent's configuration, which only an admin may read.
+export type DecisionTickQuestion =
+  | { name: string; type: "yes_no" }
+  | { name: string; type: "choice"; options: DecisionOption[] }
+  | { name: string; type: "score"; levels: DecisionOption[] };
+
 export interface DecisionTickBlock {
-  questions: DecisionsConfig["questions"];
+  questions: DecisionTickQuestion[];
   rules: {
     when: DecisionsConfig["rules"][number]["when"];
     tool: string;
@@ -80,7 +89,14 @@ export function currentBlockOf(settings: unknown): CurrentBlock | null {
   return {
     mark: decisionsFingerprint(read.config),
     block: {
-      questions: read.config.questions,
+      questions: read.config.questions.map(
+        (q): DecisionTickQuestion =>
+          q.type === "choice"
+            ? { name: q.name, type: q.type, options: q.options }
+            : q.type === "score"
+              ? { name: q.name, type: q.type, levels: q.levels }
+              : { name: q.name, type: q.type },
+      ),
       rules: read.config.rules.map((r) => ({
         when: r.when,
         tool: r.action.tool,

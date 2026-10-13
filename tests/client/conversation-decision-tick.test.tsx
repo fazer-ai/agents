@@ -49,11 +49,10 @@ type Tick = NonNullable<TrailEntry["decision"]>;
 
 const BLOCK: NonNullable<Tick["block"]> = {
   questions: [
-    { name: "asks_refund", type: "yes_no", instructions: "" },
+    { name: "asks_refund", type: "yes_no" },
     {
       name: "topic",
       type: "choice",
-      instructions: "",
       options: [
         { value: "exchange", description: "exchange or return" },
         { value: "damaged", description: "arrived damaged" },
@@ -63,7 +62,6 @@ const BLOCK: NonNullable<Tick["block"]> = {
     {
       name: "anger",
       type: "score",
-      instructions: "",
       levels: [
         { value: "calm", description: "calm" },
         { value: "upset", description: "complaining" },
@@ -475,7 +473,7 @@ describe("the expanded tick", () => {
       ...BLOCK,
       questions: [
         ...BLOCK.questions,
-        { name: "wants_human", type: "yes_no" as const, instructions: "" },
+        { name: "wants_human", type: "yes_no" as const },
       ],
       rules: [
         ...BLOCK.rules,

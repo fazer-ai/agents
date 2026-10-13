@@ -302,6 +302,10 @@ describe.skipIf(!dbUp)(
         ["set_labels", "each_time"],
         ["private_note", "on_start"],
       ]);
+      // The classifier prompts stay with the agent's configuration, which only an admin reads.
+      expect(JSON.stringify(now?.decision?.block)).not.toContain(
+        "instructions",
+      );
       expect(older?.decision?.block).toBeNull();
       // The stored answers stay as stored either way.
       expect(older?.decision?.answers).toEqual(ANSWERS);

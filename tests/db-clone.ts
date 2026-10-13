@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type { Client } from "pg";
 import { FLEET_ROLE_EXPR } from "@/lib/tenancy/fleet-role";
@@ -121,21 +121,65 @@ export function cloneVerdict(
   return me.ancestors.includes(existing.pid) ? "use" : "refuse";
 }
 
-export function processStart(pid: number): string | null {
-  const r = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+// What a worker decides from one query, before the lock or the process table: its own ready copy is
+// used (even if the template went away mid-run, the copy is still whole); with no template to copy, the
+// file stops here with the command that provisions it; anything else takes the slow path.
+export function fastPath(
+  state: { template: boolean; clone: CloneOwner | null | undefined },
+  me: { pid: number; ppid: number },
+): "use" | "no-template" | "slow" {
+  const c = state.clone;
+  if (
+    c?.ready &&
+    c.workerPid === me.pid &&
+    (c.pid === me.ppid || c.pid === me.pid)
+  ) {
+    return "use";
+  }
+  return state.template ? "slow" : "no-template";
+}
+
+function noTemplate(template: string): Error {
+  return new Error(
+    `the test database "${template}" does not exist, so there is nothing to copy for this worker. Run: bun run db:test:setup`,
+  );
+}
+
+// `ps` runs through an awaited `Bun.spawn`: a `spawnSync` inside a `bun test --parallel` worker can
+// stop returning and spin at full CPU, which leaves the run waiting on that worker forever.
+async function ps(args: string[]): Promise<string | null> {
+  const proc = Bun.spawn(["ps", ...args], {
     env: { ...process.env, LC_ALL: "C" },
-    encoding: "utf8",
+    stdout: "pipe",
+    stderr: "ignore",
   });
-  const out = r.status === 0 ? r.stdout.trim() : "";
+  const [out, code] = await Promise.all([
+    new Response(proc.stdout).text(),
+    proc.exited,
+  ]);
+  return code === 0 ? out : null;
+}
+
+export async function processStart(pid: number): Promise<string | null> {
+  const out = (await ps(["-o", "lstart=", "-p", String(pid)]))?.trim() ?? "";
   return out.length > 0 ? out : null;
 }
 
-function ancestorsOf(pid: number): { pids: number[]; parentCmd: string } {
-  const r = spawnSync("ps", ["-A", "-o", "pid=,ppid=,comm="], {
-    encoding: "utf8",
-  });
+// Start times of every pid named, gathered up front so the decisions above can stay synchronous.
+async function startsOf(
+  pids: number[],
+): Promise<(pid: number) => string | null> {
+  const starts = new Map<number, string | null>();
+  for (const pid of new Set(pids)) starts.set(pid, await processStart(pid));
+  return (pid) => starts.get(pid) ?? null;
+}
+
+async function ancestorsOf(
+  pid: number,
+): Promise<{ pids: number[]; parentCmd: string }> {
+  const out = (await ps(["-A", "-o", "pid=,ppid=,comm="])) ?? "";
   const parent = new Map<number, { ppid: number; comm: string }>();
-  for (const line of r.stdout.split("\n")) {
+  for (const line of out.split("\n")) {
     const m = line.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/);
     if (m) parent.set(Number(m[1]), { ppid: Number(m[2]), comm: m[3] ?? "" });
   }
@@ -256,16 +300,14 @@ async function reapUnderLock(
   root: string,
   template: string,
 ): Promise<string[]> {
-  const starts = new Map<number, string | null>();
-  const startOf = (pid: number) => {
-    if (!starts.has(pid)) starts.set(pid, processStart(pid));
-    return starts.get(pid) ?? null;
-  };
-  const doomed = clonesToDrop(
-    await listClones(maint, root),
-    { root, template },
-    startOf,
+  const rows = await listClones(maint, root);
+  const startOf = await startsOf(
+    rows.flatMap((r) => {
+      const o = parseOwner(r.comment);
+      return o ? [o.pid] : [];
+    }),
   );
+  const doomed = clonesToDrop(rows, { root, template }, startOf);
   for (const name of doomed) await dropClone(maint, name);
   return doomed;
 }
@@ -379,11 +421,7 @@ async function createClone(
       [template],
     )
   ).rows[0];
-  if (!meta) {
-    throw new Error(
-      `the test database "${template}" does not exist, so there is nothing to copy for this worker. Run: bun run db:test:setup`,
-    );
-  }
+  if (!meta) throw noTemplate(template);
   const id = (s: string) => maint.escapeIdentifier(s);
   const stopAt = Date.now() + TEMPLATE_BUSY_DEADLINE_MS;
   let pause = 100;
@@ -475,33 +513,46 @@ export async function ensureWorkerClone(opts: {
         ? undefined
         : parseOwner(rows[0]?.comment ?? null);
     };
-    // Every file but the worker's first ends here, without the lock or a `ps`.
-    const seen = await current();
-    if (
-      seen?.ready &&
-      seen.workerPid === process.pid &&
-      (seen.pid === process.ppid || seen.pid === process.pid)
-    ) {
-      return;
-    }
+    // Every file but the worker's first ends here, without the lock or a `ps`, and so does every file
+    // of a checkout that has no test database.
+    const { rows: probe } = await maint.query<{
+      comment: string | null;
+      cloned: boolean;
+      template: boolean;
+    }>(
+      `SELECT (SELECT shobj_description(oid, 'pg_database') FROM pg_database WHERE datname = $1) AS comment,
+              EXISTS (SELECT 1 FROM pg_database WHERE datname = $1) AS cloned,
+              EXISTS (SELECT 1 FROM pg_database WHERE datname = $2) AS template`,
+      [clone, template],
+    );
+    const p = probe[0];
+    const decided = fastPath(
+      {
+        template: Boolean(p?.template),
+        clone: p?.cloned ? parseOwner(p.comment) : undefined,
+      },
+      { pid: process.pid, ppid: process.ppid },
+    );
+    if (decided === "use") return;
+    if (decided === "no-template") throw noTemplate(template);
 
     // The run is the parent when this is a spawned worker, and this very process when Bun runs
     // the files in-process (`--parallel=1`) or when the parent is gone and the worker was adopted; a
     // copy owned by the process itself is removed when it ends.
-    const { pids: ancestors, parentCmd } = ancestorsOf(process.pid);
+    const { pids: ancestors, parentCmd } = await ancestorsOf(process.pid);
     const ownerPid = /(^|\/)bun$/.test(parentCmd) ? process.ppid : process.pid;
-    const start = processStart(ownerPid);
+    const start = await processStart(ownerPid);
     if (start === null)
       throw new Error(`the \`bun test\` run (pid ${ownerPid}) is gone`);
     const me = { pid: process.pid, ancestors: [process.pid, ...ancestors] };
     let created = false;
     await withCloneLock(maint, root, async () => {
       await reapUnderLock(maint, root, template);
-      const starts = new Map<number, string | null>([[ownerPid, start]]);
-      const verdict = cloneVerdict(await current(), me, (pid) => {
-        if (!starts.has(pid)) starts.set(pid, processStart(pid));
-        return starts.get(pid) ?? null;
-      });
+      const existing = await current();
+      const startOf = await startsOf(existing ? [existing.pid] : []);
+      const verdict = cloneVerdict(existing, me, (pid) =>
+        pid === ownerPid ? start : startOf(pid),
+      );
       if (verdict === "use") {
         const o = (await current()) as CloneOwner;
         if (o.pid === ownerPid && o.workerPid !== process.pid) {

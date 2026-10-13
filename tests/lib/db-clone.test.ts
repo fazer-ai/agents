@@ -8,6 +8,7 @@ import {
   clonesToDrop,
   cloneVerdict,
   ensureWorkerClone,
+  fastPath,
   ownerComment,
   processStart,
   reapClones,
@@ -258,7 +259,7 @@ describe("removing leftovers, on the database", () => {
             owner({
               template,
               pid: process.pid,
-              start: processStart(process.pid) as string,
+              start: (await processStart(process.pid)) as string,
             }),
           ],
         ] as const;
@@ -379,4 +380,81 @@ describe("the clone's deadlines", () => {
       server.stop(true);
     }
   });
+});
+
+// A WORKER WITH NO TEMPLATE TO COPY FAILS ITS FILE AT ONCE. Without the checkout's database every
+// file of every worker would otherwise walk the whole slow path (process table, lock, reap) only to
+// learn that again at CREATE, and a run of a thousand files does that a thousand times.
+describe("what a worker decides before taking the lock", () => {
+  const me = { pid: 200, ppid: 100 };
+
+  test("its own ready copy is used, with or without the template", () => {
+    expect(fastPath({ template: true, clone: owner({}) }, me)).toBe("use");
+    // NOTE: a template reprovisioned mid-run does not take the copy away from the worker using it.
+    expect(fastPath({ template: false, clone: owner({}) }, me)).toBe("use");
+  });
+
+  test("with no template and no copy of its own, it stops there", () => {
+    expect(fastPath({ template: false, clone: undefined }, me)).toBe(
+      "no-template",
+    );
+    expect(
+      fastPath({ template: false, clone: owner({ workerPid: 999 }) }, me),
+    ).toBe("no-template");
+  });
+
+  test("with the template and no copy of its own, it goes on to make one", () => {
+    expect(fastPath({ template: true, clone: undefined }, me)).toBe("slow");
+    expect(
+      fastPath({ template: true, clone: owner({ ready: false }) }, me),
+    ).toBe("slow");
+  });
+});
+
+describe("a worker whose checkout has no test database", () => {
+  const suUrl = process.env.MIGRATION_DATABASE_URL;
+  const live = process.env[DB_GATE_OPT_OUT] !== "1" && Boolean(suUrl);
+
+  test.skipIf(!live)(
+    "is refused with the command that provisions it, and copies nothing",
+    async () => {
+      const root = `/nonexistent/fznotemplate1384-p${process.pid}`;
+      const template = testDbNameFor(
+        `fznotemplate1384_p${process.pid}_test`,
+        root,
+      );
+      const clone = testDbNameFor(template, root, "1");
+      const maint = new Client({
+        connectionString: withDbName(suUrl as string, "postgres"),
+      });
+      await maint.connect();
+      try {
+        // NOTE: this checkout's clone lock, held elsewhere: a worker that went on to the slow path
+        // would wait on it and lapse on its statement deadline, never reaching the message below.
+        await maint.query("SELECT pg_advisory_lock(hashtextextended($1, 0))", [
+          `fazerai-test-clone:${testDbNameFor("x_test", root)}`,
+        ]);
+        const err = await ensureWorkerClone({
+          suUrl: withDbName(suUrl as string, template),
+          appRole: "app",
+          root,
+          template,
+          clone,
+          deadlines: { connectMs: 5_000, queryMs: 2_000 },
+        }).catch((e) => e);
+        expect((err as Error).message).toContain(
+          `"${template}" does not exist`,
+        );
+        expect((err as Error).message).toContain("bun run db:test:setup");
+        const { rowCount } = await maint.query(
+          "SELECT 1 FROM pg_database WHERE datname = $1",
+          [clone],
+        );
+        expect(rowCount).toBe(0);
+      } finally {
+        await maint.end();
+      }
+    },
+    60_000,
+  );
 });

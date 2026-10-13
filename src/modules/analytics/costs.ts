@@ -3,7 +3,7 @@ import logger from "@/api/lib/logger";
 import metricsPrisma from "@/api/lib/prisma-metrics";
 import { resolveLangfuseConfig } from "@/graph/observability";
 import { usageNode } from "@/graph/usage";
-import type { TenantContext } from "@/lib/tenancy";
+import type { ScopedDb, TenantContext } from "@/lib/tenancy";
 import { runMetricsScoped } from "./budget";
 import {
   type DashboardFilter,
@@ -93,16 +93,18 @@ export async function resolveLangfuseProjectId(
 // The link only, and it never waits on Langfuse: the project id comes from the cache, and on a miss
 // the base URL is returned now while the id is resolved in the background for the next load. So a
 // slow or unreachable Langfuse delays no figure. Never throws.
-async function langfuseLink(
+export async function langfuseLink(
   base: PrismaClient,
   ctx: TenantContext,
   tenantId: bigint,
   fetchFn: typeof fetch,
+  // The transaction the configuration is read in: the request's metrics budget unless the caller
+  // gives it one of its own.
+  scoped: <T>(fn: (db: ScopedDb) => Promise<T>) => Promise<T> = (fn) =>
+    runMetricsScoped(base, ctx, fn),
 ): Promise<DashboardCosts["langfuse"]> {
   try {
-    const cfg = await runMetricsScoped(base, ctx, (db) =>
-      resolveLangfuseConfig(db, tenantId),
-    );
+    const cfg = await scoped((db) => resolveLangfuseConfig(db, tenantId));
     if (!cfg) return null;
     const baseUrl = cfg.baseUrl ?? "https://cloud.langfuse.com";
     const projectId = projectIdCache.get(`${baseUrl}|${cfg.publicKey}`);

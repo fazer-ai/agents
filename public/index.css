@@ -315,6 +315,30 @@ body[data-resizing-sidebar]:not([data-sidebar-snapping]) #app-sidebar {
   animation: section-highlight 2s ease-in-out;
 }
 
+/* A dashboard figure that does not cover its whole window yet: a slow opacity pulse while parts are
+   still arriving. One animation for every card, with no delay of its own, and each card started on
+   the same clock (`--provisional-phase`, set at mount), so the cards breathe together. Under reduced
+   motion it holds still at the faint end. */
+@keyframes provisional-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 0.85;
+  }
+}
+.provisional-pulse {
+  animation: provisional-pulse 1.6s ease-in-out infinite;
+  animation-delay: var(--provisional-phase, 0s);
+}
+@media (prefers-reduced-motion: reduce) {
+  .provisional-pulse {
+    animation: none !important;
+    opacity: 0.7;
+  }
+}
+
 /* Logo glow effect */
 .hover\:drop-shadow-accent:hover {
   filter: drop-shadow(0 0 2em color-mix(in srgb, var(--color-accent) 67%, transparent));

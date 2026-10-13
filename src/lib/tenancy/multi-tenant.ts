@@ -67,6 +67,8 @@ const TENANT_SCOPED_MODELS = new Set<string>([
   "AttendanceSummary",
   "OtherInboxSummary",
   "PlaygroundTurnNote",
+  "DashboardDay",
+  "DashboardDirty",
 ]);
 
 function withTenant<T>(data: T, tenantId: bigint): T {

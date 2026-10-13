@@ -16,7 +16,12 @@ import {
 } from "@testing-library/react";
 import { MemoryRouter, useLocation } from "react-router";
 import { ThemeProvider } from "@/client/contexts/ThemeContext";
+import {
+  getActiveTenantId,
+  setActiveTenantId,
+} from "@/client/lib/activeTenant";
 import { DashboardPage } from "@/client/pages/DashboardPage";
+import { streamGrace } from "@/client/pages/dashboard/useStream";
 import { withI18n } from "@/tests/utils/i18n";
 
 // THE DASHBOARD AS THE OPERATOR READS IT. Every block asks the API with the page's one filter, which
@@ -122,15 +127,174 @@ let healthFails = false;
 let healthFailStatus = 500;
 let healthFailField: string | undefined;
 let costsHang = false;
+let partialFlag = false;
+let refuseFlag = false;
+// The previous period's stream refused after its first days, while the view's own completes.
+let prevRefused = false;
+// A stream that closes after a partial snapshot, with no last snapshot and no refusal.
+let endsEarly = false;
+// The view's own stream still filling while the previous period's is complete.
+let currentPartial = false;
+// The tenant a SUPER_ADMIN selected, deleted while the view fills.
+let tenantGone: string | null = null;
+// A filling view whose server goes on to say every day is in while the next snapshot merges.
+let computedAhead = false;
+// A filling view whose last snapshot, complete, arrives this long after its first.
+let completesAfterMs: number | null = null;
+// The flow-log days of a filling view that have no figures yet.
+let logGaps: [string, string][] = [];
+// Of those, the days with no figures for good (retention).
+let logNone: [string, string][] = [];
+// The conversation days of a filling view that have no figures yet.
+let convGaps: [string, string][] = [];
+// The ledger stopped on a day past the time budget; every other family is in.
+let ledgerRefused = false;
 let optionsFail = false;
+
+// What the per-block routes would answer, as the page's stream carries it: one snapshot with every
+// requested block, `done`, or a refusal after the blocks that did arrive.
+async function streamOf(url: URL): Promise<Response> {
+  if (url.searchParams.get("agentId") === "8")
+    return new Response(new ReadableStream({ start() {} }), {
+      headers: { "content-type": "text/event-stream" },
+    });
+  const blocks = (url.searchParams.get("blocks") ?? "").split(",");
+  const isPrev = url.searchParams.get("blocks") === "kpis,outcomes,costs";
+  const partial =
+    partialFlag || (isPrev && prevRefused) || (!isPrev && currentPartial);
+  const refuseMidway = refuseFlag || (isPrev && prevRefused);
+  const body = async (path: string, key: string) => {
+    const u = new URL(url);
+    u.pathname = path;
+    const res = await stubFetch(u.toString());
+    if (!res.ok) return undefined;
+    return ((await res.json()) as Record<string, unknown>)[key];
+  };
+  const figures: Record<string, unknown> = {};
+  if (blocks.includes("kpis"))
+    figures.kpis = await body("/api/v1/metrics/kpis", "kpis");
+  if (blocks.includes("outcomes")) {
+    figures.trend = await body("/api/v1/metrics/outcomes", "trend");
+    figures.series = { agent: [], inbox: [] };
+  }
+  if (blocks.includes("costs") && !costsHang)
+    figures.costs = await body("/api/v1/metrics/costs", "costs");
+  if (blocks.includes("breakdown"))
+    figures.breakdown = {
+      agent: await body("/api/v1/metrics/breakdown", "rows"),
+      inbox: await body("/api/v1/metrics/breakdown", "rows"),
+      model: await body("/api/v1/metrics/breakdown", "rows"),
+      node: await body("/api/v1/metrics/breakdown", "rows"),
+    };
+  if (blocks.includes("handoffs"))
+    figures.handoffs = await body("/api/v1/metrics/handoffs", "handoffs");
+  if (blocks.includes("labels"))
+    figures.labels = await body("/api/v1/metrics/labels", "labels");
+  if (blocks.includes("health") && !healthFails)
+    figures.health = await body("/api/v1/metrics/health", "health");
+  if (blocks.includes("followUps"))
+    figures.followUps = await body("/api/v1/metrics/follow-ups", "followUps");
+  if (blocks.includes("knowledge"))
+    figures.knowledge = await body("/api/v1/metrics/knowledge", "knowledge");
+  const c = { total: 7, ready: 7, noData: 0, gaps: [] };
+  const progress = partial
+    ? {
+        total: 7,
+        ready: 3,
+        computing: ["2026-10-01", "2026-10-04"],
+        pending: [["2026-10-01", "2026-10-04"]],
+        families: {
+          conv: { total: 7, ready: 3, noData: 0, gaps: convGaps },
+          ledger: c,
+          log: { total: 7, ready: 5, noData: 2, gaps: logGaps, none: logNone },
+          know: c,
+        },
+      }
+    : {
+        total: 7,
+        ready: ledgerRefused ? 3 : 7,
+        computing: null,
+        pending: [],
+        families: {
+          conv: c,
+          ledger: ledgerRefused
+            ? {
+                total: 7,
+                ready: 3,
+                noData: 0,
+                gaps: [["2000-01-01", "2100-12-31"]],
+                refused: { status: 503, field: "since" },
+              }
+            : c,
+          log: c,
+          know: c,
+        },
+      };
+  const done = !healthFails && !costsHang && !partial;
+  const events = [
+    // What the server says while the queue settles, before the window's days are known.
+    `event: waiting\ndata: ${JSON.stringify({ kind: "waiting" })}\n\n`,
+    `event: snapshot\ndata: ${JSON.stringify({ kind: "snapshot", progress, figures, done })}\n\n`,
+    ...(computedAhead
+      ? [
+          `event: computing\ndata: ${JSON.stringify({ kind: "computing", progress: { total: 7, ready: 7, computing: null, pending: [], families: { conv: c, ledger: c, log: c, know: c } } })}\n\n`,
+        ]
+      : []),
+    ...(tenantGone
+      ? [
+          `event: refused\ndata: ${JSON.stringify({ status: 404, error: "x", rejectedTenantId: tenantGone })}\n\n`,
+        ]
+      : (healthFails && blocks.includes("health")) || refuseMidway
+        ? [
+            `event: refused\ndata: ${JSON.stringify({ status: healthFailStatus, error: "x", ...(healthFailField ? { field: healthFailField } : {}) })}\n\n`,
+          ]
+        : []),
+  ];
+  const text = new TextEncoder().encode(events.join(""));
+  const whole = {
+    total: 7,
+    ready: 7,
+    computing: null,
+    pending: [],
+    families: { conv: c, ledger: c, log: c, know: c },
+  };
+  // A block still loading: the snapshot without it, on a stream that stays open.
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(text);
+      if (completesAfterMs !== null) {
+        setTimeout(() => {
+          controller.enqueue(
+            new TextEncoder().encode(
+              `event: snapshot\ndata: ${JSON.stringify({ kind: "snapshot", progress: whole, figures, done: true })}\n\n`,
+            ),
+          );
+          controller.close();
+        }, completesAfterMs);
+        return;
+      }
+      // A view still filling keeps its stream open, unless it was refused or the test cuts it.
+      if (!costsHang && (!partial || refuseMidway || endsEarly))
+        controller.close();
+    },
+  });
+  return new Response(stream, {
+    headers: { "content-type": "text/event-stream" },
+  });
+}
 
 const stubFetch = (async (input: unknown) => {
   const url = new URL(
     String(typeof input === "string" ? input : (input as Request).url),
     "http://localhost",
   );
-  asked.push(url);
   const p = url.pathname;
+  if (p.endsWith("/metrics/stream")) {
+    asked.push(url);
+    return streamOf(url);
+  }
+  if (!p.includes("/metrics/") || p.endsWith("/metrics/filter-options"))
+    asked.push(url);
   if (p.endsWith("/metrics/kpis")) return json({ instance: "i", kpis });
   if (p.endsWith("/metrics/outcomes"))
     return json({
@@ -248,7 +412,7 @@ function Where() {
   return null;
 }
 
-async function renderDash(path = "/") {
+async function renderDash(path = "/", settled = true) {
   asked.length = 0;
   render(
     withI18n(
@@ -260,6 +424,7 @@ async function renderDash(path = "/") {
       </ThemeProvider>,
     ),
   );
+  if (!settled) return;
   await waitFor(() => {
     expect(has("Automation funnel")).toBe(true);
   });
@@ -276,6 +441,9 @@ afterAll(() => {
   globalThis.fetch = realFetch;
 });
 beforeEach(() => {
+  // Most cases read a partial view at once; the grace has its own cases.
+  streamGrace.ms = 0;
+  completesAfterMs = null;
   costs = COSTS;
   kpis = KPIS;
   ceilingPollMs = 300_000;
@@ -284,6 +452,17 @@ beforeEach(() => {
   healthFailField = undefined;
   optionsFail = false;
   costsHang = false;
+  partialFlag = false;
+  refuseFlag = false;
+  prevRefused = false;
+  endsEarly = false;
+  currentPartial = false;
+  tenantGone = null;
+  logGaps = [];
+  logNone = [];
+  convGaps = [];
+  ledgerRefused = false;
+  computedAhead = false;
 });
 afterEach(cleanup);
 
@@ -291,48 +470,42 @@ describe("one filter, in the URL, for every block", () => {
   test("every block asks with the agent, inbox and segment the link names", async () => {
     await renderDash("/?range=7d&agent=7&inbox=3&source=playground");
     await waitFor(() => {
-      expect(asks("/metrics/health").length).toBeGreaterThan(0);
+      expect(asks("/metrics/stream").length).toBe(2);
     });
-    for (const path of [
-      "/metrics/kpis",
-      "/metrics/outcomes",
-      "/metrics/costs",
-      "/metrics/breakdown",
-      "/metrics/handoffs",
-      "/metrics/labels",
-      "/metrics/health",
-      "/metrics/follow-ups",
-      "/metrics/knowledge",
-    ]) {
-      const u = asks(path)[0];
-      expect([path, u?.searchParams.get("agentId")]).toEqual([path, "7"]);
-      expect([path, u?.searchParams.get("inboxId")]).toEqual([path, "3"]);
-      expect([path, u?.searchParams.get("source")]).toEqual([
-        path,
-        "playground",
-      ]);
-      expect([path, Boolean(u?.searchParams.get("until"))]).toEqual([
-        path,
-        true,
-      ]);
+    for (const u of asks("/metrics/stream")) {
+      expect(u.searchParams.get("agentId")).toBe("7");
+      expect(u.searchParams.get("inboxId")).toBe("3");
+      expect(u.searchParams.get("source")).toBe("playground");
+      expect(Boolean(u.searchParams.get("until"))).toBe(true);
     }
-    // The previous period is asked too, as long as this one and ending where it starts.
-    const kpiAsks = asks("/metrics/kpis").map((u) => ({
-      since: u.searchParams.get("since"),
-      until: u.searchParams.get("until"),
-    }));
-    const current = kpiAsks.find(
-      (k) => k.until && new Date(k.until) > new Date(),
+    // One stream carries every block of the view; the previous period's, as long as this one and
+    // ending where it starts, carries what the comparisons need.
+    const [current, prev] = [...asks("/metrics/stream")].sort((a, b) =>
+      String(b.searchParams.get("until")).localeCompare(
+        String(a.searchParams.get("until")),
+      ),
     );
-    const prev = kpiAsks.find((k) => k.until === current?.since);
-    expect(Boolean(prev)).toBe(true);
+    expect(current?.searchParams.get("blocks")?.split(",").sort()).toEqual([
+      "breakdown",
+      "costs",
+      "followUps",
+      "handoffs",
+      "health",
+      "knowledge",
+      "kpis",
+      "labels",
+      "outcomes",
+    ]);
+    expect(prev?.searchParams.get("until")).toBe(
+      current?.searchParams.get("since"),
+    );
+    expect(prev?.searchParams.get("blocks")).toBe("kpis,outcomes,costs");
   });
 
   test("one opening of the screen sends each distinct request once", async () => {
     await renderDash("/?range=30d");
     await waitFor(() => {
-      expect(asks("/metrics/knowledge").length).toBeGreaterThan(0);
-      expect(asks("/metrics/breakdown").length).toBeGreaterThan(0);
+      expect(asks("/metrics/stream").length).toBe(2);
     });
     const sent = asked
       .filter((u) => u.pathname.includes("/metrics/"))
@@ -353,7 +526,7 @@ describe("one filter, in the URL, for every block", () => {
     await renderDash("/?agent=7&inbox=3");
     await waitFor(() => {
       expect(asks("/metrics/filter-options").length).toBe(1);
-      expect(asks("/metrics/health").length).toBeGreaterThan(0);
+      expect(asks("/metrics/stream").length).toBeGreaterThan(0);
     });
     expect(location).toBe("/?agent=7&inbox=3");
   });
@@ -527,18 +700,19 @@ describe("a block whose request fails", () => {
     await renderDash("/");
     await waitFor(() => {
       expect(has("Warnings and errors")).toBe(true);
+      // Both health blocks, and the page's line: the stream stopped before it was done.
       expect(
         screen.queryAllByRole("button", { name: "Try again" }).length,
-      ).toBe(2);
+      ).toBe(3);
     });
     expect(has("No warnings or errors in this period.")).toBe(false);
-    const before = asks("/metrics/health").length;
+    const before = asks("/metrics/stream").length;
     healthFails = false;
     fireEvent.click(
       screen.getAllByRole("button", { name: "Try again" })[0] as HTMLElement,
     );
     await waitFor(() => {
-      expect(asks("/metrics/health").length).toBe(before + 1);
+      expect(asks("/metrics/stream").length).toBeGreaterThan(before);
       expect(has("No warnings or errors in this period.")).toBe(true);
     });
   });
@@ -554,7 +728,7 @@ describe("a block the server refused as too slow", () => {
       expect(has("This period took too long to compute.")).toBe(true);
       expect(
         screen.queryAllByRole("button", { name: "Try again" }).length,
-      ).toBe(2);
+      ).toBe(3);
     });
     expect(has("Could not load metrics.")).toBe(false);
     // Another 503 (the database down, a session that could not be read) and a 500 are not about the
@@ -598,9 +772,8 @@ describe("the funnel's own controls", () => {
     fireEvent.click(screen.getByRole("radio", { name: "By agent" }));
     await waitFor(() => {
       expect(
-        asks("/metrics/outcomes").some(
-          (u) => u.searchParams.get("breakdown") === "agent",
-        ),
+        (screen.getByRole("radio", { name: "By agent" }) as HTMLInputElement)
+          .checked,
       ).toBe(true);
     });
     fireEvent.click(screen.getByRole("radio", { name: "90d" }));
@@ -622,7 +795,7 @@ describe("a block still loading", () => {
     await renderDash("/");
     await waitFor(() => {
       expect(has("Daily cost")).toBe(true);
-      expect(asks("/metrics/costs").length).toBeGreaterThan(0);
+      expect(asks("/metrics/stream").length).toBeGreaterThan(0);
     });
     expect(exportDaily().length).toBe(0);
     cleanup();
@@ -788,5 +961,332 @@ describe("cards that grow apart each take their own row", () => {
     const followUps = rowOf("automation", "Follow-ups");
     expect(followUps).toBeGreaterThan(-1);
     expect(rowOf("automation", "Knowledge suggestions")).toBe(followUps);
+  });
+});
+
+describe("a view still filling", () => {
+  test("each block says how many of its days are in, and flow-log days nothing can fill read as no data", async () => {
+    partialFlag = true;
+    await renderDash("/?range=7d");
+    await waitFor(() => {
+      expect(has("partial · 3 of 7 days")).toBe(true);
+      expect(has("3 of 7 days ready · computing")).toBe(true);
+      expect(has("no data for 2 days")).toBe(true);
+    });
+    cleanup();
+    partialFlag = false;
+    await renderDash("/?range=7d");
+    await waitFor(() => {
+      expect(screen.queryAllByRole("button", { name: "40" }).length).toBe(1);
+    });
+    // A whole block shows nothing in the place of the partial badge.
+    expect(screen.queryAllByText("complete", { exact: true })).toEqual([]);
+    expect(has("partial ·")).toBe(false);
+    expect(has("days ready")).toBe(false);
+  });
+});
+
+describe("a previous period that did not fill", () => {
+  test("compares nothing against the families whose days were not all in", async () => {
+    const compared = () =>
+      screen.queryAllByText("previous:", { exact: false }).length;
+    await renderDash("/?range=7d");
+    await waitFor(() => {
+      expect(has("Steps delivered")).toBe(true);
+      expect(compared()).toBeGreaterThan(0);
+    });
+    const whole = compared();
+    cleanup();
+    // The previous period's conversations stopped at 3 of 7 days; its ledger was all in.
+    prevRefused = true;
+    await renderDash("/?range=7d");
+    await waitFor(() => {
+      expect(has("Steps delivered")).toBe(true);
+      expect(compared()).toBeGreaterThan(0);
+    });
+    expect(compared()).toBeLessThan(whole);
+  });
+});
+
+describe("a view still filling beside a complete previous period", () => {
+  test("compares nothing while the view's own days are not all in", async () => {
+    const compared = () =>
+      screen.queryAllByText("previous:", { exact: false }).length;
+    await renderDash("/?range=7d");
+    await waitFor(() => {
+      expect(has("Steps delivered")).toBe(true);
+      expect(compared()).toBeGreaterThan(0);
+    });
+    const whole = compared();
+    cleanup();
+    // The view's conversations are at 3 of 7 days; its ledger is all in.
+    currentPartial = true;
+    await renderDash("/?range=7d");
+    await waitFor(() => {
+      expect(has("partial · 3 of 7 days")).toBe(true);
+      expect(compared()).toBeGreaterThan(0);
+    });
+    expect(compared()).toBeLessThan(whole);
+  });
+});
+
+describe("the health blocks", () => {
+  test("latency covers the ledger's days, and only the problems say the flow log has none", async () => {
+    partialFlag = true;
+    await renderDash("/?range=7d");
+    // The coverage chip sits in the block's heading.
+    const card = (title: string) =>
+      screen.getAllByText(title, { exact: false })[0]?.closest("h3");
+    await waitFor(() => {
+      expect(card("Warnings and errors")?.textContent).toContain(
+        "no data for 2 days",
+      );
+    });
+    expect(card("Model call latency")?.textContent).not.toContain(
+      "no data for",
+    );
+  });
+});
+
+describe("a selected tenant deleted while the view fills", () => {
+  test("drops the selection, as a refused selector on any other request does", async () => {
+    setActiveTenantId("42");
+    const w = window as unknown as Record<string, boolean | undefined>;
+    // Already reloading: the test checks the selection is dropped, not the reload itself.
+    w.__tenantSelectorReloading = true;
+    tenantGone = "42";
+    try {
+      await renderDash("/?range=7d", false);
+      await waitFor(() => {
+        expect(getActiveTenantId()).toBeNull();
+      });
+    } finally {
+      w.__tenantSelectorReloading = undefined;
+      setActiveTenantId(null);
+    }
+  });
+});
+
+describe("a family stopped on a day past the time budget", () => {
+  test("refuses its own blocks, and the others show their figures", async () => {
+    ledgerRefused = true;
+    await renderDash("/?range=7d", false);
+    await waitFor(() => {
+      expect(has("This period took too long to compute")).toBe(true);
+      expect(has("Steps delivered")).toBe(true);
+    });
+  });
+});
+
+describe("a period's tiles while it fills", () => {
+  test("open no list until every day of the period is in", async () => {
+    await renderDash("/?range=7d");
+    await waitFor(() => {
+      expect(screen.queryAllByRole("button", { name: "40" }).length).toBe(1);
+    });
+    cleanup();
+    partialFlag = true;
+    await renderDash("/?range=7d");
+    await waitFor(() => {
+      expect(has("partial · 3 of 7 days")).toBe(true);
+    });
+    // The count is of three days; the list would be of seven.
+    expect(screen.queryAllByRole("button", { name: "40" }).length).toBe(0);
+  });
+
+  test("a block reads the coverage its figures were merged at, not the days computed since", async () => {
+    partialFlag = true;
+    computedAhead = true;
+    await renderDash("/?range=7d");
+    // The line under the filter follows the server; the blocks wait for the figures.
+    await waitFor(() => {
+      expect(has("7 of 7 days ready")).toBe(true);
+    });
+    expect(has("partial · 3 of 7 days")).toBe(true);
+    expect(screen.queryAllByRole("button", { name: "40" }).length).toBe(0);
+  });
+});
+
+describe("days with no figures yet", () => {
+  test("are blank in a block's table, never zero", async () => {
+    const cells = () =>
+      [
+        ...(screen
+          .getAllByText("Handoffs by cause")
+          .find((e) => e.tagName === "CAPTION")
+          ?.closest("table")
+          ?.querySelectorAll("tbody td") ?? []),
+      ].map((td) => td.textContent);
+    await renderDash("/?range=7d");
+    await waitFor(() => {
+      expect(cells()).toContain("0");
+    });
+    cleanup();
+    partialFlag = true;
+    logGaps = [["2000-01-01", "2100-12-31"]];
+    await renderDash("/?range=7d");
+    await waitFor(() => {
+      expect(cells().length).toBeGreaterThan(0);
+    });
+    expect(cells()).not.toContain("0");
+  });
+});
+
+describe("a figure that does not cover its window yet", () => {
+  test("a chart keeps every day on its axis, marking the days loading apart from those with no data", async () => {
+    partialFlag = true;
+    convGaps = [["2000-01-01", "2100-12-31"]];
+    logGaps = [["2000-01-01", "2100-12-31"]];
+    logNone = [["2000-01-01", "2100-12-31"]];
+    await renderDash("/?range=7d");
+    await waitFor(() => {
+      // The funnel trend's days are all still loading; the handoffs' are no data for good.
+      expect(has("loading · 7 days")).toBe(true);
+      expect(has("no data · 7 days")).toBe(true);
+    });
+    const table = screen
+      .getAllByRole("table")
+      .find(
+        (t) => t.querySelector("caption")?.textContent === "Funnel over time",
+      );
+    expect(table?.querySelectorAll("tbody tr").length).toBe(7);
+  });
+
+  test("reads as provisional in its own card, with the badge and a bar of the days in, until it is whole", async () => {
+    const provisional = (state: string) =>
+      document.querySelectorAll(`[data-provisional="${state}"]`).length;
+    const bars = () =>
+      [...document.querySelectorAll('[role="progressbar"]')].filter(
+        (b) =>
+          b.getAttribute("aria-valuenow") === "3" &&
+          b.getAttribute("aria-valuemax") === "7",
+      ).length;
+    partialFlag = true;
+    await renderDash("/?range=7d");
+    await waitFor(() => {
+      expect(has("partial · 3 of 7 days")).toBe(true);
+      // Five KPI tiles, each pulsing with its own badge and bar.
+      expect(provisional("arriving")).toBeGreaterThanOrEqual(5);
+      expect(bars()).toBeGreaterThanOrEqual(5);
+    });
+    expect(
+      screen.getAllByText("partial · 3 of 7 days").length,
+    ).toBeGreaterThanOrEqual(6);
+    cleanup();
+    partialFlag = false;
+    await renderDash("/?range=7d");
+    await waitFor(() => {
+      expect(screen.queryAllByRole("button", { name: "40" }).length).toBe(1);
+    });
+    expect(provisional("arriving")).toBe(0);
+    expect(provisional("stopped")).toBe(0);
+    expect(bars()).toBe(0);
+  });
+
+  test("stops pulsing when its stream fails, since nothing is loading any more", async () => {
+    partialFlag = true;
+    endsEarly = true;
+    await renderDash("/?range=7d", false);
+    // A stream that ends short of its figures shows its retry: nothing it left reads as loading.
+    await waitFor(() => {
+      expect(
+        screen.queryAllByRole("button", { name: "Try again" }).length,
+      ).toBeGreaterThan(0);
+    });
+    expect(
+      document.querySelectorAll('[data-provisional="arriving"]').length,
+    ).toBe(0);
+  });
+});
+
+describe("a view that completes within the stream's grace", () => {
+  // Anything that would read as partial, seen at any moment of the opening.
+  const watchPartial = () => {
+    const seen: string[] = [];
+    const look = () => {
+      const text = document.body.textContent ?? "";
+      if (/partial ·|days ready/.test(text)) seen.push("badge or line");
+      if (document.querySelector("[data-provisional]"))
+        seen.push("provisional");
+      if (document.querySelector('[role="progressbar"][aria-valuemax="7"]'))
+        seen.push("bar");
+    };
+    const observer = new MutationObserver(look);
+    observer.observe(document.body, {
+      subtree: true,
+      childList: true,
+      characterData: true,
+      attributes: true,
+    });
+    return { seen, stop: () => observer.disconnect() };
+  };
+
+  test("shows its figures as final, with no partial badge, pulse or bar at any moment", async () => {
+    streamGrace.ms = 1500;
+    partialFlag = true;
+    completesAfterMs = 500;
+    const watch = watchPartial();
+    await renderDash("/?range=7d", false);
+    await waitFor(
+      () => {
+        expect(screen.queryAllByRole("button", { name: "40" }).length).toBe(1);
+      },
+      { timeout: 3000 },
+    );
+    watch.stop();
+    expect(watch.seen).toEqual([]);
+  });
+
+  test("still filling once the grace has passed, it shows the partial badge, pulse and bar", async () => {
+    streamGrace.ms = 1500;
+    partialFlag = true;
+    const watch = watchPartial();
+    await renderDash("/?range=7d", false);
+    await waitFor(
+      () => {
+        expect(has("partial · 3 of 7 days")).toBe(true);
+        expect(
+          document.querySelectorAll('[data-provisional="arriving"]').length,
+        ).toBeGreaterThan(0);
+      },
+      { timeout: 4000 },
+    );
+    watch.stop();
+  });
+});
+
+describe("a stream cut before its last snapshot", () => {
+  test("reads as failed, with a retry, not as still computing", async () => {
+    partialFlag = true;
+    endsEarly = true;
+    await renderDash("/?range=7d", false);
+    await waitFor(() => {
+      expect(
+        screen.queryAllByRole("button", { name: "Try again" }).length,
+      ).toBeGreaterThan(0);
+    });
+    expect(has("days ready · computing")).toBe(false);
+  });
+});
+
+describe("a view refused while it fills", () => {
+  test("says so with a retry, and no block passes its first days off as the period", async () => {
+    partialFlag = true;
+    refuseFlag = true;
+    healthFailStatus = 503;
+    healthFailField = "since";
+    await renderDash("/?range=7d", false);
+    await waitFor(() => {
+      expect(has("This period took too long to compute")).toBe(true);
+    });
+    expect(has("days ready")).toBe(false);
+    // The funnel's days were partial when the stream stopped: the refusal, never 3 days as the period.
+    expect(has("partial ·")).toBe(false);
+    expect(has("Automation funnel")).toBe(false);
+    // Blocks whose families were all in keep their figures.
+    expect(has("Steps delivered")).toBe(true);
+    expect(
+      screen.queryAllByRole("button", { name: "Try again" }).length,
+    ).toBeGreaterThan(1);
   });
 });

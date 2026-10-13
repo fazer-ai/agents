@@ -2,16 +2,11 @@ import { ArrowRightLeft, MessageSquareOff, Tags } from "lucide-react";
 import { lazy, Suspense } from "react";
 import { useTranslation } from "react-i18next";
 import { Skeleton } from "@/client/components";
-import { api } from "@/client/lib/api";
-import { Block, type BlockTable, failureOf, SectionHeading } from "./Block";
+import { Block, type BlockTable, SectionHeading } from "./Block";
 import type { ChartRow } from "./charts";
-import {
-  apiQuery,
-  type DashboardFilters,
-  daysOf,
-  type Window,
-} from "./filters";
-import { useBlock } from "./useBlock";
+import { daysOf, type Window } from "./filters";
+import { isProvisional } from "./Provisional";
+import { dayState, inGap, useStreamBlock } from "./useStream";
 
 const StackedBars = lazy(() =>
   import("./charts").then((m) => ({ default: m.StackedBars })),
@@ -21,13 +16,7 @@ const StackedBars = lazy(() =>
 // its silence by reason, a guardrail, a person), the agent's silences by the reason it picked, and
 // volume and outcome by the conversation's labels.
 
-export function ReasonsSection({
-  filters,
-  win,
-}: {
-  filters: DashboardFilters;
-  win: Window;
-}) {
+export function ReasonsSection({ win }: { win: Window }) {
   const { t, i18n } = useTranslation();
   const nf = new Intl.NumberFormat(i18n.language);
   const pf = (v: number) =>
@@ -35,15 +24,8 @@ export function ReasonsSection({
       style: "percent",
       maximumFractionDigits: 1,
     }).format(v);
-  const query = apiQuery(filters, win);
-  const handoffs = useBlock(JSON.stringify(["handoffs", query]), async () => {
-    const res = await api.api.v1.metrics.handoffs.get({ query });
-    return { data: res.data?.handoffs ?? null, ...failureOf(res.error) };
-  });
-  const labels = useBlock(JSON.stringify(["labels", query]), async () => {
-    const res = await api.api.v1.metrics.labels.get({ query });
-    return { data: res.data?.labels ?? null, ...failureOf(res.error) };
-  });
+  const handoffs = useStreamBlock((f) => f.handoffs, ["log.handoffs"]);
+  const labels = useStreamBlock((f) => f.labels, ["conv"]);
 
   const causeLabel: Record<string, string> = {
     agent: t("dashboard.cause.agent", "The agent handed over"),
@@ -76,19 +58,26 @@ export function ReasonsSection({
     raw: c,
     label: causeLabel[c] ?? c,
   }));
-  const days = daysOf(win, h?.days[0]?.date ?? null);
+  const days = daysOf(
+    win,
+    handoffs.coverage?.first ?? h?.days[0]?.date ?? null,
+  );
   const rows: ChartRow[] = days.map((day) => {
-    const row: ChartRow = { day };
+    const row: ChartRow = { day, state: dayState(handoffs.coverage, day) };
     for (const s of series)
-      row[s.key] =
-        h?.days.find((d) => d.date === day && d.cause === s.raw)
-          ?.conversations ?? 0;
+      row[s.key] = inGap(handoffs.coverage, day)
+        ? null
+        : (h?.days.find((d) => d.date === day && d.cause === s.raw)
+            ?.conversations ?? 0);
     return row;
   });
   const handoffTable: BlockTable = {
     name: "dashboard-handoff-causes",
     header: [t("dashboard.col.day", "Day"), ...series.map((s) => s.label)],
-    rows: rows.map((r) => [r.day, ...series.map((s) => r[s.key] as number)]),
+    rows: rows.map((r) => [
+      r.day,
+      ...series.map((s) => r[s.key] as number | null),
+    ]),
   };
 
   const targetLabel: Record<string, string> = {
@@ -112,13 +101,17 @@ export function ReasonsSection({
   }));
   // Its own range: under "all time" the window starts at the first event, and a silence can come
   // before the first handoff.
-  const silenceDays = daysOf(win, h?.silenceDays[0]?.date ?? null);
+  const silenceDays = daysOf(
+    win,
+    handoffs.coverage?.first ?? h?.silenceDays[0]?.date ?? null,
+  );
   const silenceRows: ChartRow[] = silenceDays.map((day) => {
-    const row: ChartRow = { day };
+    const row: ChartRow = { day, state: dayState(handoffs.coverage, day) };
     for (const s of silenceSeries)
-      row[s.key] =
-        h?.silenceDays.find((d) => d.date === day && d.reason === s.raw)
-          ?.turns ?? 0;
+      row[s.key] = inGap(handoffs.coverage, day)
+        ? null
+        : (h?.silenceDays.find((d) => d.date === day && d.reason === s.raw)
+            ?.turns ?? 0);
     return row;
   });
   const silenceTable: BlockTable = {
@@ -129,7 +122,7 @@ export function ReasonsSection({
     ],
     rows: silenceRows.map((r) => [
       r.day,
-      ...silenceSeries.map((s) => r[s.key] as number),
+      ...silenceSeries.map((s) => r[s.key] as number | null),
     ]),
   };
 
@@ -161,6 +154,7 @@ export function ReasonsSection({
         {t("dashboard.reasons.title", "Why it hands over, and what people ask")}
       </SectionHeading>
       <Block
+        coverage={handoffs.coverage}
         error={handoffs.error}
         errorStatus={handoffs.status}
         errorField={handoffs.field}
@@ -229,9 +223,9 @@ export function ReasonsSection({
           )
         }
       >
-        {handoffs.loading && !h ? (
+        {handoffs.loading && !h && !isProvisional(handoffs.coverage) ? (
           <Skeleton className="h-56 w-full" />
-        ) : series.length === 0 ? (
+        ) : series.length === 0 && !isProvisional(handoffs.coverage) ? (
           <p className="py-8 text-center text-sm text-text-muted">
             {t("dashboard.handoffs.none", "No handoffs in this period.")}
           </p>
@@ -249,6 +243,7 @@ export function ReasonsSection({
       </Block>
 
       <Block
+        coverage={handoffs.coverage}
         error={handoffs.error}
         errorStatus={handoffs.status}
         errorField={handoffs.field}
@@ -283,9 +278,9 @@ export function ReasonsSection({
           )
         }
       >
-        {handoffs.loading && !h ? (
+        {handoffs.loading && !h && !isProvisional(handoffs.coverage) ? (
           <Skeleton className="h-48 w-full" />
-        ) : silenceSeries.length === 0 ? (
+        ) : silenceSeries.length === 0 && !isProvisional(handoffs.coverage) ? (
           <p className="py-8 text-center text-sm text-text-muted">
             {t("dashboard.silences.none", "No silences in this period.")}
           </p>
@@ -303,6 +298,7 @@ export function ReasonsSection({
       </Block>
 
       <Block
+        coverage={labels.coverage}
         error={labels.error}
         errorStatus={labels.status}
         errorField={labels.field}

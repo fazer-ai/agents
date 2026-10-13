@@ -4,10 +4,10 @@ import { useTranslation } from "react-i18next";
 import { SegmentedControl, Skeleton } from "@/client/components";
 import type { api } from "@/client/lib/api";
 import { cn } from "@/client/lib/utils";
-import { Block, type BlockTable, failureOf } from "./Block";
+import { Block, type BlockTable } from "./Block";
 import { useNodeLabel } from "./CostSection";
-import { apiQuery, type DashboardFilters, type Window } from "./filters";
-import { useAskBreakdown, useBlock } from "./useBlock";
+import type { DashboardFilters } from "./filters";
+import { useStreamBlock } from "./useStream";
 
 type Dimension = "agent" | "inbox" | "model" | "node";
 type BreakdownData = Awaited<
@@ -27,12 +27,8 @@ type SortKey =
 // how many of those conversations the agent resolved. Sorting is by any column; clicking an agent or
 // inbox row makes it the page's filter.
 export function BreakdownSection({
-  filters,
-  win,
   onFilter,
 }: {
-  filters: DashboardFilters;
-  win: Window;
   onFilter: (patch: Partial<DashboardFilters>) => void;
 }) {
   const { t, i18n } = useTranslation();
@@ -53,15 +49,7 @@ export function BreakdownSection({
       style: "percent",
       maximumFractionDigits: 1,
     }).format(v);
-  const askBreakdown = useAskBreakdown();
-  const query = apiQuery(filters, win);
-  const block = useBlock(
-    JSON.stringify(["breakdown", query, dimension]),
-    async () => {
-      const res = await askBreakdown(query, dimension);
-      return { data: res.data?.rows ?? null, ...failureOf(res.error) };
-    },
-  );
+  const block = useStreamBlock((f) => f.breakdown?.[dimension], ["ledger"]);
 
   const nameOf = (r: Row): string => {
     if (r.key === null)
@@ -139,6 +127,7 @@ export function BreakdownSection({
       className="flex scroll-mt-4 flex-col gap-3 lg:scroll-mt-32"
     >
       <Block
+        coverage={block.coverage}
         error={block.error}
         errorStatus={block.status}
         errorField={block.field}

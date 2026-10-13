@@ -43,7 +43,7 @@ export type HandoffCause = (typeof HANDOFF_CAUSES)[number];
 export const HANDOFF_TARGETS = ["pinned", "routing", "not_assigned"] as const;
 export type HandoffTarget = (typeof HANDOFF_TARGETS)[number];
 
-const TARGET_SQL = Prisma.sql`(CASE l.detail->>'assigned'
+export const TARGET_SQL = Prisma.sql`(CASE l.detail->>'assigned'
   WHEN 'agent' THEN 'pinned'
   WHEN 'team' THEN 'pinned'
   WHEN 'routing' THEN 'routing'
@@ -74,10 +74,10 @@ export interface HandoffReasons {
 // The line a tool call writes for its own result carries no `phase`; the lines that do are written
 // around the call (a precondition that refused it, a side effect that failed), and a refused call
 // logs `status: ok` with nothing having run.
-const callRanSql = (a: string) =>
+export const callRanSql = (a: string) =>
   Prisma.sql`${Prisma.raw(a)}.status = 'ok' AND ${Prisma.raw(a)}.detail->>'phase' IS NULL`;
 
-const CAUSE_SQL = Prisma.sql`(CASE
+export const CAUSE_SQL = Prisma.sql`(CASE
   WHEN l.stage = 'tool' AND l.detail->>'tool' = 'handoff_to_human' AND ${callRanSql("l")}
        AND COALESCE(l.detail->>'handedOff', 'true') = 'true' THEN 'agent'
   WHEN l.stage = 'handoff' AND l.detail->>'outcome' = 'opened_after_skip'
@@ -107,7 +107,7 @@ const CAUSE_SQL = Prisma.sql`(CASE
 // handoff_to_human call. Narrower than `stage IN ('tool', 'handoff')` only by tool lines whose cause
 // is NULL, and written this way so the reads below reach their lines through
 // `execution_logs_dashboard_lines_idx` instead of every tool line of the window.
-const HANDOFF_LINE_SQL = Prisma.sql`(l.stage = 'handoff'
+export const HANDOFF_LINE_SQL = Prisma.sql`(l.stage = 'handoff'
   OR (l.stage = 'tool' AND l.detail->>'tool' = 'handoff_to_human'))`;
 
 export async function getHandoffReasons(

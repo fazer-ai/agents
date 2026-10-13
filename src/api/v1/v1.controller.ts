@@ -22,6 +22,7 @@ import { instanceIdentity } from "@/lib/instance";
 import type { TenantContext } from "@/lib/tenancy";
 import { getDashboardCosts } from "@/modules/analytics/costs";
 import { DRILL_OUTCOMES } from "@/modules/analytics/drilldown";
+import { fromKeptDays } from "@/modules/analytics/rollup/answer";
 import {
   getInstanceMetrics,
   getKpis,
@@ -750,9 +751,14 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
   .get(
     "/metrics/kpis",
     async ({ tenantContext, query }) => {
-      const kpis = await getKpis(
-        ctxOrThrow(tenantContext),
-        parseDashboardFilter(query),
+      const ctx = ctxOrThrow(tenantContext);
+      const filter = parseDashboardFilter(query);
+      const kpis = await fromKeptDays(
+        ctx,
+        filter,
+        "kpis",
+        (f) => f.kpis as NonNullable<typeof f.kpis>,
+        () => getKpis(ctx, filter),
       );
       return { instance: instanceIdentity, kpis };
     },
@@ -794,9 +800,14 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
   .get(
     "/metrics/costs",
     async ({ tenantContext, query }) => {
-      const costs = await getDashboardCosts(
-        ctxOrThrow(tenantContext),
-        parseDashboardFilter(query),
+      const ctx = ctxOrThrow(tenantContext);
+      const filter = parseDashboardFilter(query);
+      const costs = await fromKeptDays(
+        ctx,
+        filter,
+        "costs",
+        (f) => f.costs as NonNullable<typeof f.costs>,
+        () => getDashboardCosts(ctx, filter),
       );
       return { instance: instanceIdentity, costs };
     },

@@ -186,6 +186,7 @@ model Tenant {
   mcpOAuthRefreshTokens         McpOAuthRefreshToken[]
   mcpOAuthPendingAuthorizations McpOAuthPendingAuthorization[]
   appointments                  Appointment[]
+  dashboardDays                 DashboardDay[]
 
   @@map("tenants")
 }
@@ -1246,6 +1247,7 @@ model Conversation {
   /// each append walks that account's whole conversation history to find the handful of rows sharing
   /// one contact-inbox.
   @@index([tenantId, chatwootInstanceId, contactInboxId])
+  @@index([tenantId, createdAt])
   @@map("conversations")
 }
 
@@ -2937,4 +2939,47 @@ model McpOAuthClientApproval {
 
   @@unique([userId, clientId])
   @@map("mcp_oauth_client_approvals")
+}
+
+// THE DASHBOARD'S KEPT DAYS (docs/dashboard.md, "Kept days"). One row per tenant, filter, timezone,
+// local day and section: the figures of that day in a form that adds up over days, computed the
+// first time a dashboard request needs the day and read back by every later one. `version` is a hash
+// of the queries that computed the row, so a release that changes a figure's definition stops reading
+// what the previous one kept. Today and yesterday are never kept.
+model DashboardDay {
+  id         BigInt   @id @default(autoincrement())
+  tenantId   BigInt   @map("tenant_id")
+  version    String
+  filterKey  String   @map("filter_key")
+  tz         String
+  day        DateTime @db.Date
+  section    String
+  data       Json
+  computedAt DateTime @default(now()) @map("computed_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, version, filterKey, tz, section, day])
+  @@index([tenantId, tz, day])
+  @@map("dashboard_days")
+}
+
+// What changed under a kept day, written by triggers on the tables the figures read
+// (conversations, llm_usage, execution_logs, approval_queue_items, inboxes) when the row touched is
+// more than a day old, so every writer counts, the Chatwoot webhook and a repricing script alike. The
+// next dashboard request drops the kept days these name and marks the row processed. No foreign key
+// to tenants: a tenant's own deletion cascades into the tables that write here.
+model DashboardDirty {
+  id             BigInt    @id @default(autoincrement())
+  tenantId       BigInt    @map("tenant_id")
+  conversationId BigInt?   @map("conversation_id")
+  // conv | ledger | log | know | conv-all; null with a conversation means every section it reaches.
+  section        String?
+  at             DateTime?
+  createdAt      DateTime  @default(now()) @map("created_at")
+  processedAt    DateTime? @map("processed_at")
+
+  @@index([tenantId, processedAt])
+  @@index([tenantId, createdAt])
+  @@map("dashboard_dirty")
 }

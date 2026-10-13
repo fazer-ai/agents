@@ -18,13 +18,7 @@ import {
   SpendHealthLines,
 } from "@/client/components";
 import { api } from "@/client/lib/api";
-import {
-  Block,
-  type BlockTable,
-  Delta,
-  failureOf,
-  SectionHeading,
-} from "./Block";
+import { Block, type BlockTable, Delta, SectionHeading } from "./Block";
 import type { ChartRow } from "./charts";
 import {
   apiQuery,
@@ -32,7 +26,9 @@ import {
   daysOf,
   type Window,
 } from "./filters";
-import { useAskBreakdown, useBlock } from "./useBlock";
+import { CoverageBar, isProvisional, ProvisionalFigure } from "./Provisional";
+import { useBlock } from "./useBlock";
+import { dayState, inGap, useStreamBlock } from "./useStream";
 
 const LineTrend = lazy(() =>
   import("./charts").then((m) => ({ default: m.LineTrend })),
@@ -110,24 +106,9 @@ export function CostSection({
     }).format(v);
 
   const query = apiQuery(filters, win);
-  const costs = useBlock(JSON.stringify(["costs", query]), async () => {
-    const res = await api.api.v1.metrics.costs.get({ query });
-    return { data: res.data?.costs ?? null, ...failureOf(res.error) };
-  });
-  const prevQuery = prev ? apiQuery(filters, prev) : null;
-  const prevCosts = useBlock(
-    JSON.stringify(["costs-prev", prevQuery]),
-    async () => {
-      if (!prevQuery) return { data: null };
-      const res = await api.api.v1.metrics.costs.get({ query: prevQuery });
-      return { data: res.data?.costs ?? null, ...failureOf(res.error) };
-    },
-  );
-  const askBreakdown = useAskBreakdown();
-  const cache = useBlock(JSON.stringify(["cache", query]), async () => {
-    const res = await askBreakdown(query, "agent");
-    return { data: res.data?.rows ?? null, ...failureOf(res.error) };
-  });
+  const costs = useStreamBlock((f) => f.costs, ["ledger"]);
+  const prevCosts = useStreamBlock((f) => f.costs, ["ledger"], "previous");
+  const cache = useStreamBlock((f) => f.breakdown?.agent, ["ledger"]);
   const ceiling = useBlock<Ceiling>(
     JSON.stringify(["ceiling", query.until]),
     async () => {
@@ -139,7 +120,7 @@ export function CostSection({
 
   const c = costs.data;
   const p = prevCosts.data;
-  const days = daysOf(win, c?.days[0]?.date ?? null);
+  const days = daysOf(win, costs.coverage?.first ?? c?.days[0]?.date ?? null);
   const prevDays = prev ? daysOf(prev) : [];
   const costByDay = new Map(c?.days.map((d) => [d.date, d]) ?? []);
   const prevByDay = new Map(p?.days.map((d) => [d.date, d]) ?? []);
@@ -154,10 +135,13 @@ export function CostSection({
     label: split === "node" ? nodeLabel(k) : k,
   }));
   const stacked: ChartRow[] = days.map((day) => {
-    const row: ChartRow = { day };
+    const row: ChartRow = { day, state: dayState(costs.coverage, day) };
+    const gap = inGap(costs.coverage, day);
     for (const s of segments) {
-      row[s.key] =
-        splitRows.find((r) => r.date === day && r.key === s.raw)?.costUsd ?? 0;
+      row[s.key] = gap
+        ? null
+        : (splitRows.find((r) => r.date === day && r.key === s.raw)?.costUsd ??
+          0);
     }
     return row;
   });
@@ -168,11 +152,16 @@ export function CostSection({
       ...segments.map((s) => s.label),
       t("dashboard.col.total", "Total"),
     ],
+    // A day with no figures yet is blank in every column, its total too.
     rows: stacked.map((r) => {
+      if (inGap(costs.coverage, r.day))
+        return [r.day, ...segments.map(() => null), null];
       const vals = segments.map((s) => (r[s.key] as number) ?? 0);
       return [r.day, ...vals, vals.reduce((a, b) => a + b, 0)];
     }),
     display: stacked.map((r) => {
+      if (inGap(costs.coverage, r.day))
+        return [r.day, ...segments.map(() => "\u2014"), "\u2014"];
       const vals = segments.map((s) => (r[s.key] as number) ?? 0);
       return [
         r.day,
@@ -187,6 +176,7 @@ export function CostSection({
     const pd = prevDays[i] ? prevByDay.get(prevDays[i] as string) : undefined;
     return {
       day,
+      state: dayState(costs.coverage, day),
       perConversation: d?.costPerConversation ?? null,
       perResolved: d?.costPerResolvedConversation ?? null,
       perConversationPrev: pd?.costPerConversation ?? null,
@@ -316,9 +306,11 @@ export function CostSection({
             <Skeleton className="h-8 w-28" />
           ) : c ? (
             <>
-              <p className="font-semibold text-2xl text-text-primary tabular-nums">
-                {cf.format(c.totalCostUsd)}
-              </p>
+              <ProvisionalFigure coverage={costs.coverage}>
+                <p className="font-semibold text-2xl text-text-primary tabular-nums">
+                  {cf.format(c.totalCostUsd)}
+                </p>
+              </ProvisionalFigure>
               <Delta
                 kind="amount"
                 current={c.totalCostUsd}
@@ -336,15 +328,18 @@ export function CostSection({
               {t("dashboard.costsError", "Could not read the cost.")}
             </p>
           )}
+          <CoverageBar coverage={costs.coverage} />
         </Card>
         <Card className="flex flex-col gap-2">
           <div className="flex items-center gap-2 text-text-muted text-xs">
             <Coins className="h-4 w-4 text-accent" aria-hidden="true" />
             {t("dashboard.cost.perConversation", "Cost / conversation")}
           </div>
-          <p className="font-semibold text-2xl text-text-primary tabular-nums">
-            {money(c?.costPerConversation)}
-          </p>
+          <ProvisionalFigure coverage={costs.coverage}>
+            <p className="font-semibold text-2xl text-text-primary tabular-nums">
+              {money(c?.costPerConversation)}
+            </p>
+          </ProvisionalFigure>
           <p className="text-text-muted text-xs">
             {t(
               "dashboard.cost.acrossConversations",
@@ -362,6 +357,7 @@ export function CostSection({
             format={(v) => cf.format(v)}
             lowerIsBetter
           />
+          <CoverageBar coverage={costs.coverage} />
         </Card>
         <Card className="flex flex-col gap-2">
           <div className="flex items-center gap-2 text-text-muted text-xs">
@@ -371,9 +367,11 @@ export function CostSection({
               "Cost / conversation resolved by the agent",
             )}
           </div>
-          <p className="font-semibold text-2xl text-text-primary tabular-nums">
-            {money(c?.costPerResolvedConversation)}
-          </p>
+          <ProvisionalFigure coverage={costs.coverage}>
+            <p className="font-semibold text-2xl text-text-primary tabular-nums">
+              {money(c?.costPerResolvedConversation)}
+            </p>
+          </ProvisionalFigure>
           <p className="text-text-muted text-xs">
             {t("dashboard.cost.acrossResolved", "across {{n}} resolved", {
               count: c?.resolvedConversations ?? 0,
@@ -387,23 +385,27 @@ export function CostSection({
             format={(v) => cf.format(v)}
             lowerIsBetter
           />
+          <CoverageBar coverage={costs.coverage} />
         </Card>
         <Card className="flex flex-col gap-2">
           <div className="flex items-center gap-2 text-text-muted text-xs">
             <Layers className="h-4 w-4 text-accent" aria-hidden="true" />
             {t("dashboard.tokens", "Tokens (in / out)")}
           </div>
-          <p className="font-semibold text-text-primary text-xl tabular-nums">
-            {c
-              ? `${nf.format(c.tokens.prompt)} / ${nf.format(c.tokens.completion)}`
-              : "\u2014"}
-          </p>
+          <ProvisionalFigure coverage={costs.coverage}>
+            <p className="font-semibold text-text-primary text-xl tabular-nums">
+              {c
+                ? `${nf.format(c.tokens.prompt)} / ${nf.format(c.tokens.completion)}`
+                : "\u2014"}
+            </p>
+          </ProvisionalFigure>
           <p className="text-text-muted text-xs">
             {t("dashboard.calls", "{{n}} requests", {
               count: c?.requests ?? 0,
               n: nf.format(c?.requests ?? 0),
             })}
           </p>
+          <CoverageBar coverage={costs.coverage} />
         </Card>
       </div>
 
@@ -438,6 +440,7 @@ export function CostSection({
       )}
 
       <Block
+        coverage={costs.coverage}
         error={costs.error}
         errorStatus={costs.status}
         errorField={costs.field}
@@ -463,9 +466,9 @@ export function CostSection({
           />
         }
       >
-        {costs.loading && !c ? (
+        {costs.loading && !c && !isProvisional(costs.coverage) ? (
           <Skeleton className="h-64 w-full" />
-        ) : segments.length === 0 ? (
+        ) : segments.length === 0 && !isProvisional(costs.coverage) ? (
           <p className="py-8 text-center text-sm text-text-muted">
             {t("dashboard.noData", "No data yet.")}
           </p>
@@ -482,6 +485,7 @@ export function CostSection({
       </Block>
 
       <Block
+        coverage={costs.coverage}
         error={costs.error}
         errorStatus={costs.status}
         errorField={costs.field}
@@ -499,9 +503,10 @@ export function CostSection({
         chart
         table={perConvTable}
       >
-        {costs.loading && !c ? (
+        {costs.loading && !c && !isProvisional(costs.coverage) ? (
           <Skeleton className="h-56 w-full" />
-        ) : perConv.every((r) => r.perConversation === null) ? (
+        ) : perConv.every((r) => r.perConversation === null) &&
+          !isProvisional(costs.coverage) ? (
           <p className="py-8 text-center text-sm text-text-muted">
             {t("dashboard.noData", "No data yet.")}
           </p>
@@ -528,6 +533,7 @@ export function CostSection({
       </Block>
 
       <Block
+        coverage={cache.coverage}
         error={cache.error}
         errorStatus={cache.status}
         errorField={cache.field}

@@ -331,6 +331,22 @@ export function toCounts(r: OutcomeRow | undefined): OutcomeCounts {
   };
 }
 
+// The conversations a first-response time is read from, as `c`. The kept days' section repeats it
+// (rollup/sections.ts), so both read the same sample.
+export const FIRST_RESPONSE_SAMPLE_SQL = Prisma.sql`c.chatwoot_created_at IS NOT NULL
+         AND c.chatwoot_first_reply_at IS NOT NULL
+         -- A reply cannot precede the conversation that carries it: a clock skew or a hand-written
+         -- row would otherwise contribute a negative "response time".
+         AND c.chatwoot_first_reply_at >= c.chatwoot_created_at
+         -- A first reply the platform posted is not a person answering. Compared exactly, and to
+         -- the second only when the stored reading has no fraction: the REST partial renders it as
+         -- epoch seconds, and then a person and the platform in the same second cannot be told apart.
+         AND NOT (
+           c.chatwoot_platform_reply_at IS NOT NULL
+           AND (c.chatwoot_platform_reply_at = c.chatwoot_first_reply_at
+                OR date_trunc('second', c.chatwoot_platform_reply_at) = c.chatwoot_first_reply_at)
+         )`;
+
 export async function getKpis(
   ctx: TenantContext,
   filter: DashboardFilter = {},
@@ -358,19 +374,7 @@ export async function getKpis(
              )::float8 AS p90,
              COUNT(*)::int AS sampled
         FROM conversations c
-       WHERE c.chatwoot_created_at IS NOT NULL
-         AND c.chatwoot_first_reply_at IS NOT NULL
-         -- A reply cannot precede the conversation that carries it: a clock skew or a hand-written
-         -- row would otherwise contribute a negative "response time".
-         AND c.chatwoot_first_reply_at >= c.chatwoot_created_at
-         -- A first reply the platform posted is not a person answering. Compared exactly, and to
-         -- the second only when the stored reading has no fraction: the REST partial renders it as
-         -- epoch seconds, and then a person and the platform in the same second cannot be told apart.
-         AND NOT (
-           c.chatwoot_platform_reply_at IS NOT NULL
-           AND (c.chatwoot_platform_reply_at = c.chatwoot_first_reply_at
-                OR date_trunc('second', c.chatwoot_platform_reply_at) = c.chatwoot_first_reply_at)
-         )
+       WHERE ${FIRST_RESPONSE_SAMPLE_SQL}
          -- The same conversations the funnel counts.
          AND ${cohortWhereSql("c", filter)}`);
     // COUNT and the percentiles come from ONE aggregate over the same rows, so they cannot

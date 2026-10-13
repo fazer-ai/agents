@@ -1,12 +1,19 @@
-import { Elysia, t } from "elysia";
+import { Elysia, sse, t } from "elysia";
+import logger from "@/api/lib/logger";
 import { doc, errors } from "@/api/lib/openapi";
 import {
   parseQueryEnum,
   parseQueryId,
   parseQueryInstant,
 } from "@/api/lib/query-filters";
+import { refusalBody, refusalHeaders } from "@/api/lib/refusal";
 import { tenancyPlugin } from "@/api/middlewares/tenancy";
-import { ForbiddenError, TenantTargetRequiredError } from "@/lib/errors";
+import { REJECTED_TENANT_SELECTOR_HEADER } from "@/lib/console-params";
+import {
+  AppError,
+  ForbiddenError,
+  TenantTargetRequiredError,
+} from "@/lib/errors";
 import { instanceIdentity } from "@/lib/instance";
 import type { TenantContext } from "@/lib/tenancy";
 import {
@@ -20,8 +27,11 @@ import {
   getBreakdown,
 } from "@/modules/analytics/breakdown";
 import type { DashboardFilter } from "@/modules/analytics/filter";
-import { getHealth } from "@/modules/analytics/health";
+import { getHealth, type HealthReport } from "@/modules/analytics/health";
 import { getFilterOptions } from "@/modules/analytics/options";
+import { fromKeptDays } from "@/modules/analytics/rollup/answer";
+import type { Block } from "@/modules/analytics/rollup/engine";
+import { BLOCKS, streamFigures } from "@/modules/analytics/rollup/stream";
 import { getOutcomeTrend } from "@/modules/analytics/trends";
 
 // translate('errors.metricsTooSlow', 'The metrics for this period took longer than {{seconds}}s to compute. Try a shorter period, or try again in a moment.')
@@ -90,6 +100,13 @@ export function parseDashboardFilter(query: {
 
 const filterOnly = t.Object(dashboardFilterQuery);
 
+function parseBlocks(s: string | undefined): Block[] {
+  if (s === undefined) return BLOCKS;
+  const asked = s.split(",").map((b) => b.trim());
+  for (const b of asked) parseQueryEnum(b, "blocks", BLOCKS);
+  return BLOCKS.filter((b) => asked.includes(b));
+}
+
 export const dashboardController = new Elysia({
   prefix: "/v1/metrics",
   tags: ["Dashboard"],
@@ -114,11 +131,24 @@ export const dashboardController = new Elysia({
     "/outcomes",
     async ({ tenantContext, query }) => ({
       instance: instanceIdentity,
-      trend: await getOutcomeTrend(
-        ctxOrThrow(tenantContext),
-        parseDashboardFilter(query),
-        parseQueryEnum(query.breakdown, "breakdown", ["agent", "inbox"]),
-      ),
+      trend: await (async () => {
+        const ctx = ctxOrThrow(tenantContext);
+        const filter = parseDashboardFilter(query);
+        const breakdown = parseQueryEnum(query.breakdown, "breakdown", [
+          "agent",
+          "inbox",
+        ]);
+        return fromKeptDays(
+          ctx,
+          filter,
+          "outcomes",
+          (f) =>
+            breakdown && f.trend && f.series
+              ? { ...f.trend, series: f.series[breakdown] }
+              : (f.trend as NonNullable<typeof f.trend>),
+          () => getOutcomeTrend(ctx, filter, breakdown),
+        );
+      })(),
     }),
     {
       requireAuth: true,
@@ -142,12 +172,20 @@ export const dashboardController = new Elysia({
     "/breakdown",
     async ({ tenantContext, query }) => ({
       instance: instanceIdentity,
-      rows: await getBreakdown(
-        ctxOrThrow(tenantContext),
-        parseDashboardFilter(query),
-        parseQueryEnum(query.dimension, "dimension", BREAKDOWN_DIMENSIONS) ??
-          "agent",
-      ),
+      rows: await (async () => {
+        const ctx = ctxOrThrow(tenantContext);
+        const filter = parseDashboardFilter(query);
+        const dimension =
+          parseQueryEnum(query.dimension, "dimension", BREAKDOWN_DIMENSIONS) ??
+          "agent";
+        return fromKeptDays(
+          ctx,
+          filter,
+          "breakdown",
+          (f) => f.breakdown?.[dimension] ?? [],
+          () => getBreakdown(ctx, filter, dimension),
+        );
+      })(),
     }),
     {
       requireAuth: true,
@@ -171,10 +209,17 @@ export const dashboardController = new Elysia({
     "/handoffs",
     async ({ tenantContext, query }) => ({
       instance: instanceIdentity,
-      handoffs: await getHandoffReasons(
-        ctxOrThrow(tenantContext),
-        parseDashboardFilter(query),
-      ),
+      handoffs: await (async () => {
+        const ctx = ctxOrThrow(tenantContext);
+        const filter = parseDashboardFilter(query);
+        return fromKeptDays(
+          ctx,
+          filter,
+          "handoffs",
+          (f) => f.handoffs as NonNullable<typeof f.handoffs>,
+          () => getHandoffReasons(ctx, filter),
+        );
+      })(),
     }),
     {
       requireAuth: true,
@@ -190,10 +235,17 @@ export const dashboardController = new Elysia({
     "/labels",
     async ({ tenantContext, query }) => ({
       instance: instanceIdentity,
-      labels: await getLabelOutcomes(
-        ctxOrThrow(tenantContext),
-        parseDashboardFilter(query),
-      ),
+      labels: await (async () => {
+        const ctx = ctxOrThrow(tenantContext);
+        const filter = parseDashboardFilter(query);
+        return fromKeptDays(
+          ctx,
+          filter,
+          "labels",
+          (f) => f.labels as NonNullable<typeof f.labels>,
+          () => getLabelOutcomes(ctx, filter),
+        );
+      })(),
     }),
     {
       requireAuth: true,
@@ -209,10 +261,17 @@ export const dashboardController = new Elysia({
     "/health",
     async ({ tenantContext, query }) => ({
       instance: instanceIdentity,
-      health: await getHealth(
-        ctxOrThrow(tenantContext),
-        parseDashboardFilter(query),
-      ),
+      health: await (async () => {
+        const ctx = ctxOrThrow(tenantContext);
+        const filter = parseDashboardFilter(query);
+        return fromKeptDays(
+          ctx,
+          filter,
+          "health",
+          (f) => f.health as HealthReport,
+          () => getHealth(ctx, filter),
+        );
+      })(),
     }),
     {
       requireAuth: true,
@@ -228,10 +287,17 @@ export const dashboardController = new Elysia({
     "/follow-ups",
     async ({ tenantContext, query }) => ({
       instance: instanceIdentity,
-      followUps: await getFollowUpActivity(
-        ctxOrThrow(tenantContext),
-        parseDashboardFilter(query),
-      ),
+      followUps: await (async () => {
+        const ctx = ctxOrThrow(tenantContext);
+        const filter = parseDashboardFilter(query);
+        return fromKeptDays(
+          ctx,
+          filter,
+          "followUps",
+          (f) => f.followUps as NonNullable<typeof f.followUps>,
+          () => getFollowUpActivity(ctx, filter),
+        );
+      })(),
     }),
     {
       requireAuth: true,
@@ -244,13 +310,81 @@ export const dashboardController = new Elysia({
     },
   )
   .get(
+    "/stream",
+    async function* ({ tenantContext, query, request }) {
+      const ctx = ctxOrThrow(tenantContext);
+      const filter = parseDashboardFilter(query);
+      const blocks = parseBlocks(query.blocks);
+      try {
+        for await (const event of streamFigures(
+          ctx,
+          filter,
+          blocks,
+          request.signal,
+        ))
+          yield sse({ event: event.kind, data: event });
+      } catch (error) {
+        // NOTE: past the first event the status is sent; a refusal is the stream's last event. An
+        // error that is no refusal (the database out of connections, say) ends the stream the same
+        // way, as a 500 the page offers a retry for: thrown, it would cut the response mid-chunk and
+        // leave every block with nothing to say.
+        if (!(error instanceof AppError)) {
+          logger.error({ err: error }, "metrics stream failed");
+          yield sse({
+            event: "refused",
+            data: { status: 500, error: "Internal server error" },
+          });
+          return;
+        }
+        yield sse({
+          event: "refused",
+          data: {
+            status: error.statusCode,
+            ...refusalBody(error, request.headers.get("accept-language")),
+            // The header a refused tenant selector is named in on a plain response; the client
+            // recovers from it the same way.
+            ...(refusalHeaders(error)[REJECTED_TENANT_SELECTOR_HEADER]
+              ? {
+                  rejectedTenantId:
+                    refusalHeaders(error)[REJECTED_TENANT_SELECTOR_HEADER],
+                }
+              : {}),
+          },
+        });
+      }
+    },
+    {
+      requireAuth: true,
+      query: t.Object({
+        ...dashboardFilterQuery,
+        blocks: t.Optional(
+          t.String({
+            description: `Comma-separated blocks to compute (${BLOCKS.join(", ")}); omit for all of them.`,
+          }),
+        ),
+      }),
+      detail: doc(
+        "Dashboard, as it fills",
+        "Server-sent events with the figures of every requested block for the window. A `snapshot` comes first with what is already kept, then after each part of at most 30 days is computed (today and yesterday first, then the most recent days), each carrying the coverage per family; `computing` names the days about to be computed; the last snapshot has `done: true`. A refusal after the first event arrives as a `refused` event with the status and the sentence. The figures are the ones the per-block routes return.",
+      ),
+      response: errors(400, 401, 403, 404, 422),
+    },
+  )
+  .get(
     "/knowledge",
     async ({ tenantContext, query }) => ({
       instance: instanceIdentity,
-      knowledge: await getKnowledgeActivity(
-        ctxOrThrow(tenantContext),
-        parseDashboardFilter(query),
-      ),
+      knowledge: await (async () => {
+        const ctx = ctxOrThrow(tenantContext);
+        const filter = parseDashboardFilter(query);
+        return fromKeptDays(
+          ctx,
+          filter,
+          "knowledge",
+          (f) => f.knowledge as NonNullable<typeof f.knowledge>,
+          () => getKnowledgeActivity(ctx, filter),
+        );
+      })(),
     }),
     {
       requireAuth: true,

@@ -2,10 +2,9 @@ import { Activity, BookOpen, Bot, Clock, Repeat } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router";
 import { Skeleton } from "@/client/components";
-import { api } from "@/client/lib/api";
-import { Block, type BlockTable, failureOf, SectionHeading } from "./Block";
-import { apiQuery, type DashboardFilters, type Window } from "./filters";
-import { useBlock } from "./useBlock";
+import { Block, type BlockTable, SectionHeading } from "./Block";
+import type { DashboardFilters, Window } from "./filters";
+import { useStreamBlock } from "./useStream";
 
 // IS IT HEALTHY, AND WHAT ELSE DOES IT DO. Latency by model from the ledger, the flow log's warnings
 // and errors by stage and tool (each row opens the Logs page on exactly those lines), then the
@@ -44,12 +43,10 @@ export function HealthSection({
   // The unit is in the column header, as in the CSV.
   const ms = (v: number | null) =>
     v === null ? "\u2014" : nf.format(Math.round(v));
-  const query = apiQuery(filters, win);
-  const health = useBlock(JSON.stringify(["health", query]), async () => {
-    const res = await api.api.v1.metrics.health.get({ query });
-    return { data: res.data?.health ?? null, ...failureOf(res.error) };
-  });
-  const h = health.data;
+  // Latency comes from the ledger and problems from the flow log: each block covers, and fails, by
+  // its own family.
+  const latency = useStreamBlock((f) => f.health?.latency, ["ledger"]);
+  const problems = useStreamBlock((f) => f.health?.problems, ["log.problems"]);
   const latencyTable: BlockTable = {
     name: "dashboard-latency",
     header: [
@@ -58,7 +55,7 @@ export function HealthSection({
       t("dashboard.col.percentileMs", "{{p}} (ms)", { p: "p50" }),
       t("dashboard.col.percentileMs", "{{p}} (ms)", { p: "p90" }),
     ],
-    rows: (h?.latency ?? []).map((r) => [r.model, r.calls, r.p50Ms, r.p90Ms]),
+    rows: (latency.data ?? []).map((r) => [r.model, r.calls, r.p50Ms, r.p90Ms]),
   };
   const problemsTable: BlockTable = {
     name: "dashboard-problems",
@@ -69,7 +66,7 @@ export function HealthSection({
       t("dashboard.col.lines", "Log lines"),
       t("dashboard.col.conversations", "Conversations"),
     ],
-    rows: (h?.problems ?? []).map((r) => [
+    rows: (problems.data ?? []).map((r) => [
       r.stage,
       r.tool,
       r.level,
@@ -91,11 +88,12 @@ export function HealthSection({
         {t("dashboard.health.title", "Health")}
       </SectionHeading>
       <Block
-        error={health.error}
-        errorStatus={health.status}
-        errorField={health.field}
-        loading={health.loading && !health.data}
-        onRetry={health.reload}
+        coverage={latency.coverage}
+        error={latency.error}
+        errorStatus={latency.status}
+        errorField={latency.field}
+        loading={latency.loading && !latency.data}
+        onRetry={latency.reload}
         icon={Clock}
         title={t("dashboard.health.latency", "Model call latency")}
         help={t(
@@ -104,9 +102,9 @@ export function HealthSection({
         )}
         table={latencyTable}
       >
-        {health.loading && !h ? (
+        {latency.loading && !latency.data ? (
           <Skeleton className="h-24 w-full" />
-        ) : !h || h.latency.length === 0 ? (
+        ) : !latency.data || latency.data.length === 0 ? (
           <p className="text-sm text-text-muted">
             {t("dashboard.noData", "No data yet.")}
           </p>
@@ -130,7 +128,7 @@ export function HealthSection({
               </tr>
             </thead>
             <tbody>
-              {h.latency.map((r) => (
+              {latency.data.map((r) => (
                 <tr key={r.model} className="border-border border-t">
                   <td className="truncate py-1.5 pr-3 text-text-secondary">
                     {r.model}
@@ -152,11 +150,12 @@ export function HealthSection({
       </Block>
 
       <Block
-        error={health.error}
-        errorStatus={health.status}
-        errorField={health.field}
-        loading={health.loading && !health.data}
-        onRetry={health.reload}
+        coverage={problems.coverage}
+        error={problems.error}
+        errorStatus={problems.status}
+        errorField={problems.field}
+        loading={problems.loading && !problems.data}
+        onRetry={problems.reload}
         icon={Activity}
         title={t("dashboard.health.problems", "Warnings and errors")}
         help={t(
@@ -165,9 +164,9 @@ export function HealthSection({
         )}
         table={problemsTable}
       >
-        {health.loading && !h ? (
+        {problems.loading && !problems.data ? (
           <Skeleton className="h-24 w-full" />
-        ) : !h || h.problems.length === 0 ? (
+        ) : !problems.data || problems.data.length === 0 ? (
           <p className="text-sm text-text-muted">
             {t(
               "dashboard.health.noProblems",
@@ -176,7 +175,7 @@ export function HealthSection({
           </p>
         ) : (
           <ul className="flex flex-col gap-1.5">
-            {h.problems.map((r) => (
+            {problems.data.map((r) => (
               <li
                 key={`${r.stage}|${r.tool ?? ""}|${r.level}`}
                 className="flex items-center justify-between gap-4 text-sm"
@@ -208,24 +207,11 @@ export function HealthSection({
   );
 }
 
-export function AutomationSection({
-  filters,
-  win,
-}: {
-  filters: DashboardFilters;
-  win: Window;
-}) {
+export function AutomationSection() {
   const { t, i18n } = useTranslation();
   const nf = new Intl.NumberFormat(i18n.language);
-  const query = apiQuery(filters, win);
-  const followUps = useBlock(JSON.stringify(["followups", query]), async () => {
-    const res = await api.api.v1.metrics["follow-ups"].get({ query });
-    return { data: res.data?.followUps ?? null, ...failureOf(res.error) };
-  });
-  const knowledge = useBlock(JSON.stringify(["knowledge", query]), async () => {
-    const res = await api.api.v1.metrics.knowledge.get({ query });
-    return { data: res.data?.knowledge ?? null, ...failureOf(res.error) };
-  });
+  const followUps = useStreamBlock((f) => f.followUps, ["log.followups"]);
+  const knowledge = useStreamBlock((f) => f.knowledge, ["know"]);
   const f = followUps.data;
   const k = knowledge.data;
   const fuRows: [string, number | undefined][] = [
@@ -272,6 +258,7 @@ export function AutomationSection({
       </SectionHeading>
       <div className="grid gap-4 lg:grid-cols-2">
         <Block
+          coverage={followUps.coverage}
           error={followUps.error}
           errorStatus={followUps.status}
           errorField={followUps.field}
@@ -299,6 +286,7 @@ export function AutomationSection({
           )}
         </Block>
         <Block
+          coverage={knowledge.coverage}
           error={knowledge.error}
           errorStatus={knowledge.status}
           errorField={knowledge.field}

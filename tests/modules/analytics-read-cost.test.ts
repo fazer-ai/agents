@@ -9,6 +9,7 @@ import {
   getLabelOutcomes,
 } from "@/modules/analytics/activity";
 import type { DashboardFilter } from "@/modules/analytics/filter";
+import { COMPUTE } from "@/modules/analytics/rollup/sections";
 import { outcomeCountsSql } from "@/modules/analytics/service";
 import { dbProbeFailed } from "@/tests/db-gate";
 
@@ -162,6 +163,30 @@ describe.skipIf(!dbUp)("the dashboard's reads, by what they cost", () => {
       getHandoffReasons(ctx(), MONTH, db),
     );
     expect(n).toBe(2);
+    expect(scans.length).toBeGreaterThan(0);
+    for (const s of scans)
+      expect(s["Index Name"]).toBe("execution_logs_dashboard_lines_idx");
+  });
+
+  test("a kept day's handoffs reach their lines through the dashboard index", async () => {
+    const range = {
+      first: "2026-09-12",
+      last: "2026-10-11",
+      since: MONTH.since as Date,
+      until: MONTH.until as Date,
+    };
+    const { scans } = await flowLogScans(() =>
+      runScopedOn(db, ctx(), (tx) =>
+        COMPUTE.log(
+          tx,
+          new Set(["log.handoffs"]),
+          MONTH,
+          "America/Sao_Paulo",
+          range,
+          new Map(),
+        ),
+      ),
+    );
     expect(scans.length).toBeGreaterThan(0);
     for (const s of scans)
       expect(s["Index Name"]).toBe("execution_logs_dashboard_lines_idx");

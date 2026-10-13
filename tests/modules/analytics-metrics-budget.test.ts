@@ -239,6 +239,20 @@ describe.skipIf(!dbUp)("metrics time budget", () => {
     expect(elapsed).toBeLessThan(1_400);
   });
 
+  test("a write under the budget runs, and gets only the time left too", async () => {
+    // The kept days of the dashboard are written inside the read that computed them.
+    const t0 = Date.now();
+    const result = await withMetricsTimeout(1_000, () =>
+      runMetricsScoped(app as PrismaClient, ctx, async (db) => {
+        await db.$executeRaw`SELECT pg_sleep(0.8)`;
+        return db.$executeRawUnsafe("SELECT pg_sleep(1)");
+      }).catch((e) => e),
+    );
+    const elapsed = Date.now() - t0;
+    expect((result as { statusCode?: number }).statusCode).toBe(503);
+    expect(elapsed).toBeLessThan(1_400);
+  });
+
   test("a statement on the metrics pool outside a read, like the session lookup, is bounded too", async () => {
     const pool = await withMetricsTimeout(
       500,

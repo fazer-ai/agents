@@ -858,6 +858,20 @@
       "title": "Teto de gasto",
       "unread": "Não foi possível ler o teto."
     },
+    "chart": {
+      "loading": "carregando",
+      "loadingDays_zero": "carregando · {{count}} dias",
+      "loadingDays_one": "carregando · {{count}} dia",
+      "loadingDays_many": "carregando · {{count}} dias",
+      "loadingDays_other": "carregando · {{count}} dias",
+      "loadingTip": "calculando…",
+      "noData": "sem dados",
+      "noDataDays_zero": "sem dados · {{count}} dias",
+      "noDataDays_one": "sem dados · {{count}} dia",
+      "noDataDays_many": "sem dados · {{count}} dias",
+      "noDataDays_other": "sem dados · {{count}} dias",
+      "noDataTip": "sem dados: os Logs deste dia foram apagados pela retenção antes de ele ser guardado"
+    },
     "col": {
       "agent": "Agente",
       "cacheShare": "Entrada em cache",
@@ -905,6 +919,14 @@
       "title": "Custo"
     },
     "costsError": "Não foi possível ler o custo.",
+    "coverage": {
+      "bar": "{{ready}} de {{total}} dias prontos",
+      "noData_zero": "sem dados em {{count}} dias",
+      "noData_one": "sem dados em {{count}} dia",
+      "noData_many": "sem dados em {{count}} dias",
+      "noData_other": "sem dados em {{count}} dias",
+      "partial": "parcial · {{ready}} de {{total}} dias"
+    },
     "error": "Não foi possível carregar as métricas.",
     "exportCsv": "CSV",
     "exportCsvOf": "Exportar {{title}} em CSV",
@@ -1004,7 +1026,12 @@
     "percent": "%",
     "previous": "anterior: {{value}}",
     "previousPeriod": "período anterior",
+    "progress": {
+      "computing": "{{ready}} de {{total}} dias prontos · calculando de {{from}} a {{to}}",
+      "ready": "{{ready}} de {{total}} dias prontos"
+    },
     "range": {
+      "12m": "12m",
       "30d": "30d",
       "7d": "7d",
       "90d": "90d",

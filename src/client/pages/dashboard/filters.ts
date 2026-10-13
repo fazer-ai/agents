@@ -3,7 +3,7 @@
 // computed here, in the operator's own days (docs/ui.md, "A day is defined by the viewer's browser
 // timezone"), and the previous period is the same number of days immediately before it.
 
-export const RANGES = ["7d", "30d", "90d", "all", "custom"] as const;
+export const RANGES = ["7d", "30d", "90d", "12m", "all", "custom"] as const;
 export type Range = (typeof RANGES)[number];
 export const SOURCES = ["inbox", "playground", "all"] as const;
 export type Source = (typeof SOURCES)[number];
@@ -12,6 +12,7 @@ const RANGE_DAYS: Record<Exclude<Range, "custom" | "all">, number> = {
   "7d": 7,
   "30d": 30,
   "90d": 90,
+  "12m": 365,
 };
 
 export interface DashboardFilters {

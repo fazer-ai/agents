@@ -432,6 +432,11 @@ const BARE_SLICES: Record<
   // an imported protected-label list, an array of titles. The label and description that loop clips
   // go through `clipText`.
   "src/modules/agents/transfer.ts": [3, "array"],
+  // The kept days of the dashboard: a day cut from `toISOString()`, a hex digest cut to the version
+  // key, and a section name cut at its dot. All ASCII the code itself produces.
+  "src/modules/analytics/rollup/days.ts": [1, "ascii"],
+  "src/modules/analytics/rollup/engine.ts": [1, "ascii"],
+  "src/modules/analytics/rollup/sections.ts": [1, "ascii"],
   // The date the reminder says it was sent on, cut from `toISOString()`: a fixed-width ASCII
   // `YYYY-MM-DD` the runtime produces, never operator or customer text.
   "src/modules/appointments/reminders.ts": [1, "ascii"],

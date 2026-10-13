@@ -2,9 +2,11 @@ import type { TFunction } from "i18next";
 import { Download, type LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { Card, HelpPopover } from "@/client/components";
+import { Badge, Card, HelpPopover } from "@/client/components";
 import { readRefusal } from "@/client/lib/fieldRefusal";
 import { type CsvCell, downloadCsv } from "./csv";
+import { CoverageBar, PartialBadge, ProvisionalValue } from "./Provisional";
+import type { BlockCoverage } from "./useStream";
 
 // What a block shows, as a table: the same rows feed the CSV export and the screen-reader table that
 // stands in for a chart, so the file, the chart and what a screen reader hears cannot disagree.
@@ -48,6 +50,30 @@ export function metricsErrorMessage(
     : t("dashboard.error", "Could not load metrics.");
 }
 
+// How many of the window's days a block's figures cover while the page fills, and the flow-log days
+// that have no data (emptied by retention before they were kept), which read as missing, never as 0.
+// A block that is whole shows nothing in their place.
+export function CoverageChip({
+  coverage,
+}: {
+  coverage: BlockCoverage | null | undefined;
+}) {
+  const { t } = useTranslation();
+  if (!coverage || coverage.total === 0) return null;
+  return (
+    <span className="inline-flex flex-wrap items-center gap-1.5" role="status">
+      <PartialBadge coverage={coverage} />
+      {coverage.noData > 0 && (
+        <Badge variant="warning">
+          {t("dashboard.coverage.noData", "no data for {{count}} days", {
+            count: coverage.noData,
+          })}
+        </Badge>
+      )}
+    </span>
+  );
+}
+
 // A dashboard block: a titled card with its controls, a CSV export of exactly what it shows, and,
 // when its content is a chart, a table a screen reader reads in the chart's place (the chart itself
 // is hidden from the accessibility tree, since an SVG of bars says nothing).
@@ -65,6 +91,7 @@ export function Block({
   loading,
   onRetry,
   footer,
+  coverage,
   children,
 }: {
   id?: string;
@@ -88,6 +115,8 @@ export function Block({
   // Figures shown under a chart that are not in its table (a period's totals, a second breakdown):
   // rendered for everyone, since hiding them with the chart would leave a screen reader without them.
   footer?: ReactNode;
+  // The days the figures cover while the page fills (CoverageChip).
+  coverage?: BlockCoverage | null;
   children: ReactNode;
 }) {
   const { t } = useTranslation();
@@ -100,6 +129,7 @@ export function Block({
           <Icon className="h-4 w-4 text-accent" aria-hidden="true" />
           {title}
           {help ? <HelpPopover content={help} label={title} /> : null}
+          {!error && <CoverageChip coverage={coverage} />}
         </h3>
         <div className="flex flex-wrap items-center gap-2">
           {actions}
@@ -124,6 +154,7 @@ export function Block({
           )}
         </div>
       </div>
+      {!error && <CoverageBar coverage={coverage} />}
       {error ? (
         <p className="flex items-center gap-2 py-4 text-sm text-text-muted">
           {metricsErrorMessage(t, errorStatus, errorField)}
@@ -138,11 +169,14 @@ export function Block({
           )}
         </p>
       ) : chart ? (
+        // A chart says which days are still loading on its own axis: it does not pulse as a whole.
         <div aria-hidden="true">{children}</div>
       ) : (
-        children
+        <ProvisionalValue coverage={coverage}>{children}</ProvisionalValue>
       )}
-      {shown && footer}
+      {shown && footer && (
+        <ProvisionalValue coverage={coverage}>{footer}</ProvisionalValue>
+      )}
       {/* The wrapper is what hides it: a `<table>` keeps its content width whatever width it is
           given, so `sr-only` on the table itself still widened the page into a horizontal scroll. */}
       {ready && chart && table && (

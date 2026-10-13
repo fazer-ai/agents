@@ -18,6 +18,7 @@ import { AppError } from "@/lib/errors";
 import { ACTOR_TYPES, type ActorType } from "@/lib/tenancy/actor";
 import { readAgentConfigHealth } from "@/modules/agents/config-health-read";
 import { getAgent, getAgentToolSelections } from "@/modules/agents/service";
+import { fromKeptDays } from "@/modules/analytics/rollup/answer";
 import type { MetricsFilter } from "@/modules/analytics/service";
 import {
   getInstanceMetrics,
@@ -1207,7 +1208,14 @@ export async function metricsGet(
   const filter = metricsFilter(args);
   try {
     const [kpis, usage] = await Promise.all([
-      getKpis(ctx, filter, base),
+      fromKeptDays(
+        ctx,
+        filter,
+        "kpis",
+        (f) => f.kpis as NonNullable<typeof f.kpis>,
+        () => getKpis(ctx, filter, base),
+        base,
+      ),
       getInstanceMetrics(ctx, filter, base),
     ]);
     return ok({ kpis, usage });

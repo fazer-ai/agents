@@ -21,7 +21,7 @@ import {
 import { api } from "@/client/lib/api";
 import { cn } from "@/client/lib/utils";
 import { SectionNav } from "./agents/SectionNav";
-import { failureOf, metricsErrorMessage } from "./dashboard/Block";
+import { metricsErrorMessage } from "./dashboard/Block";
 import { BreakdownSection } from "./dashboard/BreakdownSection";
 import { CostSection } from "./dashboard/CostSection";
 import {
@@ -32,6 +32,7 @@ import {
   type Range,
   readFilters,
   type Source,
+  type Window,
   windowOf,
   writeFilters,
 } from "./dashboard/filters";
@@ -45,7 +46,8 @@ import {
   type PerformanceView,
 } from "./dashboard/PerformanceSection";
 import { ReasonsSection } from "./dashboard/ReasonsSection";
-import { SharedRequestsProvider, useBlock } from "./dashboard/useBlock";
+import { StreamProgress } from "./dashboard/StreamProgress";
+import { DashboardStreamProvider, useStreamBlock } from "./dashboard/useStream";
 
 // THE OPERATOR'S DASHBOARD, organised by the question an operator brings: is the agent
 // doing its job, why does it hand over and what are people asking, what does it cost, is it healthy,
@@ -70,6 +72,7 @@ function FilterBar({
     { value: "7d", label: t("dashboard.range.7d", "7d") },
     { value: "30d", label: t("dashboard.range.30d", "30d") },
     { value: "90d", label: t("dashboard.range.90d", "90d") },
+    { value: "12m", label: t("dashboard.range.12m", "12mo") },
     { value: "all", label: t("dashboard.range.all", "All") },
     { value: "custom", label: t("dashboard.range.custom", "Dates") },
   ];
@@ -180,6 +183,61 @@ function DashboardSkeleton() {
   );
 }
 
+function DashboardBlocks({
+  filters,
+  win,
+  prev,
+  onFilter,
+  view,
+  onView,
+}: {
+  filters: DashboardFilters;
+  win: Window;
+  prev: Window | null;
+  onFilter: (patch: Partial<DashboardFilters>) => void;
+  view: PerformanceView;
+  onView: (patch: Partial<PerformanceView>) => void;
+}) {
+  const { t } = useTranslation();
+  const kpis = useStreamBlock<Kpis>((f) => f.kpis, ["conv"]);
+  const prevKpis = useStreamBlock<Kpis>((f) => f.kpis, ["conv"], "previous");
+  return (
+    <div className="flex min-w-0 flex-col gap-8">
+      <div id="performance" className="scroll-mt-4 lg:scroll-mt-32">
+        <DataBoundary
+          loading={kpis.loading && !kpis.data}
+          error={kpis.error}
+          errorStatus={kpis.status ?? undefined}
+          onRetry={kpis.reload}
+          loadingLabel={t("dashboard.loading", "Loading metrics…")}
+          errorLabel={metricsErrorMessage(t, kpis.status, kpis.field)}
+          skeleton={<DashboardSkeleton />}
+        >
+          {kpis.data && (
+            <PerformanceSection
+              filters={filters}
+              win={win}
+              prev={prev}
+              kpis={kpis.data}
+              kpisCoverage={kpis.coverage}
+              prevKpis={prevKpis.data}
+              onFilter={onFilter}
+              view={view}
+              onView={onView}
+            />
+          )}
+        </DataBoundary>
+      </div>
+
+      <ReasonsSection win={win} />
+      <CostSection filters={filters} win={win} prev={prev} />
+      <HealthSection filters={filters} win={win} />
+      <AutomationSection />
+      <BreakdownSection onFilter={onFilter} />
+    </div>
+  );
+}
+
 export function DashboardPage() {
   const { t } = useTranslation();
   const [params, setParams] = useSearchParams();
@@ -238,19 +296,7 @@ export function DashboardPage() {
   const win = windowOf(filters);
   const prev = previousWindow(win);
   const query = apiQuery(filters, win);
-  const kpis = useBlock<Kpis>(JSON.stringify(["kpis", query]), async () => {
-    const res = await api.api.v1.metrics.kpis.get({ query });
-    return { data: res.data?.kpis ?? null, ...failureOf(res.error) };
-  });
   const prevQuery = prev ? apiQuery(filters, prev) : null;
-  const prevKpis = useBlock<Kpis>(
-    JSON.stringify(["kpis-prev", prevQuery]),
-    async () => {
-      if (!prevQuery) return { data: null };
-      const res = await api.api.v1.metrics.kpis.get({ query: prevQuery });
-      return { data: res.data?.kpis ?? null };
-    },
-  );
 
   const sections = [
     {
@@ -312,39 +358,17 @@ export function DashboardPage() {
         <SectionNav sections={sections} layout="bar" />
       </div>
 
-      <div className="flex min-w-0 flex-col gap-8">
-        <div id="performance" className="scroll-mt-4 lg:scroll-mt-32">
-          <DataBoundary
-            loading={kpis.loading && !kpis.data}
-            error={kpis.error}
-            errorStatus={kpis.status ?? undefined}
-            onRetry={kpis.reload}
-            loadingLabel={t("dashboard.loading", "Loading metrics…")}
-            errorLabel={metricsErrorMessage(t, kpis.status, kpis.field)}
-            skeleton={<DashboardSkeleton />}
-          >
-            {kpis.data && (
-              <PerformanceSection
-                filters={filters}
-                win={win}
-                prev={prev}
-                kpis={kpis.data}
-                prevKpis={prevKpis.data}
-                onFilter={setFilters}
-                view={perfView}
-                onView={(patch) => setPerfView((v) => ({ ...v, ...patch }))}
-              />
-            )}
-          </DataBoundary>
-        </div>
-        <SharedRequestsProvider>
-          <ReasonsSection filters={filters} win={win} />
-          <CostSection filters={filters} win={win} prev={prev} />
-          <HealthSection filters={filters} win={win} />
-          <AutomationSection filters={filters} win={win} />
-          <BreakdownSection filters={filters} win={win} onFilter={setFilters} />
-        </SharedRequestsProvider>
-      </div>
+      <DashboardStreamProvider query={query} prevQuery={prevQuery}>
+        <StreamProgress />
+        <DashboardBlocks
+          filters={filters}
+          win={win}
+          prev={prev}
+          onFilter={setFilters}
+          view={perfView}
+          onView={(patch) => setPerfView((v) => ({ ...v, ...patch }))}
+        />
+      </DashboardStreamProvider>
     </PageContainer>
   );
 }

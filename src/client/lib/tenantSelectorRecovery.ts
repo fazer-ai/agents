@@ -13,7 +13,13 @@ const RELOADING = "__tenantSelectorReloading";
 
 export function recoverFromRejectedSelector(response: Response): boolean {
   const rejected = response.headers.get(REJECTED_TENANT_SELECTOR_HEADER);
-  if (!rejected || !dropRejectedSelection(rejected)) return false;
+  return rejected ? recoverFromRejectedTenant(rejected) : false;
+}
+
+// The same, for a refusal that arrives inside a response already under way (the dashboard's stream),
+// which names the refused id in its event instead of a header.
+export function recoverFromRejectedTenant(rejected: string): boolean {
+  if (!dropRejectedSelection(rejected)) return false;
   const w = window as unknown as Record<string, boolean | undefined>;
   if (w[RELOADING]) return true;
   w[RELOADING] = true;

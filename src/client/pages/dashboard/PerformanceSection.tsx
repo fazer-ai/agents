@@ -16,19 +16,18 @@ import {
   Select,
   Skeleton,
 } from "@/client/components";
-import { api } from "@/client/lib/api";
+import type { api } from "@/client/lib/api";
 import { formatDuration } from "@/client/lib/duration";
 import { cn } from "@/client/lib/utils";
 import {
   Block,
   type BlockTable,
+  CoverageChip,
   Delta,
-  failureOf,
   SectionHeading,
 } from "./Block";
 import type { ChartRow } from "./charts";
 import {
-  apiQuery,
   type DashboardFilters,
   daysOf,
   drillDownHref,
@@ -37,7 +36,13 @@ import {
   trendPointHref,
   type Window,
 } from "./filters";
-import { useBlock } from "./useBlock";
+import {
+  CoverageBar,
+  isProvisional,
+  PartialBadge,
+  ProvisionalValue,
+} from "./Provisional";
+import { type BlockCoverage, dayState, useStreamBlock } from "./useStream";
 
 const LineTrend = lazy(() =>
   import("./charts").then((m) => ({ default: m.LineTrend })),
@@ -96,6 +101,7 @@ function KpiTile({
   help,
   href,
   className,
+  coverage,
 }: {
   icon: typeof Bot;
   label: string;
@@ -106,6 +112,8 @@ function KpiTile({
   help?: React.ReactNode;
   href?: string;
   className?: string;
+  // The days the figure covers while the page fills: until it is whole, it reads as provisional.
+  coverage?: BlockCoverage | null;
 }) {
   const navigate = useNavigate();
   return (
@@ -118,21 +126,32 @@ function KpiTile({
         {label}
         {help ? <HelpPopover content={help} label={label} /> : null}
       </div>
-      {href ? (
-        <button
-          type="button"
-          onClick={() => navigate(href)}
-          className="self-start font-semibold text-2xl text-text-primary tabular-nums hover:text-accent hover:underline"
-        >
-          {primary}
-        </button>
-      ) : (
-        <p className="font-semibold text-2xl text-text-primary tabular-nums">
-          {primary}
-        </p>
-      )}
+      <div className="flex flex-wrap items-center gap-2">
+        <ProvisionalValue coverage={coverage}>
+          {href ? (
+            <button
+              type="button"
+              onClick={() => navigate(href)}
+              className="self-start font-semibold text-2xl text-text-primary tabular-nums hover:text-accent hover:underline"
+            >
+              {primary}
+            </button>
+          ) : (
+            <p
+              className={cn(
+                "font-semibold text-2xl tabular-nums",
+                !isProvisional(coverage) && "text-text-primary",
+              )}
+            >
+              {primary}
+            </p>
+          )}
+        </ProvisionalValue>
+        <PartialBadge coverage={coverage} />
+      </div>
       <p className="text-text-muted text-xs">{secondary}</p>
       {delta}
+      <CoverageBar coverage={coverage} />
     </Card>
   );
 }
@@ -189,6 +208,7 @@ export function PerformanceSection({
   win,
   prev,
   kpis,
+  kpisCoverage,
   prevKpis,
   onFilter,
   view,
@@ -198,6 +218,7 @@ export function PerformanceSection({
   win: Window;
   prev: Window | null;
   kpis: Kpis;
+  kpisCoverage?: BlockCoverage | null;
   prevKpis: Kpis | null;
   onFilter: (patch: Partial<DashboardFilters>) => void;
   view: PerformanceView;
@@ -216,28 +237,14 @@ export function PerformanceSection({
       maximumFractionDigits: 1,
     }).format(v);
 
-  const query = apiQuery(filters, win);
-  const trend = useBlock(
-    JSON.stringify(["outcomes", query, breakdown]),
-    async () => {
-      const res = await api.api.v1.metrics.outcomes.get({
-        query: {
-          ...query,
-          ...(breakdown === "none" ? {} : { breakdown }),
-        },
-      });
-      return { data: res.data?.trend ?? null, ...failureOf(res.error) };
-    },
+  const trend = useStreamBlock<Trend>(
+    (f) =>
+      breakdown !== "none" && f.trend && f.series
+        ? { ...f.trend, series: f.series[breakdown] }
+        : f.trend,
+    ["conv"],
   );
-  const prevQuery = prev ? apiQuery(filters, prev) : null;
-  const prevTrend = useBlock(
-    JSON.stringify(["outcomes-prev", prevQuery]),
-    async () => {
-      if (!prevQuery) return { data: null };
-      const res = await api.api.v1.metrics.outcomes.get({ query: prevQuery });
-      return { data: res.data?.trend ?? null, ...failureOf(res.error) };
-    },
-  );
+  const prevTrend = useStreamBlock<Trend>((f) => f.trend, ["conv"], "previous");
 
   const metricLabel: Record<Metric, string> = {
     involvement: t("dashboard.kpi.involvement", "Involvement"),
@@ -255,12 +262,17 @@ export function PerformanceSection({
             ? prevKpis.automationRate
             : prevKpis.handoffRate
       : null;
+  // A tile's list is the whole period's, so it links only once every day of it is in: while the
+  // period fills, the count is of fewer days than the list would hold.
+  const whole = !kpisCoverage || kpisCoverage.done;
   const periodHref = (m: Metric) =>
-    drillDownHref(filters, { since: win.since, until: win.until }, DRILL[m]);
+    whole
+      ? drillDownHref(filters, { since: win.since, until: win.until }, DRILL[m])
+      : undefined;
 
   // The chart's rows: every day of the window, the previous period's value at the same position.
   const tr = trend.data;
-  const days = daysOf(win, tr?.days[0]?.date ?? null);
+  const days = daysOf(win, trend.coverage?.first ?? tr?.days[0]?.date ?? null);
   const prevDays = prev ? daysOf(prev) : [];
   const prevByDay = new Map(prevTrend.data?.days.map((d) => [d.date, d]) ?? []);
   const byDay = new Map(tr?.days.map((d) => [d.date, d]) ?? []);
@@ -271,7 +283,11 @@ export function PerformanceSection({
         ).map((m) => ({ key: m, label: metricLabel[m] }))
       : (tr?.series ?? []).map((s) => ({ key: `s${s.key}`, label: s.label }));
   const rows: ChartRow[] = days.map((day, i) => {
-    const row: ChartRow = { day, prevDay: prevDays[i] ?? null };
+    const row: ChartRow = {
+      day,
+      prevDay: prevDays[i] ?? null,
+      state: dayState(trend.coverage, day),
+    };
     if (breakdown === "none") {
       for (const m of [
         "involvement",
@@ -289,6 +305,8 @@ export function PerformanceSection({
         row[`s${s.key}`] = rate(d, metric);
       }
     }
+    // A day without its figures holds its place on the axis, with no point drawn.
+    if (row.state !== "ready") for (const s of seriesDefs) row[s.key] = null;
     return row;
   });
   const compare =
@@ -334,9 +352,12 @@ export function PerformanceSection({
   return (
     <section className="flex flex-col gap-3">
       <div className="flex items-center justify-between">
-        <SectionHeading icon={Target}>
-          {t("dashboard.funnel", "Automation funnel")}
-        </SectionHeading>
+        <div className="flex flex-wrap items-center gap-2">
+          <SectionHeading icon={Target}>
+            {t("dashboard.funnel", "Automation funnel")}
+          </SectionHeading>
+          <CoverageChip coverage={kpisCoverage} />
+        </div>
         <SegmentedControl
           aria-label={t("dashboard.funnelMode", "Show the funnel as")}
           value={mode}
@@ -355,7 +376,8 @@ export function PerformanceSection({
             label={t("dashboard.kpi.total", "Conversations")}
             primary={nf.format(kpis.totalConversations)}
             secondary={t("dashboard.kpi.totalHint", "in the period")}
-            href={drillDownHref(filters, win, "all")}
+            href={whole ? drillDownHref(filters, win, "all") : undefined}
+            coverage={kpisCoverage}
             delta={
               <Delta
                 kind="amount"
@@ -384,6 +406,7 @@ export function PerformanceSection({
               },
             )}
             href={periodHref("involvement")}
+            coverage={kpisCoverage}
             delta={
               <Delta
                 kind="rate"
@@ -416,6 +439,7 @@ export function PerformanceSection({
               "Of the conversations the agent took, the share it closed itself. Over every conversation in the period, the same closings are the automation rate (involvement × resolution), which the funnel over time also draws.",
             )}
             href={periodHref("resolution")}
+            coverage={kpisCoverage}
             delta={
               <Delta
                 kind="rate"
@@ -438,6 +462,7 @@ export function PerformanceSection({
               { handoff: nf.format(kpis.handoff) },
             )}
             href={periodHref("handoff")}
+            coverage={kpisCoverage}
             delta={
               <Delta
                 kind="rate"
@@ -456,6 +481,7 @@ export function PerformanceSection({
             className={KPI_SPANS[4]}
             icon={Timer}
             label={t("dashboard.kpi.firstResponse", "First response")}
+            coverage={kpisCoverage}
             primary={
               formatDuration(kpis.firstResponseSeconds, i18n.language) ??
               "\u2014"
@@ -497,24 +523,35 @@ export function PerformanceSection({
       </div>
 
       <Card className="flex flex-col gap-3">
-        <FunnelBar
-          label={t("dashboard.kpi.total", "Conversations")}
-          count={kpis.totalConversations}
-          total={kpis.totalConversations}
-          nf={nf}
-        />
-        <FunnelBar
-          label={metricLabel.involvement}
-          count={kpis.involved}
-          total={kpis.totalConversations}
-          nf={nf}
-        />
-        <FunnelBar
-          label={metricLabel.resolution}
-          count={kpis.resolvedByBot}
-          total={kpis.totalConversations}
-          nf={nf}
-        />
+        {isProvisional(kpisCoverage) && (
+          <div className="flex justify-end">
+            <PartialBadge coverage={kpisCoverage} />
+          </div>
+        )}
+        <ProvisionalValue
+          coverage={kpisCoverage}
+          className="flex flex-col gap-3"
+        >
+          <FunnelBar
+            label={t("dashboard.kpi.total", "Conversations")}
+            count={kpis.totalConversations}
+            total={kpis.totalConversations}
+            nf={nf}
+          />
+          <FunnelBar
+            label={metricLabel.involvement}
+            count={kpis.involved}
+            total={kpis.totalConversations}
+            nf={nf}
+          />
+          <FunnelBar
+            label={metricLabel.resolution}
+            count={kpis.resolvedByBot}
+            total={kpis.totalConversations}
+            nf={nf}
+          />
+        </ProvisionalValue>
+        <CoverageBar coverage={kpisCoverage} />
         {/* Conversations resolved before this instance started recording WHO closed them cannot be
             attributed either way. Saying so is the difference between a funnel that looks lower for
             a historical window and an operator concluding the agent got worse the day they upgraded. */}
@@ -530,6 +567,7 @@ export function PerformanceSection({
       </Card>
 
       <Block
+        coverage={trend.coverage}
         error={trend.error}
         errorStatus={trend.status}
         errorField={trend.field}
@@ -578,9 +616,9 @@ export function PerformanceSection({
           </>
         }
       >
-        {trend.loading && !tr ? (
+        {trend.loading && !tr && !isProvisional(trend.coverage) ? (
           <Skeleton className="h-64 w-full" />
-        ) : (tr?.days.length ?? 0) === 0 ? (
+        ) : (tr?.days.length ?? 0) === 0 && !isProvisional(trend.coverage) ? (
           <p className="py-8 text-center text-sm text-text-muted">
             {t("dashboard.noData", "No data yet.")}
           </p>

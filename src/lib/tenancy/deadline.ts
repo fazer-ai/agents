@@ -13,6 +13,13 @@ export class DeadlinePassedError extends Error {
   }
 }
 
+const RAW = new Set([
+  "$queryRaw",
+  "$queryRawUnsafe",
+  "$executeRaw",
+  "$executeRawUnsafe",
+]);
+
 export function untilDeadline<D extends object>(db: D, deadline: number): D {
   const setLeft = (
     db as unknown as {
@@ -39,7 +46,7 @@ export function untilDeadline<D extends object>(db: D, deadline: number): D {
     get(target, prop, receiver) {
       const value = Reflect.get(target, prop, receiver);
       if (typeof prop !== "string") return value;
-      if (prop === "$queryRaw" || prop === "$queryRawUnsafe") {
+      if (RAW.has(prop)) {
         return bounded(value as (...a: unknown[]) => unknown, target);
       }
       // A model delegate (`db.llmUsage`): each of its operations is a statement.

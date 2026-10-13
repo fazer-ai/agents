@@ -86,6 +86,14 @@ describe("the window and the period before it", () => {
     expect(w.until.getTime()).toBe(new Date(2026, 9, 7).getTime());
   });
 
+  test("twelve months is the 365 local days ending today, and a link keeps it", () => {
+    const w = windowOf({ ...DEFAULT_FILTERS, range: "12m" }, now);
+    expect(w.firstDay).toBe("2025-10-07");
+    expect(w.lastDay).toBe("2026-10-06");
+    expect(daysOf(w)).toHaveLength(365);
+    expect(readFilters(new URLSearchParams("range=12m")).range).toBe("12m");
+  });
+
   test("the previous period is as long and ends where this one starts", () => {
     const w = windowOf({ ...DEFAULT_FILTERS, range: "7d" }, now);
     const p = previousWindow(w);

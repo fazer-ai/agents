@@ -34,9 +34,18 @@ const analytics = await import("@/modules/analytics/service");
 const getKpis = spyOn(analytics, "getKpis").mockImplementation(
   (async () => kpis) as unknown as typeof analytics.getKpis,
 );
+// The kept days answer an aligned window with the same type; the live reader is the stubbed one.
+const answer = await import("@/modules/analytics/rollup/answer");
+const fromKeptDays = spyOn(answer, "fromKeptDays").mockImplementation(((
+  ..._args: unknown[]
+) =>
+  (
+    _args[4] as () => Promise<unknown>
+  )()) as unknown as typeof answer.fromKeptDays);
 const app = (await import("@/app")).default;
 afterAll(() => {
   getKpis.mockRestore();
+  fromKeptDays.mockRestore();
 });
 
 const admin: MockUserEntity = { ...mockUser, role: "TENANT_ADMIN" };

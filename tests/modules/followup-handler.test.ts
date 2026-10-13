@@ -1181,6 +1181,75 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     expect(await lastFollowUpOf(1722)).not.toBeNull();
   });
 
+  // A customer message between the balloons does not mark where the reply starts: the read goes on
+  // to its first, refused balloon a page further back, and the message is a turn still owed.
+  test("a customer message inside the reply does not cut the read short", async () => {
+    await seedConversation(1723, due());
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: 1723 },
+      data: { lastHandledMessageId: 17230 },
+    });
+    const s = stubClient({
+      page: [
+        customerRow(17230),
+        replyRow(17231, { refused: true, sendId: "reply:k23:a" }),
+        ...Array.from({ length: 5 }, (_, i) => note(17232 + i)),
+        customerRow(17240),
+        ...Array.from({ length: 18 }, (_, i) => note(17241 + i)),
+        replyRow(17260, { sendId: "reply:k23:b" }),
+      ],
+    });
+    expect(await run(1723, s)).toMatchObject({ outcome: "reschedule" });
+    expect(s.notes).toEqual([]);
+    expect(s.sent).toEqual([]);
+  });
+
+  // Imported history attributed to the bot is old, so it is not the agent's newest reply; a template
+  // a person sent after the refusal reached the customer, so it is.
+  test("imported bot history hides nothing, and a person's template supersedes the refusal", async () => {
+    await seedConversation(1724, due());
+    const imported = stubClient({
+      page: [
+        replyRow(17241, { refused: true }),
+        {
+          ...replyRow(17242),
+          content_attributes: { imported: true },
+        },
+      ],
+    });
+    expect(await run(1724, imported)).toEqual({ outcome: "done" });
+    expect(imported.notes.map(([c]) => c)).toEqual([1724]);
+    await seedConversation(1725, due());
+    const template = stubClient({
+      page: [
+        replyRow(17251, { refused: true }),
+        {
+          ...replyRow(17252),
+          message_type: 3,
+          sender: { type: "user", id: 3 },
+        },
+      ],
+    });
+    expect(await run(1725, template)).toEqual({ outcome: "done" });
+    expect(template.notes).toEqual([]);
+    expect(template.sent.length).toBeGreaterThan(0);
+  });
+
+  // A message of an earlier reply marks where the newest one starts, so a long history before it
+  // is not read, and the delivered reply is not held for want of a boundary.
+  test("an earlier reply's message ends the read", async () => {
+    await seedConversation(1726, due());
+    const s = stubClient({
+      page: [
+        ...Array.from({ length: 110 }, (_, i) => note(17260 + i)),
+        replyRow(17380, { sendId: "reply:k26a:a" }),
+        replyRow(17381, { sendId: "reply:k26b:a" }),
+      ],
+    });
+    expect(await run(1726, s)).toEqual({ outcome: "done" });
+    expect(s.sent.length).toBeGreaterThan(0);
+  });
+
   // A message that renders to nothing is never answered, so it is not a turn coming.
   test("a blank customer message after the refusal does not hold the step", async () => {
     await seedConversation(1717, due());

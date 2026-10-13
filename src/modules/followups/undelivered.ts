@@ -78,6 +78,7 @@ export async function lastReplyDelivery(params: {
     m.messageType === "outgoing" &&
     !m.private &&
     !m.isReaction &&
+    !m.imported &&
     m.senderType === "agent_bot" &&
     m.senderId !== null &&
     bots.has(m.senderId);
@@ -114,8 +115,9 @@ export async function lastReplyDelivery(params: {
       break;
     }
     // The newest reply's key. Past that reply, paging goes on until something older than it ends
-    // it: the customer message it answered, or a message of ours from another reply. Notes and
-    // activity in between say nothing about where it starts.
+    // it: a customer message already handled (the one it answered, or older), or a message of ours
+    // from another reply. Notes, activity and a customer message written between its balloons say
+    // nothing about where it starts.
     const key = newest ? replyKeyOf(newest.sendId) : null;
     const found = newest;
     if (
@@ -124,7 +126,10 @@ export async function lastReplyDelivery(params: {
         read.some(
           (m) =>
             m.id < found.id &&
-            (customer(m) || (ours(m) && replyKeyOf(m.sendId) !== key)),
+            ((customer(m) &&
+              params.handledThrough !== null &&
+              m.id <= params.handledThrough) ||
+              (ours(m) && replyKeyOf(m.sendId) !== key)),
         ))
     ) {
       bounded = true;
@@ -161,7 +166,7 @@ export async function lastReplyDelivery(params: {
         m.id > last.id &&
         !m.private &&
         (customer(m) ||
-          (m.messageType === "outgoing" &&
+          ((m.messageType === "outgoing" || m.messageType === "template") &&
             !m.isReaction &&
             !m.imported &&
             !m.externalError &&

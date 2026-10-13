@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { cp, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Glob } from "bun";
 
 // Who is allowed to read a vault secret RAW, and who has to go through a resolver that answers for
@@ -40,56 +43,70 @@ function stripComments(src: string): string {
     .replace(/(^|[^:])\/\/[^\n]*/g, "$1");
 }
 
-async function rawReaders(root: string): Promise<string[]> {
+// Paths come back relative to `root` (`src/...`), the spelling ALLOWED uses, so the same scan reads
+// the checkout and a scratch tree laid out like it.
+async function rawReaders(root = "."): Promise<string[]> {
   const out: string[] = [];
-  for await (const rel of new Glob("**/*.{ts,tsx}").scan(root)) {
-    const path = `${root}/${rel}`;
-    const code = stripComments(await Bun.file(path).text());
-    if (code.includes(RAW_READER)) out.push(path);
+  for await (const rel of new Glob("src/**/*.{ts,tsx}").scan(root)) {
+    const code = stripComments(await Bun.file(join(root, rel)).text());
+    if (code.includes(RAW_READER)) out.push(rel);
   }
   return out.sort();
 }
 
+// The controls below need a file the scan walks, and `src/` is not theirs to write: another test
+// process sweeping `src/` at the same moment lists the file and then reads it after it is gone. So
+// they scan a scratch tree holding the listed readers at their real paths plus the file under test.
+async function scratchTree(extra: Record<string, string>): Promise<string> {
+  const root = await mkdtemp(join(tmpdir(), "credential-reader-fence-"));
+  for (const path of Object.keys(ALLOWED)) await cp(path, join(root, path));
+  for (const [path, text] of Object.entries(extra))
+    await Bun.write(join(root, path), text);
+  return root;
+}
+
 describe("who may read a vault secret without asking what it is for", () => {
   test("every raw reader is listed, and every listing is a raw reader", async () => {
-    const found = await rawReaders("src");
+    const found = await rawReaders();
     // Both directions: an unlisted reader is the defect, and a listing with no reader left is a stale
     // exemption that would silently adopt the next module to take that path.
     expect(new Set(found)).toEqual(new Set(Object.keys(ALLOWED)));
   });
 
   // The fence is only worth its line count if it fails on the thing it describes. The defect is a
-  // module outside the list reading the raw resolver, so the control is exactly that, in a file the
-  // scan actually walks.
+  // module outside the list reading the raw resolver, so the control is exactly that, at a path the
+  // scan walks, next to the listed readers that alone satisfy the fence.
   test("it catches a reader that is not listed", async () => {
-    const path = `src/modules/vault/__fence_probe_${process.pid}.ts`;
-    await Bun.write(
-      path,
-      `import { ${RAW_READER} } from "./service";\nexport const x = ${RAW_READER};\n`,
-    );
+    const path = "src/modules/vault/__fence_probe.ts";
+    const root = await scratchTree({
+      [path]: `import { ${RAW_READER} } from "./service";\nexport const x = ${RAW_READER};\n`,
+    });
     try {
-      const found = await rawReaders("src");
+      const found = await rawReaders(root);
       expect(found).toContain(path);
       expect(new Set(found)).not.toEqual(new Set(Object.keys(ALLOWED)));
+      expect(new Set(found.filter((p) => p !== path))).toEqual(
+        new Set(Object.keys(ALLOWED)),
+      );
     } finally {
-      await Bun.file(path).delete();
+      await rm(root, { recursive: true, force: true });
     }
   });
 
   // The other direction: a file whose only occurrence is a comment must NOT read as a reader, or an
   // exemption granted for a mention keeps standing over the real read somebody adds under it later.
   test("a file that only mentions the resolver in a comment is not a reader", async () => {
-    const path = `src/modules/vault/__fence_mention_${process.pid}.ts`;
-    await Bun.write(
-      path,
-      `// a note about ${RAW_READER} and why this file does not use it\n` +
+    const path = "src/modules/vault/__fence_mention.ts";
+    const root = await scratchTree({
+      [path]:
+        `// a note about ${RAW_READER} and why this file does not use it\n` +
         `/* ${RAW_READER} again, in a block */\n` +
         `export const y = 1;\n`,
-    );
+    });
     try {
-      expect(await rawReaders("src")).not.toContain(path);
+      expect(await rawReaders(root)).not.toContain(path);
     } finally {
-      await Bun.file(path).delete();
+      await rm(root, { recursive: true, force: true });
     }
   });
 

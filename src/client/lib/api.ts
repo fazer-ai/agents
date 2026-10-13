@@ -25,22 +25,29 @@ export const api = treaty<App>(window.location.origin, {
     if (tenantId) headers["X-Tenant-Id"] = tenantId;
     return headers;
   },
-  onResponse: (response) => {
-    // First and unconditional: a 401 and a 429 carry the same `Date` as a 200, and the console's
-    // debug-window deadline is judged against the server's clock, not the browser's.
-    noteServerDate(response);
-    if (response.status === 401) {
-      window.dispatchEvent(new CustomEvent("auth:unauthorized"));
-    } else if (response.status === 429) {
-      // Surfaced as a coalesced global toast (see GlobalApiToasts) so every page gets clear
-      // rate-limit feedback, not just the ones that read err.status into a DataBoundary.
-      window.dispatchEvent(new CustomEvent("api:rate-limited"));
-    } else {
-      // NOTE: keyed on the header the boundary sets and never on the status: a 404 is also how an
-      // agent, a document or a tenant the page NAMED comes back missing, and none of those says
-      // anything about what the browser is holding. `mediaFetch` answers the same header.
-      recoverFromRejectedSelector(response);
-    }
-  },
+  onResponse: onApiResponse,
   parseDate: false,
 });
+
+// What every response says before its body is read. Eden hands this hook a CLONE of the response and
+// reads the original; only the headers and status are read here, so the clone's body is cancelled at
+// once: left open, it buffers every chunk the original receives, and a dashboard stream that runs for
+// minutes would hold all of its snapshots in memory. Cancelling one branch leaves the other reading.
+export function onApiResponse(response: Response): void {
+  response.body?.cancel().catch(() => {});
+  // First and unconditional: a 401 and a 429 carry the same `Date` as a 200, and the console's
+  // debug-window deadline is judged against the server's clock, not the browser's.
+  noteServerDate(response);
+  if (response.status === 401) {
+    window.dispatchEvent(new CustomEvent("auth:unauthorized"));
+  } else if (response.status === 429) {
+    // Surfaced as a coalesced global toast (see GlobalApiToasts) so every page gets clear
+    // rate-limit feedback, not just the ones that read err.status into a DataBoundary.
+    window.dispatchEvent(new CustomEvent("api:rate-limited"));
+  } else {
+    // NOTE: keyed on the header the boundary sets and never on the status: a 404 is also how an
+    // agent, a document or a tenant the page NAMED comes back missing, and none of those says
+    // anything about what the browser is holding. `mediaFetch` answers the same header.
+    recoverFromRejectedSelector(response);
+  }
+}

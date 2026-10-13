@@ -153,13 +153,17 @@ function nudge(
     stillWanted?: () => Promise<boolean>;
     requireLiveBotOwnership?: boolean;
     getConversation?: (c: number) => Promise<unknown>;
-    listContactConversations?: (contactId: number) => Promise<unknown>;
+    listContactConversationsByActivity?: (p: {
+      contactId: number;
+    }) => Promise<unknown>;
   } = {},
 ) {
   const r = recorder();
-  if (opts.listContactConversations)
-    (r.client as unknown as Record<string, unknown>).listContactConversations =
-      opts.listContactConversations;
+  if (opts.listContactConversationsByActivity)
+    (
+      r.client as unknown as Record<string, unknown>
+    ).listContactConversationsByActivity =
+      opts.listContactConversationsByActivity;
   if (opts.getConversation)
     (r.client as unknown as Record<string, unknown>).getConversation =
       opts.getConversation;
@@ -360,18 +364,20 @@ describe.skipIf(!dbUp)("proactive limit", () => {
       data: { contactId: contact.id },
     });
     const listed: number[] = [];
-    const listContactConversations = async (contactId: number) => {
-      listed.push(contactId);
+    const listContactConversationsByActivity = async (p: {
+      contactId: number;
+    }) => {
+      listed.push(p.contactId);
       return [];
     };
 
     resetOtherInboxesCaches();
-    const first = nudge(5120, { listContactConversations });
+    const first = nudge(5120, { listContactConversationsByActivity });
     expect(await first.run).toBe("messaged");
     expect(listed).toEqual([512]);
 
     resetOtherInboxesCaches();
-    const refused = nudge(5120, { listContactConversations });
+    const refused = nudge(5120, { listContactConversationsByActivity });
     expect(await refused.run).toBe("silent");
     expect(listed).toEqual([512]);
   });

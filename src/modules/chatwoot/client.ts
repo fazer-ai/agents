@@ -1911,6 +1911,56 @@ export class ChatwootClient {
     });
   }
 
+  // The contact's conversations in the given inboxes active since `activeSince`, newest activity
+  // first, through the conversation filter: the contact listing answers the 25 most recently CREATED,
+  // so a long-lived conversation still in use falls off it. The filter compares `last_activity_at`
+  // with a whole date, so the bound sent is the day before `activeSince` and the caller cuts at the
+  // instant. First page only, which the filter sorts by `last_activity_at` desc in every fork version.
+  async listContactConversationsByActivity(p: {
+    contactId: number;
+    inboxIds: readonly number[];
+    activeSince: Date;
+  }): Promise<ChatwootConversationRef[]> {
+    const dayBefore = new Date(p.activeSince.getTime() - 86_400_000)
+      .toISOString()
+      .slice(0, 10);
+    const res = (await this.request(
+      this.config.adminToken,
+      "POST",
+      "/conversations/filter",
+      {
+        sort_by: "last_activity_at_desc",
+        payload: [
+          {
+            attribute_key: "contact_id",
+            filter_operator: "equal_to",
+            values: [p.contactId],
+            query_operator: "and",
+          },
+          {
+            attribute_key: "inbox_id",
+            filter_operator: "equal_to",
+            values: [...p.inboxIds],
+            query_operator: "and",
+          },
+          {
+            attribute_key: "last_activity_at",
+            filter_operator: "is_greater_than",
+            values: [dayBefore],
+            query_operator: null,
+          },
+        ],
+      },
+    )) as { payload?: unknown } | null;
+    if (!Array.isArray(res?.payload)) {
+      throw new Error("POST /conversations/filter: no payload array");
+    }
+    return res.payload.flatMap((row) => {
+      const ref = parseConversationRef(row);
+      return ref ? [ref] : [];
+    });
+  }
+
   // Opens (or, when the inbox is set to continue the contact's open case, continues) a conversation
   // for the contact in the inbox. No message rides along: on a continued case the fork would post it
   // into the existing thread, and the caller decides whether an opening message is owed.

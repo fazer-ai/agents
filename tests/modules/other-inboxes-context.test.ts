@@ -120,13 +120,50 @@ function fakeChatwoot(
     conversationFails?: boolean;
   } = {},
 ) {
-  const calls = { listing: 0, messages: [] as number[] };
+  const calls = {
+    listing: 0,
+    messages: [] as number[],
+    asked: [] as { inboxIds: readonly number[]; activeSince: Date }[],
+  };
+  const refs = () => convs.map(({ messages: _m, ...ref }) => ref);
   const client = {
+    // Chatwoot's contact listing: the 25 conversations created last (ids rise with creation).
     async listContactConversations(contactId: number) {
       calls.listing += 1;
       if (opts.listingFails) throw new Error("HTTP 500");
       expect(contactId).toBe(CONTACT);
-      return convs.map(({ messages: _m, ...ref }) => ref);
+      return refs()
+        .sort((a, b) => b.id - a.id)
+        .slice(0, 25);
+    },
+    // The conversation filter: contact, inboxes and `last_activity_at` past a whole date, newest
+    // activity first, one page of 25.
+    async listContactConversationsByActivity(p: {
+      contactId: number;
+      inboxIds: readonly number[];
+      activeSince: Date;
+    }) {
+      calls.listing += 1;
+      calls.asked.push({ inboxIds: p.inboxIds, activeSince: p.activeSince });
+      if (opts.listingFails) throw new Error("HTTP 500");
+      expect(p.contactId).toBe(CONTACT);
+      const day = new Date(p.activeSince.getTime() - DAY)
+        .toISOString()
+        .slice(0, 10);
+      const bound = Date.parse(`${day}T00:00:00Z`);
+      return refs()
+        .filter(
+          (r) =>
+            r.inboxId !== null &&
+            p.inboxIds.includes(r.inboxId) &&
+            (r.lastActivityAt?.getTime() ?? 0) > bound,
+        )
+        .sort(
+          (a, b) =>
+            (b.lastActivityAt?.getTime() ?? 0) -
+              (a.lastActivityAt?.getTime() ?? 0) || b.id - a.id,
+        )
+        .slice(0, 25);
     },
     async getConversation(conversationId: number) {
       if (opts.conversationFails) throw new Error("HTTP 500");
@@ -1382,6 +1419,66 @@ describe.skipIf(!dbUp)("the contact's conversations in other inboxes", () => {
     const late = await run(config(), cw, { now: NOW + 6 * 60_000 });
     expect(cw.calls.listing).toBe(2);
     expect(late.systemPrompt).toContain("TOKEN-B1");
+  });
+
+  test("the listing is read again inside the five minutes when the picked inboxes or the window change", async () => {
+    const cw = fakeChatwoot([conv(10, INBOX_B, 1, [incoming(1, "TOKEN-B1")])]);
+    await run(config(), cw, { now: NOW });
+    const both = [
+      { instanceId: Number(instanceId), inboxId: INBOX_B },
+      { instanceId: Number(instanceId), inboxId: INBOX_D },
+    ];
+    await run(config({ inboxes: both }), cw, { now: NOW + 60_000 });
+    await run(config({ lookbackDays: 7 }), cw, { now: NOW + 120_000 });
+    expect(cw.calls.listing).toBe(3);
+  });
+
+  // A contact with more than 25 conversations: the long-lived one, created first, is the most active.
+  // Chatwoot's contact listing answers the 25 created last, which leaves it out.
+  test("a recently active conversation is seen when the contact has 25 or more created after it", async () => {
+    const both = [
+      { instanceId: Number(instanceId), inboxId: INBOX_B },
+      { instanceId: Number(instanceId), inboxId: INBOX_D },
+    ];
+    const convs = Array.from({ length: 30 }, (_, i) =>
+      conv(41 + i, [INBOX_B, INBOX_C, INBOX_D][i % 3] as number, i * 2, [
+        incoming(300 + i, `TOKEN-T${41 + i}`),
+      ]),
+    );
+    const cw = fakeChatwoot(convs);
+    const out = await run(
+      config({ inboxes: both, maxConversations: 3, lookbackDays: 30 }),
+      cw,
+    );
+    const seen = [...block(out.systemPrompt).matchAll(/TOKEN-T(\d+)/g)].map(
+      (m) => Number(m[1]),
+    );
+    expect(seen).toEqual([41, 43, 44]);
+    expect(cw.calls.asked).toEqual([
+      { inboxIds: [INBOX_B, INBOX_D], activeSince: new Date(NOW - 30 * DAY) },
+    ]);
+  });
+
+  test("the listing asks only the picked inboxes other than the current one", async () => {
+    const withA = [
+      { instanceId: Number(instanceId), inboxId: INBOX_D },
+      { instanceId: Number(instanceId), inboxId: INBOX_A },
+      { instanceId: Number(instanceId), inboxId: INBOX_B },
+    ];
+    const cw = fakeChatwoot([conv(10, INBOX_B, 1, [incoming(1, "TOKEN-B1")])]);
+    await run(config({ inboxes: withA }), cw);
+    expect(cw.calls.asked.map((a) => a.inboxIds)).toEqual([[INBOX_B, INBOX_D]]);
+
+    resetOtherInboxesCaches();
+    const onlyA = fakeChatwoot([conv(10, INBOX_B, 1, [])]);
+    const out = await run(
+      config({
+        inboxes: [{ instanceId: Number(instanceId), inboxId: INBOX_A }],
+      }),
+      onlyA,
+    );
+    expect(onlyA.calls.listing).toBe(0);
+    expect(out.otherInboxesReport?.included).toBe(0);
   });
 
   test("a failed read leaves the block out and reports it, with no message text", async () => {

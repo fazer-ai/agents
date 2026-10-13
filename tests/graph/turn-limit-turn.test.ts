@@ -619,7 +619,9 @@ describe.skipIf(!dbUp)("the per-conversation turn limit", () => {
       ]);
       const refused = { ...newCalls(), methods: [] as string[] };
       expect(await turn(8290, refused)).toBe("blocked");
-      expect(refused.methods).not.toContain("listContactConversations");
+      expect(refused.methods).not.toContain(
+        "listContactConversationsByActivity",
+      );
 
       // The same agent and contact under the limit does read them: the assertion above is the gate's.
       const under = await seedConversation(8291);
@@ -629,7 +631,7 @@ describe.skipIf(!dbUp)("the per-conversation turn limit", () => {
       });
       const answered = { ...newCalls(), methods: [] as string[] };
       expect(await turn(8291, answered)).toBe("posted");
-      expect(answered.methods).toContain("listContactConversations");
+      expect(answered.methods).toContain("listContactConversationsByActivity");
     } finally {
       await suDb.agent.update({
         where: { id: limitedAgentId },

@@ -206,6 +206,12 @@ export async function withOtherInboxesContext(
     otherInboxesReport: report,
   });
 
+  const inboxIds = [...selected]
+    .filter((id) => id !== cfg.chatwootInboxId)
+    .sort((a, b) => a - b);
+  if (inboxIds.length === 0) return withReport(cfg);
+  const since = now() - settings.lookbackDays * 86_400_000;
+
   let client: ChatwootClient;
   let refs: ChatwootConversationRef[];
   try {
@@ -213,7 +219,7 @@ export async function withOtherInboxesContext(
       args.tenantId,
       args.instanceId,
     );
-    const listingKey = `${args.tenantId}:${args.instanceId}:${cfg.agentId}:${contactId}`;
+    const listingKey = `${args.tenantId}:${args.instanceId}:${cfg.agentId}:${contactId}:${inboxIds.join(",")}:${settings.lookbackDays}`;
     const cached = listingCache.get(listingKey);
     if (cached && now() - cached.at < LISTING_TTL_MS) {
       refs = cached.refs;
@@ -222,7 +228,11 @@ export async function withOtherInboxesContext(
       if (!pending) {
         const at = now();
         pending = client
-          .listContactConversations(contactId)
+          .listContactConversationsByActivity({
+            contactId,
+            inboxIds,
+            activeSince: new Date(since),
+          })
           .then((r) => {
             remember(listingCache, listingKey, { at, refs: r });
             return r;
@@ -237,7 +247,6 @@ export async function withOtherInboxesContext(
     return withReport(cfg);
   }
 
-  const since = now() - settings.lookbackDays * 86_400_000;
   const chosen = refs
     .filter(
       (r): r is ChatwootConversationRef & { lastActivityAt: Date } =>

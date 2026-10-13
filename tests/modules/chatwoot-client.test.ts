@@ -72,6 +72,81 @@ describe("ChatwootClient", () => {
     expect(calls[2]?.headers["api-access-token"]).toBe("ADMIN_TOK");
   });
 
+  // The filter compares `last_activity_at` with a whole date, so the bound is the day BEFORE the
+  // instant asked for: a conversation active on that same day past the instant is still returned.
+  test("listContactConversationsByActivity asks the filter for the contact's picked inboxes since the day before", async () => {
+    const { fetchImpl, calls } = stub(200, {
+      payload: [
+        { id: 31, inbox_id: 2, status: "open", last_activity_at: 1791800000 },
+        {
+          id: 7,
+          inbox_id: 3,
+          status: "resolved",
+          last_activity_at: 1791700000,
+        },
+      ],
+    });
+    const client = await createChatwootClient(baseConfig, {
+      fetchImpl,
+      assertSafe: passthroughSafe,
+    });
+    const refs = await client.listContactConversationsByActivity({
+      contactId: 77,
+      inboxIds: [2, 3],
+      activeSince: new Date("2026-09-12T00:30:00Z"),
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.method).toBe("POST");
+    expect(calls[0]?.url).toBe(
+      "https://chat.example.com/api/v1/accounts/5/conversations/filter",
+    );
+    expect(calls[0]?.headers["api-access-token"]).toBe("ADMIN_TOK");
+    expect(calls[0]?.body).toEqual({
+      sort_by: "last_activity_at_desc",
+      payload: [
+        {
+          attribute_key: "contact_id",
+          filter_operator: "equal_to",
+          values: [77],
+          query_operator: "and",
+        },
+        {
+          attribute_key: "inbox_id",
+          filter_operator: "equal_to",
+          values: [2, 3],
+          query_operator: "and",
+        },
+        {
+          attribute_key: "last_activity_at",
+          filter_operator: "is_greater_than",
+          values: ["2026-09-11"],
+          query_operator: null,
+        },
+      ],
+    });
+    expect(refs.map((r) => [r.id, r.inboxId])).toEqual([
+      [31, 2],
+      [7, 3],
+    ]);
+    expect(refs[0]?.lastActivityAt?.getTime()).toBe(1791800000 * 1000);
+  });
+
+  // A filter answer without a list is not "no conversations": the block reports the listing unread.
+  test("listContactConversationsByActivity throws on an answer with no payload array", async () => {
+    const { fetchImpl } = stub(200, { meta: {} });
+    const client = await createChatwootClient(baseConfig, {
+      fetchImpl,
+      assertSafe: passthroughSafe,
+    });
+    await expect(
+      client.listContactConversationsByActivity({
+        contactId: 77,
+        inboxIds: [2],
+        activeSince: new Date("2026-09-12T00:30:00Z"),
+      }),
+    ).rejects.toThrow("no payload array");
+  });
+
   test("sendMessage uses the bot token and the right URL/body", async () => {
     const { fetchImpl, calls } = stub(200, { id: 1 });
     const client = await createChatwootClient(baseConfig, {

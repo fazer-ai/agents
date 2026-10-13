@@ -385,6 +385,23 @@ describe("the clone's deadlines", () => {
   });
 });
 
+// The start time is the ownership token, so it has to read the same from every process that compares
+// it: a run, a nested run and the detached reaper may each carry a different `TZ`.
+test("a process's start time reads the same whatever TZ the caller has", async () => {
+  const saved = process.env.TZ;
+  try {
+    process.env.TZ = "Asia/Tokyo";
+    const tokyo = await processStart(process.pid);
+    process.env.TZ = "America/Sao_Paulo";
+    const saoPaulo = await processStart(process.pid);
+    expect(tokyo).not.toBeNull();
+    expect(saoPaulo).toBe(tokyo);
+  } finally {
+    if (saved === undefined) delete process.env.TZ;
+    else process.env.TZ = saved;
+  }
+});
+
 // A WORKER WITH NO TEMPLATE TO COPY FAILS ITS FILE AT ONCE. Without the checkout's database every
 // file of every worker would otherwise walk the whole slow path (process table, lock, reap) only to
 // learn that again at CREATE, and a run of a thousand files does that a thousand times.
@@ -421,7 +438,7 @@ describe("what a worker decides before taking the lock", () => {
   });
 
   test("a copy whose pids match but whose owner started at another time is not its own", () => {
-    // NOTE: after a reboot the kernel can hand a dead run's pids to the new run; only the start time
+    // After a reboot the kernel can hand a dead run's pids to the new run; only the start time
     // tells them apart, and the slow path is where the leftover is dropped.
     const recycled = alive({ 100: "Mon Oct 13 09:00:00 2026" });
     expect(fastPath({ template: true, clone: owner({}) }, me, recycled)).toBe(

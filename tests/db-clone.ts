@@ -154,10 +154,12 @@ function noTemplate(template: string): Error {
 }
 
 // `ps` runs through an awaited `Bun.spawn`: a `spawnSync` inside a `bun test --parallel` worker can
-// stop returning and spin at full CPU, which leaves the run waiting on that worker forever.
+// stop returning and spin at full CPU, which leaves the run waiting on that worker forever. The locale
+// and the zone are fixed because `lstart` is the ownership token: two runs, or a run and its detached
+// reaper, with different `TZ` would read the same start as two different processes.
 async function ps(args: string[]): Promise<string | null> {
   const proc = Bun.spawn(["ps", ...args], {
-    env: { ...process.env, LC_ALL: "C" },
+    env: { ...process.env, LC_ALL: "C", TZ: "UTC" },
     stdout: "pipe",
     stderr: "ignore",
   });

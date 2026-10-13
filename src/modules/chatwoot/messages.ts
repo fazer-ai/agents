@@ -111,6 +111,10 @@ export interface ChatwootMessageRow {
   // `CHATWOOT_PLATFORM_SENT_KEY`: the platform sent this on the admin token, so the user Chatwoot
   // names as sender is not a person typing. Optional because a hand-built row carries no mark.
   platformSent?: boolean;
+  // `content_attributes.external_error`: what the channel said when it refused this message. Chatwoot
+  // writes it only while the message is `failed`, so its presence is the refusal. Optional because a
+  // hand-built row carries none.
+  externalError?: string | null;
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -345,6 +349,9 @@ export function parseChatwootMessages(raw: unknown): ChatwootMessageRow[] {
           ? ca.external_sender_name
           : null,
       imported: ca?.imported === true,
+      ...(typeof ca?.external_error === "string" && ca.external_error.trim()
+        ? { externalError: ca.external_error }
+        : {}),
       // Read as a STRING and nothing else. The bag is shared with Chatwoot's own keys and with
       // whatever an operator's automation writes there, so a value of another shape is somebody
       // else's key that happens to collide, not a name this build wrote.

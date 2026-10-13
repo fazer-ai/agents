@@ -19,6 +19,7 @@ import {
   parseSchedule,
 } from "@/modules/business-hours/hours";
 import { readChannelRedirectConfig } from "@/modules/channel-redirect/service";
+import { announceFailedTurn } from "@/modules/conversations/failure-note";
 import { readDebugModes } from "@/modules/flowlog/debug-mode";
 import { emitFlowEvent } from "@/modules/flowlog/service";
 import { appointmentPauseApplies } from "@/modules/followups/appointment-pause";
@@ -50,6 +51,7 @@ import {
 } from "./settings";
 import { snoozedFollowUpHandler, sweepSnoozedFollowUps } from "./snoozed";
 import { readSnoozedFollowUpConfig } from "./snoozed-settings";
+import { type LastReplyDelivery, lastReplyDelivery } from "./undelivered";
 
 // Follow-up handlers for the scheduler. The SWEEP is coarse: it enqueues a FOLLOWUP per inactive,
 // bot-handled conversation and re-arms itself. The FOLLOWUP is precise: it re-checks the gate
@@ -445,6 +447,22 @@ export function followUpConfigVersion(
   return `${agentUpdatedAt.getTime()}:${hoursUpdatedAt?.getTime() ?? 0}`;
 }
 
+// The Chatwoot ids of the agent's own bots on this instance.
+async function agentBotIdsOf(
+  base: PrismaClient,
+  tenantId: bigint,
+  instanceId: bigint,
+  agentId: bigint,
+): Promise<number[]> {
+  const bots = await runScopedOn(base, sysCtx(tenantId), (db) =>
+    db.chatwootAgentBot.findMany({
+      where: { chatwootInstanceId: instanceId, agentId },
+      select: { chatwootAgentBotId: true },
+    }),
+  );
+  return bots.map((b) => b.chatwootAgentBotId);
+}
+
 // A deferral that does not depend on the configuration (a retry backoff, a turn in flight, a live
 // decline) says so, and is kept whatever the configuration does.
 const BACKOFF_DEFERRAL = "backoff";
@@ -772,6 +790,88 @@ export async function followUpHandler(
       runAt: new Date(Date.now() + IN_FLIGHT_BACKOFF_MS),
       payload: { ...job.payload, deferredUnder: BACKOFF_DEFERRAL },
     };
+  }
+
+  // The reply the customer is silent about, asked before any model spend. One the channel refused
+  // never reached them, so a nudge about it is a question about nothing: while its resend is queued
+  // the step waits for it, and once nothing more will send it the conversation goes to the team, as
+  // a turn the agent could not complete does. docs/tts.md, "An inactivity follow-up never nudges".
+  let delivery: LastReplyDelivery;
+  try {
+    delivery = await lastReplyDelivery({
+      tenantId,
+      instanceId,
+      chatwootConversationId: conversationId,
+      agentBotIds: await agentBotIdsOf(base, tenantId, instanceId, ctx.agentId),
+      base,
+      ...(deps?.makeClient ? { deps: { makeClient: deps.makeClient } } : {}),
+    });
+  } catch (e) {
+    logger.warn(
+      "followUpHandler: could not tell whether the last reply arrived (thread=%s): %s",
+      threadId,
+      e instanceof Error ? e.message : String(e),
+    );
+    return {
+      outcome: "reschedule",
+      runAt: new Date(Date.now() + IN_FLIGHT_BACKOFF_MS),
+      payload: { ...job.payload, deferredUnder: BACKOFF_DEFERRAL },
+    };
+  }
+  if (delivery.state === "resend_pending") {
+    return {
+      outcome: "reschedule",
+      runAt: delivery.until,
+      payload: { ...job.payload, deferredUnder: BACKOFF_DEFERRAL },
+    };
+  }
+  if (delivery.state === "undelivered") {
+    const lost = delivery;
+    await announceFailedTurn({
+      tenantId,
+      instanceId,
+      chatwootConversationId: conversationId,
+      // NOTE: asked again right before the hand-over: a resend or a new reply that landed since is
+      // the conversation answered after all.
+      assess: async () => {
+        try {
+          const again = await lastReplyDelivery({
+            tenantId,
+            instanceId,
+            chatwootConversationId: conversationId,
+            agentBotIds: await agentBotIdsOf(
+              base,
+              tenantId,
+              instanceId,
+              ctx.agentId,
+            ),
+            base,
+            ...(deps?.makeClient
+              ? { deps: { makeClient: deps.makeClient } }
+              : {}),
+          });
+          return {
+            path: "direct",
+            fence:
+              again.state === "undelivered" &&
+              again.messageId === lost.messageId
+                ? "clear"
+                : "superseded",
+          };
+        } catch {
+          return { path: "direct", fence: "unknown" };
+        }
+      },
+      error: new Error(
+        `the channel refused the agent's last reply (code ${lost.code ?? "unknown"}) and it was not resent`,
+      ),
+      base,
+      ...(deps?.makeClient ? { deps: { makeClient: deps.makeClient } } : {}),
+    });
+    // NOTE: the episode is spent whatever the hand-over answered: a nudge about this reply is never
+    // right, and the stamp keeps the sweep from arming it again until the customer speaks.
+    await stampUnlessRetired();
+    return { outcome: "done" };
   }
 
   const idleMin = lastEventAt

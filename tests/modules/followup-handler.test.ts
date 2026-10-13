@@ -11,6 +11,7 @@ import {
   cancelAppointment,
   hasLiveAppointment,
 } from "@/modules/appointments/reminders";
+import { mediaFallbackDedupeKey } from "@/modules/chatwoot/channel-failure";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import {
   ensureAllTenantSweeps,
@@ -61,7 +62,14 @@ function fakeModel() {
   return new FakeListChatModel({ responses: [REPLY] });
 }
 
-function stubClient(over: { liveMeta?: Record<string, unknown> } = {}) {
+function stubClient(
+  over: {
+    liveMeta?: Record<string, unknown>;
+    // The latest page of the conversation, which the handler reads to tell whether the last reply
+    // arrived. Empty by default: no reply of ours on it reads as nothing refused.
+    page?: Record<string, unknown>[];
+  } = {},
+) {
   const sent: Array<[number, string]> = [];
   const notes: Array<[number, string]> = [];
   const labelSets: string[][] = [];
@@ -75,6 +83,7 @@ function stubClient(over: { liveMeta?: Record<string, unknown> } = {}) {
       status: "pending",
       meta: over.liveMeta ?? {},
     }),
+    getMessages: async () => ({ payload: over.page ?? [] }),
     sendMessage: async (c: number, t: string) => {
       sent.push([c, t]);
       return {};
@@ -751,6 +760,125 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
         data: { mode: "production" },
       });
     }
+  });
+
+  // The agent's reply as it sits on the latest page: refused by the channel when `refused` is set.
+  function replyRow(
+    id: number,
+    opts: { refused?: boolean; botId?: number } = {},
+  ) {
+    return {
+      id,
+      content: "O plano custa R$ 89",
+      message_type: 1,
+      private: false,
+      created_at: Math.floor(Date.now() / 1000) - 600,
+      sender: { type: "agent_bot", id: opts.botId ?? 5 },
+      content_attributes: opts.refused
+        ? { external_error: "(#131000) Something went wrong" }
+        : {},
+    };
+  }
+  const run = (convId: number, s: ReturnType<typeof stubClient>) =>
+    followUpHandler(jobFor(convId), appDb, {
+      makeModel: fakeModel,
+      makeClient: s.makeClient,
+      checkpointer: new MemorySaver(),
+      persistUsage: async () => {},
+    });
+  const due = () => ({
+    lastInboundAt: new Date(Date.now() - 20 * 60_000),
+    lastFollowUpAt: null,
+  });
+
+  // The production case: the reply never reached the customer and nothing will resend it, so a nudge
+  // would ask about an answer they never saw. The conversation goes to the team instead.
+  test("a reply the channel refused, with no resend coming, is handed over instead of nudged", async () => {
+    await seedConversation(1700, due());
+    const s = stubClient({ page: [replyRow(17001, { refused: true })] });
+    expect(await run(1700, s)).toEqual({ outcome: "done" });
+    expect(s.sent).toEqual([]);
+    expect(s.notes.map(([c]) => c)).toEqual([1700]);
+    expect(s.notes[0]?.[1]).toContain("131000");
+    // The episode is spent: the sweep does not arm it again until the customer speaks.
+    expect(await lastFollowUpOf(1700)).not.toBeNull();
+  });
+
+  // A resend that already ran and still left the reply refused (skipped, or refused itself) is no
+  // longer coming; a note the bot left after the reply is not something the customer received.
+  test("a spent resend job and a later private note still read as a reply that did not arrive", async () => {
+    await seedConversation(1705, due());
+    await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "MEDIA_TEXT_FALLBACK",
+        dedupeKey: mediaFallbackDedupeKey(instanceId, 17051),
+        status: "DONE",
+        runAt: new Date(Date.now() - 60_000),
+        payload: {},
+      },
+    });
+    const s = stubClient({
+      page: [
+        replyRow(17051, { refused: true }),
+        { ...replyRow(17052), private: true },
+      ],
+    });
+    expect(await run(1705, s)).toEqual({ outcome: "done" });
+    expect(s.sent).toEqual([]);
+    expect(s.notes.map(([c]) => c)).toEqual([1705]);
+  });
+
+  test("while the refused reply's resend is queued, the step waits for it", async () => {
+    await seedConversation(1701, due());
+    const runAt = new Date(Date.now() + 3 * 60_000);
+    await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "MEDIA_TEXT_FALLBACK",
+        dedupeKey: mediaFallbackDedupeKey(instanceId, 17011),
+        status: "PENDING",
+        runAt,
+        payload: {},
+      },
+    });
+    const s = stubClient({ page: [replyRow(17011, { refused: true })] });
+    const result = await run(1701, s);
+    expect(result).toMatchObject({ outcome: "reschedule" });
+    expect((result as { runAt: Date }).runAt.getTime()).toBeGreaterThan(
+      runAt.getTime(),
+    );
+    expect(s.sent).toEqual([]);
+    expect(s.notes).toEqual([]);
+    expect(await lastFollowUpOf(1701)).toBeNull();
+  });
+
+  // The resend landed after the refusal: it is the newest reply, and the follow-up is the usual one.
+  // So is a refusal on another bot's message, which is not this agent's reply.
+  test("a delivered resend, or another bot's refused message, leaves the follow-up as it is", async () => {
+    await seedConversation(1702, due());
+    const resent = stubClient({
+      page: [replyRow(17021, { refused: true }), replyRow(17022)],
+    });
+    expect(await run(1702, resent)).toEqual({ outcome: "done" });
+    expect(resent.sent.length).toBeGreaterThan(0);
+    await seedConversation(1703, due());
+    const other = stubClient({
+      page: [replyRow(17031), replyRow(17032, { refused: true, botId: 99 })],
+    });
+    expect(await run(1703, other)).toEqual({ outcome: "done" });
+    expect(other.sent.length).toBeGreaterThan(0);
+  });
+
+  test("a page that does not read holds the step instead of nudging", async () => {
+    await seedConversation(1704, due());
+    const s = stubClient();
+    const client = await s.makeClient();
+    (client as unknown as { getMessages: () => Promise<unknown> }).getMessages =
+      async () => ({});
+    const result = await run(1704, s);
+    expect(result).toMatchObject({ outcome: "reschedule" });
+    expect(s.sent).toEqual([]);
   });
 
   test("(l) backs off (reschedules) instead of nudging while a turn is in flight", async () => {

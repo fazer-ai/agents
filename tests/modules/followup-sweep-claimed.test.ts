@@ -78,6 +78,7 @@ function stubClient(duranteOPasso0: () => Promise<void>) {
   let currentLabels: string[] = [];
   let hookRan = false;
   const client = {
+    getMessages: async () => ({ payload: [] }),
     getConversation: async (c: number) => {
       if (!hookRan) {
         hookRan = true;

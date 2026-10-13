@@ -99,6 +99,7 @@ function keyOf(convId: number): string {
 function stubClient(meta: Record<string, unknown> = {}) {
   const sent: string[] = [];
   const client = {
+    getMessages: async () => ({ payload: [] }),
     getConversation: async (c: number) => ({
       id: c,
       status: "pending",

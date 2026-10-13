@@ -80,6 +80,7 @@ function stubClient() {
   const resolved: number[] = [];
   let currentLabels: string[] = [];
   const client = {
+    getMessages: async () => ({ payload: [] }),
     getConversation: async (c: number) => ({
       id: c,
       status: "pending",

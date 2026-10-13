@@ -155,6 +155,7 @@ function stubClient(liveState: () => unknown) {
   const sent: Array<[number, string]> = [];
   const notes: Array<[number, string]> = [];
   const client = {
+    getMessages: async () => ({ payload: [] }),
     getConversation: async (_c: number) => liveState(),
     sendMessage: async (c: number, t: string) => {
       sent.push([c, t]);
@@ -1420,6 +1421,12 @@ describe.skipIf(!dbUp)("follow-up em conversa resolvida — guardrails", () => {
       });
       if (method === "GET" && /\/conversations\/\d+$/.test(url)) {
         return new Response(JSON.stringify(conversationBody()), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (method === "GET" && /\/conversations\/\d+\/messages$/.test(url)) {
+        return new Response(JSON.stringify({ payload: [] }), {
           status: 200,
           headers: { "content-type": "application/json" },
         });

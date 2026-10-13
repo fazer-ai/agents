@@ -659,7 +659,7 @@ export async function sweepStrandedDeliveries(
     groups,
     base,
     counts,
-    Date.now() + (params.readBudgetMs ?? SWEEP_READ_BUDGET_MS),
+    readClock(params.deps) + (params.readBudgetMs ?? SWEEP_READ_BUDGET_MS),
     params.deps,
   );
   return counts;
@@ -736,7 +736,10 @@ export const CONVERSATION_STATE_READS = 3;
 
 export interface ConversationStateDeps {
   makeClient?: () => Promise<ChatwootClient>;
+  // The clock the read budget is measured on.
+  clock?: () => number;
 }
+const readClock = (deps?: ConversationStateDeps) => (deps?.clock ?? Date.now)();
 
 type LiveRead =
   | {
@@ -878,7 +881,7 @@ async function settleConversationEvents(
     // The budget bounds network reads only: a failure already known for the instance still advances
     // every one of its rows, or a timeout that outran the budget would leave all but the first row
     // where they were, holding the scan pass after pass.
-    if (!down.has(instanceKey) && Date.now() >= readUntil) continue;
+    if (!down.has(instanceKey) && readClock(deps) >= readUntil) continue;
     const read: LiveRead = down.has(instanceKey)
       ? { kind: "unreadable", err: down.get(instanceKey) }
       : await readLive(g.tenantId, g.instanceId, g.conversationId, base, deps);
@@ -965,7 +968,8 @@ export async function reconcileUnconfirmedCloses(
   const { tenantId, base } = params;
   const now = params.now ?? new Date();
   const cutoff = new Date(now.getTime() - STALE_AFTER_MS);
-  const readUntil = Date.now() + (params.readBudgetMs ?? SWEEP_READ_BUDGET_MS);
+  const readUntil =
+    readClock(params.deps) + (params.readBudgetMs ?? SWEEP_READ_BUDGET_MS);
   const rows = await runScopedOn(base, sysCtx(tenantId), (db) =>
     db.conversation.findMany({
       where: {
@@ -1002,7 +1006,7 @@ export async function reconcileUnconfirmedCloses(
       await postpone(conv.id);
       continue;
     }
-    if (Date.now() >= readUntil) continue;
+    if (readClock(params.deps) >= readUntil) continue;
     const read = await readLive(
       tenantId,
       conv.chatwootInstanceId,
@@ -1132,7 +1136,7 @@ export async function sweepDeadClaims(
     groups,
     base,
     counts,
-    Date.now() + (params.readBudgetMs ?? DEAD_CLAIM_READ_BUDGET_MS),
+    readClock(params.deps) + (params.readBudgetMs ?? DEAD_CLAIM_READ_BUDGET_MS),
     params.deps,
   );
   return counts;

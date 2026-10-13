@@ -352,12 +352,15 @@ describe.skipIf(!dbUp)(
       live.set(9017, 503);
       live.set(9018, 503);
       // The read itself takes longer than the whole budget, as a request timeout would.
-      onRead = () => new Promise((r) => setTimeout(r, 60));
+      let t = 0;
+      onRead = async () => {
+        t += 15_000;
+      };
       await sweepStrandedDeliveries({
         tenantId,
         base: appDb,
-        deps,
-        readBudgetMs: 30,
+        deps: { ...deps, clock: () => t },
+        readBudgetMs: 10_000,
       });
       expect(reads).toHaveLength(1);
       expect((await ledger(a)).attempts).toBe(1);

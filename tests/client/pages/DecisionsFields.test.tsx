@@ -1047,6 +1047,7 @@ describe("a rule on a custom tool", () => {
           { name: "motivo", type: "string" as const, required: true },
           { name: "telefone", type: "string" as const, required: true },
           { name: "prioridade", type: "number" as const, required: false },
+          { name: "parcelas", type: "integer" as const, required: false },
         ],
       },
     ],
@@ -1191,6 +1192,123 @@ describe("a rule on a custom tool", () => {
       action: { args: Record<string, unknown> };
     }[];
     expect(rules[0]?.action.args.prioridade).toBe(1.2);
+  });
+
+  // agents#1405: a Save refused for a required argument went to the rule's first select, the
+  // condition's question, instead of the row that is missing its value.
+  test("a Save refused for a required argument goes to that argument's row", async () => {
+    stubApi();
+    renderSection(
+      { monitoring: { engine: "decisions", decisions: BLOCK } },
+      { granted: GRANTED, customTools: TOOLS, showErrors: true },
+    );
+    openAll();
+    const action = screen.getAllByTestId("decisions-rule-action")[0];
+    if (!action) throw new Error("no action select");
+    fireEvent.change(action, { target: { value: "abrir_ticket" } });
+    fireEvent.change(
+      screen
+        .getByTestId("decisions-arg-motivo")
+        .querySelector("input") as HTMLElement,
+      { target: { value: "cancelamento" } },
+    );
+    expect(revealFirstProblem(screen.getByTestId("decisions-fields"))).toBe(
+      true,
+    );
+    const focused = document.activeElement;
+    expect(
+      Boolean(focused?.closest('[data-testid="decisions-arg-telefone"]')),
+    ).toBe(true);
+  });
+
+  test("a number argument's fixed value is a numeric input, and a text one stays text", async () => {
+    stubApi();
+    renderSection(
+      { monitoring: { engine: "decisions", decisions: BLOCK } },
+      { granted: GRANTED, customTools: TOOLS },
+    );
+    openAll();
+    const action = screen.getAllByTestId("decisions-rule-action")[0];
+    if (!action) throw new Error("no action select");
+    fireEvent.change(action, { target: { value: "abrir_ticket" } });
+    const number = screen.getByRole("spinbutton", {
+      name: "prioridade",
+    }) as HTMLInputElement;
+    expect(number.type).toBe("number");
+    // Any decimal is a number the tool takes: a whole step would call 2.5 a mismatch.
+    expect(number.step).toBe("any");
+    expect(
+      (screen.getByRole("spinbutton", { name: "parcelas" }) as HTMLInputElement)
+        .type,
+    ).toBe("number");
+    expect(screen.getByRole("textbox", { name: "telefone" })).toBeTruthy();
+  });
+
+  test("text a numeric input cannot read is a problem at its row, not a value dropped in silence", async () => {
+    stubApi();
+    const { state } = renderSection(
+      { monitoring: { engine: "decisions", decisions: BLOCK } },
+      { granted: GRANTED, customTools: TOOLS, showErrors: true },
+    );
+    openAll();
+    const action = screen.getAllByTestId("decisions-rule-action")[0];
+    if (!action) throw new Error("no action select");
+    fireEvent.change(action, { target: { value: "abrir_ticket" } });
+    const row = (arg: string) => screen.getByTestId(`decisions-arg-${arg}`);
+    fireEvent.change(row("motivo").querySelector("input") as HTMLElement, {
+      target: { value: "cancelamento" },
+    });
+    fireEvent.change(row("telefone").querySelector("input") as HTMLElement, {
+      target: { value: "+5511999990000" },
+    });
+    const input = row("prioridade").querySelector("input") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "1" } });
+    expect(count("decisions-problems")).toBe(0);
+    // "1e" typed: the browser shows it and hands the app an empty value, flagged as bad input.
+    Object.defineProperty(input, "validity", {
+      configurable: true,
+      get: () => ({ badInput: true, valid: false }),
+    });
+    fireEvent.change(input, { target: { value: "" } });
+    expect(count("decisions-problems")).toBe(1);
+    expect(
+      (row("prioridade").closest('[role="group"]')?.textContent ?? "").includes(
+        "Not the type the tool takes here.",
+      ),
+    ).toBe(true);
+    const rules = observationToStored(state()).decisions?.rules as {
+      action: { args: Record<string, unknown> };
+    }[];
+    expect(typeof rules[0]?.action.args.prioridade).not.toBe("number");
+  });
+
+  test("an optional number emptied is left out, neither 0 nor the empty text", async () => {
+    stubApi();
+    const { state } = renderSection(
+      { monitoring: { engine: "decisions", decisions: BLOCK } },
+      { granted: GRANTED, customTools: TOOLS, showErrors: true },
+    );
+    openAll();
+    const action = screen.getAllByTestId("decisions-rule-action")[0];
+    if (!action) throw new Error("no action select");
+    fireEvent.change(action, { target: { value: "abrir_ticket" } });
+    const input = screen
+      .getByTestId("decisions-arg-prioridade")
+      .querySelector("input") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "5" } });
+    fireEvent.change(input, { target: { value: "" } });
+    const rules = observationToStored(state()).decisions?.rules as {
+      action: { args: Record<string, unknown> };
+    }[];
+    expect(Object.hasOwn(rules[0]?.action.args ?? {}, "prioridade")).toBe(
+      false,
+    );
+    expect(
+      (
+        screen.getByTestId("decisions-arg-prioridade").closest('[role="group"]')
+          ?.textContent ?? ""
+      ).includes("Not the type the tool takes here."),
+    ).toBe(false);
   });
 
   test("a fixed text emptied is stored as the empty text, not left out", async () => {

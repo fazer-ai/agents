@@ -21,13 +21,15 @@ export function revealFirstProblem(root: ParentNode | null): boolean {
   const target = field ?? summary;
   if (!target) return false;
   target.scrollIntoView({ behavior: "smooth", block: "center" });
+  // A mark that holds controls (a group, a `data-problem` box) is reached through its own; only an
+  // error line, which holds none, stands for the control it sits under. Asking the line's parent
+  // first took a group row to its parent's first control, another row's (agents#1405).
   const control = target.matches(CONTROL)
     ? target
     : !field
       ? target.querySelector<HTMLElement>("button")
-      : target.hasAttribute("data-problem")
-        ? target.querySelector<HTMLElement>(CONTROL)
-        : target.parentElement?.querySelector<HTMLElement>(CONTROL);
+      : (target.querySelector<HTMLElement>(CONTROL) ??
+        target.parentElement?.querySelector<HTMLElement>(CONTROL));
   control?.focus({ preventScroll: true });
   return true;
 }

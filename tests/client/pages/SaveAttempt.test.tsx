@@ -65,6 +65,29 @@ describe("revealing the first problem", () => {
     expect(focusedMark()).toBe("rule-question");
   });
 
+  test("an invalid group among its siblings focuses a control of its own, not the first sibling's", () => {
+    const { container } = render(
+      <div>
+        <div>
+          <fieldset data-mark="row-ok">
+            <select data-mark="ok-mode">
+              <option>x</option>
+            </select>
+          </fieldset>
+          <fieldset aria-invalid="true" data-mark="row-bad">
+            <select data-mark="bad-mode">
+              <option>x</option>
+            </select>
+            <input data-mark="bad-value" />
+          </fieldset>
+        </div>
+      </div>,
+    );
+    expect(revealFirstProblem(container)).toBe(true);
+    expect(scrolled).toEqual(["row-bad"]);
+    expect(focusedMark()).toBe("bad-mode");
+  });
+
   test("a control that draws its own warning is reached by its problem mark", () => {
     const { container } = render(
       <div>

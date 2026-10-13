@@ -37,3 +37,34 @@ export async function announceStatusChange(
     );
   }
 }
+
+// The handoff a status write's sibling: the bot-to-person edge of the holder, announced by whichever
+// writer moves it, for the same reason. The webhook mirror announces it when its own event moves the
+// holder; a read-back that moved it first leaves that event finding `User` already stored, and the
+// edge would otherwise reach no subscriber. Same savepoint discipline as above.
+export async function announceHandoff(
+  db: ScopedDb,
+  tenantId: bigint,
+  p: {
+    conversationId: bigint;
+    inboxId: bigint | null;
+    previousAssigneeType: string | null;
+    assigneeType: string | null;
+  },
+): Promise<void> {
+  if (p.previousAssigneeType === "User" || p.assigneeType !== "User") return;
+  await db.$executeRawUnsafe("SAVEPOINT announce_handoff");
+  try {
+    await emitOutbound(db, tenantId, "conversation.handoff", {
+      conversation_id: String(p.conversationId),
+      inbox_id: p.inboxId != null ? String(p.inboxId) : null,
+    });
+    await db.$executeRawUnsafe("RELEASE SAVEPOINT announce_handoff");
+  } catch (err) {
+    await db.$executeRawUnsafe("ROLLBACK TO SAVEPOINT announce_handoff");
+    logger.warn(
+      "outbound emit failed (event=conversation.handoff): %s",
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+}

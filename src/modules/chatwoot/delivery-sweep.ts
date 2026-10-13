@@ -864,6 +864,52 @@ async function announceReconciled(
 export const SWEEP_READ_BUDGET_MS = 60_000;
 export const DEAD_CLAIM_READ_BUDGET_MS = 10_000;
 
+// A conversation Chatwoot no longer has: its stranded events close, or its stamp is cleared, with
+// nothing applied, so the flow log says which and why instead of the row leaving in silence. Filed
+// under the mirrored conversation when there is one; `info`, since nobody is waiting on it.
+async function noteConversationGone(
+  tenantId: bigint,
+  base: PrismaClient,
+  instanceId: bigint,
+  conversationId: number,
+  closed: string,
+): Promise<void> {
+  const conv = await runScopedOn(base, sysCtx(tenantId), (db) =>
+    db.conversation.findUnique({
+      where: {
+        tenantId_chatwootInstanceId_chatwootConversationId: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootConversationId: conversationId,
+        },
+      },
+      select: { id: true, inboxId: true },
+    }),
+  ).catch(() => null);
+  logger.info(
+    "chatwoot delivery sweep: conversation %d is gone from Chatwoot (404); %s with nothing applied",
+    conversationId,
+    closed,
+  );
+  await writeFlowEvent(
+    {
+      tenantId,
+      turnId: crypto.randomUUID(),
+      source: "inbox",
+      conversationId: conv?.id ?? null,
+      agentId: null,
+      inboxId: conv?.inboxId ?? null,
+      base,
+    },
+    {
+      stage: "delivery",
+      level: "info",
+      status: "ok",
+      detail: { outcome: "conversation_gone", conversationId, closed },
+    },
+  );
+}
+
 // Settles the groups `takeConversationEvents` took, AFTER the pass's ordinary verdicts: those are the
 // customers waiting on a recovery, and a read here can take a request timeout. An instance that failed
 // one read is not asked again in the same pass; its other conversations count the failure too, so an
@@ -913,6 +959,15 @@ async function settleConversationEvents(
         );
       }
       continue;
+    }
+    if (read.kind === "gone") {
+      await noteConversationGone(
+        g.tenantId,
+        base,
+        g.instanceId,
+        g.conversationId,
+        `${g.rows.length} stranded conversation event(s) closed`,
+      );
     }
     if (read.kind === "state") {
       const r = await reconcileMirrorFromLive({
@@ -1022,6 +1077,15 @@ export async function reconcileUnconfirmedCloses(
       );
       await postpone(conv.id);
       continue;
+    }
+    if (read.kind === "gone") {
+      await noteConversationGone(
+        tenantId,
+        base,
+        conv.chatwootInstanceId,
+        conv.chatwootConversationId,
+        "its unconfirmed close stamp cleared",
+      );
     }
     if (read.kind === "state") {
       const r = await reconcileMirrorFromLive({

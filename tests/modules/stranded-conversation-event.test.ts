@@ -21,6 +21,7 @@ import {
 } from "@/modules/chatwoot/delivery-sweep";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { clearFlowLog, flowLogRows } from "../utils/flowlog";
 
 // A conversation event (a status or an assignee change) that strands in the delivery ledger is the
 // only word the mirror would have had about that change. The sweep reads the conversation back from
@@ -234,6 +235,13 @@ beforeAll(async () => {
       },
     })
   ).id;
+  await suDb.webhookSubscription.create({
+    data: {
+      tenantId,
+      url: "https://example.com/hook",
+      events: ["conversation.handoff"],
+    },
+  });
 });
 
 beforeEach(async () => {
@@ -249,6 +257,8 @@ beforeEach(async () => {
   });
   await suDb.schedulerJob.deleteMany({ where: { tenantId } });
   await suDb.chatwootWebhookDelivery.deleteMany({ where: { tenantId } });
+  await suDb.outboundWebhookDelivery.deleteMany({ where: { tenantId } });
+  await clearFlowLog(suDb, { tenantId });
   await suDb.conversation.deleteMany({ where: { tenantId } });
 });
 
@@ -413,16 +423,46 @@ describe.skipIf(!dbUp)(
         "User",
         4,
       ]);
+      // The handoff a live event would have announced: the event that would have is the one lost.
+      const handoffs = await suDb.outboundWebhookDelivery.findMany({
+        where: { tenantId, event: "conversation.handoff" },
+        select: { payload: true },
+      });
+      expect(
+        handoffs.map((h) => (h.payload as { data?: unknown }).data),
+      ).toEqual([
+        {
+          conversation_id: String(
+            (
+              await suDb.conversation.findFirstOrThrow({
+                where: { tenantId, chatwootConversationId: 9003 },
+              })
+            ).id,
+          ),
+          inbox_id: String(inboxDbId),
+        },
+      ]);
     });
 
     test("a conversation Chatwoot no longer has closes its row and invents nothing (catches a 404 looping or a state made up)", async () => {
-      await seedConversation(9004);
+      const cid = await seedConversation(9004);
       const row = await strand(9004, "conversation_resolved");
       live.set(9004, 404);
       await sweepStrandedDeliveries({ tenantId, base: appDb, deps });
       expect((await ledger(row)).status).toBe("PROCESSED");
       const m = await mirror(9004);
       expect([m.status, m.chatwootStatusAt]).toEqual(["pending", V1]);
+      const lines = await flowLogRows(suDb, {
+        where: { tenantId, conversationId: cid, stage: "delivery" },
+        select: { detail: true },
+      });
+      expect(lines.map((l) => l.detail)).toEqual([
+        {
+          outcome: "conversation_gone",
+          conversationId: 9004,
+          closed: "1 stranded conversation event(s) closed",
+        },
+      ]);
     });
 
     test("a read that fails for another reason is retried on the next pass, and closed after the last attempt (catches one outage losing the event, or a row read forever)", async () => {

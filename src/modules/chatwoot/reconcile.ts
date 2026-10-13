@@ -5,7 +5,7 @@ import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clearsResolutionOrigin } from "@/modules/conversations/resolution-origin";
 import type { LiveConversationState } from "./normalize";
 import { firstOwnershipStamp } from "./state-order";
-import { announceStatusChange } from "./status-announce";
+import { announceHandoff, announceStatusChange } from "./status-announce";
 import { statusClaimDeferredWins, statusClaimVerdict } from "./status-claim";
 import { runResolutionHooks } from "./webhook";
 
@@ -367,6 +367,14 @@ export async function reconcileMirrorFromLive(
             inboxId: current.inboxId,
             status: nextStatus,
             previousStatus: current.status,
+            assigneeType: nextAssigneeType,
+          });
+        }
+        if (assigneeOrdered) {
+          await announceHandoff(db, tenantId, {
+            conversationId: current.id,
+            inboxId: current.inboxId,
+            previousAssigneeType: current.assigneeType,
             assigneeType: nextAssigneeType,
           });
         }

@@ -82,7 +82,7 @@ Three parts: the **closed event set + envelope** (`events.ts`), the deterministi
 | ------------------------------ | ------------------------------------------------- | --------------------------------------------------------------------------------------- |
 | `conversation.created`         | `chatwoot/mirror.ts` (Conversation create)        | `conversation_id, inbox_id, status, assignee_type`                                       |
 | `conversation.status_changed`  | `chatwoot/status-announce.ts` (whichever write moves the mirror's status first: the webhook mirror, the live reconcile, the takeover claim, the console fallback) | `conversation_id, inbox_id, status, previous_status, assignee_type`                      |
-| `conversation.handoff`         | `chatwoot/mirror.ts` (assignee → `User`)          | `conversation_id, inbox_id`                                                              |
+| `conversation.handoff`         | `chatwoot/mirror.ts` and `chatwoot/status-announce.ts` (whichever write moves the assignee to `User` first: the webhook mirror or the live reconcile) | `conversation_id, inbox_id`                                                              |
 | `kanban.card_moved`            | `graph/tools/native.ts` (`kanban_move_card`)      | `card_id, to_step, conversation_id`                                                      |
 | `llm.usage`                    | `graph/usage.ts` (`defaultUsagePersist`)          | `agent_id, conversation_id, model, node, prompt_tokens, completion_tokens`               |
 | `tenant.created`               | `api/v1/tenants.service.ts` (`createTenant`)      | `tenant_id, slug`                                                                        |

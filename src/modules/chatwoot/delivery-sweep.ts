@@ -1,4 +1,5 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
+import { broadcastConversationEvent } from "@/api/features/realtime/realtime.service";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import {
@@ -644,17 +645,15 @@ export async function sweepStrandedDeliveries(
     }),
   )) as StrandedRow[];
 
-  const rest = await applyStrandedConversationEvents(
+  const { groups, rest } = takeConversationEvents(
     rows.map((row) => ({ row, tenantId })),
-    base,
     now,
     STALE_AFTER_MS,
-    counts,
-    params.deps,
   );
   for (const { row } of rest) {
     await settleStranded(row, tenantId, base, now, STALE_AFTER_MS, counts);
   }
+  await settleConversationEvents(groups, base, counts, params.deps);
   return counts;
 }
 
@@ -766,26 +765,25 @@ async function readLive(
   }
 }
 
-// Takes the stranded conversation events out of `rows` and settles them, one live read per
-// conversation however many of its rows stranded; returns the rest for the ordinary verdicts.
-async function applyStrandedConversationEvents(
+interface ConversationEventGroup {
+  tenantId: bigint;
+  instanceId: bigint;
+  conversationId: number;
+  rows: StrandedRow[];
+}
+
+// Takes the stranded conversation events out of `rows`, grouped by conversation so each is read once
+// however many of its rows stranded; returns the rest for the ordinary verdicts.
+function takeConversationEvents(
   rows: Array<{ row: StrandedRow; tenantId: bigint }>,
-  base: PrismaClient,
   now: Date,
   staleAfterMs: number,
-  counts: SweepCounts,
-  deps?: ConversationStateDeps,
-): Promise<Array<{ row: StrandedRow; tenantId: bigint }>> {
+): {
+  groups: ConversationEventGroup[];
+  rest: Array<{ row: StrandedRow; tenantId: bigint }>;
+} {
   const rest: Array<{ row: StrandedRow; tenantId: bigint }> = [];
-  const groups = new Map<
-    string,
-    {
-      tenantId: bigint;
-      instanceId: bigint;
-      conversationId: number;
-      rows: StrandedRow[];
-    }
-  >();
+  const groups = new Map<string, ConversationEventGroup>();
   for (const item of rows) {
     const { row, tenantId } = item;
     if (
@@ -806,26 +804,78 @@ async function applyStrandedConversationEvents(
     g.rows.push(row);
     groups.set(key, g);
   }
-  for (const g of groups.values()) {
-    const read = await readLive(
-      g.tenantId,
-      g.instanceId,
-      g.conversationId,
-      base,
-      deps,
-    );
+  return { groups: [...groups.values()], rest };
+}
+
+// Publishes the state a read-back left on the row. The reconcile announces only its deferred
+// transition and leaves every other one to its caller, and a console showing the list learns a
+// status or a holder only from this event.
+async function announceReconciled(
+  tenantId: bigint,
+  base: PrismaClient,
+  where: { id: bigint } | { instanceId: bigint; conversationId: number },
+  state: NonNullable<
+    Awaited<ReturnType<typeof reconcileMirrorFromLive>>["state"]
+  >,
+): Promise<void> {
+  const id =
+    "id" in where
+      ? where.id
+      : (
+          await runScopedOn(base, sysCtx(tenantId), (db) =>
+            db.conversation.findUnique({
+              where: {
+                tenantId_chatwootInstanceId_chatwootConversationId: {
+                  tenantId,
+                  chatwootInstanceId: where.instanceId,
+                  chatwootConversationId: where.conversationId,
+                },
+              },
+              select: { id: true },
+            }),
+          )
+        )?.id;
+  if (id === undefined) return;
+  broadcastConversationEvent(tenantId, {
+    conversationId: String(id),
+    status: state.status,
+    assigneeId: state.assigneeId,
+    assigneeType: state.assigneeType,
+    lastEventAt: state.lastEventAt ? state.lastEventAt.toISOString() : null,
+  });
+}
+
+// Settles the groups `takeConversationEvents` took, AFTER the pass's ordinary verdicts: those are the
+// customers waiting on a recovery, and a read here can take a request timeout. An instance that failed
+// one read is not asked again in the same pass; its other conversations count the failure too, so an
+// instance that is down costs one failed read per pass and its rows still close after the budget.
+async function settleConversationEvents(
+  groups: ConversationEventGroup[],
+  base: PrismaClient,
+  counts: SweepCounts,
+  deps?: ConversationStateDeps,
+): Promise<void> {
+  const down = new Map<string, unknown>();
+  for (const g of groups) {
+    const instanceKey = `${g.tenantId}:${g.instanceId}`;
+    const read: LiveRead = down.has(instanceKey)
+      ? { kind: "unreadable", err: down.get(instanceKey) }
+      : await readLive(g.tenantId, g.instanceId, g.conversationId, base, deps);
     if (read.kind === "unreadable") {
-      const attempts = Math.max(...g.rows.map((r) => r.attempts ?? 0)) + 1;
-      const last = attempts >= CONVERSATION_STATE_READS;
+      down.set(instanceKey, read.err);
       logger.warn(
         { err: read.err, conversationId: g.conversationId },
-        last
-          ? "chatwoot delivery sweep: a stranded conversation event's state could not be read from Chatwoot after %d passes; its rows close without it"
-          : "chatwoot delivery sweep: a stranded conversation event's state could not be read from Chatwoot (pass %d); left for the next sweep",
-        attempts,
+        "chatwoot delivery sweep: a stranded conversation event's state could not be read from Chatwoot",
       );
+      // Each row against its OWN count: a row that stranded after the earlier failures is owed its
+      // own reads, not the remainder of an older row's budget.
       for (const row of g.rows) {
-        if (last) {
+        if ((row.attempts ?? 0) + 1 >= CONVERSATION_STATE_READS) {
+          logger.warn(
+            { conversationId: g.conversationId, deliveryId: row.deliveryId },
+            "chatwoot delivery sweep: a stranded conversation event closes without its state after %d failed reads",
+            CONVERSATION_STATE_READS,
+          );
           if (await finish(row, g.tenantId, "PROCESSED", base))
             counts.closed += 1;
           else counts.raced += 1;
@@ -841,13 +891,21 @@ async function applyStrandedConversationEvents(
       continue;
     }
     if (read.kind === "state") {
-      await reconcileMirrorFromLive({
+      const r = await reconcileMirrorFromLive({
         tenantId: g.tenantId,
         instanceId: g.instanceId,
         conversationId: g.conversationId,
         live: read.live,
         base,
       });
+      if (r.applied && r.state) {
+        await announceReconciled(
+          g.tenantId,
+          base,
+          { instanceId: g.instanceId, conversationId: g.conversationId },
+          r.state,
+        );
+      }
     }
     for (const row of g.rows) {
       if (await finish(row, g.tenantId, "PROCESSED", base)) {
@@ -857,7 +915,6 @@ async function applyStrandedConversationEvents(
       }
     }
   }
-  return rest;
 }
 
 // A CLOSE THIS SIDE MADE THAT THE MIRROR NEVER SAW. Our resolve records who closed the conversation
@@ -896,6 +953,7 @@ export async function reconcileUnconfirmedCloses(
         id: true,
         chatwootInstanceId: true,
         chatwootConversationId: true,
+        resolvedByAt: true,
       },
     }),
   );
@@ -924,12 +982,18 @@ export async function reconcileUnconfirmedCloses(
         base,
       });
       if (r.applied) applied += 1;
+      if (r.applied && r.state) {
+        await announceReconciled(tenantId, base, { id: conv.id }, r.state);
+      }
     }
+    // Only the stamp this pass read: a close recorded while Chatwoot was being asked stamps a newer
+    // `resolved_by_at`, and its own webhook, still on the way, is what confirms it.
     await runScopedOn(base, sysCtx(tenantId), (db) =>
       db.conversation.updateMany({
         where: {
           id: conv.id,
           resolvedBy: { not: null },
+          resolvedByAt: conv.resolvedByAt,
           status: { not: "resolved" },
         },
         data: { resolvedBy: null, resolvedByAt: null },
@@ -1000,13 +1064,10 @@ export async function sweepDeadClaims(
   );
   // No window at all, not zero: `claimedAt` is the dead process's clock, and on a host a little ahead
   // of this one a zero window would read the claim as in flight until the clocks agree.
-  const rest = await applyStrandedConversationEvents(
+  const { groups, rest } = takeConversationEvents(
     rows.map(({ tenantId, ...row }) => ({ row, tenantId })),
-    base,
     now,
     Number.NEGATIVE_INFINITY,
-    counts,
-    params.deps,
   );
   for (const { row, tenantId } of rest) {
     await settleStranded(
@@ -1018,6 +1079,7 @@ export async function sweepDeadClaims(
       counts,
     );
   }
+  await settleConversationEvents(groups, base, counts, params.deps);
   return counts;
 }
 

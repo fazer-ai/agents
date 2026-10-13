@@ -8,6 +8,7 @@ import {
 } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
+import { setPublisher } from "@/api/features/realtime/realtime.service";
 import { encryptJson } from "@/api/lib/crypto";
 import { chatwootThreadId } from "@/graph/checkpointer";
 import {
@@ -70,10 +71,14 @@ interface LiveConv {
 // What the fake account answers per conversation; a number is an HTTP error status.
 let live = new Map<number, LiveConv | number>();
 let reads: number[] = [];
+// Runs inside a read, to put the database where a concurrent writer would have left it.
+let onRead: (id: number) => Promise<void> = async () => {};
+let published: Array<{ conversationId: string; status: string }> = [];
 
 const client = {
   getConversation: async (id: number) => {
     reads.push(id);
+    await onRead(id);
     const c = live.get(id);
     if (c === undefined || typeof c === "number") {
       throw new ChatwootApiError(
@@ -135,7 +140,11 @@ async function seedConversation(
 async function strand(
   convId: number,
   event: string,
-  over: { claimedAgoMs?: number; status?: "PENDING" | "PROCESSING" } = {},
+  over: {
+    claimedAgoMs?: number;
+    status?: "PENDING" | "PROCESSING";
+    attempts?: number;
+  } = {},
 ) {
   seq += 1;
   const claimedAgoMs = over.claimedAgoMs ?? STALE_MS + 60_000;
@@ -149,6 +158,7 @@ async function strand(
       receivedAt: new Date(Date.now() - claimedAgoMs - 1_000),
       claimedAt: new Date(Date.now() - claimedAgoMs),
       conversationId: convId,
+      attempts: over.attempts ?? 0,
     },
     select: { id: true },
   });
@@ -228,12 +238,20 @@ beforeEach(async () => {
   if (!dbUp) return;
   live = new Map();
   reads = [];
+  onRead = async () => {};
+  published = [];
+  setPublisher((_topic, data) => {
+    const e = JSON.parse(data);
+    if (e.type === "conversation" && e.tenantId === tenantId.toString())
+      published.push({ conversationId: e.conversationId, status: e.status });
+  });
   await suDb.schedulerJob.deleteMany({ where: { tenantId } });
   await suDb.chatwootWebhookDelivery.deleteMany({ where: { tenantId } });
   await suDb.conversation.deleteMany({ where: { tenantId } });
 });
 
 afterAll(async () => {
+  setPublisher(() => undefined);
   if (!tenantId) return;
   await suDb.schedulerJob.deleteMany({ where: { tenantId } });
   await suDb.chatwootWebhookDelivery.deleteMany({ where: { tenantId } });
@@ -266,6 +284,58 @@ describe.skipIf(!dbUp)(
       expect(await recoveries()).toBe(0);
       // One read per conversation per pass, however many of its rows stranded.
       expect(reads).toEqual([9001]);
+    });
+
+    test("the repaired state is announced to open consoles (catches a list left showing pending after the repair)", async () => {
+      const id = await seedConversation(9010);
+      await strand(9010, "conversation_resolved");
+      live.set(9010, { status: "resolved", updatedAt: V2 });
+      await sweepStrandedDeliveries({ tenantId, base: appDb, deps });
+      expect(published).toContainEqual({
+        conversationId: String(id),
+        status: "resolved",
+      });
+    });
+
+    test("the ordinary verdicts are given before any conversation is read (catches a slow Chatwoot delaying a customer's recovery)", async () => {
+      await seedConversation(9011);
+      await strand(9011, "conversation_resolved");
+      const other = await strand(9012, "webwidget_triggered");
+      let otherAtRead = "";
+      onRead = async () => {
+        otherAtRead = (await ledger(other)).status;
+      };
+      live.set(9011, { status: "resolved", updatedAt: V2 });
+      await sweepStrandedDeliveries({ tenantId, base: appDb, deps });
+      expect(otherAtRead).toBe("PROCESSED");
+    });
+
+    test("each row spends its own budget of failed reads (catches a newer row closed on an older row's failures)", async () => {
+      await seedConversation(9013);
+      const old = await strand(9013, "conversation_status_changed", {
+        attempts: 2,
+      });
+      const fresh = await strand(9013, "conversation_resolved");
+      live.set(9013, 503);
+      await sweepStrandedDeliveries({ tenantId, base: appDb, deps });
+      expect(await ledger(old)).toEqual({ status: "PROCESSED", attempts: 2 });
+      expect(await ledger(fresh)).toEqual({
+        status: "PROCESSING",
+        attempts: 1,
+      });
+    });
+
+    test("an instance that failed a read is not asked again in the same pass, and its other rows count the failure (catches a down instance costing a timeout per conversation)", async () => {
+      await seedConversation(9014);
+      await seedConversation(9015);
+      const a = await strand(9014, "conversation_resolved");
+      const b = await strand(9015, "conversation_resolved");
+      live.set(9014, 503);
+      live.set(9015, 503);
+      await sweepStrandedDeliveries({ tenantId, base: appDb, deps });
+      expect(reads).toHaveLength(1);
+      expect((await ledger(a)).attempts).toBe(1);
+      expect((await ledger(b)).attempts).toBe(1);
     });
 
     test("a status change stranded on its own is applied too (catches the sweep reading only the resolve)", async () => {
@@ -403,5 +473,36 @@ describe.skipIf(!dbUp)("a close this side made converges", () => {
     await suDb.$executeRaw`UPDATE conversations SET updated_at = now() - interval '2 hours' WHERE tenant_id = ${tenantId}`;
     await reconcileUnconfirmedCloses({ tenantId, base: appDb, deps });
     expect(reads).toEqual([]);
+  });
+
+  test("the repaired close is announced to open consoles (catches a list left showing pending after the repair)", async () => {
+    const id = await seedConversation(9105, {
+      resolvedBy: "agent",
+      resolvedByAt: V1 - 1_000,
+      updatedAgoMs: STALE_MS + 60_000,
+    });
+    live.set(9105, { status: "resolved", updatedAt: V2 });
+    await reconcileUnconfirmedCloses({ tenantId, base: appDb, deps });
+    expect(published).toContainEqual({
+      conversationId: String(id),
+      status: "resolved",
+    });
+  });
+
+  test("a close recorded while Chatwoot was being asked keeps its stamp (catches the pass erasing who closed a new episode)", async () => {
+    const id = await seedConversation(9106, {
+      resolvedBy: "followup_abandonment",
+      resolvedByAt: V1 - 1_000,
+      updatedAgoMs: STALE_MS + 60_000,
+    });
+    live.set(9106, { status: "pending", updatedAt: V1 - 500 });
+    onRead = async () => {
+      await suDb.conversation.update({
+        where: { id },
+        data: { resolvedBy: "agent", resolvedByAt: V3 },
+      });
+    };
+    await reconcileUnconfirmedCloses({ tenantId, base: appDb, deps });
+    expect((await mirror(9106)).resolvedBy).toBe("agent");
   });
 });

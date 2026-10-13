@@ -12,9 +12,9 @@ import { privilegedReachSql } from "@/lib/tenancy/privileged-reach";
 // provisions the grant INHERIT FALSE, but a grant made by hand afterwards is invisible to it, so the
 // served connection is checked here too (docs/tenancy.md, the fleet role bullets).
 
-// Every refusal this guard can make shares a base, and `src/index.ts` rethrows on the BASE rather
-// than on each class, so a refusal added later is fatal by construction instead of being logged as
-// "DB unavailable?" while the process keeps serving.
+// Every refusal this guard can make shares a base, and `checkRuntimeRoleAtBoot` rethrows on the
+// BASE rather than on each class, so a refusal added later is fatal by construction instead of being
+// logged as "DB unavailable?" while the process keeps serving.
 export abstract class RuntimeIsolationError extends Error {}
 
 export const FLEET_INHERITED_REASON = "inherits the fleet role";
@@ -120,6 +120,25 @@ async function fleetFunctionAccess(
      SELECT false, false WHERE to_regprocedure('${FLEET_ROLE_FN}') IS NULL`,
   );
   return rows[0] ?? { present: false, executable: false };
+}
+
+/**
+ * The boot step `src/index.ts` runs before serving. A refusal of this guard is fatal (crash-loop until
+ * it is fixed); any other error is an outage and only warns, since `initSetupState` already tolerates
+ * one. Caught on the BASE class, never on one refusal by name, so a refusal added later is fatal too.
+ */
+export async function checkRuntimeRoleAtBoot(
+  check: () => Promise<void> = () => assertRuntimeRoleIsNotSuperuser(),
+): Promise<void> {
+  try {
+    await check();
+  } catch (error) {
+    if (error instanceof RuntimeIsolationError) throw error;
+    logger.warn(
+      { error },
+      "Could not verify the runtime DB role (DB unavailable?); continuing",
+    );
+  }
 }
 
 export async function assertRuntimeRoleIsNotSuperuser(

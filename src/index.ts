@@ -5,10 +5,7 @@ import ackPrisma from "@/api/lib/prisma-ack";
 import app from "@/app";
 import config from "@/config";
 import { assertConnectionBudget } from "@/lib/db-budget";
-import {
-  assertRuntimeRoleIsNotSuperuser,
-  RuntimeIsolationError,
-} from "@/lib/db-guard";
+import { checkRuntimeRoleAtBoot } from "@/lib/db-guard";
 import { releaseProcessLease, startProcessLease } from "@/lib/process-lease";
 import { installShutdownHandlers } from "@/lib/shutdown";
 import { registerAppointmentReminderHandler } from "@/modules/appointments/reminders";
@@ -133,23 +130,9 @@ for (let attempt = 0; attempt < MAX_PORT_ATTEMPTS; attempt++) {
   }
 }
 
-// NOTE: Fail fast if the runtime DB connection cannot uphold isolation. Any refusal the guard makes
-// hard-crashes the process (correct: crash-loop until it is fixed); a DB-unavailable error only
-// warns, since initSetupState below already tolerates a boot-time outage.
-//
-// Caught on the BASE class, never on one refusal by name: the guard grew a second one
-// (`FleetPolicyMismatchError`, for a database restored under another name) and a `instanceof
-// SuperuserRuntimeError` here swallowed it as an outage, leaving the process serving with every
-// cross-tenant read answering zero rows.
-try {
-  await assertRuntimeRoleIsNotSuperuser();
-} catch (error) {
-  if (error instanceof RuntimeIsolationError) throw error;
-  logger.warn(
-    { error },
-    "Could not verify the runtime DB role (DB unavailable?); continuing",
-  );
-}
+// NOTE: Fail fast if the runtime DB connection cannot uphold isolation; an outage only warns
+// (src/lib/db-guard.ts, checkRuntimeRoleAtBoot).
+await checkRuntimeRoleAtBoot();
 
 if (config.env === "production" && config.ssrf.allowPrivateTargets) {
   logger.warn(

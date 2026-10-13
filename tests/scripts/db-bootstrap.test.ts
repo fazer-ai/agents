@@ -22,6 +22,8 @@ import {
   fleetMembershipRepair,
   parseAppRole,
   planRoleProvisioning,
+  provisionDatabase,
+  provisionFleetRole,
 } from "../../scripts/db-bootstrap";
 import {
   holdRoleCatalogLock,
@@ -680,98 +682,151 @@ describe("planRoleProvisioning", () => {
     });
   });
 
-  // NOTE: The twin of the test below: every server available here is 17, so deleting the pre-16
-  // branch of the administrative grant breaks nothing else in this suite. On PostgreSQL 15 with a
-  // non-superuser owner, skipping it leaves every future DATA migration failing with
-  // `permission denied to set role` (the contract docs/deploy.md states for that role). So the fleet
-  // role must be granted to CURRENT_USER on BOTH sides of the version gate, in each side's spelling.
-  test("the administrative grant exists on both sides of the version gate", async () => {
-    const source = await Bun.file(
-      new URL("../../scripts/db-bootstrap.ts", import.meta.url).pathname,
-    ).text();
-    // The needle is written with an escaped dollar rather than as a plain string, so the linter does
-    // not read a literal `${` as a template someone forgot to interpolate.
-    const needle = `\${fleet} TO CURRENT_USER`;
-    const grants = source
-      .split("\n")
-      .map((l) => l.trim())
-      // Scoped to the FLEET role: the runtime role is granted to CURRENT_USER further down for an
-      // unrelated reason (the langgraph schema's AUTHORIZATION), and counting it would make this
-      // assert a number instead of a rule.
-      .filter((l) => !l.startsWith("//") && l.includes(needle));
-    // One per branch, and no more: a third would mean a path nobody accounted for.
-    expect(grants.length).toBe(2);
-    expect(
-      grants.filter((l) => l.includes("WITH INHERIT FALSE, SET TRUE")),
-    ).toHaveLength(1);
-    // The pre-16 one takes no options at all — 15 refuses to parse them.
-    const legacy = grants.find((l) => !l.includes("WITH "));
-    expect(legacy).toBeDefined();
-    expect(legacy).not.toContain("INHERIT");
-    expect(legacy).not.toContain("SET TRUE");
-
-    // And each sits on its own side of the gate: the optioned one inside a `>= 160000` branch, the
-    // bare one in the `else` that closes it.
-    const optionedAt = source.indexOf(`${needle} WITH INHERIT FALSE, SET TRUE`);
-    const gate = source.lastIndexOf(
-      "if (serverVersionNum >= 160000) {",
-      optionedAt,
-    );
-    const elseAt = source.indexOf("} else {", optionedAt);
-    const bareAt = source.indexOf(`${needle}\``, elseAt);
-    expect(gate).toBeGreaterThan(-1);
-    expect(optionedAt).toBeGreaterThan(gate);
-    expect(elseAt).toBeGreaterThan(optionedAt);
-    expect(bareAt).toBeGreaterThan(elseAt);
-  });
-
-  // NOTE: This reads the script's own source because the failure it guards cannot be reached from
-  // this suite: every server available runs PostgreSQL 17, and the statement in question is one an
-  // older server refuses to PARSE (`pg_auth_members.inherit_option`, on a boot path that runs
-  // everywhere). So every 16-only spelling must live inside a version gate.
-  test("16-only syntax stays behind the version gate", async () => {
-    const source = await Bun.file(
-      new URL("../../scripts/db-bootstrap.ts", import.meta.url).pathname,
-    ).text();
-    // Every gate, not "the" gate: a second gate arriving is not the thing to make red. The rule
-    // is that a 16-only spelling sits inside SOME `>= 160000` branch, so the ranges are collected.
-    const gates: Array<[number, number]> = [];
-    const gateRe = /if\s*\([^)]*>=\s*160000\)\s*\{/g;
-    for (const m of source.matchAll(gateRe)) {
-      const start = m.index as number;
-      // The branch ends at the first `}` back at the opening line's indentation.
-      const indent = source.slice(source.lastIndexOf("\n", start) + 1, start);
-      const close = source.indexOf(`\n${indent}}`, start);
-      gates.push([start, close === -1 ? source.length : close]);
+  // NOTE: Every server available here is 17, so the pre-16 branches run only against a client that
+  // reports an older `server_version_num`. That client answers each catalog read with the healthy
+  // state and records the statements, which is the effect being asserted: what is sent on each side.
+  describe("on both sides of the version gate", () => {
+    const FLEET = "fazerai_fleet_gate_probe";
+    function recordingClient(serverVersionNum: number) {
+      const sent: string[] = [];
+      const answer = (sql: string): Record<string, unknown>[] => {
+        if (/ AS role$/.test(sql)) return [{ role: FLEET }];
+        if (sql.includes("AS server_version_num"))
+          return [
+            {
+              app_exists: true,
+              app_superuser: false,
+              app_bypassrls: false,
+              app_createdb: false,
+              app_createrole: false,
+              admin_superuser: false,
+              server_version_num: serverVersionNum,
+            },
+          ];
+        if (sql.includes("AS revokable"))
+          return [{ reaches: null, revokable: null }];
+        if (sql.includes("r.rolsuper, r.rolbypassrls"))
+          return [
+            {
+              rolsuper: false,
+              rolbypassrls: false,
+              rolcanlogin: false,
+              rolcreatedb: false,
+              rolcreaterole: false,
+              rolreplication: false,
+              reaches: null,
+            },
+          ];
+        if (sql.includes("AS present")) return [{ present: true }];
+        if (sql.includes("quote_ident($1::text) AS q"))
+          return [{ q: `"${FLEET}"` }];
+        if (sql.includes("AS can_set_role"))
+          return [{ can_set_role: true, usage: false }];
+        // NOTE: absent on the first read and present once created, so the reconciliation runs too.
+        if (sql.includes("AS owner"))
+          return sent.some((s) => s.startsWith("CREATE SCHEMA"))
+            ? [{ owner: "app_role" }]
+            : [];
+        if (sql.includes("AS schema_ok"))
+          return [{ schema_ok: true, tables_ok: true, foreign_owners: null }];
+        return [];
+      };
+      const client = {
+        query: async (text: string) => {
+          const sql = text.replace(/\s+/g, " ").trim();
+          sent.push(sql);
+          return { rows: answer(sql) };
+        },
+      };
+      return { client: client as unknown as Client, sent };
     }
-    expect(gates.length).toBeGreaterThan(0);
 
-    // Spellings PostgreSQL 15 cannot parse or resolve, as they appear in a statement.
-    const sixteenOnly = [
+    // NOTE: on PostgreSQL 15 with a non-superuser owner, a missing pre-16 grant leaves every future
+    // DATA migration failing with `permission denied to set role` (docs/deploy.md), so the
+    // administrator gets the fleet role on BOTH sides, in each side's spelling.
+    test("the administrative grant is sent on each side, in that side's spelling", async () => {
+      const grants: Record<number, string[]> = {};
+      for (const version of [170000, 160000, 150000]) {
+        const { client, sent } = recordingClient(version);
+        await provisionFleetRole(client, "app_role", '"app_role"', version);
+        grants[version] = sent.filter((s) =>
+          s.startsWith(`GRANT "${FLEET}" TO CURRENT_USER`),
+        );
+      }
+      expect(grants).toEqual({
+        170000: [
+          `GRANT "${FLEET}" TO CURRENT_USER WITH INHERIT FALSE, SET TRUE`,
+        ],
+        160000: [
+          `GRANT "${FLEET}" TO CURRENT_USER WITH INHERIT FALSE, SET TRUE`,
+        ],
+        150000: [`GRANT "${FLEET}" TO CURRENT_USER`],
+      });
+    });
+
+    test("and the runtime role's membership too", async () => {
+      const membership = (version: number) => {
+        const { client, sent } = recordingClient(version);
+        return provisionFleetRole(
+          client,
+          "app_role",
+          '"app_role"',
+          version,
+        ).then(() =>
+          sent.filter(
+            (s) =>
+              s.startsWith(`GRANT "${FLEET}" TO "app_role"`) ||
+              s.startsWith('ALTER ROLE "app_role"'),
+          ),
+        );
+      };
+      expect(await membership(170000)).toEqual([
+        `GRANT "${FLEET}" TO "app_role" WITH INHERIT FALSE, SET TRUE`,
+      ]);
+      expect(await membership(150000)).toEqual([
+        'ALTER ROLE "app_role" NOINHERIT',
+        `GRANT "${FLEET}" TO "app_role"`,
+      ]);
+    });
+
+    // PostgreSQL 15 refuses to PARSE these, on a boot path that runs everywhere, which is a crash loop
+    // rather than a wrong answer. The whole bootstrap is driven, not only the fleet role.
+    const SIXTEEN_ONLY = [
       "WITH SET",
       "WITH INHERIT",
+      ", SET TRUE",
+      "INHERIT TRUE",
       "inherit_option",
       "set_option",
-      // The privilege TYPE, added in 16 alongside the grant option it reports. Older servers reject
-      // it outright — `unrecognized privilege type` — which on a boot path is a crash loop, not a
-      // wrong answer, and is why it belongs in this list rather than in a comment.
       "'SET')",
     ];
-    const offenders = source
-      .split("\n")
-      .map((line, i) => ({ line, at: i }))
-      .filter(({ line }) => {
-        const code = line.trim();
-        if (code.startsWith("//") || code.startsWith("*")) return false;
-        return sixteenOnly.some((t) => code.includes(t));
-      })
-      .filter(({ at }) => {
-        const offset = source.split("\n").slice(0, at).join("\n").length;
-        return !gates.some(([lo, hi]) => offset >= lo && offset <= hi);
-      })
-      .map(({ line }) => line.trim());
+    const sixteenOnlyIn = (sent: string[]) =>
+      sent.filter((s) => SIXTEEN_ONLY.some((t) => s.includes(t)));
 
-    expect(offenders).toEqual([]);
+    test("nothing 16-only is sent to a PostgreSQL 15 server", async () => {
+      const { client, sent } = recordingClient(150000);
+      await provisionDatabase(client, "app_role", "pw");
+      // NOTE: positive control: the run reached the fleet role and the checkpointer schema, so an
+      // empty list below is about what was sent, not about a run that stopped early.
+      expect(sent.some((s) => s.includes("TO CURRENT_USER"))).toBe(true);
+      expect(
+        sent.some((s) =>
+          s.startsWith("GRANT USAGE, CREATE ON SCHEMA langgraph"),
+        ),
+      ).toBe(true);
+      expect(sixteenOnlyIn(sent)).toEqual([]);
+    });
+
+    test("while a 16 server gets every one of them", async () => {
+      const { client, sent } = recordingClient(160000);
+      await provisionDatabase(client, "app_role", "pw");
+      const found = sixteenOnlyIn(sent);
+      expect(found.length).toBeGreaterThanOrEqual(4);
+      expect(found.some((s) => s.includes("'SET')"))).toBe(true);
+      expect(found).toContain(
+        'GRANT "app_role" TO CURRENT_USER WITH SET TRUE, INHERIT TRUE',
+      );
+    });
   });
 
   // NOTE: The role name is interpolated into DDL as a double-quoted identifier, so this regex is

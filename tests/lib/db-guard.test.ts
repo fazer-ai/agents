@@ -1,10 +1,12 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { Client } from "pg";
 import { PrismaClient } from "@/../generated/prisma/client";
+import logger from "@/api/lib/logger";
 import * as dbGuard from "@/lib/db-guard";
 import {
   assertRuntimeRoleIsNotSuperuser,
+  checkRuntimeRoleAtBoot,
   FLEET_INHERITED_REASON,
   FleetPolicyMismatchError,
   FleetRoleUnreachableError,
@@ -49,17 +51,18 @@ async function withRoleCatalogLock(
   );
 }
 
-// Needs no database: it is about the SHAPE of the refusals. `src/index.ts` rethrows on the base
-// class, so a refusal that does not extend it is caught there as "DB unavailable?" and the process
-// keeps serving.
+// Needs no database: it is about the SHAPE of the refusals and what the boot step does with them. A
+// refusal that does not extend the base is caught at boot as "DB unavailable?" and the process keeps
+// serving.
 describe("every refusal this guard makes is fatal at boot", () => {
-  test("all of them extend the class src/index.ts rethrows on", () => {
-    const errorClasses = Object.entries(dbGuard).filter(
-      ([, v]) =>
-        typeof v === "function" &&
-        v !== RuntimeIsolationError &&
-        Object.prototype.isPrototypeOf.call(Error, v),
-    );
+  const errorClasses = Object.entries(dbGuard).filter(
+    ([, v]) =>
+      typeof v === "function" &&
+      v !== RuntimeIsolationError &&
+      Object.prototype.isPrototypeOf.call(Error, v),
+  );
+
+  test("all of them extend the class the boot step rethrows on", () => {
     // NOTE: positive control: a scan that matched nothing would pass whatever the answer is.
     expect(errorClasses.map(([k]) => k).sort()).toEqual([
       "FleetPolicyMismatchError",
@@ -73,16 +76,53 @@ describe("every refusal this guard makes is fatal at boot", () => {
     }
   });
 
-  test("and src/index.ts catches the base, not one of them by name", async () => {
-    const source = await Bun.file(
-      new URL("../../src/index.ts", import.meta.url).pathname,
-    ).text();
-    const code = source
-      .split("\n")
-      .filter((l) => !l.trim().startsWith("//"))
-      .join("\n");
-    expect(code).toContain("error instanceof RuntimeIsolationError");
-    expect(code).not.toContain("error instanceof SuperuserRuntimeError");
+  test("and the boot step rethrows each of them, without warning", async () => {
+    const warn = spyOn(logger, "warn").mockImplementation(() => {});
+    try {
+      for (const [name, cls] of errorClasses) {
+        const refusal = Object.create(
+          (cls as { prototype: object }).prototype,
+        ) as Error;
+        const thrown = await checkRuntimeRoleAtBoot(async () => {
+          throw refusal;
+        }).then(
+          () => null,
+          (e: unknown) => e,
+        );
+        expect({ name, thrown }).toEqual({ name, thrown: refusal });
+      }
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test("an error that is not a refusal only warns, and boot continues", async () => {
+    const warn = spyOn(logger, "warn").mockImplementation(() => {});
+    try {
+      const outage = new Error("connect ECONNREFUSED 127.0.0.1:5432");
+      await expect(
+        checkRuntimeRoleAtBoot(async () => {
+          throw outage;
+        }),
+      ).resolves.toBeUndefined();
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]?.[0]).toEqual({ error: outage });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test("a check that passes neither throws nor warns", async () => {
+    const warn = spyOn(logger, "warn").mockImplementation(() => {});
+    try {
+      await expect(
+        checkRuntimeRoleAtBoot(async () => {}),
+      ).resolves.toBeUndefined();
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 

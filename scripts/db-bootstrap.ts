@@ -305,7 +305,7 @@ async function revokeForeignFleetAccess(client: Client, fleetRole: string) {
 // statement is one a CREATEROLE administrator may run. The role holds no attribute: what lets it
 // across tenants is the `fleet_super_admin` policy, so a table with RLS but no such policy fails
 // closed.
-async function provisionFleetRole(
+export async function provisionFleetRole(
   client: Client,
   role: string,
   ident: string,
@@ -737,6 +737,147 @@ async function provisionRuntimeRole(
   }
 }
 
+// Everything bootstrap does over its administrative connection, given the runtime role it serves:
+// the runtime role, its grants, the fleet role and the checkpointer schema. Which statements it sends
+// turns on the server's `server_version_num`, read here, never assumed.
+export async function provisionDatabase(
+  client: Client,
+  role: string,
+  password: string,
+) {
+  // Safe to interpolate only because `parseAppRole` refuses a name that could carry a quote.
+  const ident = `"${role}"`;
+  // NOTE: superuser-only to install, and a permitted no-op once present.
+  await client.query("CREATE EXTENSION IF NOT EXISTS vector");
+
+  await client.query("SELECT set_config('fazerai.app_role', $1, false)", [
+    role,
+  ]);
+  await client.query("SELECT set_config('fazerai.app_password', $1, false)", [
+    password,
+  ]);
+
+  // `admin_superuser` and `server_version_num` decide nothing; they name the mode in the log.
+  const state = await client.query<{
+    app_exists: boolean;
+    app_superuser: boolean;
+    app_bypassrls: boolean;
+    app_createdb: boolean;
+    app_createrole: boolean;
+    admin_superuser: boolean;
+    server_version_num: number;
+  }>(
+    `SELECT
+       EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1) AS app_exists,
+       COALESCE((SELECT rolsuper      FROM pg_roles WHERE rolname = $1), false) AS app_superuser,
+       COALESCE((SELECT rolbypassrls  FROM pg_roles WHERE rolname = $1), false) AS app_bypassrls,
+       COALESCE((SELECT rolcreatedb   FROM pg_roles WHERE rolname = $1), false) AS app_createdb,
+       COALESCE((SELECT rolcreaterole FROM pg_roles WHERE rolname = $1), false) AS app_createrole,
+       COALESCE((SELECT rolsuper FROM pg_roles WHERE rolname = current_user), false) AS admin_superuser,
+       current_setting('server_version_num')::int AS server_version_num`,
+    [role],
+  );
+  const s = state.rows[0];
+  if (!s) throw new Error("could not read the role catalog");
+  const runtimeRole: RuntimeRoleState = {
+    exists: s.app_exists,
+    isSuperuser: s.app_superuser,
+    bypassesRls: s.app_bypassrls,
+    hasCreateDb: s.app_createdb,
+    hasCreateRole: s.app_createrole,
+  };
+  const plan = planRoleProvisioning(runtimeRole);
+
+  await provisionRuntimeRole(client, role, ident, runtimeRole, plan);
+
+  // Re-read, since the demotion may have changed the answer. `pg_has_role(..., 'USAGE')`
+  // rather than `pg_auth_members.inherit_option`, a PostgreSQL 16 column that would fail every
+  // boot on older servers.
+  const privileged = (
+    await client.query<{
+      reaches: string | null;
+      revokable: string | null;
+    }>(
+      `SELECT
+         (SELECT ${privilegedReachSql("r.oid", FLEET_ROLE_EXPR)}
+            FROM pg_roles r WHERE r.rolname = $1) AS reaches,
+         (SELECT string_agg(DISTINCT quote_ident(d.rolname), ', ')
+            FROM pg_auth_members am
+            JOIN pg_roles r ON r.oid = am.member
+            JOIN pg_roles d ON d.oid = am.roleid
+           WHERE r.rolname = $1
+             AND pg_has_role(r.oid, d.oid, 'USAGE')
+             AND EXISTS (SELECT 1 FROM pg_roles p
+                          WHERE (p.rolsuper OR p.rolbypassrls)
+                            AND pg_has_role(d.oid, p.oid, 'USAGE'))) AS revokable`,
+      [role],
+    )
+  ).rows[0];
+  assertRuntimeRoleIsUnprivileged(
+    role,
+    privileged?.reaches ?? null,
+    privileged?.revokable ?? null,
+  );
+
+  // NOTE: CREATE so PostgresSaver.setup() can run `CREATE SCHEMA IF NOT EXISTS langgraph`, whose
+  // privilege is checked even when the schema already exists.
+  await client.query(`
+    DO $$
+    BEGIN
+      EXECUTE format('GRANT CONNECT, CREATE ON DATABASE %I TO %I',
+                     current_database(), current_setting('fazerai.app_role'));
+    END $$;
+  `);
+
+  // NOTE: ALTER DEFAULT PRIVILEGES is scoped to the role running it, which is the one that runs
+  // migrations, so future migration tables get these grants.
+  await client.query(`GRANT USAGE ON SCHEMA public TO ${ident}`);
+  await client.query(
+    `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ${ident}`,
+  );
+  await client.query(
+    `GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO ${ident}`,
+  );
+  await client.query(
+    `ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO ${ident}`,
+  );
+  await client.query(
+    `ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO ${ident}`,
+  );
+
+  // NOTE: on 16+ `CREATE SCHEMA ... AUTHORIZATION` needs SET ROLE to the owner, and the implicit
+  // membership CREATEROLE confers carries SET FALSE; an explicit grant fixes it (best-effort, the
+  // CREATE SCHEMA reports the real problem). `INHERIT TRUE` is not redundant: it defaults to the
+  // grantee's `rolinherit`, and an administrator that is also the outgoing runtime role must keep
+  // the checkpointer tables the schema step hands over.
+  if (s.server_version_num >= 160000) {
+    try {
+      await client.query(
+        `GRANT ${ident} TO CURRENT_USER WITH SET TRUE, INHERIT TRUE`,
+      );
+    } catch (err) {
+      console.warn(
+        `db-bootstrap: could not grant "${role}" to the administrative role (${message(err)})`,
+      );
+    }
+  }
+
+  const fleetRoleName = await provisionFleetRole(
+    client,
+    role,
+    ident,
+    s.server_version_num,
+  );
+
+  await provisionCheckpointerSchema(client, role, ident);
+
+  console.log(
+    `db-bootstrap: provisioned runtime role "${role}" + fleet role "${fleetRoleName}" ` +
+      `(idempotent; ${plan}, ` +
+      `admin=${s.admin_superuser ? "superuser" : "non-superuser"}, server=${s.server_version_num})`,
+  );
+}
+
 async function main() {
   const migrationUrl = process.env.MIGRATION_DATABASE_URL;
   const appUrl = process.env.DATABASE_URL;
@@ -748,140 +889,11 @@ async function main() {
   if (!appUrl) throw new Error("DATABASE_URL is required for bootstrap");
 
   const { role, password } = parseAppRole(substitutePort(appUrl));
-  const ident = `"${role}"`; // validated above
 
   const client = new Client({ connectionString: substitutePort(migrationUrl) });
   await client.connect();
   try {
-    // NOTE: superuser-only to install, and a permitted no-op once present.
-    await client.query("CREATE EXTENSION IF NOT EXISTS vector");
-
-    await client.query("SELECT set_config('fazerai.app_role', $1, false)", [
-      role,
-    ]);
-    await client.query("SELECT set_config('fazerai.app_password', $1, false)", [
-      password,
-    ]);
-
-    // `admin_superuser` and `server_version_num` decide nothing; they name the mode in the log.
-    const state = await client.query<{
-      app_exists: boolean;
-      app_superuser: boolean;
-      app_bypassrls: boolean;
-      app_createdb: boolean;
-      app_createrole: boolean;
-      admin_superuser: boolean;
-      server_version_num: number;
-    }>(
-      `SELECT
-         EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1) AS app_exists,
-         COALESCE((SELECT rolsuper      FROM pg_roles WHERE rolname = $1), false) AS app_superuser,
-         COALESCE((SELECT rolbypassrls  FROM pg_roles WHERE rolname = $1), false) AS app_bypassrls,
-         COALESCE((SELECT rolcreatedb   FROM pg_roles WHERE rolname = $1), false) AS app_createdb,
-         COALESCE((SELECT rolcreaterole FROM pg_roles WHERE rolname = $1), false) AS app_createrole,
-         COALESCE((SELECT rolsuper FROM pg_roles WHERE rolname = current_user), false) AS admin_superuser,
-         current_setting('server_version_num')::int AS server_version_num`,
-      [role],
-    );
-    const s = state.rows[0];
-    if (!s) throw new Error("could not read the role catalog");
-    const runtimeRole: RuntimeRoleState = {
-      exists: s.app_exists,
-      isSuperuser: s.app_superuser,
-      bypassesRls: s.app_bypassrls,
-      hasCreateDb: s.app_createdb,
-      hasCreateRole: s.app_createrole,
-    };
-    const plan = planRoleProvisioning(runtimeRole);
-
-    await provisionRuntimeRole(client, role, ident, runtimeRole, plan);
-
-    // Re-read, since the demotion may have changed the answer. `pg_has_role(..., 'USAGE')`
-    // rather than `pg_auth_members.inherit_option`, a PostgreSQL 16 column that would fail every
-    // boot on older servers.
-    const privileged = (
-      await client.query<{
-        reaches: string | null;
-        revokable: string | null;
-      }>(
-        `SELECT
-           (SELECT ${privilegedReachSql("r.oid", FLEET_ROLE_EXPR)}
-              FROM pg_roles r WHERE r.rolname = $1) AS reaches,
-           (SELECT string_agg(DISTINCT quote_ident(d.rolname), ', ')
-              FROM pg_auth_members am
-              JOIN pg_roles r ON r.oid = am.member
-              JOIN pg_roles d ON d.oid = am.roleid
-             WHERE r.rolname = $1
-               AND pg_has_role(r.oid, d.oid, 'USAGE')
-               AND EXISTS (SELECT 1 FROM pg_roles p
-                            WHERE (p.rolsuper OR p.rolbypassrls)
-                              AND pg_has_role(d.oid, p.oid, 'USAGE'))) AS revokable`,
-        [role],
-      )
-    ).rows[0];
-    assertRuntimeRoleIsUnprivileged(
-      role,
-      privileged?.reaches ?? null,
-      privileged?.revokable ?? null,
-    );
-
-    // NOTE: CREATE so PostgresSaver.setup() can run `CREATE SCHEMA IF NOT EXISTS langgraph`, whose
-    // privilege is checked even when the schema already exists.
-    await client.query(`
-      DO $$
-      BEGIN
-        EXECUTE format('GRANT CONNECT, CREATE ON DATABASE %I TO %I',
-                       current_database(), current_setting('fazerai.app_role'));
-      END $$;
-    `);
-
-    // NOTE: ALTER DEFAULT PRIVILEGES is scoped to the role running it, which is the one that runs
-    // migrations, so future migration tables get these grants.
-    await client.query(`GRANT USAGE ON SCHEMA public TO ${ident}`);
-    await client.query(
-      `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ${ident}`,
-    );
-    await client.query(
-      `GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO ${ident}`,
-    );
-    await client.query(
-      `ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO ${ident}`,
-    );
-    await client.query(
-      `ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO ${ident}`,
-    );
-
-    // NOTE: on 16+ `CREATE SCHEMA ... AUTHORIZATION` needs SET ROLE to the owner, and the implicit
-    // membership CREATEROLE confers carries SET FALSE; an explicit grant fixes it (best-effort, the
-    // CREATE SCHEMA reports the real problem). `INHERIT TRUE` is not redundant: it defaults to the
-    // grantee's `rolinherit`, and an administrator that is also the outgoing runtime role must keep
-    // the checkpointer tables the schema step hands over.
-    if (s.server_version_num >= 160000) {
-      try {
-        await client.query(
-          `GRANT ${ident} TO CURRENT_USER WITH SET TRUE, INHERIT TRUE`,
-        );
-      } catch (err) {
-        console.warn(
-          `db-bootstrap: could not grant "${role}" to the administrative role (${message(err)})`,
-        );
-      }
-    }
-
-    const fleetRoleName = await provisionFleetRole(
-      client,
-      role,
-      ident,
-      s.server_version_num,
-    );
-
-    await provisionCheckpointerSchema(client, role, ident);
-
-    console.log(
-      `db-bootstrap: provisioned runtime role "${role}" + fleet role "${fleetRoleName}" ` +
-        `(idempotent; ${plan}, ` +
-        `admin=${s.admin_superuser ? "superuser" : "non-superuser"}, server=${s.server_version_num})`,
-    );
+    await provisionDatabase(client, role, password);
   } finally {
     await client.end();
   }

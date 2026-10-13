@@ -21,7 +21,7 @@ const DOCS = ["do", "cs"].join("");
 const VIEW = ["pg_stat", "activity"].join("_");
 const DB = "declare const db: { $queryRaw: (...a: unknown[]) => unknown };\n";
 // On the no-test-reads-source list, and on the no-test-real-wait list, in biome.jsonc.
-const LISTED_SOURCE = "tests/client/import-warnings-rendered.test.ts";
+const LISTED_SOURCE = "tests/client/debug-warning-source.test.ts";
 const LISTED_WAIT = "tests/api/features/realtime/realtime.controller.test.ts";
 const APP = "declare const app: { listen: (...a: unknown[]) => unknown };\n";
 const PROBE_HEAD =

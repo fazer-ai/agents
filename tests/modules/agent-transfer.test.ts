@@ -1209,7 +1209,9 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     expect(kb?.stripContactFooters).toBe(true);
     // NOTE: KB created empty (no bundled documents). Creation is SILENT (only a reuse warns), so no
     // kbCreatedEmpty warning fires; the empty base just exists.
-    expect(warnings.some((w) => w.code === "kbCreatedEmpty")).toBe(false);
+    expect(warnings.some((w) => (w.code as string) === "kbCreatedEmpty")).toBe(
+      false,
+    );
     const kbDocCount = await suDb.knowledgeDocument.count({
       where: { tenantId: dstTenant, knowledgeBaseId: kb?.id },
     });
@@ -1227,7 +1229,9 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
       select: { businessHoursId: true },
     });
     expect(agentRow?.businessHoursId).not.toBeNull();
-    expect(warnings.some((w) => w.code === "hoursCreated")).toBe(false);
+    expect(warnings.some((w) => (w.code as string) === "hoursCreated")).toBe(
+      false,
+    );
     // Grants resolved to the just-created components.
     const grants = await suDb.agentToolSelection.findMany({
       where: { agentId: BigInt(agent.id) },
@@ -3627,7 +3631,9 @@ describe.skipIf(!dbUp)("agent export/import with KB documents", () => {
     expect(jobsAfter).toBe(jobsBefore);
     // NOTE: Creating the docs is SILENT (only reuse warns); the editor's live "needs indexing"
     // alert surfaces them instead, so no kbDocsImported warning: the UNINDEXED rows are the contract.
-    expect(warnings.some((w) => w.code === "kbDocsImported")).toBe(false);
+    expect(warnings.some((w) => (w.code as string) === "kbDocsImported")).toBe(
+      false,
+    );
   });
 
   test("re-import into a tenant that already has the base skips the bundled docs (no duplication)", async () => {

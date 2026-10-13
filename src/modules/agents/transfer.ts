@@ -39,6 +39,7 @@ import {
   remapCredRefAt,
   SETTINGS_CREDENTIAL_PATHS,
 } from "@/modules/agents/credential-paths";
+import type { ImportWarningCode } from "@/modules/agents/import-warning-codes";
 import { settingsForStorage } from "@/modules/agents/settings-storage";
 import {
   clampOversizedTextInPlace,
@@ -422,7 +423,7 @@ export type ImportWarningTarget =
   | { kind: "knowledge"; name: string };
 
 export interface ImportWarning {
-  code: string;
+  code: ImportWarningCode;
   params?: Record<string, string | number>;
   target?: ImportWarningTarget;
 }
@@ -1661,7 +1662,7 @@ function readableSchedule(
     0,
     MAX_SCHEDULE_EXCEPTIONS,
   );
-  const dropped: [string, number][] = [
+  const dropped: [ImportWarningCode, number][] = [
     [
       "hoursWindowsDropped",
       countNotStoredAsWritten(h.windows ?? [], MAX_SCHEDULE_WINDOWS, (item) =>

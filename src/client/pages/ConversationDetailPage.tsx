@@ -76,6 +76,7 @@ import {
   type TurnUsageEntry,
 } from "./conversationTimeline";
 import { DecisionTickMarker } from "./DecisionTickMarker";
+import { type DecisionTickView, previousDecisionTicks } from "./decisionTick";
 
 // Eden-derived types for the dynamic /conversations/:id routes (metadata shell + the separate
 // thread, fetched independently so a slow Chatwoot only spins the messages area).
@@ -444,8 +445,16 @@ function TurnUsageMarker({ turn }: { turn: TurnUsageEntry }) {
 // proactive follow-up that was sent). Distinct from the transient AgentActivityIndicator below. A tool
 // marker that captured args/result is EXPANDABLE: clicking it reveals the arguments and the result
 // (same rendering as the playground trace, via ToolCallDetails).
-function TrailMarker({ entry }: { entry: TrailEntry }) {
-  if (entry.kind === "decision") return <DecisionTickMarker entry={entry} />;
+function TrailMarker({
+  entry,
+  previous,
+}: {
+  entry: TrailEntry;
+  previous?: DecisionTickView;
+}) {
+  if (entry.kind === "decision") {
+    return <DecisionTickMarker entry={entry} previous={previous} />;
+  }
   return <ActivityTrailMarker entry={entry} />;
 }
 
@@ -1412,6 +1421,11 @@ export function ConversationDetailPage() {
       canLoadOlder,
     ],
   );
+  // Each decision tick's previous tick of the same agent, for the collapsed marker's "what changed".
+  const previousTicks = useMemo(
+    () => previousDecisionTicks(conv?.trail ?? []),
+    [conv?.trail],
+  );
   // Resolve a reply's quoted message: map id to message, so a bubble that quotes another can show a
   // WhatsApp-style preview when the referenced message is in the loaded window.
   const messagesById = useMemo(() => {
@@ -2065,7 +2079,11 @@ export function ConversationDetailPage() {
                   </div>
                   {timeline.items.map((item) =>
                     item.kind === "trail" ? (
-                      <TrailMarker key={item.key} entry={item.entry} />
+                      <TrailMarker
+                        key={item.key}
+                        entry={item.entry}
+                        previous={previousTicks.get(item.entry.id)}
+                      />
                     ) : item.kind === "usage" ? (
                       <TurnUsageMarker key={item.key} turn={item.turn} />
                     ) : null,
@@ -2096,7 +2114,13 @@ export function ConversationDetailPage() {
                   )}
                   {timeline.items.map((item) => {
                     if (item.kind === "trail") {
-                      return <TrailMarker key={item.key} entry={item.entry} />;
+                      return (
+                        <TrailMarker
+                          key={item.key}
+                          entry={item.entry}
+                          previous={previousTicks.get(item.entry.id)}
+                        />
+                      );
                     }
                     if (item.kind === "usage") {
                       return (

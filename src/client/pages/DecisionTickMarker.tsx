@@ -1,24 +1,33 @@
 import { ChevronDown, ChevronRight, ListChecks } from "lucide-react";
-import { useState } from "react";
+import { type ReactNode, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/client/lib/utils";
 import type { TrailEntry } from "./conversationTimeline";
 import {
   actionSummary,
+  answerChanges,
   type DecisionTickView,
   type ProbabilityRow,
   percent,
   type QuestionView,
   questionViews,
   type RuleView,
-  ruleViews,
+  ruleGroups,
 } from "./decisionTick";
 
 // One decision tick of a "Questions and rules" observer on the conversation timeline (agents#1401).
 // Collapsed it says what the tick did; expanded it shows every question's answer with its
 // probabilities and every rule's outcome, so an operator can tell a choice at 51% under a 60%
 // threshold from a question nobody asked without reading the logs.
-export function DecisionTickMarker({ entry }: { entry: TrailEntry }) {
+export function DecisionTickMarker({
+  entry,
+  previous,
+}: {
+  entry: TrailEntry;
+  // The previous decided tick of the same agent in this conversation, when there is one: the
+  // collapsed marker says which answers moved since.
+  previous?: DecisionTickView;
+}) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   const tick = entry.decision;
@@ -39,6 +48,8 @@ export function DecisionTickMarker({ entry }: { entry: TrailEntry }) {
       : t("conversation.trail.decision.classified", "Classified");
   const why = failed || skipped ? whyText(tick, t) : null;
   const summary = failed || skipped ? null : summaryText(tick, t);
+  const changes =
+    failed || skipped || !previous ? [] : answerChanges(previous, tick);
   const hasDetails = tick.answers !== null || tick.actions.length > 0;
 
   const line = (
@@ -80,6 +91,24 @@ export function DecisionTickMarker({ entry }: { entry: TrailEntry }) {
           <span>{summary}</span>
         </>
       )}
+      {changes.length > 0 && (
+        <>
+          <span aria-hidden="true">·</span>
+          <span className="text-text-secondary" data-testid="decision-changes">
+            {changes
+              .map((c) => {
+                const word = (w: string) =>
+                  !c.yesNo
+                    ? w
+                    : w === "yes"
+                      ? t("conversation.trail.decision.yes", "yes")
+                      : t("conversation.trail.decision.no", "no");
+                return `${c.question}: ${word(c.from)} → ${word(c.to)}`;
+              })
+              .join("; ")}
+          </span>
+        </>
+      )}
     </div>
   );
   const reasonLine = why && (
@@ -113,7 +142,7 @@ export function DecisionTickMarker({ entry }: { entry: TrailEntry }) {
       </button>
       {reasonLine}
       {expanded && (
-        <div className="w-full max-w-xl">
+        <div className="w-full">
           <DecisionTickDetails tick={tick} />
         </div>
       )}
@@ -243,14 +272,17 @@ function whyText(tick: DecisionTickView, t: T): string {
 export function DecisionTickDetails({ tick }: { tick: DecisionTickView }) {
   const { t } = useTranslation();
   const questions = questionViews(tick);
-  const rules = ruleViews(tick);
+  const groups = ruleGroups(tick);
+  const [restOpen, setRestOpen] = useState(false);
+  const hasRules =
+    groups.fired.length + groups.near.length + groups.rest.length > 0;
   return (
     <div
-      className="flex flex-col gap-2 rounded border border-border bg-bg-secondary p-2 text-left text-xs"
+      className="grid gap-3 rounded border border-border bg-bg-secondary p-2 text-left text-xs lg:grid-cols-2"
       data-testid="decision-details"
     >
       {questions.length > 0 && (
-        <div className="flex flex-col gap-2">
+        <div className="flex min-w-0 flex-col gap-1">
           <span className="font-medium text-[10px] text-text-muted uppercase tracking-wider">
             {t("conversation.trail.decision.questions", "Questions")}
           </span>
@@ -259,75 +291,180 @@ export function DecisionTickDetails({ tick }: { tick: DecisionTickView }) {
           ))}
         </div>
       )}
-      {rules.length > 0 && (
-        <div className="flex flex-col gap-1">
-          <span className="font-medium text-[10px] text-text-muted uppercase tracking-wider">
-            {t("conversation.trail.decision.rules", "Rules")}
-          </span>
-          {rules.map((r) => (
-            <RuleRow key={r.rule} r={r} tick={tick} />
-          ))}
+      {hasRules && (
+        <div className="flex min-w-0 flex-col gap-2">
+          {groups.fired.length > 0 && (
+            <RuleGroup
+              testId="decision-rules-fired"
+              title={t("conversation.trail.decision.groupFired", "Fired")}
+            >
+              {groups.fired.map((r) => (
+                <RuleRow key={r.rule} r={r} tick={tick} />
+              ))}
+            </RuleGroup>
+          )}
+          {groups.near.length > 0 && (
+            <RuleGroup
+              testId="decision-rules-near"
+              title={t("conversation.trail.decision.groupNear", "Almost fired")}
+            >
+              {groups.near.map((r) => (
+                <RuleRow key={r.rule} r={r} tick={tick} />
+              ))}
+            </RuleGroup>
+          )}
+          {groups.rest.length > 0 && (
+            <div
+              className="flex flex-col gap-1"
+              data-testid="decision-rules-rest"
+            >
+              <button
+                type="button"
+                onClick={() => setRestOpen((v) => !v)}
+                aria-expanded={restOpen}
+                className="flex items-center gap-1 self-start rounded px-1 py-0.5 text-text-muted hover:bg-bg-tertiary"
+              >
+                {restOpen ? (
+                  <ChevronDown
+                    className="h-3 w-3 shrink-0"
+                    aria-hidden="true"
+                  />
+                ) : (
+                  <ChevronRight
+                    className="h-3 w-3 shrink-0"
+                    aria-hidden="true"
+                  />
+                )}
+                {t(
+                  "conversation.trail.decision.restCount",
+                  "{{count}} rules did not fire",
+                  { count: groups.rest.length },
+                )}
+              </button>
+              {restOpen &&
+                groups.rest.map((r) => (
+                  <RuleRow key={r.rule} r={r} tick={tick} />
+                ))}
+            </div>
+          )}
         </div>
       )}
     </div>
   );
 }
 
+function RuleGroup({
+  title,
+  testId,
+  children,
+}: {
+  title: string;
+  testId: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="flex flex-col gap-1" data-testid={testId}>
+      <span className="font-medium text-[10px] text-text-muted uppercase tracking-wider">
+        {title}
+      </span>
+      {children}
+    </div>
+  );
+}
+
+// One line per question: the answer and the confidence, with a close call flagged. The bars for every
+// option open on a click, so thirty options do not stand between the operator and the rules.
 function QuestionBlock({ q }: { q: QuestionView }) {
   const { t } = useTranslation();
+  const [open, setOpen] = useState(false);
+  const bars = q.kind === "choice" || q.kind === "score" || q.kind === "yes_no";
+  const answer =
+    q.kind === "unanswered"
+      ? t("conversation.trail.decision.unanswered", "not answered")
+      : q.kind === "refusal"
+        ? t(
+            "conversation.trail.decision.refusal",
+            "the classifier declined to answer",
+          )
+        : q.kind === "yes_no"
+          ? t("conversation.trail.decision.yesProbability", "yes: {{p}}", {
+              p: percent(q.probability),
+            })
+          : q.kind === "choice"
+            ? (q.choice ?? "—")
+            : t(
+                "conversation.trail.decision.scoreLevel",
+                "level {{level}}{{name}} (score {{score}})",
+                {
+                  level: q.level,
+                  name: q.levelName ? ` · ${q.levelName}` : "",
+                  score: q.score.toFixed(2),
+                },
+              );
+  const head = (
+    <span className="flex min-w-0 flex-wrap items-baseline gap-1.5">
+      {bars &&
+        (open ? (
+          <ChevronDown
+            className="h-3 w-3 shrink-0 self-center"
+            aria-hidden="true"
+          />
+        ) : (
+          <ChevronRight
+            className="h-3 w-3 shrink-0 self-center"
+            aria-hidden="true"
+          />
+        ))}
+      <span className="font-medium font-mono text-text-primary">{q.name}</span>
+      <span
+        className={cn(
+          q.kind === "unanswered" || q.kind === "refusal"
+            ? "text-text-muted"
+            : "text-text-secondary",
+        )}
+      >
+        {answer}
+      </span>
+      {(q.kind === "choice" || q.kind === "score") && q.confidence !== null && (
+        <span className="text-text-muted">
+          {t("conversation.trail.decision.confidence", "confidence {{p}}", {
+            p: percent(q.confidence),
+          })}
+        </span>
+      )}
+      {(q.kind === "choice" || q.kind === "score") && q.closeCall && (
+        <span
+          className="rounded bg-warning-soft px-1 text-warning"
+          data-testid="decision-close-call"
+        >
+          {t(
+            "conversation.trail.decision.closeCall",
+            "close call: {{value}} {{p}}",
+            { value: q.closeCall.value, p: percent(q.closeCall.probability) },
+          )}
+        </span>
+      )}
+    </span>
+  );
   return (
     <div
       className="flex flex-col gap-1"
       data-testid={`decision-question-${q.name}`}
     >
-      <div className="flex flex-wrap items-baseline gap-1.5">
-        <span className="font-medium font-mono text-text-primary">
-          {q.name}
-        </span>
-        {q.kind === "unanswered" && (
-          <span className="text-text-muted">
-            {t("conversation.trail.decision.unanswered", "not answered")}
-          </span>
-        )}
-        {q.kind === "refusal" && (
-          <span className="text-text-muted">
-            {t(
-              "conversation.trail.decision.refusal",
-              "the classifier declined to answer",
-            )}
-          </span>
-        )}
-        {q.kind === "yes_no" && (
-          <span className="text-text-secondary">
-            {t("conversation.trail.decision.yesProbability", "yes: {{p}}", {
-              p: percent(q.probability),
-            })}
-          </span>
-        )}
-        {q.kind === "score" && (
-          <span className="text-text-secondary">
-            {t(
-              "conversation.trail.decision.scoreLevel",
-              "level {{level}}{{name}} (score {{score}})",
-              {
-                level: q.level,
-                name: q.levelName ? ` · ${q.levelName}` : "",
-                score: q.score.toFixed(2),
-              },
-            )}
-          </span>
-        )}
-        {(q.kind === "choice" || q.kind === "score") &&
-          q.confidence !== null && (
-            <span className="text-text-muted">
-              {t("conversation.trail.decision.confidence", "confidence {{p}}", {
-                p: percent(q.confidence),
-              })}
-            </span>
-          )}
-      </div>
-      {q.kind === "yes_no" && (
-        <>
+      {bars ? (
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+          className="rounded px-1 py-0.5 text-left hover:bg-bg-tertiary"
+        >
+          {head}
+        </button>
+      ) : (
+        <div className="px-1 py-0.5">{head}</div>
+      )}
+      {open && q.kind === "yes_no" && (
+        <div className="flex flex-col gap-1 pl-5">
           <Bar p={q.probability} chosen />
           {q.thresholds.length > 0 && (
             <span className="text-text-muted">
@@ -342,10 +479,15 @@ function QuestionBlock({ q }: { q: QuestionView }) {
                 .join(" · ")}
             </span>
           )}
-        </>
+        </div>
       )}
-      {(q.kind === "choice" || q.kind === "score") &&
-        q.rows.map((row) => <ProbabilityLine key={row.value} row={row} />)}
+      {open && (q.kind === "choice" || q.kind === "score") && (
+        <div className="flex flex-col gap-1 pl-5">
+          {q.rows.map((row) => (
+            <ProbabilityLine key={row.value} row={row} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -427,7 +569,68 @@ function RuleRow({ r, tick }: { r: RuleView; tick: DecisionTickView }) {
       >
         {ruleText(r, tick, t)}
       </span>
+      {(r.kind === "fired" || r.kind === "held") && (
+        <CauseText rule={r.rule} tick={tick} />
+      )}
     </div>
+  );
+}
+
+// What made a fired rule act: its conditions, each with the answer this tick gave. Known only from the
+// block the tick ran; a line of another block names the rule and its outcome alone.
+function CauseText({ rule, tick }: { rule: number; tick: DecisionTickView }) {
+  const { t } = useTranslation();
+  const when = tick.block?.rules[rule]?.when;
+  if (!when || when.length === 0) return null;
+  const answers = tick.answers ?? {};
+  const parts = when.map((c) => {
+    const a = (answers[c.question] ?? null) as Record<string, unknown> | null;
+    const num = (v: unknown) =>
+      typeof v === "number" && Number.isFinite(v) ? v : null;
+    if ("minProbability" in c) {
+      const p = num(a?.probability);
+      return t(
+        "conversation.trail.decision.causeYes",
+        "{{question}} yes {{p}} (at least {{min}})",
+        {
+          question: c.question,
+          p: p === null ? "—" : percent(p),
+          min: percent(c.minProbability),
+        },
+      );
+    }
+    if ("equals" in c) {
+      return t(
+        "conversation.trail.decision.causeChoice",
+        "{{question}} is {{value}}",
+        {
+          question: c.question,
+          value: c.equals,
+        },
+      );
+    }
+    const score = num(a?.score);
+    const q = tick.block?.questions.find((x) => x.name === c.question);
+    const level = score === null ? null : Math.round(score);
+    const name =
+      level !== null && q?.type === "score"
+        ? q.levels[level]?.value
+        : undefined;
+    return t(
+      "conversation.trail.decision.causeLevel",
+      "{{question}} level {{level}}",
+      {
+        question: c.question,
+        level: `${level ?? "—"}${name ? ` (${name})` : ""}`,
+      },
+    );
+  });
+  return (
+    <span className="text-text-muted" data-testid="decision-rule-cause">
+      {t("conversation.trail.decision.because", "because {{cause}}", {
+        cause: parts.join(", "),
+      })}
+    </span>
   );
 }
 

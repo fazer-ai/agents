@@ -19,6 +19,7 @@ import {
   type TrailEntry,
 } from "@/client/pages/conversationTimeline";
 import { DecisionTickMarker } from "@/client/pages/DecisionTickMarker";
+import { isNearMiss, previousDecisionTicks } from "@/client/pages/decisionTick";
 
 // A decision tick of a "Questions and rules" observer on the conversation page (agents#1401):
 // collapsed it says what the tick did; expanded it shows each question's answer with its
@@ -118,6 +119,7 @@ const ANSWERS = {
 function tick(over: Partial<Tick> = {}): Tick {
   return {
     outcome: "decided",
+    agentId: "7",
     provider: "typesafe",
     model: "jev-latest",
     modelVersion: "jev-1.13.0",
@@ -213,14 +215,29 @@ function msg(id: number, atMs: number): Message {
   } as unknown as Message;
 }
 
+// Opens the marker, then every question's bars and the folded rules, so a test reads the whole tick.
 async function expand(e: TrailEntry, lng: "en" | "pt-BR" = "en") {
   await inLanguage(lng, <DecisionTickMarker entry={e} />);
-  fireEvent.click(screen.getByRole("button"));
-  return screen.getByTestId("decision-details");
+  fireEvent.click(screen.getAllByRole("button")[0] as HTMLElement);
+  const d = screen.getByTestId("decision-details");
+  for (const q of within(d).queryAllByTestId(/^decision-question-/)) {
+    const b = within(q).queryByRole("button");
+    if (b) fireEvent.click(b);
+  }
+  const rest = within(d).queryByTestId("decision-rules-rest");
+  if (rest) fireEvent.click(within(rest).getByRole("button"));
+  return d;
 }
 
+// Every rule's line, in rule order whatever group it sits in.
 const ruleLines = () =>
-  screen.getAllByTestId("decision-rule").map((r) => r.textContent ?? "");
+  screen
+    .getAllByTestId("decision-rule")
+    .map((r) => r.textContent ?? "")
+    .sort(
+      (a, b) =>
+        Number(/^Rule (\d+)/.exec(a)?.[1]) - Number(/^Rule (\d+)/.exec(b)?.[1]),
+    );
 
 describe("the collapsed marker", () => {
   test("names the classifier version, the duration and what ran, counted by kind", async () => {
@@ -493,7 +510,7 @@ describe("the expanded tick", () => {
   test("every rule has its outcome: fired, and each reason a rule did not fire", async () => {
     await expand(entry("1"));
     expect(ruleLines()).toEqual([
-      "Rule 1set_labelsfired: ran",
+      "Rule 1set_labelsfired: ranbecause asks_refund yes 82% (at least 70%)",
       "Rule 2handoff_to_humannot fired: asks_refund probability 82% is below 90%",
       "Rule 3set_custom_attributenot fired: topic confidence 51% is below 60%",
       "Rule 4set_labelsnot fired: anger reached level 1 (upset), the rule asks 2 (furious) to 2 (furious)",
@@ -529,6 +546,15 @@ describe("the expanded tick", () => {
     await expand(
       entry("1", {
         decision: tick({
+          answers: {
+            ...ANSWERS,
+            anger: {
+              type: "score",
+              score: 2,
+              confidence: 0.9,
+              probabilities: { calm: 0, upset: 0.1, furious: 0.9 },
+            },
+          },
           held: [{ rule: 3, trigger: "on_start" }],
           notFired: [],
           actions: [
@@ -538,8 +564,14 @@ describe("the expanded tick", () => {
       }),
     );
     expect(ruleLines()[3]).toBe(
-      "Rule 4set_labelsconditions held, but it already acted (When the conditions start holding)",
+      "Rule 4set_labelsconditions held, but it already acted (When the conditions start holding)because anger level 2 (furious)",
     );
+    // Its conditions held, so it sits with the rules that fired, not among the misses.
+    expect(
+      within(screen.getByTestId("decision-rules-fired"))
+        .getAllByTestId("decision-rule")
+        .map((r) => /^Rule (\d+)/.exec(r.textContent ?? "")?.[1]),
+    ).toEqual(["1", "4"]);
   });
 
   test("each outcome of a fired rule, and a merged rule takes the outcome of the action it shares", async () => {
@@ -574,11 +606,11 @@ describe("the expanded tick", () => {
       }),
     );
     expect(ruleLines()).toEqual([
-      "Rule 1set_labelsfired: refused by a protected label",
-      "Rule 2handoff_to_humanfired: not allowed for this agent",
-      "Rule 3set_custom_attributefired: failed (tool_error)",
-      "Rule 4set_labelsfired, same action as rule 1: refused by a protected label",
-      "Rule 5private_notefired: ran",
+      "Rule 1set_labelsfired: refused by a protected labelbecause asks_refund yes 82% (at least 70%)",
+      "Rule 2handoff_to_humanfired: not allowed for this agentbecause asks_refund yes 82% (at least 90%)",
+      "Rule 3set_custom_attributefired: failed (tool_error)because topic is exchange",
+      "Rule 4set_labelsfired, same action as rule 1: refused by a protected labelbecause anger level 1 (upset)",
+      "Rule 5private_notefired: ranbecause topic is damaged",
     ]);
   });
 
@@ -684,6 +716,159 @@ describe("a line that ran another block", () => {
       ["damaged10%", "false"],
       ["exchangechosen—", "true"],
     ]);
+  });
+});
+
+describe("reading a large block (the operator's review of #1417)", () => {
+  test("a question is one line, its answer and confidence; its bars open on a click", async () => {
+    await inLanguage("en", <DecisionTickMarker entry={entry("1")} />);
+    fireEvent.click(screen.getAllByRole("button")[0] as HTMLElement);
+    const q = screen.getByTestId("decision-question-topic");
+    expect(q.textContent).toBe("topicexchangeconfidence 51%");
+    expect(within(q).queryAllByTestId("decision-option")).toEqual([]);
+    expect(q.textContent).not.toContain("exchange or return");
+    fireEvent.click(within(q).getByRole("button"));
+    expect(within(q).getAllByTestId("decision-option")).toHaveLength(3);
+  });
+
+  test("a runner-up within 15 points of the chosen option is flagged as a close call", async () => {
+    const closeOn = (p: Record<string, number>, choice: string) =>
+      tick({
+        answers: {
+          topic: { type: "choice", choice, confidence: 0.5, probabilities: p },
+        },
+      });
+    await inLanguage(
+      "en",
+      <DecisionTickMarker
+        entry={entry("1", {
+          decision: closeOn(
+            { exchange: 0.55, damaged: 0.44, other: 0.01 },
+            "exchange",
+          ),
+        })}
+      />,
+    );
+    fireEvent.click(screen.getAllByRole("button")[0] as HTMLElement);
+    expect(screen.getByTestId("decision-close-call").textContent).toBe(
+      "close call: damaged 44%",
+    );
+    cleanup();
+    await inLanguage(
+      "en",
+      <DecisionTickMarker
+        entry={entry("1", {
+          decision: closeOn(
+            { exchange: 0.6, damaged: 0.44, other: 0 },
+            "exchange",
+          ),
+        })}
+      />,
+    );
+    fireEvent.click(screen.getAllByRole("button")[0] as HTMLElement);
+    expect(screen.queryByTestId("decision-close-call")).toBeNull();
+  });
+
+  test("rules sit in three groups: fired with their cause, almost fired, and the rest folded", async () => {
+    await inLanguage("en", <DecisionTickMarker entry={entry("1")} />);
+    fireEvent.click(screen.getAllByRole("button")[0] as HTMLElement);
+    const lines = (id: string) =>
+      within(screen.getByTestId(id))
+        .queryAllByTestId("decision-rule")
+        .map((r) => /^Rule (\d+)/.exec(r.textContent ?? "")?.[1]);
+    expect(lines("decision-rules-fired")).toEqual(["1"]);
+    expect(
+      within(screen.getByTestId("decision-rules-fired")).getByTestId(
+        "decision-rule-cause",
+      ).textContent,
+    ).toBe("because asks_refund yes 82% (at least 70%)");
+    // 82% under 90%, a confidence of 51% under 60%, and a score one level short.
+    expect(lines("decision-rules-near")).toEqual(["2", "3", "4"]);
+    const rest = screen.getByTestId("decision-rules-rest");
+    expect(rest.textContent).toBe("1 rule did not fire");
+    expect(lines("decision-rules-rest")).toEqual([]);
+    fireEvent.click(within(rest).getByRole("button"));
+    expect(lines("decision-rules-rest")).toEqual(["5"]);
+  });
+
+  test("a near miss is within 15 points of its threshold, or one level outside the range", () => {
+    const below = (got: number, threshold: number) =>
+      isNearMiss({ why: "below_threshold", got, threshold, question: "q" });
+    expect(below(0.55, 0.7)).toBe(true);
+    expect(below(0.54, 0.7)).toBe(false);
+    expect(
+      isNearMiss({ why: "below_threshold", got: null, threshold: 0.7 }),
+    ).toBe(false);
+    const levels = (got: number, minLevel: number, maxLevel: number) =>
+      isNearMiss({ why: "outside_levels", got, minLevel, maxLevel });
+    expect(levels(1.2, 2, 2)).toBe(true);
+    expect(levels(0.4, 2, 2)).toBe(false);
+    expect(levels(4, 1, 3)).toBe(true);
+    expect(levels(4.6, 1, 3)).toBe(false);
+    expect(isNearMiss({ why: "other_choice", got: "a", expected: "b" })).toBe(
+      false,
+    );
+  });
+
+  test("the expanded tick takes the trail's width and puts questions and rules side by side on a wide screen", async () => {
+    const d = await expand(entry("1"));
+    expect(d.className).toContain("lg:grid-cols-2");
+    expect(d.parentElement?.className).toBe("w-full");
+  });
+
+  test("the collapsed marker says which answers moved since the agent's previous tick", async () => {
+    const previous = tick({
+      answers: {
+        ...ANSWERS,
+        asks_refund: { type: "yes_no", probability: 0.3 },
+        topic: { ...ANSWERS.topic, choice: "damaged" },
+        anger: { ...ANSWERS.anger, score: 2.1 },
+      },
+    });
+    await inLanguage(
+      "en",
+      <DecisionTickMarker entry={entry("2")} previous={previous} />,
+    );
+    expect(screen.getByTestId("decision-changes").textContent).toBe(
+      "asks_refund: no → yes; topic: damaged → exchange; anger: furious → upset",
+    );
+    cleanup();
+    await inLanguage(
+      "en",
+      <DecisionTickMarker entry={entry("2")} previous={tick()} />,
+    );
+    expect(screen.queryByTestId("decision-changes")).toBeNull();
+    cleanup();
+    await inLanguage("en", <DecisionTickMarker entry={entry("2")} />);
+    expect(screen.queryByTestId("decision-changes")).toBeNull();
+  });
+
+  test("the previous tick is the same agent's last decided one; the first has none", () => {
+    const of = (
+      id: string,
+      agentId: string,
+      outcome: Tick["outcome"] = "decided",
+    ) =>
+      entry(id, {
+        decision: tick({
+          agentId,
+          outcome,
+          ...(outcome === "decided" ? {} : { answers: null }),
+        }),
+      });
+    const trail = [
+      of("1", "A"),
+      of("2", "B"),
+      of("3", "A", "failed"),
+      of("4", "A"),
+      entry("5", { kind: "tool", decision: null }),
+      of("6", "B"),
+    ];
+    const prev = previousDecisionTicks(trail);
+    const agentOf = (id: string) => prev.get(id)?.agentId ?? null;
+    expect([...prev.keys()]).toEqual(["4", "6"]);
+    expect([agentOf("4"), agentOf("6")]).toEqual(["A", "B"]);
+    expect(prev.get("4")).toBe(trail[0]?.decision ?? undefined);
   });
 });
 

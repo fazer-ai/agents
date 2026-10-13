@@ -38,8 +38,10 @@ export type QuestionView =
   | {
       name: string;
       kind: "choice";
+      choice: string | null;
       confidence: number | null;
       rows: ProbabilityRow[];
+      closeCall: CloseCall | null;
     }
   | {
       name: string;
@@ -50,6 +52,7 @@ export type QuestionView =
       levelName: string | null;
       confidence: number | null;
       rows: ProbabilityRow[];
+      closeCall: CloseCall | null;
     };
 
 // One block per question: in the block's order when the tick ran the block shown, else in the order
@@ -121,8 +124,10 @@ function questionView(
     return {
       name,
       kind: "choice",
+      choice,
       confidence: num(a.confidence),
       rows,
+      closeCall: closeCallOf(rows),
     };
   }
   if (a.type === "score") {
@@ -140,9 +145,37 @@ function questionView(
       levelName,
       confidence: num(a.confidence),
       rows: rowsFor(levelName),
+      closeCall: closeCallOf(rowsFor(levelName)),
     };
   }
   return { name, kind: "unanswered" };
+}
+
+// How close a call has to be to be flagged, and how near a threshold a rule has to come to be a near
+// miss: about 15 points of probability or confidence (agents#1401, the operator's decision).
+export const NEAR = 0.15;
+
+export interface CloseCall {
+  value: string;
+  probability: number;
+}
+
+// The runner-up, when it came within NEAR of the chosen option: "negativo 55% against neutro 44%" is
+// the call an operator wants to see, since a threshold or an option there decides the outcome. Needs
+// the chosen option's own probability; a choice whose probability was not given is not judged.
+function closeCallOf(rows: ProbabilityRow[]): CloseCall | null {
+  const chosen = rows.find((r) => r.chosen);
+  if (!chosen || chosen.probability === null) return null;
+  let runner: CloseCall | null = null;
+  for (const r of rows) {
+    if (r.chosen || r.probability === null) continue;
+    if (!runner || r.probability > runner.probability) {
+      runner = { value: r.value, probability: r.probability };
+    }
+  }
+  return runner && chosen.probability - runner.probability <= NEAR + 1e-9
+    ? runner
+    : null;
 }
 
 export type RuleView =
@@ -253,6 +286,128 @@ export function actionSummary(tick: DecisionTickView): ActionSummary {
     s.labelsRemoved = writes.reduce((n, w) => n + w.removed, 0);
   }
   return s;
+}
+
+// The rules in the three groups the expanded tick shows: the ones that fired (or whose conditions
+// held and their trigger held them back), the near misses, and the rest, folded into one line.
+export interface RuleGroups {
+  fired: RuleView[];
+  near: RuleView[];
+  rest: RuleView[];
+}
+
+// A rule that did not fire is a near miss when its value came within NEAR of its threshold, or a
+// score landed one level outside its range: the rule an operator tunes. Everything else (another
+// option chosen, a question unanswered) is a plain no.
+export function isNearMiss(miss: Record<string, unknown>): boolean {
+  if (miss.why === "below_threshold") {
+    const got = num(miss.got);
+    const threshold = num(miss.threshold);
+    return got !== null && threshold !== null && threshold - got <= NEAR + 1e-9;
+  }
+  if (miss.why === "outside_levels") {
+    const got = num(miss.got);
+    const min = num(miss.minLevel);
+    const max = num(miss.maxLevel);
+    if (got === null || min === null || max === null) return false;
+    const level = Math.round(got);
+    return (level < min ? min - level : level - max) <= 1;
+  }
+  return false;
+}
+
+export function ruleGroups(tick: DecisionTickView): RuleGroups {
+  const groups: RuleGroups = { fired: [], near: [], rest: [] };
+  for (const r of ruleViews(tick)) {
+    if (r.kind === "fired" || r.kind === "held") groups.fired.push(r);
+    else if (r.kind === "not_fired" && isNearMiss(r.miss)) groups.near.push(r);
+    else groups.rest.push(r);
+  }
+  return groups;
+}
+
+// What changed in the answers since the previous tick of the same agent: a choice that moved, a
+// score that landed on another level, a yes/no that crossed one half. Only questions both ticks
+// answered; a probability that moved without changing the answer is not a change.
+export interface AnswerChange {
+  question: string;
+  // A yes/no's sides are "yes" and "no", for the screen to translate; the rest are option values.
+  yesNo: boolean;
+  from: string;
+  to: string;
+}
+
+function answerWord(
+  raw: unknown,
+  name: string,
+  block: Block | null,
+): string | null {
+  const a = bag(raw);
+  if (!a) return null;
+  if (a.type === "choice") return str(a.choice);
+  if (a.type === "yes_no") {
+    const p = num(a.probability);
+    return p === null ? null : p >= 0.5 ? "yes" : "no";
+  }
+  if (a.type === "score") {
+    const score = num(a.score);
+    if (score === null) return null;
+    const level = Math.round(score);
+    const q = block?.questions.find((x) => x.name === name);
+    return q?.type === "score"
+      ? (q.levels[level]?.value ?? String(level))
+      : String(level);
+  }
+  return null;
+}
+
+export function answerChanges(
+  previous: DecisionTickView,
+  current: DecisionTickView,
+): AnswerChange[] {
+  const before = previous.answers ?? {};
+  const now = current.answers ?? {};
+  const names = current.block
+    ? current.block.questions.map((q) => q.name)
+    : Object.keys(now);
+  const out: AnswerChange[] = [];
+  for (const name of names) {
+    if (!(name in before) || !(name in now)) continue;
+    const from = answerWord(
+      before[name],
+      name,
+      previous.block ?? current.block,
+    );
+    const to = answerWord(now[name], name, current.block);
+    if (from !== null && to !== null && from !== to) {
+      out.push({
+        question: name,
+        yesNo: bag(now[name])?.type === "yes_no",
+        from,
+        to,
+      });
+    }
+  }
+  return out;
+}
+
+// For each decided tick on the trail, the decided tick of the same agent before it, if any. The trail
+// comes oldest first. A tick that did not decide (skipped, failed) is neither compared nor a baseline.
+export function previousDecisionTicks(
+  trail: readonly TrailEntry[],
+): Map<string, DecisionTickView> {
+  const lastByAgent = new Map<string, DecisionTickView>();
+  const out = new Map<string, DecisionTickView>();
+  for (const e of trail) {
+    const tick = e.decision;
+    if (e.kind !== "decision" || !tick || tick.outcome !== "decided") continue;
+    if (tick.answers === null) continue;
+    const agent = tick.agentId ?? "";
+    const prev = lastByAgent.get(agent);
+    if (prev) out.set(e.id, prev);
+    lastByAgent.set(agent, tick);
+  }
+  return out;
 }
 
 export function percent(p: number): string {

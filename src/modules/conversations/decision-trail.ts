@@ -18,6 +18,9 @@ export interface DecisionTick {
   // not start for a reason only the operator can fix (a warn or error line). `skipped`: the tick had
   // nothing to do (no customer message yet, a reopened conversation), which nobody needs to fix.
   outcome: "decided" | "failed" | "skipped";
+  // The observer that ran the tick, so the screen compares a tick with the previous one of the
+  // same agent (two observers can watch one inbox).
+  agentId: string | null;
   provider: string | null;
   model: string | null;
   // The model the provider says answered (TypeSafe resolves `jev-latest` to a version).
@@ -91,6 +94,7 @@ export function currentBlockOf(settings: unknown): CurrentBlock | null {
 // answers are not an object (a line this build did not write).
 export function decisionTickOf(
   line: {
+    agentId: bigint | null;
     status: string | null;
     level: string;
     provider: string | null;
@@ -112,6 +116,7 @@ export function decisionTickOf(
   const mark = str(d.block);
   return {
     outcome,
+    agentId: line.agentId === null ? null : String(line.agentId),
     provider: line.provider,
     model: line.model,
     modelVersion: str(d.modelVersion),

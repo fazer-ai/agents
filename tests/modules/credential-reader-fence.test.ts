@@ -34,11 +34,8 @@ const ALLOWED: Record<string, string> = {
 };
 
 // Comments are not usage, and a fence that counts them lies in the direction that matters: it lets a
-// file stay on the list for a MENTION and then covers a real raw read added there later.
-//
-// Comments are stripped, string literals are not: a file that names the resolver inside a string is
-// doing something worth listing. `withoutComments` is the shared lexer, so a `//` inside a string or
-// a URL is not taken for a comment.
+// file stay on the list for a MENTION and then covers a real raw read added there later. Strings are
+// kept, since a file that names the resolver inside one is doing something worth listing.
 //
 // Paths come back relative to `root` (`src/...`), the spelling ALLOWED uses, so the same scan reads
 // the checkout and a scratch tree laid out like it.

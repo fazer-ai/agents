@@ -450,6 +450,8 @@ const BARE_SLICES: Record<
   "src/modules/business-hours/announce.ts": [2, "fixed-format"],
   "src/modules/business-hours/hours.ts": [1, "fixed-format"],
   "src/modules/chatwoot/attributes.ts": [1, "array"],
+  // The contact filter's date bound: the leading `YYYY-MM-DD` of an ISO instant, ASCII by construction.
+  "src/modules/chatwoot/client.ts": [1, "fixed-format"],
   // The drain's room for rows that failed here, cut off an ARRAY of row ids.
   "src/modules/chatwoot/delivery-queue.ts": [1, "array"],
   // NOTE: the first few offending account ids for the refusal message. A slice over an array of

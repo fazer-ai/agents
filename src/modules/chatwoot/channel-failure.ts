@@ -343,7 +343,8 @@ export async function handleChannelFailure(params: {
 }
 
 // Why a resend would arrive after the conversation moved on, or null when nothing came after the
-// failed reply. Private notes and activity lines are not something the customer received.
+// failed reply. Private notes and activity lines are not something the customer received, a reaction
+// answers nothing, and an imported row is old history the importer wrote with today's ids.
 export function newerThanFailure(
   rows: ReturnType<typeof parseChatwootMessages>,
   messageId: number,
@@ -355,6 +356,8 @@ export function newerThanFailure(
     (m) =>
       m.id > messageId &&
       !m.private &&
+      !m.isReaction &&
+      !m.imported &&
       (replyKey === null || replyKeyOf(m.sendId) !== replyKey),
   );
   if (after.some((m) => m.messageType === "incoming"))

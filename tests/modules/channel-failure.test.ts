@@ -336,6 +336,21 @@ test("what came after a failed reply names why its resend is skipped", () => {
       1,
     );
   expect(after([])).toBeNull();
+  // A reaction answers nothing, and an imported row is old history with a new id.
+  expect(
+    after([
+      {
+        message_type: 1,
+        sender: { type: "user", id: 3 },
+        content_attributes: { is_reaction: true },
+      },
+      {
+        message_type: 0,
+        sender: { type: "contact", id: 31 },
+        content_attributes: { imported: true },
+      },
+    ]),
+  ).toBeNull();
   expect(
     after([{ message_type: 0, sender: { type: "contact", id: 31 } }]),
   ).toBe("the customer wrote after the failed reply");

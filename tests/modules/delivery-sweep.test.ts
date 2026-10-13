@@ -7,7 +7,10 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import logger from "@/api/lib/logger";
 import { chatwootThreadId } from "@/graph/checkpointer";
-import type { ChatwootClient } from "@/modules/chatwoot/client";
+import {
+  ChatwootApiError,
+  type ChatwootClient,
+} from "@/modules/chatwoot/client";
 import {
   ensureDeliverySweep,
   finish,
@@ -780,7 +783,18 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
       event: "conversation_updated",
     });
 
-    await sweepStrandedDeliveries({ tenantId, base: appDb });
+    await sweepStrandedDeliveries({
+      tenantId,
+      base: appDb,
+      deps: {
+        makeClient: async () =>
+          ({
+            getConversation: async (id: number) => {
+              throw new ChatwootApiError(404, `/conversations/${id}`);
+            },
+          }) as unknown as ChatwootClient,
+      },
+    });
     expect((await statusOf(rowId)).status).toBe("PROCESSED");
     expect(
       await suDb.schedulerJob.findFirst({
@@ -1009,8 +1023,8 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
   });
 
   test("closes a strand that carried no inbound message", async () => {
-    // A conversation update, or the bot's own reply coming back around as a `message_created`.
-    // Neither is a customer waiting.
+    // The bot's own reply coming back around as a `message_created`: no customer waiting. (A
+    // conversation event is read back from Chatwoot instead; see stranded-conversation-event.test.ts.)
     //
     // CLAIMED, because that is what a row this build produced looks like: tx1 stamps every one it
     // works. The null inbound id can only be read as "nothing was there" on a row whose build was
@@ -1022,7 +1036,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
       ageMs: STALE_MS * 2,
       claimedAgoMs: STALE_MS * 2,
       inboundMessageId: null,
-      event: "conversation_updated",
+      event: "message_created",
     });
 
     const counts = await sweepStrandedDeliveries({ tenantId, base: appDb });

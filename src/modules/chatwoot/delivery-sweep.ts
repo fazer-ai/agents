@@ -11,11 +11,14 @@ import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { writeFlowEvent } from "@/modules/flowlog/service";
 import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
+import { ChatwootApiError, type ChatwootClient } from "./client";
 import {
   drainStoredChatwootDeliveries,
   heldDeliveryRowIds,
 } from "./delivery-queue";
-import { TURN_BEARING_EVENT } from "./normalize";
+import { loadChatwootClient } from "./instance";
+import { parseLiveConversation, TURN_BEARING_EVENT } from "./normalize";
+import { reconcileMirrorFromLive } from "./reconcile";
 import { armDeliveryRecoveryOn, isRecoverableStrand } from "./recover-delivery";
 import {
   armHumanReplyRecovery,
@@ -368,6 +371,8 @@ interface StrandedRow {
   event: string;
   receivedAt: Date;
   claimedAt: Date | null;
+  // How many passes have tried to read a stranded conversation event's state back from Chatwoot.
+  attempts?: number;
   // Read only by the dead-claim pass, which takes the row from the claim it judged dead and no other:
   // a recovery that claimed it since stamps its own process, and the CAS then matches nothing.
   claimedBy?: string | null;
@@ -383,6 +388,9 @@ interface StrandedRow {
 }
 
 export interface SweepCounts {
+  // Terminal, a conversation event whose state was read back from Chatwoot and given to the mirror
+  // (or found gone there). Apart from `closed`: the row owed the mirror something, and got it now.
+  conversationState: number;
   // Terminal, nothing lost: the delivery carried no inbound message at all.
   closed: number;
   // Terminal, a customer message lost.
@@ -557,6 +565,7 @@ async function finishDead(
 export interface SweepStrandedDeliveriesParams {
   tenantId: bigint;
   base: PrismaClient;
+  deps?: ConversationStateDeps;
   now?: Date;
   // One pass's ceiling, overridable so the batch's fairness can be asked with a handful of rows.
   batch?: number;
@@ -577,6 +586,7 @@ export async function sweepStrandedDeliveries(
     lost: 0,
     owed: 0,
     observerStrands: 0,
+    conversationState: 0,
     owedTranscription: 0,
     roleUnstated: 0,
     raced: 0,
@@ -622,6 +632,7 @@ export async function sweepStrandedDeliveries(
         event: true,
         receivedAt: true,
         claimedAt: true,
+        attempts: true,
         conversationId: true,
         inboundMessageId: true,
         humanReplyShape: true,
@@ -633,7 +644,15 @@ export async function sweepStrandedDeliveries(
     }),
   )) as StrandedRow[];
 
-  for (const row of rows) {
+  const rest = await applyStrandedConversationEvents(
+    rows.map((row) => ({ row, tenantId })),
+    base,
+    now,
+    STALE_AFTER_MS,
+    counts,
+    params.deps,
+  );
+  for (const { row } of rest) {
     await settleStranded(row, tenantId, base, now, STALE_AFTER_MS, counts);
   }
   return counts;
@@ -645,6 +664,7 @@ function emptyCounts(): SweepCounts {
     lost: 0,
     owed: 0,
     observerStrands: 0,
+    conversationState: 0,
     owedTranscription: 0,
     roleUnstated: 0,
     raced: 0,
@@ -689,6 +709,236 @@ async function settleStranded(
   await record(verdict, row, tenantId, mirror, counts, base);
 }
 
+// STRANDED CONVERSATION EVENTS. A status or assignee change reaches the mirror only through its
+// conversation event, and that row owes no turn, so the classifier closes it as having carried
+// nothing. Closed that way, the change is lost: a resolve stranded behind the `pending` its own label
+// write caused leaves the mirror `pending` for good. The event's body is not kept once the row is
+// claimed, so the state is read back from Chatwoot and applied by `reconcileMirrorFromLive`, under
+// the same version ordering the live path uses: a newer state already mirrored still wins.
+
+const CONVERSATION_STATE_EVENTS: ReadonlySet<string> = new Set([
+  "conversation_resolved",
+  "conversation_opened",
+  "conversation_status_changed",
+  "conversation_updated",
+]);
+
+// Passes that may fail to read a stranded event's conversation before its rows close without it: an
+// outage longer than this many sweep intervals is past what the event could still say.
+export const CONVERSATION_STATE_READS = 3;
+
+export interface ConversationStateDeps {
+  makeClient?: () => Promise<ChatwootClient>;
+}
+
+type LiveRead =
+  | {
+      kind: "state";
+      live: NonNullable<ReturnType<typeof parseLiveConversation>>;
+    }
+  | { kind: "gone" }
+  | { kind: "unreadable"; err: unknown };
+
+async function readLive(
+  tenantId: bigint,
+  instanceId: bigint,
+  conversationId: number,
+  base: PrismaClient,
+  deps?: ConversationStateDeps,
+): Promise<LiveRead> {
+  try {
+    const make = deps?.makeClient;
+    const client = await loadChatwootClient(tenantId, instanceId, {
+      base,
+      ...(make ? { makeClient: () => make() } : {}),
+    });
+    const live = parseLiveConversation(
+      await client.getConversation(conversationId),
+    );
+    return live
+      ? { kind: "state", live }
+      : { kind: "unreadable", err: new Error("unparseable conversation") };
+  } catch (err) {
+    if (err instanceof ChatwootApiError && err.status === 404) {
+      return { kind: "gone" };
+    }
+    return { kind: "unreadable", err };
+  }
+}
+
+// Takes the stranded conversation events out of `rows` and settles them, one live read per
+// conversation however many of its rows stranded; returns the rest for the ordinary verdicts.
+async function applyStrandedConversationEvents(
+  rows: Array<{ row: StrandedRow; tenantId: bigint }>,
+  base: PrismaClient,
+  now: Date,
+  staleAfterMs: number,
+  counts: SweepCounts,
+  deps?: ConversationStateDeps,
+): Promise<Array<{ row: StrandedRow; tenantId: bigint }>> {
+  const rest: Array<{ row: StrandedRow; tenantId: bigint }> = [];
+  const groups = new Map<
+    string,
+    {
+      tenantId: bigint;
+      instanceId: bigint;
+      conversationId: number;
+      rows: StrandedRow[];
+    }
+  >();
+  for (const item of rows) {
+    const { row, tenantId } = item;
+    if (
+      row.conversationId === null ||
+      !CONVERSATION_STATE_EVENTS.has(row.event) ||
+      classifyStrandedDelivery(row, { now, staleAfterMs }) !== "no-message"
+    ) {
+      rest.push(item);
+      continue;
+    }
+    const key = `${tenantId}:${row.chatwootInstanceId}:${row.conversationId}`;
+    const g = groups.get(key) ?? {
+      tenantId,
+      instanceId: row.chatwootInstanceId,
+      conversationId: row.conversationId,
+      rows: [],
+    };
+    g.rows.push(row);
+    groups.set(key, g);
+  }
+  for (const g of groups.values()) {
+    const read = await readLive(
+      g.tenantId,
+      g.instanceId,
+      g.conversationId,
+      base,
+      deps,
+    );
+    if (read.kind === "unreadable") {
+      const attempts = Math.max(...g.rows.map((r) => r.attempts ?? 0)) + 1;
+      const last = attempts >= CONVERSATION_STATE_READS;
+      logger.warn(
+        { err: read.err, conversationId: g.conversationId },
+        last
+          ? "chatwoot delivery sweep: a stranded conversation event's state could not be read from Chatwoot after %d passes; its rows close without it"
+          : "chatwoot delivery sweep: a stranded conversation event's state could not be read from Chatwoot (pass %d); left for the next sweep",
+        attempts,
+      );
+      for (const row of g.rows) {
+        if (last) {
+          if (await finish(row, g.tenantId, "PROCESSED", base))
+            counts.closed += 1;
+          else counts.raced += 1;
+          continue;
+        }
+        await runScopedOn(base, sysCtx(g.tenantId), (db) =>
+          db.chatwootWebhookDelivery.updateMany({
+            where: casOn(row),
+            data: { attempts: { increment: 1 } },
+          }),
+        );
+      }
+      continue;
+    }
+    if (read.kind === "state") {
+      await reconcileMirrorFromLive({
+        tenantId: g.tenantId,
+        instanceId: g.instanceId,
+        conversationId: g.conversationId,
+        live: read.live,
+        base,
+      });
+    }
+    for (const row of g.rows) {
+      if (await finish(row, g.tenantId, "PROCESSED", base)) {
+        counts.conversationState += 1;
+      } else {
+        counts.raced += 1;
+      }
+    }
+  }
+  return rest;
+}
+
+// A CLOSE THIS SIDE MADE THAT THE MIRROR NEVER SAW. Our resolve records who closed the conversation
+// (`resolved_by`) when it toggles, and the mirror takes the status from the webhook that follows;
+// a `resolved_by` still standing on a row that does not say `resolved` long after that webhook was
+// due is a close whose event was lost, which includes every row stranded before the sweep above read
+// these events back. Read back the same way. Whatever the read finds, the stamp stops naming the
+// row's state unless that state is `resolved`, so a row leaves this list once read: a close the
+// source has undone since (the customer wrote again) is no longer the conversation's state.
+
+const UNCONFIRMED_CLOSE_BATCH = 50;
+
+export interface ReconcileUnconfirmedClosesParams {
+  tenantId: bigint;
+  base: PrismaClient;
+  now?: Date;
+  deps?: ConversationStateDeps;
+}
+
+export async function reconcileUnconfirmedCloses(
+  params: ReconcileUnconfirmedClosesParams,
+): Promise<number> {
+  const { tenantId, base } = params;
+  const now = params.now ?? new Date();
+  const cutoff = new Date(now.getTime() - STALE_AFTER_MS);
+  const rows = await runScopedOn(base, sysCtx(tenantId), (db) =>
+    db.conversation.findMany({
+      where: {
+        resolvedBy: { not: null },
+        status: { not: "resolved" },
+        updatedAt: { lt: cutoff },
+      },
+      orderBy: { updatedAt: "asc" },
+      take: UNCONFIRMED_CLOSE_BATCH,
+      select: {
+        id: true,
+        chatwootInstanceId: true,
+        chatwootConversationId: true,
+      },
+    }),
+  );
+  let applied = 0;
+  for (const conv of rows) {
+    const read = await readLive(
+      tenantId,
+      conv.chatwootInstanceId,
+      conv.chatwootConversationId,
+      base,
+      params.deps,
+    );
+    if (read.kind === "unreadable") {
+      logger.warn(
+        { err: read.err, conversationId: conv.chatwootConversationId },
+        "chatwoot delivery sweep: a close the mirror never confirmed could not be read from Chatwoot; left for the next pass",
+      );
+      continue;
+    }
+    if (read.kind === "state") {
+      const r = await reconcileMirrorFromLive({
+        tenantId,
+        instanceId: conv.chatwootInstanceId,
+        conversationId: conv.chatwootConversationId,
+        live: read.live,
+        base,
+      });
+      if (r.applied) applied += 1;
+    }
+    await runScopedOn(base, sysCtx(tenantId), (db) =>
+      db.conversation.updateMany({
+        where: {
+          id: conv.id,
+          resolvedBy: { not: null },
+          status: { not: "resolved" },
+        },
+        data: { resolvedBy: null, resolvedByAt: null },
+      }),
+    );
+  }
+  return applied;
+}
+
 // How often each process looks for claims whose process died. Together with the lease's lifetime
 // this is the whole wait of a delivery a dead process claimed: at most `LEASE_TTL_MS` plus one pass
 // after the death, or one pass after the first process starts when none was running.
@@ -705,6 +955,7 @@ export interface SweepDeadClaimsParams {
   now?: Date;
   batch?: number;
   ttlMs?: number;
+  deps?: ConversationStateDeps;
 }
 
 // Settles the PROCESSING rows whose claim names a process that is no longer alive: the
@@ -732,7 +983,7 @@ export async function sweepDeadClaims(
       SELECT d.id, d.tenant_id AS "tenantId", d.status::text AS status,
              d.chatwoot_instance_id AS "chatwootInstanceId", d.delivery_id AS "deliveryId",
              d.event, d.received_at AS "receivedAt", d.claimed_at AS "claimedAt",
-             d.claimed_by::text AS "claimedBy", d.conversation_id AS "conversationId",
+             d.claimed_by::text AS "claimedBy", d.attempts, d.conversation_id AS "conversationId",
              d.inbound_message_id AS "inboundMessageId", d.human_reply_shape AS "humanReplyShape",
              d.human_reply_message_id AS "humanReplyMessageId", d.route_observed AS "routeObserved",
              d.route_agent_bot_id AS "routeAgentBotId", d.route_remembers AS "routeRemembers"
@@ -747,9 +998,17 @@ export async function sweepDeadClaims(
        ORDER BY d.claimed_at
        LIMIT ${params.batch ?? DEAD_CLAIM_BATCH}`,
   );
-  for (const { tenantId, ...row } of rows) {
-    // NOTE: no window at all, not zero: `claimedAt` is the dead process's clock, and on a host a little
-    // ahead of this one a zero window would read the claim as in flight until the clocks agree.
+  // No window at all, not zero: `claimedAt` is the dead process's clock, and on a host a little ahead
+  // of this one a zero window would read the claim as in flight until the clocks agree.
+  const rest = await applyStrandedConversationEvents(
+    rows.map(({ tenantId, ...row }) => ({ row, tenantId })),
+    base,
+    now,
+    Number.NEGATIVE_INFINITY,
+    counts,
+    params.deps,
+  );
+  for (const { row, tenantId } of rest) {
     await settleStranded(
       row,
       tenantId,
@@ -1069,6 +1328,14 @@ async function deliverySweepHandler(
     },
   );
   await sweepStrandedDeliveries({ tenantId: job.tenantId, base });
+  await reconcileUnconfirmedCloses({ tenantId: job.tenantId, base }).catch(
+    (err) => {
+      logger.warn(
+        { err, tenantId: String(job.tenantId) },
+        "chatwoot delivery sweep: reconciling unconfirmed closes failed",
+      );
+    },
+  );
   return {
     outcome: "reschedule",
     runAt: new Date(Date.now() + SWEEP_INTERVAL_MS),

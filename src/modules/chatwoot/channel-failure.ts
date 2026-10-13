@@ -94,6 +94,26 @@ export const RATE_LIMITED_RESEND_DELAY_MS = 180_000;
 const MEDIA_FALLBACK_SEND_ID = "media-fallback:";
 const RESEND_SEND_ID = "channel-resend:";
 
+// A replacement keeps the reply key of the message it replaces, so it is still the same reply to the
+// jobs of that reply's other refused messages: a resend landing first must not cancel its siblings.
+function replacementSendId(
+  prefix: string,
+  messageId: number,
+  replyKey: string | null,
+): string {
+  return replyKey === null
+    ? `${prefix}${messageId}`
+    : `reply:${replyKey}:${prefix}${messageId}`;
+}
+
+function isReplacement(sendId: string): boolean {
+  return [MEDIA_FALLBACK_SEND_ID, RESEND_SEND_ID].some(
+    (prefix) =>
+      sendId.startsWith(prefix) ||
+      (replyKeyOf(sendId) !== null && sendId.includes(`:${prefix}`)),
+  );
+}
+
 export interface ChannelFailure {
   messageId: number;
   conversationId: number;
@@ -172,9 +192,7 @@ export function channelFailureOf(
     text,
     byOperator: m.replyByOperator === true,
     rendered: spoken === null && content !== null,
-    wasResend:
-      sendId.startsWith(MEDIA_FALLBACK_SEND_ID) ||
-      sendId.startsWith(RESEND_SEND_ID),
+    wasResend: isReplacement(sendId),
     replyKey: replyKeyOf(m.sendId),
     sentAt: m.createdAt ?? null,
   };
@@ -382,6 +400,7 @@ export async function mediaFallbackHandler(
   }
   const text = decryptJson<string>(job.payloadSecret);
   const resend = p.resend === true;
+  const replyKey = typeof p.replyKey === "string" ? p.replyKey : null;
   const sentAt =
     typeof p.sentAt === "string" && !Number.isNaN(Date.parse(p.sentAt))
       ? new Date(p.sentAt)
@@ -430,7 +449,11 @@ export async function mediaFallbackHandler(
   // stale-claim interval, so the read pages back to the FAILED message. A failed read THROWS; a
   // conversation too busy to reach that boundary within the page ceiling sends nothing, because a
   // text that late is worth less than a duplicate costs.
-  const sendId = `${resend ? RESEND_SEND_ID : MEDIA_FALLBACK_SEND_ID}${messageId}`;
+  const sendId = replacementSendId(
+    resend ? RESEND_SEND_ID : MEDIA_FALLBACK_SEND_ID,
+    messageId,
+    replyKey,
+  );
   let before: number | undefined;
   // What the conversation received after the failed reply, read on the same pages. A resend is
   // skipped when anything did: the customer's newer message is answered by the next turn with fresh
@@ -462,11 +485,7 @@ export async function mediaFallbackHandler(
       throw new Error("media fallback: the conversation read back empty");
     if (rows.some((m) => m.sendId === sendId)) return { outcome: "done" };
     if (resend && newer === null)
-      newer = newerThanFailure(
-        rows,
-        messageId,
-        typeof p.replyKey === "string" ? p.replyKey : null,
-      );
+      newer = newerThanFailure(rows, messageId, replyKey);
     const oldest = rows[0]?.id;
     if (oldest === undefined || oldest <= messageId) break;
     before = oldest;

@@ -261,6 +261,8 @@ describe("channelFailureOf", () => {
       channelFailureOf(updated(23, { error: "(#131000) x", sendId }), BOT_ID)
         ?.wasResend;
     expect(of("channel-resend:9")).toBe(true);
+    expect(of("reply:k1:channel-resend:9")).toBe(true);
+    expect(of("reply:k1:media-fallback:9")).toBe(true);
     expect(of("media-fallback:9")).toBe(true);
     // NOTE: The send ids of every first reply are not resends.
     expect(of("turn:abc:0")).toBe(false);
@@ -1275,6 +1277,42 @@ describe.skipIf(!dbUp)("a channel failure reported to the bot", () => {
     });
     await mediaFallbackHandler(await claimed(9017), appDb, newer.makeClient);
     expect(newer.sent).toEqual([]);
+  });
+
+  // Two balloons of one reply refused: the first one's resend landing must not read as a newer reply
+  // to the second one's job, so the replacement keeps the reply's key.
+  test("a sibling's resend is still the same reply, and carries the key forward", async () => {
+    await deliver(
+      updated(9018, {
+        error: "(#131000) x",
+        content: "a",
+        sendId: "reply:k18:a",
+      }),
+    );
+    const first = fakeChatwoot({ failedId: 9018 });
+    await mediaFallbackHandler(await claimed(9018), appDb, first.makeClient);
+    expect(first.sent.map((m) => m.sendId)).toEqual([
+      "reply:k18:channel-resend:9018",
+    ]);
+    await deliver(
+      updated(9019, {
+        error: "(#131000) x",
+        content: "b",
+        sendId: "reply:k18:b",
+      }),
+    );
+    const second = fakeChatwoot({
+      failedId: 9019,
+      after: [
+        {
+          messageType: 1,
+          sender: { type: "agent_bot", id: BOT_ID },
+          sendId: "reply:k18:channel-resend:9018",
+        },
+      ],
+    });
+    await mediaFallbackHandler(await claimed(9019), appDb, second.makeClient);
+    expect(second.sent).toHaveLength(1);
   });
 
   // A customer message that lands while the job reads Chatwoot is not on the pages it read; the

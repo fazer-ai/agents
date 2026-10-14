@@ -151,7 +151,6 @@
         "!tests/tooling/**",
         "!tests/api/error-catalog.test.ts",
         "!tests/api/lib/refusal-callsites.test.ts",
-        "!tests/client/behavior-dirty-snapshot.test.ts",
         "!tests/client/debug-warning-source.test.ts",
         "!tests/client/error-toast-reason.test.ts",
         "!tests/client/field-refusal-fence.test.ts",

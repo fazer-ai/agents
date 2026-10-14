@@ -9,25 +9,65 @@
 
 const MONITORING_TIMING = ["analysis", "window", "debounce"] as const;
 
+/** The blocks of `settings` a Behavior save writes. The save writes only these, each after comparing
+ * its form state with the server's, and the dirty snapshot reads the same states, so a block left off
+ * this list is never saved rather than saved unmarked. */
+export const BEHAVIOR_BLOCKS = [
+  "availability",
+  "debounce",
+  "stt",
+  "contactAuth",
+  "tts",
+  "split",
+  "signature",
+  "serviceWindow",
+  "followUp",
+  "snoozedFollowUp",
+  "vision",
+  "limits",
+  "observability",
+  "memory",
+  "modelFallback",
+  "monitoring",
+  "attributeContext",
+  "contactFields",
+  "takeover",
+  "otherInboxes",
+] as const;
+
+export type BehaviorBlock = (typeof BEHAVIOR_BLOCKS)[number];
+
+/** Each declared block's form state, the unit both the save and the dirty snapshot compare. */
+export type BehaviorState = Record<BehaviorBlock, unknown>;
+
+/** The Behavior tab's dirty snapshot: the fields the tab saves outside `settings`, then every declared
+ * block's state. Two snapshots differ exactly when one of those differs. */
+export function behaviorSnapshot(
+  state: BehaviorState,
+  agentFields: Record<string, unknown>,
+): string {
+  return JSON.stringify({
+    ...agentFields,
+    ...Object.fromEntries(BEHAVIOR_BLOCKS.map((k) => [k, state[k]])),
+  });
+}
+
 const isBag = (v: unknown): v is Record<string, unknown> =>
   !!v && typeof v === "object" && !Array.isArray(v);
 
 // `fromForm`: each block as the save would write it. `formState` and `storedState`: each block's form
 // state, keyed like the blocks, read off the form and off the server's copy at one instant.
 export function editedBlocks(
-  fromForm: Record<string, unknown>,
-  formState: Record<string, unknown>,
-  storedState: Record<string, unknown>,
+  fromForm: Partial<Record<BehaviorBlock, unknown>>,
+  formState: BehaviorState,
+  storedState: BehaviorState,
   stored: Record<string, unknown>,
-): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const [key, block] of Object.entries(fromForm)) {
+): Partial<Record<BehaviorBlock, unknown>> {
+  const out: Partial<Record<BehaviorBlock, unknown>> = {};
+  for (const key of BEHAVIOR_BLOCKS) {
+    const block = fromForm[key];
     if (block === undefined) continue;
-    // A block with no state to compare is written: dropping an edit is the worse mistake.
-    if (
-      key in formState &&
-      JSON.stringify(formState[key]) === JSON.stringify(storedState[key])
-    ) {
+    if (JSON.stringify(formState[key]) === JSON.stringify(storedState[key])) {
       continue;
     }
     // Behavior owns only the timing half of `monitoring`; the decision setup is the decisions save's

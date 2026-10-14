@@ -1,100 +1,96 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
+import {
+  BEHAVIOR_BLOCKS,
+  type BehaviorState,
+  behaviorSnapshot,
+  editedBlocks,
+} from "@/client/pages/agents/behaviorSave";
+import {
+  editTab,
+  lastSavedSettings,
+  renderEditor,
+  stubEditorApi,
+} from "../utils/agent-editor";
 
 // The dirty snapshot (`sectionSnap.behavior`) lights the tab's dot, enables Discard and arms the
 // navigation guard. A block the save writes and the snapshot does not read is edited with no dirty
-// marker, and the edit is lost on leaving. Read off the source: no run can edit every block
-// generically, and the next block is the one this has to catch.
-const PAGE = await Bun.file(
-  "src/client/pages/agents/AgentEditorPage.tsx",
-).text();
+// marker, and the edit is lost on leaving. Both read one declared list of blocks, so a block is
+// saved only when it is also compared.
 
-// Keys whose form state is spelled differently from the stored block.
-const STATE_ALIASES: Record<string, string[]> = {
-  // One stored block, assembled from two independent pieces of form state.
-  availability: ["awayEnabled", "awayMessage"],
-  // Named after the block the save writes; the form state behind it is `observation`.
-  monitoring: ["observation"],
-};
+const realFetch = globalThis.fetch;
+afterEach(() => {
+  cleanup();
+  globalThis.fetch = realFetch;
+});
 
-export function snapshotBody(source: string): string {
-  const at = source.indexOf("behavior: JSON.stringify({");
-  if (at < 0) return "";
-  const open = source.indexOf("{", source.indexOf("JSON.stringify(", at));
-  let depth = 0;
-  for (let i = open; i < source.length; i++) {
-    if (source[i] === "{") depth += 1;
-    else if (source[i] === "}") {
-      depth -= 1;
-      if (depth === 0) return source.slice(open, i + 1);
-    }
-  }
-  return "";
-}
+const state = (over: Partial<BehaviorState> = {}): BehaviorState => ({
+  ...(Object.fromEntries(
+    BEHAVIOR_BLOCKS.map((k) => [k, { enabled: false }]),
+  ) as BehaviorState),
+  ...over,
+});
 
-function braceBlockAt(source: string, from: number): string {
-  const open = source.indexOf("{", from);
-  if (open < 0) return "";
-  let depth = 0;
-  for (let i = open; i < source.length; i++) {
-    if (source[i] === "{") depth += 1;
-    else if (source[i] === "}") {
-      depth -= 1;
-      if (depth === 0) return source.slice(open, i + 1);
-    }
-  }
-  return "";
-}
-
-export function savedBlockKeys(source: string): string[] {
-  const fn = braceBlockAt(source, source.indexOf("function behaviorBlocksOf"));
-  const ret = braceBlockAt(fn, fn.indexOf("return {"));
-  const keys: string[] = [];
-  let depth = 0;
-  for (const m of ret.matchAll(/[{}]|^[ \t]*([A-Za-z_]\w*)\s*:/gm)) {
-    if (m[0] === "{" || m[0] === "}") depth += m[0] === "{" ? 1 : -1;
-    else if (depth === 1 && m[1]) keys.push(m[1]);
-  }
-  return keys;
-}
-
-export function blocksMissingFromSnapshotByKey(source: string): string[] {
-  const snap = snapshotBody(source);
-  return savedBlockKeys(source).filter((k) => {
-    const names = STATE_ALIASES[k] ?? [k];
-    return !names.every((n) => new RegExp(`\\b${n}\\b`).test(snap));
-  });
-}
+const AGENT_FIELDS = { businessHoursId: null, followUpHoursId: null };
 
 describe("the Behavior tab's dirty snapshot", () => {
   test("every saved block is in the dirty snapshot, whatever shape it was written in", () => {
-    expect(blocksMissingFromSnapshotByKey(PAGE)).toEqual([]);
+    const stored = state();
+    // Every declared block, and one the type would refuse: what a save that slipped past it holds.
+    const fromForm: Parameters<typeof editedBlocks>[0] = Object.fromEntries([
+      ...BEHAVIOR_BLOCKS.map((k) => [k, { written: k }]),
+      ["newBlock", { text: "nobody compares this" }],
+    ]);
+    for (const block of BEHAVIOR_BLOCKS) {
+      const edited = state({ [block]: { enabled: true } });
+      expect(
+        behaviorSnapshot(edited, AGENT_FIELDS),
+        `${block} is not in the snapshot`,
+      ).not.toBe(behaviorSnapshot(stored, AGENT_FIELDS));
+      expect(
+        Object.keys(editedBlocks(fromForm, edited, stored, {})),
+        `${block} is not the one block saved`,
+      ).toEqual([block]);
+    }
+    // An undeclared block is never written: not when no state carries it, and not when one does and
+    // it differs, since the snapshot would not read that state.
+    expect(editedBlocks(fromForm, stored, stored, {})).toEqual({});
+    const withNew = {
+      ...stored,
+      newBlock: { text: "edited" },
+    } as BehaviorState;
+    expect(editedBlocks(fromForm, withNew, stored, {})).toEqual({});
   });
 
-  test("the scan actually sees the blocks", () => {
-    const keys = savedBlockKeys(PAGE);
-    expect(keys.length).toBeGreaterThanOrEqual(15);
-    expect(keys).toContain("signature");
-    expect(keys).toContain("availability");
+  test("the fields saved outside the settings are in the snapshot too", () => {
+    const base = behaviorSnapshot(state(), AGENT_FIELDS);
+    expect(
+      behaviorSnapshot(state(), { ...AGENT_FIELDS, businessHoursId: "bh-1" }),
+    ).not.toBe(base);
+    expect(behaviorSnapshot(state(), { ...AGENT_FIELDS })).toBe(base);
   });
 
-  // POSITIVE CONTROL over the predicate: an inline-literal block, saved and compared nowhere.
-  test("an inline-literal block that is not compared is caught, and the complete one is clean", () => {
-    const save = `
-      function behaviorBlocksOf(): Record<string, unknown> {
-        return {
-          memory: memoryToStored(memory),
-          newBlock: { text: newBlock.text.trim() },
-        };
-      }`;
-    expect(
-      blocksMissingFromSnapshotByKey(
-        `${save}\n      behavior: JSON.stringify({\n        memory,\n      }),`,
+  test("an edit marks the tab unsaved, the save writes that block alone, and saving clears the mark", async () => {
+    const stub = stubEditorApi({ settings: {} });
+    await renderEditor(stub, "behavior");
+    expect(screen.queryAllByText("Unsaved changes").length).toBe(0);
+    editTab("behavior");
+    await waitFor(() =>
+      expect(screen.queryAllByText("Unsaved changes").length).toBeGreaterThan(
+        0,
       ),
-    ).toEqual(["newBlock"]);
-    expect(
-      blocksMissingFromSnapshotByKey(
-        `${save}\n      behavior: JSON.stringify({\n        memory,\n        newBlock,\n      }),`,
-      ),
-    ).toEqual([]);
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByText("Agent saved.");
+    const saved = Object.keys(lastSavedSettings(stub) ?? {});
+    expect(saved.length).toBe(1);
+    expect(BEHAVIOR_BLOCKS as readonly string[]).toContain(saved[0] as string);
+    await waitFor(() =>
+      expect(screen.queryAllByText("Unsaved changes").length).toBe(0),
+    );
+    expect(screen.getByRole("button", { name: "Save" })).toHaveProperty(
+      "disabled",
+      true,
+    );
   });
 });

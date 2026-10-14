@@ -129,7 +129,12 @@ import {
   type ModelFallbackState,
   type TakeoverState,
 } from "./BehaviorTab";
-import { editedBlocks } from "./behaviorSave";
+import {
+  type BehaviorBlock,
+  type BehaviorState,
+  behaviorSnapshot,
+  editedBlocks,
+} from "./behaviorSave";
 import {
   type ChannelRedirectFormState,
   ChannelRedirectTab,
@@ -1876,10 +1881,10 @@ function AgentEditor() {
     };
   }
 
-  // Each block's FORM state, keyed like the block `behaviorBlocksOf` writes: what decides whether the
-  // block was edited, compared before its lossy serialization. The debug window is read at `now` on
-  // both sides, as the dirty snapshot reads it, so a window that closed in between is not an edit.
-  function behaviorStateOf(f: SnapForm, now: Date): Record<string, unknown> {
+  // Each declared block's FORM state (./behaviorSave): what decides whether the block was edited,
+  // compared before its lossy serialization, and what the dirty snapshot reads. The debug window is
+  // read at `now`, so a window that closed between two reads is not an edit.
+  function behaviorStateOf(f: SnapForm, now: Date): BehaviorState {
     return {
       availability: { awayEnabled: f.awayEnabled, awayMessage: f.awayMessage },
       debounce: f.debounce,
@@ -1919,7 +1924,7 @@ function AgentEditor() {
   function behaviorBlocksOf(
     f: SnapForm,
     stored: Record<string, unknown>,
-  ): Record<string, unknown> {
+  ): Partial<Record<BehaviorBlock, unknown>> {
     const {
       awayEnabled,
       awayMessage,
@@ -2299,43 +2304,14 @@ function AgentEditor() {
       }),
       // NOTE: Track the behavior FORM state directly (not buildSettings(), which spreads the whole
       // settings bag including tool-owned handoff/kanban) so a Tools save never falsely lights up
-      // Behavior's dot.
-      behavior: JSON.stringify({
-        businessHoursId: f.businessHoursId,
-        awayEnabled: f.awayEnabled,
-        awayMessage: f.awayMessage,
-        followUpHoursId: f.followUpHoursId,
-        debounce: f.debounce,
-        stt: f.stt,
-        contactAuth: f.contactAuth,
-        tts: f.tts,
-        split: f.split,
-        signature: f.signature,
-        serviceWindow: f.serviceWindow,
-        followUp: f.followUp,
-        snoozedFollowUp: f.snoozedFollowUp,
-        vision: f.vision,
-        limits: f.limits,
-        attributeContext: f.attributeContext,
-        contactFields: f.contactFields,
-        takeover: f.takeover,
-        otherInboxes: f.otherInboxes,
-        observability: {
-          logToolValues: f.observability.logToolValues,
-          fullDetailUntil: isFullDetailWindowOpen(
-            f.observability.fullDetailUntil,
-            snapshotNow,
-          )
-            ? f.observability.fullDetailUntil?.toISOString()
-            : null,
+      // Behavior's dot. The blocks a watcher on questions and rules does not draw read as stored.
+      behavior: behaviorSnapshot(
+        behaviorStateOf({ ...f, ...hidden }, snapshotNow),
+        {
+          businessHoursId: f.businessHoursId,
+          followUpHoursId: f.followUpHoursId,
         },
-        memory: hidden.memory,
-        modelFallback: hidden.modelFallback,
-        // NOTE: Named after the block the save writes (`monitoring`), which is what the dirty-snapshot
-        // fence reads off the writer; the form state behind it is `observation`. Its timing only: the
-        // decision setup is the `decisions` section's.
-        monitoring: timingOf(f.observation),
-      }),
+      ),
       // NOTE: The decision setup, drawn on two tabs: the head (engine and classifier) on General, the
       // body (questions and rules) on Questions and rules. One section, since either save writes all
       // of it; the two halves light their own tab's dot.

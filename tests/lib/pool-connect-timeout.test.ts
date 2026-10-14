@@ -1,6 +1,8 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createServer, type Server, type Socket } from "node:net";
+import { PrismaPg } from "@prisma/adapter-pg";
 import { Pool } from "pg";
+import { PrismaClient } from "@/../generated/prisma/client";
 import {
   CONNECT_TIMEOUT_MS,
   connectTimeoutOption,
@@ -8,6 +10,7 @@ import {
 } from "@/api/lib/pool-options";
 import config from "@/config";
 import { getCheckpointer } from "@/graph/checkpointer";
+import { isDatabaseUnavailable } from "@/lib/pool-retry";
 import { registeredPool } from "@/lib/pool-stats";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { until } from "@/tests/utils/poll";
@@ -128,6 +131,31 @@ describe.skipIf(!dbUp)("a bounded pool at max, on the real database", () => {
       await stalled.end();
     }
   });
+});
+
+test("a connect past its bound reads as an unavailable database through the Prisma adapter", async () => {
+  // What a caller sees: the adapter's error, which isDatabaseUnavailable must take for a database that
+  // could not be reached, so the work is rescheduled instead of failed.
+  const pool = stalledPool(100);
+  const client = new PrismaClient({
+    adapter: new PrismaPg(pool, { disposeExternalPool: true }),
+  });
+  let failure: unknown;
+  client.$queryRaw`SELECT 1`.then(
+    () => {},
+    (e) => {
+      failure = e;
+    },
+  );
+  try {
+    await until("the query to fail on the connect bound", () => failure, {
+      deadlineMs: 5_000,
+    });
+    expect(isDatabaseUnavailable(failure)).toBe(true);
+  } finally {
+    for (const s of sockets) s.destroy();
+    await client.$disconnect();
+  }
 });
 
 test("a bound that is not a positive number of ms is refused, since pg reads 0 as none", () => {

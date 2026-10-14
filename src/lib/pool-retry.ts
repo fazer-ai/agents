@@ -27,6 +27,17 @@ const ADAPTER_UNAVAILABLE = new Set([
   "TooManyConnections",
 ]);
 
+// The socket codes a connect fails with, which Prisma reports as the request error's own `code` when
+// the connection never opened. The adapter names the same set unreachable (`SOCKET_ERRORS` in
+// @prisma/adapter-pg). ETIMEDOUT is also what the runtime pools' bounded connect fails with
+// (src/api/lib/pool-options.ts).
+const SOCKET_UNAVAILABLE = new Set([
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "ENOTFOUND",
+  "ETIMEDOUT",
+]);
+
 // The database could not be reached or had no connection to give: a transaction that never started,
 // the connection codes (P1001 unreachable, P1002 timed out, P1017 closed by the server), or the
 // adapter's kinds above. Transient by nature and repaired by nobody, so a caller retries it rather
@@ -36,6 +47,7 @@ export function isDatabaseUnavailable(err: unknown, depth = 0): boolean {
   if (isTransactionNeverStarted(err)) return true;
   const code = (err as { code?: unknown }).code;
   if (code === "P1001" || code === "P1002" || code === "P1017") return true;
+  if (typeof code === "string" && SOCKET_UNAVAILABLE.has(code)) return true;
   const kind = (err as { kind?: unknown }).kind;
   if (typeof kind === "string" && ADAPTER_UNAVAILABLE.has(kind)) return true;
   const meta = (err as { meta?: { driverAdapterError?: unknown } }).meta;

@@ -22,6 +22,17 @@ export const CONNECT_TIMEOUT_MS = 10_000;
 // two are armed from different configs: `pg-pool` arms its queue timer from its own options and hands
 // those options to each `Client` it builds, which arms its connect timer from them. A `Client` that
 // sets the timeout in its own config bounds the connect and leaves the queue as it was.
+function asConnectTimeout<E>(err: E): E {
+  if (
+    err instanceof Error &&
+    (err as { code?: unknown }).code === undefined &&
+    /timeout/i.test(err.message)
+  ) {
+    Object.assign(err, { code: "ETIMEDOUT" });
+  }
+  return err;
+}
+
 export function connectTimeoutOption(ms: number = CONNECT_TIMEOUT_MS): {
   Client: typeof Client & { readonly connectTimeoutMs: number };
 } {
@@ -46,6 +57,26 @@ export function connectTimeoutOption(ms: number = CONNECT_TIMEOUT_MS): {
             );
       own.connectionTimeoutMillis = ms;
       super(own);
+    }
+
+    // `pg` fails its own connect timeout with a bare `Error("timeout expired")` and no code, which the
+    // Prisma adapter passes through unclassified, so `isDatabaseUnavailable` (src/lib/pool-retry.ts)
+    // would read a stalled database as a fault of the caller and spend its retries. Given the socket
+    // code a timeout has, the adapter names it `SocketTimeout`, like any other unreachable database.
+    override connect(): Promise<Client>;
+    override connect(callback: (err: Error) => void): void;
+    override connect(
+      callback?: (err: Error) => void,
+    ): Promise<Client> | undefined {
+      if (callback) {
+        super.connect((err: Error) =>
+          callback(err ? asConnectTimeout(err) : err),
+        );
+        return;
+      }
+      return super.connect().catch((err: unknown) => {
+        throw asConnectTimeout(err);
+      });
     }
   }
   return { Client: BoundedConnectClient };

@@ -19,7 +19,10 @@ import {
   parseSchedule,
 } from "@/modules/business-hours/hours";
 import { readChannelRedirectConfig } from "@/modules/channel-redirect/service";
-import { loadAgentBot, loadChatwootClient } from "@/modules/chatwoot/instance";
+import {
+  agentBotChatwootId,
+  loadChatwootClient,
+} from "@/modules/chatwoot/instance";
 import { pendingIncoming } from "@/modules/chatwoot/messages";
 import {
   parseLiveConversation,
@@ -483,8 +486,7 @@ async function ourAgentBotIdOf(
   );
   const agentId = conv?.inbox?.agentId;
   if (agentId == null) return null;
-  const bot = await loadAgentBot(tenantId, instanceId, agentId, base);
-  return bot?.chatwootAgentBotId ?? null;
+  return agentBotChatwootId(tenantId, instanceId, agentId, base);
 }
 
 // How long past the hand-over's status claim the retry runs, so the claim has run out by then.

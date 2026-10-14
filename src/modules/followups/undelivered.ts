@@ -1,5 +1,6 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { mediaAnnotationFor } from "@/modules/chatwoot/annotations";
 import {
   channelErrorCode,
   mediaFallbackDedupeKey,
@@ -60,6 +61,22 @@ function replaces(row: Row, messageId: number): boolean {
   return new RegExp(
     `(?:^|:)(?:channel-resend|media-fallback):${messageId}$`,
   ).test(row.sendId ?? "");
+}
+
+// Whether a refusal on this message would carry text to resend, from the sources `handleChannelFailure`
+// reads: a voice note's reply or transcription (or the one this process kept when it sent it), and a
+// text message's own content. A file is resent as nothing.
+function resendTextKnown(
+  tenantId: bigint,
+  instanceId: bigint,
+  m: Row,
+): boolean {
+  if (m.attachmentTypes.length === 0) return m.content.trim().length > 0;
+  return !!(
+    m.replyText?.trim() ||
+    m.transcribedText?.trim() ||
+    mediaAnnotationFor(tenantId, instanceId, m.id)?.transcribedText?.trim()
+  );
 }
 
 function sysCtx(tenantId: bigint): TenantContext {
@@ -271,8 +288,7 @@ export async function lastReplyDelivery(params: {
         resendExpected(
           m.externalError,
           m.sendId ?? null,
-          m.attachmentTypes.includes("audio") ||
-            (m.attachmentTypes.length === 0 && m.content.trim().length > 0),
+          resendTextKnown(params.tenantId, params.instanceId, m),
         ) &&
         m.createdAt != null &&
         now.getTime() < m.createdAt.getTime() + RESEND_ARM_GRACE_MS,

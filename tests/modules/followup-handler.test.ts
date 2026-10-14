@@ -1307,6 +1307,94 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     expect(s.notes.map(([c]) => c)).toEqual([1753]);
   });
 
+  // A voice note whose reply text is nowhere (not on it, not transcribed, not kept by this process)
+  // is resent as nothing, so its refusal is not waited for.
+  test("a fresh refusal on a voice note with no text is handed over at once", async () => {
+    await seedConversation(1755, due());
+    const s = stubClient({
+      page: [
+        {
+          ...replyRow(17551, {
+            refused: true,
+            createdAt: Math.floor(Date.now() / 1000) - 60,
+          }),
+          content: "",
+          attachments: [
+            { id: 2, file_type: "audio", data_url: "https://x/a.ogg" },
+          ],
+        },
+      ],
+    });
+    expect(await run(1755, s)).toEqual({ outcome: "done" });
+    expect(s.notes.map(([c]) => c)).toEqual([1755]);
+  });
+
+  // The same voice note carrying the reply it was rendered from gets a resend, and is waited for.
+  test("a fresh refusal on a voice note with its reply text waits for the resend", async () => {
+    await seedConversation(1756, due());
+    const row = replyRow(17561, {
+      refused: true,
+      createdAt: Math.floor(Date.now() / 1000) - 60,
+    });
+    const s = stubClient({
+      page: [
+        {
+          ...row,
+          content: "",
+          attachments: [
+            { id: 3, file_type: "audio", data_url: "https://x/b.ogg" },
+          ],
+          content_attributes: {
+            ...row.content_attributes,
+            fazer_ai_reply_text: "O plano custa R$ 89",
+          },
+        },
+      ],
+    });
+    expect(await run(1756, s)).toMatchObject({ outcome: "reschedule" });
+    expect(s.notes).toEqual([]);
+  });
+
+  // Who holds the conversation needs only the bot's id: a bot token that does not decrypt does not
+  // keep a hand-over that landed from being spent.
+  test("a hand-over retry is confirmed with the bot's token unreadable", async () => {
+    await seedConversation(1757, due());
+    const bot = await suDb.chatwootAgentBot.findFirstOrThrow({
+      where: { tenantId, chatwootInstanceId: instanceId },
+      select: { id: true, accessToken: true },
+    });
+    await suDb.chatwootAgentBot.update({
+      where: { id: bot.id },
+      data: { accessToken: "not-a-ciphertext" },
+    });
+    try {
+      const s = stubClient({
+        page: [replyRow(17571, { refused: true })],
+        liveMeta: { assignee_type: "User", assignee: { id: 9, name: "Ana" } },
+      });
+      const out = await followUpHandler(
+        {
+          ...jobFor(1757),
+          payload: { ...jobFor(1757).payload, handoverRetry: true },
+        },
+        appDb,
+        {
+          makeModel: fakeModel,
+          makeClient: s.makeClient,
+          checkpointer: new MemorySaver(),
+          persistUsage: async () => {},
+        },
+      );
+      expect(out).toEqual({ outcome: "done" });
+      expect(await lastFollowUpOf(1757)).not.toBeNull();
+    } finally {
+      await suDb.chatwootAgentBot.update({
+        where: { id: bot.id },
+        data: { accessToken: bot.accessToken },
+      });
+    }
+  });
+
   // A retry for a conversation gone from the mirror (its instance removed) ends instead of waiting
   // for a reconcile that cannot happen.
   test("a hand-over retry for a conversation no longer mirrored ends", async () => {

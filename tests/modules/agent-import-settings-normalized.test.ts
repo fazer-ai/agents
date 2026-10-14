@@ -1,7 +1,8 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import type { TenantContext } from "@/lib/tenancy";
+import * as behaviorSettings from "@/modules/agents/behavior-settings";
 import { dropUnusableImportedSettingsInPlace } from "@/modules/agents/service";
 import { exportAgent, importAgent } from "@/modules/agents/transfer";
 import { dbProbeFailed } from "@/tests/db-gate";
@@ -74,9 +75,46 @@ async function importWith(
 
 // THE CEILINGS ARE ON WORK, NOT ON THE ANSWER. Each reader comparison reads the whole block, so a bag
 // with thousands of lists spends a bounded number of them and still normalizes what it can, inside the
-// import's 5s transaction. Asked of the pass itself, with no database in the way.
+// import's 5s transaction. Asked of the pass itself, with no database in the way, and counted in
+// reads of the block rather than in milliseconds: the work is the claim, and a machine under load
+// stretches the milliseconds of the same work.
+//
+// The pass reads a block as it is, then judges the fixes in one batch, and asks once more with the
+// paddings taken out when a padding the reader does not honour spoiled the batch: three reads at most
+// for a block judged in one pass.
+const ONE_PASS_READS = 3;
+
+class ReadsExceeded extends Error {}
+
+// How many times `act` reads a block, stopping it at the first read past `limit`: a pass that has gone
+// back to a budget of reads, or one read per value, would otherwise run its thousands of whole-block
+// reads before the assertion could say so.
+async function readsOf(
+  act: () => unknown,
+  limit = ONE_PASS_READS,
+): Promise<number> {
+  const read = behaviorSettings.readBehaviorSettings;
+  let n = 0;
+  const spy = spyOn(
+    behaviorSettings,
+    "readBehaviorSettings",
+  ).mockImplementation((...args: Parameters<typeof read>) => {
+    n += 1;
+    if (n > limit) throw new ReadsExceeded();
+    return read(...args);
+  });
+  try {
+    await act();
+  } catch (err) {
+    if (!(err instanceof ReadsExceeded)) throw err;
+  } finally {
+    spy.mockRestore();
+  }
+  return n;
+}
+
 describe("the reader comparisons a bag can cost", () => {
-  test("thousands of lists, one padding the reader does not honour, and the values still come out", () => {
+  test("thousands of lists, one padding the reader does not honour, and the values still come out", async () => {
     const labels = Array.from({ length: 1000 }, (_, i) => `l${i}`);
     const steps: unknown[] = [
       { delayValue: 1, delayUnit: " hours ", assignLabels: labels },
@@ -85,9 +123,12 @@ describe("the reader comparisons a bag can cost", () => {
       steps.push({ delayValue: 1, delayUnit: "minutes", assignLabels: [1] });
     }
     const bag = { followUp: { enabled: true, steps } };
-    const started = Date.now();
-    const dropped = dropUnusableImportedSettingsInPlace(bag);
-    expect(Date.now() - started).toBeLessThan(3_000);
+    let dropped = { count: 0, paths: [] as string[] };
+    expect(
+      await readsOf(() => {
+        dropped = dropUnusableImportedSettingsInPlace(bag);
+      }),
+    ).toBeLessThanOrEqual(ONE_PASS_READS);
     expect(dropped.count).toBe(5_000);
     expect(dropped.paths[0]).toBe("followUp.steps.0.delayUnit");
     // The pass answers a normalized copy of the block, so the bag is what to read.
@@ -97,7 +138,7 @@ describe("the reader comparisons a bag can cost", () => {
   });
   // The tail cut is for a list the reader cuts to a window, and no cut reaches past what it is willing
   // to take: trying it on a long list would read the whole block once per element for nothing.
-  test("a long list is not walked from the tail for a difference that is not its own", () => {
+  test("a long list is not walked from the tail for a difference that is not its own", async () => {
     const bag = {
       followUp: {
         enabled: true,
@@ -113,9 +154,12 @@ describe("the reader comparisons a bag can cost", () => {
         ],
       },
     };
-    const started = Date.now();
-    const dropped = dropUnusableImportedSettingsInPlace(bag);
-    expect(Date.now() - started).toBeLessThan(4_000);
+    let dropped = { count: 0, paths: [] as string[] };
+    expect(
+      await readsOf(() => {
+        dropped = dropUnusableImportedSettingsInPlace(bag);
+      }),
+    ).toBeLessThanOrEqual(ONE_PASS_READS);
     expect(dropped.count).toBe(2);
     expect(dropped.paths).toEqual([
       "followUp.steps.0.delayUnit",
@@ -183,15 +227,19 @@ describe("the reader comparisons a bag can cost", () => {
         ],
       },
     };
-    const started = Date.now();
+    // A scan per label is cost INSIDE one read, so reads cannot see it. Process CPU time can, and
+    // unlike wall time it does not grow with what else the machine runs: the single pass costs tens
+    // of ms here, a scan per label over a hundred thousand of them over ten seconds.
+    const cpu = process.cpuUsage();
     const dropped = dropUnusableImportedSettingsInPlace(bag);
-    expect(Date.now() - started).toBeLessThan(3_000);
+    const spent = process.cpuUsage(cpu);
+    expect((spent.user + spent.system) / 1000).toBeLessThan(2_000);
     expect(dropped.paths).toEqual(["followUp.enabled"]);
   });
 
   // Bounding how MANY comparisons a block gets does not bound what one costs, and each is a clone and a
   // read of the block. A block gets fewer comparisons the bigger it is, down to a single pass.
-  test("a block of three hundred thousand labels is judged in one pass, not in a budget of them", () => {
+  test("a block of three hundred thousand labels is judged in one pass, not in a budget of them", async () => {
     const step = (labels: unknown[]) => ({
       delayValue: 1,
       delayUnit: "minutes",
@@ -207,17 +255,23 @@ describe("the reader comparisons a bag can cost", () => {
         ],
       },
     };
-    const started = Date.now();
-    dropUnusableImportedSettingsInPlace(bag);
-    // NOTE: a wide margin over the single pass, and still below what a budget of passes costs.
-    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(
+      await readsOf(() => dropUnusableImportedSettingsInPlace(bag)),
+    ).toBeLessThanOrEqual(ONE_PASS_READS);
   });
 
   // A bundle's list is caller-sized, so the paths taken out are answered bounded and counted: spreading
   // a million of them into an array throws `RangeError` and takes the import and its preview down.
-  test("a million unusable entries answer a bounded list of paths and their count", () => {
+  // Counted like the others, so a pass gone back to one read per entry fails here at once instead of
+  // reading a million-entry block a million times.
+  test("a million unusable entries answer a bounded list of paths and their count", async () => {
     const bag = { guardrails: { competitors: Array(1_000_000).fill(1) } };
-    const dropped = dropUnusableImportedSettingsInPlace(bag);
+    let dropped = { count: 0, paths: [] as string[] };
+    expect(
+      await readsOf(() => {
+        dropped = dropUnusableImportedSettingsInPlace(bag);
+      }),
+    ).toBeLessThanOrEqual(ONE_PASS_READS);
     expect(dropped.count).toBe(1_000_000);
     expect(dropped.paths.length).toBeLessThanOrEqual(64);
     expect(dropped.paths[0]).toBe("guardrails.competitors.0");
@@ -343,11 +397,15 @@ describe.skipIf(!dbUp)("an imported settings bag create would refuse", () => {
   // A BUNDLE IS CALLER INPUT, and the import runs inside a 5s transaction: one pass over the block,
   // not one pass per entry.
   test("a list of fifty thousand unusable entries costs one pass, and the warnings are counted past the first twenty", async () => {
-    const started = Date.now();
-    const { stored, result } = await importWith({
-      guardrails: { competitors: Array(50_000).fill(1) },
+    let imported: Awaited<ReturnType<typeof importWith>> | undefined;
+    const importReads = await readsOf(async () => {
+      imported = await importWith({
+        guardrails: { competitors: Array(50_000).fill(1) },
+      });
     });
-    expect(Date.now() - started).toBeLessThan(4_000);
+    expect(importReads).toBeLessThanOrEqual(ONE_PASS_READS);
+    if (!imported) throw new Error("the import did not answer");
+    const { stored, result } = imported;
     expect(stored?.guardrails).toEqual({ competitors: [] });
     const named = result.warnings.filter(
       (w) => w.code === "settingsValueDropped",

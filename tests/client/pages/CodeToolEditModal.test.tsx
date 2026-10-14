@@ -1,7 +1,6 @@
 /// <reference lib="dom" />
 
 import { afterEach, describe, expect, jest, spyOn, test } from "bun:test";
-import { readFileSync } from "node:fs";
 import { completionStatus, startCompletion } from "@codemirror/autocomplete";
 import { EditorView } from "@codemirror/view";
 import {
@@ -678,27 +677,66 @@ test("a save in flight cannot be dismissed", async () => {
   }
 });
 
-// NOTE: the `finally` half stays a source fence: a reopened dialog does not reset `saving`, so the
-// scoped `setSaving(false)` has no observable effect to assert until the opening resets it.
-test("a save in flight cannot be dismissed, and its finally belongs to its own opening", () => {
-  // Two guards over one hole, a save dismissed with Esc/X and reopened before it answers. The
-  // dialog refuses the dismissal (docs/modals.md), which makes the second guard unreachable from
-  // the UI, hence a source fence: an unscoped `setSaving(false)` would leave the reopened form
-  // disabled with nothing running, for as long as the first request takes.
-  const src = readFileSync(
-    "src/client/pages/resources/CodeToolEditModal.tsx",
-    "utf8",
-  );
-  expect(src.includes("onCloseRequest={saving ? () => {} : undefined}")).toBe(
-    true,
-  );
-  const saveFn = src.slice(src.indexOf("async function save()"));
-  const tail = saveFn.slice(saveFn.indexOf("} finally {"));
-  expect(
-    tail.startsWith(
-      "} finally {\n      if (sessionRef.current === session) setSaving(false);",
-    ),
-  ).toBe(true);
+// A save's `finally` belongs to its own opening. Asked through two saves held at once: the first is
+// left behind by a programmatic close, the second is made in the next opening, and the first answers
+// while the second is still out. Its `finally` must not clear the flag the second one set, or the
+// open dialog would offer Cancel with a write still on its way. The dismissal half is the test above.
+test("a save that answers after its dialog was reopened leaves the new save in flight", async () => {
+  const realFetch = globalThis.fetch;
+  const held: Array<() => void> = [];
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const href = input instanceof Request ? input.url : String(input);
+    if (
+      href.includes("/code-tools") &&
+      (init?.method ?? "GET").toUpperCase() === "POST"
+    ) {
+      await new Promise<void>((r) => held.push(r));
+      return new Response(JSON.stringify({ tool: codeTool(), warnings: [] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    return realFetch(input as RequestInfo, init);
+  }) as typeof fetch;
+  const cancelDisabled = () =>
+    screen.getByText("Cancel").closest("button")?.hasAttribute("disabled");
+  const fillAndSave = () => {
+    fireEvent.change(document.body.querySelector("input") as HTMLElement, {
+      target: { value: "Look up CPF" },
+    });
+    fireEvent.change(descriptionField(), {
+      target: { value: "a description" },
+    });
+    setCode("return 1");
+    fireEvent.click(screen.getByText("Save").closest("button") as HTMLElement);
+  };
+  try {
+    render(<TwoToolsHarness />);
+    fireEvent.click(screen.getByText("open-new"));
+    fillAndSave();
+    await waitFor(() => expect(held.length).toBe(1));
+    fireEvent.click(screen.getByText("close-it"));
+    fireEvent.click(screen.getByText("open-new"));
+    await waitFor(() => expect(cancelDisabled()).toBe(false));
+    fillAndSave();
+    await waitFor(() => expect(held.length).toBe(2));
+    expect(cancelDisabled()).toBe(true);
+
+    await act(async () => {
+      held[0]?.();
+      await new Promise((r) => setTimeout(r, 30));
+    });
+    expect(cancelDisabled()).toBe(true);
+    expect(screen.queryAllByText("New code tool").length).toBe(1);
+
+    await act(async () => {
+      held[1]?.();
+      await new Promise((r) => setTimeout(r, 30));
+    });
+    expect(screen.queryAllByText("New code tool").length).toBe(0);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });
 
 // The starter body's comment is the first console text an author of a code tool reads, so it

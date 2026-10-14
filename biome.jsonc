@@ -155,7 +155,6 @@
         "!tests/client/error-toast-reason.test.ts",
         "!tests/client/field-refusal-fence.test.ts",
         "!tests/client/locale-plurals.test.ts",
-        "!tests/client/pages/CodeToolEditModal.test.tsx",
         "!tests/client/tool-sample-persistence.test.ts",
         "!tests/graph/prepare.test.ts",
         "!tests/graph/refused-turn-callsites.test.ts",

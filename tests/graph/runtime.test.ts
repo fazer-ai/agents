@@ -5679,7 +5679,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     const base = ownershipClient(calls);
     const inner = await base();
     const mirrored = Promise.withResolvers<void>();
-    const labelsRead = Promise.withResolvers<void>();
+    let labelWritten = false;
     let armed = false;
     const client = {
       ...inner,
@@ -5694,19 +5694,25 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
           data: { status },
         });
         mirrored.resolve();
-        // The response comes back only after the label read has seen the mirrored status.
-        await labelsRead.promise;
+        // The response comes back only after the label has passed its ownership fence and reached
+        // Chatwoot. A fence that stood the label down never gets there, and this call then gives up,
+        // which leaves the label missing from `calls` below.
+        await until(
+          "the label written past its ownership fence",
+          () => labelWritten,
+        );
         return {};
       },
       // Armed inside the model call: the turn reads the labels while it prepares, too.
       getConversationLabels: async (c: number) => {
-        if (!armed) return inner.getConversationLabels(c);
-        await mirrored.promise;
-        try {
-          return await inner.getConversationLabels(c);
-        } finally {
-          labelsRead.resolve();
-        }
+        if (armed) await mirrored.promise;
+        return inner.getConversationLabels(c);
+      },
+      setConversationLabels: async (...args: unknown[]) => {
+        labelWritten = true;
+        return (
+          inner.setConversationLabels as (...a: unknown[]) => Promise<unknown>
+        )(...args);
       },
     } as unknown as ChatwootClient;
     const m = scriptedToolModel([

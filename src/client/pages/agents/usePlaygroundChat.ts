@@ -532,8 +532,9 @@ export function usePlaygroundChat(
   const busy = sending || followingUp || transcribing || extracting;
   const recording = recordState !== "idle";
   // What the composer holds while it is on screen: typed text and a recording running or paused.
-  // A request and a stopped recording hold by themselves (holdWhile, holdInFlight), so they keep
-  // holding after the editor unmounts.
+  // Every write holds by itself in the API client (holdingWrites), and a file or a stopped recording
+  // holds from the moment it leaves the composer until its last request (holdWhile, holdInFlight), so
+  // both keep holding after the editor unmounts.
   useHeldDraft(input.trim() !== "" || recording);
   const hasConversation = turns.some(
     (x) => x.role === "user" || x.role === "assistant",
@@ -740,7 +741,7 @@ export function usePlaygroundChat(
     [t],
   );
 
-  const sendNow = useCallback(async () => {
+  const send = useCallback(async () => {
     const text = input.trim();
     if (!text || busy || notReady) return;
     const wasNew = !sessionSaved.current;
@@ -799,9 +800,8 @@ export function usePlaygroundChat(
     refreshSessionUsage,
     ensureThread,
   ]);
-  const send = useCallback(() => holdWhile(() => sendNow()), [sendNow]);
 
-  const simulateFollowupNow = useCallback(async () => {
+  const simulateFollowup = useCallback(async () => {
     if (busy || notReady || !hasConversation) return;
     setFollowingUp(true);
     try {
@@ -849,10 +849,6 @@ export function usePlaygroundChat(
     t,
     refreshSessionUsage,
   ]);
-  const simulateFollowup = useCallback(
-    () => holdWhile(() => simulateFollowupNow()),
-    [simulateFollowupNow],
-  );
 
   // Drops the pending flag on the trailing optimistic user bubble (kept, still playable) — used when
   // a step fails so the bubble stays but stops showing the "Transcribing…"/"Extracting…" state.
@@ -1011,6 +1007,8 @@ export function usePlaygroundChat(
       ensureThread,
     ],
   );
+  // The API client holds each request; this holds the gaps between them: the file read into the
+  // multipart body before the first one, and the session total read between the two writes.
   const sendFile = useCallback(
     (file: File) => holdWhile(() => sendFileNow(file)),
     [sendFileNow],
@@ -1150,6 +1148,7 @@ export function usePlaygroundChat(
       ensureThread,
     ],
   );
+  // Same as sendFile: the recording is read into the multipart body before its first request.
   const sendRecording = useCallback(
     (blob: Blob) => holdWhile(() => sendRecordingNow(blob)),
     [sendRecordingNow],

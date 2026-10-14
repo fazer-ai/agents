@@ -54,9 +54,9 @@ export function useHeldDraft(active: boolean) {
   }, [active]);
 }
 
-// Work the operator started that the server does not have yet (a send waiting for its thread, a
-// voice note between stop and upload). Held by the operation itself, not by a component, so leaving
-// the screen mid-flight still keeps the console's own reloads off until it settles.
+// Work the operator started that the server does not have yet (a write on the wire, a voice note
+// between stop and upload). Held by the operation itself, not by a component, so leaving the screen
+// mid-flight still keeps the console's own reloads off until it settles.
 let inFlight = 0;
 
 export function holdInFlight(): () => void {
@@ -76,6 +76,69 @@ export async function holdWhile<T>(work: () => Promise<T>): Promise<T> {
   } finally {
     release();
   }
+}
+
+// A write the server may already be applying (POST, PUT, PATCH, DELETE) holds the console's own reloads
+// until its answer has been read: a reload aborts the request mid-flight and drops the answer, which
+// for a password change is the cookie of the session that replaces the current one. Wraps the API
+// client's fetch, so it holds whichever screen started the write and outlives that screen. A read
+// holds nothing.
+const WRITES = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+
+export function holdingWrites(
+  fetcher: () => typeof fetch = () => globalThis.fetch,
+): typeof fetch {
+  return (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const method = (
+      init?.method ?? (input instanceof Request ? input.method : "GET")
+    ).toUpperCase();
+    if (!WRITES.has(method)) return fetcher()(input, init);
+    const release = holdInFlight();
+    let response: Response;
+    try {
+      response = await fetcher()(input, init);
+    } catch (error) {
+      release();
+      throw error;
+    }
+    return releasedWhenRead(response, release);
+  }) as typeof fetch;
+}
+
+// The same response, whose body releases the hold once it has been read to the end, fails or is
+// cancelled.
+function releasedWhenRead(response: Response, release: () => void): Response {
+  if (!response.body) {
+    release();
+    return response;
+  }
+  const reader = response.body.getReader();
+  const body = new ReadableStream<Uint8Array>(
+    {
+      async pull(controller) {
+        try {
+          const { done, value } = await reader.read();
+          if (done) {
+            release();
+            controller.close();
+          } else controller.enqueue(value);
+        } catch (error) {
+          release();
+          controller.error(error);
+        }
+      },
+      cancel(reason) {
+        release();
+        return reader.cancel(reason);
+      },
+    },
+    { highWaterMark: 0 },
+  );
+  return new Response(body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
 }
 
 // Whether a reload now would lose something: a form or modal the native prompt is guarding, a held

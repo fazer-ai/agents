@@ -5,6 +5,7 @@ import i18n from "@/client/lib/i18n";
 import { noteServerDate } from "@/client/lib/serverClock";
 import { noteServedBuild } from "@/client/lib/staleBuild";
 import { recoverFromRejectedSelector } from "@/client/lib/tenantSelectorRecovery";
+import { holdingWrites } from "@/client/lib/unsavedGuard";
 
 // `parseDate: false` disables Eden treaty's default JSON reviver that
 // auto-converts any string matching an ISO 8601 / RFC 1123 / dd-mm-yyyy regex
@@ -27,6 +28,8 @@ export const api = treaty<App>(window.location.origin, {
     return headers;
   },
   onResponse: onApiResponse,
+  // Every write holds a stale tab's reload until its answer is read (client/lib/unsavedGuard.ts).
+  fetcher: holdingWrites(),
   parseDate: false,
 });
 

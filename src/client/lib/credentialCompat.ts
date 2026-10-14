@@ -36,12 +36,12 @@ const VISION_PROVIDER_TYPE: Record<string, string> = {
 };
 
 // The decisions engine's classification APIs (src/modules/decisions/config.ts): the provider's own
-// kind and a generic key, which the server takes as an API key all the same (`credentialServes`).
-// TypeSafe has no kind of its own, so a generic key is what it lists; never everything, or tracing
-// keys and OAuth blobs that cannot serve would be offered first.
+// kind first (the inline "New credential" creates it) and a generic key, which the server takes as
+// an API key all the same (`credentialServes`), so an agent set up before TypeSafe had a kind keeps
+// its entry. Never everything, or tracing keys and OAuth blobs that cannot serve would be offered.
 const DECISIONS_PROVIDER_TYPES: Record<string, string[]> = {
   openai: ["openai", "generic"],
-  typesafe: ["generic"],
+  typesafe: ["typesafe", "generic"],
 };
 
 const CATALOG_TYPE_TYPE: Record<string, string> = {

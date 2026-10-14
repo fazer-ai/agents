@@ -28,6 +28,7 @@ const TABLE: [string, boolean, boolean][] = [
   ["deepseek", true, true],
   ["openrouter", true, true],
   ["openai_compatible", true, true],
+  ["typesafe", true, true],
   ["elevenlabs", true, true],
   ["asaas", true, true],
   ["resend", true, true],

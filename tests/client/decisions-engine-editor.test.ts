@@ -392,7 +392,14 @@ describe("the classifier's key list", () => {
       "generic",
       "openai",
     ]);
-    expect(credentialCompat.decisions("typesafe")).toEqual(["generic"]);
+    // Its own kind first: the inline "New credential" on the Classifier creates the first one.
+    expect(credentialCompat.decisions("typesafe")).toEqual([
+      "typesafe",
+      "generic",
+    ]);
+    expect(credentialCompat.decisions("typesafe").includes("openai")).toBe(
+      false,
+    );
     for (const provider of ["openai", "typesafe"]) {
       const kinds = credentialCompat.decisions(provider);
       expect(kinds.includes("langfuse")).toBe(false);

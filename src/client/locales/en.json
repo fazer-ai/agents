@@ -4119,7 +4119,8 @@
       "openai_compatible": "OpenAI-compatible",
       "openrouter": "OpenRouter",
       "query": "Query",
-      "resend": "Resend"
+      "resend": "Resend",
+      "typesafe": "TypeSafe"
     },
     "secretTypeHint": {
       "basic_auth": "Sent as the Authorization: Basic header. The value must be user:password already base64-encoded.",

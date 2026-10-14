@@ -117,6 +117,7 @@ const CLIENT_IDENTICAL_BY_DESIGN: readonly string[] = [
   "vault.secretType.openai",
   "vault.secretType.openrouter",
   "vault.secretType.resend",
+  "vault.secretType.typesafe",
 
   // Acronyms, units and format strings: no letters to translate, or none outside a placeholder.
   "dashboard.absolute",
@@ -915,7 +916,8 @@ describe("both languages answer, and answer differently", () => {
     expectWaiverLedger(
       "CLIENT_IDENTICAL_BY_DESIGN",
       CLIENT_IDENTICAL_BY_DESIGN,
-      hasProOnlyKeys ? 109 : 107,
+      // A brand name reads the same in both languages, like every `vault.secretType.*` waived above.
+      hasProOnlyKeys ? 110 : 108,
     );
     // NOTE: the same in every edition, since the list is empty in every tree.
     expectWaiverLedger("SAY_LESS_GRANDFATHERED", SAY_LESS_GRANDFATHERED, 0);

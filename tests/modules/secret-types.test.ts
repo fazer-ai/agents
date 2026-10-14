@@ -12,6 +12,16 @@ describe("secret-types catalog", () => {
     expect(isSecretTypeId("nope")).toBe(false);
   });
 
+  test("typesafe is a kind of its own, sent as a bearer token like the decisions engine sends it", () => {
+    expect(isSecretTypeId("typesafe")).toBe(true);
+    expect(resolveSecretInjection("typesafe", "ts-key")).toEqual({
+      target: "header",
+      name: "Authorization",
+      value: "Bearer ts-key",
+    });
+    expect(isNonInjectableSecret("typesafe")).toBe(false);
+  });
+
   test("header kind with paramName injects a custom header", () => {
     expect(resolveSecretInjection("header", "mykey", "X-Custom-Auth")).toEqual({
       target: "header",

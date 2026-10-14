@@ -21,6 +21,10 @@ export interface SecretTestSpec {
   // When true the operator-supplied baseURL is the (only) base — for self-hosted/configurable APIs
   // (chatwoot, openai-compatible). The runner SSRF-guards it. No baseURL → result `missing_base_url`.
   needsBase?: boolean;
+  // When true the entry's own base URL, if it has one, replaces `bases`: for a kind whose base URL is
+  // optional and is where the real requests go (typesafe), probing the public host would test a
+  // server the credential is not used against. No base URL on the entry falls back to `bases`.
+  entryBaseFirst?: boolean;
   path: string;
   // Extra static headers the probe endpoint requires beyond the injected credential (e.g. the
   // anthropic-version header). Never carries the secret.
@@ -140,6 +144,21 @@ export const SECRET_TYPES: SecretType[] = [
     baseUrl: "required",
     // Base is the operator's API root (typically ending in /v1); the probe hits {base}/models.
     test: { needsBase: true, path: "/models" },
+  },
+  {
+    // TypeSafe, the Jev classifier of the decisions engine (src/modules/decisions/providers.ts sends
+    // the key as a bearer token). The base URL is optional because the engine takes a credential's
+    // base URL in place of the public one. The probe lists the account's models, which is
+    // authenticated and runs no classification (docs.typesafe.ai, `client.models.list()`).
+    id: "typesafe",
+    injection: "bearer",
+    service: "typesafe",
+    baseUrl: "optional",
+    test: {
+      bases: ["https://api.typesafe.ai/v1"],
+      entryBaseFirst: true,
+      path: "/models",
+    },
   },
   {
     id: "elevenlabs",

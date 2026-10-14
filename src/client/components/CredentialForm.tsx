@@ -59,6 +59,7 @@ const NAME_RE = /^[^\x00-\x1f\x7f]{1,128}$/;
 // t('vault.secretType.deepseek', 'DeepSeek')
 // t('vault.secretType.openrouter', 'OpenRouter')
 // t('vault.secretType.openai_compatible', 'OpenAI-compatible')
+// t('vault.secretType.typesafe', 'TypeSafe')
 // t('vault.secretType.elevenlabs', 'ElevenLabs')
 // t('vault.secretType.asaas', 'Asaas')
 // t('vault.secretType.resend', 'Resend')

@@ -67,7 +67,7 @@ describe("secret-types client mirror", () => {
     expect(
       SERVER_SECRET_TYPE_IDS.filter((id) => clientDialable(id, BASE) === BASE)
         .length,
-    ).toBe(9);
+    ).toBe(10);
   });
 
   test("the client base-URL pair matches the server's single declaration", () => {

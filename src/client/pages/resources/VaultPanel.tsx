@@ -45,6 +45,7 @@ type VaultEntry = NonNullable<
 // t('vault.secretType.deepseek', 'DeepSeek')
 // t('vault.secretType.openrouter', 'OpenRouter')
 // t('vault.secretType.openai_compatible', 'OpenAI-compatible')
+// t('vault.secretType.typesafe', 'TypeSafe')
 // t('vault.secretType.elevenlabs', 'ElevenLabs')
 // t('vault.secretType.asaas', 'Asaas')
 // t('vault.secretType.resend', 'Resend')

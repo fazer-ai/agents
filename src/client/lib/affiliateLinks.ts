@@ -13,6 +13,7 @@ export const PROVIDER_KEY_LINKS: Record<string, string> = {
   gemini: "https://aistudio.google.com/apikey",
   deepseek: "https://platform.deepseek.com/api_keys",
   openrouter: "https://openrouter.ai/keys",
+  typesafe: "https://console.typesafe.ai/keys",
 };
 
 export type ProviderLink = { href: string; kind: "affiliate" | "direct" };

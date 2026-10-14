@@ -9,7 +9,24 @@ import {
 import config from "@/config";
 import { getCheckpointer } from "@/graph/checkpointer";
 import { registeredPool } from "@/lib/pool-stats";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { until } from "@/tests/utils/poll";
+
+// The cases that need the test database skip under the db-gate's opt-out, as every integration suite
+// does; the stalled-server and option cases run either way.
+const appUrl = process.env.TEST_APP_DATABASE_URL;
+let dbUp = false;
+if (appUrl) {
+  const probe = new Pool({ connectionString: appUrl, max: 1 });
+  try {
+    await probe.query("SELECT 1");
+    dbUp = true;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
+  } finally {
+    await probe.end();
+  }
+}
 
 // A connect that never completes, from a server that accepts the TCP connection and never answers:
 // the shape a stalled network or a wedged Postgres takes. Bound to 127.0.0.1 and an address the
@@ -63,10 +80,10 @@ describe("a pool built with connectTimeoutOption", () => {
       await pool.end();
     }
   });
+});
 
+describe.skipIf(!dbUp)("a bounded pool at max, on the real database", () => {
   test("still waits, past the connect bound, for a free client when it is at max", async () => {
-    const appUrl = process.env.TEST_APP_DATABASE_URL;
-    if (!appUrl) throw new Error("TEST_APP_DATABASE_URL is not set");
     const pool = new Pool({
       connectionString: appUrl,
       max: 1,
@@ -118,13 +135,11 @@ test("a bound that is not a positive number of ms is refused, since pg reads 0 a
   expect(() => connectTimeoutOption(Number.NaN)).toThrow(/positive/);
 });
 
-describe("a pool given its password as an option", () => {
+describe.skipIf(!dbUp)("a pool given its password as an option", () => {
   // `pg-pool` keeps a password passed as an option non-enumerable, so a client that copied its config
   // by spreading it would connect with none.
   test("still authenticates through the bounded client", async () => {
-    const appUrl = process.env.TEST_APP_DATABASE_URL;
-    if (!appUrl) throw new Error("TEST_APP_DATABASE_URL is not set");
-    const url = new URL(appUrl);
+    const url = new URL(appUrl ?? "");
     const password = decodeURIComponent(url.password);
     if (!password) throw new Error("the test database URL carries no password");
     const pool = new Pool({
@@ -163,8 +178,10 @@ describe("the runtime's pool options", () => {
     expect(options.connectionTimeoutMillis ?? 0).toBe(0);
     expect(options.max).toBe(3);
   });
+});
 
-  test("the checkpointer's pool is built with them", async () => {
+describe.skipIf(!dbUp)("the checkpointer's pool", () => {
+  test("is built with the runtime's pool options", async () => {
     await getCheckpointer();
     const pool = registeredPool("checkpointer");
     if (!pool) throw new Error("no pool registered as checkpointer");
@@ -181,7 +198,7 @@ describe("the runtime's pool options", () => {
   });
 });
 
-describe("the checkpointer after a failed setup", () => {
+describe.skipIf(!dbUp)("the checkpointer after a failed setup", () => {
   test("is built again on the next call, not kept failed until a restart", async () => {
     const key = Symbol.for("fazerai.langgraph.checkpointer");
     const g = globalThis as unknown as Record<symbol, unknown>;

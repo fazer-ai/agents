@@ -403,13 +403,17 @@ export function usePlaygroundChat(
   // that has it. The per-turn line comes from the reply.
   const [sessionUsage, setSessionUsage] = useState<PlaygroundUsage>(NO_USAGE);
   const [input, setInput] = useState("");
-  useHeldDraft(input.trim() !== "");
   const [sending, setSending] = useState(false);
   const [followingUp, setFollowingUp] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
   const [extracting, setExtracting] = useState(false);
   const [recordState, setRecordState] = useState<RecordState>("idle");
   const [recordStream, setRecordStream] = useState<MediaStream | null>(null);
+  // Everything the operator gave the composer that is not yet a turn: typed text, a recording
+  // running or paused, and audio or a file still being read into text.
+  useHeldDraft(
+    input.trim() !== "" || recordState !== "idle" || transcribing || extracting,
+  );
   const [sessions, setSessions] = useState<PlaygroundSessionMeta[]>([]);
   const [loadingSession, setLoadingSession] = useState(false);
   // Manual "reply with audio" toggle: forces TTS on every turn regardless of the agent's mode.

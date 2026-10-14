@@ -4,8 +4,8 @@ import { Pool } from "pg";
 import {
   CONNECT_TIMEOUT_MS,
   connectTimeoutOption,
+  runtimePoolOptions,
 } from "@/api/lib/pool-options";
-import "@/api/lib/prisma";
 import config from "@/config";
 import { getCheckpointer } from "@/graph/checkpointer";
 import { registeredPool } from "@/lib/pool-stats";
@@ -145,28 +145,40 @@ describe("a pool given its password as an option", () => {
   });
 });
 
-describe("the runtime's pools", () => {
-  test.each([["main"], ["background"], ["checkpointer"]])(
-    "%s bounds its connect and not its queue",
-    async (name) => {
-      if (name === "checkpointer") await getCheckpointer();
-      const pool = registeredPool(name);
-      if (!pool) throw new Error(`no pool registered as ${name}`);
-      const options = (
-        pool as unknown as {
-          options: {
-            Client?: { connectTimeoutMs?: number };
-            connectionTimeoutMillis?: number;
-          };
-        }
-      ).options;
-      // The value the deploy documents, written out: compared with the constant, a constant set to 0
-      // (no limit) would agree with itself.
-      expect(options.Client?.connectTimeoutMs).toBe(10_000);
-      expect(CONNECT_TIMEOUT_MS).toBe(10_000);
-      expect(options.connectionTimeoutMillis ?? 0).toBe(0);
-    },
-  );
+// What the main, background and checkpointer pools are built with. Read from the builder, not from
+// the pools: other files in the same process mock ./prisma, and then the real pools never exist here.
+// That each site builds through it is held by require-pool-connect-bound, which refuses an inline
+// options object with no bound.
+describe("the runtime's pool options", () => {
+  test("bound the connect at 10 s and not the queue", () => {
+    const options = runtimePoolOptions("postgresql://x@127.0.0.1/y", 3) as {
+      Client?: { connectTimeoutMs?: number };
+      connectionTimeoutMillis?: number;
+      max?: number;
+    };
+    // The value the deploy documents, written out: compared with the constant, a constant set to 0
+    // (no limit) would agree with itself.
+    expect(options.Client?.connectTimeoutMs).toBe(10_000);
+    expect(CONNECT_TIMEOUT_MS).toBe(10_000);
+    expect(options.connectionTimeoutMillis ?? 0).toBe(0);
+    expect(options.max).toBe(3);
+  });
+
+  test("the checkpointer's pool is built with them", async () => {
+    await getCheckpointer();
+    const pool = registeredPool("checkpointer");
+    if (!pool) throw new Error("no pool registered as checkpointer");
+    const options = (
+      pool as unknown as {
+        options: {
+          Client?: { connectTimeoutMs?: number };
+          connectionTimeoutMillis?: number;
+        };
+      }
+    ).options;
+    expect(options.Client?.connectTimeoutMs).toBe(10_000);
+    expect(options.connectionTimeoutMillis ?? 0).toBe(0);
+  });
 });
 
 describe("the checkpointer after a failed setup", () => {

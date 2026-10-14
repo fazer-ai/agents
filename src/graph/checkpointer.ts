@@ -1,9 +1,6 @@
 import { PostgresSaver } from "@langchain/langgraph-checkpoint-postgres";
 import { Pool } from "pg";
-import {
-  connectTimeoutOption,
-  lockTimeoutOption,
-} from "@/api/lib/pool-options";
+import { runtimePoolOptions } from "@/api/lib/pool-options";
 import config from "@/config";
 import { parseDbId } from "@/lib/db-id";
 import { instrumentPool } from "@/lib/pool-stats";
@@ -33,12 +30,12 @@ async function init(): Promise<PostgresSaver> {
   // (config.langgraphPoolMax, which follows DB_POOL_MAX unless set).
   const pool = instrumentPool(
     "checkpointer",
-    new Pool({
-      connectionString: config.langgraphDatabaseUrl ?? "",
-      max: config.langgraphPoolMax,
-      ...lockTimeoutOption(),
-      ...connectTimeoutOption(),
-    }),
+    new Pool(
+      runtimePoolOptions(
+        config.langgraphDatabaseUrl ?? "",
+        config.langgraphPoolMax,
+      ),
+    ),
   );
   const saver = new PostgresSaver(pool, undefined, { schema: "langgraph" });
   try {

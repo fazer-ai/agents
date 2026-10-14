@@ -51,6 +51,22 @@ export function connectTimeoutOption(ms: number = CONNECT_TIMEOUT_MS): {
   return { Client: BoundedConnectClient };
 }
 
+// The options of the runtime's own pools: the main and background Prisma pools (./prisma.ts) and the
+// LangGraph checkpointer's (src/graph/checkpointer.ts). Both bounds a turn relies on: the lock wait
+// of each statement, and the connect of each new connection. The wait for a free connection is
+// left unbounded on purpose (connectTimeoutOption above).
+export function runtimePoolOptions(
+  connectionString: string | undefined,
+  max: number,
+) {
+  return {
+    connectionString,
+    max,
+    ...lockTimeoutOption(),
+    ...connectTimeoutOption(),
+  };
+}
+
 // The metrics reads are a few large aggregates, and the JIT compiles each of them again on every
 // request: on a month of a busy instance that compilation is most of a second per read, more than it
 // saves. Off for this pool only, whatever the server's `jit`. `pg` lets an `options` in the URL

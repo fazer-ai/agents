@@ -1,3 +1,4 @@
+import { Client, type ClientConfig } from "pg";
 import config from "@/config";
 
 // `lock_timeout` for a pool's connections, sent by `pg` as a startup parameter so it holds for
@@ -9,6 +10,32 @@ export function lockTimeoutOption(): { lock_timeout?: number } {
   return config.dbLockTimeoutMs > 0
     ? { lock_timeout: config.dbLockTimeoutMs }
     : {};
+}
+
+// How long a pool's NEW connection may take to complete before it fails. `pg`'s default is 0, no
+// limit: a connect stalled by the network, or by a Postgres that accepts the TCP connection and never
+// answers, holds the turn waiting on it forever instead of failing so the turn is retried.
+export const CONNECT_TIMEOUT_MS = 10_000;
+
+// The connect bound and nothing else. `connectionTimeoutMillis` on the pool would also bound the wait
+// for a free client when the pool is at `max`, turning a burst that queues into failed turns. The
+// two are armed from different configs: `pg-pool` arms its queue timer from its own options and hands
+// those options to each `Client` it builds, which arms its connect timer from them. A `Client` that
+// sets the timeout in its own config bounds the connect and leaves the queue as it was.
+export function connectTimeoutOption(ms: number = CONNECT_TIMEOUT_MS): {
+  Client: typeof Client & { readonly connectTimeoutMs: number };
+} {
+  class BoundedConnectClient extends Client {
+    static readonly connectTimeoutMs = ms;
+    constructor(config?: string | ClientConfig) {
+      super(
+        typeof config === "string"
+          ? { connectionString: config, connectionTimeoutMillis: ms }
+          : { ...config, connectionTimeoutMillis: ms },
+      );
+    }
+  }
+  return { Client: BoundedConnectClient };
 }
 
 // The metrics reads are a few large aggregates, and the JIT compiles each of them again on every

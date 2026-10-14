@@ -1,6 +1,9 @@
 import { PostgresSaver } from "@langchain/langgraph-checkpoint-postgres";
 import { Pool } from "pg";
-import { lockTimeoutOption } from "@/api/lib/pool-options";
+import {
+  connectTimeoutOption,
+  lockTimeoutOption,
+} from "@/api/lib/pool-options";
 import config from "@/config";
 import { parseDbId } from "@/lib/db-id";
 import { instrumentPool } from "@/lib/pool-stats";
@@ -28,25 +31,38 @@ async function init(): Promise<PostgresSaver> {
   // lock timeout. The checkpointer is touched during every graph.invoke, so it needs about the
   // headroom of the main pool or it becomes the bottleneck under concurrent turns
   // (config.langgraphPoolMax, which follows DB_POOL_MAX unless set).
-  const saver = new PostgresSaver(
-    instrumentPool(
-      "checkpointer",
-      new Pool({
-        connectionString: config.langgraphDatabaseUrl ?? "",
-        max: config.langgraphPoolMax,
-        ...lockTimeoutOption(),
-      }),
-    ),
-    undefined,
-    { schema: "langgraph" },
+  const pool = instrumentPool(
+    "checkpointer",
+    new Pool({
+      connectionString: config.langgraphDatabaseUrl ?? "",
+      max: config.langgraphPoolMax,
+      ...lockTimeoutOption(),
+      ...connectTimeoutOption(),
+    }),
   );
-  await saver.setup();
+  const saver = new PostgresSaver(pool, undefined, { schema: "langgraph" });
+  try {
+    await saver.setup();
+  } catch (error) {
+    // The next call builds a pool of its own, so this one is closed rather than left holding
+    // whatever it opened.
+    await pool.end().catch(() => {});
+    throw error;
+  }
   return saver;
 }
 
 export function getCheckpointer(): Promise<PostgresSaver> {
   const h = holder();
-  h.promise ??= init();
+  if (!h.promise) {
+    const pending = init();
+    h.promise = pending;
+    // A setup that failed (a connect past its bound, the database down for a moment) is not kept:
+    // the next turn asks again, instead of every turn inheriting this failure until a restart.
+    pending.catch(() => {
+      if (h.promise === pending) h.promise = undefined;
+    });
+  }
   return h.promise;
 }
 

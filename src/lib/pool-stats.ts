@@ -157,6 +157,12 @@ export function forgetPool(name: string): void {
   registry().pools.delete(name);
 }
 
+// Test-only: the pool registered under `name`, so a test can read what the app's own pools were
+// built with.
+export function registeredPool(name: string): Pool | undefined {
+  return registry().pools.get(name)?.pool;
+}
+
 export function resetLockTimeouts(): void {
   registry().lockTimeouts = [];
 }

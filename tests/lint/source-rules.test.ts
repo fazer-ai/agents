@@ -61,6 +61,18 @@ const PROBES: Record<string, string> = {
   [P("close-busy.tsx")]:
     "declare const M: (p: { busy?: boolean; onClose?: () => void }) => null;\ndeclare const saving: boolean;\nexport const a = <M busy={saving} onClose={() => {}} />;\n",
 
+  // require-pool-connect-bound
+  [P("pool-unbounded.ts")]:
+    'declare const Pool: new (o: object) => object;\nexport const p = new Pool({ connectionString: "x", max: 2 });\n',
+  [P("pool-adapter-unbounded.ts")]:
+    'declare const PrismaPg: new (o: object) => object;\nexport const a = new PrismaPg({ connectionString: "x" });\n',
+  [P("pool-connect-option.ts")]:
+    "declare const Pool: new (o: object) => object;\ndeclare function connectTimeoutOption(): object;\nexport const p = new Pool({ max: 2, ...connectTimeoutOption() });\n",
+  [P("pool-timeout-millis.ts")]:
+    'declare const PrismaPg: new (o: object) => object;\nexport const a = new PrismaPg({ connectionString: "x", connectionTimeoutMillis: 5_000 });\n',
+  [P("pool-built-elsewhere.ts")]:
+    "declare const Pool: new (o: object) => object;\ndeclare function opts(): object;\nexport const p = new Pool(opts());\n",
+
   // no-bigint-cast
   [P("bigint-param.ts")]:
     "declare const params: { id: string };\nexport const a = BigInt(params.id);\n",
@@ -195,6 +207,7 @@ const PROBES: Record<string, string> = {
 
 const RULES = {
   jsx: "A JSX comment documents the element below it",
+  pool: "A pool's options bound its connect",
   close: "A no-op `onCloseRequest` does not block",
   bigint: "A caller's id is parsed, never cast",
   env: "The environment is read in",
@@ -286,6 +299,23 @@ describe("no-noop-close-request", () => {
   test("an onCloseRequest that does something, and busy, pass", () => {
     expect(of(P("close-confirm.tsx"), "close")).toBe(0);
     expect(of(P("close-busy.tsx"), "close")).toBe(0);
+  });
+});
+
+describe("require-pool-connect-bound", () => {
+  test.each([["pool-unbounded.ts"], ["pool-adapter-unbounded.ts"]])(
+    "a pool whose options bound nothing is refused (%s)",
+    (name) => {
+      expect(of(P(name), "pool")).toBe(1);
+    },
+  );
+
+  test.each([
+    ["pool-connect-option.ts"],
+    ["pool-timeout-millis.ts"],
+    ["pool-built-elsewhere.ts"],
+  ])("a bounded pool, or options built elsewhere, pass (%s)", (name) => {
+    expect(of(P(name), "pool")).toBe(0);
   });
 });
 

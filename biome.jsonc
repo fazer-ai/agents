@@ -92,6 +92,10 @@
       "plugins": ["./biome-plugins/no-noop-close-request.grit"]
     },
     {
+      "includes": ["src/**/*.ts", "tests/lint/.probe-src-*/**/*.ts"],
+      "plugins": ["./biome-plugins/require-pool-connect-bound.grit"]
+    },
+    {
       "includes": ["src/**/*.tsx", "tests/lint/.probe-src-*/**/*.tsx"],
       "plugins": ["./biome-plugins/no-jsx-comment-note.grit"]
     },

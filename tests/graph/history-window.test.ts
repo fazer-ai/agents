@@ -191,6 +191,30 @@ describe("selectHistoryWindow", () => {
       expect(window.dropped).toBe(2);
     });
 
+    test("two acts superseded in a row both travel", () => {
+      const twice = [
+        new HumanMessage("velho"),
+        new HumanMessage("pode ser terça"),
+        new AIMessage({
+          content: "",
+          tool_calls: [{ name: "calendar_create_event", args: {}, id: "c2" }],
+        }),
+        new ToolMessage({ content: "criado", tool_call_id: "c2" }),
+        undeliveredReplyNote(42),
+        new HumanMessage("manda o endereço por email"),
+        new AIMessage({
+          content: "",
+          tool_calls: [{ name: "send_email", args: {}, id: "c6" }],
+        }),
+        new ToolMessage({ content: "enviado", tool_call_id: "c6" }),
+        undeliveredReplyNote(42),
+        new HumanMessage("e o horário?"),
+      ];
+      const window = selectHistoryWindow(twice, EACH, count);
+      expect(opened(window.kept)[0]).toBe("pode ser terça");
+      expect(window.dropped).toBe(1);
+    });
+
     // The edge check looks one message before the opener, and an opener at index 0 has none.
     test("a lone oversized message still travels", () => {
       const lone = [new HumanMessage("um texto enorme")];

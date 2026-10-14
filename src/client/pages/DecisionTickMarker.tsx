@@ -282,7 +282,7 @@ export function DecisionTickDetails({ tick }: { tick: DecisionTickView }) {
     0;
   return (
     <div
-      className="grid gap-3 rounded border border-border bg-bg-secondary p-2 text-left text-xs lg:grid-cols-2"
+      className="grid gap-3 rounded border border-border bg-bg-secondary p-2 text-left text-xs lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]"
       data-testid="decision-details"
     >
       {questions.length > 0 && (
@@ -326,7 +326,7 @@ export function DecisionTickDetails({ tick }: { tick: DecisionTickView }) {
               title={t("conversation.trail.decision.groupNear", "Almost fired")}
             >
               {groups.near.map((r) => (
-                <RuleRow key={r.rule} r={r} tick={tick} />
+                <RuleRow key={r.rule} r={r} tick={tick} near />
               ))}
             </RuleGroup>
           )}
@@ -561,30 +561,48 @@ function Bar({ p, chosen }: { p: number; chosen: boolean }) {
   );
 }
 
-function RuleRow({ r, tick }: { r: RuleView; tick: DecisionTickView }) {
+// A near miss is one line on a wide screen: the rule, its action and the short reason side by side,
+// the reason cut with an ellipsis (whole in its title) only if a long name still overflows.
+function RuleRow({
+  r,
+  tick,
+  near = false,
+}: {
+  r: RuleView;
+  tick: DecisionTickView;
+  near?: boolean;
+}) {
   const { t } = useTranslation();
   const n = r.rule + 1;
   const tool =
     r.kind === "fired" ? r.tool : (tick.block?.rules[r.rule]?.tool ?? null);
+  const text = ruleText(r, tick, t, near);
   return (
     <div
-      className="flex flex-wrap items-baseline gap-1.5"
+      className={cn(
+        "flex flex-wrap items-baseline gap-1.5",
+        near && "lg:flex-nowrap",
+      )}
       data-testid="decision-rule"
     >
-      <span className="font-medium text-text-primary">
+      <span className="shrink-0 font-medium text-text-primary">
         {t("conversation.trail.decision.ruleN", "Rule {{n}}", { n })}
       </span>
-      {tool && <span className="font-mono text-text-secondary">{tool}</span>}
+      {tool && (
+        <span className="shrink-0 font-mono text-text-secondary">{tool}</span>
+      )}
       <span
+        title={near ? text : undefined}
         className={cn(
           r.kind === "fired" && r.outcome === "ran"
             ? "text-success"
             : r.kind === "fired"
               ? "text-error"
               : "text-text-muted",
+          near && "lg:min-w-0 lg:truncate",
         )}
       >
-        {ruleText(r, tick, t)}
+        {text}
       </span>
       {(r.kind === "fired" || r.kind === "held") && (
         <CauseText rule={r.rule} tick={tick} />
@@ -662,12 +680,12 @@ function CauseText({ rule, tick }: { rule: number; tick: DecisionTickView }) {
       (c.minLevel === c.maxLevel
         ? t(
             "conversation.trail.decision.causeLevelExact",
-            "{{question}} level {{level}} (needs {{min}})",
+            "{{question}} level {{level}}, needs level {{min}}",
             vars,
           )
         : t(
             "conversation.trail.decision.causeLevelRange",
-            "{{question}} level {{level}} (needs {{min}} to {{max}})",
+            "{{question}} level {{level}}, needs {{min}} to {{max}}",
             vars,
           )) + sure
     );
@@ -675,13 +693,20 @@ function CauseText({ rule, tick }: { rule: number; tick: DecisionTickView }) {
   return (
     <span className="text-text-muted" data-testid="decision-rule-cause">
       {t("conversation.trail.decision.because", "because {{cause}}", {
-        cause: parts.join(", "),
+        cause: parts.join("; "),
       })}
     </span>
   );
 }
 
-function ruleText(r: RuleView, tick: DecisionTickView, t: T): string {
+// `bare` drops the "not fired:" lead-in where the group's heading already says it (the near misses),
+// so the row fits on one line on a wide screen.
+function ruleText(
+  r: RuleView,
+  tick: DecisionTickView,
+  t: T,
+  bare = false,
+): string {
   if (r.kind === "unknown") {
     return t(
       "conversation.trail.decision.firedNoOutcome",
@@ -716,7 +741,19 @@ function ruleText(r: RuleView, tick: DecisionTickView, t: T): string {
           outcome,
         });
   }
-  return missText(r.miss, tick, t);
+  const reason = missText(r.miss, tick, t);
+  if (reason === null) {
+    return t("conversation.trail.decision.notFired", "not fired");
+  }
+  return bare
+    ? reason
+    : t(
+        "conversation.trail.decision.notFiredBecause",
+        "not fired: {{reason}}",
+        {
+          reason,
+        },
+      );
 }
 
 function firedText(r: Extract<RuleView, { kind: "fired" }>, t: T): string {
@@ -772,7 +809,7 @@ function missText(
   miss: Record<string, unknown>,
   tick: DecisionTickView,
   t: T,
-): string {
+): string | null {
   const question = typeof miss.question === "string" ? miss.question : "";
   const n = (v: unknown) =>
     typeof v === "number" && Number.isFinite(v) ? v : null;
@@ -785,7 +822,7 @@ function missText(
         : t("conversation.trail.decision.measureProbability", "probability");
     return t(
       "conversation.trail.decision.belowThreshold",
-      "not fired: {{question}} {{measure}} {{got}} is below {{threshold}}",
+      "{{question}} {{measure}} {{got}} is below {{threshold}}",
       {
         question,
         measure,
@@ -797,7 +834,7 @@ function missText(
   if (miss.why === "other_choice") {
     return t(
       "conversation.trail.decision.otherChoice",
-      "not fired: {{question}} answered {{got}}, the rule expects {{expected}}",
+      "{{question}} answered {{got}}, the rule expects {{expected}}",
       {
         question,
         got: String(miss.got ?? ""),
@@ -828,31 +865,49 @@ function missText(
       min: `${min ?? "—"}${name(min)}`,
       max: `${max ?? "—"}${name(max)}`,
     };
-    return score !== null && score !== level
+    // One level reads as that level; a real range keeps "from X to Y". The score sits after a comma,
+    // so the level's name is the only parenthetical.
+    const one = min !== null && min === max;
+    const between = score !== null && score !== level;
+    if (between) {
+      const withScore = { ...vars, score: (score as number).toFixed(2) };
+      return one
+        ? t(
+            "conversation.trail.decision.outsideLevelsScoreOne",
+            "{{question}} at level {{got}}, score {{score}}; asks for level {{min}}",
+            withScore,
+          )
+        : t(
+            "conversation.trail.decision.outsideLevelsScore",
+            "{{question}} at level {{got}}, score {{score}}; asks from {{min}} to {{max}}",
+            withScore,
+          );
+    }
+    return one
       ? t(
-          "conversation.trail.decision.outsideLevelsScore",
-          "not fired: {{question}} reached level {{got}} (score {{score}}), the rule asks {{min}} to {{max}}",
-          { ...vars, score: score.toFixed(2) },
+          "conversation.trail.decision.outsideLevelsOne",
+          "{{question}} at level {{got}}; asks for level {{min}}",
+          vars,
         )
       : t(
           "conversation.trail.decision.outsideLevels",
-          "not fired: {{question}} reached level {{got}}, the rule asks {{min}} to {{max}}",
+          "{{question}} at level {{got}}; asks from {{min}} to {{max}}",
           vars,
         );
   }
   if (miss.why === "unanswered") {
     return t(
       "conversation.trail.decision.missUnanswered",
-      "not fired: {{question}} was not answered",
+      "{{question}} was not answered",
       { question },
     );
   }
   if (miss.why === "refused") {
     return t(
       "conversation.trail.decision.missRefused",
-      "not fired: the classifier declined to answer {{question}}",
+      "the classifier declined to answer {{question}}",
       { question },
     );
   }
-  return t("conversation.trail.decision.notFired", "not fired");
+  return null;
 }

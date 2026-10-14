@@ -509,11 +509,92 @@ describe("the expanded tick", () => {
     await expand(entry("1"));
     expect(ruleLines()).toEqual([
       "Rule 1set_labelsfired: ranbecause asks_refund yes 82% (at least 70%)",
-      "Rule 2handoff_to_humannot fired: asks_refund probability 82% is below 90%",
-      "Rule 3set_custom_attributenot fired: topic confidence 51% is below 60%",
-      "Rule 4set_labelsnot fired: anger reached level 1 (upset), the rule asks 2 (furious) to 2 (furious)",
+      "Rule 2handoff_to_humanasks_refund probability 82% is below 90%",
+      "Rule 3set_custom_attributetopic confidence 51% is below 60%",
+      "Rule 4set_labelsanger at level 1 (upset); asks for level 2 (furious)",
       "Rule 5private_notenot fired: topic answered exchange, the rule expects damaged",
     ]);
+  });
+
+  test("the wording the operator asked for on #1417: one level reads as that level, a range as from-to, one parenthetical, a near miss on one line", async () => {
+    await inLanguage(
+      "pt-BR",
+      <DecisionTickMarker
+        entry={entry("1", {
+          decision: tick({
+            block: {
+              ...BLOCK,
+              rules: [
+                ...BLOCK.rules.slice(0, 3),
+                {
+                  when: [{ question: "anger", minLevel: 2, maxLevel: 2 }],
+                  tool: "set_labels",
+                  trigger: "on_start",
+                },
+                {
+                  when: [{ question: "anger", minLevel: 0, maxLevel: 0 }],
+                  tool: "private_note",
+                  trigger: "each_time",
+                },
+              ],
+            },
+            notFired: [
+              {
+                rule: 3,
+                miss: {
+                  question: "anger",
+                  why: "outside_levels",
+                  got: 1.2,
+                  minLevel: 2,
+                  maxLevel: 2,
+                },
+              },
+              {
+                rule: 4,
+                miss: {
+                  question: "anger",
+                  why: "outside_levels",
+                  got: 1.2,
+                  minLevel: 0,
+                  maxLevel: 0,
+                },
+              },
+              {
+                rule: 2,
+                miss: {
+                  question: "anger",
+                  why: "outside_levels",
+                  got: 1,
+                  minLevel: 2,
+                  maxLevel: 3,
+                },
+              },
+            ],
+          }),
+        })}
+      />,
+    );
+    fireEvent.click(screen.getAllByRole("button")[0] as HTMLElement);
+    const near = within(screen.getByTestId("decision-rules-near"))
+      .getAllByTestId("decision-rule")
+      .map((r) => r.textContent);
+    expect(near).toEqual([
+      "Regra 3set_custom_attributeanger no nível 1 (upset); pede de 2 (furious) a 3",
+      "Regra 4set_labelsanger no nível 1 (upset), nota 1.20; pede o nível 2 (furious)",
+      "Regra 5private_noteanger no nível 1 (upset), nota 1.20; pede o nível 0 (calm)",
+    ]);
+    for (const line of near) expect(line).not.toMatch(/\)\s*\(/);
+    // One line on a wide screen: the row does not wrap from lg up, and the reason keeps its whole
+    // text in the title when a long name would still overflow.
+    const row = within(
+      screen.getByTestId("decision-rules-near"),
+    ).getAllByTestId("decision-rule")[1] as HTMLElement;
+    expect(row.className).toContain("lg:flex-nowrap");
+    const reason = row.lastElementChild as HTMLElement;
+    expect(reason.className).toContain("lg:truncate");
+    expect(reason.getAttribute("title")).toBe(
+      "anger no nível 1 (upset), nota 1.20; pede o nível 2 (furious)",
+    );
   });
 
   test("a score between two levels names the nearest one, as the rule read it, and the score", async () => {
@@ -536,7 +617,7 @@ describe("the expanded tick", () => {
       }),
     );
     expect(ruleLines()[3]).toBe(
-      "Rule 4set_labelsnot fired: anger reached level 1 (upset) (score 1.46), the rule asks 2 (furious) to 2 (furious)",
+      "Rule 4set_labelsanger at level 1 (upset), score 1.46; asks for level 2 (furious)",
     );
   });
 
@@ -564,7 +645,7 @@ describe("the expanded tick", () => {
       }),
     );
     expect(ruleLines()[3]).toBe(
-      "Rule 4set_labelsconditions held, but it already acted (When the conditions start holding)because anger level 2 (furious) (needs 2)",
+      "Rule 4set_labelsconditions held, but it already acted (When the conditions start holding)because anger level 2 (furious), needs level 2",
     );
     // Its conditions held, but it did not act this tick: its own group, neither fired nor a miss.
     const rulesIn = (id: string) =>
@@ -615,7 +696,7 @@ describe("the expanded tick", () => {
       "Rule 1set_labelsfired: refused by a protected labelbecause asks_refund yes 82% (at least 70%)",
       "Rule 2handoff_to_humanfired: not allowed for this agentbecause asks_refund yes 82% (at least 90%)",
       "Rule 3set_custom_attributefired: failed (tool_error)because topic is exchange, 51% sure (needs 60%)",
-      "Rule 4set_labelsfired, same action as rule 1: refused by a protected labelbecause anger level 1 (upset) (needs 2)",
+      "Rule 4set_labelsfired, same action as rule 1: refused by a protected labelbecause anger level 1 (upset), needs level 2",
       "Rule 5private_notefired: ranbecause topic is exchange",
     ]);
   });
@@ -814,7 +895,7 @@ describe("reading a large block (the operator's review of #1417)", () => {
         "decision-rule-cause",
       ).textContent,
     ).toBe(
-      "because anger level 1 (upset) (needs 1 to 2), 70% sure (needs 60%), topic is exchange, 51% sure (needs 50%)",
+      "because anger level 1 (upset), needs 1 to 2, 70% sure (needs 60%); topic is exchange, 51% sure (needs 50%)",
     );
   });
 
@@ -861,7 +942,7 @@ describe("reading a large block (the operator's review of #1417)", () => {
 
   test("the expanded tick takes the trail's width and puts questions and rules side by side on a wide screen", async () => {
     const d = await expand(entry("1"));
-    expect(d.className).toContain("lg:grid-cols-2");
+    expect(d.className).toContain("lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]");
     expect(d.parentElement?.className).toBe("w-full");
   });
 

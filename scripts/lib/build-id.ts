@@ -10,11 +10,13 @@ const ROOT_INPUTS = ["package.json", "bun.lock", "build.ts"];
 export async function buildId({
   root = ".",
   version,
-  env,
+  cdnUrl,
+  edition,
 }: {
   root?: string;
   version: string;
-  env: Record<string, string | undefined>;
+  cdnUrl: string;
+  edition: string;
 }): Promise<string> {
   const files = [...new Bun.Glob(INPUT_GLOB).scanSync(root), ...ROOT_INPUTS]
     .filter((file) => !file.endsWith(".md"))
@@ -26,8 +28,6 @@ export async function buildId({
     hasher.update(`${file}\0`);
     hasher.update(await content.arrayBuffer());
   }
-  hasher.update(
-    `${env.BUN_PUBLIC_CDN_URL ?? ""}\0${env.BUN_PUBLIC_EDITION ?? ""}`,
-  );
+  hasher.update(`${cdnUrl}\0${edition}`);
   return `${version}+${hasher.digest("hex").slice(0, 12)}`;
 }

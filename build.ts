@@ -14,8 +14,19 @@ import {
 // tag / git sha) wins; otherwise fall back to package.json's version.
 const APP_VERSION = process.env.BUN_PUBLIC_VERSION || pkg.version || "";
 
-// Names this frontend to the server and to the open tabs (scripts/lib/build-id.ts).
-const BUILD_ID = await buildId({ version: APP_VERSION, env: process.env });
+// Distribution edition. Defaults to "full" so the master and any plain `bun run build` yield the
+// Full app; the Free derivation flips the fallback to "free" (# @edition-arg).
+const EDITION = process.env.BUN_PUBLIC_EDITION || "free";
+const CDN_URL = process.env.BUN_PUBLIC_CDN_URL || "";
+
+// Names this frontend to the server and to the open tabs (scripts/lib/build-id.ts). Handed the
+// values the bundle is built with, not the raw env, so two builds that resolve the same edition
+// agree however each one was told it.
+const BUILD_ID = await buildId({
+  version: APP_VERSION,
+  cdnUrl: CDN_URL,
+  edition: EDITION,
+});
 
 if (process.argv.includes("--help") || process.argv.includes("-h")) {
   console.log(`
@@ -161,16 +172,10 @@ const result = await Bun.build({
   },
   define: {
     "process.env.NODE_ENV": JSON.stringify("production"),
-    "process.env.BUN_PUBLIC_CDN_URL": JSON.stringify(
-      process.env.BUN_PUBLIC_CDN_URL || "",
-    ),
+    "process.env.BUN_PUBLIC_CDN_URL": JSON.stringify(CDN_URL),
     "process.env.BUN_PUBLIC_VERSION": JSON.stringify(APP_VERSION),
     "process.env.BUN_PUBLIC_BUILD_ID": JSON.stringify(BUILD_ID),
-    // Distribution edition. Defaults to "full" so the master and any plain `bun run build`
-    // yield the Full app; the Free derivation flips the fallback to "free" (# @edition-arg).
-    "process.env.BUN_PUBLIC_EDITION": JSON.stringify(
-      process.env.BUN_PUBLIC_EDITION || "free",
-    ),
+    "process.env.BUN_PUBLIC_EDITION": JSON.stringify(EDITION),
   },
   ...cliConfig,
 });

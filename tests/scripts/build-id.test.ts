@@ -5,8 +5,8 @@ import { join } from "node:path";
 import { buildId } from "../../scripts/lib/build-id";
 
 // Two builds of one tree inline the same id (CI builds it for the CDN and again per image
-// architecture); a change to anything the bundle is built from, or to the build's public env, gives
-// another id.
+// architecture); a change to anything the bundle is built from, or to the edition or CDN it is
+// built for, gives another id.
 
 const root = await mkdtemp(join(tmpdir(), "build-id-"));
 afterAll(() => rm(root, { recursive: true, force: true }));
@@ -27,9 +27,9 @@ const BASE = {
   "src/client/App.tsx": "app",
   "public/index.html": "<html>",
 };
-const ENV = { BUN_PUBLIC_CDN_URL: "", BUN_PUBLIC_EDITION: "full" };
-const id = (dir: string, env = ENV) =>
-  buildId({ root: dir, version: "9.9.2", env });
+const BUILT = { cdnUrl: "", edition: "full" };
+const id = (dir: string, built = BUILT) =>
+  buildId({ root: dir, version: "9.9.2", ...built });
 
 describe("the build id", () => {
   test("is the same for two builds of the same tree, prefixed by the version", async () => {
@@ -80,8 +80,8 @@ describe("the build id", () => {
   test("changes with the edition and with the CDN the bundle points at", async () => {
     const dir = await tree("k", BASE);
     const base = await id(dir);
-    const free = await id(dir, { ...ENV, BUN_PUBLIC_EDITION: "free" });
-    const cdn = await id(dir, { ...ENV, BUN_PUBLIC_CDN_URL: "https://cdn" });
+    const free = await id(dir, { ...BUILT, edition: "free" });
+    const cdn = await id(dir, { ...BUILT, cdnUrl: "https://cdn" });
     expect([base === free, base === cdn]).toEqual([false, false]);
   });
 });

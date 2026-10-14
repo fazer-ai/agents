@@ -17,7 +17,7 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import { MemoryRouter, useNavigate } from "react-router";
+import { MemoryRouter, useLocation, useNavigate } from "react-router";
 import {
   StaleBuildBanner,
   StaleBuildWatcher,
@@ -27,7 +27,11 @@ import {
   useNavGuard,
 } from "@/client/contexts/NavGuardContext";
 import { onApiResponse } from "@/client/lib/api";
-import { importWithReload, resetBuildWatch } from "@/client/lib/staleBuild";
+import {
+  importWithReload,
+  resetBuildWatch,
+  useScreenScope,
+} from "@/client/lib/staleBuild";
 import { useBeforeUnload } from "@/client/lib/unsavedGuard";
 
 // A tab loaded before a deploy learns it from the next response, says so in the shell with a Reload,
@@ -72,6 +76,10 @@ function GoTo({ to, label = "go" }: { to: string; label?: string }) {
     </button>
   );
 }
+function TabbedScreen({ scope }: { scope: string }) {
+  useScreenScope(scope);
+  return null;
+}
 function DirtyPage() {
   useNavGuard(true);
   return null;
@@ -81,9 +89,9 @@ function DirtyModal() {
   return null;
 }
 
-function renderShell(extra?: React.ReactNode) {
+function renderShell(extra?: React.ReactNode, at = "/agents") {
   return render(
-    <MemoryRouter initialEntries={["/agents"]}>
+    <MemoryRouter initialEntries={[at]}>
       <NavGuardProvider>
         <StaleBuildWatcher />
         <StaleBuildBanner />
@@ -194,6 +202,69 @@ describe("the reload on a route change", () => {
     const afterQuery = reloads;
     fireEvent.click(screen.getByRole("button", { name: "go" }));
     expect([afterQuery, reloads]).toEqual([0, 1]);
+  });
+
+  test("moving between the tabs of one screen does not reload, leaving it does", () => {
+    renderShell(
+      <>
+        <TabbedScreen scope="/agents/5" />
+        <GoTo to="/agents/5/playground" label="tab" />
+      </>,
+      "/agents/5/general",
+    );
+    act(() => serverAnswers("9.9.2+b"));
+    fireEvent.click(screen.getByRole("button", { name: "tab" }));
+    const afterTab = reloads;
+    fireEvent.click(screen.getByRole("button", { name: "go" }));
+    expect([afterTab, reloads]).toEqual([0, 1]);
+  });
+
+  test("arriving at a scoped screen from another one is a change of screen", () => {
+    renderShell(
+      <>
+        <TabbedScreen scope="/agents/5" />
+        <GoTo to="/agents/5/general" label="open" />
+      </>,
+      "/agents",
+    );
+    act(() => serverAnswers("9.9.2+b"));
+    fireEvent.click(screen.getByRole("button", { name: "open" }));
+    expect(reloads).toBe(1);
+  });
+
+  test("a screen that unmounted no longer holds its tabs together", () => {
+    function Scoped() {
+      const { pathname } = useLocation();
+      return pathname.endsWith("/general") ? (
+        <TabbedScreen scope="/agents/5" />
+      ) : null;
+    }
+    renderShell(
+      <>
+        <Scoped />
+        <GoTo to="/agents/5/other" label="away" />
+        <GoTo to="/agents/5/playground" label="tab" />
+      </>,
+      "/agents/5/general",
+    );
+    act(() => serverAnswers(OWN));
+    fireEvent.click(screen.getByRole("button", { name: "away" }));
+    act(() => serverAnswers("9.9.2+b"));
+    fireEvent.click(screen.getByRole("button", { name: "tab" }));
+    expect(reloads).toBe(1);
+  });
+
+  test("a screen's scope does not cover a neighbour that shares its prefix", () => {
+    renderShell(
+      <>
+        <TabbedScreen scope="/agents/5" />
+        <GoTo to="/agents/55/general" label="neighbour" />
+      </>,
+      "/agents/5/general",
+    );
+    act(() => serverAnswers("9.9.2+b"));
+    fireEvent.click(screen.getByRole("button", { name: "neighbour" }));
+    expect(reloads).toBe(1);
   });
 
   test("never reloads by itself before the route changes", () => {

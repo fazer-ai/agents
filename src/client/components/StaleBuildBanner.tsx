@@ -7,6 +7,7 @@ import { useConfirmLeave } from "@/client/contexts/NavGuardContext";
 import { api } from "@/client/lib/api";
 import {
   getStaleBuild,
+  isSameScreen,
   reloadIntoServedBuild,
   useStaleBuild,
 } from "@/client/lib/staleBuild";
@@ -22,7 +23,7 @@ const FOCUS_CHECK_INTERVAL_MS = 15_000;
 export function StaleBuildWatcher() {
   const location = useLocation();
   const lastCheck = useRef(0);
-  const firstRoute = useRef(true);
+  const lastPath = useRef(location.pathname);
 
   useEffect(() => {
     const onFocus = () => {
@@ -35,14 +36,13 @@ export function StaleBuildWatcher() {
     return () => window.removeEventListener("focus", onFocus);
   }, []);
 
-  // NOTE: the pathname alone is the screen. A filter, a search box or an anchor rewrites only the query
-  // or the hash while the operator is still working on the same screen, mid-typing included.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the pathname is the trigger, not an input.
+  // NOTE: the pathname is the screen. A filter, a search box or an anchor rewrites only the query or
+  // the hash while the operator is still working on the same screen, mid-typing included, and a
+  // screen's own tabs (useScreenScope) stay on it too.
   useEffect(() => {
-    if (firstRoute.current) {
-      firstRoute.current = false;
-      return;
-    }
+    const from = lastPath.current;
+    lastPath.current = location.pathname;
+    if (isSameScreen(from, location.pathname)) return;
     if (getStaleBuild().stale && !hasUnsavedChanges()) window.location.reload();
   }, [location.pathname]);
 

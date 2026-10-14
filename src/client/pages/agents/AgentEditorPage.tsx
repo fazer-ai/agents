@@ -73,6 +73,7 @@ import {
 } from "@/client/lib/fieldRefusal";
 import { importWarningMessage } from "@/client/lib/importWarningMessage";
 import { serverNowDate } from "@/client/lib/serverClock";
+import { useScreenScope } from "@/client/lib/staleBuild";
 import { formatRelativeTime, slugify } from "@/client/lib/utils";
 import {
   invalidateVault,
@@ -804,6 +805,9 @@ const DECISIONS_REFUSAL_FIELD = /^(settings\.)?monitoring\.decisions(\.|$)/;
 // moving between tabs of the same agent keeps everything.
 export function AgentEditorPage() {
   const { id = "" } = useParams();
+  // The tabs are one screen: the playground draft lives across them and no unsaved guard sees it,
+  // so a tab switch must not be the change of screen that reloads a stale tab.
+  useScreenScope(`/agents/${id}`);
   return <AgentEditor key={id} />;
 }
 

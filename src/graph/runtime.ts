@@ -158,6 +158,7 @@ import {
   markTurnOwning,
   type ThreadOwner,
   type TurnHold,
+  type turnOwnsThread,
   turnWaitDeadline,
   WAIT_AGAIN,
   waitForTurnToClear,
@@ -265,6 +266,9 @@ export interface RuntimeDeps {
   // Injectable transcriber (tests): the whole voice-note transcription (download, provider, write-back)
   // in place of `transcribeInboundAudio`, for a test whose subject is what the words do after.
   transcribe?: typeof transcribeInboundAudio;
+  // Injectable durable ownership read of the re-engage gate (tests), in place of `turnOwnsThread`: a
+  // test holds it open to commit a competing write between the read and the gate's own mark.
+  reengageOwnershipRead?: typeof turnOwnsThread;
   // How long a debounce flush waits for a voice note of its burst whose transcription is still in
   // flight (tests shorten it); `FLUSH_TRANSCRIPTION_WAIT_MS` otherwise.
   transcriptionWaitMs?: number;

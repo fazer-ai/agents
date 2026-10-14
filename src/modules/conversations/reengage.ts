@@ -514,9 +514,10 @@ export async function reengageConversation(
   // `await` até `markFlushHold`: um `await` entre a checagem e a marca deixa duas chamadas concorrentes
   // lerem "livre" e marcarem as duas (o teste da barreira fixa isso). Por isso este predicado não é
   // compartilhado com a checagem antecipada.
+  const lerDono = deps.reengageOwnershipRead ?? turnOwnsThread;
   const donoDuravel =
     contactInboxId !== null &&
-    (await turnOwnsThread(
+    (await lerDono(
       {
         tenantId,
         instanceId: resolved.instanceId,

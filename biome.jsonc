@@ -171,7 +171,6 @@
         "!tests/modules/flowlog-debug-mode.test.ts",
         "!tests/modules/mcp/write-passes-its-client.test.ts",
         "!tests/modules/operator-text-surface.test.ts",
-        "!tests/modules/reengage-gate-atomic.test.ts",
         "!tests/modules/tenant-selector-entry-points.test.ts",
         "!tests/modules/terminal-failure-fence.test.ts",
         "!tests/modules/vault/base-url-applicability.test.ts",

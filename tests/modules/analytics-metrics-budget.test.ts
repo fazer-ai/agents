@@ -35,7 +35,7 @@ import { until } from "@/tests/utils/poll";
 // console and the MCP tools show), and Postgres stops the statement, so the connection is back in
 // the pool when the request answers. `LOCK TABLE llm_usage` stands in for a window too long to
 // aggregate: the read waits exactly as long as the lock is held.
-//
+
 // No test measures how long a read took. A bounded read is refused while the lock it waits on is
 // still held; an unbounded one waits the lock out and answers. Where the claim is that a statement
 // gets only what is LEFT of the deadline, the clock is moved to near the deadline instead of spent:

@@ -117,22 +117,16 @@ export async function lastReplyDelivery(params: {
       bounded = true;
       break;
     }
-    // The newest reply's key. Past that reply, paging goes on until something older than it ends
-    // it: a customer message already handled (the one it answered, or older), or a message of ours
-    // from another reply. Notes, activity and a customer message written between its balloons say
-    // nothing about where it starts.
+    // The newest reply's key. Past that reply, paging goes on until a message of ours from another
+    // reply ends it. Notes, activity and customer messages say nothing for sure: a handled one may
+    // sit between two of its balloons, with the earlier one on an older page.
     const key = newest ? replyKeyOf(newest.sendId) : null;
     const found = newest;
     if (
       found &&
       (key === null ||
         read.some(
-          (m) =>
-            m.id < found.id &&
-            ((customer(m) &&
-              params.handledThrough !== null &&
-              m.id <= params.handledThrough) ||
-              (ours(m) && replyKeyOf(m.sendId) !== key)),
+          (m) => m.id < found.id && ours(m) && replyKeyOf(m.sendId) !== key,
         ))
     ) {
       bounded = true;
@@ -141,10 +135,6 @@ export async function lastReplyDelivery(params: {
     before = oldest.id;
   }
   if (newest === null) return { state: "delivered" };
-  // NOTE: the newest reply was found and the pages ran out before where it starts: its earlier
-  // messages are unread, and an unread one may be the refused one.
-  if (!bounded)
-    throw new Error("follow-up: the reply's start is past the pages read");
   const last = newest;
   const key = replyKeyOf(newest.sendId);
   const reply = read.filter(
@@ -153,6 +143,19 @@ export async function lastReplyDelivery(params: {
       (m.id === newest.id || (key !== null && replyKeyOf(m.sendId) === key)),
   );
   const start = reply.reduce((a, m) => (m.id < a ? m.id : a), last.id);
+  // NOTE: with the pages run out, a customer message already handled says enough: before the reply
+  // it is where the reply starts, and inside it it supersedes the reply (below). Without one, the
+  // reply's earlier messages are unread, and an unread one may be the refused one.
+  if (
+    !bounded &&
+    !read.some(
+      (m) =>
+        customer(m) &&
+        params.handledThrough !== null &&
+        m.id <= params.handledThrough,
+    )
+  )
+    throw new Error("follow-up: the reply's start is past the pages read");
   const open = await params.stillOpen(read);
   // NOTE: from where the reply starts, so one written between its balloons counts too.
   if (read.some((m) => m.id > start && customer(m) && open.has(m.id)))
@@ -161,23 +164,20 @@ export async function lastReplyDelivery(params: {
   // silence or by a gate, and moved the conversation past the reply.
   if (read.some((m) => m.id > start && customer(m)))
     return { state: "delivered" };
-  if (
-    read.some(
-      (m) =>
-        m.id > last.id &&
-        !m.private &&
-        (m.messageType === "outgoing" || m.messageType === "template") &&
-        !m.isReaction &&
-        !m.imported &&
-        !m.externalError &&
-        !ours(m),
-    )
-  )
-    return { state: "delivered" };
+  // A person's public reply or template that was not refused, written after a refused message,
+  // moved the conversation past it.
+  const person = (m: Row) =>
+    !m.private &&
+    (m.messageType === "outgoing" || m.messageType === "template") &&
+    !m.isReaction &&
+    !m.imported &&
+    !m.externalError &&
+    !ours(m);
   const missing = reply.filter(
     (m) =>
       m.externalError &&
-      !reply.some((r) => !r.externalError && replaces(r, m.id)),
+      !reply.some((r) => !r.externalError && replaces(r, m.id)) &&
+      !read.some((p) => p.id > m.id && person(p)),
   );
   if (missing.length === 0) return { state: "delivered" };
   const jobs = await runScopedOn(params.base, sysCtx(params.tenantId), (db) =>

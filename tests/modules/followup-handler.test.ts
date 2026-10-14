@@ -1162,6 +1162,44 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     expect(s.sent.map(([c]) => c)).toEqual([1730]);
   });
 
+  // The handled message's earlier balloon sits on an older page: the read goes on to it rather than
+  // taking the handled message for the one the reply answered.
+  test("a handled message between balloons on two pages does not end the read", async () => {
+    await seedConversation(1731, due());
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: 1731 },
+      data: { lastHandledMessageId: 17312 },
+    });
+    const s = stubClient({
+      page: [
+        customerRow(17310),
+        replyRow(17311, { sendId: "reply:k31:a" }),
+        customerRow(17312),
+        ...Array.from({ length: 18 }, (_, i) => note(17313 + i)),
+        replyRow(17331, { refused: true, sendId: "reply:k31:b" }),
+      ],
+    });
+    expect(await run(1731, s)).toEqual({ outcome: "done" });
+    expect(s.sent.map(([c]) => c)).toEqual([1731]);
+    expect(s.notes).toEqual([]);
+  });
+
+  // A person who replied after the refused balloon moved the conversation past it, even with a later
+  // balloon of the same reply after their message.
+  test("a person's reply between the refused balloon and a later one supersedes it", async () => {
+    await seedConversation(1732, due());
+    const s = stubClient({
+      page: [
+        replyRow(17321, { refused: true, sendId: "reply:k32:a" }),
+        { ...replyRow(17322), sender: { type: "user", id: 3 } },
+        replyRow(17323, { sendId: "reply:k32:b" }),
+      ],
+    });
+    expect(await run(1732, s)).toEqual({ outcome: "done" });
+    expect(s.sent.map(([c]) => c)).toEqual([1732]);
+    expect(s.notes).toEqual([]);
+  });
+
   // An automation message the channel refused as well did not reach the customer either, so it does
   // not stand for the refused reply.
   test("a refused automation message after the reply does not supersede it", async () => {

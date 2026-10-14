@@ -6,8 +6,8 @@ import {
   violatedConstraintOf,
 } from "@/lib/pg-error";
 
-// The two shapes, as Prisma 7.10 with `@prisma/adapter-pg` builds them: converted (measured on a real
-// violation) and unconverted (the shape seen on CI).
+// The two shapes a violation arrives in through `@prisma/adapter-pg`: converted, with Prisma's code
+// and the adapter's detail, and unconverted, with the SQLSTATE as the code and the server's message.
 function converted(code: "P2002" | "P2003", sqlstate: string, index: string) {
   return new Prisma.PrismaClientKnownRequestError("Unique constraint failed", {
     code,

@@ -20,6 +20,15 @@ try {
 
 export const APP_VERSION = appVersion;
 
+// The build this bundle came from (build.ts). The server names the build it serves on every API
+// response, and a different one means this tab is running a replaced frontend. Empty in dev.
+let appBuildId = "";
+try {
+  appBuildId = process.env.BUN_PUBLIC_BUILD_ID || "";
+} catch {}
+
+export const APP_BUILD_ID = appBuildId;
+
 // Distribution edition: "free" (open-source, Pro features gated/stripped) or "full".
 // Defaults to "full" in dev (BUN_PUBLIC_* is not inlined by the dev server), so Pro gates stay
 // hidden while developing. The Free build sets BUN_PUBLIC_EDITION=free.

@@ -1,14 +1,15 @@
 import { ArrowRightLeft, MessageSquareOff, Tags } from "lucide-react";
-import { lazy, Suspense } from "react";
+import { Suspense } from "react";
 import { useTranslation } from "react-i18next";
 import { Skeleton } from "@/client/components";
+import { lazyWithReload } from "@/client/lib/staleBuild";
 import { Block, type BlockTable, SectionHeading } from "./Block";
 import type { ChartRow } from "./charts";
 import { daysOf, type Window } from "./filters";
 import { hasNoData, isProvisional } from "./Provisional";
 import { dayState, inGap, useStreamBlock } from "./useStream";
 
-const StackedBars = lazy(() =>
+const StackedBars = lazyWithReload(() =>
   import("./charts").then((m) => ({ default: m.StackedBars })),
 );
 

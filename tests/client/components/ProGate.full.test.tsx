@@ -12,6 +12,7 @@ mock.module("@/client/lib/env", () => ({
   EDITION: "full",
   CDN_URL: "",
   APP_VERSION: "",
+  APP_BUILD_ID: "",
 }));
 
 const { ProGate } = await import("@/client/components/ProGate");

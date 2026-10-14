@@ -10,6 +10,7 @@ import { useTranslation } from "react-i18next";
 import { Card, Modal, useModalController } from "@/client/components";
 import { useTheme } from "@/client/contexts/ThemeContext";
 import { nativeToolMeta } from "@/client/lib/nativeTools";
+import { importWithReload } from "@/client/lib/staleBuild";
 import { toolpackToolMeta } from "@/client/lib/toolpackTools";
 import { cn, slugify } from "@/client/lib/utils";
 import type { GrantState, ToolCatalog } from "./types";
@@ -316,7 +317,8 @@ function GraphModalBody({
     setSvg(null);
     void (async () => {
       try {
-        const mermaid = (await import("mermaid")).default;
+        const mermaid = (await importWithReload(() => import("mermaid")))
+          .default;
         mermaid.initialize({
           startOnLoad: false,
           securityLevel: "strict",

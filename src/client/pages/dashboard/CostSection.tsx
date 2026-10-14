@@ -7,7 +7,7 @@ import {
   LineChart as LineIcon,
   TriangleAlert,
 } from "lucide-react";
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router";
 import {
@@ -18,6 +18,7 @@ import {
   SpendHealthLines,
 } from "@/client/components";
 import { api } from "@/client/lib/api";
+import { lazyWithReload } from "@/client/lib/staleBuild";
 import { Block, type BlockTable, Delta, SectionHeading } from "./Block";
 import type { ChartRow } from "./charts";
 import {
@@ -30,10 +31,10 @@ import { CoverageBar, isProvisional, ProvisionalFigure } from "./Provisional";
 import { useBlock } from "./useBlock";
 import { dayState, inGap, useStreamBlock } from "./useStream";
 
-const LineTrend = lazy(() =>
+const LineTrend = lazyWithReload(() =>
   import("./charts").then((m) => ({ default: m.LineTrend })),
 );
-const StackedBars = lazy(() =>
+const StackedBars = lazyWithReload(() =>
   import("./charts").then((m) => ({ default: m.StackedBars })),
 );
 

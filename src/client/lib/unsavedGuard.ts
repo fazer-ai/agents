@@ -39,6 +39,12 @@ export function acquireBeforeUnload(): () => void {
   };
 }
 
+// Whether any form or modal holds changes the native prompt is guarding, i.e. whether a reload
+// now would lose something.
+export function hasUnsavedChanges(): boolean {
+  return beforeUnloadCount > 0;
+}
+
 // Force-detach the native prompt. For a confirmed full-page reload (e.g. the
 // tenant switch) where the user already approved leaving via our own dialog and
 // the document is about to be replaced anyway — so the native prompt would be a

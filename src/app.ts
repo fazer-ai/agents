@@ -13,6 +13,11 @@ import { refusalBody, refusalHeaders } from "@/api/lib/refusal";
 import { loggedPath, loggedUrl } from "@/api/lib/request-target";
 import { schemaRefusal } from "@/api/lib/schema-refusal";
 import {
+  readServedBuild,
+  type ServedBuild,
+  stampServedBuild,
+} from "@/api/lib/served-build";
+import {
   applyStaticCacheControl,
   developmentIndexHandler,
   productionIndexHandler,
@@ -45,6 +50,10 @@ const indexHandler =
   config.env === "production"
     ? productionIndexHandler("dist/index.html")
     : (await import("@/public/index.html")).default;
+
+// The build dist/ holds, named on every response (api/lib/served-build.ts). Dev serves no build.
+const servedBuild =
+  config.env === "production" ? await readServedBuild("dist/build.json") : null;
 
 // Elysia's own `/*`. In dev the document goes out through Bun's native routes (below), so this one
 // answers only what the carve-outs hand back: a missing asset gets the production 404.
@@ -84,7 +93,11 @@ const devSpaRoutes: Record<string, false | unknown> =
 // not this file's. Production runs only the default export below.
 // Async because the static plugin is awaited inside the chain; the top-level `await` on the default
 // export keeps `App` the Elysia type rather than a promise.
-export async function buildApp() {
+export async function buildApp({
+  build = servedBuild,
+}: {
+  build?: ServedBuild | null;
+} = {}) {
   const app = new Elysia({
     // NOTE: without these carve-outs Bun's native routes table serves the SPA HTMLBundle for /api/*
     // before Elysia's fetch handler runs; the bare /api entry covers requests without a trailing
@@ -115,6 +128,7 @@ export async function buildApp() {
       }),
     )
     .use(localeMiddleware)
+    .onRequest(({ set }) => stampServedBuild(build, set.headers))
     .onAfterResponse(({ request, route, set }) => {
       logger.info(
         "%s %s [%s]",

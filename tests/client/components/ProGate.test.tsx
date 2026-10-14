@@ -10,6 +10,7 @@ mock.module("@/client/lib/env", () => ({
   EDITION: "free",
   CDN_URL: "",
   APP_VERSION: "",
+  APP_BUILD_ID: "",
 }));
 
 const { ProGate } = await import("@/client/components/ProGate");
@@ -24,6 +25,7 @@ describe("ProGate (Free edition)", () => {
       EDITION: "full",
       CDN_URL: "",
       APP_VERSION: "",
+      APP_BUILD_ID: "",
     }));
   });
 

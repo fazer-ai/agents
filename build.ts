@@ -13,6 +13,11 @@ import {
 // tag / git sha) wins; otherwise fall back to package.json's version.
 const APP_VERSION = process.env.BUN_PUBLIC_VERSION || pkg.version || "";
 
+// Identifies this build, not this version: two builds of the same version differ, so a redeploy of
+// an unchanged version still tells an open tab that its bundle is no longer the one being served.
+// Inlined into the bundle and written to dist/build.json, which the server reads at boot.
+const BUILD_ID = `${APP_VERSION}+${Date.now().toString(36)}`;
+
 if (process.argv.includes("--help") || process.argv.includes("-h")) {
   console.log(`
 🏗️  Bun Build Script
@@ -161,6 +166,7 @@ const result = await Bun.build({
       process.env.BUN_PUBLIC_CDN_URL || "",
     ),
     "process.env.BUN_PUBLIC_VERSION": JSON.stringify(APP_VERSION),
+    "process.env.BUN_PUBLIC_BUILD_ID": JSON.stringify(BUILD_ID),
     // Distribution edition. Defaults to "full" so the master and any plain `bun run build`
     // yield the Full app; the Free derivation flips the fallback to "free" (# @edition-arg).
     "process.env.BUN_PUBLIC_EDITION": JSON.stringify(
@@ -226,6 +232,11 @@ if (cdnUrl) {
     );
   }
 }
+
+await Bun.write(
+  path.join(outdir, "build.json"),
+  `${JSON.stringify({ version: APP_VERSION, buildId: BUILD_ID })}\n`,
+);
 
 const assetsSource = path.join(process.cwd(), "public", "assets");
 const assetsDest = path.join(outdir, "assets");

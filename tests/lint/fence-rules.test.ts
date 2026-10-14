@@ -54,6 +54,7 @@ const RULES = {
   secretRef: "Only the owning service writes",
   staleness: "makes the check a tautology",
   marker: "Write an audit marker through",
+  dynamicImport: "A dynamic import in the console goes through",
   unusedWaiver: "Suppression comment has no effect",
 } as const;
 type Rule = keyof typeof RULES;
@@ -105,6 +106,12 @@ const PROBES: Record<string, string> = {
     'declare const id: string;\nwindow.open(`/api/v1/files/\u0024{id}`, "_blank");\n',
   [P("window-open-blob.ts")]:
     'declare const blobUrl: string;\nwindow.open(blobUrl);\nwindow.open("https://example.com/api/x");\n',
+
+  // require-reload-on-dynamic-import
+  [P("dynamic-import-bare.ts")]:
+    'declare const lazy: (f: () => unknown) => unknown;\nexport const A = lazy(() => import("./a"));\nexport async function b() {\n  return (await import("./b")).default;\n}\n',
+  [P("dynamic-import-wrapped.ts")]:
+    'declare const lazyWithReload: (f: () => unknown) => unknown;\ndeclare const importWithReload: (f: () => Promise<{ default: unknown }>) => Promise<{ default: unknown }>;\nexport const A = lazyWithReload(() => import("./a").then((m) => m));\nexport async function b() {\n  return (await importWithReload(() => import("./b"))).default;\n}\n',
 
   // require-textarea-cap, require-highlighted-cap
   [P("textarea-uncapped.tsx")]:
@@ -437,6 +444,8 @@ describe("each fence refuses its shape and nothing else", () => {
     ["window-open-api.ts", { windowOpen: 1 }],
     ["window-open-api-template.ts", { windowOpen: 1 }],
     ["window-open-blob.ts", {}],
+    ["dynamic-import-bare.ts", { dynamicImport: 2 }],
+    ["dynamic-import-wrapped.ts", {}],
     ["textarea-uncapped.tsx", { textarea: 1 }],
     ["textarea-capped.tsx", {}],
     ["textarea-waived.tsx", {}],

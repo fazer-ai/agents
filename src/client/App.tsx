@@ -8,6 +8,7 @@ import {
   ToastProvider,
 } from "@/client/components";
 import { SetupGate } from "@/client/components/SetupGate";
+import { StaleBuildWatcher } from "@/client/components/StaleBuildBanner";
 import { ApprovalsProvider } from "@/client/contexts/ApprovalsContext";
 import { AuthProvider } from "@/client/contexts/AuthContext";
 import { BrandingProvider } from "@/client/contexts/BrandingContext";
@@ -67,6 +68,7 @@ export function App() {
               <AuthProvider>
                 <BrowserRouter>
                   <NavGuardProvider>
+                    <StaleBuildWatcher />
                     <SidebarProvider>
                       <BreadcrumbProvider>
                         <ApprovalsProvider>

@@ -320,7 +320,8 @@
       "plugins": [
         "./biome-plugins/no-window-open-api-path.grit",
         "./biome-plugins/no-unparenthesised-fallback-ternary.grit",
-        "./biome-plugins/no-tautological-staleness.grit"
+        "./biome-plugins/no-tautological-staleness.grit",
+        "./biome-plugins/require-reload-on-dynamic-import.grit"
       ]
     },
     // ChannelRedirectTab.tsx and PlaygroundChat.tsx clamp nothing behind their textareas: channel

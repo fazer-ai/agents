@@ -3724,6 +3724,14 @@
     "warnAt": "Avisar em (%)",
     "warnAtHint": "Percentual de um teto que dispara um aviso nos seus canais de alerta, para você saber antes de o agente ficar em silêncio. 0 desliga o aviso."
   },
+  "staleBuild": {
+    "badgeTooltip": "Console atualizado",
+    "badgeTooltipVersion": "Console atualizado para v{{version}}",
+    "banner": "O console foi atualizado. Recarregue para usar a nova versão.",
+    "bannerVersion": "O console foi atualizado para a v{{version}}. Recarregue para usar a nova versão.",
+    "reload": "Recarregar",
+    "reloadShort": "recarregar"
+  },
   "strongConfirm": {
     "password": "Sua senha"
   },

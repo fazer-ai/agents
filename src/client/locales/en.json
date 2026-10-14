@@ -3614,6 +3614,14 @@
     "warnAt": "Warn at (%)",
     "warnAtHint": "Percentage of a ceiling that triggers a warning on your alert channels, so you hear about it before the agent goes quiet. 0 disables the warning."
   },
+  "staleBuild": {
+    "badgeTooltip": "Console updated",
+    "badgeTooltipVersion": "Console updated to v{{version}}",
+    "banner": "The console was updated. Reload to use the new version.",
+    "bannerVersion": "The console was updated to v{{version}}. Reload to use the new version.",
+    "reload": "Reload",
+    "reloadShort": "reload"
+  },
   "strongConfirm": {
     "password": "Your password"
   },

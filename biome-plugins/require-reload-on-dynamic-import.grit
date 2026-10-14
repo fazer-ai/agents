@@ -1,0 +1,11 @@
+// Refuses a dynamic import in the console that does not go through `lazyWithReload` or
+// `importWithReload` (client/lib/staleBuild.ts). A tab opened before a deploy asks for a file the new
+// build no longer has, and a bare `import()` leaves that screen broken; the wrappers reload the page
+// once instead (docs/routing.md, "A tab older than the server").
+language js;
+
+JsImportCallExpression() as $import where {
+    not $import <: within `lazyWithReload($_)`,
+    not $import <: within `importWithReload($_)`,
+    register_diagnostic(span = $import, message = "A dynamic import in the console goes through `lazyWithReload` or `importWithReload`, so a file a deploy removed reloads the page instead of breaking it.")
+}

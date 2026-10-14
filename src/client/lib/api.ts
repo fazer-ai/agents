@@ -3,6 +3,7 @@ import type { App } from "@/app";
 import { getActiveTenantId } from "@/client/lib/activeTenant";
 import i18n from "@/client/lib/i18n";
 import { noteServerDate } from "@/client/lib/serverClock";
+import { noteServedBuild } from "@/client/lib/staleBuild";
 import { recoverFromRejectedSelector } from "@/client/lib/tenantSelectorRecovery";
 
 // `parseDate: false` disables Eden treaty's default JSON reviver that
@@ -38,6 +39,8 @@ export function onApiResponse(response: Response): void {
   // First and unconditional: a 401 and a 429 carry the same `Date` as a 200, and the console's
   // debug-window deadline is judged against the server's clock, not the browser's.
   noteServerDate(response);
+  // NOTE: every status, for the same reason: a 401 after a deploy comes from the new build too.
+  noteServedBuild(response);
   if (response.status === 401) {
     window.dispatchEvent(new CustomEvent("auth:unauthorized"));
   } else if (response.status === 429) {

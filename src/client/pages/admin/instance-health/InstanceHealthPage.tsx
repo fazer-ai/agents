@@ -1,6 +1,5 @@
 import { Activity, Pencil } from "lucide-react";
 import {
-  lazy,
   Suspense,
   useCallback,
   useEffect,
@@ -31,13 +30,14 @@ import {
 import { useAuth } from "@/client/contexts/AuthContext";
 import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
+import { lazyWithReload } from "@/client/lib/staleBuild";
 import { throughputOfSignal } from "@/modules/instance-health/signals";
 import { JOB_LANE } from "@/modules/scheduler/lanes";
 import type { SchedulerJobKind } from "@/modules/scheduler/service";
 import { InstanceAlertChannels } from "./InstanceAlertChannels";
 import { formatSignalValue, signalHelp, signalLabel } from "./signals";
 
-const Sparkline = lazy(() => import("./Sparkline"));
+const Sparkline = lazyWithReload(() => import("./Sparkline"));
 
 // The instance's own load (docs/logs.md, instance alerts): one card per signal with its last value,
 // its last hour and its threshold, refreshed at the sampler's cadence, and the instance's alert

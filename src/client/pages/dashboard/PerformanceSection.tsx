@@ -6,7 +6,7 @@ import {
   Timer,
   TrendingUp,
 } from "lucide-react";
-import { lazy, Suspense } from "react";
+import { Suspense } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router";
 import {
@@ -18,6 +18,7 @@ import {
 } from "@/client/components";
 import type { api } from "@/client/lib/api";
 import { formatDuration } from "@/client/lib/duration";
+import { lazyWithReload } from "@/client/lib/staleBuild";
 import { cn } from "@/client/lib/utils";
 import {
   Block,
@@ -44,7 +45,7 @@ import {
 } from "./Provisional";
 import { type BlockCoverage, dayState, useStreamBlock } from "./useStream";
 
-const LineTrend = lazy(() =>
+const LineTrend = lazyWithReload(() =>
   import("./charts").then((m) => ({ default: m.LineTrend })),
 );
 

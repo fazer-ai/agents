@@ -235,6 +235,28 @@ try {
       );
     }
   }
+  // The open-tab check compares the build the server names with the one inlined in the bundle it
+  // served (docs/routing.md, "A tab older than the server"); both have to be this build's id.
+  if (MODE === "production" && !process.env.SMOKE_URL) {
+    const { buildId } = (await Bun.file("dist/build.json").json()) as {
+      buildId?: string;
+    };
+    const named = (await fetch(`${target.baseUrl}/api/health`)).headers.get(
+      "x-app-build",
+    );
+    const bundle = PROBES.find((p) => /\/index-[a-z0-9]+\.js$/i.test(p.path));
+    const inlined = bundle
+      ? (
+          await (await fetch(`${target.baseUrl}${bundle.path}`)).text()
+        ).includes(JSON.stringify(buildId ?? ""))
+      : false;
+    const ok = !!buildId && named === buildId && inlined;
+    console.log(
+      `${ok ? "ok  " : "FAIL"} served build ${named ?? "(none)"} → dist/build.json ${buildId ?? "(none)"}, inlined in the bundle: ${inlined}`,
+    );
+    if (!ok)
+      failures.push("the served build is not the one the bundle carries");
+  }
 } finally {
   await target.stop();
 }

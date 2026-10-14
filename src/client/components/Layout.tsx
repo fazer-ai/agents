@@ -4,6 +4,7 @@ import { AnnouncementBanner } from "@/client/components/AnnouncementBanner";
 import { Header } from "@/client/components/Header";
 import { ProactiveBreakerBanner } from "@/client/components/ProactiveBreakerBanner";
 import { Sidebar } from "@/client/components/Sidebar";
+import { StaleBuildBanner } from "@/client/components/StaleBuildBanner";
 import { ProactiveBreakerProvider } from "@/client/contexts/ProactiveBreakerContext";
 import { useSidebarShortcut } from "@/client/hooks/useSidebarShortcut";
 
@@ -37,6 +38,7 @@ export function Layout({ children }: LayoutProps) {
           header is the panel's own top bar. */}
         <div className="flex min-w-0 flex-1 flex-col overflow-hidden bg-bg-secondary md:my-2 md:mr-2 md:rounded-xl md:border md:border-border">
           <Header />
+          <StaleBuildBanner />
           <AnnouncementBanner />
           <ProactiveBreakerBanner />
           {/* `relative` is load-bearing, for `sr-only` rather than for anything this element

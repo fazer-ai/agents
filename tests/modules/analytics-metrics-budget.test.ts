@@ -81,7 +81,9 @@ const principal: VerifiedToken = {
 // of it); a read that is not bounded waits it out and answers, and the tests assert on that answer.
 const HOLD_MS = 4_000;
 // A budget no read can spend for real: a read that got a fresh one, or one counted from somewhere
-// other than its deadline, waits on the lock until HOLD_MS and answers.
+// other than its deadline, waits on the lock until HOLD_MS and answers. Nothing else cuts that wait
+// short: `lockTimeoutUnder` sets no lock timeout for a budget above DB_LOCK_TIMEOUT_MS, and the
+// clients here open their sessions with none.
 const BUDGET_MS = 60_000;
 // What a test leaves of BUDGET_MS by moving the clock, once the read has taken its deadline.
 const LEFT_MS = 500;
@@ -227,10 +229,10 @@ describe.skipIf(!dbUp)("metrics time budget", () => {
         getDashboardCosts(ctx, {}, app as PrismaClient).catch((e) => e),
       );
       expect(statusOf(result)).toBe(503);
-      expect(await usage.release()).toBe(true);
       expect((result as Error).message).toContain("Try a shorter period");
       expect((result as { field?: string }).field).toBe("since");
       expect(await waitingOnUsage()).toBe(0);
+      expect(await usage.release()).toBe(true);
     } finally {
       await usage.release();
     }
@@ -312,12 +314,12 @@ describe.skipIf(!dbUp)("metrics time budget", () => {
         }).catch((e) => e),
       );
       expect(statusOf(result)).toBe(503);
-      expect(await usage.release()).toBe(true);
       const [row] = await (su as PrismaClient).$queryRaw<{ n: number }[]>`
         SELECT count(*)::int AS n FROM pg_stat_activity
          WHERE datname = current_database() AND state = 'active' AND query LIKE '%mb_two%'
            AND pid <> pg_backend_pid()`;
       expect(row?.n).toBe(0);
+      expect(await usage.release()).toBe(true);
     } finally {
       clock.restore();
       await usage.release();

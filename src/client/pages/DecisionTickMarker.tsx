@@ -275,7 +275,11 @@ export function DecisionTickDetails({ tick }: { tick: DecisionTickView }) {
   const groups = ruleGroups(tick);
   const [restOpen, setRestOpen] = useState(false);
   const hasRules =
-    groups.fired.length + groups.near.length + groups.rest.length > 0;
+    groups.fired.length +
+      groups.held.length +
+      groups.near.length +
+      groups.rest.length >
+    0;
   return (
     <div
       className="grid gap-3 rounded border border-border bg-bg-secondary p-2 text-left text-xs lg:grid-cols-2"
@@ -299,6 +303,19 @@ export function DecisionTickDetails({ tick }: { tick: DecisionTickView }) {
               title={t("conversation.trail.decision.groupFired", "Fired")}
             >
               {groups.fired.map((r) => (
+                <RuleRow key={r.rule} r={r} tick={tick} />
+              ))}
+            </RuleGroup>
+          )}
+          {groups.held.length > 0 && (
+            <RuleGroup
+              testId="decision-rules-held"
+              title={t(
+                "conversation.trail.decision.groupHeld",
+                "Already acted",
+              )}
+            >
+              {groups.held.map((r) => (
                 <RuleRow key={r.rule} r={r} tick={tick} />
               ))}
             </RuleGroup>
@@ -622,7 +639,8 @@ function CauseText({ rule, tick }: { rule: number; tick: DecisionTickView }) {
           "{{question}} is {{value}}",
           {
             question: c.question,
-            value: c.equals,
+            // What the tick measured, which is the condition's option whenever the rule fired.
+            value: typeof a?.choice === "string" ? a.choice : c.equals,
           },
         ) + sure
       );

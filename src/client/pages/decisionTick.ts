@@ -294,10 +294,12 @@ export function actionSummary(tick: DecisionTickView): ActionSummary {
   return s;
 }
 
-// The rules in the three groups the expanded tick shows: the ones that fired (or whose conditions
-// held and their trigger held them back), the near misses, and the rest, folded into one line.
+// The rules in the groups the expanded tick shows: the ones that fired, the ones whose conditions
+// held but their trigger held them back (they did NOT act this tick, so they never sit among the
+// fired), the near misses, and the rest, folded into one line.
 export interface RuleGroups {
   fired: RuleView[];
+  held: RuleView[];
   near: RuleView[];
   rest: RuleView[];
 }
@@ -323,10 +325,12 @@ export function isNearMiss(miss: Record<string, unknown>): boolean {
 }
 
 export function ruleGroups(tick: DecisionTickView): RuleGroups {
-  const groups: RuleGroups = { fired: [], near: [], rest: [] };
+  const groups: RuleGroups = { fired: [], held: [], near: [], rest: [] };
   for (const r of ruleViews(tick)) {
-    if (r.kind === "fired" || r.kind === "held" || r.kind === "unknown") {
+    if (r.kind === "fired" || r.kind === "unknown") {
       groups.fired.push(r);
+    } else if (r.kind === "held") {
+      groups.held.push(r);
     } else if (r.kind === "not_fired" && isNearMiss(r.miss)) {
       groups.near.push(r);
     } else groups.rest.push(r);

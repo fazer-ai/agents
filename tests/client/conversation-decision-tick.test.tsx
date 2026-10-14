@@ -566,12 +566,18 @@ describe("the expanded tick", () => {
     expect(ruleLines()[3]).toBe(
       "Rule 4set_labelsconditions held, but it already acted (When the conditions start holding)because anger level 2 (furious) (needs 2)",
     );
-    // Its conditions held, so it sits with the rules that fired, not among the misses.
-    expect(
-      within(screen.getByTestId("decision-rules-fired"))
+    // Its conditions held, but it did not act this tick: its own group, neither fired nor a miss.
+    const rulesIn = (id: string) =>
+      within(screen.getByTestId(id))
         .getAllByTestId("decision-rule")
-        .map((r) => /^Rule (\d+)/.exec(r.textContent ?? "")?.[1]),
-    ).toEqual(["1", "4"]);
+        .map((r) => /^Rule (\d+)/.exec(r.textContent ?? "")?.[1]);
+    expect(rulesIn("decision-rules-fired")).toEqual(["1"]);
+    expect(rulesIn("decision-rules-held")).toEqual(["4"]);
+    expect(
+      within(screen.getByTestId("decision-rules-held")).getByText(
+        "Already acted",
+      ),
+    ).toBeTruthy();
   });
 
   test("each outcome of a fired rule, and a merged rule takes the outcome of the action it shares", async () => {
@@ -610,7 +616,7 @@ describe("the expanded tick", () => {
       "Rule 2handoff_to_humanfired: not allowed for this agentbecause asks_refund yes 82% (at least 90%)",
       "Rule 3set_custom_attributefired: failed (tool_error)because topic is exchange, 51% sure (needs 60%)",
       "Rule 4set_labelsfired, same action as rule 1: refused by a protected labelbecause anger level 1 (upset) (needs 2)",
-      "Rule 5private_notefired: ranbecause topic is damaged",
+      "Rule 5private_notefired: ranbecause topic is exchange",
     ]);
   });
 

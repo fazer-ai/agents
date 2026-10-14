@@ -750,6 +750,7 @@
         "fired": "fired: {{outcome}}",
         "firedNoOutcome": "fired with an earlier rule's identical action, no outcome of its own",
         "groupFired": "Fired",
+        "groupHeld": "Already acted",
         "groupNear": "Almost fired",
         "handedOff": "handed off",
         "held": "conditions held, but it already acted ({{trigger}})",

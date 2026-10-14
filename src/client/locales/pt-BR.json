@@ -770,6 +770,7 @@
         "fired": "disparou: {{outcome}}",
         "firedNoOutcome": "disparou com a mesma ação de uma regra anterior, sem desfecho próprio",
         "groupFired": "Dispararam",
+        "groupHeld": "Já tinham agido",
         "groupNear": "Quase dispararam",
         "handedOff": "transferiu para humano",
         "held": "as condições valeram, mas ela já tinha agido ({{trigger}})",

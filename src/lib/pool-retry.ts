@@ -1,5 +1,6 @@
 import { Prisma } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
+import { CONNECT_TIMEOUT_MESSAGE } from "@/api/lib/pool-options";
 
 // A transaction that NEVER STARTED: no free connection within `maxWait` (SCOPED_TX_OPTIONS), so
 // Prisma gave up before running a statement. With the `pg` adapter that is code P2028, "Unable to
@@ -11,6 +12,8 @@ export function isTransactionNeverStarted(err: unknown, depth = 0): boolean {
   const code = (err as { code?: unknown }).code;
   const message = String((err as { message?: unknown }).message ?? "");
   if (code === "P2024") return true;
+  // A connect past its bound (src/api/lib/pool-options.ts): no connection, so nothing ran.
+  if (message.includes(CONNECT_TIMEOUT_MESSAGE)) return true;
   if (code === "P2028" && message.includes("Unable to start a transaction"))
     return true;
   return isTransactionNeverStarted(

@@ -17,22 +17,37 @@ export function lockTimeoutOption(): { lock_timeout?: number } {
 // answers, holds the turn waiting on it forever instead of failing so the turn is retried.
 export const CONNECT_TIMEOUT_MS = 10_000;
 
-// The connect bound and nothing else. `connectionTimeoutMillis` on the pool would also bound the wait
-// for a free client when the pool is at `max`, turning a burst that queues into failed turns. The
-// two are armed from different configs: `pg-pool` arms its queue timer from its own options and hands
-// those options to each `Client` it builds, which arms its connect timer from them. A `Client` that
-// sets the timeout in its own config bounds the connect and leaves the queue as it was.
-function asConnectTimeout<E>(err: E): E {
+// What a connect past its bound fails with. Nothing ran on a connection that never opened, so it is
+// the same fact as a transaction that never started, and `isTransactionNeverStarted`
+// (src/lib/pool-retry.ts) reads it as one: by the class where `pg`'s error reaches the caller as it is
+// (the checkpointer), and by the message where Prisma wraps it and keeps only the text and the code.
+export const CONNECT_TIMEOUT_MESSAGE =
+  "the database connection did not open within its connect bound";
+
+export class DatabaseConnectTimeout extends Error {
+  readonly code = "ETIMEDOUT";
+  constructor(cause: unknown) {
+    super(CONNECT_TIMEOUT_MESSAGE, { cause });
+    this.name = "DatabaseConnectTimeout";
+  }
+}
+
+function asConnectTimeout(err: unknown): unknown {
   if (
     err instanceof Error &&
     (err as { code?: unknown }).code === undefined &&
     /timeout/i.test(err.message)
   ) {
-    Object.assign(err, { code: "ETIMEDOUT" });
+    return new DatabaseConnectTimeout(err);
   }
   return err;
 }
 
+// The connect bound and nothing else. `connectionTimeoutMillis` on the pool would also bound the wait
+// for a free client when the pool is at `max`, turning a burst that queues into failed turns. The
+// two are armed from different configs: `pg-pool` arms its queue timer from its own options and hands
+// those options to each `Client` it builds, which arms its connect timer from them. A `Client` that
+// sets the timeout in its own config bounds the connect and leaves the queue as it was.
 export function connectTimeoutOption(ms: number = CONNECT_TIMEOUT_MS): {
   Client: typeof Client & { readonly connectTimeoutMs: number };
 } {
@@ -59,10 +74,9 @@ export function connectTimeoutOption(ms: number = CONNECT_TIMEOUT_MS): {
       super(own);
     }
 
-    // `pg` fails its own connect timeout with a bare `Error("timeout expired")` and no code, which the
-    // Prisma adapter passes through unclassified, so `isDatabaseUnavailable` (src/lib/pool-retry.ts)
-    // would read a stalled database as a fault of the caller and spend its retries. Given the socket
-    // code a timeout has, the adapter names it `SocketTimeout`, like any other unreachable database.
+    // `pg` fails its own connect timeout with a bare `Error("timeout expired")` and no code, which reads
+    // as a fault of the caller: a turn would announce a failure and a recovery would spend its retries
+    // on a database that is only slow to answer. Replaced by DatabaseConnectTimeout above.
     override connect(): Promise<Client>;
     override connect(callback: (err: Error) => void): void;
     override connect(
@@ -70,7 +84,7 @@ export function connectTimeoutOption(ms: number = CONNECT_TIMEOUT_MS): {
     ): Promise<Client> | undefined {
       if (callback) {
         super.connect((err: Error) =>
-          callback(err ? asConnectTimeout(err) : err),
+          callback(err ? (asConnectTimeout(err) as Error) : err),
         );
         return;
       }

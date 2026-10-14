@@ -14,8 +14,12 @@ import {
 import { AIMessage } from "@langchain/core/messages";
 import type { ChatResult } from "@langchain/core/outputs";
 import { PrismaPg } from "@prisma/adapter-pg";
-import { PrismaClient } from "@/../generated/prisma/client";
+import { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import {
+  CONNECT_TIMEOUT_MESSAGE,
+  DatabaseConnectTimeout,
+} from "@/api/lib/pool-options";
 import { chatwootThreadId, contactInboxThreadId } from "@/graph/checkpointer";
 import {
   clearTurnInFlight,
@@ -1735,62 +1739,82 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
     return n;
   }
 
-  test("a live turn the pool never served goes to recovery now: DEAD, recovery armed, nothing posted", async () => {
-    const conv = await seedConversation();
-    const deliveryId = `failnote-pool-${process.pid}-${conv}`;
-    const model = new FailingModel(new Error("the model was reached"));
-    // The agent's load is where a saturated pool refuses a turn before anything can act.
-    const load = spyOn(prepare, "loadAgentConfig").mockImplementationOnce(
-      async () => {
-        throw neverStarted();
-      },
-    );
-    let out: string;
-    try {
-      out = await recordAndProcessChatwootDelivery({
-        tenantId,
-        instanceId,
-        deliveryId,
-        agentBotId: 9,
-        normalized: incoming(conv, 5_000 + conv),
-        base: appDb,
-        deps: { makeModel: () => model, sleep: async () => {} },
+  // A connection that never opened ran nothing either: `pg`'s own error as the checkpointer meets it,
+  // and the same failure wrapped by Prisma on the main pool, which keeps its text and code.
+  test.each<[string, () => unknown]>([
+    ["no free connection", neverStarted],
+    [
+      "a connect past its bound",
+      () => new DatabaseConnectTimeout(new Error("timeout expired")),
+    ],
+    [
+      "a connect past its bound, through Prisma",
+      () =>
+        new Prisma.PrismaClientKnownRequestError(
+          `Invalid \`prisma.$queryRaw()\` invocation:\n\n${CONNECT_TIMEOUT_MESSAGE}`,
+          { code: "ETIMEDOUT", clientVersion: "test" },
+        ),
+    ],
+  ])(
+    "a live turn the pool never served goes to recovery now: DEAD, recovery armed, nothing posted (%s)",
+    async (_, failure) => {
+      const conv = await seedConversation();
+      const deliveryId = `failnote-pool-${process.pid}-${conv}`;
+      const model = new FailingModel(new Error("the model was reached"));
+      // The agent's load is where a saturated pool refuses a turn before anything can act.
+      const load = spyOn(prepare, "loadAgentConfig").mockImplementationOnce(
+        async () => {
+          throw failure();
+        },
+      );
+      let out: string;
+      try {
+        out = await recordAndProcessChatwootDelivery({
+          tenantId,
+          instanceId,
+          deliveryId,
+          agentBotId: 9,
+          normalized: incoming(conv, 5_000 + conv),
+          base: appDb,
+          deps: { makeModel: () => model, sleep: async () => {} },
+        });
+      } finally {
+        load.mockRestore();
+      }
+      expect(out).toBe("processed");
+      expect(model.calls).toBe(0);
+      const row = await suDb.chatwootWebhookDelivery.findFirstOrThrow({
+        where: { tenantId, deliveryId },
+        select: { id: true, status: true },
       });
-    } finally {
-      load.mockRestore();
-    }
-    expect(out).toBe("processed");
-    expect(model.calls).toBe(0);
-    const row = await suDb.chatwootWebhookDelivery.findFirstOrThrow({
-      where: { tenantId, deliveryId },
-      select: { id: true, status: true },
-    });
-    expect(row.status).toBe("DEAD");
-    const recovery = await suDb.schedulerJob.findMany({
-      where: {
-        tenantId,
-        kind: "DELIVERY_RECOVERY",
-        dedupeKey: deliveryRecoveryDedupeKey(row.id),
-      },
-    });
-    expect(recovery).toHaveLength(1);
-    // Said like the sweep says it, at `info` because a recovery is coming.
-    const convRow = await suDb.conversation.findFirstOrThrow({
-      where: { tenantId, chatwootConversationId: conv },
-      select: { id: true },
-    });
-    const line = (
-      await flowLogRows(suDb, {
-        where: { tenantId, conversationId: convRow.id, stage: "delivery" },
-      })
-    ).find(
-      (r) => (r.detail as { outcome?: string } | null)?.outcome === "stranded",
-    );
-    expect(line?.level).toBe("info");
-    // The recovery is going to answer: a note or a hand-over now would close the gate it needs.
-    expect(writes.filter((w) => w.conversationId === conv)).toHaveLength(0);
-    expect(await noticeAt(conv)).toBeNull();
-  });
+      expect(row.status).toBe("DEAD");
+      const recovery = await suDb.schedulerJob.findMany({
+        where: {
+          tenantId,
+          kind: "DELIVERY_RECOVERY",
+          dedupeKey: deliveryRecoveryDedupeKey(row.id),
+        },
+      });
+      expect(recovery).toHaveLength(1);
+      // Said like the sweep says it, at `info` because a recovery is coming.
+      const convRow = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: conv },
+        select: { id: true },
+      });
+      const line = (
+        await flowLogRows(suDb, {
+          where: { tenantId, conversationId: convRow.id, stage: "delivery" },
+        })
+      ).find(
+        (r) =>
+          (r.detail as { outcome?: string } | null)?.outcome === "stranded",
+      );
+      expect(line?.level).toBe("info");
+      // The recovery is going to answer: a note or a hand-over now would close the gate it needs.
+      expect(writes.filter((w) => w.conversationId === conv)).toHaveLength(0);
+      expect(await noticeAt(conv)).toBeNull();
+    },
+  );
 
   test("inside a recovery's own pass, a turn the pool never served announces nothing either", async () => {
     const conv = await seedConversation();

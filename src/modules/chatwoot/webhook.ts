@@ -5687,7 +5687,8 @@ export async function processChatwootDelivery(
             convLabel,
             err instanceof Error ? err.message : String(err),
           );
-          // A live turn the pool never gave a connection to, before any tool could act, is not a turn
+          // A live turn the pool never gave a connection to (none free, or one whose connect never
+          // opened), before any tool could act, is not a turn
           // that failed: the same turn a little later answers it, so it goes to the delivery's
           // recovery, which retries and hands over when it gives up. A model call alone has no effect
           // outside; once a tool started, a replay could repeat it, so that one fails here like any other.

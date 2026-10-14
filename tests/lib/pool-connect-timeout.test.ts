@@ -6,11 +6,15 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import {
   CONNECT_TIMEOUT_MS,
   connectTimeoutOption,
+  DatabaseConnectTimeout,
   runtimePoolOptions,
 } from "@/api/lib/pool-options";
 import config from "@/config";
 import { getCheckpointer } from "@/graph/checkpointer";
-import { isDatabaseUnavailable } from "@/lib/pool-retry";
+import {
+  isDatabaseUnavailable,
+  isTransactionNeverStarted,
+} from "@/lib/pool-retry";
 import { registeredPool } from "@/lib/pool-stats";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { until } from "@/tests/utils/poll";
@@ -77,7 +81,9 @@ describe("a pool built with connectTimeoutOption", () => {
       await until("the connect to fail on its bound", () => failure, {
         deadlineMs: 5_000,
       });
-      expect(String(failure)).toMatch(/timeout/i);
+      // The checkpointer meets this error as `pg` gives it, with no Prisma around it.
+      expect(failure).toBeInstanceOf(DatabaseConnectTimeout);
+      expect(isTransactionNeverStarted(failure)).toBe(true);
     } finally {
       for (const s of sockets) s.destroy();
       await pool.end();
@@ -152,6 +158,9 @@ test("a connect past its bound reads as an unavailable database through the Pris
       deadlineMs: 5_000,
     });
     expect(isDatabaseUnavailable(failure)).toBe(true);
+    // And as a transaction that never started: a turn that met it before any tool ran is retried by
+    // the delivery's recovery, not announced as failed.
+    expect(isTransactionNeverStarted(failure)).toBe(true);
   } finally {
     for (const s of sockets) s.destroy();
     await client.$disconnect();

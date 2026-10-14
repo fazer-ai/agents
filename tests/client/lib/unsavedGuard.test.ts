@@ -1,6 +1,6 @@
 /// <reference lib="dom" />
 
-import { describe, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import {
   acquireBeforeUnload,
   leaveViaBackTrap,
@@ -52,6 +52,18 @@ describe("unsavedGuard: beforeunload", () => {
 });
 
 describe("unsavedGuard: back-button trap", () => {
+  // The trap waits a bounded time for its own cleanup pop. Each test reads a clock that starts well
+  // past whatever an earlier test file left in flight, and stands still within the test.
+  let clock = Date.now();
+  let now: ReturnType<typeof spyOn> | null = null;
+  beforeEach(() => {
+    clock += 60_000;
+    now = spyOn(Date, "now").mockImplementation(() => clock);
+  });
+  afterEach(() => {
+    now?.mockRestore();
+  });
+
   test("arms a sentinel, re-arms on Back, and notifies the top blocker", () => {
     const push = spyOn(window.history, "pushState");
     const back = spyOn(window.history, "back").mockImplementation(landPop);
@@ -189,5 +201,47 @@ describe("unsavedGuard: back-button trap", () => {
     push.mockRestore();
     back.mockRestore();
     go.mockRestore();
+  });
+
+  test("a cleanup pop that never lands stops being awaited, and the next guard arms its sentinel", () => {
+    const back = spyOn(window.history, "back").mockImplementation(() => {});
+    const gone = pushBackBlocker(() => {});
+    gone(); // its cleanup back() never produces a popstate
+
+    clock += 5_000;
+    const push = spyOn(window.history, "pushState");
+    let calls = 0;
+    const next = pushBackBlocker(() => {
+      calls += 1;
+    });
+    expect(push.mock.calls.length).toBe(1);
+    window.dispatchEvent(new Event("popstate")); // the user's Back
+    expect(calls).toBe(1);
+
+    back.mockImplementation(landPop);
+    next();
+    push.mockRestore();
+    back.mockRestore();
+  });
+
+  test("a cleanup pop that lands with no guard armed is heard, so a guard right after arms its sentinel", () => {
+    const back = spyOn(window.history, "back").mockImplementation(() => {});
+    const gone = pushBackBlocker(() => {});
+    gone();
+    window.dispatchEvent(new Event("popstate")); // the cleanup pop lands, nobody armed
+
+    const push = spyOn(window.history, "pushState");
+    let calls = 0;
+    const next = pushBackBlocker(() => {
+      calls += 1;
+    });
+    expect(push.mock.calls.length).toBe(1);
+    window.dispatchEvent(new Event("popstate"));
+    expect(calls).toBe(1);
+
+    back.mockImplementation(landPop);
+    next();
+    push.mockRestore();
+    back.mockRestore();
   });
 });

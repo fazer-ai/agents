@@ -75,6 +75,20 @@ const PROBES: Record<string, string> = {
   [P("pool-built-elsewhere.ts")]:
     "declare const Pool: new (o: object) => object;\ndeclare function opts(): object;\nexport const p = new Pool(opts());\n",
 
+  // no-raw-violation-code
+  [P("violation-eq.ts")]:
+    'declare const e: { code?: string };\nexport const a = e.code === "P2002";\n',
+  [P("violation-neq.ts")]:
+    'declare const e: { code?: string };\nexport const a = e.code !== "P2003";\n',
+  [P("violation-left.ts")]:
+    'declare const e: { code?: string };\nexport const a = "23505" === e.code;\n',
+  [P("violation-sqlstate-fk.ts")]:
+    'declare const e: { code?: string };\nexport const a = e.code === "23503";\n',
+  [P("violation-other-code.ts")]:
+    'declare const e: { code?: string };\nexport const a = e.code === "P2025";\n',
+  [P("violation-comment.ts")]:
+    "// a P2002 is a unique violation\nexport const a = 1;\n",
+
   // no-bigint-cast
   [P("bigint-param.ts")]:
     "declare const params: { id: string };\nexport const a = BigInt(params.id);\n",
@@ -220,6 +234,7 @@ const RULES = {
   auth: "Stub this client context or hook per file with `stubExports`",
   unused: "Suppression comment has no effect",
   glob: "A test that globs src/ reads each file",
+  violation: "A violation code read by hand misses the other shape",
 } as const;
 type Rule = keyof typeof RULES;
 
@@ -319,6 +334,22 @@ describe("require-pool-connect-bound", () => {
     ["pool-built-elsewhere.ts"],
   ])("a bounded pool, or options built elsewhere, pass (%s)", (name) => {
     expect(of(P(name), "pool")).toBe(0);
+  });
+});
+
+describe("no-raw-violation-code", () => {
+  test.each([
+    ["violation-eq.ts"],
+    ["violation-neq.ts"],
+    ["violation-left.ts"],
+    ["violation-sqlstate-fk.ts"],
+  ])("a violation code written out is refused (%s)", (name) => {
+    expect(of(P(name), "violation")).toBe(1);
+  });
+
+  test("another Prisma code, and a comment naming one, pass", () => {
+    expect(of(P("violation-other-code.ts"), "violation")).toBe(0);
+    expect(of(P("violation-comment.ts"), "violation")).toBe(0);
   });
 });
 

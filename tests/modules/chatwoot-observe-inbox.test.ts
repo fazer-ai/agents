@@ -18,6 +18,7 @@ import {
   unobserveInbox,
 } from "@/modules/chatwoot/management";
 import { dbProbeFailed } from "@/tests/db-gate";
+import { VIOLATION_SHAPES } from "@/tests/utils/raw-violation";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // The OBSERVER binding: a monitoring agent attached to an inbox on the fork as an observer, next
@@ -1928,6 +1929,97 @@ describe.skipIf(!dbUp)("the observer binding", () => {
     ).toBe(0);
     expect(observing.size).toBe(0);
   });
+
+  // The pending row's insert refused by a foreign key: the constraint's name says whether the agent
+  // or the inbox is gone, in either shape of the violation (Prisma 7 sends no `field_name`).
+  test.each(
+    VIOLATION_SHAPES.map(([label, shape], n) => [label, shape, n] as const),
+  )(
+    "an attach whose agent is gone at the insert answers that the agent is not found, the violation %s",
+    async (_, shape, n) => {
+      const inbox = await suDb.inbox.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootInboxId: OTHER_INBOX_ID + 88 + n,
+          name: `Agente sumido ${n}`,
+        },
+        select: { id: true },
+      });
+      let refused = false;
+      // The agent's row cannot go while the insert's transaction locks it, so the refusal is asked of
+      // Postgres directly: an agent id no row holds.
+      const racing = appDb.$extends({
+        query: {
+          inboxObserver: {
+            async create({ args, query }) {
+              refused = true;
+              return query({
+                ...args,
+                data: { ...args.data, agentId: -1n } as never,
+              });
+            },
+          },
+        },
+      }) as unknown as PrismaClient;
+      const cw = fakeChatwoot({ observerRoute: true, observing: new Set() });
+      await expect(
+        observeInbox(
+          ctx(tenantId),
+          inbox.id,
+          monitoringAgent,
+          cw,
+          shape(racing),
+        ),
+      ).rejects.toMatchObject({ translationKey: "errors.agentNotFound" });
+      expect(refused).toBe(true);
+      expect(
+        await suDb.inboxObserver.count({
+          where: { tenantId, inboxId: inbox.id },
+        }),
+      ).toBe(0);
+    },
+  );
+
+  test.each(
+    VIOLATION_SHAPES.map(([label, shape], n) => [label, shape, n] as const),
+  )(
+    "an attach whose inbox is gone at the insert answers that the inbox is not found, the violation %s",
+    async (_, shape, n) => {
+      const inbox = await suDb.inbox.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootInboxId: OTHER_INBOX_ID + 90 + n,
+          name: `Inbox sumida ${n}`,
+        },
+        select: { id: true },
+      });
+      let removed = false;
+      const racing = appDb.$extends({
+        query: {
+          inboxObserver: {
+            async create({ args, query }) {
+              removed = true;
+              await suDb.inbox.delete({ where: { id: inbox.id } });
+              return query(args);
+            },
+          },
+        },
+      }) as unknown as PrismaClient;
+      const cw = fakeChatwoot({ observerRoute: true, observing: new Set() });
+      await expect(
+        observeInbox(
+          ctx(tenantId),
+          inbox.id,
+          monitoringAgent,
+          cw,
+          shape(racing),
+        ),
+      ).rejects.toMatchObject({ translationKey: "errors.inboxNotFound" });
+      expect(removed).toBe(true);
+    },
+  );
 
   // NOTE: A PENDING ROW IS NOT A BINDING FOR THE BULK REATTACH TO ASSERT. Attached upstream by this
   // loop, it would leave the fork delivering to a bot whose row still says "attaching", which the

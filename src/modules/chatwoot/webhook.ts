@@ -30,6 +30,7 @@ import {
   UnauthorizedError,
 } from "@/lib/errors";
 import { withKeyedQueue } from "@/lib/locks";
+import { isUniqueViolation } from "@/lib/pg-error";
 import {
   isTransactionNeverStarted,
   retryWhileTransactionNeverStarted,
@@ -266,12 +267,6 @@ function sysCtx(tenantId: bigint): TenantContext {
     role: "TENANT_ADMIN",
     actorType: "system",
   };
-}
-
-function isUniqueViolation(err: unknown): boolean {
-  return (
-    err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002"
-  );
 }
 
 // The runtime knobs (enabled, mode) of the agent bound to a Chatwoot inbox, or null when unbound or

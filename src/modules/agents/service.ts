@@ -28,6 +28,7 @@ import {
   type TranslatedParam,
 } from "@/lib/errors";
 import { parseInput } from "@/lib/parse-input";
+import { isForeignKeyViolation } from "@/lib/pg-error";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import {
   agentUpdateAudit,
@@ -3340,7 +3341,7 @@ export async function replaceAgentToolSelections(
     // NOTE: A target deleted between the existence check and the insert fails the foreign key: the
     // same event as "no such tool", so the check is re-asked in a fresh read to name it. If it finds
     // everything, the original error stands.
-    if (err instanceof Error && (err as { code?: string }).code === "P2003") {
+    if (isForeignKeyViolation(err)) {
       await runScopedOn(base, ctx, (db) => assertGrantTargetsExist(db, grants));
     }
     throw err;

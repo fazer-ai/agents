@@ -30,6 +30,7 @@ import {
   updateCompanySettings,
 } from "@/modules/tenant-settings/service";
 import { dbProbeFailed } from "@/tests/db-gate";
+import { VIOLATION_SHAPES } from "@/tests/utils/raw-violation";
 
 // DB-backed: what the scoped writes and the RLS fence actually do. The rules themselves are a table
 // in document-blocks.test.ts; this file proves the persistence follows the decision — and covers the
@@ -297,6 +298,50 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
     // The slug is NOT re-derived by a rename: it is a tool name an agent may already be granted.
     expect(moved.slug).toBe("termo_b");
   });
+
+  // The same rename lost to a concurrent writer: the pre-check saw the name free, and the index is
+  // what refuses it. The answer still names the name, not the slug, in either shape of the violation.
+  test.each(VIOLATION_SHAPES)(
+    "a rename that loses the name to a concurrent writer is told the name is taken, the violation %s",
+    async (label, shape) => {
+      const tag = label.slice(0, 3);
+      const b = await createDocumentTemplate(
+        ctx(tenantA),
+        { name: `Termo corrido ${tag}`, blocks: MINIMAL_BLOCKS, fields: [] },
+        appDb,
+      );
+      let raced = false;
+      const racing = appDb.$extends({
+        query: {
+          documentTemplate: {
+            async update({ args, query }) {
+              if (!raced) {
+                raced = true;
+                await suDb.documentTemplate.create({
+                  data: {
+                    tenantId: tenantA,
+                    name: `Termo disputado ${tag}`,
+                    slug: `termo_disputado_vencedor_${tag}`,
+                  },
+                });
+              }
+              return query(args);
+            },
+          },
+        },
+      }) as unknown as PrismaClient;
+      const refused = await updateDocumentTemplate(
+        ctx(tenantA),
+        BigInt(b.id),
+        { name: `Termo disputado ${tag}` },
+        shape(racing),
+      ).catch((e: unknown) => e);
+      expect(raced).toBe(true);
+      expect((refused as AppError).translationKey).toBe(
+        "errors.documentTemplateNameTaken",
+      );
+    },
+  );
 
   // The near-miss: two names that LOOK different and normalise the same. Refusing "Orcamento"
   // because "Orçamento" exists reads as a bug unless the message names both.
@@ -859,53 +904,56 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
   // luck reaches from a test. Forced here by letting another connection win the key in between: the
   // conflict then lands on the real unique index, in the real transaction, which is the only way to
   // exercise what recovery from it has to survive.
-  test("a caller that loses the idempotency race gets the winner's document", async () => {
-    const key = `race-${process.pid}`;
-    let raced = false;
-    const racing = appDb.$extends({
-      query: {
-        issuedDocument: {
-          async create({ args, query }) {
-            if (!raced) {
-              raced = true;
-              await suDb.issuedDocument.create({
-                data: {
-                  tenantId: tenantA,
-                  templateId,
-                  title: "Orçamento",
-                  // What a real competing issuance writes, which is the point: the row that comes
-                  // back has to be the WINNER's, prefix included, not a reconstruction of our own.
-                  numberPrefix: "ORC-",
-                  idempotencyKey: key,
-                  status: "PENDING",
-                  snapshot: (args.data as { snapshot: unknown })
-                    .snapshot as never,
-                },
-              });
-            }
-            return query(args);
+  test.each(VIOLATION_SHAPES)(
+    "a caller that loses the idempotency race gets the winner's document, the violation %s",
+    async (label, shape) => {
+      const key = `race-${process.pid}-${label.slice(0, 3)}`;
+      let raced = false;
+      const racing = appDb.$extends({
+        query: {
+          issuedDocument: {
+            async create({ args, query }) {
+              if (!raced) {
+                raced = true;
+                await suDb.issuedDocument.create({
+                  data: {
+                    tenantId: tenantA,
+                    templateId,
+                    title: "Orçamento",
+                    // What a real competing issuance writes, which is the point: the row that comes
+                    // back has to be the WINNER's, prefix included, not a reconstruction of our own.
+                    numberPrefix: "ORC-",
+                    idempotencyKey: key,
+                    status: "PENDING",
+                    snapshot: (args.data as { snapshot: unknown })
+                      .snapshot as never,
+                  },
+                });
+              }
+              return query(args);
+            },
           },
         },
-      },
-    }) as unknown as PrismaClient;
+      }) as unknown as PrismaClient;
 
-    const doc = await issueDocument({
-      ctx: ctx(tenantA),
-      templateId,
-      idempotencyKey: key,
-      values: VALUES,
-      base: racing,
-      storageDir: DIR,
-    });
-    expect(raced).toBe(true);
-    expect(doc.status).toBe("READY");
-    expect(doc.number).toMatch(/^ORC-/);
-    expect(
-      await suDb.issuedDocument.count({
-        where: { tenantId: tenantA, idempotencyKey: key },
-      }),
-    ).toBe(1);
-  });
+      const doc = await issueDocument({
+        ctx: ctx(tenantA),
+        templateId,
+        idempotencyKey: key,
+        values: VALUES,
+        base: shape(racing),
+        storageDir: DIR,
+      });
+      expect(raced).toBe(true);
+      expect(doc.status).toBe("READY");
+      expect(doc.number).toMatch(/^ORC-/);
+      expect(
+        await suDb.issuedDocument.count({
+          where: { tenantId: tenantA, idempotencyKey: key },
+        }),
+      ).toBe(1);
+    },
+  );
 
   // NOTE: The printed number is frozen with the document. Its own template, because this test EDITS and then
   // DELETES the one it uses. The number on the PDF has to keep matching the number the console lists
@@ -1189,29 +1237,33 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
 
   // Creation already answers a taken slug with a conflict; an update raising the same constraint has
   // to answer the same way, or the console shows an internal error for a name the operator can fix.
-  test("answers a slug already taken on update with a conflict", async () => {
-    const starter = documentStarter("receipt", "pt-BR");
-    if (!starter) throw new Error("no starter");
-    const tpl = await createDocumentTemplate(
-      ctx(tenantA),
-      {
-        name: "Recibo para renomear",
-        slug: "recibo_para_renomear",
-        blocks: starter.blocks,
-        fields: starter.fields,
-        style: starter.style,
-      },
-      appDb,
-    );
-    await expect(
-      updateDocumentTemplate(
+  test.each(VIOLATION_SHAPES)(
+    "answers a slug already taken on update with a conflict, the violation %s",
+    async (label, shape) => {
+      const starter = documentStarter("receipt", "pt-BR");
+      if (!starter) throw new Error("no starter");
+      const tag = label.slice(0, 3);
+      const tpl = await createDocumentTemplate(
         ctx(tenantA),
-        BigInt(tpl.id),
-        { slug: "orcamento" },
+        {
+          name: `Recibo para renomear ${tag}`,
+          slug: `recibo_para_renomear_${tag}`,
+          blocks: starter.blocks,
+          fields: starter.fields,
+          style: starter.style,
+        },
         appDb,
-      ),
-    ).rejects.toThrow(/already exists/);
-  });
+      );
+      await expect(
+        updateDocumentTemplate(
+          ctx(tenantA),
+          BigInt(tpl.id),
+          { slug: "orcamento" },
+          shape(appDb),
+        ),
+      ).rejects.toThrow(/already exists/);
+    },
+  );
 
   // NOTE: The version is the cache buster, and it has to move on EVERY write. The URL the console reads the
   // letterhead from does not carry the key (it is `/tenant-settings/company/logo?v=<version>`, resolved
@@ -2152,57 +2204,61 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
   // The foreign key then refuses the row, and a raw P2003 would reach the caller as a 500 (and an agent
   // turn as an integration-failure alert). It is the same event the read would have reported a moment
   // earlier, so it gets the same answer.
-  test("answers a template deleted mid-issuance the way a missing one is answered", async () => {
-    const starter = documentStarter("receipt", "pt-BR");
-    if (!starter) throw new Error("no starter");
-    const tpl = await createDocumentTemplate(
-      ctx(tenantA),
-      {
-        name: "Recibo em fuga",
-        slug: "recibo_em_fuga",
-        blocks: starter.blocks,
-        fields: starter.fields,
-        style: starter.style,
-      },
-      appDb,
-    );
-    const id = BigInt(tpl.id);
-    let deleted = false;
-    // Deletes between the template read and the insert — the window the foreign key is guarding.
-    const racing = appDb.$extends({
-      query: {
-        issuedDocument: {
-          async create({ args, query }) {
-            if (!deleted) {
-              deleted = true;
-              await suDb.documentTemplate.delete({ where: { id } });
-            }
-            return query(args);
+  test.each(VIOLATION_SHAPES)(
+    "answers a template deleted mid-issuance the way a missing one is answered, the violation %s",
+    async (label, shape) => {
+      const starter = documentStarter("receipt", "pt-BR");
+      if (!starter) throw new Error("no starter");
+      const tag = label.slice(0, 3);
+      const tpl = await createDocumentTemplate(
+        ctx(tenantA),
+        {
+          name: `Recibo em fuga ${tag}`,
+          slug: `recibo_em_fuga_${tag}`,
+          blocks: starter.blocks,
+          fields: starter.fields,
+          style: starter.style,
+        },
+        appDb,
+      );
+      const id = BigInt(tpl.id);
+      let deleted = false;
+      // Deletes between the template read and the insert — the window the foreign key is guarding.
+      const racing = appDb.$extends({
+        query: {
+          issuedDocument: {
+            async create({ args, query }) {
+              if (!deleted) {
+                deleted = true;
+                await suDb.documentTemplate.delete({ where: { id } });
+              }
+              return query(args);
+            },
           },
         },
-      },
-    }) as unknown as PrismaClient;
+      }) as unknown as PrismaClient;
 
-    const failed = await issueDocument({
-      ctx: ctx(tenantA),
-      templateId: id,
-      idempotencyKey: `fk-race-${process.pid}`,
-      values: {
-        cliente: "Ana",
-        valor: 100,
-        referencia: "serviço",
-        pago_em: "2026-09-05",
-      },
-      base: racing,
-      storageDir: DIR,
-    }).catch((e: unknown) => e);
-    expect(deleted).toBe(true);
-    expect(failed).toBeInstanceOf(AppError);
-    expect((failed as AppError).statusCode).toBe(404);
-    expect((failed as AppError).translationKey).toBe(
-      "errors.documentTemplateNotFound",
-    );
-  });
+      const failed = await issueDocument({
+        ctx: ctx(tenantA),
+        templateId: id,
+        idempotencyKey: `fk-race-${process.pid}-${tag}`,
+        values: {
+          cliente: "Ana",
+          valor: 100,
+          referencia: "serviço",
+          pago_em: "2026-09-05",
+        },
+        base: shape(racing),
+        storageDir: DIR,
+      }).catch((e: unknown) => e);
+      expect(deleted).toBe(true);
+      expect(failed).toBeInstanceOf(AppError);
+      expect((failed as AppError).statusCode).toBe(404);
+      expect((failed as AppError).translationKey).toBe(
+        "errors.documentTemplateNotFound",
+      );
+    },
+  );
 
   // A partial style patch must change ONLY what it names. Validated on its own, the parse fills
   // every omitted property with a default, and writing that result resets the operator's colour,

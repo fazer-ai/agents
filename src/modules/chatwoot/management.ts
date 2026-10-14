@@ -1,10 +1,15 @@
 import { z } from "zod";
-import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
+import type { PrismaClient } from "@/../generated/prisma/client";
 import { decryptJson, encryptJson } from "@/api/lib/crypto";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { AppError, ConflictError, NotFoundError } from "@/lib/errors";
 import { parseInput } from "@/lib/parse-input";
+import {
+  isForeignKeyViolation,
+  isUniqueViolation,
+  violatedConstraintOf,
+} from "@/lib/pg-error";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { isMonitoring } from "@/modules/agents/mode";
@@ -588,10 +593,7 @@ async function connectAccount(
       });
       return { id: row.id, reconnected: false, changed: true };
     } catch (err) {
-      if (
-        err instanceof Prisma.PrismaClientKnownRequestError &&
-        err.code === "P2002"
-      ) {
+      if (isUniqueViolation(err)) {
         throw accountTakenError();
       }
       throw err;
@@ -2444,18 +2446,16 @@ export async function observeInbox(
         pendingRowId = created.id;
       } catch (err) {
         // NOTE: a foreign key here names the inbox, not the agent: the agent is locked two statements
-        // up, while `removeInbox` can delete the mirror after the read that found it. Asked when
-        // Prisma names the constraint (`field_name`), so a foreign key added later reports itself.
-        if ((err as { code?: string }).code === "P2003") {
-          const field = String(
-            (err as { meta?: { field_name?: unknown } }).meta?.field_name ?? "",
-          );
+        // up, while `removeInbox` can delete the mirror after the read that found it. The constraint's
+        // name says which (`violatedConstraintOf`), so a foreign key added later reports itself.
+        if (isForeignKeyViolation(err)) {
+          const field = violatedConstraintOf(err) ?? "";
           if (field.includes("agent_id")) {
             throw new NotFoundError("agent not found", "errors.agentNotFound");
           }
           throw new NotFoundError("inbox not found", "errors.inboxNotFound");
         }
-        if ((err as { code?: string }).code !== "P2002") throw err;
+        if (!isUniqueViolation(err)) throw err;
       }
     }
     try {
@@ -2678,7 +2678,7 @@ export async function observeInbox(
     // only while a row exists, and the row is what this transaction was about to write; the
     // foreign key says so, the bot row went with the agent, and the fork is attached to a bot
     // nothing here can name any more — so it is detached now, because no retry can.
-    if ((err as { code?: string }).code === "P2003") {
+    if (isForeignKeyViolation(err)) {
       await detachQuietly("the agent was deleted during the attach");
       throw new NotFoundError("agent not found", "errors.agentNotFound");
     }

@@ -1,7 +1,7 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
-import { Prisma } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
+import { isUniqueViolation } from "@/lib/pg-error";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { writeFlowEvent } from "@/modules/flowlog/service";
 import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
@@ -369,11 +369,7 @@ async function handOver(
       await armDeliveryRecoveryOn(db, tenantId, row.id);
       return true;
     } catch (err) {
-      if (
-        err instanceof Prisma.PrismaClientKnownRequestError &&
-        err.code === "P2002"
-      )
-        return false;
+      if (isUniqueViolation(err)) return false;
       throw err;
     }
   });

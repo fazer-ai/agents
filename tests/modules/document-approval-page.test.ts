@@ -22,6 +22,7 @@ import { createDocumentTemplate } from "@/modules/documents/templates";
 import { alertLinks, buildAlertBody } from "@/modules/flowlog/alert-send";
 import { settleFlowEvents } from "@/modules/flowlog/scheduled";
 import { dbProbeFailed } from "@/tests/db-gate";
+import { VIOLATION_SHAPES } from "@/tests/utils/raw-violation";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogRows } from "../utils/flowlog";
 import { outboundUrl } from "../utils/outbound";
@@ -331,48 +332,51 @@ describe.skipIf(!dbUp)(
       );
     });
 
-    test("two calls racing to open the same request raise one alert", async () => {
-      seq += 1;
-      const chatwootConversationId = 11_400 + seq;
-      const conv = await suDb.conversation.create({
-        data: {
-          tenantId,
-          chatwootInstanceId: instanceId,
-          inboxId,
-          contactId,
-          chatwootConversationId,
-          status: "pending",
-          threadId: `${tenantId}:${instanceId}:${chatwootConversationId}`,
-          lastEventAt: new Date(),
-          lastInboundAt: new Date(),
-        },
-      });
-      const now = new Date();
-      const call = () =>
-        issueOrRequestApproval({
-          ctx: ctx(),
-          base: appDb,
-          storageDir: DIR,
-          templateId,
-          idempotencyKey: `page-race-${seq}`,
-          values: ARGS,
-          threadId: conv.threadId,
-          chatwootInstanceId: instanceId,
-          conversationId: conv.id,
-          now,
+    test.each(VIOLATION_SHAPES)(
+      "two calls racing to open the same request raise one alert, the violation %s",
+      async (_, shape) => {
+        seq += 1;
+        const chatwootConversationId = 11_400 + seq;
+        const conv = await suDb.conversation.create({
+          data: {
+            tenantId,
+            chatwootInstanceId: instanceId,
+            inboxId,
+            contactId,
+            chatwootConversationId,
+            status: "pending",
+            threadId: `${tenantId}:${instanceId}:${chatwootConversationId}`,
+            lastEventAt: new Date(),
+            lastInboundAt: new Date(),
+          },
         });
-      const outs = await Promise.all([call(), call(), call()]);
-      const ids = new Set(
-        outs.map((o) => (o.kind === "approval" ? o.request.id : null)),
-      );
-      expect(ids.size).toBe(1);
-      const [id] = [...ids];
-      const rows = await deliveriesFor(
-        BigInt(id as string),
-        "document_approval_requested",
-      );
-      expect(rows.map((r) => r.count)).toEqual([1]);
-    });
+        const now = new Date();
+        const call = () =>
+          issueOrRequestApproval({
+            ctx: ctx(),
+            base: shape(appDb),
+            storageDir: DIR,
+            templateId,
+            idempotencyKey: `page-race-${seq}`,
+            values: ARGS,
+            threadId: conv.threadId,
+            chatwootInstanceId: instanceId,
+            conversationId: conv.id,
+            now,
+          });
+        const outs = await Promise.all([call(), call(), call()]);
+        const ids = new Set(
+          outs.map((o) => (o.kind === "approval" ? o.request.id : null)),
+        );
+        expect(ids.size).toBe(1);
+        const [id] = [...ids];
+        const rows = await deliveriesFor(
+          BigInt(id as string),
+          "document_approval_requested",
+        );
+        expect(rows.map((r) => r.count)).toEqual([1]);
+      },
+    );
 
     test("a request the agent's retry lands on again raises no second alert", async () => {
       const now = new Date();
@@ -411,59 +415,62 @@ describe.skipIf(!dbUp)(
       expect(rows[0]?.stage).toBe("tool");
     });
 
-    test("asking an expired request again opens one new request dated today, and the old one stays expired", async () => {
-      const first = new Date("2026-10-01T15:00:00Z");
-      const { requestId, conversationId } = await newRequest(first);
-      await expire(requestId);
-      const later = new Date("2031-03-20T15:00:00Z");
-      const [a, b] = await Promise.all([
-        requestApprovalAgain({
-          ctx: ctx(),
-          requestId,
-          base: appDb,
-          now: later,
-        }),
-        requestApprovalAgain({
-          ctx: ctx(),
-          requestId,
-          base: appDb,
-          now: later,
-        }),
-      ]);
-      expect(a.id).toBe(b.id);
-      expect(a.id).not.toBe(String(requestId));
-      expect(a.status).toBe("PENDING");
-      expect(a.conversationId).toBe(String(conversationId));
-      expect(a.templateId).toBe(String(templateId));
-      expect(a.expiresAt.getTime()).toBeGreaterThan(later.getTime());
-      expect((await getApprovalRequest(ctx(), requestId, appDb)).status).toBe(
-        "EXPIRED",
-      );
-      const [oldRow, newRow] = await Promise.all(
-        [requestId, BigInt(a.id)].map((id) =>
-          suDb.documentApprovalRequest.findUniqueOrThrow({
-            where: { id },
-            select: { snapshot: true },
+    test.each(VIOLATION_SHAPES)(
+      "asking an expired request again opens one new request dated today, and the old one stays expired, the violation %s",
+      async (_, shape) => {
+        const first = new Date("2026-10-01T15:00:00Z");
+        const { requestId, conversationId } = await newRequest(first);
+        await expire(requestId);
+        const later = new Date("2031-03-20T15:00:00Z");
+        const [a, b] = await Promise.all([
+          requestApprovalAgain({
+            ctx: ctx(),
+            requestId,
+            base: shape(appDb),
+            now: later,
           }),
-        ),
-      );
-      expect(
-        (oldRow?.snapshot as unknown as DocumentSnapshot | undefined)
-          ?.issuedDate,
-      ).toBe("2026-10-01");
-      expect(
-        (newRow?.snapshot as unknown as DocumentSnapshot | undefined)
-          ?.issuedDate,
-      ).toBe("2031-03-20");
-      expect(
-        await suDb.documentApprovalRequest.count({
-          where: { tenantId, conversationId },
-        }),
-      ).toBe(2);
-      expect(
-        await deliveriesFor(BigInt(a.id), "document_approval_requested"),
-      ).toHaveLength(1);
-    });
+          requestApprovalAgain({
+            ctx: ctx(),
+            requestId,
+            base: shape(appDb),
+            now: later,
+          }),
+        ]);
+        expect(a.id).toBe(b.id);
+        expect(a.id).not.toBe(String(requestId));
+        expect(a.status).toBe("PENDING");
+        expect(a.conversationId).toBe(String(conversationId));
+        expect(a.templateId).toBe(String(templateId));
+        expect(a.expiresAt.getTime()).toBeGreaterThan(later.getTime());
+        expect((await getApprovalRequest(ctx(), requestId, appDb)).status).toBe(
+          "EXPIRED",
+        );
+        const [oldRow, newRow] = await Promise.all(
+          [requestId, BigInt(a.id)].map((id) =>
+            suDb.documentApprovalRequest.findUniqueOrThrow({
+              where: { id },
+              select: { snapshot: true },
+            }),
+          ),
+        );
+        expect(
+          (oldRow?.snapshot as unknown as DocumentSnapshot | undefined)
+            ?.issuedDate,
+        ).toBe("2026-10-01");
+        expect(
+          (newRow?.snapshot as unknown as DocumentSnapshot | undefined)
+            ?.issuedDate,
+        ).toBe("2031-03-20");
+        expect(
+          await suDb.documentApprovalRequest.count({
+            where: { tenantId, conversationId },
+          }),
+        ).toBe(2);
+        expect(
+          await deliveriesFor(BigInt(a.id), "document_approval_requested"),
+        ).toHaveLength(1);
+      },
+    );
 
     test("asking again after the template was switched off answers with the replacement already made", async () => {
       const { requestId } = await newRequest();
@@ -492,25 +499,28 @@ describe.skipIf(!dbUp)(
       }
     });
 
-    test("asking again in parallel audits once, with the request that was made", async () => {
-      const { requestId } = await newRequest();
-      await expire(requestId);
-      const [a, b] = await Promise.all([
-        requestApprovalAgain({ ctx: ctx(), requestId, base: appDb }),
-        requestApprovalAgain({ ctx: ctx(), requestId, base: appDb }),
-      ]);
-      expect(a.id).toBe(b.id);
-      const audits = await suDb.auditLog.findMany({
-        where: {
-          tenantId,
-          action: "document_approval.request_again",
-          target: `document_approval:${requestId}`,
-        },
-        select: { after: true },
-      });
-      expect(audits).toHaveLength(1);
-      expect(audits[0]?.after).toEqual({ requestId: a.id });
-    });
+    test.each(VIOLATION_SHAPES)(
+      "asking again in parallel audits once, with the request that was made, the violation %s",
+      async (_, shape) => {
+        const { requestId } = await newRequest();
+        await expire(requestId);
+        const [a, b] = await Promise.all([
+          requestApprovalAgain({ ctx: ctx(), requestId, base: shape(appDb) }),
+          requestApprovalAgain({ ctx: ctx(), requestId, base: shape(appDb) }),
+        ]);
+        expect(a.id).toBe(b.id);
+        const audits = await suDb.auditLog.findMany({
+          where: {
+            tenantId,
+            action: "document_approval.request_again",
+            target: `document_approval:${requestId}`,
+          },
+          select: { after: true },
+        });
+        expect(audits).toHaveLength(1);
+        expect(audits[0]?.after).toEqual({ requestId: a.id });
+      },
+    );
 
     test("a document a caller issued under the old again key does not block asking again", async () => {
       const { requestId } = await newRequest();

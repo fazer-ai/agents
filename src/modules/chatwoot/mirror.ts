@@ -2,6 +2,7 @@ import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { withEntityLock } from "@/lib/locks";
+import { isForeignKeyViolation, isUniqueViolation } from "@/lib/pg-error";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { ADDITIONAL_CONTACT_FIELDS } from "@/modules/chatwoot/contact-fields";
 import { clearsResolutionOrigin } from "@/modules/conversations/resolution-origin";
@@ -73,22 +74,6 @@ export interface MirrorResult {
   // could not be retired, or a live status claim that refused the status. A later delivery of the
   // same event can decide differently, so it must run the mirror again rather than reuse this run.
   heldBack?: true;
-}
-
-function isForeignKeyViolation(err: unknown): boolean {
-  return (
-    typeof err === "object" &&
-    err !== null &&
-    (err as { code?: unknown }).code === "P2003"
-  );
-}
-
-function isUniqueViolation(err: unknown): boolean {
-  return (
-    typeof err === "object" &&
-    err !== null &&
-    (err as { code?: unknown }).code === "P2002"
-  );
 }
 
 // biome-ignore lint/plugin/require-resolution-hooks: processChatwootDelivery runs them off the transition this reports

@@ -1,8 +1,9 @@
-import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
+import type { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { parseDbId } from "@/lib/db-id";
 import { AppError, NotFoundError, quotingReason } from "@/lib/errors";
+import { isUniqueViolation } from "@/lib/pg-error";
 import { sanitizeErrorMessage } from "@/lib/redact";
 import { assertSafeOutboundUrl, SsrfError } from "@/lib/ssrf";
 import {
@@ -905,12 +906,6 @@ async function reconcile(
       result.deleted++;
     }
   }
-}
-
-function isUniqueViolation(err: unknown): boolean {
-  return (
-    err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002"
-  );
 }
 
 // A document another run already deleted is the outcome this one wanted.

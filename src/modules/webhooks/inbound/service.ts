@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
-import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
+import type { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { type AgentNudge, runAgentNudge } from "@/graph/nudge";
 import type { RuntimeDeps } from "@/graph/runtime";
 import { AppError, UnauthorizedError } from "@/lib/errors";
+import { isUniqueViolation } from "@/lib/pg-error";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { makeStorableDeep, unstorableProblem } from "@/lib/text";
 import { emitDeadLetter } from "@/modules/flowlog/dead-letter";
@@ -113,12 +114,6 @@ function logRejection(
         : {}),
     },
     "inbound: rejected with 401",
-  );
-}
-
-function isUniqueViolation(err: unknown): boolean {
-  return (
-    err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002"
   );
 }
 

@@ -10,6 +10,7 @@ import {
   quotingReason,
   type TranslatedParam,
 } from "@/lib/errors";
+import { isUniqueViolation, violatedConstraintOf } from "@/lib/pg-error";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { unstorablePhrase } from "@/lib/text";
 import { markUndisclosed, undisclosedMoved } from "@/modules/audit/projection";
@@ -184,12 +185,10 @@ function nameTaken(
 // case and the MCP/import case. Answering it two different ways is how a rename ends up as a 500 for
 // something the operator can fix by typing another name, so the mapping lives here.
 // Which INDEX fired is the difference between "that name is taken" and "that identifier is taken",
-// and Prisma reports it in `meta.target`. Read leniently, because it is a driver detail: an unknown
-// shape falls back to the slug message, which is the one that was correct before the name constraint
-// existed.
+// and `violatedConstraintOf` names it (the index name carries the column). An unknown shape falls
+// back to the slug message, which is the one that was correct before the name constraint existed.
 function conflictTarget(e: unknown): "name" | "slug" {
-  const target = (e as { meta?: { target?: unknown } } | null)?.meta?.target;
-  const text = Array.isArray(target) ? target.join(",") : String(target ?? "");
+  const text = violatedConstraintOf(e) ?? "";
   return /(^|[^a-z])name/.test(text) ? "name" : "slug";
 }
 
@@ -201,7 +200,7 @@ function writeConflict(
   slugExplicit: boolean,
 ): (e: unknown) => never {
   return (e: unknown) => {
-    if (e instanceof Error && (e as { code?: string }).code === "P2002") {
+    if (isUniqueViolation(e)) {
       if (name !== undefined && conflictTarget(e) === "name") {
         throw new AppError(
           `you already have a document template called "${name}"`,

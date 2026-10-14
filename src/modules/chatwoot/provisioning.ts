@@ -1,9 +1,10 @@
-import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
+import type { PrismaClient } from "@/../generated/prisma/client";
 import { decryptJson, encryptJson } from "@/api/lib/crypto";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
 import { AppError } from "@/lib/errors";
+import { isUniqueViolation } from "@/lib/pg-error";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { loadChatwootClient } from "@/modules/chatwoot/instance";
 import { generateRouteToken } from "@/modules/webhooks/inbound/route-token";
@@ -21,12 +22,6 @@ import { chatwootOutgoingUrl } from "./webhook-mount";
 
 function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
-}
-
-function isUniqueViolation(err: unknown): boolean {
-  return (
-    err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002"
-  );
 }
 
 export interface EnsuredAgentBot {

@@ -96,6 +96,14 @@
       "plugins": ["./biome-plugins/require-pool-connect-bound.grit"]
     },
     {
+      "includes": [
+        "src/**/*.{ts,tsx}",
+        "!src/lib/pg-error.ts",
+        "tests/lint/.probe-src-*/**/*.{ts,tsx}"
+      ],
+      "plugins": ["./biome-plugins/no-raw-violation-code.grit"]
+    },
+    {
       "includes": ["src/**/*.tsx", "tests/lint/.probe-src-*/**/*.tsx"],
       "plugins": ["./biome-plugins/no-jsx-comment-note.grit"]
     },

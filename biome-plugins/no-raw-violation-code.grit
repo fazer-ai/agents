@@ -1,0 +1,10 @@
+// Refuses, under src/, a unique or foreign-key violation code written out ("P2002", "P2003", "23505",
+// "23503") anywhere but src/lib/pg-error.ts. The violation reaches a caller in two shapes, Prisma's
+// code or the Postgres SQLSTATE, and a check that names one of them answers 500 for the other: ask
+// `isUniqueViolation` / `isForeignKeyViolation` instead.
+language js;
+
+or { JsStringLiteralExpression(), JsTemplateChunkElement() } as $code where {
+    $code <: r"[\"'`]?(?:P2002|P2003|23505|23503)[\"'`]?",
+    register_diagnostic(span = $code, message = "A violation code read by hand misses the other shape the error arrives in: use `isUniqueViolation` / `isForeignKeyViolation` from src/lib/pg-error.ts.")
+}

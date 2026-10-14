@@ -34,6 +34,7 @@ import {
   receiveInbound,
 } from "@/modules/webhooks/inbound/service";
 import { dbProbeFailed } from "@/tests/db-gate";
+import { VIOLATION_SHAPES } from "@/tests/utils/raw-violation";
 
 // An external system of the operator's own speaking back into a conversation it was handed, through
 // the GENERIC integration and `{{conversation_ref}}`.
@@ -389,13 +390,17 @@ describe.skipIf(!dbUp)("GENERIC inbound end to end", () => {
 
   // ── the receptor ──
 
-  const post = (route: string, body: Record<string, unknown>) => {
+  const post = (
+    route: string,
+    body: Record<string, unknown>,
+    base: PrismaClient = appDb,
+  ) => {
     const raw = JSON.stringify(body);
     return receiveInbound({
       routeToken: route,
       rawBody: raw,
       getHeader: signed(raw),
-      base: appDb,
+      base,
     });
   };
   const deliveries = () => suDb.inboundDelivery.count({ where: { tenantId } });
@@ -452,49 +457,56 @@ describe.skipIf(!dbUp)("GENERIC inbound end to end", () => {
     ).rejects.toMatchObject({ statusCode: 401 });
   });
 
-  test("a correlated event is queued once and dispatched as a relay to the bot's conversation", async () => {
-    const minted = await ensureConversationRef({
-      tenantId,
-      integrationInstanceId: genericId,
-      threadId: THREAD(),
-      base: appDb,
-    });
-    if (!minted.ok) throw new Error("mint");
-    const body = {
-      event_id: "ev-report-1",
-      conversation_ref: minted.ref,
-      text: "Entraram 120 de 400\nPróxima às 16:30",
-    };
-    const r = await post(genericRoute, body);
-    expect(r.outcome).toBe("queued");
-    expect((await post(genericRoute, body)).outcome).toBe("duplicate");
+  test.each(
+    VIOLATION_SHAPES.map(([label, shape], n) => [label, shape, n] as const),
+  )(
+    "a correlated event is queued once and dispatched as a relay to the bot's conversation, the violation %s",
+    async (_, shape, n) => {
+      const minted = await ensureConversationRef({
+        tenantId,
+        integrationInstanceId: genericId,
+        threadId: THREAD(),
+        base: appDb,
+      });
+      if (!minted.ok) throw new Error("mint");
+      const body = {
+        event_id: `ev-report-1-${n}`,
+        conversation_ref: minted.ref,
+        text: "Entraram 120 de 400\nPróxima às 16:30",
+      };
+      const r = await post(genericRoute, body, shape(appDb));
+      expect(r.outcome).toBe("queued");
+      expect((await post(genericRoute, body, shape(appDb))).outcome).toBe(
+        "duplicate",
+      );
 
-    const calls: Array<Record<string, unknown>> = [];
-    const proc = await processInboundDelivery({
-      deliveryId: r.deliveryId as bigint,
-      tenantId,
-      base: appDb,
-      deps: {
-        runNudge: async (args) => {
-          calls.push(args as unknown as Record<string, unknown>);
-          return "messaged";
+      const calls: Array<Record<string, unknown>> = [];
+      const proc = await processInboundDelivery({
+        deliveryId: r.deliveryId as bigint,
+        tenantId,
+        base: appDb,
+        deps: {
+          runNudge: async (args) => {
+            calls.push(args as unknown as Record<string, unknown>);
+            return "messaged";
+          },
         },
-      },
-    });
-    expect(proc).toBe("processed");
-    expect(calls).toHaveLength(1);
-    expect(calls[0]?.threadId).toBe(THREAD());
-    expect(calls[0]?.deliverToResolved).toBe(true);
-    expect(calls[0]?.nudge).toMatchObject({
-      source: "GENERIC",
-      kind: "agent_nudge",
-      framing: "operator_event",
-      text: "Entraram 120 de 400\nPróxima às 16:30",
-      instructions: "Mande o relatório como veio.",
-      // NOTE: Which instance spoke, so the conversation can name it.
-      integrationInstanceId: String(genericId),
-    });
-  });
+      });
+      expect(proc).toBe("processed");
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.threadId).toBe(THREAD());
+      expect(calls[0]?.deliverToResolved).toBe(true);
+      expect(calls[0]?.nudge).toMatchObject({
+        source: "GENERIC",
+        kind: "agent_nudge",
+        framing: "operator_event",
+        text: "Entraram 120 de 400\nPróxima às 16:30",
+        instructions: "Mande o relatório como veio.",
+        // NOTE: Which instance spoke, so the conversation can name it.
+        integrationInstanceId: String(genericId),
+      });
+    },
+  );
 
   // NOTE: A re-dispatch runs under a scheduler deadline, and the turn it starts has to stop when that
   // deadline fires, or it finishes beside the next attempt the sweep arms.

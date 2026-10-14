@@ -1,9 +1,10 @@
-import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
+import type { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { DEFAULT_TIMEZONE } from "@/graph/time";
 import { AppError, NotFoundError } from "@/lib/errors";
 import { withEntityLock } from "@/lib/locks";
+import { isForeignKeyViolation, isUniqueViolation } from "@/lib/pg-error";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { clipText, makeStorable } from "@/lib/text";
 import { auditMutation } from "@/modules/audit/service";
@@ -308,18 +309,12 @@ export async function createApprovalRequest(params: {
   }).catch((err: unknown) => {
     if (err instanceof KeyAnswered) throw err;
     // NOTE: a P2002 aborts the transaction it was raised in, so the winner is read in a new one.
-    if (
-      err instanceof Prisma.PrismaClientKnownRequestError &&
-      err.code === "P2002"
-    ) {
+    if (isUniqueViolation(err)) {
       return null;
     }
     // NOTE: the template deleted after it was read: the same event as "no such template", and the
     // same terminal answer issuance gives it.
-    if (
-      err instanceof Prisma.PrismaClientKnownRequestError &&
-      err.code === "P2003"
-    ) {
+    if (isForeignKeyViolation(err)) {
       throw new NotFoundError(
         "document template not found",
         "errors.documentTemplateNotFound",

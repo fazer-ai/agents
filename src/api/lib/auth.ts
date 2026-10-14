@@ -15,6 +15,7 @@ import {
   TenantSelectorRefusedError,
   UnauthorizedError,
 } from "@/lib/errors";
+import { isForeignKeyViolation } from "@/lib/pg-error";
 import { roleAtLeast, runWithinBudgetOn, type TxBudget } from "@/lib/tenancy";
 import { type Membership, resolveMembership } from "@/lib/tenancy/membership";
 import {
@@ -129,7 +130,7 @@ async function recordEnded(
     ]);
     return inserted.count > 0;
   } catch (error) {
-    if ((error as { code?: string }).code === "P2003") return true;
+    if (isForeignKeyViolation(error)) return true;
     logger.warn({ error }, "Ending the session failed; treating as transient");
     throw new ServiceUnavailableError();
   }

@@ -3,6 +3,7 @@ import { decryptJson, encryptJson } from "@/api/lib/crypto";
 import basePrisma from "@/api/lib/prisma";
 import { MAX_DB_ID, parseDbId } from "@/lib/db-id";
 import { AppError, ConflictError, NotFoundError } from "@/lib/errors";
+import { isUniqueViolation } from "@/lib/pg-error";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { SETTINGS_CREDENTIAL_PATHS } from "@/modules/agents/credential-paths";
 import {
@@ -1116,7 +1117,7 @@ export async function createVaultEntry(
       });
       return { id: created.id, ref: formatVaultRef(created.id) };
     } catch (e) {
-      if ((e as { code?: string }).code === "P2002") {
+      if (isUniqueViolation(e)) {
         throw new ConflictError(
           "vault entry name and type already in use",
           "errors.vaultNameInUse",
@@ -1375,7 +1376,7 @@ export async function updateVaultEntry(
     try {
       await db.vaultEntry.update({ where: { id: entry.id }, data });
     } catch (e) {
-      if ((e as { code?: string }).code === "P2002") {
+      if (isUniqueViolation(e)) {
         throw new ConflictError(
           "vault entry name and type already in use",
           "errors.vaultNameInUse",

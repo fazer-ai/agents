@@ -24,7 +24,7 @@ interface Props {
   guardableTools: GuardableTool[];
   // Every name the turn may build, wider than what is offered (assembledToolNames). A saved row
   // outside it is the one flagged, since its rule guards nothing.
-  assembledTools: ReadonlySet<string>;
+  assembledTools: { has(name: string): boolean };
   // Questions and rules: a refused tool is a rule's action that does not run, and no model is told.
   decides?: boolean;
 }

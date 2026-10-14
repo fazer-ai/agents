@@ -48,25 +48,3 @@ export function ambiguousMcpNames(
   }
   return out;
 }
-
-// The exposed name the assembly gives a tool: its base, or the first `_<n>` not yet in `used`.
-// Pure, so the console can replay the assembly (src/client/pages/agents/guardableTools.ts).
-export function namespacedToolName(
-  slug: string,
-  toolName: string,
-  used: Set<string>,
-): string {
-  const name = mcpRuntimeBase(slug, toolName);
-  if (!used.has(name)) {
-    used.add(name);
-    return name;
-  }
-  for (let i = 2; ; i++) {
-    const suffix = `_${i}`;
-    const cand = name.slice(0, MCP_TOOL_NAME_MAX - suffix.length) + suffix;
-    if (!used.has(cand)) {
-      used.add(cand);
-      return cand;
-    }
-  }
-}

@@ -268,82 +268,30 @@ describe("assembledToolNames", () => {
     expect(built.has(`mcp____${"a".repeat(57)}`)).toBe(true);
   });
 
-  // Suffixes exist only where two tools reach one name, so a large server costs one name per tool.
-  test("a suffix is counted only while that many tools reach the name", () => {
-    const three = catalog({
-      mcpConnections: [
-        { id: "5", name: "CRM", enabled: true, slug: "crm" },
-        { id: "6", name: "CRM!", enabled: true, slug: "crm" },
-        { id: "7", name: "CRM?", enabled: true, slug: "crm" },
-      ],
-    });
-    // The third connection's grant is gone, so its `_3` is not built any more.
-    const built = assembledToolNames(three, mcpGrants, {});
-    expect(built.has("mcp__crm__create_deal_2")).toBe(true);
-    expect(built.has("mcp__crm__create_deal_3")).toBe(false);
-  });
-
-  // A real tool already named `foo_2` takes that name, so the second `foo` gets `_3`.
-  test("a suffix already taken by a real tool moves the collision on", () => {
-    const c = catalog({
-      mcpConnections: [
-        { id: "5", name: "CRM", enabled: true, slug: "crm" },
-        { id: "6", name: "CRM!", enabled: true, slug: "crm" },
-      ],
-    });
+  // No two tools reach one name, so the names are exact and a rule on a revoked tool is flagged.
+  test("without a collision, an MCP name the agent no longer builds is not built", () => {
     const built = assembledToolNames(
-      c,
+      catalog({
+        mcpConnections: [{ id: "5", name: "CRM", enabled: true, slug: "crm" }],
+      }),
       [
         grant({
           source: "MCP",
           mcpServerConnectionId: "5",
-          enabledTools: ["foo", "foo_2"],
-        }),
-        grant({
-          source: "MCP",
-          mcpServerConnectionId: "6",
-          enabledTools: ["foo"],
+          enabledTools: ["create_deal"],
         }),
       ],
       {},
     );
-    expect([...built].filter((n) => n.startsWith("mcp__")).sort()).toEqual([
-      "mcp__crm__foo",
-      "mcp__crm__foo_2",
-      "mcp__crm__foo_3",
-    ]);
+    expect(built.has("mcp__crm__create_deal")).toBe(true);
+    expect(built.has("mcp__crm__delete_deal")).toBe(false);
   });
 
-  // The assembly reads connections by name. Here the order changes the result: A first gives B's
-  // `foo` the `_2` and pushes B's real `foo_2` to `foo_2_2`; B first would end on `foo_3` instead.
-  test("connections are replayed in name order, not grant order", () => {
-    const c = catalog({
-      mcpConnections: [
-        { id: "5", name: "B", enabled: true, slug: "crm" },
-        { id: "6", name: "A", enabled: true, slug: "crm" },
-      ],
-    });
-    const built = assembledToolNames(
-      c,
-      [
-        grant({
-          source: "MCP",
-          mcpServerConnectionId: "5",
-          enabledTools: ["foo", "foo_2"],
-        }),
-        grant({
-          source: "MCP",
-          mcpServerConnectionId: "6",
-          enabledTools: ["foo"],
-        }),
-      ],
-      {},
-    );
-    expect([...built].filter((n) => n.startsWith("mcp__")).sort()).toEqual([
-      "mcp__crm__foo",
-      "mcp__crm__foo_2",
-      "mcp__crm__foo_2_2",
-    ]);
+  // The suffixes follow the server's listing order, which the console does not have.
+  test("with a collision, any MCP name may be built, and other names are still checked", () => {
+    const built = assembledToolNames(twoCrms, mcpGrants, {});
+    expect(built.has("mcp__crm__create_deal_7")).toBe(true);
+    expect(built.has("busca_antiga")).toBe(false);
   });
 
   test("a tool listed twice in one grant is one tool", () => {

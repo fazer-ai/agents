@@ -1,5 +1,5 @@
 import { NATIVE_TOOL_NAMES, REPLY_AS_TEXT_TOOL } from "@/graph/tools/catalog";
-import { namespacedToolName } from "@/graph/tools/mcp-names";
+import { mcpRuntimeBase } from "@/graph/tools/mcp-names";
 import { isGuardableToolName } from "@/modules/agents/tool-preconditions";
 import { DECISION_ACTION_TOOLS } from "@/modules/decisions/config";
 import { customToolsOf } from "./decisionsFormState";
@@ -105,15 +105,19 @@ export function guardableToolsOf(
   });
 }
 
-// The names the turn may build, which is wider than what the select offers: an MCP name that may
-// belong to another server, or that the assembly trims past 64 characters, is not offered (a new rule
-// on it could guard the wrong tool) but a saved rule on it still matches something. The warning on a
-// saved row asks this question, so it never calls a working guard inert.
+// Whether a saved rule's name is one the turn may build, which is wider than what the select offers.
+// MCP names are exact while no two granted tools reach one name. Where two do, the assembly suffixes
+// the later ones in the server's listing order, which this screen does not have, so any MCP name is
+// then taken as possibly built: a missed warning there is better than calling a working guard inert.
+export interface BuiltTools {
+  has(name: string): boolean;
+}
+
 export function assembledToolNames(
   catalog: ToolCatalog,
   grants: readonly GrantState[],
   opts: { observing?: boolean; decides?: boolean },
-): Set<string> {
+): BuiltTools {
   const names = new Set(
     guardableToolsOf(catalog, grants, opts).map((t) => t.name),
   );
@@ -123,30 +127,22 @@ export function assembledToolNames(
   const listed = new Set(catalog.native.map((n) => n.name));
   for (const n of NATIVE_TOOL_NAMES) if (!listed.has(n)) names.add(n);
   names.add(REPLY_AS_TEXT_TOOL);
-  // The MCP names, by replaying the assembly's own allocation (`namespacedToolName`) in its order:
-  // connections by name, compared by code unit. Within one connection the assembly follows the
-  // server's listing, which this screen does not have; the grant's order stands in for it.
-  const mcp = grants
-    .filter((g) => g.source === "MCP")
-    .map((g) => ({
-      g,
-      conn: catalog.mcpConnections.find(
-        (c) => c.id === g.mcpServerConnectionId,
-      ),
-    }))
-    .filter(({ conn }) => conn !== undefined && conn.enabled !== false)
-    .sort((x, y) => {
-      const a = x.conn?.name ?? "";
-      const b = y.conn?.name ?? "";
-      return a < b ? -1 : a > b ? 1 : 0;
-    });
-  const used = new Set<string>();
-  for (const { g, conn } of mcp) {
-    if (!conn) continue;
+  const bases = new Map<string, number>();
+  for (const g of grants) {
+    if (g.source !== "MCP") continue;
+    const conn = catalog.mcpConnections.find(
+      (c) => c.id === g.mcpServerConnectionId,
+    );
+    if (!conn || conn.enabled === false) continue;
     // NOTE: a tool listed twice in one grant is exposed once.
-    for (const tool of new Set(g.enabledTools ?? []))
-      namespacedToolName(conn.slug, tool, used);
+    for (const tool of new Set(g.enabledTools ?? [])) {
+      const base = mcpRuntimeBase(conn.slug, tool);
+      bases.set(base, (bases.get(base) ?? 0) + 1);
+    }
   }
-  for (const n of used) names.add(n);
-  return names;
+  for (const base of bases.keys()) names.add(base);
+  const collides = [...bases.values()].some((n) => n > 1);
+  return {
+    has: (name) => names.has(name) || (collides && name.startsWith("mcp__")),
+  };
 }

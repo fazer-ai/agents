@@ -17,7 +17,11 @@ import logger from "@/api/lib/logger";
 import config from "@/config";
 import { normalizeTupleItems } from "@/graph/gemini-tools";
 import { fenceReporterOf } from "@/graph/tools/fence-report";
-import { ambiguousMcpNames, namespacedToolName } from "@/graph/tools/mcp-names";
+import {
+  ambiguousMcpNames,
+  MCP_TOOL_NAME_MAX,
+  mcpRuntimeBase,
+} from "@/graph/tools/mcp-names";
 import { declarationSchema } from "@/graph/tools/mcp-schema";
 import {
   hasSafeStdioCommandChars,
@@ -187,13 +191,31 @@ export function mcpServerSlug(name: string): string {
   );
 }
 
-// `mcp__<slug>__<tool>`, unique within `used`, ≤64 chars (./mcp-names.ts, where the console reads it
-// too): the slug is trimmed first, and a numeric suffix breaks any residual collision, deterministic
-// given selection order.
-export { namespacedToolName };
-
+// `mcp__<slug>__<tool>`, sanitized, unique within `used`, ≤64 chars. To stay under the limit the slug
+// is trimmed first (the bare tool name is the informative part); a numeric suffix breaks any residual
+// collision (deterministic given selection order).
 // Stamped on an exposed tool whose name may be another server's (ambiguousMcpNames).
 export const AMBIGUOUS_MCP_NAME = Symbol("ambiguousMcpName");
+
+export function namespacedToolName(
+  slug: string,
+  toolName: string,
+  used: Set<string>,
+): string {
+  const name = mcpRuntimeBase(slug, toolName);
+  if (!used.has(name)) {
+    used.add(name);
+    return name;
+  }
+  for (let i = 2; ; i++) {
+    const suffix = `_${i}`;
+    const cand = name.slice(0, MCP_TOOL_NAME_MAX - suffix.length) + suffix;
+    if (!used.has(cand)) {
+      used.add(cand);
+      return cand;
+    }
+  }
+}
 
 // Per-tool metadata stamped on every exposed MCP tool, so the prompt builder can group the tools back
 // by server and surface its context (label + native `instructions`) — see buildMcpContextSection.

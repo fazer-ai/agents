@@ -5,6 +5,7 @@ import type { TenantContext } from "@/lib/tenancy";
 import * as behaviorSettings from "@/modules/agents/behavior-settings";
 import { dropUnusableImportedSettingsInPlace } from "@/modules/agents/service";
 import { exportAgent, importAgent } from "@/modules/agents/transfer";
+import { parseFollowUpStep } from "@/modules/followups/settings";
 import { dbProbeFailed } from "@/tests/db-gate";
 
 // WHAT CREATE REFUSES, AN IMPORT NORMALIZES AND NAMES.
@@ -83,8 +84,65 @@ async function importWith(
 // paddings taken out when a padding the reader does not honour spoiled the batch: three reads at most
 // for a block judged in one pass.
 const ONE_PASS_READS = 3;
+const SEARCH_WORK_LIMIT = 5_000_000;
 
 class ReadsExceeded extends Error {}
+
+// The work `act` does over `items`: each read of an element of the list it is handed, plus the
+// length of every list a search method walks while it runs (a scan of what was already kept is one of
+// those). Stopped at the first unit past `limit`, so a quadratic reader fails at once by assertion.
+const SEARCHES = [
+  "includes",
+  "indexOf",
+  "lastIndexOf",
+  "some",
+  "every",
+  "find",
+  "findIndex",
+  "findLast",
+  "findLastIndex",
+] as const;
+
+// Spies every array search method, charging the length of the list each call walks to `spend`.
+function spySearches(spend: (units: number) => void) {
+  return SEARCHES.map((name) => {
+    const original = Array.prototype[name] as (...a: unknown[]) => unknown;
+    return spyOn(Array.prototype, name).mockImplementation(function (
+      this: unknown[],
+      ...args: unknown[]
+    ) {
+      spend(this.length);
+      return original.apply(this, args);
+    } as never);
+  });
+}
+
+function workOf(
+  items: unknown[],
+  limit: number,
+  act: (input: unknown[]) => unknown,
+): number {
+  let work = 0;
+  const spend = (units: number) => {
+    work += units;
+    if (work > limit) throw new ReadsExceeded();
+  };
+  const input = new Proxy(items, {
+    get(target, key, receiver) {
+      if (typeof key === "string" && /^\d+$/.test(key)) spend(1);
+      return Reflect.get(target, key, receiver);
+    },
+  });
+  const spies = spySearches(spend);
+  try {
+    act(input);
+  } catch (err) {
+    if (!(err instanceof ReadsExceeded)) throw err;
+  } finally {
+    for (const spy of spies) spy.mockRestore();
+  }
+  return work;
+}
 
 // How many times `act` reads a block, stopping it at the first read past `limit`: a pass that has gone
 // back to a budget of reads, or one read per value, would otherwise run its thousands of whole-block
@@ -95,6 +153,13 @@ async function readsOf(
 ): Promise<number> {
   const read = behaviorSettings.readBehaviorSettings;
   let n = 0;
+  // A search that walks a long list once per element is cost inside one read: charged here too, far
+  // above any single pass and far below a scan per element of a block this size.
+  let searched = 0;
+  const searches = spySearches((units) => {
+    searched += units;
+    if (searched > SEARCH_WORK_LIMIT) throw new ReadsExceeded();
+  });
   const spy = spyOn(
     behaviorSettings,
     "readBehaviorSettings",
@@ -109,7 +174,9 @@ async function readsOf(
     if (!(err instanceof ReadsExceeded)) throw err;
   } finally {
     spy.mockRestore();
+    for (const search of searches) search.mockRestore();
   }
+  expect(searched).toBeLessThanOrEqual(SEARCH_WORK_LIMIT);
   return n;
 }
 
@@ -213,27 +280,28 @@ describe("the reader comparisons a bag can cost", () => {
   });
 
   // The reader this pass compares with is the one every TURN runs, so its label de-dupe must be one
-  // pass: a scan per label makes a single comparison overrun the import's transaction.
-  test("a step with a hundred thousand labels is read in one pass, not one scan per label", () => {
-    const bag = {
+  // pass: a scan per label makes a single comparison overrun the import's transaction. That cost is
+  // inside one read, where a read count cannot see it, so the reader's own work is counted: the
+  // reads of its input, and the length of every list a search walks.
+  test("a step with a hundred thousand labels is read in one pass, not one scan per label", async () => {
+    const n = 100_000;
+    const labels = Array.from({ length: n }, (_, i) => `l${i}`);
+    expect(
+      workOf(labels, 10 * n, (input) =>
+        parseFollowUpStep({
+          delayValue: 1,
+          delayUnit: "minutes",
+          assignLabels: input,
+        }),
+      ),
+    ).toBeLessThanOrEqual(10 * n);
+    // And the pass over the same step answers what it did.
+    const dropped = dropUnusableImportedSettingsInPlace({
       followUp: {
         enabled: "sim",
-        steps: [
-          {
-            delayValue: 1,
-            delayUnit: "minutes",
-            assignLabels: Array.from({ length: 100_000 }, (_, i) => `l${i}`),
-          },
-        ],
+        steps: [{ delayValue: 1, delayUnit: "minutes", assignLabels: labels }],
       },
-    };
-    // A scan per label is cost INSIDE one read, so reads cannot see it. Process CPU time can, and
-    // unlike wall time it does not grow with what else the machine runs: the single pass costs tens
-    // of ms here, a scan per label over a hundred thousand of them over ten seconds.
-    const cpu = process.cpuUsage();
-    const dropped = dropUnusableImportedSettingsInPlace(bag);
-    const spent = process.cpuUsage(cpu);
-    expect((spent.user + spent.system) / 1000).toBeLessThan(2_000);
+    });
     expect(dropped.paths).toEqual(["followUp.enabled"]);
   });
 

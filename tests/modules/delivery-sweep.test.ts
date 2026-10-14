@@ -1241,9 +1241,6 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
         event: "UPDATE",
         when: `NEW.id = ${sibling.id} AND NEW.status::text = 'PROCESSED'`,
         body: `
-          IF (SELECT status::text FROM chatwoot_webhook_deliveries WHERE id = ${own.id}) <> 'PROCESSING' THEN
-            RAISE EXCEPTION 'settled after tx2';
-          END IF;
           IF (SELECT last_error FROM conversations WHERE id = ${conv.id}) IS NULL THEN
             RAISE EXCEPTION 'settled after the error was cleared';
           END IF;

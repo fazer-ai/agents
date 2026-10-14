@@ -1,5 +1,5 @@
 import { NATIVE_TOOL_NAMES, REPLY_AS_TEXT_TOOL } from "@/graph/tools/catalog";
-import { ambiguousMcpNames, mcpRuntimeBase } from "@/graph/tools/mcp-names";
+import { mcpRuntimeBase } from "@/graph/tools/mcp-names";
 import { isGuardableToolName } from "@/modules/agents/tool-preconditions";
 import { DECISION_ACTION_TOOLS } from "@/modules/decisions/config";
 import { customToolsOf } from "./decisionsFormState";
@@ -123,19 +123,25 @@ export function assembledToolNames(
   const listed = new Set(catalog.native.map((n) => n.name));
   for (const n of NATIVE_TOOL_NAMES) if (!listed.has(n)) names.add(n);
   names.add(REPLY_AS_TEXT_TOOL);
-  // Each granted MCP tool's own name, plus the suffixes the assembly may give a name two tools reach
-  // (`ambiguousMcpNames`, the same set the decisions editor holds back), and only those.
-  const servers: { slug: string; tools: string[] }[] = [];
+  // Each granted MCP tool's own name, and where n tools reach one name, the `_2` to `_n` the
+  // assembly gives the later ones: the suffixes it can reach, not every one it might in theory.
+  const byBase = new Map<string, number>();
   for (const g of grants) {
     if (g.source !== "MCP") continue;
     const conn = catalog.mcpConnections.find(
       (c) => c.id === g.mcpServerConnectionId,
     );
     if (!conn || conn.enabled === false) continue;
-    const tools = g.enabledTools ?? [];
-    servers.push({ slug: conn.slug, tools });
-    for (const tool of tools) names.add(mcpRuntimeBase(conn.slug, tool));
+    // NOTE: a tool listed twice in one grant is exposed once.
+    for (const tool of new Set(g.enabledTools ?? [])) {
+      const base = mcpRuntimeBase(conn.slug, tool);
+      byBase.set(base, (byBase.get(base) ?? 0) + 1);
+    }
   }
-  for (const n of ambiguousMcpNames(servers)) names.add(n);
+  for (const [base, count] of byBase) {
+    names.add(base);
+    for (let i = 2; i <= count; i++)
+      names.add(base.slice(0, 64 - `_${i}`.length) + `_${i}`);
+  }
   return names;
 }

@@ -269,6 +269,20 @@ describe("assembledToolNames", () => {
   });
 
   // Suffixes exist only where two tools reach one name, so a large server costs one name per tool.
+  test("a suffix is counted only while that many tools reach the name", () => {
+    const three = catalog({
+      mcpConnections: [
+        { id: "5", name: "CRM", enabled: true, slug: "crm" },
+        { id: "6", name: "CRM!", enabled: true, slug: "crm" },
+        { id: "7", name: "CRM?", enabled: true, slug: "crm" },
+      ],
+    });
+    // The third connection's grant is gone, so its `_3` is not built any more.
+    const built = assembledToolNames(three, mcpGrants, {});
+    expect(built.has("mcp__crm__create_deal_2")).toBe(true);
+    expect(built.has("mcp__crm__create_deal_3")).toBe(false);
+  });
+
   test("a name no other tool reaches gets no suffixes", () => {
     const built = assembledToolNames(
       catalog({

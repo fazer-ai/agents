@@ -251,6 +251,8 @@ describe("invalidToolPreconditions", () => {
         "calendar_check_availability",
         "busca_por_cpf_cnpj",
         "calcula-frete",
+        // The custom-tool normalizer trims a leading `_` but keeps a leading `-`.
+        "-frete",
         "mcp__crm__create_deal",
       ];
       const bag: Record<string, unknown> = {};

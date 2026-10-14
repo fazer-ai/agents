@@ -22,6 +22,9 @@ interface Props {
   // Every tool this agent is granted, from any source. A precondition on a tool the agent was not
   // granted is inert, so it is not offered.
   guardableTools: GuardableTool[];
+  // Every name the turn may build, wider than what is offered (assembledToolNames). A saved row
+  // outside it is the one flagged, since its rule guards nothing.
+  assembledTools: ReadonlySet<string>;
   // Questions and rules: a refused tool is a rule's action that does not run, and no model is told.
   decides?: boolean;
 }
@@ -30,6 +33,7 @@ export function ToolPreconditionsEditor({
   rows,
   onChange,
   guardableTools,
+  assembledTools,
   decides = false,
 }: Props) {
   const { t } = useTranslation();
@@ -148,7 +152,7 @@ export function ToolPreconditionsEditor({
               >
                 <Trash2 className="h-4 w-4" aria-hidden />
               </Button>
-              {row.tool && !byName.has(row.tool) && (
+              {row.tool && !assembledTools.has(row.tool) && (
                 <p className="flex w-full items-center gap-1.5 text-warning text-xs">
                   <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden />
                   {t(

@@ -136,8 +136,9 @@ export function unmetPreconditionMessage(
 // the model calls, so a rule on a name the agent does not have, or no longer has after a rename or a
 // revoked grant, guards nothing; that is reported where it is seen (the editor flags the row, the
 // turn writes a warn line) rather than refused here, where an MCP server's tools may not even be
-// listable. A name no source can produce (a space, a leading underscore, `__proto__`) is refused.
-export const GUARDABLE_TOOL_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+// listable. A name no source can produce (a space, a leading underscore, `__proto__`) is refused; a
+// leading `-` is allowed, since the custom-tool normalizer keeps one.
+export const GUARDABLE_TOOL_NAME = /^(?!_)[A-Za-z0-9_-]{1,64}$/;
 
 export function isGuardableToolName(name: unknown): name is string {
   return typeof name === "string" && GUARDABLE_TOOL_NAME.test(name);

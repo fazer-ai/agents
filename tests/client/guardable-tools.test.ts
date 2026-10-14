@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { guardableToolsOf } from "@/client/pages/agents/guardableTools";
+import {
+  assembledToolNames,
+  guardableToolsOf,
+} from "@/client/pages/agents/guardableTools";
 import type { GrantState, ToolCatalog } from "@/client/pages/agents/types";
 
 // What the precondition select offers: the tools the agent is granted, by the name the model calls
@@ -180,5 +183,105 @@ describe("guardableToolsOf", () => {
     expect(
       offered.filter((n) => n === "calendar_check_availability"),
     ).toHaveLength(1);
+  });
+
+  test("knowledge and document tools are offered, a document only when the turn would build it", () => {
+    const c = catalog({
+      documentTemplates: [
+        {
+          id: "3",
+          name: "Proposta",
+          toolName: "send_proposta",
+          description: null,
+          enabled: true,
+          available: true,
+        },
+        {
+          id: "4",
+          name: "Recibo antigo",
+          toolName: "send_recibo",
+          description: null,
+          enabled: true,
+          available: false,
+        },
+      ],
+    });
+    const offered = names(c, [
+      grant({ source: "NATIVE", enabledTools: [] }),
+      grant({
+        source: "RAG",
+        enabledTools: ["search_knowledge"],
+        knowledgeBaseIds: ["1"],
+      }),
+      grant({ source: "DOCUMENT", documentTemplateId: "3" }),
+      grant({ source: "DOCUMENT", documentTemplateId: "4" }),
+    ]);
+    expect(offered).toEqual(["search_knowledge", "send_proposta"]);
+  });
+});
+
+// The warning on a saved rule asks what the turn builds, not what the select offers.
+describe("assembledToolNames", () => {
+  const twoCrms = catalog({
+    mcpConnections: [
+      { id: "5", name: "CRM", enabled: true, slug: "crm" },
+      { id: "6", name: "CRM!", enabled: true, slug: "crm" },
+    ],
+  });
+  const mcpGrants = [
+    grant({ source: "NATIVE", enabledTools: [] }),
+    grant({
+      source: "MCP",
+      mcpServerConnectionId: "5",
+      enabledTools: ["create_deal"],
+    }),
+    grant({
+      source: "MCP",
+      mcpServerConnectionId: "6",
+      enabledTools: ["create_deal"],
+    }),
+  ];
+
+  test("an MCP name two servers may share is not offered, and still counts as built", () => {
+    expect(names(twoCrms, mcpGrants)).not.toContain("mcp__crm__create_deal");
+    const built = assembledToolNames(twoCrms, mcpGrants, {});
+    expect(built.has("mcp__crm__create_deal")).toBe(true);
+    expect(built.has("mcp__crm__create_deal_2")).toBe(true);
+  });
+
+  test("an MCP name the assembly trims past 64 characters counts as built", () => {
+    const tool = "a".repeat(60);
+    const built = assembledToolNames(
+      catalog({
+        mcpConnections: [{ id: "5", name: "CRM", enabled: true, slug: "crm" }],
+      }),
+      [
+        grant({
+          source: "MCP",
+          mcpServerConnectionId: "5",
+          enabledTools: [tool],
+        }),
+      ],
+      {},
+    );
+    // No room is left for the slug, and the tool name itself is cut to fit.
+    expect(built.has(`mcp____${"a".repeat(57)}`)).toBe(true);
+  });
+
+  test("a disabled connection builds nothing", () => {
+    const built = assembledToolNames(
+      catalog({
+        mcpConnections: [{ id: "5", name: "CRM", enabled: false, slug: "crm" }],
+      }),
+      [
+        grant({
+          source: "MCP",
+          mcpServerConnectionId: "5",
+          enabledTools: ["create_deal"],
+        }),
+      ],
+      {},
+    );
+    expect(built.has("mcp__crm__create_deal")).toBe(false);
   });
 });

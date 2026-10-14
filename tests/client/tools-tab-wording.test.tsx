@@ -23,6 +23,7 @@ describe("the Tools tab's wording", () => {
         rows={[]}
         onChange={() => {}}
         guardableTools={[]}
+        assembledTools={new Set()}
         decides
       />,
     );
@@ -35,6 +36,7 @@ describe("the Tools tab's wording", () => {
         rows={[]}
         onChange={() => {}}
         guardableTools={[]}
+        assembledTools={new Set()}
       />,
     );
     expect(screen.queryAllByText(/is told why/).length).toBeGreaterThan(0);

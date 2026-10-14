@@ -1,3 +1,4 @@
+import { mcpRuntimeBase } from "@/graph/tools/mcp-names";
 import { DECISION_ACTION_TOOLS } from "@/modules/decisions/config";
 import { customToolsOf } from "./decisionsFormState";
 import { offeredPackTools } from "./ToolGrantsEditor";
@@ -9,7 +10,7 @@ export interface GuardableTool {
   // What the operator recognizes: the native's own label is resolved by the editor, so it is absent
   // here; a custom tool carries its label, an MCP or toolpack tool its server or integration name.
   label: string | null;
-  kind: "native" | "http" | "code" | "mcp" | "toolpack";
+  kind: "native" | "http" | "code" | "mcp" | "toolpack" | "rag" | "document";
 }
 
 // Every tool this agent is granted, from every source, as the assembly would name it. A rule on a tool
@@ -51,6 +52,20 @@ export function guardableToolsOf(
 
   if (!opts.decides) {
     for (const g of grants) {
+      // A RAG row with no tool enabled builds nothing (the assembly skips it).
+      if (g.source === "RAG") {
+        for (const name of g.enabledTools ?? [])
+          out.push({ name, label: null, kind: "rag" });
+        continue;
+      }
+      if (g.source === "DOCUMENT") {
+        const tpl = catalog.documentTemplates.find(
+          (d) => d.id === g.documentTemplateId,
+        );
+        if (tpl?.enabled && tpl.available)
+          out.push({ name: tpl.toolName, label: tpl.name, kind: "document" });
+        continue;
+      }
       if (g.source !== "INTEGRATION") continue;
       const inst = catalog.integrationInstances.find(
         (i) => i.id === g.integrationInstanceId,
@@ -75,4 +90,33 @@ export function guardableToolsOf(
     seen.add(t.name);
     return true;
   });
+}
+
+// The names the turn may build, which is wider than what the select offers: an MCP name that may
+// belong to another server, or that the assembly trims past 64 characters, is not offered (a new rule
+// on it could guard the wrong tool) but a saved rule on it still matches something. The warning on a
+// saved row asks this question, so it never calls a working guard inert.
+export function assembledToolNames(
+  catalog: ToolCatalog,
+  grants: readonly GrantState[],
+  opts: { observing?: boolean; decides?: boolean },
+): Set<string> {
+  const names = new Set(
+    guardableToolsOf(catalog, grants, opts).map((t) => t.name),
+  );
+  for (const g of grants) {
+    if (g.source !== "MCP") continue;
+    const conn = catalog.mcpConnections.find(
+      (c) => c.id === g.mcpServerConnectionId,
+    );
+    if (!conn || conn.enabled === false) continue;
+    for (const tool of g.enabledTools ?? []) {
+      const base = mcpRuntimeBase(conn.slug, tool);
+      names.add(base);
+      // NOTE: a collision suffix the assembly may add (`_2`, `_3`, ...), bounded by the grant count.
+      for (let i = 2; i <= grants.length + 1; i++)
+        names.add(base.slice(0, 64 - `_${i}`.length) + `_${i}`);
+    }
+  }
+  return names;
 }

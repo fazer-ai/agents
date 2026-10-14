@@ -10,7 +10,7 @@ import {
 import { useTranslation } from "react-i18next";
 import type { DiscoveredMcpTool } from "@/client/components/mcp/DiscoveredMcpTools";
 import type { CrossInboxCaseState } from "./CrossInboxCaseFields";
-import { guardableToolsOf } from "./guardableTools";
+import { assembledToolNames, guardableToolsOf } from "./guardableTools";
 import type { ResolveConversationState } from "./ResolveConversationFields";
 import { SectionNav } from "./SectionNav";
 import type { SendImageState } from "./SendImageFields";
@@ -150,6 +150,10 @@ export function ToolsTab({
     observing,
     decides,
   });
+  const assembledTools = assembledToolNames(catalog, grants, {
+    observing,
+    decides,
+  });
 
   // Section index for the Tools tab: mirrors the section ids set on ToolGrantsEditor's
   // blocks + the capability map below.
@@ -260,6 +264,7 @@ export function ToolsTab({
             rows={toolPreconditions}
             onChange={setToolPreconditions}
             guardableTools={guardableTools}
+            assembledTools={assembledTools}
             decides={decides}
           />
         </div>

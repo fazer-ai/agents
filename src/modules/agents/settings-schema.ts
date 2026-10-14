@@ -914,7 +914,7 @@ const guardableToolKeys = <T extends z.ZodTypeAny>(value: T) =>
           input: ctx.value,
           path: [name],
           message:
-            "must be a tool name: letters, digits, `_` or `-`, up to 64, starting with a letter or digit",
+            "must be a tool name: letters, digits, `_` or `-`, up to 64, not starting with `_`",
         });
       }
     });

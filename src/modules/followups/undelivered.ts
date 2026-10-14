@@ -32,8 +32,9 @@ export type LastReplyDelivery =
       state: "undelivered";
       messageId: number;
       code: string | null;
-      // The customer message the reply was answering, when the pages read reach it.
-      answeredId: number | null;
+      // The newest message the read assessed, which pins the hand-over: the newest incoming one
+      // read, or the reply's own first message when none was read.
+      assessedThrough: number;
     };
 
 // How long after the resend's own instant the follow-up asks again: the send and the webhook that
@@ -211,13 +212,14 @@ export async function lastReplyDelivery(params: {
   // The newest incoming message read, not only the one answered: any after the reply was
   // already assessed above (a blank one, a reaction no turn runs for), and the hand-over's fence
   // compares against the mirror's newest inbound, which counts them.
-  const answered = read
+  // Without one, the reply's start: a page behind the mirror says nothing about what came after.
+  const assessed = read
     .filter((m) => m.messageType === "incoming" && !m.private)
-    .reduce<number | null>((a, m) => (a === null || m.id > a ? m.id : a), null);
+    .reduce<number>((a, m) => (m.id > a ? m.id : a), 0);
   return {
     state: "undelivered",
     messageId: lost.id,
     code: lost.externalError ? channelErrorCode(lost.externalError) : null,
-    answeredId: answered,
+    assessedThrough: assessed > 0 ? assessed : start,
   };
 }

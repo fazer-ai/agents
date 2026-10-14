@@ -857,15 +857,19 @@ export async function followUpHandler(
           ctx.conv.lastProactiveAt,
         )
       : lastFollowUpAt;
-  if (anchor && !retryingHandover) {
+  const notDueYet = (): JobResult | null => {
+    if (!anchor) return null;
     const dueAt = anchor.getTime() + stepDelayMinutes(step) * 60_000;
-    if (Date.now() < dueAt) {
-      return {
-        outcome: "reschedule",
-        runAt: new Date(dueAt),
-        payload: { ...job.payload, deferredUnder: ctx.configVersion },
-      };
-    }
+    if (Date.now() >= dueAt) return null;
+    return {
+      outcome: "reschedule",
+      runAt: new Date(dueAt),
+      payload: { ...job.payload, deferredUnder: ctx.configVersion },
+    };
+  };
+  if (!retryingHandover) {
+    const wait = notDueYet();
+    if (wait) return wait;
   }
 
   // Stamps `lastFollowUpAt` (the column /reset clears) unless the job was retired, returning
@@ -1051,7 +1055,7 @@ export async function followUpHandler(
       },
       // NOTE: pinned to the customer message the reply answered: a newer one mirrored meanwhile is a
       // turn still owed, and the hand-over stands down for it.
-      aboutMessageId: lost.answeredId,
+      aboutMessageId: lost.assessedThrough,
       error: new Error(
         `the channel refused the agent's last reply (code ${lost.code ?? "unknown"}) and it was not resent`,
       ),
@@ -1087,6 +1091,11 @@ export async function followUpHandler(
         handoverRetry: true,
       },
     };
+  }
+  // NOTE: a retry that found the reply answered after all is a nudge again, and waits like one.
+  if (retryingHandover) {
+    const wait = notDueYet();
+    if (wait) return wait;
   }
 
   const idleMin = lastEventAt

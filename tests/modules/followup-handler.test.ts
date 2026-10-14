@@ -1647,6 +1647,41 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     expect(s.resolved).toEqual([1739]);
   });
 
+  // The read found no incoming message, while the mirror already has a newer one: the hand-over is
+  // pinned to the reply itself, so that message keeps its turn.
+  test("a hand-over with no inbound read yields to one the mirror has", async () => {
+    await seedConversation(1741, due());
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: 1741 },
+      data: { lastInboundMessageId: 17415 },
+    });
+    const s = stubClient({ page: [replyRow(17411, { refused: true })] });
+    await run(1741, s);
+    expect(s.resolved).toEqual([]);
+    expect(await lastFollowUpOf(1741)).toBeNull();
+  });
+
+  // A retry that finds the reply answered after all is a nudge again, and waits out the delay.
+  test("a hand-over retry that finds the reply delivered waits like a nudge", async () => {
+    await seedConversation(1742, { ...due(), lastEventAt: new Date() });
+    const s = stubClient({ page: [replyRow(17421)] });
+    const out = await followUpHandler(
+      {
+        ...jobFor(1742),
+        payload: { ...jobFor(1742).payload, handoverRetry: true },
+      },
+      appDb,
+      {
+        makeModel: fakeModel,
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    );
+    expect(out).toMatchObject({ outcome: "reschedule" });
+    expect(s.sent).toEqual([]);
+  });
+
   test("a page that does not read holds the step instead of nudging", async () => {
     await seedConversation(1704, due());
     const s = stubClient();

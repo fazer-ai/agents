@@ -10,10 +10,13 @@ import { usePlaygroundChat } from "@/client/pages/agents/usePlaygroundChat";
 
 const realFetch = globalThis.fetch;
 let threadsHang = false;
+let transcribeFails = false;
 // The transcription and the file extraction never answer, nor does opening a thread while
 // `threadsHang` is set, so the test can look at the hook while it is in flight.
 globalThis.fetch = (async (input: RequestInfo | URL) => {
   const url = String(input instanceof Request ? input.url : input);
+  if (transcribeFails && url.includes("/audio/transcribe"))
+    return new Response(JSON.stringify({ error: "boom" }), { status: 500 });
   if (
     url.includes("/audio/transcribe") ||
     url.includes("/file/extract") ||
@@ -130,4 +133,48 @@ test("a message sent but not yet posted holds the reload", async () => {
   });
   threadsHang = false;
   expect([hook.result.current.input, hasUnsavedChanges()]).toEqual(["", true]);
+});
+
+test("a stopped recording holds the reload until the browser hands it over", async () => {
+  // Browsers deliver `stop` on a later task, not inside stop().
+  const syncStop = FakeRecorder.prototype.stop;
+  FakeRecorder.prototype.stop = function (this: FakeRecorder) {
+    this.state = "inactive";
+    setTimeout(() => {
+      this.ondataavailable?.({ data: new Blob(["voice"]) });
+      this.onstop?.();
+    }, 20);
+  };
+  try {
+    const hook = renderHook(() => usePlaygroundChat("7", false));
+    await act(() => hook.result.current.startRecording());
+    act(() => hook.result.current.stopRecording());
+    const beforeHandOver = hasUnsavedChanges();
+    await act(() => new Promise((r) => setTimeout(r, 40)));
+    expect([
+      beforeHandOver,
+      hook.result.current.transcribing,
+      hasUnsavedChanges(),
+    ]).toEqual([true, true, true]);
+  } finally {
+    FakeRecorder.prototype.stop = syncStop;
+  }
+});
+
+test("once the recording is handed over and its request ends, the hold lets go", async () => {
+  transcribeFails = true;
+  try {
+    const hook = renderHook(() => usePlaygroundChat("7", false));
+    await act(() => hook.result.current.startRecording());
+    await act(async () => {
+      hook.result.current.stopRecording();
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    expect([hook.result.current.transcribing, hasUnsavedChanges()]).toEqual([
+      false,
+      false,
+    ]);
+  } finally {
+    transcribeFails = false;
+  }
 });

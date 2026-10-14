@@ -409,6 +409,9 @@ export function usePlaygroundChat(
   const [extracting, setExtracting] = useState(false);
   const [recordState, setRecordState] = useState<RecordState>("idle");
   const [recordStream, setRecordStream] = useState<MediaStream | null>(null);
+  // Between stop() and the browser's `stop` event the recording is neither running nor being
+  // transcribed yet, and it is still the operator's.
+  const [finalizing, setFinalizing] = useState(false);
   const [sessions, setSessions] = useState<PlaygroundSessionMeta[]>([]);
   const [loadingSession, setLoadingSession] = useState(false);
   // Manual "reply with audio" toggle: forces TTS on every turn regardless of the agent's mode.
@@ -527,7 +530,7 @@ export function usePlaygroundChat(
   // Everything the operator gave the composer that the server does not have yet: typed text, a
   // recording running or paused, and any request still in flight (a send, a follow-up, audio or a
   // file being read into text).
-  useHeldDraft(input.trim() !== "" || recording || busy);
+  useHeldDraft(input.trim() !== "" || recording || finalizing || busy);
   const hasConversation = turns.some(
     (x) => x.role === "user" || x.role === "assistant",
   );
@@ -1158,6 +1161,7 @@ export function usePlaygroundChat(
       if (ev.data.size > 0) audioChunksRef.current.push(ev.data);
     };
     rec.onstop = () => {
+      setFinalizing(false);
       releaseStream();
       // A cancel set canceledRef before stop(): discard the recording (don't transcribe/send),
       // even though stop()'s trailing dataavailable repopulated the chunks.
@@ -1193,7 +1197,10 @@ export function usePlaygroundChat(
 
   const stopRecording = useCallback(() => {
     const rec = mediaRecorderRef.current;
-    if (rec && rec.state !== "inactive") rec.stop(); // → onstop → sendRecording
+    if (rec && rec.state !== "inactive") {
+      setFinalizing(true);
+      rec.stop(); // → onstop → sendRecording
+    }
     setRecordState("idle");
   }, []);
 

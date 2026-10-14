@@ -907,8 +907,10 @@ const guardableToolKeys = <T extends z.ZodTypeAny>(value: T) =>
     .object({})
     .catchall(value)
     .check((ctx) => {
-      for (const name of Object.keys(ctx.value)) {
-        if (GUARDABLE_TOOL_NAME.test(name)) continue;
+      for (const [name, value] of Object.entries(ctx.value)) {
+        // NOTE: a removal (`null`) passes whatever its name, so a rule stored under a name that is no
+        // longer valid can still be deleted; the write boundary says whether it was there.
+        if (value === null || GUARDABLE_TOOL_NAME.test(name)) continue;
         ctx.issues.push({
           code: "custom",
           input: ctx.value,

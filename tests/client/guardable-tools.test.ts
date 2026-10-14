@@ -268,6 +268,25 @@ describe("assembledToolNames", () => {
     expect(built.has(`mcp____${"a".repeat(57)}`)).toBe(true);
   });
 
+  // Suffixes exist only where two tools reach one name, so a large server costs one name per tool.
+  test("a name no other tool reaches gets no suffixes", () => {
+    const built = assembledToolNames(
+      catalog({
+        mcpConnections: [{ id: "5", name: "CRM", enabled: true, slug: "crm" }],
+      }),
+      [
+        grant({
+          source: "MCP",
+          mcpServerConnectionId: "5",
+          enabledTools: ["create_deal", "list_deals"],
+        }),
+      ],
+      {},
+    );
+    expect(built.has("mcp__crm__create_deal")).toBe(true);
+    expect(built.has("mcp__crm__create_deal_2")).toBe(false);
+  });
+
   test("a disabled connection builds nothing", () => {
     const built = assembledToolNames(
       catalog({

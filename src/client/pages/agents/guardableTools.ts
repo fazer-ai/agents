@@ -1,5 +1,5 @@
 import { NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
-import { mcpRuntimeBase } from "@/graph/tools/mcp-names";
+import { ambiguousMcpNames, mcpRuntimeBase } from "@/graph/tools/mcp-names";
 import { DECISION_ACTION_TOOLS } from "@/modules/decisions/config";
 import { customToolsOf } from "./decisionsFormState";
 import { offeredPackTools } from "./ToolGrantsEditor";
@@ -119,22 +119,19 @@ export function assembledToolNames(
   // fields, for one), which this screen cannot see, so a rule on it is not called inert.
   const listed = new Set(catalog.native.map((n) => n.name));
   for (const n of NATIVE_TOOL_NAMES) if (!listed.has(n)) names.add(n);
-  // A collision suffix can reach as far as the number of MCP tools the agent is granted.
-  const mcpTools = grants
-    .filter((g) => g.source === "MCP")
-    .reduce((sum, g) => sum + (g.enabledTools?.length ?? 0), 0);
+  // Each granted MCP tool's own name, plus the suffixes the assembly may give a name two tools reach
+  // (`ambiguousMcpNames`, the same set the decisions editor holds back), and only those.
+  const servers: { slug: string; tools: string[] }[] = [];
   for (const g of grants) {
     if (g.source !== "MCP") continue;
     const conn = catalog.mcpConnections.find(
       (c) => c.id === g.mcpServerConnectionId,
     );
     if (!conn || conn.enabled === false) continue;
-    for (const tool of g.enabledTools ?? []) {
-      const base = mcpRuntimeBase(conn.slug, tool);
-      names.add(base);
-      for (let i = 2; i <= mcpTools + 1; i++)
-        names.add(base.slice(0, 64 - `_${i}`.length) + `_${i}`);
-    }
+    const tools = g.enabledTools ?? [];
+    servers.push({ slug: conn.slug, tools });
+    for (const tool of tools) names.add(mcpRuntimeBase(conn.slug, tool));
   }
+  for (const n of ambiguousMcpNames(servers)) names.add(n);
   return names;
 }

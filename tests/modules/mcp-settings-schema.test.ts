@@ -277,6 +277,15 @@ describe("agent_settings_set argument schema", () => {
   // NOTE: The refusal happens in the PARSE, before the handler, which is the whole point, since a client
   // validating against tools/list refuses it before sending. Asserted by the error text: a blank key
   // must never reach `assertSettingsToolPreconditions`.
+  // A removal is not a new rule: a rule stored under a name that is no longer valid can still go.
+  test("a removal parses whatever its name", () => {
+    expect(
+      z
+        .object(BEHAVIOR_PATCH_SHAPE)
+        .safeParse({ toolPreconditions: { "legacy tool": null } }).success,
+    ).toBe(true);
+  });
+
   // Any tool's name is a key, and the parse refuses one no tool can carry, before the handler.
   test("a precondition on any tool name parses, and a name no tool can carry is refused", () => {
     const rule = { kind: "attribute", scope: "conversation", key: "dia" };

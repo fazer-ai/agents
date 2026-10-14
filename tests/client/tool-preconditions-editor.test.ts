@@ -565,6 +565,48 @@ describe("the Tools tab offers every granted tool, and flags a rule on one that 
     expect(offered()).toContain("busca_antiga");
   });
 
+  // Two MCP connections whose names give one slug expose names the select holds back (a new rule
+  // could guard the other server's tool), but a saved rule on one still guards a tool the turn builds.
+  test("a rule on a built name the select holds back carries no warning", async () => {
+    const stub = stubEditorApi(
+      {
+        settings: {
+          toolPreconditions: {
+            mcp__crm__create_deal: {
+              kind: "attribute",
+              scope: "conversation",
+              key: "cpf",
+            },
+          },
+        },
+      },
+      {
+        catalog: {
+          ...catalog,
+          mcpConnections: [
+            { id: "5", name: "CRM", enabled: true, slug: "crm" },
+            { id: "6", name: "CRM!", enabled: true, slug: "crm" },
+          ],
+        },
+        grants: [
+          ...grants,
+          grant({
+            source: "MCP",
+            mcpServerConnectionId: "6",
+            enabledTools: ["create_deal"],
+          }),
+        ],
+      },
+    );
+    await renderEditor(stub, "tools");
+    expect(offered()).toContain("mcp__crm__create_deal");
+    expect(
+      screen.queryByText(
+        "This tool is not among the agent's tools, so this rule guards nothing.",
+      ),
+    ).toBeNull();
+  });
+
   test("a rule on a granted tool carries no warning", async () => {
     const stub = stubEditorApi(
       {

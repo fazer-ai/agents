@@ -97,8 +97,11 @@ export async function lastReplyDelivery(params: {
   // watermark. A customer message at or below it marks where a reply starts.
   handledThrough: number | null;
   // Which of the customer messages read are still owed a reply: the flush's own selection
-  // (`selectOpenMessages`), so a message a gate dispensed is not read as a turn coming.
-  stillOpen: (rows: Row[]) => Promise<Set<number>>;
+  // (`selectOpenMessages`), so a message a gate dispensed is not read as a turn coming. `settled`
+  // are those a turn claimed or a gate dispensed, the record that one was handled.
+  stillOpen: (
+    rows: Row[],
+  ) => Promise<{ open: Set<number>; settled: Set<number> }>;
   base: PrismaClient;
   deps?: LoadChatwootClientDeps;
   now?: Date;
@@ -227,15 +230,11 @@ export async function lastReplyDelivery(params: {
       "follow-up: the agent replied again while the reply was read",
     );
   const reply = replyOf(read, newest);
-  const open = await params.stillOpen(read);
+  const { open, settled } = await params.stillOpen(read);
   // NOTE: any the read holds, before the reply too: one that arrived after the turn's last look and
   // before its reply was written is still queued for its own turn.
   if (read.some((m) => customer(m) && open.has(m.id)))
     return { state: "customer_spoke" };
-  // A customer message from where the reply starts that is no longer owed a reply was handled, in
-  // silence or by a gate, and moved the conversation past the reply.
-  if (read.some((m) => m.id > start && customer(m)))
-    return { state: "delivered" };
   // A person's public reply or template that was not refused, written after a refused message,
   // moved the conversation past it. Attributed the way the flush attributes it
   // (`foreignReplyBoundary`): a sender-less row counts only where the provider tells a phone apart
@@ -246,6 +245,19 @@ export async function lastReplyDelivery(params: {
   };
   const person = (m: Row) =>
     !m.externalError && !ours(m) && foreignReplyBoundary([m], identity) > 0;
+  // A customer message from where the reply starts that was handled, in silence or by a gate, moved
+  // the conversation past the reply. Handled is on record (the watermark, a claim, a dispensal): an
+  // answer somebody else wrote is the person's reply below, and a refused one closes nothing.
+  if (
+    read.some(
+      (m) =>
+        m.id > start &&
+        customer(m) &&
+        ((params.handledThrough !== null && m.id <= params.handledThrough) ||
+          settled.has(m.id)),
+    )
+  )
+    return { state: "delivered" };
   const missing = reply.filter(
     (m) =>
       m.externalError &&

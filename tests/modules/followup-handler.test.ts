@@ -1431,6 +1431,22 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     expect(s.notes.map(([c]) => c)).toEqual([1752]);
   });
 
+  // Another bot's answer to the customer message was refused too: it closes the message for the
+  // flush, but nothing on record says it was handled, so it does not supersede the refused reply.
+  test("a customer message answered only by a refused foreign reply does not supersede", async () => {
+    await seedConversation(1758, due());
+    const s = stubClient({
+      page: [
+        replyRow(17581, { refused: true }),
+        customerRow(17582),
+        replyRow(17583, { refused: true, botId: 777 }),
+      ],
+    });
+    expect(await run(1758, s)).toEqual({ outcome: "done" });
+    expect(s.sent).toEqual([]);
+    expect(s.notes.map(([c]) => c)).toEqual([1758]);
+  });
+
   // A customer message that arrived after the turn's last look and before its reply was written is
   // still queued for its own turn: it holds the step, though it sorts before the reply.
   test("an open customer message before the refused reply holds the step", async () => {
@@ -1740,6 +1756,11 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
   // A message that renders to nothing is never answered, so it is not a turn coming.
   test("a blank customer message after the refusal does not hold the step", async () => {
     await seedConversation(1717, due());
+    // NOTE: covered by the watermark too, so only its blankness keeps it from superseding the reply.
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: 1717 },
+      data: { lastHandledMessageId: 17172 },
+    });
     const s = stubClient({
       page: [
         replyRow(17171, { refused: true }),

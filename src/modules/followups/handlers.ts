@@ -959,7 +959,9 @@ export async function followUpHandler(
   );
   // The flush's own answer to "is this customer message still owed a reply", so the follow-up
   // waits for exactly the turns the flush would run.
-  const stillOpen = async (rows: Row[]): Promise<Set<number>> => {
+  const stillOpen = async (
+    rows: Row[],
+  ): Promise<{ open: Set<number>; settled: Set<number> }> => {
     const agentBotIds = await agentBotIdsOf(
       base,
       tenantId,
@@ -972,7 +974,7 @@ export async function followUpHandler(
       messageIds: pendingIncoming(rows, null).map((m) => m.id),
       base,
     });
-    return new Set(
+    const open = new Set(
       selectOpenMessages({
         page: rows,
         scalarFloor: handledThrough,
@@ -982,6 +984,7 @@ export async function followUpHandler(
         whatsappProvider: ctx.whatsappProvider,
       }).map((m) => m.id),
     );
+    return { open, settled: new Set([...state.claimed, ...state.dispensed]) };
   };
   let delivery: LastReplyDelivery;
   try {

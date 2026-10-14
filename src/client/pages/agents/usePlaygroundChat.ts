@@ -409,11 +409,6 @@ export function usePlaygroundChat(
   const [extracting, setExtracting] = useState(false);
   const [recordState, setRecordState] = useState<RecordState>("idle");
   const [recordStream, setRecordStream] = useState<MediaStream | null>(null);
-  // Everything the operator gave the composer that is not yet a turn: typed text, a recording
-  // running or paused, and audio or a file still being read into text.
-  useHeldDraft(
-    input.trim() !== "" || recordState !== "idle" || transcribing || extracting,
-  );
   const [sessions, setSessions] = useState<PlaygroundSessionMeta[]>([]);
   const [loadingSession, setLoadingSession] = useState(false);
   // Manual "reply with audio" toggle: forces TTS on every turn regardless of the agent's mode.
@@ -529,6 +524,10 @@ export function usePlaygroundChat(
 
   const busy = sending || followingUp || transcribing || extracting;
   const recording = recordState !== "idle";
+  // Everything the operator gave the composer that the server does not have yet: typed text, a
+  // recording running or paused, and any request still in flight (a send, a follow-up, audio or a
+  // file being read into text).
+  useHeldDraft(input.trim() !== "" || recording || busy);
   const hasConversation = turns.some(
     (x) => x.role === "user" || x.role === "assistant",
   );

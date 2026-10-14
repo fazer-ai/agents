@@ -9,10 +9,16 @@ import { usePlaygroundChat } from "@/client/pages/agents/usePlaygroundChat";
 // console's own reloads (a stale tab, a failed import) wait.
 
 const realFetch = globalThis.fetch;
-// The transcription and the file extraction never answer, so the test can look at the hook while it is in flight.
+let threadsHang = false;
+// The transcription and the file extraction never answer, nor does opening a thread while
+// `threadsHang` is set, so the test can look at the hook while it is in flight.
 globalThis.fetch = (async (input: RequestInfo | URL) => {
   const url = String(input instanceof Request ? input.url : input);
-  if (url.includes("/audio/transcribe") || url.includes("/file/extract"))
+  if (
+    url.includes("/audio/transcribe") ||
+    url.includes("/file/extract") ||
+    (threadsHang && url.endsWith("/playground/threads"))
+  )
     return new Promise<Response>(() => {});
   const body = url.endsWith("/playground/threads")
     ? { threadId: "1:playground:7:fresh" }
@@ -112,4 +118,16 @@ test("a file still being read into text holds the reload", async () => {
     await new Promise((r) => setTimeout(r, 0));
   });
   expect(hasUnsavedChanges()).toBe(true);
+});
+
+test("a message sent but not yet posted holds the reload", async () => {
+  threadsHang = true;
+  const hook = renderHook(() => usePlaygroundChat("7", false));
+  act(() => hook.result.current.setInput("first question"));
+  await act(async () => {
+    void hook.result.current.send();
+    await Promise.resolve();
+  });
+  threadsHang = false;
+  expect([hook.result.current.input, hasUnsavedChanges()]).toEqual(["", true]);
 });

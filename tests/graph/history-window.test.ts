@@ -6,7 +6,12 @@ import {
   ToolMessage,
 } from "@langchain/core/messages";
 import { selectHistoryWindow } from "@/graph/history-window";
-import { HUMAN_HANDBACK_NOTE, humanHandbackMessage } from "@/graph/markers";
+import {
+  HUMAN_HANDBACK_NOTE,
+  humanHandbackMessage,
+  UNDELIVERED_REPLY_NOTE,
+  undeliveredReplyNote,
+} from "@/graph/markers";
 
 // Decision table for the history ceiling. The counter is synthetic on purpose: what is under test
 // is the RULE (where the window opens and what it is never allowed to drop), not the tokenizer,
@@ -149,6 +154,54 @@ describe("selectHistoryWindow", () => {
     expect(String(window.kept[0]?.content)).toBe(
       "um texto enorme colado pelo cliente",
     );
+  });
+
+  // The note a superseded turn leaves after an act reads "the actions above". Opened on the note, or
+  // with the note left just outside, the window would hand the next turn a fact about nothing.
+  describe("an undelivered-reply note travels with the act it speaks of", () => {
+    const history = () => [
+      new HumanMessage("velho"),
+      new AIMessage("resposta velha"),
+      new HumanMessage("pode ser terça"),
+      new AIMessage({
+        content: "",
+        tool_calls: [{ name: "calendar_create_event", args: {}, id: "c4" }],
+      }),
+      new ToolMessage({ content: "criado", tool_call_id: "c4" }),
+      undeliveredReplyNote(42),
+      new HumanMessage("e o endereço?"),
+    ];
+    const opened = (kept: BaseMessage[]) => kept.map((m) => String(m.content));
+
+    test("when the cut would open on the note", () => {
+      // Two fit: the note and the newer message.
+      const window = selectHistoryWindow(history(), 2 * EACH, count);
+      expect(opened(window.kept)).toEqual([
+        "pode ser terça",
+        "",
+        "criado",
+        UNDELIVERED_REPLY_NOTE,
+        "e o endereço?",
+      ]);
+    });
+
+    test("when the newer message alone takes the whole budget", () => {
+      const window = selectHistoryWindow(history(), EACH, count);
+      expect(opened(window.kept)[0]).toBe("pode ser terça");
+      expect(window.dropped).toBe(2);
+    });
+
+    test("and an older note far from the edge is cut like anything else", () => {
+      const older = [
+        ...history(),
+        new AIMessage("O endereço é Rua X."),
+        new HumanMessage("obrigado"),
+        new AIMessage("Por nada!"),
+        new HumanMessage("até"),
+      ];
+      const window = selectHistoryWindow(older, 2 * EACH, count);
+      expect(opened(window.kept)).toEqual(["até"]);
+    });
   });
 
   test("counts each message once instead of re-counting the whole prefix", () => {

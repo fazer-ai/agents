@@ -625,6 +625,26 @@ describe("actedToolNames", () => {
     ]);
   });
 
+  test("a batch that mixes an act with the silence tool names only the act", () => {
+    const produced = [
+      h("h1", "pode ser terça"),
+      new AIMessage({
+        id: "a1",
+        content: "",
+        tool_calls: [
+          { id: "c1", name: "calendar_create_event", args: {} },
+          { id: "c2", name: SKIP_REPLY_TOOL, args: {} },
+        ],
+      }),
+      toolResult("t1", "ok", "calendar_create_event"),
+      toolResult("t2", "ok", SKIP_REPLY_TOOL),
+      a("a2", "Agendado."),
+    ];
+    expect(actedToolNames(produced, new Set([SKIP_REPLY_TOOL]))).toEqual([
+      "calendar_create_event",
+    ]);
+  });
+
   test("a turn with no reply to stand in for names nothing", () => {
     const produced = [
       h("h1", "pode ser terça"),

@@ -212,10 +212,14 @@ export function actedToolNames(
   const start = trailingRunStart(produced);
   if (start === null) return [];
   const stretch = actingStretch(produced, start);
+  // A batch is inert as a whole only when every call is, so a mixed one still drops its inert
+  // calls by name.
   const names = stretch.flatMap((m, i) =>
     isInertToolCall(m, inertTools, stretch[i + 1])
       ? []
-      : ((m as AIMessage).tool_calls ?? []).map((c) => c.name),
+      : ((m as AIMessage).tool_calls ?? [])
+          .map((c) => c.name)
+          .filter((name) => !inertTools.has(name)),
   );
   return [...new Set(names)];
 }

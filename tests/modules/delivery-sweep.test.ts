@@ -29,6 +29,7 @@ import {
 } from "@/modules/chatwoot/webhook";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { clearFlowLog, flowLogRows } from "@/tests/utils/flowlog";
+import { underConcurrentEdit } from "@/tests/utils/pg-waits";
 import { POLL_DEADLINE_MS } from "@/tests/utils/poll";
 import { HandoffThenThrowModel } from "@/tests/utils/scripted-models";
 import { seedChatwootInstance } from "../utils/chatwoot";
@@ -2200,21 +2201,60 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     await clearFlowLog(suDb, { tenantId });
   });
 
-  test("retires the PROCESSING rows before it looks for DEAD ones", async () => {
-    // The order of the two writes, asserted at the SOURCE: the interleaving it guards against
-    // is another process's write landing between them, which no end state shows. With DEAD first,
-    // the sweep's PROCESSING -> DEAD landing between them makes both statements miss, and the row
-    // stays DEAD, reported as unanswered, with no owner left to run tx2. This way round the same
-    // interleaving is harmless: after, the sweep's terminal CAS on the status it READ matches
-    // nothing; before, the DEAD statement catches the row and writes the correction.
-    const src = await Bun.file("src/modules/chatwoot/delivery-sweep.ts").text();
-    const body = src.slice(
-      src.indexOf("export async function retireCoveredDeliveries"),
+  test("a sweep that marks the row DEAD mid-settlement does not leave it DEAD", async () => {
+    // The interleaving the order of the two writes exists for: the sweep's PROCESSING -> DEAD
+    // landing while the settlement is running. The settlement's PROCESSING statement queues on the
+    // sweep's row lock and, once the sweep commits, rechecks its predicate and skips the row, so the
+    // DEAD statement that runs after it is what settles it. Had the DEAD statement run first, it
+    // would have seen the row still PROCESSING, the PROCESSING one would skip it after the commit,
+    // and the row would stay DEAD, reported as unanswered, with nobody left to correct it.
+    const convId = 8945;
+    const messageId = 9790;
+    const conv = await seedConversation(convId);
+    const row = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `sweep-mid-settlement-${process.pid}`,
+        event: "message_created",
+        status: "PROCESSING",
+        receivedAt: new Date(Date.now() - 60_000),
+        claimedAt: new Date(Date.now() - 60_000),
+        conversationId: convId,
+        inboundMessageId: messageId,
+        routeObserved: false,
+      },
+      select: { id: true },
+    });
+
+    const settled = await underConcurrentEdit(
+      suDb,
+      (tx) =>
+        tx.chatwootWebhookDelivery.update({
+          where: { id: row.id },
+          data: { status: "DEAD", processedAt: new Date() },
+        }),
+      () =>
+        retireCoveredDeliveries({
+          tenantId,
+          instanceId,
+          conversationId: convId,
+          conversationRowId: conv.id,
+          settlement: "answered",
+          covered: true,
+          messageIds: [messageId],
+          base: appDb,
+        }),
     );
-    expect(body.indexOf('status: "PROCESSING"')).toBeGreaterThan(-1);
-    expect(body.indexOf('status: "DEAD"')).toBeGreaterThan(
-      body.indexOf('status: "PROCESSING"'),
-    );
+
+    expect((await statusOf(row.id)).status).toBe("PROCESSED");
+    expect(settled).toBe(1);
+    expect(await correctionOutcome(convId)).toBe("answered_late");
+
+    await suDb.chatwootWebhookDelivery.deleteMany({
+      where: { conversationId: convId },
+    });
+    await clearFlowLog(suDb, { tenantId });
   });
 
   // NOTE: What a turn did with the message, written down. Every caller of this function supplies

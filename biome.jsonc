@@ -163,7 +163,6 @@
         "!tests/modules/audit-channel-family.test.ts",
         "!tests/modules/chatwoot-recover-delivery.test.ts",
         "!tests/modules/credential-reader-fence.test.ts",
-        "!tests/modules/delivery-sweep.test.ts",
         "!tests/modules/flowlog-alert-summary.test.ts",
         "!tests/modules/flowlog-debug-mode.test.ts",
         "!tests/modules/mcp/write-passes-its-client.test.ts",

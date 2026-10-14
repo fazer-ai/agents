@@ -84,9 +84,10 @@ export function selectHistoryWindow(
     // act it speaks of, from the message that act answered: the note says "the actions above", and
     // without them it names nothing the next turn can report. Over the ceiling when it has to be, for
     // the reason the turn being answered is.
-    const edge = [start, start - 1].find((i) =>
-      isUndeliveredReplyNote(history[i] as BaseMessage),
-    );
+    const edge = [start, start - 1].find((i) => {
+      const m = history[i];
+      return m !== undefined && isUndeliveredReplyNote(m);
+    });
     if (edge !== undefined) {
       start = edge;
       while (start > 0 && history[start - 1]?.getType() !== "human") start--;

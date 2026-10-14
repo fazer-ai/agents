@@ -191,6 +191,13 @@ describe("selectHistoryWindow", () => {
       expect(window.dropped).toBe(2);
     });
 
+    // The edge check looks one message before the opener, and an opener at index 0 has none.
+    test("a lone oversized message still travels", () => {
+      const lone = [new HumanMessage("um texto enorme")];
+      const window = selectHistoryWindow(lone, 1, () => 2);
+      expect(window.kept).toEqual(lone);
+    });
+
     test("and an older note far from the edge is cut like anything else", () => {
       const older = [
         ...history(),

@@ -44,6 +44,13 @@ export const SETTINGS_CREDENTIAL_PATHS = [
     sectionId: "gr-model",
     use: "apiKey",
   },
+  // The guardrails' classification API, when `guardrails.classifier` is `decisions`.
+  {
+    path: ["guardrails", "decisions", "credentialRef"],
+    tab: "guardrails",
+    sectionId: "gr-model",
+    use: "apiKey",
+  },
   {
     path: ["memory", "compaction", "credentialRef"],
     tab: "behavior",

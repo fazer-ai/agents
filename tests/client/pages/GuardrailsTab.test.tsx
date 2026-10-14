@@ -55,6 +55,7 @@ const templateFields = () =>
 // Nothing refused: every test here is about the form, not about a refusal landing on it.
 const NO_REFUSALS: GuardrailsRefusals = {
   credential: null,
+  decisionsCredential: null,
   customPolicy: null,
   inputTemplateMessage: null,
   outputTemplateMessage: null,

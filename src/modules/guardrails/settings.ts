@@ -6,6 +6,11 @@ import {
   GENERATION_PROMPT_MAX,
   TEMPLATE_MESSAGE_MAX,
 } from "@/modules/agents/text-caps";
+import {
+  DECISION_PROVIDERS,
+  DEFAULT_DECISION_MODEL,
+  type DecisionProvider,
+} from "@/modules/decisions/config";
 
 // Per-agent guardrails (input/output moderation) config, read from `agent.settings.guardrails`. A
 // dedicated LLM "guardrails agent" (its OWN selectable chat model, separate from the main agent's)
@@ -21,6 +26,39 @@ export const GUARDRAIL_ACTIONS: readonly GuardrailAction[] = [
   "silent",
   "handoff",
 ];
+
+// Who judges a screening. `chat` is the guardrails agent's own chat model writing a verdict with a
+// rationale (./analyze). `decisions` asks a classification API of the decisions engine
+// (modules/decisions: Jev on TypeSafe, OpenAI Decisions) one yes/no question per enabled check and per
+// operator policy, and a check trips when its probability reaches its threshold. The chat verdict is
+// the default because only the chat model writes a replacement reply.
+export type GuardrailClassifier = "chat" | "decisions";
+export const GUARDRAIL_CLASSIFIERS: readonly GuardrailClassifier[] = [
+  "chat",
+  "decisions",
+];
+
+// What each threshold is keyed by: the checks, by their settings name, plus the operator's policy,
+// which a decisions provider answers as a question of its own.
+export type GuardrailThresholdKey = keyof GuardrailChecks | "customPolicy";
+export const GUARDRAIL_THRESHOLD_KEYS: readonly GuardrailThresholdKey[] = [
+  "toxicity",
+  "unsafeContent",
+  "competitorMentions",
+  "promptAdherence",
+  "answerRelevance",
+  "customPolicy",
+];
+export const DEFAULT_GUARDRAIL_THRESHOLD = 0.8;
+
+export interface GuardrailDecisionsConfig {
+  provider: DecisionProvider;
+  // Always a usable model after the reader: empty resolves to the provider's default.
+  model: string;
+  credentialRef: string | null; // `vault:<id>`, of the provider's own kind or a generic key
+  // Probability at or above which a check trips, 0 to 1, per check and for the policy.
+  thresholds: Record<GuardrailThresholdKey, number>;
+}
 
 export interface GuardrailChecks {
   // Harassment, hate speech, insults, or abusive/threatening language.
@@ -58,6 +96,10 @@ export interface GuardrailDirectionConfig {
 
 export interface GuardrailsConfig {
   enabled: boolean;
+  // Who judges. The chat model's fields below stay stored while a decisions provider is chosen, so
+  // switching back restores them.
+  classifier: GuardrailClassifier;
+  decisions: GuardrailDecisionsConfig;
   // The guardrails agent's own chat model (separate from the main agent's model).
   provider: ModelConfig["provider"];
   // Always a usable model name after the reader: an empty stored value resolves to
@@ -77,8 +119,20 @@ const DEFAULT_TEMPLATE = "Desculpe, não consigo ajudar com isso.";
 const DEFAULT_HANDOFF_MESSAGE =
   "Encaminhei seu atendimento para a nossa equipe. Uma pessoa vai continuar com você por aqui.";
 
+const DEFAULT_THRESHOLDS: Record<GuardrailThresholdKey, number> =
+  Object.fromEntries(
+    GUARDRAIL_THRESHOLD_KEYS.map((k) => [k, DEFAULT_GUARDRAIL_THRESHOLD]),
+  ) as Record<GuardrailThresholdKey, number>;
+
 export const GUARDRAILS_DEFAULTS: GuardrailsConfig = {
   enabled: false,
+  classifier: "chat",
+  decisions: {
+    provider: "typesafe",
+    model: DEFAULT_DECISION_MODEL.typesafe,
+    credentialRef: null,
+    thresholds: DEFAULT_THRESHOLDS,
+  },
   provider: "openai",
   model: "",
   credentialRef: null,
@@ -182,6 +236,43 @@ function readCompetitors(v: unknown): string[] {
   return out;
 }
 
+// A threshold outside 0..1 is clamped, and anything not a finite number takes the default: the write
+// boundary refuses both (settings-schema.ts), so this only meets a row that skipped it.
+function readThresholds(v: unknown): Record<GuardrailThresholdKey, number> {
+  const b = v && typeof v === "object" ? (v as Record<string, unknown>) : {};
+  const out = { ...DEFAULT_THRESHOLDS };
+  for (const k of GUARDRAIL_THRESHOLD_KEYS) {
+    const n = b[k];
+    if (typeof n === "number" && Number.isFinite(n))
+      out[k] = Math.min(Math.max(n, 0), 1);
+  }
+  return out;
+}
+
+function readDecisions(v: unknown): GuardrailDecisionsConfig {
+  const b = v && typeof v === "object" ? (v as Record<string, unknown>) : {};
+  const raw = str(b.provider);
+  const provider =
+    raw && (DECISION_PROVIDERS as readonly string[]).includes(raw)
+      ? (raw as DecisionProvider)
+      : GUARDRAILS_DEFAULTS.decisions.provider;
+  return {
+    provider,
+    model: str(b.model) ?? DEFAULT_DECISION_MODEL[provider],
+    credentialRef: str(b.credentialRef),
+    thresholds: readThresholds(b.thresholds),
+  };
+}
+
+// The credential the guardrail screening actually uses: the chat model's, or the decisions
+// provider's. One answer for the runtime and the configuration check, so the two cannot look at
+// different fields.
+export function guardrailCredentialRef(cfg: GuardrailsConfig): string | null {
+  return cfg.classifier === "decisions"
+    ? cfg.decisions.credentialRef
+    : cfg.credentialRef;
+}
+
 export function readGuardrailsConfig(settings: unknown): GuardrailsConfig {
   const s =
     settings && typeof settings === "object"
@@ -196,6 +287,8 @@ export function readGuardrailsConfig(settings: unknown): GuardrailsConfig {
       : GUARDRAILS_DEFAULTS.provider;
   return {
     enabled: bool(bag.enabled, GUARDRAILS_DEFAULTS.enabled),
+    classifier: bag.classifier === "decisions" ? "decisions" : "chat",
+    decisions: readDecisions(bag.decisions),
     provider,
     // NOTE: an empty model (saved when the operator enables guardrails without opening the provider
     // select) resolves to the provider default the editor displays; sent verbatim, the provider would

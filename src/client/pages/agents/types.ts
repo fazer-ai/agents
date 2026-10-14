@@ -92,6 +92,7 @@ export interface BehaviorRefusals {
 
 export interface GuardrailsRefusals {
   credential: string | null;
+  decisionsCredential: string | null;
   customPolicy: string | null;
   inputTemplateMessage: string | null;
   outputTemplateMessage: string | null;

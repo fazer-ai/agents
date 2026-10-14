@@ -1,8 +1,10 @@
 import { MessageCircle, Send, ShieldCheck, TriangleAlert } from "lucide-react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   CredentialPicker,
   FormField,
+  Input,
   ModelPicker,
   Select,
   SwitchField,
@@ -17,10 +19,17 @@ import {
   GENERATION_PROMPT_MAX,
   TEMPLATE_MESSAGE_MAX,
 } from "@/modules/agents/text-caps";
+import {
+  DECISION_PROVIDERS,
+  DEFAULT_DECISION_MODEL,
+  type DecisionProvider,
+} from "@/modules/decisions/config";
 import type {
   GuardrailAction,
   GuardrailChecks,
+  GuardrailClassifier,
   GuardrailsConfig,
+  GuardrailThresholdKey,
 } from "@/modules/guardrails/settings";
 import { Section, SectionNav } from "./SectionNav";
 import { TabActionBar } from "./TabActionBar";
@@ -43,12 +52,52 @@ interface GuardrailsTabProps {
   onDiscard: () => void;
 }
 
+// Product names, the same in every language (as on the Classifier card, DecisionsFields).
+const DECISION_PROVIDER_NAMES: Record<DecisionProvider, string> = {
+  openai: "OpenAI Decisions",
+  typesafe: "TypeSafe (Jev)",
+};
+
 const ACTIONS: GuardrailAction[] = [
   "template",
   "generated",
   "silent",
   "handoff",
 ];
+
+// A threshold field holding its own text while it is typed ("0." is not a number yet), committed to
+// the form on each valid value and drawn again from the form when it leaves, so a clamped value
+// (1.5 becomes 1) shows what will be saved.
+function ThresholdInput({
+  value,
+  onCommit,
+  label,
+  testId,
+}: {
+  value: number;
+  onCommit: (raw: string) => void;
+  label: string;
+  testId: string;
+}) {
+  const [text, setText] = useState(String(value));
+  useEffect(() => setText(String(value)), [value]);
+  return (
+    <Input
+      type="number"
+      min={0}
+      max={1}
+      step={0.05}
+      value={text}
+      onChange={(e) => {
+        setText(e.target.value);
+        onCommit(e.target.value);
+      }}
+      onBlur={() => setText(String(value))}
+      aria-label={label}
+      data-testid={testId}
+    />
+  );
+}
 
 export function GuardrailsTab({
   guardrails: g,
@@ -97,6 +146,87 @@ export function GuardrailsTab({
       ...s,
       [dir]: { ...s[dir], checks: { ...s[dir].checks, [key]: v } },
     }));
+
+  const byClassifier = g.classifier === "decisions";
+  // Switching to a classification API takes `generated` off both directions, since no model writes
+  // the replacement there: the screen shows the action that will run instead of saving one the
+  // server refuses. Switching back leaves the template, and `generated` can be picked again.
+  const setClassifier = (classifier: GuardrailClassifier) =>
+    setG((s) => ({
+      ...s,
+      classifier,
+      ...(classifier === "decisions"
+        ? {
+            input:
+              s.input.action === "generated"
+                ? { ...s.input, action: "template" }
+                : s.input,
+            output:
+              s.output.action === "generated"
+                ? { ...s.output, action: "template" }
+                : s.output,
+          }
+        : {}),
+    }));
+  const setDecisions = (patch: Partial<GuardrailsConfig["decisions"]>) =>
+    setG((s) => ({ ...s, decisions: { ...s.decisions, ...patch } }));
+  const setThreshold = (key: GuardrailThresholdKey, raw: string) => {
+    const n = Number(raw);
+    if (raw.trim() === "" || !Number.isFinite(n)) return;
+    setG((s) => ({
+      ...s,
+      decisions: {
+        ...s.decisions,
+        thresholds: {
+          ...s.decisions.thresholds,
+          [key]: Math.min(Math.max(n, 0), 1),
+        },
+      },
+    }));
+  };
+  const checkLabel = (k: keyof GuardrailChecks) =>
+    ({
+      toxicity: t("editor.guardrails.checkToxicity", "Toxicity / abuse"),
+      unsafeContent: t("editor.guardrails.checkUnsafe", "Unsafe content"),
+      competitorMentions: t(
+        "editor.guardrails.checkCompetitors",
+        "Competitor mentions",
+      ),
+      promptAdherence: t(
+        "editor.guardrails.checkAdherence",
+        "Adherence to the agent's instructions",
+      ),
+      answerRelevance: t(
+        "editor.guardrails.checkRelevance",
+        "The reply answers what the customer asked",
+      ),
+    })[k];
+  // The checks some enabled direction asks, each with one threshold: the threshold belongs to the
+  // check, not to the direction, so it is drawn once.
+  const thresholdChecks = (
+    [
+      "toxicity",
+      "unsafeContent",
+      "competitorMentions",
+      "promptAdherence",
+      "answerRelevance",
+    ] as const
+  ).filter(
+    (k) =>
+      (g.input.enabled &&
+        k !== "promptAdherence" &&
+        k !== "answerRelevance" &&
+        g.input.checks[k]) ||
+      (g.output.enabled && g.output.checks[k]),
+  );
+  const thresholdInput = (key: GuardrailThresholdKey, label: string) => (
+    <ThresholdInput
+      value={g.decisions.thresholds[key]}
+      onCommit={(raw) => setThreshold(key, raw)}
+      label={label}
+      testId={`gr-threshold-${key}`}
+    />
+  );
 
   const actionLabel = (a: GuardrailAction) =>
     a === "template"
@@ -196,8 +326,18 @@ export function GuardrailsTab({
                 }
               >
                 {ACTIONS.map((a) => (
-                  <option key={a} value={a}>
-                    {actionLabel(a)}
+                  <option
+                    key={a}
+                    value={a}
+                    disabled={a === "generated" && byClassifier}
+                  >
+                    {a === "generated" && byClassifier
+                      ? t(
+                          "editor.guardrails.actionGeneratedUnavailable",
+                          "{{action}} (not available with a classification API)",
+                          { action: actionLabel(a) },
+                        )
+                      : actionLabel(a)}
                   </option>
                 ))}
               </Select>
@@ -330,6 +470,130 @@ export function GuardrailsTab({
               label={t("editor.guardrails.enabled", "Enable guardrails")}
             />
             {g.enabled && (
+              <FormField
+                label={t("editor.guardrails.classifier", "Who judges")}
+                description={
+                  byClassifier
+                    ? t(
+                        "editor.guardrails.classifierDecisionsHint",
+                        "A classification API answers one yes/no question per check. Faster, but it gives only numbers and writes no reply.",
+                      )
+                    : t(
+                        "editor.guardrails.classifierChatHint",
+                        "A language model reads the message and explains its verdict. It can write a replacement reply.",
+                      )
+                }
+                help={
+                  byClassifier
+                    ? t(
+                        "editor.guardrails.classifierDecisionsHelp",
+                        "Each enabled check, and the custom policy, is one yes/no question to the classification API.\n\nA check trips when its probability reaches its threshold.\n\nThe API writes no reply of its own, so the generated reply action is not available: a tripped message gets the template or is silenced.",
+                      )
+                    : undefined
+                }
+              >
+                <Select
+                  value={g.classifier}
+                  onChange={(e) =>
+                    setClassifier(e.target.value as GuardrailClassifier)
+                  }
+                  data-testid="gr-classifier"
+                >
+                  <option value="chat">
+                    {t(
+                      "editor.guardrails.classifierChat",
+                      "A language model (default)",
+                    )}
+                  </option>
+                  <option value="decisions">
+                    {t(
+                      "editor.guardrails.classifierDecisions",
+                      "A classification API (Jev, OpenAI Decisions)",
+                    )}
+                  </option>
+                </Select>
+              </FormField>
+            )}
+            {g.enabled && byClassifier && (
+              <>
+                <FormField
+                  label={t(
+                    "editor.guardrails.decisionsProvider",
+                    "Classification API",
+                  )}
+                >
+                  <Select
+                    value={g.decisions.provider}
+                    onChange={(e) => {
+                      const provider = e.target.value as DecisionProvider;
+                      setDecisions({
+                        provider,
+                        model: DEFAULT_DECISION_MODEL[provider],
+                      });
+                    }}
+                    data-testid="gr-decisions-provider"
+                  >
+                    {DECISION_PROVIDERS.map((p) => (
+                      <option key={p} value={p}>
+                        {DECISION_PROVIDER_NAMES[p]}
+                      </option>
+                    ))}
+                  </Select>
+                </FormField>
+                <FormField
+                  label={t("editor.credential", "API key")}
+                  error={refusals.decisionsCredential}
+                  group
+                >
+                  <CredentialPicker
+                    value={g.decisions.credentialRef ?? ""}
+                    onChange={(v) => setDecisions({ credentialRef: v || null })}
+                    required
+                    compatibleTypes={credentialCompat.decisions(
+                      g.decisions.provider,
+                    )}
+                    defaultCreateType={
+                      credentialCompat.decisions(g.decisions.provider)[0]
+                    }
+                    ariaLabel={t("editor.credential", "API key")}
+                  />
+                </FormField>
+                <FormField
+                  label={t("editor.model", "Model")}
+                  description={t(
+                    "editor.guardrails.decisionsModelHint",
+                    "Empty uses the default, {{model}}.",
+                    { model: DEFAULT_DECISION_MODEL[g.decisions.provider] },
+                  )}
+                >
+                  <Input
+                    value={g.decisions.model}
+                    onChange={(e) => setDecisions({ model: e.target.value })}
+                    placeholder={DEFAULT_DECISION_MODEL[g.decisions.provider]}
+                  />
+                </FormField>
+                {thresholdChecks.length > 0 && (
+                  <FormField
+                    label={t("editor.guardrails.thresholds", "Thresholds")}
+                    description={t(
+                      "editor.guardrails.thresholdsHint",
+                      "From 0 to 1. A check trips when the API's probability for it reaches this value. Lower blocks more; higher lets more through.",
+                    )}
+                    group
+                  >
+                    <div className="grid grid-cols-[1fr_6rem] items-center gap-2">
+                      {thresholdChecks.map((k) => (
+                        <div key={k} className="contents text-sm">
+                          <span>{checkLabel(k)}</span>
+                          {thresholdInput(k, checkLabel(k))}
+                        </div>
+                      ))}
+                    </div>
+                  </FormField>
+                )}
+              </>
+            )}
+            {g.enabled && !byClassifier && (
               <>
                 <FormField label={t("editor.provider", "Provider")}>
                   <Select
@@ -435,10 +699,25 @@ export function GuardrailsTab({
                 <FormField
                   label={t("editor.guardrails.customPolicy", "Custom policy")}
                   error={refusals.customPolicy}
-                  description={t(
-                    "editor.guardrails.customPolicyHint",
-                    "Extra rules appended to every analysis.",
-                  )}
+                  description={
+                    byClassifier
+                      ? t(
+                          "editor.guardrails.customPolicyQuestionHint",
+                          "Write it as one yes/no question where yes means a violation.",
+                        )
+                      : t(
+                          "editor.guardrails.customPolicyHint",
+                          "Extra rules appended to every analysis.",
+                        )
+                  }
+                  help={
+                    byClassifier
+                      ? t(
+                          "editor.guardrails.customPolicyQuestionHelp",
+                          "For example: “Does the reply promise the customer a refund?”\n\nA rule written as a statement (“the assistant must not…”) is read the wrong way round, and clean replies trip it.",
+                        )
+                      : undefined
+                  }
                 >
                   <Textarea
                     value={g.customPolicy}
@@ -449,6 +728,26 @@ export function GuardrailsTab({
                     maxLength={CUSTOM_POLICY_MAX}
                   />
                 </FormField>
+                {byClassifier && g.customPolicy.trim() && (
+                  <FormField
+                    label={t(
+                      "editor.guardrails.customPolicyThreshold",
+                      "Threshold for the custom policy",
+                    )}
+                    description={t(
+                      "editor.guardrails.customPolicyThresholdHint",
+                      "From 0 to 1, like the checks' thresholds.",
+                    )}
+                  >
+                    {thresholdInput(
+                      "customPolicy",
+                      t(
+                        "editor.guardrails.customPolicyThreshold",
+                        "Threshold for the custom policy",
+                      ),
+                    )}
+                  </FormField>
+                )}
               </Section>
             </>
           )}

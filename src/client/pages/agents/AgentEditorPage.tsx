@@ -117,6 +117,7 @@ import { isFullDetailWindowOpen } from "@/modules/flowlog/settings";
 import {
   GUARDRAILS_DEFAULTS,
   type GuardrailsConfig,
+  guardrailCredentialRef,
 } from "@/modules/guardrails/settings";
 import { readMemoryConfig } from "@/modules/memory/settings";
 import type { MonitoringEngine } from "@/modules/observe/settings";
@@ -1261,6 +1262,10 @@ function AgentEditor() {
       observation.engine === "decisions" &&
       observation.decisions !== null,
     guardrailsEnabled: guardrails.enabled,
+    guardrailsChatModelShown:
+      guardrails.enabled && guardrails.classifier === "chat",
+    guardrailsClassifierShown:
+      guardrails.enabled && guardrails.classifier === "decisions",
     followUpEnabled: followUp.enabled,
     followUpSteps: followUp.steps.length,
     snoozedFollowUpEnabled:
@@ -1364,6 +1369,8 @@ function AgentEditor() {
       customTools?.all ?? null,
     )?.credentialRef,
     "settings.guardrails.credentialRef": guardrails.credentialRef,
+    "settings.guardrails.decisions.credentialRef":
+      guardrails.decisions.credentialRef,
     "availability.awayMessage": awayMessage.trim(),
     "contactAuth.denyMessage": contactAuth.denyMessage.trim(),
     // NOTE: `buildSettings` stores null for an empty prompt or one still at the default, so an untouched
@@ -2674,7 +2681,7 @@ function AgentEditor() {
     contactAuthHandoffEnabled: contactAuth.handoffEnabled,
     contactAuthDenyMessage: contactAuth.denyMessage,
     guardrailsEnabled: guardrails.enabled,
-    guardrailsCredentialRef: guardrails.credentialRef ?? "",
+    guardrailsCredentialRef: guardrailCredentialRef(guardrails) ?? "",
     guardrailsFailures: guardrailHealth?.failures,
     guardrailsLastFailureAt: guardrailHealth?.lastAt,
     pendingRefs,
@@ -2988,7 +2995,7 @@ function AgentEditor() {
     // NOTE: Same two hard requirements the runtime has (modules/guardrails/gate): the feature switched on
     // and its OWN credential resolved. A direction being off is not checked here — that is a per-
     // direction answer, and the gate already returns "not-run" for it without costing anything.
-    guardrails: guardrails.enabled && !!guardrails.credentialRef,
+    guardrails: guardrails.enabled && !!guardrailCredentialRef(guardrails),
   };
 
   // Live draft sent with each playground turn: the unsaved prompt/model/settings (never grants —
@@ -4753,6 +4760,12 @@ function AgentEditor() {
                   credential: refusal.at(
                     "settings.guardrails.credentialRef",
                     currentRef.current["settings.guardrails.credentialRef"],
+                  ),
+                  decisionsCredential: refusal.at(
+                    "settings.guardrails.decisions.credentialRef",
+                    currentRef.current[
+                      "settings.guardrails.decisions.credentialRef"
+                    ],
                   ),
                   customPolicy: refusal.at(
                     "guardrails.customPolicy",

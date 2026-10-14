@@ -155,6 +155,8 @@ function view(over: Partial<EditorControlsShown> = {}): EditorControlsShown {
     modelFallbackChosen: true,
     decisionsEngineShown: true,
     guardrailsEnabled: true,
+    guardrailsChatModelShown: true,
+    guardrailsClassifierShown: true,
     followUpEnabled: true,
     followUpSteps: 2,
     snoozedFollowUpEnabled: true,
@@ -311,12 +313,30 @@ describe("editorRefusalFields", () => {
     // GuardrailsTab draws gr-input/gr-output/gr-policy AND the credential picker only while the
     // switch is on; gr-model is the section that survives, and it holds the switch.
     const off = editorRefusalFields(
-      view({ tab: "guardrails", guardrailsEnabled: false }),
+      view({
+        tab: "guardrails",
+        guardrailsEnabled: false,
+        guardrailsChatModelShown: false,
+        guardrailsClassifierShown: false,
+      }),
     );
     expect(off.drawn).toEqual([]);
     expect(
       editorRefusalFields(view({ tab: "guardrails" })).drawn.length,
     ).toBeGreaterThan(0);
+  });
+
+  test("the guardrails tab draws the credential of whoever judges, not the other one", () => {
+    const chat = editorRefusalFields(
+      view({ tab: "guardrails", guardrailsClassifierShown: false }),
+    ).drawn;
+    expect(chat).toContain("settings.guardrails.credentialRef");
+    expect(chat).not.toContain("settings.guardrails.decisions.credentialRef");
+    const classifier = editorRefusalFields(
+      view({ tab: "guardrails", guardrailsChatModelShown: false }),
+    ).drawn;
+    expect(classifier).toContain("settings.guardrails.decisions.credentialRef");
+    expect(classifier).not.toContain("settings.guardrails.credentialRef");
   });
 
   test("the follow-up notes stop where the editor's step list does", () => {

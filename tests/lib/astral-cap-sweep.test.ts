@@ -420,7 +420,7 @@ const BARE_SLICES: Record<
   // The same ceiling at its source, over the same array of titles (graph/tools/label-view.ts).
   "src/graph/tools/label-view.ts": [1, "array"],
   "src/graph/tools/toolName.ts": [1, "ascii"],
-  "src/graph/trace.ts": [2, "array + index"],
+  "src/graph/trace.ts": [3, "array + index"],
   "src/lib/redact.ts": [1, "array"],
   "src/lib/ssrf.ts": [1, "index"],
   "src/lib/text.ts": [3, "the-cut"],

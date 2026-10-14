@@ -29,7 +29,10 @@ import {
   guardrailHealthWindowStart,
   readGuardrailHealth,
 } from "@/modules/guardrails/health";
-import { readGuardrailsConfig } from "@/modules/guardrails/settings";
+import {
+  guardrailCredentialRef,
+  readGuardrailsConfig,
+} from "@/modules/guardrails/settings";
 import { readMemoryConfig } from "@/modules/memory/settings";
 import { readKnowledgeConfig } from "@/modules/rag/review-settings";
 import { readSttConfig } from "@/modules/stt/settings";
@@ -266,7 +269,7 @@ export async function readAgentConfigHealth(
     contactAuthHandoffEnabled: contactAuth.handoffEnabled,
     contactAuthDenyMessage: contactAuth.denyMessage ?? "",
     guardrailsEnabled: guardrails.enabled,
-    guardrailsCredentialRef: guardrails.credentialRef ?? "",
+    guardrailsCredentialRef: guardrailCredentialRef(guardrails) ?? "",
     guardrailsFailures: guardrailHealth?.failures,
     guardrailsLastFailureAt: guardrailHealth?.lastAt,
     pendingRefs,

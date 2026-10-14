@@ -30,6 +30,7 @@ import {
 } from "@/modules/cross-inbox-case/carry-attachments-settings";
 import { CROSS_INBOX_CASE_ATTRIBUTE_KEY_RE } from "@/modules/cross-inbox-case/settings";
 import {
+  DECISION_PROVIDERS,
   decisionsPatchSchema,
   decisionsSchema,
 } from "@/modules/decisions/config";
@@ -38,7 +39,11 @@ import {
   parseIsoInstant,
 } from "@/modules/flowlog/settings";
 import { FOLLOW_UP_DELAY_UNITS } from "@/modules/followups/settings";
-import { GUARDRAIL_ACTIONS } from "@/modules/guardrails/settings";
+import {
+  GUARDRAIL_ACTIONS,
+  GUARDRAIL_CLASSIFIERS,
+  GUARDRAIL_THRESHOLD_KEYS,
+} from "@/modules/guardrails/settings";
 import { HANDOFF_MODES } from "@/modules/handoff/settings";
 import {
   OTHER_INBOXES_LIMITS,
@@ -826,38 +831,95 @@ const guardrailOutput = z.looseObject({
     ),
 });
 
-const guardrails = z.looseObject({
-  enabled: z.boolean().optional(),
-  provider: oneOf(MODEL_PROVIDERS)
-    .optional()
-    .describe("the guardrails agent's OWN model provider, not the agent's"),
-  model: z
-    .string()
-    .optional()
-    .describe(
-      "empty resolves to the provider default (openai-compatible keeps empty: the server picks)",
-    ),
-  credentialRef: z
-    .string()
-    .nullable()
-    .optional()
-    .describe("vault entry NAME (never the key itself)"),
-  baseURL: z.string().nullable().optional(),
-  // NOTE: Item type declared, count and length not: readCompetitors DROPS a non-string (so declaring it
-  // turns a silent loss into a named refusal) but truncates the list and each name, which must keep
-  // parsing.
-  competitors: z.array(z.string()).optional(),
-  customPolicy: z
-    .string()
+// A threshold is refused outside 0..1 rather than clamped: GET returns what was stored, and a stored
+// -0.5 would be read by the screening as 0 while the API kept showing -0.5.
+const guardrailThreshold = z
+  .number()
+  .min(0)
+  .max(1)
+  .optional()
+  .describe("probability at or above which the check trips; default 0.8");
+
+const guardrailDecisions = z.looseObject({
+  provider: oneOf(DECISION_PROVIDERS)
     .optional()
     .describe(
-      `free text appended to every analysis prompt; refused above ${CUSTOM_POLICY_MAX} characters, not trimmed`,
+      "the classification API: typesafe (Jev) or openai (OpenAI Decisions)",
     ),
-  input: guardrailInput.optional().describe("screens the CUSTOMER message"),
-  output: guardrailOutput
+  model: modelId(),
+  credentialRef: credentialRef(),
+  thresholds: z
+    .looseObject(
+      Object.fromEntries(
+        GUARDRAIL_THRESHOLD_KEYS.map((k) => [k, guardrailThreshold]),
+      ),
+    )
     .optional()
-    .describe("screens the AGENT reply before it is sent"),
+    .describe(
+      "per check, plus customPolicy for the operator's policy; absent = 0.8",
+    ),
 });
+
+const guardrails = z
+  .looseObject({
+    enabled: z.boolean().optional(),
+    classifier: oneOf(GUARDRAIL_CLASSIFIERS)
+      .optional()
+      .describe(
+        "who judges: chat = the guardrails model writes a verdict (default); decisions = a classification API asks each check as a yes/no question, configured under `decisions`",
+      ),
+    decisions: guardrailDecisions
+      .optional()
+      .describe(
+        "the classification API used when classifier is decisions; the chat model fields stay stored for switching back",
+      ),
+    provider: oneOf(MODEL_PROVIDERS)
+      .optional()
+      .describe("the guardrails agent's OWN model provider, not the agent's"),
+    model: z
+      .string()
+      .optional()
+      .describe(
+        "empty resolves to the provider default (openai-compatible keeps empty: the server picks)",
+      ),
+    credentialRef: z
+      .string()
+      .nullable()
+      .optional()
+      .describe("vault entry NAME (never the key itself)"),
+    baseURL: z.string().nullable().optional(),
+    // NOTE: Item type declared, count and length not: readCompetitors DROPS a non-string (so declaring it
+    // turns a silent loss into a named refusal) but truncates the list and each name, which must keep
+    // parsing.
+    competitors: z.array(z.string()).optional(),
+    customPolicy: z
+      .string()
+      .optional()
+      .describe(
+        `free text appended to every analysis prompt; refused above ${CUSTOM_POLICY_MAX} characters, not trimmed`,
+      ),
+    input: guardrailInput.optional().describe("screens the CUSTOMER message"),
+    output: guardrailOutput
+      .optional()
+      .describe("screens the AGENT reply before it is sent"),
+  })
+  .superRefine((v, ctx) => {
+    // A classification API answers numbers: no model writes the replacement `generated` sends. Asked
+    // over the whole block (`wholeBlock`), since switching the classifier makes an unchanged action
+    // wrong. The MCP patch reaches here merged, so REST and MCP refuse the same write.
+    if (v.classifier !== "decisions") return;
+    for (const dir of ["input", "output"] as const) {
+      if (v[dir]?.action === "generated") {
+        ctx.addIssue({
+          code: "custom",
+          path: [dir, "action"],
+          message:
+            "the decisions classifier cannot write a replacement reply: choose template, silent or handoff",
+          params: { wholeBlock: 2 },
+        });
+      }
+    }
+  });
 
 const kanban = z.looseObject({
   instructions: toolNote()

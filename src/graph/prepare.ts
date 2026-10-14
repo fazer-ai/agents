@@ -93,6 +93,7 @@ import {
 import { readObservabilityConfig } from "@/modules/flowlog/settings";
 import {
   type GuardrailsConfig,
+  guardrailCredentialRef,
   readGuardrailsConfig,
 } from "@/modules/guardrails/settings";
 import {
@@ -566,8 +567,10 @@ export async function loadAgentConfig(
   const guardrails = readGuardrailsConfig(effSettings);
   let guardrailsApiKey = "";
   let guardrailsCredentialBaseUrl: string | null = null;
-  if (guardrails.enabled && guardrails.credentialRef) {
-    const gEntry = await tryResolveApiKeyEntry(db, guardrails.credentialRef);
+  // The chat model's key, or the decisions provider's, whichever the screening uses.
+  const guardrailsRef = guardrailCredentialRef(guardrails);
+  if (guardrails.enabled && guardrailsRef) {
+    const gEntry = await tryResolveApiKeyEntry(db, guardrailsRef);
     if (gEntry.state === "ok") {
       guardrailsApiKey = gEntry.secret;
       guardrailsCredentialBaseUrl = gEntry.baseUrl;
@@ -577,7 +580,7 @@ export async function loadAgentConfig(
           ? "agent %s: guardrails credentialRef %s resolves to a %s credential, which cannot be used as an API key — guardrails analysis is skipped"
           : "agent %s: guardrails credentialRef %s did not resolve — guardrails analysis is skipped",
         String(args.agentId),
-        guardrails.credentialRef,
+        guardrailsRef,
         gEntry.state === "unusable" ? gEntry.kind : "",
       );
     }

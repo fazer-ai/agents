@@ -97,6 +97,17 @@ export function traceGuardrail(r: GuardrailReport): TraceGuardrail {
     ...(r.rationale
       ? { rationale: scrubbedClip(r.rationale, OUTPUT_MAX) }
       : {}),
+    // Numbers and the screening's own question keys (./guardrails/classify), not model text: copied
+    // as they are, bounded in count like the categories.
+    ...(r.scores?.length
+      ? {
+          scores: r.scores.slice(0, CATEGORIES_MAX).map((s) => ({
+            category: scrubbedClip(s.category, CATEGORY_MAX),
+            probability: s.probability,
+            threshold: s.threshold,
+          })),
+        }
+      : {}),
   };
 }
 

@@ -6,6 +6,7 @@ import {
   type LangfuseConfig,
 } from "@/graph/observability";
 import {
+  recordDirectUsage,
   UsageCapture,
   type UsagePersist,
   usageAttribution,
@@ -15,6 +16,7 @@ import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { literalForChatwoot } from "@/modules/chatwoot/liquid";
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
 import { analyzeGuardrail } from "./analyze";
+import { classifyGuardrail, type GuardrailScore } from "./classify";
 import { loggableCategories } from "./log-categories";
 import { judgesAnything } from "./prompts";
 import type { GuardrailAction, GuardrailsConfig } from "./settings";
@@ -104,6 +106,26 @@ export interface GuardrailReport {
   // The text that was refused, on a hand-over only: the person taking the case over has to read what
   // the customer was not sent, and nobody else will ever show it to them.
   refused?: string;
+  // Under a decisions provider, what each question answered and the threshold it was held to, on
+  // every screening that ran (clean ones too, since "approved at 0.12 against 0.8" is what tells an
+  // operator whether a threshold is right). Numbers and our own keys only; there is no rationale.
+  scores?: GuardrailScore[];
+}
+
+// The scores as one line an operator reads in the note: the tripped ones first.
+export function scoresLine(scores: GuardrailScore[]): string {
+  const fmt = (n: number) => n.toFixed(2);
+  return [...scores]
+    .sort(
+      (a, b) =>
+        Number((b.probability ?? -1) >= b.threshold) -
+        Number((a.probability ?? -1) >= a.threshold),
+    )
+    .map(
+      (s) =>
+        `${s.category} ${s.probability === null ? "?" : fmt(s.probability)} (threshold ${fmt(s.threshold)})`,
+    )
+    .join(", ");
 }
 
 // Where a screening gets announced to a human. The gate decides WHEN (one place, below); this decides
@@ -125,7 +147,9 @@ export function chatwootNoteSink(
       r.outcome !== "handed-off"
     )
       return;
-    const head = `Guardrail (${r.direction}): ${r.categories?.join(", ") || "policy"} — ${r.action}. ${r.rationale ?? ""}`;
+    const head = r.scores
+      ? `Guardrail (${r.direction}): ${r.categories?.join(", ") || "policy"} — ${r.action}. ${scoresLine(r.scores)}`
+      : `Guardrail (${r.direction}): ${r.categories?.join(", ") || "policy"} — ${r.action}. ${r.rationale ?? ""}`;
     await client
       // The rationale and the refused reply are model text, escaped for Chatwoot's Liquid.
       .sendPrivateNote(
@@ -173,6 +197,8 @@ export interface GuardrailGateParams {
   makeModel?: typeof createChatModel;
   // Overrides the ledger sink. Tests inject; production takes the default, which writes the row.
   persistUsage?: UsagePersist;
+  // The decisions provider's fetch, under the decisions classifier. Tests inject.
+  decisionFetch?: typeof fetch;
   // The tenant's Langfuse, for the other book: the gate runs outside the graph, so the turn's trace
   // handler never sees its calls, and the dollar ceiling (which sums Langfuse's generations) would miss
   // them. Required so no call site can forget it; null when the tenant has none.
@@ -262,6 +288,143 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
     // and by then the operator has been told.
   };
 
+  // The trip, from a verdict to what the caller does and what the operator reads. One place for both
+  // classifiers, so a new action cannot reach one of them only.
+  const tripped = (
+    direction: "input" | "output",
+    subject: string,
+    categories: string[],
+    replacement: string | null,
+    extra: Pick<GuardrailReport, "rationale" | "scores">,
+    logged: Record<string, unknown>,
+  ): { d: GuardrailDecision; r: GuardrailReport } => {
+    const dir = gr[direction];
+    // A classifier hands no replacement in, so its `generated` lands on the template below.
+    const action = dir.action;
+    // The turn trail and the operator note report what the guardrail DID, not what it was
+    // configured to do. `generated` with no replacement in hand sends the template — when the model
+    // returns none, and on the input direction every time (see ./analyze.ts) — and an operator
+    // reading "generated" on a line where the template went out is reading the config back, not the
+    // event.
+    const effectiveAction =
+      action === "generated" && replacement === null ? "template" : action;
+    emitFlowEvent(p.flow, {
+      stage: "guardrail",
+      status: "ok",
+      level: "warn",
+      detail: { direction, action: effectiveAction, ...logged },
+    });
+    const r: GuardrailReport = {
+      direction,
+      outcome:
+        action === "silent"
+          ? "suppressed"
+          : action === "handoff"
+            ? "handed-off"
+            : "replaced",
+      action: effectiveAction,
+      categories,
+      ...extra,
+      ...(action === "handoff" ? { refused: subject } : {}),
+    };
+    if (action === "silent") return { d: { kind: "suppressed" }, r };
+    if (action === "handoff")
+      return {
+        d: { kind: "handed-off", reply: dir.handoffMessage || null },
+        r,
+      };
+    return {
+      d:
+        effectiveAction === "generated" && replacement !== null
+          ? { kind: "replaced", reply: replacement, generated: true }
+          : { kind: "replaced", reply: dir.templateMessage },
+      r,
+    };
+  };
+
+  // The screening under a decisions provider (./classify). Same outcomes and the same lines as the
+  // chat verdict, with the scores in place of a rationale.
+  const screenByClassifier = async (
+    direction: "input" | "output",
+    subject: string,
+    checks: GuardrailsConfig["input"]["checks"],
+  ): Promise<{ d: GuardrailDecision; r: GuardrailReport | null }> => {
+    if (!p.apiKey) {
+      emitFlowEvent(p.flow, {
+        stage: "guardrail",
+        status: "error",
+        level: "warn",
+        detail: { direction, outcome: "credential_not_found" },
+      });
+      return {
+        d: { kind: "unavailable", modelRan: false },
+        r: { direction, outcome: "unavailable" },
+      };
+    }
+    const verdict = await classifyGuardrail(
+      gr.decisions,
+      {
+        direction,
+        text: subject,
+        checks,
+        competitors: gr.competitors,
+        customPolicy: gr.customPolicy,
+        systemPrompt: direction === "output" ? p.systemPrompt : undefined,
+        customerMessage: p.customerMessage,
+      },
+      p.apiKey,
+      p.credentialBaseUrl ?? null,
+      p.decisionFetch,
+    );
+    // Recorded per call that came back: a failed one bills nothing either provider documents. A
+    // ledger write never breaks the screening it records.
+    for (const c of verdict.calls) {
+      await recordDirectUsage(p.flow, {
+        provider: gr.decisions.provider,
+        model: gr.decisions.model,
+        node: "guardrail",
+        promptTokens: c.inputTokens,
+        completionTokens: 0,
+        durationMs: c.durationMs,
+      }).catch(() => {});
+    }
+    // Numbers and our own question keys: nothing in a score is text the provider wrote.
+    const logged = {
+      categories: verdict.categories,
+      scores: verdict.scores,
+    };
+    if (verdict.error) {
+      emitFlowEvent(p.flow, {
+        stage: "guardrail",
+        status: "error",
+        level: "warn",
+        detail: { direction, outcome: "analysis_failed", ...logged },
+        errorMessage: verdict.error,
+      });
+    }
+    // Nothing was asked: the only enabled check had nothing to judge with (competitor mentions
+    // with no names). Same answer as a direction with nothing left to ask.
+    if (verdict.scores.length === 0) return { d: { kind: "not-run" }, r: null };
+    if (!verdict.violated) {
+      // A provider was asked, however it came back, so the caller's reads are a round trip old.
+      const d: GuardrailDecision = verdict.error
+        ? { kind: "unavailable", modelRan: true }
+        : { kind: "clean" };
+      return {
+        d,
+        r: { direction, outcome: d.kind, scores: verdict.scores },
+      };
+    }
+    return tripped(
+      direction,
+      subject,
+      verdict.categories,
+      null,
+      { scores: verdict.scores },
+      logged,
+    );
+  };
+
   // The screening itself. It returns the report alongside the decision so the ANNOUNCEMENT has a
   // single call site (below), instead of one per outcome: an outcome added later would otherwise
   // reach the operator on whichever paths someone remembered.
@@ -286,6 +449,8 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
     if (!judgesAnything({ direction, checks, customPolicy: gr.customPolicy })) {
       return { d: { kind: "not-run" }, r: null };
     }
+    if (gr.classifier === "decisions")
+      return screenByClassifier(direction, subject, checks);
     const model = resolveModel(direction);
     if (!model)
       return {
@@ -335,59 +500,20 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
         : { kind: "clean" };
       return { d, r: { direction, outcome: d.kind } };
     }
-    // The turn trail and the operator note report what the guardrail DID, not what it was
-    // configured to do. `generated` with no replacement in hand sends the template — when the model
-    // returns none, and on the input direction every time (see ./analyze.ts) — and an operator
-    // reading "generated" on a line where the template went out is reading the config back, not the
-    // event.
-    const replacement =
-      dir.action === "generated" ? verdict.suggestedReply : null;
-    const effectiveAction =
-      dir.action === "generated" && replacement === null
-        ? "template"
-        : dir.action;
-    emitFlowEvent(p.flow, {
-      stage: "guardrail",
-      status: "ok",
-      level: "warn",
-      // NOTE: `categories` and `rationale` are both model-written, so neither can be copied into
-      // this row as it stands: `rationale` explains what in the message violated the policy, so it
-      // quotes the message, and `categories` is asked for as policy keys but arrives as whatever
-      // the model wrote. What goes in is the part with a known vocabulary, plus a COUNT of what did
-      // not match it, which is how "it violated something we cannot name here" stays visible. The
-      // announcement below carries both in full, wherever the caller puts it.
-      detail: {
-        direction,
-        action: effectiveAction,
-        ...loggableCategories(verdict.categories),
-      },
-    });
-    const r: GuardrailReport = {
+    // NOTE: `categories` and `rationale` are both model-written, so neither can be copied into
+    // the log row as it stands: `rationale` explains what in the message violated the policy, so it
+    // quotes the message, and `categories` is asked for as policy keys but arrives as whatever
+    // the model wrote. What goes in is the part with a known vocabulary, plus a COUNT of what did
+    // not match it, which is how "it violated something we cannot name here" stays visible. The
+    // announcement carries both in full, wherever the caller puts it.
+    return tripped(
       direction,
-      outcome:
-        dir.action === "silent"
-          ? "suppressed"
-          : dir.action === "handoff"
-            ? "handed-off"
-            : "replaced",
-      action: effectiveAction,
-      categories: verdict.categories,
-      rationale: verdict.rationale,
-      ...(dir.action === "handoff" ? { refused: subject } : {}),
-    };
-    if (dir.action === "silent") return { d: { kind: "suppressed" }, r };
-    if (dir.action === "handoff")
-      return {
-        d: { kind: "handed-off", reply: dir.handoffMessage || null },
-        r,
-      };
-    return {
-      d:
-        replacement === null
-          ? { kind: "replaced", reply: dir.templateMessage }
-          : { kind: "replaced", reply: replacement, generated: true },
-      r,
-    };
+      subject,
+      verdict.categories,
+      dir.action === "generated" ? verdict.suggestedReply : null,
+      { rationale: verdict.rationale },
+      loggableCategories(verdict.categories),
+    );
   };
 
   return async (direction, subject) => {

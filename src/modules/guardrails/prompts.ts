@@ -52,6 +52,12 @@ const CHECK_DEFINITIONS: Record<
   },
 };
 
+// The key a check is named by, in the prompt, the log and the trace. Exported for the decisions
+// classifier (./classify), which names its questions the same way so a trip reads the same on both.
+export function checkKey(k: keyof GuardrailChecks): string {
+  return CHECK_DEFINITIONS[k].key;
+}
+
 // The keys the prompt asks a verdict to answer with. `categories` is model-written and nothing holds
 // it to this list, so `execution_logs.detail` records only these and counts the rest. An operator's
 // `customPolicy` is deliberately absent (the prompt gives it no key): naming it would mean editing the

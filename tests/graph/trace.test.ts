@@ -178,6 +178,32 @@ describe("traceGuardrail", () => {
     expect(e.categories?.[0]).not.toContain("sk-abcdefghijklmnopqrstuvwxyz");
   });
 
+  test("carries a classifier's scores, numbers as they came and the count bounded", () => {
+    const e = traceGuardrail({
+      ...report,
+      scores: [
+        { category: "toxicity", probability: 0.97, threshold: 0.8 },
+        { category: "custom_policy", probability: null, threshold: 0.5 },
+        ...Array.from({ length: 20 }, (_, i) => ({
+          category: `extra_${i}`,
+          probability: 0.1,
+          threshold: 0.8,
+        })),
+      ],
+    });
+    expect(e.scores?.[0]).toEqual({
+      category: "toxicity",
+      probability: 0.97,
+      threshold: 0.8,
+    });
+    expect(e.scores?.[1]?.probability).toBeNull();
+    expect(e.scores?.length).toBe(12);
+  });
+
+  test("no scores, no scores key", () => {
+    expect("scores" in traceGuardrail(report)).toBe(false);
+  });
+
   test("bounds the rationale, which nothing upstream bounds", () => {
     const e = traceGuardrail({ ...report, rationale: "x".repeat(9000) });
     expect((e.rationale as string).length).toBeLessThan(9000);

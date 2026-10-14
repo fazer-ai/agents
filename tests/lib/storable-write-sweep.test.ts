@@ -332,7 +332,7 @@ const ERROR_COLUMN_LINES: Record<string, [number, ErrorSite | string]> = {
   "src/modules/flowlog/read.ts": [4, "read"],
   "src/modules/flowlog/service.ts": [2, "guarded"],
   "src/modules/flowlog/webhook.ts": [1, "flow-event"],
-  "src/modules/guardrails/gate.ts": [2, "flow-event"],
+  "src/modules/guardrails/gate.ts": [3, "flow-event"],
   // The guardrail's own transfer, when the status change is refused.
   "src/modules/guardrails/handoff.ts": [1, "flow-event"],
   "src/modules/guardrails/health.ts": [4, "read"],

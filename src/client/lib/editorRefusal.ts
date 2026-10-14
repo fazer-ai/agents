@@ -74,6 +74,11 @@ const TEXT_TARGETS: ReadonlyArray<{ match: RegExp } & EditorTarget> = [
     tab: "guardrails",
     sectionId: "gr-policy",
   },
+  {
+    match: /^guardrails\.(classifier$|decisions\.)/,
+    tab: "guardrails",
+    sectionId: "gr-model",
+  },
   { match: /^guardrails\.input\./, tab: "guardrails", sectionId: "gr-input" },
   { match: /^guardrails\.output\./, tab: "guardrails", sectionId: "gr-output" },
   { match: /^vision\.extractionPrompt$/, tab: "behavior", sectionId: "vision" },
@@ -208,6 +213,10 @@ export interface EditorControlsShown {
   // engine is `decisions`.
   decisionsEngineShown: boolean;
   guardrailsEnabled: boolean;
+  // The guardrails tab draws one credential picker at a time: the chat model's, or the classification
+  // API's when that is who judges.
+  guardrailsChatModelShown: boolean;
+  guardrailsClassifierShown: boolean;
   followUpEnabled: boolean;
   // How many follow-up steps the Proactive section is showing. The note of a step that does not
   // exist is a name nothing can render, so the list stops where the editor's does.
@@ -238,7 +247,8 @@ const CREDENTIAL_SWITCH: Readonly<Record<string, SwitchName>> = {
   "memory.compaction.credentialRef": "memoryCompactionEnabled",
   "modelFallback.credentialRef": "modelFallbackChosen",
   "monitoring.decisions.credentialRef": "decisionsEngineShown",
-  "guardrails.credentialRef": "guardrailsEnabled",
+  "guardrails.credentialRef": "guardrailsChatModelShown",
+  "guardrails.decisions.credentialRef": "guardrailsClassifierShown",
 };
 
 interface OwnedField {

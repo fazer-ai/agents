@@ -1435,12 +1435,47 @@ function TraceRow({ entry }: { entry: TraceEntry }) {
             {guardrailTraceLabel(t, entry)}
           </span>
         </span>
-        {tripped && (
+        {tripped && !entry.scores && (
           <pre className="overflow-x-auto whitespace-pre-wrap rounded bg-bg-tertiary px-2 py-1 text-text-muted">
             {[entry.categories?.join(", "), entry.rationale]
               .filter(Boolean)
               .join(" — ")}
           </pre>
+        )}
+        {/* A classification API's screening (guardrails.classifier = decisions): every question with
+            what it answered and the threshold it was held to, clean screenings included, since
+            "approved at 0.12 against 0.8" is what tells whether a threshold is right. */}
+        {entry.scores && entry.scores.length > 0 && (
+          <ul
+            className="flex flex-col gap-0.5 rounded bg-bg-tertiary px-2 py-1 text-text-muted"
+            data-testid="guardrail-scores"
+          >
+            {entry.scores.map((s) => {
+              const missing = t(
+                "playground.trace.guardrailScoreMissing",
+                "no answer",
+              );
+              const hit =
+                s.probability !== null && s.probability >= s.threshold;
+              return (
+                <li
+                  key={s.category}
+                  className={cn("font-mono", { "text-warning": hit })}
+                >
+                  {t("playground.trace.guardrailScore", {
+                    defaultValue:
+                      "{{category}}: {{probability}} (threshold {{threshold}})",
+                    category: s.category,
+                    probability:
+                      s.probability === null
+                        ? missing
+                        : s.probability.toFixed(2),
+                    threshold: s.threshold.toFixed(2),
+                  })}
+                </li>
+              );
+            })}
+          </ul>
         )}
       </div>
     );

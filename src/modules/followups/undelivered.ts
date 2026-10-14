@@ -89,7 +89,7 @@ export async function lastReplyDelivery(params: {
     m.senderType === "agent_bot" &&
     m.senderId !== null &&
     bots.has(m.senderId);
-  // NOTE: a reaction counts, as it does for the flush (`pendingIncoming`).
+  // A reaction counts, as it does for the flush (`pendingIncoming`).
   const customer = (m: Row) =>
     m.messageType === "incoming" &&
     !m.private &&
@@ -208,7 +208,7 @@ export async function lastReplyDelivery(params: {
     };
   }
   const lost = missing.reduce((a, m) => (m.id > a.id ? m : a));
-  // NOTE: the newest incoming message read, not only the one answered: any after the reply was
+  // The newest incoming message read, not only the one answered: any after the reply was
   // already assessed above (a blank one, a reaction no turn runs for), and the hand-over's fence
   // compares against the mirror's newest inbound, which counts them.
   const answered = read

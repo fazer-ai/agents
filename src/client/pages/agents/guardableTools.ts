@@ -1,5 +1,5 @@
 import { NATIVE_TOOL_NAMES, REPLY_AS_TEXT_TOOL } from "@/graph/tools/catalog";
-import { mcpRuntimeBase } from "@/graph/tools/mcp-names";
+import { namespacedToolName } from "@/graph/tools/mcp-names";
 import { isGuardableToolName } from "@/modules/agents/tool-preconditions";
 import { DECISION_ACTION_TOOLS } from "@/modules/decisions/config";
 import { customToolsOf } from "./decisionsFormState";
@@ -123,25 +123,30 @@ export function assembledToolNames(
   const listed = new Set(catalog.native.map((n) => n.name));
   for (const n of NATIVE_TOOL_NAMES) if (!listed.has(n)) names.add(n);
   names.add(REPLY_AS_TEXT_TOOL);
-  // Each granted MCP tool's own name, and where n tools reach one name, the `_2` to `_n` the
-  // assembly gives the later ones: the suffixes it can reach, not every one it might in theory.
-  const byBase = new Map<string, number>();
-  for (const g of grants) {
-    if (g.source !== "MCP") continue;
-    const conn = catalog.mcpConnections.find(
-      (c) => c.id === g.mcpServerConnectionId,
-    );
-    if (!conn || conn.enabled === false) continue;
+  // The MCP names, by replaying the assembly's own allocation (`namespacedToolName`) in its order:
+  // connections by name, compared by code unit. Within one connection the assembly follows the
+  // server's listing, which this screen does not have; the grant's order stands in for it.
+  const mcp = grants
+    .filter((g) => g.source === "MCP")
+    .map((g) => ({
+      g,
+      conn: catalog.mcpConnections.find(
+        (c) => c.id === g.mcpServerConnectionId,
+      ),
+    }))
+    .filter(({ conn }) => conn !== undefined && conn.enabled !== false)
+    .sort((x, y) => {
+      const a = x.conn?.name ?? "";
+      const b = y.conn?.name ?? "";
+      return a < b ? -1 : a > b ? 1 : 0;
+    });
+  const used = new Set<string>();
+  for (const { g, conn } of mcp) {
+    if (!conn) continue;
     // NOTE: a tool listed twice in one grant is exposed once.
-    for (const tool of new Set(g.enabledTools ?? [])) {
-      const base = mcpRuntimeBase(conn.slug, tool);
-      byBase.set(base, (byBase.get(base) ?? 0) + 1);
-    }
+    for (const tool of new Set(g.enabledTools ?? []))
+      namespacedToolName(conn.slug, tool, used);
   }
-  for (const [base, count] of byBase) {
-    names.add(base);
-    for (let i = 2; i <= count; i++)
-      names.add(base.slice(0, 64 - `_${i}`.length) + `_${i}`);
-  }
+  for (const n of used) names.add(n);
   return names;
 }

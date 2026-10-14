@@ -283,6 +283,86 @@ describe("assembledToolNames", () => {
     expect(built.has("mcp__crm__create_deal_3")).toBe(false);
   });
 
+  // A real tool already named `foo_2` takes that name, so the second `foo` gets `_3`.
+  test("a suffix already taken by a real tool moves the collision on", () => {
+    const c = catalog({
+      mcpConnections: [
+        { id: "5", name: "CRM", enabled: true, slug: "crm" },
+        { id: "6", name: "CRM!", enabled: true, slug: "crm" },
+      ],
+    });
+    const built = assembledToolNames(
+      c,
+      [
+        grant({
+          source: "MCP",
+          mcpServerConnectionId: "5",
+          enabledTools: ["foo", "foo_2"],
+        }),
+        grant({
+          source: "MCP",
+          mcpServerConnectionId: "6",
+          enabledTools: ["foo"],
+        }),
+      ],
+      {},
+    );
+    expect([...built].filter((n) => n.startsWith("mcp__")).sort()).toEqual([
+      "mcp__crm__foo",
+      "mcp__crm__foo_2",
+      "mcp__crm__foo_3",
+    ]);
+  });
+
+  // The assembly reads connections by name. Here the order changes the result: A first gives B's
+  // `foo` the `_2` and pushes B's real `foo_2` to `foo_2_2`; B first would end on `foo_3` instead.
+  test("connections are replayed in name order, not grant order", () => {
+    const c = catalog({
+      mcpConnections: [
+        { id: "5", name: "B", enabled: true, slug: "crm" },
+        { id: "6", name: "A", enabled: true, slug: "crm" },
+      ],
+    });
+    const built = assembledToolNames(
+      c,
+      [
+        grant({
+          source: "MCP",
+          mcpServerConnectionId: "5",
+          enabledTools: ["foo", "foo_2"],
+        }),
+        grant({
+          source: "MCP",
+          mcpServerConnectionId: "6",
+          enabledTools: ["foo"],
+        }),
+      ],
+      {},
+    );
+    expect([...built].filter((n) => n.startsWith("mcp__")).sort()).toEqual([
+      "mcp__crm__foo",
+      "mcp__crm__foo_2",
+      "mcp__crm__foo_2_2",
+    ]);
+  });
+
+  test("a tool listed twice in one grant is one tool", () => {
+    const built = assembledToolNames(
+      catalog({
+        mcpConnections: [{ id: "5", name: "CRM", enabled: true, slug: "crm" }],
+      }),
+      [
+        grant({
+          source: "MCP",
+          mcpServerConnectionId: "5",
+          enabledTools: ["foo", "foo"],
+        }),
+      ],
+      {},
+    );
+    expect(built.has("mcp__crm__foo_2")).toBe(false);
+  });
+
   test("a name no other tool reaches gets no suffixes", () => {
     const built = assembledToolNames(
       catalog({

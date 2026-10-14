@@ -2,6 +2,7 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { EditorView } from "@codemirror/view";
+import { TooltipProvider } from "@radix-ui/react-tooltip";
 import {
   act,
   cleanup,
@@ -14,6 +15,7 @@ import {
 import { useEffect, useRef } from "react";
 import { MemoryRouter } from "react-router";
 import { ToastProvider, useModalController } from "@/client/components";
+import { invalidateVault } from "@/client/lib/vaultCache";
 import {
   formFromTool,
   insertEachBlock,
@@ -723,10 +725,19 @@ describe("the edit dialog, rendered", () => {
   afterEach(() => {
     cleanup();
     globalThis.fetch = realFetch;
+    vaultEntries = [];
+    invalidateVault();
   });
 
   // What the test endpoint answers, set per test.
   let testAnswer = { status: 200, raw: "{}" };
+  // What the vault listing answers, set per test.
+  let vaultEntries: Array<{
+    id: string;
+    name: string;
+    kind: string;
+    baseUrl: string | null;
+  }> = [];
 
   async function openStored(over: Partial<Tool> = {}) {
     const tool = legacyTool({
@@ -761,6 +772,7 @@ describe("the edit dialog, rendered", () => {
         });
       }
       if (path === "/api/v1/tools/1") return json({ tool });
+      if (path === "/api/v1/vault") return json({ entries: vaultEntries });
       return json({ items: [], entries: [], instances: [] });
     }) as unknown as typeof fetch;
     function Harness() {
@@ -776,7 +788,9 @@ describe("the edit dialog, rendered", () => {
     render(
       <MemoryRouter>
         <ToastProvider>
-          <Harness />
+          <TooltipProvider>
+            <Harness />
+          </TooltipProvider>
         </ToastProvider>
       </MemoryRouter>,
     );
@@ -839,6 +853,41 @@ describe("the edit dialog, rendered", () => {
       "/v1/x": false,
       "not a url": false,
       "https://api.example.com/y": true,
+    });
+  });
+
+  // A relative template is valid only when the credential supplies a base the runtime will prepend.
+  // A base URL stored on a kind that takes none is never dialled, so it cannot be that base: the
+  // dialog refuses the relative template exactly as it does with no credential at all.
+  test("a base URL on a kind that cannot carry one does not make a relative template valid", async () => {
+    const seen: Record<string, { testable: boolean; refused: boolean }> = {};
+    for (const kind of ["bearer_token", "openai"]) {
+      vaultEntries = [
+        {
+          id: "5",
+          name: `key-${kind}`,
+          kind,
+          baseUrl: "https://elsewhere.example",
+        },
+      ];
+      invalidateVault();
+      await openStored({ credentialRef: "vault:5" });
+      await screen.findByText(`key-${kind}`);
+      fireEvent.change(screen.getByDisplayValue("https://api.example.com/x"), {
+        target: { value: "/v1/x" },
+      });
+      seen[kind] = {
+        testable: testable(),
+        refused:
+          screen.queryAllByText(
+            "A relative URL requires a credential with a base URL.",
+          ).length > 0,
+      };
+      cleanup();
+    }
+    expect(seen).toEqual({
+      bearer_token: { testable: true, refused: false },
+      openai: { testable: false, refused: true },
     });
   });
 

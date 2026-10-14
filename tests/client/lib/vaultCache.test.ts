@@ -182,6 +182,31 @@ describe("useVaultBaseUrls", () => {
     cleanup();
   });
 
+  // The answer is the base the runtime will dial, so a base stored on a kind whose catalog entry
+  // takes none is no answer at all: the editor would lock a field to a host nothing ever calls.
+  test("a base URL on a kind that cannot carry one is not an endpoint", async () => {
+    entriesToReturn = [
+      {
+        id: "7",
+        name: "proxy",
+        kind: "openai_compatible",
+        baseUrl: "http://llama:8080/v1",
+      },
+      {
+        id: "9",
+        name: "stray",
+        kind: "openai",
+        baseUrl: "https://elsewhere.example/v1",
+      },
+    ];
+    const { result } = renderHook(() => useVaultBaseUrls());
+    await waitFor(() =>
+      expect(result.current("vault:7")).toBe("http://llama:8080/v1"),
+    );
+    expect(result.current("vault:9")).toBeNull();
+    cleanup();
+  });
+
   test("follows the vault when it changes underneath", async () => {
     entriesToReturn = [{ id: "7", name: "llama", kind: "openai" }];
     const { result } = renderHook(() => useVaultBaseUrls());

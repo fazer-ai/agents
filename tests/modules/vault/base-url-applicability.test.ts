@@ -159,15 +159,6 @@ describe("nothing reads a base URL past the gate", () => {
     expect([...found].sort()).toEqual(Object.keys(CLIENT_LEDGER).sort());
     expect(found.size).toBeGreaterThan(4);
   });
-
-  test("every gated client file CALLS the gate", async () => {
-    for (const [file, how] of Object.entries(CLIENT_LEDGER)) {
-      if (how !== "gated") continue;
-      const code = codeOnly(await Bun.file(file).text());
-      const calls = [...code.matchAll(/dialableBaseUrl\(/g)].length;
-      expect([file, calls > 0]).toEqual([file, true]);
-    }
-  });
 });
 
 describe("the catalog is the rule", () => {

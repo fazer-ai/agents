@@ -78,7 +78,7 @@ async function importWith(
 // import's 5s transaction. Asked of the pass itself, with no database in the way, and counted in
 // reads of the block rather than in milliseconds: the work is the claim, and a machine under load
 // stretches the milliseconds of the same work.
-//
+
 // The pass reads a block as it is, then judges the fixes in one batch, and asks once more with the
 // paddings taken out when a padding the reader does not honour spoiled the batch: three reads at most
 // for a block judged in one pass.

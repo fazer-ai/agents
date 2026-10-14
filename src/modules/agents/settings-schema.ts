@@ -903,23 +903,35 @@ const guardrails = z
       .optional()
       .describe("screens the AGENT reply before it is sent"),
   })
-  .superRefine((v, ctx) => {
-    // A classification API answers numbers: no model writes the replacement `generated` sends. Asked
-    // over the whole block (`wholeBlock`), since switching the classifier makes an unchanged action
-    // wrong. The MCP patch reaches here merged, so REST and MCP refuse the same write.
-    if (v.classifier !== "decisions") return;
-    for (const dir of ["input", "output"] as const) {
-      if (v[dir]?.action === "generated") {
-        ctx.addIssue({
-          code: "custom",
-          path: [dir, "action"],
-          message:
-            "the decisions classifier cannot write a replacement reply: choose template, silent or handoff",
-          params: { wholeBlock: 2 },
-        });
+  .superRefine(
+    (v, ctx) => {
+      // A classification API answers numbers: no model writes the replacement `generated` sends.
+      // Asked over the whole block (`wholeBlock`), since switching the classifier makes an unchanged
+      // action wrong. The MCP patch reaches here merged, so REST and MCP refuse the same write.
+      const bag = v as Record<string, unknown>;
+      if (bag.classifier !== "decisions") return;
+      for (const dir of ["input", "output"] as const) {
+        const d = bag[dir];
+        if (
+          d &&
+          typeof d === "object" &&
+          "action" in d &&
+          d.action === "generated"
+        ) {
+          ctx.addIssue({
+            code: "custom",
+            path: [dir, "action"],
+            message:
+              "the decisions classifier cannot write a replacement reply: choose template, silent or handoff",
+            params: { wholeBlock: 2 },
+          });
+        }
       }
-    }
-  });
+    },
+    // Runs past the aborting issues too: a normalized block carries the input's reply-only checks,
+    // which fail their `never` and are let through by the write boundary when typed as the reader's.
+    { when: (payload) => !!payload.value && typeof payload.value === "object" },
+  );
 
 const kanban = z.looseObject({
   instructions: toolNote()

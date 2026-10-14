@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { assertSettingsClosedValues } from "@/modules/agents/service";
 import { BEHAVIOR_PATCH_SHAPE } from "@/modules/agents/settings-schema";
 import * as settings from "@/modules/guardrails/settings";
 
@@ -90,6 +91,30 @@ describe("write boundary", () => {
     expect(
       issuesOf({ classifier: "decisions", input: { action: "template" } }),
     ).toEqual([]);
+  });
+
+  test("a normalized block, as GET returns it, is refused with generated under the classifier", () => {
+    // The reader fills the input's reply-only checks, which fail their `never` and are let through
+    // by the boundary; the refusal of `generated` must not ride on them.
+    const read = readGuardrailsConfig({
+      guardrails: { enabled: true, output: { action: "generated" } },
+    });
+    const write = (g: unknown, stored: unknown) => () =>
+      assertSettingsClosedValues({ guardrails: g }, { guardrails: stored });
+    expect(write({ ...read, classifier: "decisions" }, read)).toThrow();
+    expect(write(read, read)).not.toThrow();
+    const asTemplate = {
+      ...read,
+      classifier: "decisions",
+      output: { ...read.output, action: "template" },
+    };
+    expect(write(asTemplate, read)).not.toThrow();
+    expect(
+      write(
+        { ...asTemplate, input: { ...read.input, action: "generated" } },
+        asTemplate,
+      ),
+    ).toThrow();
   });
 
   test("a provider outside the list, a threshold that is not a number or outside 0..1 are refused", () => {

@@ -83,6 +83,7 @@ import {
 } from "@/modules/other-inboxes/context";
 import { signatureFor } from "@/modules/signature/service";
 import { deliverReply, type ReplyDelivery } from "@/modules/split/service";
+import type { transcribeInboundAudio } from "@/modules/stt/service";
 import type { TtsCheckConfig } from "@/modules/tts/check";
 import { plannedReplyIsAudio, spokenNoticeFor } from "@/modules/tts/modality";
 import { synthesizeReply } from "@/modules/tts/service";
@@ -261,6 +262,9 @@ export interface RuntimeDeps {
   visionFetch?: typeof fetch;
   // Injectable fetch for the STT provider (tests); real fetch in production.
   sttFetch?: typeof fetch;
+  // Injectable transcriber (tests): the whole voice-note transcription (download, provider, write-back)
+  // in place of `transcribeInboundAudio`, for a test whose subject is what the words do after.
+  transcribe?: typeof transcribeInboundAudio;
   // How long a debounce flush waits for a voice note of its burst whose transcription is still in
   // flight (tests shorten it); `FLUSH_TRANSCRIPTION_WAIT_MS` otherwise.
   transcriptionWaitMs?: number;

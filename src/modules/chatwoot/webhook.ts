@@ -2061,7 +2061,8 @@ export async function runEagerMedia(
           { agentId: owner.agentId },
         );
         if (sttCfg && (await admitted())) {
-          const text = await transcribeInboundAudio({
+          const transcribe = owner.deps?.transcribe ?? transcribeInboundAudio;
+          const text = await transcribe({
             tenantId,
             instanceId,
             conversationId: n.conversationId,

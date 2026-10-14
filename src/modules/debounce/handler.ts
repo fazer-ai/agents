@@ -668,7 +668,8 @@ export async function fillMissingAudio(args: {
     if (!audio) continue;
     attempted = true;
     try {
-      const text = await transcribeInboundAudio({
+      const transcribe = args.deps?.transcribe ?? transcribeInboundAudio;
+      const text = await transcribe({
         tenantId: args.tenantId,
         instanceId: args.instanceId,
         conversationId: args.conversationId,

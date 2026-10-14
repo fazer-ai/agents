@@ -119,15 +119,16 @@ function lateAudio(
 
 // A client whose scheduler writes for an ingestion all throw: the transient failure the arm is
 // retried against, driven to the end of its retries.
-function failingIngest() {
+function failingIngest(onArm: () => Promise<void> = async () => {}) {
   return appDb.$extends({
     query: {
       schedulerJob: {
-        $allOperations({ args, query }) {
+        async $allOperations({ args, query }) {
           const shape = JSON.stringify(args, (_k, v) =>
             typeof v === "bigint" ? String(v) : v,
           );
           if (shape.includes("INGEST_MESSAGE")) {
+            await onArm();
             throw new Error("injected: scheduler unavailable");
           }
           return query(args);
@@ -841,74 +842,90 @@ describe.skipIf(!dbUp)("late media reaches memory", () => {
     expect(row.inboundMessageId).toBe(6014);
   });
 
-  // WHERE THE FILL IS CALLED FROM, read off the source. The two cases above prove the rules; this
-  // one proves the wiring, and it is read rather than driven because driving it means a vault
-  // credential and an HTTP fake of a provider — the STT registry is a frozen map, so no stub can be
-  // registered. What matters is the POSITION: inside the branch that just produced a transcription,
-  // before the statement after it, because from there on the words exist nowhere durable but the row.
-  test("the fill sits in the branch that produced the transcription", async () => {
-    const src = await Bun.file(
-      new URL("../../src/modules/chatwoot/webhook.ts", import.meta.url)
-        .pathname,
-    ).text();
-    const stash = src.indexOf("n.message.transcribedText = text;");
-    expect(stash).toBeGreaterThan(-1);
-    const fill = src.indexOf("fillLedgerTranscribedMessage(", stash);
-    expect(fill).toBeGreaterThan(stash);
-    // Nothing between them but the assignment itself, comments, and the fill's own `await`: no other
-    // call, no branch, nothing that could be skipped or that could throw first.
-    const between = src
-      .slice(stash, fill)
-      .split("\n")
-      .map((l) => l.trim())
-      .filter((l) => l.length > 0 && !l.startsWith("//"))
-      .join(" ");
-    expect(between).toBe("n.message.transcribedText = text; await");
+  // THE WORDS THIS SIDE PAID FOR, on an update that arrived with raw audio: the eager pass transcribes
+  // it (the injected transcriber stands in for download, provider and write-back), and the scheduler
+  // refuses every ingestion arm, the transient failure a process death between the pass and the arm
+  // looks like to the sweep. Both cases below drive that one delivery.
+  async function deliverRawAudioThroughFailingArm(messageId: number) {
+    const n = lateAudio(messageId, { transcribed: false });
+    if (!n) throw new Error("unreachable: the fixture is a valid event");
+    const rowId = await newDeliveryRow();
+    const transcribed: number[] = [];
+    // What the row named when each arm was tried: a process dying at that instant leaves exactly this.
+    const namedAtArm: (number | null)[] = [];
+    const base = failingIngest(async () => {
+      const at = await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+        where: { id: rowId },
+        select: { inboundMessageId: true },
+      });
+      namedAtArm.push(at.inboundMessageId);
+    });
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: { settings: { stt: { enabled: true } } },
+    });
+    let outcome: unknown = null;
+    try {
+      await processChatwootDelivery({
+        tenantId,
+        instanceId,
+        deliveryRowId: rowId,
+        agentBotId: AGENT_BOT_ID,
+        normalized: n,
+        base,
+        deps: {
+          sleep: async () => {},
+          transcribe: async (p) => {
+            transcribed.push(p.messageId);
+            return TRANSCRIPTION;
+          },
+          makeClient: (async () =>
+            ({
+              sendMessage: async () => ({}),
+              sendPrivateNote: async () => ({}),
+            }) as unknown as ChatwootClient) as never,
+          makeModel: () => {
+            throw new Error("a late-media update must not run a turn");
+          },
+        },
+      });
+    } catch (err) {
+      outcome = err;
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { settings: {} },
+      });
+    }
+    const row = await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+      where: { id: rowId },
+      select: { inboundMessageId: true, status: true },
+    });
+    return { transcribed, namedAtArm, outcome, row };
+  }
+
+  // The fill sits in the branch that produced the transcription, before anything that can fail: from
+  // there on the words exist nowhere durable but the row, and a row that names nothing is closed by
+  // the sweep as carrying nothing.
+  test("a transcription the pass produced is on the ledger row before the arm can fail", async () => {
+    const r = await deliverRawAudioThroughFailingArm(6015);
+    expect(r.transcribed).toEqual([6015]);
+    expect(r.namedAtArm.length).toBeGreaterThan(0);
+    expect(r.namedAtArm.every((id) => id === 6015)).toBe(true);
+    expect(r.row.inboundMessageId).toBe(6015);
   });
 
-  // NOTE: ASKED AFTER THE ANALYSIS, not before it. The value at the top of the receiver is the WIRE's answer,
-  // and it decides whether the event reaches the runtime at all. But an update can carry RAW audio, and
-  // then the eager pass produces the words: read from the top's value, the retry and the failure guard
-  // would stand down on exactly the delivery that paid for the transcription. Read off the source for
-  // the same reason as the fill's position (the STT registry is a frozen map, so no stub provider can
-  // be registered): the value the guards read is computed after every eager pass in the function.
+  // NOTE: ASKED AFTER THE ANALYSIS, not before it. The value at the top of the receiver is the WIRE's
+  // answer, which here is "no words". Read from there, the arm would be tried once and the failure
+  // guard would stand down, settling the row and losing the words the pass just paid for.
   test("the ingestion guards read a transcription the eager pass produced", async () => {
-    const src = await Bun.file(
-      new URL("../../src/modules/chatwoot/webhook.ts", import.meta.url)
-        .pathname,
-    ).text();
-    const receiver = src.indexOf(
-      "export async function processChatwootDelivery(",
+    const r = await deliverRawAudioThroughFailingArm(6016);
+    expect(r.transcribed).toEqual([6016]);
+    expect(String(r.outcome)).toContain(
+      "the late transcription could not be armed",
     );
-    expect(receiver).toBeGreaterThan(-1);
-    const decl = src.indexOf(
-      "const carriesTranscription = inboundTranscriptionOnUpdate(n) !== null;",
-      receiver,
-    );
-    expect(decl).toBeGreaterThan(receiver);
-    // Every eager pass the receiver runs is behind it...
-    const before = src.slice(receiver, decl);
-    const after = src.slice(decl);
-    expect(before).toContain("await runEagerMedia(");
-    expect(after.slice(0, after.indexOf("\nexport "))).not.toContain(
-      "await runEagerMedia(",
-    );
-    // ...and the guards are the only readers, so none of them can see the wire's answer instead.
-    for (const guard of [
-      'if (carriesTranscription && ingested === "failed") {',
-      'if (carriesTranscription && ingested === "no-thread") {',
-    ]) {
-      expect(after).toContain(guard);
-    }
-    // O `retryArm` é o terceiro, e é procurado pelo CORPO e não por uma linha: o formatter quebra a lista
-    // de disjuntos em várias linhas, e uma cerca por linha reprovaria por FORMA. O que se prende é
-    // `carriesTranscription` estar dentro do argumento, ou seja, o valor lido ali é o de depois do eager
-    // pass.
-    const arm = after.indexOf("retryArm:");
-    expect(arm).toBeGreaterThan(-1);
-    expect(after.slice(arm, after.indexOf("sleep:", arm))).toContain(
-      "carriesTranscription",
-    );
+    expect(r.row.status).toBe("PROCESSING");
+    expect(r.namedAtArm.length).toBeGreaterThan(1);
   });
 
   // The gate is what the analysis PRODUCED, not the event's shape: an update carrying an audio

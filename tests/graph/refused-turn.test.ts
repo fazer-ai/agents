@@ -11,9 +11,11 @@ import {
   nudgeMessage,
 } from "@/graph/markers";
 import {
+  actedToolNames,
   planReactiveTurnRollback,
   planTurnRollback,
   type RollbackPlan,
+  turnActedBeforeItsReply,
 } from "@/graph/refused-turn";
 import { SKIP_REPLY_TOOL } from "@/graph/silence";
 
@@ -504,4 +506,131 @@ describe("planReactiveTurnRollback", () => {
       );
     });
   }
+});
+
+// The rollback above keeps a superseded turn's act and drops its closing line, and that
+// alone left the next turn answering the newer message as if the booking had been confirmed. So the
+// reactive path asks one more thing of the same slice: did THIS turn act before the sentence nobody
+// read? Only then is there an outcome the customer was never told.
+describe("turnActedBeforeItsReply", () => {
+  const ROWS: Array<{
+    name: string;
+    produced: BaseMessage[];
+    inert?: ReadonlySet<string>;
+    expected: boolean;
+  }> = [
+    {
+      name: "a booking followed by its unsent confirmation",
+      produced: [
+        h("h1", "pode ser terça às 10h"),
+        calling("a1", "calendar_create_event"),
+        toolResult("t1", "ok", "calendar_create_event"),
+        a("a2", "Agendado para terça às 10h."),
+      ],
+      expected: true,
+    },
+    {
+      name: "a turn that only wrote a reply did nothing the customer is owed",
+      produced: [h("h1", "oi"), a("a1", "Olá!")],
+      expected: false,
+    },
+    {
+      // The act belongs to a turn that was delivered. Reading past the customer's message would
+      // credit this turn with it, and every later refusal would carry a note about an old booking.
+      name: "an act from an earlier turn is not this turn's",
+      produced: [
+        h("h0", "pode ser terça"),
+        calling("a0", "calendar_create_event"),
+        toolResult("t0", "ok", "calendar_create_event"),
+        a("a1", "Agendado."),
+        h("h1", "obrigado"),
+        a("a2", "Por nada!"),
+      ],
+      expected: false,
+    },
+    {
+      name: "the silence tool did nothing, when it is ours",
+      produced: [
+        h("h1", "ok"),
+        calling("a1", SKIP_REPLY_TOOL),
+        toolResult("t1", "ok", SKIP_REPLY_TOOL),
+        a("a2", "."),
+      ],
+      inert: new Set([SKIP_REPLY_TOOL]),
+      expected: false,
+    },
+    {
+      // The same name bound to an operator's HTTP tool really called something.
+      name: "the silence tool's name on a tool that is not ours did act",
+      produced: [
+        h("h1", "ok"),
+        calling("a1", SKIP_REPLY_TOOL),
+        toolResult("t1", "ok", SKIP_REPLY_TOOL),
+        a("a2", "."),
+      ],
+      expected: true,
+    },
+    {
+      name: "a call the boundary refused never ran",
+      produced: [
+        h("h1", "pode ser terça"),
+        calling("a1", "calendar_create_event"),
+        refused("t1", "calendar_create_event", "a1-c"),
+        a("a2", "Agendado."),
+      ],
+      expected: false,
+    },
+    {
+      name: "a turn that said nothing has no reply to stand in for",
+      produced: [
+        h("h1", "pode ser terça"),
+        calling("a1", "calendar_create_event"),
+        toolResult("t1", "ok", "calendar_create_event"),
+      ],
+      expected: false,
+    },
+  ];
+
+  for (const row of ROWS) {
+    test(row.name, () => {
+      expect(turnActedBeforeItsReply(row.produced, row.inert)).toBe(
+        row.expected,
+      );
+    });
+  }
+});
+
+// What the operator's line names: the acts of this turn, once each, without the call that did nothing.
+describe("actedToolNames", () => {
+  test("the acts in call order, a repeat once, and neither the silence tool nor an earlier turn's", () => {
+    const produced = [
+      h("h0", "pode ser terça"),
+      calling("a0", "crm_update"),
+      toolResult("t0", "ok", "crm_update"),
+      a("r0", "feito"),
+      h("h1", "e quarta?"),
+      calling("a1", SKIP_REPLY_TOOL),
+      toolResult("t1", "ok", SKIP_REPLY_TOOL),
+      calling("a2", "calendar_create_event"),
+      toolResult("t2", "ok", "calendar_create_event"),
+      calling("a3", "send_email"),
+      toolResult("t3", "ok", "send_email"),
+      calling("a4", "calendar_create_event"),
+      toolResult("t4", "ok", "calendar_create_event"),
+      a("a5", "Agendado."),
+    ];
+    expect(actedToolNames(produced, new Set([SKIP_REPLY_TOOL]))).toEqual([
+      "calendar_create_event",
+      "send_email",
+    ]);
+  });
+
+  test("a turn with no reply to stand in for names nothing", () => {
+    const produced = [
+      h("h1", "pode ser terça"),
+      calling("a1", "calendar_create_event"),
+      toolResult("t1", "ok", "calendar_create_event"),
+    ];
+    expect(actedToolNames(produced)).toEqual([]);
+  });
 });

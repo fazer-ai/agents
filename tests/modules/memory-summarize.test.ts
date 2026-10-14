@@ -18,6 +18,7 @@ import {
   MEMORY_HEAD_OPEN,
   memoryHeadMessage,
   nudgeMessage,
+  undeliveredReplyNote,
 } from "@/graph/markers";
 import { DATA_FENCE, renderNudge } from "@/graph/nudge";
 import {
@@ -156,6 +157,19 @@ describe("renderTranscript", () => {
       ].join("\n"),
     );
     expect(t).not.toContain(HUMAN_HANDBACK_NOTE);
+  });
+
+  // The note a superseded turn leaves after an act is the system talking to the next
+  // turn, not dialogue, and the same marker rule keeps it out of the memory.
+  test("the undelivered-reply note is dropped, not attributed to anybody", () => {
+    const t = renderTranscript([
+      new HumanMessage("pode ser terça"),
+      undeliveredReplyNote(42),
+      new HumanMessage("e o endereço?"),
+    ]);
+    expect(t).toBe(
+      ["cliente: pode ser terça", "cliente: e o endereço?"].join("\n"),
+    );
   });
 
   // Same rule as the note above it, and for the same reason: a customer who types the sentence keeps

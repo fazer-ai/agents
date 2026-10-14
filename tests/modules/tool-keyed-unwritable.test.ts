@@ -44,4 +44,18 @@ describe("which tool names a write surface can carry", () => {
       "__proto__",
     ]);
   });
+
+  // The precondition block takes any guardable name (not starting with `_`), so `constructor` is a
+  // real tool name there: a rule on it and its tombstone both have to reach the write boundary.
+  test("the precondition block keeps a rule and a tombstone on `constructor` and its kin", () => {
+    const block = BEHAVIOR_PATCH_SHAPE.toolPreconditions.unwrap();
+    const names = CANDIDATES.filter((k) => !k.startsWith("_"));
+    const rule = { kind: "attribute", scope: "conversation", key: "k" };
+    for (const value of [rule, null]) {
+      const input = JSON.parse(
+        `{${names.map((k) => `"${k}":${JSON.stringify(value)}`).join(",")}}`,
+      );
+      expect(Object.keys(block.parse(input))).toEqual(names);
+    }
+  });
 });

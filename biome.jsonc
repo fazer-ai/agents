@@ -164,7 +164,6 @@
         "!tests/lib/source-text.test.ts",
         "!tests/modules/audit-actions.test.ts",
         "!tests/modules/audit-channel-family.test.ts",
-        "!tests/modules/billed-call-usage.test.ts",
         "!tests/modules/chatwoot-recover-delivery.test.ts",
         "!tests/modules/credential-reader-fence.test.ts",
         "!tests/modules/delivery-sweep.test.ts",

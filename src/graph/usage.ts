@@ -279,35 +279,42 @@ function noteTurnUsage(row: UsageRow): void {
 // first: did the agent take the turn this call was billed for? "A billed call on this conversation"
 // is not that question: vision runs on the incoming attachment BEFORE the bot-ownership gate, so an
 // image sent into a human-owned conversation bills the tenant while the agent never speaks. The map
-// is TOTAL, fenced in tests/modules/billed-call-usage.test.ts: a default of true would inflate
-// involvement, and a default of false would deflate it as quietly.
-export const USAGE_NODE_IS_AGENT_TURN: Readonly<Record<string, boolean>> =
-  Object.freeze({
-    agent: true,
-    nudge: true,
-    guardrail: true,
-    tts_normalize: true,
-    memory_compact: true,
-    vision: false,
-    // The OBSERVE job classifying a conversation the agent watches: a model call on a
-    // conversation nobody of ours answers, so it is involvement in nothing the agent said.
-    observer: false,
-    // The OBSERVE job on the `decisions` engine: a classification call (modules/decisions), same
-    // conversation and same answer as `observer`.
-    decision: false,
-    // The SUGGESTION_REVIEW job judging a proposed knowledge entry: nothing the agent said.
-    suggestion_review: false,
-    // The OTHER_INBOX_SUMMARY job summarizing the contact's conversation in another inbox: a
-    // conversation this turn did not take, read as context.
-    other_inbox_summary: false,
-  });
+// is TOTAL by type: its keys ARE `UsageNode`, which every sink takes, so a call billed under a node
+// with no answer here does not compile. A default of true would inflate involvement, and false would
+// deflate it as quietly.
+const IS_AGENT_TURN = {
+  agent: true,
+  nudge: true,
+  guardrail: true,
+  tts_normalize: true,
+  memory_compact: true,
+  vision: false,
+  // The OBSERVE job classifying a conversation the agent watches: a model call on a
+  // conversation nobody of ours answers, so it is involvement in nothing the agent said.
+  observer: false,
+  // The OBSERVE job on the `decisions` engine: a classification call (modules/decisions), same
+  // conversation and same answer as `observer`.
+  decision: false,
+  // The SUGGESTION_REVIEW job judging a proposed knowledge entry: nothing the agent said.
+  suggestion_review: false,
+  // The OTHER_INBOX_SUMMARY job summarizing the contact's conversation in another inbox: a
+  // conversation this turn did not take, read as context.
+  other_inbox_summary: false,
+} as const satisfies Record<string, boolean>;
+
+// The step a billed call is recorded under. `UsageCapture`, `recordDirectUsage` and `buildCallbacks`
+// take only this, so the vocabulary is the map above and nothing else.
+export type UsageNode = keyof typeof IS_AGENT_TURN;
+
+export const USAGE_NODE_IS_AGENT_TURN: Readonly<Record<UsageNode, boolean>> =
+  Object.freeze(IS_AGENT_TURN);
 
 // Consumed as an EXCLUSION, with `node: null` kept beside it: a row with no node is an agent turn,
 // and an inclusion list would drop those rows and move every past involvement number.
-export const NON_AGENT_TURN_NODES: readonly string[] = Object.freeze(
-  Object.entries(USAGE_NODE_IS_AGENT_TURN)
-    .filter(([, isTurn]) => !isTurn)
-    .map(([node]) => node),
+export const NON_AGENT_TURN_NODES: readonly UsageNode[] = Object.freeze(
+  (Object.keys(USAGE_NODE_IS_AGENT_TURN) as UsageNode[]).filter(
+    (node) => !USAGE_NODE_IS_AGENT_TURN[node],
+  ),
 );
 
 function sysCtx(tenantId: bigint): TenantContext {
@@ -619,7 +626,7 @@ export async function recordDirectUsage(
   row: {
     provider: string;
     model: string;
-    node: string;
+    node: UsageNode;
     promptTokens: number;
     completionTokens: number;
     cachedReadTokens?: number;
@@ -703,7 +710,7 @@ export interface UsageCaptureParams {
   // The provider of `model`, for its price.
   provider: string;
   model: string;
-  node?: string | null;
+  node?: UsageNode | null;
   source?: UsageSource;
   persist?: UsagePersist;
   base?: PrismaClient;
@@ -722,7 +729,7 @@ export class UsageCapture extends BaseCallbackHandler {
   private readonly turnId: string | null;
   private readonly provider: string;
   private readonly model: string;
-  private readonly node: string | null;
+  private readonly node: UsageNode | null;
   private readonly source: UsageSource;
   private readonly persist: UsagePersist;
   private readonly base: PrismaClient | undefined;

@@ -202,7 +202,12 @@ import {
   dropDuplicateToolNames,
   droppedToolNamesEvent,
 } from "./tools/unique-names";
-import { UsageCapture, type UsagePersist, type UsageSource } from "./usage";
+import {
+  UsageCapture,
+  type UsageNode,
+  type UsagePersist,
+  type UsageSource,
+} from "./usage";
 
 // Shared agent-invocation plumbing used by BOTH entry points: runAgentTurn (incoming customer
 // message) and runAgentNudge (inbound domain event). Loading is a short scoped read (DB only);
@@ -1930,7 +1935,7 @@ export interface CallbacksArgs {
   threadId: string;
   base?: PrismaClient;
   persistUsage?: UsagePersist;
-  node?: string;
+  node?: UsageNode;
   // The model to LABEL the usage row with. Defaults to the agent's own model, which is right for the
   // turn itself; a secondary call on a separately-configured model (the speech normalizer) must pass
   // the model it actually billed, or the row attributes that spend to the wrong model. The provider

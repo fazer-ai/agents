@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import type { LLMResult } from "@langchain/core/outputs";
 import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
@@ -7,10 +8,19 @@ import {
   environmentForSource,
   shutdownLangfuseClients,
 } from "@/graph/observability";
+import { type AgentConfig, buildCallbacks } from "@/graph/prepare";
 import { runAgentTurn } from "@/graph/runtime";
-import { NON_AGENT_TURN_NODES, USAGE_NODE_IS_AGENT_TURN } from "@/graph/usage";
+import {
+  NON_AGENT_TURN_NODES,
+  recordDirectUsage,
+  USAGE_NODE_IS_AGENT_TURN,
+  UsageCapture,
+  type UsageNode,
+  type UsageRow,
+} from "@/graph/usage";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
+import type { FlowContext } from "@/modules/flowlog/service";
 import { updateLangfuse } from "@/modules/tenant-settings/service";
 import { formatVaultRef } from "@/modules/vault/service";
 import { getVisionProvider } from "@/modules/vision/providers";
@@ -627,55 +637,65 @@ describe.skipIf(!dbUp)("billed model calls reach the usage ledger", () => {
 
 // The ledger holds rows for calls the agent did not make (vision bills before the
 // bot-ownership gate), so "has a billed call" is not "the agent took this conversation" for
-// `getKpis`. Every node written must be classified. The predicate is a `node:` key resolving to a
-// string literal inside a file that builds a ledger sink; scoping it to sink files keeps unrelated
-// `node:` keys (an n8n workflow graph names its steps that way) out of the vocabulary.
-const SINK_FILE = /new UsageCapture\(|recordDirectUsage\(|buildCallbacks\(/;
-const NODE_LITERAL = /\bnode:\s*[^,\n}]*?"([a-z_]+)"/g;
-
-function nodesWritten(source: string): string[] {
-  if (!SINK_FILE.test(source)) return [];
-  return [...source.matchAll(NODE_LITERAL)].map((m) => m[1] as string);
+// `getKpis`. Every node written must be classified, and that is the type's job: the three sinks take
+// a `UsageNode`, whose members are the classification map's keys. The function below is never run;
+// each `@ts-expect-error` fails the typecheck the day its sink accepts an unclassified node again.
+function unclassifiedNodesDoNotCompile(flow: FlowContext, cfg: AgentConfig) {
+  new UsageCapture({
+    tenantId: 1n,
+    provider: "p",
+    model: "m",
+    // @ts-expect-error: a node outside the vocabulary has no answer to "did the agent run".
+    node: "brand_new_node",
+  });
+  void recordDirectUsage(flow, {
+    provider: "p",
+    model: "m",
+    // @ts-expect-error: same, for a call that bypasses LangChain.
+    node: "brand_new_node",
+    promptTokens: 1,
+    completionTokens: 1,
+  });
+  // @ts-expect-error: same, for a turn's callbacks.
+  buildCallbacks(cfg, { tenantId: 1n, threadId: "t", node: "brand_new_node" });
 }
+void unclassifiedNodesDoNotCompile;
 
-async function tsFilesUnder(dir: string): Promise<string[]> {
-  const glob = new Bun.Glob("**/*.ts");
-  const out: string[] = [];
-  for await (const f of glob.scan({ cwd: dir, absolute: true })) out.push(f);
-  return out;
-}
+const resultOf = (input: number, output: number) =>
+  ({
+    generations: [
+      [
+        {
+          text: "ok",
+          message: {
+            usage_metadata: { input_tokens: input, output_tokens: output },
+          },
+        },
+      ],
+    ],
+  }) as unknown as LLMResult;
 
 describe("every node the ledger writes is classified for the involvement KPI", () => {
-  // Without this, a sweep that classifies nothing passes exactly like one that classifies
-  // everything. The fixture is the shape the next offender has: a new billed call, a new label.
-  test("the predicate finds a node a sink file writes, and ignores one it does not", () => {
-    const sink = `
-      await recordDirectUsage(params.flow, {
-        model: cfg.model,
-        node: "brand_new_node",
-      });`;
-    const notASink = `
-      const wf = { main: [[{ node: "HTTP Request", type: "main", index: 0 }]] };`;
-    expect(nodesWritten(sink)).toEqual(["brand_new_node"]);
-    expect(nodesWritten(notASink)).toEqual([]);
-    expect(USAGE_NODE_IS_AGENT_TURN.brand_new_node).toBeUndefined();
-  });
-
-  test("no node reaches a row without an answer to 'did the agent run'", async () => {
-    const found = new Set<string>();
-    for (const file of await tsFilesUnder(
-      new URL("../../src", import.meta.url).pathname,
-    )) {
-      for (const node of nodesWritten(await Bun.file(file).text())) {
-        found.add(node);
-      }
+  test("a row billed under each node carries it, and the KPI has its answer", async () => {
+    const nodes = Object.keys(USAGE_NODE_IS_AGENT_TURN) as UsageNode[];
+    const rows: UsageRow[] = [];
+    for (const node of nodes) {
+      await new UsageCapture({
+        tenantId: 1n,
+        provider: "test-provider",
+        model: "m",
+        node,
+        persist: async (row) => {
+          rows.push(row);
+        },
+      }).handleLLMEnd(resultOf(3, 2), `run-${node}`);
     }
-    // NOTE: both directions. A node written but unclassified is a row the involvement KPI cannot
-    // answer for; a node classified but not written is a rule about code that is gone, and the map is what a
-    // reader trusts to be the whole vocabulary.
-    expect([...found].sort()).toEqual(
-      Object.keys(USAGE_NODE_IS_AGENT_TURN).sort(),
-    );
+    expect(rows.map((r) => r.node)).toEqual(nodes);
+    for (const r of rows) {
+      expect(typeof USAGE_NODE_IS_AGENT_TURN[r.node as UsageNode]).toBe(
+        "boolean",
+      );
+    }
     // The claim the KPI actually rests on, spelled out where it can go red.
     expect([...NON_AGENT_TURN_NODES].sort()).toEqual([
       "decision",

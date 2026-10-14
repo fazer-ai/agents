@@ -30,6 +30,7 @@ import {
   CODE_TOOL_CONTEXT_VARS,
   CODE_TOOL_GLOBALS,
 } from "@/lib/code-tool-vocabulary";
+import { until } from "@/tests/utils/poll";
 
 // What the editor OFFERS: completion is what makes the `context` vocabulary discoverable at all.
 // The completion source is asked directly: driving CodeMirror's completion state in happy-dom would
@@ -807,7 +808,7 @@ describe("the hotkey lists what is in scope, not just the two roots", () => {
     ) as EditorView;
     view.dispatch({ selection: { anchor: view.state.doc.length } });
     startCompletion(view);
-    await new Promise((r) => setTimeout(r, 200));
+    await until("the list", () => completionStatus(view.state) === "active");
     expect(currentCompletions(view.state).map((c) => c.label)).toContain(
       "meuValor",
     );
@@ -850,17 +851,15 @@ describe("the advertised hotkey opens the list", () => {
   test("the Mod-i chord does, and the Mac dead key does not", async () => {
     const view = mount();
     press(view, modI);
-    await new Promise((r) => setTimeout(r, 200));
-    expect(currentCompletions(view.state).length).toBeGreaterThan(0);
+    await until("the list", () => currentCompletions(view.state).length > 0);
 
     closeCompletion(view);
-    await new Promise((r) => setTimeout(r, 50));
-    expect(currentCompletions(view.state).length).toBe(0);
+    await until("the list closed", () => completionStatus(view.state) === null);
 
-    // What ⌥I sends on a US International layout: the keymap sees "Dead", not "i".
+    // What ⌥I sends on a US International layout: the keymap sees "Dead", not "i". A chord that
+    // started a completion would have it pending the moment the key is handled.
     press(view, { key: "Dead", code: "KeyI", keyCode: 73, altKey: true });
-    await new Promise((r) => setTimeout(r, 200));
-    expect(currentCompletions(view.state).length).toBe(0);
+    expect(completionStatus(view.state)).toBeNull();
   });
 
   // NOTE: closing the list has to leave it reopenable: a popup that opens while typing and cannot come
@@ -869,12 +868,12 @@ describe("the advertised hotkey opens the list", () => {
     const view = mount();
     const open = async () => {
       press(view, modI);
-      await new Promise((r) => setTimeout(r, 200));
+      await until("the list", () => currentCompletions(view.state).length > 0);
       return currentCompletions(view.state).length;
     };
     expect(await open()).toBeGreaterThan(0);
     closeCompletion(view);
-    await new Promise((r) => setTimeout(r, 50));
+    await until("the list closed", () => completionStatus(view.state) === null);
     expect(await open()).toBeGreaterThan(0);
   });
 });
@@ -1166,7 +1165,7 @@ describe("the key that decides a rename happened", () => {
     async function offered(view: EditorView) {
       view.dispatch({ selection: { anchor: view.state.doc.length } });
       startCompletion(view);
-      await new Promise((r) => setTimeout(r, 200));
+      await until("the list", () => completionStatus(view.state) === "active");
       return currentCompletions(view.state)
         .map((c) => c.label)
         .sort();
@@ -1229,12 +1228,10 @@ describe("who owns Escape while the popup is open", () => {
 
     view.dispatch({ selection: { anchor: view.state.doc.length } });
     startCompletion(view);
-    await new Promise((r) => setTimeout(r, 200));
-    expect(completionStatus(view.state)).toBe("active");
+    await until("the list", () => completionStatus(view.state) === "active");
     expect(handOverEscape(content)).toBe(true);
     // Answering the claim also CLOSES the popup, because the press it answered was the press meant
     // to close it: reporting alone would leave the suggestion on screen and swallow the key.
-    await new Promise((r) => setTimeout(r, 50));
     expect(completionStatus(view.state)).not.toBe("active");
     expect(handOverEscape(content)).toBe(false);
   });
@@ -1245,21 +1242,27 @@ describe("who owns Escape while the popup is open", () => {
   // that had not finished arriving.
   test("a press during the debounce is claimed too", async () => {
     const { view, content } = mount("return context.");
-    view.dispatch({ selection: { anchor: view.state.doc.length } });
-    startCompletion(view);
-    expect(completionStatus(view.state)).toBe("pending");
-    expect(handOverEscape(content)).toBe(true);
-    // Answering it cancels the pending query rather than leaving one to open after the press.
-    await new Promise((r) => setTimeout(r, 250));
-    expect(completionStatus(view.state)).toBeNull();
+    jest.useFakeTimers();
+    try {
+      view.dispatch({ selection: { anchor: view.state.doc.length } });
+      startCompletion(view);
+      expect(completionStatus(view.state)).toBe("pending");
+      expect(handOverEscape(content)).toBe(true);
+      // Answering it cancels the pending query rather than leaving one to open after the press: the
+      // debounce runs out, and nothing opens when it does.
+      jest.advanceTimersByTime(1_000);
+      await act(async () => {});
+      expect(completionStatus(view.state)).toBeNull();
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   test("a press outside this editor is not this editor's to claim", async () => {
     const { view } = mount("return context.");
     view.dispatch({ selection: { anchor: view.state.doc.length } });
     startCompletion(view);
-    await new Promise((r) => setTimeout(r, 200));
-    expect(completionStatus(view.state)).toBe("active");
+    await until("the list", () => completionStatus(view.state) === "active");
     expect(handOverEscape(document.body)).toBe(false);
   });
 
@@ -1269,8 +1272,7 @@ describe("who owns Escape while the popup is open", () => {
     const { view, content } = mount("return context.");
     view.dispatch({ selection: { anchor: view.state.doc.length } });
     startCompletion(view);
-    await new Promise((r) => setTimeout(r, 200));
-    expect(completionStatus(view.state)).toBe("active");
+    await until("the list", () => completionStatus(view.state) === "active");
     // NOT consulted before unmounting, on purpose: consulting closes the popup, and the claim would
     // then answer `false` for that reason instead of for the release, which is a test that passes
     // whether or not the release exists. Destroying a view leaves its last state behind, so a claim

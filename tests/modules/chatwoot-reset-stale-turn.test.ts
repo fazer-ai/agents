@@ -28,6 +28,7 @@ import {
 } from "@/modules/chatwoot/webhook";
 import { generateRouteToken } from "@/modules/webhooks/inbound/route-token";
 import { dbProbeFailed } from "@/tests/db-gate";
+import { until } from "@/tests/utils/poll";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 const BOT_TOKEN = "BOT-TOKEN";
@@ -241,6 +242,16 @@ const attributeWrites = (calls: CwCall[]) =>
       JSON.stringify(c.body ?? {}).includes(`"${ATTR_KEY}"`),
   );
 
+// Waits for `step`, named `what` if it never comes: the hang a missed step would otherwise be.
+// Polled with `until`, so no timer is left running once the step has come.
+async function reaches(step: Promise<unknown>, what: string): Promise<void> {
+  let done = false;
+  void step.then(() => {
+    done = true;
+  });
+  await until(what, () => done);
+}
+
 describe.skipIf(!dbUp)("a turn already running when /reset lands", () => {
   beforeAll(async () => {
     const t = await suDb.tenant.create({
@@ -383,12 +394,7 @@ describe.skipIf(!dbUp)("a turn already running when /reset lands", () => {
       },
     });
 
-    await Promise.race([
-      inStretch.promise,
-      Bun.sleep(10_000).then(() => {
-        throw new Error("the turn never reached its client build");
-      }),
-    ]);
+    await reaches(inStretch.promise, "the turn reaching its client build");
     await deliver("/reset");
     const afterReset = cw.calls.length;
     held.resolve();
@@ -452,12 +458,7 @@ describe.skipIf(!dbUp)("a turn already running when /reset lands", () => {
         return createChatwootClient(cfgIn);
       },
     });
-    await Promise.race([
-      inStretch.promise,
-      Bun.sleep(10_000).then(() => {
-        throw new Error("the turn never reached its client build");
-      }),
-    ]);
+    await reaches(inStretch.promise, "the turn reaching its client build");
     await deliver("/reset");
     held.resolve();
     await turn;
@@ -505,12 +506,10 @@ describe.skipIf(!dbUp)("a turn already running when /reset lands", () => {
       makeModel: () => model as unknown as BaseChatModel,
     });
     try {
-      await Promise.race([
+      await reaches(
         inGate.promise,
-        Bun.sleep(10_000).then(() => {
-          throw new Error("the delivery never reached the authorization gate");
-        }),
-      ]);
+        "the delivery reaching the authorization gate",
+      );
       await deliver("/reset");
       const afterReset = cw.calls.length;
       held.resolve();
@@ -557,12 +556,7 @@ describe.skipIf(!dbUp)("a turn already running when /reset lands", () => {
     const turn = deliver("consegue ver meu pedido?", {
       makeModel: () => parked as unknown as BaseChatModel,
     });
-    await Promise.race([
-      inModel.promise,
-      Bun.sleep(10_000).then(() => {
-        throw new Error("the turn never reached the model call");
-      }),
-    ]);
+    await reaches(inModel.promise, "the turn reaching the model call");
     await deliver("/reset");
     held.resolve();
     await turn;
@@ -619,12 +613,7 @@ describe.skipIf(!dbUp)("a turn already running when /reset lands", () => {
       model,
       parked,
       turnCalls: () => turnCalls,
-      reached: Promise.race([
-        inModel.promise,
-        Bun.sleep(10_000).then(() => {
-          throw new Error("the turn never reached the model call");
-        }),
-      ]),
+      reached: reaches(inModel.promise, "the turn reaching the model call"),
       release: () => held.resolve(),
     };
   };
@@ -748,20 +737,10 @@ describe.skipIf(!dbUp)("a turn already running when /reset lands", () => {
           },
         }) as unknown as BaseChatModel,
     });
-    await Promise.race([
-      inModel.promise,
-      Bun.sleep(10_000).then(() => {
-        throw new Error("the turn never reached the model call");
-      }),
-    ]);
+    await reaches(inModel.promise, "the turn reaching the model call");
     armed = true;
     const reset = deliver("/reset");
-    await Promise.race([
-      inCommand.promise,
-      Bun.sleep(10_000).then(() => {
-        throw new Error("the command never posted its acknowledgement");
-      }),
-    ]);
+    await reaches(inCommand.promise, "the command posting its acknowledgement");
     // The boundary is written by now; the command's own watermark advance is not.
     modelHeld.resolve();
     await turn;
@@ -794,12 +773,7 @@ describe.skipIf(!dbUp)("a turn already running when /reset lands", () => {
     globalThis.fetch = cw.impl;
 
     const reset = deliver("/reset");
-    await Promise.race([
-      inCommand.promise,
-      Bun.sleep(10_000).then(() => {
-        throw new Error("the command never reached its live read");
-      }),
-    ]);
+    await reaches(inCommand.promise, "the command reaching its live read");
 
     // The turn has to still be RUNNING when the command writes its mark, or the fence reads a
     // conversation that has not been reset yet and the question never gets asked. Parked in the
@@ -823,12 +797,7 @@ describe.skipIf(!dbUp)("a turn already running when /reset lands", () => {
           },
         }) as unknown as BaseChatModel,
     });
-    await Promise.race([
-      inModel.promise,
-      Bun.sleep(10_000).then(() => {
-        throw new Error("the turn never reached the model call");
-      }),
-    ]);
+    await reaches(inModel.promise, "the turn reaching the model call");
     // The command finishes — and stamps — with the turn still in flight.
     held.resolve();
     await reset;
@@ -865,12 +834,7 @@ describe.skipIf(!dbUp)("a turn already running when /reset lands", () => {
     globalThis.fetch = cw.impl;
 
     const older = deliver("/reset");
-    await Promise.race([
-      inFirst.promise,
-      Bun.sleep(10_000).then(() => {
-        throw new Error("the first command never reached its live read");
-      }),
-    ]);
+    await reaches(inFirst.promise, "the first command reaching its live read");
     // The NEWER command arrives and finishes while the older one is still parked.
     await deliver("/reset");
     const newest = await suDb.conversation.findFirstOrThrow({

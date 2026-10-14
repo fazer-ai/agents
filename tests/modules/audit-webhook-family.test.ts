@@ -26,6 +26,7 @@ import { sendWebhookTest } from "@/modules/webhooks/outbound/test";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { countingBase } from "../utils/counting-base";
 import { outboundUrl } from "../utils/outbound";
+import { until } from "../utils/poll";
 
 // The outbound-webhook and alert-channel trail, recorded by the services that perform the writes, so
 // the console and MCP leave the same row. Two things this family carries:
@@ -42,6 +43,42 @@ const suUrl = process.env.MIGRATION_DATABASE_URL;
 let dbUp = false;
 let su: PrismaClient | undefined;
 let app: PrismaClient | undefined;
+
+// Holds `table`'s row `id` in a transaction that sets `enabled = false`, the concurrent writer the
+// races below need. `blockedOn` resolves once another session is parked on a lock against that
+// table, which is the writer this test started; `release` commits the holder.
+async function holdRow(table: string, id: string) {
+  const db = su as PrismaClient;
+  const locked = Promise.withResolvers<void>();
+  const commit = Promise.withResolvers<void>();
+  const holder = db.$transaction(
+    async (tx) => {
+      await tx.$executeRawUnsafe(
+        `UPDATE ${table} SET enabled = false WHERE id = ${id}`,
+      );
+      locked.resolve();
+      await commit.promise;
+    },
+    { timeout: 30_000 },
+  );
+  holder.catch(locked.reject);
+  await locked.promise;
+  return {
+    blockedOn: () =>
+      until(`a writer parked on the held ${table} row`, async () => {
+        const [found] = await db.$queryRawUnsafe<{ n: bigint }[]>(
+          `SELECT count(*) AS n FROM pg_stat_activity
+            WHERE datname = current_database() AND pid <> pg_backend_pid()
+              AND wait_event_type = 'Lock' AND query ILIKE '%${table}%'`,
+        );
+        return (found?.n ?? 0n) > 0n;
+      }),
+    release: async () => {
+      commit.resolve();
+      await holder;
+    },
+  };
+}
 
 if (appUrl && suUrl) {
   try {
@@ -307,29 +344,18 @@ describe.skipIf(!dbUp)("the webhook and alert-channel trail", () => {
       appDb,
     );
     await clearAudit();
-    let held = false;
-    const holder = (su as PrismaClient).$transaction(
-      async (tx) => {
-        await tx.$executeRawUnsafe(
-          `UPDATE webhook_subscriptions SET enabled = false WHERE id = ${created.id}`,
-        );
-        held = true;
-        await Bun.sleep(500);
-      },
-      { timeout: 10_000 },
+    const held = await holdRow("webhook_subscriptions", created.id);
+    const writer = updateWebhookSubscription(
+      ctx(),
+      BigInt(created.id),
+      { events: ["conversation.handoff"] },
+      appDb,
     );
-    await Bun.sleep(120);
-    // The rendezvous FIRED: without this the test is a `sleep` with a better name.
-    expect(held).toBe(true);
-    await Promise.all([
-      holder,
-      updateWebhookSubscription(
-        ctx(),
-        BigInt(created.id),
-        { events: ["conversation.handoff"] },
-        appDb,
-      ),
-    ]);
+    // The writer is parked on the held row before the holder commits, so what it reads after the
+    // wait is what the holder left, with no window guessed in milliseconds.
+    await held.blockedOn();
+    await held.release();
+    await writer;
     const [row] = await rows();
     expect(row?.action).toBe("webhook.update");
     expect(row?.before).toMatchObject({ enabled: false });
@@ -386,23 +412,13 @@ describe.skipIf(!dbUp)("the webhook and alert-channel trail", () => {
       appDb,
     );
     await clearAudit();
-    let held = false;
-    const holder = (su as PrismaClient).$transaction(
-      async (tx) => {
-        await tx.$executeRawUnsafe(
-          `UPDATE webhook_subscriptions SET enabled = false WHERE id = ${created.id}`,
-        );
-        held = true;
-        await Bun.sleep(500);
-      },
-      { timeout: 10_000 },
-    );
-    await Bun.sleep(120);
-    expect(held).toBe(true);
-    await Promise.all([
-      holder,
-      deleteWebhookSubscription(ctx(), BigInt(created.id), appDb),
-    ]);
+    const held = await holdRow("webhook_subscriptions", created.id);
+    const writer = deleteWebhookSubscription(ctx(), BigInt(created.id), appDb);
+    // The writer is parked on the held row before the holder commits, so what it reads after the
+    // wait is what the holder left, with no window guessed in milliseconds.
+    await held.blockedOn();
+    await held.release();
+    await writer;
     const [row] = await rows();
     expect(row?.action).toBe("webhook.delete");
     expect(row?.before).toMatchObject({
@@ -661,23 +677,18 @@ describe.skipIf(!dbUp)("the webhook and alert-channel trail", () => {
       appDb,
     );
     await clearAudit();
-    let held = false;
-    const holder = (su as PrismaClient).$transaction(
-      async (tx) => {
-        await tx.$executeRawUnsafe(
-          `UPDATE alert_channels SET enabled = false WHERE id = ${created.id}`,
-        );
-        held = true;
-        await Bun.sleep(500);
-      },
-      { timeout: 10_000 },
+    const held = await holdRow("alert_channels", created.id);
+    const writer = updateAlertChannel(
+      ctx(),
+      BigInt(created.id),
+      { name: "raced2" },
+      appDb,
     );
-    await Bun.sleep(120);
-    expect(held).toBe(true);
-    await Promise.all([
-      holder,
-      updateAlertChannel(ctx(), BigInt(created.id), { name: "raced2" }, appDb),
-    ]);
+    // The writer is parked on the held row before the holder commits, so what it reads after the
+    // wait is what the holder left, with no window guessed in milliseconds.
+    await held.blockedOn();
+    await held.release();
+    await writer;
     const [row] = await rows();
     expect(row?.action).toBe("alert_channel.update");
     expect(row?.before).toMatchObject({ name: "raced", enabled: false });
@@ -691,23 +702,13 @@ describe.skipIf(!dbUp)("the webhook and alert-channel trail", () => {
       appDb,
     );
     await clearAudit();
-    let held = false;
-    const holder = (su as PrismaClient).$transaction(
-      async (tx) => {
-        await tx.$executeRawUnsafe(
-          `UPDATE alert_channels SET enabled = false WHERE id = ${created.id}`,
-        );
-        held = true;
-        await Bun.sleep(500);
-      },
-      { timeout: 10_000 },
-    );
-    await Bun.sleep(120);
-    expect(held).toBe(true);
-    await Promise.all([
-      holder,
-      deleteAlertChannel(ctx(), BigInt(created.id), appDb),
-    ]);
+    const held = await holdRow("alert_channels", created.id);
+    const writer = deleteAlertChannel(ctx(), BigInt(created.id), appDb);
+    // The writer is parked on the held row before the holder commits, so what it reads after the
+    // wait is what the holder left, with no window guessed in milliseconds.
+    await held.blockedOn();
+    await held.release();
+    await writer;
     const [row] = await rows();
     expect(row?.action).toBe("alert_channel.delete");
     expect(row?.before).toMatchObject({ enabled: false, name: "race-del" });

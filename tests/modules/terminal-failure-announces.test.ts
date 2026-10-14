@@ -4,6 +4,7 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { processAlertBatch } from "@/modules/flowlog/alert-worker";
+import { settleFlowEvents } from "@/modules/flowlog/scheduled";
 import { registerRagIngestHandler } from "@/modules/rag/documents";
 import {
   claimDueJobs,
@@ -25,7 +26,7 @@ import {
 import { dbProbeFailed } from "@/tests/db-gate";
 import { clearFlowLog, flowLogRows } from "@/tests/utils/flowlog";
 import { withJobHandler } from "@/tests/utils/job-registry";
-import { POLL_DEADLINE_MS } from "@/tests/utils/poll";
+import { until } from "@/tests/utils/poll";
 
 // ── A UNIT OF WORK THAT DIES PERMANENTLY HAS TO SAY SO ──
 //
@@ -72,13 +73,13 @@ let routeToken = "";
 
 const past = () => new Date(Date.now() - 60_000);
 
-// The emit is fire-and-forget, so the row lands after the caller returned. Poll for the expected
-// count rather than sleeping a fixed amount: a fixed sleep is either flaky or slow, and this says
-// which of the two it is when it fails.
-async function deadRows(expected: number, waitMs = POLL_DEADLINE_MS) {
-  const deadline = Date.now() + waitMs;
-  for (;;) {
-    const rows = await flowLogRows(suDb, {
+// The emit is fire-and-forget, so the row lands after the caller returned. Every scheduled write is
+// settled first, which is what lets `deadRows(0)` say "none was written" without sleeping; a count
+// above zero is then polled for, in case a line comes from a write nothing tracks.
+async function deadRows(expected: number) {
+  await settleFlowEvents();
+  const read = () =>
+    flowLogRows(suDb, {
       // flowlog-scope: tenant-wide. The subject is HOW MANY lines a terminal failure wrote, and none of
       // these units has a turn. The tenant is this file's own, and `clearRows` empties it before each
       // case through `clearFlowLog`, which settles scheduled writes first, or the emptying misses the
@@ -86,10 +87,11 @@ async function deadRows(expected: number, waitMs = POLL_DEADLINE_MS) {
       where: { tenantId, stage: "dead_letter" },
       orderBy: { id: "asc" },
     });
-    if (rows.length >= expected) return rows;
-    if (Date.now() > deadline) return rows;
-    await Bun.sleep(50);
-  }
+  if (expected === 0) return read();
+  return until(`${expected} dead-letter line(s)`, async () => {
+    const rows = await read();
+    return rows.length >= expected ? rows : null;
+  });
 }
 
 async function clearRows() {
@@ -388,8 +390,7 @@ describe.skipIf(!dbUp)("a terminal failure announces itself", () => {
       data: { status: "PENDING", attempts: 0 },
     });
     await announceReaped(reaped, appDb);
-    await Bun.sleep(400);
-    expect(await deadRows(0, 0)).toHaveLength(0);
+    expect(await deadRows(0)).toHaveLength(0);
   });
 
   test("a failed re-read loses one line, never the rest of the batch", async () => {
@@ -492,8 +493,7 @@ describe.skipIf(!dbUp)("a terminal failure announces itself", () => {
       data: { claimSeq: { increment: 1 } },
     });
     await announceReaped(reaped, appDb);
-    await Bun.sleep(400);
-    expect(await deadRows(0, 0)).toHaveLength(0);
+    expect(await deadRows(0)).toHaveLength(0);
   });
 
   test("a kind that registers its own hook does not get the generic line as well", async () => {
@@ -531,8 +531,7 @@ describe.skipIf(!dbUp)("a terminal failure announces itself", () => {
     // NOTE: its hook owns the announcement for this kind (a private note on the conversation),
     // and here it declines to write one — the payload carries no thread. The generic line must not
     // step in over that decision: the hook already looked and said no.
-    await Bun.sleep(400);
-    expect(await deadRows(0, 0)).toHaveLength(0);
+    expect(await deadRows(0)).toHaveLength(0);
   });
 
   // ── THE ALERT BUS: the sharp one, because it cannot notify through itself ──
@@ -598,7 +597,7 @@ describe.skipIf(!dbUp)("a terminal failure announces itself", () => {
     // would be queued to that same broken channel, die, and queue another — one new row per death,
     // forever. The coalescing one layer down does not bound it: it bumps a PENDING row, and the
     // row this would follow is DEAD.
-    await Bun.sleep(300);
+    await settleFlowEvents();
     const deliveries = await suDb.alertDelivery.findMany({
       where: { tenantId },
     });
@@ -716,10 +715,9 @@ describe.skipIf(!dbUp)("a terminal failure announces itself", () => {
     });
     // The dedupe key is a digest of the body, so the retry lands on the row that already exists.
     expect(again.deliveryId).toBe(first.deliveryId as bigint);
-    await Bun.sleep(400);
     // One event was dropped, so one line. A provider that retries for a day would otherwise report
     // the same loss all day, at its own rate.
-    expect(await deadRows(0, 0)).toHaveLength(1);
+    expect(await deadRows(0)).toHaveLength(1);
   });
 
   test("a delivery that burns through its processing attempts announces", async () => {
@@ -787,8 +785,7 @@ describe.skipIf(!dbUp)("a terminal failure announces itself", () => {
       (await suDb.inboundDelivery.findUniqueOrThrow({ where: { id: row.id } }))
         .status,
     ).toBe("PROCESSING");
-    await Bun.sleep(400);
-    expect(await deadRows(0, 0)).toHaveLength(0);
+    expect(await deadRows(0)).toHaveLength(0);
   });
 
   test("a stale processing claim at the cap is killed, and says so", async () => {
@@ -842,8 +839,7 @@ describe.skipIf(!dbUp)("a terminal failure announces itself", () => {
     expect(outcome).toBe("skipped");
     // The claim and the attempt-cap kill share one branch, and only the second is a death. A row
     // another replica took a second ago reaches exactly the same `return { kind: "skip" }`.
-    await Bun.sleep(400);
-    expect(await deadRows(0, 0)).toHaveLength(0);
+    expect(await deadRows(0)).toHaveLength(0);
   });
 
   test("an unstamped row claimed a moment ago is not taken from under it", async () => {
@@ -872,8 +868,7 @@ describe.skipIf(!dbUp)("a terminal failure announces itself", () => {
       (await suDb.inboundDelivery.findUniqueOrThrow({ where: { id: row.id } }))
         .status,
     ).toBe("PROCESSING");
-    await Bun.sleep(400);
-    expect(await deadRows(0, 0)).toHaveLength(0);
+    expect(await deadRows(0)).toHaveLength(0);
   });
 
   test("claiming stamps the clock the staleness rule reads", async () => {

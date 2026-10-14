@@ -13,7 +13,11 @@ import {
   useSyncExternalStore,
 } from "react";
 import { useTranslation } from "react-i18next";
-import { useBackGuard, useBeforeUnload } from "@/client/lib/unsavedGuard";
+import {
+  useBackGuard,
+  useBeforeUnload,
+  useHeldDraft,
+} from "@/client/lib/unsavedGuard";
 import { cn } from "@/client/lib/utils";
 import { Button } from "./Button";
 import { DiscardDialog } from "./DiscardDialog";
@@ -378,6 +382,9 @@ export function Modal({
   }, [isOpen]);
 
   useBeforeUnload(guardActive);
+  // A save in flight also holds the console's own reloads (client/lib/staleBuild.ts), clean form
+  // included: a stale tab's reload would end the request `busy` keeps the operator waiting on.
+  useHeldDraft(isOpen && busy);
   // Back is trapped while busy too, dirty or not: without the trap it would navigate away from the
   // page with the request still out, which is the dismissal `busy` exists to refuse.
   useBackGuard(guardActive || (isOpen && busy), requestClose);

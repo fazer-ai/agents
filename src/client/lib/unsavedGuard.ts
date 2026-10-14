@@ -39,9 +39,9 @@ export function acquireBeforeUnload(): () => void {
   };
 }
 
-// Input that is not a form change but a reload would still lose: a composer's unsent message. It
-// arms no prompt (leaving the screen keeps it in memory, as before), and only stops the reloads the
-// console starts by itself (client/lib/staleBuild.ts).
+// Input that is not a form change but a reload would still lose: a composer's unsent message, or a
+// modal's save in flight (`busy`). It arms no prompt (leaving the screen keeps it in memory, as
+// before), and only stops the reloads the console starts by itself (client/lib/staleBuild.ts).
 let heldDrafts = 0;
 
 export function useHeldDraft(active: boolean) {

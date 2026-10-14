@@ -80,17 +80,17 @@ const principal: VerifiedToken = {
 // refused well inside it (its budget, or what a jump of the clock left of it, is at most an eighth
 // of it); a read that is not bounded waits it out and answers, and the tests assert on that answer.
 const HOLD_MS = 4_000;
-// A budget no read can spend for real: a read that got a fresh one, or one counted from somewhere
-// other than its deadline, waits on the lock until HOLD_MS and answers. Nothing else cuts that wait
-// short: `lockTimeoutUnder` sets no lock timeout for a budget above DB_LOCK_TIMEOUT_MS, and the
-// clients here open their sessions with none.
-const BUDGET_MS = 60_000;
+// A budget twice the hold: a read that got a fresh one, or one counted from somewhere other than its
+// deadline, waits on the lock until HOLD_MS and answers. Nothing else cuts that wait short:
+// `lockTimeoutUnder` sets no lock timeout for a budget above DB_LOCK_TIMEOUT_MS and one just under
+// the budget otherwise, and the clients here open their sessions with none.
+const BUDGET_MS = 2 * HOLD_MS;
 // What a test leaves of BUDGET_MS by moving the clock, once the read has taken its deadline.
 const LEFT_MS = 500;
 
-// Catches a hang, never decides a verdict: five times the longest a test can wait on locks, which is
-// two holds back to back in the session lookup's mutant run.
-const CEILING_MS = 5 * 2 * HOLD_MS;
+// Catches a hang, never decides a verdict: five times the longest budget a test arms, which is also
+// the longest it can wait on locks (two holds back to back, in the session lookup's mutant run).
+const CEILING_MS = 5 * BUDGET_MS;
 setDefaultTimeout(CEILING_MS);
 
 // `Date.now()` as the deadline code reads it: the real clock, plus whatever `jump` added. A test moves
@@ -244,17 +244,17 @@ describe.skipIf(!dbUp)("metrics time budget", () => {
     });
     const usage = await lockTable("llm_usage");
     try {
-      const result = await withMetricsTimeout(10_000, () =>
+      const result = await withMetricsTimeout(BUDGET_MS, () =>
         getHealth(ctx, {}, locking).catch((e) => e),
       );
       expect(statusOf(result)).toBe(503);
       expect(await usage.release()).toBe(true);
-      // The sentence states the time the read ran (about 0.3 s), not the 10 s budget it never reached.
+      // The sentence states the time the read ran (about 0.3 s), not the budget it never reached.
       const seconds = (result as { translationParams?: { seconds?: number } })
         .translationParams?.seconds;
       expect(seconds).toBeGreaterThanOrEqual(0.2);
-      expect(seconds).not.toBe(10);
-      expect((result as Error).message).not.toContain("10s");
+      expect(seconds).not.toBe(BUDGET_MS / 1000);
+      expect((result as Error).message).not.toContain(`${BUDGET_MS / 1000}s`);
     } finally {
       await usage.release();
       await locking.$disconnect();

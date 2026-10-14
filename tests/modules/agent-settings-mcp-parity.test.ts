@@ -78,6 +78,39 @@ const NOT_PUBLISHED: Record<string, string> = {
 const UNPROBEABLE: Record<string, string> = {};
 
 // The per-block properties, as tools/list publishes them.
+// The rule as published for a tool name the block does not list: the catchall's schema, with the
+// tombstone's `null` branch set aside.
+async function publishedPreconditionRule(): Promise<{
+  properties?: Record<string, unknown>;
+}> {
+  const server = buildMcpServer(principal);
+  const [clientT, serverT] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverT);
+  const client = new Client({ name: "rule", version: "0" });
+  await client.connect(clientT);
+  try {
+    const tool = (await client.listTools()).tools.find(
+      (t) => t.name === "agent_settings_set",
+    );
+    if (!tool) throw new Error("agent_settings_set is not listed");
+    const block = (
+      tool.inputSchema as {
+        properties?: Record<string, { additionalProperties?: unknown }>;
+      }
+    ).properties?.toolPreconditions;
+    const rule = block?.additionalProperties as
+      | { anyOf?: Record<string, unknown>[]; type?: string }
+      | undefined;
+    if (!rule) throw new Error("toolPreconditions publishes no rule shape");
+    const branches = rule.anyOf ?? [rule];
+    return (branches.find((b) => b.type === "object") ?? {}) as {
+      properties?: Record<string, unknown>;
+    };
+  } finally {
+    await client.close();
+  }
+}
+
 async function publishedProperties(): Promise<
   Record<string, Record<string, unknown>>
 > {
@@ -325,13 +358,23 @@ describe("the new blocks declare type and choice", () => {
 // `z.record(z.string(), …)`. Both readers drop a key outside the catalog, so the schema cannot refuse
 // one without diverging from the console; what it can do is tell the caller which names exist,
 // which is the difference between a typo the client sees and a rule that silently guards nothing.
-describe("toolGuidance and toolPreconditions publish the native catalog", () => {
-  test("every native tool name appears as a property of both", async () => {
+describe("toolGuidance publishes the native catalog", () => {
+  test("every native tool name appears as a property of toolGuidance", async () => {
     const published = await publishedProperties();
-    for (const block of ["toolGuidance", "toolPreconditions"]) {
-      const props = Object.keys(published[block] ?? {});
-      expect(props.sort()).toEqual([...NATIVE_TOOL_NAMES].sort());
-    }
+    const props = Object.keys(published.toolGuidance ?? {});
+    expect(props.sort()).toEqual([...NATIVE_TOOL_NAMES].sort());
+  });
+
+  // A precondition can guard a tool of any source, so its keys are the agent's names, not a catalog.
+  // What is published is the shape every rule takes, whatever it is keyed by.
+  test("toolPreconditions publishes the rule shape for any tool name", async () => {
+    const value = await publishedPreconditionRule();
+    expect(Object.keys(value.properties ?? {}).sort()).toEqual([
+      "equals",
+      "key",
+      "kind",
+      "scope",
+    ]);
   });
 
   // NOTE: text on handoff_to_human and kanban_move_card is not forbidden: prepare.ts overwrites it
@@ -407,23 +450,23 @@ describe("a tool precondition can be removed", () => {
     ).not.toThrow();
   });
 
-  test("but a tombstone for a non-native name that is NOT stored is still refused", () => {
+  test("but a tombstone for a name no tool can carry is still refused", () => {
     // Nothing to delete: accepting it would report success for a no-op, and it is also the shape a
     // caller would send while believing they had created something.
     expect(() =>
       assertSettingsToolPreconditions(
-        { toolPreconditions: { mcp__crm__create_deal: null } },
+        { toolPreconditions: { "crm deal": null } },
         { toolPreconditions: {} },
       ),
     ).toThrow();
   });
 
-  test("and a non-native RULE is still refused, tombstone or not", () => {
+  test("and a RULE on such a name is still refused, tombstone or not", () => {
     expect(() =>
       assertSettingsToolPreconditions(
         {
           toolPreconditions: {
-            mcp__crm__create_deal: {
+            "crm deal": {
               kind: "attribute",
               scope: "conversation",
               key: "cpf",

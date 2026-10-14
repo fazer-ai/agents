@@ -22,7 +22,7 @@ describe("the Tools tab's wording", () => {
       <ToolPreconditionsEditor
         rows={[]}
         onChange={() => {}}
-        grantedNativeTools={[]}
+        guardableTools={[]}
         decides
       />,
     );
@@ -34,7 +34,7 @@ describe("the Tools tab's wording", () => {
       <ToolPreconditionsEditor
         rows={[]}
         onChange={() => {}}
-        grantedNativeTools={[]}
+        guardableTools={[]}
       />,
     );
     expect(screen.queryAllByText(/is told why/).length).toBeGreaterThan(0);

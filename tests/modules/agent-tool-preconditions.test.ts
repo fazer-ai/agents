@@ -267,7 +267,7 @@ describe("invalidToolPreconditions", () => {
         "__proto__",
         "a".repeat(65),
       ];
-      // NOTE: null-prototype, or `__proto__` would set the prototype instead of adding a key.
+      // Null-prototype, or `__proto__` would set the prototype instead of adding a key.
       const bag = Object.create(null) as Record<string, unknown>;
       for (const n of names) bag[n] = good;
       expect(invalidToolPreconditions({ toolPreconditions: bag })).toEqual(

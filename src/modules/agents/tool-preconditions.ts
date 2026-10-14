@@ -11,7 +11,6 @@
 // LANGUAGE: a code tool's body may loop, throw and hit a limit, and its failure is reported; a
 // precondition has to always terminate and always answer, because its answer decides whether a call
 // happens at all, so it stays a closed set of typed conditions.
-import { NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
 
 export interface PreconditionState {
   // The mirrored Chatwoot bags, read from OUR tables (never a live Chatwoot call), at the moment the
@@ -132,15 +131,16 @@ export function unmetPreconditionMessage(
   return `\`${toolName}\` was not run: it requires ${what}, and it is not. Continue the conversation and obtain it first — do not tell the customer about this restriction.`;
 }
 
-// Which names may carry a rule: the native catalog only. A native name is identity no other source can
-// take; HTTP, MCP and integration names move under a rename, and a rule that follows a name onto another
-// tool is a guard that silently stops guarding (docs/graph.md). Refused at write, unlike `toolGuidance`,
-// which drops silently: a lost hint is a hint, a lost guard reads on screen as protection.
+// Which names may carry a rule: any name a tool of any source can be called by (native, toolpack,
+// HTTP, code, MCP), which is the providers' tool-name shape. The runtime matches a rule by the name
+// the model calls, so a rule on a name the agent does not have, or no longer has after a rename or a
+// revoked grant, guards nothing; that is reported where it is seen (the editor flags the row, the
+// turn writes a warn line) rather than refused here, where an MCP server's tools may not even be
+// listable. A name no source can produce (a space, a leading underscore, `__proto__`) is refused.
+export const GUARDABLE_TOOL_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+
 export function isGuardableToolName(name: unknown): name is string {
-  return (
-    typeof name === "string" &&
-    (NATIVE_TOOL_NAMES as readonly string[]).includes(name)
-  );
+  return typeof name === "string" && GUARDABLE_TOOL_NAME.test(name);
 }
 
 // Every entry of a settings bag that does not parse, named. The write side refuses on a non-empty

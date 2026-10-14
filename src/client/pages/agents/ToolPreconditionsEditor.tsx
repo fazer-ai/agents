@@ -1,4 +1,4 @@
-import { Plus, ShieldCheck, Trash2 } from "lucide-react";
+import { AlertTriangle, Plus, ShieldCheck, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/client/components/Button";
 import { FormField } from "@/client/components/FormField";
@@ -6,20 +6,22 @@ import { Input } from "@/client/components/Input";
 import { Select } from "@/client/components/Select";
 import { nativeToolMeta } from "@/client/lib/nativeTools";
 import { isGuardableToolName } from "@/modules/agents/tool-preconditions";
+import type { GuardableTool } from "./guardableTools";
 import type { ToolPreconditionRow } from "./types";
 
 // The enforceable half of the per-tool guidance: guidance tells the model WHEN to use a tool; a
 // precondition says when the tool MAY be used, and the runtime holds it. Edited as a LIST rather than
-// the stored map, so a row survives the operator clearing its tool name to pick another. Scoped by
-// `isGuardableToolName`, the write boundary's own predicate, so the console never offers a name the
-// API refuses or hides one it accepts (reasoning in modules/agents/tool-preconditions.ts).
+// the stored map, so a row survives the operator clearing its tool name to pick another. Rows are read
+// back through `isGuardableToolName`, the write boundary's own predicate, so the console never shows a
+// name the API refuses or hides one it accepts. A row whose tool the agent does not have is shown with
+// a warning: it guards nothing, and on screen it would otherwise read as protection.
 
 interface Props {
   rows: ToolPreconditionRow[];
   onChange: (rows: ToolPreconditionRow[]) => void;
-  // Native tools this agent actually has. A precondition on a tool the agent was not granted is
-  // inert, so it is not offered.
-  grantedNativeTools: string[];
+  // Every tool this agent is granted, from any source. A precondition on a tool the agent was not
+  // granted is inert, so it is not offered.
+  guardableTools: GuardableTool[];
   // Questions and rules: a refused tool is a rule's action that does not run, and no model is told.
   decides?: boolean;
 }
@@ -27,7 +29,7 @@ interface Props {
 export function ToolPreconditionsEditor({
   rows,
   onChange,
-  grantedNativeTools,
+  guardableTools,
   decides = false,
 }: Props) {
   const { t } = useTranslation();
@@ -42,8 +44,15 @@ export function ToolPreconditionsEditor({
     const claimed = new Set(
       rows.filter((_, idx) => idx !== index).map((r) => r.tool),
     );
-    const names = grantedNativeTools.filter((n) => !claimed.has(n));
+    const names = guardableTools
+      .map((g) => g.name)
+      .filter((n) => !claimed.has(n));
     return own && !names.includes(own) ? [own, ...names] : names;
+  };
+  const byName = new Map(guardableTools.map((g) => [g.name, g]));
+  const labelOf = (name: string) => {
+    const tool = byName.get(name);
+    return tool?.label ?? (tool ? nativeToolMeta(name, t).label : name);
   };
 
   return (
@@ -86,7 +95,7 @@ export function ToolPreconditionsEditor({
                 </option>
                 {optionsFor(row.tool, i).map((name) => (
                   <option key={name} value={name}>
-                    {nativeToolMeta(name, t).label}
+                    {labelOf(name)}
                   </option>
                 ))}
               </Select>
@@ -139,6 +148,15 @@ export function ToolPreconditionsEditor({
               >
                 <Trash2 className="h-4 w-4" aria-hidden />
               </Button>
+              {row.tool && !byName.has(row.tool) && (
+                <p className="flex w-full items-center gap-1.5 text-warning text-xs">
+                  <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                  {t(
+                    "editor.toolPreconditions.toolGone",
+                    "This tool is not among the agent's tools, so this rule guards nothing.",
+                  )}
+                </p>
+              )}
             </div>
           ))}
           <div>

@@ -2396,7 +2396,8 @@
       "pickTool": "Pick a tool…",
       "scope": "Scope",
       "title": "Tool preconditions",
-      "tool": "Tool"
+      "tool": "Tool",
+      "toolGone": "This tool is not among the agent's tools, so this rule guards nothing."
     },
     "tools": {
       "clear": "Clear",

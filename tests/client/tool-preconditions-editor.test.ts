@@ -262,11 +262,11 @@ describe("round 2: parse → serialize is a fixed point for the runtime", () => 
     },
   );
 
-  test("a condition on a tool this editor cannot offer survives a save", () => {
-    // Configured over REST on an HTTP/MCP/integration tool. Rendering it would produce a row with a
-    // blank selector, and the only sensible reaction to a blank row is to delete it.
+  test("a condition on a name this editor cannot render survives a save", () => {
+    // A name the write boundary refuses (stored before the boundary existed, or by hand). Rendering it
+    // would produce a row the next save could not write, and the reaction to that is to delete it.
     const stored = {
-      create_invoice: { kind: "attribute", scope: "contact", key: "cpf" },
+      "create invoice": { kind: "attribute", scope: "contact", key: "cpf" },
     };
     expect(parseToolPreconditionRows(stored)).toEqual([]);
     expect(resave(stored)).toEqual(stored);
@@ -467,18 +467,29 @@ describe("the Tools tab offers every granted tool, and flags a rule on one that 
     ],
     mcpConnections: [{ id: "5", name: "CRM", enabled: true, slug: "crm" }],
   };
+  // The shape the server sends: every id key present, the arrays always arrays.
+  const grant = (g: Record<string, unknown>) => ({
+    toolDefinitionId: null,
+    mcpServerConnectionId: null,
+    integrationInstanceId: null,
+    documentTemplateId: null,
+    codeToolDefinitionId: null,
+    knowledgeBaseIds: [],
+    enabledTools: [],
+    ...g,
+  });
   const grants = [
-    { source: "HTTP", toolDefinitionId: "7" },
-    {
+    grant({ source: "HTTP", toolDefinitionId: "7" }),
+    grant({
       source: "INTEGRATION",
       integrationInstanceId: "9",
       enabledTools: ["calendar_check_availability"],
-    },
-    {
+    }),
+    grant({
       source: "MCP",
       mcpServerConnectionId: "5",
       enabledTools: ["create_deal"],
-    },
+    }),
   ];
   const offered = () =>
     [

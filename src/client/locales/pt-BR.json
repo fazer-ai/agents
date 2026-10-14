@@ -2477,7 +2477,8 @@
       "pickTool": "Escolha uma ferramenta…",
       "scope": "Escopo",
       "title": "Precondições de ferramenta",
-      "tool": "Ferramenta"
+      "tool": "Ferramenta",
+      "toolGone": "Esta ferramenta não está entre as do agente, então esta regra não bloqueia nada."
     },
     "tools": {
       "clear": "Limpar",

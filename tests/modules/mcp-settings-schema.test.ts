@@ -252,10 +252,18 @@ describe("agent_settings_set argument schema", () => {
   // refuses what does not parse), so unpublished, a schema-valid call would come back as an MCP error
   // with nothing to predict it.
   test("the published precondition refuses the blank the write refuses", async () => {
-    const published = await publishedSchema();
-    const value = published.toolPreconditions?.handoff_to_human;
-    if (!value)
-      throw new Error("toolPreconditions.handoff_to_human not published");
+    // The rule is published once, as the shape of any key (a precondition is keyed by any tool name).
+    const tools = await withClient(async (c) => (await c.listTools()).tools);
+    const tool = tools.find((t) => t.name === "agent_settings_set");
+    if (!tool) throw new Error("agent_settings_set is not listed");
+    const value = (
+      tool.inputSchema as {
+        properties: Record<string, { additionalProperties?: unknown }>;
+      }
+    ).properties.toolPreconditions?.additionalProperties as
+      | Record<string, unknown>
+      | undefined;
+    if (!value) throw new Error("toolPreconditions publishes no rule shape");
     const branches = Array.isArray(value.anyOf)
       ? (value.anyOf as Record<string, unknown>[])
       : [value];
@@ -269,6 +277,26 @@ describe("agent_settings_set argument schema", () => {
   // NOTE: The refusal happens in the PARSE, before the handler, which is the whole point, since a client
   // validating against tools/list refuses it before sending. Asserted by the error text: a blank key
   // must never reach `assertSettingsToolPreconditions`.
+  // Any tool's name is a key, and the parse refuses one no tool can carry, before the handler.
+  test("a precondition on any tool name parses, and a name no tool can carry is refused", () => {
+    const rule = { kind: "attribute", scope: "conversation", key: "dia" };
+    for (const name of [
+      "calendar_check_availability",
+      "mcp__crm__create_deal",
+    ]) {
+      expect(
+        z
+          .object(BEHAVIOR_PATCH_SHAPE)
+          .safeParse({ toolPreconditions: { [name]: rule } }).success,
+      ).toBe(true);
+    }
+    expect(() =>
+      z
+        .object(BEHAVIOR_PATCH_SHAPE)
+        .parse({ toolPreconditions: { "has space": rule } }),
+    ).toThrow(/tool name/);
+  });
+
   test("a blank precondition key is refused by the schema, not by the write boundary", () => {
     const patch = {
       toolPreconditions: {

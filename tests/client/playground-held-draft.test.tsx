@@ -38,7 +38,12 @@ globalThis.fetch = (async (input: RequestInfo | URL) => {
 }) as unknown as typeof fetch;
 
 // A microphone and a recorder that behave like the browser's for start, pause and stop.
+let trackEnded: (() => void) | null = null;
 class FakeRecorder {
+  static last: FakeRecorder | null = null;
+  constructor() {
+    FakeRecorder.last = this;
+  }
   state: "inactive" | "recording" | "paused" = "inactive";
   mimeType = "audio/webm";
   ondataavailable: ((ev: { data: Blob }) => void) | null = null;
@@ -65,8 +70,24 @@ const realDevices = Object.getOwnPropertyDescriptor(navigator, "mediaDevices");
 Object.defineProperty(navigator, "mediaDevices", {
   configurable: true,
   value: {
+    // Stopping the microphone's track ends the recorder, as the browser does, on a later task.
     getUserMedia: async () =>
-      ({ getTracks: () => [] }) as unknown as MediaStream,
+      ({
+        getTracks: () => [
+          {
+            stop: () => {
+              const rec = FakeRecorder.last;
+              if (rec && rec.state !== "inactive") {
+                rec.state = "inactive";
+                trackEnded = () => {
+                  rec.ondataavailable?.({ data: new Blob(["voice"]) });
+                  rec.onstop?.();
+                };
+              }
+            },
+          },
+        ],
+      }) as unknown as MediaStream,
   },
 });
 afterAll(() => {
@@ -291,5 +312,24 @@ test("a recording cancelled between stop and hand-over lets go of the hold", asy
     expect(hasUnsavedChanges()).toBe(false);
   } finally {
     FakeRecorder.prototype.stop = syncStop;
+  }
+});
+
+test("leaving the editor mid-recording holds the reload until the recorder hands the audio over", async () => {
+  trackEnded = null;
+  const hook = renderHook(() => usePlaygroundChat("7", false));
+  await act(() => hook.result.current.startRecording());
+  act(() => hook.result.current.pauseRecording());
+  hook.unmount();
+  const beforeHandOver = hasUnsavedChanges();
+  transcribeFails = true;
+  try {
+    await act(async () => {
+      (trackEnded as (() => void) | null)?.();
+      await until("the failed upload to settle", () => !hasUnsavedChanges());
+    });
+    expect([beforeHandOver, trackEnded !== null]).toEqual([true, true]);
+  } finally {
+    transcribeFails = false;
   }
 });

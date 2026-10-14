@@ -590,6 +590,11 @@ export function usePlaygroundChat(
   useEffect(() => {
     const urls = objectUrlsRef.current;
     return () => {
+      // Stopping the tracks ends a live recording, and its `stop` event uploads it after this
+      // unmount; the hold covers that gap as stopRecording does.
+      const rec = mediaRecorderRef.current;
+      if (rec && rec.state !== "inactive")
+        releaseFinalizing.current ??= holdInFlight();
       for (const track of streamRef.current?.getTracks() ?? []) track.stop();
       for (const url of urls) URL.revokeObjectURL(url);
     };

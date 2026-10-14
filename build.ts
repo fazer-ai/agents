@@ -4,6 +4,7 @@ import { existsSync } from "fs";
 import { cp, rename, rm } from "fs/promises";
 import path from "path";
 import pkg from "./package.json" with { type: "json" };
+import { buildId } from "./scripts/lib/build-id";
 import {
   findNonAbsoluteUrls,
   rewriteAssetUrlsForCdn,
@@ -13,10 +14,8 @@ import {
 // tag / git sha) wins; otherwise fall back to package.json's version.
 const APP_VERSION = process.env.BUN_PUBLIC_VERSION || pkg.version || "";
 
-// Identifies this build, not this version: two builds of the same version differ, so a redeploy of
-// an unchanged version still tells an open tab that its bundle is no longer the one being served.
-// Inlined into the bundle and written to dist/build.json, which the server reads at boot.
-const BUILD_ID = `${APP_VERSION}+${Date.now().toString(36)}`;
+// Names this frontend to the server and to the open tabs (scripts/lib/build-id.ts).
+const BUILD_ID = await buildId({ version: APP_VERSION, env: process.env });
 
 if (process.argv.includes("--help") || process.argv.includes("-h")) {
   console.log(`

@@ -223,6 +223,18 @@ describe("a dynamic import that fails", () => {
     expect([reloads, settled]).toEqual([1, false]);
   });
 
+  test("surfaces the error instead of reloading over unsaved changes", async () => {
+    renderShell(<DirtyModal />);
+    const error = await importWithReload(missingChunk).then(
+      () => null,
+      (e: unknown) => (e instanceof Error ? e.message : String(e)),
+    );
+    expect([reloads, error]).toEqual([
+      0,
+      "Failed to fetch dynamically imported module",
+    ]);
+  });
+
   test("surfaces the error when this build already reloaded once", async () => {
     importWithReload(missingChunk).catch(() => {});
     await Promise.resolve();

@@ -115,6 +115,25 @@ describe("the reload after a chunk fails", () => {
     expect([newer, reloads]).toEqual([true, 2]);
   });
 
+  test("unsaved changes refuse the reload and leave it unspent", () => {
+    const storage = memoryStorage();
+    let reloads = 0;
+    const reload = () => reloads++;
+    const whileDirty = reloadOnceForFailedChunk({
+      ownBuild: "9.9.1+a",
+      storage,
+      reload,
+      unsaved: () => true,
+    });
+    const afterSaving = reloadOnceForFailedChunk({
+      ownBuild: "9.9.1+a",
+      storage,
+      reload,
+      unsaved: () => false,
+    });
+    expect([whileDirty, afterSaving, reloads]).toEqual([false, true, 1]);
+  });
+
   test("storage that cannot remember the reload refuses it", () => {
     let reloads = 0;
     const reloaded = reloadOnceForFailedChunk({

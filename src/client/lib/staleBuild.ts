@@ -1,6 +1,9 @@
 import { lazy, useSyncExternalStore } from "react";
 import { APP_BUILD_ID } from "@/client/lib/env";
-import { suppressUnloadPrompt } from "@/client/lib/unsavedGuard";
+import {
+  hasUnsavedChanges,
+  suppressUnloadPrompt,
+} from "@/client/lib/unsavedGuard";
 import {
   SERVED_BUILD_HEADER,
   SERVED_VERSION_HEADER,
@@ -78,18 +81,22 @@ export function reloadIntoServedBuild(): void {
 // At most one reload per build: the reload fetches the current document, so a chunk that still
 // fails from the SAME build is not a deploy, and reloading again would loop. Keyed in sessionStorage
 // so it survives the reload it guards; storage that cannot be written refuses the reload for the same
-// reason.
+// reason. Unsaved changes refuse it too: the operator could cancel the unload prompt, the page would
+// stay without the module, and the caller's own error path is the only way back from there.
 const CHUNK_RELOAD_KEY = "@agents:chunk-reload-build";
 
 export function reloadOnceForFailedChunk({
   ownBuild = APP_BUILD_ID,
   storage = globalThis.sessionStorage,
   reload = () => window.location.reload(),
+  unsaved = hasUnsavedChanges,
 }: {
   ownBuild?: string;
   storage?: Pick<Storage, "getItem" | "setItem">;
   reload?: () => void;
+  unsaved?: () => boolean;
 } = {}): boolean {
+  if (unsaved()) return false;
   try {
     if (storage.getItem(CHUNK_RELOAD_KEY) === ownBuild) return false;
     storage.setItem(CHUNK_RELOAD_KEY, ownBuild);

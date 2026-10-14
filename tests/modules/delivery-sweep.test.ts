@@ -1158,28 +1158,136 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
   });
 
   test("the receiver settles at the DECISION, not after its tail work", async () => {
-    // ORDERING, and it only shows on failure. tx2 is the natural place to record that a delivery
-    // finished and much too late to record that its MESSAGE is settled: the error clearing, the
-    // follow-up arming, the redirect re-arm, the ingestion pass and the watermark tail all sit in
-    // between, each taking its own time, and a process dying in that stretch leaves PROCESSING on a
-    // message whose fate was already sealed. Asserted at the source, since a passing run cannot tell
-    // an early write from a late one.
-    const src = await Bun.file(
-      new URL("../../src/modules/chatwoot/webhook.ts", import.meta.url),
-    ).text();
-    const body = src.slice(
-      src.indexOf("export async function processChatwootDelivery("),
+    // ORDERING, and it only shows on failure. A process dying between the turn's decision and tx2
+    // (the error clearing, the follow-up arming, the ingestion, the watermark tail) must leave the
+    // message settled, so the settlement is checked at the moment it is written: a trigger on the
+    // sibling row's move to PROCESSED refuses it once a tail write has already landed (the error
+    // cleared, or tx2 run on the delivery's own row). The settlement swallows its own failure, so a
+    // late one shows as the sibling left PROCESSING.
+    const convId = 8964;
+    const messageId = 9464;
+    const conv = await seedConversation(convId);
+    await suDb.conversation.update({
+      where: { id: conv.id },
+      data: {
+        lastError: "a turn that failed earlier",
+        lastErrorAt: new Date(),
+      },
+    });
+    const sibling = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `decision-sibling-${process.pid}`,
+        event: "message_created",
+        status: "PROCESSING",
+        receivedAt: new Date(Date.now() - 60_000),
+        claimedAt: new Date(Date.now() - 60_000),
+        conversationId: convId,
+        inboundMessageId: messageId,
+        routeObserved: false,
+      },
+      select: { id: true },
+    });
+    const own = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `decision-own-${process.pid}`,
+        event: "message_created",
+        status: "PENDING",
+        conversationId: convId,
+        inboundMessageId: messageId,
+      },
+      select: { id: true },
+    });
+    // Debounce off: with it on, the delivery arms a flush and no turn runs here.
+    await suDb.agent.update({
+      where: { id: agentDbId },
+      data: { settings: { debounce: { enabled: false } } },
+    });
+    const sent: Array<[number, string]> = [];
+    const client = {
+      getMessages: async () => ({ payload: [] }),
+      sendMessage: async (conversationId: number, content: string) => {
+        sent.push([conversationId, content]);
+        return {};
+      },
+      toggleTyping: async () => ({}),
+    } as unknown as ChatwootClient;
+    const n = normalizeChatwootEvent({
+      event: "message_created",
+      id: messageId,
+      private: false,
+      content: "oi",
+      message_type: "incoming",
+      sender: { id: 77, name: "Cliente", type: null },
+      conversation: {
+        id: convId,
+        inbox_id: CHATWOOT_INBOX_ID,
+        status: "pending",
+        contact_inbox: { id: 61_000 + convId },
+        meta: { sender: { id: 77, name: "Cliente" } },
+        channel: "Channel::Api",
+        last_activity_at: Math.floor(Date.now() / 1000),
+        updated_at: Math.floor(Date.now() / 1000),
+      },
+    });
+    if (!n) throw new Error("payload did not normalize");
+
+    await withTrigger(
+      {
+        table: "chatwoot_webhook_deliveries",
+        event: "UPDATE",
+        when: `NEW.id = ${sibling.id} AND NEW.status::text = 'PROCESSED'`,
+        body: `
+          IF (SELECT status::text FROM chatwoot_webhook_deliveries WHERE id = ${own.id}) <> 'PROCESSING' THEN
+            RAISE EXCEPTION 'settled after tx2';
+          END IF;
+          IF (SELECT last_error FROM conversations WHERE id = ${conv.id}) IS NULL THEN
+            RAISE EXCEPTION 'settled after the error was cleared';
+          END IF;
+          RETURN NEW;`,
+      },
+      () =>
+        processChatwootDelivery({
+          tenantId,
+          instanceId,
+          deliveryRowId: own.id,
+          agentBotId: AGENT_BOT_ID,
+          normalized: n,
+          base: appDb,
+          deps: {
+            makeModel: () =>
+              new FakeListChatModel({ responses: ["claro!"] }) as BaseChatModel,
+            makeClient: async () => client,
+            checkpointer: new MemorySaver(),
+          },
+        }),
     );
-    const settle = body.indexOf("await settleDelivery(");
-    const ingest = body.indexOf("await ingestUnhandledMessage(");
-    const tx2 = body.indexOf("// tx2: mark processed.");
-    expect(settle).toBeGreaterThan(-1);
-    expect(ingest).toBeGreaterThan(-1);
-    expect(tx2).toBeGreaterThan(-1);
-    expect(settle).toBeLessThan(ingest);
-    expect(settle).toBeLessThan(tx2);
-    // And the gate tail settles at its own decision, which is also before the ingestion.
-    expect(body.lastIndexOf("await settleDelivery(")).toBeLessThan(ingest);
+
+    expect(sent).toEqual([[convId, "claro!"]]);
+    expect((await statusOf(sibling.id)).status).toBe("PROCESSED");
+    // The tail did run after it: without these the trigger above would refuse nothing.
+    expect((await statusOf(own.id)).status).toBe("PROCESSED");
+    expect(
+      (
+        await suDb.conversation.findUniqueOrThrow({
+          where: { id: conv.id },
+          select: { lastError: true },
+        })
+      ).lastError,
+    ).toBeNull();
+
+    await suDb.agent.update({
+      where: { id: agentDbId },
+      data: { settings: {} },
+    });
+    await suDb.chatwootWebhookDelivery.deleteMany({
+      where: { id: { in: [own.id, sibling.id] } },
+    });
+    await clearFlowLog(suDb, { tenantId });
+    await suDb.schedulerJob.deleteMany({ where: { tenantId } });
   });
 
   test("a flow write that fails is never swallowed, on either line", async () => {
@@ -2038,22 +2146,60 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
   });
 
   test("a gate advances the watermark before it settles the row", async () => {
-    // Two writes that are not a transaction, ordered at the SOURCE because no end state shows
-    // which ran first. Settle first, and a death between them leaves the row terminal with the
-    // watermark still below the message: the sweep no longer sees it, and a later flush
-    // re-coalesces from that watermark and ANSWERS a message a gate deliberately suppressed.
-    // Watermark first leaves the row on the worklist for a handled message, a false line the next
-    // turn over that message corrects.
-    const src = await Bun.file("src/modules/chatwoot/webhook.ts").text();
-    const tail = src.slice(
-      src.indexOf(
-        "A new inbound message the bot deliberately leaves unanswered",
-      ),
+    // Two writes that are not a transaction. Settle first, and a death between them leaves the row
+    // terminal with the watermark still below the message: the sweep no longer sees it, and a later
+    // flush re-coalesces from that watermark and ANSWERS a message a gate deliberately suppressed.
+    // Checked at the moment the settlement is written: a trigger refuses the sibling's move to
+    // PROCESSED while the watermark is still below the message, and the settlement swallows its own
+    // failure, so a settlement ahead of the mark shows as the sibling left PROCESSING.
+    const convId = 8832;
+    const messageId = 9784;
+    const conv = await seedConversation(convId);
+    const sibling = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `mark-first-sibling-${process.pid}`,
+        event: "message_created",
+        status: "PROCESSING",
+        receivedAt: new Date(Date.now() - 60_000),
+        claimedAt: new Date(Date.now() - 60_000),
+        conversationId: convId,
+        inboundMessageId: messageId,
+        routeObserved: false,
+      },
+      select: { id: true },
+    });
+
+    // Held by a human, which is the gate's exit.
+    await withTrigger(
+      {
+        table: "chatwoot_webhook_deliveries",
+        event: "UPDATE",
+        when: `NEW.id = ${sibling.id} AND NEW.status::text = 'PROCESSED'`,
+        body: `
+          IF COALESCE((SELECT last_handled_message_id FROM conversations WHERE id = ${conv.id}), 0) < ${messageId} THEN
+            RAISE EXCEPTION 'settled below the watermark';
+          END IF;
+          RETURN NEW;`,
+      },
+      () => deliverThrough(convId, messageId, "incoming"),
     );
-    const mark = tail.indexOf("advanceHandledWatermark");
-    const settle = tail.indexOf("await settleDelivery(");
-    expect(mark).toBeGreaterThan(-1);
-    expect(settle).toBeGreaterThan(mark);
+
+    expect((await statusOf(sibling.id)).status).toBe("PROCESSED");
+    expect(
+      (
+        await suDb.conversation.findUniqueOrThrow({
+          where: { id: conv.id },
+          select: { lastHandledMessageId: true },
+        })
+      ).lastHandledMessageId,
+    ).toBe(messageId);
+
+    await suDb.chatwootWebhookDelivery.deleteMany({
+      where: { conversationId: convId },
+    });
+    await clearFlowLog(suDb, { tenantId });
   });
 
   test("retires the PROCESSING rows before it looks for DEAD ones", async () => {

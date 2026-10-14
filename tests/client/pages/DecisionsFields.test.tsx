@@ -330,7 +330,7 @@ describe("the decisions engine in the agent editor", () => {
     expect(stored.decisions).toEqual(BLOCK);
   });
 
-  test("says what each rule and question has been doing, from the engine's own lines", async () => {
+  test("says what each rule has been doing, from the engine's own lines", async () => {
     stubApi();
     renderSection({ monitoring: { engine: "decisions", decisions: BLOCK } });
     await waitFor(() => expect(count("decisions-activity-total")).toBe(1));
@@ -341,14 +341,31 @@ describe("the decisions engine in the agent editor", () => {
       "Fired in 1 of 2 decisions.",
       "Fired in 0 of 2 decisions.",
     ]);
-    expect(text("decisions-question-answers")).toEqual([
-      "Latest answers: yes 91% · yes 10%",
-      "Latest answers: reembolso (80%)",
-    ]);
+    // agents#1426: a question shows no answers here; they mean something only beside their
+    // conversation, where the trail shows each tick's answers.
+    expect(count("decisions-question-answers")).toBe(0);
+    expect(text("decisions-activity-total")[0]).toContain(
+      "The number beside each rule counts those.",
+    );
+    const body = document.body.textContent ?? "";
+    expect(body).not.toContain("Latest answers");
+    expect(body).not.toContain("No answer under this name yet.");
     // The read is this agent's observe lines.
     const q = logQueries[0];
     expect(q?.get("agentId")).toBe("7");
     expect(q?.get("stage")).toBe("observe");
+  });
+
+  test("a question added on screen says nothing about answers", async () => {
+    stubApi();
+    renderSection({ monitoring: { engine: "decisions", decisions: BLOCK } });
+    await waitFor(() => expect(count("decisions-activity-total")).toBe(1));
+    fireEvent.click(screen.getByRole("button", { name: "Add question" }));
+    expect(count("decisions-question")).toBe(3);
+    expect(document.body.textContent ?? "").not.toContain(
+      "No answer under this name yet.",
+    );
+    expect(count("decisions-question-answers")).toBe(0);
   });
 
   test("lines a different set of rules wrote are not counted against these", async () => {

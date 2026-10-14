@@ -78,24 +78,19 @@ describe("what a decisions agent has been doing", () => {
     expect(a.rules.has(1)).toBe(false);
   });
 
-  test("keeps each question's latest answers, newest first", () => {
+  test("the order the lines arrive in does not change the counts", () => {
     const a = summarizeDecisions(LINES, "aaaa", 3);
-    expect(a.answers.get("pede_reembolso")).toEqual([
-      { type: "refusal" },
-      { type: "yes_no", probability: 0.12 },
-      { type: "yes_no", probability: 0.91 },
-    ]);
-    expect(a.answers.get("irritacao")).toEqual([
-      { type: "score", score: 1.4, confidence: 0.6 },
-    ]);
-    expect(
-      summarizeDecisions(LINES, "aaaa", 3, 1).answers.get("pede_reembolso"),
-    ).toEqual([{ type: "refusal" }]);
+    const b = summarizeDecisions([...LINES].reverse(), "aaaa", 3);
+    expect(b.decisions).toBe(a.decisions);
+    expect([...b.rules.entries()]).toEqual([...a.rules.entries()]);
   });
 
-  test("the order the lines arrive in does not change the answer", () => {
-    const a = summarizeDecisions([...LINES].reverse(), "aaaa", 3);
-    expect(a.answers.get("pede_reembolso")?.[0]).toEqual({ type: "refusal" });
+  // agents#1426: the editor shows no answers, so the summary carries none.
+  test("carries the counts and no answers", () => {
+    expect(Object.keys(summarizeDecisions(LINES, "aaaa", 3)).sort()).toEqual([
+      "decisions",
+      "rules",
+    ]);
   });
 
   test("counts only the lines that ran the block being shown", () => {
@@ -116,7 +111,6 @@ describe("what a decisions agent has been doing", () => {
       held: 0,
       merged: 0,
     });
-    expect(a.answers.has("irritacao")).toBe(false);
     // ...and the other block's line is counted when THAT block is the one shown.
     expect(summarizeDecisions(lines, "bbbb", 3).decisions).toBe(1);
   });

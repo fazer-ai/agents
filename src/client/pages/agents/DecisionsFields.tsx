@@ -46,7 +46,6 @@ import {
   type ToolArgSpec,
 } from "@/modules/decisions/tool-args";
 import {
-  type AnswerSample,
   type DecisionLine,
   type DecisionsActivity,
   type RuleActivity,
@@ -280,26 +279,6 @@ function IconButton({
       </button>
     </Tooltip>
   );
-}
-
-function sampleText(t: TFunction, s: AnswerSample): string {
-  const pct = (n: number) => `${Math.round(n * 100)}%`;
-  if (s.type === "yes_no") {
-    return t("editor.decisionsAnswerYesNo", "yes {{p}}", {
-      p: pct(s.probability),
-    });
-  }
-  if (s.type === "choice") {
-    return s.confidence === null
-      ? s.choice
-      : `${s.choice} (${pct(s.confidence)})`;
-  }
-  if (s.type === "score") {
-    return t("editor.decisionsAnswerScore", "level {{score}}", {
-      score: Math.round(s.score * 100) / 100,
-    });
-  }
-  return t("editor.decisionsAnswerRefusal", "refused");
 }
 
 function ruleActivityText(
@@ -1877,7 +1856,7 @@ export function DecisionsFields({
         >
           {t(
             "editor.decisionsActivityTotal",
-            "{{count}} of this agent's latest decisions ran these questions and rules as saved. The numbers beside each question and rule count those.",
+            "{{count}} of this agent's latest decisions ran these questions and rules as saved. The number beside each rule counts those.",
             { count: activity.decisions },
           )}
         </p>
@@ -1926,7 +1905,6 @@ export function DecisionsFields({
           </div>
         )}
         {decisions.questions.map((q, qi) => {
-          const samples = activity?.answers.get(q.name) ?? [];
           const qOpen = open.has(q.key) || forced.includes(q.key);
           return (
             <div
@@ -2088,27 +2066,6 @@ export function DecisionsFields({
               {!qOpen && q.instructions.trim() && (
                 <p className="truncate text-text-secondary text-xs">
                   {q.instructions.trim()}
-                </p>
-              )}
-              {activity && activity.decisions > 0 && (
-                <p
-                  className="text-text-muted text-xs"
-                  data-testid="decisions-question-answers"
-                >
-                  {samples.length > 0
-                    ? t(
-                        "editor.decisionsLatestAnswers",
-                        "Latest answers: {{answers}}",
-                        {
-                          answers: samples
-                            .map((s) => sampleText(t, s))
-                            .join(" · "),
-                        },
-                      )
-                    : t(
-                        "editor.decisionsNoAnswers",
-                        "No answer under this name yet.",
-                      )}
                 </p>
               )}
             </div>

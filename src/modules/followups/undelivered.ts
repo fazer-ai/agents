@@ -169,9 +169,11 @@ export async function lastReplyDelivery(params: {
   )
     throw new Error("follow-up: the reply's start is past the pages read");
   // The fork's pages carry only the reactions to their own messages, so a reaction to an older one is
-  // missing from them: the catch-up read from where the reply starts brings it, as for the flush
-  // (`readBurstPage`).
-  let cursor = start - 1;
+  // missing from them: the catch-up read brings it, as for the flush (`readBurstPage`). It starts at
+  // the newest handled message when that is older than the reply, since the reply may answer a
+  // reaction the pages left out.
+  let cursor =
+    Math.min(start, params.handledThrough ?? Number.MAX_SAFE_INTEGER) - 1;
   for (let n = 0; ; n++) {
     const raw = await client.getMessages(params.chatwootConversationId, {
       after: cursor,

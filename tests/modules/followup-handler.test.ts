@@ -1236,6 +1236,30 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     expect(s.notes).toEqual([]);
   });
 
+  // The refused reply answered a reaction to an older message, which the pages leave out: the catch-up
+  // read starts at the handled message, so the hand-over is pinned past it and the fence holds.
+  test("a reaction the reply answered is read for the hand-over's pin", async () => {
+    await seedConversation(1750, { ...due(), lastRepliedMessageId: 17501 });
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: 1750 },
+      data: { lastInboundMessageId: 17501 },
+    });
+    const s = stubClient({
+      page: [
+        customerRow(17500),
+        {
+          ...customerRow(17501),
+          content: "👍",
+          content_attributes: { is_reaction: true },
+          reactsTo: 17300,
+        },
+        replyRow(17502, { refused: true }),
+      ],
+    });
+    expect(await run(1750, s)).toEqual({ outcome: "done" });
+    expect(s.resolved).toEqual([1750]);
+  });
+
   // A customer message that arrived after the turn's last look and before its reply was written is
   // still queued for its own turn: it holds the step, though it sorts before the reply.
   test("an open customer message before the refused reply holds the step", async () => {

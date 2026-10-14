@@ -107,6 +107,7 @@ export function behaviorTabProps(
       separator: "blank" as const,
     },
     setSignature: () => {},
+    signatureSeed: { current: null },
     vision: {
       enabled: true,
       provider: "openai",

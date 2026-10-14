@@ -239,7 +239,11 @@ import {
   revealFirstProblem,
   setupSaveBlocked,
 } from "./saveAttempt";
-import { signatureToForm, signatureToStored } from "./signatureFormState";
+import {
+  type SignatureSeed,
+  signatureToForm,
+  signatureToStored,
+} from "./signatureFormState";
 import {
   snoozedFollowUpBlocksSave,
   snoozedFollowUpStoredIndices,
@@ -925,6 +929,8 @@ function AgentEditor() {
   // The operator's closing line. Mirrors modules/signature (off by default, `top`, `blank`, and
   // `all`, which is what `top` implies: a badge above the message answers "who is talking to me"
   // on every message, where a farewell below it is said once).
+  // What the signature switch last seeded, kept here so it outlives the Behavior tab (`signatureOnToggle`).
+  const signatureSeed = useRef<SignatureSeed | null>(null);
   const [signature, setSignature] = useState({
     enabled: false,
     text: "",
@@ -4612,6 +4618,7 @@ function AgentEditor() {
                 setSplit={setSplit}
                 signature={signature}
                 setSignature={setSignature}
+                signatureSeed={signatureSeed}
                 serviceWindow={serviceWindow}
                 setServiceWindow={setServiceWindow}
                 followUp={followUp}

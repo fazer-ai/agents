@@ -124,10 +124,9 @@ describe("signatureOnToggle: the seed, and the guard that matters more", () => {
   };
 
   test("turning it on over an empty box seeds the agent's name", () => {
-    expect(signatureOnToggle(off, true, null)).toEqual({
-      form: { ...off, enabled: true, text: SIGNATURE_SEED },
-      seededFrom: "",
-    });
+    const up = signatureOnToggle(off, true, null);
+    expect(up.form).toEqual({ ...off, enabled: true, text: SIGNATURE_SEED });
+    expect(up.seed).toEqual({ form: up.form, from: "" });
   });
 
   test("a box holding only whitespace counts as empty", () => {
@@ -141,9 +140,7 @@ describe("signatureOnToggle: the seed, and the guard that matters more", () => {
     const down = signatureOnToggle(on, false, null);
     expect(down.form).toEqual({ ...on, enabled: false });
     // and the whole point: back on gives it back byte for byte
-    expect(signatureOnToggle(down.form, true, down.seededFrom).form).toEqual(
-      on,
-    );
+    expect(signatureOnToggle(down.form, true, down.seed).form).toEqual(on);
   });
 
   // The seed is the switch's own suggestion, not something the operator wrote: turned straight back
@@ -152,17 +149,17 @@ describe("signatureOnToggle: the seed, and the guard that matters more", () => {
     for (const before of ["", "  \n"]) {
       const box = { ...off, text: before };
       const up = signatureOnToggle(box, true, null);
-      expect(signatureOnToggle(up.form, false, up.seededFrom).form).toEqual(
-        box,
-      );
+      expect(signatureOnToggle(up.form, false, up.seed).form).toEqual(box);
     }
   });
 
-  test("a seed the operator edited stays when the switch goes off", () => {
+  // Any edit since the seed hands the switch a new form, even one that types the seed back: the text
+  // is then the operator's, and off keeps it.
+  test("a seed edited, even back to itself, stays when the switch goes off", () => {
     const up = signatureOnToggle(off, true, null);
-    const edited = { ...up.form, text: "Alex" };
-    expect(signatureOnToggle(edited, false, up.seededFrom).form.text).toBe(
-      "Alex",
+    const retyped = { ...up.form, text: SIGNATURE_SEED };
+    expect(signatureOnToggle(retyped, false, up.seed).form.text).toBe(
+      SIGNATURE_SEED,
     );
   });
 
@@ -177,8 +174,9 @@ describe("signatureOnToggle: the seed, and the guard that matters more", () => {
 
   // Turning it on over a kept text seeds nothing, and says so, so a later off has nothing to undo.
   test("on over a kept text records no seed", () => {
+    const up = signatureOnToggle(off, true, null);
     expect(
-      signatureOnToggle({ ...off, text: SIG }, true, "").seededFrom,
+      signatureOnToggle({ ...off, text: SIG }, true, up.seed).seed,
     ).toBeNull();
   });
 

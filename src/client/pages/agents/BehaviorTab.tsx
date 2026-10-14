@@ -128,7 +128,7 @@ import {
 } from "./OtherInboxesFields";
 import type { ObservationState } from "./observationFormState";
 import { Section, SectionNav } from "./SectionNav";
-import { signatureOnToggle } from "./signatureFormState";
+import { type SignatureSeed, signatureOnToggle } from "./signatureFormState";
 import {
   newSnoozedStep,
   type SnoozedCadenceState,
@@ -428,6 +428,8 @@ interface BehaviorTabProps {
   setSplit: React.Dispatch<React.SetStateAction<SplitState>>;
   signature: SignatureState;
   setSignature: React.Dispatch<React.SetStateAction<SignatureState>>;
+  // What the switch last seeded (`signatureOnToggle`), held by the page so it outlives the tab.
+  signatureSeed: React.MutableRefObject<SignatureSeed | null>;
   vision: VisionState;
   setVision: React.Dispatch<React.SetStateAction<VisionState>>;
   visionCredBaseUrl: string | null;
@@ -1595,6 +1597,7 @@ export function BehaviorTab({
   setSplit,
   signature,
   setSignature,
+  signatureSeed,
   vision,
   setVision,
   visionCredBaseUrl,
@@ -1650,8 +1653,6 @@ export function BehaviorTab({
   // a time or schedule name would make the signature change on every message, the one property the
   // feature exists to remove.
   const signatureRef = useRef<HTMLTextAreaElement>(null);
-  // What the box held when the switch last seeded it (`signatureOnToggle`).
-  const signatureSeededFrom = useRef<string | null>(null);
   // How much a SELECTION would free, since an insert REPLACES it. Tracked in state because the
   // chips' disabled state is decided at render and a selection change does not otherwise cause one:
   // without it a chip stays greyed out while the very text it would overwrite sits highlighted.
@@ -3294,9 +3295,9 @@ export function BehaviorTab({
                 const next = signatureOnToggle(
                   signature,
                   v,
-                  signatureSeededFrom.current,
+                  signatureSeed.current,
                 );
-                signatureSeededFrom.current = next.seededFrom;
+                signatureSeed.current = next.seed;
                 setSignature(next.form);
               }}
               label={t(

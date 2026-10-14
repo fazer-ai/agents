@@ -670,8 +670,6 @@ export async function followUpHandler(
       if (stamped > 0) run?.commit();
       return { outcome: "done" };
     }
-    const { handoverRetry: _retry, ...payload } = job.payload;
-    job = { ...job, payload };
   }
 
   const ctx = await runScopedOn(base, sysCtx(tenantId), async (db) => {
@@ -1092,8 +1090,11 @@ export async function followUpHandler(
       },
     };
   }
-  // NOTE: a retry that found the reply answered after all is a nudge again, and waits like one.
+  // NOTE: a retry that found the reply answered after all is a nudge again, and waits like one. The
+  // marker stays on every deferral before this point, since the hand-over is still owed there.
   if (retryingHandover) {
+    const { handoverRetry: _retry, ...payload } = job.payload;
+    job = { ...job, payload };
     const wait = notDueYet();
     if (wait) return wait;
   }

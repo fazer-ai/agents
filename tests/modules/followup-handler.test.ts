@@ -1682,6 +1682,30 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     expect(s.sent).toEqual([]);
   });
 
+  // A page that does not read on a retry defers it, and the deferral is still a hand-over retry: the
+  // next run does not wait out the inactivity delay again.
+  test("a hand-over retry deferred by an unread page keeps its marker", async () => {
+    await seedConversation(1743, { ...due(), lastEventAt: new Date() });
+    const s = stubClient({ onRead: () => ({}) });
+    const out = await followUpHandler(
+      {
+        ...jobFor(1743),
+        payload: { ...jobFor(1743).payload, handoverRetry: true },
+      },
+      appDb,
+      {
+        makeModel: fakeModel,
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    );
+    expect(out).toMatchObject({
+      outcome: "reschedule",
+      payload: { handoverRetry: true },
+    });
+  });
+
   test("a page that does not read holds the step instead of nudging", async () => {
     await seedConversation(1704, due());
     const s = stubClient();

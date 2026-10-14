@@ -1,4 +1,11 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import {
+  afterAll,
+  describe,
+  expect,
+  setDefaultTimeout,
+  spyOn,
+  test,
+} from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import {
@@ -28,6 +35,11 @@ import { until } from "@/tests/utils/poll";
 // console and the MCP tools show), and Postgres stops the statement, so the connection is back in
 // the pool when the request answers. `LOCK TABLE llm_usage` stands in for a window too long to
 // aggregate: the read waits exactly as long as the lock is held.
+//
+// No test measures how long a read took. A bounded read is refused while the lock it waits on is
+// still held; an unbounded one waits the lock out and answers. Where the claim is that a statement
+// gets only what is LEFT of the deadline, the clock is moved to near the deadline instead of spent:
+// the budget is one no read could spend, so a statement handed a fresh one waits the lock out too.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -64,34 +76,99 @@ const principal: VerifiedToken = {
   jti: "j",
 };
 
+// How long a locked table stays locked when the test does not release it. Every read under test is
+// refused well inside it (its budget, or what a jump of the clock left of it, is at most an eighth
+// of it); a read that is not bounded waits it out and answers, and the tests assert on that answer.
+const HOLD_MS = 4_000;
+// A budget no read can spend for real: a read that got a fresh one, or one counted from somewhere
+// other than its deadline, waits on the lock until HOLD_MS and answers.
+const BUDGET_MS = 60_000;
+// What a test leaves of BUDGET_MS by moving the clock, once the read has taken its deadline.
+const LEFT_MS = 500;
+
+setDefaultTimeout(15_000);
+
+// `Date.now()` as the deadline code reads it: the real clock, plus whatever `jump` added. A test moves
+// a read to near its deadline without spending the time. Captured before the spy, so `real` is the
+// real clock; `until` reads `Date.now()` too, so a test polls before it jumps, never after.
+function skewedClock(): { jump: (ms: number) => void; restore: () => void } {
+  const real = Date.now.bind(Date);
+  let skew = 0;
+  const spy = spyOn(Date, "now").mockImplementation(() => real() + skew);
+  return {
+    jump: (ms) => {
+      skew += ms;
+    },
+    restore: () => spy.mockRestore(),
+  };
+}
+
+// Locks `table` in a session of its own until `release()`, or for HOLD_MS if it never comes. The
+// lock is held once this returns.
+async function lockTable(
+  table: string,
+): Promise<{ release: () => Promise<void> }> {
+  let pid: number | undefined;
+  const held = (su as PrismaClient)
+    .$transaction(
+      async (tx) => {
+        await tx.$executeRawUnsafe(
+          `LOCK TABLE ${table} IN ACCESS EXCLUSIVE MODE`,
+        );
+        const [row] = await tx.$queryRaw<{ pid: number }[]>`
+          SELECT pg_backend_pid() AS pid`;
+        pid = row?.pid;
+        await tx.$queryRawUnsafe(
+          `SELECT pg_sleep(${HOLD_MS / 1000})::text /* mb_hold */`,
+        );
+      },
+      { timeout: 20_000 },
+    )
+    // Cancelled by `release()`, the transaction rolls back, which is the release.
+    .catch(() => undefined);
+  await until(`${table} locked`, async () => (pid === undefined ? null : pid));
+  // Cancels the hold only while it is the hold: once it ran out, its connection is back in the pool
+  // and the pid may be serving anything, this cancel included.
+  let released: Promise<void> | undefined;
+  return {
+    release: () => {
+      released ??= (async () => {
+        await (su as PrismaClient).$queryRaw`
+          SELECT pg_cancel_backend(pid) FROM pg_stat_activity
+           WHERE pid = ${pid}::int AND pid <> pg_backend_pid() AND query LIKE '%mb_hold%'`;
+        await held;
+      })();
+      return released;
+    },
+  };
+}
+
+// Resolves once a statement of another session is waiting for the lock on `table`.
+async function waitedOn(table: string): Promise<void> {
+  await until(`a statement waiting on ${table}`, async () => {
+    const [row] = await (su as PrismaClient).$queryRaw<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM pg_locks l JOIN pg_class c ON c.oid = l.relation
+       WHERE c.relname = ${table} AND NOT l.granted`;
+    return (row?.n ?? 0) > 0 ? true : null;
+  });
+}
+
+// Holds the client's one connection for `ms`, from now.
+function holdOnly(client: PrismaClient, ms: number): Promise<unknown> {
+  return client.$transaction(
+    async (tx) => {
+      await tx.$queryRawUnsafe(`SELECT pg_sleep(${ms / 1000})::text`);
+    },
+    { timeout: 10_000 },
+  );
+}
+
 async function waitingOnUsage(): Promise<number> {
   const [row] = await (su as PrismaClient).$queryRaw<{ n: number }[]>`
     SELECT count(*)::int AS n FROM pg_stat_activity
      WHERE datname = current_database() AND state = 'active' AND query ILIKE '%llm_usage%'
        AND pid <> pg_backend_pid() AND usename <> current_user`;
   return row?.n ?? -1;
-}
-
-// Runs `act` while llm_usage is locked, and releases the lock only once `act` has answered: an
-// unbounded read never answers, and the test times out.
-async function underUsageLock<T>(act: () => Promise<T>): Promise<{
-  result: T;
-  elapsed: number;
-  left: number;
-}> {
-  let out: { result: T; elapsed: number; left: number } | undefined;
-  await (su as PrismaClient).$transaction(
-    async (tx) => {
-      await tx.$executeRawUnsafe(
-        "LOCK TABLE llm_usage IN ACCESS EXCLUSIVE MODE",
-      );
-      const t0 = Date.now();
-      const result = await act();
-      out = { result, elapsed: Date.now() - t0, left: await waitingOnUsage() };
-    },
-    { timeout: 20_000 },
-  );
-  return out as { result: T; elapsed: number; left: number };
 }
 
 function withMetricsTimeout<T>(ms: number, fn: () => Promise<T>): Promise<T> {
@@ -102,6 +179,9 @@ function withMetricsTimeout<T>(ms: number, fn: () => Promise<T>): Promise<T> {
     metrics.timeoutMs = saved;
   });
 }
+
+const statusOf = (result: unknown) =>
+  (result as { statusCode?: number }).statusCode;
 
 test("a statement asked for after the deadline is refused before it is sent, and reads as the metrics refusal", async () => {
   // A cheap statement finishes inside any timeout Postgres is given, so clamping what is left to 1 ms
@@ -126,133 +206,170 @@ test("a statement asked for after the deadline is refused before it is sent, and
 });
 
 describe.skipIf(!dbUp)("metrics time budget", () => {
-  test("a read past METRICS_TIMEOUT_MS answers 503 at the budget and leaves no statement running", async () => {
-    const { result, elapsed, left } = await withMetricsTimeout(500, () =>
-      underUsageLock(() =>
+  test("a read past METRICS_TIMEOUT_MS answers 503 while the lock still holds, and leaves no statement running", async () => {
+    const usage = await lockTable("llm_usage");
+    try {
+      const result = await withMetricsTimeout(500, () =>
         getDashboardCosts(ctx, {}, app as PrismaClient).catch((e) => e),
-      ),
-    );
-    expect((result as { statusCode?: number }).statusCode).toBe(503);
-    expect((result as Error).message).toContain("Try a shorter period");
-    expect((result as { field?: string }).field).toBe("since");
-    expect(elapsed).toBeLessThan(2_000);
-    expect(left).toBe(0);
+      );
+      expect(statusOf(result)).toBe(503);
+      expect((result as Error).message).toContain("Try a shorter period");
+      expect((result as { field?: string }).field).toBe("since");
+      expect(await waitingOnUsage()).toBe(0);
+    } finally {
+      await usage.release();
+    }
   });
 
   test("a read refused by the lock timeout is the same 503", async () => {
     const locking = new PrismaClient({
       adapter: new PrismaPg({ connectionString: appUrl, lock_timeout: 300 }),
     });
+    const usage = await lockTable("llm_usage");
     try {
-      const { result, elapsed } = await withMetricsTimeout(10_000, () =>
-        underUsageLock(() => getHealth(ctx, {}, locking).catch((e) => e)),
+      const result = await withMetricsTimeout(10_000, () =>
+        getHealth(ctx, {}, locking).catch((e) => e),
       );
-      expect((result as { statusCode?: number }).statusCode).toBe(503);
-      expect(elapsed).toBeLessThan(2_000);
+      expect(statusOf(result)).toBe(503);
       // The sentence states the time the read ran (about 0.3 s), not the 10 s budget it never reached.
       const seconds = (result as { translationParams?: { seconds?: number } })
         .translationParams?.seconds;
       expect(seconds).toBeGreaterThanOrEqual(0.2);
-      expect(seconds).toBeLessThan(2);
+      expect(seconds).not.toBe(10);
       expect((result as Error).message).not.toContain("10s");
     } finally {
+      await usage.release();
       await locking.$disconnect();
     }
   });
 
   test("the MCP metrics tool returns the refusal as a tool error", async () => {
-    const { result } = await withMetricsTimeout(500, () =>
-      underUsageLock(() =>
+    const usage = await lockTable("llm_usage");
+    try {
+      const result = await withMetricsTimeout(500, () =>
         metricsGet(principal, {}, { base: app as PrismaClient }),
-      ),
-    );
-    expect(JSON.stringify(result)).toContain("Try a shorter period");
+      );
+      expect(JSON.stringify(result)).toContain("Try a shorter period");
+    } finally {
+      await usage.release();
+    }
+  });
+
+  test("each statement is given what is left of the deadline, for the statement and for its lock wait", async () => {
+    // Read back from the statement itself: what Postgres enforces, not how long anything took. Time
+    // that passes only lowers what is left, so the bounds hold on any machine.
+    const clock = skewedClock();
+    try {
+      const seen = await withMetricsTimeout(BUDGET_MS, () =>
+        runMetricsScoped(app as PrismaClient, ctx, async (db) => {
+          clock.jump(BUDGET_MS - 2_000);
+          const [row] = await db.$queryRaw<
+            { statement: number; lock: number }[]
+          >`SELECT (SELECT setting::int FROM pg_settings WHERE name = 'statement_timeout') AS statement,
+                   (SELECT setting::int FROM pg_settings WHERE name = 'lock_timeout') AS lock`;
+          return row;
+        }),
+      );
+      expect(seen?.statement).toBeGreaterThan(0);
+      expect(seen?.statement).toBeLessThanOrEqual(2_000);
+      expect(seen?.lock).toBeLessThanOrEqual(2_000);
+    } finally {
+      clock.restore();
+    }
   });
 
   test("a read of several aggregates is bounded as a whole, not per aggregate", async () => {
-    // Each aggregate fits the 1 s budget; together they do not. Per statement, the second would start
-    // at 0.8 s with a fresh second and hold the connection to 1.6 s.
-    const t0 = Date.now();
-    const result = await withMetricsTimeout(1_000, () =>
-      runMetricsScoped(app as PrismaClient, ctx, async (db) => {
-        await db.$queryRawUnsafe("SELECT pg_sleep(0.8)::text /* mb_two */");
-        await db.$queryRawUnsafe("SELECT pg_sleep(0.8)::text /* mb_two */");
-        return "answered";
-      }).catch((e) => e),
-    );
-    const elapsed = Date.now() - t0;
-    expect((result as { statusCode?: number }).statusCode).toBe(503);
-    expect(elapsed).toBeLessThan(1_400);
-    const [row] = await (su as PrismaClient).$queryRaw<{ n: number }[]>`
-      SELECT count(*)::int AS n FROM pg_stat_activity
-       WHERE datname = current_database() AND state = 'active' AND query LIKE '%mb_two%'
-         AND pid <> pg_backend_pid()`;
-    expect(row?.n).toBe(0);
-  });
-
-  test("a read that waited for a metrics connection runs only on what is left of the budget", async () => {
-    // The pool's one connection is held for 0.7 s of the 1 s budget, and the read then needs 0.7 s.
-    // Counted from the connection it would answer at 1.4 s; counted from its start it is refused at 1 s.
-    const one = new PrismaClient({
-      adapter: new PrismaPg({ connectionString: appUrl, max: 1 }),
-    });
+    // The first aggregate answers; by the second only LEFT_MS of the budget remains. Given a budget of
+    // its own, the second would wait out the lock and answer.
+    const usage = await lockTable("llm_usage");
+    const clock = skewedClock();
     try {
-      await one.$queryRaw`SELECT 1`;
-      const t0 = Date.now();
-      const holder = one.$transaction(
-        async (tx) => {
-          await tx.$queryRawUnsafe("SELECT pg_sleep(0.7)::text");
-        },
-        { timeout: 5_000 },
-      );
-      const result = await withMetricsTimeout(1_000, () =>
-        runMetricsScoped(one, ctx, async (db) => {
-          await db.$queryRawUnsafe("SELECT pg_sleep(0.7)::text /* mb_wait */");
+      const result = await withMetricsTimeout(BUDGET_MS, () =>
+        runMetricsScoped(app as PrismaClient, ctx, async (db) => {
+          await db.$queryRawUnsafe("SELECT 1 /* mb_two */");
+          clock.jump(BUDGET_MS - LEFT_MS);
+          await db.$queryRawUnsafe(
+            "SELECT count(*)::int FROM llm_usage /* mb_two */",
+          );
           return "answered";
         }).catch((e) => e),
       );
-      const elapsed = Date.now() - t0;
-      await holder;
-      expect((result as { statusCode?: number }).statusCode).toBe(503);
-      expect((result as { field?: string }).field).toBe("since");
-      expect(elapsed).toBeLessThan(1_300);
+      expect(statusOf(result)).toBe(503);
       const [row] = await (su as PrismaClient).$queryRaw<{ n: number }[]>`
         SELECT count(*)::int AS n FROM pg_stat_activity
-         WHERE datname = current_database() AND state = 'active' AND query LIKE '%mb_wait%'
+         WHERE datname = current_database() AND state = 'active' AND query LIKE '%mb_two%'
            AND pid <> pg_backend_pid()`;
       expect(row?.n).toBe(0);
     } finally {
+      clock.restore();
+      await usage.release();
+    }
+  });
+
+  test("a read that waited for a metrics connection runs only on what is left of the budget", async () => {
+    // The read takes its deadline, and the clock moves to LEFT_MS before it: while the pool's one
+    // connection is busy. Counted from the connection, the budget would be whole again.
+    const one = new PrismaClient({
+      adapter: new PrismaPg({ connectionString: appUrl, max: 1 }),
+    });
+    const usage = await lockTable("llm_usage");
+    const clock = skewedClock();
+    try {
+      await one.$queryRaw`SELECT 1`;
+      const holder = holdOnly(one, 200);
+      const result = await withMetricsTimeout(BUDGET_MS, () => {
+        const read = runMetricsScoped(one, ctx, async (db) => {
+          await db.llmUsage.count();
+          return "answered";
+        });
+        clock.jump(BUDGET_MS - LEFT_MS);
+        return read.catch((e) => e);
+      });
+      await holder;
+      expect(statusOf(result)).toBe(503);
+      expect((result as { field?: string }).field).toBe("since");
+    } finally {
+      clock.restore();
+      await usage.release();
       await one.$disconnect();
     }
   });
 
   test("a model aggregate gets only the time left too", async () => {
-    // The raw query spends 0.8 s of the 1 s budget; the model count then waits on the lock. Bounded,
-    // it is cancelled at the deadline; per statement it would wait a full second more.
-    const { result, elapsed } = await withMetricsTimeout(1_000, () =>
-      underUsageLock(() =>
+    const usage = await lockTable("llm_usage");
+    const clock = skewedClock();
+    try {
+      const result = await withMetricsTimeout(BUDGET_MS, () =>
         runMetricsScoped(app as PrismaClient, ctx, async (db) => {
-          await db.$queryRawUnsafe("SELECT pg_sleep(0.8)::text");
+          await db.$queryRawUnsafe("SELECT 1");
+          clock.jump(BUDGET_MS - LEFT_MS);
           return db.llmUsage.count();
         }).catch((e) => e),
-      ),
-    );
-    expect((result as { statusCode?: number }).statusCode).toBe(503);
-    expect(elapsed).toBeLessThan(1_400);
+      );
+      expect(statusOf(result)).toBe(503);
+    } finally {
+      clock.restore();
+      await usage.release();
+    }
   });
 
   test("a write under the budget runs, and gets only the time left too", async () => {
     // The kept days of the dashboard are written inside the read that computed them.
-    const t0 = Date.now();
-    const result = await withMetricsTimeout(1_000, () =>
-      runMetricsScoped(app as PrismaClient, ctx, async (db) => {
-        await db.$executeRaw`SELECT pg_sleep(0.8)`;
-        return db.$executeRawUnsafe("SELECT pg_sleep(1)");
-      }).catch((e) => e),
-    );
-    const elapsed = Date.now() - t0;
-    expect((result as { statusCode?: number }).statusCode).toBe(503);
-    expect(elapsed).toBeLessThan(1_400);
+    const usage = await lockTable("llm_usage");
+    const clock = skewedClock();
+    try {
+      const result = await withMetricsTimeout(BUDGET_MS, () =>
+        runMetricsScoped(app as PrismaClient, ctx, async (db) => {
+          await db.$executeRaw`SELECT 1`;
+          clock.jump(BUDGET_MS - LEFT_MS);
+          return db.$executeRawUnsafe("SELECT count(*) FROM llm_usage");
+        }).catch((e) => e),
+      );
+      expect(statusOf(result)).toBe(503);
+    } finally {
+      clock.restore();
+      await usage.release();
+    }
   });
 
   test("a statement on the metrics pool outside a read, like the session lookup, is bounded too", async () => {
@@ -263,206 +380,127 @@ describe.skipIf(!dbUp)("metrics time budget", () => {
           adapter: new PrismaPg(metricsPoolOptions(appUrl)),
         }),
     );
+    const users = await lockTable("users");
     try {
-      let code: unknown;
-      let waitedMs = -1;
-      await (su as PrismaClient).$transaction(
-        async (tx) => {
-          await tx.$executeRawUnsafe(
-            "LOCK TABLE users IN ACCESS EXCLUSIVE MODE",
-          );
-          const t0 = Date.now();
-          code = await pool.user
-            .findUnique({ where: { id: 1n }, select: { id: true } })
-            .then(
-              () => "answered",
-              (e) => postgresCodeOf(e),
-            );
-          waitedMs = Date.now() - t0;
-        },
-        { timeout: 20_000 },
-      );
+      const code = await pool.user
+        .findUnique({ where: { id: 1n }, select: { id: true } })
+        .then(
+          () => "answered",
+          (e) => postgresCodeOf(e),
+        );
       expect(code === "57014" || code === "55P03").toBe(true);
-      expect(waitedMs).toBeLessThan(1_500);
     } finally {
+      await users.release();
       await pool.$disconnect();
     }
   });
 
   test("a SUPER_ADMIN's tenant check spends the same budget the aggregates do", async () => {
+    // The check is the read's first statement, and it waits on `tenants` with LEFT_MS of the budget.
+    // Outside the deadline, it would wait out the lock, and the read would answer.
     const tenant = await (su as PrismaClient).tenant.create({
       data: { name: "mb", slug: `mb-${process.pid}-${Date.now()}` },
     });
+    const tenants = await lockTable("tenants");
+    const clock = skewedClock();
     try {
-      // The tenant check waits 0.8 s on a lock, then the aggregate would take 0.8 s more.
-      const holder = (su as PrismaClient).$transaction(
-        async (tx) => {
-          await tx.$executeRawUnsafe(
-            "LOCK TABLE tenants IN ACCESS EXCLUSIVE MODE",
-          );
-          await tx.$queryRawUnsafe("SELECT pg_sleep(0.8)::text");
-        },
-        { timeout: 10_000 },
-      );
-      await until("tenants locked", async () => {
-        const [row] = await (app as PrismaClient).$queryRaw<{ n: number }[]>`
-          SELECT count(*)::int AS n FROM pg_locks l JOIN pg_class c ON c.oid = l.relation
-           WHERE c.relname = 'tenants' AND l.mode = 'AccessExclusiveLock' AND l.granted`;
-        return (row?.n ?? 0) > 0 ? true : null;
-      });
-      const t0 = Date.now();
-      const result = await withMetricsTimeout(1_000, () =>
-        runMetricsScoped(
+      const result = await withMetricsTimeout(BUDGET_MS, () => {
+        const read = runMetricsScoped(
           app as PrismaClient,
           { tenantId: tenant.id, role: "SUPER_ADMIN" as const, userId: 1n },
-          async (db) => {
-            await db.$queryRawUnsafe("SELECT pg_sleep(0.8)::text");
-            return "answered";
-          },
-        ).catch((e) => e),
-      );
-      const elapsed = Date.now() - t0;
-      await holder;
-      expect((result as { statusCode?: number }).statusCode).toBe(503);
-      expect(elapsed).toBeLessThan(1_400);
+          async () => "answered",
+        );
+        clock.jump(BUDGET_MS - LEFT_MS);
+        return read.catch((e) => e);
+      });
+      expect(statusOf(result)).toBe(503);
     } finally {
+      clock.restore();
+      await tenants.release();
       await (su as PrismaClient).tenant.delete({ where: { id: tenant.id } });
     }
   });
 
   test("a SUPER_ADMIN's tenant check after a wait for a connection gets only what is left", async () => {
-    // The connection arrives at 0.7 s of the 1 s budget, and the tenant check then waits on a lock
-    // held to 1.5 s. Bounded from the request's start it is cancelled at 1 s; from the connection, at
-    // 1.7 s.
     const tenant = await (su as PrismaClient).tenant.create({
       data: { name: "mb", slug: `mb-wait-${process.pid}-${Date.now()}` },
     });
     const one = new PrismaClient({
       adapter: new PrismaPg({ connectionString: appUrl, max: 1 }),
     });
+    const tenants = await lockTable("tenants");
+    const clock = skewedClock();
     try {
       await one.$queryRaw`SELECT 1`;
-      const locker = (su as PrismaClient).$transaction(
-        async (tx) => {
-          await tx.$executeRawUnsafe(
-            "LOCK TABLE tenants IN ACCESS EXCLUSIVE MODE",
-          );
-          await tx.$queryRawUnsafe("SELECT pg_sleep(1.5)::text");
-        },
-        { timeout: 10_000 },
-      );
-      await until("tenants locked", async () => {
-        const [row] = await (app as PrismaClient).$queryRaw<{ n: number }[]>`
-          SELECT count(*)::int AS n FROM pg_locks l JOIN pg_class c ON c.oid = l.relation
-           WHERE c.relname = 'tenants' AND l.mode = 'AccessExclusiveLock' AND l.granted`;
-        return (row?.n ?? 0) > 0 ? true : null;
-      });
-      const t0 = Date.now();
-      const holder = one.$transaction(
-        async (tx) => {
-          await tx.$queryRawUnsafe("SELECT pg_sleep(0.7)::text");
-        },
-        { timeout: 5_000 },
-      );
-      const result = await withMetricsTimeout(1_000, () =>
-        runMetricsScoped(
+      const holder = holdOnly(one, 200);
+      const result = await withMetricsTimeout(BUDGET_MS, () => {
+        const read = runMetricsScoped(
           one,
           { tenantId: tenant.id, role: "SUPER_ADMIN" as const, userId: 1n },
           async () => "answered",
-        ).catch((e) => e),
-      );
-      const elapsed = Date.now() - t0;
+        );
+        clock.jump(BUDGET_MS - LEFT_MS);
+        return read.catch((e) => e);
+      });
       await holder;
-      await locker;
-      expect((result as { statusCode?: number }).statusCode).toBe(503);
-      expect(elapsed).toBeLessThan(1_350);
+      expect(statusOf(result)).toBe(503);
     } finally {
+      clock.restore();
+      await tenants.release();
       await one.$disconnect();
       await (su as PrismaClient).tenant.delete({ where: { id: tenant.id } });
     }
   });
 
   test("an API key lookup keeps to the budget it is given", async () => {
-    let waitedMs = -1;
-    await (su as PrismaClient).$transaction(
-      async (tx) => {
-        await tx.$executeRawUnsafe(
-          "LOCK TABLE api_keys IN ACCESS EXCLUSIVE MODE",
-        );
-        const t0 = Date.now();
-        await verifyApiKey("fazerai_mb_lookup", app as PrismaClient, {
-          maxWait: 1_000,
-          timeout: 400,
-        }).catch(() => null);
-        waitedMs = Date.now() - t0;
-      },
-      { timeout: 20_000 },
-    );
-    expect(waitedMs).toBeLessThan(1_200);
+    const keys = await lockTable("api_keys");
+    try {
+      const outcome = await verifyApiKey(
+        "fazerai_mb_lookup",
+        app as PrismaClient,
+        { maxWait: 1_000, timeout: 400 },
+      ).then(
+        () => "answered",
+        (e) => postgresCodeOf(e),
+      );
+      expect(outcome === "57014" || outcome === "55P03").toBe(true);
+    } finally {
+      await keys.release();
+    }
   });
-
-  // Holds the client's one connection for `ms`, from now.
-  function holdOnly(client: PrismaClient, ms: number): Promise<unknown> {
-    return client.$transaction(
-      async (tx) => {
-        await tx.$queryRawUnsafe(`SELECT pg_sleep(${ms / 1000})::text`);
-      },
-      { timeout: 10_000 },
-    );
-  }
-
-  // Locks `table` until `ms` from now, in a session of its own.
-  async function lockFor(
-    table: string,
-    ms: number,
-  ): Promise<{ held: Promise<unknown> }> {
-    const held = (su as PrismaClient).$transaction(
-      async (tx) => {
-        await tx.$executeRawUnsafe(
-          `LOCK TABLE ${table} IN ACCESS EXCLUSIVE MODE`,
-        );
-        await tx.$queryRawUnsafe(`SELECT pg_sleep(${ms / 1000})::text`);
-      },
-      { timeout: 20_000 },
-    );
-    await until(`${table} locked`, async () => {
-      const [row] = await (su as PrismaClient).$queryRaw<{ n: number }[]>`
-        SELECT count(*)::int AS n FROM pg_locks l JOIN pg_class c ON c.oid = l.relation
-         WHERE c.relname = ${table} AND l.mode = 'AccessExclusiveLock' AND l.granted`;
-      return (row?.n ?? 0) > 0 ? true : null;
-    });
-    // Wrapped: an async function returning the promise itself would wait for it.
-    return { held };
-  }
 
   test("a session lookup under the request's deadline that got its connection late gets only what is left", async () => {
     const one = new PrismaClient({
       adapter: new PrismaPg({ connectionString: appUrl, max: 1 }),
     });
+    const users = await lockTable("users");
+    const clock = skewedClock();
     try {
       await one.$queryRaw`SELECT 1`;
-      // Connection at 0.7 s of a 1 s budget, then `users` stays locked to 1.5 s.
-      const { held: locked } = await lockFor("users", 1_500);
-      const t0 = Date.now();
-      const holder = holdOnly(one, 700);
-      const budget = metricsBudget(t0 + 1_000);
-      const outcome = await runWithinBudgetOn(one, budget, (db) =>
-        db.user.findUnique({ where: { id: 1n }, select: { id: true } }),
-      ).then(
+      const holder = holdOnly(one, 200);
+      const read = runWithinBudgetOn(
+        one,
+        metricsBudget(Date.now() + BUDGET_MS),
+        (db) => db.user.findUnique({ where: { id: 1n }, select: { id: true } }),
+      );
+      clock.jump(BUDGET_MS - LEFT_MS);
+      const outcome = await read.then(
         () => "answered",
         (e) => e,
       );
-      const elapsed = Date.now() - t0;
       await holder;
-      await locked;
       expect(outcome).not.toBe("answered");
-      expect(elapsed).toBeLessThan(1_350);
     } finally {
+      clock.restore();
+      await users.release();
       await one.$disconnect();
     }
   });
 
   test("a session lookup under a deadline bounds the membership and ended-session reads on their own", async () => {
+    // The user row is read while `users` is locked; the clock moves to LEFT_MS, and then the lock
+    // goes. The next read, of the memberships (then of the ended sessions), waits on its own lock
+    // with what is left. Read in the same Prisma call, it would keep the whole budget and answer.
     const tenant = await (su as PrismaClient).tenant.create({
       data: { name: "mb", slug: `mb-session-${process.pid}-${Date.now()}` },
     });
@@ -481,25 +519,41 @@ describe.skipIf(!dbUp)("metrics time budget", () => {
       tenantId: String(tenant.id),
       jti: `mb-session-${process.pid}`,
     };
+    // Each read is held at the user row until the clock has moved, then meets the second lock.
+    async function underSecondLock(
+      second: string,
+      read: (
+        db: Parameters<Parameters<typeof runWithinBudgetOn>[2]>[0],
+      ) => Promise<unknown>,
+    ): Promise<unknown> {
+      const users = await lockTable("users");
+      const next = await lockTable(second);
+      const clock = skewedClock();
+      try {
+        const outcome = runWithinBudgetOn(
+          app as PrismaClient,
+          metricsBudget(Date.now() + BUDGET_MS),
+          read,
+        ).then(
+          () => "answered",
+          (e) => e,
+        );
+        await waitedOn("users");
+        clock.jump(BUDGET_MS - LEFT_MS);
+        await users.release();
+        return await outcome;
+      } finally {
+        clock.restore();
+        await users.release();
+        await next.release();
+      }
+    }
     try {
-      // A 1 s budget: `users` stays locked to 0.6 s and `tenant_users` to 1.6 s. Read in one Prisma
-      // call, the membership read would start with the whole second and end at 1.6 s.
-      const { held: users } = await lockFor("users", 600);
-      const { held: memberships } = await lockFor("tenant_users", 1_600);
-      const t0 = Date.now();
-      const outcome = await runWithinBudgetOn(
-        app as PrismaClient,
-        metricsBudget(t0 + 1_000),
-        (db) => findSessionUser(db, user.id, session, true),
-      ).then(
-        () => "answered",
-        (e) => e,
-      );
-      const elapsed = Date.now() - t0;
-      await users;
-      await memberships;
-      expect(outcome).not.toBe("answered");
-      expect(elapsed).toBeLessThan(1_350);
+      expect(
+        await underSecondLock("tenant_users", (db) =>
+          findSessionUser(db, user.id, session, true),
+        ),
+      ).not.toBe("answered");
       // Without the locks it answers with the membership.
       const row = await runWithinBudgetOn(
         app as PrismaClient,
@@ -508,22 +562,11 @@ describe.skipIf(!dbUp)("metrics time budget", () => {
       );
       expect(row?.memberships.map((m) => m.tenantId)).toEqual([tenant.id]);
       // The identity check's ended-session read is bounded the same way.
-      const { held: usersAgain } = await lockFor("users", 600);
-      const { held: ended } = await lockFor("ended_sessions", 1_600);
-      const t1 = Date.now();
-      const check = await runWithinBudgetOn(
-        app as PrismaClient,
-        metricsBudget(t1 + 1_000),
-        (db) => findSessionPassword(db, user.id, session, true),
-      ).then(
-        () => "answered",
-        (e) => e,
-      );
-      const checkElapsed = Date.now() - t1;
-      await usersAgain;
-      await ended;
-      expect(check).not.toBe("answered");
-      expect(checkElapsed).toBeLessThan(1_350);
+      expect(
+        await underSecondLock("ended_sessions", (db) =>
+          findSessionPassword(db, user.id, session, true),
+        ),
+      ).not.toBe("answered");
     } finally {
       await (su as PrismaClient).user.delete({ where: { id: user.id } });
       await (su as PrismaClient).tenant.delete({ where: { id: tenant.id } });
@@ -552,34 +595,29 @@ describe.skipIf(!dbUp)("metrics time budget", () => {
         createdByUserId: user.id,
       },
     });
-    const one = new PrismaClient({
-      adapter: new PrismaPg({ connectionString: appUrl, max: 1 }),
-    });
+    // The key's row is read while `api_keys` is locked; the clock moves to LEFT_MS, the lock goes,
+    // and the tenant lookup waits on `tenants` with what is left. With the deadline set once, at the
+    // opening, it would keep the whole budget and answer.
+    const keys = await lockTable("api_keys");
+    const tenants = await lockTable("tenants");
+    const clock = skewedClock();
     try {
-      await one.$queryRaw`SELECT 1`;
-      // A 2 s budget, the connection at 1.0 s; the key's row stays locked to 1.6 s and its tenant's to
-      // 2.6 s. With the deadline set once, at the opening, each lookup gets a fresh second and the
-      // tenant lookup ends at 2.6 s; set before each statement, it is cancelled at 2 s.
-      const { held: keys } = await lockFor("api_keys", 1_600);
-      const { held: tenants } = await lockFor("tenants", 2_600);
-      const t0 = Date.now();
-      const holder = holdOnly(one, 1_000);
-      const outcome = await verifyApiKey(
+      const outcome = verifyApiKey(
         token,
-        one,
-        metricsBudget(t0 + 2_000),
+        app as PrismaClient,
+        metricsBudget(Date.now() + BUDGET_MS),
       ).then(
         () => "answered",
         (e) => e,
       );
-      const elapsed = Date.now() - t0;
-      await holder;
-      await keys;
-      await tenants;
-      expect(outcome).not.toBe("answered");
-      expect(elapsed).toBeLessThan(2_350);
+      await waitedOn("api_keys");
+      clock.jump(BUDGET_MS - LEFT_MS);
+      await keys.release();
+      expect(await outcome).not.toBe("answered");
     } finally {
-      await one.$disconnect();
+      clock.restore();
+      await keys.release();
+      await tenants.release();
       await (su as PrismaClient).apiKey.deleteMany({
         where: { tenantId: tenant.id },
       });

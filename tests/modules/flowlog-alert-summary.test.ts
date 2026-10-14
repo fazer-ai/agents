@@ -286,6 +286,8 @@ const EXPLAINED_ELSEWHERE: Record<string, string> = {
 // when the line also carries a printed key: otherwise a new cause added BESIDE `silenceUnexplained`
 // would ship silent, because "names at least one printed key" is already true.
 const NOT_A_CAUSE: Record<string, string> = {
+  tools:
+    "generate: which calls a superseded turn made before its unsent reply; `reason` is the cause",
   attempt: "tts_check: which try this was; `outcome` says what was done",
   codeRead:
     "channel_error: whether `code` was present, which the body already shows by printing it or not",

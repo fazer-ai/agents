@@ -8937,7 +8937,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         },
         select: { detail: true },
       });
-      expect(JSON.stringify(warned)).not.toContain("supersededAfterAction");
+      expect(JSON.stringify(warned)).not.toContain("superseded_after_action");
     });
 
     // The silence tool is the one call that does nothing, so a turn that called it and then wrote a
@@ -9129,15 +9129,10 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       // erase the record of. The turn's closing line did not, and is the part that comes out.
       expect(sent).toEqual([[93153, "cliente quer atendente"]]);
       const channel = await threadChannel(checkpointer, 93153);
-      // And in its place, a note that the act was never reported. Without it the next
-      // turn reads a finished act and assumes it was confirmed.
-      expect(channel).toEqual([
-        ["human", "oi"],
-        ["ai", ""],
-        ["tool", expect.any(String)],
-        ["human", UNDELIVERED_REPLY_NOTE],
-      ]);
-      // The operator learns of it too, since the customer has not.
+      expect(channel.map(([type]) => type)).toEqual(["human", "ai", "tool"]);
+      expect(JSON.stringify(channel)).not.toContain("Vou te transferir");
+      // A completed transfer told the customer itself and leaves the conversation with a person, so
+      // no turn of ours comes next to need the note, and the operator has nothing to learn.
       const conv = await suDb.conversation.findFirstOrThrow({
         where: { tenantId, chatwootConversationId: 93153 },
       });
@@ -9150,9 +9145,92 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         },
         select: { detail: true },
       });
+      expect(JSON.stringify(warned)).not.toContain("superseded_after_action");
+    });
+
+    test("a booking whose confirmation was superseded leaves the note where the confirmation stood", async () => {
+      await seedConversation(93160, null);
+      const checkpointer = new MemorySaver();
+      const sent: Array<[number, string]> = [];
+      const client = {
+        getMessages: async () => ({
+          payload: [
+            { id: 1, content: "oi", message_type: 0, private: false },
+            { id: 2, content: "deixa", message_type: 0, private: false },
+          ],
+        }),
+        sendMessage: async (conversationId: number, content: string) => {
+          sent.push([conversationId, content]);
+          return {};
+        },
+        assignToAgent: async () => ({}),
+        toggleStatus: async () => ({}),
+        unassignConversation: async () => ({}),
+        getConversation: async () => ({
+          id: 93160,
+          status: "pending",
+          meta: { assignee_type: null, assignee: null },
+        }),
+      } as unknown as ChatwootClient;
+      // The call names a tool the agent does not have, so the graph answers it with an error result.
+      // The rollback judges an act by the call and never by its outcome, so this is the booking.
+      let n = 0;
+      const booksThenConfirms = {
+        invoke: async () => new AIMessage("Agendado para terça às 10h."),
+        bindTools: () => ({
+          invoke: async () => {
+            n++;
+            return n === 1
+              ? new AIMessage({
+                  content: "",
+                  tool_calls: [
+                    { name: "calendar_create_event", args: {}, id: "call_cal" },
+                  ],
+                })
+              : new AIMessage("Agendado para terça às 10h.");
+          },
+        }),
+      };
+      const outcome = await runAgentTurn({
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        event: incoming({ conversationId: 93160 }),
+        base: appDb,
+        deps: {
+          makeModel: () => booksThenConfirms as unknown as BaseChatModel,
+          makeClient: async () => client,
+          checkpointer,
+        },
+      });
+      expect(outcome).toBe("superseded");
+      expect(sent).toEqual([]);
+      const channel = await threadChannel(checkpointer, 93160);
+      // And in its place, a note that the act was never reported. Without it the next
+      // turn reads a finished act and assumes it was confirmed.
+      expect(channel).toEqual([
+        ["human", "oi"],
+        ["ai", ""],
+        ["tool", expect.any(String)],
+        ["human", UNDELIVERED_REPLY_NOTE],
+      ]);
+      // The operator learns of it too, since the customer has not.
+      const conv = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: 93160 },
+      });
+      const warned = await flowLogRows(suDb, {
+        where: {
+          tenantId,
+          conversationId: conv.id,
+          stage: "generate",
+          level: "warn",
+        },
+        select: { detail: true },
+      });
       expect(warned.map((r) => r.detail)).toContainEqual(
         expect.objectContaining({
-          supersededAfterAction: ["handoff_to_human"],
+          reason: "superseded_after_action",
+          tools: ["calendar_create_event"],
         }),
       );
 
@@ -9160,7 +9238,8 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       // and leaves a single note behind once it has answered.
       const seen: string[][] = [];
       const recording = {
-        invoke: async () => new AIMessage("Sobre o atendente: já pedi."),
+        invoke: async () =>
+          new AIMessage("Sua visita está marcada para terça às 10h."),
         bindTools: () => ({
           invoke: async (messages: BaseMessage[]) => {
             seen.push(
@@ -9168,7 +9247,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
                 typeof m.content === "string" ? m.content : "",
               ),
             );
-            return new AIMessage("Sobre o atendente: já pedi.");
+            return new AIMessage("Sua visita está marcada para terça às 10h.");
           },
         }),
       };
@@ -9177,7 +9256,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         instanceId,
         agentBotId: 9,
         event: incoming({
-          conversationId: 93153,
+          conversationId: 93160,
           message: {
             id: 2,
             content: "deixa",
@@ -9199,7 +9278,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       expect(read.findIndex((t) => t.includes("deixa"))).toBeGreaterThan(
         noteAt,
       );
-      const after = await threadChannel(checkpointer, 93153);
+      const after = await threadChannel(checkpointer, 93160);
       expect(
         after.filter(([, text]) => text === UNDELIVERED_REPLY_NOTE),
       ).toHaveLength(1);
@@ -9261,7 +9340,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         },
         select: { detail: true },
       });
-      expect(JSON.stringify(warned)).not.toContain("supersededAfterAction");
+      expect(JSON.stringify(warned)).not.toContain("superseded_after_action");
     });
 
     // A takeover after an act is refused too, and the act stays, but no turn of ours comes next: the

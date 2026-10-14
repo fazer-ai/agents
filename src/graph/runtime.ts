@@ -2271,6 +2271,10 @@ async function runTurnBody(
       });
     }
     const inertTools = inertToolsFor(loaded);
+    // Whether a refusal leaves the next turn a note about acts the customer was not told of. A
+    // completed transfer spoke to the customer itself and leaves the conversation with a person.
+    const owesUndeliveredNote = (outcome: RunAgentTurnOutcome) =>
+      outcome === "superseded" && !handoffState.completed;
     const rollBack = async (outcome: RunAgentTurnOutcome) =>
       rollBackRefusedTurn(outcome, {
         checkpointer: params.deps?.checkpointer ?? (await getCheckpointer()),
@@ -2281,7 +2285,7 @@ async function runTurnBody(
         // NOTE: `superseded` only, because only there does a turn come next that must tell the
         // customer. A takeover hands the conversation to a person who sees the act in
         // Chatwoot, and `stale` was called off by the operator.
-        ...(outcome === "superseded"
+        ...(owesUndeliveredNote(outcome)
           ? { undeliveredNote: undeliveredReplyNote(conversationId) }
           : {}),
         logPrefix: "turn",
@@ -2765,7 +2769,7 @@ async function runTurnBody(
     // NOTE: The note above tells the next turn; this tells the operator, since the customer was not
     // told either. Read off the same slice the rollback reads, so the two cannot disagree.
     if (
-      ended.outcome === "superseded" &&
+      owesUndeliveredNote(ended.outcome) &&
       turnActedBeforeItsReply(result.messages, inertTools)
     ) {
       emitFlowEvent(flow, {
@@ -2773,7 +2777,8 @@ async function runTurnBody(
         level: "warn",
         status: "ok",
         detail: {
-          supersededAfterAction: actedToolNames(result.messages, inertTools),
+          reason: "superseded_after_action",
+          tools: actedToolNames(result.messages, inertTools),
         },
       });
     }

@@ -645,6 +645,18 @@ describe("actedToolNames", () => {
     ]);
   });
 
+  test("a call the boundary refused is not named, beside one that ran", () => {
+    const produced = [
+      h("h1", "pode ser terça"),
+      calling("a1", "send_email"),
+      refused("t1", "send_email", "a1-c"),
+      calling("a2", "calendar_create_event"),
+      toolResult("t2", "ok", "calendar_create_event"),
+      a("a3", "Agendado."),
+    ];
+    expect(actedToolNames(produced)).toEqual(["calendar_create_event"]);
+  });
+
   test("a turn with no reply to stand in for names nothing", () => {
     const produced = [
       h("h1", "pode ser terça"),

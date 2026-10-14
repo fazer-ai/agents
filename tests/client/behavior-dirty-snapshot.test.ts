@@ -12,11 +12,15 @@ import {
   renderEditor,
   stubEditorApi,
 } from "../utils/agent-editor";
+import {
+  editEveryBlock,
+  STORED,
+  stubWithHours,
+} from "../utils/behavior-blocks";
 
 // The dirty snapshot (`sectionSnap.behavior`) lights the tab's dot, enables Discard and arms the
 // navigation guard. A block the save writes and the snapshot does not read is edited with no dirty
-// marker, and the edit is lost on leaving. Both read one declared list of blocks, so a block is
-// saved only when it is also compared.
+// marker, and the edit is lost on leaving. Asked of every block the rendered editor writes.
 
 const realFetch = globalThis.fetch;
 afterEach(() => {
@@ -24,43 +28,77 @@ afterEach(() => {
   globalThis.fetch = realFetch;
 });
 
-const state = (over: Partial<BehaviorState> = {}): BehaviorState => ({
-  ...(Object.fromEntries(
-    BEHAVIOR_BLOCKS.map((k) => [k, { enabled: false }]),
-  ) as BehaviorState),
-  ...over,
-});
-
 const AGENT_FIELDS = { businessHoursId: null, followUpHoursId: null };
 
+// One value per block over the given keys: the state a snapshot or a save reads.
+const stateOver = (
+  keys: Iterable<string>,
+  over: Record<string, unknown> = {},
+) =>
+  ({
+    ...Object.fromEntries([...keys].map((k) => [k, { enabled: false }])),
+    ...over,
+  }) as BehaviorState;
+
+const state = (over: Partial<BehaviorState> = {}) =>
+  stateOver(BEHAVIOR_BLOCKS, over);
+
+// The blocks the rendered editor writes when every block of the tab is edited through its own control:
+// read off the PATCH, so it does not depend on the declared list.
+async function blocksTheEditorWrites(): Promise<string[]> {
+  const stub = stubWithHours();
+  await renderEditor(stub, "behavior");
+  await editEveryBlock();
+  // The gate turned on with no condition and no endpoint is refused by the save; off, it saves.
+  fireEvent.click(
+    screen.getByRole("switch", { name: /Only answer authorized contacts/ }),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(lastSavedSettings(stub)).toBeDefined());
+  const saved = lastSavedSettings(stub) ?? {};
+  return Object.keys(saved).filter(
+    (k) => JSON.stringify(saved[k]) !== JSON.stringify(STORED[k]),
+  );
+}
+
 describe("the Behavior tab's dirty snapshot", () => {
-  test("every saved block is in the dirty snapshot, whatever shape it was written in", () => {
-    const stored = state();
-    // Every declared block, and one the type would refuse: what a save that slipped past it holds.
-    const fromForm: Parameters<typeof editedBlocks>[0] = Object.fromEntries([
-      ...BEHAVIOR_BLOCKS.map((k) => [k, { written: k }]),
-      ["newBlock", { text: "nobody compares this" }],
+  test("every saved block is in the dirty snapshot, whatever shape it was written in", async () => {
+    const written = await blocksTheEditorWrites();
+    // Guards the loop: an editor that wrote nothing would pass every case below.
+    expect(written.length).toBeGreaterThanOrEqual(18);
+    const keys = new Set([
+      ...written,
+      ...Object.keys(STORED),
+      ...BEHAVIOR_BLOCKS,
+      "newBlock",
     ]);
-    for (const block of BEHAVIOR_BLOCKS) {
-      const edited = state({ [block]: { enabled: true } });
-      expect(
-        behaviorSnapshot(edited, AGENT_FIELDS),
-        `${block} is not in the snapshot`,
-      ).not.toBe(behaviorSnapshot(stored, AGENT_FIELDS));
-      expect(
-        Object.keys(editedBlocks(fromForm, edited, stored, {})),
-        `${block} is not the one block saved`,
-      ).toEqual([block]);
+    const stored = stateOver(keys);
+    const fromForm: Parameters<typeof editedBlocks>[0] = Object.fromEntries(
+      [...keys].map((k) => [k, { written: k }]),
+    );
+    for (const block of keys) {
+      const edited = stateOver(keys, { [block]: { enabled: true } });
+      const saves = Object.keys(editedBlocks(fromForm, edited, stored, {}));
+      if (written.includes(block)) {
+        expect(saves, `${block} is written by the editor`).toEqual([block]);
+      }
+      if (saves.includes(block)) {
+        expect(
+          behaviorSnapshot(edited, AGENT_FIELDS),
+          `${block} is saved and not in the snapshot`,
+        ).not.toBe(behaviorSnapshot(stored, AGENT_FIELDS));
+      }
     }
-    // An undeclared block is never written: not when no state carries it, and not when one does and
-    // it differs, since the snapshot would not read that state.
-    expect(editedBlocks(fromForm, stored, stored, {})).toEqual({});
-    const withNew = {
-      ...stored,
-      newBlock: { text: "edited" },
-    } as BehaviorState;
-    expect(editedBlocks(fromForm, withNew, stored, {})).toEqual({});
-  });
+    // An undeclared block is never written, even when its state differs.
+    expect(
+      editedBlocks(
+        fromForm,
+        stateOver(keys, { newBlock: { text: "edited" } }),
+        stored,
+        {},
+      ),
+    ).toEqual({});
+  }, 30_000);
 
   test("the fields saved outside the settings are in the snapshot too", () => {
     const base = behaviorSnapshot(state(), AGENT_FIELDS);

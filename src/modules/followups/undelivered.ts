@@ -14,6 +14,7 @@ import {
   hasAnswerableContent,
   parseChatwootMessages,
 } from "@/modules/chatwoot/messages";
+import { foreignReplyBoundary } from "@/modules/debounce/watermark";
 
 // Whether the bot's newest reply in a conversation reached the customer, asked before a follow-up
 // nudges about it. The channel refuses a message AFTER Chatwoot accepted it, and the refusal stays on
@@ -62,6 +63,9 @@ export async function lastReplyDelivery(params: {
   // The Chatwoot ids of the agent's own bots on this instance: another bot's message is not this
   // agent's reply.
   agentBotIds: number[];
+  // The inbox's WhatsApp provider, which says whether a sender-less outgoing row can be a person on
+  // the phone or only an echo of our own send.
+  whatsappProvider: string | null;
   // The newest customer message already handled (answered or deliberately skipped): the mirror's
   // watermark. A customer message at or below it marks where a reply starts.
   handledThrough: number | null;
@@ -85,10 +89,10 @@ export async function lastReplyDelivery(params: {
     m.senderType === "agent_bot" &&
     m.senderId !== null &&
     bots.has(m.senderId);
+  // NOTE: a reaction counts, as it does for the flush (`pendingIncoming`).
   const customer = (m: Row) =>
     m.messageType === "incoming" &&
     !m.private &&
-    !m.isReaction &&
     !m.imported &&
     hasAnswerableContent(m);
   const read: Row[] = [];
@@ -165,14 +169,15 @@ export async function lastReplyDelivery(params: {
   if (read.some((m) => m.id > start && customer(m)))
     return { state: "delivered" };
   // A person's public reply or template that was not refused, written after a refused message,
-  // moved the conversation past it.
+  // moved the conversation past it. Attributed the way the flush attributes it
+  // (`foreignReplyBoundary`): a sender-less row counts only where the provider tells a phone apart
+  // from an echo of our own send.
+  const identity = {
+    managedBotId: params.agentBotIds[0] ?? null,
+    whatsappProvider: params.whatsappProvider,
+  };
   const person = (m: Row) =>
-    !m.private &&
-    (m.messageType === "outgoing" || m.messageType === "template") &&
-    !m.isReaction &&
-    !m.imported &&
-    !m.externalError &&
-    !ours(m);
+    !m.externalError && !ours(m) && foreignReplyBoundary([m], identity) > 0;
   const missing = reply.filter(
     (m) =>
       m.externalError &&
@@ -203,8 +208,11 @@ export async function lastReplyDelivery(params: {
     };
   }
   const lost = missing.reduce((a, m) => (m.id > a.id ? m : a));
+  // NOTE: the newest incoming message read, not only the one answered: any after the reply was
+  // already assessed above (a blank one, a reaction no turn runs for), and the hand-over's fence
+  // compares against the mirror's newest inbound, which counts them.
   const answered = read
-    .filter((m) => customer(m) && m.id < start)
+    .filter((m) => m.messageType === "incoming" && !m.private)
     .reduce<number | null>((a, m) => (a === null || m.id > a ? m.id : a), null);
   return {
     state: "undelivered",

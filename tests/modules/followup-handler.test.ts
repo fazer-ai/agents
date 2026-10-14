@@ -1200,6 +1200,73 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     expect(s.notes).toEqual([]);
   });
 
+  // A blank message the mirror already counts as the newest inbound does not block the hand-over's
+  // fence: it was assessed here, and the hand-over is pinned past it.
+  test("a blank message after the refused reply does not block the hand-over", async () => {
+    await seedConversation(1735, due());
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: 1735 },
+      data: { lastInboundMessageId: 17352 },
+    });
+    const s = stubClient({
+      page: [
+        customerRow(17350),
+        replyRow(17351, { refused: true }),
+        { ...customerRow(17352), content: "  " },
+      ],
+    });
+    expect(await run(1735, s)).toEqual({ outcome: "done" });
+    expect(s.resolved).toEqual([1735]);
+  });
+
+  // A reaction is a turn for the flush, so one after the refused reply holds the step like a message.
+  test("a reaction after the refused reply holds the step", async () => {
+    await seedConversation(1736, due());
+    const s = stubClient({
+      page: [
+        replyRow(17361, { refused: true }),
+        {
+          ...customerRow(17362),
+          content: "👍",
+          content_attributes: { is_reaction: true },
+        },
+      ],
+    });
+    expect(await run(1736, s)).toMatchObject({ outcome: "reschedule" });
+    expect(s.notes).toEqual([]);
+  });
+
+  // A person's reply the channel refused too did not reach the customer either.
+  test("a person's refused reply after the refused one does not supersede it", async () => {
+    await seedConversation(1738, due());
+    const s = stubClient({
+      page: [
+        replyRow(17381, { refused: true }),
+        {
+          ...replyRow(17382, { refused: true }),
+          sender: { type: "user", id: 3 },
+        },
+      ],
+    });
+    expect(await run(1738, s)).toEqual({ outcome: "done" });
+    expect(s.notes.map(([c]) => c)).toEqual([1738]);
+  });
+
+  // A sender-less outgoing row may be the echo of our own balloon, not a person: it does not stand
+  // for the refused balloon.
+  test("an unattributed outgoing row does not supersede the refused balloon", async () => {
+    await seedConversation(1737, due());
+    const s = stubClient({
+      page: [
+        replyRow(17371, { refused: true, sendId: "reply:k37:a" }),
+        { ...replyRow(17372), sender: null },
+        replyRow(17373, { sendId: "reply:k37:b" }),
+      ],
+    });
+    expect(await run(1737, s)).toEqual({ outcome: "done" });
+    expect(s.notes.map(([c]) => c)).toEqual([1737]);
+  });
+
   // An automation message the channel refused as well did not reach the customer either, so it does
   // not stand for the refused reply.
   test("a refused automation message after the reply does not supersede it", async () => {

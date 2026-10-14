@@ -1001,6 +1001,7 @@ export async function followUpHandler(
       chatwootConversationId: conversationId,
       agentBotIds: await agentBotIdsOf(base, tenantId, instanceId, ctx.agentId),
       handledThrough,
+      whatsappProvider: ctx.whatsappProvider,
       stillOpen,
       base,
       ...(deps?.makeClient ? { deps: { makeClient: deps.makeClient } } : {}),
@@ -1056,6 +1057,7 @@ export async function followUpHandler(
               ctx.agentId,
             ),
             handledThrough,
+            whatsappProvider: ctx.whatsappProvider,
             stillOpen,
             base,
             ...(deps?.makeClient

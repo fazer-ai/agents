@@ -91,7 +91,7 @@ export function DemoteFleetAdminModal({
       modal={modal}
       title={t("admin.removeSuperAdmin", "Remove super admin")}
       size="md"
-      onCloseRequest={loading ? () => {} : undefined}
+      busy={loading}
     >
       <form
         className="space-y-4"

@@ -254,7 +254,7 @@ export function CodeToolTestModal({
       title={t("codeTools.testTitle", "Test this code tool")}
       // NO WAY OUT WHILE A REQUEST IS IN FLIGHT: the token makes a late answer harmless but does not
       // un-run the body, so dismissing and running again would run it twice (docs/modals.md).
-      onCloseRequest={running ? () => {} : undefined}
+      busy={running}
       footer={
         <div className="flex items-center justify-between gap-2">
           <span className="text-error text-xs">{error}</span>

@@ -288,8 +288,8 @@ export function CodeToolEditModal({
   }, [form.code, modal.isOpen]);
 
   async function save() {
-    // The opening this save belongs to. Dismissal is blocked while the request is out (the Modal's
-    // `onCloseRequest` below), so this is defence in depth rather than the only guard. Every
+    // The opening this save belongs to. Dismissal is blocked while the request is out (`busy` on the
+    // Modal below), so this is defence in depth rather than the only guard. Every
     // continuation reached after the await still checks it, `finally` included: `setSaving(false)`
     // belonging to a previous opening would leave the reopened form disabled with nothing running,
     // for as long as the first request takes to answer (docs/modals.md).
@@ -388,7 +388,7 @@ export function CodeToolEditModal({
         // and for a reason of the same shape (docs/modals.md): dismissing mid-request and reopening
         // offers a second Save for a write that is already on its way, and the operator reads the
         // second one's `codeToolNameTaken` as a name conflict with someone else's tool.
-        onCloseRequest={saving ? () => {} : undefined}
+        busy={saving}
         title={
           editId
             ? t("codeTools.editTitle", "Edit code tool")

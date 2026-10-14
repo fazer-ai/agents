@@ -156,7 +156,7 @@ function ChannelModal({
       modal={modal}
       size="md"
       // A save in flight finishes into this dialog: closing now would let it close the next one.
-      onCloseRequest={loading ? () => undefined : undefined}
+      busy={loading}
       title={
         editing
           ? t("instanceHealth.editChannelTitle", "Edit instance alert channel")

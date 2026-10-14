@@ -290,7 +290,7 @@ export function McpPanel() {
         modal={deleteModal}
         size="sm"
         title={t("mcp.deleteTitle", "Delete MCP server")}
-        onCloseRequest={deleting ? () => undefined : undefined}
+        busy={deleting}
         footer={
           <div className="flex justify-end gap-2">
             <Button

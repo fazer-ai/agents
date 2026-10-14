@@ -47,6 +47,20 @@ const PROBES: Record<string, string> = {
   [P("jsx-note-beside-expression.tsx")]:
     "declare const x: string;\nexport const a = <div>{x /* NOTE: beside */}</div>;\n",
 
+  // no-noop-close-request
+  [P("close-noop-ternary.tsx")]:
+    "declare const M: (p: { onCloseRequest?: () => void }) => null;\ndeclare const saving: boolean;\nexport const a = <M onCloseRequest={saving ? () => {} : undefined} />;\n",
+  [P("close-noop-undefined.tsx")]:
+    "declare const M: (p: { onCloseRequest?: () => void }) => null;\ndeclare const busy: boolean;\nexport const a = <M onCloseRequest={busy ? () => undefined : undefined} />;\n",
+  [P("close-noop-bare.tsx")]:
+    "declare const M: (p: { onCloseRequest?: () => void }) => null;\nexport const a = <M onCloseRequest={() => {}} />;\n",
+  [P("close-noop-multiline.tsx")]:
+    "declare const M: (p: { onCloseRequest?: () => void }) => null;\ndeclare const saving: boolean;\nexport const a = (\n  <M\n    onCloseRequest={\n      saving\n        ? () => {}\n        : undefined\n    }\n  />\n);\n",
+  [P("close-confirm.tsx")]:
+    "declare const M: (p: { onCloseRequest?: () => void }) => null;\ndeclare const dirty: boolean;\ndeclare function ask(): void;\nexport const a = <M onCloseRequest={dirty ? () => { ask(); } : undefined} />;\n",
+  [P("close-busy.tsx")]:
+    "declare const M: (p: { busy?: boolean; onClose?: () => void }) => null;\ndeclare const saving: boolean;\nexport const a = <M busy={saving} onClose={() => {}} />;\n",
+
   // no-bigint-cast
   [P("bigint-param.ts")]:
     "declare const params: { id: string };\nexport const a = BigInt(params.id);\n",
@@ -181,6 +195,7 @@ const PROBES: Record<string, string> = {
 
 const RULES = {
   jsx: "A JSX comment documents the element below it",
+  close: "A no-op `onCloseRequest` does not block",
   bigint: "A caller's id is parsed, never cast",
   env: "The environment is read in",
   deadline: "Every model call names its own `deadlineMs`",
@@ -256,6 +271,22 @@ describe("no-jsx-comment-note", () => {
       expect(of(P(name), "jsx")).toBe(0);
     },
   );
+});
+
+describe("no-noop-close-request", () => {
+  test.each([
+    ["close-noop-ternary.tsx"],
+    ["close-noop-undefined.tsx"],
+    ["close-noop-bare.tsx"],
+    ["close-noop-multiline.tsx"],
+  ])("a no-op onCloseRequest is refused (%s)", (name) => {
+    expect(of(P(name), "close")).toBe(1);
+  });
+
+  test("an onCloseRequest that does something, and busy, pass", () => {
+    expect(of(P("close-confirm.tsx"), "close")).toBe(0);
+    expect(of(P("close-busy.tsx"), "close")).toBe(0);
+  });
 });
 
 describe("no-bigint-cast", () => {

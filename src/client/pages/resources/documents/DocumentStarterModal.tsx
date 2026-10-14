@@ -150,7 +150,7 @@ export function DocumentStarterModal({
       // what keeps this dialog from being REOPENED while a request from the previous opening is
       // still out — the case that would otherwise need a session token, and does not, because it
       // cannot happen.
-      onCloseRequest={creating ? () => undefined : undefined}
+      busy={creating !== null}
     >
       {naming ? (
         <div className="flex flex-col gap-3">

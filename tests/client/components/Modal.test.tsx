@@ -1,11 +1,18 @@
 /// <reference lib="dom" />
 
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+} from "@testing-library/react";
 import { useEffect, useRef } from "react";
 import {
   isInsideRadixPopper,
   Modal,
+  ModalCancelButton,
   useModalController,
   useUnsavedChanges,
 } from "@/client/components/Modal";
@@ -74,6 +81,103 @@ function HookDirtyModal() {
     </Modal>
   );
 }
+
+// A request in flight, dirty or not, with the controls a real form modal has (Cancel in the footer).
+function BusyModal({ dirty, busy }: { dirty: boolean; busy: boolean }) {
+  const modal = useModalController();
+  const openedRef = useRef(false);
+  useEffect(() => {
+    if (openedRef.current) return;
+    openedRef.current = true;
+    modal.open();
+  }, [modal]);
+  return (
+    <Modal
+      modal={modal}
+      title="Editor"
+      unsavedChanges={dirty}
+      busy={busy}
+      footer={<ModalCancelButton />}
+    >
+      <p>Body content</p>
+    </Modal>
+  );
+}
+
+// Every user-driven way out: Escape, a press-and-release outside, the X, Cancel, and browser Back.
+const DISMISSALS: Array<[string, () => void]> = [
+  [
+    "Escape",
+    () => fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" }),
+  ],
+  [
+    "outside click",
+    () => {
+      fireEvent.pointerDown(document.body, { clientX: 5000, clientY: 5000 });
+      fireEvent.pointerUp(document.body, { clientX: 5000, clientY: 5000 });
+    },
+  ],
+  [
+    "the close button",
+    () => fireEvent.click(screen.getByRole("button", { name: "Close" })),
+  ],
+  [
+    "Cancel",
+    () => fireEvent.click(screen.getByRole("button", { name: "Cancel" })),
+  ],
+  // Outside `fireEvent`, so the state it sets is flushed by an explicit act.
+  ["Back", () => act(() => void window.dispatchEvent(new Event("popstate")))],
+];
+
+describe("Modal while a request is in flight (busy)", () => {
+  afterEach(() => cleanup());
+
+  test.each(DISMISSALS)(
+    "a dirty modal stays open on %s and never offers to discard",
+    (_, dismiss) => {
+      render(<BusyModal dirty busy />);
+      dismiss();
+      expect(screen.getByText("Editor")).toBeInTheDocument();
+      expect(screen.queryByText("Discard changes?")).toBeNull();
+    },
+  );
+
+  test.each(DISMISSALS)("a clean modal stays open on %s", (_, dismiss) => {
+    render(<BusyModal dirty={false} busy />);
+    dismiss();
+    expect(screen.getByText("Editor")).toBeInTheDocument();
+    expect(screen.queryByText("Discard changes?")).toBeNull();
+  });
+
+  test.each(DISMISSALS)(
+    "once the request settles, %s on a dirty modal offers to discard again",
+    (_, dismiss) => {
+      const view = render(<BusyModal dirty busy />);
+      view.rerender(<BusyModal dirty busy={false} />);
+      dismiss();
+      expect(screen.getByText("Discard changes?")).toBeInTheDocument();
+    },
+  );
+
+  test("the unload prompt stays armed for a dirty form while the request is out", () => {
+    render(<BusyModal dirty busy />);
+    const e = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(e);
+    expect(e.defaultPrevented).toBe(true);
+  });
+
+  test("Back is trapped while busy even on a clean form, and released when the request settles", () => {
+    const push = spyOn(window.history, "pushState");
+    const view = render(<BusyModal dirty={false} busy={false} />);
+    const before = push.mock.calls.length;
+    view.rerender(<BusyModal dirty={false} busy />);
+    expect(push.mock.calls.length).toBe(before + 1);
+    view.rerender(<BusyModal dirty={false} busy={false} />);
+    window.dispatchEvent(new Event("popstate"));
+    expect(push.mock.calls.length).toBe(before + 1);
+    push.mockRestore();
+  });
+});
 
 describe("Modal", () => {
   afterEach(() => cleanup());

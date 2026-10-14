@@ -43,7 +43,7 @@ export function ConfirmDialog({
       modal={modal}
       size="sm"
       title={payload?.title ?? ""}
-      onCloseRequest={busy ? () => undefined : undefined}
+      busy={busy}
       footer={
         <div className="flex justify-end gap-2">
           <Button

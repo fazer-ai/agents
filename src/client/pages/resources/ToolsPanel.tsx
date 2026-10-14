@@ -347,7 +347,7 @@ export function ToolsPanel() {
         modal={deleteModal}
         size="sm"
         title={t("tools.deleteTitle", "Delete tool")}
-        onCloseRequest={deleting ? () => undefined : undefined}
+        busy={deleting}
         footer={
           <div className="flex justify-end gap-2">
             <Button

@@ -266,15 +266,23 @@ interface ModalProps {
   // to show a confirmation before closing. Called instead of `modal.close()`;
   // the handler is responsible for eventually calling `modal.close()` itself
   // (or not). Programmatic `modal.close()` calls from the parent are
-  // unaffected.
+  // unaffected. To block closing while a request is in flight, use `busy`.
   onCloseRequest?: () => void;
+  // NOTE: a request this modal started is in flight. Every user-driven close
+  // (Esc, outside click, X, Cancel, Back) does nothing, and the "discard
+  // changes?" prompt never opens: offering to discard a write already on its
+  // way tells the operator it was thrown away while it is being saved, and a
+  // reopened form offers a second Save for it. Takes precedence over
+  // `unsavedChanges` and `onCloseRequest`; the unload prompt stays armed while
+  // dirty. Programmatic `modal.close()` is unaffected.
+  busy?: boolean;
   // NOTE: when true, a user-driven close (Esc/outside/X/Back) is intercepted
   // with a "discard changes?" confirmation, and the browser guards (native
   // unload prompt + Back-button trap) are armed while the modal is open. Pass
   // the form's dirty flag. This is the ergonomic path when the form state lives
   // in the wrapper (outside the <Modal> subtree). A descendant body component
   // can instead call `useUnsavedChanges(isDirty)`; both are OR-ed together.
-  // Takes precedence over `onCloseRequest` while dirty.
+  // Takes precedence over `onCloseRequest` while dirty, and yields to `busy`.
   unsavedChanges?: boolean;
 }
 
@@ -296,6 +304,7 @@ export function Modal({
   ariaLabel,
   closeOnOutsideClick = true,
   onCloseRequest,
+  busy = false,
   unsavedChanges = false,
 }: ModalProps) {
   const { t } = useTranslation();
@@ -347,11 +356,15 @@ export function Modal({
   closeRef.current = modal.close;
   const onCloseRequestRef = useRef(onCloseRequest);
   onCloseRequestRef.current = onCloseRequest;
+  const busyRef = useRef(busy);
+  busyRef.current = busy;
 
   // Single funnel for every user-driven close (Esc, outside click, X, Back).
-  // Dirty → show the discard confirm; otherwise run the custom onCloseRequest
-  // (if any) or close. Programmatic modal.close() from the parent bypasses this.
+  // Busy → nothing; dirty → show the discard confirm; otherwise run the custom
+  // onCloseRequest (if any) or close. Programmatic modal.close() from the parent
+  // bypasses this.
   const requestClose = useCallback(() => {
+    if (busyRef.current) return;
     if (guardActiveRef.current) {
       setDiscardOpen(true);
       return;
@@ -365,7 +378,9 @@ export function Modal({
   }, [isOpen]);
 
   useBeforeUnload(guardActive);
-  useBackGuard(guardActive, requestClose);
+  // Back is trapped while busy too, dirty or not: without the trap it would navigate away from the
+  // page with the request still out, which is the dismissal `busy` exists to refuse.
+  useBackGuard(guardActive || (isOpen && busy), requestClose);
   // stackLevel (from the open-stack, already capped at MODAL_MAX_DEPTH) drives the z-index so
   // deeper stacks keep escalating without colliding with the toast layer at level 5+. The overlay
   // sits one step below its own content so it dims the modal beneath. The warning below still fires
@@ -512,9 +527,10 @@ export function Modal({
                       {title}
                     </DialogPrimitive.Title>
                     <DialogPrimitive.Close
+                      disabled={busy}
                       // t('common.close', 'Close')
                       aria-label={t("common.close", "Close")}
-                      className="rounded-lg p-1 text-text-muted transition-colors hover:bg-bg-tertiary hover:text-text-primary"
+                      className="rounded-lg p-1 text-text-muted transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       <X className="h-5 w-5" aria-hidden="true" />
                     </DialogPrimitive.Close>

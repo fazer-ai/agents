@@ -409,7 +409,7 @@ export function VaultPanel() {
         modal={deleteModal}
         size="sm"
         title={t("vault.deleteTitle", "Delete secret")}
-        onCloseRequest={deleting ? () => undefined : undefined}
+        busy={deleting}
         footer={
           <div className="flex justify-end gap-2">
             <Button

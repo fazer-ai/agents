@@ -163,8 +163,8 @@ export function AddSuperAdminModal({
       modal={modal}
       title={t("superAdmin.title", "Add super admin")}
       size="md"
-      unsavedChanges={isDirty && !loading}
-      onCloseRequest={loading ? () => {} : undefined}
+      unsavedChanges={isDirty}
+      busy={loading}
     >
       {step.kind === "email" && (
         <form

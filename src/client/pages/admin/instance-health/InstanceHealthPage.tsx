@@ -154,7 +154,7 @@ function ThresholdModal({
       modal={modal}
       size="sm"
       // A save in flight finishes into this dialog: closing now would let it close the next one.
-      onCloseRequest={loading ? () => undefined : undefined}
+      busy={loading}
       title={
         signal
           ? choices

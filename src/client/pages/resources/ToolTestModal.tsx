@@ -362,7 +362,7 @@ export function ToolTestModal({
       // or the X — none of which the disabled Cancel button covers) and pressing send again runs the
       // operation TWICE, with the first result deliberately dropped so nothing on screen says it
       // happened. `docs/modals.md`: guard user-driven close while loading AND disable the buttons.
-      onCloseRequest={running ? () => {} : undefined}
+      busy={running}
       footer={
         <div className="flex items-center justify-between gap-2">
           <span className="text-error text-xs">{error}</span>

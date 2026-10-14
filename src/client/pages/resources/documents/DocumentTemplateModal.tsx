@@ -420,7 +420,7 @@ export function DocumentTemplateModal({
       unsavedChanges={isDirty}
       // While the save is in flight the modal stays put: closing it there is what creates the stale
       // callback in the first place, and the request cannot be taken back (docs/modals.md).
-      onCloseRequest={saving ? () => undefined : undefined}
+      busy={saving}
       title={t("documents.editTitle", "Edit document template")}
       footer={
         <div className="flex justify-end gap-2">

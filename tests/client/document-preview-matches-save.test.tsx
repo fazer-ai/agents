@@ -9,6 +9,7 @@ import {
   test,
 } from "bun:test";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -200,6 +201,32 @@ describe("the form is not editable while a save is in flight", () => {
     // NOTE: released so the request does not outlive the test. Whether the modal then closes is
     // asserted by the test above; waiting for the close here would only add a timing dependency
     // that times out under a full-suite run.
+    releasePatch();
+  });
+  // Edited, so Escape would otherwise open the discard prompt over the held save, and its
+  // "Discard" would close the modal with the PATCH still on its way (#1439).
+  test("Escape neither closes it nor offers to discard the edit", async () => {
+    holdPatch = true;
+    render(
+      <MemoryRouter initialEntries={["/recursos/documentos"]}>
+        <ToastProvider>
+          <Harness />
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+    const textarea = await screen.findByDisplayValue("Olá.");
+    fireEvent.change(textarea, { target: { value: "Bom dia." } });
+    fireEvent.click(await screen.findByText(/^(Save|Salvar)$/));
+    await waitFor(() => {
+      expect(patchBodies.length).toBe(1);
+    });
+    fireEvent.keyDown(textarea, { key: "Escape" });
+    // The prompt opens a render later; flushed, so its absence is read after it would have shown.
+    await act(async () => {});
+    expect(screen.getByDisplayValue("Bom dia.")).toBeInTheDocument();
+    expect(
+      screen.queryByText(/^(Discard changes\?|Descartar alterações\?)$/),
+    ).toBeNull();
     releasePatch();
   });
 });

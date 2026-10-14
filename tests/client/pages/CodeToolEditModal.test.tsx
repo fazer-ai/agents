@@ -638,7 +638,12 @@ test("the parser only runs while the dialog is open", async () => {
 // NO WAY OUT WHILE THE SAVE IS IN FLIGHT (docs/modals.md): dismissing mid-request and reopening
 // offers a second Save for a write already on its way. Asked of the dialog: Escape on an unedited
 // stored tool whose save is out leaves it open.
-test("a save in flight cannot be dismissed", async () => {
+// Edited or not: on an edited form the dismissal would otherwise open the discard prompt, whose
+// "Discard" closes the dialog with the PATCH still on its way (#1439).
+test.each([
+  ["unedited", false],
+  ["edited", true],
+])("a save in flight cannot be dismissed, %s", async (_, edited) => {
   const realFetch = globalThis.fetch;
   const held: Array<() => void> = [];
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -661,9 +666,13 @@ test("a save in flight cannot be dismissed", async () => {
   }) as typeof fetch;
   try {
     render(<TwoToolsHarness />);
-    // Unedited, so Escape is the dialog's own dismissal and not the discard prompt's.
     fireEvent.click(screen.getByText("open-1"));
     await screen.findByDisplayValue("Look up CPF");
+    if (edited) {
+      fireEvent.change(descriptionField(), {
+        target: { value: "an edited description" },
+      });
+    }
     fireEvent.click(screen.getByText("Save").closest("button") as HTMLElement);
     await waitFor(() => expect(held.length).toBe(1));
     fireEvent.keyDown(document.activeElement ?? document.body, {
@@ -671,6 +680,7 @@ test("a save in flight cannot be dismissed", async () => {
     });
     await act(async () => {});
     expect(screen.queryAllByText("Edit code tool").length).toBe(1);
+    expect(screen.queryByText("Discard changes?")).toBeNull();
     held[0]?.();
   } finally {
     globalThis.fetch = realFetch;
@@ -868,9 +878,10 @@ test("the mirror of CodeMirror's platform rule, at the edges", () => {
   expect(isMacLike(undefined)).toBe(false);
 });
 
-// A save the operator walked away from: Escape while the request is out asks to discard, Discard
-// closes, and the answer arrives after. The next opening is a fresh form, so Cancel works there.
-test("a save discarded mid-flight leaves the next opening able to cancel", async () => {
+// A save whose dialog closed under it: the operator cannot dismiss it while the request is out ("a save
+// in flight cannot be dismissed"), so the close is the page's own, and the answer arrives after. The next opening is a
+// fresh form, so Cancel works there.
+test("a save closed mid-flight leaves the next opening able to cancel", async () => {
   const realFetch = globalThis.fetch;
   let answer: (r: Response) => void = () => {};
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -899,6 +910,9 @@ test("a save discarded mid-flight leaves the next opening able to cancel", async
           <button type="button" onClick={() => modal.open({})}>
             open
           </button>
+          <button type="button" onClick={() => modal.close()}>
+            close-it
+          </button>
           <CodeToolEditModal
             modal={modal}
             onSaved={() => {
@@ -918,20 +932,7 @@ test("a save discarded mid-flight leaves the next opening able to cancel", async
     setCode("return input.cpf;");
     fireEvent.click(screen.getByText("Save").closest("button") as HTMLElement);
 
-    const dialog = document.body.querySelector(
-      '[role="dialog"]',
-    ) as HTMLElement;
-    dialog.dispatchEvent(
-      new KeyboardEvent("keydown", {
-        key: "Escape",
-        bubbles: true,
-        cancelable: true,
-      }),
-    );
-    await waitFor(() =>
-      expect(document.body.textContent).toContain("Discard changes?"),
-    );
-    fireEvent.click(screen.getByText("Discard"));
+    fireEvent.click(screen.getByText("close-it"));
     await waitFor(() =>
       expect(document.body.textContent?.includes("Look up CPF")).toBe(false),
     );

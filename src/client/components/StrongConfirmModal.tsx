@@ -65,7 +65,7 @@ export function StrongConfirmModal({
       size="sm"
       unsavedChanges={typed.trim() !== "" || password !== ""}
       title={payload?.title ?? ""}
-      onCloseRequest={busy ? () => undefined : undefined}
+      busy={busy}
       footer={
         <div className="flex justify-end gap-2">
           <Button

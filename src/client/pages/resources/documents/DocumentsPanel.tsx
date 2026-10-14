@@ -506,7 +506,7 @@ export function DocumentsPanel() {
         modal={deleteModal}
         size="sm"
         title={t("documents.deleteTitle", "Delete document template")}
-        onCloseRequest={deleting ? () => undefined : undefined}
+        busy={deleting}
         footer={
           <div className="flex justify-end gap-2">
             <Button

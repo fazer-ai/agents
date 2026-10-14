@@ -74,7 +74,13 @@ describe("a pool built with connectTimeoutOption", () => {
     });
     const stalled = stalledPool(100);
     try {
-      const held = await pool.connect();
+      // The first client is a real connect under the same short bound, which a loaded runner can miss:
+      // asked again until one lands, since what is measured here is the queue, not this connect.
+      const held = await until(
+        "a first client of the real database",
+        () => pool.connect().catch(() => null),
+        { deadlineMs: 10_000 },
+      );
       let queuedSettled = false;
       const queued = pool.connect();
       queued.then(
@@ -103,6 +109,33 @@ describe("a pool built with connectTimeoutOption", () => {
     } finally {
       await pool.end();
       await stalled.end();
+    }
+  });
+});
+
+describe("a pool given its password as an option", () => {
+  // `pg-pool` keeps a password passed as an option non-enumerable, so a client that copied its config
+  // by spreading it would connect with none.
+  test("still authenticates through the bounded client", async () => {
+    const appUrl = process.env.TEST_APP_DATABASE_URL;
+    if (!appUrl) throw new Error("TEST_APP_DATABASE_URL is not set");
+    const url = new URL(appUrl);
+    const password = decodeURIComponent(url.password);
+    if (!password) throw new Error("the test database URL carries no password");
+    const pool = new Pool({
+      host: url.hostname,
+      port: Number(url.port),
+      user: decodeURIComponent(url.username),
+      database: url.pathname.slice(1),
+      password,
+      max: 1,
+      ...connectTimeoutOption(),
+    });
+    try {
+      const { rows } = await pool.query<{ one: number }>("SELECT 1 AS one");
+      expect(rows[0]?.one).toBe(1);
+    } finally {
+      await pool.end();
     }
   });
 });

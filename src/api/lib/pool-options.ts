@@ -28,11 +28,18 @@ export function connectTimeoutOption(ms: number = CONNECT_TIMEOUT_MS): {
   class BoundedConnectClient extends Client {
     static readonly connectTimeoutMs = ms;
     constructor(config?: string | ClientConfig) {
-      super(
+      // A copy by descriptor, not a spread: `pg-pool` hides `password` (and `ssl.key`) as
+      // non-enumerable, and a spread would drop it, leaving a pool whose password is not in its URL
+      // unable to authenticate.
+      const own: ClientConfig =
         typeof config === "string"
-          ? { connectionString: config, connectionTimeoutMillis: ms }
-          : { ...config, connectionTimeoutMillis: ms },
-      );
+          ? { connectionString: config }
+          : Object.defineProperties(
+              {},
+              Object.getOwnPropertyDescriptors(config ?? {}),
+            );
+      own.connectionTimeoutMillis = ms;
+      super(own);
     }
   }
   return { Client: BoundedConnectClient };

@@ -25,6 +25,12 @@ export const CONNECT_TIMEOUT_MS = 10_000;
 export function connectTimeoutOption(ms: number = CONNECT_TIMEOUT_MS): {
   Client: typeof Client & { readonly connectTimeoutMs: number };
 } {
+  // `pg` reads 0 as no limit at all, the very wait this exists to end.
+  if (!(ms > 0) || !Number.isFinite(ms)) {
+    throw new Error(
+      `a connect bound must be a positive number of ms, got ${ms}`,
+    );
+  }
   class BoundedConnectClient extends Client {
     static readonly connectTimeoutMs = ms;
     constructor(config?: string | ClientConfig) {

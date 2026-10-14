@@ -113,6 +113,11 @@ describe("a pool built with connectTimeoutOption", () => {
   });
 });
 
+test("a bound that is not a positive number of ms is refused, since pg reads 0 as none", () => {
+  expect(() => connectTimeoutOption(0)).toThrow(/positive/);
+  expect(() => connectTimeoutOption(Number.NaN)).toThrow(/positive/);
+});
+
 describe("a pool given its password as an option", () => {
   // `pg-pool` keeps a password passed as an option non-enumerable, so a client that copied its config
   // by spreading it would connect with none.
@@ -155,7 +160,10 @@ describe("the runtime's pools", () => {
           };
         }
       ).options;
-      expect(options.Client?.connectTimeoutMs).toBe(CONNECT_TIMEOUT_MS);
+      // The value the deploy documents, written out: compared with the constant, a constant set to 0
+      // (no limit) would agree with itself.
+      expect(options.Client?.connectTimeoutMs).toBe(10_000);
+      expect(CONNECT_TIMEOUT_MS).toBe(10_000);
       expect(options.connectionTimeoutMillis ?? 0).toBe(0);
     },
   );

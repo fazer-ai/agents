@@ -66,6 +66,8 @@ const PROBES: Record<string, string> = {
     'declare const Pool: new (o: object) => object;\nexport const p = new Pool({ connectionString: "x", max: 2 });\n',
   [P("pool-adapter-unbounded.ts")]:
     'declare const PrismaPg: new (o: object) => object;\nexport const a = new PrismaPg({ connectionString: "x" });\n',
+  [P("pool-namespaced-unbounded.ts")]:
+    'declare const pg: { Pool: new (o: object) => object };\nexport const p = new pg.Pool({ connectionString: "x", max: 2 });\n',
   [P("pool-connect-option.ts")]:
     "declare const Pool: new (o: object) => object;\ndeclare function connectTimeoutOption(): object;\nexport const p = new Pool({ max: 2, ...connectTimeoutOption() });\n",
   [P("pool-timeout-millis.ts")]:
@@ -303,12 +305,13 @@ describe("no-noop-close-request", () => {
 });
 
 describe("require-pool-connect-bound", () => {
-  test.each([["pool-unbounded.ts"], ["pool-adapter-unbounded.ts"]])(
-    "a pool whose options bound nothing is refused (%s)",
-    (name) => {
-      expect(of(P(name), "pool")).toBe(1);
-    },
-  );
+  test.each([
+    ["pool-unbounded.ts"],
+    ["pool-adapter-unbounded.ts"],
+    ["pool-namespaced-unbounded.ts"],
+  ])("a pool whose options bound nothing is refused (%s)", (name) => {
+    expect(of(P(name), "pool")).toBe(1);
+  });
 
   test.each([
     ["pool-connect-option.ts"],

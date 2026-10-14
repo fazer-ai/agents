@@ -1,4 +1,4 @@
-// Refuses, under src/, a `new Pool({…})` or a `new PrismaPg({…})` (which builds its own pool) whose
+// Refuses, under src/, a `new Pool({…})` (also `new pg.Pool({…})`) or a `new PrismaPg({…})` (which builds its own pool) whose
 // options bound neither the connect nor the queue: `pg`'s default for `connectionTimeoutMillis` is 0,
 // so a connect stalled by the network, or by a Postgres that accepts the TCP connection and never
 // answers, holds whatever waits on it forever. Spread `connectTimeoutOption()` from
@@ -8,7 +8,7 @@
 language js;
 
 JsNewExpression() as $new where {
-    $new <: r"(?s)new\s+(?:Pool|PrismaPg)\s*\(\s*\{.*",
+    $new <: r"(?s)new\s+(?:[\w$]+\s*\.\s*)?(?:Pool|PrismaPg)\s*\(\s*\{.*",
     not $new <: r"(?s).*(?:connectionTimeoutMillis|connectTimeoutOption\s*\().*",
     register_diagnostic(span = $new, message = "A pool's options bound its connect: spread `connectTimeoutOption()` (src/api/lib/pool-options.ts), or set `connectionTimeoutMillis` when the wait for a free client should be bounded too.")
 }

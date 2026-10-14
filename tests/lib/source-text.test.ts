@@ -401,8 +401,8 @@ describe("the scan removes prose and keeps code", () => {
   }
 
   // NOTE: the distinction the two exports exist for, and why this is not one function with a flag nobody
-  // would pass: `refused-turn-callsites` matches ON a string literal, so stripping contents there
-  // would blind the sweep rather than sharpen it.
+  // would pass: a sweep that matches ON a string literal would be blinded by stripping its contents
+  // rather than sharpened.
   test("withoutComments keeps a literal the pattern reads", () => {
     const source =
       '// returning "stale" would replay\nreturn refuse("stale");\n';
@@ -433,8 +433,8 @@ describe("nested JSX does not cost exponentially", () => {
 });
 
 describe("the scan is positionally transparent", () => {
-  // What lets a sweep strip and keep reporting WHERE it found something: `refused-turn-callsites`
-  // finds its anchor in the stripped text and slices it, and `flowlog-reader-scope`-shaped readers
+  // What lets a sweep strip and keep reporting WHERE it found something: an anchor found in the
+  // stripped text slices the original at the same offset, and `flowlog-reader-scope`-shaped readers
   // report a line number from an index.
   const source = "const a = 1; // s.slice(0, 1)\nconst b = s.slice(0, 10);\n";
   // A BLOCK comment spanning lines is what separates "blank everything" from "blank everything but

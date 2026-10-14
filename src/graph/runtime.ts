@@ -138,7 +138,12 @@ import {
   buildToolset,
   loadAgentConfig,
 } from "./prepare";
-import { undoRefusedTurn } from "./refused-turn";
+import {
+  rollBackRefusedTurn,
+  type Settled,
+  settlement,
+  undoRefusedTurn,
+} from "./refused-turn";
 import { burstReopenedResolved } from "./reopened-by-burst";
 import { stillInSameEpisode } from "./reset-episode";
 import {
@@ -192,8 +197,7 @@ function sysCtx(tenantId: bigint): TenantContext {
 
 // What the post gate saw, not what the turn did: its two refusals have opposite bookkeeping (more
 // is coming vs. it is over), so a boolean would make each caller rebuild the difference.
-// `postBlocked` translates the fact into an outcome; outcome words here would also make the
-// `refused-turn-callsites` guard read these returns as refusals escaping `refuse()`.
+// `postBlocked` translates the fact into an outcome.
 export type PostVerdict =
   | "post"
   // A newer message arrived mid-turn: becomes `superseded`, and its flush answers the whole burst.
@@ -242,6 +246,22 @@ export type RunAgentTurnOutcome =
   // `answered`.
   | "answered-elsewhere"
   | "blocked";
+
+// The words that, after the model call, can only mean the generated reply never reached the
+// customer, so `settled` refuses them at compile time. `empty` is not one: an empty turn with nothing
+// to take back settles on it too.
+type TurnRefusalOnly =
+  | "stale"
+  | "agent-unavailable"
+  | "taken-over"
+  | "superseded"
+  | "answered-elsewhere"
+  | "blocked";
+export const turnSettlement = settlement<
+  RunAgentTurnOutcome,
+  TurnRefusalOnly
+>();
+const { refused, settled } = turnSettlement;
 
 export interface RuntimeDeps {
   makeModel?: (cfg: ResolvedModelConfig) => BaseChatModel;
@@ -1312,7 +1332,15 @@ async function runTurnBody(
   // not write a second note.
   const handOverForGuardrail = async (
     direction: "input" | "output",
-  ): Promise<"handed" | "failed" | RunAgentTurnOutcome> => {
+  ): Promise<
+    | "handed"
+    | "failed"
+    | "stale"
+    | "agent-unavailable"
+    | "superseded"
+    | "answered-elsewhere"
+    | "taken-over"
+  > => {
     turnState.resolveRequested = false;
     const blocked = await postBlocked();
     if (blocked) return blocked;
@@ -2238,291 +2266,389 @@ async function runTurnBody(
         detail: { silenceRetry: outcome },
       });
     }
-    // Every refusal from here down goes out through this (fenced by
-    // tests/graph/refused-turn-callsites.test.ts). The invoke already checkpointed the answer, so a
-    // suppressed send would leave the next turn reading an unsent reply; `undoRefusedTurn` decides
-    // whether to roll back.
-    const refuse = async (
-      outcome: RunAgentTurnOutcome,
-    ): Promise<RunAgentTurnOutcome> => {
-      const plan = await undoRefusedTurn({
+    const rollBack = async (outcome: RunAgentTurnOutcome) =>
+      rollBackRefusedTurn(outcome, {
         checkpointer: params.deps?.checkpointer ?? (await getCheckpointer()),
         graphThreadId,
         produced: result.messages,
         kind: "reactive",
-      }).catch((err) => {
-        // NOTE: Best-effort, and loudly: throwing would turn a correct refusal into a retried turn.
-        logger.warn(
-          { err, conversationId: String(conversationId) },
-          "turn: could not roll back the refused turn",
-        );
-        return null;
+        logPrefix: "turn",
+        conversationId,
       });
-      if (plan?.action === "remove") {
-        logger.info(
-          "turn rolled back a refused turn: conv=%s outcome=%s messages=%d",
-          String(conversationId),
-          outcome,
-          plan.ids.length,
-        );
-      } else if (plan?.reason === "another-invoke-is-reading") {
-        // NOTE: The one keep that is a miss: the history still holds a message the customer never
-        // received, so it is a warn.
-        logger.warn(
-          "turn could not roll back a refused turn, another invoke holds the thread: conv=%s outcome=%s",
-          String(conversationId),
-          outcome,
-        );
-      }
-      return outcome;
-    };
-    // NOTE: A tool-boundary refusal ends on an empty assistant message like an empty turn, so it is
-    // read off the result (a fence may change its mind), before `drafted` treats emptiness as a
-    // result. An owner change mid-turn gets the post-generation recheck's outcome and line.
-    if (turnWasCalledOff(result.messages)) {
-      const lost = ownershipFence.lost();
-      if (lost) {
-        // NOTE: The detail of the read that refused, not of a second one.
-        if (lost.closed !== null) {
-          emitFlowEvent(flow, {
-            stage: "handoff",
-            status: "ok",
-            detail: lost.closed,
-          });
+    // The post-generation stretch. The invoke already checkpointed the answer, so each end says
+    // whether it reached the customer: `refused` is rolled back by the single caller below, and
+    // `settled` does not compile on a word that can only be a refusal (`TurnRefusalOnly`).
+    const afterGeneration = async (): Promise<Settled<RunAgentTurnOutcome>> => {
+      // NOTE: A tool-boundary refusal ends on an empty assistant message like an empty turn, so it is
+      // read off the result (a fence may change its mind), before `drafted` treats emptiness as a
+      // result. An owner change mid-turn gets the post-generation recheck's outcome and line.
+      if (turnWasCalledOff(result.messages)) {
+        const lost = ownershipFence.lost();
+        if (lost) {
+          // NOTE: The detail of the read that refused, not of a second one.
+          if (lost.closed !== null) {
+            emitFlowEvent(flow, {
+              stage: "handoff",
+              status: "ok",
+              detail: lost.closed,
+            });
+          }
+          return refused("taken-over");
         }
-        return refuse("taken-over");
+        return refused(standDown());
       }
-      return refuse(standDown());
-    }
 
-    // The follow-up's silence token can reach this shared thread and be reproduced here. A reply
-    // that reduces to it is silence; see docs/graph.md, "Saying nothing". Before the output guardrail,
-    // so the judge never screens a marker as the agent's text.
-    const drafted = customerFacingReply(lastAssistantText(result.messages));
-    let reply = drafted.text;
-    // NOTE: A token silence is logged, as `skip_reply` records itself, so it is not mistaken for the
-    // agent ignoring a waiting customer.
-    if (drafted.bySentinel) {
-      emitFlowEvent(flow, {
-        stage: "generate",
-        level: "warn",
-        status: "ok",
-        detail: { silenceTokenSuppressed: true },
-      });
-      // NOTE: The token is rolled back out of the checkpoint, or the next turn imitates it. Armed
-      // here and run in the `finally`: the rollback refuses while `isTurnInFlight` holds, which is
-      // this very turn, so inline it would always keep.
-      silenceProduced = result.messages as BaseMessage[];
-    }
-    // NOTE: A real answer carrying the token goes out unedited (editing it is data loss), so the
-    // operator is told here.
-    if (drafted.carriesToken) {
-      emitFlowEvent(flow, {
-        stage: "generate",
-        level: "warn",
-        status: "ok",
-        detail: { silenceTokenInReply: true },
-      });
-    }
-
-    // NOTE: The deferred resolve falls with the transfer, even when its closing line never reached
-    // the customer: the human queue's conversation is not ours to close.
-    if (handoffState.completed) turnState.resolveRequested = false;
-    const handedOff = handoffAnsweredTheTurn(handoffState);
-    // NOTE: The model's final text after a handoff duplicates the closing line, and the mirror may
-    // still read bot-owned. Blanked, not returned, so queued images still pass every gate below.
-    if (handedOff) reply = "";
-    // NOTE: The transfer declared that this case gets no reply, so the model's next line is dropped
-    // too. The proactive path needs nothing: its ownership probe already reads `open`.
-    else if (handoffDeclaredSilence(handoffState)) {
-      // NOTE: The queue goes too: "no reply" includes attachments, and a caption tripping the output
-      // guardrail would put a replacement back on the wire. The words leave the thread through the
-      // deferred rollback the token uses; the reactive plan takes only the trailing assistant text,
-      // so the transfer's call and result stay.
-      if (reply) silenceProduced = result.messages as BaseMessage[];
-      reply = "";
-      const dropped = turnState.pendingAttachments.length;
-      turnState.pendingAttachments.length = 0;
-      logger.info(
-        "turn: the handoff declared silence (conv=%s), so nothing goes to the customer (attachments dropped=%d)",
-        String(conversationId),
-        dropped,
-      );
-    }
-    // NOTE: A reply the model wrote beside a tool call before ending on an empty message becomes the
-    // reply here, above every gate. Only when nothing else answers the turn: no transfer, nothing
-    // delivered or queued, no `skip_reply`, and a final message that said nothing (`wroteText`, not
-    // `reply`). See docs/graph.md, "Saying nothing".
-    if (
-      !drafted.wroteText &&
-      !handoffState.completed &&
-      !turnDeliveredToCustomer(turnState, handoffState)
-    ) {
-      // The same filter as any reply: a line that reduces to the silence token is silence.
-      const recovered = customerFacingReply(
-        replyWrittenThisTurn(result.messages as BaseMessage[]),
-      );
-      if (recovered.text) {
-        reply = recovered.text;
-        replyRecovered = true;
-      }
-    }
-    await deliverHandoffPromise();
-
-    // Re-check the live assignee before posting. A small TOCTOU remains between this read and the
-    // POST, which is a network call and cannot share a transaction with the read; single-replica
-    // deployments accept it (docs/graph.md, "Pieces"). The same read takes the voice preference
-    // `set_voice_preference` may have written during the invoke.
-    const ourBot = loaded.agentBotId ?? agentBotId;
-    const recheck = await runScopedOn(base, sysCtx(tenantId), async (db) => {
-      const conv = await db.conversation.findUnique({
-        where: {
-          tenantId_chatwootInstanceId_chatwootConversationId: {
-            tenantId,
-            chatwootInstanceId: instanceId,
-            chatwootConversationId: conversationId,
-          },
-        },
-        select: {
-          assigneeType: true,
-          assigneeId: true,
-          status: true,
-          chatwootStatusAt: true,
-        },
-      });
-      const ours = shouldBotHandle(
-        {
-          assigneeType: conv?.assigneeType ?? null,
-          assigneeId: conv?.assigneeId ?? null,
-          status: conv?.status ?? null,
-        },
-        { ourAgentBotId: ourBot },
-      );
-      let voiceReply = loaded.contactVoiceReply;
-      if (loaded.contactDbId != null) {
-        const c = await db.contact.findUnique({
-          where: { id: loaded.contactDbId },
-          select: { voiceReply: true },
+      // The follow-up's silence token can reach this shared thread and be reproduced here. A reply
+      // that reduces to it is silence; see docs/graph.md, "Saying nothing". Before the output guardrail,
+      // so the judge never screens a marker as the agent's text.
+      const drafted = customerFacingReply(lastAssistantText(result.messages));
+      let reply = drafted.text;
+      // NOTE: A token silence is logged, as `skip_reply` records itself, so it is not mistaken for the
+      // agent ignoring a waiting customer.
+      if (drafted.bySentinel) {
+        emitFlowEvent(flow, {
+          stage: "generate",
+          level: "warn",
+          status: "ok",
+          detail: { silenceTokenSuppressed: true },
         });
-        voiceReply = c?.voiceReply ?? null;
+        // NOTE: The token is rolled back out of the checkpoint, or the next turn imitates it. Armed
+        // here and run in the `finally`: the rollback refuses while `isTurnInFlight` holds, which is
+        // this very turn, so inline it would always keep.
+        silenceProduced = result.messages as BaseMessage[];
       }
-      return {
-        ours,
-        voiceReply,
-        // NOTE: Carried out so the discard below says why ownership was lost, about this moment.
-        assigneeType: conv?.assigneeType ?? null,
-        observed: {
-          status: conv?.status ?? null,
-          statusAt: conv?.chatwootStatusAt ?? null,
-        },
-      };
-    });
-    // NOTE: Both gates below drop everything still unsent, queued photos of a handed-off turn
-    // included; the closing line already left before them.
-    if (!recheck.ours) {
-      // NOTE: Two different events share this exit, so the line comes from `describeClosedGate`,
-      // the reading every gate closing on this question shares.
-      emitFlowEvent(flow, {
-        stage: "handoff",
-        status: "ok",
-        detail: describeClosedGate({
-          assigneeType: recheck.assigneeType,
-          status: recheck.observed.status,
-        }),
-      });
-      return refuse("taken-over");
-    }
+      // NOTE: A real answer carrying the token goes out unedited (editing it is data loss), so the
+      // operator is told here.
+      if (drafted.carriesToken) {
+        emitFlowEvent(flow, {
+          stage: "generate",
+          level: "warn",
+          status: "ok",
+          detail: { silenceTokenInReply: true },
+        });
+      }
 
-    // Last-moment supersede gate: a refusal drops the reply and the deferred resolve intent.
-    const blocked = await postBlocked();
-    if (blocked) return refuse(blocked);
-
-    // Output guardrail before delivery, over everything the model wrote for the customer
-    // (reply, captions, document fields). A trip drops the queue and replaces or suppresses the
-    // reply; a suppressed send discards the deferred resolve. Above the empty-reply branch, since a
-    // caption is customer-facing even without a final message.
-    const modelWritten = turnState.pendingAttachments.flatMap((i) =>
-      [i.caption?.trim(), i.screenText?.trim()].filter((c): c is string => !!c),
-    );
-    const screened = [reply, ...modelWritten].filter(Boolean).join("\n");
-    const outGuard = screened ? await runGuardrail("output", screened) : null;
-    // Whether what goes out below is the operator's text standing in for the reply.
-    let replyByOperator = false;
-    // NOTE: `postBlocked` answered before this model call, and the suppressed branch returns
-    // "blocked" without a later ask.
-    if (await writeCalledOff()) return refuse(standDown());
-    if (outGuard && guardrailTripped(outGuard)) {
-      turnState.pendingAttachments.length = 0;
-      const replacement = screenedText(outGuard, screened);
-      // NOTE: The refused reply goes nowhere and the case goes to the team; the transfer is marked,
-      // so the empty branch below does not resolve or hand over twice.
-      if (outGuard.kind === "handed-off") {
-        const handed = await handOverForGuardrail("output");
-        if (handed !== "handed" && handed !== "failed") return refuse(handed);
-        // NOTE: A landed transfer with nothing to say is `blocked` (policy settled it), not `empty`,
-        // which recovery would run again.
-        if (handed === "handed" && replacement === null)
-          return refuse("blocked");
-        // NOTE: A failed transfer throws, like the input side, after the refused reply is rolled out
-        // of the checkpoint so the retry does not read it as said.
-        if (handed === "failed") {
-          handoffFailed = "output";
-          return refuse("empty");
+      // NOTE: The deferred resolve falls with the transfer, even when its closing line never reached
+      // the customer: the human queue's conversation is not ours to close.
+      if (handoffState.completed) turnState.resolveRequested = false;
+      const handedOff = handoffAnsweredTheTurn(handoffState);
+      // NOTE: The model's final text after a handoff duplicates the closing line, and the mirror may
+      // still read bot-owned. Blanked, not returned, so queued images still pass every gate below.
+      if (handedOff) reply = "";
+      // NOTE: The transfer declared that this case gets no reply, so the model's next line is dropped
+      // too. The proactive path needs nothing: its ownership probe already reads `open`.
+      else if (handoffDeclaredSilence(handoffState)) {
+        // NOTE: The queue goes too: "no reply" includes attachments, and a caption tripping the output
+        // guardrail would put a replacement back on the wire. The words leave the thread through the
+        // deferred rollback the token uses; the reactive plan takes only the trailing assistant text,
+        // so the transfer's call and result stay.
+        if (reply) silenceProduced = result.messages as BaseMessage[];
+        reply = "";
+        const dropped = turnState.pendingAttachments.length;
+        turnState.pendingAttachments.length = 0;
+        logger.info(
+          "turn: the handoff declared silence (conv=%s), so nothing goes to the customer (attachments dropped=%d)",
+          String(conversationId),
+          dropped,
+        );
+      }
+      // NOTE: A reply the model wrote beside a tool call before ending on an empty message becomes the
+      // reply here, above every gate. Only when nothing else answers the turn: no transfer, nothing
+      // delivered or queued, no `skip_reply`, and a final message that said nothing (`wroteText`, not
+      // `reply`). See docs/graph.md, "Saying nothing".
+      if (
+        !drafted.wroteText &&
+        !handoffState.completed &&
+        !turnDeliveredToCustomer(turnState, handoffState)
+      ) {
+        // The same filter as any reply: a line that reduces to the silence token is silence.
+        const recovered = customerFacingReply(
+          replyWrittenThisTurn(result.messages as BaseMessage[]),
+        );
+        if (recovered.text) {
+          reply = recovered.text;
+          replyRecovered = true;
         }
-        reply = replacement ?? "";
-      } else {
-        if (replacement === null) return refuse("blocked");
-        reply = replacement;
       }
-      replyRecovered = false;
-      replyByOperator = screenedByOperator(outGuard);
-    }
+      await deliverHandoffPromise();
 
-    // NOTE: Empty reply: queued attachments and a deferred resolve still apply. After the recheck and
-    // the supersede gate, since resolving under a superseded turn would make the next flush read
-    // "resolved" and swallow the newest message. A delivered attachment reports "posted", which
-    // clears the error badge.
-    if (!reply) {
-      // NOTE: Nothing has left this turn yet on this branch, so the whole thing stands down.
-      if (await writeCalledOff()) return refuse(standDown());
-      // A silence a person has to see (./skip-handover.ts): a reason naming one, or any silence
-      // where our side never spoke. Asked on every empty exit unless a transfer or a landed resolve
-      // already moved the conversation; a delivered attachment does not stand in the way.
-      const handOverIfOwed = async (closed: boolean): Promise<void> => {
-        if (closed || handoffState?.completed === true) return;
-        if (await writeCalledOff()) return;
-        const msgs = result.messages as BaseMessage[];
-        const row = await handoverRow(
-          base,
-          tenantId,
-          loaded.conversationDbId,
-          ourBot,
+      // Re-check the live assignee before posting. A small TOCTOU remains between this read and the
+      // POST, which is a network call and cannot share a transaction with the read; single-replica
+      // deployments accept it (docs/graph.md, "Pieces"). The same read takes the voice preference
+      // `set_voice_preference` may have written during the invoke.
+      const ourBot = loaded.agentBotId ?? agentBotId;
+      const recheck = await runScopedOn(base, sysCtx(tenantId), async (db) => {
+        const conv = await db.conversation.findUnique({
+          where: {
+            tenantId_chatwootInstanceId_chatwootConversationId: {
+              tenantId,
+              chatwootInstanceId: instanceId,
+              chatwootConversationId: conversationId,
+            },
+          },
+          select: {
+            assigneeType: true,
+            assigneeId: true,
+            status: true,
+            chatwootStatusAt: true,
+          },
+        });
+        const ours = shouldBotHandle(
+          {
+            assigneeType: conv?.assigneeType ?? null,
+            assigneeId: conv?.assigneeId ?? null,
+            status: conv?.status ?? null,
+          },
+          { ourAgentBotId: ourBot },
         );
-        if (!row.ours) return;
-        // A slow tool's acknowledgement is our side speaking, and nothing stamps the row for it.
-        const kind = skipHandoverKind(
-          silenceWasChosen(msgs) ? chosenSilence(msgs) : null,
-          row.spoken || turnState.spokeOutsideTheReply === true,
-        );
-        if (!kind) return;
-        await applySkipHandover({
+        let voiceReply = loaded.contactVoiceReply;
+        if (loaded.contactDbId != null) {
+          const c = await db.contact.findUnique({
+            where: { id: loaded.contactDbId },
+            select: { voiceReply: true },
+          });
+          voiceReply = c?.voiceReply ?? null;
+        }
+        return {
+          ours,
+          voiceReply,
+          // NOTE: Carried out so the discard below says why ownership was lost, about this moment.
+          assigneeType: conv?.assigneeType ?? null,
+          observed: {
+            status: conv?.status ?? null,
+            statusAt: conv?.chatwootStatusAt ?? null,
+          },
+        };
+      });
+      // NOTE: Both gates below drop everything still unsent, queued photos of a handed-off turn
+      // included; the closing line already left before them.
+      if (!recheck.ours) {
+        // NOTE: Two different events share this exit, so the line comes from `describeClosedGate`,
+        // the reading every gate closing on this question shares.
+        emitFlowEvent(flow, {
+          stage: "handoff",
+          status: "ok",
+          detail: describeClosedGate({
+            assigneeType: recheck.assigneeType,
+            status: recheck.observed.status,
+          }),
+        });
+        return refused("taken-over");
+      }
+
+      // Last-moment supersede gate: a refusal drops the reply and the deferred resolve intent.
+      const blocked = await postBlocked();
+      if (blocked) return refused(blocked);
+
+      // Output guardrail before delivery, over everything the model wrote for the customer
+      // (reply, captions, document fields). A trip drops the queue and replaces or suppresses the
+      // reply; a suppressed send discards the deferred resolve. Above the empty-reply branch, since a
+      // caption is customer-facing even without a final message.
+      const modelWritten = turnState.pendingAttachments.flatMap((i) =>
+        [i.caption?.trim(), i.screenText?.trim()].filter(
+          (c): c is string => !!c,
+        ),
+      );
+      const screened = [reply, ...modelWritten].filter(Boolean).join("\n");
+      const outGuard = screened ? await runGuardrail("output", screened) : null;
+      // Whether what goes out below is the operator's text standing in for the reply.
+      let replyByOperator = false;
+      // NOTE: `postBlocked` answered before this model call, and the suppressed branch returns
+      // "blocked" without a later ask.
+      if (await writeCalledOff()) return refused(standDown());
+      if (outGuard && guardrailTripped(outGuard)) {
+        turnState.pendingAttachments.length = 0;
+        const replacement = screenedText(outGuard, screened);
+        // NOTE: The refused reply goes nowhere and the case goes to the team; the transfer is marked,
+        // so the empty branch below does not resolve or hand over twice.
+        if (outGuard.kind === "handed-off") {
+          const handed = await handOverForGuardrail("output");
+          if (handed !== "handed" && handed !== "failed")
+            return refused(handed);
+          // NOTE: A landed transfer with nothing to say is `blocked` (policy settled it), not `empty`,
+          // which recovery would run again.
+          if (handed === "handed" && replacement === null)
+            return refused("blocked");
+          // NOTE: A failed transfer throws, like the input side, after the refused reply is rolled out
+          // of the checkpoint so the retry does not read it as said.
+          if (handed === "failed") {
+            handoffFailed = "output";
+            return refused("empty");
+          }
+          reply = replacement ?? "";
+        } else {
+          if (replacement === null) return refused("blocked");
+          reply = replacement;
+        }
+        replyRecovered = false;
+        replyByOperator = screenedByOperator(outGuard);
+      }
+
+      // NOTE: Empty reply: queued attachments and a deferred resolve still apply. After the recheck and
+      // the supersede gate, since resolving under a superseded turn would make the next flush read
+      // "resolved" and swallow the newest message. A delivered attachment reports "posted", which
+      // clears the error badge.
+      if (!reply) {
+        // NOTE: Nothing has left this turn yet on this branch, so the whole thing stands down.
+        if (await writeCalledOff()) return refused(standDown());
+        // A silence a person has to see (./skip-handover.ts): a reason naming one, or any silence
+        // where our side never spoke. Asked on every empty exit unless a transfer or a landed resolve
+        // already moved the conversation; a delivered attachment does not stand in the way.
+        const handOverIfOwed = async (closed: boolean): Promise<void> => {
+          if (closed || handoffState?.completed === true) return;
+          if (await writeCalledOff()) return;
+          const msgs = result.messages as BaseMessage[];
+          const row = await handoverRow(
+            base,
+            tenantId,
+            loaded.conversationDbId,
+            ourBot,
+          );
+          if (!row.ours) return;
+          // A slow tool's acknowledgement is our side speaking, and nothing stamps the row for it.
+          const kind = skipHandoverKind(
+            silenceWasChosen(msgs) ? chosenSilence(msgs) : null,
+            row.spoken || turnState.spokeOutsideTheReply === true,
+          );
+          if (!kind) return;
+          await applySkipHandover({
+            client,
+            conversationId,
+            kind,
+            detail: chosenSilence(msgs)?.detail ?? null,
+            handoff: loaded.handoffConfig,
+            instanceId,
+            flow,
+            stillWanted: async () => !(await writeCalledOff()),
+          });
+        };
+        const queued = turnState.pendingAttachments.length;
+        const {
+          sent,
+          failed,
+          calledOff: attachmentsCalledOff,
+          lostClaim,
+        } = await deliverPendingAttachments(
           client,
           conversationId,
-          kind,
-          detail: chosenSilence(msgs)?.detail ?? null,
-          handoff: loaded.handoffConfig,
-          instanceId,
+          turnState,
           flow,
-          stillWanted: async () => !(await writeCalledOff()),
+          { tenantId: params.tenantId, base },
+          writeCalledOff,
+          claimBeforeSend,
+        );
+        sentAttachment ||= sent;
+        // NOTE: Another turn holds the burst and nothing went out, so the whole turn stands down.
+        if (lostClaim) return refused("superseded");
+        // NOTE: Only when nothing left: after a delivered attachment, "stale" would hand the burst to
+        // the next flush, which sends it again.
+        if (attachmentsCalledOff && !sent) return refused(standDown());
+        // NOTE: The attachments were the turn and none arrived. With a failure it throws, since callers
+        // record a turn error only on a throw; not when a handoff answered, and not when nothing
+        // failed (a revocation is the operator's own click). Either way the deferred resolve is
+        // skipped: a conversation with no answer must not close.
+        if (queued > 0 && !sent && !handedOff) {
+          if (failed) {
+            throw new Error(
+              "envio de anexo: nada foi entregue e o turno não tinha resposta em texto",
+            );
+          }
+          // NOTE: Nothing to close, but a silence that asked for a person still gets one.
+          await handOverIfOwed(false);
+          return settled("empty");
+        }
+        // An empty completion looks like a declared silence here, and must not let the deferred
+        // resolve close an unanswered conversation. Read from the tool's mark, bounded at this turn
+        // (`silenceWasChosen`): an earlier `skip_reply` in the shared thread authorises nothing now.
+        const silenceChosen = silenceWasChosen(
+          result.messages as BaseMessage[],
+        );
+        const unexplained = silenceIsUnexplained({
+          delivered: sent,
+          // NOTE: `completed`, not `handedOff`: that one asks whether the transfer supplied text, while
+          // here the question is whether a person now owns it, which a silent transfer also answers.
+          handedOff: handoffState?.completed === true,
+          silenceChosen,
         });
-      };
-      const queued = turnState.pendingAttachments.length;
-      const {
-        sent,
-        failed,
-        calledOff: attachmentsCalledOff,
-        lostClaim,
-      } = await deliverPendingAttachments(
+        if (unexplained) {
+          // One warn for both exits, saying whether a resolve was discarded, since the operator's
+          // next move differs. The intent is left unused, not cleared: the `!unexplained` gate below
+          // skips it.
+          const resolveDiscarded = turnState.resolveRequested;
+          emitFlowEvent(flow, {
+            stage: "generate",
+            level: "warn",
+            status: "ok",
+            detail: {
+              silenceUnexplained: true,
+              resolveDiscarded,
+              silenceRetried,
+            },
+          });
+        }
+        // NOTE: A thank-you after a close: an `acknowledged` silence, with no transfer, answering the
+        // burst that reopened a resolved conversation (./reopened-by-burst.ts) puts it back to
+        // `resolved`, so the follow-up does not nudge the customer who said thanks. The gates below
+        // still decide. See docs/graph.md, "Saying nothing".
+        if (
+          handoffState?.completed !== true &&
+          silenceChosen &&
+          chosenSilence(result.messages as BaseMessage[])?.reason ===
+            "acknowledged" &&
+          (await answersTheReopen(
+            client,
+            conversationId,
+            params.claimReply?.messageIds,
+          ))
+        ) {
+          turnState.resolveRequested = true;
+        }
+        // The close is skipped, not returned on, when the run was called off (something may have
+        // reached the customer) or the batch was partial (./close-intent.ts, shared by all three
+        // closing sites).
+        let closed = false;
+        if (
+          !unexplained &&
+          mayCloseConversation({
+            replyPartial: false,
+            attachmentFailed: failed,
+          }) &&
+          !(await writeCalledOff())
+        ) {
+          closed = await applyDeferredResolve(
+            client,
+            conversationId,
+            turnState,
+            flow,
+            {
+              tenantId,
+              instanceId,
+              base,
+              observed: recheck.observed,
+              stillWanted: stillWantedFence,
+            },
+          );
+        }
+        await handOverIfOwed(closed);
+        if (!sent && !handedOff) return settled("empty");
+        const postedFiles = postedOutcomeFor({
+          replyPartial: false,
+          attachmentFailed: failed,
+        });
+        if (postedFiles === "posted-partial") {
+          await notePartialDelivery({
+            tenantId,
+            instanceId,
+            conversationId,
+            base,
+          });
+        }
+        return settled(postedFiles);
+      }
+
+      // NOTE: The image lands before the text that talks about it, and before the TTS branch.
+      if (await writeCalledOff()) return refused(standDown());
+      const attachments = await deliverPendingAttachments(
         client,
         conversationId,
         turnState,
@@ -2531,215 +2657,103 @@ async function runTurnBody(
         writeCalledOff,
         claimBeforeSend,
       );
-      sentAttachment ||= sent;
-      // NOTE: Another turn holds the burst and nothing went out, so the whole turn stands down.
-      if (lostClaim) return refuse("superseded");
-      // NOTE: Only when nothing left: after a delivered attachment, "stale" would hand the burst to
-      // the next flush, which sends it again.
-      if (attachmentsCalledOff && !sent) return refuse(standDown());
-      // NOTE: The attachments were the turn and none arrived. With a failure it throws, since callers
-      // record a turn error only on a throw; not when a handoff answered, and not when nothing
-      // failed (a revocation is the operator's own click). Either way the deferred resolve is
-      // skipped: a conversation with no answer must not close.
-      if (queued > 0 && !sent && !handedOff) {
-        if (failed) {
+      sentAttachment ||= attachments.sent;
+      if (attachments.lostClaim) return refused("superseded");
+      // NOTE: Called off mid-batch: report what was delivered, since "stale" would replay a burst whose
+      // attachment the customer already has.
+      if (attachments.calledOff)
+        return attachments.sent ? settled("posted") : refused(standDown());
+
+      const delivered = await deliverText(
+        reply,
+        recheck.voiceReply,
+        !replyByOperator,
+      );
+      // NOTE: Another turn holds the claim; the memoized gate means no attachment went out either.
+      if (delivered === "superseded") return refused("superseded");
+      // NOTE: Nothing landed and a send failed: the one partial shape that throws, since nothing can be
+      // duplicated and a throw is how callers record a turn error. Not when an attachment already went
+      // out, which a re-run would send again.
+      if (
+        delivered !== "stale" &&
+        delivered.failed &&
+        delivered.delivered === 0
+      ) {
+        // NOTE: And only when "nothing landed" is a fact: `unproven` means the reply may be in the
+        // conversation, and a throw hands the row to recovery, which re-runs every tool. The badge
+        // below reports it instead.
+        if (!attachments.sent && !delivered.unproven) {
           throw new Error(
-            "envio de anexo: nada foi entregue e o turno não tinha resposta em texto",
+            "envio da resposta: nenhum balão foi entregue ao cliente",
           );
         }
-        // NOTE: Nothing to close, but a silence that asked for a person still gets one.
-        await handOverIfOwed(false);
-        return "empty";
       }
-      // An empty completion looks like a declared silence here, and must not let the deferred
-      // resolve close an unanswered conversation. Read from the tool's mark, bounded at this turn
-      // (`silenceWasChosen`): an earlier `skip_reply` in the shared thread authorises nothing now.
-      const silenceChosen = silenceWasChosen(result.messages as BaseMessage[]);
-      const unexplained = silenceIsUnexplained({
-        delivered: sent,
-        // NOTE: `completed`, not `handedOff`: that one asks whether the transfer supplied text, while
-        // here the question is whether a person now owns it, which a silent transfer also answers.
-        handedOff: handoffState?.completed === true,
-        silenceChosen,
-      });
-      if (unexplained) {
-        // One warn for both exits, saying whether a resolve was discarded, since the operator's
-        // next move differs. The intent is left unused, not cleared: the `!unexplained` gate below
-        // skips it.
-        const resolveDiscarded = turnState.resolveRequested;
-        emitFlowEvent(flow, {
-          stage: "generate",
-          level: "warn",
-          status: "ok",
-          detail: {
-            silenceUnexplained: true,
-            resolveDiscarded,
-            silenceRetried,
-          },
-        });
-      }
-      // NOTE: A thank-you after a close: an `acknowledged` silence, with no transfer, answering the
-      // burst that reopened a resolved conversation (./reopened-by-burst.ts) puts it back to
-      // `resolved`, so the follow-up does not nudge the customer who said thanks. The gates below
-      // still decide. See docs/graph.md, "Saying nothing".
-      if (
-        handoffState?.completed !== true &&
-        silenceChosen &&
-        chosenSilence(result.messages as BaseMessage[])?.reason ===
-          "acknowledged" &&
-        (await answersTheReopen(
-          client,
-          conversationId,
-          params.claimReply?.messageIds,
-        ))
-      ) {
-        turnState.resolveRequested = true;
-      }
-      // The close is skipped, not returned on, when the run was called off (something may have
-      // reached the customer) or the batch was partial (./close-intent.ts, shared by all three
-      // closing sites).
-      let closed = false;
-      if (
-        !unexplained &&
-        mayCloseConversation({
-          replyPartial: false,
-          attachmentFailed: failed,
-        }) &&
-        !(await writeCalledOff())
-      ) {
-        closed = await applyDeferredResolve(
-          client,
-          conversationId,
-          turnState,
-          flow,
-          {
+      // NOTE: Zero is the split loop standing down on its first balloon: a stale turn, unless an
+      // attachment already went out (then "stale" would have the next flush send it again).
+      if (delivered === "stale" || delivered.delivered === 0) {
+        // NOTE: An unproven zero is reported, not stood down: the next flush would answer it again.
+        if (delivered !== "stale" && delivered.unproven) {
+          await notePartialDelivery({
             tenantId,
             instanceId,
+            conversationId,
             base,
-            observed: recheck.observed,
-            stillWanted: stillWantedFence,
-          },
-        );
-      }
-      await handOverIfOwed(closed);
-      if (!sent && !handedOff) return "empty";
-      const postedFiles = postedOutcomeFor({
-        replyPartial: false,
-        attachmentFailed: failed,
-      });
-      if (postedFiles === "posted-partial") {
-        await notePartialDelivery({
-          tenantId,
-          instanceId,
-          conversationId,
-          base,
+            unproven: true,
+          });
+          return settled("posted-partial");
+        }
+        if (!attachments.sent) return refused(standDown());
+        // The attachment is the answer the customer got; a failed text send makes it partial.
+        // `stale` is not partial (nothing was attempted after the fence, and it would put `lastError`
+        // back on a conversation /reset cleared), but a file that failed before the fence still counts.
+        const postedOnFiles = postedOutcomeFor({
+          replyPartial: delivered !== "stale" && delivered.failed,
+          attachmentFailed: attachments.failed,
         });
+        if (postedOnFiles === "posted-partial") {
+          await notePartialDelivery({
+            tenantId,
+            instanceId,
+            conversationId,
+            base,
+          });
+        }
+        return settled(postedOnFiles);
       }
-      return postedFiles;
-    }
-
-    // NOTE: The image lands before the text that talks about it, and before the TTS branch.
-    if (await writeCalledOff()) return refuse(standDown());
-    const attachments = await deliverPendingAttachments(
-      client,
-      conversationId,
-      turnState,
-      flow,
-      { tenantId: params.tenantId, base },
-      writeCalledOff,
-      claimBeforeSend,
-    );
-    sentAttachment ||= attachments.sent;
-    if (attachments.lostClaim) return refuse("superseded");
-    // NOTE: Called off mid-batch: report what was delivered, since "stale" would replay a burst whose
-    // attachment the customer already has.
-    if (attachments.calledOff)
-      return attachments.sent ? "posted" : refuse(standDown());
-
-    const delivered = await deliverText(
-      reply,
-      recheck.voiceReply,
-      !replyByOperator,
-    );
-    // NOTE: Another turn holds the claim; the memoized gate means no attachment went out either.
-    if (delivered === "superseded") return refuse("superseded");
-    // NOTE: Nothing landed and a send failed: the one partial shape that throws, since nothing can be
-    // duplicated and a throw is how callers record a turn error. Not when an attachment already went
-    // out, which a re-run would send again.
-    if (
-      delivered !== "stale" &&
-      delivered.failed &&
-      delivered.delivered === 0
-    ) {
-      // NOTE: And only when "nothing landed" is a fact: `unproven` means the reply may be in the
-      // conversation, and a throw hands the row to recovery, which re-runs every tool. The badge
-      // below reports it instead.
-      if (!attachments.sent && !delivered.unproven) {
-        throw new Error(
-          "envio da resposta: nenhum balão foi entregue ao cliente",
-        );
-      }
-    }
-    // NOTE: Zero is the split loop standing down on its first balloon: a stale turn, unless an
-    // attachment already went out (then "stale" would have the next flush send it again).
-    if (delivered === "stale" || delivered.delivered === 0) {
-      // NOTE: An unproven zero is reported, not stood down: the next flush would answer it again.
-      if (delivered !== "stale" && delivered.unproven) {
-        await notePartialDelivery({
-          tenantId,
-          instanceId,
-          conversationId,
-          base,
-          unproven: true,
-        });
-        return "posted-partial";
-      }
-      if (!attachments.sent) return refuse(standDown());
-      // The attachment is the answer the customer got; a failed text send makes it partial.
-      // `stale` is not partial (nothing was attempted after the fence, and it would put `lastError`
-      // back on a conversation /reset cleared), but a file that failed before the fence still counts.
-      const postedOnFiles = postedOutcomeFor({
-        replyPartial: delivered !== "stale" && delivered.failed,
+      deliveredBalloons = delivered.delivered;
+      // An attendance the customer did not fully receive (text or files) does not close, while
+      // the outcome still settles the burst, since a re-run would send the delivered part twice.
+      const posted = postedOutcomeFor({
+        replyPartial: delivered.failed,
         attachmentFailed: attachments.failed,
       });
-      if (postedOnFiles === "posted-partial") {
+      if (posted === "posted-partial") {
         await notePartialDelivery({
           tenantId,
           instanceId,
           conversationId,
           base,
+          // NOTE: Part landed and one send is unaccounted for: a doubt, not a fact.
+          unproven: delivered.unproven,
         });
+        return settled(posted);
       }
-      return postedOnFiles;
-    }
-    deliveredBalloons = delivered.delivered;
-    // An attendance the customer did not fully receive (text or files) does not close, while
-    // the outcome still settles the burst, since a re-run would send the delivered part twice.
-    const posted = postedOutcomeFor({
-      replyPartial: delivered.failed,
-      attachmentFailed: attachments.failed,
-    });
-    if (posted === "posted-partial") {
-      await notePartialDelivery({
+      // NOTE: The reply is out; the resolve is a separate write.
+      if (await writeCalledOff()) return settled("posted");
+      await applyDeferredResolve(client, conversationId, turnState, flow, {
         tenantId,
         instanceId,
-        conversationId,
         base,
-        // NOTE: Part landed and one send is unaccounted for: a doubt, not a fact.
-        unproven: delivered.unproven,
+        observed: recheck.observed,
+        stillWanted: stillWantedFence,
       });
-      return posted;
-    }
-    // NOTE: The reply is out; the resolve is a separate write.
-    if (await writeCalledOff()) return "posted";
-    await applyDeferredResolve(client, conversationId, turnState, flow, {
-      tenantId,
-      instanceId,
-      base,
-      observed: recheck.observed,
-      stillWanted: stillWantedFence,
-    });
-    return "posted";
+      return settled("posted");
+    };
+    const ended = await afterGeneration();
+    // NOTE: Not awaited, and inside the `try`: `undoRefusedTurn` stands down while `isTurnInFlight`
+    // holds, and the `finally` clears it before the queued rollback runs. The call still takes its
+    // place in the `ingest:` queue now, before the durable claim is released.
+    return ended.undo ? rollBack(ended.outcome) : ended.outcome;
   } finally {
     clearTurnInFlight(threadId);
     // NOTE: Before the durable claim is released: the next turn on this thread waits on it, and its
@@ -2799,9 +2813,9 @@ async function runTurnBody(
             plan.ids.length,
           );
         } else if (plan?.reason === "already-gone") {
-          // NOTE: Not a miss: a refusal after the silence ran `refuse`'s own rollback, which races
-          // this one (`return refuse(...)` is not awaited). Reading the outcome, not the order, is
-          // what makes the answer stable.
+          // NOTE: Not a miss: a refusal after the silence ran its own rollback, which races this one
+          // (that rollback is not awaited). Reading the outcome, not the order, is what makes the
+          // answer stable.
           logger.info(
             "turn: the token-silenced turn was already taken back out: conv=%s",
             String(conversationId),

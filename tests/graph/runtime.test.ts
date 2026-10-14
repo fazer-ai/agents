@@ -8947,6 +8947,66 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       ]);
     });
 
+    // NOTE: The same refusal on a contact-inbox thread, the production shape: the graph thread and the
+    // conversation's in-flight key differ, and the durable claim on the graph thread is held until the
+    // `finally` releases it. An awaited rollback reads that claim as another invoke and keeps the reply.
+    // The person takes over inside the model's call, past the gate that runs before it.
+    test("taken-over on a contact-inbox thread: the reply leaves that thread too", async () => {
+      const contactInboxId = 7471;
+      await suDb.conversation.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootConversationId: 93159,
+          contactInboxId,
+          status: "pending",
+          threadId: `${tenantId}:${instanceId}:93159`,
+          lastEventAt: new Date(),
+        },
+      });
+      class TakenOverWhileWriting extends BaseChatModel {
+        _llmType() {
+          return "fake-taken-over-while-writing";
+        }
+        async _generate(): Promise<ChatResult> {
+          await suDb.conversation.updateMany({
+            where: {
+              tenantId,
+              chatwootInstanceId: instanceId,
+              chatwootConversationId: 93159,
+            },
+            data: { status: "open", assigneeType: "User", assigneeId: 3 },
+          });
+          return {
+            generations: [{ text: REPLY, message: new AIMessage(REPLY) }],
+          };
+        }
+      }
+      const checkpointer = new MemorySaver();
+      const sent: Array<[number, string]> = [];
+      const outcome = await runAgentTurn({
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        event: incoming({ conversationId: 93159, contactInboxId }),
+        base: appDb,
+        deps: {
+          makeModel: () => new TakenOverWhileWriting({}),
+          makeClient: makeStubClient(sent),
+          checkpointer,
+        },
+      });
+      expect(outcome).toBe("taken-over");
+      expect(sent).toEqual([]);
+      const channel = await threadOf(
+        checkpointer,
+        contactInboxThreadId(tenantId, instanceId, contactInboxId),
+      );
+      // NOTE: positive control: the customer's message is there, so the read found the thread.
+      expect(channel).toContainEqual(["human", "oi"]);
+      expect(channel.filter(([type]) => type === "ai")).toEqual([]);
+    });
+
     // The row the PROACTIVE rollback answers the other way, and the reason the reactive plan is not
     // the same function. `transfer_to_human` really handed the conversation over from inside the
     // graph and no removal here undoes it, so its record stays — while the closing line, which the
@@ -11151,6 +11211,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         await configure("output", { action: "handoff", handoffMessage: "" });
         await seedConv(7042);
         const log = newLog();
+        const saver = new MemorySaver();
         const outcome = await runAgentTurn({
           tenantId: gTenantId,
           instanceId: gInstanceId,
@@ -11160,7 +11221,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
           deps: {
             makeModel: branchingModel(TRIP),
             makeClient: handoffStub(log),
-            checkpointer: new MemorySaver(),
+            checkpointer: saver,
           },
         });
         // Settled, like a suppression: the operator's policy answered this message, and recovery
@@ -11168,6 +11229,15 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         expect(outcome).toBe("blocked");
         expect(log.sent).toEqual([]);
         expect(log.toggles).toEqual([[7042, "open"]]);
+        // The refused reply leaves the thread: the transfer landed, but the customer read none of it.
+        expect(
+          (
+            await threadChannel(saver, 7042, {
+              tenantId: gTenantId,
+              instanceId: gInstanceId,
+            })
+          ).filter(([type]) => type === "ai"),
+        ).toEqual([]);
         // `route` mode: Chatwoot's own routing, nothing assigned from here.
         expect(log.assigns).toEqual([]);
         // NOTE: The skip hand-over must not add a second note on top of this one.

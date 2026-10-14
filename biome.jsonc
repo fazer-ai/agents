@@ -157,7 +157,6 @@
         "!tests/client/locale-plurals.test.ts",
         "!tests/client/tool-sample-persistence.test.ts",
         "!tests/graph/prepare.test.ts",
-        "!tests/graph/refused-turn-callsites.test.ts",
         "!tests/lib/jsx-comment-tag-sweep.test.ts",
         "!tests/lib/source-text.test.ts",
         "!tests/modules/audit-actions.test.ts",

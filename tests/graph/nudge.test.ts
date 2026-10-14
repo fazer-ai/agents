@@ -23,6 +23,7 @@ import {
   stampedConversationId,
 } from "@/graph/markers";
 import {
+  type ApprovedDocumentDelivery,
   FOLLOWUP_SKIP_SENTINEL,
   isNudgeSilent,
   OPERATOR_EVENT_NOTE_PREFIX,
@@ -530,6 +531,31 @@ async function speechOf(convId: number) {
     where: { conversationId: row.id, proactive: true },
   });
   return { ...row, proactiveTurns };
+}
+
+// What the proactive turn left in a memory thread: its directive and every message after it. A
+// refused turn leaves nothing, and a delivered one leaves its directive and its answer.
+async function turnLeftIn(
+  saver: MemorySaver,
+  graphThreadId: string,
+): Promise<Array<[string, string]>> {
+  const messages =
+    (
+      (
+        await buildThreadStateGraph(saver).getState({
+          configurable: { thread_id: graphThreadId },
+        })
+      ).values as { messages?: BaseMessage[] }
+    ).messages ?? [];
+  const start = messages.findIndex((m) => isNudgeTurn(m));
+  return start === -1
+    ? []
+    : messages
+        .slice(start)
+        .map((m) => [
+          m.getType(),
+          typeof m.content === "string" ? m.content : JSON.stringify(m.content),
+        ]);
 }
 
 describe.skipIf(!dbUp)("runAgentNudge", () => {
@@ -1300,6 +1326,7 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
           return { generations: [{ text: "", message }] };
         }
       }
+      const saver = new MemorySaver();
       const outcome = await runAgentNudge({
         tenantId,
         threadId: `${tenantId}:${instanceId}:${convId}`,
@@ -1314,7 +1341,7 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
         deps: {
           makeModel: () => new TakeoverDuringRelay(),
           makeClient: s.makeClient,
-          checkpointer: new MemorySaver(),
+          checkpointer: saver,
           persistUsage: async () => {},
         },
       });
@@ -1323,6 +1350,14 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
       expect(s.notes.map(([, t]) => t)).toEqual([
         `${OPERATOR_EVENT_NOTE_PREFIX}Entraram 120 de 400.`,
       ]);
+      // `noted` is a refusal here: the relay the model wrote went to nobody, so it leaves the thread
+      // with its directive, or the next turn reads it as said.
+      expect(
+        await turnLeftIn(
+          saver,
+          contactInboxThreadId(tenantId, instanceId, convId + 1000),
+        ),
+      ).toEqual([]);
     });
   }
 
@@ -3996,6 +4031,7 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
       async () => {
         await seedConv(9871, null);
         const s = stub();
+        const saver = new MemorySaver();
         const outcome = await runAgentNudge({
           tenantId,
           threadId: `${tenantId}:${instanceId}:9871`,
@@ -4036,7 +4072,7 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
                     responses: ["Entraram 120 de 400."],
                   })) as never,
             makeClient: s.makeClient,
-            checkpointer: new MemorySaver(),
+            checkpointer: saver,
             persistUsage: async () => {},
           },
         });
@@ -4045,6 +4081,9 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
         expect(s.notes.map(([, t]) => t)).toEqual([
           `${OPERATOR_EVENT_NOTE_PREFIX}Entraram 120 de 400.`,
         ]);
+        expect(
+          await turnLeftIn(saver, `${tenantId}:${instanceId}:9871`),
+        ).toEqual([]);
       },
     );
   });
@@ -7098,6 +7137,310 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     }
     expect(logged).toBe(true);
   });
+  // The ends of the post-generation stretch whose word is a refusal only on that end (`silent`,
+  // `noted`, `noted-window`), so the type cannot tell `refused` from `settled` there and the channel
+  // has to. Each asserts what the thread kept, and flipping that end to `settled` turns it red.
+  describe("a refused end whose word can also settle still takes the turn back", () => {
+    const WRITTEN = "Segue o orçamento em anexo.";
+    // The model's call is a stretch of time, and `during` is what happens inside it.
+    class WritesDuring extends BaseChatModel {
+      constructor(private readonly during: () => Promise<void>) {
+        super({});
+      }
+      _llmType() {
+        return "fake-writes-during";
+      }
+      async _generate(): Promise<ChatResult> {
+        await this.during();
+        return {
+          generations: [{ text: WRITTEN, message: new AIMessage(WRITTEN) }],
+        };
+      }
+    }
+    const approvedDoc = (
+      over: Partial<ApprovedDocumentDelivery> = {},
+    ): ApprovedDocumentDelivery => ({
+      bytes: new ArrayBuffer(4),
+      fileName: "orcamento.pdf",
+      heldNote: "NOTA-PESSOA",
+      windowNote: "NOTA-JANELA",
+      caption: "Segue o PDF.",
+      stillValid: async () => true,
+      revokedNote: "NOTA-REVOGADO",
+      blockedNote: "NOTA-BLOQUEADO",
+      ...over,
+    });
+    const takeOver = (convId: number) =>
+      suDb.conversation.updateMany({
+        where: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootConversationId: convId,
+        },
+        data: { status: "open", assigneeType: "User", assigneeId: 5 },
+      });
+    const handOffVerdict = {
+      enabled: true,
+      provider: "openai",
+      model: GUARD_MODEL,
+      input: { enabled: false },
+      output: {
+        enabled: true,
+        action: "handoff",
+        handoffMessage: "ENCAMINHADO",
+        checks: {
+          toxicity: true,
+          unsafeContent: false,
+          competitorMentions: false,
+          promptAdherence: false,
+        },
+      },
+    };
+    const tripped = JSON.stringify({
+      violated: true,
+      categories: ["toxicity"],
+      rationale: "x",
+    });
+
+    test("a document a person took over while the model wrote is noted, and the line leaves the thread", async () => {
+      await seedConv(47101, null);
+      const s = stub();
+      const saver = new MemorySaver();
+      const outcome = await runAgentNudge({
+        tenantId,
+        threadId: `${tenantId}:${instanceId}:47101`,
+        nudge: { source: "document_approval", kind: "approved" },
+        approvedDocument: approvedDoc(),
+        base: appDb,
+        deps: {
+          makeModel: () =>
+            new WritesDuring(async () => {
+              await takeOver(47101);
+            }),
+          makeClient: s.makeClient,
+          checkpointer: saver,
+          persistUsage: async () => {},
+        },
+      });
+      expect(outcome).toBe("noted");
+      expect(s.messages).toEqual([]);
+      expect(s.notes.map(([, t]) => t)).toEqual(["NOTA-PESSOA"]);
+      expect(
+        await turnLeftIn(saver, `${tenantId}:${instanceId}:47101`),
+      ).toEqual([]);
+    });
+
+    test("a document revoked while the model wrote is noted, and the line leaves the thread", async () => {
+      await seedConv(47102, null);
+      const s = stub();
+      const saver = new MemorySaver();
+      const outcome = await runAgentNudge({
+        tenantId,
+        threadId: `${tenantId}:${instanceId}:47102`,
+        nudge: { source: "document_approval", kind: "approved" },
+        approvedDocument: approvedDoc({ stillValid: async () => false }),
+        base: appDb,
+        deps: {
+          makeModel: () => new WritesDuring(async () => {}),
+          makeClient: s.makeClient,
+          checkpointer: saver,
+          persistUsage: async () => {},
+        },
+      });
+      expect(outcome).toBe("noted");
+      expect(s.messages).toEqual([]);
+      expect(s.notes.map(([, t]) => t)).toEqual(["NOTA-REVOGADO"]);
+      expect(
+        await turnLeftIn(saver, `${tenantId}:${instanceId}:47102`),
+      ).toEqual([]);
+    });
+
+    // The window closes between the last ask and the document's own: `stillValid` is the last wait
+    // before the send, so the clock moves there.
+    test("a document whose window closed at the send is noted, and the line leaves the thread", async () => {
+      await seedConv(47103, null);
+      const s = stub();
+      const saver = new MemorySaver();
+      let late = false;
+      const outcome = await runAgentNudge({
+        tenantId,
+        threadId: `${tenantId}:${instanceId}:47103`,
+        nudge: { source: "document_approval", kind: "approved" },
+        approvedDocument: approvedDoc({
+          stillValid: async () => {
+            late = true;
+            return true;
+          },
+        }),
+        base: appDb,
+        deps: {
+          makeModel: () => new WritesDuring(async () => {}),
+          makeClient: s.makeClient,
+          checkpointer: saver,
+          persistUsage: async () => {},
+          now: () => (late ? new Date(Date.now() + 25 * 3600_000) : new Date()),
+        },
+      });
+      expect(outcome).toBe("noted-window");
+      expect(s.messages).toEqual([]);
+      expect(s.notes.map(([, t]) => t)).toEqual(["NOTA-JANELA"]);
+      expect(
+        await turnLeftIn(saver, `${tenantId}:${instanceId}:47103`),
+      ).toEqual([]);
+    });
+
+    // The live probe answers twice after the model: once for the stretch the model took (still
+    // ours), and again just before the document goes, when a person has it.
+    test("a document a person took between the two live probes is noted, and the line leaves the thread", async () => {
+      await seedConv(47104, null);
+      const s = stub();
+      const saver = new MemorySaver();
+      let generated = false;
+      let probesAfter = 0;
+      (s.client as unknown as Record<string, unknown>).getConversation =
+        async () => {
+          if (generated) probesAfter += 1;
+          return probesAfter >= 2
+            ? {
+                id: 47104,
+                status: "open",
+                meta: { assignee_type: "User", assignee: { id: 5 } },
+              }
+            : { id: 47104, status: "pending", meta: {} };
+        };
+      const outcome = await runAgentNudge({
+        tenantId,
+        threadId: `${tenantId}:${instanceId}:47104`,
+        nudge: { source: "document_approval", kind: "approved" },
+        approvedDocument: approvedDoc(),
+        requireLiveBotOwnership: true,
+        base: appDb,
+        deps: {
+          makeModel: () =>
+            new WritesDuring(async () => {
+              generated = true;
+            }),
+          makeClient: s.makeClient,
+          checkpointer: saver,
+          persistUsage: async () => {},
+        },
+      });
+      expect(probesAfter).toBe(2);
+      expect(outcome).toBe("noted");
+      expect(s.messages).toEqual([]);
+      expect(s.notes.map(([, t]) => t)).toEqual(["NOTA-PESSOA"]);
+      expect(
+        await turnLeftIn(saver, `${tenantId}:${instanceId}:47104`),
+      ).toEqual([]);
+    });
+
+    // The control for the four above: the document that went out keeps the line it rode on.
+    test("a document that went out keeps its line in the thread", async () => {
+      await seedConv(47105, null);
+      const s = stub();
+      const files: string[] = [];
+      (s.client as unknown as Record<string, unknown>).sendFileAttachment =
+        async (_c: number, _b: ArrayBuffer, name: string) => {
+          files.push(name);
+          return { id: 1 };
+        };
+      const saver = new MemorySaver();
+      const outcome = await runAgentNudge({
+        tenantId,
+        threadId: `${tenantId}:${instanceId}:47105`,
+        nudge: { source: "document_approval", kind: "approved" },
+        approvedDocument: approvedDoc(),
+        base: appDb,
+        deps: {
+          makeModel: () => new WritesDuring(async () => {}),
+          makeClient: s.makeClient,
+          checkpointer: saver,
+          persistUsage: async () => {},
+        },
+      });
+      expect(outcome).toBe("messaged");
+      expect(files).toEqual(["orcamento.pdf"]);
+      expect(
+        (await turnLeftIn(saver, `${tenantId}:${instanceId}:47105`)).slice(1),
+      ).toEqual([["ai", WRITTEN]]);
+    });
+
+    test("a judge's transfer that did not land is silent, and the refused line leaves the thread", async () => {
+      await withGuardrails(handOffVerdict, async () => {
+        await seedConv(47106, null);
+        const s = statusClient({ failOn: "open" });
+        const saver = new MemorySaver();
+        const outcome = await runAgentNudge({
+          tenantId,
+          threadId: `${tenantId}:${instanceId}:47106`,
+          nudge: { source: "followup", kind: "inactivity", step: 1 },
+          base: appDb,
+          deps: {
+            makeModel: guardBranch(
+              tripped,
+              new FakeListChatModel({ responses: [WRITTEN] }),
+            ),
+            makeClient: s.makeClient,
+            checkpointer: saver,
+            persistUsage: async () => {},
+          },
+        });
+        expect(outcome).toBe("silent");
+        expect(s.messages).toEqual([]);
+        expect(s.statuses).toEqual([[47106, "open-THREW"]]);
+        expect(
+          await turnLeftIn(saver, `${tenantId}:${instanceId}:47106`),
+        ).toEqual([]);
+      });
+    });
+
+    test("a reminder the judge would hand over under a snoozed person is silent, and leaves the thread", async () => {
+      await withGuardrails(handOffVerdict, async () => {
+        await seedConv(47107, "User");
+        await suDb.conversation.updateMany({
+          where: {
+            tenantId,
+            chatwootInstanceId: instanceId,
+            chatwootConversationId: 47107,
+          },
+          data: { status: "snoozed", assigneeId: 5 },
+        });
+        const s = stub();
+        (s.client as unknown as Record<string, unknown>).getConversation =
+          async () => ({
+            id: 47107,
+            status: "snoozed",
+            meta: { assignee_type: "User", assignee: { id: 5 } },
+            snoozed_until: null,
+          });
+        const saver = new MemorySaver();
+        const outcome = await runAgentNudge({
+          tenantId,
+          threadId: `${tenantId}:${instanceId}:47107`,
+          nudge: { source: "followup", kind: "snoozed", step: 1 },
+          holder: "snoozed-human",
+          requireLiveBotOwnership: true,
+          base: appDb,
+          deps: {
+            makeModel: guardBranch(
+              tripped,
+              new FakeListChatModel({ responses: [WRITTEN] }),
+            ),
+            makeClient: s.makeClient,
+            checkpointer: saver,
+            persistUsage: async () => {},
+          },
+        });
+        expect(outcome).toBe("silent");
+        expect(s.messages).toEqual([]);
+        expect(s.statuses).toEqual([]);
+        expect(
+          await turnLeftIn(saver, `${tenantId}:${instanceId}:47107`),
+        ).toEqual([]);
+      });
+    });
+  });
+
   // NOTE: O prompt é UM texto para os dois caminhos: escrito uma vez pelo operador, usado pelo
   // turno que responde e pelo follow-up que cobra. Uma variável que responde num e some no outro é
   // um buraco: o modelo recebe "A última mensagem chegou ." e o cliente lê o que ele fizer com

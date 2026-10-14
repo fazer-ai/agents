@@ -260,3 +260,61 @@ export async function undoRefusedTurn(params: {
     }
   });
 }
+
+// How a post-generation stretch ended: `undo` says the generated text never reached the customer
+// and has to leave the checkpoint. Built only through `settlement`, never as a literal.
+export interface Settled<O extends string> {
+  readonly outcome: O;
+  readonly undo: boolean;
+}
+
+// The two ways to end a post-generation stretch, typed per path. `RefusalOnly` names the words that
+// can only mean "generated and not delivered" on that path, and `settled` refuses them at compile
+// time, so a refusal that skips the rollback is a type error rather than a quiet residue in history.
+// Words that are a refusal only sometimes (`silent`, `noted`, `empty`) stay legal on both sides,
+// and behavior tests hold those exits.
+export function settlement<O extends string, RefusalOnly extends O>() {
+  return {
+    refused: (outcome: O): Settled<O> => ({ outcome, undo: true }),
+    settled: (outcome: Exclude<O, RefusalOnly>): Settled<O> => ({
+      outcome,
+      undo: false,
+    }),
+  };
+}
+
+// The rollback a refused stretch's single caller runs, shared by the reactive and the proactive
+// path. Best-effort and loud: throwing would turn a correct refusal into a retried turn. The one
+// keep that is a miss (`another-invoke-is-reading`) is a warn, since the history still holds a
+// message the customer never received.
+export async function rollBackRefusedTurn<O extends string>(
+  outcome: O,
+  params: Parameters<typeof undoRefusedTurn>[0] & {
+    logPrefix: "turn" | "agentNudge";
+    conversationId: number;
+  },
+): Promise<O> {
+  const { logPrefix, conversationId, ...undo } = params;
+  const plan = await undoRefusedTurn(undo).catch((err) => {
+    logger.warn(
+      { err, conversationId: String(conversationId) },
+      `${logPrefix}: could not roll back the refused turn`,
+    );
+    return null;
+  });
+  if (plan?.action === "remove") {
+    logger.info(
+      `${logPrefix} rolled back a refused turn: conv=%s outcome=%s messages=%d`,
+      String(conversationId),
+      outcome,
+      plan.ids.length,
+    );
+  } else if (plan?.reason === "another-invoke-is-reading") {
+    logger.warn(
+      `${logPrefix} could not roll back a refused turn, another invoke holds the thread: conv=%s outcome=%s`,
+      String(conversationId),
+      outcome,
+    );
+  }
+  return outcome;
+}

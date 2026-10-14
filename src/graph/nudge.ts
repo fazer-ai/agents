@@ -105,7 +105,12 @@ import {
   buildToolset,
   loadAgentConfig,
 } from "./prepare";
-import { undoRefusedTurn } from "./refused-turn";
+import {
+  rollBackRefusedTurn,
+  type Settled,
+  settlement,
+  undoRefusedTurn,
+} from "./refused-turn";
 import type { RuntimeDeps } from "./runtime";
 import {
   chosenSilence,
@@ -265,6 +270,15 @@ export type RunAgentNudgeOutcome =
   | "over-ceiling"
   | "no-conversation"
   | "no-agent";
+
+// The words that, after the model call, can only mean the generated turn never reached anyone, so
+// `settled` refuses them at compile time. `silent` and `noted` are a refusal only on some ends.
+type NudgeRefusalOnly = "stale" | "agent-unavailable" | "live-unavailable";
+export const nudgeSettlement = settlement<
+  RunAgentNudgeOutcome,
+  NudgeRefusalOnly
+>();
+const { refused, settled } = nudgeSettlement;
 
 // Deterministic, SYSTEM-applied side effects for a nudge (independent of what the agent says): merge
 // label(s) onto the conversation and/or resolve it. Applied on EVERY terminal path — including when
@@ -1129,7 +1143,7 @@ async function runAgentNudgeBody(
   // fail the job, and its retry would run the whole turn and message the customer again.
   const noteApprovedAfterSend = async (
     text: string,
-  ): Promise<RunAgentNudgeOutcome> => {
+  ): Promise<"noted" | "messaged"> => {
     try {
       const outcome = await noteApproved(text, "noted");
       // A refusal (the agent switched off meanwhile) is no retry either: the message went out.
@@ -2500,16 +2514,11 @@ async function runAgentNudgeBody(
       }
     } else if (claimedGraphThread) clearTurnInFlight(graphThreadId);
   }
-  // Every refusal from here on suppresses the send and leaves the generated pair checkpointed,
-  // so it returns through `refuse`, which takes the turn back out. One closure used at every
-  // post-generation refusal, so a refusal that skips it is a visible diff and one the source sweep
-  // fails on (tests/graph/refused-turn-callsites.test.ts). It never decides WHETHER to roll back:
-  // `undoRefusedTurn` reads the channel, so a turn that ran a tool, or whose messages another
-  // writer already took, keeps what it has.
-  const refuse = async (
-    outcome: RunAgentNudgeOutcome,
-  ): Promise<RunAgentNudgeOutcome> => {
-    const plan = await undoRefusedTurn({
+  // The rollback of a refused stretch. It never decides WHETHER to roll back: `undoRefusedTurn`
+  // reads the channel, so a turn that ran a tool, or whose messages another writer already took,
+  // keeps what it has.
+  const rollBack = (outcome: RunAgentNudgeOutcome) =>
+    rollBackRefusedTurn(outcome, {
       // `skip_reply` counts as inert only when the NATIVE one is what got bound. A custom HTTP tool
       // may legitimately carry that name (`toolDefinitionCreateSchema` reserves none), and that one
       // really calls something — removing a turn after it ran is the case `actedOnTheWorld` exists
@@ -2523,35 +2532,9 @@ async function runAgentNudgeBody(
       // released, which is exactly when another replica may start. Null off a contact inbox.
       owner: graphOwner,
       base,
-    }).catch((err) => {
-      // NOTE: best-effort, and loudly. The send was already suppressed, so a failed rollback costs
-      // the next turn a message the customer never saw, which is the defect this exists to close,
-      // and nothing more. Throwing would turn a correct refusal into a retried job.
-      logger.warn(
-        { err, conversationId: String(conversationId) },
-        "agentNudge: could not roll back the refused turn",
-      );
-      return null;
+      logPrefix: "agentNudge",
+      conversationId,
     });
-    if (plan?.action === "remove") {
-      logger.info(
-        "agentNudge rolled back a refused turn: conv=%s outcome=%s messages=%d",
-        String(conversationId),
-        outcome,
-        plan.ids.length,
-      );
-    } else if (plan?.reason === "another-invoke-is-reading") {
-      // NOTE: the one keep that is a MISS rather than a decision about this turn. The history still
-      // holds a message the customer never received, and the next turn will read it. Logged at warn
-      // so the case has a name in the logs instead of looking like a rollback that ran.
-      logger.warn(
-        "agentNudge could not roll back a refused turn, another invoke holds the thread: conv=%s outcome=%s",
-        String(conversationId),
-        outcome,
-      );
-    }
-    return outcome;
-  };
 
   // SILENCE IS NOT A REFUSAL, and it still leaves words behind. A silent turn concluded
   // correctly, but the model may have written the SENTINEL or a narrated "(nada a fazer)" that nobody
@@ -2590,8 +2573,8 @@ async function runAgentNudgeBody(
         plan.ids.length,
       );
     } else if (plan) {
-      // NOTE: Named rather than silent, for the reason `refuse` names its own miss: the history still holds
-      // words nobody received, and the next turn will read them.
+      // NOTE: Named rather than silent, for the reason a refused rollback names its own miss: the
+      // history still holds words nobody received, and the next turn will read them.
       logger.warn(
         "agentNudge could not take a silent turn's words back out: conv=%s reason=%s",
         String(conversationId),
@@ -2600,424 +2583,439 @@ async function runAgentNudgeBody(
     }
   };
 
-  // NOTE: THE BOUNDARY'S REFUSAL IS NOT A SILENT TURN, though both end on an empty assistant
-  // message. Asked of the RESULT rather than of the fence, because the fence can change its mind:
-  // `stillWanted` reads the switch and the mode live, so an agent switched off during the model call
-  // and back on by now answers yes, and this turn would advance the ladder and leave its own refusal
-  // in shared history. Before `drafted`, the first line that treats the empty turn as a result.
-  if (turnWasCalledOff(result.messages)) {
-    // Called off by a PERSON taking the conversation (the fence remembers which read refused), not
-    // by a retirement: an operator's event then goes to that person, as at the other takeover ends.
-    if (operatorEvent && ownershipFence.lost() !== null) {
-      return refuse(await noteOperatorEvent());
-    }
-    return refuse(standDown());
-  }
-
-  // Silence via the explicit sentinel / narrated-emptiness guard (never post that), else strip any
-  // stray sentinel occurrence from a real reply so it can't leak into the customer message.
-  const drafted = proactiveReply(lastAssistantText(result.messages));
-  // An approved document is owed to the customer whatever the agent wrote: a silence there would
-  // keep the PDF the team just released.
-  const silent = drafted.silent && !approved;
-  const reply = drafted.text || (approved ? approved.caption : "");
-
-  // 5. Re-check ownership at post time (a human may have taken over during the model call), for
-  // BOTH the customer message and the post-actions. The live-gated path re-probes Chatwoot (the
-  // pre-invoke GET covers only the window BEFORE the model ran; nothing is posted yet, so failing
-  // closed is free); event nudges read the mirror and downgrade to a private note. A completed
-  // transfer's closing line is deliverable whatever these checks say: it is the last thing the bot
-  // owes, no retry can deliver it (the conversation reads `open`), and "never message over a human"
-  // does not reach the conversation we just handed to one. Every OTHER proactive text is decided here.
-  const handedOff = handoffAnsweredTheTurn(handoffState);
-
-  // NOTE: answers for the GENERATION, which every path pays for, and sits before the ownership probe
-  // because everything below WRITES to the conversation. Six ends below reach `applyPostActions`, and
-  // three post no message (the promised line, a chosen silence, a suppressed reply), so a check among
-  // the SENDS alone would let a retired follow-up relabel and resolve a conversation /reset cleared,
-  // and `followUpHandler` would write its watermark back. Before the probe, so a retired run neither
-  // spends the round trip nor returns the retry `live-unavailable` asks for. The later asks cover
-  // later model calls (the guardrail judge, the screening inside deliverPromisedLine).
-  if (!(await stillWanted())) return refuse(standDown());
-
-  let canMessagePost: boolean;
-  if (handedOff) {
-    canMessagePost = true;
-  } else {
-    const owned = await botStillOwnsIt();
-    // The probe is its own stretch of time, and every end below consumes its answer: the silent
-    // branch, the template, the two notes and the post-actions all write without asking again. The
-    // check above this block answers for the model call, not for this round trip. Above the
-    // `unavailable` return as well, so a retired run reports what it is rather than asking for a
-    // retry it must not get.
-    if (!(await stillWanted())) return refuse(standDown());
-    // Fail closed: nothing has been posted yet, so a probe that could not run costs a retry and
-    // nothing else.
-    if (owned === "unavailable") return refuse("live-unavailable");
-    // NOTE: the live-gated caller asked for certainty and gets an abort; an event nudge downgrades
-    // to a private note instead.
-    if (owned === "not-ours" && params.requireLiveBotOwnership)
-      return refuse("stale");
-    // A person took an operator's event over while the model wrote it: the model's words come back
-    // out of the thread (the customer never got them), and the event reaches the person as it came.
-    if (owned === "not-ours" && operatorEvent) {
-      return refuse(await noteOperatorEvent());
-    }
-    canMessagePost = owned === "ours";
-  }
-
-  // Deterministic post-actions applied by the SYSTEM whenever the step fires and the bot still owns
-  // the conversation — even when the agent stayed silent. Best-effort: a failure here must NOT fail
-  // the job (any customer message already went out → retrying would double-post), so each action is
-  // wrapped + logged. MUST run AFTER any customer message: a message reopens a resolved conversation.
-  // allowResolve=false skips ONLY the resolve action (labels still apply): the noted-window branch
-  // never reached the customer AND ends the sequence, so auto-resolving there would close the
-  // conversation on the back of a message nobody received.
-
-  // The transfer is done and this is the sentence it promised the customer. Its own path,
-  // because the branches below judge the MODEL's proactive text: there is no silence to respect (the
-  // transfer spoke for this turn) and no ownership to protect (we just handed it over). It does
-  // respect the 24h service window.
-  const promised = await deliverPromisedLine();
-  // NOTE: "stale" leaves through its own door, the difference between ending the episode and
-  // continuing it: `followUpHandler` stamps `lastFollowUpAt` on a silent turn AND arms the next step,
-  // so a retired run reporting silence would write its watermark onto the conversation /reset
-  // cleared and re-arm the sequence it ended, and the post-actions would relabel and resolve it. The
-  // transfer itself stands: the tool ran inside the graph and this fence cannot reverse it.
-  if (promised === "stale") return refuse(standDown());
-  if (promised) {
-    if (promised !== "silent") markFollowUp(promised);
-    const applied = await applyPostActions({ canMessage: canMessagePost });
-    // NOTE: nothing reached the customer on a silent end, so a refusal of its post-actions is a
-    // withdrawal and not a silence: the handler would stamp the step and commit it, and the labels
-    // or the resolve it was owed would never run.
-    if (promised === "silent" && applied === "stale") {
-      return refuse(standDown());
-    }
-    // NOTE: the transfer spoke for this turn and carried no file, so the approved document is now the
-    // person's to send, and saying so is the note a held conversation gets.
-    if (approved) return noteApprovedAfterSend(approved.heldNote);
-    return promised;
-  }
-
-  // THE DECLARED SILENCE REACHES HERE TOO, and the ownership probe above does not enforce it:
-  // without `requireLiveBotOwnership` it reads the MIRROR, which `toggleStatus` does not write, and a
-  // late or lost assignment webhook leaves it saying the bot owns a conversation the transfer handed
-  // over, so the proactive text would go out over a declared silence. Blanked rather than returned
-  // on, so the post-actions still fire and `takeBackUndeliveredSilence` removes the unread sentence.
-  const declaredSilence = handoffDeclaredSilence(handoffState);
-  if (declaredSilence && reply) {
-    logger.info(
-      "nudge: the handoff declared silence (conv=%s), so the proactive text is not sent",
-      String(conversationId),
-    );
-  }
-
-  // Agent stayed silent: no message, but the deterministic actions still fire (covers "no reply on
-  // the final follow-up: label + resolve").
-  if (silent || !reply || declaredSilence) {
-    // A SILENCE THAT NAMES A PERSON (./skip-handover.ts): a follow-up that stayed quiet because
-    // the conversation is not one for the agent, or because it needs somebody, hands it to `open`
-    // with a note instead of closing the episode on a stamp nobody reads. Only while the bot still
-    // owns it and no transfer already moved it. The floor for a conversation nobody answered is not
-    // asked here: a follow-up only runs on one our side has spoken in.
-    const chosen =
-      canMessagePost &&
-      !handoffState.completed &&
-      !resolvedThisTurn(result.messages as BaseMessage[])
-        ? chosenSilence(result.messages as BaseMessage[])
-        : null;
-    const handover = chosen ? skipHandoverKind(chosen, true) : null;
-    if (handover && (await stillWanted())) {
-      await applySkipHandover({
-        client,
-        conversationId,
-        kind: handover,
-        detail: chosen?.detail ?? null,
-        handoff: cfg.handoffConfig,
-        instanceId,
-        flow,
-        stillWanted,
-      });
-      // The ladder's own resolve would close the conversation the reason asked a person to see, and
-      // that holds whether or not the status change landed: a failed hand-over leaves it pending,
-      // which is still better than closed with nobody told. Its labels still apply.
-      const applied = await applyPostActions({
-        canMessage: canMessagePost,
-        allowResolve: false,
-      });
-      await takeBackUndeliveredSilence(drafted.wroteText);
-      if (applied === "stale") return refuse(standDown());
-      return "silent";
-    }
-    // Keyed on the TRANSFER, not on the suppression: a conversation the human queue now owns is not
-    // ours to close, even when the closing line never made it out.
-    const applied = await applyPostActions({ canMessage: canMessagePost });
-    await takeBackUndeliveredSilence(drafted.wroteText);
-    // NOTE: the same rule as the promised line's silent end above.
-    if (applied === "stale") return refuse(standDown());
-    return "silent";
-  }
-
-  // NOTE: message the customer ONLY when the bot still owns the conversation AND we were in message
-  // mode; otherwise it becomes a private note (never message over a human). WhatsApp 24h window:
-  // free-form only within it; outside, an approved template (HSM) if configured, else a private note.
-  // Screened BEFORE the last word on either, so both answers are newer than the screening: the judge
-  // is a model round trip with a 15s ceiling, a human who took over meanwhile would have their
-  // conversation resolved by the post-actions, and a window that shut meanwhile turns the send into
-  // one the provider refuses. A completed transfer left through `deliverPromisedLine` and never
-  // reaches this branch.
-  if (canMessagePre && canMessagePost && sendModeNow() === "freeform") {
-    // The one branch whose text the CUSTOMER reads, so the one branch that is screened. A failed
-    // send still throws here: nothing has been done to the conversation that a retry cannot repeat,
-    // so the job should run again rather than swallow the miss.
-    const decision = await screenOutput(reply);
-    const screened = screenedText(decision, reply);
-    const screenedIsOperator =
-      guardrailTripped(decision) && screenedByOperator(decision);
-
-    // NOTE: the recheck covers ONE window, the judge's own model call, between the ownership answered
-    // before generation and the send and post-actions that consume it. Skipped when no judge ran (the
-    // default configuration), which would otherwise pay a live Chatwoot GET per follow-up for a
-    // window of zero length. Asked BEFORE the verdict is acted on: a suppressed reply runs the
-    // post-actions too, so it closes a human-owned thread as hard as a delivered one.
-    if (guardrailRan(decision)) {
-      const owned = await botStillOwnsIt().catch((err) => {
-        // Swallowed on purpose (a throw here re-runs the turn and rewrites whatever the judge just
-        // wrote), but never silently: this is the mirror's own database read failing.
-        logger.warn(
-          { err, conversationId: String(conversationId) },
-          "agentNudge: ownership recheck after moderation could not read",
-        );
-        return "unavailable" as const;
-      });
-      // NOTE: whether abandoning the turn is still free depends on what the judge did: a clean verdict
-      // leaves no trace and the step is worth running again, while a trip or a failed screening has
-      // already written a note or a paging warn that every retry repeats (up to NUDGE_RETRY_LIMIT
-      // copies, two model calls each), so degrading and retrying both cost something and neither is
-      // the default. A failed read is answered the same way. Only the live-gating caller is told:
-      // `live-unavailable` is an outcome OF that gate, and for every other caller a recheck that
-      // cannot say "still ours" is answered by the note branch below.
-      if (
-        owned === "unavailable" &&
-        !guardrailLeftAMark(decision) &&
-        params.requireLiveBotOwnership
-      ) {
-        return refuse("live-unavailable");
+  // The post-generation stretch. Every end says whether the generated pair reached the customer:
+  // `refused` is rolled back by the single caller below, after the claims above were released, and
+  // `settled` does not compile on a word that can only be a refusal (`NudgeRefusalOnly`).
+  const afterGeneration = async (): Promise<Settled<RunAgentNudgeOutcome>> => {
+    // NOTE: THE BOUNDARY'S REFUSAL IS NOT A SILENT TURN, though both end on an empty assistant
+    // message. Asked of the RESULT rather than of the fence, because the fence can change its mind:
+    // `stillWanted` reads the switch and the mode live, so an agent switched off during the model call
+    // and back on by now answers yes, and this turn would advance the ladder and leave its own refusal
+    // in shared history. Before `drafted`, the first line that treats the empty turn as a result.
+    if (turnWasCalledOff(result.messages)) {
+      // Called off by a PERSON taking the conversation (the fence remembers which read refused), not
+      // by a retirement: an operator's event then goes to that person, as at the other takeover ends.
+      if (operatorEvent && ownershipFence.lost() !== null) {
+        return refused(await noteOperatorEvent());
       }
-      // A KNOWN takeover ends the episode either way: that outcome does not retry, so it costs no
-      // repetition — and "the human owns it" is a different fact from "we could not ask".
+      return refused(standDown());
+    }
+
+    // Silence via the explicit sentinel / narrated-emptiness guard (never post that), else strip any
+    // stray sentinel occurrence from a real reply so it can't leak into the customer message.
+    const drafted = proactiveReply(lastAssistantText(result.messages));
+    // An approved document is owed to the customer whatever the agent wrote: a silence there would
+    // keep the PDF the team just released.
+    const silent = drafted.silent && !approved;
+    const reply = drafted.text || (approved ? approved.caption : "");
+
+    // 5. Re-check ownership at post time (a human may have taken over during the model call), for
+    // BOTH the customer message and the post-actions. The live-gated path re-probes Chatwoot (the
+    // pre-invoke GET covers only the window BEFORE the model ran; nothing is posted yet, so failing
+    // closed is free); event nudges read the mirror and downgrade to a private note. A completed
+    // transfer's closing line is deliverable whatever these checks say: it is the last thing the bot
+    // owes, no retry can deliver it (the conversation reads `open`), and "never message over a human"
+    // does not reach the conversation we just handed to one. Every OTHER proactive text is decided here.
+    const handedOff = handoffAnsweredTheTurn(handoffState);
+
+    // NOTE: answers for the GENERATION, which every path pays for, and sits before the ownership probe
+    // because everything below WRITES to the conversation. Six ends below reach `applyPostActions`, and
+    // three post no message (the promised line, a chosen silence, a suppressed reply), so a check among
+    // the SENDS alone would let a retired follow-up relabel and resolve a conversation /reset cleared,
+    // and `followUpHandler` would write its watermark back. Before the probe, so a retired run neither
+    // spends the round trip nor returns the retry `live-unavailable` asks for. The later asks cover
+    // later model calls (the guardrail judge, the screening inside deliverPromisedLine).
+    if (!(await stillWanted())) return refused(standDown());
+
+    let canMessagePost: boolean;
+    if (handedOff) {
+      canMessagePost = true;
+    } else {
+      const owned = await botStillOwnsIt();
+      // The probe is its own stretch of time, and every end below consumes its answer: the silent
+      // branch, the template, the two notes and the post-actions all write without asking again. The
+      // check above this block answers for the model call, not for this round trip. Above the
+      // `unavailable` return as well, so a retired run reports what it is rather than asking for a
+      // retry it must not get.
+      if (!(await stillWanted())) return refused(standDown());
+      // Fail closed: nothing has been posted yet, so a probe that could not run costs a retry and
+      // nothing else.
+      if (owned === "unavailable") return refused("live-unavailable");
+      // NOTE: the live-gated caller asked for certainty and gets an abort; an event nudge downgrades
+      // to a private note instead.
       if (owned === "not-ours" && params.requireLiveBotOwnership)
-        return refuse("stale");
-      // A person took an operator's event over during the judge's call: same end as the probe above.
+        return refused("stale");
+      // A person took an operator's event over while the model wrote it: the model's words come back
+      // out of the thread (the customer never got them), and the event reaches the person as it came.
       if (owned === "not-ours" && operatorEvent) {
-        return refuse(await noteOperatorEvent());
+        return refused(await noteOperatorEvent());
       }
       canMessagePost = owned === "ours";
     }
 
-    // NOTE: Asked again over the same stretch the ownership and the window are re-asked over: the judge's
-    // model call. Nothing has reached the customer yet, so aborting here costs nothing.
-    //
-    // ABOVE the suppression branch, for the reason the check outside this block sits above the silent
-    // one: suppression posts no message but still fires the post-actions, so a check placed after it
-    // guards only the sends and lets the judge's stretch of time reach the labels and the resolve.
-    if (!(await stillWanted())) return refuse(standDown());
-    // NOTE: a follow-up the judge refused with `handoff` goes to the team: the refused text is not
-    // sent, and the ladder's resolve falls with the transfer as it does for the tool's. Only while
-    // the bot still owns the conversation, the answer every send here waits for: a person already on
-    // it needs no transfer.
-    // NOTE: never a transfer under the snoozed holder: the conversation is a person's, and handing it to
-    // the team would take it from them. The judge refused the text, so the reminder is not sent, and
-    // the step ends as a silent one does.
-    if (decision.kind === "handed-off" && snoozedHolder) {
+    // Deterministic post-actions applied by the SYSTEM whenever the step fires and the bot still owns
+    // the conversation — even when the agent stayed silent. Best-effort: a failure here must NOT fail
+    // the job (any customer message already went out → retrying would double-post), so each action is
+    // wrapped + logged. MUST run AFTER any customer message: a message reopens a resolved conversation.
+    // allowResolve=false skips ONLY the resolve action (labels still apply): the noted-window branch
+    // never reached the customer AND ends the sequence, so auto-resolving there would close the
+    // conversation on the back of a message nobody received.
+
+    // The transfer is done and this is the sentence it promised the customer. Its own path,
+    // because the branches below judge the MODEL's proactive text: there is no silence to respect (the
+    // transfer spoke for this turn) and no ownership to protect (we just handed it over). It does
+    // respect the 24h service window.
+    const promised = await deliverPromisedLine();
+    // NOTE: "stale" leaves through its own door, the difference between ending the episode and
+    // continuing it: `followUpHandler` stamps `lastFollowUpAt` on a silent turn AND arms the next step,
+    // so a retired run reporting silence would write its watermark onto the conversation /reset
+    // cleared and re-arm the sequence it ended, and the post-actions would relabel and resolve it. The
+    // transfer itself stands: the tool ran inside the graph and this fence cannot reverse it.
+    if (promised === "stale") return refused(standDown());
+    if (promised) {
+      if (promised !== "silent") markFollowUp(promised);
       const applied = await applyPostActions({ canMessage: canMessagePost });
-      if (applied === "stale") return refuse(standDown());
-      return refuse("silent");
+      // NOTE: nothing reached the customer on a silent end, so a refusal of its post-actions is a
+      // withdrawal and not a silence: the handler would stamp the step and commit it, and the labels
+      // or the resolve it was owed would never run.
+      if (promised === "silent" && applied === "stale") {
+        return refused(standDown());
+      }
+      // NOTE: the transfer spoke for this turn and carried no file, so the approved document is now the
+      // person's to send, and saying so is the note a held conversation gets.
+      if (approved)
+        return settled(await noteApprovedAfterSend(approved.heldNote));
+      return settled(promised);
     }
-    if (decision.kind === "handed-off" && canMessagePost) {
-      const handed = await applyGuardrailHandoff({
-        client,
-        conversationId,
-        instanceId,
-        handoff: cfg.handoffConfig,
-        direction: "output",
-        flow,
-        stillWanted,
-      });
-      handoffState.completed = handed;
-      // The transfer is one or two requests, and the send below is still ahead.
-      if (!(await stillWanted())) return refuse(standDown());
-      // A transfer that did not land sends no line promising a person, and the ladder's resolve
-      // stays off all the same: the policy said this case needs one.
-      // Through `refuse`, because the refused reply is already in the thread: left there, the next
-      // turn on this still-bot-owned conversation would read it as said.
-      if (!handed) {
+
+    // THE DECLARED SILENCE REACHES HERE TOO, and the ownership probe above does not enforce it:
+    // without `requireLiveBotOwnership` it reads the MIRROR, which `toggleStatus` does not write, and a
+    // late or lost assignment webhook leaves it saying the bot owns a conversation the transfer handed
+    // over, so the proactive text would go out over a declared silence. Blanked rather than returned
+    // on, so the post-actions still fire and `takeBackUndeliveredSilence` removes the unread sentence.
+    const declaredSilence = handoffDeclaredSilence(handoffState);
+    if (declaredSilence && reply) {
+      logger.info(
+        "nudge: the handoff declared silence (conv=%s), so the proactive text is not sent",
+        String(conversationId),
+      );
+    }
+
+    // Agent stayed silent: no message, but the deterministic actions still fire (covers "no reply on
+    // the final follow-up: label + resolve").
+    if (silent || !reply || declaredSilence) {
+      // A SILENCE THAT NAMES A PERSON (./skip-handover.ts): a follow-up that stayed quiet because
+      // the conversation is not one for the agent, or because it needs somebody, hands it to `open`
+      // with a note instead of closing the episode on a stamp nobody reads. Only while the bot still
+      // owns it and no transfer already moved it. The floor for a conversation nobody answered is not
+      // asked here: a follow-up only runs on one our side has spoken in.
+      const chosen =
+        canMessagePost &&
+        !handoffState.completed &&
+        !resolvedThisTurn(result.messages as BaseMessage[])
+          ? chosenSilence(result.messages as BaseMessage[])
+          : null;
+      const handover = chosen ? skipHandoverKind(chosen, true) : null;
+      if (handover && (await stillWanted())) {
+        await applySkipHandover({
+          client,
+          conversationId,
+          kind: handover,
+          detail: chosen?.detail ?? null,
+          handoff: cfg.handoffConfig,
+          instanceId,
+          flow,
+          stillWanted,
+        });
+        // The ladder's own resolve would close the conversation the reason asked a person to see, and
+        // that holds whether or not the status change landed: a failed hand-over leaves it pending,
+        // which is still better than closed with nobody told. Its labels still apply.
         const applied = await applyPostActions({
           canMessage: canMessagePost,
           allowResolve: false,
         });
-        // NOTE: the same rule as every other silent end.
-        if (applied === "stale") return refuse(standDown());
-        return refuse("silent");
+        await takeBackUndeliveredSilence(drafted.wroteText);
+        if (applied === "stale") return refused(standDown());
+        return settled("silent");
       }
-      // The window closed during the judge's call or the transfer. The ordinary template below says
-      // nothing about a transfer, so it is not sent in the line's place: the operator gets the line
-      // as a note, which is what `deliverPromisedLine` does for the tool's own transfer.
-      if (screened !== null && sendModeNow() !== "freeform") {
-        delivered = true;
-        await client.sendPrivateNote(
-          conversationId,
-          `${OUTSIDE_WINDOW_NOTE_PREFIX}${screenedIsOperator ? screened : literalForChatwoot(screened)}`,
-        );
-        // The transfer carried no file, so the approved document is the person's to send, said
-        // beside the line as on the in-window transfer.
-        if (approved) {
-          delivered = true;
-          await client.sendPrivateNote(conversationId, approved.heldNote);
-        }
-        markFollowUp("noted-window");
-        await applyPostActions({
-          canMessage: canMessagePost,
-          allowResolve: false,
-        });
-        return "noted-window";
-      }
-    }
-    if (screened === null) {
+      // Keyed on the TRANSFER, not on the suppression: a conversation the human queue now owns is not
+      // ours to close, even when the closing line never made it out.
       const applied = await applyPostActions({ canMessage: canMessagePost });
-      // NOTE: the same rule as every other silent end.
-      if (applied === "stale") return refuse(standDown());
-      return "silent";
+      await takeBackUndeliveredSilence(drafted.wroteText);
+      // NOTE: the same rule as the promised line's silent end above.
+      if (applied === "stale") return refused(standDown());
+      return settled("silent");
     }
-    // The window is asked again for the same reason the ownership is, and about the same stretch of
-    // time: the judge's model call. Both were read before it and are spent here. A mode that has
-    // gone stale sends a free-form message the provider now refuses, and this is the last point
-    // where the reply can still fall through to the template/note branch below instead of being
-    // lost to that rejection — on the handoff path, permanently.
-    if (canMessagePost && sendModeNow() === "freeform") {
-      // A transfer the judge made carries its line and no file: the conversation is a person's now,
-      // so the approved document is theirs to send, as after the agent's own transfer. Any other
-      // trip drops the file as well, as a trip drops every attachment of a turn.
-      const attach =
-        approved && !handoffState.completed && !guardrailTripped(decision)
-          ? approved
-          : null;
-      // NOTE: the live ownership probe waits on Chatwoot, so the revocation is read after it, and the
-      // ask after both: a document revoked while the probe was pending is not sent, and nothing is
-      // awaited between the last of these and the send.
-      if (attach) {
-        const owned = await botStillOwnsIt();
-        const valid = await attach.stillValid();
-        if (!(await stillWanted())) return refuse(standDown());
-        if (owned === "unavailable") return refuse("live-unavailable");
-        if (owned === "not-ours") {
-          return refuse(await noteApproved(attach.heldNote, "noted"));
+
+    // NOTE: message the customer ONLY when the bot still owns the conversation AND we were in message
+    // mode; otherwise it becomes a private note (never message over a human). WhatsApp 24h window:
+    // free-form only within it; outside, an approved template (HSM) if configured, else a private note.
+    // Screened BEFORE the last word on either, so both answers are newer than the screening: the judge
+    // is a model round trip with a 15s ceiling, a human who took over meanwhile would have their
+    // conversation resolved by the post-actions, and a window that shut meanwhile turns the send into
+    // one the provider refuses. A completed transfer left through `deliverPromisedLine` and never
+    // reaches this branch.
+    if (canMessagePre && canMessagePost && sendModeNow() === "freeform") {
+      // The one branch whose text the CUSTOMER reads, so the one branch that is screened. A failed
+      // send still throws here: nothing has been done to the conversation that a retry cannot repeat,
+      // so the job should run again rather than swallow the miss.
+      const decision = await screenOutput(reply);
+      const screened = screenedText(decision, reply);
+      const screenedIsOperator =
+        guardrailTripped(decision) && screenedByOperator(decision);
+
+      // NOTE: the recheck covers ONE window, the judge's own model call, between the ownership answered
+      // before generation and the send and post-actions that consume it. Skipped when no judge ran (the
+      // default configuration), which would otherwise pay a live Chatwoot GET per follow-up for a
+      // window of zero length. Asked BEFORE the verdict is acted on: a suppressed reply runs the
+      // post-actions too, so it closes a human-owned thread as hard as a delivered one.
+      if (guardrailRan(decision)) {
+        const owned = await botStillOwnsIt().catch((err) => {
+          // Swallowed on purpose (a throw here re-runs the turn and rewrites whatever the judge just
+          // wrote), but never silently: this is the mirror's own database read failing.
+          logger.warn(
+            { err, conversationId: String(conversationId) },
+            "agentNudge: ownership recheck after moderation could not read",
+          );
+          return "unavailable" as const;
+        });
+        // NOTE: whether abandoning the turn is still free depends on what the judge did: a clean verdict
+        // leaves no trace and the step is worth running again, while a trip or a failed screening has
+        // already written a note or a paging warn that every retry repeats (up to NUDGE_RETRY_LIMIT
+        // copies, two model calls each), so degrading and retrying both cost something and neither is
+        // the default. A failed read is answered the same way. Only the live-gating caller is told:
+        // `live-unavailable` is an outcome OF that gate, and for every other caller a recheck that
+        // cannot say "still ours" is answered by the note branch below.
+        if (
+          owned === "unavailable" &&
+          !guardrailLeftAMark(decision) &&
+          params.requireLiveBotOwnership
+        ) {
+          return refused("live-unavailable");
         }
-        if (!valid) {
-          return refuse(await noteApproved(attach.revokedNote, "noted"));
+        // A KNOWN takeover ends the episode either way: that outcome does not retry, so it costs no
+        // repetition — and "the human owns it" is a different fact from "we could not ask".
+        if (owned === "not-ours" && params.requireLiveBotOwnership)
+          return refused("stale");
+        // A person took an operator's event over during the judge's call: same end as the probe above.
+        if (owned === "not-ours" && operatorEvent) {
+          return refused(await noteOperatorEvent());
         }
-        if (sendModeNow() !== "freeform") {
-          return refuse(await noteApproved(attach.windowNote, "noted-window"));
+        canMessagePost = owned === "ours";
+      }
+
+      // NOTE: Asked again over the same stretch the ownership and the window are re-asked over: the judge's
+      // model call. Nothing has reached the customer yet, so aborting here costs nothing.
+      //
+      // ABOVE the suppression branch, for the reason the check outside this block sits above the silent
+      // one: suppression posts no message but still fires the post-actions, so a check placed after it
+      // guards only the sends and lets the judge's stretch of time reach the labels and the resolve.
+      if (!(await stillWanted())) return refused(standDown());
+      // NOTE: a follow-up the judge refused with `handoff` goes to the team: the refused text is not
+      // sent, and the ladder's resolve falls with the transfer as it does for the tool's. Only while
+      // the bot still owns the conversation, the answer every send here waits for: a person already on
+      // it needs no transfer.
+      // NOTE: never a transfer under the snoozed holder: the conversation is a person's, and handing it to
+      // the team would take it from them. The judge refused the text, so the reminder is not sent, and
+      // the step ends as a silent one does.
+      if (decision.kind === "handed-off" && snoozedHolder) {
+        const applied = await applyPostActions({ canMessage: canMessagePost });
+        if (applied === "stale") return refused(standDown());
+        return refused("silent");
+      }
+      if (decision.kind === "handed-off" && canMessagePost) {
+        const handed = await applyGuardrailHandoff({
+          client,
+          conversationId,
+          instanceId,
+          handoff: cfg.handoffConfig,
+          direction: "output",
+          flow,
+          stillWanted,
+        });
+        handoffState.completed = handed;
+        // The transfer is one or two requests, and the send below is still ahead.
+        if (!(await stillWanted())) return refused(standDown());
+        // A transfer that did not land sends no line promising a person, and the ladder's resolve
+        // stays off all the same: the policy said this case needs one.
+        // Refused, because the refused reply is already in the thread: left there, the next turn on
+        // this still-bot-owned conversation would read it as said.
+        if (!handed) {
+          const applied = await applyPostActions({
+            canMessage: canMessagePost,
+            allowResolve: false,
+          });
+          // NOTE: the same rule as every other silent end.
+          if (applied === "stale") return refused(standDown());
+          return refused("silent");
+        }
+        // The window closed during the judge's call or the transfer. The ordinary template below says
+        // nothing about a transfer, so it is not sent in the line's place: the operator gets the line
+        // as a note, which is what `deliverPromisedLine` does for the tool's own transfer.
+        if (screened !== null && sendModeNow() !== "freeform") {
+          delivered = true;
+          await client.sendPrivateNote(
+            conversationId,
+            `${OUTSIDE_WINDOW_NOTE_PREFIX}${screenedIsOperator ? screened : literalForChatwoot(screened)}`,
+          );
+          // The transfer carried no file, so the approved document is the person's to send, said
+          // beside the line as on the in-window transfer.
+          if (approved) {
+            delivered = true;
+            await client.sendPrivateNote(conversationId, approved.heldNote);
+          }
+          markFollowUp("noted-window");
+          await applyPostActions({
+            canMessage: canMessagePost,
+            allowResolve: false,
+          });
+          return settled("noted-window");
         }
       }
-      const signedReply = sign(screened, !screenedIsOperator);
-      delivered = true;
-      keepSentId(
-        await (attach
-          ? client.sendFileAttachment(
-              conversationId,
-              attach.bytes,
-              attach.fileName,
-              "application/pdf",
-              { caption: signedReply },
-            )
-          : client.sendMessage(conversationId, signedReply)),
+      if (screened === null) {
+        const applied = await applyPostActions({ canMessage: canMessagePost });
+        // NOTE: the same rule as every other silent end.
+        if (applied === "stale") return refused(standDown());
+        return settled("silent");
+      }
+      // The window is asked again for the same reason the ownership is, and about the same stretch of
+      // time: the judge's model call. Both were read before it and are spent here. A mode that has
+      // gone stale sends a free-form message the provider now refuses, and this is the last point
+      // where the reply can still fall through to the template/note branch below instead of being
+      // lost to that rejection — on the handoff path, permanently.
+      if (canMessagePost && sendModeNow() === "freeform") {
+        // A transfer the judge made carries its line and no file: the conversation is a person's now,
+        // so the approved document is theirs to send, as after the agent's own transfer. Any other
+        // trip drops the file as well, as a trip drops every attachment of a turn.
+        const attach =
+          approved && !handoffState.completed && !guardrailTripped(decision)
+            ? approved
+            : null;
+        // NOTE: the live ownership probe waits on Chatwoot, so the revocation is read after it, and the
+        // ask after both: a document revoked while the probe was pending is not sent, and nothing is
+        // awaited between the last of these and the send.
+        if (attach) {
+          const owned = await botStillOwnsIt();
+          const valid = await attach.stillValid();
+          if (!(await stillWanted())) return refused(standDown());
+          if (owned === "unavailable") return refused("live-unavailable");
+          if (owned === "not-ours") {
+            return refused(await noteApproved(attach.heldNote, "noted"));
+          }
+          if (!valid) {
+            return refused(await noteApproved(attach.revokedNote, "noted"));
+          }
+          if (sendModeNow() !== "freeform") {
+            return refused(
+              await noteApproved(attach.windowNote, "noted-window"),
+            );
+          }
+        }
+        const signedReply = sign(screened, !screenedIsOperator);
+        delivered = true;
+        keepSentId(
+          await (attach
+            ? client.sendFileAttachment(
+                conversationId,
+                attach.bytes,
+                attach.fileName,
+                "application/pdf",
+                { caption: signedReply },
+              )
+            : client.sendMessage(conversationId, signedReply)),
+        );
+        if (attach) attach.onAttached?.();
+        await recordProactiveSpeech();
+        logger.info(
+          "agentNudge messaged: conv=%s source=%s",
+          String(conversationId),
+          params.nudge.source,
+        );
+        // NOTE: a silence the caption stood in for is a sentence nobody read; it leaves the thread,
+        // whether the caption went with the PDF or the guardrail replaced it.
+        if (approved && drafted.silent) {
+          await takeBackUndeliveredSilence(drafted.wroteText);
+        }
+        markFollowUp("messaged");
+        await applyPostActions({ canMessage: canMessagePost });
+        if (approved && !attach) {
+          return settled(
+            await noteApprovedAfterSend(
+              handoffState.completed ? approved.heldNote : approved.blockedNote,
+            ),
+          );
+        }
+        return settled("messaged");
+      }
+      // A human arrived while the judge was reading, or the window closed while it did. Everything
+      // below already knows what to do with either: `canMessagePost` carries the first, and the
+      // second is answered by asking again.
+    }
+
+    // NOTE: refused, because the agent's reply is in the thread and was never sent: left there, the
+    // next turn would read "segue em anexo" as said.
+    if (approved) {
+      return refused(
+        await noteApproved(
+          canMessagePre && canMessagePost
+            ? approved.windowNote
+            : approved.heldNote,
+          canMessagePre && canMessagePost ? "noted-window" : "noted",
+        ),
       );
-      if (attach) attach.onAttached?.();
-      await recordProactiveSpeech();
+    }
+    if (canMessagePre && canMessagePost) {
+      if (sendModeNow() === "template") {
+        const payload = buildTemplatePayload(
+          cfg.serviceWindowConfig,
+          cfg.contactName,
+        );
+        if (payload) {
+          delivered = true;
+          keepSentId(await client.sendTemplate(conversationId, payload));
+          await recordProactiveSpeech();
+          logger.info(
+            "agentNudge templated (outside 24h window): conv=%s source=%s template=%s",
+            String(conversationId),
+            params.nudge.source,
+            payload.name,
+          );
+          markFollowUp("templated");
+          await applyPostActions({ canMessage: canMessagePost });
+          return settled("templated");
+        }
+      }
+      // NOTE: outside the window with no usable template → leave the intended message as an internal
+      // note, EXPLAINED (pt-BR, same register as the test-mode/out-of-hours notices), since an
+      // unexplained note reads as a bug to the operator.
+      delivered = true;
+      await client.sendPrivateNote(
+        conversationId,
+        `${OUTSIDE_WINDOW_NOTE_PREFIX}${literalForChatwoot(reply)}`,
+      );
       logger.info(
-        "agentNudge messaged: conv=%s source=%s",
+        "agentNudge noted (outside 24h window, no template): conv=%s source=%s",
         String(conversationId),
         params.nudge.source,
       );
-      // NOTE: a silence the caption stood in for is a sentence nobody read; it leaves the thread,
-      // whether the caption went with the PDF or the guardrail replaced it.
-      if (approved && drafted.silent) {
-        await takeBackUndeliveredSilence(drafted.wroteText);
-      }
-      markFollowUp("messaged");
-      await applyPostActions({ canMessage: canMessagePost });
-      if (approved && !attach) {
-        return noteApprovedAfterSend(
-          handoffState.completed ? approved.heldNote : approved.blockedNote,
-        );
-      }
-      return "messaged";
+      markFollowUp("noted-window");
+      await applyPostActions({
+        canMessage: canMessagePost,
+        allowResolve: false,
+      });
+      return settled("noted-window");
     }
-    // A human arrived while the judge was reading, or the window closed while it did. Everything
-    // below already knows what to do with either: `canMessagePost` carries the first, and the
-    // second is answered by asking again.
-  }
-
-  // NOTE: through `refuse`, because the agent's reply is in the thread and was never sent: left
-  // there, the next turn would read "segue em anexo" as said.
-  if (approved) {
-    return refuse(
-      await noteApproved(
-        canMessagePre && canMessagePost
-          ? approved.windowNote
-          : approved.heldNote,
-        canMessagePre && canMessagePost ? "noted-window" : "noted",
-      ),
-    );
-  }
-  if (canMessagePre && canMessagePost) {
-    if (sendModeNow() === "template") {
-      const payload = buildTemplatePayload(
-        cfg.serviceWindowConfig,
-        cfg.contactName,
-      );
-      if (payload) {
-        delivered = true;
-        keepSentId(await client.sendTemplate(conversationId, payload));
-        await recordProactiveSpeech();
-        logger.info(
-          "agentNudge templated (outside 24h window): conv=%s source=%s template=%s",
-          String(conversationId),
-          params.nudge.source,
-          payload.name,
-        );
-        markFollowUp("templated");
-        await applyPostActions({ canMessage: canMessagePost });
-        return "templated";
-      }
-    }
-    // NOTE: outside the window with no usable template → leave the intended message as an internal
-    // note, EXPLAINED (pt-BR, same register as the test-mode/out-of-hours notices), since an
-    // unexplained note reads as a bug to the operator.
     delivered = true;
-    await client.sendPrivateNote(
-      conversationId,
-      `${OUTSIDE_WINDOW_NOTE_PREFIX}${literalForChatwoot(reply)}`,
-    );
+    await client.sendPrivateNote(conversationId, literalForChatwoot(reply));
     logger.info(
-      "agentNudge noted (outside 24h window, no template): conv=%s source=%s",
+      "agentNudge noted: conv=%s source=%s",
       String(conversationId),
       params.nudge.source,
     );
-    markFollowUp("noted-window");
-    await applyPostActions({ canMessage: canMessagePost, allowResolve: false });
-    return "noted-window";
-  }
-  delivered = true;
-  await client.sendPrivateNote(conversationId, literalForChatwoot(reply));
-  logger.info(
-    "agentNudge noted: conv=%s source=%s",
-    String(conversationId),
-    params.nudge.source,
-  );
-  markFollowUp("noted");
-  await applyPostActions({ canMessage: canMessagePost });
-  return "noted";
+    markFollowUp("noted");
+    await applyPostActions({ canMessage: canMessagePost });
+    return settled("noted");
+  };
+  const ended = await afterGeneration();
+  return ended.undo ? rollBack(ended.outcome) : ended.outcome;
 }

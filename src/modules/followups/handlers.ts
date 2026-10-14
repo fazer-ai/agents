@@ -1096,6 +1096,9 @@ export async function followUpHandler(
       return { outcome: "done" };
     }
     if (await jobRetired(job, base)) return { outcome: "done" };
+    // NOTE: the attempt may have left the mirror's claim saying `open`, which only a retry reconciles,
+    // so the marker is written even past the run's deadline.
+    run?.commit();
     return {
       outcome: "reschedule",
       runAt: new Date(

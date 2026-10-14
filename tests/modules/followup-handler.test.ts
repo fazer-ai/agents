@@ -1771,6 +1771,35 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     expect(s.notes.map(([c]) => c)).toEqual([1717]);
   });
 
+  // The attempt may leave the mirror's claim saying `open`, which only the retry reconciles: its
+  // reschedule is committed, so a run past its deadline still writes the marker.
+  test("a hand-over retry is committed so a late run keeps its marker", async () => {
+    await seedConversation(1759, due());
+    const s = stubClient({
+      page: [replyRow(17591, { refused: true })],
+      toggleFails: { on: true },
+    });
+    let committed = false;
+    const out = await followUpHandler(
+      jobFor(1759),
+      appDb,
+      {
+        makeModel: fakeModel,
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+      {
+        signal: new AbortController().signal,
+        commit: () => {
+          committed = true;
+        },
+      },
+    );
+    expect(out).toMatchObject({ payload: { handoverRetry: true } });
+    expect(committed).toBe(true);
+  });
+
   // A refused toggle leaves the mirror's claim saying `open`; the retry runs past the claim's life,
   // reconciles the mirror from Chatwoot and hands over, instead of ending on the stale `open`.
   test("a hand-over whose toggle failed is retried after the mirror is reconciled", async () => {

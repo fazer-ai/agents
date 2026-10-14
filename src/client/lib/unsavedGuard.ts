@@ -163,6 +163,20 @@ type BackBlocker = () => void;
 
 const blockers: BackBlocker[] = [];
 let armed = false;
+// Set while the Back that pops our own leftover sentinel (`disarm`) has not landed yet. That Back is
+// asynchronous, so another guard can arm in between: a modal that closes on save while the page
+// behind it turns dirty (an inline "New credential" selected by its save). The listener stays
+// attached until the cleanup pop arrives, so it is recognized as ours and never reaches a blocker as
+// a user's Back.
+let cleanupPending = false;
+let listening = false;
+
+function listen(on: boolean) {
+  if (on === listening) return;
+  listening = on;
+  if (on) window.addEventListener("popstate", onPopState);
+  else window.removeEventListener("popstate", onPopState);
+}
 
 function sentinelState(): unknown {
   // Preserve react-router's history state (idx/key/usr) and just add our marker,
@@ -178,6 +192,14 @@ function hasSentinel(): boolean {
 }
 
 function onPopState() {
+  if (cleanupPending) {
+    // Our own cleanup pop, not the user's Back. A guard that armed while it was on the way pushed no
+    // sentinel (`arm` waits for this pop), so it goes on top now.
+    cleanupPending = false;
+    if (blockers.length > 0) window.history.pushState(sentinelState(), "");
+    else listen(false);
+    return;
+  }
   if (blockers.length === 0) return;
   // The user pressed Back, consuming our sentinel (the URL is unchanged because
   // the sentinel was pushed for the same location). Re-arm immediately so the
@@ -191,20 +213,27 @@ function onPopState() {
 function arm() {
   if (armed) return;
   armed = true;
-  window.history.pushState(sentinelState(), "");
-  window.addEventListener("popstate", onPopState);
+  listen(true);
+  // With a cleanup pop still on the way, a sentinel pushed now would be the entry that pop leaves
+  // from; the pop's own handling pushes the sentinel once it lands.
+  if (!cleanupPending) window.history.pushState(sentinelState(), "");
 }
 
 function disarm() {
   if (!armed) return;
   armed = false;
-  // Detach BEFORE popping the sentinel: the back() below fires a popstate for a
-  // same-URL entry that is our own cleanup, not a user Back, so the listener
-  // must already be gone when it arrives (no flag needed).
-  window.removeEventListener("popstate", onPopState);
-  // Pop the leftover sentinel (if still on top) so the next Back is not wasted
-  // on a dead same-URL entry.
-  if (hasSentinel()) window.history.back();
+  // Armed and disarmed again before the earlier cleanup pop landed: that pop already takes the
+  // sentinel away, and a second back() would leave the page.
+  if (cleanupPending) return;
+  // Pop the leftover sentinel (if still on top) so the next Back is not wasted on a dead same-URL
+  // entry. The back() is asynchronous and its popstate is our own cleanup, not a user Back: the
+  // listener stays attached to recognize it, because a guard may arm before it arrives.
+  if (hasSentinel()) {
+    cleanupPending = true;
+    window.history.back();
+  } else {
+    listen(false);
+  }
 }
 
 // Register a Back-button blocker. While at least one is registered, the Back
@@ -232,8 +261,9 @@ export function pushBackBlocker(onBack: BackBlocker): () => void {
 // previous location. A single `history.go` avoids racing two history ops.
 export function leaveViaBackTrap() {
   if (!isBrowser) return;
-  window.removeEventListener("popstate", onPopState);
+  listen(false);
   armed = false;
+  cleanupPending = false;
   window.history.go(hasSentinel() ? -2 : -1);
 }
 

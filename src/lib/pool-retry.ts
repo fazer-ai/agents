@@ -1,3 +1,4 @@
+import { Prisma } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 
 // A transaction that NEVER STARTED: no free connection within `maxWait` (SCOPED_TX_OPTIONS), so
@@ -27,8 +28,8 @@ const ADAPTER_UNAVAILABLE = new Set([
   "TooManyConnections",
 ]);
 
-// The socket codes a connect fails with, which Prisma reports as the request error's own `code` when
-// the connection never opened. The adapter names the same set unreachable (`SOCKET_ERRORS` in
+// The socket codes a connect fails with, which Prisma reports as its request error's own `code` when
+// the connection never opened. Read on that error only. The adapter names the same set unreachable (`SOCKET_ERRORS` in
 // @prisma/adapter-pg). ETIMEDOUT is also what the runtime pools' bounded connect fails with
 // (src/api/lib/pool-options.ts).
 const SOCKET_UNAVAILABLE = new Set([
@@ -47,7 +48,13 @@ export function isDatabaseUnavailable(err: unknown, depth = 0): boolean {
   if (isTransactionNeverStarted(err)) return true;
   const code = (err as { code?: unknown }).code;
   if (code === "P1001" || code === "P1002" || code === "P1017") return true;
-  if (typeof code === "string" && SOCKET_UNAVAILABLE.has(code)) return true;
+  // Only on Prisma's own error: an HTTP client fails with the same socket codes, and a Chatwoot
+  // that cannot be reached is not a database outage.
+  if (
+    err instanceof Prisma.PrismaClientKnownRequestError &&
+    SOCKET_UNAVAILABLE.has(err.code)
+  )
+    return true;
   const kind = (err as { kind?: unknown }).kind;
   if (typeof kind === "string" && ADAPTER_UNAVAILABLE.has(kind)) return true;
   const meta = (err as { meta?: { driverAdapterError?: unknown } }).meta;

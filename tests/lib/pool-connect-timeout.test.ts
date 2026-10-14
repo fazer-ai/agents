@@ -158,6 +158,16 @@ test("a connect past its bound reads as an unavailable database through the Pris
   }
 });
 
+test("the same socket code from anything but Prisma is not a database outage", () => {
+  // A Chatwoot request that cannot connect fails with these codes too, and its failure is the
+  // account's, not the database's.
+  for (const code of ["ETIMEDOUT", "ECONNREFUSED", "ECONNRESET", "ENOTFOUND"]) {
+    expect(
+      isDatabaseUnavailable(Object.assign(new Error(code), { code })),
+    ).toBe(false);
+  }
+});
+
 test("a bound that is not a positive number of ms is refused, since pg reads 0 as none", () => {
   expect(() => connectTimeoutOption(0)).toThrow(/positive/);
   expect(() => connectTimeoutOption(Number.NaN)).toThrow(/positive/);

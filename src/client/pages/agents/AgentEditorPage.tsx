@@ -4612,6 +4612,9 @@ function AgentEditor() {
                 setSplit={setSplit}
                 signature={signature}
                 setSignature={setSignature}
+                savedSignature={() =>
+                  signatureToForm(syncedAgentRef.current?.settings ?? {})
+                }
                 serviceWindow={serviceWindow}
                 setServiceWindow={setServiceWindow}
                 followUp={followUp}

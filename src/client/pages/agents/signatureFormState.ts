@@ -59,13 +59,25 @@ export function signatureToStored(form: SignatureState): {
 // seeding over a kept text would lose it.
 export const SIGNATURE_SEED = "**{{nome_agente}}**";
 
+// `saved` is the block as the server has it. The seed is the switch's own suggestion, so turning the
+// switch off over it, untouched, where the saved box is empty gives the empty box back: on and off
+// again is then no change, and the tab is clean. A text the operator wrote, or a saved one that
+// reads like the seed, stays.
 export function signatureOnToggle(
   form: SignatureState,
   enabled: boolean,
+  saved: SignatureState,
 ): SignatureState {
+  const seedOnly = form.text === SIGNATURE_SEED && !saved.text.trim();
   return {
     ...form,
     enabled,
-    text: enabled && !form.text.trim() ? SIGNATURE_SEED : form.text,
+    text: enabled
+      ? form.text.trim()
+        ? form.text
+        : SIGNATURE_SEED
+      : seedOnly
+        ? saved.text
+        : form.text,
   };
 }

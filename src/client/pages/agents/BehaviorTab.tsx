@@ -428,6 +428,8 @@ interface BehaviorTabProps {
   setSplit: React.Dispatch<React.SetStateAction<SplitState>>;
   signature: SignatureState;
   setSignature: React.Dispatch<React.SetStateAction<SignatureState>>;
+  // The block as the server has it, asked when the switch moves (`signatureOnToggle`).
+  savedSignature: () => SignatureState;
   vision: VisionState;
   setVision: React.Dispatch<React.SetStateAction<VisionState>>;
   visionCredBaseUrl: string | null;
@@ -1595,6 +1597,7 @@ export function BehaviorTab({
   setSplit,
   signature,
   setSignature,
+  savedSignature,
   vision,
   setVision,
   visionCredBaseUrl,
@@ -3289,7 +3292,7 @@ export function BehaviorTab({
               // text is a decision (seed an empty box, never touch a kept one) and it belongs where
               // a test can reach it.
               onCheckedChange={(v) =>
-                setSignature(signatureOnToggle(signature, v))
+                setSignature(signatureOnToggle(signature, v, savedSignature()))
               }
               label={t(
                 "editor.signatureEnabled",

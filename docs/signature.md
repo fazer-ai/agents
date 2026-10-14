@@ -35,7 +35,7 @@ The defaults match too, `top` included.
 
 Both answers are needed before a customer sees anything: `enabled` says whether to sign, `text` says what with. An enabled block with an empty text signs nothing, and that is not an error state, it is an operator who has not finished.
 
-**The field seeds itself once.** The first time the switch goes on over an empty field, the editor fills it with `**{{nome_agente}}**`, the agent's own name in bold, which is the signature most operators write by hand. It only ever seeds an empty field: turning the switch off keeps what you wrote, and seeding over a kept text would hand it back with the other hand.
+**The field seeds itself once.** The first time the switch goes on over an empty field, the editor fills it with `**{{nome_agente}}**`, the agent's own name in bold, which is the signature most operators write by hand. It only ever seeds an empty field: turning the switch off keeps what you wrote, and seeding over a kept text would hand it back with the other hand. The seed is the switch's suggestion, not your text, so turning the switch straight back off over it, untouched, gives back the field as saved (empty): on and off again is no change, and the tab is not marked as edited (issue #1440). A seed you edited, or a saved signature that reads like it, stays.
 
 ## Position and repetition are the same decision
 

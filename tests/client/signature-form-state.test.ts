@@ -124,7 +124,7 @@ describe("signatureOnToggle: the seed, and the guard that matters more", () => {
   };
 
   test("turning it on over an empty box seeds the agent's name", () => {
-    expect(signatureOnToggle(off, true)).toEqual({
+    expect(signatureOnToggle(off, true, off)).toEqual({
       ...off,
       enabled: true,
       text: SIGNATURE_SEED,
@@ -132,22 +132,56 @@ describe("signatureOnToggle: the seed, and the guard that matters more", () => {
   });
 
   test("a box holding only whitespace counts as empty", () => {
-    expect(signatureOnToggle({ ...off, text: "   \n" }, true).text).toBe(
+    expect(signatureOnToggle({ ...off, text: "   \n" }, true, off).text).toBe(
       SIGNATURE_SEED,
     );
   });
 
-  test("turning it OFF never touches the text", () => {
+  test("turning it OFF never touches the operator's text", () => {
     const on = { ...off, enabled: true, text: SIG };
-    expect(signatureOnToggle(on, false)).toEqual({ ...on, enabled: false });
+    expect(signatureOnToggle(on, false, on)).toEqual({ ...on, enabled: false });
     // and the whole point: back on gives it back byte for byte
-    expect(signatureOnToggle(signatureOnToggle(on, false), true)).toEqual(on);
+    expect(
+      signatureOnToggle(signatureOnToggle(on, false, on), true, on),
+    ).toEqual(on);
+  });
+
+  // The seed is the switch's own suggestion, not something the operator wrote: turned straight back
+  // off, it goes with the switch, so on and off again is no change at all and the tab is clean.
+  test("turning it off over the untouched seed gives back the saved empty box", () => {
+    const seeded = signatureOnToggle(off, true, off);
+    expect(signatureOnToggle(seeded, false, off)).toEqual(off);
+  });
+
+  test("a seed the operator edited stays when the switch goes off", () => {
+    const edited = { ...signatureOnToggle(off, true, off), text: "Alex" };
+    expect(signatureOnToggle(edited, false, off).text).toBe("Alex");
+  });
+
+  // The saved box is given back as stored, blank characters and all, so the snapshot matches it.
+  test("off over the seed gives back a saved box of blanks as it was", () => {
+    const saved = { ...off, text: "  \n" };
+    const seeded = signatureOnToggle(saved, true, saved);
+    expect(signatureOnToggle(seeded, false, saved)).toEqual(saved);
+  });
+
+  // The seed typed over a saved signature is the operator's edit, not the switch's: off keeps it.
+  test("a seed written over a saved signature stays when the switch goes off", () => {
+    const saved = { ...off, enabled: true, text: "Alex" };
+    const typed = { ...saved, text: SIGNATURE_SEED };
+    expect(signatureOnToggle(typed, false, saved).text).toBe(SIGNATURE_SEED);
+  });
+
+  // A stored signature that happens to read like the seed is the operator's: off keeps it.
+  test("the seed is kept when it is the saved signature", () => {
+    const saved = { ...off, enabled: true, text: SIGNATURE_SEED };
+    expect(signatureOnToggle(saved, false, saved).text).toBe(SIGNATURE_SEED);
   });
 
   // The seed is only useful if it resolves; a literal `{{...}}` in the preview would teach the
   // operator the variables do not work at the moment they are learning the field.
   test("the seed names a variable the field supports", () => {
-    const seeded = signatureOnToggle(off, true);
+    const seeded = signatureOnToggle(off, true, off);
     const [first] = signaturePreviewParts(
       seeded,
       (_k: string, d: string) => d,
@@ -181,9 +215,9 @@ describe("a stored signature longer than the cap", () => {
   // meet this: turning a long signature off for a while.
   test("turning it off and on again does not shorten it", () => {
     const form = signatureToForm({ signature: { text: LONG } });
-    expect(signatureOnToggle(signatureOnToggle(form, false), true).text).toBe(
-      LONG,
-    );
+    expect(
+      signatureOnToggle(signatureOnToggle(form, false, form), true, form).text,
+    ).toBe(LONG);
   });
 });
 
@@ -252,9 +286,9 @@ describe("the frequency the form reads and the one it writes", () => {
       frequency: "once" as const,
       separator: "blank" as const,
     };
-    expect(signatureOnToggle(off, true).frequency).toBe("once");
-    expect(signatureOnToggle({ ...off, enabled: true }, false).frequency).toBe(
-      "once",
-    );
+    expect(signatureOnToggle(off, true, off).frequency).toBe("once");
+    expect(
+      signatureOnToggle({ ...off, enabled: true }, false, off).frequency,
+    ).toBe("once");
   });
 });

@@ -16,14 +16,13 @@ import { hasUnsavedChanges } from "@/client/lib/unsavedGuard";
 // so focus asks the server once; the throttle keeps alt-tabbing from turning into a request each time.
 const FOCUS_CHECK_INTERVAL_MS = 15_000;
 
-// Mounted once inside the router. Asks the server on window focus, and on a route change with
-// nothing unsaved reloads a tab the server has outgrown: the operator was leaving the screen anyway,
-// so the reload costs nothing they would keep.
+// Mounted once inside the router. Asks the server on window focus, and when the operator moves to
+// another screen with nothing unsaved reloads a tab the server has outgrown: they were leaving the
+// screen anyway, so the reload costs nothing they would keep.
 export function StaleBuildWatcher() {
   const location = useLocation();
   const lastCheck = useRef(0);
   const firstRoute = useRef(true);
-  const route = `${location.pathname}${location.search}`;
 
   useEffect(() => {
     const onFocus = () => {
@@ -36,14 +35,16 @@ export function StaleBuildWatcher() {
     return () => window.removeEventListener("focus", onFocus);
   }, []);
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the route is the trigger, not an input.
+  // NOTE: the pathname alone is the screen. A filter, a search box or an anchor rewrites only the query
+  // or the hash while the operator is still working on the same screen, mid-typing included.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the pathname is the trigger, not an input.
   useEffect(() => {
     if (firstRoute.current) {
       firstRoute.current = false;
       return;
     }
     if (getStaleBuild().stale && !hasUnsavedChanges()) window.location.reload();
-  }, [route]);
+  }, [location.pathname]);
 
   return null;
 }

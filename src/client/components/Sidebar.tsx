@@ -1,5 +1,5 @@
 import * as DialogPrimitive from "@radix-ui/react-dialog";
-import { PanelLeftClose, PanelLeftOpen, X } from "lucide-react";
+import { PanelLeftClose, PanelLeftOpen, RotateCw, X } from "lucide-react";
 import { type ReactNode, useId } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, NavLink } from "react-router";
@@ -335,6 +335,8 @@ function SidebarVersion({ collapsed = false }: { collapsed?: boolean }) {
 
   // A tab older than the server says so here too, ahead of the release link: the release check
   // compares the server with GitHub, so after a deploy it goes quiet while this tab is still behind.
+  // Its mark is the reload icon, never the release dot: the dot means a newer release exists, and
+  // while the tab is stale the reload is the one thing to do, so the release link waits for it.
   const staleTooltip = serverVersion
     ? t("staleBuild.badgeTooltipVersion", "Console updated to v{{version}}", {
         version: serverVersion,
@@ -379,13 +381,13 @@ function SidebarVersion({ collapsed = false }: { collapsed?: boolean }) {
           {stale ? (
             reloadButton(
               <>
-                {APP_VERSION}
-                <span
-                  className="absolute top-0 right-0 h-1.5 w-1.5 rounded-full bg-info"
+                <RotateCw
+                  className="mx-auto mb-0.5 h-3 w-3"
                   aria-hidden="true"
                 />
+                {APP_VERSION}
               </>,
-              "relative block w-full truncate text-info hover:underline",
+              "block w-full truncate text-info hover:underline",
             )
           ) : hasUpdate ? (
             // Focusable link so keyboard/SR users can reach the tooltip and act on the update; the
@@ -417,10 +419,7 @@ function SidebarVersion({ collapsed = false }: { collapsed?: boolean }) {
               {reloadButton(
                 <>
                   {full}
-                  <span
-                    className="h-1.5 w-1.5 rounded-full bg-info"
-                    aria-hidden="true"
-                  />
+                  <RotateCw className="h-3 w-3" aria-hidden="true" />
                   {t("staleBuild.reloadShort", "reload")}
                 </>,
                 "inline-flex items-center gap-1 text-info hover:underline",

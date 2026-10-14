@@ -21,6 +21,7 @@ import {
 import { MemoryRouter } from "react-router";
 import * as AuthModule from "@/client/contexts/AuthContext";
 import * as ThemeModule from "@/client/contexts/ThemeContext";
+import * as UpdatesModule from "@/client/contexts/UpdatesContext";
 import { stubExports } from "@/tests/utils/module-stub";
 
 // The version line at the foot of the sidebar shows the build this tab runs. After a deploy the
@@ -44,6 +45,16 @@ mock.module("@/client/lib/env", () => ({
 }));
 afterAll(() => {
   mock.module("@/client/lib/env", () => ENV_DEFAULTS);
+});
+
+let update = {
+  available: false,
+  currentVersion: "9.9.1",
+  latestVersion: null as string | null,
+  releaseUrl: null as string | null,
+};
+stubExports(UpdatesModule, {
+  useUpdates: () => ({ announcements: [], update, refresh: () => {} }),
 });
 
 stubExports(AuthModule, {
@@ -100,7 +111,18 @@ function renderSidebar() {
 const reloadControl = () =>
   screen.queryByRole("button", { name: /console updated/i });
 
+// The release indicator's own mark: the accent dot next to "update".
+const releaseDots = () =>
+  document.querySelectorAll("#app-sidebar .bg-accent-solid.rounded-full")
+    .length;
+
 beforeEach(() => {
+  update = {
+    available: false,
+    currentVersion: "9.9.1",
+    latestVersion: null,
+    releaseUrl: null,
+  };
   localStorage.clear();
   resetBuildWatch("9.9.1+a");
   reloads = 0;
@@ -126,6 +148,42 @@ describe("the sidebar version line", () => {
       control?.textContent?.includes("v9.9.1") ?? false,
       control?.getAttribute("aria-label") ?? "",
     ]).toEqual([true, "Console updated to v9.9.2. Reload"]);
+  });
+
+  test("a newer release alone shows its dot and its link", () => {
+    update = { ...update, available: true, latestVersion: "9.9.3" };
+    renderSidebar();
+    act(() => serverAnswers("9.9.1+a"));
+    const line = document.getElementById("app-sidebar")?.textContent ?? "";
+    expect([releaseDots(), line.includes("update")]).toEqual([1, true]);
+  });
+
+  test("a stale tab never borrows the release dot, even with a newer release out", () => {
+    update = { ...update, available: true, latestVersion: "9.9.3" };
+    renderSidebar();
+    act(() => serverAnswers("9.9.2+b"));
+    const control = reloadControl();
+    const line = document.getElementById("app-sidebar")?.textContent ?? "";
+    expect([
+      releaseDots(),
+      control?.querySelector("svg") !== null && control !== null,
+      line.includes("update"),
+    ]).toEqual([0, true, false]);
+  });
+
+  test("the collapsed stale line has no release dot either", () => {
+    update = { ...update, available: true, latestVersion: "9.9.3" };
+    renderSidebar();
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: /collapse/i }));
+    });
+    act(() => serverAnswers("9.9.2+b"));
+    const control = reloadControl();
+    expect([
+      releaseDots(),
+      control !== null && control.querySelector("svg") !== null,
+      control?.querySelector(".rounded-full") != null,
+    ]).toEqual([0, true, false]);
   });
 
   test("the collapsed line offers the same reload", () => {

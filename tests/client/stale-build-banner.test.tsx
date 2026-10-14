@@ -64,11 +64,11 @@ const reloadSpy = spyOn(window.location, "reload").mockImplementation(() => {
 });
 afterAll(() => reloadSpy.mockRestore());
 
-function GoTo({ to }: { to: string }) {
+function GoTo({ to, label = "go" }: { to: string; label?: string }) {
   const navigate = useNavigate();
   return (
     <button type="button" onClick={() => navigate(to)}>
-      go
+      {label}
     </button>
   );
 }
@@ -177,6 +177,23 @@ describe("the reload on a route change", () => {
     act(() => serverAnswers("9.9.2+b"));
     fireEvent.click(screen.getByRole("button", { name: "go" }));
     expect(reloads).toBe(1);
+  });
+
+  test("a filter or search that changes only the query does not reload", () => {
+    renderShell(
+      <>
+        <GoTo to="/agents?level=warn" label="filter" />
+        <GoTo to="/agents?level=warn&q=a" label="search" />
+        <GoTo to="/agents?level=warn&q=a#row" label="anchor" />
+      </>,
+    );
+    act(() => serverAnswers("9.9.2+b"));
+    fireEvent.click(screen.getByRole("button", { name: "filter" }));
+    fireEvent.click(screen.getByRole("button", { name: "search" }));
+    fireEvent.click(screen.getByRole("button", { name: "anchor" }));
+    const afterQuery = reloads;
+    fireEvent.click(screen.getByRole("button", { name: "go" }));
+    expect([afterQuery, reloads]).toEqual([0, 1]);
   });
 
   test("never reloads by itself before the route changes", () => {

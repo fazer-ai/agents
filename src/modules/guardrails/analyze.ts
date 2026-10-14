@@ -80,7 +80,9 @@ export function splitAnalyses(p: AnalysisParams): {
       ) as unknown as typeof p.checks,
       competitors: [],
       customPolicy: "",
-      systemPrompt: undefined,
+      // Kept: whether a refusal answers depends on what the assistant is there to handle, and only
+      // the agent's instructions say that. prompts.ts prints them for answer_relevance as scope only.
+      systemPrompt: p.systemPrompt,
       // NOTE: this half never writes a replacement; the runtime falls back to the configured template.
       // The policies were stripped from this call, so a replacement would ignore them, and a relevance
       // violation means the reply did not ANSWER, so the model would have to invent a commercial fact.

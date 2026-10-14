@@ -2021,7 +2021,7 @@
       "checkAdherence": "Aderência às instruções do agente",
       "checkCompetitors": "Menção a concorrentes",
       "checkRelevance": "A resposta responde o que o cliente perguntou",
-      "checkRelevanceHelp": "Esta verificação confere se a resposta do agente atende à mensagem do cliente.\n\nSe reprovar, ela aplica a ação configurada usando sempre a mensagem pronta. O modelo não cria uma nova resposta.\n\nFica desligada por padrão porque mensagens curtas, como “sim”, podem causar reprovações indevidas. Com outra verificação ativa, cada resposta gera duas consultas ao modelo, cobradas separadamente.",
+      "checkRelevanceHelp": "Esta verificação confere se a resposta do agente atende à mensagem do cliente. Recusar algo que o agente não atende, dizendo isso, conta como resposta; para separar os dois casos, a verificação lê as instruções do agente.\n\nSe reprovar, ela aplica a ação configurada usando sempre a mensagem pronta. O modelo não cria uma nova resposta.\n\nFica desligada por padrão porque mensagens curtas, como “sim”, podem causar reprovações indevidas. Com outra verificação ativa, cada resposta gera duas consultas ao modelo, cobradas separadamente.",
       "checks": "Checagens",
       "checkToxicity": "Toxicidade / abuso",
       "checkUnsafe": "Conteúdo inseguro",

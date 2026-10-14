@@ -271,6 +271,61 @@ describe("buildGuardrailSystemPrompt", () => {
     expect(p).toContain("is still an answer");
   });
 
+  // A polite refusal of something the agent does not handle ("I can't assess your legal rights")
+  // answers the question; read as unanswered, it would be replaced by the template.
+  test("a refusal of what is outside the assistant's scope counts as an answer", () => {
+    const p = buildGuardrailSystemPrompt({
+      ...relevance,
+      checks: { ...relevance.checks, promptAdherence: false },
+      customerMessage: "Pelo CDC tenho direito a troca?",
+    });
+    expect(p).toContain(
+      "Declining a request that is outside the assistant's scope or policy, and saying so (with or without pointing the customer elsewhere), IS an answer.",
+    );
+    // ...while declining what the assistant IS there for still trips.
+    expect(p).toContain("declines something the assistant is there to handle");
+  });
+
+  // Without the agent's instructions the relevance reviewer cannot tell an out-of-scope refusal from
+  // an in-scope one: "não consigo ajudar com trocas" reads as fair even from a store that does them.
+  const relevanceAlone = {
+    ...relevance,
+    checks: { ...relevance.checks, promptAdherence: false },
+    systemPrompt: "Você atende trocas e entregas da Loja Verde.",
+    customerMessage: "Como troco o vaso?",
+  };
+
+  test("the relevance reviewer gets the agent's instructions as scope", () => {
+    const p = buildGuardrailSystemPrompt(relevanceAlone);
+    expect(p).toContain("Você atende trocas e entregas da Loja Verde.");
+    expect(p).toContain(
+      "ONLY to tell what the assistant is there to handle (for answer_relevance",
+    );
+  });
+
+  test("the scope block needs a customer message, like the check itself", () => {
+    const p = buildGuardrailSystemPrompt({
+      ...relevanceAlone,
+      customerMessage: undefined,
+    });
+    expect(p).not.toContain("Você atende trocas e entregas da Loja Verde.");
+  });
+
+  // With prompt_adherence in the same prompt the instructions are already there once, under its own
+  // heading; printing them twice would hand the policy reviewer a second, scope-only reading.
+  test("the instructions are printed once when prompt_adherence is in the prompt", () => {
+    const p = buildGuardrailSystemPrompt({
+      ...relevanceAlone,
+      checks: { ...relevanceAlone.checks, promptAdherence: true },
+    });
+    expect(
+      p.split("Você atende trocas e entregas da Loja Verde.").length - 1,
+    ).toBe(1);
+    expect(p).not.toContain(
+      "ONLY to tell what the assistant is there to handle",
+    );
+  });
+
   test("never reaches an input prompt, like the other reply-only check", () => {
     const p = buildGuardrailSystemPrompt({
       ...relevance,
@@ -352,8 +407,18 @@ describe("splitAnalyses", () => {
     });
     expect(relevance?.competitors).toEqual([]);
     expect(relevance?.customPolicy).toBe("");
-    expect(relevance?.systemPrompt).toBeUndefined();
     expect(relevance?.customerMessage).toBe(full.customerMessage);
+  });
+
+  // The instructions travel as SCOPE (what the assistant is there to handle); with prompt_adherence
+  // off in this half they are printed only under the relevance heading.
+  test("the half that reads the customer keeps the agent's instructions as scope", () => {
+    const { relevance } = splitAnalyses(full);
+    expect(relevance?.systemPrompt).toBe("You are Maria.");
+    if (relevance === null) throw new Error("no relevance half");
+    const prompt = buildGuardrailSystemPrompt(relevance);
+    expect(prompt).toContain("You are Maria.");
+    expect(prompt).not.toContain("prompt_adherence");
   });
 
   test("the half that judges the reply carries no customer message", () => {

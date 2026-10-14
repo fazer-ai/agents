@@ -48,7 +48,7 @@ const CHECK_DEFINITIONS: Record<
   answerRelevance: {
     key: "answer_relevance",
     description:
-      "the assistant reply does not answer what the customer actually asked: it addresses a different question, or leaves the question the customer asked unanswered.",
+      "the assistant reply does not answer what the customer actually asked: it addresses a different question, leaves the question the customer asked unanswered, or declines something the assistant is there to handle. Declining a request that is outside the assistant's scope or policy, and saying so (with or without pointing the customer elsewhere), IS an answer.",
   },
 };
 
@@ -149,6 +149,23 @@ export function buildGuardrailSystemPrompt(p: GuardrailPromptParams): string {
     lines.push(
       "",
       "The agent's instructions (for prompt_adherence):",
+      '"""',
+      p.systemPrompt,
+      '"""',
+    );
+  }
+  // Whether a refusal answers depends on what the assistant is there to handle, and only the agent's
+  // instructions say that: without them, "I can't help with exchanges here" reads as a fair refusal
+  // even from a store that does exchanges. Printed as scope for the relevance call only; when
+  // prompt_adherence is in the same prompt the block above already carries them.
+  if (
+    customerMessageForReview(p) !== null &&
+    !p.checks.promptAdherence &&
+    p.systemPrompt
+  ) {
+    lines.push(
+      "",
+      "The agent's instructions, ONLY to tell what the assistant is there to handle (for answer_relevance; do not judge the reply against them otherwise):",
       '"""',
       p.systemPrompt,
       '"""',

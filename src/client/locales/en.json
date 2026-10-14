@@ -1956,7 +1956,7 @@
       "checkAdherence": "Adherence to the agent's instructions",
       "checkCompetitors": "Competitor mentions",
       "checkRelevance": "The reply answers what the customer asked",
-      "checkRelevanceHelp": "This check determines whether the agent's reply addresses the customer's message.\n\nIf it fails, the configured action always uses the prepared message. The model does not write a replacement reply.\n\nIt is off by default because short messages such as “yes” can cause false failures. When another check is active, each reply makes two separately billed model requests.",
+      "checkRelevanceHelp": "This check determines whether the agent's reply addresses the customer's message. A reply that declines something outside what the agent handles, and says so, counts as an answer; to tell the two apart, the check reads the agent's instructions.\n\nIf it fails, the configured action always uses the prepared message. The model does not write a replacement reply.\n\nIt is off by default because short messages such as “yes” can cause false failures. When another check is active, each reply makes two separately billed model requests.",
       "checks": "Checks",
       "checkToxicity": "Toxicity / abuse",
       "checkUnsafe": "Unsafe content",

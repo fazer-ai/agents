@@ -86,7 +86,10 @@ const BUDGET_MS = 60_000;
 // What a test leaves of BUDGET_MS by moving the clock, once the read has taken its deadline.
 const LEFT_MS = 500;
 
-setDefaultTimeout(15_000);
+// Catches a hang, never decides a verdict: five times the longest a test can wait on locks, which is
+// two holds back to back in the session lookup's mutant run.
+const CEILING_MS = 5 * 2 * HOLD_MS;
+setDefaultTimeout(CEILING_MS);
 
 // `Date.now()` as the deadline code reads it: the real clock, plus whatever `jump` added. A test moves
 // a read to near its deadline without spending the time. Captured before the spy, so `real` is the
@@ -122,11 +125,13 @@ async function lockTable(
           `SELECT pg_sleep(${HOLD_MS / 1000})::text /* mb_hold */`,
         );
       },
-      { timeout: 20_000 },
+      { timeout: CEILING_MS },
     )
     // Cancelled by `release()`, the transaction rolls back, which is the release.
     .catch(() => undefined);
-  await until(`${table} locked`, async () => (pid === undefined ? null : pid));
+  await until(`${table} locked`, async () => (pid === undefined ? null : pid), {
+    deadlineMs: CEILING_MS,
+  });
   // Cancels the hold only while it is the hold: once it ran out, its connection is back in the pool
   // and the pid may be serving anything, this cancel included.
   let released: Promise<void> | undefined;
@@ -145,12 +150,16 @@ async function lockTable(
 
 // Resolves once a statement of another session is waiting for the lock on `table`.
 async function waitedOn(table: string): Promise<void> {
-  await until(`a statement waiting on ${table}`, async () => {
-    const [row] = await (su as PrismaClient).$queryRaw<{ n: number }[]>`
+  await until(
+    `a statement waiting on ${table}`,
+    async () => {
+      const [row] = await (su as PrismaClient).$queryRaw<{ n: number }[]>`
       SELECT count(*)::int AS n FROM pg_locks l JOIN pg_class c ON c.oid = l.relation
        WHERE c.relname = ${table} AND NOT l.granted`;
-    return (row?.n ?? 0) > 0 ? true : null;
-  });
+      return (row?.n ?? 0) > 0 ? true : null;
+    },
+    { deadlineMs: CEILING_MS },
+  );
 }
 
 // Holds the client's one connection for `ms`, from now.
@@ -159,7 +168,7 @@ function holdOnly(client: PrismaClient, ms: number): Promise<unknown> {
     async (tx) => {
       await tx.$queryRawUnsafe(`SELECT pg_sleep(${ms / 1000})::text`);
     },
-    { timeout: 10_000 },
+    { timeout: CEILING_MS },
   );
 }
 
@@ -466,6 +475,34 @@ describe.skipIf(!dbUp)("metrics time budget", () => {
       expect(outcome === "57014" || outcome === "55P03").toBe(true);
     } finally {
       await keys.release();
+    }
+  });
+
+  test("an API key lookup that waited for its connection gets only what is left", async () => {
+    const one = new PrismaClient({
+      adapter: new PrismaPg({ connectionString: appUrl, max: 1 }),
+    });
+    const keys = await lockTable("api_keys");
+    const clock = skewedClock();
+    try {
+      await one.$queryRaw`SELECT 1`;
+      const holder = holdOnly(one, 200);
+      const lookup = verifyApiKey(
+        "fazerai_mb_lookup",
+        one,
+        metricsBudget(Date.now() + BUDGET_MS),
+      );
+      clock.jump(BUDGET_MS - LEFT_MS);
+      const outcome = await lookup.then(
+        () => "answered",
+        (e) => e,
+      );
+      await holder;
+      expect(outcome).not.toBe("answered");
+    } finally {
+      clock.restore();
+      await keys.release();
+      await one.$disconnect();
     }
   });
 

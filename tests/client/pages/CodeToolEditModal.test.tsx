@@ -639,7 +639,7 @@ test("the parser only runs while the dialog is open", async () => {
 // offers a second Save for a write already on its way. Asked of the dialog: Escape on an unedited
 // stored tool whose save is out leaves it open.
 // Edited or not: on an edited form the dismissal would otherwise open the discard prompt, whose
-// "Discard" closes the dialog with the PATCH still on its way (#1439).
+// "Discard" closes the dialog with the PATCH still on its way.
 test.each([
   ["unedited", false],
   ["edited", true],

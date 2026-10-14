@@ -204,7 +204,7 @@ describe("the form is not editable while a save is in flight", () => {
     releasePatch();
   });
   // Edited, so Escape would otherwise open the discard prompt over the held save, and its
-  // "Discard" would close the modal with the PATCH still on its way (#1439).
+  // "Discard" would close the modal with the PATCH still on its way.
   test("Escape neither closes it nor offers to discard the edit", async () => {
     holdPatch = true;
     render(

@@ -2,7 +2,7 @@
 // branch of a ternary). It was the documented way to block a modal's dismissal while a request is in
 // flight, and it holds only while the form is clean: `<Modal>` opens the discard prompt on a dirty
 // form before it ever calls `onCloseRequest`, so "Discard" closes the modal with the write still on
-// its way (#1439). The way to say a request is in flight is `busy={…}`, which blocks every
+// its way. The way to say a request is in flight is `busy={…}`, which blocks every
 // user-driven close and never opens the prompt. An `onCloseRequest` that does something (a
 // confirmation of its own) is not touched.
 language js;

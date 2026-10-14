@@ -1118,6 +1118,49 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     expect(ours.sent).toEqual([[1031, REPLY]]);
   });
 
+  // The handler reads liveness with `mirrorHolder: "not-asked"`, which the predicate counts as live,
+  // so ownership is the live probe's to decide and never the mirror's. Both directions of a stale
+  // mirror: one that still says ours while a person holds the conversation in Chatwoot, and one that
+  // still names another bot after ours got it back.
+  test("(p2) ownership is asked of Chatwoot, not of the mirror, in both directions", async () => {
+    await setAgentSteps([
+      { delayValue: 1, delayUnit: "minutes", instructions: "" },
+    ]);
+    await seedConversation(1032, {
+      assigneeType: "AgentBot",
+      assigneeId: 5,
+      lastInboundAt: new Date(Date.now() - 5 * 60_000),
+      lastFollowUpAt: null,
+    });
+    const takenLive = stubClient({
+      liveMeta: { assignee_type: "User", assignee: { id: 9, name: "Ana" } },
+    });
+    await followUpHandler(jobFor(1032), appDb, {
+      makeModel: fakeModel,
+      makeClient: takenLive.makeClient,
+      checkpointer: new MemorySaver(),
+      persistUsage: async () => {},
+    });
+    expect(takenLive.sent).toEqual([]);
+
+    await seedConversation(1033, {
+      assigneeType: "AgentBot",
+      assigneeId: 777,
+      lastInboundAt: new Date(Date.now() - 5 * 60_000),
+      lastFollowUpAt: null,
+    });
+    const oursLive = stubClient({
+      liveMeta: { assignee_type: "AgentBot", assignee: { id: 5 } },
+    });
+    await followUpHandler(jobFor(1033), appDb, {
+      makeModel: fakeModel,
+      makeClient: oursLive.makeClient,
+      checkpointer: new MemorySaver(),
+      persistUsage: async () => {},
+    });
+    expect(oursLive.sent).toEqual([[1033, REPLY]]);
+  });
+
   // NOTE: The SWEEP is the other half of the same question, and it answers it in SQL rather than in
   // TypeScript. Without it the opt-out is unreachable: a conversation with a live appointment never
   // gets enqueued, so the handler gate that honours the flag never runs. The sweep only ever enqueues

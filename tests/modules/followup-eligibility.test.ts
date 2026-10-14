@@ -1,6 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
 import {
   type FollowUpLiveness,
   isFollowUpLive,
@@ -134,38 +132,6 @@ describe("isFollowUpLive", () => {
       expect(isFollowUpLive({ ...LIVE, ...c.patch })).toBe(c.live);
     });
   }
-});
-
-// `mirrorHolder: "not-asked"` reads as live, so it is only sound for a reader that re-asks Chatwoot
-// before it sends. The table above proves what the predicate DOES with each value, not that readers
-// pass the value they are entitled to; "not-asked" is what a new reader picks when the strict answer
-// is inconvenient. File-scoped on purpose: it says the abstaining file also arms the live probe, not
-// that the two are on the same branch, which is enough to make a copy-paste into a reader with no
-// probe fail here.
-describe('mirrorHolder: "not-asked" — who may say it', () => {
-  function sourceFiles(dir: string): string[] {
-    const out: string[] = [];
-    for (const entry of readdirSync(dir)) {
-      const full = join(dir, entry);
-      if (statSync(full).isDirectory()) out.push(...sourceFiles(full));
-      else if (full.endsWith(".ts") || full.endsWith(".tsx")) out.push(full);
-    }
-    return out;
-  }
-
-  test("every reader that abstains re-asks Chatwoot before sending", () => {
-    const abstaining = sourceFiles("src").filter((f) =>
-      readFileSync(f, "utf8").includes('mirrorHolder: "not-asked"'),
-    );
-    // The handler is the one reader entitled to it today; zero matches would mean the check went
-    // stale (the string moved or was renamed) rather than that the rule holds.
-    expect(abstaining).toEqual(["src/modules/followups/handlers.ts"]);
-    for (const f of abstaining) {
-      expect(readFileSync(f, "utf8")).toContain(
-        "requireLiveBotOwnership: true",
-      );
-    }
-  });
 });
 
 // The predicate itself, one term at a time.

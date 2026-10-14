@@ -100,7 +100,7 @@ function stubClient(
         ...first,
         id: c,
         status: first?.status ?? status,
-        meta: over.liveMeta ?? {},
+        meta: first?.meta ?? over.liveMeta ?? {},
       };
     },
     getMessages: async (_c: number, o?: { before?: number }) => {
@@ -1484,6 +1484,44 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     expect(done).toEqual({ outcome: "done" });
     expect(s.resolved).toEqual([1728]);
     expect(s.notes.map(([c]) => c)).toEqual([1728]);
+  });
+
+  // Another bot took the conversation: it is out of this agent's hands, and the retry spends the
+  // episode there instead of handing over again and again.
+  test("a hand-over retry finding another bot holding the conversation spends the episode", async () => {
+    await seedConversation(1733, due());
+    const s = stubClient({
+      page: [replyRow(17331, { refused: true })],
+      liveMeta: { assignee_type: "AgentBot", assignee: { id: 777 } },
+    });
+    const done = await followUpHandler(
+      {
+        ...jobFor(1733),
+        payload: { ...jobFor(1733).payload, handoverRetry: true },
+      },
+      appDb,
+      {
+        makeModel: fakeModel,
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    );
+    expect(done).toEqual({ outcome: "done" });
+    expect(s.notes).toEqual([]);
+    expect(await lastFollowUpOf(1733)).not.toBeNull();
+  });
+
+  // The same on the first pass: the hand-over stands down for another bot, and the episode is spent.
+  test("a hand-over finding another bot holding the conversation spends the episode", async () => {
+    await seedConversation(1734, due());
+    const s = stubClient({
+      page: [replyRow(17341, { refused: true })],
+      liveMeta: { assignee_type: "AgentBot", assignee: { id: 777 } },
+    });
+    expect(await run(1734, s)).toEqual({ outcome: "done" });
+    expect(s.resolved).toEqual([]);
+    expect(await lastFollowUpOf(1734)).not.toBeNull();
   });
 
   test("a page that does not read holds the step instead of nudging", async () => {

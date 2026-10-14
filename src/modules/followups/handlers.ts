@@ -19,7 +19,7 @@ import {
   parseSchedule,
 } from "@/modules/business-hours/hours";
 import { readChannelRedirectConfig } from "@/modules/channel-redirect/service";
-import { loadChatwootClient } from "@/modules/chatwoot/instance";
+import { loadAgentBot, loadChatwootClient } from "@/modules/chatwoot/instance";
 import { pendingIncoming } from "@/modules/chatwoot/messages";
 import {
   parseLiveConversation,
@@ -463,6 +463,30 @@ export function followUpConfigVersion(
   return `${agentUpdatedAt.getTime()}:${hoursUpdatedAt?.getTime() ?? 0}`;
 }
 
+// The agent's own bot on the conversation's inbox, the one the failed-turn note posts as: another bot
+// holding the conversation has it out of this agent's hands.
+async function ourAgentBotIdOf(
+  base: PrismaClient,
+  tenantId: bigint,
+  instanceId: bigint,
+  conversationId: number,
+): Promise<number | null> {
+  const conv = await runScopedOn(base, sysCtx(tenantId), (db) =>
+    db.conversation.findFirst({
+      where: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: conversationId,
+      },
+      select: { inbox: { select: { agentId: true } } },
+    }),
+  );
+  const agentId = conv?.inbox?.agentId;
+  if (agentId == null) return null;
+  const bot = await loadAgentBot(tenantId, instanceId, agentId, base);
+  return bot?.chatwootAgentBotId ?? null;
+}
+
 // Whether Chatwoot has the conversation out of the bot's hands, read live. Unreadable answers no, so
 // the hand-over is asked again rather than taken for done.
 async function handedToTeam(
@@ -480,7 +504,14 @@ async function handedToTeam(
     const live = parseLiveConversation(
       await client.getConversation(conversationId),
     );
-    return live !== null && !shouldBotHandle(live);
+    if (live === null) return false;
+    const ourAgentBotId = await ourAgentBotIdOf(
+      base,
+      tenantId,
+      instanceId,
+      conversationId,
+    );
+    return !shouldBotHandle(live, { ourAgentBotId });
   } catch {
     return false;
   }
@@ -518,7 +549,13 @@ async function reconcileFromChatwoot(
     // NOTE: a claim still alive outranks Chatwoot's word, and the mirror keeps its `open`.
     if (done.refusedByStatusClaim || !done.state) return "unread";
     // The row as the reconcile left it, not the snapshot: a webhook newer than the read outranks it.
-    return shouldBotHandle(done.state) ? "bot" : "handed";
+    const ourAgentBotId = await ourAgentBotIdOf(
+      base,
+      tenantId,
+      instanceId,
+      conversationId,
+    );
+    return shouldBotHandle(done.state, { ourAgentBotId }) ? "bot" : "handed";
   } catch (e) {
     logger.warn(
       "followUpHandler: could not reconcile the conversation before a hand-over retry (conv=%s): %s",

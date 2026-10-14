@@ -319,7 +319,10 @@ export function CredentialForm({
       const { data, error: err } = await api.api.v1.vault.test.post({
         kind,
         value,
-        baseURL: secretTypeNeedsBase(kind) ? effectiveBaseUrl : null,
+        // Every kind that takes a base URL probes it, the optional ones too: the requests of a
+        // typesafe key go to its base URL when it has one, so a test against the public host would
+        // judge a server the key is not used with. Kinds without one keep their fixed host.
+        baseURL: secretTypeSupportsBaseUrl(kind) ? effectiveBaseUrl : null,
         paramName: needsParamName ? paramName.trim() || null : null,
       });
       const r = data as
@@ -344,7 +347,9 @@ export function CredentialForm({
       const { data, error: err } = await api.api.v1
         .vault({ id: initialId })
         .test.post({
-          baseURL: secretTypeNeedsBase(kind) ? effectiveBaseUrl : null,
+          // The base URL on screen, unsaved edits included: the server falls back to the stored one
+          // only for a null, so an emptied optional field is sent as "" and probes the public host.
+          baseURL: secretTypeSupportsBaseUrl(kind) ? baseUrl.trim() : null,
         });
       const r = data as
         | { testable?: boolean; ok?: boolean; code?: string; status?: number }
@@ -966,7 +971,9 @@ export function CredentialForm({
                 ? "https://cloud.langfuse.com"
                 : kind === "mcp_oauth"
                   ? "https://servidor.exemplo.com/mcp"
-                  : "https://api.exemplo.com"
+                  : kind === "typesafe"
+                    ? "https://api.typesafe.ai/v1"
+                    : "https://api.exemplo.com"
             }
           />
         </FormField>

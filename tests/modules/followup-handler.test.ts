@@ -1041,7 +1041,7 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
   // A note at the bottom of the newest page does not end the reply: its refused first balloon sits a
   // page further back, and the delivered balloon on the newest page does not stand for it.
   test("notes inside a reply do not cut the read short", async () => {
-    await seedConversation(1711, due());
+    await seedConversation(1711, { ...due(), lastRepliedMessageId: 17110 });
     const s = stubClient({
       page: [
         customerRow(17110),
@@ -1236,10 +1236,26 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     expect(s.notes).toEqual([]);
   });
 
+  // A customer message that arrived after the turn's last look and before its reply was written is
+  // still queued for its own turn: it holds the step, though it sorts before the reply.
+  test("an open customer message before the refused reply holds the step", async () => {
+    await seedConversation(1749, { ...due(), lastRepliedMessageId: 17490 });
+    const s = stubClient({
+      page: [
+        customerRow(17490),
+        customerRow(17491),
+        replyRow(17492, { refused: true }),
+      ],
+    });
+    expect(await run(1749, s)).toMatchObject({ outcome: "reschedule" });
+    expect(s.resolved).toEqual([]);
+    expect(s.notes).toEqual([]);
+  });
+
   // A blank message the mirror already counts as the newest inbound does not block the hand-over's
   // fence: it was assessed here, and the hand-over is pinned past it.
   test("a blank message after the refused reply does not block the hand-over", async () => {
-    await seedConversation(1735, due());
+    await seedConversation(1735, { ...due(), lastRepliedMessageId: 17350 });
     await suDb.conversation.updateMany({
       where: { tenantId, chatwootConversationId: 1735 },
       data: { lastInboundMessageId: 17352 },

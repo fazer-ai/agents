@@ -202,11 +202,11 @@ export async function lastReplyDelivery(params: {
     throw new Error(
       "follow-up: the agent replied again while the reply was read",
     );
-  const last = head;
   const reply = replyOf(read, newest);
   const open = await params.stillOpen(read);
-  // NOTE: from where the reply starts, so one written between its balloons counts too.
-  if (read.some((m) => m.id > start && customer(m) && open.has(m.id)))
+  // NOTE: any the read holds, before the reply too: one that arrived after the turn's last look and
+  // before its reply was written is still queued for its own turn.
+  if (read.some((m) => customer(m) && open.has(m.id)))
     return { state: "customer_spoke" };
   // A customer message from where the reply starts that is no longer owed a reply was handled, in
   // silence or by a gate, and moved the conversation past the reply.

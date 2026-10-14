@@ -39,10 +39,25 @@ export function acquireBeforeUnload(): () => void {
   };
 }
 
-// Whether any form or modal holds changes the native prompt is guarding, i.e. whether a reload
-// now would lose something.
+// Input that is not a form change but a reload would still lose: a composer's unsent message. It
+// arms no prompt (leaving the screen keeps it in memory, as before), and only stops the reloads the
+// console starts by itself (client/lib/staleBuild.ts).
+let heldDrafts = 0;
+
+export function useHeldDraft(active: boolean) {
+  useEffect(() => {
+    if (!active) return;
+    heldDrafts += 1;
+    return () => {
+      heldDrafts -= 1;
+    };
+  }, [active]);
+}
+
+// Whether a reload now would lose something: a form or modal the native prompt is guarding, or a
+// held draft.
 export function hasUnsavedChanges(): boolean {
-  return beforeUnloadCount > 0;
+  return beforeUnloadCount > 0 || heldDrafts > 0;
 }
 
 // Force-detach the native prompt. For a confirmed full-page reload (e.g. the

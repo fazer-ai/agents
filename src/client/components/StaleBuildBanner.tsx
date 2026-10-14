@@ -7,7 +7,6 @@ import { useConfirmLeave } from "@/client/contexts/NavGuardContext";
 import { api } from "@/client/lib/api";
 import {
   getStaleBuild,
-  isSameScreen,
   reloadIntoServedBuild,
   useStaleBuild,
 } from "@/client/lib/staleBuild";
@@ -37,12 +36,10 @@ export function StaleBuildWatcher() {
   }, []);
 
   // NOTE: the pathname is the screen. A filter, a search box or an anchor rewrites only the query or
-  // the hash while the operator is still working on the same screen, mid-typing included, and a
-  // screen's own tabs (useScreenScope) stay on it too.
+  // the hash while the operator is still working on the same screen, mid-typing included.
   useEffect(() => {
-    const from = lastPath.current;
+    if (lastPath.current === location.pathname) return;
     lastPath.current = location.pathname;
-    if (isSameScreen(from, location.pathname)) return;
     if (getStaleBuild().stale && !hasUnsavedChanges()) window.location.reload();
   }, [location.pathname]);
 

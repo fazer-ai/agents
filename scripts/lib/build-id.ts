@@ -5,7 +5,7 @@
 
 // The Docker context drops `*.md`, so they are not inputs.
 const INPUT_GLOB = "{src,public}/**";
-const ROOT_INPUTS = ["package.json", "bun.lock", "build.ts"];
+const ROOT_INPUTS = ["package.json", "bun.lock", "build.ts", "tsconfig.json"];
 
 export async function buildId({
   root = ".",

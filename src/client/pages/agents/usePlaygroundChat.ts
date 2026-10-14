@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { api } from "@/client/lib/api";
+import { useHeldDraft } from "@/client/lib/unsavedGuard";
 
 // Shape of the playground response, derived from the Eden treaty (never hand-declared — see
 // docs/eden-treaty.md).
@@ -402,6 +403,7 @@ export function usePlaygroundChat(
   // that has it. The per-turn line comes from the reply.
   const [sessionUsage, setSessionUsage] = useState<PlaygroundUsage>(NO_USAGE);
   const [input, setInput] = useState("");
+  useHeldDraft(input.trim() !== "");
   const [sending, setSending] = useState(false);
   const [followingUp, setFollowingUp] = useState(false);
   const [transcribing, setTranscribing] = useState(false);

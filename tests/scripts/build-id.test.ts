@@ -69,6 +69,14 @@ describe("the build id", () => {
     expect(a === b).toBe(false);
   });
 
+  test("changes with tsconfig.json, whose aliases and JSX options the bundler reads", async () => {
+    const a = await id(await tree("o", { ...BASE, "tsconfig.json": "{}" }));
+    const b = await id(
+      await tree("p", { ...BASE, "tsconfig.json": '{"compilerOptions":{}}' }),
+    );
+    expect(a === b).toBe(false);
+  });
+
   test("ignores a markdown file, which the image's build never sees", async () => {
     const a = await id(await tree("i", BASE));
     const b = await id(

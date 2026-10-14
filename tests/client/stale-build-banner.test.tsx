@@ -27,12 +27,8 @@ import {
   useNavGuard,
 } from "@/client/contexts/NavGuardContext";
 import { onApiResponse } from "@/client/lib/api";
-import {
-  importWithReload,
-  resetBuildWatch,
-  useScreenScope,
-} from "@/client/lib/staleBuild";
-import { useBeforeUnload } from "@/client/lib/unsavedGuard";
+import { importWithReload, resetBuildWatch } from "@/client/lib/staleBuild";
+import { useBeforeUnload, useHeldDraft } from "@/client/lib/unsavedGuard";
 
 // A tab loaded before a deploy learns it from the next response, says so in the shell with a Reload,
 // and reloads on its own at the next route change unless something is unsaved.
@@ -76,8 +72,8 @@ function GoTo({ to, label = "go" }: { to: string; label?: string }) {
     </button>
   );
 }
-function TabbedScreen({ scope }: { scope: string }) {
-  useScreenScope(scope);
+function HeldDraft() {
+  useHeldDraft(true);
   return null;
 }
 function DirtyPage() {
@@ -204,66 +200,34 @@ describe("the reload on a route change", () => {
     expect([afterQuery, reloads]).toEqual([0, 1]);
   });
 
-  test("moving between the tabs of one screen does not reload, leaving it does", () => {
+  test("a change of screen does not reload over an unsent draft", () => {
     renderShell(
       <>
-        <TabbedScreen scope="/agents/5" />
-        <GoTo to="/agents/5/playground" label="tab" />
+        <HeldDraft />
+        <GoTo to="/agents/5/general" label="tab" />
       </>,
-      "/agents/5/general",
+      "/agents/5/playground",
     );
     act(() => serverAnswers("9.9.2+b"));
     fireEvent.click(screen.getByRole("button", { name: "tab" }));
-    const afterTab = reloads;
     fireEvent.click(screen.getByRole("button", { name: "go" }));
-    expect([afterTab, reloads]).toEqual([0, 1]);
+    expect([reloads, bannerText() !== null]).toEqual([0, true]);
   });
 
-  test("arriving at a scoped screen from another one is a change of screen", () => {
-    renderShell(
-      <>
-        <TabbedScreen scope="/agents/5" />
-        <GoTo to="/agents/5/general" label="open" />
-      </>,
-      "/agents",
-    );
-    act(() => serverAnswers("9.9.2+b"));
-    fireEvent.click(screen.getByRole("button", { name: "open" }));
-    expect(reloads).toBe(1);
-  });
-
-  test("a screen that unmounted no longer holds its tabs together", () => {
-    function Scoped() {
+  test("once the draft is gone the next change of screen reloads", () => {
+    function Draft() {
       const { pathname } = useLocation();
-      return pathname.endsWith("/general") ? (
-        <TabbedScreen scope="/agents/5" />
-      ) : null;
+      return pathname.endsWith("/playground") ? <HeldDraft /> : null;
     }
     renderShell(
       <>
-        <Scoped />
-        <GoTo to="/agents/5/other" label="away" />
-        <GoTo to="/agents/5/playground" label="tab" />
+        <Draft />
+        <GoTo to="/agents/5/general" label="tab" />
       </>,
-      "/agents/5/general",
+      "/agents/5/playground",
     );
-    act(() => serverAnswers(OWN));
-    fireEvent.click(screen.getByRole("button", { name: "away" }));
     act(() => serverAnswers("9.9.2+b"));
     fireEvent.click(screen.getByRole("button", { name: "tab" }));
-    expect(reloads).toBe(1);
-  });
-
-  test("a screen's scope does not cover a neighbour that shares its prefix", () => {
-    renderShell(
-      <>
-        <TabbedScreen scope="/agents/5" />
-        <GoTo to="/agents/55/general" label="neighbour" />
-      </>,
-      "/agents/5/general",
-    );
-    act(() => serverAnswers("9.9.2+b"));
-    fireEvent.click(screen.getByRole("button", { name: "neighbour" }));
     expect(reloads).toBe(1);
   });
 
@@ -313,6 +277,18 @@ describe("a dynamic import that fails", () => {
 
   test("surfaces the error instead of reloading over unsaved changes", async () => {
     renderShell(<DirtyModal />);
+    const error = await importWithReload(missingChunk).then(
+      () => null,
+      (e: unknown) => (e instanceof Error ? e.message : String(e)),
+    );
+    expect([reloads, error]).toEqual([
+      0,
+      "Failed to fetch dynamically imported module",
+    ]);
+  });
+
+  test("surfaces the error instead of reloading over an unsent draft", async () => {
+    renderShell(<HeldDraft />);
     const error = await importWithReload(missingChunk).then(
       () => null,
       (e: unknown) => (e instanceof Error ? e.message : String(e)),

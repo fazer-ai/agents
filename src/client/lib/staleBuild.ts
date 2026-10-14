@@ -1,4 +1,4 @@
-import { lazy, useEffect, useSyncExternalStore } from "react";
+import { lazy, useSyncExternalStore } from "react";
 import { APP_BUILD_ID } from "@/client/lib/env";
 import {
   hasUnsavedChanges,
@@ -69,31 +69,6 @@ export function useStaleBuild(): StaleBuildState {
 // Drops the verdict too, so one test file cannot leave the next one looking at a stale tab.
 export function resetBuildWatch(ownBuild: string = APP_BUILD_ID): void {
   watch = createBuildWatch(ownBuild);
-}
-
-// A screen whose sub-routes are its own tabs, kept mounted across them with state no unsaved guard
-// sees (the agent editor holds the playground composer's draft across its tabs), declares its path.
-// Moving between two paths inside one declared screen is not a change of screen.
-const screenScopes = new Set<string>();
-
-export function useScreenScope(path: string): void {
-  useEffect(() => {
-    screenScopes.add(path);
-    return () => {
-      screenScopes.delete(path);
-    };
-  }, [path]);
-}
-
-const within = (path: string, scope: string) =>
-  path === scope || path.startsWith(`${scope}/`);
-
-export function isSameScreen(from: string, to: string): boolean {
-  if (from === to) return true;
-  for (const scope of screenScopes) {
-    if (within(from, scope) && within(to, scope)) return true;
-  }
-  return false;
 }
 
 // The operator's own Reload, called behind the discard confirm (useConfirmLeave), which already

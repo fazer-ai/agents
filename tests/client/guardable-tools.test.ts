@@ -311,6 +311,27 @@ describe("assembledToolNames", () => {
     expect(names(catalog(), [])).not.toContain("update_contact");
   });
 
+  test("the audio settings' reply_as_text counts as built", () => {
+    expect(assembledToolNames(catalog(), [], {}).has("reply_as_text")).toBe(
+      true,
+    );
+  });
+
+  test("an MCP tool whose name the write boundary refuses is not offered", () => {
+    const c = catalog({
+      mcpConnections: [{ id: "5", name: "CRM", enabled: true, slug: "crm" }],
+    });
+    const offered = names(c, [
+      grant({ source: "NATIVE", enabledTools: [] }),
+      grant({
+        source: "MCP",
+        mcpServerConnectionId: "5",
+        enabledTools: ["foo.bar", "create_deal"],
+      }),
+    ]);
+    expect(offered).toEqual(["mcp__crm__create_deal"]);
+  });
+
   test("one server's many trimmed tools reach as many suffixes as it has tools", () => {
     const stem = "b".repeat(57);
     const tools = [`${stem}1`, `${stem}2`, `${stem}3`];

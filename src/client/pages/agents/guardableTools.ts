@@ -1,5 +1,6 @@
-import { NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
+import { NATIVE_TOOL_NAMES, REPLY_AS_TEXT_TOOL } from "@/graph/tools/catalog";
 import { ambiguousMcpNames, mcpRuntimeBase } from "@/graph/tools/mcp-names";
+import { isGuardableToolName } from "@/modules/agents/tool-preconditions";
 import { DECISION_ACTION_TOOLS } from "@/modules/decisions/config";
 import { customToolsOf } from "./decisionsFormState";
 import { offeredPackTools } from "./ToolGrantsEditor";
@@ -96,8 +97,9 @@ export function guardableToolsOf(
 
   // One entry per name: the assembly keeps one tool per name too (dropDuplicateToolNames).
   const seen = new Set<string>();
+  // A name the write boundary refuses (an MCP tool called `foo.bar`) is not offered: the save would fail.
   return out.filter((t) => {
-    if (seen.has(t.name)) return false;
+    if (!isGuardableToolName(t.name) || seen.has(t.name)) return false;
     seen.add(t.name);
     return true;
   });
@@ -116,9 +118,11 @@ export function assembledToolNames(
     guardableToolsOf(catalog, grants, opts).map((t) => t.name),
   );
   // A native the catalog leaves out is granted by configuration (`update_contact` by writable contact
-  // fields, for one), which this screen cannot see, so a rule on it is not called inert.
+  // fields, for one), which this screen cannot see, so a rule on it is not called inert; the same goes
+  // for `reply_as_text`, which the agent's audio settings build.
   const listed = new Set(catalog.native.map((n) => n.name));
   for (const n of NATIVE_TOOL_NAMES) if (!listed.has(n)) names.add(n);
+  names.add(REPLY_AS_TEXT_TOOL);
   // Each granted MCP tool's own name, plus the suffixes the assembly may give a name two tools reach
   // (`ambiguousMcpNames`, the same set the decisions editor holds back), and only those.
   const servers: { slug: string; tools: string[] }[] = [];

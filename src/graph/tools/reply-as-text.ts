@@ -1,12 +1,13 @@
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
+import { REPLY_AS_TEXT_TOOL } from "./catalog";
 
 // THE MODEL'S WAY TO SAY "THIS ONE HAS TO BE READ": sends THIS reply as text; the customer's stored
 // preference and later turns are untouched. Offered on EVERY turn of an agent that enabled it: the
 // tool definitions are part of the provider's cached prefix, so a toolset that varied with modality
 // would pay a cache write on every switch. No arguments, so no customer-derived text reaches the
 // tool's log line; the trail records only THAT the model chose text (`tts`, reason `model_choice`).
-export const REPLY_AS_TEXT_TOOL = "reply_as_text";
+export { REPLY_AS_TEXT_TOOL };
 
 // The turn's record of the choice, owned by whoever delivers the reply (the reactive turn, the
 // playground) and read once, at delivery. A holder rather than a return value because the tool runs

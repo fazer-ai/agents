@@ -111,6 +111,10 @@ export const OPEN_CASE_TOOL_NAME = "open_case_in_inbox";
 export const OPEN_CASE_HANDED_MARK =
   "This conversation was handed to the human team";
 
+// Built by configuration rather than granted (`tts.textChoice`), so not in the native catalog; named
+// here, in a module with no imports, so the console can ask about it without loading the tool.
+export const REPLY_AS_TEXT_TOOL = "reply_as_text";
+
 export const RAG_TOOL_NAMES = ["search_knowledge", "suggest_kb_entry"] as const;
 export type RagToolName = (typeof RAG_TOOL_NAMES)[number];
 

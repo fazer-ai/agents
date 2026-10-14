@@ -639,6 +639,19 @@ export async function followUpHandler(
   // inactivity cadence again.
   const retryingHandover = job.payload.handoverRetry === true;
   if (retryingHandover) {
+    // A conversation gone from the mirror (its instance removed) has nothing to reconcile, and
+    // a retry that waited for it would wait forever.
+    const mirrored = await runScopedOn(base, sysCtx(tenantId), (db) =>
+      db.conversation.findFirst({
+        where: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootConversationId: conversationId,
+        },
+        select: { id: true },
+      }),
+    );
+    if (!mirrored) return { outcome: "done" };
     const now = await reconcileFromChatwoot(
       base,
       tenantId,

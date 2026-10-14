@@ -268,7 +268,12 @@ export async function lastReplyDelivery(params: {
       (m) =>
         !armed.has(mediaFallbackDedupeKey(params.instanceId, m.id)) &&
         !!m.externalError &&
-        resendExpected(m.externalError, m.sendId ?? null) &&
+        resendExpected(
+          m.externalError,
+          m.sendId ?? null,
+          m.attachmentTypes.includes("audio") ||
+            (m.attachmentTypes.length === 0 && m.content.trim().length > 0),
+        ) &&
         m.createdAt != null &&
         now.getTime() < m.createdAt.getTime() + RESEND_ARM_GRACE_MS,
     )

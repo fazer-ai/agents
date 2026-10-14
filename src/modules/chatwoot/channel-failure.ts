@@ -154,13 +154,19 @@ export function channelErrorCode(externalError: string): string | null {
 
 // Whether a refusal on this message gets a resend armed for it, once its webhook arrives: the same
 // decision `handleChannelFailure` takes, for a reader that sees the refusal before the webhook does.
+// `hasText` is whether the failure will carry text to resend: a voice note's (its reply, kept with it)
+// or a text message's own; a file is resent as nothing (`no_text`).
 export function resendExpected(
   externalError: string,
   sendId: string | null,
+  hasText: boolean,
 ): boolean {
   const kind = classify(channelErrorCode(externalError));
   return (
-    kind !== "delivery" && kind !== "account" && !isReplacement(sendId ?? "")
+    hasText &&
+    kind !== "delivery" &&
+    kind !== "account" &&
+    !isReplacement(sendId ?? "")
   );
 }
 

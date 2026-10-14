@@ -1286,6 +1286,47 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     expect(s.notes).toEqual([]);
   });
 
+  // A file with no text is resent as nothing, so its refusal is not waited for either.
+  test("a fresh refusal on a file with no text is handed over at once", async () => {
+    await seedConversation(1753, due());
+    const s = stubClient({
+      page: [
+        {
+          ...replyRow(17531, {
+            refused: true,
+            createdAt: Math.floor(Date.now() / 1000) - 60,
+          }),
+          content: "",
+          attachments: [
+            { id: 1, file_type: "image", data_url: "https://x/y.png" },
+          ],
+        },
+      ],
+    });
+    expect(await run(1753, s)).toEqual({ outcome: "done" });
+    expect(s.notes.map(([c]) => c)).toEqual([1753]);
+  });
+
+  // A retry for a conversation gone from the mirror (its instance removed) ends instead of waiting
+  // for a reconcile that cannot happen.
+  test("a hand-over retry for a conversation no longer mirrored ends", async () => {
+    const s = stubClient({ page: [replyRow(17541, { refused: true })] });
+    const out = await followUpHandler(
+      {
+        ...jobFor(1754),
+        payload: { ...jobFor(1754).payload, handoverRetry: true },
+      },
+      appDb,
+      {
+        makeModel: fakeModel,
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    );
+    expect(out).toEqual({ outcome: "done" });
+  });
+
   // A refusal that never gets a resend (a wall, or a resend refused itself) is not waited for.
   test("a fresh refusal no resend follows is handed over at once", async () => {
     await seedConversation(1752, due());

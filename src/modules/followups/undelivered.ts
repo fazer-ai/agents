@@ -144,14 +144,17 @@ export async function lastReplyDelivery(params: {
     before = oldest.id;
   }
   if (newest === null) return { state: "delivered" };
-  const last = newest;
   const key = replyKeyOf(newest.sendId);
-  const reply = read.filter(
-    (m) =>
-      ours(m) &&
-      (m.id === newest.id || (key !== null && replyKeyOf(m.sendId) === key)),
+  const replyOf = (rows: Row[], head: Row) =>
+    rows.filter(
+      (m) =>
+        ours(m) &&
+        (m.id === head.id || (key !== null && replyKeyOf(m.sendId) === key)),
+    );
+  const start = replyOf(read, newest).reduce(
+    (a, m) => (m.id < a ? m.id : a),
+    newest.id,
   );
-  const start = reply.reduce((a, m) => (m.id < a ? m.id : a), last.id);
   // NOTE: with the pages run out, a customer message already handled says enough: before the reply
   // it is where the reply starts, and inside it it supersedes the reply (below). Without one, the
   // reply's earlier messages are unread, and an unread one may be the refused one.
@@ -176,12 +179,31 @@ export async function lastReplyDelivery(params: {
     const rows = parseChatwootMessages(raw);
     if (chatwootMessageListLength(raw) !== rows.length)
       throw new Error("follow-up: the catch-up read did not read");
-    for (const m of rows) if (!read.some((r) => r.id === m.id)) read.push(m);
+    // NOTE: the later copy wins: a refusal written between the two reads is on it.
+    for (const m of rows) {
+      const at = read.findIndex((r) => r.id === m.id);
+      if (at === -1) read.push(m);
+      else read[at] = m;
+    }
     if (rows.length < CATCH_UP_PAGE) break;
     if (n + 1 >= CATCH_UP_MAX_READS)
       throw new Error("follow-up: the history after the reply did not read");
     cursor = Math.max(...rows.map((m) => m.id));
   }
+  // The reply judged on the merged history: a replacement that landed between the reads joins it,
+  // and a newer reply of ours means the conversation moved while it was read, so it is read again.
+  const head = read
+    .filter(ours)
+    .reduce((a, m) => (m.id > a.id ? m : a), newest);
+  if (
+    head.id !== newest.id &&
+    (key === null || replyKeyOf(head.sendId) !== key)
+  )
+    throw new Error(
+      "follow-up: the agent replied again while the reply was read",
+    );
+  const last = head;
+  const reply = replyOf(read, newest);
   const open = await params.stillOpen(read);
   // NOTE: from where the reply starts, so one written between its balloons counts too.
   if (read.some((m) => m.id > start && customer(m) && open.has(m.id)))

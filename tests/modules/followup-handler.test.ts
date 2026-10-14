@@ -70,6 +70,8 @@ function stubClient(
     firstLive?: Record<string, unknown>;
     // The version every live read reports (`updated_at`), when a test orders it against the mirror.
     liveVersion?: number;
+    // What the catch-up read (by id) answers, when it is to see a later state than the pages.
+    afterPage?: Record<string, unknown>[];
     // Runs after a toggle lands: what reaches the mirror while the caller reads the result back.
     onToggle?: () => Promise<void>;
     // The latest page of the conversation, which the handler reads to tell whether the last reply
@@ -122,7 +124,7 @@ function stubClient(
       // NOTE: the catch-up read: everything past the id, reactions to older messages included.
       if (o?.after !== undefined)
         return {
-          payload: rows
+          payload: (over.afterPage ?? rows)
             .filter((m) => Number(m.id) > (o.after ?? 0))
             .slice(0, 100),
         };
@@ -1309,6 +1311,49 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     });
     expect(await run(1745, s)).toMatchObject({ outcome: "reschedule" });
     expect(s.resolved).toEqual([]);
+    expect(s.notes).toEqual([]);
+  });
+
+  // The catch-up read is the later look at the reply: a refusal that landed between the two reads is
+  // on it, and wins over the earlier copy.
+  test("a refusal seen only by the catch-up read is not lost", async () => {
+    await seedConversation(1746, due());
+    const s = stubClient({
+      page: [replyRow(17461)],
+      afterPage: [replyRow(17461, { refused: true })],
+    });
+    expect(await run(1746, s)).toEqual({ outcome: "done" });
+    expect(s.notes.map(([c]) => c)).toEqual([1746]);
+  });
+
+  // A replacement that landed between the reads joins the reply it replaces.
+  test("a replacement seen only by the catch-up read completes the reply", async () => {
+    await seedConversation(1747, due());
+    const s = stubClient({
+      page: [replyRow(17471, { refused: true, sendId: "reply:k47:a" })],
+      afterPage: [
+        replyRow(17471, { refused: true, sendId: "reply:k47:a" }),
+        replyRow(17472, { sendId: "reply:k47:channel-resend:17471" }),
+      ],
+    });
+    expect(await run(1747, s)).toEqual({ outcome: "done" });
+    expect(s.sent.map(([c]) => c)).toEqual([1747]);
+    expect(s.notes).toEqual([]);
+  });
+
+  // A new reply of the agent's that landed between the reads: the conversation moved while it was
+  // read, so the step holds and reads it again.
+  test("a new reply seen only by the catch-up read holds the step", async () => {
+    await seedConversation(1748, due());
+    const s = stubClient({
+      page: [replyRow(17481, { sendId: "reply:k48:a" })],
+      afterPage: [
+        replyRow(17481, { sendId: "reply:k48:a" }),
+        replyRow(17482, { refused: true, sendId: "reply:k49:a" }),
+      ],
+    });
+    expect(await run(1748, s)).toMatchObject({ outcome: "reschedule" });
+    expect(s.sent).toEqual([]);
     expect(s.notes).toEqual([]);
   });
 

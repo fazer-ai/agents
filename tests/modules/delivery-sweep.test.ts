@@ -1161,9 +1161,10 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     // ORDERING, and it only shows on failure. A process dying between the turn's decision and tx2
     // (the error clearing, the follow-up arming, the ingestion, the watermark tail) must leave the
     // message settled, so the settlement is checked at the moment it is written: a trigger on the
-    // sibling row's move to PROCESSED refuses it once a tail write has already landed (the error
-    // cleared, or tx2 run on the delivery's own row). The settlement swallows its own failure, so a
-    // late one shows as the sibling left PROCESSING.
+    // sibling row's move to PROCESSED refuses it once the conversation's error is cleared, the first
+    // tail write. The delivery's own status is no marker: one updateMany settles both rows, in no
+    // promised order. The settlement swallows its own failure, so a late one shows as the sibling
+    // left PROCESSING.
     const convId = 8964;
     const messageId = 9464;
     const conv = await seedConversation(convId);

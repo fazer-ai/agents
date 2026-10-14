@@ -1,3 +1,4 @@
+import { NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
 import { mcpRuntimeBase } from "@/graph/tools/mcp-names";
 import { DECISION_ACTION_TOOLS } from "@/modules/decisions/config";
 import { customToolsOf } from "./decisionsFormState";
@@ -58,7 +59,9 @@ export function guardableToolsOf(
           out.push({ name, label: null, kind: "rag" });
         continue;
       }
+      // NOTE: a watcher's muted turn builds no document tool.
       if (g.source === "DOCUMENT") {
+        if (opts.observing) continue;
         const tpl = catalog.documentTemplates.find(
           (d) => d.id === g.documentTemplateId,
         );
@@ -83,6 +86,14 @@ export function guardableToolsOf(
     }
   }
 
+  // Two integrations of one catalog type expose the same names, and which one the assembly keeps is
+  // decided by an order this screen does not see, so such a name carries no integration's label.
+  const packs = new Map<string, number>();
+  for (const t of out)
+    if (t.kind === "toolpack") packs.set(t.name, (packs.get(t.name) ?? 0) + 1);
+  for (const t of out)
+    if (t.kind === "toolpack" && (packs.get(t.name) ?? 0) > 1) t.label = t.name;
+
   // One entry per name: the assembly keeps one tool per name too (dropDuplicateToolNames).
   const seen = new Set<string>();
   return out.filter((t) => {
@@ -104,6 +115,14 @@ export function assembledToolNames(
   const names = new Set(
     guardableToolsOf(catalog, grants, opts).map((t) => t.name),
   );
+  // A native the catalog leaves out is granted by configuration (`update_contact` by writable contact
+  // fields, for one), which this screen cannot see, so a rule on it is not called inert.
+  const listed = new Set(catalog.native.map((n) => n.name));
+  for (const n of NATIVE_TOOL_NAMES) if (!listed.has(n)) names.add(n);
+  // A collision suffix can reach as far as the number of MCP tools the agent is granted.
+  const mcpTools = grants
+    .filter((g) => g.source === "MCP")
+    .reduce((sum, g) => sum + (g.enabledTools?.length ?? 0), 0);
   for (const g of grants) {
     if (g.source !== "MCP") continue;
     const conn = catalog.mcpConnections.find(
@@ -113,8 +132,7 @@ export function assembledToolNames(
     for (const tool of g.enabledTools ?? []) {
       const base = mcpRuntimeBase(conn.slug, tool);
       names.add(base);
-      // NOTE: a collision suffix the assembly may add (`_2`, `_3`, ...), bounded by the grant count.
-      for (let i = 2; i <= grants.length + 1; i++)
+      for (let i = 2; i <= mcpTools + 1; i++)
         names.add(base.slice(0, 64 - `_${i}`.length) + `_${i}`);
     }
   }

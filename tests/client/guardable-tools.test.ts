@@ -284,4 +284,77 @@ describe("assembledToolNames", () => {
     );
     expect(built.has("mcp__crm__create_deal")).toBe(false);
   });
+
+  test("a native the catalog leaves out is granted by configuration, so it counts as built", () => {
+    // `update_contact` comes from writable contact fields, not from a grant this screen sees.
+    const built = assembledToolNames(catalog(), [], {});
+    expect(built.has("update_contact")).toBe(true);
+    expect(names(catalog(), [])).not.toContain("update_contact");
+  });
+
+  test("one server's many trimmed tools reach as many suffixes as it has tools", () => {
+    const stem = "b".repeat(57);
+    const tools = [`${stem}1`, `${stem}2`, `${stem}3`];
+    const built = assembledToolNames(
+      catalog({
+        mcpConnections: [{ id: "5", name: "CRM", enabled: true, slug: "crm" }],
+      }),
+      [
+        grant({
+          source: "MCP",
+          mcpServerConnectionId: "5",
+          enabledTools: tools,
+        }),
+      ],
+      {},
+    );
+    const base = `mcp____${stem}`;
+    expect(built.has(`${base.slice(0, 62)}_3`)).toBe(true);
+  });
+});
+
+describe("guardableToolsOf, sources a watcher or a collision changes", () => {
+  test("a watcher is not offered a document tool, which its muted turn does not build", () => {
+    const c = catalog({
+      documentTemplates: [
+        {
+          id: "3",
+          name: "Proposta",
+          toolName: "send_proposta",
+          description: null,
+          enabled: true,
+          available: true,
+        },
+      ],
+    });
+    const g = [grant({ source: "DOCUMENT", documentTemplateId: "3" })];
+    expect(names(c, g, { observing: true })).not.toContain("send_proposta");
+    expect(names(c, g)).toContain("send_proposta");
+  });
+
+  test("a name two toolpacks share is labelled by the tool alone", () => {
+    const second = {
+      ...(catalog().integrationInstances[0] as object),
+      id: "10",
+      name: "Agenda 2",
+    };
+    const c = catalog({
+      integrationInstances: [catalog().integrationInstances[0], second],
+    });
+    const tools = guardableToolsOf(
+      c,
+      [
+        calendar,
+        grant({
+          source: "INTEGRATION",
+          integrationInstanceId: "10",
+          enabledTools: ["calendar_check_availability"],
+        }),
+      ],
+      {},
+    );
+    expect(
+      tools.find((t) => t.name === "calendar_check_availability")?.label,
+    ).toBe("calendar_check_availability");
+  });
 });

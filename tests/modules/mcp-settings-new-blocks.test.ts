@@ -173,16 +173,16 @@ describe.skipIf(!dbUp)("the four blocks reach the agent through MCP", () => {
     expect(s.toolPreconditions?.handoff_to_human).toBeDefined();
   });
 
-  test("a precondition on a tool name the runtime cannot guard is REFUSED, not stored", async () => {
-    // The write boundary restricts these keys to the native catalog, and MCP must not be the way around
-    // it: a rule on an MCP-namespaced name reads as protection and guards nothing.
+  test("a precondition on a name no tool can carry is REFUSED, not stored", async () => {
+    // MCP is not a way around the write boundary: a name with a space matches no tool the runtime
+    // builds, and stored it would read as protection.
     const r = await agentSettingsSet(
       principal(),
       {
         agent_id: String(agentId),
         dry_run: false,
         toolPreconditions: {
-          mcp__crm__create_deal: {
+          "crm deal": {
             kind: "attribute",
             scope: "conversation",
             key: "cpf",
@@ -199,8 +199,39 @@ describe.skipIf(!dbUp)("the four blocks reach the agent through MCP", () => {
         select: { settings: true },
       })
     ).settings as Record<string, Record<string, unknown>>;
-    expect(stored.toolPreconditions?.mcp__crm__create_deal).toBeUndefined();
+    expect(stored.toolPreconditions?.["crm deal"]).toBeUndefined();
     // The rule that WAS there is untouched by the refused write.
+    expect(stored.toolPreconditions?.handoff_to_human).toBeDefined();
+  });
+
+  test("a precondition on an MCP tool's name is stored beside the native one", async () => {
+    const r = await agentSettingsSet(
+      principal(),
+      {
+        agent_id: String(agentId),
+        dry_run: false,
+        toolPreconditions: {
+          mcp__crm__create_deal: {
+            kind: "attribute",
+            scope: "conversation",
+            key: "cpf",
+          },
+        },
+      } as never,
+      { base: appDb },
+    );
+    expect(r.ok).toBe(true);
+    const stored = (
+      await suDb.agent.findUniqueOrThrow({
+        where: { id: agentId },
+        select: { settings: true },
+      })
+    ).settings as Record<string, Record<string, unknown>>;
+    expect(stored.toolPreconditions?.mcp__crm__create_deal).toEqual({
+      kind: "attribute",
+      scope: "conversation",
+      key: "cpf",
+    });
     expect(stored.toolPreconditions?.handoff_to_human).toBeDefined();
   });
 

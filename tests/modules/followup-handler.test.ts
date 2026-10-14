@@ -68,6 +68,10 @@ function stubClient(
     // More of the live conversation for the first read: its status and version, when a test needs
     // a read that a later change in Chatwoot made stale.
     firstLive?: Record<string, unknown>;
+    // The version every live read reports (`updated_at`), when a test orders it against the mirror.
+    liveVersion?: number;
+    // Runs after a toggle lands: what reaches the mirror while the caller reads the result back.
+    onToggle?: () => Promise<void>;
     // The latest page of the conversation, which the handler reads to tell whether the last reply
     // arrived. Empty by default: no reply of ours on it reads as nothing refused. Paged the way
     // Chatwoot pages: the newest 20, or the 20 older than `before`.
@@ -97,6 +101,9 @@ function stubClient(
       if (over.liveFails?.on) throw new Error("Chatwoot unreachable");
       const first = liveReads++ === 0 ? over.firstLive : undefined;
       return {
+        ...(over.liveVersion === undefined
+          ? {}
+          : { updated_at: over.liveVersion }),
         ...first,
         id: c,
         status: first?.status ?? status,
@@ -129,6 +136,7 @@ function stubClient(
       if (over.toggleFails?.on) throw new Error("toggle refused");
       resolved.push(c);
       status = to;
+      await over.onToggle?.();
       return {};
     },
   } as unknown as ChatwootClient;
@@ -1589,6 +1597,54 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     expect(await run(1734, s)).toEqual({ outcome: "done" });
     expect(s.resolved).toEqual([]);
     expect(await lastFollowUpOf(1734)).not.toBeNull();
+  });
+
+  // An operator gave the conversation back while the hand-over read it: the read is older than the
+  // mirror, so the episode is not spent on it and the hand-over is asked again.
+  test("a hand-over read older than the mirror does not spend the episode", async () => {
+    await seedConversation(1740, due());
+    const version = Math.floor(Date.now() / 1000);
+    const s = stubClient({
+      page: [replyRow(17401, { refused: true })],
+      liveVersion: version - 60,
+      onToggle: async () => {
+        await suDb.conversation.updateMany({
+          where: { tenantId, chatwootConversationId: 1740 },
+          data: {
+            status: "pending",
+            chatwootStatusAt: version,
+            statusClaimUntil: null,
+          },
+        });
+      },
+    });
+    expect(await run(1740, s)).toMatchObject({
+      outcome: "reschedule",
+      payload: { handoverRetry: true },
+    });
+    expect(await lastFollowUpOf(1740)).toBeNull();
+  });
+
+  // The note the failed toggle posted is activity, but the retry is a hand-over still owed, not a
+  // nudge: it does not wait out the inactivity delay again.
+  test("a hand-over retry does not wait out the inactivity delay", async () => {
+    await seedConversation(1739, { ...due(), lastEventAt: new Date() });
+    const s = stubClient({ page: [replyRow(17391, { refused: true })] });
+    const done = await followUpHandler(
+      {
+        ...jobFor(1739),
+        payload: { ...jobFor(1739).payload, handoverRetry: true },
+      },
+      appDb,
+      {
+        makeModel: fakeModel,
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    );
+    expect(done).toEqual({ outcome: "done" });
+    expect(s.resolved).toEqual([1739]);
   });
 
   test("a page that does not read holds the step instead of nudging", async () => {

@@ -487,36 +487,6 @@ async function ourAgentBotIdOf(
   return bot?.chatwootAgentBotId ?? null;
 }
 
-// Whether Chatwoot has the conversation out of the bot's hands, read live. Unreadable answers no, so
-// the hand-over is asked again rather than taken for done.
-async function handedToTeam(
-  base: PrismaClient,
-  tenantId: bigint,
-  instanceId: bigint,
-  conversationId: number,
-  deps?: RuntimeDeps,
-): Promise<boolean> {
-  try {
-    const client = await loadChatwootClient(tenantId, instanceId, {
-      base,
-      ...(deps?.makeClient ? { makeClient: deps.makeClient } : {}),
-    });
-    const live = parseLiveConversation(
-      await client.getConversation(conversationId),
-    );
-    if (live === null) return false;
-    const ourAgentBotId = await ourAgentBotIdOf(
-      base,
-      tenantId,
-      instanceId,
-      conversationId,
-    );
-    return !shouldBotHandle(live, { ourAgentBotId });
-  } catch {
-    return false;
-  }
-}
-
 // How long past the hand-over's status claim the retry runs, so the claim has run out by then.
 const HANDOVER_RETRY_SLACK_MS = 5_000;
 
@@ -665,7 +635,10 @@ export async function followUpHandler(
   // A hand-over whose toggle did not land, or was not confirmed, leaves the mirror's claim saying
   // `open` whatever Chatwoot says, and the liveness gate below would end the episode on it. The retry
   // runs past the claim's life and reconciles the mirror from Chatwoot first.
-  if (job.payload.handoverRetry === true) {
+  // A hand-over still owed, carried past the reconcile: it is not a nudge, so it does not wait out the
+  // inactivity cadence again.
+  const retryingHandover = job.payload.handoverRetry === true;
+  if (retryingHandover) {
     const now = await reconcileFromChatwoot(
       base,
       tenantId,
@@ -884,7 +857,7 @@ export async function followUpHandler(
           ctx.conv.lastProactiveAt,
         )
       : lastFollowUpAt;
-  if (anchor) {
+  if (anchor && !retryingHandover) {
     const dueAt = anchor.getTime() + stepDelayMinutes(step) * 60_000;
     if (Date.now() < dueAt) {
       return {
@@ -1090,7 +1063,15 @@ export async function followUpHandler(
     // the note: the note can be posted, or coalesced, with the toggle refused. One that did not (the
     // reply landed meanwhile, a read or the toggle failed) is asked again shortly, unless the run
     // was retired.
-    if (await handedToTeam(base, tenantId, instanceId, conversationId, deps)) {
+    if (
+      (await reconcileFromChatwoot(
+        base,
+        tenantId,
+        instanceId,
+        conversationId,
+        deps,
+      )) === "handed"
+    ) {
       await stampUnlessRetired();
       return { outcome: "done" };
     }

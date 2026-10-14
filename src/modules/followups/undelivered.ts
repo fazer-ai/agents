@@ -3,6 +3,7 @@ import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import {
   channelErrorCode,
   mediaFallbackDedupeKey,
+  resendExpected,
 } from "@/modules/chatwoot/channel-failure";
 import { replyKeyOf } from "@/modules/chatwoot/constants";
 import {
@@ -40,6 +41,10 @@ export type LastReplyDelivery =
 // How long after the resend's own instant the follow-up asks again: the send and the webhook that
 // mirrors it take a moment, and asking at the exact instant would find the job still claimed.
 export const RESEND_SETTLE_MS = 60_000;
+
+// How long after a refused message was sent the follow-up waits for its resend to be armed, when the
+// refusal is on Chatwoot and the webhook that arms the resend has not arrived yet.
+export const RESEND_ARM_GRACE_MS = 10 * 60_000;
 
 // How far back the read looks for the agent's newest reply and where it starts. A conversation whose
 // last reply sits past this many pages of notes and activity has moved on from it.
@@ -240,19 +245,36 @@ export async function lastReplyDelivery(params: {
             mediaFallbackDedupeKey(params.instanceId, m.id),
           ),
         },
-        status: { in: ["PENDING", "CLAIMED"] },
       },
-      select: { runAt: true },
+      select: { runAt: true, status: true, dedupeKey: true },
     }),
   );
-  if (jobs.length > 0) {
-    const now = params.now ?? new Date();
-    const latest = jobs.reduce((a, j) => (j.runAt > a ? j.runAt : a), now);
+  const now = params.now ?? new Date();
+  const queued = jobs.filter(
+    (j) => j.status === "PENDING" || j.status === "CLAIMED",
+  );
+  if (queued.length > 0) {
+    const latest = queued.reduce((a, j) => (j.runAt > a ? j.runAt : a), now);
     return {
       state: "resend_pending",
       until: new Date(latest.getTime() + RESEND_SETTLE_MS),
     };
   }
+  // No job at all is not a resend that ran: the webhook that arms it may still be on its way.
+  // A refusal that gets one waits a bounded while for it, measured from when the message was sent.
+  const armed = new Set(jobs.map((j) => j.dedupeKey));
+  const awaited = missing
+    .filter(
+      (m) =>
+        !armed.has(mediaFallbackDedupeKey(params.instanceId, m.id)) &&
+        !!m.externalError &&
+        resendExpected(m.externalError, m.sendId ?? null) &&
+        m.createdAt != null &&
+        now.getTime() < m.createdAt.getTime() + RESEND_ARM_GRACE_MS,
+    )
+    .map((m) => (m.createdAt as Date).getTime() + RESEND_ARM_GRACE_MS);
+  if (awaited.length > 0)
+    return { state: "resend_pending", until: new Date(Math.max(...awaited)) };
   const lost = missing.reduce((a, m) => (m.id > a.id ? m : a));
   // The newest incoming message read, not only the one answered: any after the reply was
   // already assessed above (a blank one, a reaction no turn runs for), and the hand-over's fence

@@ -152,6 +152,18 @@ export function channelErrorCode(externalError: string): string | null {
   return m?.[1] ?? m?.[2] ?? null;
 }
 
+// Whether a refusal on this message gets a resend armed for it, once its webhook arrives: the same
+// decision `handleChannelFailure` takes, for a reader that sees the refusal before the webhook does.
+export function resendExpected(
+  externalError: string,
+  sendId: string | null,
+): boolean {
+  const kind = classify(channelErrorCode(externalError));
+  return (
+    kind !== "delivery" && kind !== "account" && !isReplacement(sendId ?? "")
+  );
+}
+
 // Whether this event is a channel failure on a message THIS route's bot sent, and what it is. Null for
 // everything else, which is every event but a rare few.
 export function channelFailureOf(

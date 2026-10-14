@@ -830,14 +830,20 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
   // The agent's reply as it sits on the latest page: refused by the channel when `refused` is set.
   function replyRow(
     id: number,
-    opts: { refused?: boolean; botId?: number; sendId?: string } = {},
+    opts: {
+      refused?: boolean;
+      botId?: number;
+      sendId?: string;
+      createdAt?: number;
+    } = {},
   ) {
     return {
       id,
       content: "O plano custa R$ 89",
       message_type: 1,
       private: false,
-      created_at: Math.floor(Date.now() / 1000) - 600,
+      // Past the wait for a resend to be armed, unless a test sets its own.
+      created_at: opts.createdAt ?? Math.floor(Date.now() / 1000) - 1_200,
       sender: { type: "agent_bot", id: opts.botId ?? 5 },
       content_attributes: {
         ...(opts.refused
@@ -889,7 +895,11 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     });
     const s = stubClient({
       page: [
-        replyRow(17051, { refused: true }),
+        // NOTE: fresh, so the spent job is what says no resend is coming.
+        replyRow(17051, {
+          refused: true,
+          createdAt: Math.floor(Date.now() / 1000) - 60,
+        }),
         { ...replyRow(17052), private: true },
       ],
     });
@@ -1258,6 +1268,38 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     });
     expect(await run(1750, s)).toEqual({ outcome: "done" });
     expect(s.resolved).toEqual([1750]);
+  });
+
+  // The refusal is on Chatwoot before the webhook that arms its resend reached us: no job yet is not a
+  // resend that ran, so the step waits a bounded while instead of handing over.
+  test("a fresh refusal whose resend is not armed yet waits for it", async () => {
+    await seedConversation(1751, due());
+    const sent = Math.floor(Date.now() / 1000) - 60;
+    const s = stubClient({
+      page: [replyRow(17511, { refused: true, createdAt: sent })],
+    });
+    const out = await run(1751, s);
+    expect(out).toMatchObject({ outcome: "reschedule" });
+    const at = (out as { runAt: Date }).runAt.getTime();
+    expect(at).toBeGreaterThan(Date.now() + 8 * 60_000);
+    expect(at).toBeLessThanOrEqual(sent * 1000 + 10 * 60_000 + 1_000);
+    expect(s.notes).toEqual([]);
+  });
+
+  // A refusal that never gets a resend (a wall, or a resend refused itself) is not waited for.
+  test("a fresh refusal no resend follows is handed over at once", async () => {
+    await seedConversation(1752, due());
+    const s = stubClient({
+      page: [
+        replyRow(17521, {
+          refused: true,
+          sendId: "reply:k52:channel-resend:17520",
+          createdAt: Math.floor(Date.now() / 1000) - 60,
+        }),
+      ],
+    });
+    expect(await run(1752, s)).toEqual({ outcome: "done" });
+    expect(s.notes.map(([c]) => c)).toEqual([1752]);
   });
 
   // A customer message that arrived after the turn's last look and before its reply was written is

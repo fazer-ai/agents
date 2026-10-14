@@ -59,6 +59,10 @@ export interface ToolPreconditionRow {
   scope: "conversation" | "contact";
   key: string;
   equals: string;
+  // Whether the rule asks for any value or for `equals`. Absent, it follows `equals`: a typed value
+  // means "equals". Kept apart so "equals" with the value still blank stays chosen while it is typed,
+  // and a value hidden by "any" is kept on screen state but never saved.
+  match?: "any" | "equals";
 }
 
 // The refusal marks the editor hands its tabs, one object per tab. The readings stay in

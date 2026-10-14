@@ -491,6 +491,7 @@ describe("the Tools tab offers every granted tool, and flags a rule on one that 
       enabledTools: ["create_deal"],
     }),
   ];
+  const GONE = /is not among the agent's tools/;
   const offered = () =>
     [
       ...(screen.getByRole("combobox", { name: "Tool" }) as HTMLSelectElement)
@@ -522,7 +523,8 @@ describe("the Tools tab offers every granted tool, and flags a rule on one that 
     fireEvent.change(screen.getByRole("combobox", { name: "Tool" }), {
       target: { value: "calendar_check_availability" },
     });
-    fireEvent.change(screen.getByRole("textbox", { name: "Attribute" }), {
+    // NOTE: an input with suggestions (`list`) is a combobox, not a textbox.
+    fireEvent.change(screen.getByRole("combobox", { name: "Attribute" }), {
       target: { value: "dia_turno" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Save tools" }));
@@ -559,7 +561,7 @@ describe("the Tools tab offers every granted tool, and flags a rule on one that 
     await renderEditor(stub, "tools");
     expect(
       await screen.findByText(
-        "This tool is not among the agent's tools, so this rule guards nothing.",
+        "busca_antiga is not among the agent's tools: it was renamed, removed or turned off. This rule guards nothing.",
       ),
     ).toBeTruthy();
     expect(offered()).toContain("busca_antiga");
@@ -600,11 +602,7 @@ describe("the Tools tab offers every granted tool, and flags a rule on one that 
     );
     await renderEditor(stub, "tools");
     expect(offered()).toContain("mcp__crm__create_deal");
-    expect(
-      screen.queryByText(
-        "This tool is not among the agent's tools, so this rule guards nothing.",
-      ),
-    ).toBeNull();
+    expect(screen.queryByText(GONE)).toBeNull();
   });
 
   test("a rule on a granted tool carries no warning", async () => {
@@ -624,10 +622,78 @@ describe("the Tools tab offers every granted tool, and flags a rule on one that 
     );
     await renderEditor(stub, "tools");
     await screen.findByRole("combobox", { name: "Tool" });
+    expect(screen.queryByText(GONE)).toBeNull();
+  });
+  test("the select groups the offered tools by where they come from", async () => {
+    const stub = stubEditorApi({ settings: {} }, { catalog, grants });
+    await renderEditor(stub, "tools");
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Add a precondition" }),
+    );
+    const select = screen.getByRole("combobox", {
+      name: "Tool",
+    }) as HTMLSelectElement;
+    const groups = Object.fromEntries(
+      [...select.querySelectorAll("optgroup")].map((g) => [
+        g.label,
+        [...g.querySelectorAll("option")].map((o) => o.value),
+      ]),
+    );
+    expect(groups["HTTP tools"]).toEqual(["busca_por_cpf"]);
+    expect(groups["MCP servers"]).toEqual(["mcp__crm__create_deal"]);
+    expect(groups.Integrations).toEqual(["calendar_check_availability"]);
+  });
+
+  test('choosing "equals" saves the value, and going back to "any value" drops it', async () => {
+    const stub = stubEditorApi(
+      {
+        settings: {
+          toolPreconditions: {
+            busca_por_cpf: { kind: "attribute", scope: "contact", key: "cpf" },
+          },
+        },
+      },
+      { catalog, grants },
+    );
+    await renderEditor(stub, "tools");
+    const match = await screen.findByRole("combobox", { name: "Condition" });
     expect(
-      screen.queryByText(
-        "This tool is not among the agent's tools, so this rule guards nothing.",
-      ),
+      screen.queryByRole("textbox", { name: "Required value" }),
     ).toBeNull();
+    fireEvent.change(match, { target: { value: "equals" } });
+    fireEvent.change(screen.getByRole("textbox", { name: "Required value" }), {
+      target: { value: "ok" },
+    });
+    const saved = async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Save tools" }));
+      await waitFor(() =>
+        expect(
+          stub.writes.some((w) => w.method === "PATCH" && w.body.settings),
+        ).toBe(true),
+      );
+      const w = stub.writes.filter(
+        (x) => x.method === "PATCH" && x.body.settings,
+      );
+      const settings = w[w.length - 1]?.body.settings as Record<
+        string,
+        Record<string, unknown>
+      >;
+      return settings.toolPreconditions?.busca_por_cpf;
+    };
+    expect(await saved()).toEqual({
+      kind: "attribute",
+      scope: "contact",
+      key: "cpf",
+      equals: "ok",
+    });
+    stub.writes.length = 0;
+    fireEvent.change(screen.getByRole("combobox", { name: "Condition" }), {
+      target: { value: "any" },
+    });
+    expect(await saved()).toEqual({
+      kind: "attribute",
+      scope: "contact",
+      key: "cpf",
+    });
   });
 });

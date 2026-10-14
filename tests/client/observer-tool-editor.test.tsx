@@ -308,7 +308,7 @@ test("...and an agent that answers is offered all of them", async () => {
 // and the section index on the left leave out what a muted turn strips.
 function renderToolsTab(
   observing: boolean,
-  rows: { tool: string; scope: string; key: string; value: string }[] = [],
+  rows: { tool: string; scope: string; key: string; equals: string }[] = [],
 ) {
   const noop = () => undefined;
   return render(
@@ -396,7 +396,7 @@ function renderToolsTab(
 }
 
 // The empty row is what an operator adding a guard sees, and its select is the list of choices.
-const EMPTY_ROW = { tool: "", scope: "conversation", key: "", value: "" };
+const EMPTY_ROW = { tool: "", scope: "conversation", key: "", equals: "" };
 
 test("a watcher is not offered a precondition on a tool its turn would strip", async () => {
   stubAuth();

@@ -20,6 +20,7 @@ describe("the Tools tab's wording", () => {
   test("the preconditions' help says what happens on each engine", () => {
     render(
       <ToolPreconditionsEditor
+        agentId="1"
         rows={[]}
         onChange={() => {}}
         guardableTools={[]}
@@ -33,6 +34,7 @@ describe("the Tools tab's wording", () => {
     cleanup();
     render(
       <ToolPreconditionsEditor
+        agentId="1"
         rows={[]}
         onChange={() => {}}
         guardableTools={[]}

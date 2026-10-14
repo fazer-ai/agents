@@ -261,6 +261,7 @@ export function ToolsTab({
             setIntegrationCollapsed={setIntegrationCollapsed}
           />
           <ToolPreconditionsEditor
+            agentId={agentId}
             rows={toolPreconditions}
             onChange={setToolPreconditions}
             guardableTools={guardableTools}

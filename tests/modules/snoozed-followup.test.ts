@@ -1,4 +1,11 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import {
+  afterAll,
+  beforeAll,
+  describe,
+  expect,
+  setSystemTime,
+  test,
+} from "bun:test";
 import type { BindToolsInput } from "@langchain/core/language_models/chat_models";
 import { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import {
@@ -2019,6 +2026,42 @@ describe.skipIf(!dbUp)("snoozed ladder: the handler", () => {
     // Already due: arming it again would only rewrite the row on every pass until it is claimed.
     expect(second.runAt.getTime()).toBe(first.runAt.getTime());
     expect(second.updatedAt.getTime()).toBe(first.updatedAt.getTime());
+  });
+
+  test("a job the sweep already re-armed is not re-armed again while the app's clock runs ahead of the database's (catches a due row rewritten on every pass)", async () => {
+    await setSettings(LADDER);
+    await seed(2094, { lastEventAt: new Date(Date.now() - 30_000) });
+    await suDb.$executeRaw`UPDATE agents SET updated_at = now() - interval '10 minutes' WHERE id = ${agentId}`;
+    await suDb.$executeRaw`UPDATE inboxes SET responder_bound_at = NULL WHERE tenant_id = ${tenantId}`;
+    const key = snoozedDedupeKey(threadOf(2094));
+    const started = new Date(Date.now() - 60_000);
+    await suDb.schedulerJob.deleteMany({ where: { tenantId, dedupeKey: key } });
+    await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "SNOOZED_FOLLOWUP",
+        dedupeKey: key,
+        runAt: started,
+        claimedAt: started,
+        runStartedAt: started,
+        status: "DONE",
+        payload: { threadId: threadOf(2094) },
+      },
+    });
+    // The app stamps run_at with its own clock; the database's lags it by more than a pass takes.
+    setSystemTime(new Date(Date.now() + 5_000));
+    try {
+      await sweepSnoozedFollowUps(appDb, tenantId, [agentId]);
+      const first = await suDb.schedulerJob.findFirstOrThrow({
+        where: { tenantId, dedupeKey: key },
+        select: { status: true, runAt: true, updatedAt: true },
+      });
+      expect(first.status).toBe("PENDING");
+      // Counted, not compared by value: the clock is frozen, so a rewrite would write the same instants.
+      expect(await sweepSnoozedFollowUps(appDb, tenantId, [agentId])).toBe(0);
+    } finally {
+      setSystemTime();
+    }
   });
 
   test("an event in the last run's own second is swept again: Chatwoot's instants are whole seconds", async () => {

@@ -878,6 +878,9 @@ describe.skipIf(!dbUp)("instance alert order, signing and retention", () => {
       coalesceWindowMs: 0,
       send: { assertSafe: allowAll, fetchImpl: failing },
     });
+    // The backoff is drawn from [0, 2s), so the firing could already be due again: held in the future,
+    // it is still retrying when the recovery is claimed.
+    await suDb.$executeRaw`UPDATE instance_alert_deliveries SET next_attempt_at = now() + interval '1 hour' WHERE next_attempt_at IS NOT NULL`;
     await evaluateSample({ ingress_lag_p95_ms: 0 }, 9_105_000);
     await age();
     const sent: string[] = [];

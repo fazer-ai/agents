@@ -196,7 +196,8 @@ export async function sweepSnoozedFollowUps(
                 j.status = 'CLAIMED'
                 -- A row waiting and already due runs next anyway: arming it again would only rewrite
                 -- it on every pass until it is claimed, since its watermark is still its last start.
-                OR (j.status IN ('PENDING', 'FAILED') AND j.run_at <= now() AT TIME ZONE 'UTC')
+                -- Due by the app's clock, the one that wrote run_at: the database's may lag it.
+                OR (j.status IN ('PENDING', 'FAILED') AND j.run_at <= ${new Date()})
                 OR COALESCE(j.run_started_at, j.claimed_at, j.updated_at) >= GREATEST(
                   c.last_event_at + interval '1 second',
                   to_timestamp(c.chatwoot_status_at + 1) AT TIME ZONE 'UTC',

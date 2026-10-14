@@ -4,12 +4,17 @@ import { afterAll, afterEach, expect, test } from "bun:test";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { hasUnsavedChanges } from "@/client/lib/unsavedGuard";
 import { usePlaygroundChat } from "@/client/pages/agents/usePlaygroundChat";
+import { until } from "@/tests/utils/poll";
 
 // The playground composer's unsent message is input a reload would lose, so while it holds text the
 // console's own reloads (a stale tab, a failed import) wait.
 
 const realFetch = globalThis.fetch;
+// Requests held open by the stub, answered with a failure after each test so no operation outlives
+// the test that started it.
+const pending: ((r: Response) => void)[] = [];
 let threadsHang = false;
+let followupHangs = false;
 let transcribeFails = false;
 // The transcription and the file extraction never answer, nor does opening a thread while
 // `threadsHang` is set, so the test can look at the hook while it is in flight.
@@ -20,9 +25,10 @@ globalThis.fetch = (async (input: RequestInfo | URL) => {
   if (
     url.includes("/audio/transcribe") ||
     url.includes("/file/extract") ||
-    (threadsHang && url.endsWith("/playground/threads"))
+    (threadsHang && url.endsWith("/playground/threads")) ||
+    (followupHangs && url.includes("/playground/followup"))
   )
-    return new Promise<Response>(() => {});
+    return new Promise<Response>((resolve) => pending.push(resolve));
   const body = url.endsWith("/playground/threads")
     ? { threadId: "1:playground:7:fresh" }
     : { sessions: [] };
@@ -69,7 +75,15 @@ afterAll(() => {
   if (realDevices)
     Object.defineProperty(navigator, "mediaDevices", realDevices);
 });
-afterEach(cleanup);
+afterEach(async () => {
+  cleanup();
+  // A request can be issued after the test returns, so answer until nothing is waiting or held.
+  for (let i = 0; i < 100 && (pending.length > 0 || hasUnsavedChanges()); i++) {
+    for (const answer of pending.splice(0))
+      answer(new Response(JSON.stringify({ error: "gone" }), { status: 500 }));
+    await new Promise((r) => setTimeout(r, 10));
+  }
+});
 
 test("an unsent message holds the reload, and clearing it lets go", () => {
   const hook = renderHook(() => usePlaygroundChat("7", false));
@@ -176,5 +190,106 @@ test("once the recording is handed over and its request ends, the hold lets go",
     ]);
   } finally {
     transcribeFails = false;
+  }
+});
+
+test("leaving the editor while a send waits for its thread keeps the hold until it settles", async () => {
+  threadsHang = true;
+  try {
+    const hook = renderHook(() => usePlaygroundChat("7", false));
+    act(() => hook.result.current.setInput("first question"));
+    await act(async () => {
+      void hook.result.current.send();
+      await Promise.resolve();
+    });
+    hook.unmount();
+    expect(hasUnsavedChanges()).toBe(true);
+  } finally {
+    threadsHang = false;
+  }
+});
+
+test("leaving the editor while a file is read keeps the hold", async () => {
+  const hook = renderHook(() => usePlaygroundChat("7", false));
+  await act(async () => {
+    void hook.result.current.sendFile(
+      new File(["%PDF"], "quote.pdf", { type: "application/pdf" }),
+    );
+    await new Promise((r) => setTimeout(r, 0));
+  });
+  hook.unmount();
+  expect(hasUnsavedChanges()).toBe(true);
+});
+
+test("leaving the editor right after stopping a recording keeps the hold until it is handed over", async () => {
+  const syncStop = FakeRecorder.prototype.stop;
+  let handOver: (() => void) | null = null;
+  FakeRecorder.prototype.stop = function (this: FakeRecorder) {
+    this.state = "inactive";
+    handOver = () => {
+      this.ondataavailable?.({ data: new Blob(["voice"]) });
+      this.onstop?.();
+    };
+  };
+  try {
+    const hook = renderHook(() => usePlaygroundChat("7", false));
+    await act(() => hook.result.current.startRecording());
+    act(() => hook.result.current.stopRecording());
+    hook.unmount();
+    const beforeHandOver = hasUnsavedChanges();
+    transcribeFails = true;
+    await act(async () => {
+      (handOver as (() => void) | null)?.();
+      await until("the failed upload to settle", () => !hasUnsavedChanges());
+    });
+    expect([beforeHandOver, hasUnsavedChanges()]).toEqual([true, false]);
+  } finally {
+    transcribeFails = false;
+    FakeRecorder.prototype.stop = syncStop;
+  }
+});
+
+test("a simulated follow-up in flight keeps the hold after the editor unmounts", async () => {
+  const hook = renderHook(() => usePlaygroundChat("7", false));
+  act(() => hook.result.current.setInput("a question"));
+  await act(async () => {
+    await hook.result.current.send();
+  });
+  followupHangs = true;
+  try {
+    const before = hasUnsavedChanges();
+    await act(async () => {
+      void hook.result.current.simulateFollowup();
+      await Promise.resolve();
+    });
+    hook.unmount();
+    expect([before, hasUnsavedChanges()]).toEqual([false, true]);
+  } finally {
+    followupHangs = false;
+  }
+});
+
+test("a recording cancelled between stop and hand-over lets go of the hold", async () => {
+  const syncStop = FakeRecorder.prototype.stop;
+  let handOver: (() => void) | null = null;
+  FakeRecorder.prototype.stop = function (this: FakeRecorder) {
+    this.state = "inactive";
+    handOver = () => {
+      this.ondataavailable?.({ data: new Blob(["voice"]) });
+      this.onstop?.();
+    };
+  };
+  try {
+    const hook = renderHook(() => usePlaygroundChat("7", false));
+    await act(() => hook.result.current.startRecording());
+    act(() => hook.result.current.stopRecording());
+    act(() => hook.result.current.cancelRecording());
+    await act(async () => {
+      (handOver as (() => void) | null)?.();
+      await Promise.resolve();
+    });
+    expect(hasUnsavedChanges()).toBe(false);
+  } finally {
+    FakeRecorder.prototype.stop = syncStop;
   }
 });

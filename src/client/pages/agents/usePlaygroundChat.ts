@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { api } from "@/client/lib/api";
-import { useHeldDraft } from "@/client/lib/unsavedGuard";
+import {
+  holdInFlight,
+  holdWhile,
+  useHeldDraft,
+} from "@/client/lib/unsavedGuard";
 
 // Shape of the playground response, derived from the Eden treaty (never hand-declared — see
 // docs/eden-treaty.md).
@@ -410,8 +414,8 @@ export function usePlaygroundChat(
   const [recordState, setRecordState] = useState<RecordState>("idle");
   const [recordStream, setRecordStream] = useState<MediaStream | null>(null);
   // Between stop() and the browser's `stop` event the recording is neither running nor being
-  // transcribed yet, and it is still the operator's.
-  const [finalizing, setFinalizing] = useState(false);
+  // transcribed yet, and it is still the operator's, even if the editor unmounts meanwhile.
+  const releaseFinalizing = useRef<(() => void) | null>(null);
   const [sessions, setSessions] = useState<PlaygroundSessionMeta[]>([]);
   const [loadingSession, setLoadingSession] = useState(false);
   // Manual "reply with audio" toggle: forces TTS on every turn regardless of the agent's mode.
@@ -527,10 +531,10 @@ export function usePlaygroundChat(
 
   const busy = sending || followingUp || transcribing || extracting;
   const recording = recordState !== "idle";
-  // Everything the operator gave the composer that the server does not have yet: typed text, a
-  // recording running or paused, and any request still in flight (a send, a follow-up, audio or a
-  // file being read into text).
-  useHeldDraft(input.trim() !== "" || recording || finalizing || busy);
+  // What the composer holds while it is on screen: typed text and a recording running or paused.
+  // A request and a stopped recording hold by themselves (holdWhile, holdInFlight), so they keep
+  // holding after the editor unmounts.
+  useHeldDraft(input.trim() !== "" || recording);
   const hasConversation = turns.some(
     (x) => x.role === "user" || x.role === "assistant",
   );
@@ -731,7 +735,7 @@ export function usePlaygroundChat(
     [t],
   );
 
-  const send = useCallback(async () => {
+  const sendNow = useCallback(async () => {
     const text = input.trim();
     if (!text || busy || notReady) return;
     const wasNew = !sessionSaved.current;
@@ -790,8 +794,9 @@ export function usePlaygroundChat(
     refreshSessionUsage,
     ensureThread,
   ]);
+  const send = useCallback(() => holdWhile(() => sendNow()), [sendNow]);
 
-  const simulateFollowup = useCallback(async () => {
+  const simulateFollowupNow = useCallback(async () => {
     if (busy || notReady || !hasConversation) return;
     setFollowingUp(true);
     try {
@@ -839,6 +844,10 @@ export function usePlaygroundChat(
     t,
     refreshSessionUsage,
   ]);
+  const simulateFollowup = useCallback(
+    () => holdWhile(() => simulateFollowupNow()),
+    [simulateFollowupNow],
+  );
 
   // Drops the pending flag on the trailing optimistic user bubble (kept, still playable) — used when
   // a step fails so the bubble stays but stops showing the "Transcribing…"/"Extracting…" state.
@@ -874,7 +883,7 @@ export function usePlaygroundChat(
   //   1) /file/extract → kind + content (fast) → render it under the file;
   //   2) /file (with that extraction) → the agent reply. Passing the extraction back skips a second
   //      vision round trip, so step 2 isn't slowed by re-extracting.
-  const sendFile = useCallback(
+  const sendFileNow = useCallback(
     async (file: File) => {
       if (notReady || busy || recording) return;
       const wasNew = !sessionSaved.current;
@@ -997,6 +1006,10 @@ export function usePlaygroundChat(
       ensureThread,
     ],
   );
+  const sendFile = useCallback(
+    (file: File) => holdWhile(() => sendFileNow(file)),
+    [sendFileNow],
+  );
 
   // ---- Recording (mic → transcribe → turn) ----
   const releaseStream = useCallback(() => {
@@ -1035,7 +1048,7 @@ export function usePlaygroundChat(
   //   1) /audio/transcribe → transcription (fast) → render it immediately;
   //   2) /audio (with that transcription) → the agent reply. Passing the transcription back skips a
   //      second STT round trip, so step 2 isn't slowed by re-transcribing.
-  const sendRecording = useCallback(
+  const sendRecordingNow = useCallback(
     async (blob: Blob) => {
       if (blob.size === 0) return;
       const wasNew = !sessionSaved.current;
@@ -1132,6 +1145,10 @@ export function usePlaygroundChat(
       ensureThread,
     ],
   );
+  const sendRecording = useCallback(
+    (blob: Blob) => holdWhile(() => sendRecordingNow(blob)),
+    [sendRecordingNow],
+  );
 
   const startRecording = useCallback(async () => {
     if (busy || recording || notReady) return;
@@ -1161,19 +1178,22 @@ export function usePlaygroundChat(
       if (ev.data.size > 0) audioChunksRef.current.push(ev.data);
     };
     rec.onstop = () => {
-      setFinalizing(false);
+      const release = releaseFinalizing.current;
+      releaseFinalizing.current = null;
       releaseStream();
       // A cancel set canceledRef before stop(): discard the recording (don't transcribe/send),
       // even though stop()'s trailing dataavailable repopulated the chunks.
       if (canceledRef.current) {
         canceledRef.current = false;
         audioChunksRef.current = [];
+        release?.();
         return;
       }
       const blob = new Blob(audioChunksRef.current, {
         type: rec.mimeType || "audio/webm",
       });
       void sendRecording(blob);
+      release?.();
     };
     rec.start();
     setRecordState("recording");
@@ -1198,7 +1218,7 @@ export function usePlaygroundChat(
   const stopRecording = useCallback(() => {
     const rec = mediaRecorderRef.current;
     if (rec && rec.state !== "inactive") {
-      setFinalizing(true);
+      releaseFinalizing.current ??= holdInFlight();
       rec.stop(); // → onstop → sendRecording
     }
     setRecordState("idle");

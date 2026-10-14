@@ -54,10 +54,34 @@ export function useHeldDraft(active: boolean) {
   }, [active]);
 }
 
-// Whether a reload now would lose something: a form or modal the native prompt is guarding, or a
-// held draft.
+// Work the operator started that the server does not have yet (a send waiting for its thread, a
+// voice note between stop and upload). Held by the operation itself, not by a component, so leaving
+// the screen mid-flight still keeps the console's own reloads off until it settles.
+let inFlight = 0;
+
+export function holdInFlight(): () => void {
+  inFlight += 1;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    inFlight -= 1;
+  };
+}
+
+export async function holdWhile<T>(work: () => Promise<T>): Promise<T> {
+  const release = holdInFlight();
+  try {
+    return await work();
+  } finally {
+    release();
+  }
+}
+
+// Whether a reload now would lose something: a form or modal the native prompt is guarding, a held
+// draft, or work in flight.
 export function hasUnsavedChanges(): boolean {
-  return beforeUnloadCount > 0 || heldDrafts > 0;
+  return beforeUnloadCount > 0 || heldDrafts > 0 || inFlight > 0;
 }
 
 // Force-detach the native prompt. For a confirmed full-page reload (e.g. the

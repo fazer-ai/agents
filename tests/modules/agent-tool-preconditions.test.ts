@@ -243,14 +243,36 @@ describe("invalidToolPreconditions", () => {
       ).toEqual([""]);
     });
 
-    test("an MCP name is refused: its exposed form is not stable identity", () => {
-      // `mcp__<slug>__<tool>` where the slug falls back to the connection id, and an import recreates
-      // the connection under a different one. The rule would survive the import and match nothing.
-      expect(
-        invalidToolPreconditions({
-          toolPreconditions: { mcp__crm__create_deal: good },
-        }),
-      ).toEqual(["mcp__crm__create_deal"]);
+    // Every source's tools can be guarded: the runtime matches the rule by the name the model calls,
+    // whatever source built the tool, and a name that stops matching is warned about rather than
+    // refused up front.
+    test("toolpack, HTTP, code and MCP names are accepted", () => {
+      const names = [
+        "calendar_check_availability",
+        "busca_por_cpf_cnpj",
+        "calcula-frete",
+        "mcp__crm__create_deal",
+      ];
+      const bag: Record<string, unknown> = {};
+      for (const n of names) bag[n] = good;
+      expect(invalidToolPreconditions({ toolPreconditions: bag })).toEqual([]);
+    });
+
+    // What no tool source can produce is still refused, so a typo in the API is told, not stored.
+    test("a name no tool can carry is refused", () => {
+      const names = [
+        "has space",
+        "x/y",
+        "_leading",
+        "__proto__",
+        "a".repeat(65),
+      ];
+      // NOTE: null-prototype, or `__proto__` would set the prototype instead of adding a key.
+      const bag = Object.create(null) as Record<string, unknown>;
+      for (const n of names) bag[n] = good;
+      expect(invalidToolPreconditions({ toolPreconditions: bag })).toEqual(
+        names,
+      );
     });
 
     test("every name in the native catalog is accepted", () => {
@@ -262,10 +284,11 @@ describe("invalidToolPreconditions", () => {
       expect(invalidToolPreconditions({ toolPreconditions: bag })).toEqual([]);
     });
 
-    test("isGuardableToolName agrees with the catalog, both ways", () => {
+    test("isGuardableToolName takes every native name and the 64-character edge", () => {
       for (const n of NATIVE_TOOL_NAMES)
         expect(isGuardableToolName(n)).toBe(true);
-      for (const n of ["", " ", "create_invoice", "mcp__a__b", "__proto__"]) {
+      expect(isGuardableToolName("a".repeat(64))).toBe(true);
+      for (const n of ["", " ", 42, null]) {
         expect(isGuardableToolName(n)).toBe(false);
       }
     });

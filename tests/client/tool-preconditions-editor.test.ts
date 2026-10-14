@@ -387,11 +387,7 @@ describe("the console offers exactly what the API accepts", () => {
   });
 
   test("a name the API refuses is one the editor never renders", () => {
-    for (const tool of [
-      "create_invoice",
-      "mcp__crm__deal",
-      " handoff_to_human ",
-    ]) {
+    for (const tool of ["has space", "__proto__", " handoff_to_human "]) {
       const bag = {
         [tool]: { kind: "attribute", scope: "conversation", key: "k" },
       };
@@ -407,7 +403,7 @@ describe("the console offers exactly what the API accepts", () => {
   // the moment the API starts refusing a rule the operator never opened.
   test("saving an untouched tab does not turn a carried-through entry into a 400", () => {
     const legacy = {
-      mcp__crm__create_deal: {
+      "legacy tool": {
         kind: "attribute",
         scope: "conversation",
         key: "cpf",
@@ -428,7 +424,7 @@ describe("the console offers exactly what the API accepts", () => {
     const stored = { toolPreconditions: {} };
     const next = {
       toolPreconditions: {
-        mcp__crm__create_deal: {
+        "legacy tool": {
           kind: "attribute",
           scope: "conversation",
           key: "cpf",
@@ -436,5 +432,149 @@ describe("the console offers exactly what the API accepts", () => {
       },
     };
     expect(() => assertSettingsToolPreconditions(next, stored)).toThrow();
+  });
+});
+
+// Every source's granted tools can carry a rule, and the select is where the operator finds them. A
+// rule whose tool the agent no longer has (renamed, revoked, server gone) guards nothing, so the row
+// says so instead of reading as protection.
+describe("the Tools tab offers every granted tool, and flags a rule on one that is gone", () => {
+  afterEach(cleanup);
+
+  const catalog = {
+    toolDefinitions: [
+      {
+        id: "7",
+        name: "busca",
+        label: "Busca por CPF",
+        enabled: true,
+        toolName: "busca_por_cpf",
+        args: [],
+      },
+    ],
+    integrationInstances: [
+      {
+        id: "9",
+        catalogType: "google-calendar",
+        kind: "TOOLPACK",
+        name: "Agenda da escola",
+        enabled: true,
+        tools: [
+          { name: "calendar_check_availability", args: [] },
+          { name: "calendar_create_event", args: [] },
+        ],
+      },
+    ],
+    mcpConnections: [{ id: "5", name: "CRM", enabled: true, slug: "crm" }],
+  };
+  const grants = [
+    { source: "HTTP", toolDefinitionId: "7" },
+    {
+      source: "INTEGRATION",
+      integrationInstanceId: "9",
+      enabledTools: ["calendar_check_availability"],
+    },
+    {
+      source: "MCP",
+      mcpServerConnectionId: "5",
+      enabledTools: ["create_deal"],
+    },
+  ];
+  const offered = () =>
+    [
+      ...(screen.getByRole("combobox", { name: "Tool" }) as HTMLSelectElement)
+        .options,
+    ].map((o) => o.value);
+
+  test("toolpack, HTTP and MCP tools are offered, and only the granted ones", async () => {
+    const stub = stubEditorApi({ settings: {} }, { catalog, grants });
+    await renderEditor(stub, "tools");
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Add a precondition" }),
+    );
+    expect(offered()).toEqual(
+      expect.arrayContaining([
+        "busca_por_cpf",
+        "calendar_check_availability",
+        "mcp__crm__create_deal",
+      ]),
+    );
+    expect(offered()).not.toContain("calendar_create_event");
+  });
+
+  test("a rule on a toolpack tool is saved under the name the model calls", async () => {
+    const stub = stubEditorApi({ settings: {} }, { catalog, grants });
+    await renderEditor(stub, "tools");
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Add a precondition" }),
+    );
+    fireEvent.change(screen.getByRole("combobox", { name: "Tool" }), {
+      target: { value: "calendar_check_availability" },
+    });
+    fireEvent.change(screen.getByRole("textbox", { name: "Attribute" }), {
+      target: { value: "dia_turno" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save tools" }));
+    await waitFor(() =>
+      expect(
+        stub.writes.some((w) => w.method === "PATCH" && w.body.settings),
+      ).toBe(true),
+    );
+    const settings = stub.writes.find(
+      (w) => w.method === "PATCH" && w.body.settings,
+    )?.body.settings as Record<string, Record<string, unknown>>;
+    expect(settings.toolPreconditions?.calendar_check_availability).toEqual({
+      kind: "attribute",
+      scope: "conversation",
+      key: "dia_turno",
+    });
+  });
+
+  test("a rule on a tool the agent no longer has is shown with a warning", async () => {
+    const stub = stubEditorApi(
+      {
+        settings: {
+          toolPreconditions: {
+            busca_antiga: {
+              kind: "attribute",
+              scope: "conversation",
+              key: "cpf",
+            },
+          },
+        },
+      },
+      { catalog, grants },
+    );
+    await renderEditor(stub, "tools");
+    expect(
+      await screen.findByText(
+        "This tool is not among the agent's tools, so this rule guards nothing.",
+      ),
+    ).toBeTruthy();
+    expect(offered()).toContain("busca_antiga");
+  });
+
+  test("a rule on a granted tool carries no warning", async () => {
+    const stub = stubEditorApi(
+      {
+        settings: {
+          toolPreconditions: {
+            busca_por_cpf: {
+              kind: "attribute",
+              scope: "conversation",
+              key: "cpf",
+            },
+          },
+        },
+      },
+      { catalog, grants },
+    );
+    await renderEditor(stub, "tools");
+    await screen.findByRole("combobox", { name: "Tool" });
+    expect(
+      screen.queryByText(
+        "This tool is not among the agent's tools, so this rule guards nothing.",
+      ),
+    ).toBeNull();
   });
 });

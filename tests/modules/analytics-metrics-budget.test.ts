@@ -110,7 +110,7 @@ function skewedClock(): { jump: (ms: number) => void; restore: () => void } {
 // lock is held once this returns.
 async function lockTable(
   table: string,
-): Promise<{ release: () => Promise<void> }> {
+): Promise<{ release: () => Promise<boolean> }> {
   let pid: number | undefined;
   const held = (su as PrismaClient)
     .$transaction(
@@ -133,15 +133,20 @@ async function lockTable(
     deadlineMs: CEILING_MS,
   });
   // Cancels the hold only while it is the hold: once it ran out, its connection is back in the pool
-  // and the pid may be serving anything, this cancel included.
-  let released: Promise<void> | undefined;
+  // and the pid may be serving anything, this cancel included. Resolves to whether the hold was still
+  // there, which is what a test asserts after the read answered: refused while the lock held, not
+  // after the hold ran out on its own.
+  let released: Promise<boolean> | undefined;
   return {
     release: () => {
       released ??= (async () => {
-        await (su as PrismaClient).$queryRaw`
-          SELECT pg_cancel_backend(pid) FROM pg_stat_activity
+        const cancelled = await (su as PrismaClient).$queryRaw<
+          { ok: boolean }[]
+        >`
+          SELECT pg_cancel_backend(pid) AS ok FROM pg_stat_activity
            WHERE pid = ${pid}::int AND pid <> pg_backend_pid() AND query LIKE '%mb_hold%'`;
         await held;
+        return cancelled.some((row) => row.ok);
       })();
       return released;
     },
@@ -222,6 +227,7 @@ describe.skipIf(!dbUp)("metrics time budget", () => {
         getDashboardCosts(ctx, {}, app as PrismaClient).catch((e) => e),
       );
       expect(statusOf(result)).toBe(503);
+      expect(await usage.release()).toBe(true);
       expect((result as Error).message).toContain("Try a shorter period");
       expect((result as { field?: string }).field).toBe("since");
       expect(await waitingOnUsage()).toBe(0);
@@ -240,6 +246,7 @@ describe.skipIf(!dbUp)("metrics time budget", () => {
         getHealth(ctx, {}, locking).catch((e) => e),
       );
       expect(statusOf(result)).toBe(503);
+      expect(await usage.release()).toBe(true);
       // The sentence states the time the read ran (about 0.3 s), not the 10 s budget it never reached.
       const seconds = (result as { translationParams?: { seconds?: number } })
         .translationParams?.seconds;
@@ -259,6 +266,7 @@ describe.skipIf(!dbUp)("metrics time budget", () => {
         metricsGet(principal, {}, { base: app as PrismaClient }),
       );
       expect(JSON.stringify(result)).toContain("Try a shorter period");
+      expect(await usage.release()).toBe(true);
     } finally {
       await usage.release();
     }
@@ -304,6 +312,7 @@ describe.skipIf(!dbUp)("metrics time budget", () => {
         }).catch((e) => e),
       );
       expect(statusOf(result)).toBe(503);
+      expect(await usage.release()).toBe(true);
       const [row] = await (su as PrismaClient).$queryRaw<{ n: number }[]>`
         SELECT count(*)::int AS n FROM pg_stat_activity
          WHERE datname = current_database() AND state = 'active' AND query LIKE '%mb_two%'
@@ -336,6 +345,7 @@ describe.skipIf(!dbUp)("metrics time budget", () => {
       });
       await holder;
       expect(statusOf(result)).toBe(503);
+      expect(await usage.release()).toBe(true);
       expect((result as { field?: string }).field).toBe("since");
     } finally {
       clock.restore();
@@ -356,6 +366,7 @@ describe.skipIf(!dbUp)("metrics time budget", () => {
         }).catch((e) => e),
       );
       expect(statusOf(result)).toBe(503);
+      expect(await usage.release()).toBe(true);
     } finally {
       clock.restore();
       await usage.release();
@@ -375,6 +386,7 @@ describe.skipIf(!dbUp)("metrics time budget", () => {
         }).catch((e) => e),
       );
       expect(statusOf(result)).toBe(503);
+      expect(await usage.release()).toBe(true);
     } finally {
       clock.restore();
       await usage.release();
@@ -398,6 +410,7 @@ describe.skipIf(!dbUp)("metrics time budget", () => {
           (e) => postgresCodeOf(e),
         );
       expect(code === "57014" || code === "55P03").toBe(true);
+      expect(await users.release()).toBe(true);
     } finally {
       await users.release();
       await pool.$disconnect();
@@ -423,6 +436,7 @@ describe.skipIf(!dbUp)("metrics time budget", () => {
         return read.catch((e) => e);
       });
       expect(statusOf(result)).toBe(503);
+      expect(await tenants.release()).toBe(true);
     } finally {
       clock.restore();
       await tenants.release();
@@ -453,6 +467,7 @@ describe.skipIf(!dbUp)("metrics time budget", () => {
       });
       await holder;
       expect(statusOf(result)).toBe(503);
+      expect(await tenants.release()).toBe(true);
     } finally {
       clock.restore();
       await tenants.release();
@@ -473,6 +488,7 @@ describe.skipIf(!dbUp)("metrics time budget", () => {
         (e) => postgresCodeOf(e),
       );
       expect(outcome === "57014" || outcome === "55P03").toBe(true);
+      expect(await keys.release()).toBe(true);
     } finally {
       await keys.release();
     }
@@ -499,6 +515,7 @@ describe.skipIf(!dbUp)("metrics time budget", () => {
       );
       await holder;
       expect(outcome).not.toBe("answered");
+      expect(await keys.release()).toBe(true);
     } finally {
       clock.restore();
       await keys.release();
@@ -527,6 +544,7 @@ describe.skipIf(!dbUp)("metrics time budget", () => {
       );
       await holder;
       expect(outcome).not.toBe("answered");
+      expect(await users.release()).toBe(true);
     } finally {
       clock.restore();
       await users.release();
@@ -562,7 +580,7 @@ describe.skipIf(!dbUp)("metrics time budget", () => {
       read: (
         db: Parameters<Parameters<typeof runWithinBudgetOn>[2]>[0],
       ) => Promise<unknown>,
-    ): Promise<unknown> {
+    ): Promise<{ answer: unknown; held: boolean }> {
       const users = await lockTable("users");
       const next = await lockTable(second);
       const clock = skewedClock();
@@ -578,7 +596,8 @@ describe.skipIf(!dbUp)("metrics time budget", () => {
         await waitedOn("users");
         clock.jump(BUDGET_MS - LEFT_MS);
         await users.release();
-        return await outcome;
+        const answer = await outcome;
+        return { answer, held: await next.release() };
       } finally {
         clock.restore();
         await users.release();
@@ -586,11 +605,13 @@ describe.skipIf(!dbUp)("metrics time budget", () => {
       }
     }
     try {
-      expect(
-        await underSecondLock("tenant_users", (db) =>
+      {
+        const { answer, held } = await underSecondLock("tenant_users", (db) =>
           findSessionUser(db, user.id, session, true),
-        ),
-      ).not.toBe("answered");
+        );
+        expect(answer).not.toBe("answered");
+        expect(held).toBe(true);
+      }
       // Without the locks it answers with the membership.
       const row = await runWithinBudgetOn(
         app as PrismaClient,
@@ -599,11 +620,13 @@ describe.skipIf(!dbUp)("metrics time budget", () => {
       );
       expect(row?.memberships.map((m) => m.tenantId)).toEqual([tenant.id]);
       // The identity check's ended-session read is bounded the same way.
-      expect(
-        await underSecondLock("ended_sessions", (db) =>
+      {
+        const { answer, held } = await underSecondLock("ended_sessions", (db) =>
           findSessionPassword(db, user.id, session, true),
-        ),
-      ).not.toBe("answered");
+        );
+        expect(answer).not.toBe("answered");
+        expect(held).toBe(true);
+      }
     } finally {
       await (su as PrismaClient).user.delete({ where: { id: user.id } });
       await (su as PrismaClient).tenant.delete({ where: { id: tenant.id } });
@@ -651,6 +674,7 @@ describe.skipIf(!dbUp)("metrics time budget", () => {
       clock.jump(BUDGET_MS - LEFT_MS);
       await keys.release();
       expect(await outcome).not.toBe("answered");
+      expect(await tenants.release()).toBe(true);
     } finally {
       clock.restore();
       await keys.release();

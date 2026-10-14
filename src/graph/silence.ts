@@ -218,18 +218,28 @@ export function silenceWasChosen(
   return false;
 }
 
-// Why the silence was chosen. Nothing ever takes a `pending` bot-owned conversation out of there, so
-// the reason decides whether a person must see it:
+// Why the silence was chosen, as the readers know it. Nothing ever takes a `pending` bot-owned
+// conversation out of there, so the reason decides whether a person must see it:
 //   acknowledged   nothing to add. The conversation stays as it is.
 //   not_for_us     not a real conversation (a DMARC report, a payment notice, a newsletter).
 //   needs_human    ours, but the agent cannot resolve it.
 // The last two move it to `open` (not `resolved`: the point is that a person SEES it) with a note.
+// The tool no longer offers them (SKIP_REPLY_OFFERED_REASONS); they stay readable for the turns and
+// the flow log rows that already carry them.
 export const SKIP_REPLY_REASONS = [
   "acknowledged",
   "not_for_us",
   "needs_human",
 ] as const;
 export type SkipReplyReason = (typeof SKIP_REPLY_REASONS)[number];
+
+// What the tool OFFERS: silence for a message that asks nothing, and only that. Whatever the team
+// has to see goes through handoff_to_human, whose required customer line makes speaking the default
+// and silence a declared exception; a reason here that handed over was a second, silent door to the
+// same place, and the one models took to avoid answering a person.
+export const SKIP_REPLY_OFFERED_REASONS = [
+  "acknowledged",
+] as const satisfies readonly SkipReplyReason[];
 
 // Beside the mark and for the same reason: only the tool that builds the `ToolMessage` can set it.
 export const SKIP_REPLY_REASON_KEY = "fazer_skip_reason";

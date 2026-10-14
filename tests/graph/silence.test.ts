@@ -397,7 +397,7 @@ describe("skipReplyRan — the MARK is the identity, not the name and not the te
     expect(skip).toBeDefined();
     for (const args of [
       { reason: "acknowledged" },
-      { reason: "not_for_us", detail: "DMARC report" },
+      { reason: "acknowledged", detail: "a thumbs-up after the answer" },
     ]) {
       // Invoked as a TOOL CALL, which is how the graph invokes it: without one there is no
       // `tool_call_id` to build a ToolMessage around, and the tool degrades to the plain string the

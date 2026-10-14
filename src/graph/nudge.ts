@@ -1757,6 +1757,7 @@ async function runAgentNudgeBody(
               // `graph.invoke`, and the tool fires during a model call that can run for a minute, so the
               // tool re-reads the live state itself and falls back here only when that read fails.
               observed: { status: loaded.status, statusAt: loaded.statusAt },
+              proactive: true,
               handoffState,
               // Defined below; a tool only runs inside the graph's invoke, after it exists. A `handoff`
               // verdict takes the transfer this path's own trip takes.

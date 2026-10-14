@@ -394,6 +394,8 @@ function buildPlaygroundToolset(
     // reads; the listing passes a throwaway, so the panel shows the tool the model is offered. Absent
     // on the simulated follow-up, which, like production's nudge, is never offered the tool.
     replyChoice: ReplyChoice | undefined;
+    // The simulated follow-up, built like production's nudge (ToolCtx.proactive).
+    proactive?: boolean;
   },
 ): Promise<StructuredToolInterface[]> {
   return buildToolset(
@@ -406,6 +408,7 @@ function buildPlaygroundToolset(
       conversationId: 0,
       threadId: params.threadId,
       replyChoice: params.replyChoice,
+      ...(params.proactive ? { proactive: true } : {}),
     },
     {
       // Conversation tools (handoff/resolve/…) are SIMULATED (no real effect); utility tools
@@ -499,6 +502,7 @@ async function buildPlaygroundGraph(params: {
     deps: params.deps,
     flow: params.flow,
     replyChoice: params.replyChoice,
+    proactive: params.silenceProtocol,
   });
   const toolMocks = params.overrides?.toolMocks;
   // Which names are OURS in this turn's toolset rather than the operator's — the question every rule

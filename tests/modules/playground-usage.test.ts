@@ -652,13 +652,16 @@ describe.skipIf(!dbUp)("playground usage (issue #839)", () => {
     });
     const bound: string[] = [];
     let prompt = "";
+    let skipDescription = "";
     const capturing = {
       async invoke(messages: BaseMessage[]) {
         prompt = JSON.stringify(messages.map((m) => m.content));
         return new AIMessage("Oi de novo!");
       },
-      bindTools(tools: Array<{ name: string }>) {
+      bindTools(tools: Array<{ name: string; description?: string }>) {
         bound.push(...tools.map((t) => t.name));
+        skipDescription =
+          tools.find((t) => t.name === "skip_reply")?.description ?? "";
         return capturing;
       },
     };
@@ -673,7 +676,7 @@ describe.skipIf(!dbUp)("playground usage (issue #839)", () => {
     } finally {
       await suDb.agentToolSelection.delete({ where: { id: sel.id } });
     }
-    return { bound, prompt };
+    return { bound, prompt, skipDescription };
   }
   const ASKS_FOR_THE_TOOL = "call the `skip_reply` tool";
 
@@ -681,6 +684,13 @@ describe.skipIf(!dbUp)("playground usage (issue #839)", () => {
     const { bound, prompt } = await playgroundDirectiveWith(["private_note"]);
     expect(bound).toContain("skip_reply");
     expect(prompt).toContain(ASKS_FOR_THE_TOOL);
+  });
+
+  // The simulation builds the follow-up's skip_reply like production's nudge: nobody is waiting for an
+  // answer there, so the reasons that hand the conversation to the team stay on offer.
+  test("a simulated follow-up's skip_reply keeps the reasons that hand over", async () => {
+    const { skipDescription } = await playgroundDirectiveWith(["private_note"]);
+    expect(skipDescription).toContain("needs_human");
   });
 
   test("a simulated follow-up with nothing bound is asked for the sentinel, not for a tool", async () => {

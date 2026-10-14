@@ -149,18 +149,22 @@ describe("where the skip hand-over sends the conversation (#1027)", () => {
 });
 
 describe("the reason on skip_reply", () => {
-  test("the schema requires it and accepts exactly the three values", async () => {
+  const callerOf = (proactive: boolean) => {
     const [skip] = buildNativeTools(
-      { client: {} as never, conversationId: 1 },
+      { client: {} as never, conversationId: 1, proactive },
       [SKIP_REPLY_TOOL],
     );
-    const call = (args: Record<string, unknown>) =>
+    return (args: Record<string, unknown>) =>
       skip?.invoke({
         type: "tool_call",
         id: "c1",
         name: SKIP_REPLY_TOOL,
         args,
       } as never);
+  };
+
+  test("a follow-up's schema requires it and accepts exactly the three values", async () => {
+    const call = callerOf(true);
     await expect(call({})).rejects.toThrow();
     await expect(call({ reason: "later" })).rejects.toThrow();
     for (const reason of ["acknowledged", "not_for_us", "needs_human"]) {
@@ -170,12 +174,27 @@ describe("the reason on skip_reply", () => {
     }
   });
 
+  // A turn that answers a customer has one silence: nothing to answer. The reasons that hand the
+  // conversation over were a transfer the customer never heard about; handoff_to_human is the door.
+  test("a turn that answers a customer offers only acknowledged", async () => {
+    const call = callerOf(false);
+    await expect(call({ reason: "not_for_us" })).rejects.toThrow();
+    await expect(call({ reason: "needs_human" })).rejects.toThrow();
+    const out = (await call({ reason: "acknowledged" })) as ToolMessage;
+    expect(out.additional_kwargs[SKIP_REPLY_REASON_KEY]).toBe("acknowledged");
+  });
+
   test("an observer is not promised a hand-over it does not run, and is pointed at handoff_to_human", () => {
-    const describe = (muted: boolean) =>
-      buildNativeTools({ client: { muted } as never, conversationId: 1 }, [
-        SKIP_REPLY_TOOL,
-      ])[0]?.description ?? "";
-    expect(describe(false)).toContain("hand the conversation to the team");
+    const describe = (muted: boolean, proactive = false) =>
+      buildNativeTools(
+        { client: { muted } as never, conversationId: 1, proactive },
+        [SKIP_REPLY_TOOL],
+      )[0]?.description ?? "";
+    expect(describe(false, true)).toContain(
+      "hand the conversation to the team",
+    );
+    expect(describe(false)).not.toContain("needs_human");
+    expect(describe(false)).toContain("handoff_to_human");
     expect(describe(true)).not.toContain("hand the conversation to the team");
     expect(describe(true)).toContain("handoff_to_human");
   });
@@ -395,7 +414,7 @@ class SkipTwiceModel {
             tool_calls: [
               {
                 name: "skip_reply",
-                args: { reason: "needs_human" },
+                args: { reason: "acknowledged" },
                 id: `call_skip_${n}`,
               },
             ],
@@ -604,7 +623,10 @@ describe.skipIf(!dbUp)("a silence a person has to see", () => {
     expect(calls).toEqual([]);
   });
 
-  test("not_for_us and needs_human open it, with a note that says which", async () => {
+  // The reasons that hand the conversation over are a follow-up's alone (nudge.test.ts covers them).
+  // Here the model asks for one anyway: the call is refused, the turn ends without a chosen silence,
+  // and a conversation our side already answered is not opened behind the customer's back.
+  test("a turn that answers a customer cannot hand it over by silence", async () => {
     await seed(65_902, true);
     await seed(65_903, true);
     const a = await turn(
@@ -612,37 +634,8 @@ describe.skipIf(!dbUp)("a silence a person has to see", () => {
       new SkipModel({ reason: "not_for_us", detail: "relatório DMARC" }),
     );
     const b = await turn(65_903, new SkipModel({ reason: "needs_human" }));
-    expect(shape(a.calls)).toEqual([
-      ["toggleStatus", 65_902, "open"],
-      ["sendPrivateNote", 65_902, ""],
-    ]);
-    expect(shape(b.calls)).toEqual([
-      ["toggleStatus", 65_903, "open"],
-      ["sendPrivateNote", 65_903, ""],
-    ]);
-    expect(a.calls[1]?.[2]).toBe(
-      skipHandoverNote("not_for_us", "relatório DMARC"),
-    );
-    expect(b.calls[1]?.[2]).toBe(skipHandoverNote("needs_human", null));
-    // Nothing public: the customer is not told anything.
-    expect([...a.calls, ...b.calls].some(([op]) => op === "sendMessage")).toBe(
-      false,
-    );
-    const conv = await suDb.conversation.findFirstOrThrow({
-      where: { tenantId, chatwootConversationId: 65_902 },
-      select: { id: true },
-    });
-    const lines = await flowLogRows(suDb, {
-      where: { conversationId: conv.id, stage: "handoff" },
-    });
-    expect(lines.map((l) => l.detail)).toEqual([
-      {
-        outcome: "opened_after_skip",
-        reason: "not_for_us",
-        noted: true,
-        assigned: "routing",
-      },
-    ]);
+    expect(a.calls).toEqual([]);
+    expect(b.calls).toEqual([]);
   });
 
   test("with the handoff pinned to a team, the skip lands in that team's queue (#1027)", async () => {
@@ -660,23 +653,15 @@ describe.skipIf(!dbUp)("a silence a person has to see", () => {
       },
     });
     try {
-      await seed(65_950, true);
       await seed(65_951, false);
-      const a = await turn(65_950, new SkipModel({ reason: "needs_human" }));
-      // The floor goes to the same place: it is the same hand-over.
       const b = await turn(65_951, new SkipModel({ reason: "acknowledged" }));
-      expect(shape(a.calls)).toEqual([
-        ["toggleStatus", 65_950, "open"],
-        ["assignTeam", 65_950, "7"],
-        ["sendPrivateNote", 65_950, ""],
-      ]);
       expect(shape(b.calls)).toEqual([
         ["toggleStatus", 65_951, "open"],
         ["assignTeam", 65_951, "7"],
         ["sendPrivateNote", 65_951, ""],
       ]);
       const conv = await suDb.conversation.findFirstOrThrow({
-        where: { tenantId, chatwootConversationId: 65_950 },
+        where: { tenantId, chatwootConversationId: 65_951 },
         select: { id: true },
       });
       const lines = await flowLogRows(suDb, {
@@ -685,7 +670,7 @@ describe.skipIf(!dbUp)("a silence a person has to see", () => {
       expect(lines.map((l) => l.detail)).toEqual([
         {
           outcome: "opened_after_skip",
-          reason: "needs_human",
+          reason: "unanswered",
           noted: true,
           assigned: "team",
         },
@@ -734,7 +719,7 @@ describe.skipIf(!dbUp)("a silence a person has to see", () => {
   });
 
   test("a reaffirmed silence writes one note", async () => {
-    await seed(65_905, true);
+    await seed(65_905, false);
     const { calls } = await turn(65_905, new SkipTwiceModel());
     expect(shape(calls)).toEqual([
       ["toggleStatus", 65_905, "open"],
@@ -775,10 +760,10 @@ describe.skipIf(!dbUp)("a silence a person has to see", () => {
   });
 
   test("a resolve that failed to land does not keep the conversation from a person", async () => {
-    await seed(65_908, true);
+    await seed(65_908, false);
     const { calls } = await turn(
       65_908,
-      new SkipModel({ reason: "needs_human" }, true),
+      new SkipModel({ reason: "acknowledged" }, true),
       "resolved",
     );
     expect(shape(calls)).toEqual([
@@ -792,7 +777,7 @@ describe.skipIf(!dbUp)("a silence a person has to see", () => {
     await seed(65_906, false);
     const { calls } = await turn(
       65_906,
-      new SkipModel({ reason: "needs_human" }, true),
+      new SkipModel({ reason: "acknowledged" }, true),
     );
     expect(calls.filter(([op]) => op !== "toggleStatus")).toEqual([]);
     expect(calls.map(([, , s]) => s)).toEqual(["resolved"]);
@@ -837,21 +822,6 @@ describe.skipIf(!dbUp)("a silence a person has to see", () => {
       THANKS,
     );
     expect(calls).toEqual([]);
-  });
-
-  test("a reopening message the model hands to a person still goes to a person", async () => {
-    await seed(65_912, true, true);
-    const { calls } = await turn(
-      65_912,
-      new SkipModel({ reason: "needs_human" }),
-      undefined,
-      reopenedByThanks,
-      THANKS,
-    );
-    expect(shape(calls)).toEqual([
-      ["toggleStatus", 65_912, "open"],
-      ["sendPrivateNote", 65_912, ""],
-    ]);
   });
 
   test("a reopening message answered by nobody's choice is not closed", async () => {

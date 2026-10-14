@@ -1146,6 +1146,8 @@ export interface ToolsetCtx {
   // Called by `set_labels` with what a write moved, for a caller whose own flow line is the record of
   // the turn (the observation tick). See graph/tools/label-writes.ts.
   onLabelsWritten?: LabelWriteReporter;
+  // A follow-up turn (ToolCtx.proactive).
+  proactive?: boolean;
   // The conversation's status as this turn observed it, before any close of ours. Feeds the
   // IMMEDIATE resolve_conversation path (nudge turns, which carry no turnState): a close that had
   // already happened when the turn started is not the agent's. See record-resolution.ts rule 2.
@@ -1265,6 +1267,7 @@ export interface ToolBuildDeps {
         spokeOutsideTheReply?: boolean;
       };
       handoffState?: { customerMessage: string | null; completed: boolean };
+      proactive?: boolean;
       transferWithSummary?: boolean;
       handoff?: HandoffConfig;
       handoffTargets?: HandoffTargets;
@@ -1651,6 +1654,7 @@ export async function buildToolset(
       conversationId: ctx.conversationId,
       turnState: ctx.turnState,
       handoffState: ctx.handoffState,
+      ...(ctx.proactive ? { proactive: true } : {}),
       transferWithSummary: cfg.transferWithSummary,
       handoff: effectiveHandoff,
       handoffTargets,

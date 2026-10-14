@@ -15,6 +15,7 @@ import {
   SKIP_REPLY_ACK,
   SKIP_REPLY_DETAIL_KEY,
   SKIP_REPLY_MARK,
+  SKIP_REPLY_OFFERED_REASONS,
   SKIP_REPLY_REASON_KEY,
   SKIP_REPLY_REASONS,
   SKIP_REPLY_TOOL,
@@ -353,6 +354,9 @@ export interface ToolCtx {
   // Absent (nudge turns, playground, hand-built ctx) ⇒ resolve_conversation toggles immediately.
   // Only runLoadedTurn passes it.
   turnState?: TurnState;
+  // A follow-up turn: nobody is waiting for an answer, so `skip_reply` keeps the reasons that hand
+  // the conversation to the team. On a turn that answers a customer it offers only `acknowledged`.
+  proactive?: boolean;
   // Present on every real customer-messaging path. A successful handoff customerMessage is terminal:
   // the caller must not also post the model's final assistant text.
   handoffState?: HandoffTurnState;
@@ -2392,8 +2396,11 @@ function reactToMessageTool(ctx: ToolCtx) {
   );
 }
 
-const SKIP_REPLY_DESCRIPTION =
+const SKIP_REPLY_PROACTIVE_DESCRIPTION =
   "Decide NOT to send any reply this turn, then output NO reply text (end your turn). `reason` decides what happens next: `acknowledged` when a reply would add nothing (the customer sent just 'ok', 'obrigado' or an emoji, optionally after react_to_message) and the conversation stays with you; `not_for_us` when this is not a real conversation (an automated report, a payment notice, a newsletter, an unsolicited pitch); `needs_human` when it is a real request you cannot resolve. The last two hand the conversation to the team with a private note, and so does ANY skip on a conversation nobody on our side has answered yet.";
+
+const SKIP_REPLY_DESCRIPTION =
+  "Decide NOT to send any reply this turn because the customer's last message asks nothing and a reply would add nothing (just 'ok', 'obrigado' or an emoji, optionally after react_to_message), then output NO reply text (end your turn). The conversation stays with you. Anything else is not this: answer the message (declining or redirecting when you must refuse), or, when the team has to see it (including an automated notification), call handoff_to_human. A skip on a conversation nobody on our side has answered yet still hands it to the team with a private note.";
 
 // Deliberately produce NO reply this turn. The agent calls this, then ends without any customer-facing
 // text, so the runtime posts nothing (it already skips an empty reply). The call is recorded in the
@@ -2441,11 +2448,15 @@ function skipReplyTool(ctx: ToolCtx) {
     {
       name: "skip_reply",
       description: speaks
-        ? SKIP_REPLY_DESCRIPTION
+        ? ctx.proactive
+          ? SKIP_REPLY_PROACTIVE_DESCRIPTION
+          : SKIP_REPLY_DESCRIPTION
         : "Record that this turn adds nothing, then output NO text (end your turn). This turn does not answer the customer, and `reason` is only recorded: nothing is handed over by it. To put a person on the conversation, call handoff_to_human.",
 
       schema: z.object({
-        reason: z.enum(SKIP_REPLY_REASONS),
+        reason: z.enum(
+          ctx.proactive ? SKIP_REPLY_REASONS : SKIP_REPLY_OFFERED_REASONS,
+        ),
         detail: z
           .string()
           .max(SKIP_DETAIL_MAX)

@@ -279,7 +279,9 @@ export function ToolPreconditionsEditor({
                           "Required value",
                         )}
                         value={row.equals}
-                        onChange={(e) => patch(i, { equals: e.target.value })}
+                        onChange={(e) =>
+                          patch(i, { match: "equals", equals: e.target.value })
+                        }
                         placeholder={t(
                           "editor.toolPreconditions.equalsPlaceholder",
                           "required value",

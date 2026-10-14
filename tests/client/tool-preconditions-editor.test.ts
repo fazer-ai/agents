@@ -624,6 +624,36 @@ describe("the Tools tab offers every granted tool, and flags a rule on one that 
     await screen.findByRole("combobox", { name: "Tool" });
     expect(screen.queryByText(GONE)).toBeNull();
   });
+  test('clearing a saved value keeps "equals" chosen while the new one is typed', async () => {
+    const stub = stubEditorApi(
+      {
+        settings: {
+          toolPreconditions: {
+            busca_por_cpf: {
+              kind: "attribute",
+              scope: "contact",
+              key: "cpf",
+              equals: "ok",
+            },
+          },
+        },
+      },
+      { catalog, grants },
+    );
+    await renderEditor(stub, "tools");
+    fireEvent.change(
+      await screen.findByRole("textbox", { name: "Required value" }),
+      { target: { value: "" } },
+    );
+    expect(
+      (screen.getByRole("combobox", { name: "Condition" }) as HTMLSelectElement)
+        .value,
+    ).toBe("equals");
+    expect(
+      screen.getByRole("textbox", { name: "Required value" }),
+    ).toBeTruthy();
+  });
+
   test("the select groups the offered tools by where they come from", async () => {
     const stub = stubEditorApi({ settings: {} }, { catalog, grants });
     await renderEditor(stub, "tools");

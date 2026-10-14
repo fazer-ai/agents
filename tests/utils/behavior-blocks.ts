@@ -207,43 +207,93 @@ export async function pickSchedule(picker: string, name: string) {
   await waitFor(() => expect(trigger.textContent).toContain(name));
 }
 
-// Moves every Behavior block off STORED through its own control: the schedules, the inputs and
-// selects of the blocks with no switch of their own, then every switch on screen. Switches go last
-// and bottom-up, since turning one off unmounts what it governs (follow-up steps, the away message).
+// One edit per control that has no switch of its own, each moving one thing off STORED: the two
+// schedules (agent fields, not settings), then one block each.
+export const FIELD_EDITS: Array<{
+  name: string;
+  run: () => Promise<void> | void;
+}> = [
+  {
+    name: "business hours",
+    run: () => pickSchedule("Business hours", "Plantão"),
+  },
+  {
+    name: "follow-up schedule",
+    run: () => pickSchedule("Allowed schedule", "Plantão"),
+  },
+  {
+    name: "out-of-hours message",
+    run: () =>
+      changeTo(
+        screen.getByLabelText("Out-of-hours message") as HTMLTextAreaElement,
+        "Fechado agora.",
+      ),
+  },
+  {
+    name: "audio replies",
+    run: () => {
+      const audio = screen.getByLabelText(
+        "When to reply with audio",
+      ) as HTMLSelectElement;
+      changeTo(audio, otherOption(audio));
+    },
+  },
+  {
+    name: "max tool calls",
+    run: () =>
+      changeTo(
+        screen.getByLabelText("Max tool calls / turn") as HTMLInputElement,
+        "3",
+      ),
+  },
+  {
+    // The snoozed default cadence's first step: its delay, a field of the ladder the switches hide.
+    name: "snoozed follow-up delay",
+    run: () => {
+      const delay = screen
+        .getByRole("group", { name: "Wait after the person's message" })
+        .querySelector('input[type="number"]') as HTMLInputElement;
+      changeTo(delay, "5");
+    },
+  },
+  {
+    name: "model fallback",
+    run: () => {
+      const fallback = screen
+        .getAllByLabelText("Provider")
+        .find((el) =>
+          el.textContent?.includes("No fallback"),
+        ) as HTMLSelectElement;
+      changeTo(fallback, "");
+    },
+  },
+  {
+    // The selected other inbox's chip has a Remove of its own: this one is the context document's.
+    name: "context document",
+    run: () => {
+      const removeDoc = screen
+        .getAllByRole("button", { name: "Remove" })
+        .find((b) => b.parentElement?.textContent?.includes("plano"));
+      fireEvent.click(removeDoc as HTMLElement);
+      expect(screen.queryByText("plano")).toBeNull();
+    },
+  },
+  {
+    name: "first checkbox",
+    run: () => {
+      const box = screen.getAllByRole("checkbox")[0] as HTMLInputElement;
+      const was = box.checked;
+      fireEvent.click(box);
+      expect(box.checked).toBe(!was);
+    },
+  },
+];
+
+// Moves every Behavior block off STORED through its own control: the edits above, then every switch
+// on screen. Switches go last and bottom-up, since turning one off unmounts what it governs
+// (follow-up steps, the away message).
 export async function editEveryBlock() {
-  await pickSchedule("Business hours", "Plantão");
-  await pickSchedule("Allowed schedule", "Plantão");
-  changeTo(
-    screen.getByLabelText("Out-of-hours message") as HTMLTextAreaElement,
-    "Fechado agora.",
-  );
-  const audio = screen.getByLabelText(
-    "When to reply with audio",
-  ) as HTMLSelectElement;
-  changeTo(audio, otherOption(audio));
-  changeTo(
-    screen.getByLabelText("Max tool calls / turn") as HTMLInputElement,
-    "3",
-  );
-  // The snoozed default cadence's first step: its delay, a field of the ladder the switches below hide.
-  const snoozedDelay = screen
-    .getByRole("group", { name: "Wait after the person's message" })
-    .querySelector('input[type="number"]') as HTMLInputElement;
-  changeTo(snoozedDelay, "5");
-  const fallback = screen
-    .getAllByLabelText("Provider")
-    .find((el) => el.textContent?.includes("No fallback")) as HTMLSelectElement;
-  changeTo(fallback, "");
-  // The selected other inbox's chip has a Remove of its own: this one is the context document's.
-  const removeDoc = screen
-    .getAllByRole("button", { name: "Remove" })
-    .find((b) => b.parentElement?.textContent?.includes("plano"));
-  fireEvent.click(removeDoc as HTMLElement);
-  expect(screen.queryByText("plano")).toBeNull();
-  const inContext = screen.getAllByRole("checkbox")[0] as HTMLInputElement;
-  const was = inContext.checked;
-  fireEvent.click(inContext);
-  expect(inContext.checked).toBe(!was);
+  for (const edit of FIELD_EDITS) await edit.run();
   // A switch an earlier flip unmounted (a step's exemption, under the pause) has nothing to edit.
   let flipped = 0;
   for (const s of screen.getAllByRole("switch").reverse()) {

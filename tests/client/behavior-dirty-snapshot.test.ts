@@ -6,14 +6,11 @@ import {
   behaviorSnapshot,
   editedBlocks,
 } from "@/client/pages/agents/behaviorSave";
+import { lastSavedSettings, renderEditor } from "../utils/agent-editor";
 import {
-  editTab,
-  lastSavedSettings,
-  renderEditor,
-  stubEditorApi,
-} from "../utils/agent-editor";
-import {
+  changeTo,
   editEveryBlock,
+  FIELD_EDITS,
   STORED,
   stubWithHours,
 } from "../utils/behavior-blocks";
@@ -108,27 +105,82 @@ describe("the Behavior tab's dirty snapshot", () => {
     expect(behaviorSnapshot(state(), { ...AGENT_FIELDS })).toBe(base);
   });
 
-  test("an edit marks the tab unsaved, the save writes that block alone, and saving clears the mark", async () => {
-    const stub = stubEditorApi({ settings: {} });
-    await renderEditor(stub, "behavior");
-    expect(screen.queryAllByText("Unsaved changes").length).toBe(0);
-    editTab("behavior");
-    await waitFor(() =>
-      expect(screen.queryAllByText("Unsaved changes").length).toBeGreaterThan(
-        0,
-      ),
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    await screen.findByText("Agent saved.");
-    const saved = Object.keys(lastSavedSettings(stub) ?? {});
-    expect(saved.length).toBe(1);
-    expect(BEHAVIOR_BLOCKS as readonly string[]).toContain(saved[0] as string);
-    await waitFor(() =>
-      expect(screen.queryAllByText("Unsaved changes").length).toBe(0),
-    );
-    expect(screen.getByRole("button", { name: "Save" })).toHaveProperty(
-      "disabled",
-      true,
-    );
-  });
+  // Each edit `editEveryBlock` makes, alone on a fresh editor opened on STORED: it has to mark the tab
+  // and enable Save, the save has to send it, and the post-save sync has to clear the mark.
+  test("each block's edit alone marks the tab unsaved, is what the save sends, and saving clears the mark", async () => {
+    await renderEditor(stubWithHours(), "behavior");
+    const switchNames = screen
+      .getAllByRole("switch")
+      .map((s) => s.parentElement?.textContent ?? "");
+    expect(switchNames.length).toBeGreaterThanOrEqual(14);
+    cleanup();
+    const edits = [
+      ...FIELD_EDITS,
+      ...switchNames.map((name, i) => ({
+        name: `switch ${i} (${name})`,
+        run: () => {
+          fireEvent.click(screen.getAllByRole("switch")[i] as HTMLElement);
+          // The gate turned on alone is refused by the save, so it is saved with an endpoint to ask.
+          if (name.includes("Only answer authorized contacts")) {
+            fireEvent.click(
+              screen.getByRole("switch", { name: /Ask an external endpoint/ }),
+            );
+            changeTo(
+              screen.getByLabelText(/^Authorization URL/) as HTMLInputElement,
+              "https://auth.example.com/check",
+            );
+          }
+        },
+      })),
+    ];
+    const sent = new Set<string>();
+    const failures: string[] = [];
+    for (const edit of edits) {
+      const stub = stubWithHours();
+      const before = { ...stub.agent };
+      await renderEditor(stub, "behavior");
+      await edit.run();
+      const marked = await waitFor(() => {
+        if (screen.queryAllByText("Unsaved changes").length === 0)
+          throw new Error("unmarked");
+      }).then(
+        () => true,
+        () => false,
+      );
+      const save = screen.getByRole("button", { name: "Save" });
+      if (!marked || save.hasAttribute("disabled")) {
+        failures.push(`${edit.name}: not marked, or Save disabled`);
+        cleanup();
+        continue;
+      }
+      fireEvent.click(save);
+      await waitFor(() =>
+        expect(stub.writes.some((w) => w.method === "PATCH")).toBe(true),
+      );
+      const patch = stub.writes.find((w) => w.method === "PATCH")?.body ?? {};
+      const settings = (patch.settings ?? {}) as Record<string, unknown>;
+      const changed = [
+        ...Object.keys(settings).filter(
+          (k) => JSON.stringify(settings[k]) !== JSON.stringify(STORED[k]),
+        ),
+        ...["businessHoursId", "followUpHoursId"].filter(
+          (k) => k in patch && patch[k] !== before[k],
+        ),
+      ];
+      if (changed.length !== 1) {
+        failures.push(`${edit.name}: sent ${JSON.stringify(changed)}`);
+      }
+      for (const k of changed) sent.add(k);
+      await waitFor(() =>
+        expect(screen.queryAllByText("Unsaved changes").length).toBe(0),
+      );
+      expect(save.hasAttribute("disabled"), `${edit.name}: Save after`).toBe(
+        true,
+      );
+      cleanup();
+    }
+    expect(failures).toEqual([]);
+    // Guards the loop: the single edits reach most blocks, not a couple.
+    expect(sent.size).toBeGreaterThanOrEqual(18);
+  }, 180_000);
 });

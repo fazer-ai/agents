@@ -22,6 +22,7 @@ import logger from "@/api/lib/logger";
 import { contactInboxThreadId } from "@/graph/checkpointer";
 import * as graphModule from "@/graph/graph";
 import { SILENCE_RETRY_MARK } from "@/graph/graph";
+import * as inflight from "@/graph/inflight";
 import {
   clearTurnInFlight,
   isTurnInFlight,
@@ -67,6 +68,7 @@ import {
 import { storageKey } from "@/modules/documents/issue";
 import { documentStarter } from "@/modules/documents/starters";
 import { createDocumentTemplate } from "@/modules/documents/templates";
+import { settleFlowEvents } from "@/modules/flowlog/scheduled";
 import { GuardrailHandoffFailedError } from "@/modules/guardrails/handoff";
 import { readGuardrailHealth } from "@/modules/guardrails/health";
 import { selectClosedPrefix } from "@/modules/memory/cut";
@@ -142,6 +144,51 @@ type JsonValue =
   | null
   | JsonValue[]
   | { [k: string]: JsonValue };
+
+// Counts the asks whether `graphThreadId` is taken. The wait for another invoke asks once per poll, so
+// while a turn waits, this count is the wait's own clock.
+function countAsks(graphThreadId: string): {
+  count: () => number;
+  restore: () => void;
+} {
+  const real = inflight.isTurnRunning;
+  let asks = 0;
+  const spy = spyOn(inflight, "isTurnRunning").mockImplementation(
+    (id: string) => {
+      if (id === graphThreadId) asks += 1;
+      return real(id);
+    },
+  );
+  return { count: () => asks, restore: () => spy.mockRestore() };
+}
+
+// Whether `turn` is waiting for its thread to clear: it has asked three times whether the thread is
+// taken and has not settled. A turn that does not wait asks at most twice (once in the wait, once
+// taking the thread), so three asks with the turn pending is the wait itself, seen without a clock.
+async function waitsForTheThread(
+  turn: Promise<unknown>,
+  graphThreadId: string,
+): Promise<boolean> {
+  let settled = false;
+  void turn.then(
+    () => {
+      settled = true;
+    },
+    () => {
+      settled = true;
+    },
+  );
+  const asks = countAsks(graphThreadId);
+  try {
+    await until(
+      "three asks whether the thread is taken",
+      async () => asks.count() >= 3 || settled || null,
+    );
+  } finally {
+    asks.restore();
+  }
+  return !settled;
+}
 
 function fakeModel() {
   return new FakeListChatModel({ responses: [REPLY] });
@@ -685,14 +732,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
           checkpointer: saver,
         },
       });
-      const waiting = Symbol("still waiting");
-      // It really waits: nothing on the other replica's side has moved yet.
-      expect(
-        await Promise.race([
-          turn,
-          new Promise<typeof waiting>((r) => setTimeout(() => r(waiting), 300)),
-        ]),
-      ).toBe(waiting);
+      expect(await waitsForTheThread(turn, graphThreadId)).toBe(true);
       await release();
       outcome = await turn;
     } finally {
@@ -879,7 +919,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
 
     // emitFlowEvent is fire-and-forget, so poll briefly.
     let retryLogged = false;
-    for (let i = 0; i < 30 && !retryLogged; i++) {
+    await until("the retry line", async () => {
       const rows = await flowLogRows(suDb, {
         where: {
           tenantId,
@@ -896,8 +936,8 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
             1 &&
           (r.detail as Record<string, unknown> | null)?.willRetry === true,
       );
-      if (!retryLogged) await new Promise((r) => setTimeout(r, 100));
-    }
+      return retryLogged || null;
+    });
     expect(retryLogged).toBe(true);
   });
 
@@ -1169,13 +1209,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         checkpointer: new MemorySaver(),
       },
     });
-    const waiting = Symbol("still waiting");
-    expect(
-      await Promise.race([
-        turn,
-        new Promise<typeof waiting>((r) => setTimeout(() => r(waiting), 300)),
-      ]),
-    ).toBe(waiting);
+    expect(await waitsForTheThread(turn, graphThreadId)).toBe(true);
     // Uma pessoa assume enquanto o turno está parado.
     await suDb.conversation.updateMany({
       where: { tenantId, chatwootConversationId: 9477 },
@@ -1204,7 +1238,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     // filtra o log por um desfecho tem que receber todos eles; sem ela a conversa some do rastro de
     // handoff. `emitFlowEvent` é fire-and-forget, daí o poll.
     let handoff: unknown = null;
-    for (let i = 0; i < 30 && handoff === null; i++) {
+    await until("the handoff line", async () => {
       const rows = await flowLogRows(suDb, {
         where: {
           tenantId,
@@ -1214,8 +1248,8 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         select: { detail: true },
       });
       if (rows.length > 0) handoff = rows[0]?.detail ?? null;
-      else await new Promise((r) => setTimeout(r, 50));
-    }
+      return handoff === null ? null : true;
+    });
     expect((handoff as { outcome?: string } | null)?.outcome).toBe(
       "taken_over",
     );
@@ -1265,13 +1299,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         },
       } as never,
     });
-    const waiting = Symbol("still waiting");
-    expect(
-      await Promise.race([
-        turn,
-        new Promise<typeof waiting>((r) => setTimeout(() => r(waiting), 300)),
-      ]),
-    ).toBe(waiting);
+    expect(await waitsForTheThread(turn, graphThreadId)).toBe(true);
     clearTurnInFlight(graphThreadId);
 
     // O turno segue: o modelo é chamado e o cliente é respondido. Uma leitura ilegível não pode
@@ -1321,26 +1349,31 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         checkpointer: new MemorySaver(),
       },
     });
+    let queued: Promise<void> = Promise.resolve();
     try {
-      const waiting = Symbol("still waiting");
-      expect(
-        await Promise.race([
-          turn,
-          new Promise<typeof waiting>((r) => setTimeout(() => r(waiting), 300)),
-        ]),
-      ).toBe(waiting);
+      expect(await waitsForTheThread(turn, graphThreadId)).toBe(true);
       // The turn is waiting right now, and the queue it will need is free: this callback runs
-      // instead of queueing behind the wait.
-      const tookTheQueue = Symbol("took the queue");
-      expect(
-        await Promise.race([
-          withKeyedQueue(`ingest:${graphThreadId}`, async () => tookTheQueue),
-          new Promise<"blocked">((r) => setTimeout(() => r("blocked"), 1_000)),
-        ]),
-      ).toBe(tookTheQueue);
+      // instead of queueing behind the wait. The waiting turn's own polls are the clock: three more
+      // of them with the callback still queued is a queue held across the wait.
+      let tookTheQueue = false;
+      const asks = countAsks(graphThreadId);
+      try {
+        const before = asks.count();
+        queued = withKeyedQueue(`ingest:${graphThreadId}`, async () => {
+          tookTheQueue = true;
+        });
+        await until(
+          "the callback, or three more polls of the waiting turn",
+          () => tookTheQueue || asks.count() >= before + 3,
+        );
+      } finally {
+        asks.restore();
+      }
+      expect(tookTheQueue).toBe(true);
     } finally {
       clearTurnInFlight(graphThreadId);
       await turn;
+      await queued;
     }
   }, 20_000);
 
@@ -1394,7 +1427,8 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     // this turn's to move.
     markTurnInFlight(graphThreadId);
     const second = turn(9321, 6003);
-    setTimeout(() => clearTurnInFlight(graphThreadId), 150);
+    expect(await waitsForTheThread(second, graphThreadId)).toBe(true);
+    clearTurnInFlight(graphThreadId);
     expect(await second).toBe("posted");
     const marker = await suDb.agentThread.findUniqueOrThrow({
       where: {
@@ -1691,13 +1725,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     // then claimed in the ordinary way, by a turn that is alone on the thread.
     markTurnInFlight(graphThreadId);
     const second = turn(981);
-    const waiting = Symbol("still waiting");
-    expect(
-      await Promise.race([
-        second,
-        new Promise<typeof waiting>((r) => setTimeout(() => r(waiting), 300)),
-      ]),
-    ).toBe(waiting);
+    expect(await waitsForTheThread(second, graphThreadId)).toBe(true);
     // Nothing was written while it waited, the marker included: the wait is BEFORE the divider, the
     // marker and the invoke, which is what makes standing still cost the turn a delay and nothing
     // else.
@@ -2058,7 +2086,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     // The deferred resolve is observable in the flow log (handoff stage, outcome "resolved").
     // emitFlowEvent is fire-and-forget, so poll briefly.
     let resolvedLogged = false;
-    for (let i = 0; i < 30 && !resolvedLogged; i++) {
+    await until("the resolved handoff line", async () => {
       const rows = await flowLogRows(suDb, {
         where: {
           tenantId,
@@ -2071,8 +2099,8 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         (r) =>
           (r.detail as Record<string, unknown> | null)?.outcome === "resolved",
       );
-      if (!resolvedLogged) await new Promise((r) => setTimeout(r, 100));
-    }
+      return resolvedLogged || null;
+    });
     expect(resolvedLogged).toBe(true);
 
     // The agent calling resolve_conversation is the ONE closing the Resolution funnel
@@ -2433,7 +2461,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         ["toggleStatus", 91916, "resolved"],
       ]);
       let held: Array<{ level: string; status: string | null }> = [];
-      for (let i = 0; i < 30 && held.length === 0; i++) {
+      await until("the held label line", async () => {
         const rows = await flowLogRows(suDb, {
           where: {
             tenantId,
@@ -2447,8 +2475,8 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
             (r.detail as Record<string, unknown> | null)?.phase ===
             "resolve_labels",
         );
-        if (held.length === 0) await new Promise((r) => setTimeout(r, 100));
-      }
+        return held.length > 0 || null;
+      });
       expect(held).toEqual(
         [{ level: "info", status: "error" }].map((h) =>
           expect.objectContaining(h),
@@ -2515,7 +2543,9 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     await seedConversation(9836, null);
     const CLOSING = "Já chamo uma pessoa do time.";
     const calls: Array<[string, number, string]> = [];
-    const hold = consumeCallback(() => Bun.sleep(300), false);
+    // Held until the line has been read below, so it is read with the queue still busy.
+    const busy = Promise.withResolvers<void>();
+    const hold = consumeCallback(() => busy.promise, false);
     try {
       const outcome = await runAgentTurn({
         tenantId,
@@ -2549,6 +2579,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         (decisao?.detail as Record<string, unknown> | null)?.turnDelivered,
       ).toBe(false);
     } finally {
+      busy.resolve();
       await hold;
       await awaitAllCallbacks();
     }
@@ -4376,15 +4407,10 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
             (r.detail as Record<string, unknown> | null)?.tool ===
             "react_to_message",
         );
-      let rows = await lines();
-      for (
-        let i = 0;
-        i < 30 && rows.length < works.length + expected.length;
-        i++
-      ) {
-        await new Promise((r) => setTimeout(r, 100));
-        rows = await lines();
-      }
+      const rows = await until("every reaction's line", async () => {
+        const landed = await lines();
+        return landed.length >= works.length + expected.length ? landed : null;
+      });
       expect(
         rows.filter((r) => r.level !== "info").map((r) => r.level),
       ).toEqual([...expected]);
@@ -4425,8 +4451,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
 
     // ...and the operator is told, because a turn that ends with nothing and no explanation is
     // exactly the one nobody can find afterwards. Fire-and-forget, so poll briefly.
-    let warned: Record<string, unknown> | null = null;
-    for (let i = 0; i < 30 && !warned; i++) {
+    const warned = await until("the silence warning", async () => {
       const rows = await flowLogRows(suDb, {
         where: {
           tenantId,
@@ -4436,12 +4461,12 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         },
         select: { detail: true },
       });
-      warned =
+      return (
         rows
           .map((r) => r.detail as Record<string, unknown> | null)
-          .find((d) => d?.silenceUnexplained === true) ?? null;
-      if (!warned) await new Promise((r) => setTimeout(r, 100));
-    }
+          .find((d) => d?.silenceUnexplained === true) ?? null
+      );
+    });
     expect(warned).not.toBeNull();
     // The line says WHICH exit this was: a resolve intent existed and was thrown away.
     expect(warned?.resolveDiscarded).toBe(true);
@@ -4582,8 +4607,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       ["sendPrivateNote", 9774, ""],
     ]);
 
-    let warned: Record<string, unknown> | null = null;
-    for (let i = 0; i < 30 && !warned; i++) {
+    const warned = await until("the silence warning", async () => {
       const rows = await flowLogRows(suDb, {
         where: {
           tenantId,
@@ -4593,12 +4617,12 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         },
         select: { detail: true },
       });
-      warned =
+      return (
         rows
           .map((r) => r.detail as Record<string, unknown> | null)
-          .find((d) => d?.silenceUnexplained === true) ?? null;
-      if (!warned) await new Promise((r) => setTimeout(r, 100));
-    }
+          .find((d) => d?.silenceUnexplained === true) ?? null
+      );
+    });
     expect(warned).not.toBeNull();
     // No intent existed, so nothing was thrown away — and the line says so rather than leaving the
     // operator to guess which of the two exits they are looking at.
@@ -5655,6 +5679,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     const base = ownershipClient(calls);
     const inner = await base();
     const mirrored = Promise.withResolvers<void>();
+    const labelsRead = Promise.withResolvers<void>();
     let armed = false;
     const client = {
       ...inner,
@@ -5669,14 +5694,19 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
           data: { status },
         });
         mirrored.resolve();
-        // The response comes back well after the webhook landed.
-        await new Promise((r) => setTimeout(r, 300));
+        // The response comes back only after the label read has seen the mirrored status.
+        await labelsRead.promise;
         return {};
       },
       // Armed inside the model call: the turn reads the labels while it prepares, too.
       getConversationLabels: async (c: number) => {
-        if (armed) await mirrored.promise;
-        return inner.getConversationLabels(c);
+        if (!armed) return inner.getConversationLabels(c);
+        await mirrored.promise;
+        try {
+          return await inner.getConversationLabels(c);
+        } finally {
+          labelsRead.resolve();
+        }
       },
     } as unknown as ChatwootClient;
     const m = scriptedToolModel([
@@ -7147,7 +7177,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       // filtering for it has to find the line it produced. Scoped AND polled: `emitFlowEvent` is
       // fire-and-forget, so the `send_orcamento` line may not have landed on the first read.
       let named = false;
-      for (let i = 0; i < 30 && !named; i++) {
+      await until("the send_orcamento line", async () => {
         const flow = await flowLogRows(suDb, {
           where: {
             tenantId,
@@ -7162,8 +7192,8 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
             (d) =>
               d.includes("send_orcamento") && d.includes('"outcome":"sent"'),
           );
-        if (!named) await new Promise((r) => setTimeout(r, 100));
-      }
+        return named || null;
+      });
       expect(named).toBe(true);
     } finally {
       await suDb.$executeRawUnsafe(
@@ -7249,7 +7279,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       // Polled, because emitFlowEvent is fire-and-forget: asserting on the first read passes or
       // fails on timing, which is a test that reports the wrong thing.
       let skipLogged = false;
-      for (let i = 0; i < 30 && !skipLogged; i++) {
+      await until("the skipped revocation line", async () => {
         const flow = await flowLogRows(suDb, {
           where: {
             tenantId,
@@ -7263,8 +7293,8 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
             JSON.stringify(f.detail).includes("revoked_before_delivery") &&
             f.status === "skipped",
         );
-        if (!skipLogged) await new Promise((r) => setTimeout(r, 100));
-      }
+        return skipLogged || null;
+      });
       expect(skipLogged).toBe(true);
     } finally {
       await suDb.$executeRawUnsafe(
@@ -7534,7 +7564,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       // why the file never arrived tell them somebody meant it.
       let flow: { detail: unknown; status: string | null }[] = [];
       let unknown: typeof flow = [];
-      for (let i = 0; i < 30 && unknown.length === 0; i++) {
+      await until("the revocation_unknown line", async () => {
         flow = await flowLogRows(suDb, {
           where: {
             tenantId,
@@ -7546,8 +7576,8 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         unknown = flow.filter((f) =>
           JSON.stringify(f.detail).includes("revocation_unknown"),
         );
-        if (unknown.length === 0) await new Promise((r) => setTimeout(r, 100));
-      }
+        return unknown.length > 0 || null;
+      });
       expect(unknown.length).toBeGreaterThan(0);
       expect(unknown.every((f) => f.status === "error")).toBe(true);
       expect(
@@ -8403,13 +8433,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         checkpointer,
       },
     });
-    const waiting = Symbol("still waiting");
-    expect(
-      await Promise.race([
-        turn,
-        new Promise<typeof waiting>((r) => setTimeout(() => r(waiting), 300)),
-      ]),
-    ).toBe(waiting);
+    expect(await waitsForTheThread(turn, threadId)).toBe(true);
     await clearTurnOwning(owner, appDb, otherInvoke);
     await turn;
 
@@ -8529,9 +8553,10 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         checkpointer,
       },
     });
-    // Released only after the turn has begun waiting, so the decision below really runs on the far
-    // side of the occupancy.
-    setTimeout(() => void clearTurnOwning(owner, appDb, otherInvoke), 150);
+    // Released only once the turn is seen waiting, so the decision below really runs on the far side
+    // of the occupancy.
+    expect(await waitsForTheThread(turn, owner.graphThreadId)).toBe(true);
+    await clearTurnOwning(owner, appDb, otherInvoke);
     await turn;
     expect(injected).toBe(true);
     const channel = await threadOf(checkpointer, threadId);
@@ -9840,7 +9865,8 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       });
       expect(outcome).toBe("posted");
       expect(sent).toEqual([[9471, "GEN-OUT-REPLY"]]);
-      await new Promise((r) => setTimeout(r, 300));
+      // Every line the turn scheduled has landed, so a missing one was never written.
+      await settleFlowEvents();
       const rows = await flowLogRows(suDb, {
         where: {
           tenantId: gTenantId,
@@ -10777,10 +10803,10 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       };
       const since = new Date(Date.now() - 3_600_000);
       let health = { failures: 0, lastAt: null as string | null };
-      for (let i = 0; i < 30 && health.failures === 0; i++) {
+      await until("the guardrail failure count", async () => {
         health = await readGuardrailHealth(ctx, gAgentId, since, appDb);
-        if (health.failures === 0) await new Promise((r) => setTimeout(r, 100));
-      }
+        return health.failures > 0 || null;
+      });
       expect(health.failures).toBeGreaterThan(0);
       expect(
         computeConfigIssues({

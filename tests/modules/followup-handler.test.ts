@@ -110,13 +110,39 @@ function stubClient(
         meta: first?.meta ?? over.liveMeta ?? {},
       };
     },
-    getMessages: async (_c: number, o?: { before?: number }) => {
+    getMessages: async (
+      _c: number,
+      o?: { before?: number; after?: number },
+    ) => {
       const instead = await over.onRead?.(reads++);
       if (instead !== undefined) return instead;
-      const rows = [...(over.page ?? [])]
-        .sort((a, b) => Number(a.id) - Number(b.id))
-        .filter((m) => o?.before === undefined || Number(m.id) < o.before);
-      return { payload: rows.slice(-20) };
+      const rows = [...(over.page ?? [])].sort(
+        (a, b) => Number(a.id) - Number(b.id),
+      );
+      // NOTE: the catch-up read: everything past the id, reactions to older messages included.
+      if (o?.after !== undefined)
+        return {
+          payload: rows
+            .filter((m) => Number(m.id) > (o.after ?? 0))
+            .slice(0, 100),
+        };
+      // Like the fork's pages, a reaction to a message older than the page is left out of it.
+      const plain = rows.filter(
+        (m) => o?.before === undefined || Number(m.id) < o.before,
+      );
+      const page = plain
+        .filter((m) => !(m as { reactsTo?: number }).reactsTo)
+        .slice(-20);
+      const lowest = Number(page[0]?.id ?? Infinity);
+      const reactions = plain.filter((m) => {
+        const to = (m as { reactsTo?: number }).reactsTo;
+        return to !== undefined && to >= lowest;
+      });
+      return {
+        payload: [...page, ...reactions].sort(
+          (a, b) => Number(a.id) - Number(b.id),
+        ),
+      };
     },
     sendMessage: async (c: number, t: string) => {
       sent.push([c, t]);
@@ -1241,6 +1267,48 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
       ],
     });
     expect(await run(1736, s)).toMatchObject({ outcome: "reschedule" });
+    expect(s.notes).toEqual([]);
+  });
+
+  // A reaction to an older message is left out of the fork's pages; the catch-up read brings it, and
+  // handled, it moved the conversation past the reply like any handled message.
+  test("a handled reaction to an older message is found past the pages", async () => {
+    await seedConversation(1744, due());
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: 1744 },
+      data: { lastHandledMessageId: 17470, lastInboundMessageId: 17470 },
+    });
+    const s = stubClient({
+      page: [
+        customerRow(17440),
+        replyRow(17441, { refused: true }),
+        ...Array.from({ length: 25 }, (_, i) => note(17442 + i)),
+        {
+          ...customerRow(17470),
+          content: "👍",
+          content_attributes: { is_reaction: true },
+          reactsTo: 17400,
+        },
+      ],
+    });
+    expect(await run(1744, s)).toEqual({ outcome: "done" });
+    expect(s.sent.map(([c]) => c)).toEqual([1744]);
+    expect(s.resolved).toEqual([]);
+  });
+
+  // A catch-up read that does not read whole holds the step: the reaction it lost may be the one that
+  // moved the conversation past the reply.
+  test("a catch-up read that does not read holds the step", async () => {
+    await seedConversation(1745, due());
+    const s = stubClient({
+      page: [replyRow(17451, { refused: true })],
+      onRead: (n) =>
+        n === 1
+          ? { payload: [{ id: 17452, message_type: 0 }, null] }
+          : undefined,
+    });
+    expect(await run(1745, s)).toMatchObject({ outcome: "reschedule" });
+    expect(s.resolved).toEqual([]);
     expect(s.notes).toEqual([]);
   });
 

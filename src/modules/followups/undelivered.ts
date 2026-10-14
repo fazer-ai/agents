@@ -45,6 +45,10 @@ export const RESEND_SETTLE_MS = 60_000;
 // last reply sits past this many pages of notes and activity has moved on from it.
 const MAX_PAGES = 5;
 
+// The fork's catch-up read (by id), and how many of them the read past the reply's start takes.
+const CATCH_UP_PAGE = 100;
+const CATCH_UP_MAX_READS = 5;
+
 export type Row = ReturnType<typeof parseChatwootMessages>[number];
 
 function replaces(row: Row, messageId: number): boolean {
@@ -161,6 +165,23 @@ export async function lastReplyDelivery(params: {
     )
   )
     throw new Error("follow-up: the reply's start is past the pages read");
+  // The fork's pages carry only the reactions to their own messages, so a reaction to an older one is
+  // missing from them: the catch-up read from where the reply starts brings it, as for the flush
+  // (`readBurstPage`).
+  let cursor = start - 1;
+  for (let n = 0; ; n++) {
+    const raw = await client.getMessages(params.chatwootConversationId, {
+      after: cursor,
+    });
+    const rows = parseChatwootMessages(raw);
+    if (chatwootMessageListLength(raw) !== rows.length)
+      throw new Error("follow-up: the catch-up read did not read");
+    for (const m of rows) if (!read.some((r) => r.id === m.id)) read.push(m);
+    if (rows.length < CATCH_UP_PAGE) break;
+    if (n + 1 >= CATCH_UP_MAX_READS)
+      throw new Error("follow-up: the history after the reply did not read");
+    cursor = Math.max(...rows.map((m) => m.id));
+  }
   const open = await params.stillOpen(read);
   // NOTE: from where the reply starts, so one written between its balloons counts too.
   if (read.some((m) => m.id > start && customer(m) && open.has(m.id)))

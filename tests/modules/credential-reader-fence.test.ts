@@ -1,8 +1,21 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { cp, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PrismaPg } from "@prisma/adapter-pg";
 import { Glob } from "bun";
+import { PrismaClient } from "@/../generated/prisma/client";
+import { encryptJson } from "@/api/lib/crypto";
+import { formatVaultRef } from "@/client/lib/credentialRef";
+import { loadAgentConfig } from "@/graph/prepare";
+import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { listProviderModels } from "@/modules/models/service";
+import { transcribePlaygroundAudio } from "@/modules/stt/service";
+import { listTtsOptions } from "@/modules/tts/listing";
+import { synthesizeReply } from "@/modules/tts/service";
+import { TTS_DEFAULTS, type TtsConfig } from "@/modules/tts/settings";
+import { extractPlaygroundFile } from "@/modules/vision/service";
+import { dbProbeFailed } from "@/tests/db-gate";
 import { withoutComments } from "@/tests/utils/source-text";
 
 // Who is allowed to read a vault secret RAW, and who has to go through a resolver that answers for
@@ -103,23 +116,294 @@ describe("who may read a vault secret without asking what it is for", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
-
-  // The other half of the rule, and the reason the list above is not just "these files are old": the
-  // modules that DO send a secret outbound resolve it through the use-aware entry point.
-  test("the API-key readers go through the use-aware resolver", async () => {
-    const expected = [
-      "src/graph/prepare.ts",
-      "src/modules/models/service.ts",
-      "src/modules/stt/service.ts",
-      "src/modules/tts/listing.ts",
-      "src/modules/tts/service.ts",
-      "src/modules/vision/service.ts",
-    ];
-    for (const path of expected) {
-      // Stripped for the same reason as above: a comment naming the resolver is not a call to it.
-      expect(withoutComments(await Bun.file(path).text())).toContain(
-        "tryResolveApiKeyEntry",
-      );
-    }
-  });
 });
+
+const appUrl = process.env.TEST_APP_DATABASE_URL;
+const suUrl = process.env.MIGRATION_DATABASE_URL;
+let dbUp = false;
+let su: PrismaClient | undefined;
+let app: PrismaClient | undefined;
+if (appUrl && suUrl) {
+  try {
+    su = new PrismaClient({
+      adapter: new PrismaPg({ connectionString: suUrl }),
+    });
+    await su.$queryRaw`SELECT 1`;
+    app = new PrismaClient({
+      adapter: new PrismaPg({ connectionString: appUrl }),
+    });
+    await app.$queryRaw`SELECT 1`;
+    dbUp = true;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
+  }
+}
+const suDb = su as PrismaClient;
+const appDb = app as PrismaClient;
+
+// The other half of the rule: every module that sends a key to a vendor refuses an `mcp_env` entry,
+// a real string the catalog says never leaves this process. Each sink is called twice, once with a
+// plain API key (which has to reach the vendor, or the refusal below proves nothing) and once with
+// the stdio token, which must reach no request at all.
+const KEY = `sk-sink-${process.pid}`;
+const STDIO = `stdio-token-${process.pid}`;
+
+let tenantId = 0n;
+let keyRef = "";
+let envRef = "";
+const ctx = (): TenantContext => ({
+  tenantId,
+  userId: null,
+  role: "TENANT_ADMIN",
+});
+
+// Every request a sink makes, flattened to text, so a secret is found wherever it travels: the URL,
+// a header, or the body.
+function recordingFetch(body: () => Response) {
+  const seen: string[] = [];
+  const fn = (async (url: string | URL | Request, init?: RequestInit) => {
+    const headers = new Headers(init?.headers);
+    seen.push(
+      [
+        String(url),
+        JSON.stringify([...headers.entries()]),
+        typeof init?.body === "string" ? init.body : "",
+      ].join(" "),
+    );
+    return body();
+  }) as unknown as typeof fetch;
+  return {
+    fn,
+    sent: (secret: string) => seen.some((s) => s.includes(secret)),
+    count: () => seen.length,
+  };
+}
+
+const json = (value: unknown) => () => Response.json(value);
+
+// The outcome after the credential is not what these tests are about: a vendor answering a stub
+// may fail further on, and only what reached the wire is asserted.
+async function settle(run: () => Promise<unknown>): Promise<unknown> {
+  try {
+    return await run();
+  } catch (err) {
+    return err;
+  }
+}
+
+describe.skipIf(!dbUp)(
+  "every API-key sink refuses a never-outbound secret",
+  () => {
+    beforeAll(async () => {
+      tenantId = (
+        await suDb.tenant.create({
+          data: { name: "Sinks", slug: `sinks-${process.pid}` },
+          select: { id: true },
+        })
+      ).id;
+      const mk = async (
+        name: string,
+        kind: string,
+        secret: string,
+        extra = {},
+      ) =>
+        formatVaultRef(
+          String(
+            (
+              await suDb.vaultEntry.create({
+                data: {
+                  tenantId,
+                  name,
+                  kind,
+                  secret: encryptJson(secret),
+                  ...extra,
+                },
+                select: { id: true },
+              })
+            ).id,
+          ),
+        );
+      keyRef = await mk("vendor-key", "generic", KEY);
+      envRef = await mk("stdio-token", "mcp_env", STDIO, {
+        paramName: "API_TOKEN",
+      });
+    });
+
+    afterAll(async () => {
+      if (tenantId) await suDb.tenant.delete({ where: { id: tenantId } });
+      await su?.$disconnect();
+      await app?.$disconnect();
+    });
+
+    test("the turn's model key (graph/prepare.ts)", async () => {
+      const load = async (credentialRef: string) => {
+        const agent = await suDb.agent.create({
+          data: {
+            tenantId,
+            name: `Model ${credentialRef}`,
+            systemPrompt: "x",
+            modelConfig: {
+              provider: "openai",
+              model: "gpt-4o-mini",
+              credentialRef,
+            },
+          },
+          select: { id: true },
+        });
+        return runScopedOn(appDb, ctx(), (db) =>
+          loadAgentConfig(db, {
+            tenantId,
+            instanceId: 0n,
+            conversationId: 1,
+            agentId: agent.id,
+            threadId: `${tenantId}:0:1`,
+          }),
+        );
+      };
+      expect((await load(keyRef))?.apiKey).toBe(KEY);
+      expect(await load(envRef)).toBeNull();
+    });
+
+    test("the model picker's listing (modules/models/service.ts)", async () => {
+      const list = async (credentialRef: string) => {
+        const wire = recordingFetch(json({ data: [{ id: "gpt-4o" }] }));
+        await settle(() =>
+          listProviderModels(
+            ctx(),
+            { provider: "openai", credentialRef },
+            appDb,
+            wire.fn,
+          ),
+        );
+        return wire;
+      };
+      expect((await list(keyRef)).sent(KEY)).toBe(true);
+      const refused = await list(envRef);
+      expect(refused.sent(STDIO)).toBe(false);
+      expect(refused.count()).toBe(0);
+    });
+
+    test("the voice picker's listing (modules/tts/listing.ts)", async () => {
+      const list = async (credentialRef: string) => {
+        const wire = recordingFetch(json({ voices: [] }));
+        const out = await settle(() =>
+          listTtsOptions(
+            ctx(),
+            { provider: "elevenlabs", kind: "voices", credentialRef },
+            appDb,
+            wire.fn,
+            async (url: string) => new URL(url),
+          ),
+        );
+        return { wire, out };
+      };
+      expect((await list(keyRef)).wire.sent(KEY)).toBe(true);
+      const refused = await list(envRef);
+      expect(refused.wire.count()).toBe(0);
+      expect((refused.out as { translationKey?: string }).translationKey).toBe(
+        "errors.credentialNotUsable",
+      );
+    });
+
+    test("the spoken reply (modules/tts/service.ts)", async () => {
+      const speak = async (credentialRef: string) => {
+        const wire = recordingFetch(
+          () =>
+            new Response(new ArrayBuffer(16), {
+              status: 200,
+              headers: { "content-type": "audio/ogg" },
+            }),
+        );
+        const cfg: TtsConfig = {
+          ...TTS_DEFAULTS,
+          mode: "mirror",
+          provider: "openai",
+          model: "tts-1",
+          voice: "alloy",
+          credentialRef,
+          normalize: false,
+        };
+        const out = await settle(() =>
+          synthesizeReply({
+            tenantId,
+            cfg,
+            text: "olá",
+            base: appDb,
+            deps: { fetchImpl: wire.fn },
+          }),
+        );
+        return { wire, out };
+      };
+      expect((await speak(keyRef)).wire.sent(KEY)).toBe(true);
+      const refused = await speak(envRef);
+      expect(refused.wire.count()).toBe(0);
+      expect(refused.out).toBeNull();
+    });
+
+    test("the playground transcription (modules/stt/service.ts)", async () => {
+      const hear = async (credentialRef: string) => {
+        const wire = recordingFetch(json({ text: "oi" }));
+        const out = await settle(() =>
+          transcribePlaygroundAudio({
+            ctx: ctx(),
+            agentId: 1n,
+            audio: new ArrayBuffer(8),
+            mimeType: "audio/ogg",
+            settings: {
+              stt: {
+                enabled: true,
+                provider: "openai",
+                model: "whisper-1",
+                credentialRef,
+              },
+            },
+            base: appDb,
+            deps: { fetchImpl: wire.fn },
+          }),
+        );
+        return { wire, out };
+      };
+      expect((await hear(keyRef)).wire.sent(KEY)).toBe(true);
+      const refused = await hear(envRef);
+      expect(refused.wire.count()).toBe(0);
+      expect((refused.out as { translationKey?: string }).translationKey).toBe(
+        "errors.credentialKindUnusableAsKey",
+      );
+    });
+
+    test("the playground file reading (modules/vision/service.ts)", async () => {
+      const read = async (credentialRef: string) => {
+        const wire = recordingFetch(
+          json({
+            choices: [{ message: { role: "assistant", content: "um recibo" } }],
+          }),
+        );
+        const out = await settle(() =>
+          extractPlaygroundFile({
+            ctx: ctx(),
+            agentId: 1n,
+            file: new ArrayBuffer(8),
+            mimeType: "image/png",
+            settings: {
+              vision: {
+                enabled: true,
+                provider: "openai",
+                model: "gpt-4o",
+                credentialRef,
+              },
+            },
+            base: appDb,
+            deps: { fetchImpl: wire.fn, sleep: async () => {} },
+          }),
+        );
+        return { wire, out };
+      };
+      expect((await read(keyRef)).wire.sent(KEY)).toBe(true);
+      const refused = await read(envRef);
+      expect(refused.wire.count()).toBe(0);
+      expect((refused.out as { translationKey?: string }).translationKey).toBe(
+        "errors.credentialKindUnusableAsKey",
+      );
+    });
+  },
+);

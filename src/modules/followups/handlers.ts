@@ -870,9 +870,10 @@ export async function followUpHandler(
           ctx.conv.lastProactiveAt,
         )
       : lastFollowUpAt;
-  const notDueYet = (): JobResult | null => {
-    if (!anchor) return null;
-    const dueAt = anchor.getTime() + stepDelayMinutes(step) * 60_000;
+  const notDueYet = (later?: Date): JobResult | null => {
+    const from = later && (!anchor || later > anchor) ? later : anchor;
+    if (!from) return null;
+    const dueAt = from.getTime() + stepDelayMinutes(step) * 60_000;
     if (Date.now() >= dueAt) return null;
     return {
       outcome: "reschedule",
@@ -1117,6 +1118,12 @@ export async function followUpHandler(
     const { handoverRetry: _retry, ...payload } = job.payload;
     job = { ...job, payload };
     const wait = notDueYet();
+    if (wait) return wait;
+  }
+  // NOTE: a resend that landed after the anchor (a delayed one, or one the mirror has not seen) is
+  // the reply the customer got, and the delay counts from it.
+  if (delivery.state === "delivered" && delivery.repliedAt) {
+    const wait = notDueYet(delivery.repliedAt);
     if (wait) return wait;
   }
 

@@ -1771,6 +1771,27 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     expect(s.notes.map(([c]) => c)).toEqual([1717]);
   });
 
+  // A resend that landed after the anchor (the mirror has not seen it) is the reply the customer got:
+  // the delay counts from it, not from the older activity.
+  test("a late resend restarts the inactivity delay", async () => {
+    await seedConversation(1760, due());
+    const s = stubClient({
+      page: [
+        replyRow(17601, { refused: true, sendId: "reply:k60:a" }),
+        replyRow(17602, {
+          sendId: "reply:k60:channel-resend:17601",
+          createdAt: Math.floor(Date.now() / 1000) - 10,
+        }),
+      ],
+    });
+    const out = await run(1760, s);
+    expect(out).toMatchObject({ outcome: "reschedule" });
+    expect((out as { runAt: Date }).runAt.getTime()).toBeGreaterThan(
+      Date.now() + 30_000,
+    );
+    expect(s.sent).toEqual([]);
+  });
+
   // The attempt may leave the mirror's claim saying `open`, which only the retry reconciles: its
   // reschedule is committed, so a run past its deadline still writes the marker.
   test("a hand-over retry is committed so a late run keeps its marker", async () => {
@@ -2038,7 +2059,8 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
   // A retry that finds the reply answered after all is a nudge again, and waits out the delay.
   test("a hand-over retry that finds the reply delivered waits like a nudge", async () => {
     await seedConversation(1742, { ...due(), lastEventAt: new Date() });
-    const s = stubClient({ page: [replyRow(17421)] });
+    // No reply of ours on the page, so the wait is the retry's own and not the resend's.
+    const s = stubClient();
     const out = await followUpHandler(
       {
         ...jobFor(1742),

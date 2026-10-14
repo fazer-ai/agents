@@ -27,7 +27,9 @@ import { foreignReplyBoundary } from "@/modules/debounce/watermark";
 // question: a customer message not yet handled has a turn coming for it, and a handled one or a
 // person's reply has already moved the conversation past the reply.
 export type LastReplyDelivery =
-  | { state: "delivered" }
+  // `repliedAt` is when the reply's newest message was sent, a replacement included: a resend that
+  // landed late is activity the inactivity delay counts from.
+  | { state: "delivered"; repliedAt?: Date }
   | { state: "customer_spoke" }
   | { state: "resend_pending"; until: Date }
   | {
@@ -264,7 +266,14 @@ export async function lastReplyDelivery(params: {
       !reply.some((r) => !r.externalError && replaces(r, m.id)) &&
       !read.some((p) => p.id > m.id && person(p)),
   );
-  if (missing.length === 0) return { state: "delivered" };
+  if (missing.length === 0) {
+    const sent = reply
+      .map((m) => m.createdAt?.getTime() ?? 0)
+      .reduce((a, t) => (t > a ? t : a), 0);
+    return sent > 0
+      ? { state: "delivered", repliedAt: new Date(sent) }
+      : { state: "delivered" };
+  }
   const jobs = await runScopedOn(params.base, sysCtx(params.tenantId), (db) =>
     db.schedulerJob.findMany({
       where: {

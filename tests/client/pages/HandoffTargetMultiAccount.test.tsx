@@ -183,13 +183,6 @@ function renderContactAuth(
         separator: "blank" as const,
       },
       setSignature: () => {},
-      savedSignature: () => ({
-        enabled: false,
-        text: "",
-        position: "top" as const,
-        frequency: "all" as const,
-        separator: "blank" as const,
-      }),
       vision: {
         enabled: false,
         provider: "openai",

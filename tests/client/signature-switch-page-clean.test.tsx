@@ -21,9 +21,9 @@ const { SIGNATURE_SEED } = await import(
   "@/client/pages/agents/signatureFormState"
 );
 
-// The page hands the switch the signature AS THE SERVER HAS IT (agents#1440). An agent saved off with
-// the seed as its text, which is what the bug itself left behind: on and off again keeps that text,
-// so the tab is back to what is stored and nothing is marked unsaved.
+// The Behavior tab as the operator sees it (agents#1440): the switch on and off again is no change, so
+// nothing is marked unsaved. Both for an agent with no signature, where the switch seeds the box, and
+// for one saved off with the seed as its text, which is what the bug itself left behind.
 //
 // Assertions reduce to strings or booleans before `expect`: a failing expectation that holds a DOM
 // node serializes a cyclic happy-dom tree and stalls the runner.
@@ -44,19 +44,19 @@ const AGENT = {
   transferWithSummary: true,
   enabled: true,
   mode: "reply",
-  settings: { signature: { enabled: false, text: SIGNATURE_SEED } },
+  settings: {},
   createdAt: "2026-01-01T00:00:00.000Z",
   updatedAt: "2026-01-01T00:00:00.000Z",
 };
 
-function stubApi(): void {
+function stubApi(settings: Record<string, unknown>): void {
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input));
     const routes: Record<string, unknown> = {
       "GET /api/auth/me": {
         user: { id: "1", email: "a@b.c", role: "ADMIN" },
       },
-      "GET /api/v1/agents/1": { agent: AGENT },
+      "GET /api/v1/agents/1": { agent: { ...AGENT, settings } },
       "GET /api/v1/agents/1/tool-selections": {
         grants: [],
         catalog: {
@@ -87,8 +87,8 @@ function stubApi(): void {
 const unsaved = () =>
   (document.body.textContent ?? "").includes("Unsaved changes");
 
-test("on and off again over a saved signature leaves the Behavior tab clean", async () => {
-  stubApi();
+async function onAndOff(settings: Record<string, unknown>): Promise<void> {
+  stubApi(settings);
   render(
     <MemoryRouter initialEntries={["/agents/1/behavior"]}>
       <ThemeProvider>
@@ -113,4 +113,13 @@ test("on and off again over a saved signature leaves the Behavior tab clean", as
   await waitFor(() => expect(unsaved()).toBe(true));
   fireEvent.click(toggle);
   await waitFor(() => expect(unsaved()).toBe(false));
+}
+
+// The case the issue reports: an agent with no signature, the switch on and off again.
+test("on and off again on an agent with no signature leaves the Behavior tab clean", async () => {
+  await onAndOff({});
+});
+
+test("on and off again over a saved signature leaves the Behavior tab clean", async () => {
+  await onAndOff({ signature: { enabled: false, text: SIGNATURE_SEED } });
 });

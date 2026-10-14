@@ -159,7 +159,16 @@ export function CredentialPicker({
     return nameMatch || kindIdMatch || kindLabelMatch;
   };
 
-  const compatible = entries.filter((e) => isCompatible(e) && matchesSearch(e));
+  // The compatible group follows `compatibleTypes`' order: the context lists its own kind first (the
+  // classifier's provider kind before a generic key), and the vault's name order holds within a kind,
+  // since `sort` is stable.
+  const kindRank = (e: VaultEntry) =>
+    hasFilter && e.kind ? compatibleTypes.indexOf(e.kind) : 0;
+  const byKindRank = (a: VaultEntry, b: VaultEntry) =>
+    kindRank(a) - kindRank(b);
+  const compatible = entries
+    .filter((e) => isCompatible(e) && matchesSearch(e))
+    .sort(byKindRank);
   const others = hasFilter
     ? entries.filter((e) => !isCompatible(e) && matchesSearch(e))
     : [];
@@ -193,7 +202,7 @@ export function CredentialPicker({
       prevTypesRef.current !== null && prevTypesRef.current !== key;
     prevTypesRef.current = key;
     if (!changed || !hasFilter || !selectedIncompatible) return;
-    const firstCompatible = entries.find(isCompatible);
+    const firstCompatible = entries.filter(isCompatible).sort(byKindRank)[0];
     const next = firstCompatible ? formatVaultRef(firstCompatible.id) : "";
     if (next !== value) onChange(next);
   }, [

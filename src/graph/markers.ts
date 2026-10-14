@@ -20,6 +20,7 @@ type SystemMarker =
   | "nudge"
   | "human_agent"
   | "human_handback"
+  | "undelivered_reply"
   | "called_off";
 
 function hasMarker(message: BaseMessage, marker: SystemMarker): boolean {
@@ -240,6 +241,28 @@ export function humanHandbackMessage(conversationId: number): HumanMessage {
 
 export function isHumanHandback(message: BaseMessage): boolean {
   return hasMarker(message, "human_handback");
+}
+
+// What stands where a superseded turn's unsent reply was, when that turn ACTED first.
+// The act stays in the thread, so the next turn reads a booking that happened, and without this it
+// reads one that was confirmed: nothing between the result and the newer message says the
+// confirmation never left. A fact, like the hand-back note, and no order: what to say about it is
+// the operator's prompt and the model's call.
+export const UNDELIVERED_REPLY_NOTE =
+  "(Contexto do sistema: a resposta às ações acima não chegou ao cliente, porque uma mensagem nova dele chegou antes do envio. O cliente ainda não sabe o resultado dessas ações.)";
+
+export function undeliveredReplyNote(conversationId: number): HumanMessage {
+  return new HumanMessage({
+    content: UNDELIVERED_REPLY_NOTE,
+    additional_kwargs: {
+      [MARKER_KWARG]: "undelivered_reply" satisfies SystemMarker,
+      ...conversationStamp(conversationId),
+    },
+  });
+}
+
+export function isUndeliveredReplyNote(message: BaseMessage): boolean {
+  return hasMarker(message, "undelivered_reply");
 }
 
 export function isConversationDivider(message: BaseMessage): boolean {

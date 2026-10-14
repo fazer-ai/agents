@@ -127,6 +127,7 @@ import {
   humanHandbackMessage,
   sentAtStamp,
   turnWasCalledOff,
+  undeliveredReplyNote,
 } from "./markers";
 import type { ResolvedModelConfig } from "./models";
 import { withOwnershipFence } from "./ownership-fence";
@@ -139,9 +140,11 @@ import {
   loadAgentConfig,
 } from "./prepare";
 import {
+  actedToolNames,
   rollBackRefusedTurn,
   type Settled,
   settlement,
+  turnActedBeforeItsReply,
   undoRefusedTurn,
 } from "./refused-turn";
 import { burstReopenedResolved } from "./reopened-by-burst";
@@ -154,6 +157,7 @@ import {
 import {
   chosenSilence,
   customerFacingReply,
+  inertToolsFor,
   silenceWasChosen,
 } from "./silence";
 import { applySkipHandover, skipHandoverKind } from "./skip-handover";
@@ -2266,12 +2270,20 @@ async function runTurnBody(
         detail: { silenceRetry: outcome },
       });
     }
+    const inertTools = inertToolsFor(loaded);
     const rollBack = async (outcome: RunAgentTurnOutcome) =>
       rollBackRefusedTurn(outcome, {
         checkpointer: params.deps?.checkpointer ?? (await getCheckpointer()),
         graphThreadId,
         produced: result.messages,
         kind: "reactive",
+        inertTools,
+        // NOTE: `superseded` only, because only there does a turn come next that must tell the
+        // customer. A takeover hands the conversation to a person who sees the act in
+        // Chatwoot, and `stale` was called off by the operator.
+        ...(outcome === "superseded"
+          ? { undeliveredNote: undeliveredReplyNote(conversationId) }
+          : {}),
         logPrefix: "turn",
         conversationId,
       });
@@ -2750,6 +2762,21 @@ async function runTurnBody(
       return settled("posted");
     };
     const ended = await afterGeneration();
+    // NOTE: The note above tells the next turn; this tells the operator, since the customer was not
+    // told either. Read off the same slice the rollback reads, so the two cannot disagree.
+    if (
+      ended.outcome === "superseded" &&
+      turnActedBeforeItsReply(result.messages, inertTools)
+    ) {
+      emitFlowEvent(flow, {
+        stage: "generate",
+        level: "warn",
+        status: "ok",
+        detail: {
+          supersededAfterAction: actedToolNames(result.messages, inertTools),
+        },
+      });
+    }
     // NOTE: Not awaited, and inside the `try`: `undoRefusedTurn` stands down while `isTurnInFlight`
     // holds, and the `finally` clears it before the queued rollback runs. The call still takes its
     // place in the `ingest:` queue now, before the durable claim is released.

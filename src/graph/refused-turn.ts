@@ -26,7 +26,8 @@ import { buildThreadStateGraph, THREAD_STATE_NODE } from "./thread-state";
 // the text in every later prompt. Removal names ids, never REMOVE_ALL_MESSAGES, like compaction.
 
 export type RollbackPlan =
-  | { action: "remove"; ids: string[] }
+  // `noted`: the first id now holds the undelivered-reply note instead of being removed.
+  | { action: "remove"; ids: string[]; noted?: true }
   | {
       action: "keep";
       reason:
@@ -155,6 +156,20 @@ function saidSomethingAndNothingElse(m: BaseMessage): boolean {
   );
 }
 
+// Where the trailing run starts, or null when there is none to take: nothing trailing (the turn ended
+// on a tool, so it said nothing), or nothing but assistant messages, which is not a channel this
+// invoke produced — the wall this rule leans on is missing, and guessing where the turn began is how
+// a rollback eats history.
+function trailingRunStart(produced: readonly BaseMessage[]): number | null {
+  let start = produced.length;
+  while (start > 0) {
+    const m = produced[start - 1];
+    if (m === undefined || !saidSomethingAndNothingElse(m)) break;
+    start--;
+  }
+  return start === produced.length || start === 0 ? null : start;
+}
+
 export function planReactiveTurnRollback(
   produced: readonly BaseMessage[],
   current: readonly BaseMessage[],
@@ -162,19 +177,47 @@ export function planReactiveTurnRollback(
   // question the proactive planner asks does not arise. Accepted so the two share one call shape.
   _inertTools: ReadonlySet<string> = new Set(),
 ): RollbackPlan {
-  let start = produced.length;
-  while (start > 0) {
-    const m = produced[start - 1];
-    if (m === undefined || !saidSomethingAndNothingElse(m)) break;
-    start--;
-  }
-  // Nothing trailing (the turn ended on a tool, so it said nothing), or nothing but assistant
-  // messages, which is not a channel this invoke produced — the wall this rule leans on is missing,
-  // and guessing where the turn began is how a rollback eats history.
-  if (start === produced.length || start === 0) {
-    return { action: "keep", reason: "no-turn-found" };
-  }
+  const start = trailingRunStart(produced);
+  if (start === null) return { action: "keep", reason: "no-turn-found" };
   return nameWhatSurvived(produced.slice(start), current);
+}
+
+// Whether the reply the reactive plan takes back followed an act of THIS turn: the
+// stretch between the message the turn answered and that reply. Stopping at the first human message
+// is what keeps a booking from a turn that was delivered out of it. Inert calls are read as the
+// proactive plan reads them, so a `skip_reply` or a call the boundary refused is not an act.
+export function turnActedBeforeItsReply(
+  produced: readonly BaseMessage[],
+  inertTools: ReadonlySet<string> = new Set(),
+): boolean {
+  const start = trailingRunStart(produced);
+  if (start === null) return false;
+  return actedOnTheWorld(actingStretch(produced, start), inertTools);
+}
+
+function actingStretch(
+  produced: readonly BaseMessage[],
+  start: number,
+): readonly BaseMessage[] {
+  let from = start;
+  while (from > 0 && produced[from - 1]?.getType() !== "human") from--;
+  return produced.slice(from, start);
+}
+
+// The names of what that stretch called, for the operator's line. Once each, in call order.
+export function actedToolNames(
+  produced: readonly BaseMessage[],
+  inertTools: ReadonlySet<string> = new Set(),
+): string[] {
+  const start = trailingRunStart(produced);
+  if (start === null) return [];
+  const stretch = actingStretch(produced, start);
+  const names = stretch.flatMap((m, i) =>
+    isInertToolCall(m, inertTools, stretch[i + 1])
+      ? []
+      : ((m as AIMessage).tool_calls ?? []).map((c) => c.name),
+  );
+  return [...new Set(names)];
 }
 
 // Reads the channel and writes the removal under the same `ingest:<graphThreadId>` key the append
@@ -196,6 +239,11 @@ export async function undoRefusedTurn(params: {
   // See planTurnRollback. The caller resolves it from the toolset it actually built, so a CUSTOM tool
   // that happens to be named like a native one is never mistaken for the inert one.
   inertTools?: ReadonlySet<string>;
+  // The note that takes the removed reply's place when the turn acted before it
+  // (`turnActedBeforeItsReply`). It reuses the first removed id, so the reducer puts it exactly where
+  // the reply stood, ahead of anything appended since. Absent, the reply just goes. Meaningful on the
+  // reactive plan only: the proactive one removes nothing from a turn that acted.
+  undeliveredNote?: BaseMessage;
   // The DURABLE half of the exclusion, for the one thread key that has a row to hang it on. Both or
   // neither: without them only the process-local check applies, which is all a thread with no
   // contact inbox can have.
@@ -235,11 +283,23 @@ export async function undoRefusedTurn(params: {
       )?.messages ?? []) as BaseMessage[];
       const decided = plan(produced, current, params.inertTools ?? new Set());
       if (decided.action === "remove") {
+        const note =
+          params.undeliveredNote !== undefined &&
+          turnActedBeforeItsReply(produced, params.inertTools)
+            ? params.undeliveredNote
+            : null;
+        const [first, ...rest] = decided.ids;
+        if (note && first !== undefined) note.id = first;
         await graph.updateState(
           threadCfg,
-          { messages: decided.ids.map((id) => new RemoveMessage({ id })) },
+          {
+            messages: note
+              ? [note, ...rest.map((id) => new RemoveMessage({ id }))]
+              : decided.ids.map((id) => new RemoveMessage({ id })),
+          },
           THREAD_STATE_NODE,
         );
+        if (note) return { ...decided, noted: true };
       }
       return decided;
     } finally {

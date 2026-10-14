@@ -54,10 +54,10 @@ export function ToolPreconditionsEditor({
     return own && !names.includes(own) ? [own, ...names] : names;
   };
   const byName = new Map(guardableTools.map((g) => [g.name, g]));
-  const labelOf = (name: string) => {
-    const tool = byName.get(name);
-    return tool?.label ?? (tool ? nativeToolMeta(name, t).label : name);
-  };
+  // A custom tool's own label, else the native's (a saved rule on a native the select no longer offers
+  // keeps its name readable); `nativeToolMeta` returns any other name as is.
+  const labelOf = (name: string) =>
+    byName.get(name)?.label ?? nativeToolMeta(name, t).label;
 
   return (
     <div className="flex flex-col gap-3" id="tools-preconditions">

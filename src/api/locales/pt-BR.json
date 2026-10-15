@@ -4,6 +4,7 @@
     "agentConfirmMismatch": "O nome do agente não confere",
     "agentIsResponder": "Este agente já atende esta caixa de entrada; ele não pode observá-la também.",
     "agentModifiedElsewhere": "Este agente foi alterado em outro lugar. Recarregue-o e tente novamente.",
+    "agentNotDecisionsObserver": "Só um agente que observa com perguntas e regras pode ser testado numa conversa.",
     "agentNotFound": "Agente não encontrado",
     "agentNotRunnable": "Este agente não tem um modelo executável configurado.",
     "agentObservesInboxes": "Este agente observa caixas de entrada. Remova-o como observador antes.",

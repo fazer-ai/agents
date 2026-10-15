@@ -921,6 +921,148 @@ function hasGateRule(settings: unknown): boolean {
   return gate.enabled && contactAuthHasRuleStage(gate);
 }
 
+// WHAT A TICK READS OF THE CONVERSATION, in one place because two callers read it: the tick, and the
+// conversation page's test of a decisions agent (modules/decisions/try.ts), which must send its
+// classifier exactly what a tick would. The window of rows after the last `/reset`, the transcript
+// and notes off the same rows, the labels standing now (asked with the window, `null` when
+// unreadable), and the label history. `customer: false` stops before the reads a tick with no
+// customer message would waste.
+export type ObserveEvidence =
+  | { customer: false; transcript: TranscriptLine[]; notes: string[] }
+  | {
+      customer: true;
+      transcript: TranscriptLine[];
+      notes: string[];
+      current: string[] | null;
+      currentForPrompt: string[] | null;
+      vocabLabels: string[] | null;
+      labelChanges: LabelHistory;
+      labelsAskedAt: number;
+    };
+
+export async function readObserveEvidence(p: {
+  tenantId: bigint;
+  instanceId: bigint;
+  conversationId: number;
+  client: ChatwootClient;
+  base: PrismaClient;
+  windowMessages: number;
+  conv: {
+    resetAtMessageId: number | null;
+    resetClearedLabels: unknown;
+    inbox: { provider: string | null } | null;
+  } | null;
+  protectedLabels: readonly string[] | undefined;
+}): Promise<ObserveEvidence> {
+  const { tenantId, instanceId, conversationId, client, base, conv } = p;
+  // The labels standing now are asked for WITH the window, not after it: the two reads do not
+  // depend on each other, and one after the other is a round trip the verdict waits through.
+  // Tolerated when it fails, as `buildToolset` does (prepare.ts): a watcher may not touch labels at
+  // all. `null`, not `[]`: "no labels" would let the model clear everything.
+  // Timed from when it was ASKED: the answer may sit resolved while the window is still paging.
+  const labelsAskedAt = Date.now();
+  const labelsRead: Promise<string[] | null> = client
+    .getConversationLabels(conversationId)
+    .catch((e: unknown) => {
+      logger.warn(
+        "observe: conversation labels unreadable (tenant=%s conv=%s): %s",
+        String(tenantId),
+        String(conversationId),
+        e instanceof Error ? e.message : String(e),
+      );
+      return null;
+    });
+  const fetched = await readWindowRows(
+    client,
+    conversationId,
+    p.windowMessages,
+  );
+  // NOTE: upstream Chatwoot 404s the attachment-meta write-back, so an eager transcription or image
+  // description may exist only in the in-process annotation store (docs/stt.md). Overlaid as the
+  // direct turn and the flush do, never over a value the fork did write.
+  overlayMediaAnnotations(tenantId, instanceId, fetched);
+  // ...AND THE EPISODE THE RESET ENDED IS NOT PART OF THIS ONE. `/reset` clears the labels and the
+  // memory, but Chatwoot keeps every message, and this module reads Chatwoot rather than the
+  // thread — so without this the next verdict reads the erased episode's demands (and the command
+  // itself), finds no labels standing, and writes the old classification straight back, which is
+  // the opposite of what the operator was told happened. Applied before the quote resolver is
+  // built, so a reply quoting a pre-reset message does not reintroduce its text either.
+  const resetBoundary = conv?.resetAtMessageId ?? null;
+  // A `Json?` column, READ rather than trusted: NULL is a reset that made no claim, and
+  // anything but an array of strings is a row this build did not write.
+  const resetCleared = stringArrayOrNull(conv?.resetClearedLabels);
+  const rows =
+    resetBoundary === null
+      ? fetched
+      : fetched.filter((r) => r.id > resetBoundary);
+  const ownBotIds = new Set(
+    await instanceAgentBotChatwootIds(tenantId, instanceId, base),
+  );
+  const transcript = transcriptFromRows(rows, p.windowMessages, {
+    ownBotIds,
+    trustPhoneEcho: providerReservesEchoIds(conv?.inbox?.provider ?? null),
+  });
+  // Read off the SAME rows, after the reset boundary like everything else: a note about the episode
+  // the operator wiped is not part of this one either.
+  const notes = notesFromRows(rows, p.windowMessages);
+  if (!transcript.some((l) => l.role === "customer")) {
+    return { customer: false, transcript, notes };
+  }
+  // ONE READ, for the prompt block AND `set_labels`' baseline: the tool diffs against what
+  // the model was SHOWN, so two reads could turn a label repeated to keep it into an ADDITION.
+  const current = await labelsRead;
+  // THE PROMPT BLOCK SHOWS THE GUARDED LABELS, as the tool does (it shows them and refuses to
+  // move them): the same projection the tool renders (label-view.ts).
+  const currentForPrompt =
+    current === null ? null : modelVisibleLabels(current);
+
+  // Read here, not beside `notes`, because it is a request every exit above would waste. The
+  // labels ALONE, not the toolset's vocabulary: that is two requests under one `Promise.all`, and a
+  // down attribute endpoint would stall every tick. `null` makes the block say it could not read.
+  const vocabLabels = await loadChatwootLabels(
+    client,
+    `${tenantId}:${instanceId}`,
+  ).catch(() => null);
+  // THE CONVERSATION'S OWN LABELS JOIN THE INDEX: a tag attached through `set_labels` creates
+  // no `Label` row, so an invented title is only on the conversation. A title invented, applied and
+  // removed between two ticks is in neither list, a miss chosen over inventing a decision.
+  const labelChanges = labelHistoryFromRows(
+    // NOTE: minus the reset's own cleanup. The PAGE goes in, not `rows`: whether it still reaches
+    // the command decides how a removal line is read.
+    afterResetNarration(fetched, resetBoundary, resetCleared),
+    vocabLabels === null && current === null
+      ? null
+      : [...(vocabLabels ?? []), ...(current ?? [])],
+    p.protectedLabels,
+    LABEL_CHANGES_MAX,
+  );
+
+  return {
+    customer: true,
+    transcript,
+    notes,
+    current,
+    currentForPrompt,
+    vocabLabels,
+    labelChanges,
+    labelsAskedAt,
+  };
+}
+
+// The text a classification API is asked about: the evidence blocks, with the label history marked
+// complete only when both label lists were read (each recognises changes the other cannot).
+export function observeDecisionInput(
+  e: Extract<ObserveEvidence, { customer: true }>,
+): string {
+  return observeEvidenceText(e.transcript, e.currentForPrompt, e.notes, {
+    lines: e.labelChanges.lines,
+    complete:
+      e.vocabLabels !== null &&
+      e.current !== null &&
+      e.labelChanges.omitted === 0,
+  });
+}
+
 export async function runObserve(
   tenantId: bigint,
   p: ObservePayload,
@@ -1243,57 +1385,18 @@ export async function runObserve(
       expiresOn: deadline,
     },
   );
-  // The labels standing now are asked for WITH the window, not after it: the two reads do not
-  // depend on each other, and one after the other is a round trip the verdict waits through.
-  // Tolerated when it fails, as `buildToolset` does (prepare.ts): a watcher may not touch labels at
-  // all. `null`, not `[]`: "no labels" would let the model clear everything.
-  // Timed from when it was ASKED: the answer may sit resolved while the window is still paging.
-  const labelsAskedAt = Date.now();
-  const labelsRead: Promise<string[] | null> = client
-    .getConversationLabels(conversationId)
-    .catch((e: unknown) => {
-      logger.warn(
-        "observe: conversation labels unreadable (tenant=%s conv=%s): %s",
-        String(tenantId),
-        String(conversationId),
-        e instanceof Error ? e.message : String(e),
-      );
-      return null;
-    });
-  const fetched = await readWindowRows(
-    client,
+  const evidence = await readObserveEvidence({
+    tenantId,
+    instanceId,
     conversationId,
-    mon.window.messages,
-  );
-  // NOTE: upstream Chatwoot 404s the attachment-meta write-back, so an eager transcription or image
-  // description may exist only in the in-process annotation store (docs/stt.md). Overlaid as the
-  // direct turn and the flush do, never over a value the fork did write.
-  overlayMediaAnnotations(tenantId, instanceId, fetched);
-  // ...AND THE EPISODE THE RESET ENDED IS NOT PART OF THIS ONE. `/reset` clears the labels and the
-  // memory, but Chatwoot keeps every message, and this module reads Chatwoot rather than the
-  // thread — so without this the next verdict reads the erased episode's demands (and the command
-  // itself), finds no labels standing, and writes the old classification straight back, which is
-  // the opposite of what the operator was told happened. Applied before the quote resolver is
-  // built, so a reply quoting a pre-reset message does not reintroduce its text either.
-  const resetBoundary = conv?.resetAtMessageId ?? null;
-  // A `Json?` column, READ rather than trusted: NULL is a reset that made no claim, and
-  // anything but an array of strings is a row this build did not write.
-  const resetCleared = stringArrayOrNull(conv?.resetClearedLabels);
-  const rows =
-    resetBoundary === null
-      ? fetched
-      : fetched.filter((r) => r.id > resetBoundary);
-  const ownBotIds = new Set(
-    await instanceAgentBotChatwootIds(tenantId, instanceId, base),
-  );
-  const transcript = transcriptFromRows(rows, mon.window.messages, {
-    ownBotIds,
-    trustPhoneEcho: providerReservesEchoIds(conv?.inbox?.provider ?? null),
+    client,
+    base,
+    windowMessages: mon.window.messages,
+    conv,
+    protectedLabels: cfg.protectedLabels,
   });
-  // Read off the SAME rows, after the reset boundary like everything else: a note about the episode
-  // the operator wiped is not part of this one either.
-  const notes = notesFromRows(rows, mon.window.messages);
-  if (!transcript.some((l) => l.role === "customer")) {
+  const { transcript, notes } = evidence;
+  if (!evidence.customer) {
     // NOTE: `info`: nothing to observe yet is not a problem anybody can fix.
     line(
       "skipped",
@@ -1302,34 +1405,13 @@ export async function runObserve(
     );
     return { outcome: "done" };
   }
-  // ONE READ, for the prompt block AND `set_labels`' baseline: the tool diffs against what
-  // the model was SHOWN, so two reads could turn a label repeated to keep it into an ADDITION.
-  const current = await labelsRead;
-  // THE PROMPT BLOCK SHOWS THE GUARDED LABELS, as the tool does (it shows them and refuses to
-  // move them): the same projection the tool renders (label-view.ts).
-  const currentForPrompt =
-    current === null ? null : modelVisibleLabels(current);
-
-  // Read here, not beside `notes`, because it is a request every exit above would waste. The
-  // labels ALONE, not the toolset's vocabulary: that is two requests under one `Promise.all`, and a
-  // down attribute endpoint would stall every tick. `null` makes the block say it could not read.
-  const vocabLabels = await loadChatwootLabels(
-    client,
-    `${tenantId}:${instanceId}`,
-  ).catch(() => null);
-  // THE CONVERSATION'S OWN LABELS JOIN THE INDEX: a tag attached through `set_labels` creates
-  // no `Label` row, so an invented title is only on the conversation. A title invented, applied and
-  // removed between two ticks is in neither list, a miss chosen over inventing a decision.
-  const labelChanges = labelHistoryFromRows(
-    // NOTE: minus the reset's own cleanup. The PAGE goes in, not `rows`: whether it still reaches
-    // the command decides how a removal line is read.
-    afterResetNarration(fetched, resetBoundary, resetCleared),
-    vocabLabels === null && current === null
-      ? null
-      : [...(vocabLabels ?? []), ...(current ?? [])],
-    cfg.protectedLabels,
-    LABEL_CHANGES_MAX,
-  );
+  const {
+    current,
+    currentForPrompt,
+    vocabLabels,
+    labelChanges,
+    labelsAskedAt,
+  } = evidence;
 
   // THE TURN ITSELF, the ordinary graph: with a muted client a watcher is the ordinary agent
   // (tools, MCP, knowledge) that cannot answer the customer; classifying is `set_labels` in its
@@ -1767,13 +1849,7 @@ export async function runObserve(
     try {
       result = await underSignal(
         askProvider(config, {
-          input: observeEvidenceText(transcript, currentForPrompt, notes, {
-            lines: labelChanges.lines,
-            complete:
-              vocabLabels !== null &&
-              current !== null &&
-              labelChanges.omitted === 0,
-          }),
+          input: observeDecisionInput(evidence),
           apiKey: setup.apiKey,
           baseURL: setup.baseURL,
           ...(deps.decisionFetch ? { fetchImpl: deps.decisionFetch } : {}),

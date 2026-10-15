@@ -11,6 +11,7 @@ import {
   returnConversationToAgent,
   setConversationStatus,
 } from "@/modules/conversations/service";
+import { tryDecisionsAgent } from "@/modules/decisions/try";
 import type { VerifiedToken } from "./oauth/tokens";
 import {
   err,
@@ -178,6 +179,29 @@ export async function conversationReengage(
       applied: true,
       target,
       outcome: result.outcome,
+    });
+  } catch (e) {
+    return failOf(e);
+  }
+}
+
+// The conversation page's test of a decisions agent: paid, so behind the write scope, and nothing
+// is written (modules/decisions/try.ts).
+export async function conversationDecisionsTest(
+  principal: VerifiedToken,
+  args: { conversation_id: string; agent_id: string },
+  deps: WriteDeps = {},
+): Promise<WriteResult> {
+  const base = deps.base ?? basePrisma;
+  const ctx = gate(principal);
+  if ("ok" in ctx) return ctx;
+  const conversationId = parseMcpId(args.conversation_id, "conversation_id");
+  if (typeof conversationId !== "bigint") return conversationId;
+  const agentId = parseMcpId(args.agent_id, "agent_id");
+  if (typeof agentId !== "bigint") return agentId;
+  try {
+    return ok({
+      tick: await tryDecisionsAgent(ctx, agentId, conversationId, {}, base),
     });
   } catch (e) {
     return failOf(e);

@@ -44,6 +44,7 @@ import {
   returnConversationToAgent,
   setConversationStatus,
 } from "@/modules/conversations/service";
+import { tryDecisionsAgent } from "@/modules/decisions/try";
 import {
   createTenant,
   deleteTenant,
@@ -56,6 +57,7 @@ import { getTenant, listTenants, type TenantUpdate } from "./tenants.service";
 // `ErrorTranslationKey` (src/lib/errors.ts) makes a key that is missing here a type error at the
 // throw site rather than an English sentence on a pt-BR caller's screen.
 // translate('errors.conversationNotFound', 'Conversation not found.')
+// translate('errors.agentNotDecisionsObserver', 'Only an agent that observes with questions and rules can be tested on a conversation.')
 // translate('errors.reengageNoAgent', 'No agent is bound to the inbox of this conversation.')
 // translate('errors.returnNoResponder', 'No responder is bound to the inbox of this conversation.')
 // translate('errors.returnAgentOff', 'The responder of this inbox is switched off.')
@@ -688,6 +690,42 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
         tags: ["Conversations"],
       },
       response: errors(400, 401, 403, 404),
+    },
+  )
+  // An agent that observes with questions and rules, run once on this conversation without acting:
+  // its saved block, the evidence a tick reads, one paid classification billed as the playground.
+  .post(
+    "/conversations/:id/decisions-test",
+    async ({ tenantContext, params, body }) => ({
+      instance: instanceIdentity,
+      tick: await tryDecisionsAgent(
+        ctxOrThrow(tenantContext),
+        requireDbId(body.agentId),
+        requireDbId(params.id),
+      ),
+    }),
+    {
+      requireRole: "TENANT_ADMIN",
+      params: t.Object({
+        id: t.String({
+          description:
+            "Conversation primary key (BigInt serialized as a decimal string).",
+        }),
+      }),
+      body: t.Object({
+        agentId: t.String({
+          description:
+            "A monitoring agent on the decisions engine (switched off or not attached to the inbox is fine), as a decimal string.",
+        }),
+      }),
+      detail: {
+        ...doc(
+          "Test a decisions agent on a conversation",
+          "Runs the agent's SAVED questions and rules once on this conversation, as a tick would (the same evidence, its classifier and key), and returns the result in the shape the conversation page draws a tick with: answers, the rules that would fire with their action (`outcome: decided`), the ones held back by their trigger, and the near misses. Nothing is executed and nothing is written to the conversation or the trigger state. One paid classification call, recorded and gated as the playground (429 past its spend ceiling). A tick that cannot run says why (`outcome: failed` or `skipped`) instead of answers. Requires TENANT_ADMIN or above.",
+        ),
+        tags: ["Conversations"],
+      },
+      response: errors(400, 401, 403, 404, 422, 429),
     },
   )
   .post(

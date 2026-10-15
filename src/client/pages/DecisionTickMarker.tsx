@@ -22,14 +22,19 @@ import {
 export function DecisionTickMarker({
   entry,
   previous,
+  test = false,
 }: {
-  entry: TrailEntry;
+  // Only the tick and its duration are read, so a test's result (which has no trail row) draws too.
+  entry: Pick<TrailEntry, "decision" | "durationMs">;
   // The previous decided tick of the same agent in this conversation, when there is one: the
   // collapsed marker says which answers moved since.
   previous?: DecisionTickView;
+  // A test from the conversation page (modules/decisions/try.ts): nothing ran, so the marker says
+  // what WOULD run, and it opens expanded since the test was asked for to read it.
+  test?: boolean;
 }) {
   const { t } = useTranslation();
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(test);
   const tick = entry.decision;
   if (!tick) return null;
   const failed = tick.outcome === "failed";
@@ -45,9 +50,12 @@ export function DecisionTickMarker({
     ? t("conversation.trail.decision.failed", "Classification failed")
     : skipped
       ? t("conversation.trail.decision.skipped", "Classification skipped")
-      : t("conversation.trail.decision.classified", "Classified");
+      : test
+        ? t("conversation.trail.decision.test", "Test, nothing was run")
+        : t("conversation.trail.decision.classified", "Classified");
   const why = failed || skipped ? whyText(tick, t) : null;
-  const summary = failed || skipped ? null : summaryText(tick, t);
+  const summary =
+    failed || skipped ? null : test ? wouldText(tick, t) : summaryText(tick, t);
   const changes =
     failed || skipped || !previous ? [] : answerChanges(previous, tick);
   const hasDetails = tick.answers !== null || tick.actions.length > 0;
@@ -214,6 +222,22 @@ function summaryText(tick: DecisionTickView, t: T): string {
   return parts.length > 0
     ? parts.join(", ")
     : t("conversation.trail.decision.noActionRan", "no action ran");
+}
+
+// A test's line: how many rules would act, since none ran.
+function wouldText(tick: DecisionTickView, t: T): string {
+  const n = tick.actions.filter(
+    (a) => (a as { outcome?: unknown } | null)?.outcome === "decided",
+  ).length;
+  return n === 0
+    ? t("conversation.trail.decision.noRuleWouldAct", "no rule would act")
+    : t(
+        "conversation.trail.decision.rulesWouldAct",
+        "{{count}} rules would act",
+        {
+          count: n,
+        },
+      );
 }
 
 // Why a tick did not decide, in the screen's words for the reasons the engine writes, and the raw
@@ -594,7 +618,8 @@ function RuleRow({
       <span
         title={near ? text : undefined}
         className={cn(
-          r.kind === "fired" && r.outcome === "ran"
+          // A test's `decided` is what would run, the test's good outcome, not a failure.
+          r.kind === "fired" && (r.outcome === "ran" || r.outcome === "decided")
             ? "text-success"
             : r.kind === "fired"
               ? "text-error"
@@ -731,6 +756,8 @@ function ruleText(
   }
   if (r.kind === "fired") {
     const outcome = firedText(r, t);
+    // A test ran nothing, so "fired: would run" says the same twice.
+    if (r.outcome === "decided" && r.sameAs === null) return outcome;
     return r.sameAs !== null
       ? t(
           "conversation.trail.decision.sameAs",
@@ -758,6 +785,8 @@ function ruleText(
 
 function firedText(r: Extract<RuleView, { kind: "fired" }>, t: T): string {
   switch (r.outcome) {
+    case "decided":
+      return t("conversation.trail.decision.wouldRun", "would run");
     case "ran":
       return r.partial
         ? t("conversation.trail.decision.ranPartial", "ran, in part")

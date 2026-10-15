@@ -325,6 +325,9 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   "POST /v1/conversations/:id/handoff": { tool: "conversation_handoff" },
   "POST /v1/conversations/:id/return": { tool: "conversation_return" },
   "POST /v1/conversations/:id/reengage": { tool: "conversation_reengage" },
+  "POST /v1/conversations/:id/decisions-test": {
+    tool: "conversation_decisions_test",
+  },
   "POST /v1/conversations/:id/status": { tool: "conversation_status" },
   "GET /v1/metrics": { tool: "metrics_get" },
   "GET /v1/metrics/kpis": { tool: "metrics_get" },

@@ -177,3 +177,19 @@ export async function writeTriggerState(
   }
   return held;
 }
+
+// The rules held back in a conversation, read without taking a generation: for a caller that only
+// shows what the rules would do (a test from the conversation page) and must not order itself
+// against the ticks, since it writes nothing.
+export async function readLatchedRules(
+  base: PrismaClient,
+  scope: TriggerScope,
+): Promise<Set<string>> {
+  const rows = await runScopedOn(base, sysCtx(scope.tenantId), (db) =>
+    db.decisionRuleState.findMany({
+      where: { agentId: scope.agentId, conversationId: scope.conversationId },
+      select: { ruleKey: true },
+    }),
+  );
+  return new Set(rows.map((r) => r.ruleKey));
+}

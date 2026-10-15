@@ -75,6 +75,7 @@ import {
   type TrailEntry,
   type TurnUsageEntry,
 } from "./conversationTimeline";
+import { DecisionsTestButton } from "./DecisionsTestModal";
 import { DecisionTickMarker } from "./DecisionTickMarker";
 import { type DecisionTickView, previousDecisionTicks } from "./decisionTick";
 
@@ -1950,6 +1951,12 @@ export function ConversationDetailPage() {
                       <ExternalLink className="h-4 w-4" aria-hidden="true" />
                       {t("conversation.openInChatwoot", "Open in Chatwoot")}
                     </a>
+                  )}
+                  {mayReengage && (
+                    <DecisionsTestButton
+                      conversationId={id}
+                      observerIds={conv.observers.map((o) => o.id)}
+                    />
                   )}
                   {conv.agentId && (
                     <Link

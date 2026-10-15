@@ -4,6 +4,7 @@
     "agentConfirmMismatch": "The agent name does not match",
     "agentIsResponder": "This agent already answers this inbox; it cannot observe it too.",
     "agentModifiedElsewhere": "This agent was changed somewhere else. Reload it and try again.",
+    "agentNotDecisionsObserver": "Only an agent that observes with questions and rules can be tested on a conversation.",
     "agentNotFound": "Agent not found",
     "agentNotRunnable": "This agent has no runnable model configured.",
     "agentObservesInboxes": "This agent observes inboxes. Remove it as an observer first.",

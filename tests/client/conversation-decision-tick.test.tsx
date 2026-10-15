@@ -1120,3 +1120,69 @@ describe("where a tick sits on the timeline", () => {
     ).toEqual(["mmessage", "13", "mmessage"]);
   });
 });
+
+// A test from the conversation page (agents#1499): the same marker, but nothing ran. The bugs these
+// catch: a test that reads as "Classified ... 1 label write", which an operator takes for a write on
+// the customer's conversation, and a decided rule shown under the raw outcome name.
+describe("a test from the conversation page", () => {
+  const decided = tick({
+    actions: [
+      { rule: 0, tool: "set_labels", outcome: "decided", merged: [] },
+      { rule: 1, tool: "handoff_to_human", outcome: "decided", merged: [] },
+      // Past the call budget: it would NOT act, so it is not counted.
+      { rule: 2, tool: "private_note", outcome: "over_budget", merged: [] },
+    ],
+    notFired: [],
+  });
+
+  test("says nothing was run, counts what would act, and opens on its rules", async () => {
+    await inLanguage(
+      "en",
+      <DecisionTickMarker
+        entry={{ decision: decided, durationMs: null }}
+        test
+      />,
+    );
+    const m = screen.getByTestId("decision-marker").textContent ?? "";
+    expect(m).toContain("Test, nothing was run");
+    expect(m).toContain("2 rules would act");
+    expect(m).not.toContain("Classified");
+    expect(m).not.toContain("handed off");
+    // Open without a click: the test was run to be read.
+    const lines = within(screen.getByTestId("decision-details"))
+      .getAllByTestId("decision-rule")
+      .map((r) => r.textContent ?? "");
+    expect(lines.filter((l) => l.includes("would run"))).toHaveLength(2);
+  });
+
+  test("in Portuguese, with one rule and with none", async () => {
+    await inLanguage(
+      "pt-BR",
+      <DecisionTickMarker
+        entry={{
+          decision: tick({
+            actions: [
+              { rule: 0, tool: "set_labels", outcome: "decided", merged: [] },
+            ],
+          }),
+          durationMs: null,
+        }}
+        test
+      />,
+    );
+    const m = screen.getByTestId("decision-marker").textContent ?? "";
+    expect(m).toContain("Teste, nada foi executado");
+    expect(m).toContain("1 regra agiria");
+    cleanup();
+    await inLanguage(
+      "pt-BR",
+      <DecisionTickMarker
+        entry={{ decision: tick({ actions: [] }), durationMs: null }}
+        test
+      />,
+    );
+    expect(screen.getByTestId("decision-marker").textContent).toContain(
+      "nenhuma regra agiria",
+    );
+  });
+});

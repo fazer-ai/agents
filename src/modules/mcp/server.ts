@@ -127,6 +127,7 @@ import {
   codeToolUpdate,
 } from "./write-code-tools";
 import {
+  conversationDecisionsTest,
   conversationHandoff,
   conversationReengage,
   conversationReturn,
@@ -3387,6 +3388,22 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
         },
         eff,
       ) => writeContent(await conversationStatus(eff, args)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
+      "conversation_decisions_test",
+      {
+        description:
+          "Dry-run a decisions observer's saved questions and rules on this conversation: answers and the rules that would fire. One paid classification, billed as the playground.",
+        inputSchema: {
+          conversation_id: z.string(),
+          agent_id: z.string(),
+        },
+      },
+      async (args: { conversation_id: string; agent_id: string }, eff) =>
+        writeContent(await conversationDecisionsTest(eff, args)),
     );
 
     registerTenantTool(

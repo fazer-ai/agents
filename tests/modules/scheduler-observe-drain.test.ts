@@ -9,6 +9,7 @@ import {
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { Semaphore } from "@/lib/semaphore";
+import { inFlightWork } from "@/lib/shutdown";
 import { armObserve } from "@/modules/observe/job";
 import type { MonitoringConfig } from "@/modules/observe/settings";
 import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
@@ -119,6 +120,13 @@ describe.skipIf(!dbUp)("the observe lane's fast drain", () => {
 
   afterEach(async () => {
     stopScheduler();
+    // A run started by the drain counts against the lane's slots until its outcome is written, and
+    // stopScheduler does not wait for it: the next test would start with a slot still taken.
+    const running = () =>
+      (inFlightWork().byKind.OBSERVE ?? 0) +
+      (inFlightWork().byKind.FOLLOWUP ?? 0);
+    await until(() => running() === 0);
+    expect(running()).toBe(0);
     if (previous) registerJobHandler("OBSERVE", previous);
     else unregisterJobHandler("OBSERVE");
     if (previousFollowup) registerJobHandler("FOLLOWUP", previousFollowup);

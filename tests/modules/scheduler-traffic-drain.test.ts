@@ -222,6 +222,7 @@ describe.skipIf(!dbUp)("the traffic drain", () => {
       tenantId,
     };
     let freed = 0;
+    const before = Date.now();
     const first = await runTrafficTick(appDb, {
       ...opts,
       onFreed: () => {
@@ -232,8 +233,12 @@ describe.skipIf(!dbUp)("the traffic drain", () => {
     expect(first.claimed).toBe(3);
     expect(freed).toBe(3);
     const second = await runTrafficTick(appDb, opts);
+    const after = Date.now();
     expect(second.claimed).toBe(0);
-    expect(second.waitMs).toBeGreaterThan(59_000);
+    // The starts were recorded between `before` and `after`, and they hold the window for a minute
+    // from then: however long the first tick's runs took, the wait is that minute less the time spent.
+    expect(second.waitMs).toBeLessThanOrEqual(60_001);
+    expect(second.waitMs).toBeGreaterThanOrEqual(60_001 - (after - before));
     expect(
       await suDb.schedulerJob.count({
         where: { tenantId, kind: "INGEST_MESSAGE", status: "PENDING" },

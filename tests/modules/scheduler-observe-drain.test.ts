@@ -2,6 +2,7 @@ import {
   afterAll,
   afterEach,
   beforeAll,
+  beforeEach,
   describe,
   expect,
   test,
@@ -118,21 +119,30 @@ describe.skipIf(!dbUp)("the observe lane's fast drain", () => {
     previousFollowup = getJobHandler("FOLLOWUP");
   });
 
+  // The lane's runs, counted by the shutdown drain's registry, which a run stays in until its outcome
+  // is written. The registry is per process, and a file that ran before this one may have left a run
+  // in it for good: what a case must give back is what it found, not zero.
+  const laneRuns = () =>
+    (inFlightWork().byKind.OBSERVE ?? 0) +
+    (inFlightWork().byKind.FOLLOWUP ?? 0);
+  let runsBefore = 0;
+
+  beforeEach(() => {
+    runsBefore = laneRuns();
+  });
+
   afterEach(async () => {
     stopScheduler();
-    // A run started by the drain counts against the lane's slots until its outcome is written, and
-    // stopScheduler does not wait for it: the next test would start with a slot still taken.
-    const running = () =>
-      (inFlightWork().byKind.OBSERVE ?? 0) +
-      (inFlightWork().byKind.FOLLOWUP ?? 0);
-    await until(() => running() === 0);
-    expect(running()).toBe(0);
+    // stopScheduler does not wait for a run, and a run still counts against the lane's slots: the
+    // next case would start with a slot taken.
+    await until(() => laneRuns() <= runsBefore);
+    expect(laneRuns()).toBeLessThanOrEqual(runsBefore);
     if (previous) registerJobHandler("OBSERVE", previous);
     else unregisterJobHandler("OBSERVE");
     if (previousFollowup) registerJobHandler("FOLLOWUP", previousFollowup);
     else unregisterJobHandler("FOLLOWUP");
     await suDb.schedulerJob.deleteMany({ where: { tenantId } });
-  });
+  }, POLL_DEADLINE_MS + 5_000);
 
   afterAll(async () => {
     if (!dbUp) return;

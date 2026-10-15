@@ -236,6 +236,10 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
     const t = trace();
     return t ? [usage(), t] : [usage()];
   };
+  // Spread into the detail of a line for a screening that could not judge. The gate fails open, so
+  // the message it was asked about continues anyway: `unchecked` says so, and `classifier` names the
+  // judge that failed, which is what an operator reading the Logs needs to tell this from a block.
+  const couldNotJudge = { classifier: gr.classifier, unchecked: true };
   // Built on FIRST CALL, not here, and never twice: a gate is constructed for every turn and every
   // follow-up, while a direction that is switched off never reaches the model. `createChatModel`
   // throws synchronously on a configuration it cannot satisfy (an `openai-compatible` provider with
@@ -244,42 +248,47 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
   // reports the follow-up as delivered. `undefined` is "not attempted yet"; `null` is "attempted
   // and unavailable", which is the same fail-open answer an analysis that could not run gives.
   let model: BaseChatModel | null | undefined;
+  let buildFailure: { outcome: string; message?: string } | undefined;
+  const reportedBuildFailure = new Set<"input" | "output">();
   const resolveModel = (
     direction: "input" | "output",
   ): BaseChatModel | null => {
-    if (model !== undefined) return model;
-    // NOTE: a key that never resolved is a gate configured to run that cannot, the same answer as a
-    // model that refuses to build. Kept apart from "the operator switched this off", or a deleted vault
-    // entry would read as "no guardrail ran" and stay invisible.
-    if (!p.apiKey) {
-      model = null;
-      emitFlowEvent(p.flow, {
-        stage: "guardrail",
-        status: "error",
-        level: "warn",
-        // `credential_not_found` is the fleet's name for this, used by the speech normalizer,
-        // vision, STT, TTS and memory compaction. A seventh spelling of one condition is a filter
-        // that quietly misses a sixth of the fleet.
-        detail: { direction, outcome: "credential_not_found" },
-      });
-      return model;
+    if (model === undefined) {
+      // NOTE: a key that never resolved is a gate configured to run that cannot, the same answer as a
+      // model that refuses to build. Kept apart from "the operator switched this off", or a deleted
+      // vault entry would read as "no guardrail ran" and stay invisible. `credential_not_found` is the
+      // fleet's name for this, used by the speech normalizer, vision, STT, TTS and memory compaction.
+      if (!p.apiKey) {
+        model = null;
+        buildFailure = { outcome: "credential_not_found" };
+      } else {
+        try {
+          model = (p.makeModel ?? createChatModel)({
+            provider: gr.provider,
+            model: gr.model,
+            baseURL: p.credentialBaseUrl ?? gr.baseURL ?? undefined,
+            apiKey: p.apiKey,
+            temperature: 0,
+          });
+        } catch (e) {
+          model = null;
+          buildFailure = {
+            outcome: "model_unavailable",
+            message: e instanceof Error ? e.message : String(e),
+          };
+        }
+      }
     }
-    try {
-      model = (p.makeModel ?? createChatModel)({
-        provider: gr.provider,
-        model: gr.model,
-        baseURL: p.credentialBaseUrl ?? gr.baseURL ?? undefined,
-        apiKey: p.apiKey,
-        temperature: 0,
-      });
-    } catch (e) {
-      model = null;
+    // NOTE: one line per direction, not per gate: each direction that goes on unchecked is its own
+    // message the operator has to be able to find.
+    if (buildFailure && !reportedBuildFailure.has(direction)) {
+      reportedBuildFailure.add(direction);
       emitFlowEvent(p.flow, {
         stage: "guardrail",
         status: "error",
         level: "warn",
-        detail: { direction, outcome: "model_unavailable" },
-        errorMessage: e instanceof Error ? e.message : String(e),
+        detail: { direction, outcome: buildFailure.outcome, ...couldNotJudge },
+        errorMessage: buildFailure.message,
       });
     }
     return model;
@@ -354,7 +363,11 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
         stage: "guardrail",
         status: "error",
         level: "warn",
-        detail: { direction, outcome: "credential_not_found" },
+        detail: {
+          direction,
+          outcome: "credential_not_found",
+          ...couldNotJudge,
+        },
       });
       return {
         d: { kind: "unavailable", modelRan: false },
@@ -398,7 +411,12 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
         stage: "guardrail",
         status: "error",
         level: "warn",
-        detail: { direction, outcome: "analysis_failed", ...logged },
+        detail: {
+          direction,
+          outcome: "analysis_failed",
+          ...logged,
+          ...couldNotJudge,
+        },
         errorMessage: verdict.error,
       });
     }
@@ -488,7 +506,7 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
         stage: "guardrail",
         status: "error",
         level: "warn",
-        detail: { direction, outcome: "analysis_failed" },
+        detail: { direction, outcome: "analysis_failed", ...couldNotJudge },
         errorMessage: verdict.error,
       });
     }

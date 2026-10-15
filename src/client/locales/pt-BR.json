@@ -3167,6 +3167,14 @@
     "filterLevel": "Nível",
     "filterSource": "Origem",
     "filterStage": "Etapa",
+    "guardrailClassifier": {
+      "chat": "modelo de linguagem",
+      "decisions": "API de classificação"
+    },
+    "guardrailUnchecked": {
+      "input": "A checagem falhou, e a mensagem do cliente chegou ao agente sem checagem",
+      "output": "A checagem falhou, e a resposta saiu sem checagem"
+    },
     "level": {
       "error": "Erro",
       "info": "Info",

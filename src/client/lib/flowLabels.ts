@@ -75,3 +75,54 @@ export function flowLevelLabel(level: string, t: TFunction): string {
       return level;
   }
 }
+
+// The outcomes of a guardrail line that could not judge. The gate fails open on every one of them,
+// so the message went on unchecked even on a row written before `detail.unchecked` existed.
+const GUARDRAIL_UNCHECKED_OUTCOMES = new Set([
+  "analysis_failed",
+  "credential_not_found",
+  "model_unavailable",
+]);
+
+// What a guardrail line that could not judge meant for the message, in words, or null for any other
+// line.
+export function guardrailUncheckedLabel(
+  stage: string,
+  detail: Record<string, unknown> | null,
+  t: TFunction,
+): string | null {
+  if (stage !== "guardrail" || !detail) return null;
+  const unchecked =
+    detail.unchecked === true ||
+    (typeof detail.outcome === "string" &&
+      GUARDRAIL_UNCHECKED_OUTCOMES.has(detail.outcome));
+  if (!unchecked) return null;
+  switch (detail.direction) {
+    case "input":
+      return t(
+        "logs.guardrailUnchecked.input",
+        "The check failed, so the customer's message reached the agent unchecked",
+      );
+    case "output":
+      return t(
+        "logs.guardrailUnchecked.output",
+        "The check failed, so the reply went out unchecked",
+      );
+    default:
+      return null;
+  }
+}
+
+export function guardrailClassifierLabel(
+  classifier: unknown,
+  t: TFunction,
+): string | null {
+  switch (classifier) {
+    case "chat":
+      return t("logs.guardrailClassifier.chat", "language model");
+    case "decisions":
+      return t("logs.guardrailClassifier.decisions", "classification API");
+    default:
+      return null;
+  }
+}

@@ -24,7 +24,12 @@ import {
 } from "@/client/components";
 import { Tooltip } from "@/client/components/Tooltip";
 import { api } from "@/client/lib/api";
-import { flowLevelLabel, flowStageLabel } from "@/client/lib/flowLabels";
+import {
+  flowLevelLabel,
+  flowStageLabel,
+  guardrailClassifierLabel,
+  guardrailUncheckedLabel,
+} from "@/client/lib/flowLabels";
 import { type LogGroupTitle, logGroupTitle } from "@/client/lib/logGroupTitle";
 import { cn, formatDateTime } from "@/client/lib/utils";
 import { FLOW_LEVELS, FLOW_STAGES } from "@/modules/flowlog/stages";
@@ -150,7 +155,25 @@ function StageRow({ row }: { row: LogItem }) {
       </span>
     </div>
   );
-  if (!hasDetail) return <div className="px-3 py-2">{body}</div>;
+  const rowDetail = row.detail as Record<string, unknown> | null;
+  const unchecked = guardrailUncheckedLabel(row.stage, rowDetail, t);
+  const classifier = unchecked
+    ? guardrailClassifierLabel(rowDetail?.classifier, t)
+    : null;
+  // Outside the toggle on purpose: whether the message went on unchecked is the row's headline, not
+  // a detail to expand.
+  const uncheckedLine = unchecked && (
+    <p className="mt-1 pl-5.5 text-warning text-xs">
+      {classifier ? `${unchecked} · ${classifier}` : unchecked}
+    </p>
+  );
+  if (!hasDetail)
+    return (
+      <div className="px-3 py-2">
+        {body}
+        {uncheckedLine}
+      </div>
+    );
   return (
     <div className="px-3 py-2">
       <button
@@ -161,6 +184,7 @@ function StageRow({ row }: { row: LogItem }) {
       >
         {body}
       </button>
+      {uncheckedLine}
       {expanded && (
         <div className="mt-2 flex flex-col gap-2">
           {row.errorMessage && (

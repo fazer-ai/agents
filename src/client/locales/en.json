@@ -3067,6 +3067,14 @@
     "filterLevel": "Level",
     "filterSource": "Source",
     "filterStage": "Stage",
+    "guardrailClassifier": {
+      "chat": "language model",
+      "decisions": "classification API"
+    },
+    "guardrailUnchecked": {
+      "input": "The check failed, so the customer's message reached the agent unchecked",
+      "output": "The check failed, so the reply went out unchecked"
+    },
     "level": {
       "error": "Error",
       "info": "Info",

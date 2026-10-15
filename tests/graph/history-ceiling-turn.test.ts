@@ -135,37 +135,11 @@ const isTrim = (r: { detail: unknown }) =>
   typeof (r.detail as Record<string, unknown> | null)?.historyDropped ===
   "number";
 
-// The two questions this file asks of the trail need different readers. A trimmed turn writes TWO
-// `generate`/`info` rows, its ordinary one and one for the trim (`onHistoryTrim` is its own
-// `emitFlowEvent` in src/graph/runtime.ts), so a reader waiting on the TOTAL count is satisfied by
-// the ordinary rows while the trim writes are still in flight, and intermittently reads none.
-
-// "Did this thread trim?" — poll until a trim row lands. The line is what is being asserted, so
-// waiting for it is the whole job.
-async function waitForTrimLines(convId: number) {
-  let trims: Awaited<ReturnType<typeof generateLines>> = [];
-  for (let i = 0; i < 30 && trims.length === 0; i++) {
-    trims = (await generateLines(convId)).filter(isTrim);
-    if (trims.length === 0) await new Promise((r) => setTimeout(r, 100));
-  }
-  return trims;
-}
-
-// "Did this thread trim NOTHING?" Waits on the count of NON-trim rows: polling for a trim that must
-// never arrive would only spend the whole timeout and agree with itself. `emitFlowEvent` offers no
-// barrier, so this composes two: a turn's ordinary row is dispatched after any trim row of that turn
-// (`onHistoryTrim` runs while the window is built, before the model call), so `turns` ordinary rows
-// means every owed trim write was dispatched; the settle re-read covers two transactions landing out
-// of order on a pool. Neither is a lock, so the regression is ALSO caught one assertion earlier: a
-// trim fires only when the window dropped something, so the model no longer saw all 12 messages.
-async function trimLinesAfterTurns(convId: number, turns: number) {
-  let rows: Awaited<ReturnType<typeof generateLines>> = [];
-  for (let i = 0; i < 30; i++) {
-    rows = await generateLines(convId);
-    if (rows.filter((r) => !isTrim(r)).length >= turns) break;
-    await new Promise((r) => setTimeout(r, 100));
-  }
-  await new Promise((r) => setTimeout(r, 100));
+// The trim lines of ONE thread. A trimmed turn writes TWO `generate`/`info` rows, its ordinary one
+// and one for the trim (`onHistoryTrim` is its own `emitFlowEvent` in src/graph/runtime.ts). Both are
+// tracked writes, and `flowLogRows` settles every tracked write before it reads, so one read answers
+// both "did this thread trim?" and "did it trim NOTHING?" without a poll that can only see presence.
+async function trimLines(convId: number) {
   return (await generateLines(convId)).filter(isTrim);
 }
 
@@ -291,7 +265,7 @@ describe.skipIf(!dbUp)("a turn under the agent's history ceiling", () => {
       true,
     );
     // Six turns ran, so six lines are owed; among them, none may carry a trim.
-    expect(await trimLinesAfterTurns(980, 6)).toHaveLength(0);
+    expect(await trimLines(980)).toHaveLength(0);
   });
 
   test("with a ceiling the oldest turns stop travelling, and the trail records it", async () => {
@@ -315,7 +289,7 @@ describe.skipIf(!dbUp)("a turn under the agent's history ceiling", () => {
     expect(last[0]?.getType()).toBe("system");
     expect(last[1]?.getType()).toBe("human");
 
-    const lines = await waitForTrimLines(981);
+    const lines = await trimLines(981);
     expect(lines.length).toBeGreaterThan(0);
     for (const line of lines) {
       // INFO, never warn: warn fans out to the alert channels, and a working ceiling trims on

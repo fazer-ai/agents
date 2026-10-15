@@ -44,6 +44,7 @@ import { HANDOFF_DONE_PREFIX } from "@/graph/tools/catalog";
 import * as nativeTools from "@/graph/tools/native";
 import { MAX_DB_ID } from "@/lib/db-id";
 import { keyedQueueTail, withKeyedQueue } from "@/lib/locks";
+import * as tenancy from "@/lib/tenancy";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { settleFlowEvents } from "@/modules/flowlog/scheduled";
 import { selectClosedPrefix } from "@/modules/memory/cut";
@@ -67,6 +68,7 @@ import {
   SilentHandoffThenResolveModel,
 } from "../utils/scripted-models";
 import { settlesDuring, throwingModel } from "../utils/tool-logger-settled";
+import { countCalls } from "../utils/waiting";
 
 describe("renderNudge (prompt-injection boundary)", () => {
   test("directive comes first and is authoritative", () => {
@@ -837,22 +839,18 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
   // The line records where the turn came from and the message it sent, so the console neither
   // infers "Follow-up" from the source nor guesses the bubble by time.
   async function originLine(convId: number) {
-    for (let i = 0; i < 30; i++) {
-      const rows = await flowLogRows(suDb, {
-        where: {
-          tenantId,
-          stage: "generate",
-          threadId: `${tenantId}:${instanceId}:${convId}`,
-        },
-        select: { detail: true },
-      });
-      const hit = rows
-        .map((r) => r.detail as Record<string, unknown> | null)
-        .find((d) => typeof d?.outcome === "string");
-      if (hit) return hit;
-      await new Promise((r) => setTimeout(r, 100));
-    }
-    return null;
+    const rows = await flowLogRows(suDb, {
+      where: {
+        tenantId,
+        stage: "generate",
+        threadId: `${tenantId}:${instanceId}:${convId}`,
+      },
+      select: { detail: true },
+    });
+    const hit = rows
+      .map((r) => r.detail as Record<string, unknown> | null)
+      .find((d) => typeof d?.outcome === "string");
+    return hit ?? null;
   }
 
   test("an inbound event records its origin, its integration and the message it sent", async () => {
@@ -3289,9 +3287,15 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
         strictAsks += 1;
         if (strictAsks > 1) return wanted;
         wanted = false;
-        releasing = Bun.sleep(150).then(() =>
-          releaseIngestWrite(owner, appDb, append),
-        );
+        // Released once the nudge has gone round its wait for the claim three times: each pass reads
+        // the claim through `runScopedOn`, three reads a pass.
+        const reads = countCalls(tenancy, "runScopedOn");
+        releasing = until(
+          "the nudge waiting on the append's claim",
+          () => reads.count() >= 9,
+        )
+          .finally(() => reads.restore())
+          .then(() => releaseIngestWrite(owner, appDb, append));
         return true;
       },
       base: appDb,
@@ -4330,25 +4334,21 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
       },
     });
     expect(outcome).toBe("messaged");
-    let logged = false;
-    for (let i = 0; i < 30 && !logged; i++) {
-      // Scoped to this nudge's own thread: the tests in this file share the tenant, and
-      // `outcome`/`step` are values several of them write, so a poll filtered by tenant alone can
-      // exit on a neighbour's row and report a trail this turn never left.
-      const rows = await flowLogRows(suDb, {
-        where: {
-          tenantId,
-          stage: "generate",
-          threadId: `${tenantId}:${instanceId}:9912`,
-        },
-        select: { detail: true },
-      });
-      logged = rows.some((r) => {
-        const d = r.detail as Record<string, unknown> | null;
-        return d?.outcome === "messaged" && d?.step === 2;
-      });
-      if (!logged) await new Promise((r) => setTimeout(r, 100));
-    }
+    // Scoped to this nudge's own thread: the tests in this file share the tenant, and
+    // `outcome`/`step` are values several of them write, so a poll filtered by tenant alone can
+    // exit on a neighbour's row and report a trail this turn never left.
+    const rows = await flowLogRows(suDb, {
+      where: {
+        tenantId,
+        stage: "generate",
+        threadId: `${tenantId}:${instanceId}:9912`,
+      },
+      select: { detail: true },
+    });
+    const logged = rows.some((r) => {
+      const d = r.detail as Record<string, unknown> | null;
+      return d?.outcome === "messaged" && d?.step === 2;
+    });
     expect(logged).toBe(true);
   });
 
@@ -7114,27 +7114,22 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
       },
     });
     expect(outcome).toBe("messaged");
-    // emitFlowEvent is fire-and-forget, so poll for the row instead of racing it.
-    let logged = false;
-    for (let i = 0; i < 30 && !logged; i++) {
-      const rows = await flowLogRows(suDb, {
-        where: {
-          tenantId,
-          stage: "generate",
-          // NOTE: Written before the retry, so `info` with `willRetry`: the recovered turn alerts nobody.
-          level: "info",
-          threadId: `${tenantId}:${instanceId}:913`,
-        },
-        select: { detail: true },
-      });
-      logged = rows.some(
-        (r) =>
-          (r.detail as Record<string, unknown> | null)?.retriedEmptyResponse ===
-            1 &&
-          (r.detail as Record<string, unknown> | null)?.willRetry === true,
-      );
-      if (!logged) await new Promise((r) => setTimeout(r, 100));
-    }
+    // emitFlowEvent is fire-and-forget; `flowLogRows` settles the scheduled writes before it reads.
+    const rows = await flowLogRows(suDb, {
+      where: {
+        tenantId,
+        stage: "generate",
+        // NOTE: Written before the retry, so `info` with `willRetry`: the recovered turn alerts nobody.
+        level: "info",
+        threadId: `${tenantId}:${instanceId}:913`,
+      },
+      select: { detail: true },
+    });
+    const logged = rows.some(
+      (r) =>
+        (r.detail as Record<string, unknown> | null)?.retriedEmptyResponse ===
+          1 && (r.detail as Record<string, unknown> | null)?.willRetry === true,
+    );
     expect(logged).toBe(true);
   });
   // The ends of the post-generation stretch whose word is a refusal only on that end (`silent`,

@@ -107,6 +107,7 @@ import {
   TextBesideToolThenEmptyModel,
 } from "../utils/scripted-models";
 import { settlesDuring, throwingModel } from "../utils/tool-logger-settled";
+import { countCalls, pendingAcross, waitsForTheThread } from "../utils/waiting";
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -144,51 +145,6 @@ type JsonValue =
   | null
   | JsonValue[]
   | { [k: string]: JsonValue };
-
-// Counts the asks whether `graphThreadId` is taken. The wait for another invoke asks once per poll, so
-// while a turn waits, this count is the wait's own clock.
-function countAsks(graphThreadId: string): {
-  count: () => number;
-  restore: () => void;
-} {
-  const real = inflight.isTurnRunning;
-  let asks = 0;
-  const spy = spyOn(inflight, "isTurnRunning").mockImplementation(
-    (id: string) => {
-      if (id === graphThreadId) asks += 1;
-      return real(id);
-    },
-  );
-  return { count: () => asks, restore: () => spy.mockRestore() };
-}
-
-// Whether `turn` is waiting for its thread to clear: it has asked three times whether the thread is
-// taken and has not settled. A turn that does not wait asks at most twice (once in the wait, once
-// taking the thread), so three asks with the turn pending is the wait itself, seen without a clock.
-async function waitsForTheThread(
-  turn: Promise<unknown>,
-  graphThreadId: string,
-): Promise<boolean> {
-  let settled = false;
-  void turn.then(
-    () => {
-      settled = true;
-    },
-    () => {
-      settled = true;
-    },
-  );
-  const asks = countAsks(graphThreadId);
-  try {
-    await until(
-      "three asks whether the thread is taken",
-      async () => asks.count() >= 3 || settled || null,
-    );
-  } finally {
-    asks.restore();
-  }
-  return !settled;
-}
 
 function fakeModel() {
   return new FakeListChatModel({ responses: [REPLY] });
@@ -1355,21 +1311,17 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       // The turn is waiting right now, and the queue it will need is free: this callback runs
       // instead of queueing behind the wait. The waiting turn's own polls are the clock: three more
       // of them with the callback still queued is a queue held across the wait.
-      let tookTheQueue = false;
-      const asks = countAsks(graphThreadId);
+      const asks = countCalls(
+        inflight,
+        "isTurnRunning",
+        (id: string) => id === graphThreadId,
+      );
       try {
-        const before = asks.count();
-        queued = withKeyedQueue(`ingest:${graphThreadId}`, async () => {
-          tookTheQueue = true;
-        });
-        await until(
-          "the callback, or three more polls of the waiting turn",
-          () => tookTheQueue || asks.count() >= before + 3,
-        );
+        queued = withKeyedQueue(`ingest:${graphThreadId}`, async () => {});
+        expect(await pendingAcross(queued, asks.count)).toBe(false);
       } finally {
         asks.restore();
       }
-      expect(tookTheQueue).toBe(true);
     } finally {
       clearTurnInFlight(graphThreadId);
       await turn;

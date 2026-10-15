@@ -1,11 +1,10 @@
-import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { AIMessage } from "@langchain/core/messages";
 import { FakeListChatModel } from "@langchain/core/utils/testing";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { decryptJson, encryptJson } from "@/api/lib/crypto";
 import { contactInboxThreadId } from "@/graph/checkpointer";
-import * as inflight from "@/graph/inflight";
 import { clearTurnInFlight, markTurnInFlight } from "@/graph/inflight";
 import { ingestDedupeKey } from "@/graph/ingest-job";
 import { loadAgentConfig } from "@/graph/prepare";
@@ -17,42 +16,7 @@ import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogRows } from "../utils/flowlog";
-import { until } from "../utils/poll";
-
-// Whether `run` is waiting for its thread to clear: it has asked three times whether the thread is
-// taken and has not settled. A turn that does not wait asks at most twice (once in the wait, once
-// taking the thread), so three asks with the turn pending is the wait itself, seen without a clock.
-async function waitsForTheThread(
-  run: Promise<unknown>,
-  graphThreadId: string,
-): Promise<boolean> {
-  const real = inflight.isTurnRunning;
-  let asks = 0;
-  let settled = false;
-  void run.then(
-    () => {
-      settled = true;
-    },
-    () => {
-      settled = true;
-    },
-  );
-  const spy = spyOn(inflight, "isTurnRunning").mockImplementation(
-    (id: string) => {
-      if (id === graphThreadId) asks += 1;
-      return real(id);
-    },
-  );
-  try {
-    await until(
-      "three asks whether the thread is taken",
-      () => asks >= 3 || settled,
-    );
-  } finally {
-    spy.mockRestore();
-  }
-  return !settled;
-}
+import { waitsForTheThread } from "../utils/waiting";
 
 // A MONITORING agent watches and never answers. The guarantee is asserted at the two seams that
 // hold it, against the effects an operator can see:

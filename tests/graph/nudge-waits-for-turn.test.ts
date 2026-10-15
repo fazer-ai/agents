@@ -6,6 +6,8 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { contactInboxThreadId } from "@/graph/checkpointer";
+import * as inflight from "@/graph/inflight";
+import { isTurnRunning } from "@/graph/inflight";
 import * as ingestDrain from "@/graph/ingest-drain";
 import { OPERATOR_EVENT_NOTE_PREFIX, runAgentNudge } from "@/graph/nudge";
 import { runAgentTurn } from "@/graph/runtime";
@@ -16,7 +18,9 @@ import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { clearFlowLog, flowLogRows } from "../utils/flowlog";
+import { until } from "../utils/poll";
 import { SlowReplyModel } from "../utils/scripted-models";
+import { countCalls, pendingAcross, waitsForTheThread } from "../utils/waiting";
 
 // Um invoke do LangGraph é um read-modify-write do canal inteiro: de dois que se sobrepõem no mesmo
 // thread, o que termina em SEGUNDO salva o que carregou e desfaz o primeiro. O nudge deve ao
@@ -101,19 +105,6 @@ async function channelOf(
   return messages.map((m) =>
     typeof m.content === "string" ? m.content : JSON.stringify(m.content),
   );
-}
-
-// O símbolo que separa "ainda esperando" de "terminou": um `Promise.race` contra um timer responde
-// a pergunta sem depender de o nudge ter terminado com um desfecho específico.
-const AINDA_ESPERANDO = Symbol("o nudge ainda não terminou");
-
-async function terminouEm<T>(p: Promise<T>, ms: number) {
-  return Promise.race([
-    p,
-    new Promise<typeof AINDA_ESPERANDO>((r) =>
-      setTimeout(() => r(AINDA_ESPERANDO), ms),
-    ),
-  ]);
 }
 
 describe.skipIf(!dbUp)(
@@ -226,7 +217,7 @@ describe.skipIf(!dbUp)(
         },
       });
 
-      expect(await terminouEm(nudge, 400)).toBe(AINDA_ESPERANDO);
+      expect(await waitsForTheThread(nudge, graphThreadId)).toBe(true);
       // E NADA FOI ENTREGUE ENQUANTO ESPERAVA. Uma espera colocada depois do envio protegeria o canal
       // e deixaria o cliente com a mensagem de um turno que nem começou.
       expect(s.messages).toHaveLength(0);
@@ -291,7 +282,9 @@ describe.skipIf(!dbUp)(
       });
 
       // NOTE: Em cima do turno reativo, que já reivindicou o thread.
-      await new Promise((r) => setTimeout(r, 300));
+      await until("o turno reativo com o thread", () =>
+        isTurnRunning(graphThreadId),
+      );
       const s = stub();
       const nudge = runAgentNudge({
         tenantId,
@@ -373,9 +366,20 @@ describe.skipIf(!dbUp)(
       });
 
       // Os dois estão na espera, e é a liberação que os solta juntos.
-      expect(await terminouEm(Promise.all([nudgeA, nudgeB]), 400)).toBe(
-        AINDA_ESPERANDO,
+      // Two waiters poll the same thread, so six more asks with neither settled is both of them
+      // in the wait.
+      const asks = countCalls(
+        inflight,
+        "isTurnRunning",
+        (id: string) => id === graphThreadId,
       );
+      try {
+        expect(
+          await pendingAcross(Promise.race([nudgeA, nudgeB]), asks.count, 6),
+        ).toBe(true);
+      } finally {
+        asks.restore();
+      }
       await clearTurnOwning(owner, appDb, terceiro);
       await Promise.all([nudgeA, nudgeB]);
 
@@ -421,7 +425,7 @@ describe.skipIf(!dbUp)(
         },
       });
 
-      expect(await terminouEm(nudge, 300)).toBe(AINDA_ESPERANDO);
+      expect(await waitsForTheThread(nudge, graphThreadId)).toBe(true);
       // A pessoa assume DENTRO da espera. O espelho é o que a webhook de atribuição escreve.
       await suDb.conversation.updateMany({
         where: {
@@ -483,7 +487,7 @@ describe.skipIf(!dbUp)(
           persistUsage: async () => {},
         },
       });
-      expect(await terminouEm(nudge, 300)).toBe(AINDA_ESPERANDO);
+      expect(await waitsForTheThread(nudge, graphThreadId)).toBe(true);
       await suDb.conversation.updateMany({
         where: {
           tenantId,
@@ -546,7 +550,7 @@ describe.skipIf(!dbUp)(
         },
       });
 
-      expect(await terminouEm(nudge, 300)).toBe(AINDA_ESPERANDO);
+      expect(await waitsForTheThread(nudge, graphThreadId)).toBe(true);
       await clearTurnOwning(owner, appDb, invokeMaisVelho);
       await nudge;
 
@@ -595,14 +599,14 @@ describe.skipIf(!dbUp)(
             persistUsage: async () => {},
           },
         });
-        expect(await terminouEm(nudge, 300)).toBe(AINDA_ESPERANDO);
+        expect(await waitsForTheThread(nudge, graphThreadId)).toBe(true);
 
         // O turno mais velho sai pela fila do thread, como o rollback dele sai.
         await withKeyedQueue(`ingest:${graphThreadId}`, async () => {
           solto = true;
           await clearTurnOwning(owner, appDb, invokeMaisVelho);
         });
-        expect(await terminouEm(nudge, 5_000)).toBe("messaged");
+        expect(await nudge).toBe("messaged");
         expect(drenagens.length).toBeGreaterThan(0);
         expect(drenagens.every((depoisDeSoltar) => depoisDeSoltar)).toBe(true);
       } finally {
@@ -657,7 +661,7 @@ describe.skipIf(!dbUp)(
         },
       });
 
-      expect(await terminouEm(nudge, 300)).toBe(AINDA_ESPERANDO);
+      expect(await waitsForTheThread(nudge, graphThreadId)).toBe(true);
       quebrada = true;
       await clearTurnOwning(owner, appDb, invokeMaisVelho);
       await nudge.catch(() => undefined);
@@ -759,7 +763,7 @@ describe.skipIf(!dbUp)(
         },
       });
 
-      expect(await terminouEm(nudge, 300)).toBe(AINDA_ESPERANDO);
+      expect(await waitsForTheThread(nudge, graphThreadId)).toBe(true);
       reivindicadaDeNovo = true;
       await clearTurnOwning(owner, appDb, invokeMaisVelho);
 

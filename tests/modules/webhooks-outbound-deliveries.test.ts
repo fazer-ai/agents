@@ -12,7 +12,7 @@ import {
 import { processOutboundBatch } from "@/modules/webhooks/outbound/worker";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { clearFlowLog, flowLogRows } from "@/tests/utils/flowlog";
-import { POLL_DEADLINE_MS } from "@/tests/utils/poll";
+import { until } from "@/tests/utils/poll";
 
 // ── THE DELIVERY LEDGER AS A SUPPORTED SURFACE ──
 // Integration, real DB, real RLS: every call goes through `runScopedOn` exactly as the controller
@@ -104,23 +104,17 @@ async function clearDeliveries() {
   );
 }
 
-// The emit is fire-and-forget, so the line lands after the call returned. Poll for it rather than
-// sleeping a fixed amount: a fixed sleep is either flaky or slow and never says which.
-async function webhookLines(expected: number, waitMs = POLL_DEADLINE_MS) {
-  const deadline = Date.now() + waitMs;
-  for (;;) {
-    // flowlog-scope: tenant-wide. The subject is HOW MANY lines a requeue writes, so a turn-scoped read
-    // stays green with a second row present. Scoping to the delivery would immunise only this read,
-    // so the fence is at the clear: the tenant is this file's own, and `clearFlowLog` settles the
-    // scheduled writes before deleting, emptying the previous case's line AND its unwritten one.
-    const rows = await flowLogRows(suDb, {
-      where: { tenantId, stage: "webhook" },
-      orderBy: { id: "asc" },
-    });
-    if (rows.length >= expected) return rows;
-    if (Date.now() > deadline) return rows;
-    await Bun.sleep(50);
-  }
+// The emit is fire-and-forget, so the line lands after the call returned; `flowLogRows` settles the
+// scheduled writes before it reads, so one read sees every line the call owed, and no line it did not.
+async function webhookLines() {
+  // flowlog-scope: tenant-wide. The subject is HOW MANY lines a requeue writes, so a turn-scoped read
+  // stays green with a second row present. Scoping to the delivery would immunise only this read,
+  // so the fence is at the clear: the tenant is this file's own, and `clearFlowLog` settles the
+  // scheduled writes before deleting, emptying the previous case's line AND its unwritten one.
+  return flowLogRows(suDb, {
+    where: { tenantId, stage: "webhook" },
+    orderBy: { id: "asc" },
+  });
 }
 
 describe.skipIf(!dbUp)("outbound webhook delivery ledger", () => {
@@ -404,27 +398,40 @@ describe.skipIf(!dbUp)("outbound webhook delivery ledger", () => {
       await clearDeliveries();
       await clearFlowLog(suDb, { tenantId });
       const id = await seed({ status: "SENDING", attempts: 7 });
+      const locked = Promise.withResolvers<void>();
+      const commit = Promise.withResolvers<void>();
       const holder = suDb.$transaction(
         async (tx) => {
           await tx.$executeRawUnsafe(
             `UPDATE outbound_webhook_deliveries SET status = 'DEAD', attempts = 8 WHERE id = ${id}`,
           );
-          await Bun.sleep(500);
+          locked.resolve();
+          await commit.promise;
         },
-        { timeout: 10_000 },
+        { timeout: 30_000 },
       );
-      await Bun.sleep(120);
-      const [, requeued] = await Promise.all([
-        holder,
-        requeueWebhookDelivery(ctx(), id, appDb),
-      ]);
+      holder.catch(locked.reject);
+      await locked.promise;
+      const requeue = requeueWebhookDelivery(ctx(), id, appDb);
+      // The holder commits only once the requeue is parked on the held row, so what the requeue reads
+      // after the wait is what the worker left, with no window guessed in milliseconds.
+      await until("the requeue parked on the held delivery", async () => {
+        const [found] = await suDb.$queryRawUnsafe<{ n: bigint }[]>(
+          `SELECT count(*) AS n FROM pg_stat_activity
+            WHERE datname = current_database() AND pid <> pg_backend_pid()
+              AND wait_event_type = 'Lock' AND query ILIKE '%outbound_webhook_deliveries%'`,
+        );
+        return (found?.n ?? 0n) > 0n;
+      });
+      commit.resolve();
+      const [, requeued] = await Promise.all([holder, requeue]);
       expect(requeued.status).toBe("PENDING");
       expect(requeued.attempts).toBe(0);
       expect((await requeueAudit(id))?.before).toEqual({
         status: "DEAD",
         attempts: 8,
       });
-      const [line] = await webhookLines(1);
+      const [line] = await webhookLines();
       expect(line?.detail).toMatchObject({
         action: "requeued",
         attemptsBefore: 8,
@@ -497,7 +504,7 @@ describe.skipIf(!dbUp)("outbound webhook delivery ledger", () => {
       await suDb.alertDelivery.deleteMany({ where: { tenantId } });
       const id = await seed({ status: "DEAD", attempts: 8 });
       await requeueWebhookDelivery(ctx(), id, appDb);
-      const [line, ...rest] = await webhookLines(1);
+      const [line, ...rest] = await webhookLines();
       expect(rest).toHaveLength(0);
       expect(line?.level).toBe("info");
       expect(line?.status).toBe("ok");

@@ -21,11 +21,13 @@ import {
   turnWaitDeadline,
   waitForTurnToClear,
 } from "@/graph/thread-claim";
+import * as tenancy from "@/lib/tenancy";
 import { runScopedOn } from "@/lib/tenancy";
 import { sysCtx } from "@/modules/documents/issue";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { until as pollUntil } from "../utils/poll";
+import { countCalls, pendingAcross, waitsForTheThread } from "../utils/waiting";
 
 // The in-process registry cannot see a turn running on another replica, so the claim it
 // answers with has to live in a row. What is asserted here is the ROW's behaviour, read back with a
@@ -446,15 +448,7 @@ describe.skipIf(!dbUp)("the durable turn claim on a thread", () => {
     expect(first.heldBefore).toBe(false);
 
     const waiter = waitThenTake(o);
-    const stillWaiting = Symbol("still waiting");
-    expect(
-      await Promise.race([
-        waiter,
-        new Promise<typeof stillWaiting>((r) =>
-          setTimeout(() => r(stillWaiting), 400),
-        ),
-      ]),
-    ).toBe(stillWaiting);
+    expect(await waitsForTheThread(waiter, o.graphThreadId)).toBe(true);
     // AND IT GAVE THE HOLD BACK WHILE WAITING, which is what lets the first turn's release reach
     // zero: a waiter that kept the hold it briefly took would leave the thread reading busy to the
     // append and the compaction that are allowed to run between turns.
@@ -481,15 +475,7 @@ describe.skipIf(!dbUp)("the durable turn claim on a thread", () => {
 
     const waiter = waitThenTake(o);
     try {
-      const stillWaiting = Symbol("still waiting");
-      expect(
-        await Promise.race([
-          waiter,
-          new Promise<typeof stillWaiting>((r) =>
-            setTimeout(() => r(stillWaiting), 400),
-          ),
-        ]),
-      ).toBe(stillWaiting);
+      expect(await waitsForTheThread(waiter, o.graphThreadId)).toBe(true);
       // Untouched: the only writer of this lease is the holder's own renewal.
       expect((await rowOf(o)).turnHeldUntil?.getTime()).toBe(before?.getTime());
     } finally {
@@ -513,15 +499,7 @@ describe.skipIf(!dbUp)("the durable turn claim on a thread", () => {
 
     const waiter = waitThenTake(o);
     try {
-      const stillWaiting = Symbol("still waiting");
-      expect(
-        await Promise.race([
-          waiter,
-          new Promise<typeof stillWaiting>((r) =>
-            setTimeout(() => r(stillWaiting), 400),
-          ),
-        ]),
-      ).toBe(stillWaiting);
+      expect(await waitsForTheThread(waiter, o.graphThreadId)).toBe(true);
       expect((await rowOf(o)).turnHeldUntil?.getTime()).toBe(before?.getTime());
     } finally {
       markTurnInFlight(o.graphThreadId);
@@ -549,15 +527,7 @@ describe.skipIf(!dbUp)("the durable turn claim on a thread", () => {
     const before = (await rowOf(o)).turnHeldUntil;
 
     const waiter = waitThenTake(o);
-    const stillWaiting = Symbol("still waiting");
-    expect(
-      await Promise.race([
-        waiter,
-        new Promise<typeof stillWaiting>((r) =>
-          setTimeout(() => r(stillWaiting), 700),
-        ),
-      ]),
-    ).toBe(stillWaiting);
+    expect(await waitsForTheThread(waiter, o.graphThreadId)).toBe(true);
     // Untouched while Postgres still calls it live, which is the whole assertion: a waiter that
     // acquired here would have pushed this forward by a full lease.
     expect((await rowOf(o)).turnHeldUntil?.getTime()).toBe(before?.getTime());
@@ -752,13 +722,18 @@ describe.skipIf(!dbUp)("the durable turn claim on a thread", () => {
     // Released from "another process" while the turn is inside its wait. What is asserted is that
     // the turn did NOT take the thread before the append finished: taking it early is exactly the
     // window that makes the append land inside the invoke.
-    const released = (async () => {
-      await Bun.sleep(120);
-      await releaseIngestWrite(o, appDb, write);
-      return Date.now();
-    })();
+    // Each pass of that wait reads the claim through `runScopedOn`, so three more passes with the
+    // turn pending is the turn waiting on the append, not a turn that has yet to start.
+    const reads = countCalls(tenancy, "runScopedOn");
     const took = markTurnOwning(o, appDb).then(() => Date.now());
-    const [releasedAt, tookAt] = await Promise.all([released, took]);
+    try {
+      expect(await pendingAcross(took, reads.count, 9)).toBe(true);
+    } finally {
+      reads.restore();
+    }
+    await releaseIngestWrite(o, appDb, write);
+    const releasedAt = Date.now();
+    const tookAt = await took;
     expect(tookAt).toBeGreaterThanOrEqual(releasedAt);
     expect((await rowOf(o)).turnHolders).toBe(1);
   });

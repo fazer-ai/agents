@@ -28,8 +28,6 @@ import { getJobHandler, type JobContext } from "@/modules/scheduler/worker";
 // answered, the next model call sees the abort, and a call not yet run is refused like a called-off
 // turn's.
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
 // The first model call calls the writer; the second answers. Records whether each call's signal had
 // aborted. `afterCalling` runs as the first returns its call, which is where a test puts the deadline
 // to land between the model's answer and the tool.
@@ -59,10 +57,14 @@ class CallsThenAnswers {
   }
 }
 
-function slowWriter(ran: string[], ms: number): StructuredToolInterface {
+// A writer whose work spans a turn of the event loop. `during` runs as the tool starts, which is
+// where a test puts the deadline to land while the tool is running; the write lands only after the
+// abort's own reactions have run, so a graph that stopped waiting for the tool returns without it.
+function writer(ran: string[], during?: () => void): StructuredToolInterface {
   return tool(
     async ({ v }: { v: string }) => {
-      await sleep(ms);
+      during?.();
+      await new Promise((r) => setTimeout(r, 0));
       ran.push(v);
       return `wrote ${v}`;
     },
@@ -100,27 +102,19 @@ describe("a job's deadline inside the graph (issue #811)", () => {
       model: model as unknown as BaseChatModel,
       systemPrompt: "PROMPT",
       checkpointer,
-      tools: [slowWriter(ran, 400)],
+      tools: [
+        writer(ran, () => controller.abort(new Error("deadline exceeded"))),
+      ],
       signal: controller.signal,
     });
-    const timer = setTimeout(
-      () => controller.abort(new Error("deadline exceeded")),
-      100,
-    );
-    const t = performance.now();
-    try {
-      await graph
-        .invoke(
-          { messages: [new HumanMessage("marca como qualificado")] },
-          { configurable: { thread_id: "deadline-mid-tool" } },
-        )
-        .catch(() => undefined);
-    } finally {
-      clearTimeout(timer);
-    }
+    await graph
+      .invoke(
+        { messages: [new HumanMessage("marca como qualificado")] },
+        { configurable: { thread_id: "deadline-mid-tool" } },
+      )
+      .catch(() => undefined);
     // The graph returned only after the tool it was running had finished.
     expect(ran).toEqual(["sim"]);
-    expect(performance.now() - t).toBeGreaterThanOrEqual(390);
     expect(model.sawAborted).toEqual([false]);
     const state = await graph.getState({
       configurable: { thread_id: "deadline-mid-tool" },
@@ -140,7 +134,7 @@ describe("a job's deadline inside the graph (issue #811)", () => {
       model: model as unknown as BaseChatModel,
       systemPrompt: "PROMPT",
       checkpointer: new MemorySaver(),
-      tools: [slowWriter(ran, 10)],
+      tools: [writer(ran)],
       signal: controller.signal,
     });
     const result = await graph
@@ -173,7 +167,7 @@ describe("a job's deadline inside the graph (issue #811)", () => {
       model: model as unknown as BaseChatModel,
       systemPrompt: "PROMPT",
       checkpointer: new MemorySaver(),
-      tools: [slowWriter(ran, 10)],
+      tools: [writer(ran)],
       signal: controller.signal,
       stillWanted: async () => {
         controller.abort(new Error("deadline exceeded"));
@@ -195,6 +189,7 @@ describe("a job's deadline inside the graph (issue #811)", () => {
   test("a primary ended by the deadline does not hand the turn to the fallback, and the turn fails with the job's own error", async () => {
     // The primary listens and rejects the way the SDKs do on an abort, which the provider layer reads
     // as a timeout, which is what would hand the turn to the fallback.
+    const primaryCalled = Promise.withResolvers<void>();
     const primary = {
       async invoke(_m: BaseMessage[], opts?: { signal?: AbortSignal }) {
         await new Promise<void>((_, reject) => {
@@ -203,6 +198,7 @@ describe("a job's deadline inside the graph (issue #811)", () => {
             err.name = "AbortError";
             reject(err);
           });
+          primaryCalled.resolve();
         });
         return new AIMessage("never");
       },
@@ -241,18 +237,16 @@ describe("a job's deadline inside the graph (issue #811)", () => {
       },
       signal: controller.signal,
     });
-    const timer = setTimeout(
-      () => controller.abort(new Error("deadline exceeded after 240s")),
-      100,
-    );
     let thrown: unknown;
-    try {
-      await graph.invoke({ messages: [new HumanMessage("oi")] });
-    } catch (err) {
-      thrown = err;
-    } finally {
-      clearTimeout(timer);
-    }
+    const run = graph
+      .invoke({ messages: [new HumanMessage("oi")] })
+      .catch((err: unknown) => {
+        thrown = err;
+      });
+    // The deadline lands while the primary's call is in flight.
+    await primaryCalled.promise;
+    controller.abort(new Error("deadline exceeded after 240s"));
+    await run;
     expect(fallbackCalls).toBe(0);
     expect(reported).toEqual([]);
     expect((thrown as Error | undefined)?.message).toBe(
@@ -272,6 +266,7 @@ describe("a job's deadline inside the graph (issue #811)", () => {
       },
     };
     let sawAbort = false;
+    const fallbackCalled = Promise.withResolvers<void>();
     const fallback = {
       async invoke(_m: BaseMessage[], opts?: { signal?: AbortSignal }) {
         await new Promise<void>((_, reject) => {
@@ -281,6 +276,7 @@ describe("a job's deadline inside the graph (issue #811)", () => {
             err.name = "AbortError";
             reject(err);
           });
+          fallbackCalled.resolve();
         });
         return new AIMessage("never");
       },
@@ -300,20 +296,14 @@ describe("a job's deadline inside the graph (issue #811)", () => {
       },
       signal: controller.signal,
     });
-    const timer = setTimeout(
-      () => controller.abort(new Error("deadline exceeded after 240s")),
-      100,
-    );
-    const t = performance.now();
-    try {
-      await graph
-        .invoke({ messages: [new HumanMessage("oi")] })
-        .catch(() => {});
-    } finally {
-      clearTimeout(timer);
-    }
+    const run = graph
+      .invoke({ messages: [new HumanMessage("oi")] })
+      .catch(() => {});
+    // The deadline lands while the fallback's call is in flight, and it is what ends that call.
+    await fallbackCalled.promise;
+    controller.abort(new Error("deadline exceeded after 240s"));
+    await run;
     expect(sawAbort).toBe(true);
-    expect(performance.now() - t).toBeLessThan(2_000);
   });
 
   // The handlers are tested by calling them, which skips the registration, and a registration that

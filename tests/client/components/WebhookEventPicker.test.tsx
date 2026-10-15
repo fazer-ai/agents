@@ -155,6 +155,38 @@ describe("the webhook event picker", () => {
     expect(rows("conversation").length).toBe(1);
   });
 
+  test("Enter in the search does not submit the form around the picker", () => {
+    let submitted = 0;
+    render(
+      withI18n(
+        <TooltipPrimitive.Provider>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              submitted += 1;
+            }}
+          >
+            <WebhookEventPicker
+              groups={GROUPS}
+              selected={new Set()}
+              onChange={() => {}}
+            />
+            <button type="submit">Save</button>
+          </form>
+        </TooltipPrimitive.Provider>,
+      ),
+    );
+    const search = screen.getByRole("searchbox");
+    const event = new KeyboardEvent("keydown", {
+      key: "Enter",
+      bubbles: true,
+      cancelable: true,
+    });
+    search.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(true);
+    expect(submitted).toBe(0);
+  });
+
   test("a search with no match says so", () => {
     mount([]);
     fireEvent.change(screen.getByRole("searchbox"), {

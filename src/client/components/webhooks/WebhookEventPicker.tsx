@@ -64,6 +64,10 @@ export function WebhookEventPicker({
         type="search"
         value={query}
         onChange={(e) => setQuery(e.target.value)}
+        // NOTE: the picker sits inside the subscription's form, where Enter would save the draft.
+        onKeyDown={(e) => {
+          if (e.key === "Enter") e.preventDefault();
+        }}
         disabled={disabled}
         placeholder={t("webhooks.searchEvents", "Search events")}
         aria-label={t("webhooks.searchEvents", "Search events")}

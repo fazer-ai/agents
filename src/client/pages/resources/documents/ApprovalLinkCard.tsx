@@ -9,6 +9,7 @@ import {
   Skeleton,
   useToast,
 } from "@/client/components";
+import { useNavGuard } from "@/client/contexts/NavGuardContext";
 import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
 
@@ -51,6 +52,12 @@ export function ApprovalLinkCard() {
     void load();
   }, [load]);
 
+  const dirty =
+    saved !== null &&
+    (mode !== saved.mode ||
+      (mode === "custom" && template.trim() !== saved.urlTemplate));
+  useNavGuard(dirty);
+
   if (!saved) {
     return (
       <Card className="flex flex-col gap-3">
@@ -76,10 +83,6 @@ export function ApprovalLinkCard() {
       </Card>
     );
   }
-
-  const dirty =
-    mode !== saved.mode ||
-    (mode === "custom" && template.trim() !== saved.urlTemplate);
 
   async function save() {
     setSaving(true);

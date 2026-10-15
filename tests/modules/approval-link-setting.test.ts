@@ -157,6 +157,7 @@ describe.skipIf(!dbUp)("the approval link setting", () => {
     await updateApprovalLink(ctx(), { mode: "custom" }, appDb);
     const rows = await suDb.auditLog.findMany({
       where: { tenantId, action: "tenant_settings.approval_link_set" },
+      orderBy: { id: "asc" },
       select: { before: true, after: true },
     });
     // The trail keeps the host, never a path or query that may carry a token.

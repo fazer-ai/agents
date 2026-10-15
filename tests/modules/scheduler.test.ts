@@ -22,6 +22,8 @@ import {
 } from "@/modules/scheduler/service";
 import { registerJobHandler, runClaimed } from "@/modules/scheduler/worker";
 import { dbProbeFailed } from "@/tests/db-gate";
+import { blockedByChain } from "@/tests/utils/pg-waits";
+import { until } from "@/tests/utils/poll";
 import { burnSchedulerJobId } from "../utils/scheduler";
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
@@ -489,8 +491,8 @@ describe.skipIf(!dbUp)("scheduler", () => {
       base: appDb,
     });
 
-    let holding!: () => void;
-    const isHeld = new Promise<void>((r) => {
+    let holding!: (pid: number) => void;
+    const isHeld = new Promise<number>((r) => {
       holding = r;
     });
     let release!: () => void;
@@ -502,22 +504,31 @@ describe.skipIf(!dbUp)("scheduler", () => {
     const holder = suDb.$transaction(
       async (tx) => {
         await tx.$queryRaw`SELECT id FROM scheduler_jobs WHERE id = ${held} FOR UPDATE`;
-        holding();
+        const [me] = await tx.$queryRaw<{ pid: number }[]>`
+          SELECT pg_backend_pid() AS pid`;
+        holding(me?.pid ?? -1);
         await released;
       },
       { timeout: 20_000 },
     );
 
     try {
-      await isHeld;
-      const timedOut = Symbol("timeout");
-      const outcome = await Promise.race([
-        claimDueJobs(10, appDb, new Date(), tenantId),
-        new Promise<typeof timedOut>((r) =>
-          setTimeout(() => r(timedOut), 4_000),
-        ),
-      ]);
-      expect(outcome).not.toBe(timedOut);
+      const holderPid = await isHeld;
+      // Answered, or parked behind the held row: a claim that waits on a lock it should skip is the
+      // second, and shows up in the holder's chain instead of timing out.
+      let outcome: ClaimedJob[] | undefined;
+      const claiming = claimDueJobs(10, appDb, new Date(), tenantId).then(
+        (jobs) => {
+          outcome = jobs;
+        },
+      );
+      await until(
+        "the claim answered, or parked behind the held row",
+        async () =>
+          outcome !== undefined || (await blockedByChain(suDb, holderPid)) >= 1,
+      );
+      expect(outcome).toBeDefined();
+      await claiming;
       const ids = (outcome as ClaimedJob[]).map((j) => j.id);
       expect(ids).toContain(free);
       expect(ids).not.toContain(held);

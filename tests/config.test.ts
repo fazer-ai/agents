@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { parseIntSetting } from "@/config";
 import { modelSemaphorePolicy } from "@/graph/model-limit";
+import { POLL_DEADLINE_MS } from "@/tests/utils/poll";
 
 // Every numeric environment variable goes through one validated parser. An unchecked `Number(RAW)`
 // turns "15s" into NaN and "1e309" into Infinity: a `setInterval` worker then ticks about every
@@ -168,11 +169,11 @@ describe("the timer bound is the runtime's, not a policy", () => {
         resolve(true);
       }, 2_147_483_648);
       // Resolves false instead of hanging, so a runtime that starts honouring long delays fails
-      // this test in two seconds rather than blocking the suite.
+      // this test at the suite's poll deadline rather than blocking it. A passing run never waits it.
       const guard = setTimeout(() => {
         clearInterval(interval);
         resolve(false);
-      }, 2_000);
+      }, POLL_DEADLINE_MS);
     });
     expect(firedImmediately).toBe(true);
   });

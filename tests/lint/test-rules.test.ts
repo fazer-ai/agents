@@ -20,9 +20,9 @@ const SRC = ["s", "rc"].join("");
 const DOCS = ["do", "cs"].join("");
 const VIEW = ["pg_stat", "activity"].join("_");
 const DB = "declare const db: { $queryRaw: (...a: unknown[]) => unknown };\n";
-// On the no-test-reads-source list, and on the no-test-real-wait list, in biome.jsonc.
+// On the no-test-reads-source list in biome.jsonc. The no-test-real-wait rule has no list: no test
+// file is exempt from it, so there is no listed file to prove an exemption with.
 const LISTED_SOURCE = "tests/client/debug-warning-source.test.ts";
-const LISTED_WAIT = "tests/api/features/realtime/realtime.controller.test.ts";
 const APP = "declare const app: { listen: (...a: unknown[]) => unknown };\n";
 const PROBE_HEAD =
   "declare const ping: () => Promise<boolean>;\nexport let dbUp = false;\n";
@@ -52,10 +52,6 @@ const PROBES: Record<string, string> = {
     "export const a = (fn: () => void) => setTimeout(fn, 10);\n",
   [`${PROBE}/listed-source-copy.ts`]: readFileSync(
     join(ROOT, LISTED_SOURCE),
-    "utf8",
-  ),
-  [`${PROBE}/listed-wait-copy.ts`]: readFileSync(
-    join(ROOT, LISTED_WAIT),
     "utf8",
   ),
   [`${PROBE}/serve-no-hostname.ts`]:
@@ -113,7 +109,6 @@ beforeAll(() => {
       "--reporter=github",
       ...Object.keys(PROBES),
       LISTED_SOURCE,
-      LISTED_WAIT,
     ],
     cwd: ROOT,
   });
@@ -191,10 +186,7 @@ describe("no-test-real-wait", () => {
   });
 });
 
-test.each([
-  ["source", LISTED_SOURCE, "listed-source-copy.ts"],
-  ["wait", LISTED_WAIT, "listed-wait-copy.ts"],
-] as const)(
+test.each([["source", LISTED_SOURCE, "listed-source-copy.ts"]] as const)(
   "a file on the %s list is exempt, and the same content anywhere else is not",
   (rule, listed, copy) => {
     expect(of(`${PROBE}/${copy}`)[rule]).toBeGreaterThan(0);

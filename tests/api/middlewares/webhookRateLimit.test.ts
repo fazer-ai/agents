@@ -1,11 +1,14 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { Elysia } from "elysia";
+import * as rateLimit from "@/api/middlewares/rateLimit";
 import {
   clientKeyFor,
   isWebhookReceiver,
   rateLimitMiddleware,
   webhookAuthFailureLimitMiddleware,
 } from "@/api/middlewares/rateLimit";
+import { until } from "@/tests/utils/poll";
+import { countCalls } from "@/tests/utils/waiting";
 
 // Same harness as rateLimit.test.ts: the limiters key on the peer, which only a LISTENING server
 // gives them, and Bun.serve needs Bun's own Response back for the duration of the file.
@@ -206,7 +209,7 @@ describe("guessing tokens is", () => {
     heldOnce = false;
     const app = serve({ globalMax: 1000, failureMax: 2, waitMs: 100 });
     const slow = app.post("/api/v1/chatwoot/webhook/held-token");
-    await Bun.sleep(20);
+    await until("the held attempt in its handler", () => heldOnce);
     // Its repeats wait for the held attempt's answer, and give up with 429 when it does not come.
     expect([
       await app.post("/api/v1/chatwoot/webhook/held-token"),
@@ -222,9 +225,17 @@ describe("guessing tokens is", () => {
     held = Promise.withResolvers<void>();
     const app = serve({ globalMax: 1000, failureMax: 2, waitMs: 3_000 });
     const first = app.post("/api/v1/chatwoot/webhook/good-slow-wake");
-    await Bun.sleep(20);
-    const repeat = app.post("/api/v1/chatwoot/webhook/good-slow-wake");
-    await Bun.sleep(50);
+    await until("the first delivery held in its handler", () =>
+      heldGood.has("good-slow-wake"),
+    );
+    const waits = countCalls(rateLimit, "waitOnAttempt");
+    let repeat: Promise<number>;
+    try {
+      repeat = app.post("/api/v1/chatwoot/webhook/good-slow-wake");
+      await until("the repeat waiting on the first", () => waits.count() >= 1);
+    } finally {
+      waits.restore();
+    }
     const released = Date.now();
     held.resolve();
     expect([await first, await repeat]).toEqual([200, 200]);
@@ -241,11 +252,28 @@ describe("guessing tokens is", () => {
     const batch = async (token: string) => {
       held = Promise.withResolvers<void>();
       const first = app.post(`/api/v1/chatwoot/webhook/${token}`);
-      await Bun.sleep(20);
-      const repeats = Array.from({ length: 10 }, () =>
-        app.post(`/api/v1/chatwoot/webhook/${token}`),
+      await until("the first delivery held in its handler", () =>
+        heldGood.has(token),
       );
-      await Bun.sleep(100);
+      // Every repeat has been judged before the release: the ones let through are waiting on the
+      // first, and the rest have already been answered.
+      const waits = countCalls(rateLimit, "waitOnAttempt");
+      let answered = 0;
+      let repeats: Promise<number>[];
+      try {
+        repeats = Array.from({ length: 10 }, () =>
+          app.post(`/api/v1/chatwoot/webhook/${token}`).then((s) => {
+            answered += 1;
+            return s;
+          }),
+        );
+        await until(
+          "each repeat waiting or answered",
+          () => waits.count() + answered >= 10,
+        );
+      } finally {
+        waits.restore();
+      }
       held.resolve();
       return [await first, ...(await Promise.all(repeats))];
     };

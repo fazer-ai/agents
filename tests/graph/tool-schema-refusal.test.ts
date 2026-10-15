@@ -571,8 +571,8 @@ describe.skipIf(!dbUp)("a tool call refused by its own schema", () => {
         args: { reason: "d", customerMessage: "já vai" },
       },
     ]);
+    // The alert is written inside the flow line's own tracked write, so the settle covers it too.
     await settleFlowEvents();
-    await Bun.sleep(300);
     const afterG = await suDb.alertDelivery.findMany({
       where: { tenantId },
       select: { stage: true, level: true, summary: true },
@@ -595,8 +595,8 @@ describe.skipIf(!dbUp)("a tool call refused by its own schema", () => {
       ],
       { toggleFailsTimes: 1 },
     );
+    // The alert is written inside the flow line's own tracked write, so the settle covers it too.
     await settleFlowEvents();
-    await Bun.sleep(300);
     const afterH = await suDb.alertDelivery.findMany({
       where: { tenantId },
       select: { stage: true, level: true },

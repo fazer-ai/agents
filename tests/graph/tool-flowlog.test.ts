@@ -19,6 +19,7 @@ import type { FlowContext } from "@/modules/flowlog/service";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { flowLogRows } from "../utils/flowlog";
 import { outboundUrl } from "../utils/outbound";
+import { until } from "../utils/poll";
 
 // The tool line of the execution-flow log must distinguish integration failures from successes:
 // a ToolMessage with status "error" (failableTool) is logged as ONE warn/error line with the
@@ -67,7 +68,7 @@ type LogRow = {
 
 // emitFlowEvent is fire-and-forget; poll until the expected row count lands.
 async function pollToolRows(turnId: string, count: number): Promise<LogRow[]> {
-  for (let i = 0; i < 50; i++) {
+  return until(`${count} tool row(s)`, async () => {
     const rows = await flowLogRows(suDb, {
       where: { tenantId, turnId, stage: "tool" },
       select: {
@@ -77,10 +78,8 @@ async function pollToolRows(turnId: string, count: number): Promise<LogRow[]> {
         detail: true,
       },
     });
-    if (rows.length >= count) return rows;
-    await new Promise((r) => setTimeout(r, 100));
-  }
-  return [];
+    return rows.length >= count ? rows : null;
+  }).catch((): LogRow[] => []);
 }
 
 // Scripted model: first call emits a tool_call for `toolName`, second call replies with text.
@@ -530,14 +529,12 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
 
     // The delivery row is what the alert worker POSTs from, so a failure logged info/ok would
     // never reach a channel.
-    let delivery: { stage: string | null; level: string | null } | null = null;
-    for (let i = 0; i < 50 && !delivery; i++) {
-      delivery = await suDb.alertDelivery.findFirst({
+    const delivery = await until("the alert delivery", () =>
+      suDb.alertDelivery.findFirst({
         where: { tenantId, channelId: BigInt(channel.id), stage: "tool" },
         select: { stage: true, level: true },
-      });
-      if (!delivery) await new Promise((r) => setTimeout(r, 100));
-    }
+      }),
+    ).catch(() => null);
     expect(delivery).not.toBeNull();
     expect(delivery?.level).toBe("warn");
   });

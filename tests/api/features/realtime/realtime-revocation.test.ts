@@ -11,6 +11,7 @@ import {
   test,
 } from "bun:test";
 import { Elysia } from "elysia";
+import { POLL_DEADLINE_MS } from "@/tests/utils/poll";
 import {
   mockEndedSessionCount,
   mockFindUnique,
@@ -107,8 +108,8 @@ function connect(onFirstMessage?: () => void, withCookie = cookie) {
       let opened = false;
       const timeout = setTimeout(() => {
         ws.close();
-        reject(new Error("socket did not close within 5s"));
-      }, 5_000);
+        reject(new Error(`socket did not close within ${POLL_DEADLINE_MS}ms`));
+      }, POLL_DEADLINE_MS);
       ws.addEventListener("open", () => {
         opened = true;
       });

@@ -1,6 +1,7 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, jest, test } from "bun:test";
 import { buildHttpTool, type HttpToolDef } from "@/graph/tools/http";
 import { MAX_OUTBOUND_BODY_CHARS } from "@/lib/outbound";
+import { POLL_DEADLINE_MS } from "@/tests/utils/poll";
 
 // 8.8.8.8 is a public IP literal: the SSRF guard treats it as an IP (no DNS lookup) and does not
 // block it, so these tests never touch the network.
@@ -54,7 +55,10 @@ describe("an HTTP tool's bound covers the body, not only the headers", () => {
         (v) => ({ kind: "returned" as const, v }),
         (e: unknown) => ({ kind: "threw" as const, e }),
       ),
-      new Promise<typeof HUNG>((r) => setTimeout(() => r(HUNG), 3_000)),
+      // Only a hung call ever reaches this; a passing run ends at the tool's own 150 ms bound.
+      new Promise<typeof HUNG>((r) =>
+        setTimeout(() => r(HUNG), POLL_DEADLINE_MS),
+      ),
     ]);
 
     expect(outcome).not.toBe(HUNG);
@@ -62,7 +66,7 @@ describe("an HTTP tool's bound covers the body, not only the headers", () => {
     // And it ended NEAR the bound, not after the body finally arrived: a fix that merely waits
     // longer would satisfy the assertion above and not this one.
     expect(Date.now() - startedAt).toBeLessThan(2_000);
-  }, 10_000);
+  }, 30_000);
 
   test("the refusal names the bound rather than the stream's own error", async () => {
     // What the model reads when a tool call is cut. "The operation was aborted." says nothing it
@@ -79,24 +83,40 @@ describe("an HTTP tool's bound covers the body, not only the headers", () => {
 
   test("a body that arrives inside the bound is still returned whole", async () => {
     // The fence on the other side: the bound must not turn a slow-but-fine provider into a failure.
-    const tool = buildHttpTool(def(), {
-      resolveCredential: async () => null,
-      timeoutMs: 1_000,
-      fetchImpl: (async () =>
-        new Response(
-          new ReadableStream({
-            start(c) {
-              c.enqueue(enc.encode('{"a":'));
-              setTimeout(() => {
+    // The provider's clock is the test's: the rest of the body waits in the stream until the read
+    // has asked for it and 200 ms of the 1 s bound have passed on a fake clock, so any deadline of
+    // its own that the read kept would be due first.
+    jest.useFakeTimers();
+    try {
+      const reading = Promise.withResolvers<void>();
+      const arrive = Promise.withResolvers<void>();
+      const tool = buildHttpTool(def(), {
+        resolveCredential: async () => null,
+        timeoutMs: 1_000,
+        fetchImpl: (async () =>
+          new Response(
+            new ReadableStream({
+              start(c) {
+                c.enqueue(enc.encode('{"a":'));
+              },
+              async pull(c) {
+                reading.resolve();
+                await arrive.promise;
                 c.enqueue(enc.encode("1}"));
                 c.close();
-              }, 200);
-            },
-          }),
-          { status: 200, headers: { "content-type": "application/json" } },
-        )) as unknown as typeof fetch,
-    });
-    expect(String(await tool.invoke({}))).toBe('HTTP 200\n{"a":1}');
+              },
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          )) as unknown as typeof fetch,
+      });
+      const call = tool.invoke({});
+      await reading.promise;
+      jest.advanceTimersByTime(200);
+      arrive.resolve();
+      expect(String(await call)).toBe('HTTP 200\n{"a":1}');
+    } finally {
+      jest.useRealTimers();
+    }
   }, 10_000);
 });
 

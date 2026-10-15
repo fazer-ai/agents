@@ -17,6 +17,7 @@ import {
 } from "@/modules/chatwoot/client";
 import { withConversationLabels } from "@/modules/chatwoot/labels";
 import { CROSS_INBOX_CASE_DEFAULTS } from "@/modules/cross-inbox-case/settings";
+import { until } from "@/tests/utils/poll";
 import { fakeChatwootAttributeStore } from "../utils/chatwoot-attribute-store";
 
 function recordingClient() {
@@ -1738,7 +1739,8 @@ describe("native tools", () => {
       conversationId: 9,
       shownLabels: { conversation: [] },
     });
-    // One slow state read and one fast one, so the second call lands after the first has finished.
+    // The second call's state read holds until the first call has written, so it lands after the
+    // first has finished, on every machine.
     let reads = 0;
     const guarded = applyToolPreconditions(
       tools,
@@ -1747,7 +1749,8 @@ describe("native tools", () => {
       },
       async () => {
         reads++;
-        if (reads === 2) await new Promise((r) => setTimeout(r, 60));
+        if (reads === 2)
+          await until("the first call's write", () => setCalls.length >= 1);
         return {
           conversationAttributes: { ok: "1" },
           contactAttributes: {},

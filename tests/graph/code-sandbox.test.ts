@@ -13,6 +13,10 @@ import {
 import { zoneFormatter, zoneOffsetSeconds } from "@/graph/tools/zone-offset";
 import { CODE_TOOL_GLOBALS } from "@/lib/code-tool-vocabulary";
 import { replaceLoneSurrogates } from "@/lib/text";
+import { POLL_DEADLINE_MS } from "@/tests/utils/poll";
+
+// When the control timer of the main-thread test is due: well inside the 300 ms loop it runs beside.
+const CONTROL_TIMER_MS = 50;
 
 // A CPF check as a model writes it: normalise, weigh, `%11%10`, and END with the verdict.
 // `12351612850` is valid, its second check digit going through the remainder-10 rule; the
@@ -707,11 +711,12 @@ describe("runSandboxedCode", () => {
   });
 
   test("an infinite loop is stopped at the deadline, and the main thread never blocked", async () => {
-    // The timer is the control for the design: had the interpreter run on this thread, a 50 ms
-    // timer could not fire until the loop was interrupted at 300 ms.
+    // The timer is the control for the design: had the interpreter run on this thread, a timer due
+    // at CONTROL_TIMER_MS could not fire until the loop was interrupted at 300 ms. Its delay is the
+    // subject of the test, not a guess about how long anything takes.
     const timerStart = performance.now();
     const timer = new Promise<number>((r) =>
-      setTimeout(() => r(performance.now() - timerStart), 50),
+      setTimeout(() => r(performance.now() - timerStart), CONTROL_TIMER_MS),
     );
     const started = performance.now();
     const out = await runSandboxedCode(`while (true) {}`, { timeoutMs: 300 });
@@ -1024,7 +1029,11 @@ describe("runSandboxedCode", () => {
         .href,
     );
     const reply = await new Promise<unknown>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error("no reply")), 5000);
+      // Only a thread that never answers reaches this; a passing run is answered at once.
+      const timer = setTimeout(
+        () => reject(new Error("no reply")),
+        POLL_DEADLINE_MS,
+      );
       worker.onmessage = (ev: MessageEvent<{ kind: string }>) => {
         if (ev.data.kind === "ready") {
           worker.postMessage({

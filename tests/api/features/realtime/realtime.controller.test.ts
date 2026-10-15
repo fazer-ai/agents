@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { Elysia } from "elysia";
+import { POLL_DEADLINE_MS } from "@/tests/utils/poll";
 import { setupPrismaMock } from "@/tests/utils/prisma-mock";
 
 setupPrismaMock();
@@ -78,8 +79,12 @@ function tryConnect(
       } catch {
         // ignore — connection might already be in a terminal state.
       }
-      reject(new Error("WebSocket handshake/close timed out after 5s"));
-    }, 5_000);
+      reject(
+        new Error(
+          `WebSocket handshake/close timed out after ${POLL_DEADLINE_MS}ms`,
+        ),
+      );
+    }, POLL_DEADLINE_MS);
     let opened = false;
     ws.addEventListener("open", () => {
       opened = true;

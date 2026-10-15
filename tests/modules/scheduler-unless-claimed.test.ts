@@ -7,6 +7,8 @@ import {
   enqueueJobUnlessClaimed,
 } from "@/modules/scheduler/service";
 import { dbProbeFailed } from "@/tests/db-gate";
+import { blockedByChain } from "@/tests/utils/pg-waits";
+import { until } from "@/tests/utils/poll";
 
 // `enqueueJobUnlessClaimed`, estado por estado: uma linha CLAIMED fica intocada, e todo
 // outro estado se arma exatamente como `enqueueJob` arma, que é o contrato que a varredura do
@@ -142,22 +144,27 @@ describe.skipIf(!dbUp)("enqueueJobUnlessClaimed (issue #786)", () => {
     });
     let armed: boolean | undefined;
     let settled = false;
+    let arming: Promise<void> = Promise.resolve();
     await suDb.$transaction(async (tx) => {
       await tx.$executeRaw`
         UPDATE scheduler_jobs
            SET status = 'CLAIMED', claim_seq = claim_seq + 1,
                payload = '{"v":"running","stepIndex":0}'::jsonb
          WHERE id = ${id}`;
-      const arming = enqueueJobUnlessClaimed(arm(new Date())).then((r) => {
+      const [me] = await tx.$queryRaw<{ pid: number }[]>`
+        SELECT pg_backend_pid() AS pid`;
+      arming = enqueueJobUnlessClaimed(arm(new Date())).then((r) => {
         armed = r;
         settled = true;
       });
-      await Bun.sleep(300);
+      await until(
+        "o arme parado no lock, ou terminado sem ele",
+        async () => settled || (await blockedByChain(suDb, me?.pid ?? -1)) >= 1,
+      );
       // O rendezvous disparou: o arme está parado no lock, não terminou antes da reivindicação.
       expect(settled).toBe(false);
-      void arming;
     });
-    while (!settled) await Bun.sleep(10);
+    await arming;
     expect(armed).toBe(false);
     const r = await row();
     expect(r.status).toBe("CLAIMED");

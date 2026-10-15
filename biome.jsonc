@@ -193,24 +193,7 @@
       "plugins": ["./biome-plugins/no-test-reads-source.grit"]
     },
     {
-      "includes": [
-        "tests/**/*.{ts,tsx}",
-        "!tests/api/features/realtime/realtime-revocation.test.ts",
-        "!tests/api/features/realtime/realtime.controller.test.ts",
-        "!tests/api/middlewares/webhookRateLimit.test.ts",
-        "!tests/config.test.ts",
-        "!tests/graph/code-sandbox.test.ts",
-        "!tests/graph/side-effect-flowlog.test.ts",
-        "!tests/graph/tool-flowlog.test.ts",
-        "!tests/graph/tool-schema-refusal.test.ts",
-        "!tests/graph/tools-http-body-bound.test.ts",
-        "!tests/graph/tools.test.ts",
-        "!tests/lib/shutdown-drain.test.ts",
-        "!tests/modules/scheduler-lanes.test.ts",
-        "!tests/modules/scheduler-shutdown-drain.test.ts",
-        "!tests/modules/scheduler-unless-claimed.test.ts",
-        "!tests/modules/scheduler.test.ts"
-      ],
+      "includes": ["tests/**/*.{ts,tsx}"],
       "plugins": ["./biome-plugins/no-test-real-wait.grit"]
     },
     // The fences that were sweeps in tests/ (api, client, graph, modules). Each also applies under

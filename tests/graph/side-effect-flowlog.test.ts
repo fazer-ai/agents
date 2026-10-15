@@ -13,6 +13,7 @@ import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogRows } from "../utils/flowlog";
 import { outboundUrl } from "../utils/outbound";
+import { until } from "../utils/poll";
 
 // A tool that SUCCEEDS for the model but whose side effect fails (here: handoff assignment) must land
 // a warn `tool` line in the execution log AND produce an alert delivery for a minLevel:warn channel,
@@ -103,9 +104,8 @@ type ToolRow = {
 async function pollToolRows(
   predicate: (rows: ToolRow[]) => boolean,
 ): Promise<ToolRow[]> {
-  let rows: ToolRow[] = [];
-  for (let i = 0; i < 50; i++) {
-    rows = await flowLogRows(suDb, {
+  const read = (): Promise<ToolRow[]> =>
+    flowLogRows(suDb, {
       where: {
         tenantId,
         stage: "tool",
@@ -113,10 +113,11 @@ async function pollToolRows(
       },
       select: { level: true, status: true, errorMessage: true, detail: true },
     });
-    if (predicate(rows)) return rows;
-    await new Promise((r) => setTimeout(r, 100));
-  }
-  return rows;
+  // What the rows are at the deadline, when they never match: the assertions then say what landed.
+  return until("the expected tool rows", async () => {
+    const rows = await read();
+    return predicate(rows) ? rows : null;
+  }).catch(() => read());
 }
 
 describe.skipIf(!dbUp)(
@@ -279,14 +280,12 @@ describe.skipIf(!dbUp)(
       );
 
       // And it paged the minLevel:warn channel, so the failure is not invisible.
-      let delivery: { level: string | null } | null = null;
-      for (let i = 0; i < 50 && !delivery; i++) {
-        delivery = await suDb.alertDelivery.findFirst({
+      const delivery = await until("the alert delivery", () =>
+        suDb.alertDelivery.findFirst({
           where: { tenantId, channelId: BigInt(channel.id), stage: "tool" },
           select: { level: true },
-        });
-        if (!delivery) await new Promise((r) => setTimeout(r, 100));
-      }
+        }),
+      ).catch(() => null);
       expect(delivery).not.toBeNull();
       expect(delivery?.level).toBe("warn");
     });

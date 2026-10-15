@@ -27,7 +27,7 @@ import {
   runSchedulerTick,
 } from "@/modules/scheduler/worker";
 import { dbProbeFailed } from "@/tests/db-gate";
-import { POLL_DEADLINE_MS } from "@/tests/utils/poll";
+import { POLL_DEADLINE_MS, until } from "@/tests/utils/poll";
 
 // The two halves of the rule in src/modules/scheduler/lanes.ts. The PARTITION, against the database
 // rather than the map: a test that read `JOB_LANE` and counted would pass on a right map and a wrong
@@ -426,14 +426,16 @@ describe.skipIf(!dbUp)("scheduler lanes", () => {
       batchSize: 20,
       tenantId,
     });
-    const timedOut = Symbol("timeout");
-    const outcome = await Promise.race([
-      tick.then(() => "finished" as const),
-      new Promise<typeof timedOut>((r) => setTimeout(() => r(timedOut), 5_000)),
-    ]);
-    expect(outcome).toBe("finished");
+    // The two handlers wait for each other, so a passing run finishes as soon as both have started;
+    // the poll deadline is only ever paid by a serial drain, which then fails the assertion.
+    let finished = false;
+    void tick.then(() => {
+      finished = true;
+    });
+    await until("the tick to finish both runs", () => finished).catch(() => {});
+    expect(finished).toBe(true);
     expect(ranA && ranB).toBe(true);
-  }, 15_000);
+  }, 30_000);
 
   // NOTE: the tick claims OBSERVE on its own, up to a limit sized to the provider bound; from the
   // traffic share it would wait FIFO behind every ingestion row, five rows a tick for the install.

@@ -286,19 +286,19 @@ describe.skipIf(!dbUp)("the job lanes under the shutdown drain", () => {
   test("a row a turn's barrier claims after the bound is handed back at once", async () => {
     const key = `ingest:shutdown-late-${process.pid}`;
     const id = await pending("INGEST_MESSAGE", `${key}:1`);
-    // A run that takes a while to end once cut keeps the drain in its settle wait, past the bound.
-    const end = beginWork("DEBOUNCE", () => {
-      setTimeout(() => end(), 400);
-    });
+    // A run that ends only once the late claim is back keeps the drain in its settle wait, past
+    // the bound. The bound is over once it cuts the work in flight: that cut is the moment to claim.
+    const boundCut = Promise.withResolvers<void>();
+    const end = beginWork("DEBOUNCE", () => boundCut.resolve());
     const drained = drainInFlight({ boundMs: 100, settleMs: 1_000 });
-    await sleep(200);
+    await boundCut.promise;
     const jobs = await claimPendingByKeyPrefix(
       "INGEST_MESSAGE",
       key,
       10,
       appDb,
       tenantId,
-    );
+    ).finally(() => end());
     expect(jobs.map((j) => j.id)).toEqual([id]);
     expect((await drained).unsettled).toBe(0);
     const row = await rowOf(id);

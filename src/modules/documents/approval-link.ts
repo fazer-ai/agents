@@ -73,6 +73,8 @@ function isLinkTemplate(template: string): boolean {
   // NOTE: `new URL` drops tabs and newlines, and the note would carry them and break the link.
   // biome-ignore lint/suspicious/noControlCharactersInRegex: refusing control chars is the point.
   if (/[\s\u0000-\u001f\u007f]/.test(template)) return false;
+  // NOTE: `new URL` reads a backslash as a slash; the note carries it as typed, which no browser does.
+  if (template.includes("\\")) return false;
   try {
     const url = new URL(template.replaceAll(APPROVAL_LINK_ID_TOKEN, "1"));
     return url.protocol === "https:" || url.protocol === "http:";

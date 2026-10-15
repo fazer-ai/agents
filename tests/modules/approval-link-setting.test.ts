@@ -29,6 +29,7 @@ describe("what the note's link becomes", () => {
       "https:/app.example.com/review/{id}",
       "https://app.example.com/review/\n{id}",
       "https://app.example.com/review now/{id}",
+      "https://app.example.com\\review\\{id}",
     ]) {
       expect(() =>
         normalizeApprovalLink({ mode: "custom", urlTemplate }),

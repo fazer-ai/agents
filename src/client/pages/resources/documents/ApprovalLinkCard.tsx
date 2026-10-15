@@ -96,7 +96,13 @@ export function ApprovalLinkCard() {
         const message =
           apiErrorMessage(error) ||
           t("documents.approvalLink.saveError", "Could not save.");
-        if (mode === "custom") setFieldError(message);
+        // NOTE: on the address only while it still shows what was refused; otherwise a toast.
+        if (
+          sent.mode === "custom" &&
+          draft.current.mode === "custom" &&
+          draft.current.template === sent.template
+        )
+          setFieldError(message);
         else showToast(message, "error");
         return;
       }

@@ -402,6 +402,9 @@ export function defaultUsagePersist(
         conversation_id:
           row.conversationId != null ? String(row.conversationId) : null,
         inbox_id: row.inboxId != null ? String(row.inboxId) : null,
+        // NOTE: the same id as the ledger row and the turn's execution-log lines, so a subscriber
+        // joins a call to its turn exactly; null for a call no turn made (memory compaction).
+        turn_id: row.turnId ?? null,
         source: row.source,
         model: row.model,
         // NOTE: the call type ("agent", "nudge", "tts_normalize", …). A fleet subscriber that only

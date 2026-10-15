@@ -150,19 +150,30 @@ async function flush(
   return { out, sent, seen: model.seen, elapsedMs: Date.now() - started };
 }
 
-// Runs `stimulus` the moment the flush starts waiting for an open transcription, with its waiters
-// already registered: the event the test stages lands DURING the wait, on any machine, where a timer
-// only guesses that the flush got there first.
-function duringTheWait(stimulus: () => void): { restore: () => void } {
+// Runs `stimulus` once the flush is suspended on the wait for an open transcription: the wait is
+// handed back as a thenable, and only the flush's own `await` on it schedules the stimulus, one
+// event-loop turn later. A flush that asked for the wait without awaiting it never releases it, and
+// a timer could only guess that the flush got there first.
+function duringTheWait(stimulus: () => void): {
+  restore: () => void;
+  awaited: () => boolean;
+} {
   const real = annotations.awaitOpenTranscriptions;
+  let awaited = false;
   const spy = spyOn(annotations, "awaitOpenTranscriptions").mockImplementation(
     (...args: Parameters<typeof real>) => {
       const waiting = real(...args);
-      stimulus();
-      return waiting;
+      const suspended = {
+        then(...handlers: Parameters<typeof waiting.then>) {
+          if (!awaited) setImmediate(stimulus);
+          awaited = true;
+          return waiting.then(...handlers);
+        },
+      };
+      return suspended as unknown as ReturnType<typeof real>;
     },
   );
-  return { restore: () => spy.mockRestore() };
+  return { restore: () => spy.mockRestore(), awaited: () => awaited };
 }
 
 describe.skipIf(!dbUp)(
@@ -248,6 +259,7 @@ describe.skipIf(!dbUp)(
         close();
       });
       const { out, sent, seen } = await flush(901).finally(wait.restore);
+      expect(wait.awaited()).toBe(true);
       expect(out).toEqual({ outcome: "done" });
       expect(sent).toEqual([[901, REPLY]]);
       expect(seen[0]).toContain(
@@ -281,6 +293,7 @@ describe.skipIf(!dbUp)(
       const { out, seen, elapsedMs } = await flush(903, 10_000).finally(
         wait.restore,
       );
+      expect(wait.awaited()).toBe(true);
       expect(out).toEqual({ outcome: "done" });
       expect(seen[0]).toContain(MARKER);
       expect(elapsedMs).toBeLessThan(5000);
@@ -343,6 +356,7 @@ describe.skipIf(!dbUp)(
         const { elapsedMs } = await flush(906, 10_000, deadline.signal).finally(
           wait.restore,
         );
+        expect(wait.awaited()).toBe(true);
         expect(elapsedMs).toBeLessThan(5000);
       } finally {
         close();

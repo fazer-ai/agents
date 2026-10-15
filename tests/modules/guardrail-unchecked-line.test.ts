@@ -100,6 +100,23 @@ const failingDecisions = (async () =>
     status: 503,
   })) as unknown as typeof fetch;
 
+// Answers toxicity past its threshold and leaves every other question unanswered: a screening that
+// failed in part and still tripped.
+const partlyAnsweringDecisions = (async (_url: string, init: RequestInit) => {
+  const body = JSON.parse(String(init.body)) as { questions: object };
+  const answers: Record<string, unknown> = {};
+  for (const name of Object.keys(body.questions))
+    if (name === "toxicity") answers[name] = { type: "noul", noul: 0.99 };
+  return new Response(
+    JSON.stringify({
+      model: "jev-1.13.0",
+      answers,
+      usage: { input_tokens: 1 },
+    }),
+    { status: 200 },
+  );
+}) as unknown as typeof fetch;
+
 describe.skipIf(!dbUp)(
   "the line a guardrail that could not judge writes",
   () => {
@@ -234,6 +251,29 @@ describe.skipIf(!dbUp)(
           unchecked: true,
         },
       ]);
+    });
+
+    test("a screening that failed in part and still tripped says the message was not let through", async () => {
+      const f = flow();
+      const gate = buildGuardrailGate({
+        langfuseCfg: null,
+        cfg: cfg({ classifier: "decisions" }),
+        apiKey: "k",
+        flow: f,
+        makeModel: (() => {
+          throw new Error("the chat model must not be built");
+        }) as never,
+        decisionFetch: partlyAnsweringDecisions,
+      });
+      expect(await gate("output", "resposta")).toMatchObject({
+        kind: "replaced",
+      });
+      const failed = (await lines(f.turnId)).filter(
+        (l) => l.detail.outcome === "analysis_failed",
+      );
+      expect(
+        failed.map((l) => [l.detail.classifier, l.detail.unchecked]),
+      ).toEqual([["decisions", false]]);
     });
 
     test("a screening that ran and approved writes no unchecked line", async () => {

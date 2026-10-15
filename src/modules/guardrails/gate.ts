@@ -236,10 +236,12 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
     const t = trace();
     return t ? [usage(), t] : [usage()];
   };
-  // Spread into the detail of a line for a screening that could not judge. The gate fails open, so
-  // the message it was asked about continues anyway: `unchecked` says so, and `classifier` names the
-  // judge that failed, which is what an operator reading the Logs needs to tell this from a block.
+  // Spread into the detail of a line for a screening that could not judge. `classifier` names the
+  // judge that failed, and `unchecked` says whether the message continued anyway: true whenever the
+  // gate fails open, false only when another check that did answer still tripped (`judgedPartly`).
   const couldNotJudge = { classifier: gr.classifier, unchecked: true };
+  const judgedPartly = (violated: boolean) =>
+    violated ? { classifier: gr.classifier, unchecked: false } : couldNotJudge;
   // Built on FIRST CALL, not here, and never twice: a gate is constructed for every turn and every
   // follow-up, while a direction that is switched off never reaches the model. `createChatModel`
   // throws synchronously on a configuration it cannot satisfy (an `openai-compatible` provider with
@@ -415,7 +417,7 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
           direction,
           outcome: "analysis_failed",
           ...logged,
-          ...couldNotJudge,
+          ...judgedPartly(verdict.violated),
         },
         errorMessage: verdict.error,
       });
@@ -506,7 +508,11 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
         stage: "guardrail",
         status: "error",
         level: "warn",
-        detail: { direction, outcome: "analysis_failed", ...couldNotJudge },
+        detail: {
+          direction,
+          outcome: "analysis_failed",
+          ...judgedPartly(verdict.violated),
+        },
         errorMessage: verdict.error,
       });
     }

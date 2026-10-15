@@ -92,10 +92,13 @@ export function guardrailUncheckedLabel(
   t: TFunction,
 ): string | null {
   if (stage !== "guardrail" || !detail) return null;
+  // An explicit `false` is a screening that failed in part and still tripped: the message was
+  // stopped, not let through.
   const unchecked =
-    detail.unchecked === true ||
-    (typeof detail.outcome === "string" &&
-      GUARDRAIL_UNCHECKED_OUTCOMES.has(detail.outcome));
+    typeof detail.unchecked === "boolean"
+      ? detail.unchecked
+      : typeof detail.outcome === "string" &&
+        GUARDRAIL_UNCHECKED_OUTCOMES.has(detail.outcome);
   if (!unchecked) return null;
   switch (detail.direction) {
     case "input":

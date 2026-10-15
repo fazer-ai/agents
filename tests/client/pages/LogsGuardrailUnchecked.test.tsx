@@ -162,6 +162,18 @@ describe("a guardrail line that could not judge, on the Logs page", () => {
     expect(text.includes("logs.guardrailUnchecked")).toBe(false);
   });
 
+  test("a screening that failed in part and still tripped is not described as unchecked", async () => {
+    const text = await pageText([
+      guardrailLine("f", {
+        direction: "output",
+        outcome: "analysis_failed",
+        classifier: "decisions",
+        unchecked: false,
+      }),
+    ]);
+    expect(text.includes("unchecked")).toBe(false);
+  });
+
   test("a guardrail that tripped is not described as unchecked", async () => {
     const text = await pageText([
       guardrailLine("e", {

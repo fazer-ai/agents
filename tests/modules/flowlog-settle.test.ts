@@ -199,12 +199,15 @@ describe.skipIf(!dbUp)(
         { ...second.ctx, base: slowBase(suDb, 0, { hold: release.promise }) },
         second.ev,
       );
-      await firstDone.promise;
-      // Everything a settle does once the first write is over is microtasks, which one macrotask turn
-      // drains whole: a settle that snapshotted the set once has returned by then.
-      await new Promise((r) => setImmediate(r));
-      expect(settled).toBe(false);
-      release.resolve();
+      try {
+        await firstDone.promise;
+        // Everything a settle does once the first write is over is microtasks, which one macrotask
+        // turn drains whole: a settle that snapshotted the set once has returned by then.
+        await new Promise((r) => setImmediate(r));
+        expect(settled).toBe(false);
+      } finally {
+        release.resolve();
+      }
       await settling;
       expect(await rows()).toHaveLength(2);
     });

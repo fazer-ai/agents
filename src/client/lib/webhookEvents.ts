@@ -35,6 +35,11 @@ export function webhookEventLabel(ev: string, t: TFunction): string {
         "webhooks.eventLabels.documentApprovalDecided",
         "Document approval decided",
       );
+    case "document.approval_outcome":
+      return t(
+        "webhooks.eventLabels.documentApprovalOutcome",
+        "Document approval outcome",
+      );
     case "tenant.created":
       return t("webhooks.eventLabels.tenantCreated", "Workspace created");
     case "heartbeat":

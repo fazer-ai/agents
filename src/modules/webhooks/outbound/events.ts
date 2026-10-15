@@ -22,6 +22,7 @@ export const OUTBOUND_EVENTS = [
   "tenant.created",
   "document.approval_requested",
   "document.approval_decided",
+  "document.approval_outcome",
   "heartbeat",
 ] as const;
 

@@ -49,6 +49,18 @@ export function decidedData(r: {
   };
 }
 
+export function outcomeData(r: {
+  id: bigint;
+  conversationId: bigint | null;
+  outcome: string;
+}): Record<string, unknown> {
+  return {
+    request_id: String(r.id),
+    conversation_id: id(r.conversationId),
+    outcome: r.outcome.toLowerCase(),
+  };
+}
+
 async function underSavepoint(
   db: ScopedDb,
   event: OutboundEvent,

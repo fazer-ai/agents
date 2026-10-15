@@ -33,6 +33,7 @@ import {
   registerJobHandler,
 } from "@/modules/scheduler/worker";
 import { type ApprovalOutcome, openedJobKey, reviewerNames } from "./approval";
+import { announceApprovalEvent, outcomeData } from "./approval-events";
 import { readApprovalLink, withApprovalLink } from "./approval-link";
 import { formatDocumentNumber } from "./format";
 import { getIssuedDocumentPdf, sysCtx } from "./issue";
@@ -609,7 +610,7 @@ const RECORDED: Partial<Record<Outcome, ApprovalOutcome>> = {
 };
 
 // What the decision came to, for the console's request page and history. The first run to finish
-// writes it; a request with no conversation has nothing to show.
+// writes it and announces it; a request with no conversation has nothing to show.
 async function recordOutcome(
   tenantId: bigint,
   requestId: bigint,
@@ -618,12 +619,27 @@ async function recordOutcome(
 ): Promise<void> {
   const recorded = RECORDED[outcome];
   if (!recorded) return;
-  await runScopedOn(base, sysCtx(tenantId), (db) =>
-    db.documentApprovalRequest.updateMany({
+  await runScopedOn(base, sysCtx(tenantId), async (db) => {
+    const r = await db.documentApprovalRequest.updateMany({
       where: { id: requestId, outcome: null },
       data: { outcome: recorded, outcomeAt: new Date() },
-    }),
-  );
+    });
+    if (r.count !== 1) return;
+    const row = await db.documentApprovalRequest.findUnique({
+      where: { id: requestId },
+      select: { conversationId: true },
+    });
+    await announceApprovalEvent(
+      db,
+      tenantId,
+      "document.approval_outcome",
+      outcomeData({
+        id: requestId,
+        conversationId: row?.conversationId ?? null,
+        outcome: recorded,
+      }),
+    );
+  });
 }
 
 let registered = false;

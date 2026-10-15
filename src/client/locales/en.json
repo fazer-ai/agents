@@ -4239,6 +4239,7 @@
       "conversationHandoff": "Handed off to a human",
       "conversationStatusChanged": "Conversation status changed",
       "documentApprovalDecided": "Document approval decided",
+      "documentApprovalOutcome": "Document approval outcome",
       "documentApprovalRequested": "Document approval requested",
       "heartbeat": "Heartbeat (periodic signal)",
       "kanbanCardMoved": "Kanban card moved",

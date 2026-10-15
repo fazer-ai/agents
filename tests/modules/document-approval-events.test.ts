@@ -7,8 +7,10 @@ import {
   approveDocumentRequest,
   createApprovalRequest,
   expireDueApprovalRequests,
+  openedJobKey,
   rejectDocumentRequest,
 } from "@/modules/documents/approval";
+import { runOutcomeJob } from "@/modules/documents/approval-outcome";
 import { freezeDocumentSnapshot } from "@/modules/documents/issue";
 import { documentStarter } from "@/modules/documents/starters";
 import { createDocumentTemplate } from "@/modules/documents/templates";
@@ -17,8 +19,9 @@ import { seedChatwootInstance } from "../utils/chatwoot";
 import { outboundUrl } from "../utils/outbound";
 
 // A document approval request announces itself to the tenant's webhook subscriptions: once when it is
-// opened and once when it is decided (approved, rejected or expired), with ids, statuses and times
-// only (docs/api-and-fleet.md, Outbound webhooks).
+// opened, once when it is decided (approved, rejected or expired), and once when the outcome job
+// records what the decision came to, with ids, statuses and times only (docs/api-and-fleet.md,
+// Outbound webhooks).
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -156,7 +159,11 @@ describe.skipIf(!dbUp)("document approval outbound events", () => {
       data: {
         tenantId: tenantA,
         url: outboundUrl("/approvals"),
-        events: ["document.approval_requested", "document.approval_decided"],
+        events: [
+          "document.approval_requested",
+          "document.approval_decided",
+          "document.approval_outcome",
+        ],
         enabled: true,
       },
     });
@@ -318,6 +325,39 @@ describe.skipIf(!dbUp)("document approval outbound events", () => {
         },
       ]);
     }
+  });
+
+  test("the outcome job announces what the decision came to once, however many runs reach it", async () => {
+    const id = await openRequest();
+    await rejectDocumentRequest({
+      ctx: ctx(tenantA),
+      requestId: id,
+      base: appDb,
+    });
+    // No bot on the conversation, so the outcome is that nobody could be told.
+    await suDb.schedulerJob.deleteMany({
+      where: { tenantId: tenantA, dedupeKey: openedJobKey(id) },
+    });
+    // Two runs racing past the "already recorded" read: only the one whose write lands announces.
+    await Promise.all(
+      [0, 1].map(() =>
+        runOutcomeJob(tenantA, { requestId: String(id) }, appDb),
+      ),
+    );
+    await runOutcomeJob(tenantA, { requestId: String(id) }, appDb);
+    const row = await suDb.documentApprovalRequest.findUniqueOrThrow({
+      where: { id },
+      select: { outcome: true },
+    });
+    expect(row.outcome).toBe("NO_AGENT");
+    const sent = await forRequest("document.approval_outcome", id);
+    expect(sent.map((d) => d.data)).toEqual([
+      {
+        request_id: String(id),
+        conversation_id: String(conversationId),
+        outcome: "no_agent",
+      },
+    ]);
   });
 
   test("only subscriptions to the event receive it, and never another tenant's", async () => {

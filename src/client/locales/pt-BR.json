@@ -4357,6 +4357,7 @@
       "conversationHandoff": "Transferida para um humano",
       "conversationStatusChanged": "Status da conversa alterado",
       "documentApprovalDecided": "Aprovação de documento decidida",
+      "documentApprovalOutcome": "Desfecho da aprovação de documento",
       "documentApprovalRequested": "Aprovação de documento pedida",
       "heartbeat": "Heartbeat (sinal periódico)",
       "kanbanCardMoved": "Cartão do Kanban movido",

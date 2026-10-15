@@ -223,6 +223,7 @@ describe.skipIf(!dbUp)("document approval outbound events", () => {
         request_id: String(id),
         template_id: String(templateId),
         conversation_id: String(conversationId),
+        chatwoot_conversation_id: "77",
         expires_at: row.expiresAt.toISOString(),
         status: "pending",
       },
@@ -262,6 +263,7 @@ describe.skipIf(!dbUp)("document approval outbound events", () => {
         {
           request_id: String(id),
           conversation_id: String(conversationId),
+          chatwoot_conversation_id: "77",
           status: "approved",
           reviewer_user_id: String(reviewer),
           issued_document_id: String(row.issuedDocumentId),
@@ -318,6 +320,7 @@ describe.skipIf(!dbUp)("document approval outbound events", () => {
         {
           request_id: String(id),
           conversation_id: String(conversationId),
+          chatwoot_conversation_id: "77",
           status: "expired",
           reviewer_user_id: null,
           issued_document_id: null,
@@ -355,6 +358,7 @@ describe.skipIf(!dbUp)("document approval outbound events", () => {
       {
         request_id: String(id),
         conversation_id: String(conversationId),
+        chatwoot_conversation_id: "77",
         outcome: "no_agent",
       },
     ]);

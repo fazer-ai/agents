@@ -1,4 +1,5 @@
 import logger from "@/api/lib/logger";
+import { parseDbId } from "@/lib/db-id";
 import type { ScopedDb } from "@/lib/tenancy";
 import {
   emitOutbound,
@@ -9,7 +10,9 @@ import {
 // The outbound events of a document approval request, emitted inside the transaction that makes the
 // change and under a savepoint: a failed statement aborts the whole transaction in Postgres, so
 // catching the error alone would roll back the decision being announced. Ids, statuses and times
-// only: the reviewer's note and the document's values are team and customer text.
+// only: the reviewer's note and the document's values are team and customer text. Every event
+// carries the conversation twice: `conversation_id` is our `Conversation` row, as in `conversation.*`,
+// and `chatwoot_conversation_id` is the number an app that only sees Chatwoot knows it by.
 
 export type DecidedStatus = "approved" | "rejected" | "expired";
 
@@ -61,6 +64,47 @@ export function outcomeData(r: {
   };
 }
 
+// Adds `chatwoot_conversation_id` right after `conversation_id`, read in the same transaction, with
+// an explicit null when the request has no conversation.
+async function withChatwootIds(
+  db: ScopedDb,
+  items: readonly Record<string, unknown>[],
+): Promise<Record<string, unknown>[]> {
+  const ids = [
+    ...new Set(
+      items
+        .map((i) => i.conversation_id)
+        .filter((v): v is string => typeof v === "string"),
+    ),
+  ];
+  const rows =
+    ids.length === 0
+      ? []
+      : await db.conversation.findMany({
+          where: {
+            id: {
+              in: ids
+                .map((v) => parseDbId(v))
+                .filter((v): v is bigint => v !== null),
+            },
+          },
+          select: { id: true, chatwootConversationId: true },
+        });
+  const byId = new Map(
+    rows.map((r) => [String(r.id), String(r.chatwootConversationId)]),
+  );
+  return items.map((item) => {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(item)) {
+      out[k] = v;
+      if (k === "conversation_id")
+        out.chatwoot_conversation_id =
+          typeof v === "string" ? (byId.get(v) ?? null) : null;
+    }
+    return out;
+  });
+}
+
 async function underSavepoint(
   db: ScopedDb,
   event: OutboundEvent,
@@ -88,9 +132,10 @@ export function announceApprovalEvent(
   event: OutboundEvent,
   data: Record<string, unknown>,
 ): Promise<void> {
-  return underSavepoint(db, event, () =>
-    emitOutbound(db, tenantId, event, data),
-  );
+  return underSavepoint(db, event, async () => {
+    const [enriched] = await withChatwootIds(db, [data]);
+    await emitOutbound(db, tenantId, event, enriched ?? data);
+  });
 }
 
 export function announceApprovalEvents(
@@ -100,7 +145,7 @@ export function announceApprovalEvents(
   items: readonly Record<string, unknown>[],
 ): Promise<void> {
   if (items.length === 0) return Promise.resolve();
-  return underSavepoint(db, event, () =>
-    emitOutboundMany(db, tenantId, event, items),
+  return underSavepoint(db, event, async () =>
+    emitOutboundMany(db, tenantId, event, await withChatwootIds(db, items)),
   );
 }

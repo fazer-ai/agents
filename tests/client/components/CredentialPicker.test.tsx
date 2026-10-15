@@ -178,3 +178,65 @@ describe("CredentialPicker ranks the compatible group by the context's kind orde
     expect(names.join(",")).toBe("b-typesafe,e-typesafe,a-generic,d-generic");
   });
 });
+
+// A saved ref is not an empty field. While the vault is still being read the trigger used to say
+// "None" for as long as the read took (about a second on a reload), the same word as a field nobody
+// filled; and a read that failed made the ref look deleted. Neither is what the operator saved.
+describe("CredentialPicker with a saved ref the vault has not answered for", () => {
+  const triggerText = () =>
+    (screen.getByLabelText("key").textContent ?? "").trim();
+  const NONE = /^(None|Nenhuma)$/;
+
+  test("says it is loading, never None, until the entry is named", async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const stubbed = globalThis.fetch;
+    globalThis.fetch = (async (
+      input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.includes("/api/v1/vault")) await gate;
+      return stubbed(input, init);
+    }) as typeof fetch;
+    render(
+      <CredentialPicker value="vault:7" onChange={() => {}} ariaLabel="key" />,
+    );
+    const whileLoading = triggerText();
+    const busy =
+      document
+        .querySelector('[data-testid="credential-picker-pending"]')
+        ?.getAttribute("aria-busy") ?? null;
+    release();
+    await waitFor(() =>
+      expect(screen.queryAllByText("openai-main").length > 0).toBe(true),
+    );
+    expect(NONE.test(whileLoading)).toBe(false);
+    expect(busy).toBe("true");
+    expect(
+      screen.queryAllByText(/deleted|excluída|no credential|sem credencial/)
+        .length,
+    ).toBe(0);
+  });
+
+  test("a failed read says so, never None and never that the credential was deleted", async () => {
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ error: "boom" }), {
+        status: 500,
+        headers: { "content-type": "application/json" },
+      })) as unknown as typeof fetch;
+    render(
+      <CredentialPicker value="vault:7" onChange={() => {}} ariaLabel="key" />,
+    );
+    await waitFor(() => expect(/vault|cofre/.test(triggerText())).toBe(true));
+    expect(NONE.test(triggerText())).toBe(false);
+    expect(screen.queryAllByText(/deleted|excluída/).length).toBe(0);
+  });
+
+  test("an empty field still says None once the vault is read", async () => {
+    render(<CredentialPicker value="" onChange={() => {}} ariaLabel="key" />);
+    await waitFor(() => expect(NONE.test(triggerText())).toBe(true));
+  });
+});

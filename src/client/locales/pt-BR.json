@@ -904,6 +904,8 @@
     "createTitle": "Nova credencial",
     "empty": "Nenhuma credencial ainda",
     "incompatible": "O tipo desta credencial não corresponde a este contexto e pode não funcionar aqui.",
+    "loadFailed": "Não foi possível ler o cofre",
+    "loading": "Carregando…",
     "new": "Nova credencial",
     "none": "Nenhuma",
     "pendingUnfilled": "Esta credencial ainda não tem valor, então nada que a usa consegue rodar.",
@@ -2024,6 +2026,7 @@
       "checkRelevance": "A resposta responde o que o cliente perguntou",
       "checkRelevanceHelp": "Esta verificação confere se a resposta do agente atende à mensagem do cliente. Recusar algo que o agente não atende, dizendo isso, conta como resposta; para separar os dois casos, a verificação lê as instruções do agente.\n\nSe reprovar, ela aplica a ação configurada usando sempre a mensagem pronta. O modelo não cria uma nova resposta.\n\nFica desligada por padrão porque mensagens curtas, como “sim”, podem causar reprovações indevidas. Com outra verificação ativa, cada resposta gera duas consultas ao modelo, cobradas separadamente.",
       "checks": "Checagens",
+      "checkThreshold": "Limiar: {{check}}",
       "checkToxicity": "Toxicidade / abuso",
       "checkUnsafe": "Conteúdo inseguro",
       "classifier": "Quem julga",
@@ -2064,8 +2067,7 @@
       "template": "Mensagem template",
       "templateFallbackHint": "Enviada sempre que nenhuma resposta substituta é escrita: quando o modelo não devolve nenhuma, e sempre que a checagem de relevância for a que disparou, porque aí não há resposta para reescrever.",
       "templateInboundHelp": "Na mensagem do cliente, este texto é SEMPRE o que será enviado.\n\nNão há resposta para reescrever: o texto em análise é a própria mensagem do cliente.\n\nIsso foi medido: uma mensagem mandando informar um preço e uma parceria produziu exatamente isso, palavra por palavra, nas 16 execuções.",
-      "thresholds": "Limiares",
-      "thresholdsHint": "De 0 a 1. A checagem dispara quando a probabilidade que a API devolve chega a este valor. Mais baixo bloqueia mais; mais alto deixa passar mais."
+      "thresholdsHint": "O número ao lado de cada checagem é o limiar dela, de 0 a 1: a checagem dispara quando a probabilidade que a API devolve chega a ele. Mais baixo bloqueia mais; mais alto deixa passar mais."
     },
     "handoffAgentChoice": "A IA escolhe",
     "handoffAgentChoiceDecisions": "Esta transferência está em “A IA escolhe”, e perguntas e regras não têm modelo para escolher: troque para o roteamento do Chatwoot ou para um agente ou time específico.",

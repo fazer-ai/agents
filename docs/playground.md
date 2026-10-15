@@ -35,6 +35,7 @@ The simulated follow-up screens the **output** direction only, exactly as `runAg
 - The relevance question travels in a call of its own, the only input carrying the customer's message, for the reason `splitAnalyses` gives the chat verdict; the two calls go in parallel.
 - Competitor mentions with no names listed asks nothing: a question naming no competitor asks the provider to guess.
 - Every screening that ran reports `scores` in the trace, clean ones included, and the credential checked by the configuration health is the classifier's (`guardrailCredentialRef`).
+- On the Guardrails tab each enabled check shows its threshold beside its own switch, in every direction where it is on (issue #1478); the policy's sits beside the policy. A threshold is one value per check, so a check on in both directions draws two fields that edit and show the same value, keystroke by keystroke (one draft per check in `GuardrailsTab.tsx`), and a value typed out of 0..1 is shown clamped as it is stored.
 
 ### The transcript is not the agent's memory (`playground_turn_notes`)
 

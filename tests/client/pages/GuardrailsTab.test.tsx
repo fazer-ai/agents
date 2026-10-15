@@ -2,6 +2,7 @@
 
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { useState } from "react";
 import { GuardrailsTab } from "@/client/pages/agents/GuardrailsTab";
 import type { GuardrailsRefusals } from "@/client/pages/agents/types";
 import {
@@ -230,5 +231,145 @@ describe("a refusal handed to the guardrails tab lands at its input", () => {
     cleanup();
     renderRefused({ ...NO_REFUSALS, customPolicy: "x" });
     expect(document.querySelectorAll('[aria-invalid="true"]').length).toBe(1);
+  });
+});
+
+// With a classification API judging, each check's threshold sits beside the check's own switch, in
+// the direction the check is on, not in a list in the model card that the operator had to match by
+// name. The value is one per check (stored once, used by both directions), so a check on in both
+// directions draws two fields that must always show the same thing, keystroke by keystroke.
+describe("GuardrailsTab thresholds beside their checks", () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(JSON.stringify({ entries: [] }), {
+      headers: { "content-type": "application/json" },
+    })) as unknown as typeof globalThis.fetch;
+  afterEach(() => cleanup());
+  afterAll(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  let saved: GuardrailsConfig | null = null;
+  function Stateful({ initial }: { initial: GuardrailsConfig }) {
+    const [g, setG] = useState(initial);
+    saved = g;
+    return (
+      <GuardrailsTab
+        guardrails={g}
+        setGuardrails={setG as never}
+        refusals={NO_REFUSALS}
+        dirty={false}
+        saving={false}
+        onSave={() => {}}
+        onDiscard={() => {}}
+      />
+    );
+  }
+  function mount(edit: (c: GuardrailsConfig) => void = () => {}) {
+    const c: GuardrailsConfig = {
+      ...structuredClone(GUARDRAILS_DEFAULTS),
+      enabled: true,
+      classifier: "decisions",
+    };
+    c.input = { ...c.input, enabled: true, action: "template" };
+    c.output = { ...c.output, enabled: true, action: "template" };
+    c.input.checks = { ...c.input.checks, toxicity: true, unsafeContent: true };
+    c.output.checks = {
+      toxicity: true,
+      unsafeContent: false,
+      competitorMentions: false,
+      promptAdherence: true,
+      answerRelevance: false,
+    };
+    edit(c);
+    render(<Stateful initial={c} />);
+  }
+  const fields = (key: string) =>
+    Array.from(
+      document.querySelectorAll<HTMLInputElement>(
+        `[data-testid="gr-threshold-${key}"]`,
+      ),
+    );
+  const inSection = (id: string, key: string) =>
+    document
+      .getElementById(id)
+      ?.querySelectorAll(`[data-testid="gr-threshold-${key}"]`).length ?? 0;
+
+  test("each enabled check has its threshold in its own direction, and the model card has none", () => {
+    mount();
+    expect([
+      inSection("gr-input", "toxicity"),
+      inSection("gr-output", "toxicity"),
+      inSection("gr-input", "unsafeContent"),
+      inSection("gr-output", "unsafeContent"),
+      inSection("gr-output", "promptAdherence"),
+      inSection("gr-input", "promptAdherence"),
+      fields("competitorMentions").length,
+      document
+        .getElementById("gr-model")
+        ?.querySelectorAll('[data-testid^="gr-threshold-"]').length ?? -1,
+    ]).toEqual([1, 1, 1, 0, 1, 0, 0, 0]);
+  });
+
+  test("editing one direction's field shows the same text in the other, and stores one value", () => {
+    mount();
+    const [a, b] = fields("toxicity");
+    fireEvent.change(a as HTMLInputElement, { target: { value: "0.65" } });
+    expect([a?.value, b?.value]).toEqual(["0.65", "0.65"]);
+    fireEvent.change(b as HTMLInputElement, { target: { value: "0.3" } });
+    expect([a?.value, b?.value]).toEqual(["0.3", "0.3"]);
+    expect(saved?.decisions.thresholds.toxicity).toBe(0.3);
+  });
+
+  test("an out-of-range value is shown clamped in both fields, as it is stored", () => {
+    mount();
+    const [a, b] = fields("toxicity");
+    fireEvent.change(a as HTMLInputElement, { target: { value: "1.5" } });
+    expect([a?.value, b?.value, saved?.decisions.thresholds.toxicity]).toEqual([
+      "1",
+      "1",
+      1,
+    ]);
+    fireEvent.change(a as HTMLInputElement, { target: { value: "-0.2" } });
+    expect([a?.value, b?.value, saved?.decisions.thresholds.toxicity]).toEqual([
+      "0",
+      "0",
+      0,
+    ]);
+  });
+
+  test("a value still being typed is kept as typed in both fields, and leaving draws the stored one", () => {
+    mount((c) => {
+      c.decisions.thresholds = { ...c.decisions.thresholds, toxicity: 0.8 };
+    });
+    const [a, b] = fields("toxicity");
+    fireEvent.change(a as HTMLInputElement, { target: { value: "" } });
+    const cleared = [a?.value, b?.value, saved?.decisions.thresholds.toxicity];
+    fireEvent.blur(a as HTMLInputElement);
+    expect([cleared, [a?.value, b?.value]]).toEqual([
+      ["", "", 0.8],
+      ["0.8", "0.8"],
+    ]);
+  });
+
+  test("a check switched off in one direction keeps its field, and its value, in the other", () => {
+    mount((c) => {
+      c.decisions.thresholds = { ...c.decisions.thresholds, toxicity: 0.65 };
+      c.input.checks = { ...c.input.checks, toxicity: false };
+    });
+    expect([
+      inSection("gr-input", "toxicity"),
+      inSection("gr-output", "toxicity"),
+      fields("toxicity")[0]?.value,
+    ]).toEqual([0, 1, "0.65"]);
+  });
+
+  test("with a language model judging there is no threshold anywhere", () => {
+    mount((c) => {
+      c.classifier = "chat";
+    });
+    expect(
+      document.querySelectorAll('[data-testid^="gr-threshold-"]').length,
+    ).toBe(0);
   });
 });

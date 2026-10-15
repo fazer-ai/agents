@@ -82,6 +82,9 @@ export function CredentialPicker({
   const { t } = useTranslation();
   const [entries, setEntries] = useState<VaultEntry[]>([]);
   const [loaded, setLoaded] = useState(false);
+  // The last read of the vault failed: a saved ref is then unknown, not deleted, and the trigger
+  // must not read as "None" (the field is not empty) nor as a credential that was removed.
+  const [loadFailed, setLoadFailed] = useState(false);
   const [showAll, setShowAll] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<CredentialTestState>(null);
@@ -94,8 +97,10 @@ export function CredentialPicker({
   const load = useCallback(async () => {
     try {
       setEntries(await loadVault());
+      setLoadFailed(false);
     } catch {
       // a failed load leaves an empty list; the operator can still create one
+      setLoadFailed(true);
     } finally {
       setLoaded(true);
     }
@@ -179,6 +184,9 @@ export function CredentialPicker({
     entries.find((e) => formatVaultRef(e.id) === canonicalVaultRef(value)) ??
     null;
   const unresolved = !selected && !!value;
+  // A saved ref whose entry cannot be named yet: the vault is still loading, or its read failed.
+  // Neither says the field is empty or the credential is gone, so neither shows "None".
+  const pending = unresolved && (!loaded || loadFailed);
   // The entry is there and its secret is not, which `credential_create` (MCP) and the vault's
   // "add a reference now, fill it later" both produce on purpose. Only the agent's own credentials
   // have an alert for it (config-health), so the picker says it, once, for every referencing field.
@@ -316,7 +324,20 @@ export function CredentialPicker({
                     />
                   )}
                 </>
-              ) : loaded && unresolved ? (
+              ) : pending ? (
+                <span
+                  className="flex-1 truncate text-left text-text-muted"
+                  aria-busy={!loaded || undefined}
+                  data-testid="credential-picker-pending"
+                >
+                  {loaded
+                    ? t(
+                        "credentialPicker.loadFailed",
+                        "Could not read the vault",
+                      )
+                    : t("credentialPicker.loading", "Loading…")}
+                </span>
+              ) : unresolved ? (
                 <span className="flex-1 truncate text-left text-text-muted">
                   {t("credentialPicker.unavailable", "Credential unavailable")}
                 </span>
@@ -483,7 +504,7 @@ export function CredentialPicker({
         </span>
       )}
 
-      {loaded && unresolved && (
+      {loaded && unresolved && !loadFailed && (
         <span className="text-warning text-xs" role="status">
           {t(
             "credentialPicker.unresolvedMissing",

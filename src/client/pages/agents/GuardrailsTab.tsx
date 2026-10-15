@@ -1,5 +1,5 @@
 import { MessageCircle, Send, ShieldCheck, TriangleAlert } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   CredentialPicker,
@@ -65,22 +65,23 @@ const ACTIONS: GuardrailAction[] = [
   "handoff",
 ];
 
-// A threshold field holding its own text while it is typed ("0." is not a number yet), committed to
-// the form on each valid value and drawn again from the form when it leaves, so a clamped value
-// (1.5 becomes 1) shows what will be saved.
+// A threshold field. Its text is the tab's draft for that check, shared by every field drawing the
+// same threshold (a check on in both directions shows two), so typing in one shows in the other
+// keystroke by keystroke: "0." is kept as typed, a value out of 0..1 is shown clamped as soon as it is
+// typed, and leaving the field draws it again from the form, so what is shown is what will be saved.
 function ThresholdInput({
-  value,
-  onCommit,
+  text,
+  onType,
+  onLeave,
   label,
   testId,
 }: {
-  value: number;
-  onCommit: (raw: string) => void;
+  text: string;
+  onType: (raw: string) => void;
+  onLeave: () => void;
   label: string;
   testId: string;
 }) {
-  const [text, setText] = useState(String(value));
-  useEffect(() => setText(String(value)), [value]);
   return (
     <Input
       type="number"
@@ -88,11 +89,8 @@ function ThresholdInput({
       max={1}
       step={0.05}
       value={text}
-      onChange={(e) => {
-        setText(e.target.value);
-        onCommit(e.target.value);
-      }}
-      onBlur={() => setText(String(value))}
+      onChange={(e) => onType(e.target.value)}
+      onBlur={onLeave}
       aria-label={label}
       data-testid={testId}
     />
@@ -170,20 +168,32 @@ export function GuardrailsTab({
     }));
   const setDecisions = (patch: Partial<GuardrailsConfig["decisions"]>) =>
     setG((s) => ({ ...s, decisions: { ...s.decisions, ...patch } }));
-  const setThreshold = (key: GuardrailThresholdKey, raw: string) => {
+  // Typed text per threshold, while a field for it is being edited: one draft per check, so the
+  // check's field in Input and its field in Output always show the same text.
+  const [thresholdDrafts, setThresholdDrafts] = useState<
+    Partial<Record<GuardrailThresholdKey, string>>
+  >({});
+  const typeThreshold = (key: GuardrailThresholdKey, raw: string) => {
     const n = Number(raw);
-    if (raw.trim() === "" || !Number.isFinite(n)) return;
+    if (raw.trim() === "" || !Number.isFinite(n)) {
+      setThresholdDrafts((d) => ({ ...d, [key]: raw }));
+      return;
+    }
+    const clamped = Math.min(Math.max(n, 0), 1);
+    setThresholdDrafts((d) => ({
+      ...d,
+      [key]: clamped === n ? raw : String(clamped),
+    }));
     setG((s) => ({
       ...s,
       decisions: {
         ...s.decisions,
-        thresholds: {
-          ...s.decisions.thresholds,
-          [key]: Math.min(Math.max(n, 0), 1),
-        },
+        thresholds: { ...s.decisions.thresholds, [key]: clamped },
       },
     }));
   };
+  const leaveThreshold = (key: GuardrailThresholdKey) =>
+    setThresholdDrafts(({ [key]: _left, ...rest }) => rest);
   const checkLabel = (k: keyof GuardrailChecks) =>
     ({
       toxicity: t("editor.guardrails.checkToxicity", "Toxicity / abuse"),
@@ -201,28 +211,11 @@ export function GuardrailsTab({
         "The reply answers what the customer asked",
       ),
     })[k];
-  // The checks some enabled direction asks, each with one threshold: the threshold belongs to the
-  // check, not to the direction, so it is drawn once.
-  const thresholdChecks = (
-    [
-      "toxicity",
-      "unsafeContent",
-      "competitorMentions",
-      "promptAdherence",
-      "answerRelevance",
-    ] as const
-  ).filter(
-    (k) =>
-      (g.input.enabled &&
-        k !== "promptAdherence" &&
-        k !== "answerRelevance" &&
-        g.input.checks[k]) ||
-      (g.output.enabled && g.output.checks[k]),
-  );
   const thresholdInput = (key: GuardrailThresholdKey, label: string) => (
     <ThresholdInput
-      value={g.decisions.thresholds[key]}
-      onCommit={(raw) => setThreshold(key, raw)}
+      text={thresholdDrafts[key] ?? String(g.decisions.thresholds[key])}
+      onType={(raw) => typeThreshold(key, raw)}
+      onLeave={() => leaveThreshold(key)}
       label={label}
       testId={`gr-threshold-${key}`}
     />
@@ -246,6 +239,39 @@ export function GuardrailsTab({
               "Send nothing (leave the customer without a reply)",
             );
 
+  // A check's switch, and beside it the check's threshold when a classification API judges and the
+  // check is on in this direction. The threshold belongs to the check, not to the direction: a check
+  // on in both directions draws the same value twice, and editing either edits both.
+  const checkRow = (
+    dir: "input" | "output",
+    key: keyof GuardrailChecks,
+    help?: string,
+  ) => {
+    const on = g[dir].checks[key];
+    return (
+      <div className="flex items-center gap-3">
+        <div className="min-w-0 grow">
+          <SwitchField
+            checked={on}
+            onCheckedChange={(v) => setCheck(dir, key, v)}
+            label={checkLabel(key)}
+            help={help}
+          />
+        </div>
+        {byClassifier && on && (
+          <div className="w-24 shrink-0">
+            {thresholdInput(
+              key,
+              t("editor.guardrails.checkThreshold", "Threshold: {{check}}", {
+                check: checkLabel(key),
+              }),
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   const renderDirection = (dir: "input" | "output") => {
     const d = g[dir];
     return (
@@ -257,57 +283,33 @@ export function GuardrailsTab({
         />
         {d.enabled && (
           <>
-            <FormField label={t("editor.guardrails.checks", "Checks")} group>
+            <FormField
+              label={t("editor.guardrails.checks", "Checks")}
+              description={
+                byClassifier
+                  ? t(
+                      "editor.guardrails.thresholdsHint",
+                      "The number beside each check is its threshold, from 0 to 1: the check trips when the API's probability reaches it. Lower blocks more; higher lets more through.",
+                    )
+                  : undefined
+              }
+              group
+            >
               <div className="flex flex-col gap-2">
-                <SwitchField
-                  checked={d.checks.toxicity}
-                  onCheckedChange={(v) => setCheck(dir, "toxicity", v)}
-                  label={t(
-                    "editor.guardrails.checkToxicity",
-                    "Toxicity / abuse",
-                  )}
-                />
-                <SwitchField
-                  checked={d.checks.unsafeContent}
-                  onCheckedChange={(v) => setCheck(dir, "unsafeContent", v)}
-                  label={t("editor.guardrails.checkUnsafe", "Unsafe content")}
-                />
-                <SwitchField
-                  checked={d.checks.competitorMentions}
-                  onCheckedChange={(v) =>
-                    setCheck(dir, "competitorMentions", v)
-                  }
-                  label={t(
-                    "editor.guardrails.checkCompetitors",
-                    "Competitor mentions",
-                  )}
-                />
+                {checkRow(dir, "toxicity")}
+                {checkRow(dir, "unsafeContent")}
+                {checkRow(dir, "competitorMentions")}
                 {dir === "output" && (
                   <>
-                    <SwitchField
-                      checked={d.checks.promptAdherence}
-                      onCheckedChange={(v) =>
-                        setCheck(dir, "promptAdherence", v)
-                      }
-                      label={t(
-                        "editor.guardrails.checkAdherence",
-                        "Adherence to the agent's instructions",
-                      )}
-                    />
-                    <SwitchField
-                      checked={d.checks.answerRelevance}
-                      onCheckedChange={(v) =>
-                        setCheck(dir, "answerRelevance", v)
-                      }
-                      label={t(
-                        "editor.guardrails.checkRelevance",
-                        "The reply answers what the customer asked",
-                      )}
-                      help={t(
+                    {checkRow(dir, "promptAdherence")}
+                    {checkRow(
+                      dir,
+                      "answerRelevance",
+                      t(
                         "editor.guardrails.checkRelevanceHelp",
                         "This check determines whether the agent's reply addresses the customer's message.\n\nIf it fails, the configured action always uses the prepared message. The model does not write a replacement reply.\n\nIt is off by default because short messages such as “yes” can cause false failures. When another check is active, each reply makes two separately billed model requests.",
-                      )}
-                    />
+                      ),
+                    )}
                   </>
                 )}
               </div>
@@ -572,25 +574,6 @@ export function GuardrailsTab({
                     placeholder={DEFAULT_DECISION_MODEL[g.decisions.provider]}
                   />
                 </FormField>
-                {thresholdChecks.length > 0 && (
-                  <FormField
-                    label={t("editor.guardrails.thresholds", "Thresholds")}
-                    description={t(
-                      "editor.guardrails.thresholdsHint",
-                      "From 0 to 1. A check trips when the API's probability for it reaches this value. Lower blocks more; higher lets more through.",
-                    )}
-                    group
-                  >
-                    <div className="grid grid-cols-[1fr_6rem] items-center gap-2">
-                      {thresholdChecks.map((k) => (
-                        <div key={k} className="contents text-sm">
-                          <span>{checkLabel(k)}</span>
-                          {thresholdInput(k, checkLabel(k))}
-                        </div>
-                      ))}
-                    </div>
-                  </FormField>
-                )}
               </>
             )}
             {g.enabled && !byClassifier && (

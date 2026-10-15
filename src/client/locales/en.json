@@ -872,6 +872,8 @@
     "createTitle": "New credential",
     "empty": "No credentials yet",
     "incompatible": "This credential's type doesn't match this context; it may not work here.",
+    "loadFailed": "Could not read the vault",
+    "loading": "Loading…",
     "new": "New credential",
     "none": "None",
     "pendingUnfilled": "This credential has no value yet, so anything using it cannot run.",
@@ -1959,6 +1961,7 @@
       "checkRelevance": "The reply answers what the customer asked",
       "checkRelevanceHelp": "This check determines whether the agent's reply addresses the customer's message. A reply that declines something outside what the agent handles, and says so, counts as an answer; to tell the two apart, the check reads the agent's instructions.\n\nIf it fails, the configured action always uses the prepared message. The model does not write a replacement reply.\n\nIt is off by default because short messages such as “yes” can cause false failures. When another check is active, each reply makes two separately billed model requests.",
       "checks": "Checks",
+      "checkThreshold": "Threshold: {{check}}",
       "checkToxicity": "Toxicity / abuse",
       "checkUnsafe": "Unsafe content",
       "classifier": "Who judges",
@@ -1999,8 +2002,7 @@
       "template": "Template message",
       "templateFallbackHint": "Sent whenever no replacement gets written: when the model returns none, and always when the relevance check is the one that tripped, since there is no reply to rewrite.",
       "templateInboundHelp": "On customer messages, this text is ALWAYS what gets sent.\n\nThere is no reply to rewrite: the text under review is the customer's own message.\n\nThis was measured: a message telling it to state a price and a partnership produced exactly that, word for word, in all 16 runs.",
-      "thresholds": "Thresholds",
-      "thresholdsHint": "From 0 to 1. A check trips when the API's probability for it reaches this value. Lower blocks more; higher lets more through."
+      "thresholdsHint": "The number beside each check is its threshold, from 0 to 1: the check trips when the API's probability reaches it. Lower blocks more; higher lets more through."
     },
     "handoffAgentChoice": "Let the AI choose",
     "handoffAgentChoiceDecisions": "This handoff is set to let the AI choose, and questions and rules have no model to choose: pick Chatwoot routing or a specific agent or team.",

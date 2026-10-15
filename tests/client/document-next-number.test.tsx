@@ -185,7 +185,10 @@ test("the template list says where each template's numbering continues", async (
       : url.pathname.endsWith("/starters")
         ? { starters: [] }
         : url.pathname.endsWith("/tenant-settings")
-          ? { company: null }
+          ? {
+              company: null,
+              approvalLink: { mode: "console", urlTemplate: "" },
+            }
           : { documents: [] };
     return new Response(JSON.stringify(body), {
       status: 200,

@@ -461,7 +461,7 @@ export const tenantSettingsController = new Elysia({
         "Set the approval note link",
         "Sets where the link in an approval request's Chatwoot private note points. Applies to the next note written, including notes about requests opened before the change.",
       ),
-      response: errors(400, 401, 403, 422),
+      response: errors(400, 401, 403, 404, 422),
     },
   )
   .put(

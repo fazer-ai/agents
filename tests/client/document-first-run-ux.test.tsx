@@ -152,7 +152,10 @@ const answer = async (input: RequestInfo | URL, init?: RequestInit) => {
     return json({ tenants: [{ id: "1", name: "Acme Fleet Co" }] });
   }
   if (url.pathname.endsWith("/tenant-settings")) {
-    return json({ company: storedCompany });
+    return json({
+      company: storedCompany,
+      approvalLink: { mode: "console", urlTemplate: "" },
+    });
   }
   return json({ documents: [] });
 };

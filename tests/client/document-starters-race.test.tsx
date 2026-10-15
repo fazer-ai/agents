@@ -15,6 +15,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { fetchTracker } from "@/tests/utils/fetch-settle";
@@ -137,6 +138,7 @@ const answer = async (input: RequestInfo | URL, init?: RequestInit) => {
   }
   if (url.pathname.endsWith("/tenant-settings")) {
     return json({
+      approvalLink: { mode: "console", urlTemplate: "" },
       company: {
         name: storedCompanyName,
         document: "",
@@ -286,7 +288,12 @@ describe("a refresh does not undo a company save it overlapped", () => {
 
     // The operator saves into that window.
     fireEvent.change(nameInput, { target: { value: "ACME Nova" } });
-    const save = (await screen.findAllByText(/^(Save|Salvar)$/))[0];
+    // NOTE: the letterhead modal's Save, not the approval link card's on the panel behind it.
+    const save = (
+      await within(await screen.findByRole("dialog")).findAllByText(
+        /^(Save|Salvar)$/,
+      )
+    )[0];
     if (!save) throw new Error("no save button");
     fireEvent.click(save);
     await waitFor(() => {

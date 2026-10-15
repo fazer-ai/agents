@@ -39,10 +39,11 @@ export function ApprovalLinkCard() {
     setFailed(false);
     try {
       const { data, error } = await api.api.v1["tenant-settings"].get();
-      if (error || !data) throw error ?? new Error("no data");
-      setSaved(data.approvalLink);
-      setMode(data.approvalLink.mode);
-      setTemplate(data.approvalLink.urlTemplate);
+      const link = data?.approvalLink;
+      if (error || !link) throw error ?? new Error("no approval link");
+      setSaved(link);
+      setMode(link.mode);
+      setTemplate(link.urlTemplate);
     } catch {
       setFailed(true);
     }

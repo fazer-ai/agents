@@ -20,6 +20,8 @@ export const OUTBOUND_EVENTS = [
   "kanban.card_moved",
   "llm.usage",
   "tenant.created",
+  "document.approval_requested",
+  "document.approval_decided",
   "heartbeat",
 ] as const;
 

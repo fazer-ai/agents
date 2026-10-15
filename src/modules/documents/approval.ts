@@ -16,6 +16,12 @@ import {
   registerJobHandler,
   wakeScheduler,
 } from "@/modules/scheduler/worker";
+import {
+  announceApprovalEvent,
+  announceApprovalEvents,
+  decidedData,
+  requestedData,
+} from "./approval-events";
 import { type DocumentStyle, parseDocumentStyle } from "./blocks";
 import { formatDate, formatDocumentNumber } from "./format";
 import {
@@ -304,6 +310,12 @@ export async function createApprovalRequest(params: {
       rearm: "new-work",
       payload: { requestId: String(row.id), phase: "opened" },
     });
+    await announceApprovalEvent(
+      db,
+      tenantId,
+      "document.approval_requested",
+      requestedData(row),
+    );
     await params.onCreate?.(db, row.id);
     return row;
   }).catch((err: unknown) => {
@@ -822,6 +834,23 @@ export async function approveDocumentRequest(params: {
     if (link.count === 1) {
       await armApprovalOutcome(db, ctx.tenantId as bigint, requestId, now);
       armed = true;
+      const decided = await db.documentApprovalRequest.findUniqueOrThrow({
+        where: { id: requestId },
+        select: { conversationId: true, reviewerUserId: true, decidedAt: true },
+      });
+      await announceApprovalEvent(
+        db,
+        ctx.tenantId as bigint,
+        "document.approval_decided",
+        decidedData({
+          id: requestId,
+          conversationId: decided.conversationId,
+          status: "approved",
+          reviewerUserId: decided.reviewerUserId,
+          issuedDocumentId: issued.id,
+          decidedAt: decided.decidedAt ?? now,
+        }),
+      );
     }
     return toDtoNamed(
       db,
@@ -863,6 +892,23 @@ export async function rejectDocumentRequest(params: {
     if (r.count === 1) {
       await auditDecision(db, ctx, requestId, "REJECTED");
       await armApprovalOutcome(db, ctx.tenantId as bigint, requestId, now);
+      const decided = await db.documentApprovalRequest.findUniqueOrThrow({
+        where: { id: requestId },
+        select: { conversationId: true },
+      });
+      await announceApprovalEvent(
+        db,
+        ctx.tenantId as bigint,
+        "document.approval_decided",
+        decidedData({
+          id: requestId,
+          conversationId: decided.conversationId,
+          status: "rejected",
+          reviewerUserId: params.reviewerUserId ?? null,
+          issuedDocumentId: null,
+          decidedAt: now,
+        }),
+      );
     }
     return r;
   });
@@ -987,13 +1033,15 @@ export async function expireDueApprovalRequests(
   base: PrismaClient = basePrisma,
 ): Promise<bigint[]> {
   const rows = await runScopedOn(base, sysCtx(tenantId), async (db) => {
-    const expired = await db.$queryRaw<{ id: bigint }[]>`
+    const expired = await db.$queryRaw<
+      { id: bigint; conversation_id: bigint | null }[]
+    >`
       UPDATE "document_approval_requests"
          SET "status" = 'EXPIRED', "decided_at" = ${now}, "updated_at" = ${now}
        WHERE "tenant_id" = ${tenantId}
          AND "status" = 'PENDING'
          AND "expires_at" <= ${now}
-      RETURNING "id"
+      RETURNING "id", "conversation_id"
     `;
     // One statement for the whole backlog: a row per request would be N round trips inside the
     // five-second transaction, and running past it rolls back the expiry along with every outcome.
@@ -1007,6 +1055,21 @@ export async function expireDueApprovalRequests(
         payload: { requestId: String(r.id) },
       })),
     });
+    await announceApprovalEvents(
+      db,
+      tenantId,
+      "document.approval_decided",
+      expired.map((r) =>
+        decidedData({
+          id: r.id,
+          conversationId: r.conversation_id,
+          status: "expired",
+          reviewerUserId: null,
+          issuedDocumentId: null,
+          decidedAt: now,
+        }),
+      ),
+    );
     return expired;
   });
   return rows.map((r) => r.id);

@@ -86,7 +86,11 @@ Three parts: the **closed event set + envelope** (`events.ts`), the deterministi
 | `kanban.card_moved`            | `graph/tools/native.ts` (`kanban_move_card`)      | `card_id, to_step, conversation_id`                                                      |
 | `llm.usage`                    | `graph/usage.ts` (`defaultUsagePersist`)          | `agent_id, conversation_id, turn_id, model, node, prompt_tokens, completion_tokens`      |
 | `tenant.created`               | `api/v1/tenants.service.ts` (`createTenant`)      | `tenant_id, slug`                                                                        |
+| `document.approval_requested`  | `documents/approval.ts` (`createApprovalRequest`) | `request_id, template_id, conversation_id, expires_at, status` (`pending`)               |
+| `document.approval_decided`    | `documents/approval.ts`: approval (when the issued document is linked to the request, once), rejection, and the expiry sweep (one event per expired request) | `request_id, conversation_id, status, reviewer_user_id, issued_document_id, decided_at` (`status` is `approved`, `rejected` or `expired`) |
 | `heartbeat`                    | `webhooks/outbound/heartbeat.ts` (periodic)       | `at, version`                                                                            |
+
+A new event follows what these already do: the name is `entity.verb_past` in snake_case; every id is a string, and a missing one is an explicit `null`, never an absent key; `conversation_id` is our `Conversation` row id (`kanban.card_moved` is the exception, carrying the Chatwoot display id); statuses are lowercase; and free text never goes out, even when it looks harmless (a reviewer's note, a rejection reason, a model's rationale). The document approval events are emitted inside the transaction that makes the change, under a savepoint, so a failed fan-out cannot roll the decision back; the reviewer's note and the document's values stay out.
 
 Every emission is wrapped by `buildOutboundEnvelope(tenantId, event, data)` into a **versioned envelope** stored verbatim as the delivery payload and POSTed as-is by the worker:
 

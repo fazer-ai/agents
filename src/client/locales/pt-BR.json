@@ -4356,6 +4356,8 @@
       "conversationCreated": "Conversa criada",
       "conversationHandoff": "Transferida para um humano",
       "conversationStatusChanged": "Status da conversa alterado",
+      "documentApprovalDecided": "Aprovação de documento decidida",
+      "documentApprovalRequested": "Aprovação de documento pedida",
       "heartbeat": "Heartbeat (sinal periódico)",
       "kanbanCardMoved": "Cartão do Kanban movido",
       "llmUsage": "Uso de LLM reportado",

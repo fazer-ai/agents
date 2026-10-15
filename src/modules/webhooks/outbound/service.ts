@@ -38,6 +38,36 @@ export async function emitOutbound(
   return subs.length;
 }
 
+// One event per item, for a statement that changes many rows at once: one subscription read and one
+// insert, where calling emitOutbound per item would be two round trips each inside the caller's
+// transaction.
+export async function emitOutboundMany(
+  db: ScopedDb,
+  tenantId: bigint,
+  event: OutboundEvent,
+  items: readonly Record<string, unknown>[],
+): Promise<number> {
+  if (items.length === 0) return 0;
+  const subs = await db.webhookSubscription.findMany({
+    where: { enabled: true, events: { has: event } },
+    select: { id: true },
+  });
+  if (subs.length === 0) return 0;
+  await db.outboundWebhookDelivery.createMany({
+    data: items.flatMap((data) => {
+      const envelope = buildOutboundEnvelope(tenantId, event, data);
+      return subs.map((sub) => ({
+        tenantId,
+        subscriptionId: sub.id,
+        event,
+        payload: envelope as unknown as Prisma.InputJsonValue,
+        status: "PENDING" as const,
+      }));
+    }),
+  });
+  return subs.length * items.length;
+}
+
 // Full-jitter exponential backoff (capped). attempt is 1-based.
 export function nextBackoffMs(
   attempt: number,

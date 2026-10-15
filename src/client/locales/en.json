@@ -4238,6 +4238,8 @@
       "conversationCreated": "Conversation created",
       "conversationHandoff": "Handed off to a human",
       "conversationStatusChanged": "Conversation status changed",
+      "documentApprovalDecided": "Document approval decided",
+      "documentApprovalRequested": "Document approval requested",
       "heartbeat": "Heartbeat (periodic signal)",
       "kanbanCardMoved": "Kanban card moved",
       "llmUsage": "LLM usage reported",

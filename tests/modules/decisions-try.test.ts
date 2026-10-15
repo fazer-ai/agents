@@ -530,6 +530,10 @@ describe.skipIf(!dbUp)("testing a decisions agent on a conversation", () => {
       { rule: 0, outcome: "refused", fence: "protected_label" },
       { rule: 1, outcome: "decided", fence: "protected_label", partial: true },
     ]);
+    // A label rule that names nothing writes nothing.
+    await setSettings(monitoring([labels([])]));
+    ({ tick } = await runTest(classifier(yes).fetchImpl));
+    expect(tick.actions).toMatchObject([{ rule: 0, outcome: "no_effect" }]);
     await setSettings({
       ...monitoring([labels(["inventada"])]),
       setLabels: { allowed: ["reembolso"] },

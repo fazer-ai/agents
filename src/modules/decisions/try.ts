@@ -412,6 +412,14 @@ async function withFences(
           : state.conversationAttributes;
       bag[args.key] = args.value;
     }
+    if (
+      a.tool === "set_labels" &&
+      strings(args.add).every((l) => l.trim() === "") &&
+      strings(args.remove).every((l) => l.trim() === "")
+    ) {
+      // Nothing to add or remove: the tool reports `no_effect` before any fence.
+      return { ...a, outcome: "no_effect" };
+    }
     if (a.tool === "set_labels") {
       // The fences hold on every scope. The conversation's labels were read for the evidence and the
       // contact's are read above; a card's are not. Which labels a fence refuses does not depend on

@@ -545,7 +545,7 @@ export async function tenantSettingsUpdate(
             mode: args.approval_link.mode,
             urlTemplate: args.approval_link.url_template,
           };
-    // NOTE: checked before any block is written, with the saved template when the call keeps it.
+    // Checked before any block is written, with the saved template when the call keeps it.
     const approvalLinkProposed =
       approvalLink === undefined
         ? undefined

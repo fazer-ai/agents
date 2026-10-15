@@ -158,9 +158,10 @@ describe.skipIf(!dbUp)("the approval link setting", () => {
       where: { tenantId, action: "tenant_settings.approval_link_set" },
       select: { before: true, after: true },
     });
+    // The trail keeps the host, never a path or query that may carry a token.
     expect(rows[0]).toEqual({
       before: { mode: "console", urlTemplate: "" },
-      after: custom,
+      after: { mode: "custom", urlTemplate: "https://app.example.com/…" },
     });
     expect(rows).toHaveLength(3);
   });

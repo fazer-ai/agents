@@ -10,6 +10,7 @@ import {
   type TranslatedParam,
 } from "@/lib/errors";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
+import { redactEndpoint } from "@/modules/audit/projection";
 import { auditMutation } from "@/modules/audit/service";
 import {
   type ApprovalLinkSettings,
@@ -486,7 +487,14 @@ export async function updateApprovalLink(
     {
       action: "tenant_settings.approval_link_set",
       target: "tenant_settings:approvalLink",
-      project: sides(parseApprovalLinkSettings),
+      // NOTE: the template's host only: a path or query may carry a token, and the trail keeps it.
+      project: sides((raw) => {
+        const b = parseApprovalLinkSettings(raw);
+        return {
+          mode: b.mode,
+          urlTemplate: b.urlTemplate ? redactEndpoint(b.urlTemplate) : "",
+        };
+      }),
     },
     (raw) =>
       normalizeApprovalLink({

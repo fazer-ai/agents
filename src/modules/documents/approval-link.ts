@@ -71,6 +71,7 @@ function isLinkTemplate(template: string): boolean {
   if (!template.includes(APPROVAL_LINK_ID_TOKEN)) return false;
   if (!/^https?:\/\/[^/]/i.test(template)) return false;
   // NOTE: `new URL` drops tabs and newlines, and the note would carry them and break the link.
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: refusing control chars is the point.
   if (/[\s\u0000-\u001f\u007f]/.test(template)) return false;
   try {
     const url = new URL(template.replaceAll(APPROVAL_LINK_ID_TOKEN, "1"));

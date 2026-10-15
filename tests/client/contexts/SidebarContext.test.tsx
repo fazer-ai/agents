@@ -10,6 +10,7 @@ import {
   SidebarProvider,
   useSidebar,
 } from "@/client/contexts/SidebarContext";
+import { until } from "@/tests/utils/poll";
 
 let hookValue: ReturnType<typeof useSidebar> | null = null;
 let navigateFn: ReturnType<typeof useNavigate> | null = null;
@@ -99,8 +100,10 @@ describe("SidebarContext", () => {
     expect(hookValue?.width).toBe(300);
 
     // NOTE: persistence is debounced (~150ms) so only the final value lands
-    // in storage; wait past the window before asserting.
-    await new Promise((resolve) => setTimeout(resolve, 200));
+    // in storage; wait for the write itself rather than past a guessed window.
+    await until("the width persisted", () =>
+      localStorage.getItem("@app:sidebar-width"),
+    );
     expect(localStorage.getItem("@app:sidebar-width")).toBe(String(300));
   });
 

@@ -13,6 +13,7 @@ import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { ToastProvider } from "@/client/components";
 import * as TenantEventsModule from "@/client/hooks/useTenantEvents";
+import { fetchTracker } from "@/tests/utils/fetch-settle";
 import { withI18n } from "@/tests/utils/i18n";
 import { stubExports } from "@/tests/utils/module-stub";
 
@@ -30,6 +31,9 @@ type Handlers = {
     lastEventAt?: string;
   }) => void;
 };
+// Every answer released so far is delivered and read before a "nothing happened" assertion.
+const fetches = fetchTracker();
+
 let handlers: Handlers = {};
 stubExports(TenantEventsModule, {
   useTenantEvents: (h: Handlers) => {
@@ -67,7 +71,7 @@ function json(body: unknown): Response {
 }
 
 beforeAll(() => {
-  globalThis.fetch = (async (input: unknown) => {
+  const answer = async (input: unknown) => {
     const url = new URL(
       String(typeof input === "string" ? input : (input as Request).url),
       "http://localhost",
@@ -79,7 +83,9 @@ beforeAll(() => {
       return json({ instance: "i", conversations: [ROW], nextCursor: null });
     }
     return json({});
-  }) as unknown as typeof globalThis.fetch;
+  };
+  globalThis.fetch = ((input: unknown) =>
+    fetches.track(answer(input))) as unknown as typeof fetch;
 });
 afterAll(() => {
   globalThis.fetch = realFetch;
@@ -137,8 +143,8 @@ describe("a live change on a list narrowed to an outcome", () => {
     });
     const before = listCalls;
     await reopen();
-    // Give a refetch, were one coming, the time to be asked.
-    await new Promise((r) => setTimeout(r, 50));
+    // Every request the live change started, a deferred one included, is asked and answered.
+    await fetches.settled();
     expect(listCalls).toBe(before);
   });
 });

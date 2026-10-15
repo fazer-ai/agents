@@ -9,6 +9,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
+import { fetchTracker } from "@/tests/utils/fetch-settle";
 
 // The guard, where it actually lives. `company-save-session.test.tsx` proves the card reports which
 // opening a save belongs to, against a harness parent; this drives the real `DocumentsPanel`. The
@@ -19,6 +20,9 @@ import { MemoryRouter } from "react-router";
 (globalThis as { happyDOM?: { setURL(u: string): void } }).happyDOM?.setURL(
   "http://localhost/recursos/documentos",
 );
+
+// Every answer released so far is delivered and read before a "nothing happened" assertion.
+const fetches = fetchTracker();
 
 const { DocumentsPanel } = await import(
   "@/client/pages/resources/documents/DocumentsPanel"
@@ -46,7 +50,7 @@ const json = (body: unknown) =>
 let releasePut: () => void = () => {};
 let puts = 0;
 
-globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+const answer = async (input: RequestInfo | URL, init?: RequestInit) => {
   const url = new URL(String(input), "http://localhost");
   const method = (init?.method ?? "GET").toUpperCase();
   if (method === "PUT" && url.pathname.endsWith("/tenant-settings/company")) {
@@ -65,7 +69,9 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   if (url.pathname.endsWith("/tenant-settings"))
     return json({ company: EMPTY_COMPANY });
   return json({});
-}) as unknown as typeof fetch;
+};
+globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) =>
+  fetches.track(answer(input, init))) as unknown as typeof fetch;
 
 afterEach(cleanup);
 afterAll(() => {
@@ -128,7 +134,7 @@ test("a letterhead save from a previous opening does not close the reopened edit
   // Reopened: a NEW card, a new generation, and the first card's request still in flight.
   await open();
   releasePut();
-  await new Promise((r) => setTimeout(r, 60));
+  await fetches.settled();
 
   // Still on screen. Without the guard the older save announces itself and the panel closes the
   // editor the operator is looking at.

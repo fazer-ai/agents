@@ -9,6 +9,7 @@ import {
   test,
 } from "bun:test";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -342,7 +343,8 @@ describe("TenantDeepLink", () => {
     userTenantId = "10";
     userTenants = undefined;
     renderAt("?switchTenant=20");
-    await new Promise((r) => setTimeout(r, 50));
+    // The gate decides in render; flushing the effects is every chance it gets before the list.
+    await act(async () => {});
     expect(shows("panel")).toBe(false);
     expect(reloads.length).toBe(0);
     expect(seenSearch).toBe("?switchTenant=20");
@@ -370,7 +372,8 @@ describe("TenantDeepLink", () => {
     userTenantId = "10";
     userTenants = undefined;
     const view = renderAdminRouteAt("?switchTenant=20");
-    await new Promise((r) => setTimeout(r, 50));
+    // The gate decides in render; flushing the effects is every chance it gets before the list.
+    await act(async () => {});
     expect(shows("conversations")).toBe(false);
     expect(reloads.length).toBe(0);
     userTenants = [
@@ -410,7 +413,8 @@ describe("TenantDeepLink", () => {
     userTenantId = "10";
     userTenants = undefined;
     const view = renderAdminRouteAt("");
-    await new Promise((r) => setTimeout(r, 50));
+    // The gate decides in render; flushing the effects is every chance it gets before the list.
+    await act(async () => {});
     expect(shows("conversations")).toBe(false);
     userTenants = [{ id: "10", name: "A", role: "AGENT" }];
     view.rerender(

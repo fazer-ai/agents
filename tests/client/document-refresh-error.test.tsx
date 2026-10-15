@@ -10,6 +10,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
+import { fetchTracker } from "@/tests/utils/fetch-settle";
 
 // The panel reloads itself often (after a template save or delete, a starter, a language switch)
 // while the company profile may be an OPEN FORM being typed into. A failed refresh must not take
@@ -24,6 +25,9 @@ import { MemoryRouter } from "react-router";
 (globalThis as { happyDOM?: { setURL(u: string): void } }).happyDOM?.setURL(
   "http://localhost/recursos/documentos",
 );
+
+// Every answer released so far is delivered and read before a "nothing happened" assertion.
+const fetches = fetchTracker();
 
 const { default: i18n } = await import("@/client/lib/i18n");
 const { DocumentsPanel } = await import(
@@ -44,7 +48,7 @@ let failSettings = false;
 // screen can only mean it travelled from the response.
 let settingsRefusal = "boom";
 
-globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+const answer = async (input: RequestInfo | URL, init?: RequestInit) => {
   const url = new URL(
     typeof input === "string"
       ? input
@@ -82,7 +86,9 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     });
   }
   return json({ documents: [] });
-}) as unknown as typeof fetch;
+};
+globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) =>
+  fetches.track(answer(input, init))) as unknown as typeof fetch;
 
 beforeEach(() => {
   failSettings = false;
@@ -119,12 +125,8 @@ test("a failed refresh keeps the company form and what was typed into it", async
   await act(async () => {
     await i18n.changeLanguage("pt-BR");
   });
-  await waitFor(() => {
-    expect(screen.queryAllByText(/Retry|Tentar novamente/).length >= 0).toBe(
-      true,
-    );
-  });
-  await new Promise((r) => setTimeout(r, 60));
+  // The failing refresh is answered and the panel has handled it.
+  await fetches.settled();
 
   // The form is still there, still holding the edit.
   const boxes = await screen.findAllByRole("textbox");

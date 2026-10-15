@@ -10,12 +10,16 @@ import {
 } from "@testing-library/react";
 import { useRef, useState } from "react";
 import { MemoryRouter } from "react-router";
+import { fetchTracker } from "@/tests/utils/fetch-settle";
 
 // The parent CLOSES the letterhead modal on `onSaved`, which turns two timings into lost work:
 // the operator keeps typing while the request is out (`afterCompanySave` keeps those keystrokes
 // unsaved, and announcing the save would close the editor and throw them away), or the operator
 // closes and reopens the editor while the request is out (the older response would close the
 // modal they are typing into now).
+
+// Every answer released so far is delivered and read before a "nothing happened" assertion.
+const fetches = fetchTracker();
 
 const { CompanyProfileCard } = await import(
   "@/client/pages/resources/documents/CompanyProfileCard"
@@ -72,7 +76,7 @@ function heldFetch() {
     release = r;
   });
   let calls = 0;
-  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+  const answer = async (_input: RequestInfo | URL, init?: RequestInit) => {
     if ((init?.method ?? "GET").toUpperCase() !== "PUT") {
       return new Response("{}", {
         status: 200,
@@ -85,7 +89,9 @@ function heldFetch() {
       status: 200,
       headers: { "Content-Type": "application/json" },
     });
-  }) as typeof fetch;
+  };
+  globalThis.fetch = ((_input: RequestInfo | URL, init?: RequestInit) =>
+    fetches.track(answer(_input, init))) as unknown as typeof fetch;
   return { release: () => release?.(null), calls: () => calls };
 }
 
@@ -103,7 +109,7 @@ test("a save does not announce itself over edits made while it was in flight", a
   // The operator keeps typing into the still-open form.
   fireEvent.change(nameField(), { target: { value: "ACME Novíssima" } });
   held.release();
-  await new Promise((r) => setTimeout(r, 50));
+  await fetches.settled();
 
   // Not announced, so the modal stays open — and the newer text is still on screen, unsaved.
   expect(saved).toBe(0);
@@ -232,7 +238,7 @@ test("a save from a card that has since been unmounted does not close the new on
   fireEvent.click(screen.getByTestId("close"));
   fireEvent.click(screen.getByTestId("reopen"));
   held.release();
-  await new Promise((r) => setTimeout(r, 50));
+  await fetches.settled();
 
   expect(closed).toBe(0);
 });

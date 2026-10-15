@@ -17,6 +17,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
+import { fetchTracker } from "@/tests/utils/fetch-settle";
 
 // Switching language while the panel is loading starts a second load, and the starter list is the
 // one thing here whose content is locale-specific. If the older request resolves last, its list
@@ -65,11 +66,12 @@ let releasePost = () => {};
 // What GET /tenant-settings answers with. The company PUT below does NOT change it, which is the
 // point: the load's snapshot has to lose to the write that landed after it was taken.
 let storedCompanyName = "";
-// Holds the LAST request of the panel's Promise.all, so the settings response is already in hand
-// while the load is still waiting — the window a save landing meanwhile has to win.
+// Holds the template list, one of the three requests of the panel's Promise.all, so the settings
+// response is already in hand while the load is still waiting: the window a save landing meanwhile
+// has to win.
 let holdDocuments = false;
 
-globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+const answer = async (input: RequestInfo | URL, init?: RequestInit) => {
   const url = new URL(
     typeof input === "string"
       ? input
@@ -130,6 +132,7 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     });
   }
   if (url.pathname.endsWith("/document-templates")) {
+    if (holdDocuments) await gate("documents").wait;
     return json({ templates: [] });
   }
   if (url.pathname.endsWith("/tenant-settings")) {
@@ -146,13 +149,17 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       },
     });
   }
-  if (holdDocuments) await gate("documents").wait;
   return json({ documents: [] });
-}) as unknown as typeof fetch;
+};
+// Every answer released so far is delivered and read by the panel; a gate still held stays held.
+const fetches = fetchTracker();
+globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) =>
+  fetches.track(answer(input, init))) as unknown as typeof fetch;
 
 // Fresh gates per test. They are one-shot promises, so a test that releases one leaves the next
 // test with a request that never blocks, and a race test quietly stops racing.
 beforeEach(() => {
+  fetches.reset();
   gates = {};
   posts.length = 0;
   holdPost = false;
@@ -290,7 +297,7 @@ describe("a refresh does not undo a company save it overlapped", () => {
 
     // …and now the load resolves, carrying the company as it was before the save.
     gate("documents").release();
-    await new Promise((r) => setTimeout(r, 80));
+    await fetches.settled();
 
     // NOTE: read off the summary row rather than the field: a successful save closes the editor, so
     // the name the panel is holding is what the row prints.
@@ -338,7 +345,7 @@ describe("the starter list belongs to the current language", () => {
     );
     // …and now the stale one lands.
     gate("pt-BR").release();
-    await new Promise((r) => setTimeout(r, 50));
+    await fetches.settled();
 
     expect(document.body.textContent?.includes("modelo-en-US")).toBe(true);
     expect(document.body.textContent?.includes("modelo-pt-BR")).toBe(false);

@@ -9,6 +9,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
+import { fetchTracker } from "@/tests/utils/fetch-settle";
 
 // Every template is created in order to be edited, so a successful create from a starter opens the
 // new template's editor with the body the POST answered, instead of dropping the operator back on
@@ -19,6 +20,9 @@ import { MemoryRouter } from "react-router";
 (globalThis as { happyDOM?: { setURL(u: string): void } }).happyDOM?.setURL(
   "http://localhost/recursos/documentos",
 );
+
+// Every answer released so far is delivered and read before a "nothing happened" assertion.
+const fetches = fetchTracker();
 
 const { default: i18n } = await import("@/client/lib/i18n");
 const { DocumentsPanel } = await import(
@@ -59,7 +63,7 @@ const json = (body: unknown, status = 200) =>
     headers: { "Content-Type": "application/json" },
   });
 
-globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+const answer = async (input: RequestInfo | URL, init?: RequestInit) => {
   const url = new URL(
     typeof input === "string"
       ? input
@@ -112,7 +116,9 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     return json({ company: null });
   }
   return json({ documents: [] });
-}) as unknown as typeof fetch;
+};
+globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) =>
+  fetches.track(answer(input, init))) as unknown as typeof fetch;
 
 afterEach(() => {
   cleanup();
@@ -175,7 +181,7 @@ describe("creating a template opens it", () => {
     await i18n.changeLanguage("en");
     refuseCreate = true;
     await createFromStarter("Orçamento");
-    await new Promise((r) => setTimeout(r, 80));
+    await fetches.settled();
     expect(screen.queryAllByRole("button", { name: /^create$/i }).length).toBe(
       1,
     );

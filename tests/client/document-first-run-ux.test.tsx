@@ -9,6 +9,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
+import { fetchTracker } from "@/tests/utils/fetch-settle";
 
 // The first time an operator makes a document: the starter menu says how a template gets its
 // content, the blank starter brings nothing of the menu into the template, the editor speaks the
@@ -20,6 +21,9 @@ import { MemoryRouter } from "react-router";
 (globalThis as { happyDOM?: { setURL(u: string): void } }).happyDOM?.setURL(
   "http://localhost/recursos/documentos",
 );
+
+// Every answer released so far is delivered and read before a "nothing happened" assertion.
+const fetches = fetchTracker();
 
 const { default: i18n } = await import("@/client/lib/i18n");
 const { DocumentsPanel } = await import(
@@ -99,7 +103,7 @@ const json = (body: unknown, status = 200) =>
     headers: { "Content-Type": "application/json" },
   });
 
-globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+const answer = async (input: RequestInfo | URL, init?: RequestInit) => {
   const url = new URL(
     typeof input === "string"
       ? input
@@ -151,7 +155,9 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     return json({ company: storedCompany });
   }
   return json({ documents: [] });
-}) as unknown as typeof fetch;
+};
+globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) =>
+  fetches.track(answer(input, init))) as unknown as typeof fetch;
 
 afterEach(() => {
   cleanup();
@@ -369,7 +375,7 @@ describe("the letterhead editor", () => {
       const first = screen.getAllByRole("textbox")[0] as HTMLInputElement;
       expect(first.value).toBe("Stored Co");
     });
-    await new Promise((r) => setTimeout(r, 50));
+    await fetches.settled();
     const first = screen.getAllByRole("textbox")[0] as HTMLInputElement;
     expect(first.value).toBe("Stored Co");
   });

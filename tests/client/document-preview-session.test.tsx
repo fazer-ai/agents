@@ -81,36 +81,37 @@ describe("useDocumentPreview", () => {
   // after it (`res.blob()` and `res.json()`), or a validation error about the draft just left would
   // land in the new session, naming a block already fixed, until the newer request answered.
   test("a refusal whose body arrives after the session changed is dropped", async () => {
-    let releaseBody: (() => void) | undefined;
-    const held = new Promise<void>((r) => {
-      releaseBody = r;
-    });
+    const asked = Promise.withResolvers<void>();
+    const body = Promise.withResolvers<void>();
+    const read = Promise.withResolvers<void>();
     respond = async () => ({
       ok: false,
       status: 400,
+      // Real headers, because `mediaFetch` reads them before the caller ever reaches the body.
+      headers: new Headers({ "Content-Type": "application/json" }),
       json: async () => {
-        await held;
+        asked.resolve();
+        await body.promise;
+        read.resolve();
         return { error: 'block "corpo" is empty' };
       },
     });
 
     const view = render(<Harness />);
-    // The refusal's headers are in; its body is not.
-    await waitFor(
-      () => {
-        expect(releaseBody !== undefined).toBe(true);
-      },
-      { timeout: 3000 },
-    );
-    await new Promise((r) => setTimeout(r, 800));
+    // The refusal's headers are in, and the hook is reading its body.
+    await asked.promise;
 
     // The operator reopens on a new session, and only THEN does the old body finish parsing.
     act(() => {
       reopen();
     });
     respond = okResponse;
-    releaseBody?.();
-    await new Promise((r) => setTimeout(r, 50));
+    await act(async () => {
+      body.resolve();
+      await read.promise;
+      // The hook's own reactions to the parsed body run before the next turn of the loop.
+      await new Promise((r) => setTimeout(r, 0));
+    });
 
     // The stale refusal never reaches the screen, and the new session's document does.
     expect(seenError).toBeNull();

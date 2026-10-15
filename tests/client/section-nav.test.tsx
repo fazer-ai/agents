@@ -1,6 +1,6 @@
 /// <reference lib="dom" />
 
-import { afterAll, afterEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, jest, test } from "bun:test";
 import {
   act,
   cleanup,
@@ -39,6 +39,7 @@ function layoutChanged() {
 afterEach(() => {
   cleanup();
   resized.length = 0;
+  jest.useRealTimers();
 });
 
 afterAll(() => {
@@ -104,7 +105,12 @@ function clickEntry(name: string, scroll: () => void) {
   });
 }
 
-const settle = () => act(() => new Promise((r) => setTimeout(r, 250)));
+// The hold's own clock, run past its settle window on fake timers: the pin it ends is internal, so
+// there is no condition to wait for, and a real wait only guesses how long the window is.
+const settle = () =>
+  act(() => {
+    jest.advanceTimersByTime(1_000);
+  });
 
 describe("the section index", () => {
   test("highlights the section whose top has passed the line", () => {
@@ -155,11 +161,12 @@ describe("the section index", () => {
   });
 
   test("after a click, the next scroll of the operator gives the highlight back to the line", async () => {
+    jest.useFakeTimers();
     const { scroller } = renderNav();
     clickEntry("Two", () =>
       scrollTo(scroller, 1200, { one: -1100, two: 400, three: 900 }),
     );
-    await settle();
+    settle();
     scrollTo(scroller, 100, { one: -50, two: 500, three: 1100 });
     expect(current()).toEqual(["One"]);
   });
@@ -167,10 +174,11 @@ describe("the section index", () => {
   // The section is already where the click would scroll it, so no scroll event comes: the hold has
   // to end on its own clock, or the operator's next scroll would be read as the click's.
   test("a click that scrolls nothing still gives the highlight back on the next scroll", async () => {
+    jest.useFakeTimers();
     const { scroller } = renderNav();
     clickEntry("Two", () => {});
     expect(current()).toEqual(["Two"]);
-    await settle();
+    settle();
     scrollTo(scroller, 100, { one: -50, two: 500, three: 1100 });
     expect(current()).toEqual(["One"]);
   });

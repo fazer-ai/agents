@@ -17,6 +17,7 @@ import {
   SidebarProvider,
   useSidebar,
 } from "@/client/contexts/SidebarContext";
+import { until } from "@/tests/utils/poll";
 
 let hook: ReturnType<typeof useSidebar> | null = null;
 function Probe() {
@@ -231,7 +232,10 @@ describe("SidebarResizer", () => {
     await nextFrame();
     expect(document.body.dataset.sidebarSnapping).toBe("true");
 
-    await act(() => new Promise((resolve) => setTimeout(resolve, 250)));
+    await until(
+      "the snapping flag cleared",
+      () => document.body.dataset.sidebarSnapping === undefined,
+    );
     expect(document.body.dataset.sidebarSnapping).toBeUndefined();
   });
 });

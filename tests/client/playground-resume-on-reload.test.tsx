@@ -26,11 +26,14 @@ let opened: string[] = [];
 let listDelayMs = 0;
 let sessionDelayMs = 0;
 
+const answers = new Set<Promise<Response>>();
+
 function server() {
   opened = [];
   listDelayMs = 0;
   sessionDelayMs = 0;
-  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+  answers.clear();
+  const answer = async (input: RequestInfo | URL, init?: RequestInit) => {
     const req = input instanceof Request ? input : null;
     const url = String(req ? req.url : input);
     const method = (req ? req.method : init?.method) ?? "GET";
@@ -64,7 +67,20 @@ function server() {
     if (url.endsWith("/playground") && method === "POST")
       return new Response(JSON.stringify({ error: "boom" }), { status: 500 });
     return json({});
+  };
+  globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+    const p = answer(input, init);
+    answers.add(p);
+    return p;
   }) as typeof fetch;
+}
+
+// Every answer the fake `fetch` has started, delayed ones included, delivered and read by the hook.
+async function drained() {
+  await act(async () => {
+    await Promise.allSettled([...answers]);
+    await new Promise((r) => setTimeout(r, 0));
+  });
 }
 
 function mark(agentId: string, threadId: string, href = location.href) {
@@ -169,7 +185,8 @@ describe("which session the agent screen opens on", () => {
     listDelayMs = 50;
     const left = renderHook(() => usePlaygroundChat(AGENT, false));
     left.unmount();
-    await new Promise((r) => setTimeout(r, 80));
+    // The list the unmounted hook asked for lands now, after it left.
+    await drained();
     listDelayMs = 0;
     const back = await mount();
     await new Promise((r) => setTimeout(r, 20));
@@ -260,7 +277,7 @@ describe("what pagehide leaves for the reload", () => {
       expect(
         JSON.parse(sessionStorage.getItem(PLAYGROUND_RESUME_KEY) ?? "null"),
       ).toMatchObject({ agentId: AGENT, threadId: OLDER });
-      await new Promise((r) => setTimeout(r, 100));
+      await drained();
     },
   );
 

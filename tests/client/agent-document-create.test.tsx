@@ -11,6 +11,7 @@ import {
   within,
 } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
+import { fetchTracker } from "@/tests/utils/fetch-settle";
 
 // The Documents section creates a template where every other section creates its resource: in place,
 // through the same two-step starter flow Components uses, with the new template granted to this
@@ -88,6 +89,8 @@ let posts = 0;
 // Holds the starters response for one locale until released, so a test decides which lands when.
 let hold: { locale: string; wait: Promise<void>; release: () => void } | null =
   null;
+const fetches = fetchTracker();
+
 function holdStarters(locale: string) {
   let release = () => {};
   const wait = new Promise<void>((r) => {
@@ -101,7 +104,8 @@ function serve() {
   starterLocales = [];
   posts = 0;
   hold = null;
-  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+  fetches.reset();
+  const answer = async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input), "http://localhost");
     const method = (init?.method ?? "GET").toUpperCase();
     if (url.pathname.endsWith("/document-templates/preview")) {
@@ -136,7 +140,9 @@ function serve() {
       return json({ template: { ...CREATED, name: sent.name } });
     }
     return json({});
-  }) as typeof fetch;
+  };
+  globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) =>
+    fetches.track(answer(input, init))) as typeof fetch;
 }
 
 function renderEditor(
@@ -344,7 +350,8 @@ test("an older list landing after a newer one does not replace it", async () => 
     expect(starterLocales.filter((l) => l === "en-US").length).toBe(2);
   });
   held.release();
-  await new Promise((r) => setTimeout(r, 80));
+  // Every answer released so far is delivered and read before the assertion.
+  await fetches.settled();
   expect(document.body.textContent?.includes("Quote en-US")).toBe(true);
   expect(document.body.textContent?.includes("Quote pt-BR")).toBe(false);
 });
@@ -435,7 +442,8 @@ test("an older template's slow open does not take the editor of a just-created o
     timeout: 3000,
   });
   releaseOld();
-  await new Promise((r) => setTimeout(r, 80));
+  // Every answer released so far is delivered and read before the assertion.
+  await fetches.settled();
   const dialog = await screen.findByRole("dialog");
   fireEvent.change(within(dialog).getByDisplayValue("Installation quote"), {
     target: { value: "Installation quote 2" },
@@ -470,10 +478,13 @@ test("opening a template while the starters load cancels the create flow", async
   fireEvent.click(within(section).getByLabelText(/preview/i));
   await screen.findByText("Edit document template");
   held.release();
-  await new Promise((r) => setTimeout(r, 80));
+  // Every answer released so far is delivered and read before the assertion.
+  await fetches.settled();
   const dialogs = screen
     .queryAllByRole("dialog")
     .map((d) => d.textContent ?? "");
-  expect(dialogs.some((d) => d.includes("Start from a template"))).toBe(false);
+  expect(dialogs.some((d) => d.includes("Choose a starting point"))).toBe(
+    false,
+  );
   expect(screen.queryAllByDisplayValue("Quote").length).toBeGreaterThan(0);
 });

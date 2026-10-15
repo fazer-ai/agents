@@ -164,6 +164,7 @@ function duringTheWait(stimulus: () => void): {
     (...args: Parameters<typeof real>) => {
       const waiting = real(...args);
       const suspended = {
+        // biome-ignore lint/suspicious/noThenProperty: a thenable on purpose, so the flush's own `await` is what releases the stimulus.
         then(...handlers: Parameters<typeof waiting.then>) {
           if (!awaited) setImmediate(stimulus);
           awaited = true;

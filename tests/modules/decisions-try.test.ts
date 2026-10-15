@@ -64,7 +64,7 @@ const RULE = {
 // converges and so never latches.
 const NOTE_RULE = {
   when: [{ question: "pede_reembolso", minProbability: 0.7 }],
-  action: { tool: "private_note", args: { text: "Pedido de reembolso" } },
+  action: { tool: "private_note", args: { content: "Pedido de reembolso" } },
 };
 
 function monitoring(rules: unknown[] = [RULE]) {
@@ -458,6 +458,82 @@ describe.skipIf(!dbUp)("testing a decisions agent on a conversation", () => {
       await suDb.agentToolSelection.delete({ where: { id: sel.id } });
       await suDb.mcpServerConnection.delete({ where: { id: conn.id } });
     }
+  });
+
+  // The bug: a tool's precondition is asked inside the tool, which a dry run never invokes, so the
+  // test reported "would run" where the tick refuses. And the other way: on a tick the condition reads
+  // what an earlier rule wrote, so an attribute rule ahead of it satisfies it.
+  test("a tool precondition refuses as on a tick, and reads what earlier rules would write", async () => {
+    const when = [{ question: "pede_reembolso", minProbability: 0.7 }];
+    const note = {
+      when,
+      action: { tool: "private_note", args: { content: "Reembolso" } },
+    };
+    const guarded = (rules: unknown[]) => ({
+      ...monitoring(rules),
+      toolPreconditions: {
+        private_note: {
+          kind: "attribute",
+          scope: "conversation",
+          key: "pedido",
+        },
+      },
+    });
+    await setSettings(guarded([note]));
+    let { tick } = await runTest(classifier(yes).fetchImpl);
+    expect(tick.actions).toMatchObject([
+      {
+        rule: 0,
+        tool: "private_note",
+        outcome: "refused",
+        fence: "precondition",
+      },
+    ]);
+    await setSettings(
+      guarded([
+        {
+          when,
+          action: {
+            tool: "set_custom_attribute",
+            args: { key: "pedido", value: "4471" },
+          },
+        },
+        note,
+      ]),
+    );
+    ({ tick } = await runTest(classifier(yes).fetchImpl));
+    expect(tick.actions).toMatchObject([
+      { rule: 0, tool: "set_custom_attribute", outcome: "decided" },
+      { rule: 1, tool: "private_note", outcome: "decided" },
+    ]);
+  });
+
+  // The bug: the label fences are asked inside `set_labels`, which a dry run never invokes, so a rule
+  // adding a protected label, or one outside the allowed list, read as "would run". A call refused
+  // only in part stays an action, marked partial.
+  test("label fences refuse a label write as on a tick, whole or in part", async () => {
+    const when = [{ question: "pede_reembolso", minProbability: 0.7 }];
+    const labels = (add: string[]) => ({
+      when,
+      action: { tool: "set_labels", args: { add } },
+    });
+    await setSettings({
+      ...monitoring([labels(["vip"]), labels(["reembolso", "vip"])]),
+      setLabels: { protected: ["vip"] },
+    });
+    let { tick } = await runTest(classifier(yes).fetchImpl);
+    expect(tick.actions).toMatchObject([
+      { rule: 0, outcome: "refused", fence: "protected_label" },
+      { rule: 1, outcome: "decided", fence: "protected_label", partial: true },
+    ]);
+    await setSettings({
+      ...monitoring([labels(["inventada"])]),
+      setLabels: { allowed: ["reembolso"] },
+    });
+    ({ tick } = await runTest(classifier(yes).fetchImpl));
+    expect(tick.actions).toMatchObject([
+      { rule: 0, outcome: "refused", fence: "allowed_labels" },
+    ]);
   });
 
   // The bug: paying for a classification of a conversation where the customer has said nothing.

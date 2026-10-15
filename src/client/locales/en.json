@@ -819,6 +819,7 @@
         "tools_other": "{{count}} tools",
         "unanswered": "not answered",
         "wouldRun": "would run",
+        "wouldRunPartial": "would run, in part",
         "yes": "yes",
         "yesProbability": "yes: {{p}}"
       },

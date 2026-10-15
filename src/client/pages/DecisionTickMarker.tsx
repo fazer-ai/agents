@@ -790,7 +790,9 @@ function ruleText(
 function firedText(r: Extract<RuleView, { kind: "fired" }>, t: T): string {
   switch (r.outcome) {
     case "decided":
-      return t("conversation.trail.decision.wouldRun", "would run");
+      return r.partial
+        ? t("conversation.trail.decision.wouldRunPartial", "would run, in part")
+        : t("conversation.trail.decision.wouldRun", "would run");
     case "ran":
       return r.partial
         ? t("conversation.trail.decision.ranPartial", "ran, in part")

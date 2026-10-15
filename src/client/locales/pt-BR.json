@@ -853,6 +853,7 @@
         "tools_other": "{{count}} ferramentas",
         "unanswered": "sem resposta",
         "wouldRun": "rodaria",
+        "wouldRunPartial": "rodaria, em parte",
         "yes": "sim",
         "yesProbability": "sim: {{p}}"
       },

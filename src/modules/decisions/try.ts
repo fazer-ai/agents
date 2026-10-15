@@ -8,7 +8,8 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import { buildToolset, loadAgentConfig } from "@/graph/prepare";
 import type { McpLoadDeps } from "@/graph/tools/mcp";
-import { buildNativeTools } from "@/graph/tools/native";
+import { applyLabelDelta, buildNativeTools } from "@/graph/tools/native";
+import { preconditionStateLoader } from "@/graph/tools/precondition";
 import { recordDirectUsage } from "@/graph/usage";
 import {
   AppError,
@@ -21,6 +22,11 @@ import { readLimitsConfig } from "@/modules/agents/limits";
 import { isMonitoring } from "@/modules/agents/mode";
 import { getAgent } from "@/modules/agents/service";
 import { readProtectedLabels } from "@/modules/agents/tool-guidance";
+import {
+  evaluatePrecondition,
+  type PreconditionState,
+  type ToolPrecondition,
+} from "@/modules/agents/tool-preconditions";
 import {
   type LoadChatwootClientDeps,
   loadAgentBot,
@@ -43,8 +49,17 @@ import {
 import { readMonitoringConfig } from "@/modules/observe/settings";
 import { assertPlaygroundSpendCeiling } from "@/modules/spend-ceiling/service";
 import { tryResolveApiKeyEntry } from "@/modules/vault/service";
-import { decisionsFingerprint, readDecisionsConfig } from "./config";
-import { answersForLog, applyDecisions, askProvider } from "./run";
+import {
+  type DecisionRule,
+  decisionsFingerprint,
+  readDecisionsConfig,
+} from "./config";
+import {
+  type ActionReport,
+  answersForLog,
+  applyDecisions,
+  askProvider,
+} from "./run";
 import { readLatchedRules } from "./trigger-state";
 
 // How long a test waits for the classifier, the same order as a tick's budget for one call.
@@ -287,16 +302,116 @@ export async function tryDecisionsAgent(
       logValues,
     },
   );
+  const actions = await withFences(report.actions, config.rules, {
+    preconditions: cfg.toolPreconditions,
+    loadAttributes: preconditionStateLoader({
+      base,
+      tenantId,
+      conversationDbId: cfg.conversationDbId ?? null,
+      contactDbId: cfg.contactDbId ?? null,
+    }),
+    labels: evidence.current,
+    protectedLabels: cfg.protectedLabels,
+    allowed:
+      cfg.allowedLabels.length > 0
+        ? { labels: cfg.allowedLabels, mode: cfg.outsideAllowedLabels }
+        : undefined,
+  });
+
   return line(
     {
       block: decisionsFingerprint(config),
       modelVersion: result.modelVersion,
       answers: answersForLog(result.answers),
-      actions: report.actions,
+      actions,
       notFired: report.missed,
       held: report.held,
       messagesRead: evidence.transcript.length,
     },
     "ok",
   );
+}
+
+// The fences a tick asks INSIDE the tool, which a dry run never invokes, asked here in rule order of
+// the same state: a tool's precondition (settings.toolPreconditions) of the mirrored attributes, and
+// a conversation `set_labels`'s protected and allowed labels of the labels read for the evidence,
+// through the handler's own `applyLabelDelta`. An action a fence refuses whole is `refused` with the
+// fence; one it refuses in part stays `decided` with `fence` and `partial`, as a tick reports a
+// partial write. What an earlier decided rule would write (an attribute, a label set) counts, with
+// its rule's fixed arguments, since on a tick the later fence reads what the earlier rules wrote.
+async function withFences(
+  actions: ActionReport[],
+  rules: readonly DecisionRule[],
+  fences: {
+    preconditions: Record<string, ToolPrecondition>;
+    loadAttributes: () => Promise<PreconditionState>;
+    labels: string[] | null;
+    protectedLabels: string[];
+    allowed: { labels: string[]; mode: "refuse" | "accept" } | undefined;
+  },
+): Promise<ActionReport[]> {
+  const decided = actions.filter((a) => a.outcome === "decided");
+  if (decided.length === 0) return actions;
+  const needsAttributes = decided.some((a) =>
+    Object.hasOwn(fences.preconditions, a.tool),
+  );
+  const loaded = needsAttributes
+    ? await fences.loadAttributes()
+    : { conversationAttributes: {}, contactAttributes: {} };
+  const state: PreconditionState = {
+    conversationAttributes: { ...loaded.conversationAttributes },
+    contactAttributes: { ...loaded.contactAttributes },
+  };
+  let labels = fences.labels;
+  const strings = (v: unknown): string[] =>
+    Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+  return actions.map((a): ActionReport => {
+    if (a.outcome !== "decided") return a;
+    const cond = Object.hasOwn(fences.preconditions, a.tool)
+      ? fences.preconditions[a.tool]
+      : undefined;
+    if (cond && !evaluatePrecondition(cond, state)) {
+      return { ...a, outcome: "refused", fence: "precondition" };
+    }
+    const args = rules[a.rule]?.action.args ?? {};
+    const scope = args.scope ?? "conversation";
+    if (
+      a.tool === "set_custom_attribute" &&
+      typeof args.key === "string" &&
+      typeof args.value === "string" &&
+      (scope === "conversation" || scope === "contact")
+    ) {
+      const bag =
+        scope === "contact"
+          ? state.contactAttributes
+          : state.conversationAttributes;
+      bag[args.key] = args.value;
+    }
+    if (
+      a.tool === "set_labels" &&
+      scope === "conversation" &&
+      labels !== null
+    ) {
+      const o = applyLabelDelta(
+        strings(args.add),
+        strings(args.remove),
+        labels,
+        fences.protectedLabels,
+        fences.allowed,
+      );
+      labels = o.next;
+      const fence =
+        o.refusedAdd.length > 0 || o.refusedRemove.length > 0
+          ? ("protected_label" as const)
+          : (o.refusedOutside ?? []).length > 0
+            ? ("allowed_labels" as const)
+            : null;
+      if (fence) {
+        return o.added.length > 0 || o.removed.length > 0
+          ? { ...a, fence, partial: true }
+          : { ...a, outcome: "refused", fence };
+      }
+    }
+    return a;
+  });
 }

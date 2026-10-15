@@ -1156,6 +1156,35 @@ describe("a test from the conversation page", () => {
     expect(lines.filter((l) => l.includes("would run"))).toHaveLength(3);
   });
 
+  test("a write a label fence would refuse in part says so", async () => {
+    await inLanguage(
+      "en",
+      <DecisionTickMarker
+        entry={{
+          decision: tick({
+            actions: [
+              {
+                rule: 0,
+                tool: "set_labels",
+                outcome: "decided",
+                fence: "protected_label",
+                partial: true,
+                merged: [],
+              },
+            ],
+          }),
+          durationMs: null,
+        }}
+        test
+      />,
+    );
+    const line = screen
+      .getAllByTestId("decision-rule")
+      .map((r) => r.textContent ?? "")
+      .find((l) => l.startsWith("Rule 1"));
+    expect(line).toContain("would run, in part");
+  });
+
   test("in Portuguese, with one rule and with none", async () => {
     await inLanguage(
       "pt-BR",

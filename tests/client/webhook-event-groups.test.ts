@@ -71,6 +71,18 @@ describe("one event's box", () => {
     ]);
   });
 
+  test("unchecking under the wildcard drops the name too when it was stored beside it", () => {
+    const next = toggleEvent(
+      new Set(["document.*", "document.approval_outcome"]),
+      docs,
+      "document.approval_outcome",
+    );
+    expect(sorted(next)).toEqual([
+      "document.approval_decided",
+      "document.approval_requested",
+    ]);
+  });
+
   test("outside the wildcard it toggles that name only", () => {
     const on = toggleEvent(new Set(), docs, "document.approval_decided");
     expect(sorted(on)).toEqual(["document.approval_decided"]);

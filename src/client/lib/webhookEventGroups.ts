@@ -72,6 +72,8 @@ export function toggleEvent(
   if (group.wildcard && next.has(group.wildcard)) {
     next.delete(group.wildcard);
     for (const e of group.events) if (e !== event) next.add(e);
+    // NOTE: a subscription written by REST or MCP may hold the name beside the wildcard.
+    next.delete(event);
     return next;
   }
   if (next.has(event)) next.delete(event);

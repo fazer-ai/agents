@@ -169,7 +169,7 @@ export function DecisionsTestButton({
               }}
               items={agents ?? []}
               allowCustom={false}
-              disabled={agents === null}
+              disabled={agents === null || running}
               placeholder={
                 agents === null
                   ? t("common.loading", "Loading…")

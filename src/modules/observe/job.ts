@@ -876,7 +876,7 @@ export function attributeFillsOf(mon: {
 // What a rule's custom tool may fill an argument from (decisions/tool-args.ts): the contact and inbox
 // as the HTTP tools' context carries them, the conversation by the number its link shows, and the
 // mirror's attribute bags.
-function fillContextOf(
+export function fillContextOf(
   context: Record<string, string>,
   conv: {
     customAttributes?: unknown;

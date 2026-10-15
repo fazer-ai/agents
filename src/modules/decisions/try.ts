@@ -7,6 +7,7 @@
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
+import { loadAgentConfig } from "@/graph/prepare";
 import { recordDirectUsage } from "@/graph/usage";
 import {
   AppError,
@@ -31,6 +32,8 @@ import {
 import { readDebugModes } from "@/modules/flowlog/debug-mode";
 import type { FlowContext } from "@/modules/flowlog/service";
 import {
+  attributeFillsOf,
+  fillContextOf,
   observeDecisionInput,
   readObserveEvidence,
 } from "@/modules/observe/job";
@@ -68,6 +71,7 @@ export async function tryDecisionsAgent(
       "errors.agentNotDecisionsObserver",
     );
   }
+  const fills = attributeFillsOf(mon);
   const conv = await runScopedOn(base, ctx, (db) =>
     db.conversation.findUnique({
       where: { id: conversationId },
@@ -78,7 +82,14 @@ export async function tryDecisionsAgent(
         chatwootConversationId: true,
         resetAtMessageId: true,
         resetClearedLabels: true,
+        threadId: true,
         inbox: { select: { provider: true } },
+        // What a rule's custom tool may fill an argument from, read only when a rule does, as the
+        // tick reads it.
+        customAttributes: fills.conversation,
+        ...(fills.contact
+          ? { contact: { select: { customAttributes: true } } }
+          : {}),
       },
     }),
   );
@@ -184,6 +195,27 @@ export async function tryDecisionsAgent(
     durationMs: Date.now() - startedAt,
   });
 
+  // The values a rule fills its tool's arguments from, built as the tick builds them: without them a
+  // filled argument is dropped, and two rules that differ only by what they fill would read as one.
+  const cfg = await runScopedOn(base, ctx, (db) =>
+    loadAgentConfig(
+      db,
+      {
+        tenantId,
+        instanceId,
+        conversationId: conv.chatwootConversationId,
+        agentId,
+        threadId: conv.threadId,
+      },
+      {
+        ignoreDisabled: true,
+        ignoreMode: true,
+        skipExperiment: true,
+        chatModelUnused: true,
+      },
+    ),
+  );
+  const logValues = readDebugModes(agent.settings, null).logToolValues;
   const latched = await readLatchedRules(base, {
     tenantId,
     agentId,
@@ -206,6 +238,18 @@ export async function tryDecisionsAgent(
     () => null,
     true,
     latched,
+    {},
+    async () => true,
+    {
+      context: fillContextOf(
+        cfg?.httpToolContext ?? { agent_name: agent.name },
+        conv,
+        conv.chatwootConversationId,
+        client,
+      ),
+      questions: config.questions,
+      logValues,
+    },
   );
   return line(
     {

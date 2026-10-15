@@ -312,6 +312,37 @@ describe.skipIf(!dbUp)("testing a decisions agent on a conversation", () => {
     expect(await suDb.decisionRuleState.count({ where: { tenantId } })).toBe(1);
   });
 
+  // The bug: the dry run drops what a rule FILLS its tool's arguments from, so two rules that call
+  // one custom tool with different filled values read as one action, unlike the real tick.
+  test("rules that differ only by what they fill stay two actions", async () => {
+    const when = [{ question: "pede_reembolso", minProbability: 0.7 }];
+    await setSettings(
+      monitoring([
+        {
+          when,
+          action: {
+            tool: "registrar_caso",
+            args: {},
+            fill: { conversa: "conversation.display_id" },
+          },
+        },
+        {
+          when,
+          action: {
+            tool: "registrar_caso",
+            args: {},
+            fill: { chance: "answer.pede_reembolso.probability" },
+          },
+        },
+      ]),
+    );
+    const { tick } = await runTest(classifier(yes).fetchImpl);
+    expect(tick.actions).toEqual([
+      { rule: 0, tool: "registrar_caso", outcome: "decided" },
+      { rule: 1, tool: "registrar_caso", outcome: "decided" },
+    ]);
+  });
+
   // The bug: paying for a classification of a conversation where the customer has said nothing.
   test("no customer message: skipped before the classifier is called", async () => {
     const c = classifier(yes);

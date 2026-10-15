@@ -451,7 +451,7 @@ export interface TenantSettingsUpdateArgs {
 
 export interface McpApprovalLink {
   mode: ApprovalLinkMode;
-  url_template: string;
+  url_template?: string;
 }
 
 export interface McpPriceOverride {
@@ -541,9 +541,19 @@ export async function tenantSettingsUpdate(
     const approvalLink =
       args.approval_link === undefined
         ? undefined
-        : normalizeApprovalLink({
+        : {
             mode: args.approval_link.mode,
             urlTemplate: args.approval_link.url_template,
+          };
+    // NOTE: checked before any block is written, with the saved template when the call keeps it.
+    const approvalLinkProposed =
+      approvalLink === undefined
+        ? undefined
+        : normalizeApprovalLink({
+            mode: approvalLink.mode,
+            urlTemplate:
+              approvalLink.urlTemplate ??
+              (await getTenantSettings(ctx, base)).approvalLink.urlTemplate,
           });
     if (args.dry_run !== false) {
       // NOTE: the core's own KIND question, which resolving the ref above does not answer: a
@@ -572,7 +582,7 @@ export async function tenantSettingsUpdate(
                   debug: args.langfuse.debug,
                 },
           priceOverrides: prices,
-          approvalLink,
+          approvalLink: approvalLinkProposed,
         },
       });
     }

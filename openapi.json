@@ -26970,8 +26970,7 @@
               "schema": {
                 "type": "object",
                 "required": [
-                  "mode",
-                  "urlTemplate"
+                  "mode"
                 ],
                 "properties": {
                   "mode": {
@@ -26984,7 +26983,7 @@
                   },
                   "urlTemplate": {
                     "maxLength": 500,
-                    "description": "For `custom`: a full https:// or http:// address with `{id}` where the request's id goes, e.g. `https://app.example.com/documents?approval={id}`. Empty with `custom` stores `console`. Kept as typed for the other modes.",
+                    "description": "For `custom`: a full https:// or http:// address with `{id}` where the request's id goes, e.g. `https://app.example.com/documents?approval={id}`. Empty with `custom` stores `console`. Absent keeps the saved template, so `{mode}` alone switches the mode.",
                     "type": "string"
                   }
                 }
@@ -26994,8 +26993,7 @@
               "schema": {
                 "type": "object",
                 "required": [
-                  "mode",
-                  "urlTemplate"
+                  "mode"
                 ],
                 "properties": {
                   "mode": {
@@ -27008,7 +27006,7 @@
                   },
                   "urlTemplate": {
                     "maxLength": 500,
-                    "description": "For `custom`: a full https:// or http:// address with `{id}` where the request's id goes, e.g. `https://app.example.com/documents?approval={id}`. Empty with `custom` stores `console`. Kept as typed for the other modes.",
+                    "description": "For `custom`: a full https:// or http:// address with `{id}` where the request's id goes, e.g. `https://app.example.com/documents?approval={id}`. Empty with `custom` stores `console`. Absent keeps the saved template, so `{mode}` alone switches the mode.",
                     "type": "string"
                   }
                 }
@@ -27018,8 +27016,7 @@
               "schema": {
                 "type": "object",
                 "required": [
-                  "mode",
-                  "urlTemplate"
+                  "mode"
                 ],
                 "properties": {
                   "mode": {
@@ -27032,7 +27029,7 @@
                   },
                   "urlTemplate": {
                     "maxLength": 500,
-                    "description": "For `custom`: a full https:// or http:// address with `{id}` where the request's id goes, e.g. `https://app.example.com/documents?approval={id}`. Empty with `custom` stores `console`. Kept as typed for the other modes.",
+                    "description": "For `custom`: a full https:// or http:// address with `{id}` where the request's id goes, e.g. `https://app.example.com/documents?approval={id}`. Empty with `custom` stores `console`. Absent keeps the saved template, so `{mode}` alone switches the mode.",
                     "type": "string"
                   }
                 }

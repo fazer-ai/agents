@@ -3213,11 +3213,14 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           approval_link: z
             .object({
               mode: z.enum(APPROVAL_LINK_MODES),
-              url_template: z.string().max(APPROVAL_LINK_TEMPLATE_MAX),
+              url_template: z
+                .string()
+                .max(APPROVAL_LINK_TEMPLATE_MAX)
+                .optional(),
             })
             .optional()
             .describe(
-              "Link in approval notes: console (default), custom (url_template, http(s) with {id}; empty = console) or none",
+              "Link in approval notes: console (default), custom (url_template, http(s) with {id}; empty = console; absent keeps the saved one) or none",
             ),
           dry_run: z.boolean().optional(),
         },

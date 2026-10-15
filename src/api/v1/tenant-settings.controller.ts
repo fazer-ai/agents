@@ -449,11 +449,13 @@ export const tenantSettingsController = new Elysia({
               "Where the link at the end of an approval request's private note points: `console` (the request's page in this console, the default), `custom` (urlTemplate) or `none` (the note carries no link; it is still written).",
           },
         ),
-        urlTemplate: t.String({
-          maxLength: APPROVAL_LINK_TEMPLATE_MAX,
-          description:
-            "For `custom`: a full https:// or http:// address with `{id}` where the request's id goes, e.g. `https://app.example.com/documents?approval={id}`. Empty with `custom` stores `console`. Kept as typed for the other modes.",
-        }),
+        urlTemplate: t.Optional(
+          t.String({
+            maxLength: APPROVAL_LINK_TEMPLATE_MAX,
+            description:
+              "For `custom`: a full https:// or http:// address with `{id}` where the request's id goes, e.g. `https://app.example.com/documents?approval={id}`. Empty with `custom` stores `console`. Absent keeps the saved template, so `{mode}` alone switches the mode.",
+          }),
+        ),
       }),
       detail: doc(
         "Set the approval note link",

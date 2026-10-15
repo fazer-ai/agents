@@ -147,13 +147,22 @@ describe.skipIf(!dbUp)("the approval link setting", () => {
     expect((await getTenantSettings(ctx(), appDb)).approvalLink).toEqual(
       custom,
     );
+    // The mode alone keeps the saved template, and switching back finds it.
+    await updateApprovalLink(ctx(), { mode: "none" }, appDb);
+    expect((await getTenantSettings(ctx(), appDb)).approvalLink).toEqual({
+      mode: "none",
+      urlTemplate: custom.urlTemplate,
+    });
+    await updateApprovalLink(ctx(), { mode: "custom" }, appDb);
     const rows = await suDb.auditLog.findMany({
       where: { tenantId, action: "tenant_settings.approval_link_set" },
       select: { before: true, after: true },
     });
-    expect(rows).toEqual([
-      { before: { mode: "console", urlTemplate: "" }, after: custom },
-    ]);
+    expect(rows[0]).toEqual({
+      before: { mode: "console", urlTemplate: "" },
+      after: custom,
+    });
+    expect(rows).toHaveLength(3);
   });
 
   test("over MCP: a preview writes nothing, an apply saves, and the read returns it", async () => {

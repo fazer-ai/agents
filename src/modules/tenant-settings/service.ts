@@ -466,14 +466,19 @@ export async function updateLangfuse(
   return next;
 }
 
-// The link at the end of an approval request's private note (documents/approval-link.ts). Replaced
-// whole: two fields that only mean something together.
+export interface ApprovalLinkUpdateInput {
+  mode: ApprovalLinkSettings["mode"];
+  // Absent keeps the saved template, so switching the mode alone does not lose it.
+  urlTemplate?: string;
+}
+
+// The link at the end of an approval request's private note (documents/approval-link.ts). The
+// template is checked against the mode it is saved with, inside the lock, where the kept one is read.
 export async function updateApprovalLink(
   ctx: TenantContext,
-  input: ApprovalLinkSettings,
+  input: ApprovalLinkUpdateInput,
   base: PrismaClient = basePrisma,
 ): Promise<ApprovalLinkSettings> {
-  const next = normalizeApprovalLink(input);
   return patchBlock(
     ctx,
     base,
@@ -483,7 +488,12 @@ export async function updateApprovalLink(
       target: "tenant_settings:approvalLink",
       project: sides(parseApprovalLinkSettings),
     },
-    () => next,
+    (raw) =>
+      normalizeApprovalLink({
+        mode: input.mode,
+        urlTemplate:
+          input.urlTemplate ?? parseApprovalLinkSettings(raw).urlTemplate,
+      }),
   );
 }
 

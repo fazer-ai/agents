@@ -289,6 +289,12 @@ function whyText(tick: DecisionTickView, t: T): string {
       "No customer message to read yet",
     );
   }
+  if (tick.skipped === "contact_gate") {
+    return t(
+      "conversation.trail.decision.contactGate",
+      "The contact gate leaves this conversation out",
+    );
+  }
   const code = tick.skipped ?? tick.failed ?? tick.failure;
   return code
     ? t("conversation.trail.decision.otherReason", "Reason: {{code}}", {

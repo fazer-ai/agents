@@ -33,6 +33,7 @@ import {
   loadChatwootClient,
 } from "@/modules/chatwoot/instance";
 import { underSignal } from "@/modules/contact-auth/check";
+import { observerRuleVerdict } from "@/modules/contact-auth/observer";
 import {
   currentBlockOf,
   type DecisionTick,
@@ -236,6 +237,30 @@ export async function tryDecisionsAgent(
     return line({ failed: "toolset_build" }, "error");
   }
 
+  // The contact gate's conditions, asked as the tick asks them before it spends anything: a
+  // conversation the gate leaves out is never classified. Its endpoint is not asked (the tick does
+  // not ask it either) and no line is written. A tick also asks the conditions again between
+  // actions, of what the earlier ones wrote; a test does not.
+  const ruled = await observerRuleVerdict(
+    {
+      tenantId,
+      instanceId,
+      conversationId: conv.chatwootConversationId,
+      agentId,
+      settings: agent.settings,
+      base,
+    },
+    { emit: false },
+  );
+  if (ruled !== "allowed") {
+    return line(
+      ruled === "refused"
+        ? { skipped: "contact_gate", messagesRead: evidence.transcript.length }
+        : { failed: "contact_gate", messagesRead: evidence.transcript.length },
+      ruled === "refused" ? "skipped" : "error",
+    );
+  }
+
   // A test is the operator trying the agent, so it is billed and gated as the playground is, never
   // against the inbox's ceiling, which would let testing silence the agent for customers.
   const flow: FlowContext = {
@@ -369,9 +394,13 @@ async function withFences(
   const loaded = needsAttributes
     ? await fences.loadAttributes()
     : { conversationAttributes: {}, contactAttributes: {} };
+  // Null-prototype copies, so a key such as `__proto__` is written as the own property the mirror's
+  // jsonb would hold, not through an inherited setter.
+  const bagCopy = (b: Record<string, unknown>) =>
+    Object.assign(Object.create(null) as Record<string, unknown>, b);
   const state: PreconditionState = {
-    conversationAttributes: { ...loaded.conversationAttributes },
-    contactAttributes: { ...loaded.contactAttributes },
+    conversationAttributes: bagCopy(loaded.conversationAttributes),
+    contactAttributes: bagCopy(loaded.contactAttributes),
   };
   let labels = fences.labels;
   let contactLabels =

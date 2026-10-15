@@ -756,6 +756,7 @@
         "confidence": "confidence {{p}}",
         "configInvalid": "The questions and rules are not valid",
         "configInvalidAt": "The questions and rules are not valid: {{problem}}",
+        "contactGate": "The contact gate leaves this conversation out",
         "credentialUnresolved": "The classifier's credential could not be read from the vault",
         "failed": "Classification failed",
         "failedPlain": "failed",

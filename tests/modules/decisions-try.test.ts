@@ -629,6 +629,58 @@ describe.skipIf(!dbUp)("testing a decisions agent on a conversation", () => {
     }
   });
 
+  // The bug: the contact gate leaves this conversation out, so a tick never classifies it, and the
+  // test paid for a classification and reported rules about to act.
+  test("a conversation the contact gate leaves out is skipped before the paid call", async () => {
+    await setSettings({
+      ...monitoring(),
+      contactAuth: {
+        enabled: true,
+        rule: {
+          kind: "attribute",
+          scope: "conversation",
+          key: "active",
+          equals: "yes",
+        },
+      },
+    });
+    const c = classifier(yes);
+    const { tick } = await runTest(c.fetchImpl);
+    expect(tick.outcome).toBe("skipped");
+    expect(tick.skipped).toBe("contact_gate");
+    expect(c.calls.n).toBe(0);
+  });
+
+  // The bug: a simulated write of the key `__proto__` went through the inherited setter, so a later
+  // precondition on that attribute read as unmet where the mirror's jsonb would hold it.
+  test("an attribute named __proto__ is written as its own key", async () => {
+    const when = [{ question: "pede_reembolso", minProbability: 0.7 }];
+    await setSettings({
+      ...monitoring([
+        {
+          when,
+          action: {
+            tool: "set_custom_attribute",
+            args: { key: "__proto__", value: "x" },
+          },
+        },
+        { when, action: { tool: "private_note", args: { content: "Nota" } } },
+      ]),
+      toolPreconditions: {
+        private_note: {
+          kind: "attribute",
+          scope: "conversation",
+          key: "__proto__",
+        },
+      },
+    });
+    const { tick } = await runTest(classifier(yes).fetchImpl);
+    expect(tick.actions).toMatchObject([
+      { rule: 0, outcome: "decided" },
+      { rule: 1, outcome: "decided" },
+    ]);
+  });
+
   // The bug: paying for a classification of a conversation where the customer has said nothing.
   test("no customer message: skipped before the classifier is called", async () => {
     const c = classifier(yes);

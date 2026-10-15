@@ -10,7 +10,7 @@ import {
   type TranslatedParam,
 } from "@/lib/errors";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
-import { redactEndpoint } from "@/modules/audit/projection";
+import { markUndisclosed, redactEndpoint } from "@/modules/audit/projection";
 import { auditMutation } from "@/modules/audit/service";
 import {
   type ApprovalLinkSettings,
@@ -488,13 +488,22 @@ export async function updateApprovalLink(
       action: "tenant_settings.approval_link_set",
       target: "tenant_settings:approvalLink",
       // NOTE: the template's host only: a path or query may carry a token, and the trail keeps it.
-      project: sides((raw) => {
-        const b = parseApprovalLinkSettings(raw);
+      // A change the redaction hides is marked on both sides, so the row still says something moved.
+      project: (before, after) => {
+        const b = parseApprovalLinkSettings(before);
+        const a = parseApprovalLinkSettings(after);
+        const shown = (l: ApprovalLinkSettings) => ({
+          mode: l.mode,
+          urlTemplate: l.urlTemplate ? redactEndpoint(l.urlTemplate) : "",
+        });
+        const hidden =
+          b.urlTemplate !== a.urlTemplate &&
+          shown(b).urlTemplate === shown(a).urlTemplate;
         return {
-          mode: b.mode,
-          urlTemplate: b.urlTemplate ? redactEndpoint(b.urlTemplate) : "",
+          before: hidden ? markUndisclosed(shown(b)) : shown(b),
+          after: hidden ? markUndisclosed(shown(a)) : shown(a),
         };
-      }),
+      },
     },
     (raw) =>
       normalizeApprovalLink({

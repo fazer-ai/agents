@@ -165,6 +165,22 @@ describe.skipIf(!dbUp)("the approval link setting", () => {
       after: { mode: "custom", urlTemplate: "https://app.example.com/…" },
     });
     expect(rows).toHaveLength(3);
+    // A new path on the same host changes nothing the row shows, so the row says so.
+    await updateApprovalLink(
+      ctx(),
+      {
+        mode: "custom",
+        urlTemplate: "https://app.example.com/other?approval={id}",
+      },
+      appDb,
+    );
+    const moved = await suDb.auditLog.findMany({
+      where: { tenantId, action: "tenant_settings.approval_link_set" },
+      orderBy: { id: "desc" },
+      take: 1,
+      select: { after: true },
+    });
+    expect(moved[0]?.after).toMatchObject({ undisclosedChanged: true });
   });
 
   test("over MCP: a preview writes nothing, an apply saves, and the read returns it", async () => {

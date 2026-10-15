@@ -15,6 +15,7 @@ import {
   NotFoundError,
   TenantTargetRequiredError,
 } from "@/lib/errors";
+import { providerFailure } from "@/lib/provider-failure";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { readLimitsConfig } from "@/modules/agents/limits";
 import { isMonitoring } from "@/modules/agents/mode";
@@ -232,19 +233,22 @@ export async function tryDecisionsAgent(
   await assertPlaygroundSpendCeiling({ tenantId, base, flow });
   const startedAt = Date.now();
   let result: Awaited<ReturnType<typeof askProvider>>;
+  const callDeadline = AbortSignal.timeout(deps.timeoutMs ?? TRY_TIMEOUT_MS);
   try {
     result = await askProvider(config, {
       input: observeDecisionInput(evidence),
       apiKey: key.secret,
       baseURL: key.baseUrl ?? null,
       ...(deps.decisionFetch ? { fetchImpl: deps.decisionFetch } : {}),
-      signal: AbortSignal.timeout(TRY_TIMEOUT_MS),
+      signal: callDeadline,
     });
-  } catch {
+  } catch (err) {
     return line(
       {
         failed: "decision_call",
-        failure: "provider_error",
+        // The tick's closed vocabulary (`HTTP 401`, `timeout`, `provider error`): a test writes no
+        // line, so this is the only place an operator tells a wrong key from a provider outage.
+        failure: providerFailure(err, callDeadline.aborted),
         messagesRead: evidence.transcript.length,
       },
       "error",

@@ -477,6 +477,8 @@ describe.skipIf(!dbUp)("testing a decisions agent on a conversation", () => {
     const { tick } = await runTest(c.fetchImpl);
     expect(tick.outcome).toBe("failed");
     expect(tick.failed).toBe("decision_call");
+    // The cause survives, so a wrong key (401) reads apart from an outage.
+    expect(tick.failure).toBe("HTTP 500");
   });
 
   // The bug: an LLM observer (or a responder) reaching the classifier path with no block to run.

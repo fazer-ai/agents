@@ -130,9 +130,12 @@ describe("a guardrail line that could not judge, on the Logs page", () => {
     ).toBe(true);
   });
 
-  test("a line written before the field existed still reads as unchecked", async () => {
+  test("an older line whose screening never ran still reads as unchecked", async () => {
     const text = await pageText([
-      guardrailLine("c", { direction: "input", outcome: "analysis_failed" }),
+      guardrailLine("c", {
+        direction: "input",
+        outcome: "credential_not_found",
+      }),
     ]);
     expect(
       text.includes(
@@ -140,6 +143,18 @@ describe("a guardrail line that could not judge, on the Logs page", () => {
       ),
     ).toBe(true);
     expect(text.includes(" · language model")).toBe(false);
+  });
+
+  test("an older failed analysis does not claim the message went through", async () => {
+    const text = await pageText([
+      guardrailLine("g", { direction: "output", outcome: "analysis_failed" }),
+    ]);
+    expect(
+      text.includes(
+        "The check failed; this older line does not record whether the message went through",
+      ),
+    ).toBe(true);
+    expect(text.includes("went out unchecked")).toBe(false);
   });
 
   test("in Portuguese", async () => {
@@ -171,7 +186,7 @@ describe("a guardrail line that could not judge, on the Logs page", () => {
         unchecked: false,
       }),
     ]);
-    expect(text.includes("unchecked")).toBe(false);
+    expect(text.includes("The check failed")).toBe(false);
   });
 
   test("a guardrail that tripped is not described as unchecked", async () => {

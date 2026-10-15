@@ -3173,7 +3173,8 @@
     },
     "guardrailUnchecked": {
       "input": "A checagem falhou, e a mensagem do cliente chegou ao agente sem checagem",
-      "output": "A checagem falhou, e a resposta saiu sem checagem"
+      "output": "A checagem falhou, e a resposta saiu sem checagem",
+      "unknown": "A checagem falhou; esta linha antiga não registra se a mensagem passou"
     },
     "level": {
       "error": "Erro",

@@ -3073,7 +3073,8 @@
     },
     "guardrailUnchecked": {
       "input": "The check failed, so the customer's message reached the agent unchecked",
-      "output": "The check failed, so the reply went out unchecked"
+      "output": "The check failed, so the reply went out unchecked",
+      "unknown": "The check failed; this older line does not record whether the message went through"
     },
     "level": {
       "error": "Error",

@@ -76,30 +76,35 @@ export function flowLevelLabel(level: string, t: TFunction): string {
   }
 }
 
-// The outcomes of a guardrail line that could not judge. The gate fails open on every one of them,
-// so the message went on unchecked even on a row written before `detail.unchecked` existed.
-const GUARDRAIL_UNCHECKED_OUTCOMES = new Set([
-  "analysis_failed",
+// The outcomes of a guardrail line that could not set up a screening at all. Nothing was judged, so
+// the gate failed open and the message went on unchecked, on rows written before `detail.unchecked`
+// existed too. `analysis_failed` is not here: on those older rows it also covers a screening that
+// failed in part while another check tripped and stopped the message.
+const GUARDRAIL_NEVER_JUDGED_OUTCOMES = new Set([
   "credential_not_found",
   "model_unavailable",
 ]);
 
 // What a guardrail line that could not judge meant for the message, in words, or null for any other
-// line.
+// line, including a screening that failed in part and still tripped (`unchecked: false`).
 export function guardrailUncheckedLabel(
   stage: string,
   detail: Record<string, unknown> | null,
   t: TFunction,
 ): string | null {
   if (stage !== "guardrail" || !detail) return null;
-  // An explicit `false` is a screening that failed in part and still tripped: the message was
-  // stopped, not let through.
+  if (detail.unchecked === false) return null;
+  const outcome = typeof detail.outcome === "string" ? detail.outcome : null;
   const unchecked =
-    typeof detail.unchecked === "boolean"
-      ? detail.unchecked
-      : typeof detail.outcome === "string" &&
-        GUARDRAIL_UNCHECKED_OUTCOMES.has(detail.outcome);
-  if (!unchecked) return null;
+    detail.unchecked === true ||
+    (outcome !== null && GUARDRAIL_NEVER_JUDGED_OUTCOMES.has(outcome));
+  if (!unchecked) {
+    if (outcome !== "analysis_failed") return null;
+    return t(
+      "logs.guardrailUnchecked.unknown",
+      "The check failed; this older line does not record whether the message went through",
+    );
+  }
   switch (detail.direction) {
     case "input":
       return t(

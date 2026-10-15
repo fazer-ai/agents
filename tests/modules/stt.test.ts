@@ -17,6 +17,7 @@ import type { SttConfig } from "@/modules/stt/settings";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogRows } from "../utils/flowlog";
+import { until } from "../utils/poll";
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -277,18 +278,16 @@ describe.skipIf(!dbUp)("stt", () => {
     overlayMediaAnnotations(tenantId, instanceId, rows);
     expect(rows[0]?.transcribedText).toBe(TRANSCRIPT);
     // The lost write-back is observable on the flow log (stt stage, warn, step write_back).
-    let warned = false;
-    for (let i = 0; i < 30 && !warned; i++) {
+    const warned = await until("the write_back warn", async () => {
       const logs = await flowLogRows(suDb, {
         where: { tenantId, turnId, stage: "stt", level: "warn" },
         select: { detail: true },
       });
-      warned = logs.some(
+      return logs.some(
         (r) =>
           (r.detail as Record<string, unknown> | null)?.step === "write_back",
       );
-      if (!warned) await new Promise((r) => setTimeout(r, 100));
-    }
+    });
     expect(warned).toBe(true);
   });
 
@@ -417,14 +416,13 @@ describe.skipIf(!dbUp)("stt", () => {
     expect(await deliver()).toBeNull();
     expect(asked).toBe(1);
     expect(meta).toEqual([]);
-    let rows: Array<{ status: string; detail: unknown }> = [];
-    for (let i = 0; i < 30 && rows.length === 0; i++) {
-      rows = (await flowLogRows(suDb, {
+    const rows = await until("the stt line", async () => {
+      const found = (await flowLogRows(suDb, {
         where: { tenantId, turnId, stage: "stt" },
         select: { status: true, detail: true },
       })) as Array<{ status: string; detail: unknown }>;
-      if (rows.length === 0) await new Promise((r) => setTimeout(r, 100));
-    }
+      return found.length > 0 ? found : null;
+    });
     expect(rows).toHaveLength(1);
     expect(rows[0]?.status).toBe("ok");
     expect(rows[0]?.detail).toEqual({
@@ -467,14 +465,13 @@ describe.skipIf(!dbUp)("stt", () => {
     expect(out).toEqual(["", "Oi, tudo bem?", ""]);
     const details: unknown[] = [];
     for (const turnId of turnIds) {
-      let rows: Array<{ detail: unknown }> = [];
-      for (let i = 0; i < 30 && rows.length === 0; i++) {
-        rows = (await flowLogRows(suDb, {
+      const rows = await until("the playground stt line", async () => {
+        const found = (await flowLogRows(suDb, {
           where: { tenantId, turnId, stage: "stt", source: "playground" },
           select: { detail: true },
         })) as Array<{ detail: unknown }>;
-        if (rows.length === 0) await new Promise((r) => setTimeout(r, 100));
-      }
+        return found.length > 0 ? found : null;
+      });
       details.push(rows[0]?.detail);
     }
     expect(details).toEqual([

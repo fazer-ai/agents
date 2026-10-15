@@ -1,10 +1,21 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, jest, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { authorizeContact } from "@/modules/contact-auth/service";
 import type { ContactAuthConfig } from "@/modules/contact-auth/settings";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
+
+// `until` sleeps on `Bun.sleep`, and a fake clock freezes every clock Bun has (`Date`,
+// `performance`, `Bun.nanoseconds`) and never wakes that sleep. This yields with `setImmediate`, which
+// the fake clock leaves alone, so the database work under the gate still completes, and it is bounded
+// by turns of the loop because no clock moves.
+async function onFakeClock(what: string, check: () => boolean, turns: number) {
+  for (let turn = 0; !check(); turn++) {
+    if (turn >= turns) throw new Error(`gave up waiting for ${what}`);
+    await new Promise((r) => setImmediate(r));
+  }
+}
 
 // `timeoutMs` says it covers every step that waits. The credential is resolved BEFORE the request,
 // and for a managed-OAuth entry that resolution refreshes a token over the network under a ceiling
@@ -113,9 +124,12 @@ describe.skipIf(!dbUp)("the gate's time budget", () => {
   });
 
   test("the request inherits what the credential already spent", async () => {
+    // Both deadlines are timers (the gate's budget and the request's own), so the budget is spent
+    // on a fake clock: the credential takes 700 of the 1200, and the clock then crosses 1200.
+    jest.useFakeTimers();
     let fetched = 0;
-    const started = Date.now();
-    const verdict = await authorizeContact({
+    let settled = false;
+    const pending = authorizeContact({
       tenantId,
       agentId: 1n,
       contactDbId,
@@ -130,7 +144,7 @@ describe.skipIf(!dbUp)("the gate's time budget", () => {
       base: appDb,
       // Slow but not fatal: most of the budget goes here, and the rest belongs to the request.
       resolveCredential: async () => {
-        await new Promise((r) => setTimeout(r, 700));
+        jest.advanceTimersByTime(700);
         return { value: "k", kind: null, paramName: null };
       },
       // Answers headers and then stalls, which under one shared budget is a timeout well before
@@ -152,10 +166,32 @@ describe.skipIf(!dbUp)("the gate's time budget", () => {
         );
       }) as unknown as typeof fetch,
       assertSafe: async (u: string) => new URL(u),
+    }).finally(() => {
+      settled = true;
     });
-    expect(verdict).toMatchObject({ outcome: "error", reason: "timeout" });
+    try {
+      await onFakeClock(
+        "the request reaching the endpoint",
+        () => fetched === 1,
+        5_000_000,
+      );
+      // Past the gate's budget and well short of a fresh 1200ms for the request: only a request on
+      // the gate's own deadline is cut here.
+      jest.advanceTimersByTime(600);
+      // A gate that is cut answers within a few turns of the loop; one still waiting on a fresh
+      // deadline of its own does not answer at all on this clock.
+      await onFakeClock("the gate answering", () => settled, 1_000).catch(
+        () => {},
+      );
+      expect(settled).toBe(true);
+    } finally {
+      jest.advanceTimersByTime(10_000);
+      jest.useRealTimers();
+    }
+    expect(await pending).toMatchObject({
+      outcome: "error",
+      reason: "timeout",
+    });
     expect(fetched).toBe(1);
-    // The whole call fits in the configured budget plus slack, NOT 700ms + a fresh 1200ms.
-    expect(Date.now() - started).toBeLessThan(1_800);
   });
 });

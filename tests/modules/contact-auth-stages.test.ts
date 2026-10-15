@@ -15,9 +15,12 @@ import {
   parseContactAuthRule,
   readContactAuthConfig,
 } from "@/modules/contact-auth/settings";
+import * as state from "@/modules/contact-auth/state";
 import { clearContactAuthState } from "@/modules/contact-auth/state";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { until } from "../utils/poll";
+import { countCalls } from "../utils/waiting";
 
 // ── THE GATE IN TWO STAGES ──
 //
@@ -392,9 +395,21 @@ describe.skipIf(!dbUp)("asking each stage", () => {
         return new Response('{"authorized":true}', { status: 200 });
       }) as unknown as typeof fetch;
       const key = `coalesce:${seq}`;
+      // Both callers have put the endpoint's question to the flight before the answer is released,
+      // so the second one can only join or ask again, never arrive after the first is done.
+      const flights = countCalls(state, "singleFlight", (flight: string) =>
+        flight.endsWith(`:${key}`),
+      );
       const both = ask(config, groupConv, "both", slow, key);
       const endpointOnly = ask(config, groupConv, "endpoint", slow, key);
-      await new Promise((r) => setTimeout(r, 50));
+      try {
+        await until(
+          "both callers at the endpoint's flight",
+          () => flights.count() >= 2,
+        );
+      } finally {
+        flights.restore();
+      }
       release();
       const [a, b] = await Promise.all([both, endpointOnly]);
       expect(calls).toBe(1);

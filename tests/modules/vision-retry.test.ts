@@ -219,12 +219,15 @@ function geminiFetch(statuses: number[]) {
 // deadline would leave the policy above deciding nothing, and three attempts of 60s would spend
 // three minutes of a turn a customer is waiting on.
 describe("the per-attempt budget is what aborts the call", () => {
-  // Honors the abort signal, like a real fetch: resolves late, rejects the moment it is cut off.
+  // Honors the abort signal, like a real fetch: resolves late, rejects the moment it is cut off. A
+  // passing run never pays `LATE_MS` (the abort cancels it); a provider that ignores its budget gets
+  // the late answer and fails on the assertion instead of hanging.
+  const LATE_MS = 5_000;
   const slowFetch = (async (_url: string | URL, init?: RequestInit) => {
     return await new Promise<Response>((resolve, reject) => {
       const t = setTimeout(
         () => resolve(new Response("{}", { status: 200 })),
-        5_000,
+        LATE_MS,
       );
       init?.signal?.addEventListener("abort", () => {
         clearTimeout(t);

@@ -956,12 +956,22 @@ describe.skipIf(!dbUp)("a picture in an email body reaches vision", () => {
     const lida = blob(660, "lida.png");
     const cortada = blob(661, "cortada.png");
     const deadline = new AbortController();
+    // The first file's read has answered before the deadline passes on the second.
+    const firstRead = Promise.withResolvers<void>();
+    const answer = visionFetch(["Um comprovante."]);
+    const fetchImpl = (async (...args: Parameters<typeof fetch>) => {
+      const res = await answer(...args);
+      firstRead.resolve();
+      return res;
+    }) as unknown as typeof fetch;
     const client = {
       servesUrl: () => true,
       downloadAttachment: async (dataUrl: string) => {
         // The second file is still downloading when the deadline passes.
         if (dataUrl === cortada) {
-          await new Promise((r) => setTimeout(r, 50));
+          await firstRead.promise;
+          // One turn, so the read's own reactions run before the deadline lands.
+          await new Promise((r) => setTimeout(r, 0));
           deadline.abort();
         }
         return { bytes: png(1200, 1600), contentType: "image/png" };
@@ -997,7 +1007,7 @@ describe.skipIf(!dbUp)("a picture in an email body reaches vision", () => {
       base: appDb,
       deps: {
         makeClient: async () => client,
-        fetchImpl: visionFetch(["Um comprovante."]),
+        fetchImpl,
       },
       signal: deadline.signal,
     });

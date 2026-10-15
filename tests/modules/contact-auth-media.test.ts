@@ -26,8 +26,11 @@ import {
   clearContactAuthState,
   mediaRefusedHereThrough,
 } from "@/modules/contact-auth/state";
+import * as sttService from "@/modules/stt/service";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { until } from "../utils/poll";
+import { countCalls } from "../utils/waiting";
 
 // With the contact authorization gate on, no media of an incoming message reaches the STT or vision
 // provider unless the gate let that message through. Counted at the injected provider fetches.
@@ -882,7 +885,8 @@ describe.skipIf(!dbUp)("contact authorization gate and the media pass", () => {
       clearContactAuthState();
     });
 
-    // The provider takes a while, as the real one does, so the deliveries overlap while it runs.
+    // The provider answers only once all three deliveries have asked for the transcription, so they
+    // overlap while it runs: each later one either joins the read in flight or makes its own.
     async function burst(
       convId: number,
       inbox: number,
@@ -890,21 +894,31 @@ describe.skipIf(!dbUp)("contact authorization gate and the media pass", () => {
       humanHeld = false,
     ) {
       const seen: NormalizedChatwootEvent[] = [];
-      duringStt = () => Bun.sleep(80);
-      await Promise.all(
-        (
-          ["message_created", "message_updated", "message_updated"] as const
-        ).map((event) =>
-          deliver({
-            convId,
-            chatwootInboxId: inbox,
-            event,
-            messageId,
-            humanHeld,
-            seen,
-          }),
-        ),
-      );
+      const asks = countCalls(sttService, "transcribeInboundAudio");
+      duringStt = async () => {
+        await until(
+          "the three deliveries asking for the words",
+          () => asks.count() >= 3,
+        );
+      };
+      try {
+        await Promise.all(
+          (
+            ["message_created", "message_updated", "message_updated"] as const
+          ).map((event) =>
+            deliver({
+              convId,
+              chatwootInboxId: inbox,
+              event,
+              messageId,
+              humanHeld,
+              seen,
+            }),
+          ),
+        );
+      } finally {
+        asks.restore();
+      }
       return seen;
     }
 

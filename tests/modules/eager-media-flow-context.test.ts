@@ -616,7 +616,7 @@ describe.skipIf(!dbUp)("the eager-media flow context", () => {
       },
     });
     const threadId = `${tenantId}:${instanceId}:${OBS_CONV_ID}`;
-    await new Promise((r) => setTimeout(r, 300));
+    // The delivery awaited its eager media, and `flowLogRow` settles every tracked write first.
     expect(
       await flowLogRow(suDb, {
         where: { tenantId, threadId, stage: "stt" },
@@ -768,7 +768,7 @@ describe.skipIf(!dbUp)("the eager-media flow context", () => {
       },
     });
     const threadId = `${tenantId}:${instanceId}:${OBS_CONV_ID}`;
-    await new Promise((r) => setTimeout(r, 300));
+    // The delivery awaited its eager media, and `flowLogRow` settles every tracked write first.
     expect(
       await flowLogRow(suDb, {
         where: { tenantId, threadId, stage: "stt" },

@@ -1,10 +1,11 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { AIMessage } from "@langchain/core/messages";
 import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import * as annotations from "@/modules/chatwoot/annotations";
 import {
   clearMediaAnnotations,
   openTranscription,
@@ -149,6 +150,21 @@ async function flush(
   return { out, sent, seen: model.seen, elapsedMs: Date.now() - started };
 }
 
+// Runs `stimulus` the moment the flush starts waiting for an open transcription, with its waiters
+// already registered: the event the test stages lands DURING the wait, on any machine, where a timer
+// only guesses that the flush got there first.
+function duringTheWait(stimulus: () => void): { restore: () => void } {
+  const real = annotations.awaitOpenTranscriptions;
+  const spy = spyOn(annotations, "awaitOpenTranscriptions").mockImplementation(
+    (...args: Parameters<typeof real>) => {
+      const waiting = real(...args);
+      stimulus();
+      return waiting;
+    },
+  );
+  return { restore: () => spy.mockRestore() };
+}
+
 describe.skipIf(!dbUp)(
   "debounce flush: a voice note still being transcribed",
   () => {
@@ -224,14 +240,14 @@ describe.skipIf(!dbUp)(
       await seedConversation(901);
       first();
       const close = openTranscription({ tenantId, instanceId, messageId: 3 });
-      setTimeout(() => {
+      const wait = duringTheWait(() => {
         stashMediaAnnotation(
           { tenantId, instanceId, messageId: 3 },
           { transcribedText: WORDS },
         );
         close();
-      }, 300);
-      const { out, sent, seen } = await flush(901);
+      });
+      const { out, sent, seen } = await flush(901).finally(wait.restore);
       expect(out).toEqual({ outcome: "done" });
       expect(sent).toEqual([[901, REPLY]]);
       expect(seen[0]).toContain(
@@ -261,8 +277,10 @@ describe.skipIf(!dbUp)(
       await seedConversation(903);
       first();
       const close = openTranscription({ tenantId, instanceId, messageId: 3 });
-      setTimeout(close, 100);
-      const { out, seen, elapsedMs } = await flush(903, 10_000);
+      const wait = duringTheWait(close);
+      const { out, seen, elapsedMs } = await flush(903, 10_000).finally(
+        wait.restore,
+      );
       expect(out).toEqual({ outcome: "done" });
       expect(seen[0]).toContain(MARKER);
       expect(elapsedMs).toBeLessThan(5000);
@@ -320,9 +338,11 @@ describe.skipIf(!dbUp)(
       first();
       const close = openTranscription({ tenantId, instanceId, messageId: 3 });
       const deadline = new AbortController();
-      setTimeout(() => deadline.abort(), 100);
+      const wait = duringTheWait(() => deadline.abort());
       try {
-        const { elapsedMs } = await flush(906, 10_000, deadline.signal);
+        const { elapsedMs } = await flush(906, 10_000, deadline.signal).finally(
+          wait.restore,
+        );
         expect(elapsedMs).toBeLessThan(5000);
       } finally {
         close();

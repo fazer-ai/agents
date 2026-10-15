@@ -50,7 +50,7 @@ import {
   flowLogRow,
   flowLogRows,
 } from "@/tests/utils/flowlog";
-import { POLL_DEADLINE_MS } from "@/tests/utils/poll";
+import { until } from "@/tests/utils/poll";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { burnSchedulerJobId } from "../utils/scheduler";
 import {
@@ -337,16 +337,13 @@ async function convRowId(convId: number) {
 
 async function correctionLine(convId: number) {
   const conversationId = await convRowId(convId);
-  const deadline = Date.now() + POLL_DEADLINE_MS;
-  let lines: Array<{ level: string; detail: unknown }> = [];
-  while (Date.now() < deadline) {
-    lines = await flowLogRows(suDb, {
+  const lines = await until("the correction line", async () => {
+    const found = await flowLogRows(suDb, {
       where: { tenantId, conversationId, stage: "delivery" },
       select: { level: true, detail: true },
     });
-    if (lines.length > 0) break;
-    await new Promise((r) => setTimeout(r, 50));
-  }
+    return found.length > 0 ? found : null;
+  });
   expect(lines).toHaveLength(1);
   const line = lines[0];
   if (line === undefined) throw new Error("no correction line was written");
@@ -3881,7 +3878,7 @@ describe.skipIf(!dbUp)("debounce", () => {
       where: { tenantId, chatwootConversationId: convId },
       select: { id: true },
     });
-    await new Promise((r) => setTimeout(r, 200));
+    // `flowLogCount` settles every tracked write before counting, so a line the rescue owed is here.
     expect(
       await flowLogCount(suDb, {
         where: { tenantId, conversationId: conv.id, stage: "delivery" },
@@ -5278,15 +5275,13 @@ describe.skipIf(!dbUp)("debounce", () => {
       where: { tenantId, chatwootConversationId: convId },
       select: { id: true },
     });
-    for (let i = 0; i < 40; i++) {
-      const row = await flowLogRow(suDb, {
+    const row = await until("the handoff line", () =>
+      flowLogRow(suDb, {
         where: { tenantId, stage: "handoff", conversationId: conversation.id },
         orderBy: { id: "desc" },
-      });
-      if (row) return row.detail;
-      await new Promise((r) => setTimeout(r, 50));
-    }
-    return null;
+      }),
+    );
+    return row.detail;
   }
 
   async function routeRowOf(convId: number) {
@@ -5294,15 +5289,13 @@ describe.skipIf(!dbUp)("debounce", () => {
       where: { tenantId, chatwootConversationId: convId },
       select: { id: true },
     });
-    for (let i = 0; i < 40; i++) {
-      const row = await flowLogRow(suDb, {
+    const row = await until("the route line", () =>
+      flowLogRow(suDb, {
         where: { tenantId, stage: "route", conversationId: conversation.id },
         orderBy: { id: "desc" },
-      });
-      if (row) return row;
-      await new Promise((r) => setTimeout(r, 50));
-    }
-    return null;
+      }),
+    );
+    return row;
   }
 
   // The OTHER unbound-inbox exit: the gate is OPEN, so this burst is the bot's to answer and there

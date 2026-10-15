@@ -791,6 +791,7 @@ describe.skipIf(!dbUp)("the contact gate's rule on the observer path", () => {
     const retriesHeld = new Promise<void>((r) => {
       releaseRetries = r;
     });
+    const retrying = Promise.withResolvers<void>();
     const askingFetch = (async (url: unknown, init?: unknown) => {
       asked = true;
       return (authFetch as (u: unknown, i?: unknown) => Promise<Response>)(
@@ -817,9 +818,13 @@ describe.skipIf(!dbUp)("the contact gate's rule on the observer path", () => {
       settings,
       base: downAfterAsk,
       fetchImpl: askingFetch,
-      sleep: () => retriesHeld,
+      sleep: () => {
+        retrying.resolve();
+        return retriesHeld;
+      },
     });
-    await new Promise((r) => setTimeout(r, 50));
+    // The denial was asked and its write failed: it now sits in its retries, held.
+    await retrying.promise;
     authAnswer = "allow";
     clearContactAuthState();
     await new Promise((r) => setTimeout(r, 5));

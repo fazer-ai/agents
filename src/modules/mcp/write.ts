@@ -676,13 +676,16 @@ export async function agentSettingsSet(
     // On the MERGED bag, not the patch: fields merge within a block, so a stored fence survives a
     // patch that touches the same block, and the preview must refuse what the apply would.
     assertResolveLabelsNotProtected(nextBag);
-    // The decisions block is refined only whole, so the merged monitoring block is asked here, where
-    // the preview can refuse what the apply's write boundary would.
-    if (patch.monitoring !== undefined) {
-      assertSettingsClosedValues(
-        { monitoring: nextBag.monitoring },
-        current.settings,
-      );
+    // The blocks refined only whole (monitoring's decisions block, guardrails' classifier against
+    // its actions) are asked merged here, where the preview can refuse what the apply's write
+    // boundary would.
+    for (const block of ["monitoring", "guardrails"] as const) {
+      if (patch[block] !== undefined) {
+        assertSettingsClosedValues(
+          { [block]: nextBag[block] },
+          current.settings,
+        );
+      }
     }
     // PROJECTED, like the read — the same question asked in a third place. A client is expected to
     // reuse the preview's `after` (that is what a dry run is for), so a diff carrying the fields the

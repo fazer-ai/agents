@@ -10,11 +10,12 @@ import { markdownLink } from "@/modules/documents/markdown-link";
 
 afterEach(() => cleanup());
 
-test("an address with parentheses or a backslash renders as one link to that address", () => {
+test("an address with parentheses, a backslash or an entity-like query renders as one link to that address", () => {
   for (const url of [
     "https://app.example.com/docs?f=(open)&approval=42",
     "https://app.example.com/review/42\\",
     "https://app.example.com/a\\)b/42",
+    "https://app.example.com/docs?approval=42&copy;=1",
   ]) {
     render(
       <Markdown>{`Pedido aberto.\n\n${markdownLink("Ver aprovação", url)}`}</Markdown>,

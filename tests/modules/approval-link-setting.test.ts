@@ -63,7 +63,7 @@ describe("what the note's link becomes", () => {
       42n,
     );
     expect(note).toBe(
-      "Pedido aberto.\n\n[Ver aprovação](https://app.example.com/docs?f=%28open%29&id=42)",
+      "Pedido aberto.\n\n[Ver aprovação](https://app.example.com/docs?f=%28open%29&amp;id=42)",
     );
     expect(
       approvalPageUrl({ mode: "console", urlTemplate: "" }, 7n, 42n),

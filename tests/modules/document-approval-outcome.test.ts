@@ -359,7 +359,7 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
       await runApprovalOpened(tenantId, opened.requestId, appDb, {
         makeClient: rec.makeClient,
       });
-      const ours = `\n\n[Ver aprovação](https://app.example.com/docs?f=%28open%29&approval=${opened.requestId})`;
+      const ours = `\n\n[Ver aprovação](https://app.example.com/docs?f=%28open%29&amp;approval=${opened.requestId})`;
       expect(String(outcomeNotes(rec.calls)[0]?.[2]).endsWith(ours)).toBe(true);
 
       await rejectDocumentRequest({

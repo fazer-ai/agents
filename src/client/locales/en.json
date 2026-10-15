@@ -1210,6 +1210,7 @@
   "documents": {
     "add": "New template",
     "approvalLink": {
+      "edit": "Edit the link in approval notes",
       "loadError": "Could not read the approval link setting.",
       "mode": "The link opens",
       "modeConsole": "This console",
@@ -1218,6 +1219,8 @@
       "noneHelp": "The notes are still written, with the decision and the reviewer's note, only without the link.",
       "saveError": "Could not save.",
       "subtitle": "Every private note about an approval request (opened, approved, rejected, expired) ends with a link to the request. Point it to the app where your team reviews them, or leave it out.",
+      "summaryConsole": "This console",
+      "summaryNone": "No link",
       "template": "Address",
       "templateHelp": "A full address starting with https://, with {id} where the request number goes. Leave it empty to go back to this console.",
       "title": "Link in approval notes"

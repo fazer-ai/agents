@@ -1261,6 +1261,7 @@
   "documents": {
     "add": "Novo modelo",
     "approvalLink": {
+      "edit": "Editar o link nas notas de aprovação",
       "loadError": "Não foi possível ler a configuração do link da aprovação.",
       "mode": "O link abre",
       "modeConsole": "Este console",
@@ -1269,6 +1270,8 @@
       "noneHelp": "As notas continuam sendo escritas, com a decisão e a observação de quem revisou, só sem o link.",
       "saveError": "Não foi possível salvar.",
       "subtitle": "Toda nota privada sobre um pedido de aprovação (aberto, aprovado, rejeitado, expirado) termina com um link para o pedido. Aponte para o app onde sua equipe revisa os pedidos, ou deixe o link de fora.",
+      "summaryConsole": "Este console",
+      "summaryNone": "Sem link",
       "template": "Endereço",
       "templateHelp": "Um endereço completo começando com https://, com {id} onde entra o número do pedido. Deixe vazio para voltar a este console.",
       "title": "Link nas notas de aprovação"

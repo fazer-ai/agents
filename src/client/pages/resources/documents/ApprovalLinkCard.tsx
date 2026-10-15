@@ -1,3 +1,4 @@
+import { Link2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -6,10 +7,12 @@ import {
   FilterPills,
   FormField,
   Input,
+  Modal,
+  ModalCancelButton,
   Skeleton,
+  useModalController,
   useToast,
 } from "@/client/components";
-import { useNavGuard } from "@/client/contexts/NavGuardContext";
 import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
 
@@ -20,8 +23,8 @@ interface ApprovalLink {
 }
 
 // Where the link at the end of an approval request's private note in Chatwoot points
-// (docs/documents.md, Approval). Read and saved on its own, so a reload of the templates around it
-// never touches a draft here.
+// (docs/documents.md, Approval). A summary row like the letterhead's, edited in a modal, and read and
+// saved on its own, so a reload of the templates around it never touches a draft.
 export function ApprovalLinkCard() {
   const { t } = useTranslation();
   const { showToast } = useToast();
@@ -31,6 +34,7 @@ export function ApprovalLinkCard() {
   const [template, setTemplate] = useState("");
   const [saving, setSaving] = useState(false);
   const [fieldError, setFieldError] = useState<string | null>(null);
+  const modal = useModalController();
   // The draft as it is now, for a save that answers after the operator kept typing.
   const draft = useRef({ mode, template });
   draft.current = { mode, template };
@@ -57,11 +61,10 @@ export function ApprovalLinkCard() {
     saved !== null &&
     (mode !== saved.mode ||
       (mode === "custom" && template.trim() !== saved.urlTemplate));
-  useNavGuard(dirty);
 
   if (!saved) {
     return (
-      <Card className="flex flex-col gap-3">
+      <Card className="py-3">
         {failed ? (
           <div className="flex items-center justify-between gap-2">
             <span className="text-sm text-text-muted">
@@ -77,8 +80,7 @@ export function ApprovalLinkCard() {
         ) : (
           <div role="status" className="flex flex-col gap-3">
             <span className="sr-only">{t("common.loading", "Loading…")}</span>
-            <Skeleton className="h-5 w-48" />
-            <Skeleton className="h-8 w-full" />
+            <Skeleton className="h-5 w-64" />
           </div>
         )}
       </Card>
@@ -116,6 +118,7 @@ export function ApprovalLinkCard() {
       ) {
         setMode(data.approvalLink.mode);
         setTemplate(data.approvalLink.urlTemplate);
+        modal.close();
       }
       showToast(t("common.saved", "Saved."), "success");
     } catch (e) {
@@ -129,84 +132,131 @@ export function ApprovalLinkCard() {
     }
   }
 
+  function open() {
+    if (!saved) return;
+    setMode(saved.mode);
+    setTemplate(saved.urlTemplate);
+    setFieldError(null);
+    modal.open();
+  }
+
+  const current =
+    saved.mode === "custom"
+      ? saved.urlTemplate
+      : saved.mode === "none"
+        ? t("documents.approvalLink.summaryNone", "No link")
+        : t("documents.approvalLink.summaryConsole", "This console");
+
   return (
-    <Card className="flex flex-col gap-3">
-      <div>
-        <p className="font-medium text-sm text-text-primary">
-          {t("documents.approvalLink.title", "Link in approval notes")}
-        </p>
-        <p className="text-text-muted text-xs">
-          {t(
-            "documents.approvalLink.subtitle",
-            "Every private note about an approval request (opened, approved, rejected, expired) ends with a link to the request. Point it to the app where your team reviews them, or leave it out.",
-          )}
-        </p>
-      </div>
-      <FormField
-        label={t("documents.approvalLink.mode", "The link opens")}
-        group
-      >
-        <FilterPills
-          aria-label={t("documents.approvalLink.mode", "The link opens")}
-          value={mode}
-          onChange={(k) => {
-            setMode(k as Mode);
-            setFieldError(null);
-          }}
-          items={[
-            {
-              key: "console",
-              label: t("documents.approvalLink.modeConsole", "This console"),
-            },
-            {
-              key: "custom",
-              label: t("documents.approvalLink.modeCustom", "Another address"),
-            },
-            {
-              key: "none",
-              label: t("documents.approvalLink.modeNone", "No link"),
-            },
-          ]}
-        />
-      </FormField>
-      {mode === "custom" && (
-        <FormField
-          label={t("documents.approvalLink.template", "Address")}
-          description={t(
-            "documents.approvalLink.templateHelp",
-            "A full address starting with https://, with {id} where the request number goes. Leave it empty to go back to this console.",
-          )}
-          error={fieldError}
-        >
-          <Input
-            value={template}
-            onChange={(e) => {
-              setTemplate(e.target.value);
-              setFieldError(null);
-            }}
-            placeholder="https://app.example.com/documents?approval={id}"
-            maxLength={500}
-          />
-        </FormField>
-      )}
-      {mode === "none" && (
-        <p className="text-sm text-text-secondary">
-          {t(
-            "documents.approvalLink.noneHelp",
-            "The notes are still written, with the decision and the reviewer's note, only without the link.",
-          )}
-        </p>
-      )}
-      <div className="flex justify-end">
+    <>
+      <Card className="flex items-center justify-between gap-4 py-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <Link2 className="h-4 w-4 shrink-0 text-accent" aria-hidden="true" />
+          <div className="min-w-0">
+            <p className="truncate font-medium text-sm text-text-primary">
+              {t("documents.approvalLink.title", "Link in approval notes")}
+            </p>
+            <p className="truncate text-text-muted text-xs">{current}</p>
+          </div>
+        </div>
         <Button
+          variant="secondary"
           size="sm"
-          onClick={save}
-          loading={saving}
-          disabled={!dirty || saving}
+          onClick={open}
+          aria-label={t(
+            "documents.approvalLink.edit",
+            "Edit the link in approval notes",
+          )}
         >
-          {t("common.save", "Save")}
+          {t("common.edit", "Edit")}
         </Button>
-      </div>
-    </Card>
+      </Card>
+
+      <Modal
+        modal={modal}
+        title={t("documents.approvalLink.title", "Link in approval notes")}
+        busy={saving}
+        unsavedChanges={dirty}
+        footer={
+          <div className="flex justify-end gap-2">
+            <ModalCancelButton disabled={saving} />
+            <Button onClick={save} loading={saving} disabled={!dirty || saving}>
+              {t("common.save", "Save")}
+            </Button>
+          </div>
+        }
+      >
+        <div className="flex flex-col gap-3">
+          <p className="text-sm text-text-muted">
+            {t(
+              "documents.approvalLink.subtitle",
+              "Every private note about an approval request (opened, approved, rejected, expired) ends with a link to the request. Point it to the app where your team reviews them, or leave it out.",
+            )}
+          </p>
+          <FormField
+            label={t("documents.approvalLink.mode", "The link opens")}
+            group
+          >
+            <FilterPills
+              aria-label={t("documents.approvalLink.mode", "The link opens")}
+              value={mode}
+              onChange={(k) => {
+                setMode(k as Mode);
+                setFieldError(null);
+              }}
+              items={[
+                {
+                  key: "console",
+                  label: t(
+                    "documents.approvalLink.modeConsole",
+                    "This console",
+                  ),
+                },
+                {
+                  key: "custom",
+                  label: t(
+                    "documents.approvalLink.modeCustom",
+                    "Another address",
+                  ),
+                },
+                {
+                  key: "none",
+                  label: t("documents.approvalLink.modeNone", "No link"),
+                },
+              ]}
+            />
+          </FormField>
+          {mode === "custom" && (
+            <FormField
+              label={t("documents.approvalLink.template", "Address")}
+              description={t(
+                "documents.approvalLink.templateHelp",
+                "A full address starting with https://, with {id} where the request number goes. Leave it empty to go back to this console.",
+              )}
+              error={fieldError}
+            >
+              <Input
+                autoFocus
+                value={template}
+                onChange={(e) => {
+                  setTemplate(e.target.value);
+                  setFieldError(null);
+                }}
+                placeholder="https://app.example.com/documents?approval={id}"
+                maxLength={500}
+              />
+            </FormField>
+          )}
+          {mode === "none" && (
+            <p className="text-sm text-text-secondary">
+              {t(
+                "documents.approvalLink.noneHelp",
+                "The notes are still written, with the decision and the reviewer's note, only without the link.",
+              )}
+            </p>
+          )}
+        </div>
+      </Modal>
+    </>
   );
 }

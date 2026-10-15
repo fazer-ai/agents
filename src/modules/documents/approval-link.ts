@@ -9,6 +9,7 @@ import basePrisma from "@/api/lib/prisma";
 import { AppError } from "@/lib/errors";
 import { runScopedOn } from "@/lib/tenancy";
 import { consoleUrl } from "@/modules/mcp/console-links";
+import { markdownLink } from "./markdown-link";
 
 export const APPROVAL_LINK_MODES = ["console", "custom", "none"] as const;
 export type ApprovalLinkMode = (typeof APPROVAL_LINK_MODES)[number];
@@ -99,15 +100,6 @@ export function normalizeApprovalLink(
   return { mode: "custom", urlTemplate };
 }
 
-// A Markdown link destination ends at the first unbalanced `)`, so the parentheses (and the angle
-// brackets) are percent-encoded: the link a reader follows decodes back to exactly what was typed.
-function markdownDestination(url: string): string {
-  return url.replace(
-    /[()<>]/g,
-    (c) => `%${c.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`,
-  );
-}
-
 export function approvalPageUrl(
   settings: ApprovalLinkSettings,
   tenantId: bigint,
@@ -134,5 +126,5 @@ export function withApprovalLink(
 ): string {
   const url = approvalPageUrl(settings, tenantId, requestId);
   if (url === null) return text;
-  return `${text}\n\n[Ver aprovação](${markdownDestination(url)})`;
+  return `${text}\n\n${markdownLink("Ver aprovação", url)}`;
 }

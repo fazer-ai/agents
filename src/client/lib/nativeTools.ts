@@ -167,7 +167,7 @@ export function nativeToolMeta(name: string, t: TFunction): NativeToolMeta {
         label: t("nativeTools.skip_reply.label", "Skip reply"),
         description: t(
           "nativeTools.skip_reply.desc",
-          "Decide not to reply when a message needs no answer (e.g. just 'ok' or an emoji). When the agent says the conversation is not for it or needs a person, or nobody has answered it yet, it goes to the team as open with a private note, and the agent stops answering there.",
+          "Decide not to reply when a message needs no answer (e.g. just 'ok' or an emoji). When nobody has answered the conversation yet, it goes to the team as open with a private note, and the agent stops answering there. On a follow-up, the agent can also pass the conversation to the team this way.",
         ),
       };
     case "calculator":

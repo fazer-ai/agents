@@ -3278,7 +3278,7 @@
       "label": "Voice preference"
     },
     "skip_reply": {
-      "desc": "Decide not to reply when a message needs no answer (e.g. just 'ok' or an emoji). When the agent says the conversation is not for it or needs a person, or nobody has answered it yet, it goes to the team as open with a private note, and the agent stops answering there.",
+      "desc": "Decide not to reply when a message needs no answer (e.g. just 'ok' or an emoji). When nobody has answered the conversation yet, it goes to the team as open with a private note, and the agent stops answering there. On a follow-up, the agent can also pass the conversation to the team this way.",
       "label": "Skip reply"
     },
     "update_contact": {

@@ -2396,6 +2396,11 @@ function reactToMessageTool(ctx: ToolCtx) {
   );
 }
 
+// What the model reads when it asks a turn that answers a customer for a reason that hands over. A
+// bare "expected acknowledged" teaches it to stay silent under the one reason left.
+const SKIP_REPLY_REFUSED_REASON =
+  "Only `acknowledged` is available here, and only when the message asks nothing. Nothing was skipped. If the team has to see this, call handoff_to_human (its customerMessage tells the customer a person will continue); otherwise answer the message, declining or redirecting if you must refuse.";
+
 const SKIP_REPLY_PROACTIVE_DESCRIPTION =
   "Decide NOT to send any reply this turn, then output NO reply text (end your turn). `reason` decides what happens next: `acknowledged` when a reply would add nothing (the customer sent just 'ok', 'obrigado' or an emoji, optionally after react_to_message) and the conversation stays with you; `not_for_us` when this is not a real conversation (an automated report, a payment notice, a newsletter, an unsolicited pitch); `needs_human` when it is a real request you cannot resolve. The last two hand the conversation to the team with a private note, and so does ANY skip on a conversation nobody on our side has answered yet.";
 
@@ -2454,9 +2459,11 @@ function skipReplyTool(ctx: ToolCtx) {
         : "Record that this turn adds nothing, then output NO text (end your turn). This turn does not answer the customer, and `reason` is only recorded: nothing is handed over by it. To put a person on the conversation, call handoff_to_human.",
 
       schema: z.object({
-        reason: z.enum(
-          ctx.proactive ? SKIP_REPLY_REASONS : SKIP_REPLY_OFFERED_REASONS,
-        ),
+        reason: ctx.proactive
+          ? z.enum(SKIP_REPLY_REASONS)
+          : z.enum(SKIP_REPLY_OFFERED_REASONS, {
+              error: SKIP_REPLY_REFUSED_REASON,
+            }),
         detail: z
           .string()
           .max(SKIP_DETAIL_MAX)

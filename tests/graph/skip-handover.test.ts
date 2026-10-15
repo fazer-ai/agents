@@ -178,8 +178,14 @@ describe("the reason on skip_reply", () => {
   // conversation over were a transfer the customer never heard about; handoff_to_human is the door.
   test("a turn that answers a customer offers only acknowledged", async () => {
     const call = callerOf(false);
-    await expect(call({ reason: "not_for_us" })).rejects.toThrow();
-    await expect(call({ reason: "needs_human" })).rejects.toThrow();
+    // The refusal names the door that hands over and speaks: a bare "expected acknowledged" is read
+    // as "stay silent with acknowledged".
+    await expect(call({ reason: "not_for_us" })).rejects.toThrow(
+      /handoff_to_human/,
+    );
+    await expect(call({ reason: "needs_human" })).rejects.toThrow(
+      /handoff_to_human/,
+    );
     const out = (await call({ reason: "acknowledged" })) as ToolMessage;
     expect(out.additional_kwargs[SKIP_REPLY_REASON_KEY]).toBe("acknowledged");
   });

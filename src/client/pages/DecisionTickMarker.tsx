@@ -292,7 +292,8 @@ function whyText(tick: DecisionTickView, t: T): string {
   if (tick.skipped === "contact_gate") {
     return t(
       "conversation.trail.decision.contactGate",
-      "The contact gate leaves this conversation out",
+      "The conditions in “{{section}}” leave this conversation out",
+      { section: t("editor.contactAuth", "Who this agent serves") },
     );
   }
   const code = tick.skipped ?? tick.failed ?? tick.failure;

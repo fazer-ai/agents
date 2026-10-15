@@ -1185,6 +1185,28 @@ describe("a test from the conversation page", () => {
     expect(line).toContain("would run, in part");
   });
 
+  test("a test the contact gate skipped names the section the operator edits", async () => {
+    await inLanguage(
+      "pt-BR",
+      <DecisionTickMarker
+        entry={{
+          decision: tick({
+            outcome: "skipped",
+            skipped: "contact_gate",
+            answers: null,
+            actions: [],
+          }),
+          durationMs: null,
+        }}
+        test
+      />,
+    );
+    // The reason is the line under the marker.
+    expect(document.body.textContent).toContain(
+      "As condições em “Quem este agente atende” deixam esta conversa de fora",
+    );
+  });
+
   test("in Portuguese, with one rule and with none", async () => {
     await inLanguage(
       "pt-BR",

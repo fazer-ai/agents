@@ -776,7 +776,7 @@
         "confidence": "confiança {{p}}",
         "configInvalid": "As perguntas e regras não são válidas",
         "configInvalidAt": "As perguntas e regras não são válidas: {{problem}}",
-        "contactGate": "O filtro de contatos deixa esta conversa de fora",
+        "contactGate": "As condições em “{{section}}” deixam esta conversa de fora",
         "credentialUnresolved": "Não foi possível ler do cofre a credencial do classificador",
         "failed": "Classificação falhou",
         "failedPlain": "falhou",

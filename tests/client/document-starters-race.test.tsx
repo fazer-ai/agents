@@ -288,7 +288,7 @@ describe("a refresh does not undo a company save it overlapped", () => {
 
     // The operator saves into that window.
     fireEvent.change(nameInput, { target: { value: "ACME Nova" } });
-    // NOTE: the letterhead modal's Save, not the approval link card's on the panel behind it.
+    // The letterhead modal's Save, not the approval link card's on the panel behind it.
     const save = (
       await within(await screen.findByRole("dialog")).findAllByText(
         /^(Save|Salvar)$/,

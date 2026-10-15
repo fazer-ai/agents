@@ -1,6 +1,13 @@
 /// <reference lib="dom" />
 
-import { afterAll, afterEach, describe, expect, test } from "bun:test";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  test,
+} from "bun:test";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { useState } from "react";
 import { GuardrailsTab } from "@/client/pages/agents/GuardrailsTab";
@@ -239,14 +246,20 @@ describe("a refusal handed to the guardrails tab lands at its input", () => {
 // name. The value is one per check (stored once, used by both directions), so a check on in both
 // directions draws two fields that must always show the same thing, keystroke by keystroke.
 describe("GuardrailsTab thresholds beside their checks", () => {
-  const realFetch = globalThis.fetch;
-  globalThis.fetch = (async () =>
-    new Response(JSON.stringify({ entries: [] }), {
-      headers: { "content-type": "application/json" },
-    })) as unknown as typeof globalThis.fetch;
+  // Swapped in beforeAll and put back in afterAll, with the fetch captured when this block starts:
+  // captured at collection time, it would be the stub the describe above installs at ITS collection,
+  // and restoring that would leave a fake fetch in place for every file after this one in the worker.
+  let previousFetch: typeof globalThis.fetch;
+  beforeAll(() => {
+    previousFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ entries: [] }), {
+        headers: { "content-type": "application/json" },
+      })) as unknown as typeof globalThis.fetch;
+  });
   afterEach(() => cleanup());
   afterAll(() => {
-    globalThis.fetch = realFetch;
+    globalThis.fetch = previousFetch;
   });
 
   let saved: GuardrailsConfig | null = null;

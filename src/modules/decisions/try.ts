@@ -4,10 +4,11 @@
 // key, and `applyDecisions` under `dryRun` with the conversation's trigger state read and not
 // claimed. The result is the shape the page already draws a tick with, so a test reads like one.
 
-import type { StructuredToolInterface } from "@langchain/core/tools";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
-import { loadAgentConfig } from "@/graph/prepare";
+import { buildToolset, loadAgentConfig } from "@/graph/prepare";
+import type { McpLoadDeps } from "@/graph/tools/mcp";
+import { buildNativeTools } from "@/graph/tools/native";
 import { recordDirectUsage } from "@/graph/usage";
 import {
   AppError,
@@ -51,6 +52,7 @@ export interface DecisionsTryDeps {
   // The fetch the classifier is reached with. Production never passes it.
   decisionFetch?: typeof fetch;
   makeClient?: LoadChatwootClientDeps["makeClient"];
+  mcp?: McpLoadDeps;
 }
 
 export async function tryDecisionsAgent(
@@ -221,16 +223,36 @@ export async function tryDecisionsAgent(
     agentId,
     conversationId: conv.id,
   });
-  // A dry run checks only that a tool by the action's name is there: the editor already says on a
-  // rule's card when its tool is not granted, and building the agent's toolset would reach its MCP
-  // servers for a test that calls none of them.
-  const named = config.rules.map(
-    (r) => ({ name: r.action.tool }) as unknown as StructuredToolInterface,
-  );
+  // The agent's toolset, built as the tick builds it, so a test sees what the tick would: a rule
+  // whose tool is not granted, and each tool's argument schema (a required argument left empty is
+  // `missing_value`, which costs no call). Building it discovers the agent's MCP servers; nothing is
+  // invoked, since the run below is a dry run, and no flow line is written for it.
+  if (!cfg) return line({ failed: "toolset_build" }, "error");
+  let tools: Awaited<ReturnType<typeof buildToolset>>;
+  try {
+    tools = await buildToolset(
+      { ...cfg, transferWithSummary: true },
+      {
+        tenantId,
+        instanceId,
+        base,
+        client,
+        conversationId: conv.chatwootConversationId,
+        threadId: conv.threadId,
+        expiresOn: AbortSignal.timeout(TRY_TIMEOUT_MS),
+        ...(evidence.current === null
+          ? {}
+          : { conversationLabels: evidence.current }),
+      },
+      { buildNativeTools, mcp: deps.mcp },
+    );
+  } catch {
+    return line({ failed: "toolset_build" }, "error");
+  }
   const report = await applyDecisions(
     config,
     result.answers,
-    named,
+    tools,
     [],
     AbortSignal.timeout(TRY_TIMEOUT_MS),
     async () => true,

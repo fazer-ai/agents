@@ -224,11 +224,15 @@ function summaryText(tick: DecisionTickView, t: T): string {
     : t("conversation.trail.decision.noActionRan", "no action ran");
 }
 
-// A test's line: how many rules would act, since none ran.
+// A test's line: how many rules would act, since none ran. A rule merged into an earlier rule's
+// identical action acts through it, so it counts too.
 function wouldText(tick: DecisionTickView, t: T): string {
-  const n = tick.actions.filter(
-    (a) => (a as { outcome?: unknown } | null)?.outcome === "decided",
-  ).length;
+  let n = 0;
+  for (const raw of tick.actions) {
+    const a = raw as { outcome?: unknown; merged?: unknown } | null;
+    if (a?.outcome !== "decided") continue;
+    n += 1 + (Array.isArray(a.merged) ? a.merged.length : 0);
+  }
   return n === 0
     ? t("conversation.trail.decision.noRuleWouldAct", "no rule would act")
     : t(

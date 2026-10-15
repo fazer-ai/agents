@@ -222,6 +222,52 @@ describe.skipIf(!dbUp)("testing a decisions agent on a conversation", () => {
       },
     });
     convRowId = conv.id;
+    // A custom tool the agent is granted, with the argument schema a dry run must hold rules to.
+    const td = await suDb.toolDefinition.create({
+      data: {
+        tenantId,
+        name: "registrar_caso",
+        label: "Registrar caso",
+        method: "POST",
+        urlTemplate: "https://casos.example.com/casos",
+        allowedHosts: ["casos.example.com"],
+        inputSchema: {
+          type: "object",
+          properties: {
+            conversa: { type: "number" },
+            chance: { type: "number" },
+            email: { type: "string" },
+          },
+        },
+      },
+    });
+    const td2 = await suDb.toolDefinition.create({
+      data: {
+        tenantId,
+        name: "avisar_cliente",
+        label: "Avisar cliente",
+        method: "POST",
+        urlTemplate: "https://casos.example.com/avisos",
+        allowedHosts: ["casos.example.com"],
+        inputSchema: {
+          type: "object",
+          properties: { email: { type: "string" } },
+          required: ["email"],
+        },
+      },
+    });
+    for (const t of [td, td2]) {
+      await suDb.agentToolSelection.create({
+        data: {
+          tenantId,
+          agentId,
+          source: "HTTP",
+          toolDefinitionId: t.id,
+          enabledTools: [],
+          knowledgeBaseIds: [],
+        },
+      });
+    }
   });
 
   beforeEach(async () => {
@@ -240,6 +286,8 @@ describe.skipIf(!dbUp)("testing a decisions agent on a conversation", () => {
       "decision_rule_claims",
       "conversations",
       "inboxes",
+      "agent_tool_selections",
+      "tool_definitions",
       "agents",
       "vault_entries",
       "chatwoot_instances",
@@ -340,6 +388,28 @@ describe.skipIf(!dbUp)("testing a decisions agent on a conversation", () => {
     expect(tick.actions).toEqual([
       { rule: 0, tool: "registrar_caso", outcome: "decided" },
       { rule: 1, tool: "registrar_caso", outcome: "decided" },
+    ]);
+  });
+
+  // The bug: a dry run without the tool's schema reports a rule as about to act when the real tick
+  // would find its required argument empty and call nothing (here the conversation has no contact,
+  // so its e-mail cannot fill the argument).
+  test("a required argument left empty is a missing value, not an action", async () => {
+    await setSettings(
+      monitoring([
+        {
+          when: [{ question: "pede_reembolso", minProbability: 0.7 }],
+          action: {
+            tool: "avisar_cliente",
+            args: {},
+            fill: { email: "contact.email" },
+          },
+        },
+      ]),
+    );
+    const { tick } = await runTest(classifier(yes).fetchImpl);
+    expect(tick.actions).toMatchObject([
+      { rule: 0, tool: "avisar_cliente", outcome: "failed" },
     ]);
   });
 

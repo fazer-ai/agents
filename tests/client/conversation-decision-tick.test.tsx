@@ -1128,7 +1128,8 @@ describe("a test from the conversation page", () => {
   const decided = tick({
     actions: [
       { rule: 0, tool: "set_labels", outcome: "decided", merged: [] },
-      { rule: 1, tool: "handoff_to_human", outcome: "decided", merged: [] },
+      // Rule 3 has the same action as rule 1 and acts through it.
+      { rule: 1, tool: "handoff_to_human", outcome: "decided", merged: [3] },
       // Past the call budget: it would NOT act, so it is not counted.
       { rule: 2, tool: "private_note", outcome: "over_budget", merged: [] },
     ],
@@ -1145,14 +1146,14 @@ describe("a test from the conversation page", () => {
     );
     const m = screen.getByTestId("decision-marker").textContent ?? "";
     expect(m).toContain("Test, nothing was run");
-    expect(m).toContain("2 rules would act");
+    expect(m).toContain("3 rules would act");
     expect(m).not.toContain("Classified");
     expect(m).not.toContain("handed off");
     // Open without a click: the test was run to be read.
     const lines = within(screen.getByTestId("decision-details"))
       .getAllByTestId("decision-rule")
       .map((r) => r.textContent ?? "");
-    expect(lines.filter((l) => l.includes("would run"))).toHaveLength(2);
+    expect(lines.filter((l) => l.includes("would run"))).toHaveLength(3);
   });
 
   test("in Portuguese, with one rule and with none", async () => {

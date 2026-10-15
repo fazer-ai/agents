@@ -1,6 +1,10 @@
 import type { Prisma } from "@/../generated/prisma/client";
 import type { ScopedDb } from "@/lib/tenancy";
-import { buildOutboundEnvelope, type OutboundEvent } from "./events";
+import {
+  buildOutboundEnvelope,
+  type OutboundEvent,
+  subscriptionKeysFor,
+} from "./events";
 
 // Outbound webhook fan-out (enqueue side). Domain code calls emitOutbound within its
 // scoped transaction; this creates one OutboundWebhookDelivery row per enabled subscription
@@ -20,7 +24,7 @@ export async function emitOutbound(
   data: Record<string, unknown>,
 ): Promise<number> {
   const subs = await db.webhookSubscription.findMany({
-    where: { enabled: true, events: { has: event } },
+    where: { enabled: true, events: { hasSome: subscriptionKeysFor(event) } },
     select: { id: true },
   });
   if (subs.length === 0) return 0;
@@ -49,7 +53,7 @@ export async function emitOutboundMany(
 ): Promise<number> {
   if (items.length === 0) return 0;
   const subs = await db.webhookSubscription.findMany({
-    where: { enabled: true, events: { has: event } },
+    where: { enabled: true, events: { hasSome: subscriptionKeysFor(event) } },
     select: { id: true },
   });
   if (subs.length === 0) return 0;

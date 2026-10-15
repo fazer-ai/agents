@@ -87,7 +87,10 @@ import {
   getWebhookDelivery,
   listWebhookDeliveries,
 } from "@/modules/webhooks/outbound/deliveries";
-import { OUTBOUND_EVENTS } from "@/modules/webhooks/outbound/events";
+import {
+  OUTBOUND_EVENTS,
+  outboundEventGroups,
+} from "@/modules/webhooks/outbound/events";
 import { listWebhookSubscriptions } from "@/modules/webhooks/outbound/subscriptions";
 import type { VerifiedToken } from "./oauth/tokens";
 import {
@@ -687,7 +690,7 @@ export async function webhookEventsList(
 ): Promise<WriteResult> {
   const ctx = readGate(principal);
   if ("ok" in ctx) return ctx;
-  return ok({ events: [...OUTBOUND_EVENTS] });
+  return ok({ events: [...OUTBOUND_EVENTS], families: outboundEventGroups() });
 }
 
 // ── outbound webhook deliveries ──

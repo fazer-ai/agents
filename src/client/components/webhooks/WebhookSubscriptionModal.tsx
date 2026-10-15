@@ -13,12 +13,12 @@ import {
 import { Switch } from "@/client/components/Switch";
 import { useFieldRefusal } from "@/client/hooks/useFieldRefusal";
 import { api } from "@/client/lib/api";
-import { cn } from "@/client/lib/utils";
 import { isValidHttpUrl } from "@/client/lib/validation";
-import { webhookEventLabel } from "@/client/lib/webhookEvents";
+import type { WebhookEventGroup } from "@/client/lib/webhookEventGroups";
+import { WebhookEventPicker } from "./WebhookEventPicker";
 
-// Create/edit modal for an outbound webhook subscription. `events` is a checkbox group over the
-// closed OUTBOUND_EVENTS set (passed in, fetched once by the page). `secretRef` is the NAME of a
+// Create/edit modal for an outbound webhook subscription. `events` is chosen per family by
+// `WebhookEventPicker`, over the groups the page fetches once from GET /v1/webhooks/events. `secretRef` is the NAME of a
 // vault entry (never a raw secret), chosen via the shared CredentialPicker.
 
 type SubscriptionsResponse = Awaited<
@@ -40,11 +40,11 @@ const WEBHOOK_FIELDS = ["url", "events", "secretRef"] as const;
 
 export function WebhookSubscriptionModal({
   modal,
-  events,
+  groups,
   onSaved,
 }: {
   modal: ModalController<WebhookModalPayload>;
-  events: readonly string[];
+  groups: readonly WebhookEventGroup[];
   onSaved: () => void;
 }) {
   const { t } = useTranslation();
@@ -62,6 +62,8 @@ export function WebhookSubscriptionModal({
   const [enabled, setEnabled] = useState(true);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  // Remounts the picker on every opening, so its open groups follow the subscription being edited.
+  const [openCount, setOpenCount] = useState(0);
 
   useOnModalOpen(modal, () => {
     // The component outlives the dialog, so a mark from the last session is still held here.
@@ -73,6 +75,7 @@ export function WebhookSubscriptionModal({
     setSecretTouched(false);
     setEnabled(sub?.enabled ?? true);
     setError("");
+    setOpenCount((n) => n + 1);
   });
 
   // What the inputs hold right now, in the server's vocabulary, and what the write sends. One
@@ -92,15 +95,6 @@ export function WebhookSubscriptionModal({
   const secretUnshowable = !!editing?.hasSecret && !secretRef && !secretTouched;
   const currentRef = useRef(current);
   currentRef.current = current;
-
-  const toggleEvent = (ev: string) => {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(ev)) next.delete(ev);
-      else next.add(ev);
-      return next;
-    });
-  };
 
   const handleSubmit = async () => {
     setError("");
@@ -224,38 +218,13 @@ export function WebhookSubscriptionModal({
               {refusal.at("events", current.events)}
             </p>
           )}
-          <div className="flex flex-col gap-1">
-            {events.map((ev) => {
-              const checked = selected.has(ev);
-              return (
-                <label
-                  key={ev}
-                  className={cn(
-                    "flex items-center gap-3 rounded-lg border px-3 py-2 transition-colors",
-                    {
-                      "border-accent bg-accent-soft text-text-primary": checked,
-                      "border-border text-text-secondary hover:bg-bg-hover":
-                        !checked,
-                    },
-                  )}
-                >
-                  <input
-                    type="checkbox"
-                    className="accent-accent"
-                    checked={checked}
-                    disabled={loading}
-                    onChange={() => toggleEvent(ev)}
-                  />
-                  <span className="flex min-w-0 flex-col">
-                    <span className="text-sm">{webhookEventLabel(ev, t)}</span>
-                    <span className="font-mono text-text-muted text-xs">
-                      {ev}
-                    </span>
-                  </span>
-                </label>
-              );
-            })}
-          </div>
+          <WebhookEventPicker
+            key={openCount}
+            groups={groups}
+            selected={selected}
+            onChange={setSelected}
+            disabled={loading}
+          />
         </fieldset>
 
         <FormField

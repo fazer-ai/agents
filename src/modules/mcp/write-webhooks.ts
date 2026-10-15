@@ -22,7 +22,7 @@ import {
   getWebhookDelivery,
   requeueWebhookDelivery,
 } from "@/modules/webhooks/outbound/deliveries";
-import { isOutboundEvent } from "@/modules/webhooks/outbound/events";
+import { isSubscribableEvent } from "@/modules/webhooks/outbound/events";
 import {
   assertWebhookSubscriptionCreatable,
   assertWebhookSubscriptionUpdatable,
@@ -75,7 +75,7 @@ export async function webhookCreate(
   const base = deps.base ?? basePrisma;
   const ctx = gate(principal);
   if ("ok" in ctx) return ctx;
-  const bad = args.events.filter((e) => !isOutboundEvent(e));
+  const bad = args.events.filter((e) => !isSubscribableEvent(e));
   if (bad.length) return err(`unknown event(s): ${bad.join(", ")}`);
   let secretRef: string | null | undefined;
   if (args.secret_ref) {
@@ -141,7 +141,7 @@ export async function webhookUpdate(
   const id = parseMcpId(args.webhook_id, "webhook_id");
   if (typeof id !== "bigint") return id;
   if (args.events) {
-    const bad = args.events.filter((e) => !isOutboundEvent(e));
+    const bad = args.events.filter((e) => !isSubscribableEvent(e));
     if (bad.length) return err(`unknown event(s): ${bad.join(", ")}`);
   }
   const patch: {

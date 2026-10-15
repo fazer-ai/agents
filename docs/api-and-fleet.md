@@ -93,6 +93,8 @@ Three parts: the **closed event set + envelope** (`events.ts`), the deterministi
 
 A new event follows what these already do: the name is `entity.verb_past` in snake_case; every id is a string, and a missing one is an explicit `null`, never an absent key; `conversation_id` is our `Conversation` row id (`kanban.card_moved` is the exception, carrying the Chatwoot display id); statuses are lowercase; and free text never goes out, even when it looks harmless (a reviewer's note, a rejection reason, a model's rationale). The document approval events are emitted inside the transaction that makes the change, under a savepoint, so a failed fan-out cannot roll the decision back; the reviewer's note and the document's values stay out. They also carry `chatwoot_conversation_id`, the Chatwoot display id, beside our own `conversation_id`, for an app that only sees Chatwoot.
 
+**Families and wildcards.** An event's family is the name before its first dot (`document` for `document.approval_decided`); `heartbeat` has none. A subscription may hold `<family>.*` for any family that has at least one event, alone or beside explicit names (`["conversation.*", "document.approval_decided"]`). The wildcard is stored as written, not expanded, so **an event added to the family later reaches the subscription without anyone editing it**: a receiver subscribed to a family must tolerate an event name it has not seen, and branch on `event` rather than assume the set it knew. A subscription holding both `conversation.*` and `conversation.created` gets one delivery per event, not two (the emit matches subscriptions with `hasSome` on the event and its wildcard, `subscriptionKeysFor`). Anything else ending in `.*` (`*`, `.*`, `heartbeat.*`, `conversation.created.*`, an unknown family) is refused like an unknown event, `400 errors.unknownWebhookEvent`, on REST and MCP alike. `GET /events` and `webhook_events_list` return the flat `events` list and `families`: one entry per family with its `wildcard` and `events`, plus a last entry with `family: null` and no wildcard for the events that have none. The console's form groups by that list, and checking a family's "all" box stores the wildcard.
+
 Every emission is wrapped by `buildOutboundEnvelope(tenantId, event, data)` into a **versioned envelope** stored verbatim as the delivery payload and POSTed as-is by the worker:
 
 ```json
@@ -114,9 +116,9 @@ Called inside the caller's scoped transaction. Wraps `data` in the envelope (abo
 
 TENANT_ADMIN. RLS fences every read/write to the active tenant; the secret value never crosses the surface — `secretRef` is a NAME into the tenant vault.
 
-- `GET /webhooks/events` — the closed `OUTBOUND_EVENTS` set (for the UI multiselect).
+- `GET /webhooks/events` — the closed `OUTBOUND_EVENTS` set, flat in `events` and grouped in `families` (the console form groups by it).
 - `GET /webhooks/subscriptions` — list this tenant's subscriptions.
-- `POST /webhooks/subscriptions` — create (`url`, `events[]`, optional `secretRef`, `enabled`).
+- `POST /webhooks/subscriptions` — create (`url`, `events[]` of names or family wildcards, optional `secretRef`, `enabled`).
 - `PATCH /webhooks/subscriptions/:id` — update any of those (`secretRef: null` clears it).
 - `DELETE /webhooks/subscriptions/:id` — delete (clears its deliveries first, in the same scoped transaction).
 

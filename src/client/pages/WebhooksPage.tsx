@@ -24,7 +24,14 @@ import {
 import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
 import { formatDate } from "@/client/lib/utils";
-import { webhookEventLabel } from "@/client/lib/webhookEvents";
+import {
+  summarizeSubscription,
+  type WebhookEventGroup,
+} from "@/client/lib/webhookEventGroups";
+import {
+  webhookEventLabel,
+  webhookFamilyLabel,
+} from "@/client/lib/webhookEvents";
 
 // Outbound webhook subscriptions console (TENANT_ADMIN). Lists targets, creates/edits via a modal,
 // toggles enabled inline, and deletes with a confirm. The secret value never appears here — only
@@ -63,11 +70,64 @@ function signingLabel(
   }
 }
 
+// What a subscription receives, one badge per family it touches ("Documents 2 of 3", "Conversations,
+// all"), with the event names in the badge's tooltip. A stored name the catalog no longer lists keeps
+// its own badge, so nothing the subscription holds goes unseen.
+function SubscriptionEvents({
+  events,
+  groups,
+}: {
+  events: readonly string[];
+  groups: readonly WebhookEventGroup[];
+}) {
+  const { t } = useTranslation();
+  const summary = summarizeSubscription(events, groups);
+  return (
+    <div className="flex flex-wrap gap-1">
+      {summary.groups.map(({ group, selection }) => {
+        const family = webhookFamilyLabel(group.family, t);
+        const names = selection.wildcard
+          ? (group.wildcard ?? "")
+          : group.events.filter((e) => events.includes(e)).join(", ");
+        return (
+          <Badge key={group.family ?? "system"} variant="secondary">
+            <Tooltip content={names}>
+              <span>
+                {selection.wildcard
+                  ? t("webhooks.summaryAll", "{{family}} (all)", { family })
+                  : selection.covered === selection.total &&
+                      group.wildcard === null
+                    ? family
+                    : t(
+                        "webhooks.summaryCount",
+                        "{{family}} {{covered}} of {{total}}",
+                        {
+                          family,
+                          covered: selection.covered,
+                          total: selection.total,
+                        },
+                      )}
+              </span>
+            </Tooltip>
+          </Badge>
+        );
+      })}
+      {summary.unknown.map((ev) => (
+        <Badge key={ev} variant="secondary">
+          <Tooltip content={ev}>
+            <span>{webhookEventLabel(ev, t)}</span>
+          </Tooltip>
+        </Badge>
+      ))}
+    </div>
+  );
+}
+
 export function WebhooksPage() {
   const { t } = useTranslation();
   const { showToast } = useToast();
   const [subscriptions, setSubscriptions] = useState<WebhookSubscription[]>([]);
-  const [events, setEvents] = useState<readonly string[]>([]);
+  const [groups, setGroups] = useState<readonly WebhookEventGroup[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [testingId, setTestingId] = useState<string | null>(null);
@@ -87,7 +147,7 @@ export function WebhooksPage() {
         return;
       }
       setSubscriptions(subs.data?.subscriptions ?? []);
-      setEvents(evs.data?.events ?? []);
+      setGroups(evs.data?.families ?? []);
     } catch {
       setError(true);
     } finally {
@@ -222,7 +282,7 @@ export function WebhooksPage() {
 
       <WebhookSubscriptionModal
         modal={modal}
-        events={events}
+        groups={groups}
         onSaved={() => {
           showToast(t("webhooks.saved", "Subscription saved"), "success");
           void fetchAll();
@@ -263,15 +323,7 @@ export function WebhooksPage() {
                     </Badge>
                   )}
                 </div>
-                <div className="flex flex-wrap gap-1">
-                  {sub.events.map((ev) => (
-                    <Badge key={ev} variant="secondary">
-                      <Tooltip content={ev}>
-                        <span>{webhookEventLabel(ev, t)}</span>
-                      </Tooltip>
-                    </Badge>
-                  ))}
-                </div>
+                <SubscriptionEvents events={sub.events} groups={groups} />
                 <span className="text-text-muted text-xs">
                   {signingLabel(sub, t)}
                   {" · "}

@@ -14,7 +14,7 @@ import {
   signingStateFor,
   vaultRefStates,
 } from "@/modules/vault/service";
-import { isOutboundEvent, type OutboundEvent } from "./events";
+import { isSubscribableEvent } from "./events";
 import { syncTenantHeartbeat } from "./heartbeat";
 
 // CRUD for WebhookSubscription (the OUTBOUND fan-out targets). Transport-agnostic, ctx-based
@@ -34,7 +34,8 @@ export interface WebhookSubscriptionDto {
   // may name no vault entry, and `readableVaultRef` hides it. Without this the console cannot tell
   // "unsigned" from "signed with something I may not show you", and its save would clear the second.
   hasSecret: boolean;
-  events: OutboundEvent[];
+  // Event names and family wildcards (`document.*`), as written.
+  events: string[];
   enabled: boolean;
   createdAt: Date;
   updatedAt: Date;
@@ -66,8 +67,7 @@ function toDto(row: {
     // `readableVaultRef`.
     secretRef: readableVaultRef(row.secretRef),
     hasSecret: row.secretRef !== null,
-    // The stored set is the closed union by construction (validated on write); cast for the DTO.
-    events: row.events as OutboundEvent[],
+    events: row.events,
     enabled: row.enabled,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -89,11 +89,11 @@ function auditProjection(dto: WebhookSubscriptionDto) {
   };
 }
 
-function assertKnownEvents(events: string[]): OutboundEvent[] {
+function assertKnownEvents(events: string[]): string[] {
   const seen = new Set<string>();
-  const out: OutboundEvent[] = [];
+  const out: string[] = [];
   for (const e of events) {
-    if (!isOutboundEvent(e)) {
+    if (!isSubscribableEvent(e)) {
       throw new AppError(
         `unknown webhook event: ${e}`,
         400,

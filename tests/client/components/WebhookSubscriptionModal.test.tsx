@@ -8,6 +8,7 @@ import {
   expect,
   test,
 } from "bun:test";
+import * as TooltipPrimitive from "@radix-ui/react-tooltip";
 import {
   cleanup,
   fireEvent,
@@ -65,13 +66,21 @@ function Harness({ payload }: { payload: WebhookModalPayload }) {
     modal.open(payload);
   }, []);
   return (
-    <ToastProvider>
-      <WebhookSubscriptionModal
-        modal={modal}
-        events={["conversation.created", "conversation.handoff"]}
-        onSaved={() => {}}
-      />
-    </ToastProvider>
+    <TooltipPrimitive.Provider>
+      <ToastProvider>
+        <WebhookSubscriptionModal
+          modal={modal}
+          groups={[
+            {
+              family: "conversation",
+              wildcard: "conversation.*",
+              events: ["conversation.created", "conversation.handoff"],
+            },
+          ]}
+          onSaved={() => {}}
+        />
+      </ToastProvider>
+    </TooltipPrimitive.Provider>
   );
 }
 

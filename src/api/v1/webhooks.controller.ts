@@ -17,7 +17,10 @@ import {
   OUTBOUND_DELIVERY_STATUSES,
   requeueWebhookDelivery,
 } from "@/modules/webhooks/outbound/deliveries";
-import { OUTBOUND_EVENTS } from "@/modules/webhooks/outbound/events";
+import {
+  OUTBOUND_EVENTS,
+  outboundEventGroups,
+} from "@/modules/webhooks/outbound/events";
 import {
   createWebhookSubscription,
   deleteWebhookSubscription,
@@ -72,12 +75,16 @@ export const webhooksController = new Elysia({
   .use(tenancyPlugin)
   .get(
     "/events",
-    () => ({ instance: instanceIdentity, events: OUTBOUND_EVENTS }),
+    () => ({
+      instance: instanceIdentity,
+      events: OUTBOUND_EVENTS,
+      families: outboundEventGroups(),
+    }),
     {
       requireRole: "TENANT_ADMIN",
       detail: doc(
         "List outbound events",
-        "Returns the closed set of outbound webhook event names a subscription can subscribe to.",
+        "Returns the closed set of outbound webhook event names, flat in `events` and grouped by family in `families`; a subscription can hold an event name or a family wildcard (`document.*`), which also receives events added to that family later.",
       ),
       response: errors(401, 403),
     },
@@ -110,7 +117,7 @@ export const webhooksController = new Elysia({
       requireRole: "TENANT_ADMIN",
       detail: doc(
         "Create webhook subscription",
-        "Creates an outbound webhook subscription; events are validated against the closed OUTBOUND_EVENTS set and the secret value never crosses this surface.",
+        "Creates an outbound webhook subscription; events (names or family wildcards like `document.*`) are validated against the closed OUTBOUND_EVENTS set and its families, and the secret value never crosses this surface.",
       ),
       body: t.Object({
         url: t.String({
@@ -122,7 +129,7 @@ export const webhooksController = new Elysia({
         events: t.Array(t.String(), {
           minItems: 1,
           description:
-            "Event names to subscribe to, from GET /events; an unknown name is rejected with 400.",
+            "Event names or family wildcards (`document.*`) to subscribe to, from GET /events; an unknown name or family is rejected with 400.",
         }),
         secretRef: t.Optional(
           t.Nullable(
@@ -157,7 +164,7 @@ export const webhooksController = new Elysia({
       requireRole: "TENANT_ADMIN",
       detail: doc(
         "Update webhook subscription",
-        "Updates fields of an outbound webhook subscription by id; events are validated against the closed OUTBOUND_EVENTS set.",
+        "Updates fields of an outbound webhook subscription by id; events (names or family wildcards like `document.*`) are validated against the closed OUTBOUND_EVENTS set and its families.",
       ),
       params: t.Object({
         id: t.String({
@@ -177,7 +184,7 @@ export const webhooksController = new Elysia({
           t.Array(t.String(), {
             minItems: 1,
             description:
-              "New event names to subscribe to, from GET /events; an unknown name is rejected with 400.",
+              "New event names or family wildcards (`document.*`) to subscribe to, from GET /events; an unknown name or family is rejected with 400.",
           }),
         ),
         secretRef: t.Optional(

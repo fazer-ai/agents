@@ -989,7 +989,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "webhook_events_list",
       {
         description:
-          "List the catalog of outbound event types a webhook subscription can subscribe to: flat in `events`, and grouped by family in `families` with each family's wildcard (`document.*`).",
+          "List the catalog of outbound event types a webhook subscription can subscribe to.",
         inputSchema: {},
       },
       async (_args, eff) => writeContent(await webhookEventsList(eff)),
@@ -2346,7 +2346,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "webhook_create",
       {
         description:
-          "Register an outbound webhook subscription to an EXTERNAL url for the given events (see webhook_events_list): event names, or a family wildcard such as `document.*`, which also receives events added to that family later. secret_ref is a vault entry NAME holding the HMAC signing secret (resolved server-side). Previews and creates NOTHING unless dry_run is false.",
+          "Register an outbound webhook subscription to an EXTERNAL url for the given events (see webhook_events_list). secret_ref is a vault entry NAME holding the HMAC signing secret (resolved server-side). Previews and creates NOTHING unless dry_run is false.",
         inputSchema: {
           url: z.string(),
           events: z.array(z.string()),

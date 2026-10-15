@@ -60,7 +60,7 @@ export function webhookFamilyLabel(
     case "document":
       return t("webhooks.families.document", "Documents");
     case "kanban":
-      return t("webhooks.families.kanban", "Kanban");
+      return t("webhooks.families.kanban", "Kanban board");
     case "llm":
       return t("webhooks.families.llm", "Usage");
     case "tenant":

@@ -538,6 +538,7 @@ const BARE_SLICES: Record<
   // The page's own overshoot row, dropped: the list takes `limit + 1` to learn whether a next page
   // exists. Same shape as flowlog/read.ts, and it cuts an array of rows, never a string.
   "src/modules/webhooks/outbound/deliveries.ts": [1, "array"],
+  "src/modules/webhooks/outbound/events.ts": [2, "index"],
 };
 
 describe("every bare cut left in src/ is accounted for", () => {

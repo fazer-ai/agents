@@ -4362,7 +4362,7 @@
       "heartbeat": "Um sinal periódico de que a instância está no ar.",
       "kanbanCardMoved": "O agente move um card para outra etapa. Card, etapa e conversa.",
       "llmUsage": "Uma chamada de modelo é cobrada. Modelo, etapa e contagem de tokens.",
-      "tenantCreated": "Um workspace é criado nesta instância."
+      "tenantCreated": "Um espaço de trabalho é criado nesta instância."
     },
     "eventLabels": {
       "conversationCreated": "Conversa criada",
@@ -4380,10 +4380,10 @@
     "families": {
       "conversation": "Conversas",
       "document": "Documentos",
-      "kanban": "Kanban",
+      "kanban": "Quadro Kanban",
       "llm": "Uso",
       "system": "Sistema",
-      "tenant": "Workspace"
+      "tenant": "Espaço de trabalho"
     },
     "groupAllAria": "Todos os eventos de {{family}}, inclusive os futuros",
     "groupAllFuture": "Todos, inclui eventos futuros",

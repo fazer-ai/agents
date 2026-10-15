@@ -4262,7 +4262,7 @@
     "families": {
       "conversation": "Conversations",
       "document": "Documents",
-      "kanban": "Kanban",
+      "kanban": "Kanban board",
       "llm": "Usage",
       "system": "System",
       "tenant": "Workspace"

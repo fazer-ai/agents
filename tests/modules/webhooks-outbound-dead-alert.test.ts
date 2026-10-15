@@ -78,11 +78,12 @@ async function seedDelivery(
 // scheduled writes first, so it answers "nothing was written" in one read, and a count that has to be
 // reached is waited for instead of slept for.
 async function webhookRows(expected: number) {
-  // flowlog-scope: tenant-wide. The subject is HOW MANY lines the tick wrote, so a turn-scoped read
-  // would pass with a second row present. The tenant is this file's own, and `clearRows` empties it
-  // through `clearFlowLog`, which settles scheduled writes first (or the previous case's line lands late).
   const read = () =>
     flowLogRows(suDb, {
+      // flowlog-scope: tenant-wide. The subject is HOW MANY lines the tick wrote, so a turn-scoped
+      // read would pass with a second row present. The tenant is this file's own, and `clearRows`
+      // empties it through `clearFlowLog`, which settles scheduled writes first (or the previous
+      // case's line lands late).
       where: { tenantId, stage: "webhook" },
       orderBy: { id: "asc" },
     });

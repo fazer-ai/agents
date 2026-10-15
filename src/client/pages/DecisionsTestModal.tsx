@@ -124,7 +124,7 @@ export function DecisionsTestButton({
       </Button>
       <Modal
         modal={modal}
-        size="lg"
+        size="xl"
         busy={running}
         title={t(
           "conversation.decisionsTest.title",

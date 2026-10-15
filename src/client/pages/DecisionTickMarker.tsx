@@ -517,7 +517,10 @@ function QuestionBlock({ q }: { q: QuestionView }) {
       )}
       {open && q.kind === "yes_no" && (
         <div className="flex flex-col gap-1 pl-5">
-          <Bar p={q.probability} chosen />
+          {/* The percentage is the head's "yes: …"; the bar is as wide as an option's. */}
+          <div className="w-16 sm:w-24">
+            <Bar p={q.probability} chosen />
+          </div>
           {q.thresholds.length > 0 && (
             <span className="text-text-muted">
               {q.thresholds
@@ -548,34 +551,40 @@ function ProbabilityLine({ row }: { row: ProbabilityRow }) {
   const { t } = useTranslation();
   return (
     <div
-      className="grid grid-cols-[minmax(0,1fr)_6rem_2.5rem] items-center gap-2"
+      className="grid grid-cols-[minmax(0,1fr)_4rem_2.5rem] items-start gap-2 sm:grid-cols-[minmax(0,1fr)_6rem_2.5rem]"
       data-testid="decision-option"
       data-chosen={row.chosen ? "true" : "false"}
     >
-      <span className="min-w-0 truncate">
-        <span
-          className={cn(
-            "font-mono",
-            row.chosen
-              ? "font-semibold text-text-primary"
-              : "text-text-secondary",
-          )}
-        >
-          {row.value}
-        </span>
-        {row.chosen && (
-          <span className="ml-1 text-accent">
-            {t("conversation.trail.decision.chosen", "chosen")}
+      {/* Wraps instead of cutting: an option's name and description are what the operator reads
+          the bar by, and an ellipsis left "reembol…" and "troca tr…" on a narrow column. */}
+      <span className="flex min-w-0 flex-col">
+        <span>
+          <span
+            className={cn(
+              "break-words font-mono",
+              row.chosen
+                ? "font-semibold text-text-primary"
+                : "text-text-secondary",
+            )}
+          >
+            {row.value}
           </span>
-        )}
+          {row.chosen && (
+            <span className="ml-1 inline-block whitespace-nowrap text-accent">
+              {t("conversation.trail.decision.chosen", "chosen")}
+            </span>
+          )}
+        </span>
         {row.description && (
-          <span className="ml-1 text-text-muted">{row.description}</span>
+          <span className="text-text-muted">{row.description}</span>
         )}
       </span>
       {row.probability === null ? (
         <span />
       ) : (
-        <Bar p={row.probability} chosen={row.chosen} />
+        <div className="flex h-4 items-center">
+          <Bar p={row.probability} chosen={row.chosen} />
+        </div>
       )}
       <span className="text-right tabular-nums">
         {row.probability === null ? "—" : percent(row.probability)}

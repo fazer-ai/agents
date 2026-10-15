@@ -27872,7 +27872,7 @@
           "Webhooks"
         ],
         "summary": "List outbound events",
-        "description": "Returns the closed set of outbound webhook event names a subscription can subscribe to.",
+        "description": "Returns the closed set of outbound webhook event names, flat in `events` and grouped by family in `families`; a subscription can hold an event name or a family wildcard (`document.*`), which also receives events added to that family later.",
         "responses": {
           "401": {
             "description": "Unauthorized — missing or invalid credentials.",
@@ -28050,7 +28050,7 @@
           "Webhooks"
         ],
         "summary": "Create webhook subscription",
-        "description": "Creates an outbound webhook subscription; events are validated against the closed OUTBOUND_EVENTS set and the secret value never crosses this surface.",
+        "description": "Creates an outbound webhook subscription; events (names or family wildcards like `document.*`) are validated against the closed OUTBOUND_EVENTS set and its families, and the secret value never crosses this surface.",
         "requestBody": {
           "required": true,
           "content": {
@@ -28070,7 +28070,7 @@
                   },
                   "events": {
                     "minItems": 1,
-                    "description": "Event names to subscribe to, from GET /events; an unknown name is rejected with 400.",
+                    "description": "Event names or family wildcards (`document.*`) to subscribe to, from GET /events; an unknown name or family is rejected with 400.",
                     "type": "array",
                     "items": {
                       "type": "string"
@@ -28108,7 +28108,7 @@
                   },
                   "events": {
                     "minItems": 1,
-                    "description": "Event names to subscribe to, from GET /events; an unknown name is rejected with 400.",
+                    "description": "Event names or family wildcards (`document.*`) to subscribe to, from GET /events; an unknown name or family is rejected with 400.",
                     "type": "array",
                     "items": {
                       "type": "string"
@@ -28146,7 +28146,7 @@
                   },
                   "events": {
                     "minItems": 1,
-                    "description": "Event names to subscribe to, from GET /events; an unknown name is rejected with 400.",
+                    "description": "Event names or family wildcards (`document.*`) to subscribe to, from GET /events; an unknown name or family is rejected with 400.",
                     "type": "array",
                     "items": {
                       "type": "string"
@@ -28324,7 +28324,7 @@
           "Webhooks"
         ],
         "summary": "Update webhook subscription",
-        "description": "Updates fields of an outbound webhook subscription by id; events are validated against the closed OUTBOUND_EVENTS set.",
+        "description": "Updates fields of an outbound webhook subscription by id; events (names or family wildcards like `document.*`) are validated against the closed OUTBOUND_EVENTS set and its families.",
         "parameters": [
           {
             "name": "id",
@@ -28362,7 +28362,7 @@
                   },
                   "events": {
                     "minItems": 1,
-                    "description": "New event names to subscribe to, from GET /events; an unknown name is rejected with 400.",
+                    "description": "New event names or family wildcards (`document.*`) to subscribe to, from GET /events; an unknown name or family is rejected with 400.",
                     "type": "array",
                     "items": {
                       "type": "string"
@@ -28396,7 +28396,7 @@
                   },
                   "events": {
                     "minItems": 1,
-                    "description": "New event names to subscribe to, from GET /events; an unknown name is rejected with 400.",
+                    "description": "New event names or family wildcards (`document.*`) to subscribe to, from GET /events; an unknown name or family is rejected with 400.",
                     "type": "array",
                     "items": {
                       "type": "string"
@@ -28430,7 +28430,7 @@
                   },
                   "events": {
                     "minItems": 1,
-                    "description": "New event names to subscribe to, from GET /events; an unknown name is rejected with 400.",
+                    "description": "New event names or family wildcards (`document.*`) to subscribe to, from GET /events; an unknown name or family is rejected with 400.",
                     "type": "array",
                     "items": {
                       "type": "string"

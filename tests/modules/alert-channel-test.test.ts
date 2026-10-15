@@ -609,17 +609,21 @@ describe.skipIf(!dbUp)("testing an alert channel", () => {
     // TICK UNTIL IT CLAIMS. The claim is `FOR UPDATE ... SKIP LOCKED`, so a row another
     // transaction holds is skipped until the next tick; under the full suite other files share the
     // database, so one tick can claim nothing. The wait returns the moment it delivers.
-    await until("the alert delivered by a tick", async () => {
-      await processAlertBatch({
-        base: appDb,
-        tenantId,
-        coalesceWindowMs: 0,
-        fetchImpl: real.fetchImpl,
-        assertSafe: allowAll,
+    // A worker that throws fails the test from here; the row is removed either way.
+    try {
+      await until("the alert delivered by a tick", async () => {
+        await processAlertBatch({
+          base: appDb,
+          tenantId,
+          coalesceWindowMs: 0,
+          fetchImpl: real.fetchImpl,
+          assertSafe: allowAll,
+        });
+        return real.sent.length > 0;
       });
-      return real.sent.length > 0;
-    }).catch(() => {});
-    await suDb.alertDelivery.deleteMany({ where: { id: row.id } });
+    } finally {
+      await suDb.alertDelivery.deleteMany({ where: { id: row.id } });
+    }
 
     expect(real.sent).toHaveLength(1);
     const probeSent = probe.sent[0] as Sent;

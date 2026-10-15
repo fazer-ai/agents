@@ -536,6 +536,74 @@ describe.skipIf(!dbUp)("testing a decisions agent on a conversation", () => {
     ]);
   });
 
+  // The bugs: the label fences asked of the conversation scope only, so a card's protected label read
+  // as "would run"; and a contact write simulated on a conversation with no contact, where the tick
+  // writes nothing (`no_effect`), satisfying a later precondition that the tick finds unmet.
+  test("label fences hold on every scope, and a contact write needs a contact", async () => {
+    const when = [{ question: "pede_reembolso", minProbability: 0.7 }];
+    await setSettings({
+      ...monitoring([
+        {
+          when,
+          action: {
+            tool: "set_labels",
+            args: { add: ["vip"], scope: "contact" },
+          },
+        },
+        {
+          when,
+          action: {
+            tool: "set_custom_attribute",
+            args: { key: "pedido", value: "4471", scope: "contact" },
+          },
+        },
+        {
+          when,
+          action: { tool: "private_note", args: { content: "Pedido" } },
+        },
+      ]),
+      setLabels: { protected: ["vip"] },
+      toolPreconditions: {
+        private_note: { kind: "attribute", scope: "contact", key: "pedido" },
+      },
+    });
+    // No contact: the contact writes have no effect, so the attribute the note asks for is not there.
+    let { tick } = await runTest(classifier(yes).fetchImpl);
+    expect(tick.actions).toMatchObject([
+      { rule: 0, outcome: "no_effect" },
+      { rule: 1, outcome: "no_effect" },
+      { rule: 2, outcome: "refused", fence: "precondition" },
+    ]);
+    const contact = await suDb.contact.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        name: "Marina",
+        chatwootContactId: 9,
+      },
+    });
+    await suDb.conversation.update({
+      where: { id: convRowId },
+      data: { contactId: contact.id },
+    });
+    try {
+      // With one: the protected label is refused on the contact scope too, and the attribute the
+      // earlier rule writes lets the note through.
+      ({ tick } = await runTest(classifier(yes).fetchImpl));
+      expect(tick.actions).toMatchObject([
+        { rule: 0, outcome: "refused", fence: "protected_label" },
+        { rule: 1, outcome: "decided" },
+        { rule: 2, outcome: "decided" },
+      ]);
+    } finally {
+      await suDb.conversation.update({
+        where: { id: convRowId },
+        data: { contactId: null },
+      });
+      await suDb.contact.delete({ where: { id: contact.id } });
+    }
+  });
+
   // The bug: paying for a classification of a conversation where the customer has said nothing.
   test("no customer message: skipped before the classifier is called", async () => {
     const c = classifier(yes);

@@ -312,6 +312,7 @@ export async function tryDecisionsAgent(
     }),
     labels: evidence.current,
     protectedLabels: cfg.protectedLabels,
+    hasContact: cfg.chatwootContactId !== null,
     allowed:
       cfg.allowedLabels.length > 0
         ? { labels: cfg.allowedLabels, mode: cfg.outsideAllowedLabels }
@@ -348,6 +349,9 @@ async function withFences(
     labels: string[] | null;
     protectedLabels: string[];
     allowed: { labels: string[]; mode: "refuse" | "accept" } | undefined;
+    // Whether the conversation has a contact linked to Chatwoot: without one a contact write has no
+    // effect on a tick, so it is reported `no_effect` and its attribute is not counted as written.
+    hasContact: boolean;
   },
 ): Promise<ActionReport[]> {
   const decided = actions.filter((a) => a.outcome === "decided");
@@ -376,6 +380,13 @@ async function withFences(
     const args = rules[a.rule]?.action.args ?? {};
     const scope = args.scope ?? "conversation";
     if (
+      scope === "contact" &&
+      !fences.hasContact &&
+      (a.tool === "set_custom_attribute" || a.tool === "set_labels")
+    ) {
+      return { ...a, outcome: "no_effect" };
+    }
+    if (
       a.tool === "set_custom_attribute" &&
       typeof args.key === "string" &&
       typeof args.value === "string" &&
@@ -387,19 +398,19 @@ async function withFences(
           : state.conversationAttributes;
       bag[args.key] = args.value;
     }
-    if (
-      a.tool === "set_labels" &&
-      scope === "conversation" &&
-      labels !== null
-    ) {
+    if (a.tool === "set_labels") {
+      // The fences hold on every scope. The conversation's labels were read for the evidence; a
+      // contact's or a card's were not, so their removals are taken as standing (whether a label
+      // is refused does not depend on the current set, only whether the call writes anything).
+      const known = scope === "conversation" ? labels : null;
       const o = applyLabelDelta(
         strings(args.add),
         strings(args.remove),
-        labels,
+        known ?? strings(args.remove),
         fences.protectedLabels,
         fences.allowed,
       );
-      labels = o.next;
+      if (scope === "conversation" && labels !== null) labels = o.next;
       const fence =
         o.refusedAdd.length > 0 || o.refusedRemove.length > 0
           ? ("protected_label" as const)

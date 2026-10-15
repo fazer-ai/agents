@@ -1209,6 +1209,19 @@
   },
   "documents": {
     "add": "New template",
+    "approvalLink": {
+      "loadError": "Could not read the approval link setting.",
+      "mode": "The link opens",
+      "modeConsole": "This console",
+      "modeCustom": "Another address",
+      "modeNone": "No link",
+      "noneHelp": "The notes are still written, with the decision and the reviewer's note, only without the link.",
+      "saveError": "Could not save.",
+      "subtitle": "Every private note about an approval request (opened, approved, rejected, expired) ends with a link to the request. Point it to the app where your team reviews them, or leave it out.",
+      "template": "Address",
+      "templateHelp": "A full address starting with https://, with {id} where the request number goes. Leave it empty to go back to this console.",
+      "title": "Link in approval notes"
+    },
     "approvalTtl": "The request waits for",
     "approvalTtlDays_one": "{{count}} day",
     "approvalTtlDays_other": "{{count}} days",

@@ -155,6 +155,7 @@
     "integrationNoInboundWebhook": "A integração {{integration}} não tem webhook de entrada.",
     "internalError": "Algo deu errado",
     "invalidAgentExport": "Este arquivo não é uma exportação de agente válida.",
+    "invalidApprovalLinkTemplate": "O link da aprovação precisa ser um endereço completo, começando com https:// ou http://, com {id} onde entra o número do pedido.",
     "invalidBusinessHoursDate": "{{date}} não é uma data de calendário.",
     "invalidBusinessHoursRange": "A faixa em {{date}} precisa terminar depois de começar ({{start}} até {{end}}).",
     "invalidBusinessHoursSpan": "A exceção que começa em {{start}} não pode terminar antes disso ({{end}}).",

@@ -26,6 +26,7 @@ import {
 import { useActiveTenantName } from "@/client/hooks/useActiveTenantName";
 import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
+import { ApprovalLinkCard } from "./ApprovalLinkCard";
 import { type CompanyProfile, CompanyProfileCard } from "./CompanyProfileCard";
 import {
   DocumentStarterModal,
@@ -334,6 +335,8 @@ export function DocumentsPanel() {
               </Button>
             </Card>
           </DataBoundary>
+
+          <ApprovalLinkCard />
 
           <DataBoundary
             loading={loading}

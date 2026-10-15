@@ -11,6 +11,11 @@ import {
 } from "@/lib/errors";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { auditMutation } from "@/modules/audit/service";
+import {
+  type ApprovalLinkSettings,
+  normalizeApprovalLink,
+  parseApprovalLinkSettings,
+} from "@/modules/documents/approval-link";
 import { unprintablePhrase } from "@/modules/documents/printable";
 import {
   forgetPriceOverrides,
@@ -191,6 +196,7 @@ export interface TenantSettingsDto {
   company: CompanySettings;
   spendCeiling: SpendCeilingConfig;
   priceOverrides: PriceOverridesBlock;
+  approvalLink: ApprovalLinkSettings;
 }
 
 export async function getTenantSettings(
@@ -210,6 +216,7 @@ export async function getTenantSettings(
       spendCeiling: readSpendCeilingConfig(raw),
       // The runtime's reader too, for the same reason: what the console lists is what prices a call.
       priceOverrides: readPriceOverrides(raw),
+      approvalLink: parseApprovalLinkSettings(raw),
     };
   });
 }
@@ -241,7 +248,8 @@ async function patchBlock<
     | SpendCeilingStored
     | SpendCeilingLegacyStored
     | PriceOverridesBlock
-    | ProactiveBreakerConfig,
+    | ProactiveBreakerConfig
+    | ApprovalLinkSettings,
 >(
   ctx: TenantContext,
   base: PrismaClient,
@@ -251,7 +259,8 @@ async function patchBlock<
     | "company"
     | "spendCeiling"
     | "priceOverrides"
-    | "proactiveBreaker",
+    | "proactiveBreaker"
+    | "approvalLink",
   // Handed both states, so a block can report what moved without carrying what it holds (the
   // company profile needs the difference; see `sides` for the shape the others use).
   audit: {
@@ -455,6 +464,27 @@ export async function updateLangfuse(
     },
   );
   return next;
+}
+
+// The link at the end of an approval request's private note (documents/approval-link.ts). Replaced
+// whole: two fields that only mean something together.
+export async function updateApprovalLink(
+  ctx: TenantContext,
+  input: ApprovalLinkSettings,
+  base: PrismaClient = basePrisma,
+): Promise<ApprovalLinkSettings> {
+  const next = normalizeApprovalLink(input);
+  return patchBlock(
+    ctx,
+    base,
+    "approvalLink",
+    {
+      action: "tenant_settings.approval_link_set",
+      target: "tenant_settings:approvalLink",
+      project: sides(parseApprovalLinkSettings),
+    },
+    () => next,
+  );
 }
 
 export type CompanyUpdateInput = Partial<

@@ -170,6 +170,10 @@ export const inputSchemaArg = z.preprocess((value, ctx) => {
   return value;
 }, z.record(z.string(), z.unknown()).optional());
 
+import {
+  APPROVAL_LINK_MODES,
+  APPROVAL_LINK_TEMPLATE_MAX,
+} from "@/modules/documents/approval-link";
 import { PRICE_OVERRIDES_MAX } from "@/modules/pricing/overrides";
 import {
   knowledgeApprove,
@@ -197,6 +201,7 @@ import {
   experimentDelete,
   experimentUpdate,
   langfuseConnect,
+  type McpApprovalLink,
   type McpPriceOverride,
   proactiveBreakerResume,
   proactiveBreakerSet,
@@ -3205,6 +3210,15 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
             .max(PRICE_OVERRIDES_MAX)
             .optional()
             .describe("USD per 1M tokens; replaces the saved list"),
+          approval_link: z
+            .object({
+              mode: z.enum(APPROVAL_LINK_MODES),
+              url_template: z.string().max(APPROVAL_LINK_TEMPLATE_MAX),
+            })
+            .optional()
+            .describe(
+              "Link in approval notes: console (default), custom (url_template, http(s) with {id}; empty = console) or none",
+            ),
           dry_run: z.boolean().optional(),
         },
       },
@@ -3218,6 +3232,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
             debug?: boolean;
           };
           price_overrides?: McpPriceOverride[];
+          approval_link?: McpApprovalLink;
           dry_run?: boolean;
         },
         eff,

@@ -903,6 +903,7 @@ export async function tenantSettingsGet(
         langfuse: { ...settings.langfuse, credentialRef: langfuseRef },
         // NOTE: The tenant's own model prices, USD per million tokens.
         priceOverrides: settings.priceOverrides,
+        approvalLink: settings.approvalLink,
       },
     });
   } catch (e) {

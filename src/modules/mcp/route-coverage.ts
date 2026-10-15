@@ -277,6 +277,7 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
     gap: "probe the Langfuse credential",
   },
   "PUT /v1/tenant-settings/company": { gap: "set the company profile" },
+  "PUT /v1/tenant-settings/approval-link": { tool: "tenant_settings_update" },
   "POST /v1/tenant-settings/company/logo": { none: BINARY },
   "DELETE /v1/tenant-settings/company/logo": { none: BINARY },
   "GET /v1/tenant-settings/company/logo": { none: BINARY },

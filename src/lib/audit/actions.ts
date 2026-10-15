@@ -105,6 +105,7 @@ export const AUDIT_ACTIONS = [
   "mcp_oauth_consent.deny",
   "mcp_oauth_consent.grant",
   "mcp_token.revoke",
+  "tenant_settings.approval_link_set",
   "tenant_settings.company_set",
   "tenant_settings.embedding_set",
   "tenant_settings.langfuse_set",

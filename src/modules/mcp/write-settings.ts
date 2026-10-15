@@ -16,6 +16,10 @@ import {
   updateBusinessHours,
 } from "@/modules/business-hours/service";
 import {
+  type ApprovalLinkMode,
+  normalizeApprovalLink,
+} from "@/modules/documents/approval-link";
+import {
   assertExperimentAgentExists,
   assertExperimentNameUsable,
   createExperiment,
@@ -39,6 +43,7 @@ import {
   assertLangfuseCredentialUsable,
   getTenantSettings,
   parsePriceOverrides,
+  updateApprovalLink,
   updateEmbeddingSettings,
   updateLangfuse,
   updatePriceOverrides,
@@ -440,7 +445,13 @@ export interface TenantSettingsUpdateArgs {
   };
   // The tenant's own model prices: the WHOLE list, which replaces the saved one.
   price_overrides?: McpPriceOverride[];
+  approval_link?: McpApprovalLink;
   dry_run?: boolean;
+}
+
+export interface McpApprovalLink {
+  mode: ApprovalLinkMode;
+  url_template: string;
 }
 
 export interface McpPriceOverride {
@@ -474,10 +485,11 @@ export async function tenantSettingsUpdate(
   if (
     args.embedding === undefined &&
     args.langfuse === undefined &&
-    args.price_overrides === undefined
+    args.price_overrides === undefined &&
+    args.approval_link === undefined
   ) {
     return err(
-      "no updatable blocks provided (embedding, langfuse, price_overrides)",
+      "no updatable blocks provided (embedding, langfuse, price_overrides, approval_link)",
     );
   }
 
@@ -526,6 +538,13 @@ export async function tenantSettingsUpdate(
       args.price_overrides === undefined
         ? undefined
         : parsePriceOverrides(priceOverridesFromMcp(args.price_overrides));
+    const approvalLink =
+      args.approval_link === undefined
+        ? undefined
+        : normalizeApprovalLink({
+            mode: args.approval_link.mode,
+            urlTemplate: args.approval_link.url_template,
+          });
     if (args.dry_run !== false) {
       // NOTE: the core's own KIND question, which resolving the ref above does not answer: a
       // `vault:<id>` names an entry of any kind. Only when the patch actually sets a ref.
@@ -553,6 +572,7 @@ export async function tenantSettingsUpdate(
                   debug: args.langfuse.debug,
                 },
           priceOverrides: prices,
+          approvalLink,
         },
       });
     }
@@ -574,6 +594,9 @@ export async function tenantSettingsUpdate(
     if (prices !== undefined) {
       await updatePriceOverrides(ctx, prices, base);
     }
+    if (approvalLink !== undefined) {
+      await updateApprovalLink(ctx, approvalLink, base);
+    }
     const after = await getTenantSettings(ctx, base);
     // Each block writer above records its own row, so a call touching both leaves TWO where
     // this tool used to leave one summarizing both. Same shape the console has always produced.
@@ -592,6 +615,7 @@ export async function tenantSettingsUpdate(
         embedding: { ...after.embedding, credentialRef: embName },
         langfuse: { ...after.langfuse, credentialRef: lfName },
         priceOverrides: after.priceOverrides,
+        approvalLink: after.approvalLink,
       },
     });
   } catch (e) {

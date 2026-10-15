@@ -334,6 +334,67 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
     expect(named(rec.calls, "sendFileAttachment")).toHaveLength(0);
   });
 
+  test("the tenant's own address replaces the console page in every note, and none leaves the link out", async () => {
+    const before = await suDb.tenant.findUniqueOrThrow({
+      where: { id: tenantId },
+      select: { settings: true },
+    });
+    const setLink = (approvalLink: Record<string, string>) =>
+      suDb.tenant.update({
+        where: { id: tenantId },
+        data: {
+          settings: {
+            ...(before.settings as Record<string, unknown>),
+            approvalLink,
+          },
+        },
+      });
+    try {
+      await setLink({
+        mode: "custom",
+        urlTemplate: "https://app.example.com/docs?f=(open)&approval={id}",
+      });
+      const opened = await conversationWithRequest({});
+      const rec = recordingClient();
+      await runApprovalOpened(tenantId, opened.requestId, appDb, {
+        makeClient: rec.makeClient,
+      });
+      const ours = `\n\n[Ver aprovação](https://app.example.com/docs?f=%28open%29&approval=${opened.requestId})`;
+      expect(String(outcomeNotes(rec.calls)[0]?.[2]).endsWith(ours)).toBe(true);
+
+      await rejectDocumentRequest({
+        ctx: ctx(),
+        requestId: opened.requestId,
+        reviewerUserId: null,
+        base: appDb,
+      });
+      const decided = recordingClient();
+      await runApprovalOutcome(tenantId, opened.requestId, appDb, {
+        makeClient: decided.makeClient,
+        nudgeDeps: { makeModel: noModel },
+      });
+      const rejectedNote = String(outcomeNotes(decided.calls)[0]?.[2]);
+      expect(rejectedNote).toContain("Documento não aprovado");
+      expect(rejectedNote.endsWith(ours)).toBe(true);
+      expect(rejectedNote).not.toContain("/document-approvals/");
+
+      await setLink({ mode: "none", urlTemplate: "" });
+      const bare = await conversationWithRequest({});
+      const plain = recordingClient();
+      await runApprovalOpened(tenantId, bare.requestId, appDb, {
+        makeClient: plain.makeClient,
+      });
+      const note = String(outcomeNotes(plain.calls)[0]?.[2]);
+      expect(note).toContain("Pedido de aprovação aberto");
+      expect(note).not.toContain("Ver aprovação");
+    } finally {
+      await suDb.tenant.update({
+        where: { id: tenantId },
+        data: { settings: before.settings ?? {} },
+      });
+    }
+  });
+
   test("a decision taken while the opening note waits on Chatwoot leaves that note unwritten", async () => {
     const { requestId } = await conversationWithRequest({});
     const rec = recordingClient();

@@ -10,6 +10,7 @@ import { instanceIdentity } from "@/lib/instance";
 import type { TenantContext } from "@/lib/tenancy";
 import { TEMPLATE_MESSAGE_MAX } from "@/modules/agents/text-caps";
 import { testLangfuseConnection } from "@/modules/analytics/langfuse-test";
+import { APPROVAL_LINK_TEMPLATE_MAX } from "@/modules/documents/approval-link";
 import {
   clearCompanyLogo,
   LOGO_CONTENT_TYPE,
@@ -35,6 +36,7 @@ import {
 } from "@/modules/spend-ceiling/settings";
 import {
   getTenantSettings,
+  updateApprovalLink,
   updateCompanySettings,
   updateEmbeddingSettings,
   updateLangfuse,
@@ -44,6 +46,7 @@ import {
 } from "@/modules/tenant-settings/service";
 
 // The error catalog this controller's routes answer with (`bun i18n:extract` reads these lines).
+// translate('errors.invalidApprovalLinkTemplate', "The approval link must be a full address starting with https:// or http://, with {id} where the request's id goes.")
 // translate('errors.invalidCredentialKind', 'This setting requires a credential of kind {{kind}}.')
 
 // Per-tenant feature settings (TENANT_ADMIN). Embedding (provider/model/credential for RAG) and
@@ -76,12 +79,19 @@ export const tenantSettingsController = new Elysia({
   .get(
     "/",
     async ({ tenantContext }) => {
-      const { embedding, langfuse, company, spendCeiling, priceOverrides } =
-        await getTenantSettings(ctxOrThrow(tenantContext));
+      const {
+        embedding,
+        langfuse,
+        company,
+        spendCeiling,
+        priceOverrides,
+        approvalLink,
+      } = await getTenantSettings(ctxOrThrow(tenantContext));
       return {
         instance: instanceIdentity,
         embedding,
         company,
+        approvalLink,
         spendCeiling,
         priceOverrides,
         langfuse: {
@@ -96,7 +106,7 @@ export const tenantSettingsController = new Elysia({
       requireRole: "TENANT_ADMIN",
       detail: doc(
         "Get tenant settings",
-        "Returns the tenant's embedding, Langfuse, company-profile and token-ceiling settings.",
+        "Returns the tenant's embedding, Langfuse, company-profile, approval-link and token-ceiling settings.",
       ),
       response: errors(401, 403, 404),
     },
@@ -419,6 +429,35 @@ export const tenantSettingsController = new Elysia({
       detail: doc(
         "Test Langfuse connection",
         "Probes the Langfuse instance with the supplied keys without saving them.",
+      ),
+      response: errors(400, 401, 403, 422),
+    },
+  )
+  .put(
+    "/approval-link",
+    async ({ tenantContext, body }) => ({
+      instance: instanceIdentity,
+      approvalLink: await updateApprovalLink(ctxOrThrow(tenantContext), body),
+    }),
+    {
+      requireRole: "TENANT_ADMIN",
+      body: t.Object({
+        mode: t.Union(
+          [t.Literal("console"), t.Literal("custom"), t.Literal("none")],
+          {
+            description:
+              "Where the link at the end of an approval request's private note points: `console` (the request's page in this console, the default), `custom` (urlTemplate) or `none` (the note carries no link; it is still written).",
+          },
+        ),
+        urlTemplate: t.String({
+          maxLength: APPROVAL_LINK_TEMPLATE_MAX,
+          description:
+            "For `custom`: a full https:// or http:// address with `{id}` where the request's id goes, e.g. `https://app.example.com/documents?approval={id}`. Empty with `custom` stores `console`. Kept as typed for the other modes.",
+        }),
+      }),
+      detail: doc(
+        "Set the approval note link",
+        "Sets where the link in an approval request's Chatwoot private note points. Applies to the next note written, including notes about requests opened before the change.",
       ),
       response: errors(400, 401, 403, 422),
     },

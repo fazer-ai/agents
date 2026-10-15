@@ -27,13 +27,13 @@ import { readDebugModes } from "@/modules/flowlog/debug-mode";
 import { emitFlowEvent } from "@/modules/flowlog/service";
 import { assignPinnedTarget } from "@/modules/handoff/assign-pinned";
 import { readHandoffConfig } from "@/modules/handoff/settings";
-import { consoleUrl } from "@/modules/mcp/console-links";
 import {
   type JobContext,
   type JobResult,
   registerJobHandler,
 } from "@/modules/scheduler/worker";
 import { type ApprovalOutcome, openedJobKey, reviewerNames } from "./approval";
+import { readApprovalLink, withApprovalLink } from "./approval-link";
 import { formatDocumentNumber } from "./format";
 import { getIssuedDocumentPdf, sysCtx } from "./issue";
 
@@ -58,17 +58,6 @@ type Outcome =
   // A run before this one already recorded what the decision came to: nothing is written again.
   | "recorded"
   | "retry";
-
-// Every note ends on the request's page, so the person the conversation falls to opens the decision
-// (and, on an expired one, asks again) from where they are working. A Markdown link: Chatwoot and the
-// console both render a private note as Markdown.
-function withPageLink(
-  text: string,
-  tenantId: bigint,
-  requestId: bigint,
-): string {
-  return `${text}\n\n[Ver aprovação](${consoleUrl(`/document-approvals/${requestId}`, { tenantId })})`;
-}
 
 function titleOf(title: string): string {
   return literalForChatwoot(title.replace(/\s+/g, " ").trim());
@@ -285,7 +274,9 @@ export async function runApprovalOutcome(
     committed = true;
     deps.commit?.();
   };
-  const withPage = (text: string) => withPageLink(text, tenantId, requestId);
+  const link = await readApprovalLink(tenantId, base);
+  const withPage = (text: string) =>
+    withApprovalLink(text, link, tenantId, requestId);
   const note = async (client: ChatwootClient, text: string) => {
     if (deps.signal?.aborted && !committed) return false;
     await client.sendPrivateNote(
@@ -529,8 +520,9 @@ export async function runApprovalOpened(
   if (deps.signal?.aborted || !(await pending())) return "decided";
   await client.sendPrivateNote(
     target.conv.chatwootConversationId,
-    withPageLink(
+    withApprovalLink(
       `Pedido de aprovação aberto: ${titleOf(request.title)}. Nada vai ao cliente até alguém da equipe aprovar.`,
+      await readApprovalLink(tenantId, base),
       tenantId,
       requestId,
     ),

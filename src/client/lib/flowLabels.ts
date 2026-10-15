@@ -102,19 +102,19 @@ export function guardrailUncheckedLabel(
     if (outcome !== "analysis_failed") return null;
     return t(
       "logs.guardrailUnchecked.unknown",
-      "The check failed; this older line does not record whether the message went through",
+      "The check failed; this older line does not record whether the message was let through",
     );
   }
   switch (detail.direction) {
     case "input":
       return t(
         "logs.guardrailUnchecked.input",
-        "The check failed, so the customer's message reached the agent unchecked",
+        "The check failed, so the customer's message was let through unchecked",
       );
     case "output":
       return t(
         "logs.guardrailUnchecked.output",
-        "The check failed, so the reply went out unchecked",
+        "The check failed, so the reply was let through unchecked",
       );
     default:
       return null;

@@ -98,7 +98,7 @@ describe("a guardrail line that could not judge, on the Logs page", () => {
     globalThis.fetch = realFetch;
   });
 
-  test("says the customer's message reached the agent unchecked, and which classifier failed", async () => {
+  test("says the customer's message was let through unchecked, and which classifier failed", async () => {
     const text = await pageText([
       guardrailLine("a", {
         direction: "input",
@@ -109,12 +109,12 @@ describe("a guardrail line that could not judge, on the Logs page", () => {
     ]);
     expect(
       text.includes(
-        "The check failed, so the customer's message reached the agent unchecked · language model",
+        "The check failed, so the customer's message was let through unchecked · language model",
       ),
     ).toBe(true);
   });
 
-  test("says the reply went out unchecked under a classification API", async () => {
+  test("says the reply was let through unchecked under a classification API", async () => {
     const text = await pageText([
       guardrailLine("b", {
         direction: "output",
@@ -125,7 +125,7 @@ describe("a guardrail line that could not judge, on the Logs page", () => {
     ]);
     expect(
       text.includes(
-        "The check failed, so the reply went out unchecked · classification API",
+        "The check failed, so the reply was let through unchecked · classification API",
       ),
     ).toBe(true);
   });
@@ -139,7 +139,7 @@ describe("a guardrail line that could not judge, on the Logs page", () => {
     ]);
     expect(
       text.includes(
-        "The check failed, so the customer's message reached the agent unchecked",
+        "The check failed, so the customer's message was let through unchecked",
       ),
     ).toBe(true);
     expect(text.includes(" · language model")).toBe(false);
@@ -151,10 +151,10 @@ describe("a guardrail line that could not judge, on the Logs page", () => {
     ]);
     expect(
       text.includes(
-        "The check failed; this older line does not record whether the message went through",
+        "The check failed; this older line does not record whether the message was let through",
       ),
     ).toBe(true);
-    expect(text.includes("went out unchecked")).toBe(false);
+    expect(text.includes("reply was let through unchecked")).toBe(false);
   });
 
   test("in Portuguese", async () => {
@@ -171,7 +171,7 @@ describe("a guardrail line that could not judge, on the Logs page", () => {
     );
     expect(
       text.includes(
-        "A checagem falhou, e a resposta saiu sem checagem · modelo de linguagem",
+        "A checagem falhou, e a resposta foi liberada sem checagem · modelo de linguagem",
       ),
     ).toBe(true);
     expect(text.includes("logs.guardrailUnchecked")).toBe(false);

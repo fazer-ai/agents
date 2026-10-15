@@ -3072,9 +3072,9 @@
       "decisions": "classification API"
     },
     "guardrailUnchecked": {
-      "input": "The check failed, so the customer's message reached the agent unchecked",
-      "output": "The check failed, so the reply went out unchecked",
-      "unknown": "The check failed; this older line does not record whether the message went through"
+      "input": "The check failed, so the customer's message was let through unchecked",
+      "output": "The check failed, so the reply was let through unchecked",
+      "unknown": "The check failed; this older line does not record whether the message was let through"
     },
     "level": {
       "error": "Error",

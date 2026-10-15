@@ -257,8 +257,7 @@
         "!tests/modules/tool-test-run.test.ts",
         "!tests/modules/vision-email-body.test.ts",
         "!tests/modules/vision-retry.test.ts",
-        "!tests/modules/webhooks-outbound-dead-alert.test.ts",
-        "!tests/modules/webhooks-outbound-deliveries.test.ts"
+        "!tests/modules/webhooks-outbound-dead-alert.test.ts"
       ],
       "plugins": ["./biome-plugins/no-test-real-wait.grit"]
     },

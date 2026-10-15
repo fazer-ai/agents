@@ -2,11 +2,10 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-// The lint rules for test files (biome-plugins/no-test-reads-source.grit, no-test-real-wait.grit,
-// no-test-sleep-wrapper.grit,
-// require-test-server-hostname.grit, no-swallowed-db-probe.grit, no-unscoped-pg-stat-activity.grit)
-// through the real Biome: one process lints every probe, written under tests/ as `.ts` (not
-// `.test.ts`, so `bun test` never collects them) in a directory named after the run's pid.
+// The lint rules for test files (biome-plugins/no-test-*.grit, require-test-server-hostname.grit,
+// no-swallowed-db-probe.grit, no-unscoped-pg-stat-activity.grit) through the real Biome: one process
+// lints every probe, written under tests/ as `.ts` (not `.test.ts`, so `bun test` never collects
+// them) in a directory named after the run's pid.
 //
 // The exemption is proven with the SMALLEST listed file of each rule, linted in place and as a copy.
 // Biome's time grows with the lines it reads: the 11,772-line tests/graph/runtime.test.ts, linted twice,

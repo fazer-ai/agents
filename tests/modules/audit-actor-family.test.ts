@@ -20,9 +20,11 @@ import { issueAccessToken } from "@/modules/mcp/oauth/tokens";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { personData } from "@/tests/utils/person";
 import {
+  blockedByChain,
   underConcurrentEdit,
   withAuditTriggerFixture,
 } from "@/tests/utils/pg-waits";
+import { until } from "@/tests/utils/poll";
 
 // THE ACTOR FAMILY: revoking a token, changing a role, inviting a user. The question this file holds
 // is WHICH TRAIL each row joins: `users`, `invitations` and `mcp_oauth_*` are global (no RLS), so the
@@ -481,8 +483,8 @@ describe.skipIf(!dbUp)("the actor family records its own changes", () => {
     // else's role change, deletion or login write waits behind it.
     //
     // Asserted as an ORDER and not as a duration: the refusal has to arrive while the lock is still
-    // held by somebody else. Unscoped, the call blocks until the holder commits, so `released` would
-    // already be true by the time it returned.
+    // held by somebody else. Unscoped, the call parks behind the holder, which commits only after
+    // the attempt has either answered or shown up waiting on it.
     const outsider = await newUser(otherTenantId, "AGENT");
     const invite = await createInvite(
       { ...fleetAdmin },
@@ -506,20 +508,37 @@ describe.skipIf(!dbUp)("the actor family records its own changes", () => {
       () => deleteUser(tenantAdmin(), outsider.id, appDb),
       () => revokeInvite(tenantAdmin(), invite.id, appDb),
     ]) {
-      let released = false;
+      const locked = Promise.withResolvers<number>();
+      const release = Promise.withResolvers<void>();
       const holder = suDb.$transaction(
         async (tx) => {
           await tx.$queryRaw`SELECT id FROM users WHERE id = ${outsider.id} FOR UPDATE`;
           await tx.$queryRaw`SELECT id FROM invitations WHERE id = ${invite.id} FOR UPDATE`;
-          await new Promise((r) => setTimeout(r, 2_000));
-          released = true;
+          const [me] = await tx.$queryRaw<{ pid: number }[]>`
+            SELECT pg_backend_pid() AS pid`;
+          locked.resolve(me?.pid ?? -1);
+          await release.promise;
         },
         { timeout: 15_000 },
       );
-      await new Promise((r) => setTimeout(r, 250));
-      await expect(attempt()).rejects.toThrow();
-      expect(released).toBe(false);
-      await holder;
+      try {
+        const holderPid = await locked.promise;
+        let settled = false;
+        const answer = attempt().finally(() => {
+          settled = true;
+        });
+        answer.catch(() => {});
+        // Refused while the rows are still held, or parked behind them: the second is the defect.
+        await until(
+          "the attempt refused, or parked behind the held rows",
+          async () => settled || (await blockedByChain(suDb, holderPid)) >= 1,
+        );
+        expect(settled).toBe(true);
+        await expect(answer).rejects.toThrow();
+      } finally {
+        release.resolve();
+        await holder;
+      }
     }
     await suDb.$executeRawUnsafe(
       `DELETE FROM audit_logs WHERE tenant_id = ${otherTenantId}`,

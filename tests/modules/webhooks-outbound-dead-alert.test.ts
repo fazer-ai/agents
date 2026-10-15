@@ -6,7 +6,7 @@ import { createAlertChannel } from "@/modules/flowlog/channels";
 import { processOutboundBatch } from "@/modules/webhooks/outbound/worker";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { clearFlowLog, flowLogRows } from "@/tests/utils/flowlog";
-import { POLL_DEADLINE_MS } from "@/tests/utils/poll";
+import { until } from "@/tests/utils/poll";
 
 // ── A DEAD DELIVERY HAS TO SAY SO WHERE THE OPERATOR READS ──
 // Integration, real DB, real RLS: the claim runs cross-tenant under asSuperAdmin and the outcome
@@ -74,36 +74,33 @@ async function seedDelivery(
   return row.id;
 }
 
-// The emit is fire-and-forget, so the row lands after the worker returned. Poll for the expected
-// count instead of sleeping a fixed amount: a fixed sleep is either flaky or slow, and this says
-// which of the two it is when it fails.
-async function webhookRows(expected: number, waitMs = POLL_DEADLINE_MS) {
-  const deadline = Date.now() + waitMs;
-  for (;;) {
-    // flowlog-scope: tenant-wide. The subject is HOW MANY lines the tick wrote, so a turn-scoped read
-    // would pass with a second row present. The tenant is this file's own, and `clearRows` empties it
-    // through `clearFlowLog`, which settles scheduled writes first (or the previous case's line lands late).
-    const rows = await flowLogRows(suDb, {
+// The emit is fire-and-forget, so the row lands after the worker returned. The read settles the
+// scheduled writes first, so it answers "nothing was written" in one read, and a count that has to be
+// reached is waited for instead of slept for.
+async function webhookRows(expected: number) {
+  // flowlog-scope: tenant-wide. The subject is HOW MANY lines the tick wrote, so a turn-scoped read
+  // would pass with a second row present. The tenant is this file's own, and `clearRows` empties it
+  // through `clearFlowLog`, which settles scheduled writes first (or the previous case's line lands late).
+  const read = () =>
+    flowLogRows(suDb, {
       where: { tenantId, stage: "webhook" },
       orderBy: { id: "asc" },
     });
-    if (rows.length >= expected) return rows;
-    if (Date.now() > deadline) return rows;
-    await Bun.sleep(50);
-  }
+  if (expected === 0) return read();
+  return until(`${expected} webhook line(s)`, async () => {
+    const rows = await read();
+    return rows.length >= expected ? rows : null;
+  });
 }
 
-async function alertRows(expected: number, waitMs = POLL_DEADLINE_MS) {
-  const deadline = Date.now() + waitMs;
-  for (;;) {
+async function alertRows(expected: number) {
+  return until(`${expected} alert deliveries`, async () => {
     const rows = await suDb.alertDelivery.findMany({
       where: { tenantId },
       orderBy: { id: "asc" },
     });
-    if (rows.length >= expected) return rows;
-    if (Date.now() > deadline) return rows;
-    await Bun.sleep(50);
-  }
+    return rows.length >= expected ? rows : null;
+  });
 }
 
 async function clearRows() {
@@ -318,7 +315,7 @@ describe.skipIf(!dbUp)("a dead outbound delivery reaches the operator", () => {
       assertSafe: passthroughSafe,
     });
     expect(summary.delivered).toBe(1);
-    expect(await webhookRows(0, 700)).toHaveLength(0);
+    expect(await webhookRows(0)).toHaveLength(0);
   });
 
   test("negative control: a retried delivery writes no line — the budget is not spent yet", async () => {
@@ -332,6 +329,6 @@ describe.skipIf(!dbUp)("a dead outbound delivery reaches the operator", () => {
     });
     expect(summary.retried).toBe(1);
     expect(summary.dead).toBe(0);
-    expect(await webhookRows(0, 700)).toHaveLength(0);
+    expect(await webhookRows(0)).toHaveLength(0);
   });
 });

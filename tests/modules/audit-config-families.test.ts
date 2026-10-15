@@ -43,6 +43,7 @@ import {
 } from "@/modules/tool-definitions/service";
 import { createVaultEntry, updateVaultEntry } from "@/modules/vault/service";
 import { dbProbeFailed } from "@/tests/db-gate";
+import { underConcurrentEdit } from "@/tests/utils/pg-waits";
 import { outboundUrl } from "../utils/outbound";
 import { until } from "../utils/poll";
 
@@ -948,27 +949,21 @@ describe.skipIf(!dbUp)(
       },
     ];
 
-    // A writer that commits while the caller under test is between its own read and its own write.
+    // A writer that commits while the caller under test is between its own read and its own write:
+    // the holder commits only once the caller is parked behind its row lock.
     async function underHolder(
       l: (typeof LOCKED)[number],
       id: bigint,
       run: () => Promise<unknown>,
     ) {
-      let held = false;
-      const holder = (su as PrismaClient).$transaction(
-        async (tx) => {
-          await tx.$executeRawUnsafe(
+      await underConcurrentEdit(
+        su as PrismaClient,
+        (tx) =>
+          tx.$executeRawUnsafe(
             `UPDATE ${l.table} SET ${l.column} = ${l.holderValue} WHERE id = ${id}`,
-          );
-          held = true;
-          await Bun.sleep(500);
-        },
-        { timeout: 10_000 },
+          ),
+        run,
       );
-      await Bun.sleep(120);
-      // The rendezvous FIRED: without this the test is a `sleep` with a better name.
-      expect(held).toBe(true);
-      await Promise.all([holder, run()]);
     }
 
     for (const l of LOCKED) {

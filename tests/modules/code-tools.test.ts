@@ -23,7 +23,8 @@ import {
 import { lockToolNames } from "@/modules/tool-definitions/namespace";
 import { createToolDefinition } from "@/modules/tool-definitions/service";
 import { dbProbeFailed } from "@/tests/db-gate";
-import { waitUntilBlocked } from "@/tests/utils/pg-waits";
+import { blockedByChain, waitUntilBlocked } from "@/tests/utils/pg-waits";
+import { until } from "@/tests/utils/poll";
 
 // The operator-authored code tool's service: the row is the operator's, invalid code SAVES with a
 // warning, one name namespace with HTTP tools and natives, and the audit trail carries the shape
@@ -302,26 +303,40 @@ describe.skipIf(!dbUp)("code tools service", () => {
     // The namespace spans two tables, so no unique index covers it: under READ COMMITTED both writes
     // can read a free name and insert, and `dropDuplicateToolNames` then picks the tool at assembly with a
     // flow-log line as the only trace. Both `assertNameFree`s take the same transaction lock first
-    // (src/modules/tool-definitions/namespace.ts). Timed rather than raced, because two concurrent
+    // (src/modules/tool-definitions/namespace.ts). Held rather than raced, because two concurrent
     // creates usually serialize on the pool and would pass with no lock: the first transaction holds the
-    // lock for the SAME name while it sleeps, so the second create's duration is the proof.
-    const HELD_MS = 400;
+    // lock, and the second create showing up parked behind it, not done, is the proof.
     const name = "corrida_de_nome";
-    let createMs = 0;
-    await Promise.all([
-      runScopedOn(suDb, ctx(), async (db) => {
-        await lockToolNames(db);
-        await db.$executeRawUnsafe(`SELECT pg_sleep(${HELD_MS / 1000})`);
-      }),
-      (async () => {
-        // Started after the holder has the lock, so the wait measured is the lock's.
-        await new Promise((r) => setTimeout(r, 50));
-        const t0 = Date.now();
-        await createCodeTool(ctx(), { ...VALID, name }, appDb);
-        createMs = Date.now() - t0;
-      })(),
-    ]);
-    expect(createMs).toBeGreaterThan(HELD_MS - 100);
+    const locked = Promise.withResolvers<number>();
+    const release = Promise.withResolvers<void>();
+    const holder = runScopedOn(suDb, ctx(), async (db) => {
+      await lockToolNames(db);
+      const [me] = await db.$queryRaw<{ pid: number }[]>`
+        SELECT pg_backend_pid() AS pid`;
+      locked.resolve(me?.pid ?? -1);
+      await release.promise;
+    });
+    let created = false;
+    try {
+      const holderPid = await locked.promise;
+      // Started after the holder has the lock: it has to park behind it, not finish beside it.
+      const creating = createCodeTool(ctx(), { ...VALID, name }, appDb).finally(
+        () => {
+          created = true;
+        },
+      );
+      creating.catch(() => {});
+      await until(
+        "the create parked behind the names lock, or done without it",
+        async () => created || (await blockedByChain(suDb, holderPid)) >= 1,
+      );
+      expect(created).toBe(false);
+      release.resolve();
+      await creating;
+    } finally {
+      release.resolve();
+      await holder;
+    }
     // Once it is the owner, the other table's write is refused on the name.
     const taken = await refusal(
       createToolDefinition(

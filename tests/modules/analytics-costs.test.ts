@@ -214,13 +214,25 @@ describe.skipIf(!dbUp)("getDashboardCosts (DB)", () => {
   });
 
   test("the project link is used once Langfuse has named the project", async () => {
-    const answering = (async () =>
-      new Response(JSON.stringify({ data: [{ id: "proj-9" }] }), {
+    // The background resolution's body, read: what is left after it is the cache write, which runs
+    // in the same continuation, and one macrotask turn drains that whole.
+    const bodyRead = Promise.withResolvers<void>();
+    const answering = (async () => {
+      const res = new Response(JSON.stringify({ data: [{ id: "proj-9" }] }), {
         status: 200,
-      })) as unknown as typeof fetch;
+      });
+      const json = res.json.bind(res);
+      res.json = async () => {
+        const body = await json();
+        bodyRead.resolve();
+        return body;
+      };
+      return res;
+    }) as unknown as typeof fetch;
     // The first load resolves in the background, the next one reads the cache.
     await getDashboardCosts(ctx(traced), {}, appDb, answering);
-    await new Promise((r) => setTimeout(r, 50));
+    await bodyRead.promise;
+    await new Promise((r) => setImmediate(r));
     const costs = await getDashboardCosts(ctx(traced), {}, appDb, noFetch);
     expect(costs.langfuse).toEqual({
       baseUrl: "https://langfuse.example.test",

@@ -439,6 +439,10 @@ describe("runToolTest — the same request the saved tool would make", () => {
 
 // The wrapper that captures the raw body sits between the runtime and the network, and both ways it
 // could be noticed are timing rather than content.
+// When a slow provider's body would have finished. It is the subject of the test below, which asserts
+// the call answered at its own bound and well before this, so the value is the provider's, not a guess
+// about how long the run takes.
+const LATE_BODY_MS = 1_500;
 describe("runToolTest — the capture wrapper is invisible to the runtime", () => {
   test("a body that arrives after the bound ends the call, wrapper or no wrapper", async () => {
     // There is one bound, over the whole exchange (a bound on the HEADERS alone lets the runtime
@@ -466,7 +470,7 @@ describe("runToolTest — the capture wrapper is invisible to the runtime", () =
                 const t = setTimeout(() => {
                   c.enqueue(new TextEncoder().encode("1}"));
                   c.close();
-                }, 1_500);
+                }, LATE_BODY_MS);
                 init.signal?.addEventListener("abort", () => {
                   aborted = true;
                   clearTimeout(t);
@@ -481,7 +485,7 @@ describe("runToolTest — the capture wrapper is invisible to the runtime", () =
     expect(err).toBeInstanceOf(AppError);
     expect((err as AppError).statusCode).toBe(504);
     expect(aborted).toBe(true);
-    expect(Date.now() - t0).toBeLessThan(1_500);
+    expect(Date.now() - t0).toBeLessThan(LATE_BODY_MS);
   }, 10_000);
 
   test("and the streamed body still reaches the operator whole", async () => {
@@ -698,12 +702,13 @@ describe("runToolTest — the deadline covers the body, not just the headers", (
         fetchImpl: (async () =>
           new Response(
             new ReadableStream({
+              // The rest arrives only when the reader asks again: a body in two reads, with no clock.
               start(c) {
                 c.enqueue(new TextEncoder().encode('{"a":'));
-                setTimeout(() => {
-                  c.enqueue(new TextEncoder().encode("1}"));
-                  c.close();
-                }, 50);
+              },
+              pull(c) {
+                c.enqueue(new TextEncoder().encode("1}"));
+                c.close();
               },
             }),
             { status: 200, headers: { "content-type": "application/json" } },

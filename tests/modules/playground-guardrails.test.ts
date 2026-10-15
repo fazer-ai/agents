@@ -21,6 +21,7 @@ import {
 import { listThreadTurnNotes } from "@/modules/playground/turn-notes";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { flowLogRow } from "../utils/flowlog";
+import { until } from "../utils/poll";
 import { guardrailModel } from "../utils/scripted-models";
 
 // The context a console operator carries. The playground takes the REQUEST's context, not an id
@@ -386,23 +387,23 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
     // Scoped to THIS agent, not just the tenant: every test here shares one tenant, and the
     // broken-model test a few lines up writes its own guardrail warn. Taking the newest row for the
     // tenant would read that one whenever this one has not landed yet (the emit is fire-and-forget).
-    let detail: unknown;
-    for (let i = 0; i < 50 && !detail; i++) {
-      detail = (
-        await flowLogRow(suDb, {
-          // flowlog-scope: agent — every test here shares the tenant but owns its agent, which is
-          // what fences this read (the note above says which neighbour it would otherwise take).
-          where: {
-            tenantId,
-            agentId: agentDeadCredential,
-            stage: "guardrail",
-            level: "warn",
-          },
-          select: { detail: true },
-        })
-      )?.detail;
-      if (!detail) await new Promise((r) => setTimeout(r, 100));
-    }
+    const detail = await until(
+      "the guardrail's warn line",
+      async () =>
+        (
+          await flowLogRow(suDb, {
+            // flowlog-scope: agent — every test here shares the tenant but owns its agent, which is
+            // what fences this read (the note above says which neighbour it would otherwise take).
+            where: {
+              tenantId,
+              agentId: agentDeadCredential,
+              stage: "guardrail",
+              level: "warn",
+            },
+            select: { detail: true },
+          })
+        )?.detail,
+    );
     expect(detail).toMatchObject({ outcome: "credential_not_found" });
   });
 

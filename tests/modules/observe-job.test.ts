@@ -22,6 +22,7 @@ import { readMonitoringConfig } from "@/modules/observe/settings";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { clearFlowLog, flowLogRows } from "../utils/flowlog";
+import { until } from "../utils/poll";
 import {
   EmptyThenReplyModel,
   ResolveAndHandoffModel,
@@ -3870,9 +3871,8 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
         makeModel: () => new EmptyThenDone("") as unknown as BaseChatModel,
       },
     );
-    let retries: Array<{ level: string; detail: unknown }> = [];
-    for (let i = 0; i < 30 && retries.length === 0; i++) {
-      retries = (
+    const retries = await until("the observer's retry line", async () => {
+      const lines = (
         await flowLogRows(suDb, {
           where: { conversationId: convRowId, stage: "generate" },
           select: { level: true, detail: true },
@@ -3881,8 +3881,8 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
         (r) =>
           (r.detail as Record<string, unknown> | null)?.node === "observer",
       );
-      if (retries.length === 0) await new Promise((r) => setTimeout(r, 100));
-    }
+      return lines.length > 0 ? lines : null;
+    });
     expect(retries).toEqual([
       expect.objectContaining({
         level: "info",
@@ -3945,15 +3945,13 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
       }
       const lines = await observeLines();
       expect(detailOf(lines, -1).failure).toBe("HTTP 401");
-      let rows: Array<{ causeKey: string | null; count: number }> = [];
-      for (let i = 0; i < 30 && (rows[0]?.count ?? 0) < 2; i++) {
-        rows = await suDb.alertDelivery.findMany({
+      const rows = await until("the alert counted twice", async () => {
+        const found = await suDb.alertDelivery.findMany({
           where: { channelId: channel.id },
           select: { causeKey: true, count: true },
         });
-        if ((rows[0]?.count ?? 0) < 2)
-          await new Promise((r) => setTimeout(r, 100));
-      }
+        return (found[0]?.count ?? 0) >= 2 ? found : null;
+      });
       expect(rows).toHaveLength(1);
       expect(rows[0]?.causeKey).toMatch(/^observe:.+:HTTP 401$/);
       expect(rows[0]?.count).toBe(2);

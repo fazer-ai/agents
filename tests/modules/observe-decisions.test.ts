@@ -22,6 +22,7 @@ import {
   decisionsBlockFingerprint,
   ruleStateKey,
 } from "@/modules/decisions/config";
+import * as decisionsRun from "@/modules/decisions/run";
 import * as triggerState from "@/modules/decisions/trigger-state";
 import { runObserve } from "@/modules/observe/job";
 import { dbProbeFailed } from "@/tests/db-gate";
@@ -260,7 +261,8 @@ async function tick(
   extra: {
     afterFailure?: "retry" | "dead_letter";
     timeoutMs?: number;
-    slowNotes?: number;
+    // A private note that hangs until this promise settles.
+    slowNotes?: Promise<unknown>;
   } = {},
 ) {
   const log: ClientLog = {
@@ -274,8 +276,11 @@ async function tick(
   const client = stubClient(labels, log);
   if (slowNotes !== undefined) {
     // A write that hangs past the tick's deadline (a keyed queue the signal does not cancel).
-    (client as unknown as { sendPrivateNote: unknown }).sendPrivateNote = () =>
-      new Promise((resolve) => setTimeout(() => resolve({}), slowNotes));
+    (client as unknown as { sendPrivateNote: unknown }).sendPrivateNote =
+      async () => {
+        await slowNotes;
+        return {};
+      };
   }
   const res = await runObserve(
     tenantId,
@@ -1077,13 +1082,13 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
     const p = providerDouble(() =>
       typesafeAnswer({ pede_reembolso: { type: "noul", noul: 0.99 } }),
     );
-    const started = Date.now();
+    // Never released while the tick runs: the tick returning at all is the deadline ending the wait.
+    const hold = Promise.withResolvers<void>();
     const { res } = await tick(p.fetchImpl, [], {
       timeoutMs: 1_500,
-      slowNotes: 10_000,
+      slowNotes: hold.promise,
       afterFailure: "retry",
-    });
-    expect(Date.now() - started).toBeLessThan(8_000);
+    }).finally(() => hold.resolve());
     expect(res.outcome).toBe("done");
     const line = await lastLine();
     expect(line.status).toBe("error");
@@ -1112,13 +1117,30 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
     const p = providerDouble(() =>
       typesafeAnswer({ pede_reembolso: { type: "noul", noul: 0.99 } }),
     );
-    const { log } = await tick(p.fetchImpl, [], {
-      timeoutMs: 1_000,
-      slowNotes: 2_000,
-      afterFailure: "retry",
-    });
-    // The slow note settles after the tick returned; the next rule must not run then.
-    await new Promise((r) => setTimeout(r, 2_500));
+    // The slow note settles after the tick returned; the next rule must not run then. The engine's
+    // own run is caught on the way in, so the read below waits for it to stop, not for a guess.
+    const hold = Promise.withResolvers<void>();
+    const realApply = decisionsRun.applyDecisions;
+    let engine: Promise<unknown> = Promise.resolve();
+    const apply = spyOn(decisionsRun, "applyDecisions").mockImplementation(
+      (...args: Parameters<typeof realApply>) => {
+        const run = realApply(...args);
+        engine = run;
+        return run;
+      },
+    );
+    let log: Awaited<ReturnType<typeof tick>>["log"];
+    try {
+      ({ log } = await tick(p.fetchImpl, [], {
+        timeoutMs: 1_000,
+        slowNotes: hold.promise,
+        afterFailure: "retry",
+      }));
+    } finally {
+      hold.resolve();
+      apply.mockRestore();
+    }
+    await Promise.allSettled([engine]);
     expect(log.labelsWritten).toEqual([]);
   });
 

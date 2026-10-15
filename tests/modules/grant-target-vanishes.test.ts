@@ -9,6 +9,7 @@ import {
 } from "@/modules/agents/service";
 import { deleteCodeTool } from "@/modules/code-tools/service";
 import { dbProbeFailed } from "@/tests/db-gate";
+import { until } from "@/tests/utils/poll";
 
 // The gap between "this grant names a tool that exists" and the insert that points at it.
 // `replaceAgentToolSelections` reads every target, then rewrites the selection rows, and nothing
@@ -27,6 +28,8 @@ let app: PrismaClient | undefined;
 // A SECOND app connection, because the deadlock below needs two transactions open at once and one
 // client's transaction is one connection.
 let app2: PrismaClient | undefined;
+// The racing delete's connections carry this name, so a case can see that delete waiting on a lock.
+const DELETER = `grant-target-delete-${process.pid}`;
 if (appUrl && suUrl) {
   try {
     su = new PrismaClient({
@@ -38,7 +41,10 @@ if (appUrl && suUrl) {
     });
     await app.$queryRaw`SELECT 1`;
     app2 = new PrismaClient({
-      adapter: new PrismaPg({ connectionString: appUrl }),
+      adapter: new PrismaPg({
+        connectionString: appUrl,
+        application_name: DELETER,
+      }),
     });
     await app2.$queryRaw`SELECT 1`;
     dbUp = true;
@@ -48,7 +54,25 @@ if (appUrl && suUrl) {
 }
 const appDb = app as PrismaClient;
 const appDb2 = app2 as PrismaClient;
+
 const suDb = su as PrismaClient;
+
+// Lets the racing delete reach the lock it will wait on: parked on a lock, as the ordering has it, or
+// over (refused or done) without waiting, which the assertions then read.
+async function deleteWaitsOrEnds(deleting: Promise<unknown>): Promise<void> {
+  let over = false;
+  void deleting.finally(() => {
+    over = true;
+  });
+  await until("the delete parked on a lock, or over", async () => {
+    if (over) return true;
+    const [row] = await suDb.$queryRaw<{ n: bigint }[]>`
+      SELECT count(*)::bigint AS n FROM pg_stat_activity
+       WHERE datname = current_database() AND application_name = ${DELETER}
+         AND wait_event_type = 'Lock'`;
+    return Number(row?.n ?? 0) > 0;
+  });
+}
 
 describe.skipIf(!dbUp)("a grant target deleted mid-save", () => {
   let tenantId = 0n;
@@ -198,7 +222,7 @@ describe.skipIf(!dbUp)("a grant target deleted mid-save", () => {
               () => undefined,
               (e: unknown) => e,
             );
-            await new Promise((r) => setTimeout(r, 400));
+            await deleteWaitsOrEnds(deleting);
             return query(args);
           },
         },
@@ -268,7 +292,7 @@ describe.skipIf(!dbUp)("a grant target deleted mid-save", () => {
               () => undefined,
               (e: unknown) => e,
             );
-            await new Promise((r) => setTimeout(r, 400));
+            await deleteWaitsOrEnds(deleting);
             return query(args);
           },
         },

@@ -5,6 +5,8 @@ import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import { webhookDeliveryGet, webhookDeliveryList } from "@/modules/mcp/read";
 import { webhookDeliveryRequeue } from "@/modules/mcp/write-webhooks";
 import { dbProbeFailed } from "@/tests/db-gate";
+import { blockedByChain } from "@/tests/utils/pg-waits";
+import { until } from "@/tests/utils/poll";
 
 // ── THE DELIVERY LEDGER ON MCP ──
 // The REST half is covered in webhooks-outbound-deliveries.test.ts; this drives what MCP adds on top
@@ -69,6 +71,41 @@ const appDb = app as PrismaClient;
 const suDb = su as PrismaClient;
 
 const PAYLOAD_MARKER = "sk-live-PAYLOAD-MUST-NOT-LEAK-305-mcp";
+
+type Tx = Parameters<Parameters<PrismaClient["$transaction"]>[0]>[0];
+
+// Runs `act` while a transaction holds `edit` uncommitted, and commits once `act` is parked behind
+// that row lock, or has finished without waiting for it: an act that reads without the lock answers
+// from the row as it was, and the assertions then see that. Resolves with what `act` resolved.
+async function whileHeld<T>(
+  edit: (tx: Tx) => Promise<unknown>,
+  act: () => Promise<T>,
+): Promise<T> {
+  let acting: Promise<T> | undefined;
+  let settled = false;
+  await suDb.$transaction(
+    async (tx) => {
+      await edit(tx);
+      const [me] = await tx.$queryRaw<{ pid: number }[]>`
+        SELECT pg_backend_pid() AS pid`;
+      acting = act();
+      acting.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        },
+      );
+      await until(
+        "the act parked on the edited row, or done without it",
+        async () => settled || (await blockedByChain(suDb, me?.pid ?? -1)) >= 1,
+      );
+    },
+    { timeout: 30_000 },
+  );
+  return await (acting as Promise<T>);
+}
 
 describe.skipIf(!dbUp)("MCP delivery tools (DB)", () => {
   let tenantId = 0n;
@@ -196,24 +233,18 @@ describe.skipIf(!dbUp)("MCP delivery tools (DB)", () => {
     // preview may say SENDING here, but an apply that did would refuse a delivery that is dead by
     // the time it would have written.
     const id = await seed("SENDING", 7);
-    const holder = suDb.$transaction(
-      async (tx) => {
-        await tx.$executeRawUnsafe(
+    const r = await whileHeld(
+      (tx) =>
+        tx.$executeRawUnsafe(
           `UPDATE outbound_webhook_deliveries SET status = 'DEAD', attempts = 8 WHERE id = ${id}`,
-        );
-        await Bun.sleep(500);
-      },
-      { timeout: 10_000 },
+        ),
+      () =>
+        webhookDeliveryRequeue(
+          principal({ tenantId }),
+          { delivery_id: String(id), dry_run: false },
+          { base: appDb },
+        ),
     );
-    await Bun.sleep(120);
-    const [, r] = await Promise.all([
-      holder,
-      webhookDeliveryRequeue(
-        principal({ tenantId }),
-        { delivery_id: String(id), dry_run: false },
-        { base: appDb },
-      ),
-    ]);
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.data.applied).toBe(true);
     const row = await suDb.outboundWebhookDelivery.findUniqueOrThrow({
@@ -234,24 +265,18 @@ describe.skipIf(!dbUp)("MCP delivery tools (DB)", () => {
     // attempt count and commits only after the tool's `FOR UPDATE` is already waiting on it, so
     // the unlocked read sees 8 and the locked one sees 1. The audit has to describe the second.
     const id = await seed("DEAD", 8);
-    const holder = suDb.$transaction(
-      async (tx) => {
-        await tx.$executeRawUnsafe(
+    const r = await whileHeld(
+      (tx) =>
+        tx.$executeRawUnsafe(
           `UPDATE outbound_webhook_deliveries SET attempts = 1 WHERE id = ${id}`,
-        );
-        await Bun.sleep(500);
-      },
-      { timeout: 10_000 },
+        ),
+      () =>
+        webhookDeliveryRequeue(
+          principal({ tenantId }),
+          { delivery_id: String(id), dry_run: false },
+          { base: appDb },
+        ),
     );
-    await Bun.sleep(120);
-    const [, r] = await Promise.all([
-      holder,
-      webhookDeliveryRequeue(
-        principal({ tenantId }),
-        { delivery_id: String(id), dry_run: false },
-        { base: appDb },
-      ),
-    ]);
     expect(r.ok).toBe(true);
     const audit = await suDb.auditLog.findFirstOrThrow({
       where: { tenantId, target: `webhook_delivery:${id}` },

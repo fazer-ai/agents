@@ -29,6 +29,8 @@ import {
 } from "@/modules/rag/suggestion-review";
 import type { ClaimedJob } from "@/modules/scheduler/service";
 import { dbProbeFailed } from "@/tests/db-gate";
+import { blockedByChain } from "@/tests/utils/pg-waits";
+import { until } from "@/tests/utils/poll";
 
 // The suggestion reviewer and the floor in front of it: a proposal from the agent waits in SCREENING
 // until a model has compared it with what the base, the queue and earlier rejections hold; every way
@@ -931,6 +933,8 @@ describe.skipIf(!dbUp)("the suggestion reviewer", () => {
     const a = await propose(kb, "Fazemos entregas para todo o país.");
     let release: () => void = () => undefined;
     let editing: Promise<unknown> = Promise.resolve();
+    let editorPid = -1;
+    let reviewed = false;
     const { model } = scripted(
       JSON.stringify({
         verdict: "duplicate",
@@ -950,6 +954,9 @@ describe.skipIf(!dbUp)("the suggestion reviewer", () => {
             where: { id: doc },
             data: { content: "Entregamos só no Sudeste." },
           });
+          const [me] = await tx.$queryRaw<{ pid: number }[]>`
+            SELECT pg_backend_pid() AS pid`;
+          editorPid = me?.pid ?? -1;
           started();
           await new Promise<void>((r) => {
             release = r;
@@ -958,10 +965,17 @@ describe.skipIf(!dbUp)("the suggestion reviewer", () => {
         { timeout: 20_000 },
       );
       await updated;
-      setTimeout(() => release(), 400);
+      // The edit commits once the review's discard is parked behind it, or has finished without
+      // waiting, which the assertions then read.
+      void until(
+        "the discard parked behind the edit, or the review done",
+        async () => reviewed || (await blockedByChain(suDb, editorPid)) >= 1,
+      ).finally(() => release());
       return invoke(...args);
     }) as typeof invoke;
-    await review(a.id, model, axis(24));
+    await review(a.id, model, axis(24)).finally(() => {
+      reviewed = true;
+    });
     await editing;
     expect(await item(a.id)).toMatchObject({
       status: "PENDING",
@@ -976,6 +990,8 @@ describe.skipIf(!dbUp)("the suggestion reviewer", () => {
     const a = await propose(kb, "Pode pagar com vale refeição.");
     let release: () => void = () => undefined;
     let editing: Promise<unknown> = Promise.resolve();
+    let editorPid = -1;
+    let reviewed = false;
     const { model } = scripted(
       JSON.stringify({
         verdict: "duplicate",
@@ -995,6 +1011,9 @@ describe.skipIf(!dbUp)("the suggestion reviewer", () => {
             where: { id: b.id },
             data: { proposedContent: "Não aceitamos vale-refeição." },
           });
+          const [me] = await tx.$queryRaw<{ pid: number }[]>`
+            SELECT pg_backend_pid() AS pid`;
+          editorPid = me?.pid ?? -1;
           started();
           await new Promise<void>((r) => {
             release = r;
@@ -1003,10 +1022,17 @@ describe.skipIf(!dbUp)("the suggestion reviewer", () => {
         { timeout: 20_000 },
       );
       await updated;
-      setTimeout(() => release(), 400);
+      // The edit commits once the review's discard is parked behind it, or has finished without
+      // waiting, which the assertions then read.
+      void until(
+        "the discard parked behind the edit, or the review done",
+        async () => reviewed || (await blockedByChain(suDb, editorPid)) >= 1,
+      ).finally(() => release());
       return invoke(...args);
     }) as typeof invoke;
-    await review(a.id, model, axis(25));
+    await review(a.id, model, axis(25)).finally(() => {
+      reviewed = true;
+    });
     await editing;
     expect(await item(a.id)).toMatchObject({
       status: "PENDING",

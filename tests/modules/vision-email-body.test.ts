@@ -4,6 +4,7 @@ import {
   beforeEach,
   describe,
   expect,
+  spyOn,
   test,
 } from "bun:test";
 import type { BindToolsInput } from "@langchain/core/language_models/chat_models";
@@ -26,6 +27,7 @@ import { renderInboundMessage } from "@/modules/chatwoot/render";
 import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
 import { reengageConversation } from "@/modules/conversations/reengage";
 import { extractMessageVisuals } from "@/modules/vision/extract-message";
+import * as visionService from "@/modules/vision/service";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { clearFlowLog, flowLogCount } from "../utils/flowlog";
@@ -956,22 +958,27 @@ describe.skipIf(!dbUp)("a picture in an email body reaches vision", () => {
     const lida = blob(660, "lida.png");
     const cortada = blob(661, "cortada.png");
     const deadline = new AbortController();
-    // The first file's read has answered before the deadline passes on the second.
+    // The first file's read is over, its result settled, before the deadline passes on the second.
     const firstRead = Promise.withResolvers<void>();
-    const answer = visionFetch(["Um comprovante."]);
-    const fetchImpl = (async (...args: Parameters<typeof fetch>) => {
-      const res = await answer(...args);
-      firstRead.resolve();
-      return res;
-    }) as unknown as typeof fetch;
+    const realRead = visionService.readInboundFile;
+    const reads = spyOn(visionService, "readInboundFile").mockImplementation(
+      (p: Parameters<typeof realRead>[0]) => {
+        const reading = realRead(p);
+        if (p.attachmentId === 660)
+          void reading.then(
+            () => firstRead.resolve(),
+            () => firstRead.resolve(),
+          );
+        return reading;
+      },
+    );
+    const fetchImpl = visionFetch(["Um comprovante."]);
     const client = {
       servesUrl: () => true,
       downloadAttachment: async (dataUrl: string) => {
         // The second file is still downloading when the deadline passes.
         if (dataUrl === cortada) {
           await firstRead.promise;
-          // One turn, so the read's own reactions run before the deadline lands.
-          await new Promise((r) => setTimeout(r, 0));
           deadline.abort();
         }
         return { bytes: png(1200, 1600), contentType: "image/png" };
@@ -1010,7 +1017,7 @@ describe.skipIf(!dbUp)("a picture in an email body reaches vision", () => {
         fetchImpl,
       },
       signal: deadline.signal,
-    });
+    }).finally(() => reads.mockRestore());
     expect(provider.calls).toBe(1);
     expect(r?.attachmentsUnread).toBe(1);
     const nota = mediaAnnotationFor(tenantId, instanceId, 661);

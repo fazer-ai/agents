@@ -151,8 +151,7 @@ async function flush(
 }
 
 // Runs `stimulus` once the flush is suspended on the wait for an open transcription: the wait is
-// handed back as a thenable, and only the flush's own `await` on it schedules the stimulus, one
-// event-loop turn later. A flush that asked for the wait without awaiting it never releases it, and
+// handed back as a thenable, and only the flush's own `await` on it runs the stimulus. A flush that asked for the wait without awaiting it never releases it, and
 // a timer could only guess that the flush got there first.
 function duringTheWait(stimulus: () => void): {
   restore: () => void;
@@ -166,7 +165,8 @@ function duringTheWait(stimulus: () => void): {
       const suspended = {
         // biome-ignore lint/suspicious/noThenProperty: a thenable on purpose, so the flush's own `await` is what releases the stimulus.
         then(...handlers: Parameters<typeof waiting.then>) {
-          if (!awaited) setImmediate(stimulus);
+          // Called by the flush's own `await`, which has already suspended it.
+          if (!awaited) stimulus();
           awaited = true;
           return waiting.then(...handlers);
         },

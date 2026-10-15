@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { historyWithGaps } from "@/client/pages/admin/instance-health/signals";
+import {
+  historyPeak,
+  historyWithGaps,
+} from "@/client/pages/admin/instance-health/signals";
 
 // The chart plots each sample at its own time; a stretch with no sample has to break the line, or
 // an outage reads as a straight run between its two ends (Sparkline.tsx).
@@ -34,5 +37,22 @@ describe("a signal's history for the chart", () => {
     // A little jitter is not an outage.
     const jitter = [0, 5, 11, 15, 20].map((s) => ({ at: s * 1_000, value: 1 }));
     expect(historyWithGaps(jitter)).toEqual(jitter);
+  });
+});
+
+describe("the peak under a signal's curve", () => {
+  test("is the window's largest value, not its last (catches a peak that reads like the current value)", () => {
+    expect(
+      historyPeak([
+        { at: 0, value: 3 },
+        { at: 5_000, value: 950 },
+        { at: 10_000, value: 0 },
+      ]),
+    ).toBe(950);
+  });
+
+  test("an empty window has none (catches a peak of -Infinity)", () => {
+    expect(historyPeak([])).toBeNull();
+    expect(historyPeak([{ at: 0, value: 0 }])).toBe(0);
   });
 });

@@ -2784,7 +2784,10 @@
     "unitCount": "quantidade",
     "unitMs": "milissegundos",
     "unitPerMinute": "por minuto",
-    "urlKeep": "Deixe em branco para manter a URL atual."
+    "urlKeep": "Deixe em branco para manter a URL atual.",
+    "windowHour": "Última hora",
+    "windowMinutes": "Últimos {{minutes}} min",
+    "windowPeak": "Pico {{value}}"
   },
   "integrations": {
     "add": "Nova integração",

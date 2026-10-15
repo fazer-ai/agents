@@ -130,3 +130,11 @@ export function historyWithGaps(
   }
   return out;
 }
+
+// The tallest sample of the window, said in words under the curve: the chart has no axis, so
+// without it a card reading "0 ms" over a spike reads as a contradiction.
+export function historyPeak(
+  points: readonly { at: number; value: number }[],
+): number | null {
+  return points.length === 0 ? null : Math.max(...points.map((p) => p.value));
+}

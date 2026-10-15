@@ -164,6 +164,10 @@ let slowChannels: { release: () => void; done: boolean } | null = null;
 let slowHealth: { release: () => void; done: boolean } | null = null;
 let channelType = "webhook";
 let channelSecret = false;
+// The event loop card's history, when a test needs one with a shape: a reading back at 0 after a
+// spike, over the span the samples cover.
+let spikeMinutes: number | null = null;
+let historyMs = 3_600_000;
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), {
@@ -215,6 +219,8 @@ beforeEach(() => {
   slowHealth = null;
   channelType = "webhook";
   channelSecret = false;
+  spikeMinutes = null;
+  historyMs = 3_600_000;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input instanceof Request ? input.url : input));
     const method = (
@@ -250,11 +256,20 @@ beforeEach(() => {
       } else if (slowHealth && healthReads > 2) {
         value = 50;
       }
-      const signals = HEALTH.health.signals.map((s) => ({
-        ...s,
-        value,
-        stale: signalStale,
-      }));
+      const spike = spikeMinutes;
+      const signals = HEALTH.health.signals.map((s) =>
+        spike === null
+          ? { ...s, value, stale: signalStale }
+          : {
+              ...s,
+              value: 0,
+              stale: signalStale,
+              history: [0, 4_200, 0].map((v, i) => ({
+                at: Date.now() - ((2 - i) * spike * 60_000) / 2,
+                value: v,
+              })),
+            },
+      );
       if (withKind) {
         return json({
           ...HEALTH,
@@ -292,7 +307,10 @@ beforeEach(() => {
           },
         });
       }
-      return json({ ...HEALTH, health: { ...HEALTH.health, signals } });
+      return json({
+        ...HEALTH,
+        health: { ...HEALTH.health, historyMs, signals },
+      });
     }
     if (url.pathname === "/api/v1/instance-health/channels") {
       channelReads++;
@@ -689,6 +707,47 @@ describe("instance health screen", () => {
     );
     await screen.findByText("That alert channel no longer exists");
     expect(Boolean(screen.queryByRole("dialog"))).toBe(false);
+  });
+
+  test("a card back at 0 after a spike states the window and its peak (catches a curve with no scale read as contradicting the value)", async () => {
+    spikeMinutes = 60;
+    render(
+      <MemoryRouter initialEntries={["/admin/instance-health"]}>
+        <ThemeProvider>
+          <TooltipProvider>
+            <ToastProvider>
+              <NavGuardProvider>
+                <InstanceHealthPage pollMs={20} />
+              </NavGuardProvider>
+            </ToastProvider>
+          </TooltipProvider>
+        </ThemeProvider>
+      </MemoryRouter>,
+    );
+    await screen.findByText("0 ms");
+    expect(Boolean(screen.queryByText("Last hour"))).toBe(true);
+    expect(Boolean(screen.queryByText("Peak 4.2 s"))).toBe(true);
+  });
+
+  test("the window named under the curve is the one the server keeps, not the span of the samples (catches twenty minutes after a restart named as the window)", async () => {
+    spikeMinutes = 20;
+    historyMs = 30 * 60_000;
+    render(
+      <MemoryRouter initialEntries={["/admin/instance-health"]}>
+        <ThemeProvider>
+          <TooltipProvider>
+            <ToastProvider>
+              <NavGuardProvider>
+                <InstanceHealthPage pollMs={20} />
+              </NavGuardProvider>
+            </ToastProvider>
+          </TooltipProvider>
+        </ThemeProvider>
+      </MemoryRouter>,
+    );
+    await screen.findByText("Last 30 min");
+    expect(Boolean(screen.queryByText("Last 20 min"))).toBe(false);
+    expect(Boolean(screen.queryByText("Peak 4.2 s"))).toBe(true);
   });
 
   test("a pool card shows its connections and a lane card its overdue kinds (catches waiters with no context)", async () => {

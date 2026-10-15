@@ -35,7 +35,12 @@ import { throughputOfSignal } from "@/modules/instance-health/signals";
 import { JOB_LANE } from "@/modules/scheduler/lanes";
 import type { SchedulerJobKind } from "@/modules/scheduler/service";
 import { InstanceAlertChannels } from "./InstanceAlertChannels";
-import { formatSignalValue, signalHelp, signalLabel } from "./signals";
+import {
+  formatSignalValue,
+  historyPeak,
+  signalHelp,
+  signalLabel,
+} from "./signals";
 
 const Sparkline = lazyWithReload(() => import("./Sparkline"));
 
@@ -302,6 +307,7 @@ function SignalCard({
   detail,
   onEdit,
   alerts,
+  windowMs,
 }: {
   signal: Signal;
   // A line under the value: a pool's connections, or a lane's jobs by kind.
@@ -310,6 +316,9 @@ function SignalCard({
   // The signals this card speaks for, when it is more than its own: a kind's card carries its two
   // rates, and its badge says which one is firing, and that it is not alerting only when none is on.
   alerts?: Signal[];
+  // The span the curve's horizontal axis always covers, so a short history after a restart shows
+  // as a curve on the right, not as an hour.
+  windowMs: number;
 }) {
   const { t } = useTranslation();
   const firing = (alerts ?? [signal]).find(
@@ -317,6 +326,8 @@ function SignalCard({
   );
   const alerting = (alerts ?? [signal]).some((s) => s.enabled);
   const help = signalHelp(signal.signal, t);
+  const peak = historyPeak(signal.history);
+  const windowMinutes = Math.round(windowMs / 60_000);
   return (
     <Card className="flex flex-col gap-2">
       <div className="flex items-start justify-between gap-2">
@@ -366,10 +377,27 @@ function SignalCard({
         <Suspense fallback={<Skeleton className="h-14 w-full" />}>
           <Sparkline
             points={signal.history}
+            windowMs={windowMs}
             threshold={signal.threshold}
             firing={signal.firing}
           />
         </Suspense>
+      </div>
+      <div className="-mt-1 flex items-center justify-between gap-2 text-text-muted text-xs tabular-nums">
+        <span>
+          {windowMinutes === 60
+            ? t("instanceHealth.windowHour", "Last hour")
+            : t("instanceHealth.windowMinutes", "Last {{minutes}} min", {
+                minutes: windowMinutes,
+              })}
+        </span>
+        {peak !== null && (
+          <span>
+            {t("instanceHealth.windowPeak", "Peak {{value}}", {
+              value: formatSignalValue(peak, signal.unit),
+            })}
+          </span>
+        )}
       </div>
       <div className="flex items-center justify-between gap-2 text-text-muted text-xs">
         <span>
@@ -610,6 +638,7 @@ export function InstanceHealthPage({ pollMs = POLL_MS }: { pollMs?: number }) {
                     signal={s}
                     detail={kindDetail(tp.kind, health, t)}
                     alerts={choices}
+                    windowMs={health.historyMs}
                     onEdit={() => thresholdModal.open({ signal: s, choices })}
                   />
                 );
@@ -619,6 +648,7 @@ export function InstanceHealthPage({ pollMs = POLL_MS }: { pollMs?: number }) {
                   key={s.signal}
                   signal={s}
                   detail={signalDetail(s.signal, health, t)}
+                  windowMs={health.historyMs}
                   onEdit={() => thresholdModal.open({ signal: s })}
                 />
               );

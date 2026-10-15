@@ -9,12 +9,11 @@ import {
   runModelCall,
 } from "@/graph/model-limit";
 import { summarizeAttendance } from "@/modules/memory/summarize";
+import { until } from "../utils/poll";
 
 // Which class each caller queues in on the process-wide model semaphore. Read from the semaphore
 // itself while the call holds its permit, or while it waits for one: a summary nobody waits on is
 // background, a call that names no class is a reply.
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 // A model whose call records how many background permits were held while it ran.
 class ReadingModel extends BaseChatModel {
@@ -36,7 +35,7 @@ class ReadingModel extends BaseChatModel {
 const held: Array<() => void> = [];
 afterEach(async () => {
   for (const release of held.splice(0)) release();
-  await sleep(0);
+  await Bun.sleep(0);
 });
 
 async function holdEveryPermit(): Promise<void> {
@@ -51,7 +50,7 @@ async function holdEveryPermit(): Promise<void> {
         }),
     );
   }
-  while (started < permits) await sleep(1);
+  while (started < permits) await Bun.sleep(1);
 }
 
 describe("the class a model call queues in", () => {
@@ -69,7 +68,8 @@ describe("the class a model call queues in", () => {
     let saved: number;
     beforeEach(() => {
       saved = config.agent.capacityWaitAlertMs;
-      config.agent.capacityWaitAlertMs = 100;
+      // Short, because the test waits until the alert fires: a passing run pays this and no more.
+      config.agent.capacityWaitAlertMs = 20;
     });
     afterEach(() => {
       config.agent.capacityWaitAlertMs = saved;
@@ -88,12 +88,16 @@ describe("the class a model call queues in", () => {
           onPermitWait: (info) => seen.push(info),
         },
       );
-      await sleep(20);
+      // Queued in SOME class first, so the assertion below reads which one rather than racing it.
+      await until("the summary queued for a permit", () => {
+        const r = modelPermitReading();
+        return r.waitingReply + r.waitingBackground === 1;
+      });
       expect(modelPermitReading()).toMatchObject({
         waitingReply: 0,
         waitingBackground: 1,
       });
-      await sleep(150);
+      await until("the permit wait reported", () => seen.length > 0);
       expect(seen).toHaveLength(1);
       expect(seen[0]?.occupancy).toMatchObject({
         limit: "AGENT_MODEL_CONCURRENCY",

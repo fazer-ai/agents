@@ -29,6 +29,7 @@ import {
   unregisterJobHandler,
 } from "@/modules/scheduler/worker";
 import { dbProbeFailed } from "@/tests/db-gate";
+import { until } from "@/tests/utils/poll";
 
 // A scheduler job runs under a deadline below the stale window: the reaper re-pends a CLAIMED row
 // once its claim is older than that window, and a hung handler would otherwise hold its slot and run
@@ -62,7 +63,6 @@ const suDb = su as PrismaClient;
 
 let tenantId = 0n;
 let otherTenantId = 0n;
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const past = () => new Date(Date.now() - 60_000);
 
 async function rowOf(id: bigint) {
@@ -91,6 +91,16 @@ async function claimed(
   const job = jobs.find((j) => j.id === id);
   if (!job) throw new Error(`row ${id} was not claimed`);
   return job;
+}
+
+// A run past its deadline keeps its row in the running set until its late outcome is written or
+// discarded (runClaimed's late chain), so the row leaving that set is the moment the late write, if
+// any, has landed: what every test below reads the row after.
+async function lateSettled(id: bigint) {
+  await until(
+    `row ${id}'s late outcome to be written or discarded`,
+    () => !runningJobIds().includes(id),
+  );
 }
 
 // A handler for `kind` for the length of one test, and the one that was there put back after it:
@@ -173,7 +183,7 @@ describe.skipIf(!dbUp)(
       const job = await claimed("HEARTBEAT", "deadline-late");
       await runClaimed(job, appDb, { deadlineMs: 100 });
       h.release();
-      await sleep(300);
+      await lateSettled(job.id);
       const row = await rowOf(job.id);
       expect(row.status).toBe("PENDING");
       expect(row.attempts).toBe(1);
@@ -201,7 +211,7 @@ describe.skipIf(!dbUp)(
       await runClaimed(job, appDb, { deadlineMs: 100 });
       expect((await rowOf(job.id)).attempts).toBe(1);
       release();
-      await sleep(300);
+      await lateSettled(job.id);
       const row = await suDb.schedulerJob.findUniqueOrThrow({
         where: { id: job.id },
       });
@@ -233,7 +243,7 @@ describe.skipIf(!dbUp)(
       const job = await claimed("HEARTBEAT", "deadline-committed-done");
       await runClaimed(job, appDb, { deadlineMs: 100 });
       release();
-      await sleep(300);
+      await lateSettled(job.id);
       expect((await rowOf(job.id)).status).toBe("DONE");
     });
 
@@ -241,14 +251,16 @@ describe.skipIf(!dbUp)(
     // handler that returns in the same instant its deadline fires would otherwise have its outcome
     // written and then overwritten by the failure.
     test("a committed run returning as its deadline fires still ends with its own outcome", async () => {
+      // The handler's return and the deadline, due at the same instant: the instant is the subject.
+      const SAME_INSTANT_MS = 20;
       install("HEARTBEAT", async (_job, _base, ctx) => {
         ctx?.commit();
-        await sleep(100);
+        await Bun.sleep(SAME_INSTANT_MS);
         return { outcome: "done" };
       });
       const job = await claimed("HEARTBEAT", "deadline-committed-race");
-      await runClaimed(job, appDb, { deadlineMs: 100 });
-      await sleep(300);
+      await runClaimed(job, appDb, { deadlineMs: SAME_INSTANT_MS });
+      await lateSettled(job.id);
       expect((await rowOf(job.id)).status).toBe("DONE");
     });
 
@@ -256,14 +268,17 @@ describe.skipIf(!dbUp)(
     // outcome while the failure is still being written. Taking the row back before the failure lands
     // finds it CLAIMED, the outcome is dropped, and the failure then wins.
     test("a committed run that returns as its signal aborts has its outcome written after the failure", async () => {
+      let returned = false;
       install("HEARTBEAT", async (_job, _base, ctx) => {
         ctx?.commit();
         await new Promise((r) => ctx?.signal.addEventListener("abort", r));
+        returned = true;
         return { outcome: "done" };
       });
       const job = await claimed("HEARTBEAT", "deadline-committed-abort");
-      // The failure's transaction, the run's first write, held back: the late outcome is then ready
-      // well before the failure lands, which is the order a slow database produces.
+      // The failure's transaction, the run's first write, held back until the handler has returned:
+      // the late outcome is then ready before the failure lands, which is the order a slow database
+      // produces.
       let first = true;
       const slowFailure = new Proxy(appDb, {
         get(target, prop, receiver) {
@@ -280,7 +295,14 @@ describe.skipIf(!dbUp)(
                 const v = Reflect.get(ext, p, r);
                 if (p === "$transaction") {
                   return async (...a: unknown[]) => {
-                    await sleep(150);
+                    await until(
+                      "the handler's return on abort",
+                      () => returned,
+                    );
+                    // What the late outcome does on that return is microtasks up to its first write
+                    // (or, written correctly, up to waiting for this failure): one macrotask lets
+                    // all of them run before the failure goes out.
+                    await new Promise((r) => setImmediate(r));
                     return v.apply(ext, a);
                   };
                 }
@@ -291,7 +313,7 @@ describe.skipIf(!dbUp)(
         },
       });
       await runClaimed(job, slowFailure, { deadlineMs: 100 });
-      await sleep(400);
+      await lateSettled(job.id);
       expect((await rowOf(job.id)).status).toBe("DONE");
     });
 
@@ -321,7 +343,7 @@ describe.skipIf(!dbUp)(
       });
       await runClaimed(job, watched, { deadlineMs: 100 });
       release();
-      await sleep(300);
+      await lateSettled(job.id);
       expect((await rowOf(job.id)).status).toBe("DONE");
       // The failure, the take-back and the outcome.
       expect(heldAtEachWrite.length).toBeGreaterThanOrEqual(3);
@@ -358,7 +380,7 @@ describe.skipIf(!dbUp)(
         base: appDb,
       });
       release();
-      await sleep(300);
+      await lateSettled(job.id);
       const row = await suDb.schedulerJob.findUniqueOrThrow({
         where: { id: job.id },
       });
@@ -401,7 +423,7 @@ describe.skipIf(!dbUp)(
       });
       expect(rearmed).toBe(false);
       release();
-      await sleep(300);
+      await lateSettled(job.id);
       const row = await suDb.schedulerJob.findUniqueOrThrow({
         where: { id: job.id },
       });
@@ -429,7 +451,7 @@ describe.skipIf(!dbUp)(
         data: { claimSeq: { increment: 1 } },
       });
       release();
-      await sleep(300);
+      await lateSettled(job.id);
       const row = await rowOf(job.id);
       expect(row.status).toBe("PENDING");
       expect(row.attempts).toBe(1);
@@ -446,20 +468,25 @@ describe.skipIf(!dbUp)(
       });
       const job = await claimed("HEARTBEAT", "deadline-listens");
       await runClaimed(job, appDb, { deadlineMs: 100 });
-      await sleep(200);
+      await lateSettled(job.id);
       const row = await rowOf(job.id);
       expect(row.status).toBe("PENDING");
       expect(row.attempts).toBe(1);
     });
 
     test("a run that finishes inside its deadline is not failed afterwards", async () => {
-      install("HEARTBEAT", async () => {
-        await sleep(20);
+      // A deadline short enough to wait out: the instant it would have fired is the subject.
+      const DEADLINE_MS = 40;
+      let signal: AbortSignal | undefined;
+      install("HEARTBEAT", async (_job, _base, ctx) => {
+        signal = ctx?.signal;
         return { outcome: "done" };
       });
       const job = await claimed("HEARTBEAT", "deadline-fast");
-      await runClaimed(job, appDb, { deadlineMs: 150 });
-      await sleep(300);
+      await runClaimed(job, appDb, { deadlineMs: DEADLINE_MS });
+      // Started after runClaimed began, so it ends after the deadline's own timer would have fired.
+      await Bun.sleep(DEADLINE_MS);
+      expect(signal?.aborted).toBe(false);
       const row = await rowOf(job.id);
       expect(row.status).toBe("DONE");
       expect(row.attempts).toBe(0);
@@ -481,7 +508,7 @@ describe.skipIf(!dbUp)(
       } finally {
         h.release();
       }
-      await sleep(50);
+      await lateSettled(job.id);
       const after = await claimDueJobs(10, appDb, new Date(), tenantId);
       expect(after.map((j) => j.id)).toContain(job.id);
     });
@@ -574,7 +601,7 @@ describe.skipIf(!dbUp)(
         await second.settled;
       } finally {
         h.release();
-        await sleep(0);
+        await Bun.sleep(0);
       }
     });
   },

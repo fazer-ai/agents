@@ -7,7 +7,6 @@ import { type PermitWaitInfo, runModelCall } from "@/graph/model-limit";
 // calls that hang until the test lets them go.
 
 const THRESHOLD_MS = 300;
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 let saved: number | undefined;
 beforeEach(() => {
@@ -18,7 +17,7 @@ beforeEach(() => {
 const held: Array<() => void> = [];
 afterEach(async () => {
   for (const release of held.splice(0)) release();
-  await sleep(0);
+  await Bun.sleep(0);
   if (saved !== undefined) config.agent.capacityWaitAlertMs = saved;
 });
 
@@ -36,7 +35,7 @@ async function holdEveryPermit(): Promise<() => void> {
         }),
     );
   }
-  while (started < cap) await sleep(1);
+  while (started < cap) await Bun.sleep(1);
   const release = () => {
     for (const r of releases.splice(0)) r();
   };
@@ -54,9 +53,9 @@ describe("a model call waiting for a permit", () => {
       primary: LABELS,
       onPermitWait: (info) => seen.push(info),
     });
-    await sleep(THRESHOLD_MS / 2);
+    await Bun.sleep(THRESHOLD_MS / 2);
     expect(seen).toEqual([]);
-    await sleep(THRESHOLD_MS);
+    await Bun.sleep(THRESHOLD_MS);
     // Reported BEFORE the permit arrived: the operator hears about the wait while it is happening.
     expect(seen).toHaveLength(1);
     expect(seen[0]?.waitedMs).toBeGreaterThanOrEqual(THRESHOLD_MS - 5);
@@ -74,7 +73,7 @@ describe("a model call waiting for a permit", () => {
     });
     release();
     expect(await call).toBe("ok");
-    await sleep(THRESHOLD_MS);
+    await Bun.sleep(THRESHOLD_MS);
     expect(seen).toHaveLength(1);
   });
 
@@ -85,16 +84,16 @@ describe("a model call waiting for a permit", () => {
       primary: LABELS,
       onPermitWait: (info) => seen.push(info),
     });
-    await sleep(THRESHOLD_MS / 3);
+    await Bun.sleep(THRESHOLD_MS / 3);
     release();
     await call;
-    await sleep(THRESHOLD_MS * 1.5);
+    await Bun.sleep(THRESHOLD_MS * 1.5);
     expect(seen).toEqual([]);
   });
 
   test("a call that gets a permit at once reports nothing, however long it runs", async () => {
     const seen: unknown[] = [];
-    await runModelCall(() => sleep(THRESHOLD_MS * 1.5).then(() => "ok"), {
+    await runModelCall(() => Bun.sleep(THRESHOLD_MS * 1.5).then(() => "ok"), {
       primary: LABELS,
       onPermitWait: (info) => seen.push(info),
     });
@@ -113,7 +112,7 @@ describe("a model call waiting for a permit", () => {
       },
       { primary: LABELS, onPermitWait: (info) => seen.push(info) },
     ).catch((e: Error) => e);
-    await sleep(THRESHOLD_MS * 1.5);
+    await Bun.sleep(THRESHOLD_MS * 1.5);
     release();
     // The call ran once, after the permit, and the caller gets its failure, redacted, with
     // the provider's own error as the cause.
@@ -131,7 +130,7 @@ describe("a model call waiting for a permit", () => {
         throw new Error("sink down");
       },
     });
-    await sleep(THRESHOLD_MS * 1.5);
+    await Bun.sleep(THRESHOLD_MS * 1.5);
     release();
     expect(await call).toBe("ok");
   });

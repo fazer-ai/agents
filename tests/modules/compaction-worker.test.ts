@@ -10,7 +10,6 @@ import type { ClaimedJob } from "@/modules/scheduler/service";
 // one level down.
 
 const base = {} as PrismaClient;
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 // The reaped rows below carry `id: 0n`, a number no sequence hands out. Nothing here reaches a
 // database, so any id would run; the point is that a fixture copied out of this file into one
@@ -85,7 +84,7 @@ describe("runCompactionTick", () => {
     const timeline: string[] = [];
     const run = async (j: ClaimedJob) => {
       timeline.push(`start:${j.id}`);
-      await sleep(20);
+      await Bun.sleep(20);
       timeline.push(`end:${j.id}`);
     };
 
@@ -199,7 +198,7 @@ describe("runCompactionTick", () => {
       run,
       reap: async () => [],
     });
-    await sleep(5);
+    await Bun.sleep(5);
     const second = await runCompactionTick(base, 20, {
       claim,
       run,

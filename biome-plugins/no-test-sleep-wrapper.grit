@@ -1,0 +1,22 @@
+// Refuses a test-local sleep: a function whose own parameter is the delay of a `setTimeout` that
+// resolves a promise (`const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))`). The
+// delay reaches `setTimeout` as a variable, so no-test-real-wait.grit cannot read it, and
+// `sleep(600)` waited out real time in eighteen files after that rule's list was empty. Call
+// `Bun.sleep(n)` instead, which that rule reads, or wait for a condition with `until` from
+// tests/utils/poll.ts. A fake's configured delay (`opts.listDelayMs`, a constant) is not a parameter
+// of the function that builds the promise, and stays allowed. tests/utils/ is outside the rule (biome.jsonc): a shared helper there is where a sleep of its own belongs.
+language js;
+
+`setTimeout($fn, $ms)` as $call where {
+    $ms <: r"[A-Za-z_$][A-Za-z0-9_$]*",
+    $fn <: or { r"[A-Za-z_$][A-Za-z0-9_$]*", `() => $_()` },
+    $call <: within or { `new Promise($_)`, `new Promise<$_>($_)` } as $promise,
+    $promise <: within or {
+        JsArrowFunctionExpression(parameters=$params),
+        JsFunctionDeclaration(parameters=$params),
+        JsFunctionExpression(parameters=$params),
+        JsMethodObjectMember(parameters=$params)
+    },
+    $params <: contains $ms,
+    register_diagnostic(span = $call, message = "A test does not define its own sleep: call `Bun.sleep(n)`, which no-test-real-wait reads, or wait for a condition with `until` from tests/utils/poll.ts (testes.md, T6).")
+}

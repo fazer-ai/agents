@@ -36,6 +36,7 @@ import {
   unregisterJobHandler,
 } from "@/modules/scheduler/worker";
 import { dbProbeFailed } from "@/tests/db-gate";
+import { POLL_DEADLINE_MS, until } from "@/tests/utils/poll";
 
 // The job lanes under the shutdown drain (src/lib/shutdown.ts). A run that ends inside the bound has
 // its outcome written before the process may exit; a run still going at the bound is ended the way
@@ -66,7 +67,6 @@ const appDb = app as PrismaClient;
 const suDb = su as PrismaClient;
 
 let tenantId = 0n;
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const past = () => new Date(Date.now() - 60_000);
 
 async function rowOf(id: bigint) {
@@ -151,13 +151,27 @@ describe.skipIf(!dbUp)("the job lanes under the shutdown drain", () => {
   });
 
   test("a run that ends inside the bound has its outcome written before the drain returns", async () => {
+    // The handler returns only when the test lets it, once the drain is waiting on the run.
+    const started = Promise.withResolvers<void>();
+    const gate = Promise.withResolvers<void>();
     install("HEARTBEAT", async () => {
-      await sleep(300);
+      started.resolve();
+      await gate.promise;
       return { outcome: "done" };
     });
     const job = await claimed("HEARTBEAT", "drain-finishes");
     const run = runClaimed(job, appDb);
-    const result = await drainInFlight({ boundMs: 5_000 });
+    await started.promise;
+    let returned = false;
+    const drained = drainInFlight({ boundMs: POLL_DEADLINE_MS }).then(
+      (result) => ({ result, runFirst: returned }),
+    );
+    // A drain that does not wait for the run has returned by now: it gets there in microtasks alone.
+    await new Promise<void>((r) => setImmediate(r));
+    returned = true;
+    gate.resolve();
+    const { result, runFirst } = await drained;
+    expect(runFirst).toBe(true);
     expect(result.drained).toBe(true);
     expect((await rowOf(job.id))?.status).toBe("DONE");
     await run;
@@ -185,9 +199,13 @@ describe.skipIf(!dbUp)("the job lanes under the shutdown drain", () => {
   test("the debounce lane: of three flushes, the one that ends is DONE and the two cut are PENDING", async () => {
     const saw: { signal?: AbortSignal } = {};
     const hang = untilAborted(saw);
+    // The quick flush is still running when the drain starts, and ends right after, inside the bound.
+    const quickStarted = Promise.withResolvers<void>();
+    const quickGate = Promise.withResolvers<void>();
     install("DEBOUNCE", async (job, base, ctx) => {
       if (job.dedupeKey?.endsWith(":quick")) {
-        await sleep(150);
+        quickStarted.resolve();
+        await quickGate.promise;
         return { outcome: "done" };
       }
       return hang(job, base, ctx);
@@ -202,7 +220,10 @@ describe.skipIf(!dbUp)("the job lanes under the shutdown drain", () => {
         claimDueDebounceJobs(limit, base, now, tenantId, exclude),
     });
     expect(tick.claimed).toBe(3);
-    const result = await drainInFlight({ boundMs: 500, settleMs: 1_500 });
+    await quickStarted.promise;
+    const drained = drainInFlight({ boundMs: 500, settleMs: 1_500 });
+    quickGate.resolve();
+    const result = await drained;
     expect(result.stillRunning).toEqual({
       total: 2,
       byKind: { DEBOUNCE: 2 },
@@ -215,15 +236,30 @@ describe.skipIf(!dbUp)("the job lanes under the shutdown drain", () => {
   // A run that committed (a message sent) and is cut still writes the outcome it returns late, so
   // the next process does not repeat the committed work; the drain waits for that write.
   test("a cut run that had committed has its late outcome written before the drain returns", async () => {
+    // The handler returns its outcome only when the test lets it, after the cut's failure is written.
+    const late = Promise.withResolvers<void>();
     install("HEARTBEAT", async (_job, _base, ctx) => {
       ctx?.commit();
       await new Promise((r) => ctx?.signal.addEventListener("abort", r));
-      await sleep(200);
+      await late.promise;
       return { outcome: "done" };
     });
     const job = await claimed("HEARTBEAT", "drain-committed");
     void runClaimed(job, appDb);
-    const result = await drainInFlight({ boundMs: 200, settleMs: 1_500 });
+    let returned = false;
+    const drained = drainInFlight({
+      boundMs: 200,
+      settleMs: POLL_DEADLINE_MS,
+    }).then((result) => ({ result, lateFirst: returned }));
+    await until(
+      "the cut run failed for retry",
+      async () => (await rowOf(job.id))?.status === "PENDING",
+    );
+    returned = true;
+    late.resolve();
+    const { result, lateFirst } = await drained;
+    // The drain was still waiting when the late outcome came, and returned with it written.
+    expect(lateFirst).toBe(true);
     expect(result.unsettled).toBe(0);
     expect((await rowOf(job.id))?.status).toBe("DONE");
   });
@@ -248,7 +284,8 @@ describe.skipIf(!dbUp)("the job lanes under the shutdown drain", () => {
       tenantId,
       providerConcurrency: 1,
     });
-    await sleep(300);
+    // The batch is claimed before any row runs, so once one has started both are this process's.
+    await until("a provider row to start", () => ran.length > 0);
     expect(ran).toHaveLength(1);
     const result = await drainInFlight({ boundMs: 200, settleMs: 1_500 });
     expect(result.stillRunning.total).toBe(2);

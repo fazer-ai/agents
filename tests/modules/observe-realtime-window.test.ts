@@ -27,9 +27,10 @@ import {
   startScheduler,
   stopScheduler,
   unregisterJobHandler,
+  wakeObserveDrainAt,
 } from "@/modules/scheduler/worker";
 import { dbProbeFailed } from "@/tests/db-gate";
-import { POLL_DEADLINE_MS } from "@/tests/utils/poll";
+import { POLL_DEADLINE_MS, until as untilNamed } from "@/tests/utils/poll";
 
 // The observer's burst window down to ZERO: what the reader keeps, what the write
 // boundary refuses, and when the observation of a message starts with no window at all, against
@@ -160,10 +161,23 @@ const appDb = app as PrismaClient;
 const suDb = su as PrismaClient;
 
 let tenantId = 0n;
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 async function until(holds: () => boolean, ms = POLL_DEADLINE_MS) {
   const end = Date.now() + ms;
-  while (!holds() && Date.now() < end) await sleep(10);
+  while (!holds() && Date.now() < end) await Bun.sleep(10);
+}
+
+// The worker's own state, a globalThis singleton. No wake-up pending for an instant up to `ms` and no
+// observe drain running means every wake-up asked for up to then has fired and its drain has
+// claimed what it could: a run that was going to start from them has started.
+function observeDrainedThrough(ms = Number.POSITIVE_INFINITY): boolean {
+  const h = (
+    globalThis as unknown as Record<
+      symbol,
+      { observeWakes: Map<number, unknown>; observing: boolean } | undefined
+    >
+  )[Symbol.for("fazerai.scheduler.worker")];
+  if (!h || h.observing) return false;
+  return [...h.observeWakes.keys()].every((slot) => slot > ms);
 }
 
 // A handler a test holds open, recording when each run began and ended.
@@ -275,10 +289,12 @@ describe.skipIf(!dbUp)("a window of zero on the observe lane", () => {
     // Ten messages in the run's lifetime, each arming the same row due at once.
     for (let i = 0; i < 10; i += 1) {
       expect(await arm(8803, 0)).toBe("armed");
-      await sleep(20);
+      await Bun.sleep(20);
     }
-    // Long enough for every wake-up those arms asked for to have fired.
-    await sleep(400);
+    // Every wake-up those arms asked for has fired and been drained, with the first run still held.
+    await untilNamed("the wake-ups of the ten arms drained", () =>
+      observeDrainedThrough(),
+    );
     expect(h.runs).toHaveLength(1);
     expect(
       await suDb.schedulerJob.count({
@@ -296,7 +312,18 @@ describe.skipIf(!dbUp)("a window of zero on the observe lane", () => {
     expect((second?.began ?? Infinity) - releasedAt).toBeLessThan(1_000);
     h.releaseAll();
     await until(() => h.runs[1]?.ended != null, 3_000);
-    await sleep(300);
+    // Its outcome written, and the drain the freed slot asked for has claimed what it could.
+    await untilNamed(
+      "the second run's outcome written and the drain after it done",
+      async () =>
+        (await suDb.schedulerJob.count({
+          where: {
+            tenantId,
+            kind: "OBSERVE",
+            status: { in: ["PENDING", "CLAIMED"] },
+          },
+        })) === 0 && observeDrainedThrough(),
+    );
     // Nothing owed after the last message was covered.
     expect(h.runs).toHaveLength(2);
     expect(
@@ -329,7 +356,13 @@ describe.skipIf(!dbUp)("a window of zero on the observe lane", () => {
         }),
       ).toBe("armed");
     }
-    await sleep(600);
+    // A drain asked for now, and every wake-up due by then drained: a row the window left due would
+    // have been claimed and started by it.
+    const askedAt = Date.now();
+    wakeObserveDrainAt(new Date(askedAt));
+    await untilNamed("a drain asked for now has run", () =>
+      observeDrainedThrough(askedAt + 1_000),
+    );
     expect(h.runs).toHaveLength(0);
     const rows = await suDb.schedulerJob.findMany({
       where: { tenantId, kind: "OBSERVE" },

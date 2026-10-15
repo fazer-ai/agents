@@ -16,7 +16,6 @@ import { until } from "../utils/poll";
 // covers the whole call, retries included, and holds on a provider whose adapter ignores the abort
 // signal (the Google one).
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 // The suite's DOM preload replaces the global `Response`, and Bun's socket layer does not
 // recognise that one (it answers its own placeholder page). tests/dom-setup.ts keeps Bun's.
 const BunResponse = (globalThis as unknown as { BunResponse: typeof Response })
@@ -91,10 +90,13 @@ function hangingEndpoint() {
       const pre = preflight(req);
       if (pre) return pre;
       hits++;
-      req.signal.addEventListener("abort", () => {
-        closedByClient++;
-      });
-      await sleep(600_000);
+      // Never answers: the request is held until the client closes it, and only then let go.
+      await new Promise<void>((closed) =>
+        req.signal.addEventListener("abort", () => {
+          closedByClient++;
+          closed();
+        }),
+      );
       return new BunResponse("{}", { headers: CORS });
     },
   });
@@ -136,7 +138,7 @@ class DeafModel extends BaseChatModel {
   ): Promise<ChatResult> {
     this.calls++;
     this.abortedAtStart.push(options.signal?.aborted ?? false);
-    await (typeof this.delay === "number" ? sleep(this.delay) : this.delay);
+    await (typeof this.delay === "number" ? Bun.sleep(this.delay) : this.delay);
     queueMicrotask(this.markAnswered);
     return {
       generations: [{ text: this.text, message: new AIMessage(this.text) }],
@@ -251,7 +253,7 @@ describe("with no fallback, the primary model call has a deadline", () => {
     const model = new DeafModel(Promise.resolve(), "ok");
     const graph = await graphOn(model);
     await graph.invoke({ messages: [new HumanMessage("um")] }, THREAD);
-    await sleep(DEADLINE_MS + 5);
+    await Bun.sleep(DEADLINE_MS + 5);
     const out = await graph.invoke(
       { messages: [new HumanMessage("dois")] },
       THREAD,

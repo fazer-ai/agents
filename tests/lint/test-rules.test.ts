@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 // The lint rules for test files (biome-plugins/no-test-reads-source.grit, no-test-real-wait.grit,
+// no-test-sleep-wrapper.grit,
 // require-test-server-hostname.grit, no-swallowed-db-probe.grit, no-unscoped-pg-stat-activity.grit)
 // through the real Biome: one process lints every probe, written under tests/ as `.ts` (not
 // `.test.ts`, so `bun test` never collects them) in a directory named after the run's pid.
@@ -14,6 +15,7 @@ import { join } from "node:path";
 const ROOT = join(import.meta.dir, "../..");
 const PROBE = `tests/lint/.probe-${process.pid}`;
 const TOOLING_PROBE = `tests/tooling/.probe-${process.pid}`;
+const UTILS_PROBE = `tests/utils/.probe-${process.pid}`;
 // Built rather than written: a literal path in this file is exactly what the first rule refuses, and
 // the view's name in an unscoped probe is what the last one refuses.
 const SRC = ["s", "rc"].join("");
@@ -50,6 +52,32 @@ const PROBES: Record<string, string> = {
     "const ms500 = 1;\nexport const a = Bun.sleep(ms500);\n",
   [`${PROBE}/timeout-10.ts`]:
     "export const a = (fn: () => void) => setTimeout(fn, 10);\n",
+  [`${PROBE}/wrapper-arrow.ts`]:
+    "export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));\n",
+  [`${PROBE}/wrapper-untyped.ts`]:
+    "// @ts-nocheck\nexport const nap = (ms) => new Promise((r) => setTimeout(r, ms));\n",
+  [`${PROBE}/wrapper-function.ts`]:
+    "export function delay(ms: number) {\n  return new Promise((r) => setTimeout(r, ms));\n}\n",
+  [`${PROBE}/wrapper-block-body.ts`]:
+    "export const pause = (ms = 5) => {\n  return new Promise<void>((resolve) => {\n    setTimeout(resolve, ms);\n  });\n};\n",
+  [`${PROBE}/wrapper-method.ts`]:
+    "export const o = {\n  wait(ms: number) {\n    return new Promise((r) => setTimeout(r, ms));\n  },\n};\n",
+  [`${PROBE}/wrapper-resolve-arrow.ts`]:
+    "export const sleep = (ms: number) => new Promise<void>((r) => setTimeout(() => r(), ms));\n",
+  [`${PROBE}/deadline-race.ts`]:
+    'export const within = <T>(p: Promise<T>, ms: number) =>\n  Promise.race([p, new Promise<"pending">((r) => setTimeout(() => r("pending"), ms))]);\n',
+  [`${PROBE}/deadline-reject.ts`]:
+    'export const bound = (ms: number) =>\n  new Promise<never>((_, reject) => setTimeout(() => reject(new Error("late")), ms));\n',
+  [`${PROBE}/timer-not-a-promise.ts`]:
+    "export const later = (fn: () => void, ms: number) => setTimeout(fn, ms);\n",
+  [`${PROBE}/fake-configured-delay.ts`]:
+    "export const fake = (opts: { delayMs: number }) => async () => {\n  await new Promise((r) => setTimeout(r, opts.delayMs));\n};\n",
+  [`${PROBE}/fake-closed-over-delay.ts`]:
+    "export const fake = (delayMs: number) => async () => {\n  await new Promise((r) => setTimeout(r, delayMs));\n};\n",
+  [`${PROBE}/named-constant-delay.ts`]:
+    "const SETTLE_MS = 20;\nexport const settle = () => new Promise((r) => setTimeout(r, SETTLE_MS));\n",
+  [`${UTILS_PROBE}/shared-sleep.ts`]:
+    "export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));\n",
   [`${PROBE}/listed-source-copy.ts`]: readFileSync(
     join(ROOT, LISTED_SOURCE),
     "utf8",
@@ -91,6 +119,7 @@ type Hits = {
   server: number;
   probe: number;
   activity: number;
+  wrapper: number;
 };
 let hits: Map<string, Hits>;
 
@@ -123,12 +152,14 @@ beforeAll(() => {
       server: 0,
       probe: 0,
       activity: 0,
+      wrapper: 0,
     };
     if (m[2].includes("how its source reads")) h.source++;
     if (m[2].includes("does not wait real time")) h.wait++;
     if (m[2].includes("binds 127.0.0.1")) h.server++;
     if (m[2].includes("does not swallow its refusal")) h.probe++;
     if (m[2].includes("for its own database or its own backends")) h.activity++;
+    if (m[2].includes("does not define its own sleep")) h.wrapper++;
     hits.set(file, h);
   }
 });
@@ -136,11 +167,26 @@ beforeAll(() => {
 afterAll(() => {
   rmSync(join(ROOT, PROBE), { recursive: true, force: true });
   rmSync(join(ROOT, TOOLING_PROBE), { recursive: true, force: true });
+  rmSync(join(ROOT, UTILS_PROBE), { recursive: true, force: true });
 });
 
 const of = (path: string): Hits =>
-  hits.get(path) ?? { source: 0, wait: 0, server: 0, probe: 0, activity: 0 };
-const NONE: Hits = { source: 0, wait: 0, server: 0, probe: 0, activity: 0 };
+  hits.get(path) ?? {
+    source: 0,
+    wait: 0,
+    server: 0,
+    probe: 0,
+    activity: 0,
+    wrapper: 0,
+  };
+const NONE: Hits = {
+  source: 0,
+  wait: 0,
+  server: 0,
+  probe: 0,
+  activity: 0,
+  wrapper: 0,
+};
 
 describe("no-test-reads-source", () => {
   test.each([
@@ -183,6 +229,40 @@ describe("no-test-real-wait", () => {
     ["sleep-digits-in-name.ts"],
   ])("under 50ms, or not a literal, is allowed (%s)", (name) => {
     expect(of(`${PROBE}/${name}`).wait).toBe(0);
+  });
+});
+
+describe("no-test-sleep-wrapper", () => {
+  test.each([
+    ["wrapper-arrow.ts"],
+    ["wrapper-untyped.ts"],
+    ["wrapper-function.ts"],
+    ["wrapper-block-body.ts"],
+    ["wrapper-method.ts"],
+    ["wrapper-resolve-arrow.ts"],
+  ])(
+    "a function whose own parameter is the sleep's delay is refused (%s)",
+    (name) => {
+      expect(of(`${PROBE}/${name}`).wrapper).toBe(1);
+    },
+  );
+
+  test.each([
+    ["timer-not-a-promise.ts"],
+    ["fake-configured-delay.ts"],
+    ["fake-closed-over-delay.ts"],
+    ["named-constant-delay.ts"],
+    ["deadline-race.ts"],
+    ["deadline-reject.ts"],
+  ])(
+    "a timer, a deadline, or a fake's configured delay, is not a sleep of its own (%s)",
+    (name) => {
+      expect(of(`${PROBE}/${name}`)).toEqual(NONE);
+    },
+  );
+
+  test("a shared helper under tests/utils/ is outside the rule", () => {
+    expect(of(`${UTILS_PROBE}/shared-sleep.ts`)).toEqual(NONE);
   });
 });
 

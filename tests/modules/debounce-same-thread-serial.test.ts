@@ -17,6 +17,7 @@ import { armDebounce, debounceDedupeKey } from "@/modules/debounce/service";
 import type { ClaimedJob } from "@/modules/scheduler/service";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { POLL_DEADLINE_MS } from "../utils/poll";
 import { burnSchedulerJobId } from "../utils/scheduler";
 
 // Two flushes on ONE conversation, the shape debounce-parallelism.test.ts deliberately does not
@@ -63,7 +64,6 @@ const CONV_CARIMBO = 4249;
 const CONV_LIMPEZA = 4250;
 const CONV_VAZAMENTO = 4251;
 const CHATWOOT_INBOX_ID = 7;
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 let jobIdA = 0n;
 let jobIdB = 0n;
@@ -96,7 +96,7 @@ function overlapModel(
       seen.push(messages.map((m) => String(m.content)));
       entered?.signal();
       try {
-        await sleep(delayMs);
+        await Bun.sleep(delayMs);
         return new AIMessage(`resposta ${seen.length}`);
       } finally {
         meter.active -= 1;
@@ -284,7 +284,7 @@ describe.skipIf(!dbUp)("two flushes on one thread", () => {
     });
     // Resolves on the grace clock instead of hanging if A never reaches the model, so a broken run
     // fails on an assertion rather than on the test timeout.
-    await Promise.race([insideModel, sleep(5_000)]);
+    await Promise.race([insideModel, Bun.sleep(POLL_DEADLINE_MS)]);
     const b = await flushDebounceJob({
       job: jobFor(jobIdB, convId, burstStartedAt),
       base: appDb,
@@ -395,7 +395,7 @@ describe.skipIf(!dbUp)("two flushes on one thread", () => {
       base: appDb,
       deps,
     });
-    await Promise.race([insideModel, sleep(5_000)]);
+    await Promise.race([insideModel, Bun.sleep(POLL_DEADLINE_MS)]);
     const b = await flushDebounceJob({
       job: jobFor(jobIdB, CONV_IRMA_B, Date.now()),
       base: appDb,

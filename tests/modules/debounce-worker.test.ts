@@ -13,7 +13,6 @@ import type { ClaimedJob } from "@/modules/scheduler/service";
 // DB-backed half (real rows, the reaper, a re-arm) is tests/modules/debounce-drain-slots.test.ts.
 
 const base = {} as PrismaClient;
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function job(id: number): ClaimedJob {
   return {
@@ -38,20 +37,20 @@ function hang(): Promise<void> {
 afterEach(async () => {
   stopDebounceWorker();
   for (const release of hung.splice(0)) release();
-  await sleep(0);
+  await Bun.sleep(0);
 });
 
 // Resolves to "timeout" when `p` has not settled within `ms`, so a drain that waits on a job that
 // never settles fails an assertion instead of the test runner's own timeout.
 function within<T>(p: Promise<T>, ms = 200): Promise<T | "timeout"> {
-  return Promise.race([p, sleep(ms).then(() => "timeout" as const)]);
+  return Promise.race([p, Bun.sleep(ms).then(() => "timeout" as const)]);
 }
 
 async function until(cond: () => boolean, ms = 1_000): Promise<boolean> {
   const deadline = Date.now() + ms;
   while (Date.now() < deadline) {
     if (cond()) return true;
-    await sleep(5);
+    await Bun.sleep(5);
   }
   return cond();
 }
@@ -93,7 +92,7 @@ describe("runDebounceTick", () => {
     const timeline: string[] = [];
     const run = async (j: ClaimedJob) => {
       timeline.push(`start:${j.id}`);
-      await sleep(20);
+      await Bun.sleep(20);
       timeline.push(`end:${j.id}`);
     };
 
@@ -204,7 +203,7 @@ describe("runDebounceTick", () => {
     expect(q.calls).toHaveLength(1);
 
     hung.shift()?.();
-    await sleep(0);
+    await Bun.sleep(0);
     await within(runDebounceTick(base, 2, { claim: q.claim, run }));
     expect(q.calls.map((c) => c.limit)).toEqual([2, 1]);
   });
@@ -262,13 +261,22 @@ describe("startDebounceWorker", () => {
       await hang();
       active -= 1;
     };
+    // Every tick reads the clock, a full one included, which is how the test counts ticks that claimed
+    // nothing more.
+    let ticks = 0;
+    const now = () => {
+      ticks += 1;
+      return new Date();
+    };
     startDebounceWorker({
       base,
       intervalMs: 5,
-      deps: { claim: q.claim, run },
+      deps: { claim: q.claim, run, now },
     });
-    await until(() => peak >= 9, 300);
-    await sleep(50);
+    expect(await until(() => q.calls.length >= 1)).toBe(true);
+    // Three ticks after the lane filled: a lane sized past its slots would have claimed again by then.
+    const filledAt = ticks;
+    expect(await until(() => ticks >= filledAt + 3)).toBe(true);
     return { peak, limit: q.calls[0]?.limit };
   }
 

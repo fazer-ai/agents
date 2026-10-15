@@ -48,7 +48,6 @@ let instanceId = 0n;
 let inboxDbId = 0n;
 
 const CHATWOOT_INBOX_ID = 7;
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function threadOf(convId: number) {
   return `${tenantId}:${instanceId}:${convId}`;
@@ -93,7 +92,9 @@ async function seedConversation(convId: number) {
 }
 
 const CONV = 3001;
-const DEADLINE_MS = 1_500;
+// The deadline bounds the model call alone, so the flush's own database work never counts against it,
+// and the test waits it out once: short is enough.
+const DEADLINE_MS = 300;
 
 // Never answers and never looks at the abort signal, like the Google adapter.
 class DeafModel extends BaseChatModel {
@@ -107,7 +108,7 @@ class DeafModel extends BaseChatModel {
     return this;
   }
   async _generate(): Promise<ChatResult> {
-    await sleep(600_000);
+    await new Promise<never>(() => {});
     return {
       generations: [{ text: "tarde", message: new AIMessage("tarde") }],
     };
@@ -239,7 +240,7 @@ describe.skipIf(!dbUp)(
             () => "resolved" as const,
             (e: Error) => e,
           ),
-          sleep(DEADLINE_MS + 5_000).then(() => "pending" as const),
+          Bun.sleep(DEADLINE_MS + 5_000).then(() => "pending" as const),
         ]);
         const elapsed = performance.now() - t0;
 

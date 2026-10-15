@@ -4,6 +4,7 @@ import {
   beforeAll,
   describe,
   expect,
+  setSystemTime,
   test,
 } from "bun:test";
 import { createHmac } from "node:crypto";
@@ -47,8 +48,6 @@ import { until } from "../utils/poll";
 // customer message that is not processed here goes to the delivery recovery at once; anything else is
 // processed later from the body the ack stored.
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
 function held() {
   let release: () => void = () => {};
   const gate = new Promise<void>((r) => {
@@ -86,10 +85,10 @@ describe("overflow handoffs", () => {
     };
     expect(queueOverflowHandoff(step("first", first))).toBe(true);
     expect(queueOverflowHandoff(step("second", second))).toBe(true);
-    await sleep(0);
+    await Bun.sleep(0);
     expect(order).toEqual(["first"]);
     first.release();
-    for (let i = 0; i < 100 && order.length < 2; i++) await sleep(1);
+    for (let i = 0; i < 100 && order.length < 2; i++) await Bun.sleep(1);
     expect(order).toEqual(["first", "second"]);
     expect(peak).toBe(1);
     second.release();
@@ -109,9 +108,9 @@ describe("overflow handoffs", () => {
     expect(queueOverflowHandoff(async () => {})).toBe(false);
     g.release();
     for (let i = 0; i < 200 && ran < OVERFLOW_HANDOFF_MAX_WAITING; i++)
-      await sleep(1);
+      await Bun.sleep(1);
     expect(ran).toBe(OVERFLOW_HANDOFF_MAX_WAITING);
-    await sleep(0);
+    await Bun.sleep(0);
     expect(queueOverflowHandoff(async () => {})).toBe(true);
   });
 });
@@ -134,7 +133,7 @@ describe("admission", () => {
         }),
       ).toBe(true);
     });
-    await sleep(5);
+    await Bun.sleep(5);
     expect(chatwootAdmissionState()).toMatchObject({
       running: 2,
       waiting: 4,
@@ -142,9 +141,9 @@ describe("admission", () => {
     });
     for (const g of gates) {
       g.release();
-      await sleep(2);
+      await Bun.sleep(2);
     }
-    await sleep(5);
+    await Bun.sleep(5);
     expect(finished).toBe(6);
     expect(peak).toBe(2);
     expect(chatwootAdmissionState()).toMatchObject({ running: 0, waiting: 0 });
@@ -165,7 +164,7 @@ describe("admission", () => {
         "meta",
       ),
     ).toBe(true);
-    await sleep(5);
+    await Bun.sleep(5);
     expect(metaRan).toBe(true);
     g.release();
   });
@@ -182,7 +181,7 @@ describe("admission", () => {
       Date.now() - STORED_DELIVERY_MAX_AGE_MS - 1,
     );
     for (let i = 0; i < 100 && chatwootAdmissionState().running > 0; i++)
-      await sleep(5);
+      await Bun.sleep(5);
     expect(ran).toBe(false);
   });
 
@@ -207,7 +206,7 @@ describe("admission", () => {
     expect(admitChatwootDelivery(7n, run)).toBe(true);
     expect(admitChatwootDelivery(7n, run)).toBe(false);
     g.release();
-    await sleep(5);
+    await Bun.sleep(5);
     expect(runs).toBe(1);
     // Done, so a later dispatch of the same row (a redelivery) is admitted again; its CAS decides.
     expect(admitChatwootDelivery(7n, async () => {})).toBe(true);
@@ -242,7 +241,7 @@ describe("admission", () => {
     admitChatwootDelivery(2n, async () => {
       second = true;
     });
-    await sleep(10);
+    await Bun.sleep(10);
     expect(second).toBe(true);
     expect(chatwootAdmissionState().running).toBe(0);
   });
@@ -264,7 +263,7 @@ describe("admission", () => {
     const drained = drainInFlight({ boundMs: 2_000 });
     g.release();
     expect((await drained).drained).toBe(true);
-    await sleep(10);
+    await Bun.sleep(10);
     expect(started).toBe(1);
   });
 });
@@ -339,7 +338,7 @@ const settled = async (id: bigint) => {
   for (let i = 0; i < 200; i++) {
     const row = await rowById(id);
     if (row.status !== "PENDING" && row.status !== "PROCESSING") return row;
-    await sleep(25);
+    await Bun.sleep(25);
   }
   return rowById(id);
 };
@@ -463,7 +462,7 @@ describe.skipIf(!dbUp)("draining the rows the ack stored", () => {
       throw new Error("fails before its claim");
     });
     for (let i = 0; i < 100 && chatwootAdmissionState().running > 0; i++)
-      await sleep(5);
+      await Bun.sleep(5);
     expect((await rowById(failing)).status).toBe("PENDING");
     const r = await drainStoredChatwootDeliveries({
       base: appDb,
@@ -490,7 +489,7 @@ describe.skipIf(!dbUp)("draining the rows the ack stored", () => {
         throw new Error("fails before its claim");
       });
       for (let i = 0; i < 100 && chatwootAdmissionState().running > 0; i++)
-        await sleep(5);
+        await Bun.sleep(5);
     }
     const r = await drainStoredChatwootDeliveries({
       base: appDb,
@@ -738,7 +737,7 @@ describe.skipIf(!dbUp)("draining the rows the ack stored", () => {
       throw new Error("fails before its claim");
     });
     for (let i = 0; i < 100 && chatwootAdmissionState().running > 0; i++)
-      await sleep(5);
+      await Bun.sleep(5);
     const r = await drainStoredChatwootDeliveries({
       base: appDb,
       tenantId,
@@ -751,7 +750,9 @@ describe.skipIf(!dbUp)("draining the rows the ack stored", () => {
   // A busy queue can hold an admitted row past the ceiling; it is asked again when its slot opens.
   test("a row that crosses the age ceiling while it waits is not processed", async () => {
     const id = await ackOnly("queue-crosses-ceiling", 613);
-    await pastWindow(id, STORED_DELIVERY_MAX_AGE_MS - 300);
+    // A minute inside the ceiling when admitted, and two minutes later (the clock moved, not waited
+    // for) a minute past it when its slot opens.
+    await pastWindow(id, STORED_DELIVERY_MAX_AGE_MS - 60_000);
     resetChatwootAdmissionForTest(1);
     const g = held();
     admitChatwootDelivery(-1n, () => g.gate, "meta");
@@ -761,15 +762,27 @@ describe.skipIf(!dbUp)("draining the rows the ack stored", () => {
       minAgeMs: 0,
     });
     expect(r.admitted).toBe(1);
-    await sleep(600);
-    g.release();
-    for (let i = 0; i < 100 && chatwootAdmissionState().running > 0; i++)
-      await sleep(5);
+    const later = Date.now() + 120_000;
+    setSystemTime(later);
+    try {
+      g.release();
+      await until("both queued deliveries to leave their slot", () => {
+        const state = chatwootAdmissionState();
+        return state.running === 0 && state.waiting === 0;
+      });
+    } finally {
+      setSystemTime();
+    }
     const row = await rowById(id);
     expect(row.status).toBe("PENDING");
     expect(row.attempts).toBe(0);
     // The next pass clears the body and leaves the row to the sweep.
-    await drainStoredChatwootDeliveries({ base: appDb, tenantId, minAgeMs: 0 });
+    await drainStoredChatwootDeliveries({
+      base: appDb,
+      tenantId,
+      minAgeMs: 0,
+      now: later,
+    });
     expect((await rowById(id)).payload).toBeNull();
   });
 

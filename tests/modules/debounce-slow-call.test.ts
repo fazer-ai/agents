@@ -51,7 +51,6 @@ let inboxDbId = 0n;
 
 const REPLY = "Claro, posso ajudar!";
 const CHATWOOT_INBOX_ID = 7;
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function threadOf(convId: number) {
   return `${tenantId}:${instanceId}:${convId}`;
@@ -112,14 +111,14 @@ const CONV_B = 2002;
 // Resolves to "timeout" when `p` has not settled within `ms`, so a drain that waits on a call that
 // never returns fails an assertion instead of the runner's own timeout.
 function within<T>(p: Promise<T>, ms: number): Promise<T | "timeout"> {
-  return Promise.race([p, sleep(ms).then(() => "timeout" as const)]);
+  return Promise.race([p, Bun.sleep(ms).then(() => "timeout" as const)]);
 }
 
 async function until(cond: () => boolean, ms = 3_000): Promise<boolean> {
   const deadline = Date.now() + ms;
   while (Date.now() < deadline) {
     if (cond()) return true;
-    await sleep(10);
+    await Bun.sleep(10);
   }
   return cond();
 }

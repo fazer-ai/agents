@@ -13,6 +13,7 @@ import { Semaphore } from "@/lib/semaphore";
 import { inFlightWork } from "@/lib/shutdown";
 import { armObserve } from "@/modules/observe/job";
 import type { MonitoringConfig } from "@/modules/observe/settings";
+import * as schedulerService from "@/modules/scheduler/service";
 import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
 import {
   getJobHandler,
@@ -27,6 +28,7 @@ import {
 } from "@/modules/scheduler/worker";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { POLL_DEADLINE_MS } from "@/tests/utils/poll";
+import { countCalls } from "@/tests/utils/waiting";
 
 // The observe lane's fast drain (src/modules/scheduler/worker.ts, runObserveTick). A monitoring
 // agent's verdict is read while the conversation is happening, so what is asserted here is WHEN a
@@ -58,11 +60,10 @@ const suDb = su as PrismaClient;
 
 let tenantId = 0n;
 const past = () => new Date(Date.now() - 60_000);
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 async function until(holds: () => boolean, ms = POLL_DEADLINE_MS) {
   const end = Date.now() + ms;
-  while (!holds() && Date.now() < end) await sleep(10);
+  while (!holds() && Date.now() < end) await Bun.sleep(10);
 }
 
 async function arm(key: string, kind: "OBSERVE" | "FOLLOWUP" = "OBSERVE") {
@@ -76,15 +77,17 @@ async function arm(key: string, kind: "OBSERVE" | "FOLLOWUP" = "OBSERVE") {
   });
 }
 
-// A handler a test can hold open: `started` lists the rows in the order they began, and each row
-// finishes only when `release` is called for it (or for all).
+// A handler a test can hold open: `started` lists the rows in the order they began (`startedAt`, the
+// instant each did), and each row finishes only when `release` is called for it (or for all).
 function held() {
   const started: string[] = [];
+  const startedAt: number[] = [];
   const waiting = new Map<string, () => void>();
   let open = false;
   const handler: JobHandler = async (job: ClaimedJob) => {
     const key = job.dedupeKey ?? "";
     started.push(key);
+    startedAt.push(Date.now());
     if (!open) {
       await new Promise<void>((r) => waiting.set(key, r));
     }
@@ -92,6 +95,7 @@ function held() {
   };
   return {
     started,
+    startedAt,
     handler,
     release(key?: string) {
       if (key === undefined) {
@@ -169,7 +173,8 @@ describe.skipIf(!dbUp)("the observe lane's fast drain", () => {
     await until(() => h.started.length > 0, 3_000);
     expect(h.started).toEqual(["drain-cadence"]);
     expect(Date.now() - armedAt).toBeLessThan(3_000);
-    await until(() => false, 100);
+    // The run leaves the lane's count once its outcome is written.
+    await until(() => laneRuns() <= runsBefore);
     expect(
       await suDb.schedulerJob.count({
         where: { tenantId, kind: "OBSERVE", status: "DONE" },
@@ -192,7 +197,13 @@ describe.skipIf(!dbUp)("the observe lane's fast drain", () => {
     });
     wakeObserveDrainAt(new Date());
     await until(() => h.started.length >= 2, 5_000);
-    await sleep(400);
+    // Both starts came from one claim, and nothing asks for another until a slot frees (the interval
+    // is a minute away): the third row still PENDING is that claim having held to the bound.
+    expect(
+      await suDb.schedulerJob.count({
+        where: { tenantId, kind: "OBSERVE", status: "PENDING" },
+      }),
+    ).toBe(1);
     expect(h.started).toHaveLength(2);
     h.release(h.started[0]);
     await until(() => h.started.length >= 3, 5_000);
@@ -360,10 +371,11 @@ describe.skipIf(!dbUp)("the observe lane's fast drain", () => {
     // Asked twice for the same instant, as two messages of one burst do: one timer, one drain.
     wakeObserveDrainAt(dueAt);
     wakeObserveDrainAt(dueAt);
-    await sleep(150);
     expect(h.started).toEqual([]);
     await until(() => h.started.length > 0, 3_000);
     expect(h.started).toEqual(["woken"]);
+    // Not before its instant, and not an interval after it.
+    expect(h.startedAt[0]).toBeGreaterThanOrEqual(dueAt.getTime());
     expect(Date.now() - dueAt.getTime()).toBeLessThan(1_000);
   });
 
@@ -414,9 +426,19 @@ describe.skipIf(!dbUp)("the observe lane's fast drain", () => {
       tenantId,
       providerConcurrency: 2,
     });
-    wakeObserveDrainAt(new Date(Date.now() + 200));
-    stopScheduler();
-    await sleep(500);
+    // A drain asks for its claim synchronously when it starts: counting the asks sees one the moment
+    // it would have run, before any row could reach the handler.
+    const claims = countCalls(schedulerService, "claimDueObserveJobs");
+    try {
+      // An instant already past: its wake-up is a pending zero-delay timer when the worker stops.
+      wakeObserveDrainAt(new Date(Date.now() - 1_000));
+      stopScheduler();
+      // Queued after that timer, so this resumes only once it would have fired.
+      await new Promise((r) => setTimeout(r, 0));
+      expect(claims.count()).toBe(0);
+    } finally {
+      claims.restore();
+    }
     expect(h.started).toEqual([]);
   });
 

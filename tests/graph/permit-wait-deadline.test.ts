@@ -7,7 +7,8 @@ import { MemorySaver } from "@langchain/langgraph";
 import { z } from "zod";
 import config from "@/config";
 import { buildAgentGraph } from "@/graph/graph";
-import { runModelCall } from "@/graph/model-limit";
+import { modelPermitReading, runModelCall } from "@/graph/model-limit";
+import { until } from "../utils/poll";
 
 // A job run whose deadline fires while it waits for a model permit leaves the permit queue at once,
 // since the wait takes the job's signal; otherwise its row would stay in the running set until a
@@ -15,7 +16,6 @@ import { runModelCall } from "@/graph/model-limit";
 // permits are taken by calls that hang until the test lets them go.
 
 const THRESHOLD_MS = 300;
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 let saved: number | undefined;
 beforeEach(() => {
@@ -26,7 +26,7 @@ beforeEach(() => {
 const held: Array<() => void> = [];
 afterEach(async () => {
   for (const release of held.splice(0)) release();
-  await sleep(0);
+  await Bun.sleep(0);
   if (saved !== undefined) config.agent.capacityWaitAlertMs = saved;
 });
 
@@ -44,7 +44,7 @@ async function holdEveryPermit(): Promise<() => void> {
         }),
     );
   }
-  while (started < cap) await sleep(1);
+  while (started < cap) await Bun.sleep(1);
   const release = () => {
     for (const r of releases.splice(0)) r();
   };
@@ -70,7 +70,7 @@ describe("a model call waiting for a permit when its job's deadline fires", () =
       () => "resolved",
       (err: Error) => err.message,
     );
-    await sleep(20);
+    await Bun.sleep(20);
     const abortedAt = performance.now();
     controller.abort(new Error(DEADLINE));
     // Every permit is still held: the wait ended with the abort, not with a release.
@@ -87,7 +87,7 @@ describe("a model call waiting for a permit when its job's deadline fires", () =
       signal: controller.signal,
     }).catch(() => "aborted");
     const behind = runModelCall(async () => "behind");
-    await sleep(20);
+    await Bun.sleep(20);
     controller.abort(new Error(DEADLINE));
     expect(await leaving).toBe("aborted");
     release();
@@ -103,10 +103,10 @@ describe("a model call waiting for a permit when its job's deadline fires", () =
       signal: controller.signal,
       onPermitWait: (info) => seen.push(info),
     }).catch(() => "aborted");
-    await sleep(THRESHOLD_MS / 3);
+    await Bun.sleep(THRESHOLD_MS / 3);
     controller.abort(new Error(DEADLINE));
     expect(await call).toBe("aborted");
-    await sleep(THRESHOLD_MS * 1.5);
+    await Bun.sleep(THRESHOLD_MS * 1.5);
     expect(seen).toEqual([]);
   });
 
@@ -118,7 +118,7 @@ describe("a model call waiting for a permit when its job's deadline fires", () =
         settled = true;
       },
     );
-    await sleep(THRESHOLD_MS);
+    await Bun.sleep(THRESHOLD_MS);
     expect(settled).toBe(false);
     release();
     expect(await call).toBe("ok");
@@ -135,7 +135,12 @@ describe("a model call waiting for a permit when its job's deadline fires", () =
       },
       { primary: LABELS, signal: controller.signal },
     );
-    await sleep(50);
+    // Queued behind the held permits, or (wrongly) already through to the model: either ends the wait,
+    // and the assertion tells them apart.
+    await until("the call queued for a permit or calling the model", () => {
+      const r = modelPermitReading();
+      return called || r.waitingReply + r.waitingBackground === 1;
+    });
     expect(called).toBe(false);
     release();
     expect(await call).toBe("ok");
@@ -214,7 +219,7 @@ describe("the turn's model calls wait for a permit under the job's signal", () =
         () => "resolved",
         (err: Error) => err.message,
       );
-    while (!toolStarted) await sleep(1);
+    while (!toolStarted) await Bun.sleep(1);
     await holdEveryPermit();
     controller.abort(new Error(DEADLINE));
     const toolDoneAt = performance.now();
@@ -268,7 +273,7 @@ describe("the turn's model calls wait for a permit under the job's signal", () =
         () => "resolved",
         (err: Error) => err.message,
       );
-    while (!toolStarted) await sleep(1);
+    while (!toolStarted) await Bun.sleep(1);
     await holdEveryPermit();
     controller.abort(new Error(DEADLINE));
     const toolDoneAt = performance.now();

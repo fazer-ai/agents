@@ -49,18 +49,18 @@ let tenantId = 0n;
 let instanceId = 0n;
 let inboxDbId = 0n;
 let agentId = 0n;
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function threadOf(convId: number) {
   return `${tenantId}:${instanceId}:${convId}`;
 }
 
 // A model that answers after `delayMs`. `listens` decides whether it honors the signal it is handed;
-// `saw` records whether that signal aborted while it waited, and `onWait` runs once it is waiting.
+// `saw` records whether that signal aborted while it waited and whether the call answered, and
+// `onWait` runs once it is waiting.
 function slowModel(
   delayMs: number,
   listens: boolean,
-  saw: { abort: boolean },
+  saw: { abort: boolean; answered?: boolean },
   onWait: () => void = () => {},
 ) {
   const model = {
@@ -84,6 +84,7 @@ function slowModel(
       }).finally(() => {
         waiting = false;
       });
+      saw.answered = true;
       return new AIMessage("Claro, posso ajudar!");
     },
   };
@@ -299,15 +300,17 @@ describe.skipIf(!dbUp)(
 
     test("a model call that ignores the signal and answers late still sends nothing", async () => {
       await seedConversation(2002);
-      const saw = { abort: false };
+      const saw = { abort: false, answered: false };
+      // The deadline fires as soon as the call is waiting, so any delay answers after it.
       const sent = await flushUnderDeadline(
         2002,
-        (abort) => slowModel(800, false, saw, abort),
+        (abort) => slowModel(20, false, saw, abort),
         null,
       );
-      // Give the ignored call time to answer and the turn time to try to send it.
-      await sleep(1_200);
       expect(saw.abort).toBe(true);
+      // The flush outlived the ignored call: it answered, and the turn had its chance to send it,
+      // before the flush returned, so nothing is left running that could still post.
+      expect(saw.answered).toBe(true);
       expect(sent).toEqual([]);
     });
 

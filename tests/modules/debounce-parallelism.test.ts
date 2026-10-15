@@ -51,7 +51,6 @@ let inboxDbId = 0n;
 
 const REPLY = "Claro, posso ajudar!";
 const CHATWOOT_INBOX_ID = 7;
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function threadOf(convId: number) {
   return `${tenantId}:${instanceId}:${convId}`;
@@ -87,12 +86,12 @@ function quorumGate(quorum: number, meter: { active: number }) {
       quorumMet = true;
       reached();
     }
-    grace ??= sleep(QUORUM_GRACE_MS);
+    grace ??= Bun.sleep(QUORUM_GRACE_MS);
     await Promise.race([atQuorum, grace]);
     // Skipped when the gate opened on the grace clock instead: a semaphore that admits FEWER than
     // the cap never reaches quorum, and charging it the probe per serialized call would end the
     // test on the clock rather than on the assertion that names the defect.
-    if (quorumMet) await sleep(OVERFLOW_PROBE_MS);
+    if (quorumMet) await Bun.sleep(OVERFLOW_PROBE_MS);
   };
 }
 
@@ -113,7 +112,7 @@ function sleepyModel(
       meter.max = Math.max(meter.max, meter.active);
       try {
         await gate();
-        await sleep(delayMs);
+        await Bun.sleep(delayMs);
         return new AIMessage(REPLY);
       } finally {
         meter.active -= 1;

@@ -210,7 +210,6 @@ describe("a contended model semaphore grants by class", () => {
   // bound, and the background still progresses, while the replies keep being served too.
   test("a flood of replies does not starve the background", async () => {
     const sem = new Semaphore(4, { backgroundMin: 0, agingMs: 40 });
-    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
     const grants: Array<{ cls: PermitClass; at: number }> = [];
     const bgDoneAt: number[] = [];
     const t0 = Date.now();
@@ -218,7 +217,7 @@ describe("a contended model semaphore grants by class", () => {
       sem.run(
         async () => {
           grants.push({ cls, at: Date.now() - t0 });
-          await sleep(10);
+          await Bun.sleep(10);
           if (cls === "background") bgDoneAt.push(Date.now() - t0);
         },
         undefined,
@@ -235,7 +234,7 @@ describe("a contended model semaphore grants by class", () => {
     while (Date.now() - t0 < 400) {
       replies.push(call("reply"), call("reply"));
       lastReplyQueuedAt = Date.now() - t0;
-      await sleep(5);
+      await Bun.sleep(5);
     }
     await Promise.all(background);
     // Every background call ran while replies were still queueing.
@@ -253,7 +252,6 @@ describe("a contended model semaphore grants by class", () => {
 
   test("one permit: the background still runs, alone, and the replies resume after it", async () => {
     const sem = new Semaphore(1, { backgroundMin: 0, agingMs: 30 });
-    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
     let active = 0;
     let peak = 0;
     const order: PermitClass[] = [];
@@ -263,7 +261,7 @@ describe("a contended model semaphore grants by class", () => {
           active += 1;
           peak = Math.max(peak, active);
           order.push(cls);
-          await sleep(5);
+          await Bun.sleep(5);
           active -= 1;
         },
         undefined,
@@ -274,7 +272,7 @@ describe("a contended model semaphore grants by class", () => {
     const bg = call("background");
     while (Date.now() - t0 < 200) {
       replies.push(call("reply"));
-      await sleep(3);
+      await Bun.sleep(3);
     }
     await bg;
     await Promise.all(replies);

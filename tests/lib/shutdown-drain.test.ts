@@ -8,12 +8,18 @@ import {
   shutdown,
   trackWork,
 } from "@/lib/shutdown";
+import { POLL_DEADLINE_MS } from "@/tests/utils/poll";
 
 // The drain itself, without a database: what it waits for, when it stops waiting, what it reports and
 // what it ends. The job lanes' side (a cut run is failed for retry, the claims stop) is
 // tests/modules/scheduler-shutdown-drain.test.ts; the real signal is tests/lib/shutdown-signal.test.ts.
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+// A bound the test waits out in full, so it is kept short: what is asserted is that it was reached.
+const BOUND_MS = 100;
+
+// A drain that does not wait for the work has returned once this resolves: it gets there in
+// microtasks alone, and a macrotask runs only after all of them.
+const pastMicrotasks = () => new Promise<void>((r) => setImmediate(r));
 
 // The registry is process-wide: a suite that claimed rows without running them leaves them held.
 beforeEach(() => {
@@ -34,24 +40,30 @@ describe("the shutdown drain", () => {
   });
 
   test("it waits for the work in flight and returns when it ends, not at the bound", async () => {
+    // The work runs until the test lets it end, which it does only once the drain is waiting.
+    const gate = Promise.withResolvers<void>();
     let finished = false;
     void trackWork("DEBOUNCE", async () => {
-      await sleep(300);
+      await gate.promise;
       finished = true;
     });
-    const t = performance.now();
-    const result = await drainInFlight({ boundMs: 5_000 });
-    const waited = performance.now() - t;
-    expect(finished).toBe(true);
+    // What the drain saw of the work at the moment it returned.
+    const drained = drainInFlight({ boundMs: POLL_DEADLINE_MS }).then(
+      (result) => ({ result, finished }),
+    );
+    await pastMicrotasks();
+    gate.resolve();
+    const { result, finished: endedFirst } = await drained;
+    expect(endedFirst).toBe(true);
+    // Drained, so it returned on the work's end: the bound would have reported it still running.
     expect(result.drained).toBe(true);
-    expect(waited).toBeGreaterThanOrEqual(250);
-    expect(waited).toBeLessThan(2_000);
+    expect(result.waitedMs).toBeLessThan(POLL_DEADLINE_MS);
   });
 
   test("at the bound it cuts what is still running and reports exactly that", async () => {
     const cutWith: Error[] = [];
     // One finishes inside the bound, two do not: only the two are counted and cut.
-    void trackWork("DEBOUNCE", () => sleep(100));
+    const quick = beginWork("DEBOUNCE");
     for (let i = 0; i < 2; i++) {
       const end = beginWork("DEBOUNCE", (reason) => {
         cutWith.push(reason);
@@ -59,7 +71,10 @@ describe("the shutdown drain", () => {
       });
     }
     const t = performance.now();
-    const result = await drainInFlight({ boundMs: 400, settleMs: 1_000 });
+    const drained = drainInFlight({ boundMs: BOUND_MS, settleMs: 5_000 });
+    // Ended once the drain is waiting on all three, well inside the bound.
+    quick();
+    const result = await drained;
     const waited = performance.now() - t;
     expect(result.drained).toBe(false);
     expect(result.stillRunning).toEqual({
@@ -69,9 +84,9 @@ describe("the shutdown drain", () => {
     expect(cutWith).toHaveLength(2);
     expect(cutWith.every((e) => e instanceof ShutdownCutError)).toBe(true);
     expect(result.unsettled).toBe(0);
-    // The cut ends them at once, so the settle wait is not spent.
-    expect(waited).toBeGreaterThanOrEqual(350);
-    expect(waited).toBeLessThan(900);
+    // It waited out the bound, and the cut ends them at once, so the settle wait is not spent.
+    expect(waited).toBeGreaterThanOrEqual(BOUND_MS - 10);
+    expect(waited).toBeLessThan(5_000);
   });
 
   // A claim query in flight at the bound returns its rows during the settle wait: they are cut as
@@ -108,15 +123,21 @@ describe("the shutdown drain", () => {
 
   test("the signal stops the lanes first, then drains, then exits", async () => {
     const order: string[] = [];
+    // The work ends only when the test lets it, after the signal: an exit that did not wait for it
+    // lands before "work done".
+    const gate = Promise.withResolvers<void>();
     void trackWork("DEBOUNCE", async () => {
-      await sleep(200);
+      await gate.promise;
       order.push("work done");
     });
-    await shutdown("SIGTERM", {
+    const signalled = shutdown("SIGTERM", {
       stop: () => order.push("stop"),
-      boundMs: 5_000,
+      boundMs: POLL_DEADLINE_MS,
       exit: (code) => order.push(`exit ${code}`),
     });
+    await pastMicrotasks();
+    gate.resolve();
+    await signalled;
     expect(order).toEqual(["stop", "work done", "exit 0"]);
     expect(isDraining()).toBe(true);
   });
@@ -130,7 +151,8 @@ describe("the shutdown drain", () => {
       exit: (code: number) => exits.push(`exit ${code}`),
     };
     const first = shutdown("SIGTERM", opts);
-    await sleep(50);
+    // The first signal starts draining before it first yields.
+    expect(isDraining()).toBe(true);
     const t = performance.now();
     await shutdown("SIGINT", opts);
     expect(performance.now() - t).toBeLessThan(100);

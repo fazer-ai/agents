@@ -8,6 +8,7 @@ import {
 } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
+import { runningJobIds } from "@/modules/scheduler/running";
 import {
   type ClaimedJob,
   claimDueDebounceJobs,
@@ -25,6 +26,7 @@ import {
 } from "@/modules/scheduler/worker";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { clearFlowLog, flowLogRows } from "@/tests/utils/flowlog";
+import { until } from "@/tests/utils/poll";
 
 // A discarded outcome leaves a line where alerts look, not only on stdout. Two roads discard what a
 // scheduler handler returned: the run passed its deadline, or its claim was superseded. The deadline
@@ -54,7 +56,6 @@ const appDb = app as PrismaClient;
 const suDb = su as PrismaClient;
 
 let tenantId = 0n;
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const past = () => new Date(Date.now() - 60_000);
 
 async function claim(kind: SchedulerJobKind, id: bigint): Promise<ClaimedJob> {
@@ -149,7 +150,12 @@ describe.skipIf(!dbUp)("a discarded scheduler outcome (issue #896)", () => {
     const job = await claim("HEARTBEAT", id);
     await runClaimed(job, appDb, { deadlineMs: 100 });
     release();
-    await sleep(300);
+    // The row leaves the running set once its late outcome is discarded (runClaimed's late chain),
+    // and flowLogRows settles the line that discard emitted.
+    await until(
+      "the late outcome to be discarded",
+      () => !runningJobIds().includes(id),
+    );
     const lines = await discardLines();
     expect(lines).toHaveLength(1);
     expect(lines[0]?.level).toBe("warn");

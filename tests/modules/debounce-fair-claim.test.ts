@@ -17,6 +17,8 @@ import {
   enqueueJob,
 } from "@/modules/scheduler/service";
 import { dbProbeFailed } from "@/tests/db-gate";
+import { blockedByChain } from "../utils/pg-waits";
+import { until } from "../utils/poll";
 
 // The debounce lane is cross-tenant, and its claim shares the slots: each due row ranks by what its
 // tenant already has in flight plus its place in that tenant's own queue, and ties go to the older
@@ -51,7 +53,8 @@ let tenantA = 0n;
 let tenantB = 0n;
 let tenantC = 0n;
 const T0 = Date.now();
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+// The advisory lock the claim parks on in the snapshot-to-lock test.
+const PAUSE_KEY = 547_100_001;
 
 // One due DEBOUNCE row, `ageS` seconds old.
 async function due(tenant: bigint, key: string, ageS: number) {
@@ -241,17 +244,36 @@ describe.skipIf(!dbUp)(
     test("a row re-armed into the future between the claim's snapshot and its lock is not claimed", async () => {
       // The claim ranks from its statement snapshot and locks afterwards. A re-arm that commits in
       // between leaves the snapshot's version due, and Postgres re-checks only the locked row's own
-      // predicates against the new version. `fair_claim_pause()` holds the claim right there, once.
+      // predicates against the new version. `fair_claim_pause()` holds the claim right there, once, on
+      // an advisory lock the test holds until the re-arm has committed.
       await suDb.$executeRawUnsafe(`
         CREATE OR REPLACE FUNCTION fair_claim_pause() RETURNS boolean LANGUAGE plpgsql VOLATILE AS $$
         BEGIN
           IF current_setting('fair_claim.pause', true) = 'on' THEN
             PERFORM set_config('fair_claim.pause', 'off', true);
-            PERFORM pg_sleep(1.5);
+            PERFORM pg_advisory_xact_lock(${PAUSE_KEY});
           END IF;
           RETURN true;
         END $$`);
+      let release: () => void = () => {};
+      const released = new Promise<void>((r) => {
+        release = r;
+      });
+      let holderPid: number | undefined;
+      const holding = suDb.$transaction(
+        async (tx) => {
+          await tx.$executeRawUnsafe(
+            `SELECT pg_advisory_xact_lock(${PAUSE_KEY})`,
+          );
+          const [me] = await tx.$queryRaw<Array<{ pid: number }>>`
+            SELECT pg_backend_pid() AS pid`;
+          holderPid = me?.pid ?? -1;
+          await released;
+        },
+        { maxWait: 30_000, timeout: 60_000 },
+      );
       try {
+        const pid = await until("the pause lock held", () => holderPid);
         const a0 = await due(tenantA, "a0", 30);
         const kinds = Prisma.sql`kind IN ('DEBOUNCE') AND fair_claim_pause()`;
         const tenantId = [tenantA, tenantB, tenantC];
@@ -262,12 +284,16 @@ describe.skipIf(!dbUp)(
             claimSql(4, new Date(), kinds, tenantId, [], undefined, true),
           );
         });
-        await sleep(500);
+        await until(
+          "the claim parked at its pause",
+          async () => (await blockedByChain(suDb, pid)) >= 1,
+        );
         // What armDebounce does when a message lands inside the window: the same row, pushed out.
         await suDb.schedulerJob.update({
           where: { id: a0 },
           data: { runAt: new Date(Date.now() + 60_000) },
         });
+        release();
         const claimed = await claiming;
         expect(claimed.map((j) => j.id)).not.toContain(a0);
         const row = await suDb.schedulerJob.findUniqueOrThrow({
@@ -276,6 +302,8 @@ describe.skipIf(!dbUp)(
         });
         expect(row.status).toBe("PENDING");
       } finally {
+        release();
+        await holding;
         await suDb.$executeRawUnsafe(
           `DROP FUNCTION IF EXISTS fair_claim_pause()`,
         );
@@ -302,7 +330,7 @@ describe.skipIf(!dbUp)(
         expect(started).toContain(b);
       } finally {
         for (const r of hung.splice(0)) r();
-        await sleep(0);
+        await Bun.sleep(0);
         await runDebounceTick(appDb, 4, { claim: async () => [] });
       }
     });

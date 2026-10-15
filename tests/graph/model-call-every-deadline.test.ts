@@ -12,7 +12,6 @@ import { until } from "../utils/poll";
 // speech normalization, the fallback, and the primary with or without a fallback. These tests drive
 // it there and through the graph, with a model that never looks at the signal.
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 // Short, because every test here waits it out once or twice. Each test also checks the call it cuts
 // was actually reached, so a deadline that fired before anything ran cannot pass for one that worked.
 const DEADLINE_MS = 40;
@@ -44,7 +43,7 @@ class DeafModel extends BaseChatModel {
   }
   async _generate(): Promise<ChatResult> {
     this.calls++;
-    await sleep(this.delayMs);
+    await Bun.sleep(this.delayMs);
     return {
       generations: [{ text: this.text, message: new AIMessage(this.text) }],
     };
@@ -183,7 +182,7 @@ describe("every call through runModelCall ends at its deadline", () => {
           async () => {
             active += 1;
             maxActive = Math.max(maxActive, active);
-            await sleep(15);
+            await Bun.sleep(15);
             active -= 1;
           },
           { deadlineMs: DEADLINE_MS },

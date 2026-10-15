@@ -87,6 +87,9 @@ function monitoring(rules: unknown[] = [RULE]) {
   };
 }
 
+// The labels the stub client reads for the conversation's contact.
+let contactLabels: string[] = [];
+
 interface Writes {
   count: number;
 }
@@ -103,6 +106,7 @@ function stubClient(
     muted: true,
     getMessages: async () => ({ payload: messages }),
     getConversationLabels: async () => [],
+    getContactLabels: async () => [...contactLabels],
     setConversationLabels: write,
     sendPrivateNote: write,
     updateConversationCustomAttributes: write,
@@ -547,7 +551,7 @@ describe.skipIf(!dbUp)("testing a decisions agent on a conversation", () => {
           when,
           action: {
             tool: "set_labels",
-            args: { add: ["vip"], scope: "contact" },
+            args: { add: ["vip"], remove: ["lead"], scope: "contact" },
           },
         },
         {
@@ -587,20 +591,37 @@ describe.skipIf(!dbUp)("testing a decisions agent on a conversation", () => {
       data: { contactId: contact.id },
     });
     try {
-      // With one: the protected label is refused on the contact scope too, and the attribute the
-      // earlier rule writes lets the note through.
+      // With one: the protected label is refused on the contact scope too. `vip` already stands, so
+      // the removal of `lead` is not held and the write goes through in part (read off the
+      // contact's real labels, not assumed); and the attribute the earlier rule writes lets the
+      // note through.
+      contactLabels = ["vip", "lead"];
       ({ tick } = await runTest(classifier(yes).fetchImpl));
       expect(tick.actions).toMatchObject([
-        { rule: 0, outcome: "refused", fence: "protected_label" },
+        {
+          rule: 0,
+          outcome: "decided",
+          fence: "protected_label",
+          partial: true,
+        },
         { rule: 1, outcome: "decided" },
         { rule: 2, outcome: "decided" },
       ]);
+      // And with `vip` not standing, the refused addition holds the removal: nothing is written.
+      contactLabels = ["lead"];
+      ({ tick } = await runTest(classifier(yes).fetchImpl));
+      expect(tick.actions[0]).toMatchObject({
+        rule: 0,
+        outcome: "refused",
+        fence: "protected_label",
+      });
     } finally {
       await suDb.conversation.update({
         where: { id: convRowId },
         data: { contactId: null },
       });
       await suDb.contact.delete({ where: { id: contact.id } });
+      contactLabels = [];
     }
   });
 

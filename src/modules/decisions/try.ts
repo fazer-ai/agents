@@ -313,6 +313,11 @@ export async function tryDecisionsAgent(
     labels: evidence.current,
     protectedLabels: cfg.protectedLabels,
     hasContact: cfg.chatwootContactId !== null,
+    loadContactLabels: async () => {
+      const id = cfg.chatwootContactId;
+      if (id === null) return null;
+      return client.getContactLabels(id).catch(() => null);
+    },
     allowed:
       cfg.allowedLabels.length > 0
         ? { labels: cfg.allowedLabels, mode: cfg.outsideAllowedLabels }
@@ -352,6 +357,8 @@ async function withFences(
     // Whether the conversation has a contact linked to Chatwoot: without one a contact write has no
     // effect on a tick, so it is reported `no_effect` and its attribute is not counted as written.
     hasContact: boolean;
+    // The contact's labels, read only when a rule writes them; null when unreadable.
+    loadContactLabels: () => Promise<string[] | null>;
   },
 ): Promise<ActionReport[]> {
   const decided = actions.filter((a) => a.outcome === "decided");
@@ -367,6 +374,13 @@ async function withFences(
     contactAttributes: { ...loaded.contactAttributes },
   };
   let labels = fences.labels;
+  let contactLabels =
+    decided.some((a) => {
+      const args = rules[a.rule]?.action.args;
+      return a.tool === "set_labels" && args?.scope === "contact";
+    }) && fences.hasContact
+      ? await fences.loadContactLabels()
+      : null;
   const strings = (v: unknown): string[] =>
     Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
   return actions.map((a): ActionReport => {
@@ -399,18 +413,28 @@ async function withFences(
       bag[args.key] = args.value;
     }
     if (a.tool === "set_labels") {
-      // The fences hold on every scope. The conversation's labels were read for the evidence; a
-      // contact's or a card's were not, so their removals are taken as standing (whether a label
-      // is refused does not depend on the current set, only whether the call writes anything).
-      const known = scope === "conversation" ? labels : null;
+      // The fences hold on every scope. The conversation's labels were read for the evidence and the
+      // contact's are read above; a card's are not. Which labels a fence refuses does not depend on
+      // the current set, but whether the call still writes something does (a refused addition that
+      // is not standing holds the removals), so where the set is unknown a refusal is told whole
+      // only when nothing else was asked, and in part otherwise.
+      const known =
+        scope === "conversation"
+          ? labels
+          : scope === "contact"
+            ? contactLabels
+            : null;
       const o = applyLabelDelta(
         strings(args.add),
         strings(args.remove),
-        known ?? strings(args.remove),
+        known ?? [],
         fences.protectedLabels,
         fences.allowed,
       );
       if (scope === "conversation" && labels !== null) labels = o.next;
+      if (scope === "contact" && contactLabels !== null) {
+        contactLabels = o.next;
+      }
       const fence =
         o.refusedAdd.length > 0 || o.refusedRemove.length > 0
           ? ("protected_label" as const)
@@ -418,7 +442,18 @@ async function withFences(
             ? ("allowed_labels" as const)
             : null;
       if (fence) {
-        return o.added.length > 0 || o.removed.length > 0
+        const refused = new Set([
+          ...o.refusedAdd,
+          ...o.refusedRemove,
+          ...(o.refusedOutside ?? []),
+        ]);
+        const writes =
+          known !== null
+            ? o.added.length > 0 || o.removed.length > 0
+            : [...strings(args.add), ...strings(args.remove)].some(
+                (l) => !refused.has(l.trim()),
+              );
+        return writes
           ? { ...a, fence, partial: true }
           : { ...a, outcome: "refused", fence };
       }

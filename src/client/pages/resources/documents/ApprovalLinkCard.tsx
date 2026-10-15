@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Button,
@@ -30,6 +30,9 @@ export function ApprovalLinkCard() {
   const [template, setTemplate] = useState("");
   const [saving, setSaving] = useState(false);
   const [fieldError, setFieldError] = useState<string | null>(null);
+  // The draft as it is now, for a save that answers after the operator kept typing.
+  const draft = useRef({ mode, template });
+  draft.current = { mode, template };
 
   const load = useCallback(async () => {
     setFailed(false);
@@ -81,10 +84,11 @@ export function ApprovalLinkCard() {
   async function save() {
     setSaving(true);
     setFieldError(null);
+    const sent = { mode, template };
     try {
       const { data, error } = await api.api.v1["tenant-settings"][
         "approval-link"
-      ].put({ mode, urlTemplate: template });
+      ].put({ mode: sent.mode, urlTemplate: sent.template });
       if (error || !data) {
         const message =
           apiErrorMessage(error) ||
@@ -94,8 +98,15 @@ export function ApprovalLinkCard() {
         return;
       }
       setSaved(data.approvalLink);
-      setMode(data.approvalLink.mode);
-      setTemplate(data.approvalLink.urlTemplate);
+      // NOTE: the stored value replaces the draft only when the draft is still what was sent, so an
+      // edit made during the request stays on screen, unsaved.
+      if (
+        draft.current.mode === sent.mode &&
+        draft.current.template === sent.template
+      ) {
+        setMode(data.approvalLink.mode);
+        setTemplate(data.approvalLink.urlTemplate);
+      }
       showToast(t("common.saved", "Saved."), "success");
     } catch (e) {
       showToast(

@@ -26,6 +26,7 @@ describe("what the note's link becomes", () => {
       "javascript:alert(document.cookie)//{id}",
       "não é uma url {id}",
       "https://app.example.com/documents",
+      "https:/app.example.com/review/{id}",
     ]) {
       expect(() =>
         normalizeApprovalLink({ mode: "custom", urlTemplate }),

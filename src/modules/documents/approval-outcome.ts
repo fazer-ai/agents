@@ -517,12 +517,13 @@ export async function runApprovalOpened(
   const target = await conversationOf(tenantId, request.conversationId, base);
   if (!target) return "no-agent";
   const client = await clientFor(tenantId, target, base, deps);
+  const link = await readApprovalLink(tenantId, base);
   if (deps.signal?.aborted || !(await pending())) return "decided";
   await client.sendPrivateNote(
     target.conv.chatwootConversationId,
     withApprovalLink(
       `Pedido de aprovação aberto: ${titleOf(request.title)}. Nada vai ao cliente até alguém da equipe aprovar.`,
-      await readApprovalLink(tenantId, base),
+      link,
       tenantId,
       requestId,
     ),

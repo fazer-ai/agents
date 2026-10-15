@@ -64,8 +64,11 @@ export async function readApprovalLink(
   return parseApprovalLinkSettings(row?.settings);
 }
 
+// The prefix is checked on the text as typed, not only on the parsed URL: `new URL` repairs
+// `https:/host/...`, and the note carries the text, which a browser resolves against the console.
 function isLinkTemplate(template: string): boolean {
   if (!template.includes(APPROVAL_LINK_ID_TOKEN)) return false;
+  if (!/^https?:\/\/[^/]/i.test(template)) return false;
   try {
     const url = new URL(template.replaceAll(APPROVAL_LINK_ID_TOKEN, "1"));
     return url.protocol === "https:" || url.protocol === "http:";

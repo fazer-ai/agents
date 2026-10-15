@@ -236,11 +236,20 @@ describe("transcriptions in flight", () => {
   test("every message is waited for, not only the first to close", async () => {
     const one = openTranscription(target(1));
     const two = openTranscription(target(2));
-    setTimeout(one, 20);
-    setTimeout(two, 200);
-    const started = Date.now();
-    await awaitOpenTranscriptions(T1, I1, [1, 2], { timeoutMs: 5000 });
-    expect(Date.now() - started).toBeGreaterThanOrEqual(180);
+    let settled = false;
+    const waiting = awaitOpenTranscriptions(T1, I1, [1, 2], {
+      timeoutMs: 5000,
+    }).then(() => {
+      settled = true;
+    });
+    // A close wakes its waiters synchronously, and everything that follows from it is microtasks,
+    // which one macrotask turn drains whole: a wait that ended on this close has settled by then.
+    one();
+    await new Promise((r) => setImmediate(r));
+    expect(settled).toBe(false);
+    two();
+    await waiting;
+    expect(settled).toBe(true);
   });
 
   test("two passes over one message keep it open until both settle, and a close counts once", async () => {

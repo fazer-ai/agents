@@ -6,6 +6,8 @@ import { mirrorChatwootEvent } from "@/modules/chatwoot/mirror";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
 import { dbProbeFailed } from "@/tests/db-gate";
+import { blockedByChain } from "@/tests/utils/pg-waits";
+import { until } from "@/tests/utils/poll";
 import { VIOLATION_SHAPES } from "@/tests/utils/raw-violation";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
@@ -723,9 +725,13 @@ describe.skipIf(!dbUp)("the mirror's inbox and contact rows", () => {
     const taken = new Promise<void>((r) => {
       lockTaken = r;
     });
+    let holderPid = -1;
     const holder = suDb.$transaction(
       async (tx) => {
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${threadKey})::bigint)`;
+        const [me] = await tx.$queryRaw<{ pid: number }[]>`
+          SELECT pg_backend_pid() AS pid`;
+        holderPid = me?.pid ?? -1;
         lockTaken();
         await released;
       },
@@ -743,24 +749,34 @@ describe.skipIf(!dbUp)("the mirror's inbox and contact rows", () => {
       }),
     );
     try {
-      // Give the waiting delivery time to reach the conversation lock.
-      await Bun.sleep(400);
+      await until(
+        "the waiting delivery parked on the conversation lock",
+        async () => (await blockedByChain(suDb, holderPid)) >= 1,
+      );
       const [visible] = await inboxRow(34);
       expect(visible?.name).toBe("Suporte");
 
-      const other = await Promise.race([
-        mirror(
-          event({
-            convId: 602,
-            messageId: 604,
-            at: T0 + 1101,
-            inboxId: 34,
-            inboxName: "Suporte",
-          }),
-        ).then(() => "done" as const),
-        Bun.sleep(3_000).then(() => "blocked" as const),
-      ]);
-      expect(other).toBe("done");
+      // Done, or parked behind the held conversation too, through whatever the waiting delivery
+      // holds: the second waiter in the chain is the answer, where a race against a timer only
+      // guessed how long a free delivery takes.
+      let otherDone = false;
+      const other = mirror(
+        event({
+          convId: 602,
+          messageId: 604,
+          at: T0 + 1101,
+          inboxId: 34,
+          inboxName: "Suporte",
+        }),
+      ).then(() => {
+        otherDone = true;
+      });
+      await until(
+        "the other conversation's delivery done, or parked behind the held one",
+        async () => otherDone || (await blockedByChain(suDb, holderPid)) >= 2,
+      );
+      expect(otherDone).toBe(true);
+      await other;
     } finally {
       release();
       await holder;

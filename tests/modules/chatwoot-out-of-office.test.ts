@@ -10,6 +10,7 @@ import {
 } from "@/modules/chatwoot/management";
 import { chatwootAutoRepliesOutOfHours } from "@/modules/chatwoot/out-of-office";
 import { dbProbeFailed } from "@/tests/db-gate";
+import { until } from "@/tests/utils/poll";
 
 // Two products can both answer out of hours on the same inbox, on schedules neither console shows;
 // this reading surfaces Chatwoot's side of it.
@@ -302,46 +303,31 @@ describe.skipIf(!dbUp)("listOutOfOfficeInboxes", () => {
   // its start and waits for the other's, so a serial drain deadlocks; a one-sided wait would pass on
   // a serial read that happened to take account 1 first.
   test("the accounts are read concurrently, not one timeout after another", async () => {
-    const arrive: Record<number, () => void> = {};
-    const started = new Map<number, Promise<void>>();
-    for (const id of [1, 2]) {
-      started.set(
-        id,
-        new Promise<void>((resolve) => {
-          arrive[id] = resolve;
-        }),
-      );
-    }
+    const arrived = new Set<number>();
     const makeClient = async (cfg: { accountId: number }) =>
       ({
         listInboxes: async () => {
-          arrive[cfg.accountId]?.();
-          await started.get(cfg.accountId === 1 ? 2 : 1);
+          arrived.add(cfg.accountId);
+          const other = cfg.accountId === 1 ? 2 : 1;
+          await until(`account ${other}'s listing started too`, () =>
+            arrived.has(other),
+          );
           return cfg.accountId === 1 ? ACCOUNT_1 : ACCOUNT_2;
         },
       }) as unknown as ChatwootClient;
 
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      const found = await Promise.race([
-        listOutOfOfficeInboxes(ctx(tenantA), agent1, { makeClient }, appDb),
-        new Promise<never>((_, reject) => {
-          timer = setTimeout(
-            () =>
-              reject(
-                new Error("serial: the second account never got to start"),
-              ),
-            5_000,
-          );
-        }),
-      ]);
-      expect(found.map((f) => f.name)).toEqual([
-        "WhatsApp Vendas (Chatwoot)",
-        "Instagram (Chatwoot)",
-      ]);
-    } finally {
-      if (timer) clearTimeout(timer);
-    }
+    // A serial drain never starts the second listing while the first waits for it, so the first
+    // gives up, its account says nothing, and the list comes back short.
+    const found = await listOutOfOfficeInboxes(
+      ctx(tenantA),
+      agent1,
+      { makeClient },
+      appDb,
+    );
+    expect(found.map((f) => f.name)).toEqual([
+      "WhatsApp Vendas (Chatwoot)",
+      "Instagram (Chatwoot)",
+    ]);
   });
 
   test("an agent with no bound inbox costs no call at all", async () => {

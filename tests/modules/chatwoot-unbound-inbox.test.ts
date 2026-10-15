@@ -5,7 +5,6 @@ import { encryptJson } from "@/api/lib/crypto";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
 import { dbProbeFailed } from "@/tests/db-gate";
-import { POLL_DEADLINE_MS } from "@/tests/utils/poll";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogRows } from "../utils/flowlog";
 
@@ -185,24 +184,19 @@ describe.skipIf(!dbUp)("an unbound inbox says so", () => {
     });
   }
 
-  // Scoped to the conversation asked for, by its INTERNAL id, and polled: the emit is
-  // fire-and-forget, so an unscoped read answers with a neighbour's row and an unpolled one races
-  // the write it is asserting.
-  async function routeRows(convId: number, waitMs = POLL_DEADLINE_MS) {
+  // Scoped to the conversation asked for, by its INTERNAL id, and read settled: the emit is
+  // fire-and-forget, so an unscoped read answers with a neighbour's row, and a raw read races the
+  // write it is asserting. The settle answers both "it was written" and "nothing was written".
+  async function routeRows(convId: number) {
     const conv = await suDb.conversation.findFirst({
       where: { tenantId, chatwootConversationId: convId },
       select: { id: true },
     });
     if (!conv) return [];
-    const deadline = Date.now() + waitMs;
-    for (;;) {
-      const rows = await flowLogRows(suDb, {
-        where: { tenantId, stage: "route", conversationId: conv.id },
-        orderBy: { id: "asc" },
-      });
-      if (rows.length > 0 || Date.now() > deadline) return rows;
-      await new Promise((r) => setTimeout(r, 50));
-    }
+    return flowLogRows(suDb, {
+      where: { tenantId, stage: "route", conversationId: conv.id },
+      orderBy: { id: "asc" },
+    });
   }
 
   test("a message on an inbox nobody bound writes the line, naming the inbox", async () => {
@@ -231,13 +225,13 @@ describe.skipIf(!dbUp)("an unbound inbox says so", () => {
   // write-back coming back around.
   test("an event that is not a new incoming message writes no line", async () => {
     await deliver(8102, UNBOUND_INBOX, { event: "message_updated" });
-    expect(await routeRows(8102, 300)).toEqual([]);
+    expect(await routeRows(8102)).toEqual([]);
   });
 
   // The control that proves the line is about the binding and not about the traffic.
   test("the same message on a bound inbox writes no line", async () => {
     await deliver(8103, BOUND_INBOX);
-    expect(await routeRows(8103, 300)).toEqual([]);
+    expect(await routeRows(8103)).toEqual([]);
     expect(agentDbId).toBeGreaterThan(0n);
   });
 
@@ -251,7 +245,7 @@ describe.skipIf(!dbUp)("an unbound inbox says so", () => {
     });
     try {
       await deliver(8104, BOUND_INBOX);
-      expect(await routeRows(8104, 300)).toEqual([]);
+      expect(await routeRows(8104)).toEqual([]);
     } finally {
       await suDb.agent.update({
         where: { id: agentDbId },

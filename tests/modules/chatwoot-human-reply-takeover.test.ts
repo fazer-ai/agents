@@ -20,7 +20,8 @@ import {
 } from "@/modules/conversations/service";
 import { isFollowUpLive } from "@/modules/followups/eligibility";
 import { dbProbeFailed } from "@/tests/db-gate";
-import { POLL_DEADLINE_MS } from "@/tests/utils/poll";
+import { blockedByChain } from "@/tests/utils/pg-waits";
+import { until } from "@/tests/utils/poll";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogRows } from "../utils/flowlog";
 
@@ -481,25 +482,21 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
   // which writes an `ownership_lost` line per customer message the bot did not answer; counting those
   // would tie this assertion to how many messages the fixture sends. `via` is the discriminator: only
   // this path writes it.
-  async function takeoverRows(convId: number, waitMs = POLL_DEADLINE_MS) {
+  async function takeoverRows(convId: number) {
     const conv = await convRow(convId);
     if (!conv) return [];
-    const deadline = Date.now() + waitMs;
-    for (;;) {
-      const rows = (
-        await flowLogRows(suDb, {
-          where: { tenantId, stage: "handoff", conversationId: conv.id },
-          orderBy: { id: "asc" },
-        })
-      ).filter(
-        (r) =>
-          typeof r.detail === "object" &&
-          r.detail !== null &&
-          "via" in (r.detail as Record<string, unknown>),
-      );
-      if (rows.length > 0 || Date.now() > deadline) return rows;
-      await new Promise((r) => setTimeout(r, 50));
-    }
+    // Settled, so one read answers both "it was written" and "nothing was written".
+    return (
+      await flowLogRows(suDb, {
+        where: { tenantId, stage: "handoff", conversationId: conv.id },
+        orderBy: { id: "asc" },
+      })
+    ).filter(
+      (r) =>
+        typeof r.detail === "object" &&
+        r.detail !== null &&
+        "via" in (r.detail as Record<string, unknown>),
+    );
   }
 
   const toggles = (convId: number) =>
@@ -965,7 +962,7 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     // Silent, on a takeover that was never confirmed — the direction a fence has to fail in.
     expect((await convRow(conv))?.status).toBe("open");
     // ...and not reported as one, because nothing established that a person was handed anything.
-    expect((await takeoverRows(conv, 200)).length).toBe(0);
+    expect((await takeoverRows(conv)).length).toBe(0);
     const before = turnsRan;
     await deliver(conv, { ...customerSays("continua aí?") });
     expect(turnsRan).toBe(before);
@@ -1128,7 +1125,7 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     await deliver(conv, { ...deliverReplyOff() });
     expect(toggles(conv).length).toBe(0);
     expect(liveStatus.get(conv) ?? "pending").toBe("pending");
-    expect((await takeoverRows(conv, 200)).length).toBe(0);
+    expect((await takeoverRows(conv)).length).toBe(0);
     await suDb.agent.update({
       where: { id: agentDbId },
       data: { settings: { debounce: { enabled: false } } },
@@ -1382,18 +1379,28 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     // `null` it starts on: the only writer is the callback below.
     const claimed: { until: Date | null } = { until: null };
     let running: Promise<void> | null = null;
-    const startedAt = Date.now();
+    let settled = false;
+    let releasedAt = 0;
     await suDb.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`${tenantId}:${instanceId}:${conv}`})::bigint)`;
-      running = claim().then((v) => {
-        claimed.until = v;
-      });
-      // Long enough for an unlocked write to have finished several times over, and to separate the
-      // two candidate start points for the deadline below. It cannot go flaky in the direction that
-      // matters: a slow machine only delays the claim further.
-      await Bun.sleep(400);
+      const [me] = await tx.$queryRaw<{ pid: number }[]>`
+        SELECT pg_backend_pid() AS pid`;
+      running = claim()
+        .then((v) => {
+          claimed.until = v;
+        })
+        .finally(() => {
+          settled = true;
+        });
+      // Parked on this lock, or done without it: an unlocked claim settles, and the asserts below
+      // then see what it wrote.
+      await until(
+        "the claim parked on the conversation's lock, or done without it",
+        async () => settled || (await blockedByChain(suDb, me?.pid ?? -1)) >= 1,
+      );
       expect(claimed.until).toBeNull();
       expect((await convRow(conv))?.status).toBe("pending");
+      releasedAt = Date.now();
     });
     await running;
     // The deadline the claim answers with is the one it WROTE, and it is stamped past the wait: the
@@ -1403,9 +1410,9 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     // The deadline the claim answers with is the one it WROTE...
     expect(claimed.until?.getTime()).toBe(row?.statusClaimUntil?.getTime());
     // ...and the countdown starts past the wait, not at the call: a deadline stamped before the lock
-    // would land at `startedAt + TTL` and spend the queueing on the fence it promises.
-    expect(claimed.until?.getTime() ?? 0).toBeGreaterThan(
-      startedAt + STATUS_CLAIM_TTL_MS + 100,
+    // would land before `releasedAt + TTL` and spend the queueing on the fence it promises.
+    expect(claimed.until?.getTime() ?? 0).toBeGreaterThanOrEqual(
+      releasedAt + STATUS_CLAIM_TTL_MS,
     );
   });
 

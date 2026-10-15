@@ -40,7 +40,13 @@ let tenantId: bigint;
 // that returns, so delaying the transaction delays the whole write and nothing else. Binding to
 // `target` rather than forwarding the proxy as the receiver is what keeps Prisma's own accessors
 // working — several of them are getters that close over the client instance.
-function slowBase(real: PrismaClient, delayMs: number): PrismaClient {
+// `hooks` say when the delayed write starts waiting and when its transaction is over, so a case can
+// act on the write's own progress instead of guessing how long it takes.
+function slowBase(
+  real: PrismaClient,
+  delayMs: number,
+  hooks: { entered?: () => void; done?: () => void } = {},
+): PrismaClient {
   const wrap = <T extends object>(obj: T, patch: (p: string) => unknown) =>
     new Proxy(obj, {
       get(target, prop, receiver) {
@@ -63,8 +69,13 @@ function slowBase(real: PrismaClient, delayMs: number): PrismaClient {
             p === "$transaction"
               ? // biome-ignore lint/suspicious/noExplicitAny: same
                 async (...txArgs: any[]) => {
-                  await Bun.sleep(delayMs);
-                  return extended.$transaction(...txArgs);
+                  hooks.entered?.();
+                  try {
+                    await Bun.sleep(delayMs);
+                    return await extended.$transaction(...txArgs);
+                  } finally {
+                    hooks.done?.();
+                  }
                 }
               : undefined,
           );
@@ -126,11 +137,16 @@ describe.skipIf(!dbUp)(
       await settleFlowEvents();
       await suDb.$executeRaw`DELETE FROM execution_logs WHERE tenant_id = ${tenantId}`;
       const { ctx, ev } = event(crypto.randomUUID());
-      emitFlowEvent({ ...ctx, base: slowBase(suDb, 300) }, ev);
+      const written = Promise.withResolvers<void>();
+      emitFlowEvent(
+        { ...ctx, base: slowBase(suDb, 300, { done: written.resolve }) },
+        ev,
+      );
       await settleFlowEvents();
       await suDb.$executeRaw`DELETE FROM execution_logs WHERE tenant_id = ${tenantId}`;
-      // Nothing can arrive late, because nothing was still scheduled when the DELETE ran.
-      await Bun.sleep(400);
+      // Nothing can arrive late, because nothing was still scheduled when the DELETE ran: read once the
+      // write itself is over, which a settle that waited for it had already seen happen.
+      await written.promise;
       expect(await rows()).toHaveLength(0);
     });
 
@@ -151,11 +167,19 @@ describe.skipIf(!dbUp)(
       await settleFlowEvents();
       await suDb.$executeRaw`DELETE FROM execution_logs WHERE tenant_id = ${tenantId}`;
       const first = event(crypto.randomUUID());
-      emitFlowEvent({ ...first.ctx, base: slowBase(suDb, 300) }, first.ev);
+      const entered = Promise.withResolvers<void>();
+      emitFlowEvent(
+        {
+          ...first.ctx,
+          base: slowBase(suDb, 300, { entered: entered.resolve }),
+        },
+        first.ev,
+      );
       const settling = settleFlowEvents();
-      // Scheduled after the settle started, which is the ordinary case rather than an exotic one: the
-      // suite runs many files in one process and a clear does not stop the rest of them from emitting.
-      await Bun.sleep(60);
+      // Scheduled after the settle started, while it waits on the first write, which is the ordinary
+      // case rather than an exotic one: the suite runs many files in one process and a clear does not
+      // stop the rest of them from emitting.
+      await entered.promise;
       const second = event(crypto.randomUUID());
       emitFlowEvent({ ...second.ctx, base: slowBase(suDb, 300) }, second.ev);
       await settling;

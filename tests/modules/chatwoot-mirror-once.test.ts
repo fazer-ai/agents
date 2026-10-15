@@ -163,10 +163,9 @@ describe.skipIf(!dbUp)("one mirror run per event, not per route", () => {
     let calls = 0;
     const flaky: typeof mirrorChatwootEvent = async (...args) => {
       calls += 1;
-      if (calls === 1) {
-        await Bun.sleep(50);
-        throw new Error("pool exhausted");
-      }
+      // The second delivery joins this run synchronously, before its first await, so it is already
+      // waiting on the failure this throws.
+      if (calls === 1) throw new Error("pool exhausted");
       return mirrorChatwootEvent(...args);
     };
     const n = statusEvent(14, "pending", T0);

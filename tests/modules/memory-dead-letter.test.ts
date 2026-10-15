@@ -22,6 +22,7 @@ import { runClaimed } from "@/modules/scheduler/worker";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogRows } from "../utils/flowlog";
+import { until } from "../utils/poll";
 
 // A compaction that will never happen has to SAY SO, in the trail the operator already reads by
 // conversation.
@@ -273,10 +274,10 @@ describe.skipIf(!dbUp)("a compaction that will never happen", () => {
 
   // emitFlowEvent is fire-and-forget, so reading too early sees zero and proves nothing.
   async function waitForLines(threadId: string, n: number) {
-    for (let i = 0; i < 40; i++) {
-      if ((await memoryLines(threadId)).length >= n) return;
-      await new Promise((r) => setTimeout(r, 25));
-    }
+    await until(
+      `${n} memory line(s)`,
+      async () => (await memoryLines(threadId)).length >= n,
+    );
   }
 
   // ── The statement, and when it is made ───────────────────────────────────────────────────────
@@ -468,8 +469,7 @@ describe.skipIf(!dbUp)("a compaction that will never happen", () => {
       "memory compaction model not runnable: credential_required",
       appDb,
     );
-    await new Promise((r) => setTimeout(r, 200));
-    // Still the one line from the dead row, not a second from the live one.
+    // Still the one line from the dead row, not a second from the live one: the read is settled.
     expect(await memoryLines(threadId)).toHaveLength(1);
   });
 

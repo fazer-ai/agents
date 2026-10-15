@@ -19,6 +19,7 @@ import {
 import { clearTurnInFlight, markTurnInFlight } from "@/graph/inflight";
 import { ingestFallbackKey } from "@/graph/ingest-job";
 import { buildThreadStateGraph, THREAD_STATE_NODE } from "@/graph/thread-state";
+import * as locks from "@/lib/locks";
 import { withKeyedQueue } from "@/lib/locks";
 import { CHATWOOT_AUTH_HEADER } from "@/modules/chatwoot/constants";
 import {
@@ -31,6 +32,8 @@ import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogRows } from "../utils/flowlog";
 import { isOwnershipRead } from "../utils/ownership-read";
+import { until } from "../utils/poll";
+import { countCalls } from "../utils/waiting";
 
 // /reset drives real ChatwootClient calls (the command path builds its own client, and no
 // injectable factory reaches it), so the double here is `globalThis.fetch` shaped like a Chatwoot
@@ -909,14 +912,31 @@ describe.skipIf(!dbUp)(
       // since this family does not take it and the reset would delete the checkpoint straight past
       // it.
       await withKeyedQueue(`ingest:${threadId}`, async () => {
-        // The memory step is the FIRST of the reset, so it blocks here almost immediately.
-        running = sendReset().catch((err) => {
-          resetFailed = err;
-        });
-        for (let i = 0; i < 12; i++) {
-          await new Promise((r) => setTimeout(r, 50));
-          survived.push(Boolean(await read()));
+        // The memory step is the FIRST of the reset, so it queues here almost immediately; the reads
+        // are taken once it is parked behind this section, which is the window the ordering is about.
+        const queued = countCalls(
+          locks,
+          "withKeyedQueue",
+          (key) => key === `ingest:${threadId}`,
+        );
+        try {
+          let resetSettled = false;
+          running = sendReset()
+            .catch((err) => {
+              resetFailed = err;
+            })
+            .finally(() => {
+              resetSettled = true;
+            });
+          // A reset that never queues finishes on its own, and the reads below then see what it did.
+          await until(
+            "the reset queued behind the held section, or done without it",
+            () => queued.count() >= 1 || resetSettled,
+          );
+        } finally {
+          queued.restore();
         }
+        for (let i = 0; i < 3; i++) survived.push(Boolean(await read()));
       });
       await running;
       expect(resetFailed).toBeUndefined();

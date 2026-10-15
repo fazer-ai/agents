@@ -6,7 +6,6 @@ import logger from "@/api/lib/logger";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
 import { dbProbeFailed } from "@/tests/db-gate";
-import { POLL_DEADLINE_MS } from "@/tests/utils/poll";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogRows } from "../utils/flowlog";
 
@@ -207,24 +206,19 @@ describe.skipIf(!dbUp)("the webhook gate leaves a trail", () => {
     });
   }
 
-  // Scoped to the conversation asked for, by its INTERNAL id, and polled: the emit is
-  // fire-and-forget, so an unscoped read answers with a neighbour's row and an unpolled one races
-  // the write it is asserting.
-  async function handoffRows(convId: number, waitMs = POLL_DEADLINE_MS) {
+  // Scoped to the conversation asked for, by its INTERNAL id, and read settled: the emit is
+  // fire-and-forget, so an unscoped read answers with a neighbour's row, and a raw read races the
+  // write it is asserting. The settle answers both "it was written" and "nothing was written".
+  async function handoffRows(convId: number) {
     const conv = await suDb.conversation.findFirst({
       where: { tenantId, chatwootConversationId: convId },
       select: { id: true },
     });
     if (!conv) return [];
-    const deadline = Date.now() + waitMs;
-    for (;;) {
-      const rows = await flowLogRows(suDb, {
-        where: { tenantId, stage: "handoff", conversationId: conv.id },
-        orderBy: { id: "asc" },
-      });
-      if (rows.length > 0 || Date.now() > deadline) return rows;
-      await new Promise((r) => setTimeout(r, 50));
-    }
+    return flowLogRows(suDb, {
+      where: { tenantId, stage: "handoff", conversationId: conv.id },
+      orderBy: { id: "asc" },
+    });
   }
 
   test("a human holding the conversation is reported as a takeover", async () => {
@@ -324,7 +318,7 @@ describe.skipIf(!dbUp)("the webhook gate leaves a trail", () => {
       { assigneeType: "User", status: "open" },
       { event: "message_updated" },
     );
-    expect(await handoffRows(9103, 300)).toEqual([]);
+    expect(await handoffRows(9103)).toEqual([]);
   });
 
   // A switched-off agent was never going to answer, so a gate line there would explain the silence
@@ -336,7 +330,7 @@ describe.skipIf(!dbUp)("the webhook gate leaves a trail", () => {
     });
     try {
       await deliver(9104, { assigneeType: "User", status: "open" });
-      expect(await handoffRows(9104, 300)).toEqual([]);
+      expect(await handoffRows(9104)).toEqual([]);
     } finally {
       await suDb.agent.update({
         where: { id: agentDbId },

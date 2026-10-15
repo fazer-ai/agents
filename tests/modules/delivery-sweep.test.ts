@@ -30,7 +30,7 @@ import {
 import { dbProbeFailed } from "@/tests/db-gate";
 import { clearFlowLog, flowLogRows } from "@/tests/utils/flowlog";
 import { underConcurrentEdit } from "@/tests/utils/pg-waits";
-import { POLL_DEADLINE_MS } from "@/tests/utils/poll";
+import { POLL_DEADLINE_MS, until } from "@/tests/utils/poll";
 import { HandoffThenThrowModel } from "@/tests/utils/scripted-models";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
@@ -245,56 +245,51 @@ async function correctionOutcome(convId: number) {
     where: { tenantId, chatwootConversationId: convId },
     select: { id: true },
   });
-  const deadline = Date.now() + POLL_DEADLINE_MS;
-  let lines: Array<{ detail: unknown }> = [];
-  while (Date.now() < deadline) {
-    lines = await flowLogRows(suDb, {
+  const lines = await until("the correction line", async () => {
+    const rows = await flowLogRows(suDb, {
       where: { tenantId, conversationId: conv.id, stage: "delivery" },
       select: { detail: true },
     });
-    if (lines.length > 0) break;
-    await new Promise((r) => setTimeout(r, 50));
-  }
+    return rows.length > 0 ? rows : null;
+  });
   expect(lines).toHaveLength(1);
   const line = lines[0];
   if (line === undefined) throw new Error("no correction line was written");
   return (line.detail as Record<string, unknown>).outcome;
 }
 
-// How many delivery lines a conversation has. Used in pairs: a rider conversation is polled up to
-// its expected count, and only then is the conversation under test read — an absence proved by a
-// deadline is a timeout, an absence read after a later line landed is a measurement.
+// How many delivery lines a conversation has. Used in pairs: a rider conversation is waited for up
+// to its expected count, and only then is the conversation under test read, settled — an absence
+// proved by a deadline is a timeout, an absence read after a later line landed is a measurement.
 async function deliveryLinesFor(convId: number, awaitCount = 0) {
   const conv = await suDb.conversation.findFirstOrThrow({
     where: { tenantId, chatwootConversationId: convId },
     select: { id: true },
   });
-  const deadline = Date.now() + POLL_DEADLINE_MS;
-  let n = 0;
-  while (true) {
-    n = (
+  const count = async () =>
+    (
       await flowLogRows(suDb, {
         where: { tenantId, conversationId: conv.id, stage: "delivery" },
         select: { detail: true },
       })
     ).length;
-    if (n >= awaitCount || Date.now() > deadline) return n;
-    await new Promise((r) => setTimeout(r, 50));
-  }
+  if (awaitCount === 0) return count();
+  return until(
+    `${awaitCount} delivery line(s) on conversation ${convId}`,
+    async () => {
+      const n = await count();
+      return n >= awaitCount ? n : null;
+    },
+  );
 }
 
 // The line a strand leaves when the mirror does not know the conversation: no conversation id to
-// scope by, so it is found by its absence. Polled for the same reason as the scoped read.
-async function unscopedDeliveryLines(waitMs = POLL_DEADLINE_MS) {
-  const started = Date.now();
-  while (true) {
-    const rows = await flowLogRows(suDb, {
-      where: { tenantId, stage: "delivery", conversationId: null },
-      select: { level: true, detail: true },
-    });
-    if (rows.length > 0 || Date.now() - started > waitMs) return rows;
-    await Bun.sleep(25);
-  }
+// scope by, so it is found by its absence. Read settled, so one read answers presence and absence.
+async function unscopedDeliveryLines() {
+  return flowLogRows(suDb, {
+    where: { tenantId, stage: "delivery", conversationId: null },
+    select: { level: true, detail: true },
+  });
 }
 
 describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
@@ -1066,7 +1061,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     expect(counts.closed).toBe(1);
     expect(counts.lost).toBe(0);
     expect((await statusOf(rowId)).status).toBe("PROCESSED");
-    expect(await unscopedDeliveryLines(200)).toHaveLength(0);
+    expect(await unscopedDeliveryLines()).toHaveLength(0);
     await suDb.chatwootWebhookDelivery.delete({ where: { id: rowId } });
   });
 

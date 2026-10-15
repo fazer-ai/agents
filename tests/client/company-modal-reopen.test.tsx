@@ -67,7 +67,10 @@ const answer = async (input: RequestInfo | URL, init?: RequestInit) => {
     return json({ templates: [] });
   if (url.pathname.endsWith("/documents")) return json({ documents: [] });
   if (url.pathname.endsWith("/tenant-settings"))
-    return json({ company: EMPTY_COMPANY });
+    return json({
+      approvalLink: { mode: "console", urlTemplate: "" },
+      company: EMPTY_COMPANY,
+    });
   return json({});
 };
 globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) =>

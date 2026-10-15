@@ -27,6 +27,8 @@ describe("what the note's link becomes", () => {
       "não é uma url {id}",
       "https://app.example.com/documents",
       "https:/app.example.com/review/{id}",
+      "https://app.example.com/review/\n{id}",
+      "https://app.example.com/review now/{id}",
     ]) {
       expect(() =>
         normalizeApprovalLink({ mode: "custom", urlTemplate }),
@@ -50,18 +52,18 @@ describe("what the note's link becomes", () => {
     ).toBe("console");
   });
 
-  test("parentheses and spaces in the address survive the Markdown link", () => {
+  test("parentheses in the address survive the Markdown link", () => {
     const note = withApprovalLink(
       "Pedido aberto.",
       {
         mode: "custom",
-        urlTemplate: "https://app.example.com/docs?f=(open) now&id={id}",
+        urlTemplate: "https://app.example.com/docs?f=(open)&id={id}",
       },
       7n,
       42n,
     );
     expect(note).toBe(
-      "Pedido aberto.\n\n[Ver aprovação](https://app.example.com/docs?f=%28open%29%20now&id=42)",
+      "Pedido aberto.\n\n[Ver aprovação](https://app.example.com/docs?f=%28open%29&id=42)",
     );
     expect(
       approvalPageUrl({ mode: "console", urlTemplate: "" }, 7n, 42n),

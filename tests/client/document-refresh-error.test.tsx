@@ -73,6 +73,7 @@ const answer = async (input: RequestInfo | URL, init?: RequestInit) => {
       });
     }
     return json({
+      approvalLink: { mode: "console", urlTemplate: "" },
       company: {
         name: "",
         document: "",

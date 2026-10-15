@@ -69,6 +69,8 @@ export async function readApprovalLink(
 function isLinkTemplate(template: string): boolean {
   if (!template.includes(APPROVAL_LINK_ID_TOKEN)) return false;
   if (!/^https?:\/\/[^/]/i.test(template)) return false;
+  // NOTE: `new URL` drops tabs and newlines, and the note would carry them and break the link.
+  if (/[\s\u0000-\u001f\u007f]/.test(template)) return false;
   try {
     const url = new URL(template.replaceAll(APPROVAL_LINK_ID_TOKEN, "1"));
     return url.protocol === "https:" || url.protocol === "http:";
@@ -97,11 +99,11 @@ export function normalizeApprovalLink(
   return { mode: "custom", urlTemplate };
 }
 
-// A Markdown link destination ends at the first unbalanced `)` and at a space, so those are
-// percent-encoded: the link a reader follows decodes back to exactly what the operator typed.
+// A Markdown link destination ends at the first unbalanced `)`, so the parentheses (and the angle
+// brackets) are percent-encoded: the link a reader follows decodes back to exactly what was typed.
 function markdownDestination(url: string): string {
   return url.replace(
-    /[()<> ]/g,
+    /[()<>]/g,
     (c) => `%${c.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`,
   );
 }

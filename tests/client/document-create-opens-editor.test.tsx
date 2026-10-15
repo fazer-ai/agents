@@ -113,7 +113,10 @@ const answer = async (input: RequestInfo | URL, init?: RequestInit) => {
     return json({ templates: stored });
   }
   if (url.pathname.endsWith("/tenant-settings")) {
-    return json({ company: null });
+    return json({
+      approvalLink: { mode: "console", urlTemplate: "" },
+      company: null,
+    });
   }
   return json({ documents: [] });
 };

@@ -69,6 +69,7 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     return json({ templates: [] });
   if (url.pathname.endsWith("/tenant-settings")) {
     return json({
+      approvalLink: { mode: "console", urlTemplate: "" },
       company: {
         name: "",
         document: "",

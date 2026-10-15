@@ -299,6 +299,11 @@ export function DocumentsPanel() {
         aria-label={t("resources.tabs.documents", "Document templates")}
       />
 
+      {/* Mounted on both tabs and only shown on Templates, so a draft survives a look at Issued. */}
+      <div hidden={tab !== "templates"}>
+        <ApprovalLinkCard />
+      </div>
+
       {tab === "templates" ? (
         <>
           {/* A summary, not the form: the letterhead is filled once and then forgotten, and in a
@@ -335,8 +340,6 @@ export function DocumentsPanel() {
               </Button>
             </Card>
           </DataBoundary>
-
-          <ApprovalLinkCard />
 
           <DataBoundary
             loading={loading}

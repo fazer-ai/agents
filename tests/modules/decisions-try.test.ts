@@ -287,6 +287,7 @@ describe.skipIf(!dbUp)("testing a decisions agent on a conversation", () => {
       "conversations",
       "inboxes",
       "agent_tool_selections",
+      "mcp_server_connections",
       "tool_definitions",
       "agents",
       "vault_entries",
@@ -411,6 +412,52 @@ describe.skipIf(!dbUp)("testing a decisions agent on a conversation", () => {
     expect(tick.actions).toMatchObject([
       { rule: 0, tool: "avisar_cliente", outcome: "failed" },
     ]);
+  });
+
+  // The bug: an MCP server that opens its stream and never answers holds the test forever (the
+  // modal stays busy), or holds it after the classification was already paid for.
+  test("an MCP server that never answers ends the test before the paid call", async () => {
+    const conn = await suDb.mcpServerConnection.create({
+      data: {
+        tenantId,
+        name: `mudo-${process.pid}`,
+        transport: "streamableHttp",
+        url: "https://mudo.example.com/mcp",
+      },
+    });
+    const sel = await suDb.agentToolSelection.create({
+      data: {
+        tenantId,
+        agentId,
+        source: "MCP",
+        mcpServerConnectionId: conn.id,
+        knowledgeBaseIds: [],
+        enabledTools: ["qualquer_uma"],
+      },
+    });
+    const c = classifier(yes);
+    const started = Date.now();
+    try {
+      const tick = await tryDecisionsAgent(
+        ctxOf(tenantId),
+        agentId,
+        convRowId,
+        {
+          decisionFetch: c.fetchImpl,
+          makeClient: async () => stubClient([CUSTOMER], { count: 0 }),
+          mcp: { connect: (() => new Promise(() => {})) as never },
+          timeoutMs: 300,
+        },
+        appDb,
+      );
+      expect(tick.outcome).toBe("failed");
+      expect(tick.failed).toBe("toolset_build");
+      expect(Date.now() - started).toBeLessThan(10_000);
+      expect(c.calls.n).toBe(0);
+    } finally {
+      await suDb.agentToolSelection.delete({ where: { id: sel.id } });
+      await suDb.mcpServerConnection.delete({ where: { id: conn.id } });
+    }
   });
 
   // The bug: paying for a classification of a conversation where the customer has said nothing.

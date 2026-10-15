@@ -25,6 +25,7 @@ import {
   loadAgentBot,
   loadChatwootClient,
 } from "@/modules/chatwoot/instance";
+import { underSignal } from "@/modules/contact-auth/check";
 import {
   currentBlockOf,
   type DecisionTick,
@@ -53,6 +54,8 @@ export interface DecisionsTryDeps {
   decisionFetch?: typeof fetch;
   makeClient?: LoadChatwootClientDeps["makeClient"];
   mcp?: McpLoadDeps;
+  // The test's deadline, shorter in tests. Production never passes it.
+  timeoutMs?: number;
 }
 
 export async function tryDecisionsAgent(
@@ -158,6 +161,65 @@ export async function tryDecisionsAgent(
     );
   }
 
+  // The values a rule fills its tool's arguments from, built as the tick builds them: without them a
+  // filled argument is dropped, and two rules that differ only by what they fill would read as one.
+  const cfg = await runScopedOn(base, ctx, (db) =>
+    loadAgentConfig(
+      db,
+      {
+        tenantId,
+        instanceId,
+        conversationId: conv.chatwootConversationId,
+        agentId,
+        threadId: conv.threadId,
+      },
+      {
+        ignoreDisabled: true,
+        ignoreMode: true,
+        skipExperiment: true,
+        chatModelUnused: true,
+      },
+    ),
+  );
+  const logValues = readDebugModes(agent.settings, null).logToolValues;
+  const latched = await readLatchedRules(base, {
+    tenantId,
+    agentId,
+    conversationId: conv.id,
+  });
+  // The agent's toolset, built as the tick builds it, so a test sees what the tick would: a rule
+  // whose tool is not granted, and each tool's argument schema (a required argument left empty is
+  // `missing_value`, which costs no call). Building it discovers the agent's MCP servers; nothing is
+  // invoked, since the run below is a dry run, and no flow line is written for it. Built before the
+  // paid call, so a toolset that cannot be built costs nothing, and under the test's deadline, which
+  // is what bounds discovery: an SSE server that never sends its endpoint has no timeout of its own.
+  if (!cfg) return line({ failed: "toolset_build" }, "error");
+  let tools: Awaited<ReturnType<typeof buildToolset>>;
+  try {
+    const deadline = AbortSignal.timeout(deps.timeoutMs ?? TRY_TIMEOUT_MS);
+    tools = await underSignal(
+      buildToolset(
+        { ...cfg, transferWithSummary: true },
+        {
+          tenantId,
+          instanceId,
+          base,
+          client,
+          conversationId: conv.chatwootConversationId,
+          threadId: conv.threadId,
+          expiresOn: deadline,
+          ...(evidence.current === null
+            ? {}
+            : { conversationLabels: evidence.current }),
+        },
+        { buildNativeTools, mcp: deps.mcp },
+      ),
+      deadline,
+    );
+  } catch {
+    return line({ failed: "toolset_build" }, "error");
+  }
+
   // A test is the operator trying the agent, so it is billed and gated as the playground is, never
   // against the inbox's ceiling, which would let testing silence the agent for customers.
   const flow: FlowContext = {
@@ -197,58 +259,6 @@ export async function tryDecisionsAgent(
     durationMs: Date.now() - startedAt,
   });
 
-  // The values a rule fills its tool's arguments from, built as the tick builds them: without them a
-  // filled argument is dropped, and two rules that differ only by what they fill would read as one.
-  const cfg = await runScopedOn(base, ctx, (db) =>
-    loadAgentConfig(
-      db,
-      {
-        tenantId,
-        instanceId,
-        conversationId: conv.chatwootConversationId,
-        agentId,
-        threadId: conv.threadId,
-      },
-      {
-        ignoreDisabled: true,
-        ignoreMode: true,
-        skipExperiment: true,
-        chatModelUnused: true,
-      },
-    ),
-  );
-  const logValues = readDebugModes(agent.settings, null).logToolValues;
-  const latched = await readLatchedRules(base, {
-    tenantId,
-    agentId,
-    conversationId: conv.id,
-  });
-  // The agent's toolset, built as the tick builds it, so a test sees what the tick would: a rule
-  // whose tool is not granted, and each tool's argument schema (a required argument left empty is
-  // `missing_value`, which costs no call). Building it discovers the agent's MCP servers; nothing is
-  // invoked, since the run below is a dry run, and no flow line is written for it.
-  if (!cfg) return line({ failed: "toolset_build" }, "error");
-  let tools: Awaited<ReturnType<typeof buildToolset>>;
-  try {
-    tools = await buildToolset(
-      { ...cfg, transferWithSummary: true },
-      {
-        tenantId,
-        instanceId,
-        base,
-        client,
-        conversationId: conv.chatwootConversationId,
-        threadId: conv.threadId,
-        expiresOn: AbortSignal.timeout(TRY_TIMEOUT_MS),
-        ...(evidence.current === null
-          ? {}
-          : { conversationLabels: evidence.current }),
-      },
-      { buildNativeTools, mcp: deps.mcp },
-    );
-  } catch {
-    return line({ failed: "toolset_build" }, "error");
-  }
   const report = await applyDecisions(
     config,
     result.answers,

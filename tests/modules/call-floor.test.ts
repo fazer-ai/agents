@@ -325,6 +325,57 @@ describe.skipIf(!dbUp)("estimateCallFloor", () => {
     expect(observing.map((t) => t.name)).toEqual(["resend_email_status"]);
   });
 
+  // A pack that keeps a tool and reshapes it for a muted turn (Calendar drops the invite argument)
+  // has to see the observer's mute too, or the floor measures a schema the observation never sends.
+  test("an observer's Calendar create is measured without the invite argument", async () => {
+    const cal = await suDb.integrationInstance.create({
+      data: {
+        tenantId,
+        catalogType: "GOOGLE_CALENDAR",
+        name: "agenda",
+        config: { inviteCustomer: "agent", calendarIds: ["primary"] },
+      },
+    });
+    const create = async (mode?: "monitoring") => {
+      const id = (
+        await suDb.agent.create({
+          data: {
+            tenantId,
+            name: `Agenda ${mode ?? "reply"}`,
+            systemPrompt: PROMPT,
+            ...(mode ? { mode } : {}),
+            modelConfig: { provider: "openai", model: "gpt-4o-mini" },
+            settings: mode ? { monitoring: { engine: "llm" } } : {},
+          },
+        })
+      ).id;
+      await suDb.agentToolSelection.create({
+        data: {
+          tenantId,
+          agentId: id,
+          source: "INTEGRATION",
+          integrationInstanceId: cal.id,
+          enabledTools: ["calendar_create_event"],
+          knowledgeBaseIds: [],
+        },
+      });
+      const f = await estimateCallFloor({
+        ctx: ctx(),
+        agentId: id,
+        base: appDb,
+      });
+      if (f.engine !== "llm") throw new Error("engine");
+      return f.tools.find((t) => t.name === "calendar_create_event");
+    };
+    const replying = await create();
+    const observing = await create("monitoring");
+    expect(replying).toBeDefined();
+    expect(observing).toBeDefined();
+    expect(observing?.estimatedTokens ?? 0).toBeLessThan(
+      replying?.estimatedTokens ?? 0,
+    );
+  });
+
   test("a decisions-engine observer gets no numbers: it never sends this prompt", async () => {
     const id = (
       await suDb.agent.create({

@@ -551,7 +551,7 @@ export const agentsController = new Elysia({
         "Estimate the call floor of an unsaved tool set",
         "The same estimate as `GET /v1/agents/{id}/call-floor`, measured with the given grants (and settings, when sent) in place of the saved ones, so an editor can show what saving them would send. Nothing is written. The grants are validated as `PUT /v1/agents/{id}/tool-selections` validates them; a grant pointing at something this tenant does not have counts as absent, as it would at runtime.",
       ),
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
       requireRole: "TENANT_ADMIN",
       params: t.Object({
         id: t.String({

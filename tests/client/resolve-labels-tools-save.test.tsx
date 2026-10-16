@@ -151,8 +151,11 @@ async function saveWithProtectedLabels(labels: string): Promise<string[]> {
   return asked;
 }
 
+// The call-floor estimate is a POST that writes nothing.
 const writes = (asked: string[]) =>
-  asked.filter((a) => !a.startsWith("GET ")).join(", ");
+  asked
+    .filter((a) => !a.startsWith("GET ") && !a.endsWith("/call-floor"))
+    .join(", ");
 
 describe("the editor refuses the clash before the grants are written", () => {
   test("a label made off limits while the close assigns it is refused, and nothing is written", async () => {

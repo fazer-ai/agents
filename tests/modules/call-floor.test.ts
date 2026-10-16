@@ -407,7 +407,11 @@ describe.skipIf(!dbUp)("estimateCallFloor", () => {
   // A handoff pinned to one target on one account is sent without a target to choose; built as "no
   // account" the pin reads as foreign and the tool grows an `assignTo` the model never sees.
   test("a pinned handoff is measured as pinned, not as the agent's choice", async () => {
-    const make = async (handoff: Record<string, unknown>) =>
+    const make = async (handoff: {
+      mode: string;
+      targetAgentId?: number;
+      targetInstanceId?: number;
+    }) =>
       (
         await suDb.agent.create({
           data: {

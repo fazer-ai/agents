@@ -91,6 +91,8 @@ export function behaviorTabProps(
     agentModelName: "gpt-4o",
     agentModelCredentialRef: "",
     agentModelBaseUrl: "",
+    callFloor: null,
+    draftPrompt: "",
     ttsNormalizeCredBaseUrl: null,
     split: {
       enabled: false,

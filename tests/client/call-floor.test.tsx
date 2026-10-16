@@ -1,0 +1,154 @@
+/// <reference lib="dom" />
+
+import { afterEach, describe, expect, test } from "bun:test";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import i18next from "i18next";
+import type { ReactNode } from "react";
+import { I18nextProvider } from "react-i18next";
+import clientEn from "@/client/locales/en.json";
+import clientPt from "@/client/locales/pt-BR.json";
+import {
+  type CallFloor,
+  CallFloorContext,
+  CallFloorLine,
+  ToolTokens,
+} from "@/client/pages/agents/CallFloor";
+import { estimateTokens } from "@/lib/token-estimate";
+
+// The line next to the history ceiling (agents#1510): the server measures the saved tools and what
+// the runtime appends, the editor counts the instructions as typed, and the Tools tab shows the same
+// per-tool number on each row.
+
+afterEach(() => {
+  cleanup();
+});
+
+async function inLanguage(lng: "en" | "pt-BR", ui: ReactNode) {
+  const i = i18next.createInstance();
+  await i.init({
+    lng,
+    resources: {
+      en: { translation: clientEn },
+      "pt-BR": { translation: clientPt },
+    },
+    interpolation: { escapeValue: false },
+  });
+  const wrap = (node: ReactNode) => (
+    <I18nextProvider i18n={i}>{node}</I18nextProvider>
+  );
+  const r = render(wrap(ui));
+  return { ...r, rerenderIn: (node: ReactNode) => r.rerender(wrap(node)) };
+}
+
+const FLOOR: CallFloor = {
+  engine: "llm",
+  instructions: 999,
+  instructionsAdded: 120,
+  tools: [
+    { name: "consultar_pedido", category: "http", estimatedTokens: 812 },
+    {
+      name: "mcp__loja__estoque",
+      category: "mcp",
+      estimatedTokens: 300,
+      mcp: { connectionId: "7", tool: "estoque" },
+    },
+    { name: "somar", category: "code", estimatedTokens: 64 },
+  ],
+  total: 0,
+};
+
+const PROMPT = "Você atende a loja e responde sobre pedidos. ".repeat(30);
+
+describe("CallFloorLine", () => {
+  test("the total is the draft instructions plus what the server measured, and moves as they are typed", async () => {
+    const tools = 812 + 300 + 64;
+    const { rerenderIn } = await inLanguage(
+      "en",
+      <CallFloorLine floor={FLOOR} draftPrompt={PROMPT} />,
+    );
+    const first = estimateTokens(PROMPT) + 120 + tools;
+    expect(
+      screen.getByText(
+        `Every call already sends ~${first.toLocaleString("en")} tokens before the history`,
+      ),
+    ).toBeTruthy();
+    // The saved instructions on the server (999) are not what is counted: the draft is.
+    const longer = `${PROMPT}${"Mais uma regra sobre trocas e devoluções. ".repeat(40)}`;
+    rerenderIn(<CallFloorLine floor={FLOOR} draftPrompt={longer} />);
+    const second = estimateTokens(longer) + 120 + tools;
+    expect(second).toBeGreaterThan(first);
+    expect(
+      screen.getByText(
+        `Every call already sends ~${second.toLocaleString("en")} tokens before the history`,
+      ),
+    ).toBeTruthy();
+  });
+
+  test("opening it lists the instructions, the system's additions and each tool, largest first", async () => {
+    await inLanguage(
+      "pt-BR",
+      <CallFloorLine floor={FLOOR} draftPrompt={PROMPT} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Cada chamada/ }));
+    const items = screen.getAllByRole("listitem").map((li) => li.textContent);
+    expect(items).toEqual([
+      `Instruções do agente~${estimateTokens(PROMPT).toLocaleString("pt-BR")}`,
+      "Acrescentado pelo sistema (regras da base de conhecimento, servidores MCP)~120",
+      "consultar_pedido~812",
+      "mcp__loja__estoque~300",
+      "somar~64",
+    ]);
+  });
+
+  test("with no tools and nothing appended, the total is the instructions alone", async () => {
+    await inLanguage(
+      "en",
+      <CallFloorLine
+        floor={{ ...FLOOR, instructionsAdded: 0, tools: [] }}
+        draftPrompt={PROMPT}
+      />,
+    );
+    expect(
+      screen.getByText(
+        `Every call already sends ~${estimateTokens(PROMPT).toLocaleString("en")} tokens before the history`,
+      ),
+    ).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Every call/ }));
+    expect(screen.getAllByRole("listitem")).toHaveLength(1);
+  });
+
+  test("a decisions-engine observer gets no number, and the line says why", async () => {
+    await inLanguage(
+      "pt-BR",
+      <CallFloorLine floor={{ engine: "decisions" }} draftPrompt={PROMPT} />,
+    );
+    expect(screen.queryByText(/tokens/)).toBeNull();
+    expect(screen.getByText(/não se aplicam/)).toBeTruthy();
+  });
+});
+
+describe("ToolTokens", () => {
+  test("a row shows its own tool's number, by name or by MCP grant; an unmeasured row shows none", async () => {
+    await inLanguage(
+      "en",
+      <CallFloorContext.Provider value={FLOOR}>
+        <div data-testid="http">
+          <ToolTokens tool={{ name: "consultar_pedido" }} />
+        </div>
+        <div data-testid="mcp">
+          <ToolTokens tool={{ mcp: { connectionId: "7", tool: "estoque" } }} />
+        </div>
+        <div data-testid="other-server">
+          <ToolTokens tool={{ mcp: { connectionId: "8", tool: "estoque" } }} />
+        </div>
+        <div data-testid="unsaved">
+          <ToolTokens tool={{ name: "nao_salva" }} />
+        </div>
+      </CallFloorContext.Provider>,
+    );
+    expect(screen.getByTestId("http").textContent).toBe("~812 tokens");
+    expect(screen.getByTestId("mcp").textContent).toBe("~300 tokens");
+    expect(screen.getByTestId("other-server").textContent).toBe("");
+    expect(screen.getByTestId("unsaved").textContent).toBe("");
+  });
+});

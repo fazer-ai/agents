@@ -136,6 +136,7 @@ import {
   behaviorSnapshot,
   editedBlocks,
 } from "./behaviorSave";
+import { type CallFloor, CallFloorContext } from "./CallFloor";
 import {
   type ChannelRedirectFormState,
   ChannelRedirectTab,
@@ -2543,6 +2544,30 @@ function AgentEditor() {
     };
   }, [id, serverSyncTick]);
 
+  // What every call sends before the history (instructions, runtime additions, each saved tool), for
+  // the line next to the history ceiling and the numbers on the Tools tab. Retaken on the same
+  // snapshot as the readings above: tools count as saved, so a save is when the number can move.
+  const [callFloor, setCallFloor] = useState<CallFloor | null>(null);
+  useEffect(() => {
+    if (!id || serverSyncTick === 0) {
+      setCallFloor(null);
+      return;
+    }
+    let alive = true;
+    api.api.v1
+      .agents({ id })
+      ["call-floor"].get()
+      .then(({ data }) => {
+        if (alive) setCallFloor((data?.floor as CallFloor | undefined) ?? null);
+      })
+      .catch(() => {
+        if (alive) setCallFloor(null);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [id, serverSyncTick]);
+
   // Live config-health: a feature on without its credential, or naming one whose secret is not
   // filled in (pending); each issue deep-links to its tab or the vault fill modal. Messages by issue.key:
   // t('editor.configIssue.model', 'The model has no API key set, so the agent cannot reply.')
@@ -4414,78 +4439,82 @@ function AgentEditor() {
             )}
 
             {tab === "tools" && (
-              <ToolsTab
-                agentId={id}
-                observing={watcher}
-                decides={decides}
-                catalog={catalog}
-                grants={grants}
-                onChange={setGrants}
-                onCatalogChange={refreshCatalog}
-                transferWithSummary={transferWithSummary}
-                setTransferWithSummary={setTransferWithSummary}
-                handoff={handoff}
-                setHandoff={setHandoff}
-                kanbanInstructions={kanbanInstructions}
-                setKanbanInstructions={setKanbanInstructions}
-                customAttributeInstructions={customAttributeInstructions}
-                setCustomAttributeInstructions={setCustomAttributeInstructions}
-                crossInboxCase={crossInboxCase}
-                setCrossInboxCase={setCrossInboxCase}
-                sendImage={sendImage}
-                setSendImage={setSendImage}
-                resolveConversation={resolveConversation}
-                setResolveConversation={setResolveConversation}
-                labelInstructions={labelInstructions}
-                setLabelInstructions={setLabelInstructions}
-                protectedLabels={protectedLabels}
-                setProtectedLabels={setProtectedLabels}
-                allowedLabels={allowedLabels}
-                setAllowedLabels={setAllowedLabels}
-                outsideAllowedLabels={outsideAllowedLabels}
-                setOutsideAllowedLabels={setOutsideAllowedLabels}
-                updateKanbanTaskInstructions={updateKanbanTaskInstructions}
-                toolPreconditions={toolPreconditions}
-                setToolPreconditions={setToolPreconditions}
-                setUpdateKanbanTaskInstructions={
-                  setUpdateKanbanTaskInstructions
-                }
-                mcpTools={mcpTools}
-                setMcpTools={setMcpTools}
-                mcpInstructions={mcpInstructions}
-                setMcpInstructions={setMcpInstructions}
-                mcpCollapsed={mcpCollapsed}
-                setMcpCollapsed={setMcpCollapsed}
-                integrationCollapsed={integrationCollapsed}
-                setIntegrationCollapsed={setIntegrationCollapsed}
-                refusals={{
-                  handoffInstructions: refusal.at(
-                    "handoff.instructions",
-                    currentRef.current["handoff.instructions"],
-                  ),
-                  kanbanInstructions: refusal.at(
-                    "kanban.instructions",
-                    currentRef.current["kanban.instructions"],
-                  ),
-                  attributeInstructions: refusal.at(
-                    "toolGuidance.set_custom_attribute",
-                    currentRef.current["toolGuidance.set_custom_attribute"],
-                  ),
-                  labelInstructions: refusal.at(
-                    "toolGuidance.set_labels",
-                    currentRef.current["toolGuidance.set_labels"],
-                  ),
-                  updateKanbanInstructions: refusal.at(
-                    "toolGuidance.update_kanban_task",
-                    currentRef.current["toolGuidance.update_kanban_task"],
-                  ),
-                }}
-                dirty={dirty.tools}
-                saving={savingGrants}
-                onSave={() => saveTools()}
-                onDiscard={revertTools}
-                onOpenPlayground={watcher ? undefined : openPlayground}
-              />
+              <CallFloorContext.Provider value={callFloor}>
+                <ToolsTab
+                  agentId={id}
+                  observing={watcher}
+                  decides={decides}
+                  catalog={catalog}
+                  grants={grants}
+                  onChange={setGrants}
+                  onCatalogChange={refreshCatalog}
+                  transferWithSummary={transferWithSummary}
+                  setTransferWithSummary={setTransferWithSummary}
+                  handoff={handoff}
+                  setHandoff={setHandoff}
+                  kanbanInstructions={kanbanInstructions}
+                  setKanbanInstructions={setKanbanInstructions}
+                  customAttributeInstructions={customAttributeInstructions}
+                  setCustomAttributeInstructions={
+                    setCustomAttributeInstructions
+                  }
+                  crossInboxCase={crossInboxCase}
+                  setCrossInboxCase={setCrossInboxCase}
+                  sendImage={sendImage}
+                  setSendImage={setSendImage}
+                  resolveConversation={resolveConversation}
+                  setResolveConversation={setResolveConversation}
+                  labelInstructions={labelInstructions}
+                  setLabelInstructions={setLabelInstructions}
+                  protectedLabels={protectedLabels}
+                  setProtectedLabels={setProtectedLabels}
+                  allowedLabels={allowedLabels}
+                  setAllowedLabels={setAllowedLabels}
+                  outsideAllowedLabels={outsideAllowedLabels}
+                  setOutsideAllowedLabels={setOutsideAllowedLabels}
+                  updateKanbanTaskInstructions={updateKanbanTaskInstructions}
+                  toolPreconditions={toolPreconditions}
+                  setToolPreconditions={setToolPreconditions}
+                  setUpdateKanbanTaskInstructions={
+                    setUpdateKanbanTaskInstructions
+                  }
+                  mcpTools={mcpTools}
+                  setMcpTools={setMcpTools}
+                  mcpInstructions={mcpInstructions}
+                  setMcpInstructions={setMcpInstructions}
+                  mcpCollapsed={mcpCollapsed}
+                  setMcpCollapsed={setMcpCollapsed}
+                  integrationCollapsed={integrationCollapsed}
+                  setIntegrationCollapsed={setIntegrationCollapsed}
+                  refusals={{
+                    handoffInstructions: refusal.at(
+                      "handoff.instructions",
+                      currentRef.current["handoff.instructions"],
+                    ),
+                    kanbanInstructions: refusal.at(
+                      "kanban.instructions",
+                      currentRef.current["kanban.instructions"],
+                    ),
+                    attributeInstructions: refusal.at(
+                      "toolGuidance.set_custom_attribute",
+                      currentRef.current["toolGuidance.set_custom_attribute"],
+                    ),
+                    labelInstructions: refusal.at(
+                      "toolGuidance.set_labels",
+                      currentRef.current["toolGuidance.set_labels"],
+                    ),
+                    updateKanbanInstructions: refusal.at(
+                      "toolGuidance.update_kanban_task",
+                      currentRef.current["toolGuidance.update_kanban_task"],
+                    ),
+                  }}
+                  dirty={dirty.tools}
+                  saving={savingGrants}
+                  onSave={() => saveTools()}
+                  onDiscard={revertTools}
+                  onOpenPlayground={watcher ? undefined : openPlayground}
+                />
+              </CallFloorContext.Provider>
             )}
 
             {tab === "knowledge" && (
@@ -4620,6 +4649,8 @@ function AgentEditor() {
                 agentModelName={savedModel.model}
                 agentModelCredentialRef={savedModel.credentialRef}
                 agentModelBaseUrl={savedModelBaseUrl}
+                callFloor={callFloor}
+                draftPrompt={systemPrompt}
                 ttsNormalizeCredBaseUrl={ttsNormalizeCredBaseUrl}
                 split={split}
                 setSplit={setSplit}

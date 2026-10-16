@@ -6,8 +6,9 @@
 
 import { withKeyedQueue } from "@/lib/locks";
 import { pcmFromBase64, pcmToBase64 } from "../pcm";
-import { syncElevenLabsTools } from "./elevenlabs-tools";
-import { TOOL_TIMEOUT_MS, withTimeout } from "./realtime-tools";
+import { forgetElevenLabsAgent } from "./elevenlabs-agent";
+import { syncElevenLabsTools, VOICE_TOOL_TIMEOUT_MS } from "./elevenlabs-tools";
+import { withTimeout } from "./realtime-tools";
 import type {
   VoiceProvider,
   VoiceSession,
@@ -59,12 +60,16 @@ function loud(pcm: Int16Array): boolean {
   return false;
 }
 
-async function signedUrl(options: ElevenLabsOptions): Promise<string> {
+async function signedUrl(
+  options: ElevenLabsOptions,
+  signal: AbortSignal,
+): Promise<string> {
   const fetchImpl = options.fetchImpl ?? fetch;
   const res = await fetchImpl(
     `${API}/v1/convai/conversation/get-signed-url?agent_id=${encodeURIComponent(options.agentId)}`,
-    { headers: { "xi-api-key": options.apiKey } },
+    { headers: { "xi-api-key": options.apiKey }, signal },
   );
+  if (res.status === 404) forgetElevenLabsAgent(options.agentId);
   if (!res.ok)
     throw new Error(`elevenlabs: signed url failed with ${res.status}`);
   const body = (await res.json()) as { signed_url?: string };
@@ -106,8 +111,11 @@ async function openHeld(
   handlers: VoiceSessionHandlers,
   release: () => void,
 ): Promise<VoiceSession> {
-  await syncElevenLabsTools(options, config.tools);
-  const ws = new WebSocket(await signedUrl(options));
+  // The agent is held from here: a declaration or a signed URL that hangs would hold every later
+  // call to it, so both are bounded by the same deadline as the socket's opening.
+  const signal = AbortSignal.timeout(options.openTimeoutMs ?? OPEN_TIMEOUT_MS);
+  await syncElevenLabsTools({ ...options, signal }, config.tools);
+  const ws = new WebSocket(await signedUrl(options, signal));
   const startedAt = Date.now();
   let closed = false;
   let started = false;
@@ -148,7 +156,7 @@ async function openHeld(
       if (!tool) throw new Error(`unknown tool ${name}`);
       result = await withTimeout(
         tool.invoke(call.parameters ?? {}, id),
-        TOOL_TIMEOUT_MS,
+        VOICE_TOOL_TIMEOUT_MS,
       );
     } catch (err) {
       result = `Erro ao usar a ferramenta: ${(err as Error).message}`;

@@ -152,6 +152,14 @@ export async function ensureElevenLabsAgent(
   return created.agent_id;
 }
 
+/**
+ * Forgets that this process wrote an agent, for one ElevenLabs says is gone: the next setup then
+ * finds out for itself, and creates it again, instead of trusting a write to an agent that is no more.
+ */
+export function forgetElevenLabsAgent(agentId: string): void {
+  synced.delete(agentId);
+}
+
 /** Deletes an agent on ElevenLabs; best-effort, for one this process created and then did not keep. */
 export async function deleteElevenLabsAgent(
   apiKey: string,

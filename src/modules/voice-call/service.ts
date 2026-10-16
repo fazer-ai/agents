@@ -13,6 +13,8 @@ import {
   loadAgentBot,
   loadChatwootClient,
 } from "@/modules/chatwoot/instance";
+import { mirrorChatwootEvent } from "@/modules/chatwoot/mirror";
+import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import { hashRouteToken } from "@/modules/webhooks/inbound/route-token";
 import type { CallRecord } from "./bridge";
 import type { CallDirection, VoiceSessionConfig } from "./providers/types";
@@ -106,7 +108,33 @@ const VOICE_RULES = [
 
 const HISTORY_LIMIT = 20;
 
-/** The conversation so far on WhatsApp, as lines the agent reads before the call: who said what. */
+// A conversation in an inbox with no text agent was never delivered to this product, so it has no
+// row: the agent's contact context and the tools that act on the contact read that row. Made here from
+// the live read, as its first webhook would, and only when there is none, so a row the webhooks keep
+// is never overwritten with this older read.
+async function mirrorUnseen(
+  route: VoiceRoute,
+  conversationId: number,
+  live: Record<string, unknown>,
+  base: PrismaClient = basePrisma,
+): Promise<void> {
+  const seen = await runScopedOn(base, sysCtx(route.tenantId), (db) =>
+    db.conversation.findUnique({
+      where: {
+        tenantId_chatwootInstanceId_chatwootConversationId: {
+          tenantId: route.tenantId,
+          chatwootInstanceId: route.instanceId,
+          chatwootConversationId: conversationId,
+        },
+      },
+      select: { id: true },
+    }),
+  );
+  if (seen) return;
+  const n = normalizeChatwootEvent({ ...live, event: "conversation_updated" });
+  if (n) await mirrorChatwootEvent(route.tenantId, route.instanceId, n, base);
+}
+
 /**
  * The conversation the call names, kept only when Chatwoot says it is in the token's inbox: the token
  * opens one inbox, and its history, tools and the call's note reach that inbox's conversations only.
@@ -123,10 +151,22 @@ export async function fenceConversation(
       base: deps.base,
       makeClient: deps.makeClient,
     });
-    const conv = (await client.getConversation(conversationId)) as {
-      inbox_id?: unknown;
-    } | null;
-    if (Number(conv?.inbox_id) === route.inboxId) return conversationId;
+    const conv = (await client.getConversation(conversationId)) as Record<
+      string,
+      unknown
+    > | null;
+    if (conv && Number(conv.inbox_id) === route.inboxId) {
+      await mirrorUnseen(route, conversationId, conv, deps.base).catch(
+        (err: Error) => {
+          logger.warn(
+            "voice-call: could not record conversation %d: %s",
+            conversationId,
+            err.message,
+          );
+        },
+      );
+      return conversationId;
+    }
     logger.warn(
       "voice-call: conversation %d is not in inbox %d; the call goes on without it",
       conversationId,
@@ -142,6 +182,7 @@ export async function fenceConversation(
   return null;
 }
 
+/** The conversation so far on WhatsApp, as lines the agent reads before the call: who said what. */
 export async function conversationHistory(
   route: VoiceRoute,
   conversationId: number | null,
@@ -261,22 +302,41 @@ export interface ReportDeps {
 
 const NO_SUMMARY = "Resumo indisponível.";
 
+// How far back the call's message is looked for: a page is about twenty messages, and a call's
+// message is posted when it rings, so only what was written during the call sits in front of it.
+const CALL_SEARCH_PAGES = 10;
+
 async function callInConversation(
   client: ChatwootClient,
   conversationId: number,
   callId: string,
 ): Promise<boolean> {
-  const messages = await client
-    .listRecentMessages(conversationId)
-    .catch((err: Error) => {
-      logger.warn(
-        "voice-call: could not read conversation %d: %s",
+  let before: number | undefined;
+  try {
+    for (let page = 0; page < CALL_SEARCH_PAGES; page++) {
+      const body = (await client.getMessages(
         conversationId,
-        err.message,
-      );
-      return [];
-    });
-  if (messages.some((m) => m.call?.provider_call_id === callId)) return true;
+        before === undefined ? undefined : { before },
+      )) as {
+        payload?: Array<{ id?: number; call?: { provider_call_id?: string } }>;
+      } | null;
+      const messages = body?.payload ?? [];
+      if (messages.some((m) => m.call?.provider_call_id === callId))
+        return true;
+      const ids = messages
+        .map((m) => m.id)
+        .filter((id): id is number => typeof id === "number");
+      if (ids.length === 0) break;
+      before = Math.min(...ids);
+    }
+  } catch (err) {
+    logger.warn(
+      "voice-call: could not read conversation %d: %s",
+      conversationId,
+      (err as Error).message,
+    );
+    return false;
+  }
   logger.warn(
     "voice-call: call %s is not in conversation %d; its report is dropped",
     callId,

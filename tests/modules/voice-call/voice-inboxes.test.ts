@@ -80,8 +80,10 @@ function fakeChatwoot(
     duringAiVoice?: () => Promise<void>;
     // conversation id -> the Chatwoot inbox it is in
     conversations?: Record<number, number>;
-    // conversation id -> the ids of the calls among its messages
-    calls?: Record<number, string[]>;
+    // conversation id -> its messages, oldest first, each a call's when it names one
+    history?: Record<number, Array<{ id: number; call?: string }>>;
+    // conversation id -> the contact Chatwoot names on it
+    senders?: Record<number, { id: number; name: string }>;
   } = {},
 ) {
   const writes: AiVoice[] = [];
@@ -103,19 +105,34 @@ function fakeChatwoot(
     } else if (path.endsWith("/whatsapp_calls/ai_report")) {
       reports.push(body);
     } else if (/\/conversations\/\d+\/messages$/.test(path) && !body) {
+      // A page is the twenty messages before `before`, the newest page without it.
       const id = Number(path.split("/").at(-2));
+      const before = Number(
+        new URL(url).searchParams.get("before") ?? Infinity,
+      );
+      const older = (opts.history?.[id] ?? []).filter((m) => m.id < before);
       answer = {
-        payload: (opts.calls?.[id] ?? []).map((callId) => ({
+        payload: older.slice(-20).map((m) => ({
+          id: m.id,
           content: null,
           message_type: 2,
           private: false,
-          call: { provider_call_id: callId },
+          ...(m.call ? { call: { provider_call_id: m.call } } : {}),
         })),
       };
     } else if (/\/conversations\/\d+$/.test(path)) {
       const inbox = opts.conversations?.[Number(path.split("/").pop())];
       if (inbox === undefined) status = 404;
-      else answer = { id: Number(path.split("/").pop()), inbox_id: inbox };
+      else {
+        const id = Number(path.split("/").pop());
+        const sender = opts.senders?.[id];
+        answer = {
+          id,
+          inbox_id: inbox,
+          status: "open",
+          ...(sender ? { meta: { sender } } : {}),
+        };
+      }
     } else if (path.endsWith("/agent_bots")) {
       if (opts.failAgentBots) status = 503;
       answer =
@@ -191,6 +208,8 @@ describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
   afterAll(async () => {
     if (!tenant) return;
     for (const tbl of [
+      "conversations",
+      "contacts",
       "chatwoot_agent_bots",
       "inboxes",
       "agents",
@@ -313,6 +332,29 @@ describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
     expect(await fence(null)).toBeNull();
   });
 
+  test("a conversation this product never saw is recorded with its contact, once fenced", async () => {
+    const route = await resolveVoiceRoute(await routeToken(), appDb);
+    if (!route) throw new Error("no route");
+    const cw = fakeChatwoot({
+      conversations: { 20: 501, 21: 502 },
+      senders: { 20: { id: 77, name: "Ana" }, 21: { id: 78, name: "Bia" } },
+    });
+    const fence = (id: number) =>
+      fenceConversation(route, id, { base: appDb, makeClient: cw.makeClient });
+    expect(await fence(20)).toBe(20);
+    expect(await fence(21)).toBeNull();
+    const rows = await suDb.conversation.findMany({
+      where: { tenantId: tenant, chatwootConversationId: { in: [20, 21] } },
+      select: {
+        chatwootConversationId: true,
+        contact: { select: { name: true } },
+      },
+    });
+    expect(rows).toEqual([
+      { chatwootConversationId: 20, contact: { name: "Ana" } },
+    ]);
+  });
+
   test("a call is reported only when it is one of the fenced conversation's calls", async () => {
     const route = {
       tenantId: tenant,
@@ -335,7 +377,11 @@ describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
       engineConversationId: null,
       transcript: [],
     });
-    const cw = fakeChatwoot({ calls: { 10: ["own-call"] } });
+    // The call rang, then twenty-five messages were written on the conversation during it.
+    const notes = Array.from({ length: 25 }, (_, i) => ({ id: 101 + i }));
+    const cw = fakeChatwoot({
+      history: { 10: [{ id: 100, call: "own-call" }, ...notes] },
+    });
     const deps = {
       summarize: async () => "resumo",
       base: appDb,

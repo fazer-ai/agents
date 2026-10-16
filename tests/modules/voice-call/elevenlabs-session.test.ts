@@ -241,3 +241,59 @@ describe("an ElevenLabs socket that never opens", () => {
     expect(sockets.map((s) => s.closed)).toEqual([true, true]);
   });
 });
+
+describe("an ElevenLabs request that hangs while the agent is held", () => {
+  const handlers: VoiceSessionHandlers = {
+    onAudio: () => {},
+    onInterrupt: () => {},
+    onTranscript: () => {},
+    onHangup: () => {},
+    onError: () => {},
+  };
+  // Answers every request at once except the one `hangs` names, which waits for its abort.
+  function hangingOn(hangs: "declare" | "signed-url") {
+    const asked: string[] = [];
+    const fetchImpl = ((input: string, init?: RequestInit) => {
+      const kind = input.includes("get-signed-url") ? "signed-url" : "declare";
+      asked.push(kind);
+      if (kind !== hangs)
+        return Promise.resolve(
+          new Response(JSON.stringify({ signed_url: "ws://127.0.0.1:1/" })),
+        );
+      // A request sent with no deadline would wait here for ever: refused at once, so the test
+      // fails on it instead of hanging.
+      if (!init?.signal)
+        return Promise.reject(new Error("sent with no deadline"));
+      return new Promise<Response>((_resolve, reject) => {
+        init.signal?.addEventListener("abort", () =>
+          reject(new Error("aborted")),
+        );
+      });
+    }) as unknown as typeof fetch;
+    return { asked, fetchImpl };
+  }
+
+  for (const hangs of ["declare", "signed-url"] as const) {
+    test(`a ${hangs} request is cut at the open deadline, and the next call is not held behind it`, async () => {
+      const api = hangingOn(hangs);
+      const provider = elevenLabsProvider({
+        apiKey: "k",
+        agentId: `agent-hangs-${hangs}`,
+        fetchImpl: api.fetchImpl,
+        openTimeoutMs: 5,
+      });
+      // Distinct tools per open, so each one declares them again.
+      const opened = (n: number) =>
+        provider.open(
+          {
+            ...CONFIG,
+            tools: CONFIG.tools?.map((t) => ({ ...t, description: `v${n}` })),
+          },
+          handlers,
+        );
+      await expect(opened(1)).rejects.toThrow("aborted");
+      await expect(opened(2)).rejects.toThrow("aborted");
+      expect(api.asked.filter((k) => k === hangs)).toHaveLength(2);
+    });
+  }
+});

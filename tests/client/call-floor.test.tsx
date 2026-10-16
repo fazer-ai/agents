@@ -266,3 +266,37 @@ describe("InstructionsTokens and KnowledgeTokens", () => {
     expect(items).toContain("Sugestão de entradas no conhecimento~70");
   });
 });
+
+// Each line carries the icon its row has on the Tools or Knowledge tab, so the two read as one thing.
+describe("breakdown icons", () => {
+  test("each line shows its kind's icon", async () => {
+    const floor: CallFloor = {
+      ...FLOOR,
+      tools: [
+        ...(FLOOR.engine === "llm" ? FLOOR.tools : []),
+        { name: "search_knowledge", category: "knowledge", estimatedTokens: 9 },
+      ],
+    };
+    await inLanguage(
+      "en",
+      <CallFloorLine floor={floor} draftPrompt={PROMPT} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Every call/ }));
+    const icons = screen
+      .getAllByRole("listitem")
+      .map((li) =>
+        [...(li.querySelector("svg")?.classList ?? [])].find(
+          (c) => c.startsWith("lucide-") && c !== "lucide",
+        ),
+      );
+    expect(icons).toEqual([
+      "lucide-scroll-text",
+      "lucide-webhook",
+      "lucide-plug",
+      expect.stringMatching(/^lucide-/),
+      "lucide-code-xml",
+      expect.stringMatching(/^lucide-/),
+      "lucide-book-open",
+    ]);
+  });
+});

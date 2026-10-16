@@ -41,6 +41,7 @@ export interface ElevenLabsOptions {
   agentId: string;
   toolSound?: string | null;
   fetchImpl?: typeof fetch;
+  openTimeoutMs?: number;
 }
 
 export function elevenLabsProvider(options: ElevenLabsOptions): VoiceProvider {
@@ -114,10 +115,11 @@ async function openHeld(
   let heardVoice = false;
 
   await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(
-      () => reject(new Error("elevenlabs: open timed out")),
-      OPEN_TIMEOUT_MS,
-    );
+    // A handshake that lands after the call gave up would be a socket nobody closes.
+    const timer = setTimeout(() => {
+      ws.close();
+      reject(new Error("elevenlabs: open timed out"));
+    }, options.openTimeoutMs ?? OPEN_TIMEOUT_MS);
     ws.addEventListener("open", () => {
       clearTimeout(timer);
       resolve();

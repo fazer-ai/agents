@@ -10,9 +10,10 @@ import {
 } from "@/tests/utils/fake-websocket";
 import { until } from "@/tests/utils/poll";
 
-// Leaving the Playground while a call is still starting (the setup request, or the browser's
-// microphone prompt) cancels it: nothing opens after the screen is gone, and a microphone granted
-// late is released at once instead of streaming with no hang-up button anywhere.
+// Leaving the Playground while a call is still starting (the browser's microphone prompt, or the
+// setup request after it) cancels it: nothing opens after the screen is gone, and a microphone is
+// released at once instead of streaming with no hang-up button anywhere. The setup comes after the
+// microphone because the ticket it hands out lasts a minute, and the prompt can take longer.
 
 const realFetch = globalThis.fetch;
 let answerSetup: (() => void) | null = null;
@@ -58,30 +59,47 @@ afterEach(() => {
   sockets.length = 0;
 });
 
-test("a microphone granted after the Playground closed is released, and no line opens", async () => {
-  let stopped = 0;
+function fakeMic() {
+  const counts = { stopped: 0 };
   const stream = {
-    getTracks: () => [{ stop: () => stopped++ }],
+    getTracks: () => [{ stop: () => counts.stopped++ }],
   } as unknown as MediaStream;
+  return { counts, stream };
+}
+
+test("the ticket is asked for only once the microphone is granted", async () => {
+  const mic = fakeMic();
   const hook = renderHook(() => usePlaygroundCall("7"));
   act(() => void hook.result.current.start());
+  await until("the microphone prompt", () => grant !== null);
+  expect(setupCalls).toBe(0);
+  grant?.(mic.stream);
   await until("the setup request", () => answerSetup !== null);
-  answerSetup?.();
+  hook.unmount();
+});
+
+test("a microphone granted after the Playground closed is released, and nothing is asked for", async () => {
+  const mic = fakeMic();
+  const hook = renderHook(() => usePlaygroundCall("7"));
+  act(() => void hook.result.current.start());
   await until("the microphone prompt", () => grant !== null);
   hook.unmount();
-  grant?.(stream);
-  await until("the late microphone released", () => stopped === 1);
+  grant?.(mic.stream);
+  await until("the late microphone released", () => mic.counts.stopped === 1);
+  expect(setupCalls).toBe(0);
   expect(sockets).toHaveLength(0);
 });
 
-test("a setup answered after the Playground closed never asks for the microphone", async () => {
+test("a setup answered after the Playground closed releases the microphone, and no line opens", async () => {
+  const mic = fakeMic();
   const hook = renderHook(() => usePlaygroundCall("7"));
   act(() => void hook.result.current.start());
+  await until("the microphone prompt", () => grant !== null);
+  grant?.(mic.stream);
   await until("the setup request", () => answerSetup !== null);
   hook.unmount();
   answerSetup?.();
-  await until("the setup answered", () => setupCalls === 1);
-  await new Promise((r) => setTimeout(r, 20));
-  expect(micAsked).toBe(0);
+  await until("the microphone released", () => mic.counts.stopped === 1);
+  expect(micAsked).toBe(1);
   expect(sockets).toHaveLength(0);
 });

@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { decryptJson, encryptJson } from "@/api/lib/crypto";
@@ -21,6 +21,7 @@ import {
   softDisconnectChatwootInstance,
 } from "@/modules/chatwoot/management";
 import type { CallRecord } from "@/modules/voice-call/bridge";
+import * as voiceInboxes from "@/modules/voice-call/inboxes";
 import {
   bindInboxVoiceAgent,
   syncVoiceAgentInboxes,
@@ -35,6 +36,7 @@ import { setUpAgentCalls } from "@/modules/voice-call/setup";
 import { generateRouteToken } from "@/modules/webhooks/inbound/route-token";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../../utils/chatwoot";
+import { underConcurrentEdit } from "../../utils/pg-waits";
 
 // Which voice agent answers an inbox's calls: a binding of its own beside the text
 // responder, written on the Chatwoot fork (`whatsapp_calls/ai_voice`) with the URL the calls' audio
@@ -744,5 +746,85 @@ describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
       (await suDb.agent.findUniqueOrThrow({ where: { id: BigInt(made.id) } }))
         .kind,
     ).toBe("voice");
+  });
+
+  test("a bind waits for a disconnect in flight, and then refuses the disconnected account", async () => {
+    await bindInboxVoiceAgent(
+      ctx(tenant),
+      whatsappInboxId,
+      null,
+      fakeChatwoot(),
+      appDb,
+    );
+    const cw = fakeChatwoot();
+    await expect(
+      underConcurrentEdit(
+        suDb,
+        (tx) =>
+          tx.chatwootInstance.update({
+            where: { id: instanceId },
+            data: { disconnectedAt: new Date() },
+          }),
+        () =>
+          bindInboxVoiceAgent(ctx(tenant), whatsappInboxId, voiceId, cw, appDb),
+      ),
+    ).rejects.toMatchObject({
+      statusCode: 409,
+      translationKey: "errors.chatwootAccountDisconnected",
+    });
+    const inbox = await suDb.inbox.findUniqueOrThrow({
+      where: { id: whatsappInboxId },
+    });
+    expect(inbox.voiceAgentId).toBeNull();
+    expect(cw.writes).toEqual([]);
+    await suDb.chatwootInstance.update({
+      where: { id: instanceId },
+      data: { disconnectedAt: null },
+    });
+  });
+
+  test("a bind waits for the agent's deletion in flight, and then finds no agent", async () => {
+    const doomed = await suDb.agent.create({
+      data: {
+        tenantId: tenant,
+        name: "Some",
+        kind: "voice",
+        systemPrompt: "x",
+        mode: "production",
+      },
+    });
+    await expect(
+      underConcurrentEdit(
+        suDb,
+        (tx) => tx.$executeRaw`DELETE FROM agents WHERE id = ${doomed.id}`,
+        () =>
+          bindInboxVoiceAgent(
+            ctx(tenant),
+            whatsappInboxId,
+            doomed.id,
+            fakeChatwoot(),
+            appDb,
+          ),
+      ),
+    ).rejects.toMatchObject({ statusCode: 404 });
+    const inbox = await suDb.inbox.findUniqueOrThrow({
+      where: { id: whatsappInboxId },
+    });
+    expect(inbox.voiceAgentId).toBeNull();
+  });
+
+  test("saving a text agent writes no inbox's calls; saving a voice agent does", async () => {
+    const sync = spyOn(
+      voiceInboxes,
+      "syncVoiceAgentInboxes",
+    ).mockImplementation(async () => {});
+    try {
+      await updateAgent(ctx(tenant), textId, { enabled: true }, appDb);
+      expect(sync).not.toHaveBeenCalled();
+      await updateAgent(ctx(tenant), voiceId, { enabled: true }, appDb);
+      expect(sync).toHaveBeenCalledTimes(1);
+    } finally {
+      sync.mockRestore();
+    }
   });
 });

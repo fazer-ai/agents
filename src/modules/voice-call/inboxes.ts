@@ -164,18 +164,23 @@ export async function bindInboxVoiceAgent(
 ): Promise<{ voiceAgentId: string | null }> {
   if (ctx.tenantId === null) throw new AppError("tenant required", 400);
   await runScopedOn(base, ctx, async (db) => {
-    // Locked, so two first bindings do not both mint a token: the second reads the first's.
-    await db.$queryRaw`SELECT id FROM inboxes WHERE id = ${inboxId} FOR NO KEY UPDATE`;
     const inbox = await db.inbox.findUnique({
       where: { id: inboxId },
       select: {
         channelType: true,
-        voiceRouteToken: true,
-        instance: { select: { disconnectedAt: true } },
+        chatwootInstanceId: true,
       },
     });
     if (!inbox) throw new NotFoundError("inbox not found");
-    if (agentId !== null && inbox.instance.disconnectedAt !== null)
+    // In the module's order (account, agent, inbox), as the text binding takes them. The account
+    // row first, so a disconnect cannot stamp it between this read and the commit. The agent as a
+    // foreign key would lock it (`Inbox.voiceAgentId` has no `@relation`), so `deleteAgent` cannot
+    // leave the binding pointing at nothing. The inbox last, so two first bindings do not both mint
+    // a token: the second reads the first's.
+    const account = await db.$queryRaw<{ disconnected_at: Date | null }[]>`
+      SELECT disconnected_at FROM chatwoot_instances
+       WHERE id = ${inbox.chatwootInstanceId} FOR NO KEY UPDATE`;
+    if (agentId !== null && account[0]?.disconnected_at != null)
       throw new AppError(
         "this account is disconnected; reconnect it before assigning an agent",
         409,
@@ -188,19 +193,19 @@ export async function bindInboxVoiceAgent(
         "errors.voiceInboxNotWhatsapp",
       );
     if (agentId !== null) {
-      const agent = await db.agent.findUnique({
-        where: { id: agentId },
-        select: { kind: true },
-      });
-      if (!agent) throw new NotFoundError("agent not found");
-      if (agent.kind !== "voice")
+      const agent = await db.$queryRaw<{ kind: string }[]>`
+        SELECT kind FROM agents WHERE id = ${agentId} FOR KEY SHARE`;
+      if (agent.length === 0) throw new NotFoundError("agent not found");
+      if (agent[0]?.kind !== "voice")
         throw new AppError(
           "only a voice agent answers calls",
           422,
           "errors.voiceAgentRequired",
         );
     }
-    const minted = inbox.voiceRouteToken ? null : generateRouteToken();
+    const locked = await db.$queryRaw<{ voice_route_token: string | null }[]>`
+      SELECT voice_route_token FROM inboxes WHERE id = ${inboxId} FOR NO KEY UPDATE`;
+    const minted = locked[0]?.voice_route_token ? null : generateRouteToken();
     await db.inbox.update({
       where: { id: inboxId },
       data: {

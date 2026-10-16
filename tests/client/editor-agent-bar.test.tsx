@@ -324,4 +324,78 @@ describe("the editor's bar covers the whole agent", () => {
     await screen.findByText(/Fix the General tab before saving/);
     expect(stub.writes).toEqual([]);
   });
+
+  // Phase two judges Behavior against the model General just saved: a fallback that had no endpoint
+  // to inherit under the old provider inherits the new one, and the whole save goes through.
+  test("a hold General's save resolves on another tab does not stop the save", async () => {
+    const stub = stubEditorApi({
+      name: "Atendente",
+      modelConfig: { provider: "openai", model: "gpt-4o-mini" },
+      settings: {
+        modelFallback: {
+          provider: "openai-compatible",
+          model: "m",
+          baseURL: null,
+        },
+      },
+    });
+    await renderEditor(stub, "behavior");
+    editTab("behavior");
+    await waitFor(() => expect(save().disabled).toBe(true));
+    await goTo("General");
+    fireEvent.change(screen.getByLabelText("Provider"), {
+      target: { value: "openai-compatible" },
+    });
+    fireEvent.change(await screen.findByLabelText("Base URL"), {
+      target: { value: "https://llm.example.com/v1" },
+    });
+    fireEvent.click(save());
+    await waitFor(
+      () =>
+        expect(stub.writes.filter((w) => w.method === "PATCH").length).toBe(2),
+      { timeout: 5_000 },
+    );
+    expect(screen.queryByText(/Fix the Behavior tab/)).toBeNull();
+    await screen.findByRole("tab", { name: "General", selected: true });
+  });
+
+  // The save writes what was edited when Save was pressed. A General edit made while its write is out
+  // stays pending: the second phase writes the rest, not General again.
+  test("a General edit made while its write is out is not written by the rest of the save", async () => {
+    const stub = stubEditorApi(
+      { name: "Atendente" },
+      { catalog: NATIVE_CATALOG },
+    );
+    const served = globalThis.fetch;
+    let release: () => void = () => {};
+    const held = new Promise<void>((r) => {
+      release = r;
+    });
+    let patchSent = false;
+    globalThis.fetch = (async (
+      input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      if ((init?.method ?? "GET") === "PATCH" && !patchSent) {
+        patchSent = true;
+        await held;
+      }
+      return served(input, init);
+    }) as typeof fetch;
+    await renderEditor(stub, "tools");
+    editTab("tools");
+    await goTo("General");
+    editTab("general");
+    fireEvent.click(save());
+    await waitFor(() => expect(patchSent).toBe(true));
+    fireEvent.change(nameField(), { target: { value: "Outro nome" } });
+    release();
+    await screen.findByText("Tools updated.");
+    const names = stub.writes
+      .filter((w) => w.method === "PATCH" && "name" in w.body)
+      .map((w) => w.body.name);
+    expect(names).toEqual(["Atendente (editado)"]);
+    expect(nameField().value).toBe("Outro nome");
+    expect(save().disabled).toBe(false);
+  });
 });

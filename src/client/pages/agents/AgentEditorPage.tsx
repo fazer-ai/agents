@@ -3896,187 +3896,106 @@ function AgentEditor() {
     }
   }
 
-  // The editor bar's Save, on every tab.
-  function saveFromBar() {
-    recheckedRef.current = new Set();
-    saveStartedOnRef.current = tab;
-    void saveAllDirty({ leaveHidden: true });
+  // A tab's name as the tab strip shows it, for the messages that send the operator to one.
+  const tabName = (key: TabKey) =>
+    tabs.find((tb) => tb.key === key)?.label ?? key;
+  // A hold names the tab to fix and goes there, where the field says why.
+  function heldIn(key: TabKey, reason: string): false {
+    showToast(
+      t("editor.saveHeldIn", "Fix the {{tab}} tab before saving: {{reason}}", {
+        tab: tabName(key),
+        reason,
+      }),
+      "error",
+    );
+    openTab(key);
+    return false;
   }
-  const resumeAfterGeneralRef = useRef(false);
-  // Every render, guarded by the ref: resumes once the General write has landed and nothing is saving.
-  useEffect(() => {
-    if (!resumeAfterGeneralRef.current || anySaving) return;
-    resumeAfterGeneralRef.current = false;
-    void saveAllDirty({ leaveHidden: true });
-  });
-  // Where the operator pressed Save: a save that went to other tabs to judge their holds comes back
-  // here once everything is written.
-  const saveStartedOnRef = useRef<TabKey | null>(null);
-  // A held section on a tab not on screen was judged when that tab was last drawn, and what it reads
-  // may have changed since (the engine, the model). The save opens it, the tab reports again, and the
-  // save resumes there: a hold that still stands is said on its own tab, a stale one lets it through.
-  const recheckedRef = useRef<Set<TabKey>>(new Set());
-  const resumeSaveOnRef = useRef<TabKey | null>(null);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: runs when the tab the save opened is drawn; the save reads the current render
-  useEffect(() => {
-    if (resumeSaveOnRef.current !== tab) return;
-    resumeSaveOnRef.current = null;
-    void saveAllDirty({ leaveHidden: true });
-  }, [tab]);
-
-  // Saves every dirty section sequentially (so the optimistic-concurrency token chains through each
-  // write), for the editor's bar on every tab and for "Save and export" (agents#1520). It stops at the
-  // first section that is held or refused, opens that section's tab and leaves the rest pending, so a
-  // save never reports success over a section it did not write. Tools + Knowledge share the grant set,
-  // so one saveTools() write persists both. Awaited so the export reads the just-saved version.
-  async function saveAllDirty(
-    // The bar writes what this engine and mode draw and leaves the rest pending, saying so at the end,
-    // as each tab's own Save did; an export refuses instead, since it would carry a version that
-    // leaves those edits out.
-    opts: { leaveHidden?: boolean } = {},
-  ): Promise<boolean> {
-    const tabName = (key: TabKey) =>
-      tabs.find((tb) => tb.key === key)?.label ?? key;
-    // A hold names the tab to fix and goes there, where the field says why.
-    const held = (key: TabKey, reason: string) => {
+  // NOTE: Edits to what questions and rules do not draw (or to the decision setup on an answering
+  // agent) are written by no save of this engine and mode; a save of everything says so instead of
+  // reporting a save that left them out.
+  function sayHiddenDrafts(): boolean {
+    if (hiddenDraftsPending) {
       showToast(
         t(
-          "editor.saveHeldIn",
-          "Fix the {{tab}} tab before saving: {{reason}}",
-          {
-            tab: tabName(key),
-            reason,
-          },
+          "editor.hiddenDraftsPending",
+          "There are unsaved changes that questions and rules do not use (the instructions, the model, memory, the fallback provider, Knowledge, or tools it does not show). Switch back to the language model on General to save them, or discard them.",
         ),
         "error",
       );
-      openTab(key);
-      return false;
-    };
-    // A section that was sent and refused already said why, on its own toast; the save stops there.
-    const stopped = (key: TabKey) => {
-      openTab(key);
-      return false;
-    };
-    // NOTE: Edits to what questions and rules do not draw are written by no save of this engine,
-    // so "save everything" cannot honour them; it says so instead of reporting a save that left
-    // them out.
-    const sayHidden = () => {
-      if (hiddenDraftsPending) {
-        showToast(
-          t(
-            "editor.hiddenDraftsPending",
-            "There are unsaved changes that questions and rules do not use (the instructions, the model, memory, the fallback provider, Knowledge, or tools it does not show). Switch back to the language model on General to save them, or discard them.",
-          ),
-          "error",
-        );
-        return true;
-      }
-      if (hiddenDecisionsPending) {
-        showToast(
-          t(
-            "editor.hiddenDecisionsPending",
-            "There are unsaved changes to the questions and rules, which only a monitoring agent uses. Switch the mode back to Monitoring on General to save them, or discard them.",
-          ),
-          "error",
-        );
-        return true;
-      }
-      return false;
-    };
-    if (!opts.leaveHidden && sayHidden()) return false;
-    // NOTE: The Behavior tab's Save is disabled on an empty gate; this path saves without that
-    // button, so it refuses the same state before writing any section.
-    // NOTE: A tab's own Save rule, reported by its bar while it was drawn: a field there that cannot
-    // be written as it is. Only a dirty section's rule holds, since only it would be written.
-    // Only a section this save would write: one the engine does not draw stays pending (below).
-    const drawn = (key: TabKey) =>
-      !opts.leaveHidden || visibleTabs.some((item) => item.key === key);
-    // The bar's own check: "Save and export" keeps the checks it always had, and the server answers
-    // for the rest.
-    for (const key of opts.leaveHidden ? SAVE_SECTIONS : []) {
-      // General's hold covers the engine and mode drawn on it, whose edits count as the decision setup.
-      const sectionEdited =
-        dirty[key] || (key === "general" && decisionsHeadDirty);
-      if (!sectionEdited || !drawn(key)) continue;
-      // A tab never drawn reported no hold to doubt (the decision setup, edited through General's
-      // engine cards, is checked on the page itself).
-      const drawnWith = drawnWithRef.current[key];
-      const stale = drawnWith !== undefined && drawnWith !== crossTabKey;
-      if (
-        key !== tab &&
-        (blockedRef.current[key] || stale) &&
-        !recheckedRef.current.has(key)
-      ) {
-        recheckedRef.current.add(key);
-        resumeSaveOnRef.current = key;
-        openTab(key);
-        return false;
-      }
-      if (blockedRef.current[key]) {
-        return held(
-          key,
-          t("editor.saveHeldField", "a field there cannot be saved as it is."),
-        );
-      }
+      return true;
     }
-    if (dirty.behavior && contactAuthGateEmpty(contactAuth)) {
-      return held(
+    if (hiddenDecisionsPending) {
+      showToast(
+        t(
+          "editor.hiddenDecisionsPending",
+          "There are unsaved changes to the questions and rules, which only a monitoring agent uses. Switch the mode back to Monitoring on General to save them, or discard them.",
+        ),
+        "error",
+      );
+      return true;
+    }
+    return false;
+  }
+  // What holds a Behavior write on the page itself: the Behavior tab's Save is disabled on these, and
+  // a save from elsewhere refuses the same state before writing.
+  function behaviorPageHold(): false | null {
+    if (contactAuthGateEmpty(contactAuth))
+      return heldIn(
         "behavior",
         t(
           "editor.contactAuthEmpty",
           "Add at least one condition or turn on the external endpoint, or turn the gate off.",
         ),
       );
-    }
-    // NOTE: Same reason: the snoozed ladder's cadence issues hold the Behavior Save, not this path.
-    if (
-      dirty.behavior &&
-      snoozedFollowUpBlocksSave(snoozedFollowUp, agentMode)
-    ) {
-      return held(
+    if (snoozedFollowUpBlocksSave(snoozedFollowUp, agentMode))
+      return heldIn(
         "behavior",
         t(
           "editor.snoozedFollowUpInvalidToast",
           "Fix the snoozed follow-up's cadences before saving.",
         ),
       );
-    }
+    return null;
+  }
+  // The decision setup's own check, as General's Save asks it: what is missing is marked on General.
+  function decisionsSetupHold(): boolean {
+    if (
+      !setupSaveBlocked(
+        decisionsSetupIssues.size,
+        dirty.decisions,
+        dirty.general,
+      )
+    )
+      return false;
+    decisionsBlocked("general", dirty.general);
+    openTab("general");
+    showToast(
+      t(
+        "editor.decisionsSetupIncomplete",
+        "The questions and rules are not complete yet. See what is missing on the General tab.",
+      ),
+      "error",
+    );
+    return true;
+  }
+
+  // "Save and export": every dirty section, in order, so the optimistic-concurrency token chains
+  // through each write and the export reads the version just saved. It refuses up front what the file
+  // would leave out, and stops at the first section held or refused (agents#1520).
+  async function saveAllDirty(): Promise<boolean> {
+    if (sayHiddenDrafts()) return false;
+    if (dirty.behavior && behaviorPageHold() === false) return false;
+    const stopped = (key: TabKey) => {
+      openTab(key);
+      return false;
+    };
     if (dirty.general || dirty.decisions) {
-      if (
-        setupSaveBlocked(
-          decisionsSetupIssues.size,
-          dirty.decisions,
-          dirty.general,
-        )
-      ) {
-        // Marks what is missing and scrolls to it, as General's own Save does.
-        decisionsBlocked("general", dirty.general);
-        openTab("general");
-        showToast(
-          t(
-            "editor.decisionsSetupIncomplete",
-            "The questions and rules are not complete yet. See what is missing on the General tab.",
-          ),
-          "error",
-        );
-        return false;
-      }
+      if (decisionsSetupHold()) return false;
       if (!decides && dirty.general && !guardModelBeforeSave())
         return stopped("general");
       if (!(await saveGeneral()))
         return stopped(dirty.general ? "general" : "decisions");
-      // General just changed what other tabs judge against (the saved model, the engine): the rest of
-      // the save resumes on the next render, where their holds are judged against it.
-      if (
-        opts.leaveHidden &&
-        SAVE_SECTIONS.some(
-          (key) => key !== "general" && key !== "decisions" && dirty[key],
-        )
-      ) {
-        resumeAfterGeneralRef.current = true;
-        return true;
-      }
     }
     if (
       dirty.behavior &&
@@ -4090,26 +4009,167 @@ function AgentEditor() {
       ))
     )
       return stopped("behavior");
-    // NOTE: A section whose tab this engine does not draw is not written by the bar: its edits are the
-    // other engine's, and the Tools save already writes the grants this engine hides as stored.
+    if (dirty.channelRedirect && !(await saveChannelRedirect()))
+      return stopped("channelRedirect");
+    if (dirty.guardrails && !(await saveGuardrails()))
+      return stopped("guardrails");
+    if (dirty.tools && !(await saveTools())) return stopped("tools");
+    if (dirty.knowledge && !(await saveGrants())) return stopped("knowledge");
+    return true;
+  }
+
+  // THE BAR'S SAVE (agents#1520), on every tab. A plan taken when Save is pressed: the sections edited
+  // at that moment, and only those, so an edit made while the save runs stays pending. It runs in two
+  // phases, because other tabs judge their fields against the agent's SAVED model:
+  //   1. General (with the decision setup), held only by its own checks;
+  //   2. on a later render, where the saved model is the new one, the rest, each held by its tab.
+  // A tab's hold was reported when the tab was last drawn. When it says held, or when what tabs read
+  // from outside themselves (`crossTabKey`) changed since, the save opens that tab, lets it report
+  // again, and continues there; a hold that still stands is said on its own tab. Once everything is
+  // written the save returns to the tab where Save was pressed. Sections this engine or mode does not
+  // draw are left pending, and the save says which.
+  type BarSave = {
+    sections: Set<(typeof SAVE_SECTIONS)[number]>;
+    generalDone: boolean;
+    // Each tab judged again during this save, with the `crossTabKey` it was judged under.
+    rechecked: Map<TabKey, string>;
+    origin: TabKey;
+  };
+  const barSaveRef = useRef<BarSave | null>(null);
+  // Where the save goes on: after the tab it opened is drawn, or after General's write has landed.
+  const continueRef = useRef<{ onTab: TabKey | null } | null>(null);
+  // Every render, guarded by the ref.
+  useEffect(() => {
+    const next = continueRef.current;
+    if (!next || anySaving) return;
+    if (next.onTab !== null && next.onTab !== tab) return;
+    continueRef.current = null;
+    void continueBarSave();
+  });
+
+  function saveFromBar() {
+    barSaveRef.current = {
+      sections: new Set(
+        SAVE_SECTIONS.filter(
+          (key) => dirty[key] || (key === "general" && decisionsHeadDirty),
+        ),
+      ),
+      generalDone: false,
+      rechecked: new Map(),
+      origin: tab,
+    };
+    void continueBarSave();
+  }
+
+  async function continueBarSave(): Promise<void> {
+    const plan = barSaveRef.current;
+    if (!plan) return;
+    const end = () => {
+      barSaveRef.current = null;
+    };
+    const planned = (key: (typeof SAVE_SECTIONS)[number]) =>
+      plan.sections.has(key);
+    const drawn = (key: TabKey) => visibleTabs.some((item) => item.key === key);
+    // "ok" to write, "away" when the save went to judge the tab again, "held" when it stops.
+    const judge = (key: TabKey): "ok" | "away" | "held" => {
+      // A tab never drawn reported no hold to doubt (the decision setup, edited through General's
+      // engine cards, is checked on the page itself).
+      const drawnWith = drawnWithRef.current[key];
+      const stale = drawnWith !== undefined && drawnWith !== crossTabKey;
+      if (
+        key !== tab &&
+        (blockedRef.current[key] || stale) &&
+        plan.rechecked.get(key) !== crossTabKey
+      ) {
+        plan.rechecked.set(key, crossTabKey);
+        continueRef.current = { onTab: key };
+        openTab(key);
+        return "away";
+      }
+      if (blockedRef.current[key]) {
+        heldIn(
+          key,
+          t("editor.saveHeldField", "a field there cannot be saved as it is."),
+        );
+        end();
+        return "held";
+      }
+      return "ok";
+    };
+    const stop = (key: TabKey) => {
+      openTab(key);
+      end();
+    };
+
+    // Phase 1: General, with the decision setup its engine cards edit.
+    if (!plan.generalDone && (planned("general") || planned("decisions"))) {
+      if (planned("general") && judge("general") !== "ok") return;
+      if (decisionsSetupHold()) return end();
+      if (!decides && dirty.general && !guardModelBeforeSave())
+        return stop("general");
+      if (!(await saveGeneral()))
+        return stop(dirty.general ? "general" : "decisions");
+      plan.generalDone = true;
+      const rest = [...plan.sections].some(
+        (key) => key !== "general" && key !== "decisions",
+      );
+      if (rest) {
+        continueRef.current = { onTab: null };
+        return;
+      }
+    }
+
+    // Phase 2: the rest, each judged by its own tab first, then written in order.
+    const rest = (
+      [
+        "behavior",
+        "channelRedirect",
+        "guardrails",
+        "tools",
+        "knowledge",
+      ] as const
+    ).filter((key) => planned(key) && drawn(key));
+    for (const key of rest) if (judge(key) !== "ok") return;
+    if (planned("behavior") && behaviorPageHold() === false) return end();
+    // A section discarded while the save ran is no longer edited, and is not written.
     if (
+      planned("behavior") &&
+      dirty.behavior &&
+      !(await saveAgent(
+        {
+          businessHoursId: businessHoursId || null,
+          followUpHoursId: followUpHoursId || null,
+          settings: buildSettings(),
+        },
+        "behavior",
+      ))
+    )
+      return stop("behavior");
+    // NOTE: A section whose tab this engine does not draw is not written: its edits are the other
+    // engine's, and the Tools save already writes the grants this engine hides as stored.
+    if (
+      rest.includes("channelRedirect") &&
       dirty.channelRedirect &&
-      drawn("channelRedirect") &&
       !(await saveChannelRedirect())
     )
-      return stopped("channelRedirect");
-    if (dirty.guardrails && drawn("guardrails") && !(await saveGuardrails()))
-      return stopped("guardrails");
-    if (dirty.tools && drawn("tools") && !(await saveTools()))
-      return stopped("tools");
-    if (dirty.knowledge && drawn("knowledge") && !(await saveGrants()))
-      return stopped("knowledge");
-    if (opts.leaveHidden && sayHidden()) return false;
-    // A section of a tab this mode does not draw (Guardrails, Redirect on a watcher) was not written
-    // either, and nothing above names it.
-    // The decision setup is not among them: it goes out with General whichever tab draws it.
-    const skipped = SAVE_SECTIONS.filter(
-      (key) => key !== "decisions" && dirty[key] && !drawn(key),
+      return stop("channelRedirect");
+    if (
+      rest.includes("guardrails") &&
+      dirty.guardrails &&
+      !(await saveGuardrails())
+    )
+      return stop("guardrails");
+    if (rest.includes("tools") && dirty.tools && !(await saveTools()))
+      return stop("tools");
+    if (rest.includes("knowledge") && dirty.knowledge && !(await saveGrants()))
+      return stop("knowledge");
+    end();
+    if (sayHiddenDrafts()) return;
+    // A planned section of a tab this mode does not draw (Guardrails, Redirect on a watcher) was not
+    // written either, and nothing above names it. The decision setup is not among them: it goes out
+    // with General whichever tab draws it.
+    const skipped = [...plan.sections].filter(
+      (key) => key !== "decisions" && !drawn(key),
     );
     if (skipped.length > 0) {
       showToast(
@@ -4120,15 +4180,9 @@ function AgentEditor() {
         ),
         "error",
       );
-      return false;
+      return;
     }
-    if (
-      opts.leaveHidden &&
-      saveStartedOnRef.current &&
-      saveStartedOnRef.current !== tab
-    )
-      openTab(saveStartedOnRef.current);
-    return true;
+    if (plan.origin !== tab) openTab(plan.origin);
   }
 
   function askDelete() {

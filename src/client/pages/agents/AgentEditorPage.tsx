@@ -2561,7 +2561,9 @@ function AgentEditor() {
   // The settings and the mode too: a tool's schema reads the settings (handoff instructions, writable
   // contact fields), and an observer, or one deciding by rules, is measured as one. The observation
   // block is the form's whole, engine included, where a Behavior save keeps the stored decision setup.
-  const draftSettings = {
+  // Observability shapes no tool and arms a clock of its own, so it goes as saved: a switch there is
+  // not an edit of the floor, and must not cost a request.
+  const draftSettings: Record<string, unknown> = {
     ...buildToolsSettings(buildSettings()).toolsSettings,
     ...monitoringPatch(
       observation,
@@ -2569,9 +2571,11 @@ function AgentEditor() {
       customTools?.all ?? null,
     ),
   };
+  delete draftSettings.observability;
   const draftSettingsKey = JSON.stringify(draftSettings);
   const draftSettingsRef = useRef(draftSettings);
   draftSettingsRef.current = draftSettings;
+  const measuredSyncRef = useRef<string | null>(null);
   // biome-ignore lint/correctness/useExhaustiveDependencies: draftGrantsKey and draftSettingsKey stand for the draft (read through the refs, compared by content); catalogTick is a refetch trigger — a tool definition saved in its modal changes what the floor measures.
   useEffect(() => {
     if (!id || serverSyncTick === 0) {
@@ -2579,8 +2583,7 @@ function AgentEditor() {
       return;
     }
     let alive = true;
-    // A burst of clicks is one request: the number lands once the operator stops toggling.
-    const timer = setTimeout(() => {
+    const measure = () =>
       api.api.v1
         .agents({ id })
         ["call-floor"].post({
@@ -2595,7 +2598,17 @@ function AgentEditor() {
         .catch(() => {
           if (alive) setCallFloor(null);
         });
-    }, 300);
+    // A load or a sync is measured at once, as the page's other reads are; an edit waits, so a burst
+    // of clicks is one request and the number lands once the operator stops toggling.
+    const syncKey = `${id}:${serverSyncTick}:${catalogTick}`;
+    if (measuredSyncRef.current !== syncKey) {
+      measuredSyncRef.current = syncKey;
+      measure();
+      return () => {
+        alive = false;
+      };
+    }
+    const timer = setTimeout(measure, 300);
     return () => {
       alive = false;
       clearTimeout(timer);

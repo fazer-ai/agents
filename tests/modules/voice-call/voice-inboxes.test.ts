@@ -20,6 +20,7 @@ import {
   bindInbox,
   softDisconnectChatwootInstance,
 } from "@/modules/chatwoot/management";
+import type { CallRecord } from "@/modules/voice-call/bridge";
 import {
   bindInboxVoiceAgent,
   syncVoiceAgentInboxes,
@@ -27,6 +28,7 @@ import {
 } from "@/modules/voice-call/inboxes";
 import {
   fenceConversation,
+  reportCall,
   resolveVoiceRoute,
 } from "@/modules/voice-call/service";
 import { setUpAgentCalls } from "@/modules/voice-call/setup";
@@ -76,9 +78,12 @@ function fakeChatwoot(
     duringAiVoice?: () => Promise<void>;
     // conversation id -> the Chatwoot inbox it is in
     conversations?: Record<number, number>;
+    // conversation id -> the ids of the calls among its messages
+    calls?: Record<number, string[]>;
   } = {},
 ) {
   const writes: AiVoice[] = [];
+  const reports: Array<{ provider_call_id: string }> = [];
   const fetchImpl = (async (url: string, init?: RequestInit) => {
     const body = init?.body ? JSON.parse(init.body as string) : undefined;
     const path = new URL(url).pathname;
@@ -93,6 +98,18 @@ function fakeChatwoot(
         opts.duringAiVoice = undefined;
         await during?.();
       }
+    } else if (path.endsWith("/whatsapp_calls/ai_report")) {
+      reports.push(body);
+    } else if (/\/conversations\/\d+\/messages$/.test(path) && !body) {
+      const id = Number(path.split("/").at(-2));
+      answer = {
+        payload: (opts.calls?.[id] ?? []).map((callId) => ({
+          content: null,
+          message_type: 2,
+          private: false,
+          call: { provider_call_id: callId },
+        })),
+      };
     } else if (/\/conversations\/\d+$/.test(path)) {
       const inbox = opts.conversations?.[Number(path.split("/").pop())];
       if (inbox === undefined) status = 404;
@@ -115,7 +132,7 @@ function fakeChatwoot(
       fetchImpl,
       assertSafe: async (u: string) => new URL(u),
     });
-  return { writes, makeClient };
+  return { writes, reports, makeClient };
 }
 
 describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
@@ -292,6 +309,45 @@ describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
     expect(await fence(11)).toBeNull();
     expect(await fence(12)).toBeNull();
     expect(await fence(null)).toBeNull();
+  });
+
+  test("a call is reported only when it is one of the fenced conversation's calls", async () => {
+    const route = {
+      tenantId: tenant,
+      instanceId,
+      inboxId: 501,
+      agentId: voiceId,
+      agentName: "Raquel",
+      systemPrompt: "",
+    };
+    const record = (callId: string): CallRecord => ({
+      callId,
+      direction: "inbound",
+      peer: null,
+      provider: "elevenlabs",
+      startedAt: "2026-10-16T10:00:00Z",
+      answeredAt: "2026-10-16T10:00:01Z",
+      endedAt: "2026-10-16T10:01:00Z",
+      endedBy: "connector",
+      endReason: null,
+      engineConversationId: null,
+      transcript: [],
+    });
+    const cw = fakeChatwoot({ calls: { 10: ["own-call"] } });
+    const deps = {
+      summarize: async () => "resumo",
+      base: appDb,
+      makeClient: cw.makeClient,
+    };
+    const ctxOf = (conversationId: number | null) => ({
+      conversationId,
+      inboxId: 501,
+      direction: "inbound" as const,
+    });
+    await reportCall(route, ctxOf(10), record("own-call"), deps);
+    await reportCall(route, ctxOf(10), record("other-inbox-call"), deps);
+    await reportCall(route, ctxOf(null), record("own-call"), deps);
+    expect(cw.reports.map((r) => r.provider_call_id)).toEqual(["own-call"]);
   });
 
   test("the agent's switch and mode decide whether the bound inboxes' calls are on", async () => {

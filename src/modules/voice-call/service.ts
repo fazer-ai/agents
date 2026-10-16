@@ -7,6 +7,7 @@ import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { normalizeAgentMode } from "@/modules/agents/mode";
+import type { ChatwootClient } from "@/modules/chatwoot/client";
 import {
   type LoadChatwootClientDeps,
   loadAgentBot,
@@ -255,9 +256,34 @@ export interface ReportDeps {
   /** The summary of the call, or null when there is none to give. */
   summarize(record: CallRecord): Promise<string | null>;
   base?: PrismaClient;
+  makeClient?: LoadChatwootClientDeps["makeClient"];
 }
 
 const NO_SUMMARY = "Resumo indisponível.";
+
+async function callInConversation(
+  client: ChatwootClient,
+  conversationId: number,
+  callId: string,
+): Promise<boolean> {
+  const messages = await client
+    .listRecentMessages(conversationId)
+    .catch((err: Error) => {
+      logger.warn(
+        "voice-call: could not read conversation %d: %s",
+        conversationId,
+        err.message,
+      );
+      return [];
+    });
+  if (messages.some((m) => m.call?.provider_call_id === callId)) return true;
+  logger.warn(
+    "voice-call: call %s is not in conversation %d; its report is dropped",
+    callId,
+    conversationId,
+  );
+  return false;
+}
 
 /** Writes the call's outcome back to Chatwoot: transcript and summary on the Call, the summary as a note. */
 export async function reportCall(
@@ -282,9 +308,16 @@ export async function reportCall(
   );
   const client = await loadChatwootClient(route.tenantId, route.instanceId, {
     base: deps.base,
+    makeClient: deps.makeClient,
     botToken: bot?.accessToken ?? "",
   });
-  if (record.callId) {
+  // The fork finds the call by its id across the whole account, and the id comes from the stream:
+  // it is reported only when the call is one of the fenced conversation's.
+  if (
+    record.callId &&
+    ctx.conversationId &&
+    (await callInConversation(client, ctx.conversationId, record.callId))
+  ) {
     await client
       .reportVoiceCall({ provider_call_id: record.callId, transcript, summary })
       .catch((err: Error) => {

@@ -1502,6 +1502,7 @@ export async function buildToolset(
     appointmentBooked: appointmentBookedFn,
     cancelAppointment: cancelAppointmentFn,
     onSideEffectError,
+    ...(ctx.client.muted ? { muted: true } : {}),
     // NOTE: Only a real conversation gets the live handle (mirrors the emitAck gate); the playground
     // builds with conversationId 0 + a stub client, so customer-delivery tools degrade.
     ...(ctx.conversationId > 0

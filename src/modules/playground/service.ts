@@ -687,6 +687,9 @@ export interface CallFloorTool {
   mcp?: { connectionId: string; tool: string };
   // For a document tool, its template: the name is derived from a slug the editor does not show.
   templateId?: string;
+  // For an integration tool, the instance it came from: two instances of one pack share tool names,
+  // and only the first one's tool is offered.
+  integrationInstanceId?: string;
 }
 
 // What every model call of an agent sends before the first line of history (docs/graph.md, History
@@ -774,7 +777,11 @@ export async function estimateCallFloor(params: {
     .map((tl): CallFloorTool => {
       const meta = (
         tl as {
-          metadata?: { mcpServer?: McpServerMeta; mcpTool?: string };
+          metadata?: {
+            mcpServer?: McpServerMeta;
+            mcpTool?: string;
+            integrationInstanceId?: string;
+          };
         }
       ).metadata;
       return {
@@ -783,6 +790,9 @@ export async function estimateCallFloor(params: {
         estimatedTokens: estimateTokens(
           JSON.stringify(convertToOpenAITool(tl)),
         ),
+        ...(meta?.integrationInstanceId
+          ? { integrationInstanceId: meta.integrationInstanceId }
+          : {}),
         ...(templateOf.has(tl.name)
           ? { templateId: templateOf.get(tl.name) }
           : {}),

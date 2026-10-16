@@ -2555,6 +2555,7 @@ function AgentEditor() {
   // snapshot as the readings above, and on every catalog re-read: tools count as saved, so a save of
   // the agent or of a tool definition is when the number can move.
   const [callFloor, setCallFloor] = useState<CallFloor | null>(null);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: catalogTick is a refetch trigger — a tool definition saved in its modal changes what the floor measures.
   useEffect(() => {
     if (!id || serverSyncTick === 0) {
       setCallFloor(null);

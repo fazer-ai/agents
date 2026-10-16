@@ -1558,7 +1558,16 @@ export function ToolGrantsEditor({
                               }
                               icon={meta.icon}
                               title={meta.label}
-                              meta={<ToolTokens tool={{ name: tool.name }} />}
+                              meta={
+                                <ToolTokens
+                                  tool={{
+                                    integration: {
+                                      instanceId: inst.id,
+                                      tool: tool.name,
+                                    },
+                                  }}
+                                />
+                              }
                               description={
                                 <span className="flex flex-col gap-1.5">
                                   {meta.description && (

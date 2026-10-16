@@ -24,7 +24,8 @@ const fmt = (n: number, lang: string) => `~${n.toLocaleString(lang)}`;
 export type ToolRef =
   | { name: string }
   | { mcp: { connectionId: string; tool: string } }
-  | { templateId: string };
+  | { templateId: string }
+  | { integration: { instanceId: string; tool: string } };
 
 function findTool(
   floor: CallFloor | null,
@@ -34,6 +35,11 @@ function findTool(
   return floor.tools.find((tl) => {
     if ("name" in ref) return tl.name === ref.name;
     if ("templateId" in ref) return tl.templateId === ref.templateId;
+    if ("integration" in ref)
+      return (
+        tl.integrationInstanceId === ref.integration.instanceId &&
+        tl.name === ref.integration.tool
+      );
     return (
       tl.mcp?.connectionId === ref.mcp.connectionId &&
       tl.mcp.tool === ref.mcp.tool
@@ -56,7 +62,7 @@ export function ToolTokens({ tool }: { tool: ToolRef }) {
         "Estimated tokens this tool's definition adds to every call",
       )}
     >
-      {t("editor.callFloor.tokens", "{{n}} tokens", {
+      {t("editor.callFloor.tokens", "{{n}} tokens per call", {
         n: fmt(found.estimatedTokens, i18n.language),
       })}
     </span>

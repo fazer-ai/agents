@@ -541,12 +541,13 @@ export const agentsController = new Elysia({
         ctx: ctxOrThrow(tenantContext),
         agentId: requireDbId(params.id),
         grants: (body as { grants: ToolGrantInput[] }).grants,
+        settings: (body as { settings?: Record<string, unknown> }).settings,
       }),
     }),
     {
       detail: doc(
         "Estimate the call floor of an unsaved tool set",
-        "The same estimate as `GET /v1/agents/{id}/call-floor`, measured with the given grants in place of the saved ones, so an editor can show what saving them would send. Nothing is written. The grants are validated as `PUT /v1/agents/{id}/tool-selections` validates them; a grant pointing at something this tenant does not have counts as absent, as it would at runtime.",
+        "The same estimate as `GET /v1/agents/{id}/call-floor`, measured with the given grants (and settings, when sent) in place of the saved ones, so an editor can show what saving them would send. Nothing is written. The grants are validated as `PUT /v1/agents/{id}/tool-selections` validates them; a grant pointing at something this tenant does not have counts as absent, as it would at runtime.",
       ),
       response: errors(400, 401, 403, 404),
       requireRole: "TENANT_ADMIN",
@@ -560,6 +561,12 @@ export const agentsController = new Elysia({
           description:
             "The whole grant set to measure, in the shape the tool-selections replace takes.",
         }),
+        settings: t.Optional(
+          t.Record(t.String(), t.Unknown(), {
+            description:
+              "The agent's settings to measure with, in place of the saved ones (the shape `PATCH /v1/agents/{id}` takes). Tools read them: the handoff instructions, the writable contact fields. Omit to use the saved settings.",
+          }),
+        ),
       }),
     },
   )

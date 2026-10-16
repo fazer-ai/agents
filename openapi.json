@@ -9442,7 +9442,7 @@
           "Agents"
         ],
         "summary": "Estimate the call floor of an unsaved tool set",
-        "description": "The same estimate as `GET /v1/agents/{id}/call-floor`, measured with the given grants in place of the saved ones, so an editor can show what saving them would send. Nothing is written. The grants are validated as `PUT /v1/agents/{id}/tool-selections` validates them; a grant pointing at something this tenant does not have counts as absent, as it would at runtime.",
+        "description": "The same estimate as `GET /v1/agents/{id}/call-floor`, measured with the given grants (and settings, when sent) in place of the saved ones, so an editor can show what saving them would send. Nothing is written. The grants are validated as `PUT /v1/agents/{id}/tool-selections` validates them; a grant pointing at something this tenant does not have counts as absent, as it would at runtime.",
         "parameters": [
           {
             "name": "id",
@@ -9547,6 +9547,13 @@
                         }
                       }
                     }
+                  },
+                  "settings": {
+                    "description": "The agent's settings to measure with, in place of the saved ones (the shape `PATCH /v1/agents/{id}` takes). Tools read them: the handoff instructions, the writable contact fields. Omit to use the saved settings.",
+                    "type": "object",
+                    "patternProperties": {
+                      "^(.*)$": {}
+                    }
                   }
                 }
               }
@@ -9630,6 +9637,13 @@
                         }
                       }
                     }
+                  },
+                  "settings": {
+                    "description": "The agent's settings to measure with, in place of the saved ones (the shape `PATCH /v1/agents/{id}` takes). Tools read them: the handoff instructions, the writable contact fields. Omit to use the saved settings.",
+                    "type": "object",
+                    "patternProperties": {
+                      "^(.*)$": {}
+                    }
                   }
                 }
               }
@@ -9712,6 +9726,13 @@
                           }
                         }
                       }
+                    }
+                  },
+                  "settings": {
+                    "description": "The agent's settings to measure with, in place of the saved ones (the shape `PATCH /v1/agents/{id}` takes). Tools read them: the handoff instructions, the writable contact fields. Omit to use the saved settings.",
+                    "type": "object",
+                    "patternProperties": {
+                      "^(.*)$": {}
                     }
                   }
                 }

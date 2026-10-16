@@ -297,6 +297,49 @@ describe.skipIf(!dbUp)("a guardrail that could not judge, under hold", () => {
   });
 });
 
+// Answers toxicity well under its threshold and leaves every other question unanswered: a screening
+// that failed in part with nothing tripped.
+const partlyCleanDecisions = (async (_url: string, init: RequestInit) => {
+  const body = JSON.parse(String(init.body)) as { questions: object };
+  const answers: Record<string, unknown> = {};
+  for (const name of Object.keys(body.questions))
+    if (name === "toxicity") answers[name] = { type: "noul", noul: 0.05 };
+  return new Response(JSON.stringify({ model: "jev-1.13.0", answers }), {
+    status: 200,
+  });
+}) as unknown as typeof fetch;
+
+describe("the scores a held screening keeps", () => {
+  // The bug it catches: hold replacing the report and dropping which checks answered, so the note
+  // and the playground trace can no longer say which one failed.
+  test.skipIf(!dbUp)(
+    "a decisions screening that failed in part holds with the scores it got",
+    async () => {
+      const reports: GuardrailReport[] = [];
+      const gate = buildGuardrailGate({
+        langfuseCfg: null,
+        cfg: held({ classifier: "decisions" }),
+        apiKey: "k",
+        flow: flow(),
+        decisionFetch: partlyCleanDecisions,
+        announce: async (r) => {
+          reports.push(r);
+        },
+      });
+      expect((await gate("output", CUSTOMER)).kind).toBe("handed-off");
+      expect(reports).toHaveLength(1);
+      expect(reports[0]).toMatchObject({ held: true, outcome: "handed-off" });
+      const toxicity = reports[0]?.scores?.find(
+        (x) => x.category === "toxicity",
+      );
+      expect(toxicity?.probability).toBe(0.05);
+      expect(reports[0]?.scores?.some((x) => x.probability === null)).toBe(
+        true,
+      );
+    },
+  );
+});
+
 describe("the note a held message leaves", () => {
   // The bug it catches: a held hand-over posting no note, or one that reads like a policy trip.
   test("says the check could not run and quotes the reply that was held", async () => {
@@ -318,5 +361,29 @@ describe("the note a held message leaves", () => {
     expect(notes).toHaveLength(1);
     expect(notes[0]).toContain("a checagem não pôde ser feita");
     expect(notes[0]).toContain("RESPOSTA-SEGURADA");
+  });
+
+  test("lists the scores of the checks that did answer", async () => {
+    const notes: string[] = [];
+    const sink = chatwootNoteSink(
+      {
+        sendPrivateNote: async (_c: number, text: string) => {
+          notes.push(text);
+        },
+      } as never,
+      1,
+    );
+    await sink({
+      direction: "input",
+      outcome: "handed-off",
+      held: true,
+      refused: CUSTOMER,
+      scores: [
+        { category: "toxicity", probability: 0.05, threshold: 0.8 },
+        { category: "unsafeContent", probability: null, threshold: 0.8 },
+      ],
+    } as GuardrailReport);
+    expect(notes[0]).toContain("toxicity 0.05 (threshold 0.80)");
+    expect(notes[0]).toContain("unsafeContent ? (threshold 0.80)");
   });
 });

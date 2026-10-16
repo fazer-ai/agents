@@ -110,7 +110,8 @@ export interface GuardrailReport {
   // every screening that ran (clean ones too, since "approved at 0.12 against 0.8" is what tells an
   // operator whether a threshold is right). Numbers and our own keys only; there is no rationale.
   scores?: GuardrailScore[];
-  // A hand-over the `hold` failure mode made: no check answered, so there is no verdict to report.
+  // A hand-over the `hold` failure mode made: the screening could not judge, so there is no verdict
+  // to report, only the scores of the checks that did answer (decisions provider).
   held?: true;
 }
 
@@ -150,7 +151,7 @@ export function chatwootNoteSink(
     )
       return;
     const head = r.held
-      ? `Guardrail (${r.direction}): a checagem não pôde ser feita, e a mensagem foi segurada.`
+      ? `Guardrail (${r.direction}): a checagem não pôde ser feita, e a mensagem foi segurada.${r.scores?.length ? ` ${scoresLine(r.scores)}` : ""}`
       : r.scores
         ? `Guardrail (${r.direction}): ${r.categories?.join(", ") || "policy"} — ${r.action}. ${scoresLine(r.scores)}`
         : `Guardrail (${r.direction}): ${r.categories?.join(", ") || "policy"} — ${r.action}. ${r.rationale ?? ""}`;
@@ -551,20 +552,28 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
   };
 
   // `hold`: a screening that could not judge stops the message as a hand-over does, with the
-  // direction's own customer line, and the note says why there is no verdict.
+  // direction's own customer line, and the note says why there is no verdict. The scores of the
+  // checks that did answer stay, so the note and the trace still say which ones failed.
   const held = (
     direction: "input" | "output",
     subject: string,
+    scores: GuardrailScore[] | undefined,
   ): { d: GuardrailDecision; r: GuardrailReport } => ({
     d: { kind: "handed-off", reply: gr[direction].handoffMessage || null },
-    r: { direction, outcome: "handed-off", held: true, refused: subject },
+    r: {
+      direction,
+      outcome: "handed-off",
+      held: true,
+      refused: subject,
+      ...(scores?.length ? { scores } : {}),
+    },
   });
 
   return async (direction, subject) => {
     const screened = await screen(direction, subject);
     const { d, r } =
       holds && screened.d.kind === "unavailable"
-        ? held(direction, subject)
+        ? held(direction, subject, screened.r?.scores)
         : screened;
     // The one announcement point. `not-run` is the only outcome with no report, and it is the only
     // one where nothing happened for anyone to read.

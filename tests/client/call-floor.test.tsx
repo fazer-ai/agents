@@ -183,6 +183,9 @@ describe("ToolTokens", () => {
         <div data-testid="same-name-other-kind">
           <ToolTokens tool={{ name: "resend_email_status", kind: "http" }} />
         </div>
+        <div data-testid="legacy">
+          <ToolTokens tool={{ name: "Somar", kind: "code" }} />
+        </div>
         <div data-testid="unsaved">
           <ToolTokens tool={{ name: "nao_salva", kind: "http" }} />
         </div>
@@ -192,6 +195,10 @@ describe("ToolTokens", () => {
     expect(screen.getByTestId("mcp").textContent).toBe("~300 tokens per call");
     expect(screen.getByTestId("other-server").textContent).toBe("");
     expect(screen.getByTestId("unsaved").textContent).toBe("");
+    // A row whose stored name the build normalizes ("Somar" is offered as "somar") still finds it.
+    expect(screen.getByTestId("legacy").textContent).toBe(
+      "~64 tokens per call",
+    );
     // An operator's HTTP tool named like a pack's tool is another row, and the number is the pack's.
     expect(screen.getByTestId("same-name-other-kind").textContent).toBe("");
     // The second instance of a pack contributes nothing: its row shows no number.

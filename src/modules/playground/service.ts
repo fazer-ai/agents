@@ -45,6 +45,7 @@ import {
 import { buildSimulatedNativeTools } from "@/graph/tools/native";
 import { logSchemaRefusals } from "@/graph/tools/refusal-log";
 import type { ReplyChoice } from "@/graph/tools/reply-as-text";
+import { normalizeToolName } from "@/graph/tools/toolName";
 import {
   buildPlaygroundTrace,
   buildVisionTraceEntry,
@@ -653,12 +654,18 @@ function toolClassifier(
     loaded.documentSelections.map((d) => documentToolName(d.slug)),
   );
   const knowledge = new Set(loaded.ragConfig?.tools ?? []);
-  const http = new Set(loaded.httpToolDefs.map((d) => d.name));
+  // By the name assembly exposes: a legacy row stored as `Consulta_Legada` is offered as
+  // `consulta_legada` (tools/http.ts sanitizeToolName), and a set of stored spellings misses it.
+  const http = new Set(
+    loaded.httpToolDefs.map((d) => normalizeToolName(d.name)),
+  );
   // Runs for real, like an HTTP tool: the sandbox reaches nothing outside the thread, so there is
   // no side effect to simulate, and the operator is here to see what their function returns.
   // Asked before the HTTP set because both kinds share the model's namespace and the service
   // keeps them apart at write time; the assembly would have dropped one of a colliding pair.
-  const code = new Set(loaded.codeToolDefs.map((d) => d.name));
+  const code = new Set(
+    loaded.codeToolDefs.map((d) => normalizeToolName(d.name)),
+  );
   const mcp = new Set(loaded.mcpSelections.flatMap((s) => s.enabledTools));
   const integration = new Set(
     loaded.integrationSelections.flatMap((s) => s.enabledTools),
@@ -791,7 +798,8 @@ export async function estimateCallFloor(params: {
         }),
       ]),
     );
-    for (const d of [...http, ...code]) labelOf.set(d.name, d.label);
+    for (const d of [...http, ...code])
+      labelOf.set(normalizeToolName(d.name), d.label);
   }
   const templateOf = new Map(
     loaded.documentSelections.map((d) => [

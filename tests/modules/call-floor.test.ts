@@ -381,6 +381,29 @@ describe.skipIf(!dbUp)("estimateCallFloor", () => {
     );
   });
 
+  // A row stored before names were canonicalized keeps its spelling; the build offers the normalized
+  // one, so the floor has to classify and label it by that name or it reads as an unknown tool.
+  test("a legacy-spelled code tool is classified and labelled by the name it is offered under", async () => {
+    const legacy = await suDb.codeToolDefinition.create({
+      data: {
+        tenantId,
+        name: "Consulta_Legada",
+        label: "Consulta legada",
+        description: "Consulta antiga.",
+        inputSchema: { q: { type: "string", description: "q" } },
+        code: "return input.q;",
+      },
+    });
+    const sel = await grant({
+      source: "CODE",
+      codeToolDefinitionId: legacy.id,
+    });
+    const f = await floorOf();
+    const row = f.tools.find((t) => t.name === "consulta_legada");
+    expect(row).toMatchObject({ category: "code", label: "Consulta legada" });
+    await suDb.agentToolSelection.delete({ where: { id: sel.id } });
+  });
+
   test("a decisions-engine observer gets no numbers: it never sends this prompt", async () => {
     const id = (
       await suDb.agent.create({

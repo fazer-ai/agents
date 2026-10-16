@@ -226,3 +226,22 @@ export function guardrailClassifierLabel(
       return null;
   }
 }
+
+// A tool result's size, as the playground trace and a `tool` flow line carry it: characters and the
+// estimated tokens the result adds to every later model call of the turn. Null when there is no size
+// to show (a line written before sizes were recorded, or a thrown tool error, which returned nothing).
+export function toolResultSizeLabel(
+  size: unknown,
+  t: TFunction,
+  lng: string,
+): string | null {
+  if (!size || typeof size !== "object") return null;
+  const { chars, tokens } = size as { chars?: unknown; tokens?: unknown };
+  if (typeof chars !== "number" || typeof tokens !== "number") return null;
+  const n = new Intl.NumberFormat(lng);
+  return t("logs.toolResultSize", {
+    defaultValue: "{{chars}} chars · ~{{tokens}} tokens",
+    chars: n.format(chars),
+    tokens: n.format(tokens),
+  });
+}

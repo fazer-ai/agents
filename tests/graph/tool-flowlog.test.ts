@@ -161,6 +161,37 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
     expect(rows[0]?.errorMessage).toBeNull();
   });
 
+  // NOTE: The size is measured before the row's own caps: a result far past the per-string cut is
+  // stored clipped, and its size still says how big it was, with tool values off and on.
+  test("the stored line carries the whole result's size past the detail cut", async () => {
+    const big = "x".repeat(50_000);
+    for (const logValues of [false, true]) {
+      const flow = flowCtx();
+      const logger = new ToolFlowLogger(flow, { logValues });
+      logger.handleToolStart(
+        {} as never,
+        "{}",
+        "run-size",
+        undefined,
+        undefined,
+        undefined,
+        "probe",
+      );
+      logger.handleToolEnd(
+        new ToolMessage({ content: big, tool_call_id: "c1", name: "probe" }),
+        "run-size",
+      );
+      const rows = await pollToolRows(flow.turnId, 1);
+      const detail = rows[0]?.detail as {
+        output?: unknown;
+        resultSize?: { chars?: number; tokens?: number };
+      };
+      expect(detail?.resultSize?.chars).toBe(50_000);
+      expect((detail?.resultSize?.tokens ?? 0) > 0).toBe(true);
+      expect(JSON.stringify(detail?.output ?? "").length < 50_000).toBe(true);
+    }
+  });
+
   // NOTE: How a third party's characters reach `execution_logs.error_message`: an HTTP tool's response
   // body is the failure's cause, and with `logToolValues` on `failureCause` hands all of it here.
   // Postgres refuses a NUL in a `text` column (22021) and emitFlowEvent swallows the refusal, so

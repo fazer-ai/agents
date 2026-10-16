@@ -3210,6 +3210,7 @@
     "subtitle": "Per-step execution flow for each agent turn: transcription, generation, audio, delivery and handoffs.",
     "systemPrompt": "System prompt",
     "title": "Logs",
+    "toolResultSize": "{{chars}} chars · ~{{tokens}} tokens",
     "turn": "Turn"
   },
   "mcp": {

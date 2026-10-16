@@ -45,6 +45,7 @@ import {
 import { useModalController } from "@/client/components/Modal";
 import { UsageFigure } from "@/client/components/TokenUsage";
 import { useMediaObjectUrl } from "@/client/components/useMediaObjectUrl";
+import { toolResultSizeLabel } from "@/client/lib/flowLabels";
 import { cn } from "@/client/lib/utils";
 import { useKnowledgeManager } from "@/client/pages/resources/useKnowledgeManager";
 import type {
@@ -1427,8 +1428,8 @@ export function guardrailTraceLabel(
   }
 }
 
-function TraceRow({ entry }: { entry: TraceEntry }) {
-  const { t } = useTranslation();
+export function TraceRow({ entry }: { entry: TraceEntry }) {
+  const { t, i18n } = useTranslation();
   if (entry.type === "assistant") {
     return (
       <p className="whitespace-pre-wrap text-text-muted italic">{entry.text}</p>
@@ -1581,6 +1582,14 @@ function TraceRow({ entry }: { entry: TraceEntry }) {
         {entry.simulated && (
           <span className="rounded bg-bg-tertiary px-1 text-[10px] text-text-muted uppercase">
             {t("playground.trace.simulated", "simulated")}
+          </span>
+        )}
+        {entry.size && (
+          <span
+            className="font-normal text-text-muted"
+            data-testid="trace-result-size"
+          >
+            {toolResultSizeLabel(entry.size, t, i18n.language)}
           </span>
         )}
       </span>

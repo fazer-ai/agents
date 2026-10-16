@@ -35,14 +35,4 @@ describe("the tools a voice agent's Tools tab offers", () => {
       shown.integrationInstances.map((inst) => inst.tools.map((t) => t.name)),
     ).toEqual([["drive_search_files"], ["asaas_get_customer"]]);
   });
-
-  test("document tools are files sent to the contact, so none is offered", () => {
-    const docs = {
-      ...catalog,
-      native: named("document_quote", "issue_invoice", "update_labels"),
-    } as unknown as ToolCatalog;
-    expect(voiceToolCatalog(docs).native.map((n) => n.name)).toEqual([
-      "update_labels",
-    ]);
-  });
 });

@@ -3,6 +3,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { decryptJson, encryptJson } from "@/api/lib/crypto";
 import config from "@/config";
+import * as prepare from "@/graph/prepare";
 import type { TenantContext } from "@/lib/tenancy";
 import {
   cloneAgent,
@@ -16,10 +17,12 @@ import {
   type ChatwootClient,
   createChatwootClient,
 } from "@/modules/chatwoot/client";
+import * as chatwootInstance from "@/modules/chatwoot/instance";
 import {
   bindInbox,
   softDisconnectChatwootInstance,
 } from "@/modules/chatwoot/management";
+import { loadPlaygroundVoiceAgent } from "@/modules/playground/service";
 import type { CallRecord } from "@/modules/voice-call/bridge";
 import * as voiceInboxes from "@/modules/voice-call/inboxes";
 import {
@@ -27,12 +30,14 @@ import {
   syncVoiceAgentInboxes,
   voiceStreamUrl,
 } from "@/modules/voice-call/inboxes";
+import { CALL_HTTP_TOOL_TIMEOUT_MS } from "@/modules/voice-call/providers/elevenlabs-tools";
 import {
   fenceConversation,
   reportCall,
   resolveVoiceRoute,
 } from "@/modules/voice-call/service";
 import { setUpAgentCalls } from "@/modules/voice-call/setup";
+import { loadVoiceAgent } from "@/modules/voice-call/tools";
 import { generateRouteToken } from "@/modules/webhooks/inbound/route-token";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../../utils/chatwoot";
@@ -748,6 +753,51 @@ describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
     ).toBe("agent_winner");
   });
 
+  test("a setup that loses the race to one on another key takes the winner's id with the winner's key", async () => {
+    const mine = await suDb.vaultEntry.create({
+      data: { tenantId: tenant, name: "eleven-a", secret: encryptJson("xi-a") },
+      select: { id: true },
+    });
+    const theirs = await suDb.vaultEntry.create({
+      data: { tenantId: tenant, name: "eleven-b", secret: encryptJson("xi-b") },
+      select: { id: true },
+    });
+    const agent = await suDb.agent.create({
+      data: {
+        tenantId: tenant,
+        name: "Troca",
+        kind: "voice",
+        systemPrompt: "x",
+        settings: { calls: { credentialRef: `vault:${mine.id}` } },
+      },
+    });
+    const fetchImpl = (async (url: string) => {
+      if (url.endsWith("/v1/convai/agents/create")) {
+        // The operator switched the key, and a setup on it finished while this one waited.
+        await suDb.agent.update({
+          where: { id: agent.id },
+          data: {
+            settings: {
+              calls: {
+                credentialRef: `vault:${theirs.id}`,
+                elevenLabsAgentId: "agent_on_b",
+              },
+            },
+          },
+        });
+        return new Response(JSON.stringify({ agent_id: "agent_on_a" }));
+      }
+      return new Response("{}");
+    }) as unknown as typeof fetch;
+    const result = await setUpAgentCalls(ctx(tenant), agent.id, {
+      fetchImpl,
+      base: appDb,
+    });
+    expect(
+      result.ok && [result.setup.elevenLabsAgentId, result.setup.apiKey],
+    ).toEqual(["agent_on_b", "xi-b"]);
+  });
+
   test("a voice agent is created as one, never in monitoring mode, and its kind does not change", async () => {
     const made = await createAgent(
       ctx(tenant),
@@ -912,5 +962,126 @@ describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
         after: { voiceAgentId: null },
       },
     ]);
+  });
+
+  test("two first bindings of one inbox mint one route token: the second reads the first's", async () => {
+    const fresh = await suDb.inbox.create({
+      data: {
+        tenantId: tenant,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: 503,
+        name: "Inbox 503",
+        channelType: "Channel::Whatsapp",
+      },
+    });
+    const first = generateRouteToken();
+    await underConcurrentEdit(
+      suDb,
+      (tx) =>
+        tx.inbox.update({
+          where: { id: fresh.id },
+          data: {
+            voiceRouteToken: encryptJson(first.token),
+            voiceRouteTokenHash: first.hash,
+          },
+        }),
+      () =>
+        bindInboxVoiceAgent(
+          ctx(tenant),
+          fresh.id,
+          voiceId,
+          fakeChatwoot(),
+          appDb,
+        ),
+    );
+    const row = await suDb.inbox.findUniqueOrThrow({ where: { id: fresh.id } });
+    expect(row.voiceRouteTokenHash).toBe(first.hash);
+    await bindInboxVoiceAgent(
+      ctx(tenant),
+      fresh.id,
+      null,
+      fakeChatwoot(),
+      appDb,
+    );
+  });
+
+  test("a call's tools are built unmuted, for a call, on the call's HTTP deadline", async () => {
+    const route = {
+      tenantId: tenant,
+      instanceId,
+      inboxId: 501,
+      agentId: voiceId,
+      agentName: "Raquel",
+      systemPrompt: "",
+    };
+    const seen: Parameters<typeof prepare.buildToolset>[1][] = [];
+    const configs: Parameters<typeof prepare.buildToolset>[0][] = [];
+    const build = spyOn(prepare, "buildToolset").mockImplementation(
+      async (cfg, toolsetCtx) => {
+        configs.push(cfg);
+        seen.push(toolsetCtx);
+        return [];
+      },
+    );
+    // The agent's configuration as the turn would load it; what is asked here is how the call
+    // builds its tools from it.
+    const load = spyOn(prepare, "loadAgentConfig").mockImplementation(
+      async () =>
+        ({
+          systemPrompt: "x",
+          agentBotToken: null,
+          documentSelections: [{ templateId: "1" }],
+        }) as unknown as Awaited<ReturnType<typeof prepare.loadAgentConfig>>,
+    );
+    // A client that is only what it was asked to be: muted or not.
+    const client = spyOn(
+      chatwootInstance,
+      "loadChatwootClient",
+    ).mockImplementation(
+      async (_tenant, _instance, deps) =>
+        ({ muted: deps?.mute === true }) as unknown as ChatwootClient,
+    );
+    try {
+      await loadVoiceAgent(route, 20, appDb);
+    } finally {
+      build.mockRestore();
+      load.mockRestore();
+      client.mockRestore();
+    }
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.client.muted).toBe(false);
+    expect(seen[0]?.onCall).toBe(true);
+    expect(seen[0]?.httpToolTimeoutMs).toBe(CALL_HTTP_TOOL_TIMEOUT_MS);
+    // A document is a file sent to the contact, which a call cannot do.
+    expect(configs[0]?.documentSelections).toEqual([]);
+  });
+
+  test("the Playground's call builds its tools as a call does: no documents, the call's HTTP deadline", async () => {
+    const seen: Parameters<typeof prepare.buildToolset>[1][] = [];
+    const configs: Parameters<typeof prepare.buildToolset>[0][] = [];
+    const build = spyOn(prepare, "buildToolset").mockImplementation(
+      async (cfg, toolsetCtx) => {
+        configs.push(cfg);
+        seen.push(toolsetCtx);
+        return [];
+      },
+    );
+    // An agent granted a document, as the API or an import can leave a voice agent.
+    const load = spyOn(prepare, "loadAgentConfig").mockImplementation(
+      async () =>
+        ({
+          systemPrompt: "x",
+          documentSelections: [{ templateId: "1" }],
+        }) as unknown as Awaited<ReturnType<typeof prepare.loadAgentConfig>>,
+    );
+    try {
+      await loadPlaygroundVoiceAgent(ctx(tenant), voiceId, appDb);
+    } finally {
+      build.mockRestore();
+      load.mockRestore();
+    }
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.httpToolTimeoutMs).toBe(CALL_HTTP_TOOL_TIMEOUT_MS);
+    expect(configs[0]?.documentSelections).toEqual([]);
   });
 });

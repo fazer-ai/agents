@@ -87,6 +87,7 @@ import { shouldReplyWithAudio } from "@/modules/tts/settings";
 import { logTextInsteadOfAudio, planAudioReply } from "@/modules/tts/speakable";
 import { extractPlaygroundFile } from "@/modules/vision/service";
 import { readVisionConfig } from "@/modules/vision/settings";
+import { CALL_HTTP_TOOL_TIMEOUT_MS } from "@/modules/voice-call/providers/elevenlabs-tools";
 import { toVoiceTools, type VoiceAgent } from "@/modules/voice-call/tools";
 import {
   listThreadMedia,
@@ -411,6 +412,8 @@ function buildPlaygroundToolset(
     replyChoice: ReplyChoice | undefined;
     // The simulated follow-up, built like production's nudge (ToolCtx.proactive).
     proactive?: boolean;
+    // A call's HTTP deadline, below what the voice engine waits (CALL_HTTP_TOOL_TIMEOUT_MS).
+    httpToolTimeoutMs?: number;
   },
 ): Promise<StructuredToolInterface[]> {
   return buildToolset(
@@ -424,6 +427,9 @@ function buildPlaygroundToolset(
       threadId: params.threadId,
       replyChoice: params.replyChoice,
       ...(params.proactive ? { proactive: true } : {}),
+      ...(params.httpToolTimeoutMs !== undefined
+        ? { httpToolTimeoutMs: params.httpToolTimeoutMs }
+        : {}),
     },
     {
       // Conversation tools (handoff/resolve/…) are SIMULATED (no real effect); utility tools
@@ -2022,12 +2028,18 @@ export async function loadPlaygroundVoiceAgent(
     base,
     chatModelUnused: true,
   });
-  const all = await buildPlaygroundToolset(loaded, {
-    ctx,
-    threadId,
-    base,
-    flow: undefined,
-    replyChoice: undefined,
-  });
+  // A call delivers no document and waits its own deadline on an HTTP tool, as in production
+  // (`loadVoiceAgent`).
+  const all = await buildPlaygroundToolset(
+    { ...loaded, documentSelections: [] },
+    {
+      ctx,
+      threadId,
+      base,
+      flow: undefined,
+      replyChoice: undefined,
+      httpToolTimeoutMs: CALL_HTTP_TOOL_TIMEOUT_MS,
+    },
+  );
   return { systemPrompt: loaded.systemPrompt, tools: toVoiceTools(all) };
 }

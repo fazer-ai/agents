@@ -42,6 +42,8 @@ export async function setUpAgentCalls(
     checkAccess?: boolean;
     fetchImpl?: typeof fetch;
     base?: PrismaClient;
+    // Set on the one retry a lost race earns (below).
+    retried?: boolean;
   } = {},
 ): Promise<CallsSetupResult> {
   const base = opts.base ?? basePrisma;
@@ -105,20 +107,16 @@ export async function setUpAgentCalls(
     );
     if (written === 0) {
       await deleteElevenLabsAgent(apiKey, elevenLabsAgentId, opts.fetchImpl);
-      const winner = await runScopedOn(base, ctx, (db) =>
-        db.agent.findUnique({
-          where: { id: agentId },
-          select: { settings: true },
-        }),
-      );
-      const kept = readCallsConfig(winner?.settings).elevenLabsAgentId;
-      if (!kept)
+      // The winner's id is checked as this setup checked its own: read again, key included, since the
+      // key may have changed with it and an id is only good on the account that holds it. Once.
+      if (opts.retried)
         return {
           ok: false,
           problem: "sync_failed",
-          detail: "the ElevenLabs agent id was cleared while it was being set",
+          detail:
+            "the ElevenLabs agent id kept changing while it was being set",
         };
-      elevenLabsAgentId = kept;
+      return setUpAgentCalls(ctx, agentId, { ...opts, retried: true });
     }
   }
   return { ok: true, setup: { calls, apiKey, voice, elevenLabsAgentId } };

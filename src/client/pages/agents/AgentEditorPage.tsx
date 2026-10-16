@@ -4176,9 +4176,11 @@ function AgentEditor() {
         "knowledge",
       ] as const
     ).filter((key) => planned(key) && drawn(key));
+    // A planned section undone since is not written, so nothing on its tab can hold the save.
     if (!plan.judged) {
-      for (const key of rest) if (judge(key) !== "ok") return;
-      if (planned("behavior") && behaviorPageHold() === false) return end();
+      for (const key of rest) if (dirty[key] && judge(key) !== "ok") return;
+      if (planned("behavior") && dirty.behavior && behaviorPageHold() === false)
+        return end();
       plan.judged = true;
     }
     // One write per pass, each pass on a fresh render: a section discarded while an earlier write

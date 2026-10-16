@@ -589,4 +589,64 @@ describe("the editor's bar covers the whole agent", () => {
     ).toEqual([]);
     invalidateVault();
   });
+
+  // A planned section undone while General's write is out needs no write, so a hold on its tab (the
+  // stored fallback here) does not stop the sections still edited.
+  test("a section undone while an earlier write is out does not hold the rest", async () => {
+    const stub = stubEditorApi(
+      {
+        name: "Atendente",
+        settings: {
+          modelFallback: {
+            provider: "openai-compatible",
+            model: "m",
+            baseURL: null,
+          },
+        },
+      },
+      { catalog: NATIVE_CATALOG },
+    );
+    const served = globalThis.fetch;
+    let release: () => void = () => {};
+    const held = new Promise<void>((r) => {
+      release = r;
+    });
+    let patchSent = false;
+    globalThis.fetch = (async (
+      input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      if ((init?.method ?? "GET") === "PATCH" && !patchSent) {
+        patchSent = true;
+        await held;
+      }
+      return served(input, init);
+    }) as typeof fetch;
+    await renderEditor(stub, "behavior");
+    const number = () => {
+      const panel =
+        document.querySelector<HTMLElement>('[role="tabpanel"]') ??
+        document.body;
+      const n = panel.querySelector<HTMLInputElement>('input[type="number"]');
+      if (!n) throw new Error("no number field on Behavior");
+      return n;
+    };
+    const stored = number().value;
+    editTab("behavior");
+    await goTo("Tools");
+    editTab("tools");
+    await goTo("General");
+    editTab("general");
+    fireEvent.click(save());
+    await waitFor(() => expect(patchSent).toBe(true));
+    await goTo("Behavior");
+    fireEvent.change(number(), { target: { value: stored } });
+    release();
+    await waitFor(
+      () => expect(stub.writes.some((w) => w.method === "PUT")).toBe(true),
+      { timeout: 5_000 },
+    );
+    expect(screen.queryByText(/Fix the Behavior tab/)).toBeNull();
+    expect(stub.writes.filter((w) => w.method === "PATCH").length).toBe(2);
+  });
 });

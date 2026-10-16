@@ -98,6 +98,18 @@ const get = (id: string, cookie?: string) =>
     }),
   );
 
+const post = (id: string, grants: unknown, cookie?: string) =>
+  server.handle(
+    new BunRequest(`http://localhost/api/v1/agents/${id}/call-floor`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(cookie ? { cookie } : {}),
+      },
+      body: JSON.stringify({ grants }),
+    }),
+  );
+
 describe.skipIf(!dbUp)("GET /v1/agents/:id/call-floor", () => {
   beforeAll(async () => {
     if (!su || !app) return;
@@ -172,5 +184,33 @@ describe.skipIf(!dbUp)("GET /v1/agents/:id/call-floor", () => {
     expect((await get(otherAgentId, cookie)).status).toBe(404);
     expect((await get("999999999", cookie)).status).toBe(404);
     expect((await get("abc", cookie)).status).toBe(400);
+  });
+
+  // The editor's unsaved set: the same doors, and the grants reach the estimate as sent.
+  test("POST measures the grants it is sent, behind the same doors", async () => {
+    const grants = [{ source: "NATIVE", enabledTools: ["calculator"] }];
+    seen.length = 0;
+    expect((await post(agentId, grants)).status).toBe(401);
+    expect((await post(agentId, grants, await cookieAs("AGENT"))).status).toBe(
+      403,
+    );
+    expect(seen).toEqual([]);
+    const cookie = await cookieAs("TENANT_ADMIN");
+    const res = await post(agentId, grants, cookie);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      floor: { tools: { name: string }[] };
+    };
+    expect(body.floor.tools.map((t) => t.name)).toEqual(["calculator"]);
+    expect(
+      (
+        await post(
+          agentId,
+          [{ source: "NATIVE", enabledTools: ["nope"] }],
+          cookie,
+        )
+      ).status,
+    ).toBe(400);
+    expect((await post(otherAgentId, grants, cookie)).status).toBe(404);
   });
 });

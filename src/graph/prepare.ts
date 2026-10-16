@@ -181,6 +181,7 @@ import {
 import { type AuditedSection, buildPromptAudit } from "./prompt-audit";
 import { DEFAULT_TIMEZONE, zonedWallClockToInstant } from "./time";
 import {
+  type AgentToolSelections,
   buildHttpTools,
   type LoadedCodeToolDef,
   type LoadedHttpToolDef,
@@ -496,6 +497,9 @@ export async function loadAgentConfig(
     // that does not resolve as no key, where every other caller treats both as an agent that cannot
     // run. `mc` keeps whatever parsed, for the lines that name it.
     chatModelUnused?: boolean;
+    // The grants to load instead of the saved ones: the editor's unsaved set, for the call-floor
+    // estimate of what saving it would send.
+    toolSelections?: AgentToolSelections;
   } = {},
 ): Promise<AgentConfig | null> {
   const agent = await db.agent.findUnique({
@@ -792,7 +796,7 @@ export async function loadAgentConfig(
       crossInboxCaseConfig.subjectTemplate = null;
   }
   const langfuseCfg = await resolveLangfuseConfig(db, args.tenantId);
-  const sel = await loadToolSelections(db, agent.id);
+  const sel = opts.toolSelections ?? (await loadToolSelections(db, agent.id));
   // A/B: an active experiment for this agent may override the system prompt for this thread.
   const promptOverride = opts.skipExperiment
     ? null

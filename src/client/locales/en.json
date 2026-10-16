@@ -1414,7 +1414,7 @@
     "callFloor": {
       "added": "includes {{n}} the system adds (knowledge rules, MCP servers)",
       "decisions": "Instructions and tools do not apply: this agent decides with questions and rules, and sends no instructions to a model.",
-      "help": "An estimate: the count your provider bills can be higher, more so with many tools.\n\nIt is the floor of a call. Each conversation adds its history and what belongs to it, none of which is counted here: contact and conversation attributes and contact fields, appointments, the authorization check and context from other inboxes, the label and handoff vocabulary the built-in tools' descriptions gain in a conversation, and the notices of each turn. Tools count as they are saved; instructions count as you type them.",
+      "help": "An estimate: the count your provider bills can be higher, more so with many tools.\n\nIt is the floor of a call. Each conversation adds its history and what belongs to it, none of which is counted here: contact and conversation attributes and contact fields, appointments, the authorization check and context from other inboxes, the label and handoff vocabulary the built-in tools' descriptions gain in a conversation, and the notices of each turn. Tools and instructions count as they are on screen, before you save.",
       "helpLabel": "About this estimate",
       "instructions": "Agent instructions",
       "instructionsLine": "These instructions add {{n}} tokens to every call.",

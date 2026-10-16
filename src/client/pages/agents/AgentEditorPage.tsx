@@ -2550,31 +2550,39 @@ function AgentEditor() {
     };
   }, [id, serverSyncTick]);
 
-  // What every call sends before the history (instructions, runtime additions, each saved tool), for
-  // the line next to the history ceiling and the numbers on the Tools tab. Retaken on the same
-  // snapshot as the readings above, and on every catalog re-read: tools count as saved, so a save of
-  // the agent or of a tool definition is when the number can move.
+  // What every call sends before the history (instructions, runtime additions, each tool), for the
+  // line under the instructions and the numbers on the Tools and Knowledge tabs. Measured on the grant
+  // set as it stands on screen, so a tool or a knowledge switch shows its cost before the save; retaken
+  // on every sync and catalog re-read too, since a saved tool definition changes what it measures.
   const [callFloor, setCallFloor] = useState<CallFloor | null>(null);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: catalogTick is a refetch trigger — a tool definition saved in its modal changes what the floor measures.
+  const draftGrantsKey = canonicalGrants(savedGrants);
+  const draftGrantsRef = useRef(savedGrants);
+  draftGrantsRef.current = savedGrants;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: draftGrantsKey stands for the grants (read through the ref, compared by content); catalogTick is a refetch trigger — a tool definition saved in its modal changes what the floor measures.
   useEffect(() => {
     if (!id || serverSyncTick === 0) {
       setCallFloor(null);
       return;
     }
     let alive = true;
-    api.api.v1
-      .agents({ id })
-      ["call-floor"].get()
-      .then(({ data }) => {
-        if (alive) setCallFloor((data?.floor as CallFloor | undefined) ?? null);
-      })
-      .catch(() => {
-        if (alive) setCallFloor(null);
-      });
+    // A burst of clicks is one request: the number lands once the operator stops toggling.
+    const timer = setTimeout(() => {
+      api.api.v1
+        .agents({ id })
+        ["call-floor"].post({ grants: draftGrantsRef.current })
+        .then(({ data }) => {
+          if (alive)
+            setCallFloor((data?.floor as CallFloor | undefined) ?? null);
+        })
+        .catch(() => {
+          if (alive) setCallFloor(null);
+        });
+    }, 300);
     return () => {
       alive = false;
+      clearTimeout(timer);
     };
-  }, [id, serverSyncTick, catalogTick]);
+  }, [id, serverSyncTick, catalogTick, draftGrantsKey]);
 
   // Live config-health: a feature on without its credential, or naming one whose secret is not
   // filled in (pending); each issue deep-links to its tab or the vault fill modal. Messages by issue.key:

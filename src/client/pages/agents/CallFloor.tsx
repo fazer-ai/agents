@@ -21,8 +21,8 @@ import { estimateTokens } from "@/lib/token-estimate";
 import type { CallFloor, CallFloorTool } from "@/modules/playground/service";
 
 // What every model call of the agent sends before the history (docs/graph.md, History ceiling),
-// shown where the operator sizes that ceiling. The server measures the SAVED tools and what the runtime
-// appends; the instructions are counted here, from the draft, so the number moves while they type.
+// shown where the operator sizes that ceiling. The server measures the tools as they stand on screen
+// and what the runtime appends; the instructions are counted here, so the number moves while they type.
 
 export type { CallFloor, CallFloorTool };
 
@@ -77,8 +77,9 @@ function findTool(
   });
 }
 
-// The number one tool adds to every call, next to its row. Nothing when the tool is not in the saved
-// floor (not granted yet, or granted and not saved): an absent number never reads as zero.
+// The number one tool adds to every call, next to its row. Nothing when the tool is not in the floor
+// (not turned on, or not reachable, like an MCP server that does not answer): an absent number never
+// reads as zero.
 export function ToolTokens({ tool }: { tool: ToolRef }) {
   const { t, i18n } = useTranslation();
   const floor = useContext(CallFloorContext);
@@ -136,7 +137,7 @@ export function InstructionsTokens({ draftPrompt }: { draftPrompt: string }) {
   );
 }
 
-// Next to a Knowledge tab switch: what turning it on costs every call, as saved. The search switch
+// Next to a Knowledge tab switch: what turning it on costs every call, saved or not. The search switch
 // brings the search tool and the grounding rules the runtime appends; the suggest switch its tool.
 export function KnowledgeTokens({ part }: { part: "search" | "suggest" }) {
   const { t, i18n } = useTranslation();
@@ -264,7 +265,7 @@ export function CallFloorLine({
           label={t("editor.callFloor.helpLabel", "About this estimate")}
           content={t(
             "editor.callFloor.help",
-            "An estimate: the count your provider bills can be higher, more so with many tools.\n\nIt is the floor of a call. Each conversation adds its history and what belongs to it, none of which is counted here: contact and conversation attributes and contact fields, appointments, the authorization check and context from other inboxes, the label and handoff vocabulary the built-in tools' descriptions gain in a conversation, and the notices of each turn. Tools count as they are saved; instructions count as you type them.",
+            "An estimate: the count your provider bills can be higher, more so with many tools.\n\nIt is the floor of a call. Each conversation adds its history and what belongs to it, none of which is counted here: contact and conversation attributes and contact fields, appointments, the authorization check and context from other inboxes, the label and handoff vocabulary the built-in tools' descriptions gain in a conversation, and the notices of each turn. Tools and instructions count as they are on screen, before you save.",
           )}
         />
       </div>

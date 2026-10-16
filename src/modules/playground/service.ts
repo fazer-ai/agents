@@ -33,6 +33,7 @@ import {
   withoutLoneSilenceTool,
 } from "@/graph/silence";
 import { ToolFlowLogger } from "@/graph/tool-flowlog";
+import { selectionsFromGrants } from "@/graph/tools/assemble";
 import {
   CONVERSATION_NATIVE_TOOL_NAMES,
   UTILITY_NATIVE_TOOL_NAMES,
@@ -62,6 +63,7 @@ import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
 import { estimateTokens } from "@/lib/token-estimate";
 import { isMonitoring } from "@/modules/agents/mode";
+import { normalizeGrants, type ToolGrantInput } from "@/modules/agents/service";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { renderInboundMessage } from "@/modules/chatwoot/render";
 import { documentToolName } from "@/modules/documents/templates";
@@ -733,6 +735,10 @@ export async function estimateCallFloor(params: {
   agentId: bigint;
   base?: PrismaClient;
   deps?: PlaygroundDeps;
+  // The editor's unsaved grant set, measured in place of the saved one: the number moves when a tool
+  // or a knowledge switch is turned on, before the save. Validated as the save validates it, so a set
+  // the save would refuse is refused here too.
+  grants?: ToolGrantInput[];
 }): Promise<CallFloor> {
   const base = params.base ?? basePrisma;
   const agent = await runScopedOn(base, params.ctx, (db) =>
@@ -752,7 +758,8 @@ export async function estimateCallFloor(params: {
     params.ctx.tenantId as bigint,
     params.agentId,
   );
-  const loaded = await runScopedOn(base, params.ctx, (db) =>
+  const draft = params.grants ? normalizeGrants(params.grants) : undefined;
+  const loaded = await runScopedOn(base, params.ctx, async (db) =>
     loadAgentConfig(
       db,
       {
@@ -762,7 +769,14 @@ export async function estimateCallFloor(params: {
         agentId: params.agentId,
         threadId,
       },
-      { ignoreDisabled: true, chatModelUnused: true, skipExperiment: true },
+      {
+        ignoreDisabled: true,
+        chatModelUnused: true,
+        skipExperiment: true,
+        ...(draft
+          ? { toolSelections: await selectionsFromGrants(db, draft) }
+          : {}),
+      },
     ),
   );
   if (!loaded)
@@ -797,18 +811,17 @@ export async function estimateCallFloor(params: {
   const httpNames = loaded.httpToolDefs.map((d) => d.name);
   const codeNames = loaded.codeToolDefs.map((d) => d.name);
   if (httpNames.length || codeNames.length) {
-    const [http, code] = await runScopedOn(base, params.ctx, (db) =>
-      Promise.all([
-        db.toolDefinition.findMany({
-          where: { name: { in: httpNames } },
-          select: { name: true, label: true },
-        }),
-        db.codeToolDefinition.findMany({
-          where: { name: { in: codeNames } },
-          select: { name: true, label: true },
-        }),
-      ]),
-    );
+    // One after another: both run on the scoped transaction's single connection.
+    const [http, code] = await runScopedOn(base, params.ctx, async (db) => [
+      await db.toolDefinition.findMany({
+        where: { name: { in: httpNames } },
+        select: { name: true, label: true },
+      }),
+      await db.codeToolDefinition.findMany({
+        where: { name: { in: codeNames } },
+        select: { name: true, label: true },
+      }),
+    ]);
     for (const d of [...http, ...code])
       labelOf.set(normalizeToolName(d.name), d.label);
   }

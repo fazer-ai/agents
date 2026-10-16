@@ -1210,11 +1210,6 @@
     "unpriced_other": "{{n}} requisições deste período não têm preço e estão fora do custo: {{models}}. Defina o preço próprio da conta para o modelo em Avançado > Preços dos modelos e depois reprecifique as chamadas já feitas.",
     "unpricedCta": "Abrir preços dos modelos"
   },
-  "dashboards": {
-    "proTitle": "Dashboards são um recurso do Pro",
-    "subtitle": "Painéis que você mesmo monta sobre as suas conversas e o uso de IA, cada um no seu próprio endereço.",
-    "title": "Dashboards"
-  },
   "documentApproval": {
     "again": "Pedido de novo, com a data de hoje. Este é o pedido novo.",
     "againFailed": "Não foi possível pedir de novo.",
@@ -3462,7 +3457,6 @@
     "collapsed": "Recolhido",
     "conversations": "Conversas",
     "dashboard": "Painel",
-    "dashboards": "Dashboards",
     "expand": "Expandir",
     "github": "GitHub",
     "home": "Início",
@@ -4188,9 +4182,6 @@
       "description": "A identidade visual white-label (nome, cores, logo, favicon) é um recurso Pro. Faça upgrade para o Pro para personalizar a identidade do app."
     },
     "cta": "Fazer upgrade",
-    "dashboards": {
-      "description": "Monte os seus próprios dashboards (conversas por evento, etiqueta ou desfecho, custo de IA por modelo) e compartilhe cada um pelo endereço. Faça upgrade para o Pro para criá-los."
-    },
     "dismiss": "Agora não",
     "multiTenant": {
       "description": "A edição Free roda com um único tenant. Faça upgrade para o Pro para criar e gerenciar vários tenants."

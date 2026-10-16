@@ -10,8 +10,6 @@ const DETAIL_ROOTS: { pattern: RegExp; root: string }[] = [
   { pattern: /^\/agents\/[^/]+(?:\/[^/]+)?\/?$/, root: "/agents" },
   // /conversations/:id -> /conversations
   { pattern: /^\/conversations\/[^/]+\/?$/, root: "/conversations" },
-  // /dashboards/:slug -> /dashboards (a slug is per account, like an id)
-  { pattern: /^\/dashboards\/[^/]+\/?$/, root: "/dashboards" },
 ];
 
 // Given the current pathname, returns the list root to navigate to after a tenant switch, or null when

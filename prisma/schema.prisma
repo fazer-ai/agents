@@ -187,8 +187,6 @@ model Tenant {
   mcpOAuthPendingAuthorizations McpOAuthPendingAuthorization[]
   appointments                  Appointment[]
   dashboardDays                 DashboardDay[]
-  dashboards                    Dashboard[]
-  dashboardPanels               DashboardPanel[]
 
   @@map("tenants")
 }
@@ -1541,54 +1539,6 @@ model BusinessHours {
 
   @@index([tenantId])
   @@map("business_hours")
-}
-
-// ──────────────────────────────────────────────── dashboards ──
-
-// A dashboard the account builds out of panels (docs/dashboards.md). Pro: the service, the routes
-// and the screens leave the Free tree; these tables exist in every edition so the schema never
-// diverges. `slug` is the readable part of its route, unique inside the tenant.
-model Dashboard {
-  id             BigInt   @id @default(autoincrement())
-  tenantId       BigInt   @map("tenant_id")
-  name           String
-  slug           String
-  // 24h | today | 7d | 30d: the period the view opens on.
-  defaultRange   String   @default("24h") @map("default_range")
-  // 0 (off), 60 or 300.
-  refreshSeconds Int      @default(0) @map("refresh_seconds")
-  createdAt      DateTime @default(now()) @map("created_at")
-  updatedAt      DateTime @updatedAt @map("updated_at")
-
-  tenant Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  panels DashboardPanel[]
-
-  @@unique([tenantId, slug])
-  @@map("dashboards")
-}
-
-// One panel of a dashboard. `query` is the declarative query (src/modules/dashboards/query-schema.ts),
-// parsed on every read; `position` orders the grid.
-model DashboardPanel {
-  id            BigInt   @id @default(autoincrement())
-  tenantId      BigInt   @map("tenant_id")
-  dashboardId   BigInt   @map("dashboard_id")
-  position      Int
-  // third | half | two_thirds | full
-  width         String   @default("half")
-  title         String
-  description   String?
-  // number | timeseries | bars | table
-  visualization String
-  query         Json
-  createdAt     DateTime @default(now()) @map("created_at")
-  updatedAt     DateTime @updatedAt @map("updated_at")
-
-  tenant    Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  dashboard Dashboard @relation(fields: [dashboardId], references: [id], onDelete: Cascade)
-
-  @@index([tenantId, dashboardId, position])
-  @@map("dashboard_panels")
 }
 
 // ──────────────────────────────────────────────── knowledge (RAG) ──

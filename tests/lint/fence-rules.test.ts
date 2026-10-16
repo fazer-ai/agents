@@ -55,7 +55,6 @@ const RULES = {
   staleness: "makes the check a tautology",
   marker: "Write an audit marker through",
   dynamicImport: "A dynamic import in the console goes through",
-  chartImport: "Import charts only from a chart module",
   unusedWaiver: "Suppression comment has no effect",
 } as const;
 type Rule = keyof typeof RULES;
@@ -113,12 +112,6 @@ const PROBES: Record<string, string> = {
     'declare const lazy: (f: () => unknown) => unknown;\nexport const A = lazy(() => import("./a"));\nexport async function b() {\n  return (await import("./b")).default;\n}\n',
   [P("dynamic-import-wrapped.ts")]:
     'declare const lazyWithReload: (f: () => unknown) => unknown;\ndeclare const importWithReload: (f: () => Promise<{ default: unknown }>) => Promise<{ default: unknown }>;\nexport const A = lazyWithReload(() => import("./a").then((m) => m));\nexport async function b() {\n  return (await importWithReload(() => import("./b"))).default;\n}\n',
-
-  // no-static-chart-import
-  [P("chart-static.tsx")]:
-    'import { AreaChart } from "recharts";\nimport { useChartPalette } from "@/client/pages/dashboard/charts";\nexport const a = [AreaChart, useChartPalette];\n',
-  [P("chart-lazy.tsx")]:
-    'import type { ChartRow } from "./charts";\ndeclare const lazyWithReload: (f: () => unknown) => unknown;\nexport const A = lazyWithReload(() => import("./charts"));\nexport type R = ChartRow;\n',
 
   // require-textarea-cap, require-highlighted-cap
   [P("textarea-uncapped.tsx")]:
@@ -453,8 +446,6 @@ describe("each fence refuses its shape and nothing else", () => {
     ["window-open-blob.ts", {}],
     ["dynamic-import-bare.ts", { dynamicImport: 2 }],
     ["dynamic-import-wrapped.ts", {}],
-    ["chart-static.tsx", { chartImport: 2 }],
-    ["chart-lazy.tsx", {}],
     ["textarea-uncapped.tsx", { textarea: 1 }],
     ["textarea-capped.tsx", {}],
     ["textarea-waived.tsx", {}],

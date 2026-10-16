@@ -12,18 +12,16 @@ import { UPGRADE_URL } from "@/client/lib/navigation";
 
 // A feature that is available on the Pro edition only. Extend the union + the description map to
 // gate a new feature; the modal title/CTA are shared.
-export type ProFeature = "multiTenant" | "branding" | "dashboards";
+export type ProFeature = "multiTenant" | "branding";
 
 // Per-feature body copy. The modal title and CTA are generic; only the description names the
 // feature. Keys are declared with magic comments so `bun i18n:extract` picks them up despite the
 // dynamic lookup below.
 // t('upgrade.multiTenant.description', 'The Free edition runs a single tenant. Upgrade to Pro to create and manage multiple tenants.')
 // t('upgrade.branding.description', 'White-label branding (name, colors, logo, favicon) is a Pro feature. Upgrade to Pro to customize the app identity.')
-// t('upgrade.dashboards.description', 'Build your own dashboards (conversations by event, label or outcome, AI cost by model) and share each one by its address. Upgrade to Pro to create them.')
 const FEATURE_DESCRIPTION_KEY: Record<ProFeature, string> = {
   multiTenant: "upgrade.multiTenant.description",
   branding: "upgrade.branding.description",
-  dashboards: "upgrade.dashboards.description",
 };
 
 // Upsell affordance for a Pro-only action, shown ONLY in the Free edition. Renders its own trigger

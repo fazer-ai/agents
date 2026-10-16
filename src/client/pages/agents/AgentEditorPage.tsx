@@ -4084,6 +4084,8 @@ function AgentEditor() {
     // Each tab judged again during this save, with the `crossTabKey` it was judged under.
     rechecked: Map<TabKey, string>;
     origin: TabKey;
+    // The last tab the save opened to judge it again.
+    wentTo: TabKey | null;
   };
   const barSaveRef = useRef<BarSave | null>(null);
   // Where the save goes on: after the tab it opened is drawn, or after General's write has landed.
@@ -4107,6 +4109,7 @@ function AgentEditor() {
       judged: false,
       written: new Set(),
       rechecked: new Map(),
+      wentTo: null,
       origin: tab,
     };
     barModelRef.current = barSaveRef.current.sections.has("general")
@@ -4161,6 +4164,7 @@ function AgentEditor() {
         plan.rechecked.get(key) !== crossTabKey
       ) {
         plan.rechecked.set(key, crossTabKey);
+        plan.wentTo = key;
         continueRef.current = { onTab: key };
         openTab(key);
         return "away";
@@ -4263,7 +4267,10 @@ function AgentEditor() {
       );
       return;
     }
-    if (plan.origin !== tab) openTab(plan.origin);
+    // Back where Save was pressed only from a tab the save itself opened, never from one the
+    // operator moved to while it ran.
+    if (plan.wentTo !== null && plan.wentTo === tab && plan.origin !== tab)
+      openTab(plan.origin);
   }
 
   function askDelete() {

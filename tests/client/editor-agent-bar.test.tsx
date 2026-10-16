@@ -741,4 +741,42 @@ describe("the editor's bar covers the whole agent", () => {
     );
     expect(screen.queryByText(/Fix the Knowledge tab/)).toBeNull();
   });
+
+  // The save goes back to where Save was pressed only from a tab it opened itself: an operator who
+  // moved to General while the Tools write was out stays on General.
+  test("a tab the operator moved to during the save is where the save leaves them", async () => {
+    const stub = stubEditorApi(
+      { name: "Atendente" },
+      { catalog: NATIVE_CATALOG },
+    );
+    const served = globalThis.fetch;
+    let release: () => void = () => {};
+    const held = new Promise<void>((r) => {
+      release = r;
+    });
+    let putSent = false;
+    globalThis.fetch = (async (
+      input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      if ((init?.method ?? "GET") === "PUT" && !putSent) {
+        putSent = true;
+        await held;
+      }
+      return served(input, init);
+    }) as typeof fetch;
+    await renderEditor(stub, "tools");
+    editTab("tools");
+    fireEvent.click(save());
+    await waitFor(() => expect(putSent).toBe(true));
+    await goTo("General");
+    release();
+    await screen.findByText("Tools updated.");
+    for (let i = 0; i < 5; i++) await act(async () => {});
+    expect(
+      screen
+        .getByRole("tab", { name: "General" })
+        .getAttribute("aria-selected"),
+    ).toBe("true");
+  });
 });

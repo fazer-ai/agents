@@ -38,6 +38,8 @@ const read: {
   reported: (number | null)[];
   directions: string[];
 } = { history: [], tools: [], reported: [], directions: [] };
+// Set by the test whose report fails.
+let failReport = false;
 // A fence still waiting on Chatwoot, released by the test.
 let fenceHeld: (() => void) | null = null;
 
@@ -54,6 +56,7 @@ stubExports(service, {
   reportCall: async (_r: service.VoiceRoute, c: service.CallContext) => {
     read.reported.push(c.conversationId);
     read.directions.push(c.direction);
+    if (c.conversationId === 10 && failReport) throw new Error("Chatwoot down");
     return null;
   },
 });
@@ -150,5 +153,19 @@ describe("the call stream route", () => {
       () => read.directions.length > before,
     );
     expect(read.directions.slice(before)).toEqual(["outbound"]);
+  });
+
+  test("a report that fails is logged, and the server keeps taking calls", async () => {
+    failReport = true;
+    try {
+      const before = read.reported.length;
+      await call(10);
+      await until("the failed report", () => read.reported.length > before);
+    } finally {
+      failReport = false;
+    }
+    const after = read.history.length;
+    await call(10);
+    expect(read.history.length).toBe(after + 1);
   });
 });

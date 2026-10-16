@@ -86,6 +86,7 @@ export async function checkElevenLabsAgentsAccess(
   try {
     res = await fetchImpl(`${API}/v1/convai/agents?page_size=1`, {
       headers: { "xi-api-key": apiKey },
+      signal: deadline(),
     });
   } catch (err) {
     return { ok: false, reason: "unreachable", detail: (err as Error).message };
@@ -103,6 +104,11 @@ export async function checkElevenLabsAgentsAccess(
 }
 
 const synced = new Map<string, string>();
+
+// Every request to ElevenLabs is bounded, its body included: a call's setup and the Playground's
+// ticket wait on them, and a provider that stalls would leave the person in silence.
+const REQUEST_TIMEOUT_MS = 15_000;
+const deadline = () => AbortSignal.timeout(REQUEST_TIMEOUT_MS);
 
 /**
  * The id of the agent carrying these calls on ElevenLabs, created when `agentId` is null or no longer
@@ -126,7 +132,7 @@ export async function ensureElevenLabsAgent(
     if (synced.get(agentId) === digest) return agentId;
     const res = await fetchImpl(
       `${API}/v1/convai/agents/${encodeURIComponent(agentId)}`,
-      { method: "PATCH", headers, body },
+      { method: "PATCH", headers, body, signal: deadline() },
     );
     if (res.ok) {
       synced.set(agentId, digest);
@@ -141,6 +147,7 @@ export async function ensureElevenLabsAgent(
     method: "POST",
     headers,
     body,
+    signal: deadline(),
   });
   if (!res.ok)
     throw new Error(
@@ -171,6 +178,7 @@ export async function deleteElevenLabsAgent(
     await fetchImpl(`${API}/v1/convai/agents/${encodeURIComponent(agentId)}`, {
       method: "DELETE",
       headers: { "xi-api-key": apiKey },
+      signal: deadline(),
     });
   } catch {
     // An agent left behind is unused, not wrong: nothing points at it.
@@ -201,7 +209,7 @@ export async function elevenLabsCallSummary(
     if (attempt > 0) await wait(SUMMARY_WAIT_MS);
     const res = await fetchImpl(
       `${API}/v1/convai/conversations/${encodeURIComponent(conversationId)}`,
-      { headers: { "xi-api-key": apiKey } },
+      { headers: { "xi-api-key": apiKey }, signal: deadline() },
     ).catch(() => null);
     if (!res?.ok) continue;
     const body = (await res.json().catch(() => null)) as {

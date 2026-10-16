@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { DEFAULT_HTTP_TOOL_TIMEOUT_MS } from "@/graph/tools/http";
 import {
+  CALL_HTTP_TOOL_TIMEOUT_MS,
   elevenLabsToolDefs,
   syncElevenLabsTools,
   VOICE_TOOL_TIMEOUT_MS,
@@ -21,7 +22,10 @@ describe("elevenlabs tool declarations", () => {
   test("an HTTP tool settles before this side answers the engine, and the engine waits longer still", () => {
     const [def] = elevenLabsToolDefs([tool("x", { type: "object" })]);
     const engineMs = (def?.response_timeout_secs ?? 0) * 1000;
-    expect(VOICE_TOOL_TIMEOUT_MS).toBeGreaterThan(DEFAULT_HTTP_TOOL_TIMEOUT_MS);
+    expect(CALL_HTTP_TOOL_TIMEOUT_MS).toBeLessThanOrEqual(
+      DEFAULT_HTTP_TOOL_TIMEOUT_MS,
+    );
+    expect(VOICE_TOOL_TIMEOUT_MS).toBeGreaterThan(CALL_HTTP_TOOL_TIMEOUT_MS);
     expect(engineMs).toBeGreaterThan(VOICE_TOOL_TIMEOUT_MS);
     expect(engineMs).toBeLessThanOrEqual(120_000);
   });

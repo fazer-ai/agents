@@ -9,7 +9,7 @@ import { SEND_IMAGE_DEFAULTS } from "@/modules/images/settings";
 import { KANBAN_DEFAULTS } from "@/modules/kanban/settings";
 
 // A call's turn answers by voice: a slow tool's holding message is not posted to the chat, and the
-// tool still runs.
+// tool still runs, on the deadline the call gives it.
 
 const PUBLIC = "8.8.8.8";
 
@@ -82,7 +82,10 @@ function config(): AgentConfig {
   } as unknown as AgentConfig;
 }
 
-async function runSlowTool(onCall: boolean): Promise<string[]> {
+async function runSlowTool(
+  onCall: boolean,
+  httpToolTimeoutMs?: number,
+): Promise<string[]> {
   const sent: string[] = [];
   const client = {
     muted: false,
@@ -102,6 +105,7 @@ async function runSlowTool(onCall: boolean): Promise<string[]> {
       conversationId: 7,
       threadId: "t-on-call",
       onCall,
+      httpToolTimeoutMs,
     },
     { buildNativeTools: () => [] },
   );
@@ -117,5 +121,20 @@ describe("a slow tool on a call's turn", () => {
     expect(requests).toBe(1);
     expect(await runSlowTool(false)).toEqual(["Só um instante."]);
     expect(requests).toBe(2);
+  });
+});
+
+describe("an HTTP tool on a call's turn", () => {
+  test("is cut at the deadline the call gives it, not the instance's", async () => {
+    let aborted = false;
+    globalThis.fetch = ((_input: unknown, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          aborted = true;
+          reject(new Error("aborted"));
+        });
+      })) as unknown as typeof fetch;
+    await expect(runSlowTool(true, 5)).rejects.toThrow("within 0.005s");
+    expect(aborted).toBe(true);
   });
 });

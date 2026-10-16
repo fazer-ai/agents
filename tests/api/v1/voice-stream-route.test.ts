@@ -36,7 +36,8 @@ const read: {
   history: (number | null)[];
   tools: (number | null)[];
   reported: (number | null)[];
-} = { history: [], tools: [], reported: [] };
+  directions: string[];
+} = { history: [], tools: [], reported: [], directions: [] };
 // A fence still waiting on Chatwoot, released by the test.
 let fenceHeld: (() => void) | null = null;
 
@@ -52,6 +53,7 @@ stubExports(service, {
   },
   reportCall: async (_r: service.VoiceRoute, c: service.CallContext) => {
     read.reported.push(c.conversationId);
+    read.directions.push(c.direction);
     return null;
   },
 });
@@ -130,5 +132,23 @@ describe("the call stream route", () => {
       ws.onclose = () => resolve();
     });
     expect(ws.readyState).toBe(ws.CLOSED);
+  });
+
+  test("a call the start frame names as placed is reported as placed", async () => {
+    const before = read.directions.length;
+    const configured = read.tools.length;
+    const ws = await open("tok", 10);
+    ws.send(JSON.stringify({ event: "start", direction: "outbound" }));
+    ws.send(JSON.stringify({ event: "answered" }));
+    await until(
+      "the call to be configured",
+      () => read.tools.length > configured,
+    );
+    ws.close();
+    await until(
+      "the call to be reported",
+      () => read.directions.length > before,
+    );
+    expect(read.directions.slice(before)).toEqual(["outbound"]);
   });
 });

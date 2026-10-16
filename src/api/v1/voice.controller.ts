@@ -116,6 +116,8 @@ export const voiceController = new Elysia({
             const resolved = await route;
             if (!resolved) throw new Error("unknown route token");
             ctx.inboxId = resolved.inboxId;
+            // The start frame may name the direction the query left out; the report reads it too.
+            if (start.direction === "outbound") ctx.direction = "outbound";
             ctx.conversationId = await fenceConversation(resolved, requested);
             const [history, agent, calls] = await Promise.all([
               conversationHistory(resolved, ctx.conversationId),
@@ -135,7 +137,7 @@ export const voiceController = new Elysia({
             return {
               ...voiceSessionConfig(
                 { ...resolved, systemPrompt: agent.systemPrompt },
-                { ...ctx, direction: start.direction },
+                ctx,
                 calls.setup.voice,
                 history,
                 calls.setup.calls.openingDelayMs,

@@ -121,6 +121,8 @@ async function openHeld(
   let started = false;
   const pending: Int16Array[] = [];
   let heardVoice = false;
+  // Armed once the conversation is asked for: the agent is held until ElevenLabs says it started.
+  let startTimer: ReturnType<typeof setTimeout> | null = null;
 
   await new Promise<void>((resolve, reject) => {
     // A handshake that lands after the call gave up would be a socket nobody closes.
@@ -181,6 +183,7 @@ async function openHeld(
     }
     switch (event.type) {
       case "conversation_initiation_metadata": {
+        if (startTimer) clearTimeout(startTimer);
         release();
         const meta = event.conversation_initiation_metadata_event ?? {};
         if (meta.conversation_id)
@@ -258,6 +261,13 @@ async function openHeld(
     begin() {
       if (started) return;
       started = true;
+      startTimer = setTimeout(() => {
+        release();
+        if (closed) return;
+        handlers.onError(
+          new Error("elevenlabs: the conversation did not start"),
+        );
+      }, options.openTimeoutMs ?? OPEN_TIMEOUT_MS);
       send({
         type: "conversation_initiation_client_data",
         dynamic_variables: config.variables,
@@ -285,6 +295,7 @@ async function openHeld(
     },
     close() {
       closed = true;
+      if (startTimer) clearTimeout(startTimer);
       release();
       ws.close();
     },

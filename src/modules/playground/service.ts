@@ -1017,6 +1017,7 @@ async function runPlaygroundTurnOnce(
   if (external && reply && !screenedByOperator(outGuard)) {
     const judged = await external({
       text: reply,
+      attachments: [],
       model: fallbackAnswered ? "fallback" : "primary",
       toolCalls: turnToolCalls(
         result.messages,

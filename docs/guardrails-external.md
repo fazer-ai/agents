@@ -38,11 +38,15 @@ A person who takes the conversation over while the endpoint is answering wins: t
   "toolCalls": [
     { "name": "search_knowledge", "args": {}, "result": "...", "argsSize": 2, "resultSize": 3, "isError": false }
   ],
-  "candidate": { "text": "<the reply>", "model": "primary" }
+  "candidate": {
+    "text": "<the reply>",
+    "attachments": [{ "kind": "image", "fileName": "x.png", "caption": "...", "text": "..." }],
+    "model": "primary"
+  }
 }
 ```
 
-`conversationId` and `chatwootConversationId` are null in the playground. Tool calls are this turn's, in the order the model made them, at most 50, each value cut to 8000 characters (`argsSize` and `resultSize` are the sizes before the cut); secrets are redacted the way the playground trace redacts them. The full prompt (system prompt, memory, history) is not sent.
+`conversationId` and `chatwootConversationId` are null in the playground. Tool calls are this turn's, in the order the model made them, at most 50, each value cut to 8000 characters (`argsSize` and `resultSize` are the sizes before the cut); secrets are redacted the way the playground trace redacts them. `candidate.attachments` are the files the reply sends with it, with the caption and the model-written text inside a document; a reply that is only files is asked about too, with an empty `text`, and a `replace` or a `block` drops them. The full prompt (system prompt, memory, history) is not sent.
 
 ## Response
 

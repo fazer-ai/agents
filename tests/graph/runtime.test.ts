@@ -12206,6 +12206,46 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         expect(sent).toEqual([]);
       });
 
+      // The bug it catches: a reply that is only a file (an image with its caption) going out with no
+      // question asked, past a block.
+      test("a reply that is only an image is asked about too, and a block keeps it", async () => {
+        await withExternal({ action: "template" });
+        await seedConv(14113);
+        const sent: Array<[number, string]> = [];
+        const attachments: Array<[number, string]> = [];
+        const asked: Asked[] = [];
+        await runAgentTurn({
+          tenantId: gTenantId,
+          instanceId: gInstanceId,
+          agentBotId: G_BOT,
+          event: incoming({ conversationId: 14113, inboxId: G_INBOX }),
+          base: appDb,
+          deps: {
+            makeModel: (cfg: ResolvedModelConfig): BaseChatModel =>
+              cfg.model === GUARD_MODEL
+                ? guardrailModel(async () => ({ content: clean }))
+                : (new SendImageThenReplyModel(
+                    "",
+                    IMG_URL,
+                    "LEGENDA-1514",
+                  ) as unknown as BaseChatModel),
+            makeClient: guardStub(sent, [], [], attachments),
+            checkpointer: new MemorySaver(),
+            imageDeps,
+            externalCheck: endpoint(asked, (b) =>
+              json({ decision: "block", candidateId: b.candidateId }),
+            ),
+          },
+        });
+        expect(asked).toHaveLength(1);
+        expect(asked[0]?.body.candidate).toMatchObject({
+          text: "",
+          attachments: [{ kind: "image", caption: "LEGENDA-1514" }],
+        });
+        expect(attachments).toEqual([]);
+        expect(sent).toEqual([[14113, "TEMPLATE-OUT"]]);
+      });
+
       // The bug it catches: a reply the fallback wrote reported to the endpoint as the primary's.
       test("a reply the fallback model wrote says so in the request", async () => {
         await withExternal({ action: "template" });
@@ -12239,6 +12279,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         }
         expect(asked[0]?.body.candidate).toEqual({
           text: REPLY,
+          attachments: [],
           model: "fallback",
         });
       });

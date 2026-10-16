@@ -2543,9 +2543,22 @@ async function runTurnBody(
       // The external check judges what would go out now: the reply after the built-in screening,
       // unless that already stood the operator's own text in for it. One call per reply, before it
       // is split, spoken or signed, so no piece of it gets past a block.
-      if (runExternalCheck && reply && !replyByOperator) {
+      // A reply that is only files (an image with its caption, a document) goes out too, so it is
+      // asked about as well.
+      const outgoingFiles = turnState.pendingAttachments.map((i) => ({
+        kind: i.kind,
+        fileName: i.fileName,
+        ...(i.caption?.trim() ? { caption: i.caption.trim() } : {}),
+        ...(i.screenText?.trim() ? { text: i.screenText.trim() } : {}),
+      }));
+      if (
+        runExternalCheck &&
+        (reply || outgoingFiles.length > 0) &&
+        !replyByOperator
+      ) {
         const external = await runExternalCheck({
           text: reply,
+          attachments: outgoingFiles,
           model: fallbackAnswered ? "fallback" : "primary",
           toolCalls: turnToolCalls(
             result.messages,

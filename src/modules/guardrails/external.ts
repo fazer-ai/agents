@@ -131,9 +131,19 @@ export function turnToolCalls(
   return out;
 }
 
-// What the endpoint judges.
+// A file the reply sends with it: what it is and the model-written text the customer reads on it.
+export interface ExternalAttachment {
+  kind: "image" | "document";
+  fileName: string;
+  caption?: string;
+  // Text the model wrote inside the file (a document's fields), as the built-in screening reads it.
+  text?: string;
+}
+
+// What the endpoint judges: the reply's text and every file that goes out with it.
 export interface ExternalCandidate {
   text: string;
+  attachments: ExternalAttachment[];
   model: "primary" | "fallback";
   toolCalls: ExternalToolCall[];
 }
@@ -152,8 +162,15 @@ export interface ExternalContext {
 
 // Bound to the exact text judged, and to the turn: the same reply in another turn is another
 // candidate. The endpoint echoes it, which is how an answer is tied to what it was asked about.
-export function candidateIdFor(turnId: string, text: string): string {
-  return createHash("sha256").update(`${turnId}\n${text}`).digest("hex");
+export function candidateIdFor(
+  turnId: string,
+  text: string,
+  attachments: ExternalAttachment[] = [],
+): string {
+  const files = attachments.length ? `\n${JSON.stringify(attachments)}` : "";
+  return createHash("sha256")
+    .update(`${turnId}\n${text}${files}`)
+    .digest("hex");
 }
 
 export function buildExternalRequest(
@@ -163,7 +180,11 @@ export function buildExternalRequest(
   return {
     version: 1,
     type: "guardrail.output",
-    candidateId: candidateIdFor(ctx.turnId, candidate.text),
+    candidateId: candidateIdFor(
+      ctx.turnId,
+      candidate.text,
+      candidate.attachments,
+    ),
     tenantId: String(ctx.tenantId),
     agentId: String(ctx.agentId),
     conversationId:
@@ -172,7 +193,11 @@ export function buildExternalRequest(
     turnId: ctx.turnId,
     customerMessage: ctx.customerMessage,
     toolCalls: candidate.toolCalls,
-    candidate: { text: candidate.text, model: candidate.model },
+    candidate: {
+      text: candidate.text,
+      attachments: candidate.attachments,
+      model: candidate.model,
+    },
   };
 }
 

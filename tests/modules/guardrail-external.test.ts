@@ -292,6 +292,7 @@ describe("what the check decides", () => {
     if (!check) return { d: null, reports };
     const d = await check({
       text: "RESPOSTA",
+      attachments: [],
       model: "primary",
       toolCalls: [],
     });

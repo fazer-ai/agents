@@ -39,6 +39,7 @@ import {
 import { listProviderModels } from "@/modules/models/service";
 import { getPlaygroundMedia } from "@/modules/playground/media";
 import {
+  estimateCallFloor,
   listPlaygroundTools,
   runPlaygroundAudioTurn,
   runPlaygroundExtract,
@@ -437,6 +438,31 @@ export const agentsController = new Elysia({
       detail: doc(
         "Get agent configuration health",
         'The configuration warnings the agent editor shows, computed server-side over the SAVED agent: a feature switched on with no credential, a credential referenced but never filled, a credential the vault no longer holds, two settings that cancel each other out, and text past the cap its reader keeps. Each issue carries a `severity` — `blocking` (the agent does not answer, or answers without a protection whose switch reads "on"), `degraded` (it answers, and a feature that is on does not run) or `advisory` (nothing is off; the operator has a choice to make) — plus the same sentence the console shows, in the language of Accept-Language. `unchecked` names the live readings this call did not take (Chatwoot, guardrail health), because both of those fail as an empty result that reads exactly like a clean one — an empty `unchecked` is what makes a clean answer trustworthy. Shape: `{ agentId, agentName, healthy, counts, issues[], unchecked[] }`, where `healthy` is true when no blocking and no degraded issue is live.',
+      ),
+      response: errors(400, 401, 403, 404),
+      requireRole: "TENANT_ADMIN",
+      params: t.Object({
+        id: t.String({
+          description: "Agent id, a BigInt encoded as a decimal string.",
+        }),
+      }),
+    },
+  )
+  // What every model call of the agent sends before the history: the editor shows it next to the
+  // history ceiling, so an operator sizing that ceiling sees the part of the call it does not govern.
+  .get(
+    "/:id/call-floor",
+    async ({ tenantContext, params }) => ({
+      instance: instanceIdentity,
+      floor: await estimateCallFloor({
+        ctx: ctxOrThrow(tenantContext),
+        agentId: requireDbId(params.id),
+      }),
+    }),
+    {
+      detail: doc(
+        "Estimate the agent's call floor",
+        'An ESTIMATE, in tokens, of what every model call of the saved agent sends before the first line of history: its instructions, what the runtime appends to them (the knowledge-base grounding rules, the MCP server block) and each granted tool\'s schema, largest first. A heuristic count that can run low against what a provider bills. What only a conversation supplies (contact attributes, appointments, other-inbox context, per-turn notices) is not in it, so it is a floor, not the size of a call. An agent that observes with the decisions engine never sends this prompt and answers `{ engine: "decisions" }` with no numbers. Shape: `{ engine: "llm", instructions, instructionsAdded, tools[{ name, category, estimatedTokens }], total }`.',
       ),
       response: errors(400, 401, 403, 404),
       requireRole: "TENANT_ADMIN",

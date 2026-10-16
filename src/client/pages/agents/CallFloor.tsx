@@ -1,0 +1,167 @@
+import { ChevronDown } from "lucide-react";
+import { createContext, useContext, useState } from "react";
+import { useTranslation } from "react-i18next";
+import { HelpPopover } from "@/client/components/HelpPopover";
+import { cn } from "@/client/lib/utils";
+import { estimateTokens } from "@/lib/token-estimate";
+import type { CallFloor, CallFloorTool } from "@/modules/playground/service";
+
+// What every model call of the agent sends before the history (docs/graph.md, History ceiling),
+// shown where the operator sizes that ceiling. The server measures the SAVED tools and what the runtime
+// appends; the instructions are counted here, from the draft, so the number moves while they type.
+
+export type { CallFloor, CallFloorTool };
+
+// The floor the editor loaded, for the Tools tab's per-tool numbers. Null until it loads, and when it
+// cannot: a tool with no number is the safe reading of "not measured".
+export const CallFloorContext = createContext<CallFloor | null>(null);
+
+// "~" on every number: none of them is a count, and the hint says by how much they can miss.
+const fmt = (n: number, lang: string) => `~${n.toLocaleString(lang)}`;
+
+// Which tool of the floor a row of the Tools tab is. By the model's name for every kind whose row knows
+// it; an MCP or document row knows its grant instead, since that name is derived on the server.
+export type ToolRef =
+  | { name: string }
+  | { mcp: { connectionId: string; tool: string } }
+  | { templateId: string };
+
+function findTool(
+  floor: CallFloor | null,
+  ref: ToolRef,
+): CallFloorTool | undefined {
+  if (floor?.engine !== "llm") return undefined;
+  return floor.tools.find((tl) => {
+    if ("name" in ref) return tl.name === ref.name;
+    if ("templateId" in ref) return tl.templateId === ref.templateId;
+    return (
+      tl.mcp?.connectionId === ref.mcp.connectionId &&
+      tl.mcp.tool === ref.mcp.tool
+    );
+  });
+}
+
+// The number one tool adds to every call, next to its row. Nothing when the tool is not in the saved
+// floor (not granted yet, or granted and not saved): an absent number never reads as zero.
+export function ToolTokens({ tool }: { tool: ToolRef }) {
+  const { t, i18n } = useTranslation();
+  const floor = useContext(CallFloorContext);
+  const found = findTool(floor, tool);
+  if (!found) return null;
+  return (
+    <span
+      className="shrink-0 whitespace-nowrap font-mono text-text-muted text-xs"
+      title={t(
+        "editor.callFloor.toolHint",
+        "Estimated tokens this tool's definition adds to every call",
+      )}
+    >
+      {t("editor.callFloor.tokens", "{{n}} tokens", {
+        n: fmt(found.estimatedTokens, i18n.language),
+      })}
+    </span>
+  );
+}
+
+export function CallFloorLine({
+  floor,
+  draftPrompt,
+}: {
+  floor: CallFloor | null;
+  draftPrompt: string;
+}) {
+  const { t, i18n } = useTranslation();
+  const [open, setOpen] = useState(false);
+  if (!floor) return null;
+  if (floor.engine === "decisions") {
+    return (
+      <p className="mt-2 text-text-muted text-xs">
+        {t(
+          "editor.callFloor.decisions",
+          "Instructions and tools do not apply: this agent decides with questions and rules, and sends no instructions to a model.",
+        )}
+      </p>
+    );
+  }
+  const instructions = estimateTokens(draftPrompt);
+  const tools = floor.tools.reduce((s, tl) => s + tl.estimatedTokens, 0);
+  const total = instructions + floor.instructionsAdded + tools;
+  const rows: { key: string; label: string; n: number; mono?: boolean }[] = [
+    {
+      key: "instructions",
+      label: t("editor.callFloor.instructions", "Agent instructions"),
+      n: instructions,
+    },
+    ...(floor.instructionsAdded > 0
+      ? [
+          {
+            key: "added",
+            label: t(
+              "editor.callFloor.added",
+              "Added by the system (knowledge rules, MCP servers)",
+            ),
+            n: floor.instructionsAdded,
+          },
+        ]
+      : []),
+    ...floor.tools.map((tl) => ({
+      key: `tool:${tl.name}`,
+      label: tl.name,
+      n: tl.estimatedTokens,
+      mono: true,
+    })),
+  ];
+  return (
+    <div className="mt-2 flex flex-col gap-2 text-xs">
+      <div className="flex items-start gap-1.5">
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+          className="flex min-w-0 items-start gap-1 text-left text-text-secondary hover:text-text-primary"
+        >
+          <ChevronDown
+            className={cn(
+              "mt-0.5 h-3.5 w-3.5 shrink-0 transition-transform",
+              open && "rotate-180",
+            )}
+            aria-hidden="true"
+          />
+          <span>
+            {t(
+              "editor.callFloor.line",
+              "Every call already sends {{n}} tokens before the history",
+              { n: fmt(total, i18n.language) },
+            )}
+          </span>
+        </button>
+        <HelpPopover
+          label={t("editor.callFloor.helpLabel", "About this estimate")}
+          content={t(
+            "editor.callFloor.help",
+            "An estimate: the count your provider bills can be higher, more so with many tools.\n\nIt is the floor of a call. Each conversation adds its history and what belongs to it: the contact's attributes and fields, appointments, context from other inboxes and the notices of each turn. Tools count as they are saved; instructions count as you type them.",
+          )}
+        />
+      </div>
+      {open && (
+        <ul className="flex flex-col gap-1 rounded-md border border-border bg-bg-secondary p-2">
+          {rows.map((r) => (
+            <li key={r.key} className="flex items-baseline gap-2">
+              <span
+                className={cn(
+                  "min-w-0 flex-1 break-words text-text-secondary",
+                  r.mono && "font-mono",
+                )}
+              >
+                {r.label}
+              </span>
+              <span className="shrink-0 font-mono text-text-muted">
+                {fmt(r.n, i18n.language)}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}

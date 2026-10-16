@@ -1,6 +1,7 @@
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { type BaseMessage, HumanMessage } from "@langchain/core/messages";
 import { type StructuredToolInterface, tool } from "@langchain/core/tools";
+import { convertToOpenAITool } from "@langchain/core/utils/function_calling";
 import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
@@ -21,6 +22,7 @@ import {
   buildToolset,
   loadAgentConfig,
 } from "@/graph/prepare";
+import { GROUNDING_DIRECTIVE } from "@/graph/prompt";
 import { undoRefusedTurn } from "@/graph/refused-turn";
 import {
   customerFacingReply,
@@ -35,7 +37,11 @@ import {
   CONVERSATION_NATIVE_TOOL_NAMES,
   UTILITY_NATIVE_TOOL_NAMES,
 } from "@/graph/tools/catalog";
-import type { McpLoadDeps } from "@/graph/tools/mcp";
+import {
+  buildMcpContextSection,
+  type McpLoadDeps,
+  type McpServerMeta,
+} from "@/graph/tools/mcp";
 import { buildSimulatedNativeTools } from "@/graph/tools/native";
 import { logSchemaRefusals } from "@/graph/tools/refusal-log";
 import type { ReplyChoice } from "@/graph/tools/reply-as-text";
@@ -53,6 +59,8 @@ import { sumTurnUsage, type TurnTiming, type TurnUsage } from "@/graph/usage";
 import { AppError, NotFoundError } from "@/lib/errors";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
+import { estimateTokens } from "@/lib/token-estimate";
+import { isMonitoring } from "@/modules/agents/mode";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { renderInboundMessage } from "@/modules/chatwoot/render";
 import { documentToolName } from "@/modules/documents/templates";
@@ -72,6 +80,7 @@ import {
   guardrailTripped,
   screenedText,
 } from "@/modules/guardrails/gate";
+import { readMonitoringConfig } from "@/modules/observe/settings";
 import { attachSignature, signatureFor } from "@/modules/signature/service";
 import { assertPlaygroundSpendCeiling } from "@/modules/spend-ceiling/service";
 import { transcribePlaygroundAudio } from "@/modules/stt/service";
@@ -616,6 +625,22 @@ export async function listPlaygroundTools(params: {
     replyChoice: { textChosen: false },
   });
 
+  const classify = toolClassifier(loaded);
+  return tools.map(
+    (tl): PlaygroundToolInfo => ({
+      name: tl.name,
+      description: tl.description ?? "",
+      ...classify(tl.name),
+    }),
+  );
+}
+
+// Which category each tool of a loaded agent falls in, and whether the playground simulates it. Read
+// from the loaded grant name-sets, so the listing and the call-floor estimate cannot disagree on what
+// a tool is.
+function toolClassifier(
+  loaded: AgentConfig,
+): (name: string) => Pick<PlaygroundToolInfo, "category" | "simulated"> {
   const conversation = new Set<string>(CONVERSATION_NATIVE_TOOL_NAMES);
   const utility = new Set<string>(UTILITY_NATIVE_TOOL_NAMES);
   // Simulated here for the same reason the conversation natives are, so the catalog has to say so:
@@ -636,27 +661,150 @@ export async function listPlaygroundTools(params: {
     loaded.integrationSelections.flatMap((s) => s.enabledTools),
   );
 
-  return tools.map((tl): PlaygroundToolInfo => {
-    const name = tl.name;
-    const description = tl.description ?? "";
-    if (conversation.has(name))
-      return { name, description, category: "native", simulated: true };
-    if (document.has(name))
-      return { name, description, category: "external", simulated: true };
-    if (utility.has(name))
-      return { name, description, category: "utility", simulated: false };
-    if (knowledge.has(name))
-      return { name, description, category: "knowledge", simulated: false };
-    if (code.has(name))
-      return { name, description, category: "code", simulated: false };
-    if (http.has(name))
-      return { name, description, category: "http", simulated: false };
-    if (mcp.has(name))
-      return { name, description, category: "mcp", simulated: false };
+  return (name) => {
+    if (conversation.has(name)) return { category: "native", simulated: true };
+    if (document.has(name)) return { category: "external", simulated: true };
+    if (utility.has(name)) return { category: "utility", simulated: false };
+    if (knowledge.has(name)) return { category: "knowledge", simulated: false };
+    if (code.has(name)) return { category: "code", simulated: false };
+    if (http.has(name)) return { category: "http", simulated: false };
+    if (mcp.has(name)) return { category: "mcp", simulated: false };
     if (integration.has(name))
-      return { name, description, category: "integration", simulated: false };
-    return { name, description, category: "external", simulated: false };
+      return { category: "integration", simulated: false };
+    return { category: "external", simulated: false };
+  };
+}
+
+export interface CallFloorTool {
+  name: string;
+  category: PlaygroundToolCategory;
+  estimatedTokens: number;
+  // For an MCP tool, the grant it came from: the exposed name is namespaced and deduplicated at
+  // assembly, so it cannot be rebuilt from the connection and the tool name on the other side.
+  mcp?: { connectionId: string; tool: string };
+  // For a document tool, its template: the name is derived from a slug the editor does not show.
+  templateId?: string;
+}
+
+// What every model call of an agent sends before the first line of history (docs/graph.md, History
+// ceiling). `engine: "decisions"` is an observer that classifies through the decisions API and never
+// sends this prompt, so it carries no numbers rather than numbers that describe nothing.
+export type CallFloor =
+  | { engine: "decisions" }
+  | {
+      engine: "llm";
+      // The saved instructions, as typed. The editor counts its own draft instead.
+      instructions: number;
+      // What the runtime appends to them on every call: the grounding rules when the agent can search
+      // the knowledge base, and the block naming each MCP server.
+      instructionsAdded: number;
+      // Each tool's schema as the model receives it, largest first.
+      tools: CallFloorTool[];
+      total: number;
+    };
+
+// Estimates the call floor from the same toolset a playground turn builds, so a tool counts here
+// exactly when the model is offered it. Loads without the chat model: the estimate needs no key, and
+// an agent whose credential is missing still has a prompt the operator is sizing. What only a
+// conversation supplies (contact attributes, appointments, other-inbox context, late notices) is not
+// in it; the surfaces that show the number say so.
+export async function estimateCallFloor(params: {
+  ctx: TenantContext;
+  agentId: bigint;
+  base?: PrismaClient;
+  deps?: PlaygroundDeps;
+}): Promise<CallFloor> {
+  const base = params.base ?? basePrisma;
+  const agent = await runScopedOn(base, params.ctx, (db) =>
+    db.agent.findUnique({
+      where: { id: params.agentId },
+      select: { systemPrompt: true, mode: true, settings: true },
+    }),
+  );
+  if (!agent)
+    throw new NotFoundError("agent not found", "errors.agentNotFound");
+  if (
+    isMonitoring(agent.mode) &&
+    readMonitoringConfig(agent.settings).engine === "decisions"
+  )
+    return { engine: "decisions" };
+  const threadId = newPlaygroundThreadId(
+    params.ctx.tenantId as bigint,
+    params.agentId,
+  );
+  const loaded = await runScopedOn(base, params.ctx, (db) =>
+    loadAgentConfig(
+      db,
+      {
+        tenantId: params.ctx.tenantId as bigint,
+        instanceId: 0n,
+        conversationId: 0,
+        agentId: params.agentId,
+        threadId,
+      },
+      { ignoreDisabled: true, chatModelUnused: true, skipExperiment: true },
+    ),
+  );
+  if (!loaded)
+    throw new NotFoundError("agent not found", "errors.agentNotFound");
+  const tools = await buildPlaygroundToolset(loaded, {
+    ctx: params.ctx,
+    threadId,
+    base,
+    deps: params.deps,
+    // An estimate, not a turn: nothing executes, so there is no tool-stage line to write.
+    flow: undefined,
+    replyChoice: { textChosen: false },
   });
+  const classify = toolClassifier(loaded);
+  const templateOf = new Map(
+    loaded.documentSelections.map((d) => [
+      documentToolName(d.slug),
+      String(d.templateId),
+    ]),
+  );
+  const floorTools = tools
+    .map((tl): CallFloorTool => {
+      const meta = (
+        tl as {
+          metadata?: { mcpServer?: McpServerMeta; mcpTool?: string };
+        }
+      ).metadata;
+      return {
+        name: tl.name,
+        category: meta?.mcpServer ? "mcp" : classify(tl.name).category,
+        estimatedTokens: estimateTokens(
+          JSON.stringify(convertToOpenAITool(tl)),
+        ),
+        ...(templateOf.has(tl.name)
+          ? { templateId: templateOf.get(tl.name) }
+          : {}),
+        ...(meta?.mcpServer && meta.mcpTool
+          ? {
+              mcp: {
+                connectionId: meta.mcpServer.connectionId,
+                tool: meta.mcpTool,
+              },
+            }
+          : {}),
+      };
+    })
+    .sort((a, b) => b.estimatedTokens - a.estimatedTokens);
+  const grounded = !!loaded.ragConfig?.tools.includes("search_knowledge");
+  const instructionsAdded =
+    (grounded ? estimateTokens(GROUNDING_DIRECTIVE) : 0) +
+    estimateTokens(buildMcpContextSection(tools) ?? "");
+  const instructions = estimateTokens(agent.systemPrompt);
+  return {
+    engine: "llm",
+    instructions,
+    instructionsAdded,
+    tools: floorTools,
+    total:
+      instructions +
+      instructionsAdded +
+      floorTools.reduce((sum, t) => sum + t.estimatedTokens, 0),
+  };
 }
 
 // The id of the last AI message in the invoke result (for linking the TTS audio to its turn).

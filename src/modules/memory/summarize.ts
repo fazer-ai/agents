@@ -5,7 +5,6 @@ import {
   HumanMessage,
   SystemMessage,
 } from "@langchain/core/messages";
-import { estimateTokenCount } from "tokenx";
 import logger from "@/api/lib/logger";
 import {
   CONVERSATION_DIVIDER,
@@ -25,6 +24,7 @@ import {
 import { DATA_FENCE } from "@/graph/nudge";
 import { providerFailure } from "@/lib/provider-failure";
 import { clipText, clipTextEnd } from "@/lib/text";
+import { estimateTokens } from "@/lib/token-estimate";
 
 // Condenses the raw turns of a closed attendance into the memory the agent keeps of it. A model call
 // outside a turn, so it has its own timeout and an explicit "could not be produced" state: an empty
@@ -56,7 +56,7 @@ function clipTranscript(
   let text = clipTextEnd(joined, TRANSCRIPT_MAX_CHARS);
   if (!maxHistoryTokens || maxHistoryTokens <= 0) return text;
   for (let pass = 0; pass < CLIP_PASSES; pass++) {
-    const estimate = estimateTokenCount(text);
+    const estimate = estimateTokens(text);
     if (estimate <= maxHistoryTokens) break;
     const keep = Math.floor((text.length * maxHistoryTokens) / estimate);
     if (keep <= 0) return "";
@@ -75,7 +75,7 @@ export function fitTranscript(
   let text = render(TRANSCRIPT_MAX_CHARS);
   if (!maxHistoryTokens || maxHistoryTokens <= 0) return text;
   for (let pass = 0; pass < CLIP_PASSES; pass++) {
-    const estimate = estimateTokenCount(text);
+    const estimate = estimateTokens(text);
     if (estimate <= maxHistoryTokens) break;
     const keep = Math.floor((text.length * maxHistoryTokens) / estimate);
     if (keep <= 0) return "";

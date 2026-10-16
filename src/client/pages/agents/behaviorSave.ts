@@ -18,6 +18,7 @@ export const BEHAVIOR_BLOCKS = [
   "stt",
   "contactAuth",
   "tts",
+  "calls",
   "split",
   "signature",
   "serviceWindow",

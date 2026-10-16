@@ -87,6 +87,7 @@ import { shouldReplyWithAudio } from "@/modules/tts/settings";
 import { logTextInsteadOfAudio, planAudioReply } from "@/modules/tts/speakable";
 import { extractPlaygroundFile } from "@/modules/vision/service";
 import { readVisionConfig } from "@/modules/vision/settings";
+import { toVoiceTools, type VoiceAgent } from "@/modules/voice-call/tools";
 import {
   listThreadMedia,
   type PlaygroundMediaKind,
@@ -348,6 +349,8 @@ async function loadPlaygroundConfig(params: {
   threadId: string;
   base: PrismaClient;
   overrides?: AgentConfigOverrides;
+  // A call talks through the voice engine: the agent's chat model is never built for it.
+  chatModelUnused?: boolean;
 }): Promise<AgentConfig> {
   const { ctx, agentId, threadId, base } = params;
   const tenantId = ctx.tenantId as bigint;
@@ -364,7 +367,11 @@ async function loadPlaygroundConfig(params: {
         // EMPTY. The literal rather than a `Date` so the time simulation moves it too (`prepare.ts`).
         lastIncomingAt: "now" as const,
       },
-      { ignoreDisabled: true, overrides: params.overrides },
+      {
+        ignoreDisabled: true,
+        overrides: params.overrides,
+        chatModelUnused: params.chatModelUnused,
+      },
     ),
   );
   if (!loaded) {
@@ -1996,4 +2003,31 @@ async function runPlaygroundFileTurnOnce(
     ...turn,
     trace: [...visionTrace, ...turn.trace],
   };
+}
+
+/**
+ * The agent as a call from the playground hears it: the rendered prompt and the playground's own
+ * toolset (conversation tools simulated, the rest real), narrowed to what a call may use.
+ */
+export async function loadPlaygroundVoiceAgent(
+  ctx: TenantContext,
+  agentId: bigint,
+  base: PrismaClient = basePrisma,
+): Promise<VoiceAgent> {
+  const threadId = newPlaygroundThreadId(ctx.tenantId as bigint, agentId);
+  const loaded = await loadPlaygroundConfig({
+    ctx,
+    agentId,
+    threadId,
+    base,
+    chatModelUnused: true,
+  });
+  const all = await buildPlaygroundToolset(loaded, {
+    ctx,
+    threadId,
+    base,
+    flow: undefined,
+    replyChoice: undefined,
+  });
+  return { systemPrompt: loaded.systemPrompt, tools: toVoiceTools(all) };
 }

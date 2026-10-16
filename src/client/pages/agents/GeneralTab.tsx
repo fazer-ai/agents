@@ -94,6 +94,9 @@ interface GeneralTabProps {
     decides: boolean;
     classifier: React.ReactNode;
   };
+  // A voice agent: it has no chat model, so the `voiceCard` (key, voice and the model
+  // that speaks, on ElevenLabs) takes the Model card's place, and monitoring is not a mode it has.
+  voice?: { voiceCard: React.ReactNode };
 }
 
 export function GeneralTab({
@@ -122,6 +125,7 @@ export function GeneralTab({
   catalog,
   grants,
   watcher,
+  voice,
 }: GeneralTabProps) {
   const { t } = useTranslation();
   const tenantName = useActiveTenantName();
@@ -158,7 +162,9 @@ export function GeneralTab({
     production: MessagesSquare,
     monitoring: Eye,
   };
-  const modeOptions: ChoiceCardOption<AgentMode>[] = AGENT_MODES.map((m) => ({
+  const modeOptions: ChoiceCardOption<AgentMode>[] = AGENT_MODES.filter(
+    (m) => !voice || m !== "monitoring",
+  ).map((m) => ({
     value: m,
     icon: modeIcon[m],
     testId: `mode-${m}`,
@@ -168,8 +174,17 @@ export function GeneralTab({
         : m === "monitoring"
           ? t("editor.modeMonitoring", "Monitoring")
           : t("editor.modeProduction", "Production"),
-    hint:
-      m === "test"
+    hint: voice
+      ? m === "test"
+        ? t(
+            "editor.modeTestHintVoice",
+            "Calls keep ringing your team. Try the agent with a call from the Playground.",
+          )
+        : t(
+            "editor.modeProductionHintVoice",
+            "Answers every call to the inboxes it is bound to.",
+          )
+      : m === "test"
         ? t(
             "editor.modeTestHint",
             "Stays silent until the customer sends /teste, so it is safe to try on a real inbox.",
@@ -225,7 +240,7 @@ export function GeneralTab({
             value={mode}
             onChange={setMode}
             aria-label={t("editor.mode", "Mode")}
-            className="sm:grid-cols-3"
+            className={voice ? "sm:grid-cols-2" : "sm:grid-cols-3"}
             options={modeOptions}
           />
         </FormField>
@@ -237,7 +252,9 @@ export function GeneralTab({
         <Card className="flex flex-col gap-4">{instructions}</Card>
       )}
 
-      {decides ? (
+      {voice ? (
+        voice.voiceCard
+      ) : decides ? (
         watcher?.classifier
       ) : (
         <Card id="general-model" className="flex scroll-mt-4 flex-col gap-4">

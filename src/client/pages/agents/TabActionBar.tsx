@@ -1,4 +1,5 @@
-import { MessageSquare, TriangleAlert } from "lucide-react";
+import { MessageSquare, Phone, TriangleAlert } from "lucide-react";
+import { createContext, useContext } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/client/components";
 import { useStaleNotice } from "./StaleNotice";
@@ -9,6 +10,9 @@ import { useStaleNotice } from "./StaleNotice";
 // edit there is nothing to write, the same on every tab (Gabriel's call on agents#1365). Inside the agent editor, while the "changed
 // elsewhere" notice is up, it repeats the notice on a row of its own, since on a long tab the card
 // at the top is off screen. Both rows wrap, so a narrow viewport keeps Save on screen.
+// Set by the editor of a voice agent, whose playground is a call: the button says so.
+export const PlaygroundIsCallContext = createContext(false);
+
 export function TabActionBar({
   dirty,
   saving,
@@ -28,6 +32,7 @@ export function TabActionBar({
 }) {
   const { t } = useTranslation();
   const stale = useStaleNotice();
+  const isCall = useContext(PlaygroundIsCallContext);
   return (
     <div className="sticky bottom-0 z-10 mt-auto">
       <div className="flex flex-col gap-3 rounded-xl border border-border bg-bg-secondary px-4 py-3 shadow-lg">
@@ -58,8 +63,14 @@ export function TabActionBar({
         <div className="flex flex-wrap items-center justify-between gap-2">
           {onOpenPlayground ? (
             <Button variant="secondary" onClick={onOpenPlayground}>
-              <MessageSquare className="h-4 w-4" aria-hidden="true" />
-              {t("editor.openPlayground", "Test in playground")}
+              {isCall ? (
+                <Phone className="h-4 w-4" aria-hidden="true" />
+              ) : (
+                <MessageSquare className="h-4 w-4" aria-hidden="true" />
+              )}
+              {isCall
+                ? t("editor.openPlaygroundCall", "Call in the playground")
+                : t("editor.openPlayground", "Test in playground")}
             </Button>
           ) : (
             <span />

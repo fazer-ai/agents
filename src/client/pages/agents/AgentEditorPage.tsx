@@ -177,7 +177,10 @@ import {
 import { followUpToForm, followUpToStored } from "./followUpFormState";
 import { GeneralTab } from "./GeneralTab";
 import { GuardrailsTab } from "./GuardrailsTab";
-import { readGuardrailsFormState } from "./guardrailsFormState";
+import {
+  playgroundGuardrailsUsable,
+  readGuardrailsFormState,
+} from "./guardrailsFormState";
 import { grantsToSave } from "./hiddenGrants";
 import { KnowledgeTab } from "./KnowledgeTab";
 import {
@@ -2992,10 +2995,7 @@ function AgentEditor() {
       !!tts.credentialRef &&
       (tts.provider !== "elevenlabs" || !!tts.voice.trim()),
     fileInput: vision.enabled && !!vision.credentialRef,
-    // NOTE: Same two hard requirements the runtime has (modules/guardrails/gate): the feature switched on
-    // and its OWN credential resolved. A direction being off is not checked here — that is a per-
-    // direction answer, and the gate already returns "not-run" for it without costing anything.
-    guardrails: guardrails.enabled && !!guardrailCredentialRef(guardrails),
+    guardrails: playgroundGuardrailsUsable(guardrails),
   };
 
   // Live draft sent with each playground turn: the unsaved prompt/model/settings (never grants —

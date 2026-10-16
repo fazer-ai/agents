@@ -206,7 +206,9 @@ describe("the Behavior tab reads back everything it writes", () => {
     await renderEditor(stub, "behavior");
     await editEveryBlock();
     expect(screen.queryAllByText("Unsaved changes").length).toBeGreaterThan(0);
+    // The agent's discard asks first (agents#1520).
     fireEvent.click(screen.getByRole("button", { name: "Discard" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Discard all" }));
     // Nothing left that differs from the server's copy: no mark, no Discard, no Save.
     await waitFor(() =>
       expect(screen.queryAllByText("Unsaved changes").length).toBe(0),
@@ -225,7 +227,9 @@ describe("the Behavior tab reads back everything it writes", () => {
     const read = screen.getByLabelText("Messages read") as HTMLInputElement;
     changeTo(read, String(Number(read.value) + 5));
     expect(saveButton()).toHaveProperty("disabled", false);
+    // The agent's discard asks first (agents#1520).
     fireEvent.click(screen.getByRole("button", { name: "Discard" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Discard all" }));
     await waitFor(() => expect(saveButton()).toHaveProperty("disabled", true));
   });
 });

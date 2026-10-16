@@ -2341,6 +2341,8 @@
     "saveAndExport": "Save and export",
     "saved": "Agent saved.",
     "saveError": "Could not save the agent.",
+    "saveHeldField": "a field there cannot be saved as it is.",
+    "saveHeldIn": "Fix the {{tab}} tab before saving: {{reason}}",
     "saveKnowledge": "Save knowledge",
     "saveTools": "Save tools",
     "sectionsNav": "Sections",

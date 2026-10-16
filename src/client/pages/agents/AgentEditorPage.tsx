@@ -254,7 +254,7 @@ import {
   snoozedFollowUpToForm,
   snoozedFollowUpToStored,
 } from "./snoozedFollowUpFormState";
-import { TabActionBar } from "./TabActionBar";
+import { type EditorBar, EditorBarContext, TabActionBar } from "./TabActionBar";
 import {
   parseToolPreconditionRows,
   serializeToolPreconditions,
@@ -323,6 +323,18 @@ type TabKey =
 
 // Ordered tab keys; also the source of truth for validating the URL `:tab` segment. Unknown segments
 // (including stale /model and /experiments links) are normalized to /general by the effect below.
+// The tabs that hold a section of their own to save, in the order a save of the whole agent writes
+// them (agents#1520).
+const SAVE_SECTIONS = [
+  "general",
+  "decisions",
+  "behavior",
+  "channelRedirect",
+  "guardrails",
+  "tools",
+  "knowledge",
+] as const satisfies readonly TabKey[];
+
 const TAB_KEYS: TabKey[] = [
   "general",
   "channels",
@@ -2455,6 +2467,38 @@ function AgentEditor() {
     dirty.guardrails ||
     dirty.tools ||
     dirty.knowledge;
+  // What holds each section's Save on its own tab, as that tab's bar last reported it (agents#1520).
+  const blockedRef = useRef<Partial<Record<TabKey, boolean>>>({});
+  const reportBlockedFor = useMemo(
+    () =>
+      Object.fromEntries(
+        TAB_KEYS.map((key) => [
+          key,
+          (blocked: boolean) => {
+            blockedRef.current[key] = blocked;
+          },
+        ]),
+      ) as Record<TabKey, (blocked: boolean) => void>,
+    [],
+  );
+  const anySaving =
+    savingAgent ||
+    savingGrants ||
+    savingDecisions ||
+    savingGuardrails ||
+    savingChannelRedirect;
+  const sectionDirty = (key: TabKey) =>
+    key in dirty ? dirty[key as keyof typeof dirty] : false;
+  // The bar every tab draws: the agent's, not the tab's.
+  const editorBar: EditorBar = {
+    dirty: anyDirty,
+    saving: anySaving,
+    onSave: saveFromBar,
+    onDiscard: askDiscardAll,
+    sectionDirty:
+      sectionDirty(tab) || (tab === "general" && decisionsHeadDirty),
+    reportBlocked: reportBlockedFor[tab],
+  };
 
   // What the vault holds, for the two credential states the panel below can only see from the list:
   // referenced but not filled yet (created via the MCP credential_create tool, say), and referenced
@@ -3250,7 +3294,7 @@ function AgentEditor() {
     }
   }
 
-  async function saveGrants(force = false) {
+  async function saveGrants(force = false): Promise<boolean> {
     savingRef.current += 1;
     setSavingGrants(true);
     let sent: Record<string, unknown> = {};
@@ -3281,7 +3325,7 @@ function AgentEditor() {
           grants,
           ...(expected ? { expectedUpdatedAt: expected } : {}),
         });
-      if (handleConflict(err, () => void saveGrants(true))) return;
+      if (handleConflict(err, () => void saveGrants(true))) return false;
       if (err || !data) throw err ?? new Error("no data");
       syncedGrantsRef.current = data.grants;
       if (untouchedSince(sentSnap)) setGrants(mapGrants(data.grants));
@@ -3296,7 +3340,8 @@ function AgentEditor() {
           ...(!force && afterGrants ? { expectedUpdatedAt: afterGrants } : {}),
           ...replaceFor(force),
         });
-        if (handleConflict(agentRes.error, () => void saveGrants(true))) return;
+        if (handleConflict(agentRes.error, () => void saveGrants(true)))
+          return false;
         if (agentRes.error || !agentRes.data) {
           throw agentRes.error ?? new Error("no data");
         }
@@ -3309,6 +3354,7 @@ function AgentEditor() {
       bumpSync();
       settleRefusalFor("knowledge");
       showToast(t("editor.grantsSaved", "Tools updated."), "success");
+      return true;
     } catch (e) {
       answerRefusal(
         e,
@@ -3316,6 +3362,7 @@ function AgentEditor() {
         "knowledge",
         sent,
       );
+      return false;
     } finally {
       savingRef.current -= 1;
       setSavingGrants(false);
@@ -3327,7 +3374,7 @@ function AgentEditor() {
   // unsaved edits pending in the Behavior tab (both write the same settings JSON column). Two writes
   // (grants PUT, then agent PATCH); the PUT bumps the agent's token, so the PATCH precondition chains
   // to the PUT's returned token (else the PATCH would 409 against our own grant write).
-  async function saveTools(force = false) {
+  async function saveTools(force = false): Promise<boolean> {
     savingRef.current += 1;
     setSavingGrants(true);
     let sent: Record<string, unknown> = {};
@@ -3459,14 +3506,15 @@ function AgentEditor() {
           : null);
       if (toolsText) {
         showToast(toolsText, "error");
-        return;
+        return false;
       }
       const expected = expectedFor(force);
       const grantsRes = await api.api.v1.agents({ id })["tool-selections"].put({
         grants: savedGrants,
         ...(expected ? { expectedUpdatedAt: expected } : {}),
       });
-      if (handleConflict(grantsRes.error, () => void saveTools(true))) return;
+      if (handleConflict(grantsRes.error, () => void saveTools(true)))
+        return false;
       if (grantsRes.error || !grantsRes.data) {
         throw grantsRes.error ?? new Error("no data");
       }
@@ -3485,7 +3533,8 @@ function AgentEditor() {
         ...(patchExpected ? { expectedUpdatedAt: patchExpected } : {}),
         ...replaceFor(force),
       });
-      if (handleConflict(agentRes.error, () => void saveTools(true))) return;
+      if (handleConflict(agentRes.error, () => void saveTools(true)))
+        return false;
       if (agentRes.error || !agentRes.data) {
         throw agentRes.error ?? new Error("no data");
       }
@@ -3504,6 +3553,7 @@ function AgentEditor() {
       bumpSync();
       settleRefusalFor("tools");
       showToast(t("editor.grantsSaved", "Tools updated."), "success");
+      return true;
     } catch (e) {
       answerRefusal(
         e,
@@ -3511,6 +3561,7 @@ function AgentEditor() {
         "tools",
         sent,
       );
+      return false;
     } finally {
       savingRef.current -= 1;
       setSavingGrants(false);
@@ -3521,7 +3572,7 @@ function AgentEditor() {
   // buildSettings(), which reads the live Behavior form) so it can never clobber unsaved Behavior edits
   // — both write the same settings JSON column. Mirrors saveTools' merge-onto-synced approach, minus
   // the grants write. widgetInboxId round-trips untouched (the provision route owns it).
-  async function saveChannelRedirect(force = false) {
+  async function saveChannelRedirect(force = false): Promise<boolean> {
     savingRef.current += 1;
     setSavingChannelRedirect(true);
     // Declared out here so the catch can read it: the snapshot has to be taken before the request,
@@ -3544,7 +3595,8 @@ function AgentEditor() {
       sent = sentFor(patch);
       const sentSnap = { channelRedirect: sectionSnap.channelRedirect };
       const { data, error: err } = await api.api.v1.agents({ id }).patch(patch);
-      if (handleConflict(err, () => void saveChannelRedirect(true))) return;
+      if (handleConflict(err, () => void saveChannelRedirect(true)))
+        return false;
       if (err || !data) throw err ?? new Error("no data");
       if (untouchedSince(sentSnap)) applyChannelRedirect(data.agent);
       else syncedAgentRef.current = data.agent;
@@ -3552,6 +3604,7 @@ function AgentEditor() {
       bumpSync();
       showToast(t("editor.saved", "Agent saved."), "success");
       settleRefusalFor("channelRedirect");
+      return true;
     } catch (e) {
       // NOTE: It writes the WHOLE settings bag, so it can be refused about any value in it, and the
       // refusal is answered like every other form's: marked where the field has a control, with a way
@@ -3562,6 +3615,7 @@ function AgentEditor() {
         "channelRedirect",
         sent,
       );
+      return false;
     } finally {
       savingRef.current -= 1;
       setSavingChannelRedirect(false);
@@ -3728,7 +3782,7 @@ function AgentEditor() {
   // Guardrails-tab save: the guardrails block merged onto the LAST-SYNCED settings (same pattern as
   // saveChannelRedirect) so it never clobbers unsaved edits in another tab — both write the same
   // settings JSON column.
-  async function saveGuardrails(force = false) {
+  async function saveGuardrails(force = false): Promise<boolean> {
     savingRef.current += 1;
     setSavingGuardrails(true);
     let sent: Record<string, unknown> = {};
@@ -3746,7 +3800,7 @@ function AgentEditor() {
         ...(expected ? { expectedUpdatedAt: expected } : {}),
         ...replaceFor(force),
       });
-      if (handleConflict(err, () => void saveGuardrails(true))) return;
+      if (handleConflict(err, () => void saveGuardrails(true))) return false;
       if (err || !data) throw err ?? new Error("no data");
       if (untouchedSince(sentSnap)) applyGuardrails(data.agent);
       else syncedAgentRef.current = data.agent;
@@ -3754,6 +3808,7 @@ function AgentEditor() {
       bumpSync();
       settleRefusalFor("guardrails");
       showToast(t("editor.saved", "Agent saved."), "success");
+      return true;
     } catch (e) {
       answerRefusal(
         e,
@@ -3761,6 +3816,7 @@ function AgentEditor() {
         "guardrails",
         sent,
       );
+      return false;
     } finally {
       savingRef.current -= 1;
       setSavingGuardrails(false);
@@ -3824,61 +3880,117 @@ function AgentEditor() {
     }
   }
 
+  // The editor bar's Save, on every tab.
+  function saveFromBar() {
+    void saveAllDirty({ leaveHidden: true });
+  }
+
   // Saves every dirty section sequentially (so the optimistic-concurrency token chains through each
-  // write), used by "Save and export". Tools + Knowledge share the grant set, so one saveTools() write
-  // persists both. Awaited so the export reads the just-saved version.
-  async function saveAllDirty(): Promise<boolean> {
+  // write), for the editor's bar on every tab and for "Save and export" (agents#1520). It stops at the
+  // first section that is held or refused, opens that section's tab and leaves the rest pending, so a
+  // save never reports success over a section it did not write. Tools + Knowledge share the grant set,
+  // so one saveTools() write persists both. Awaited so the export reads the just-saved version.
+  async function saveAllDirty(
+    // The bar writes what this engine and mode draw and leaves the rest pending, saying so at the end,
+    // as each tab's own Save did; an export refuses instead, since it would carry a version that
+    // leaves those edits out.
+    opts: { leaveHidden?: boolean } = {},
+  ): Promise<boolean> {
+    const tabName = (key: TabKey) =>
+      tabs.find((tb) => tb.key === key)?.label ?? key;
+    // A hold names the tab to fix and goes there, where the field says why.
+    const held = (key: TabKey, reason: string) => {
+      showToast(
+        t(
+          "editor.saveHeldIn",
+          "Fix the {{tab}} tab before saving: {{reason}}",
+          {
+            tab: tabName(key),
+            reason,
+          },
+        ),
+        "error",
+      );
+      openTab(key);
+      return false;
+    };
+    // A section that was sent and refused already said why, on its own toast; the save stops there.
+    const stopped = (key: TabKey) => {
+      openTab(key);
+      return false;
+    };
     // NOTE: Edits to what questions and rules do not draw are written by no save of this engine,
     // so "save everything" cannot honour them; it says so instead of reporting a save that left
     // them out.
-    if (hiddenDraftsPending) {
-      showToast(
-        t(
-          "editor.hiddenDraftsPending",
-          "There are unsaved changes that questions and rules do not use (the instructions, the model, memory, the fallback provider, Knowledge, or tools it does not show). Switch back to the language model on General to save them, or discard them.",
-        ),
-        "error",
-      );
+    const sayHidden = () => {
+      if (hiddenDraftsPending) {
+        showToast(
+          t(
+            "editor.hiddenDraftsPending",
+            "There are unsaved changes that questions and rules do not use (the instructions, the model, memory, the fallback provider, Knowledge, or tools it does not show). Switch back to the language model on General to save them, or discard them.",
+          ),
+          "error",
+        );
+        return true;
+      }
+      if (hiddenDecisionsPending) {
+        showToast(
+          t(
+            "editor.hiddenDecisionsPending",
+            "There are unsaved changes to the questions and rules, which only a monitoring agent uses. Switch the mode back to Monitoring on General to save them, or discard them.",
+          ),
+          "error",
+        );
+        return true;
+      }
       return false;
-    }
-    if (hiddenDecisionsPending) {
-      showToast(
-        t(
-          "editor.hiddenDecisionsPending",
-          "There are unsaved changes to the questions and rules, which only a monitoring agent uses. Switch the mode back to Monitoring on General to save them, or discard them.",
-        ),
-        "error",
-      );
-      return false;
-    }
+    };
+    if (!opts.leaveHidden && sayHidden()) return false;
     // NOTE: The Behavior tab's Save is disabled on an empty gate; this path saves without that
     // button, so it refuses the same state before writing any section.
+    // NOTE: A tab's own Save rule, reported by its bar while it was drawn: a field there that cannot
+    // be written as it is. Only a dirty section's rule holds, since only it would be written.
+    for (const key of SAVE_SECTIONS) {
+      if (dirty[key] && blockedRef.current[key]) {
+        return held(
+          key,
+          t("editor.saveHeldField", "a field there cannot be saved as it is."),
+        );
+      }
+    }
     if (dirty.behavior && contactAuthGateEmpty(contactAuth)) {
-      showToast(
+      return held(
+        "behavior",
         t(
           "editor.contactAuthEmpty",
           "Add at least one condition or turn on the external endpoint, or turn the gate off.",
         ),
-        "error",
       );
-      return false;
     }
     // NOTE: Same reason: the snoozed ladder's cadence issues hold the Behavior Save, not this path.
     if (
       dirty.behavior &&
       snoozedFollowUpBlocksSave(snoozedFollowUp, agentMode)
     ) {
-      showToast(
+      return held(
+        "behavior",
         t(
           "editor.snoozedFollowUpInvalidToast",
           "Fix the snoozed follow-up's cadences before saving.",
         ),
-        "error",
       );
-      return false;
     }
     if (dirty.general || dirty.decisions) {
-      if (dirty.decisions && decisionsSetupIssues.size > 0) {
+      if (
+        setupSaveBlocked(
+          decisionsSetupIssues.size,
+          dirty.decisions,
+          dirty.general,
+        )
+      ) {
+        // Marks what is missing and scrolls to it, as General's own Save does.
+        decisionsBlocked("general", dirty.general);
+        openTab("general");
         showToast(
           t(
             "editor.decisionsSetupIncomplete",
@@ -3888,31 +4000,30 @@ function AgentEditor() {
         );
         return false;
       }
-      if (!decides && dirty.general && !guardModelBeforeSave()) return false;
-      if (!(await saveGeneral())) return false;
+      if (!decides && dirty.general && !guardModelBeforeSave())
+        return stopped("general");
+      if (!(await saveGeneral()))
+        return stopped(dirty.general ? "general" : "decisions");
     }
-    if (dirty.behavior) {
-      await saveAgent(
+    if (
+      dirty.behavior &&
+      !(await saveAgent(
         {
           businessHoursId: businessHoursId || null,
           followUpHoursId: followUpHoursId || null,
           settings: buildSettings(),
         },
         "behavior",
-      );
-    }
-    if (dirty.channelRedirect) {
-      await saveChannelRedirect();
-    }
-    if (dirty.guardrails) {
-      await saveGuardrails();
-    }
-    if (dirty.tools) {
-      await saveTools();
-    }
-    if (dirty.knowledge) {
-      await saveGrants();
-    }
+      ))
+    )
+      return stopped("behavior");
+    if (dirty.channelRedirect && !(await saveChannelRedirect()))
+      return stopped("channelRedirect");
+    if (dirty.guardrails && !(await saveGuardrails()))
+      return stopped("guardrails");
+    if (dirty.tools && !(await saveTools())) return stopped("tools");
+    if (dirty.knowledge && !(await saveGrants())) return stopped("knowledge");
+    if (opts.leaveHidden && sayHidden()) return false;
     return true;
   }
 
@@ -4984,7 +5095,9 @@ function AgentEditor() {
 
   return (
     <StaleNoticeContext.Provider value={stale}>
-      {page}
+      <EditorBarContext.Provider value={editorBar}>
+        {page}
+      </EditorBarContext.Provider>
     </StaleNoticeContext.Provider>
   );
 }

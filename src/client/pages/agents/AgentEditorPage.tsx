@@ -4031,6 +4031,9 @@ function AgentEditor() {
   type BarSave = {
     sections: Set<(typeof SAVE_SECTIONS)[number]>;
     generalDone: boolean;
+    // Phase two's tabs were judged; the sections it has written.
+    judged: boolean;
+    written: Set<(typeof SAVE_SECTIONS)[number]>;
     // Each tab judged again during this save, with the `crossTabKey` it was judged under.
     rechecked: Map<TabKey, string>;
     origin: TabKey;
@@ -4055,10 +4058,36 @@ function AgentEditor() {
         ),
       ),
       generalDone: false,
+      judged: false,
+      written: new Set(),
       rechecked: new Map(),
       origin: tab,
     };
     void continueBarSave();
+  }
+
+  function writeSection(
+    key: "behavior" | "channelRedirect" | "guardrails" | "tools" | "knowledge",
+  ): Promise<boolean> {
+    switch (key) {
+      case "behavior":
+        return saveAgent(
+          {
+            businessHoursId: businessHoursId || null,
+            followUpHoursId: followUpHoursId || null,
+            settings: buildSettings(),
+          },
+          "behavior",
+        );
+      case "channelRedirect":
+        return saveChannelRedirect();
+      case "guardrails":
+        return saveGuardrails();
+      case "tools":
+        return saveTools();
+      case "knowledge":
+        return saveGrants();
+    }
   }
 
   async function continueBarSave(): Promise<void> {
@@ -4120,6 +4149,8 @@ function AgentEditor() {
     }
 
     // Phase 2: the rest, each judged by its own tab first, then written in order.
+    // A section whose tab this engine does not draw is not written: its edits are the other engine's,
+    // and the Tools save already writes the grants this engine hides as stored.
     const rest = (
       [
         "behavior",
@@ -4129,47 +4160,27 @@ function AgentEditor() {
         "knowledge",
       ] as const
     ).filter((key) => planned(key) && drawn(key));
-    for (const key of rest) if (judge(key) !== "ok") return;
-    if (planned("behavior") && behaviorPageHold() === false) return end();
-    // A section discarded while the save ran is no longer edited, and is not written.
-    if (
-      planned("behavior") &&
-      dirty.behavior &&
-      !(await saveAgent(
-        {
-          businessHoursId: businessHoursId || null,
-          followUpHoursId: followUpHoursId || null,
-          settings: buildSettings(),
-        },
-        "behavior",
-      ))
-    )
-      return stop("behavior");
-    // NOTE: A section whose tab this engine does not draw is not written: its edits are the other
-    // engine's, and the Tools save already writes the grants this engine hides as stored.
-    if (
-      rest.includes("channelRedirect") &&
-      dirty.channelRedirect &&
-      !(await saveChannelRedirect())
-    )
-      return stop("channelRedirect");
-    if (
-      rest.includes("guardrails") &&
-      dirty.guardrails &&
-      !(await saveGuardrails())
-    )
-      return stop("guardrails");
-    if (rest.includes("tools") && dirty.tools && !(await saveTools()))
-      return stop("tools");
-    if (rest.includes("knowledge") && dirty.knowledge && !(await saveGrants()))
-      return stop("knowledge");
+    if (!plan.judged) {
+      for (const key of rest) if (judge(key) !== "ok") return;
+      if (planned("behavior") && behaviorPageHold() === false) return end();
+      plan.judged = true;
+    }
+    // One write per pass, each pass on a fresh render: a section discarded while an earlier write
+    // was out reads as clean here and is not sent.
+    const key = rest.find((item) => !plan.written.has(item) && dirty[item]);
+    if (key) {
+      plan.written.add(key);
+      if (!(await writeSection(key))) return stop(key);
+      continueRef.current = { onTab: null };
+      return;
+    }
     end();
     if (sayHiddenDrafts()) return;
     // A planned section of a tab this mode does not draw (Guardrails, Redirect on a watcher) was not
     // written either, and nothing above names it. The decision setup is not among them: it goes out
     // with General whichever tab draws it.
     const skipped = [...plan.sections].filter(
-      (key) => key !== "decisions" && !drawn(key),
+      (item) => item !== "decisions" && !drawn(item) && dirty[item],
     );
     if (skipped.length > 0) {
       showToast(

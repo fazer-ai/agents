@@ -398,4 +398,43 @@ describe("the editor's bar covers the whole agent", () => {
     expect(nameField().value).toBe("Outro nome");
     expect(save().disabled).toBe(false);
   });
+
+  // Discard all while a write is out discards what is still waiting: the save reads each section
+  // again before writing it, so Guardrails, discarded during Behavior's write, is not sent.
+  test("a section discarded while an earlier write is out is not sent", async () => {
+    const stub = stubEditorApi({ name: "Atendente" });
+    const served = globalThis.fetch;
+    let release: () => void = () => {};
+    const held = new Promise<void>((r) => {
+      release = r;
+    });
+    let patchSent = false;
+    globalThis.fetch = (async (
+      input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      if ((init?.method ?? "GET") === "PATCH" && !patchSent) {
+        patchSent = true;
+        await held;
+      }
+      return served(input, init);
+    }) as typeof fetch;
+    await renderEditor(stub, "behavior");
+    editTab("behavior");
+    await goTo("Guardrails");
+    editTab("guardrails");
+    fireEvent.click(save());
+    await waitFor(() => expect(patchSent).toBe(true));
+    fireEvent.click(discard() as HTMLElement);
+    fireEvent.click(await screen.findByRole("button", { name: "Discard all" }));
+    release();
+    await waitFor(() => expect(discard()).toBeNull());
+    await new Promise((r) => setTimeout(r, 50));
+    const patches = stub.writes.filter((w) => w.method === "PATCH");
+    expect(patches.length).toBe(1);
+    expect(
+      (patches[0]?.body.settings as { guardrails?: unknown } | undefined)
+        ?.guardrails,
+    ).toBeUndefined();
+  });
 });

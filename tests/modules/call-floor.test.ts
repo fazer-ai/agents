@@ -404,6 +404,44 @@ describe.skipIf(!dbUp)("estimateCallFloor", () => {
     await suDb.agentToolSelection.delete({ where: { id: sel.id } });
   });
 
+  // A handoff pinned to one target on one account is sent without a target to choose; built as "no
+  // account" the pin reads as foreign and the tool grows an `assignTo` the model never sees.
+  test("a pinned handoff is measured as pinned, not as the agent's choice", async () => {
+    const make = async (handoff: Record<string, unknown>) =>
+      (
+        await suDb.agent.create({
+          data: {
+            tenantId,
+            name: `Handoff ${String(handoff.mode)}`,
+            systemPrompt: PROMPT,
+            modelConfig: { provider: "openai", model: "gpt-4o-mini" },
+            settings: { handoff },
+          },
+        })
+      ).id;
+    const schemaOf = async (id: bigint) => {
+      const f = await estimateCallFloor({
+        ctx: ctx(),
+        agentId: id,
+        base: appDb,
+      });
+      if (f.engine !== "llm") throw new Error("engine");
+      return f.tools.find((t) => t.name === "handoff_to_human")
+        ?.estimatedTokens;
+    };
+    const pinned = await schemaOf(
+      await make({
+        mode: "pinned",
+        targetAgentId: 3,
+        targetInstanceId: 5,
+      }),
+    );
+    const choice = await schemaOf(await make({ mode: "agent_choice" }));
+    expect(pinned).toBeDefined();
+    expect(choice).toBeDefined();
+    expect(pinned ?? 0).toBeLessThan(choice ?? 0);
+  });
+
   test("a decisions-engine observer gets no numbers: it never sends this prompt", async () => {
     const id = (
       await suDb.agent.create({

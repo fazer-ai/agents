@@ -409,13 +409,15 @@ function buildPlaygroundToolset(
     // Built as an observation is: on a muted client, which drops what delivers to the customer
     // (those natives, documents, a pack's delivering tools) and gives the handoff its muted schema.
     muted?: boolean;
+    // The account the build stands in, where 0n (no conversation) changes what a tool offers.
+    instanceId?: bigint;
   },
 ): Promise<StructuredToolInterface[]> {
   return buildToolset(
     loaded,
     {
       tenantId: params.ctx.tenantId as bigint,
-      instanceId: 0n,
+      instanceId: params.instanceId ?? 0n,
       base: params.base,
       client: (params.muted ? { muted: true } : {}) as ChatwootClient,
       conversationId: 0,
@@ -777,6 +779,12 @@ export async function estimateCallFloor(params: {
     flow: undefined,
     replyChoice: observing ? undefined : { textChosen: false },
     muted: observing,
+    // A pinned handoff names its target on one account; built as "no account" it reads as foreign and
+    // turns into agent_choice, a larger schema than any conversation on that account is sent.
+    ...(loaded.handoffConfig.mode === "pinned" &&
+    loaded.handoffConfig.targetInstanceId != null
+      ? { instanceId: BigInt(loaded.handoffConfig.targetInstanceId) }
+      : {}),
   });
   const classify = toolClassifier(loaded);
   // The operator's display names, read once: the loaded definitions carry only the model-facing name.

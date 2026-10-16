@@ -1477,7 +1477,7 @@ function TraceRow({ entry }: { entry: TraceEntry }) {
           >
             {[
               t("playground.trace.externalLatency", {
-                defaultValue: "{{ms}} ms",
+                defaultValue: "took {{ms}} ms",
                 ms: entry.external.latencyMs,
               }),
               entry.external.cause &&

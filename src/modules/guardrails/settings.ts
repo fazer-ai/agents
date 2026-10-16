@@ -131,7 +131,7 @@ export interface GuardrailExternalConfig {
   // An https URL, or null when there is no external check.
   url: string | null;
   // `vault:<id>` ref of the HMAC signing secret, or null to send the request unsigned.
-  secretRef: string | null;
+  credentialRef: string | null;
   // Off sends each tool call's name and sizes without its arguments and result.
   sendToolValues: boolean;
 }
@@ -189,7 +189,7 @@ export const GUARDRAILS_DEFAULTS: GuardrailsConfig = {
     handoffMessage: DEFAULT_HANDOFF_MESSAGE,
   },
   onFailure: "pass",
-  external: { url: null, secretRef: null, sendToolValues: true },
+  external: { url: null, credentialRef: null, sendToolValues: true },
 };
 
 // The endpoint as stored, or null when it cannot be one: unparseable, not https, or carrying
@@ -210,7 +210,7 @@ function readExternal(v: unknown): GuardrailExternalConfig {
   const url = str(bag.url);
   return {
     url: url && isExternalCheckUrl(url) ? url : null,
-    secretRef: str(bag.secretRef),
+    credentialRef: str(bag.credentialRef),
     sendToolValues: bool(
       bag.sendToolValues,
       GUARDRAILS_DEFAULTS.external.sendToolValues,

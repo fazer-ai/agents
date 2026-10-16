@@ -18,7 +18,7 @@ import {
   readGuardrailsConfig,
 } from "@/modules/guardrails/settings";
 
-// The external check (issue #1514): what it sends, how it reads the answer, and what it decides.
+// The external check (docs/guardrails-external.md): what it sends, how it reads the answer, and what it decides.
 
 const CID = "cid-1";
 
@@ -224,7 +224,7 @@ describe("what the check decides", () => {
     enabled: true,
     external: {
       url: "https://x.example/h",
-      secretRef: "vault:1",
+      credentialRef: "vault:1",
       sendToolValues: true,
     },
     ...over,
@@ -337,7 +337,7 @@ describe("reading the configuration", () => {
         .external;
     expect(read({ url: "https://x.example/h" })).toEqual({
       url: "https://x.example/h",
-      secretRef: null,
+      credentialRef: null,
       sendToolValues: true,
     });
     expect(read({ url: "http://x.example/h" }).url).toBeNull();

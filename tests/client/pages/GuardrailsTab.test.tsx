@@ -373,7 +373,7 @@ describe("GuardrailsTab thresholds beside their checks", () => {
     fireEvent.click(toolValues as HTMLElement);
     expect(saved?.external).toEqual({
       url: "https://check.example.com/hook",
-      secretRef: null,
+      credentialRef: null,
       sendToolValues: false,
     });
   });

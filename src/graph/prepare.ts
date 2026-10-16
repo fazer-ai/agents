@@ -595,11 +595,11 @@ export async function loadAgentConfig(
   if (
     guardrails.enabled &&
     guardrails.external.url &&
-    guardrails.external.secretRef
+    guardrails.external.credentialRef
   ) {
     const sEntry = await resolveVaultRefState<unknown>(
       db,
-      guardrails.external.secretRef,
+      guardrails.external.credentialRef,
     );
     guardrailsExternalSecret =
       sEntry.state === "filled" && typeof sEntry.value === "string"

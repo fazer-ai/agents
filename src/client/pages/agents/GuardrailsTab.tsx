@@ -829,8 +829,8 @@ export function GuardrailsTab({
                   group
                 >
                   <CredentialPicker
-                    value={g.external.secretRef ?? ""}
-                    onChange={(v) => setExternal({ secretRef: v || null })}
+                    value={g.external.credentialRef ?? ""}
+                    onChange={(v) => setExternal({ credentialRef: v || null })}
                     ariaLabel={t(
                       "editor.guardrails.externalSecret",
                       "Signing secret",

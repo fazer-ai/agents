@@ -150,7 +150,8 @@ export function guardrailExternalLabel(
   if (stage !== "guardrail" || !detail || detail.check !== "external")
     return null;
   const ms = typeof detail.latencyMs === "number" ? detail.latencyMs : null;
-  const reason = typeof detail.reason === "string" ? detail.reason : null;
+  const reason =
+    typeof detail.endpointReason === "string" ? detail.endpointReason : null;
   let head: string;
   if (detail.outcome === "external_failed") {
     const cause =
@@ -191,7 +192,10 @@ export function guardrailExternalLabel(
     head,
     ms === null
       ? null
-      : t("logs.guardrailExternal.latency", { defaultValue: "{{ms}} ms", ms }),
+      : t("logs.guardrailExternal.latency", {
+          defaultValue: "took {{ms}} ms",
+          ms,
+        }),
     reason
       ? t("logs.guardrailExternal.reason", {
           defaultValue: "reason: {{reason}}",

@@ -580,7 +580,7 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
   });
 
   // The bug it catches: the playground skipping the operator's endpoint, or tracing its block without
-  // the reason and the time it took (issue #1514).
+  // the reason and the time it took.
   test("the external check's block shows in the reply and in the trace", async () => {
     const m = models({ violated: false });
     const r = await runPlaygroundTurn({

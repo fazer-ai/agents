@@ -15,7 +15,7 @@ import type {
 } from "./gate";
 import type { GuardrailsConfig } from "./settings";
 
-// The external check (issue #1514, docs/guardrails-external.md): before a reply to a customer
+// The external check (docs/guardrails-external.md): before a reply to a customer
 // message is delivered, the turn is POSTed to an endpoint the operator runs, and its answer decides.
 // It runs after the built-in output screening, on the text that would go out, and answers in the
 // gate's own vocabulary so the caller applies a block exactly as it applies a trip.
@@ -374,7 +374,7 @@ export function buildExternalCheck(
           decision: answer.decision,
           latencyMs,
           ...(action ? { action } : {}),
-          ...(answer.reason ? { reason: answer.reason } : {}),
+          ...(answer.reason ? { endpointReason: answer.reason } : {}),
         },
       });
       if (answer.decision === "allow") {
@@ -403,12 +403,7 @@ export function buildExternalCheck(
         };
       } else {
         d = { kind: "replaced", reply: out.templateMessage };
-        r = {
-          direction: "output",
-          outcome: "replaced",
-          action: "template",
-          external,
-        };
+        r = { direction: "output", outcome: "replaced", action, external };
       }
     }
     await p.announce?.(r);

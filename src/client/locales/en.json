@@ -3110,7 +3110,7 @@
       "block": "The external check blocked the reply ({{action}})",
       "failedHeld": "The external check could not decide ({{cause}}), so the reply was held and a hand-over to the team was requested",
       "failedPassed": "The external check could not decide ({{cause}}), so the reply was let through unchecked",
-      "latency": "{{ms}} ms",
+      "latency": "took {{ms}} ms",
       "reason": "reason: {{reason}}",
       "replace": "The external check replaced the reply with its own text"
     },
@@ -3525,7 +3525,7 @@
       "externalBlockTemplate": "blocked by the endpoint, the configured reply would be sent",
       "externalCause": "failure: {{cause}}",
       "externalCheck": "External check on the reply",
-      "externalLatency": "{{ms}} ms",
+      "externalLatency": "took {{ms}} ms",
       "externalReason": "reason: {{reason}}",
       "externalReplace": "replaced by the endpoint's text",
       "guardrailClean": "approved",

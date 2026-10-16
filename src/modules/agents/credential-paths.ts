@@ -53,7 +53,7 @@ export const SETTINGS_CREDENTIAL_PATHS = [
   },
   // The external check's HMAC signing secret: a plain string, never a provider key.
   {
-    path: ["guardrails", "external", "secretRef"],
+    path: ["guardrails", "external", "credentialRef"],
     tab: "guardrails",
     sectionId: "gr-external",
     use: "injectable",

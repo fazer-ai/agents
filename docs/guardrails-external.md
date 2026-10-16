@@ -9,7 +9,7 @@ An operator who already runs their own checks (a verifier that compares a reply 
 | field | meaning |
 | --- | --- |
 | `url` | `https` only, with no credentials in it. Null turns the check off. |
-| `secretRef` | Vault reference of the HMAC signing secret. Null sends the request unsigned. |
+| `credentialRef` | Vault reference of the HMAC signing secret. Null sends the request unsigned. |
 | `sendToolValues` | Default `true`. `false` sends each tool call's name and sizes without its arguments and result. |
 
 The check runs when `guardrails.enabled` is on and `url` is set. It does not need the built-in output direction to be on, but a `block` uses that direction's action and messages (`output.action`, `templateMessage`, `handoffMessage`). The call goes through the same outbound guard as every other outbound request (`assertSafeOutboundUrl`): a private or loopback address is refused at call time unless the instance allows private targets (`SSRF_ALLOW_PRIVATE_TARGETS`).
@@ -61,5 +61,5 @@ The budget is 15 s, DNS lookup and body included. A timeout, a non-2xx, a body t
 ## What the operator sees
 
 - A private note in the conversation for `replace`, `block` and a held failure, naming the external check, the decision, the latency, and the reason when there is one.
-- A `guardrail` flow line with `detail.check: "external"`: `{direction: "output", decision, latencyMs, action?, reason?}` on an answer (`info` for allow, `warn` otherwise), and `{outcome: "external_failed", cause, httpStatus?, latencyMs, unchecked | held}` on a failure. `cause` is one of `timeout`, `http_status`, `network`, `malformed`, `unverifiable`, `unsafe_url`, `secret_not_found`. The Logs page shows the line as a sentence under the row.
+- A `guardrail` flow line with `detail.check: "external"`: `{direction: "output", decision, latencyMs, action?, endpointReason?}` on an answer (`info` for allow, `warn` otherwise), and `{outcome: "external_failed", cause, httpStatus?, latencyMs, unchecked | held}` on a failure. `cause` is one of `timeout`, `http_status`, `network`, `malformed`, `unverifiable`, `unsafe_url`, `secret_not_found`. The Logs page shows the line as a sentence under the row.
 - In the playground, a trace entry "External check on the reply" with the decision, the latency, and the reason or the failure.

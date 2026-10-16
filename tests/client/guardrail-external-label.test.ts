@@ -25,12 +25,12 @@ describe("an external check line on the Logs page", () => {
           decision: "block",
           action: "template",
           latencyMs: 2100,
-          reason: "MOTIVO-X1",
+          endpointReason: "MOTIVO-X1",
         },
         t,
       ),
     ).toBe(
-      "The external check blocked the reply (template) · 2100 ms · reason: MOTIVO-X1",
+      "The external check blocked the reply (template) · took 2100 ms · reason: MOTIVO-X1",
     );
   });
 
@@ -47,7 +47,7 @@ describe("an external check line on the Logs page", () => {
     expect(
       guardrailExternalLabel("guardrail", { ...failed, unchecked: true }, t),
     ).toBe(
-      "The external check could not decide (http_status 500), so the reply was let through unchecked · 40 ms",
+      "The external check could not decide (http_status 500), so the reply was let through unchecked · took 40 ms",
     );
     expect(
       guardrailExternalLabel(

@@ -917,7 +917,7 @@ const guardrails = z
           .describe(
             "the endpoint that judges each reply before delivery; null = no external check",
           ),
-        secretRef: credentialRef().describe(
+        credentialRef: credentialRef().describe(
           "vault entry NAME or vault:<id> of the HMAC signing secret; null = unsigned",
         ),
         sendToolValues: z

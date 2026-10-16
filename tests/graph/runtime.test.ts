@@ -11950,7 +11950,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       });
     });
 
-    // The operator's endpoint (issue #1514): asked after the built-in output screening, on the reply
+    // The operator's endpoint (docs/guardrails-external.md): asked after the built-in output screening, on the reply
     // that would go out, and its answer applied the way a trip is.
     describe("external check", () => {
       const EXT_URL = "https://check.example.com/hook";
@@ -12002,7 +12002,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
             handoffMessage: "HANDOFF-OUT",
             ...output,
           },
-          external: { url: EXT_URL, secretRef: `vault:${secret.id}` },
+          external: { url: EXT_URL, credentialRef: `vault:${secret.id}` },
           ...extra,
         });
       };

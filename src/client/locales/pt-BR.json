@@ -3212,7 +3212,7 @@
       "block": "A verificação externa bloqueou a resposta ({{action}})",
       "failedHeld": "A verificação externa não conseguiu decidir ({{cause}}), então a resposta foi segurada e a passagem para a equipe foi pedida",
       "failedPassed": "A verificação externa não conseguiu decidir ({{cause}}), então a resposta foi liberada sem checagem",
-      "latency": "{{ms}} ms",
+      "latency": "levou {{ms}} ms",
       "reason": "motivo: {{reason}}",
       "replace": "A verificação externa trocou a resposta pelo texto dela"
     },
@@ -3629,7 +3629,7 @@
       "externalBlockTemplate": "bloqueada pelo endpoint, a resposta configurada seria enviada",
       "externalCause": "falha: {{cause}}",
       "externalCheck": "Verificação externa na resposta",
-      "externalLatency": "{{ms}} ms",
+      "externalLatency": "levou {{ms}} ms",
       "externalReason": "motivo: {{reason}}",
       "externalReplace": "trocada pelo texto do endpoint",
       "guardrailClean": "aprovado",

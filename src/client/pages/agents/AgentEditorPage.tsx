@@ -1374,7 +1374,8 @@ function AgentEditor() {
     "settings.guardrails.credentialRef": guardrails.credentialRef,
     "settings.guardrails.decisions.credentialRef":
       guardrails.decisions.credentialRef,
-    "settings.guardrails.external.secretRef": guardrails.external.secretRef,
+    "settings.guardrails.external.credentialRef":
+      guardrails.external.credentialRef,
     "availability.awayMessage": awayMessage.trim(),
     "contactAuth.denyMessage": contactAuth.denyMessage.trim(),
     // NOTE: `buildSettings` stores null for an empty prompt or one still at the default, so an untouched
@@ -4798,9 +4799,9 @@ function AgentEditor() {
                     currentRef.current["guardrails.external.url"],
                   ),
                   externalSecret: refusal.at(
-                    "settings.guardrails.external.secretRef",
+                    "settings.guardrails.external.credentialRef",
                     currentRef.current[
-                      "settings.guardrails.external.secretRef"
+                      "settings.guardrails.external.credentialRef"
                     ],
                   ),
                 }}

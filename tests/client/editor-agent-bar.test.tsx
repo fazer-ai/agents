@@ -437,4 +437,48 @@ describe("the editor's bar covers the whole agent", () => {
         ?.guardrails,
     ).toBeUndefined();
   });
+
+  // Each section is judged again right before its write: the reviewer switched to a provider with no
+  // address while Behavior's write was out holds the Knowledge write, and the save says so.
+  test("a section edited into a hold while an earlier write is out is not sent", async () => {
+    const stub = stubEditorApi(
+      { name: "Atendente" },
+      { catalog: { native: [{ name: "open_case_in_inbox" }] } },
+    );
+    const served = globalThis.fetch;
+    let release: () => void = () => {};
+    const held = new Promise<void>((r) => {
+      release = r;
+    });
+    let patchSent = false;
+    globalThis.fetch = (async (
+      input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      if ((init?.method ?? "GET") === "PATCH" && !patchSent) {
+        patchSent = true;
+        await held;
+      }
+      return served(input, init);
+    }) as typeof fetch;
+    await renderEditor(stub, "behavior");
+    editTab("behavior");
+    await goTo("Knowledge");
+    const reviewer = () => {
+      const select = document
+        .getElementById("kb-review")
+        ?.querySelector("select");
+      if (!select) throw new Error("the reviewer's provider is not drawn");
+      return select;
+    };
+    fireEvent.change(reviewer(), { target: { value: "anthropic" } });
+    await waitFor(() => expect(save().disabled).toBe(false));
+    fireEvent.click(save());
+    await waitFor(() => expect(patchSent).toBe(true));
+    fireEvent.change(reviewer(), { target: { value: "openai-compatible" } });
+    release();
+    await screen.findByText(/Fix the Knowledge tab before saving/);
+    expect(stub.writes.filter((w) => w.method === "PATCH").length).toBe(1);
+    expect(stub.writes.some((w) => w.method === "PUT")).toBe(false);
+  });
 });

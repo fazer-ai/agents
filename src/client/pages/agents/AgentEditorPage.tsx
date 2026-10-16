@@ -4169,6 +4169,10 @@ function AgentEditor() {
     // was out reads as clean here and is not sent.
     const key = rest.find((item) => !plan.written.has(item) && dirty[item]);
     if (key) {
+      // Judged again right before its write: it may have been edited into a hold while an earlier
+      // write was out.
+      if (judge(key) !== "ok") return;
+      if (key === "behavior" && behaviorPageHold() === false) return end();
       plan.written.add(key);
       if (!(await writeSection(key))) return stop(key);
       continueRef.current = { onTab: null };

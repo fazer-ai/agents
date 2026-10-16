@@ -3932,7 +3932,7 @@ function AgentEditor() {
     openTab(key);
     return false;
   }
-  // NOTE: Edits to what questions and rules do not draw (or to the decision setup on an answering
+  // Edits to what questions and rules do not draw (or to the decision setup on an answering
   // agent) are written by no save of this engine and mode; a save of everything says so instead of
   // reporting a save that left them out.
   function sayHiddenDrafts(): boolean {
@@ -4039,16 +4039,11 @@ function AgentEditor() {
     return true;
   }
 
-  // THE BAR'S SAVE (agents#1520), on every tab. A plan taken when Save is pressed: the sections edited
-  // at that moment, and only those, so an edit made while the save runs stays pending. It runs in two
-  // phases, because other tabs judge their fields against the agent's SAVED model:
-  //   1. General (with the decision setup), held only by its own checks;
-  //   2. on a later render, where the saved model is the new one, the rest, each held by its tab.
-  // A tab's hold was reported when the tab was last drawn. When it says held, or when what tabs read
-  // from outside themselves (`crossTabKey`) changed since, the save opens that tab, lets it report
-  // again, and continues there; a hold that still stands is said on its own tab. Once everything is
-  // written the save returns to the tab where Save was pressed. Sections this engine or mode does not
-  // draw are left pending, and the save says which.
+  // THE BAR'S SAVE (agents#1520), on every tab: a plan of the sections edited when Save is pressed,
+  // run in two phases because other tabs judge their fields against the agent's SAVED model. First
+  // General (with the decision setup), then, on later renders, the rest, one write per render, each
+  // judged again right before it. A hold reported by a tab not on screen, or reported under another
+  // `crossTabKey`, sends the save to that tab to report again. The whole contract is in docs/ui.md.
   type BarSave = {
     sections: Set<(typeof SAVE_SECTIONS)[number]>;
     generalDone: boolean;

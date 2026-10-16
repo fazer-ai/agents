@@ -10,11 +10,11 @@ import { useStaleNotice } from "./StaleNotice";
 // edit there is nothing to write, the same on every tab (Gabriel's call on agents#1365). Inside the agent editor, while the "changed
 // elsewhere" notice is up, it repeats the notice on a row of its own, since on a long tab the card
 // at the top is off screen. Both rows wrap, so a narrow viewport keeps Save on screen.
+
 // The agent editor's bar is about the agent, not the tab (agents#1520): inside the editor, every tab's
 // bar reads this instead of its own props. Dirty when any section is, Save writes every dirty section,
-// Discard discards them all. A tab still says what holds its own Save (`saveDisabled`, a field it draws
-// that cannot be written): that holds the button while the tab's own section is dirty, and is reported
-// up, so a Save pressed on another tab stops there too and says which tab to fix.
+// Discard discards them all. A tab's own hold (`saveDisabled`) holds the button while its section is
+// dirty, and is reported up, so a Save pressed on another tab stops there too and names the tab.
 export interface EditorBar {
   dirty: boolean;
   saving: boolean;

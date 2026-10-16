@@ -140,7 +140,7 @@ describe("ToolTokens", () => {
       "en",
       <CallFloorContext.Provider value={FLOOR}>
         <div data-testid="http">
-          <ToolTokens tool={{ name: "consultar_pedido" }} />
+          <ToolTokens tool={{ name: "consultar_pedido", kind: "http" }} />
         </div>
         <div data-testid="mcp">
           <ToolTokens tool={{ mcp: { connectionId: "7", tool: "estoque" } }} />
@@ -162,8 +162,11 @@ describe("ToolTokens", () => {
             }}
           />
         </div>
+        <div data-testid="same-name-other-kind">
+          <ToolTokens tool={{ name: "resend_email_status", kind: "http" }} />
+        </div>
         <div data-testid="unsaved">
-          <ToolTokens tool={{ name: "nao_salva" }} />
+          <ToolTokens tool={{ name: "nao_salva", kind: "http" }} />
         </div>
       </CallFloorContext.Provider>,
     );
@@ -171,6 +174,8 @@ describe("ToolTokens", () => {
     expect(screen.getByTestId("mcp").textContent).toBe("~300 tokens per call");
     expect(screen.getByTestId("other-server").textContent).toBe("");
     expect(screen.getByTestId("unsaved").textContent).toBe("");
+    // An operator's HTTP tool named like a pack's tool is another row, and the number is the pack's.
+    expect(screen.getByTestId("same-name-other-kind").textContent).toBe("");
     // The second instance of a pack contributes nothing: its row shows no number.
     expect(screen.getByTestId("pack").textContent).toBe("~40 tokens per call");
     expect(screen.getByTestId("pack-shadowed").textContent).toBe("");

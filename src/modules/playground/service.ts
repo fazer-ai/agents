@@ -786,7 +786,13 @@ export async function estimateCallFloor(params: {
       ).metadata;
       return {
         name: tl.name,
-        category: meta?.mcpServer ? "mcp" : classify(tl.name).category,
+        // By where the tool came from when assembly says so: a name alone can be shared across
+        // sources, and only one of them is offered.
+        category: meta?.mcpServer
+          ? "mcp"
+          : meta?.integrationInstanceId
+            ? "integration"
+            : classify(tl.name).category,
         estimatedTokens: estimateTokens(
           JSON.stringify(convertToOpenAITool(tl)),
         ),

@@ -62,7 +62,7 @@ import { AppError, NotFoundError } from "@/lib/errors";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
 import { estimateTokens } from "@/lib/token-estimate";
-import { isMonitoring } from "@/modules/agents/mode";
+import { type AgentMode, isMonitoring } from "@/modules/agents/mode";
 import { normalizeGrants, type ToolGrantInput } from "@/modules/agents/service";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { renderInboundMessage } from "@/modules/chatwoot/render";
@@ -742,6 +742,9 @@ export async function estimateCallFloor(params: {
   // The editor's unsaved settings, in place of the saved ones: a tool's schema reads them (the handoff
   // instructions, the writable contact fields), so a draft set measured on saved settings undercounts.
   settings?: Record<string, unknown>;
+  // The unsaved mode: an observer is offered what an observation is, and one on the decisions engine
+  // sends no prompt at all.
+  mode?: AgentMode;
 }): Promise<CallFloor> {
   const base = params.base ?? basePrisma;
   const agent = await runScopedOn(base, params.ctx, (db) =>
@@ -752,8 +755,9 @@ export async function estimateCallFloor(params: {
   );
   if (!agent)
     throw new NotFoundError("agent not found", "errors.agentNotFound");
+  const mode = params.mode ?? agent.mode;
   if (
-    isMonitoring(agent.mode) &&
+    isMonitoring(mode) &&
     readMonitoringConfig(params.settings ?? agent.settings).engine ===
       "decisions"
   )
@@ -790,7 +794,7 @@ export async function estimateCallFloor(params: {
     throw new NotFoundError("agent not found", "errors.agentNotFound");
   // An LLM observer is offered what an observation offers (observe/job.ts): a muted client and no
   // `reply_as_text`, since it never speaks. Its playground turn is not what it sends in production.
-  const observing = isMonitoring(agent.mode);
+  const observing = isMonitoring(mode);
   const tools = await buildPlaygroundToolset(loaded, {
     ctx: params.ctx,
     threadId,

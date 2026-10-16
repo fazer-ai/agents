@@ -69,13 +69,7 @@ export function ToolTokens({ tool }: { tool: ToolRef }) {
   const found = findTool(floor, tool);
   if (!found) return null;
   return (
-    <span
-      className="shrink-0 whitespace-nowrap font-mono text-text-muted text-xs"
-      title={t(
-        "editor.callFloor.toolHint",
-        "Estimated tokens this tool's definition adds to every call",
-      )}
-    >
+    <span className="shrink-0 whitespace-nowrap font-mono text-text-muted text-xs">
       {t("editor.callFloor.tokens", "{{n}} tokens per call", {
         n: fmt(found.estimatedTokens, i18n.language),
       })}

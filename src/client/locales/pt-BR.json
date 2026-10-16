@@ -1477,8 +1477,7 @@
       "helpLabel": "Sobre esta estimativa",
       "instructions": "Instruções do agente",
       "line": "Cada chamada já envia {{n}} tokens antes do histórico",
-      "tokens": "{{n}} tokens por chamada",
-      "toolHint": "Tokens estimados que a definição desta ferramenta acrescenta a cada chamada"
+      "tokens": "{{n}} tokens por chamada"
     },
     "capabilities": {
       "agent": "Agente",

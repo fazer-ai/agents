@@ -1108,7 +1108,13 @@ describe("buildGuardrailGate", () => {
     // No key means no call to make, so nothing is built and nothing is billed — the difference
     // from `not-run` is entirely in what the operator is told.
     expect(f.calls()).toBe(0);
-    expect(seen).toEqual([{ direction: "output", outcome: "unavailable" }]);
+    expect(seen).toEqual([
+      {
+        direction: "output",
+        outcome: "unavailable",
+        cause: "credential_not_found",
+      },
+    ]);
   });
 
   // The reason the check above is not just an optimization: createChatModel throws SYNCHRONOUSLY on

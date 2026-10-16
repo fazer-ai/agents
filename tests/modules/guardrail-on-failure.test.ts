@@ -194,6 +194,7 @@ describe.skipIf(!dbUp)("a guardrail that could not judge, under hold", () => {
         outcome: "handed-off",
         held: true,
         refused: CUSTOMER,
+        cause: "analysis_failed",
       },
     ]);
     const got = await lines(f.turnId);
@@ -362,6 +363,60 @@ describe("the note a held message leaves", () => {
     expect(notes[0]).toContain("a checagem não pôde ser feita");
     expect(notes[0]).toContain("RESPOSTA-SEGURADA");
   });
+
+  // The bug it catches: a held note that never says why, so the person taking the case over cannot
+  // tell a deleted credential from a model that timed out.
+  test.skipIf(!dbUp)(
+    "names the cause: a missing credential, and a model that failed",
+    async () => {
+      const notes: string[] = [];
+      const announce = chatwootNoteSink(
+        {
+          sendPrivateNote: async (_c: number, text: string) => {
+            notes.push(text);
+          },
+        } as never,
+        1,
+      );
+      const noKey = buildGuardrailGate({
+        langfuseCfg: null,
+        cfg: held(),
+        apiKey: "",
+        flow: flow(),
+        makeModel: cleanChat,
+        announce,
+      });
+      await noKey("input", CUSTOMER);
+      const failing = buildGuardrailGate({
+        langfuseCfg: null,
+        cfg: held(),
+        apiKey: "k",
+        flow: flow(),
+        makeModel: failingChat,
+        announce,
+      });
+      await failing("input", CUSTOMER);
+      const noProviderKey = buildGuardrailGate({
+        langfuseCfg: null,
+        cfg: held({ classifier: "decisions" }),
+        apiKey: "",
+        flow: flow(),
+        decisionFetch: failingDecisions,
+        announce,
+      });
+      await noProviderKey("input", CUSTOMER);
+      expect(notes).toHaveLength(3);
+      expect(notes[0]).toContain(
+        "a credencial do guardrail não foi encontrada",
+      );
+      expect(notes[1]).toContain(
+        "o modelo do guardrail falhou ou não respondeu dentro do limite",
+      );
+      expect(notes[2]).toContain(
+        "a credencial do guardrail não foi encontrada",
+      );
+    },
+  );
 
   test("lists the scores of the checks that did answer", async () => {
     const notes: string[] = [];

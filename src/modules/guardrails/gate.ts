@@ -113,7 +113,24 @@ export interface GuardrailReport {
   // A hand-over the `hold` failure mode made: the screening could not judge, so there is no verdict
   // to report, only the scores of the checks that did answer (decisions provider).
   held?: true;
+  // Why a screening could not judge, on `unavailable` and on a held hand-over: the flow line's own
+  // outcome word, so the note can say it without quoting provider text.
+  cause?: GuardrailFailureCause;
 }
+
+export type GuardrailFailureCause =
+  | "credential_not_found"
+  | "model_unavailable"
+  | "analysis_failed";
+
+// The cause in the words the note's reader uses. The provider's own error stays in the flow line.
+const HELD_CAUSE: Record<GuardrailFailureCause, string> = {
+  credential_not_found: "a credencial do guardrail não foi encontrada",
+  model_unavailable:
+    "o modelo do guardrail não pôde ser usado com essa configuração",
+  analysis_failed:
+    "o modelo do guardrail falhou ou não respondeu dentro do limite",
+};
 
 // The scores as one line an operator reads in the note: the tripped ones first.
 export function scoresLine(scores: GuardrailScore[]): string {
@@ -151,7 +168,7 @@ export function chatwootNoteSink(
     )
       return;
     const head = r.held
-      ? `Guardrail (${r.direction}): a checagem não pôde ser feita, e a mensagem foi segurada.${r.scores?.length ? ` ${scoresLine(r.scores)}` : ""}`
+      ? `Guardrail (${r.direction}): a checagem não pôde ser feita${r.cause ? ` (${HELD_CAUSE[r.cause]})` : ""}, e a mensagem foi segurada.${r.scores?.length ? ` ${scoresLine(r.scores)}` : ""}`
       : r.scores
         ? `Guardrail (${r.direction}): ${r.categories?.join(", ") || "policy"} — ${r.action}. ${scoresLine(r.scores)}`
         : `Guardrail (${r.direction}): ${r.categories?.join(", ") || "policy"} — ${r.action}. ${r.rationale ?? ""}`;
@@ -261,7 +278,12 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
   // reports the follow-up as delivered. `undefined` is "not attempted yet"; `null` is "attempted
   // and unavailable", which is the same fail-open answer an analysis that could not run gives.
   let model: BaseChatModel | null | undefined;
-  let buildFailure: { outcome: string; message?: string } | undefined;
+  let buildFailure:
+    | {
+        outcome: "credential_not_found" | "model_unavailable";
+        message?: string;
+      }
+    | undefined;
   const reportedBuildFailure = new Set<"input" | "output">();
   const resolveModel = (
     direction: "input" | "output",
@@ -384,7 +406,7 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
       });
       return {
         d: { kind: "unavailable", modelRan: false },
-        r: { direction, outcome: "unavailable" },
+        r: { direction, outcome: "unavailable", cause: "credential_not_found" },
       };
     }
     const verdict = await classifyGuardrail(
@@ -443,7 +465,12 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
         : { kind: "clean" };
       return {
         d,
-        r: { direction, outcome: d.kind, scores: verdict.scores },
+        r: {
+          direction,
+          outcome: d.kind,
+          scores: verdict.scores,
+          ...(verdict.error ? { cause: "analysis_failed" as const } : {}),
+        },
       };
     }
     return tripped(
@@ -486,7 +513,7 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
     if (!model)
       return {
         d: { kind: "unavailable", modelRan: false },
-        r: { direction, outcome: "unavailable" },
+        r: { direction, outcome: "unavailable", cause: buildFailure?.outcome },
       };
     const verdict = await analyzeGuardrail(
       model,
@@ -533,7 +560,14 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
       const d: GuardrailDecision = verdict.error
         ? { kind: "unavailable", modelRan: true }
         : { kind: "clean" };
-      return { d, r: { direction, outcome: d.kind } };
+      return {
+        d,
+        r: {
+          direction,
+          outcome: d.kind,
+          ...(verdict.error ? { cause: "analysis_failed" as const } : {}),
+        },
+      };
     }
     // NOTE: `categories` and `rationale` are both model-written, so neither can be copied into
     // the log row as it stands: `rationale` explains what in the message violated the policy, so it
@@ -557,7 +591,7 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
   const held = (
     direction: "input" | "output",
     subject: string,
-    scores: GuardrailScore[] | undefined,
+    from: GuardrailReport | null,
   ): { d: GuardrailDecision; r: GuardrailReport } => ({
     d: { kind: "handed-off", reply: gr[direction].handoffMessage || null },
     r: {
@@ -565,7 +599,8 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
       outcome: "handed-off",
       held: true,
       refused: subject,
-      ...(scores?.length ? { scores } : {}),
+      ...(from?.scores?.length ? { scores: from.scores } : {}),
+      ...(from?.cause ? { cause: from.cause } : {}),
     },
   });
 
@@ -573,7 +608,7 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
     const screened = await screen(direction, subject);
     const { d, r } =
       holds && screened.d.kind === "unavailable"
-        ? held(direction, subject, screened.r?.scores)
+        ? held(direction, subject, screened.r)
         : screened;
     // The one announcement point. `not-run` is the only outcome with no report, and it is the only
     // one where nothing happened for anyone to read.

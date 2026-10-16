@@ -15,6 +15,7 @@ import config from "@/config";
 import { AppError, NotFoundError } from "@/lib/errors";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { normalizeAgentMode } from "@/modules/agents/mode";
+import { auditMutation } from "@/modules/audit/service";
 import {
   type LoadChatwootClientDeps,
   loadChatwootClient,
@@ -203,8 +204,10 @@ export async function bindInboxVoiceAgent(
           "errors.voiceAgentRequired",
         );
     }
-    const locked = await db.$queryRaw<{ voice_route_token: string | null }[]>`
-      SELECT voice_route_token FROM inboxes WHERE id = ${inboxId} FOR NO KEY UPDATE`;
+    const locked = await db.$queryRaw<
+      { voice_route_token: string | null; voice_agent_id: bigint | null }[]
+    >`
+      SELECT voice_route_token, voice_agent_id FROM inboxes WHERE id = ${inboxId} FOR NO KEY UPDATE`;
     const minted = locked[0]?.voice_route_token ? null : generateRouteToken();
     await db.inbox.update({
       where: { id: inboxId },
@@ -218,6 +221,15 @@ export async function bindInboxVoiceAgent(
           : {}),
       },
     });
+    // Who answers the inbox's calls, recorded as the text binding's `inbox.bind` is: only a change.
+    const was = locked[0]?.voice_agent_id ?? null;
+    if (was !== agentId)
+      await auditMutation(db, ctx, {
+        action: "inbox.bind_voice",
+        target: `inbox:${inboxId}`,
+        before: { voiceAgentId: was === null ? null : String(was) },
+        after: { voiceAgentId: agentId === null ? null : String(agentId) },
+      });
   });
   try {
     await syncInbox(ctx, inboxId, base, deps);

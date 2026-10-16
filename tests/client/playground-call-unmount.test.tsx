@@ -90,7 +90,7 @@ test("a microphone granted after the Playground closed is released, and nothing 
   expect(sockets).toHaveLength(0);
 });
 
-test("a setup answered after the Playground closed releases the microphone, and no line opens", async () => {
+test("leaving while the setup is pending releases the microphone at once, and no line opens", async () => {
   const mic = fakeMic();
   const hook = renderHook(() => usePlaygroundCall("7"));
   act(() => void hook.result.current.start());
@@ -98,8 +98,10 @@ test("a setup answered after the Playground closed releases the microphone, and 
   grant?.(mic.stream);
   await until("the setup request", () => answerSetup !== null);
   hook.unmount();
+  // Before the setup answers: nothing else would ever stop it if the request never came back.
+  expect(mic.counts.stopped).toBeGreaterThan(0);
   answerSetup?.();
-  await until("the microphone released", () => mic.counts.stopped === 1);
+  await until("the setup answered", () => setupCalls === 1);
   expect(micAsked).toBe(1);
   expect(sockets).toHaveLength(0);
 });

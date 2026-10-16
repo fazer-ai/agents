@@ -1152,6 +1152,8 @@ export interface ToolsetCtx {
   // chat (the call fills the pause with its own sound). Unlike a muted client, the conversation's
   // reference and an appointment's reminders stay, since the call is answering this customer.
   onCall?: boolean;
+  // The HTTP tools' deadline on this turn, when it is not the instance's (HTTP_TOOL_TIMEOUT_MS).
+  httpToolTimeoutMs?: number;
   // The turn's OUTPUT guardrail, for customer-facing text a tool sends itself. Absent ⇒ nothing
   // screens it on this path. See ToolCtx.screenCustomerText.
   screenCustomerText?: (text: string) => Promise<CustomerTextVerdict>;
@@ -1851,6 +1853,9 @@ export async function buildToolset(
       ...buildHttpTools(cfg.httpToolDefs, {
         resolveCredential,
         emitAck,
+        ...(ctx.httpToolTimeoutMs !== undefined
+          ? { timeoutMs: ctx.httpToolTimeoutMs }
+          : {}),
         expiresOn: ctx.expiresOn,
         // NOTE: The same fence the native tools and the precondition wrapper ask, at the same point: past
         // every wait, immediately before the request leaves for somebody else's system.

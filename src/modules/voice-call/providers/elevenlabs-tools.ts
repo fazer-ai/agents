@@ -12,12 +12,13 @@ import type { VoiceTool } from "./types";
 const API = "https://api.elevenlabs.io";
 // Each link more patient than the one below it, as HTTP_TOOL_TIMEOUT_MS asks: a tool that writes
 // (a booking) settles on its own deadline before this side answers the engine, so a slow one is
-// never reported as failed and retried while it still commits. The engine waits longer still, up to
-// the 120 s it accepts.
-export const VOICE_TOOL_TIMEOUT_MS = Math.min(
-  config.agent.httpToolTimeoutMs + 5_000,
-  110_000,
+// never reported as failed and retried while it still commits. The engine waits longer still, and
+// accepts at most 120 s, so on a call an HTTP tool gets the instance's deadline only up to 100 s.
+export const CALL_HTTP_TOOL_TIMEOUT_MS = Math.min(
+  config.agent.httpToolTimeoutMs,
+  100_000,
 );
+export const VOICE_TOOL_TIMEOUT_MS = CALL_HTTP_TOOL_TIMEOUT_MS + 5_000;
 const RESPONSE_TIMEOUT_SECS = Math.ceil(VOICE_TOOL_TIMEOUT_MS / 1000) + 5;
 
 // end_call goes in the same list, as a system tool. Declared beside the list under

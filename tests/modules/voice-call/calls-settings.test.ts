@@ -5,6 +5,8 @@ import {
 } from "@/client/pages/agents/callsFormState";
 import { elevenLabsProvider } from "@/modules/voice-call/providers/elevenlabs";
 import {
+  checkElevenLabsAgentsAccess,
+  deleteElevenLabsAgent,
   elevenLabsAgentConfig,
   elevenLabsCallSummary,
   ensureElevenLabsAgent,
@@ -345,5 +347,29 @@ describe("an agent deleted on ElevenLabs after this process wrote it", () => {
         `${agentId}_back`,
       );
     }
+  });
+});
+
+describe("the requests a call's setup makes to ElevenLabs", () => {
+  test("each one carries a deadline, so a stalled provider cannot hold the call or the Playground", async () => {
+    const unbounded: string[] = [];
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      if (!init?.signal) unbounded.push(`${init?.method ?? "GET"} ${url}`);
+      if (init?.method === "PATCH") return new Response("{}", { status: 404 });
+      if (init?.method === "POST")
+        return new Response(JSON.stringify({ agent_id: "agent_bounded" }));
+      return new Response(
+        JSON.stringify({
+          status: "done",
+          analysis: { transcript_summary: "ok" },
+        }),
+      );
+    }) as unknown as typeof fetch;
+    const spec = { name: "Maria", voice: "v1", calls: readCallsConfig({}) };
+    await checkElevenLabsAgentsAccess("k", fetchImpl);
+    await ensureElevenLabsAgent("k", "agent_old", spec, fetchImpl);
+    await deleteElevenLabsAgent("k", "agent_bounded", fetchImpl);
+    await elevenLabsCallSummary("k", "conv", { fetchImpl });
+    expect(unbounded).toEqual([]);
   });
 });

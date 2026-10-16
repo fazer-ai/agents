@@ -297,3 +297,45 @@ describe("an ElevenLabs request that hangs while the agent is held", () => {
     });
   }
 });
+
+describe("an ElevenLabs conversation that never starts", () => {
+  test("is reported as an error, and the agent is free for the next call", async () => {
+    server = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch(req, srv) {
+        return srv.upgrade(req, { data: undefined })
+          ? undefined
+          : new native.BunResponse("no", { status: 400 });
+      },
+      // Takes the socket and the request to start, and never answers it.
+      websocket: { message() {} },
+    });
+    const url = `ws://127.0.0.1:${server.port}/`;
+    const fetchImpl = (async (input: string) =>
+      input.includes("get-signed-url")
+        ? new Response(JSON.stringify({ signed_url: url }))
+        : new Response("{}")) as unknown as typeof fetch;
+    const errors: string[] = [];
+    const handlers: VoiceSessionHandlers = {
+      onAudio: () => {},
+      onInterrupt: () => {},
+      onTranscript: () => {},
+      onHangup: () => {},
+      onError: (err) => errors.push(err.message),
+    };
+    const provider = elevenLabsProvider({
+      apiKey: "k",
+      agentId: "agent-never-starts",
+      fetchImpl,
+      openTimeoutMs: 200,
+    });
+    const first = await provider.open(CONFIG, handlers);
+    first.begin();
+    await until("the start to be given up", () => errors.length > 0);
+    expect(errors).toEqual(["elevenlabs: the conversation did not start"]);
+    const second = await provider.open(CONFIG, handlers);
+    first.close();
+    second.close();
+  });
+});

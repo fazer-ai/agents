@@ -873,4 +873,44 @@ describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
       sync.mockRestore();
     }
   });
+
+  test("each change to who answers an inbox's calls is audited, and a save that changes nothing is not", async () => {
+    await bindInboxVoiceAgent(
+      ctx(tenant),
+      whatsappInboxId,
+      null,
+      fakeChatwoot(),
+      appDb,
+    );
+    const since = new Date();
+    for (const agentId of [voiceId, voiceId, null])
+      await bindInboxVoiceAgent(
+        ctx(tenant),
+        whatsappInboxId,
+        agentId,
+        fakeChatwoot(),
+        appDb,
+      );
+    const rows = await suDb.auditLog.findMany({
+      where: {
+        tenantId: tenant,
+        target: `inbox:${whatsappInboxId}`,
+        createdAt: { gte: since },
+      },
+      orderBy: { id: "asc" },
+      select: { action: true, before: true, after: true },
+    });
+    expect(rows).toEqual([
+      {
+        action: "inbox.bind_voice",
+        before: { voiceAgentId: null },
+        after: { voiceAgentId: String(voiceId) },
+      },
+      {
+        action: "inbox.bind_voice",
+        before: { voiceAgentId: String(voiceId) },
+        after: { voiceAgentId: null },
+      },
+    ]);
+  });
 });

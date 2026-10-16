@@ -126,6 +126,9 @@ export function usePlaygroundCall(agentId: string) {
   // Bumped when the screen goes away: a start still waiting on the setup or the microphone prompt
   // sees it changed and stops there, releasing a microphone granted too late.
   const attempt = useRef(0);
+  // A microphone granted while the ticket is still being asked for: no line holds it yet, so leaving
+  // the screen releases it from here instead of waiting for the request to come back.
+  const pendingMic = useRef<MediaStream | null>(null);
 
   // Releases the microphone and the socket at once; the audio context lingers for `afterSecs`, so the
   // end of the farewell and the busy tone are still heard.
@@ -146,6 +149,8 @@ export function usePlaygroundCall(agentId: string) {
   useEffect(
     () => () => {
       attempt.current++;
+      for (const track of pendingMic.current?.getTracks() ?? []) track.stop();
+      pendingMic.current = null;
       release(0);
     },
     [release],
@@ -209,6 +214,7 @@ export function usePlaygroundCall(agentId: string) {
       return;
     }
     const dropMic = () => {
+      pendingMic.current = null;
       for (const track of mic.getTracks()) track.stop();
     };
     if (attempt.current !== mine) {
@@ -216,6 +222,7 @@ export function usePlaygroundCall(agentId: string) {
       return;
     }
     // The ticket after the microphone: it lasts a minute, and the browser's prompt can take longer.
+    pendingMic.current = mic;
     const { data, error } = await api.api.v1
       .agents({ id: agentId })
       .playground.call.post();
@@ -255,6 +262,7 @@ export function usePlaygroundCall(agentId: string) {
       stopRingback: tone(audio, 1, 5, 12),
       answeredAt: null,
     };
+    pendingMic.current = null;
     live.current = l;
     setCall({ state: "ringing" });
 

@@ -15,6 +15,7 @@ import { buildNativeTools } from "@/graph/tools/native";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { loadChatwootClient } from "@/modules/chatwoot/instance";
 import { isVoiceDeniedTool } from "./denied-tools";
+import { CALL_HTTP_TOOL_TIMEOUT_MS } from "./providers/elevenlabs-tools";
 import type { VoiceTool } from "./providers/types";
 import type { VoiceRoute } from "./service";
 
@@ -106,6 +107,7 @@ export async function loadVoiceAgent(
         conversationId,
         threadId,
         onCall: true,
+        httpToolTimeoutMs: CALL_HTTP_TOOL_TIMEOUT_MS,
       },
       { buildNativeTools },
     );

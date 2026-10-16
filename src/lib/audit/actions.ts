@@ -57,6 +57,7 @@ export const AUDIT_ACTIONS = [
   "experiment.delete",
   "experiment.update",
   "inbox.bind",
+  "inbox.bind_voice",
   "inbox.observe",
   "inbox.reconnect",
   "inbox.remove",

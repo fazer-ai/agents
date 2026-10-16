@@ -2668,10 +2668,11 @@ function AgentEditor() {
     vaultBaseUrl(savedModel.credentialRef) ?? savedModel.baseURL;
   // The model the editor's Save writes (agents#1520): the bar saves every section together, General
   // first, so the other tabs judge their overrides against General's draft. On questions and rules
-  // no save writes the chat model, and the stored one is the one that stays. Once a running save has
-  // written General, the rest judge against what it wrote, not an edit made since.
-  const generalWrittenRef = useRef(false);
-  const draftModelSaves = !decides && !generalWrittenRef.current;
+  // no save writes the chat model, and the stored one is the one that stays. A running save that does
+  // not write General, or has written it, judges against the stored model, not an edit made since.
+  // "stored" while a running save does not (or no longer) write General.
+  const barModelRef = useRef<"draft" | "stored" | null>(null);
+  const draftModelSaves = !decides && barModelRef.current !== "stored";
   const modelAfterSave = draftModelSaves ? model : savedModel;
   const modelAfterSaveBaseUrl = !draftModelSaves
     ? savedModelBaseUrl
@@ -3419,106 +3420,139 @@ function AgentEditor() {
   // unsaved edits pending in the Behavior tab (both write the same settings JSON column). Two writes
   // (grants PUT, then agent PATCH); the PUT bumps the agent's token, so the PATCH precondition chains
   // to the PUT's returned token (else the PATCH would 409 against our own grant write).
+  // Everything the Tools PATCH will send, built BEFORE the grants PUT so the whole bag can be checked
+  // against the write boundary's own rule first. None of it depends on the PUT's result.
+  function toolsSave() {
+    const syncedSettings = (syncedAgentRef.current?.settings ?? {}) as Record<
+      string,
+      unknown
+    >;
+    // On questions and rules the guidance is not drawn and goes back AS STORED, byte for byte: the
+    // serializers below tidy what an operator typed (trim, drop empties), and tidying a value the form
+    // still holds untidied would leave the editor reading a hidden draft nobody made.
+    const asStored = (key: string, written: unknown): unknown =>
+      decides && key in syncedSettings ? syncedSettings[key] : written;
+    const storedHandoff = (syncedSettings.handoff ?? {}) as Record<
+      string,
+      unknown
+    >;
+    const handoffJson = {
+      ...serializeHandoff({
+        ...handoff,
+        instructions: savedGuidance.handoffInstructions,
+      }),
+      ...(decides && "instructions" in storedHandoff
+        ? { instructions: storedHandoff.instructions as string | null }
+        : {}),
+    };
+    const kanbanJson = asStored("kanban", {
+      instructions: savedGuidance.kanbanInstructions.trim() || null,
+    });
+    const crossInboxCaseJson = asStored(
+      "crossInboxCase",
+      serializeCrossInboxCase(savedGuidance.crossInboxCase),
+    );
+    const sendImageJson = asStored(
+      "sendImage",
+      serializeSendImage(savedGuidance.sendImage),
+    );
+    const resolveConversationJson = asStored(
+      "resolveConversation",
+      serializeResolveConversation(savedGuidance.resolveConversation),
+    );
+    // Merge the per-tool guidance map: preserve any entries for other tools, set/clear ours.
+    const existingGuidance = (syncedSettings.toolGuidance ?? {}) as Record<
+      string,
+      unknown
+    >;
+    const toolGuidanceJson: Record<string, unknown> = { ...existingGuidance };
+    if (!decides) {
+      const attrNote = savedGuidance.customAttributeInstructions.trim();
+      const labelNote = savedGuidance.labelInstructions.trim();
+      const updateKanbanNote =
+        savedGuidance.updateKanbanTaskInstructions.trim();
+      if (attrNote) toolGuidanceJson.set_custom_attribute = attrNote;
+      else delete toolGuidanceJson.set_custom_attribute;
+      if (labelNote) toolGuidanceJson.set_labels = labelNote;
+      else delete toolGuidanceJson.set_labels;
+      if (updateKanbanNote)
+        toolGuidanceJson.update_kanban_task = updateKanbanNote;
+      else delete toolGuidanceJson.update_kanban_task;
+    }
+    const toolPreconditionsJson = serializeToolPreconditions(
+      toolPreconditions,
+      syncedSettings.toolPreconditions,
+    );
+    // The guard is stored under the tool's own block rather than beside the retired `labels` key,
+    // which the write boundary now refuses: what this list does is fence a tool, not describe a
+    // taxonomy. An empty list is written as an empty array rather than dropped, so clearing the
+    // field is a change the PATCH carries instead of a no-op the merge swallows.
+    const protectedList = protectedLabels
+      .split(",")
+      .map((l) => l.trim())
+      .filter(Boolean);
+    const allowedList = allowedLabels
+      .split(",")
+      .map((l) => l.trim())
+      .filter(Boolean);
+    const existingSetLabels = (syncedSettings.setLabels ?? {}) as Record<
+      string,
+      unknown
+    >;
+    const toolsSettings = {
+      ...syncedSettings,
+      handoff: handoffJson,
+      kanban: kanbanJson,
+      toolGuidance: toolGuidanceJson,
+      toolPreconditions: toolPreconditionsJson,
+      setLabels: {
+        ...existingSetLabels,
+        protected: protectedList,
+        allowed: allowedList,
+        outsideAllowed: outsideAllowedLabels,
+      },
+      crossInboxCase: crossInboxCaseJson,
+      sendImage: sendImageJson,
+      resolveConversation: resolveConversationJson,
+    };
+    return { toolsSettings, protectedList, allowedList };
+  }
+  // The Tools save's own checks, which no field on its tab holds the button for: the bar runs them
+  // before anything is written, and the save again against the bag it is about to send.
+  function toolsLocalError(
+    built: ReturnType<typeof toolsSave>,
+    storedSettings: unknown,
+  ): string | null {
+    const { toolsSettings, protectedList, allowedList } = built;
+    return (
+      settingsTextError(toolsSettings, storedSettings) ??
+      protectedLabelsError(protectedList, storedSettings) ??
+      allowedLabelsError(allowedList, storedSettings) ??
+      resolveLabelsClashError(protectedResolveLabels(toolsSettings)) ??
+      // NOTE: the case attribute key is checked here, before the grants PUT.
+      // Refused by the PATCH, which goes out after that PUT, so a bad key would otherwise leave new
+      // grants written beside the old settings.
+      // Not on questions and rules, where the case inbox is not drawn and goes back as stored.
+      (!decides && invalidCaseAttributeKey(savedGuidance.crossInboxCase)
+        ? t(
+            "editor.crossInboxCase.attributeKeyInvalid",
+            "Use lowercase letters, digits and _, starting with a letter.",
+          )
+        : null)
+    );
+  }
+
   async function saveTools(force = false): Promise<boolean> {
     savingRef.current += 1;
     setSavingGrants(true);
     let sent: Record<string, unknown> = {};
     const sentTools = { tools: sectionSnap.tools };
     try {
-      // Everything the PATCH will send, built BEFORE the grants PUT so the whole bag can be checked
-      // against the write boundary's own rule first. None of it depends on the PUT's result.
       const syncedSettings = (syncedAgentRef.current?.settings ?? {}) as Record<
         string,
         unknown
       >;
-      // On questions and rules the guidance is not drawn and goes back AS STORED, byte for byte: the
-      // serializers below tidy what an operator typed (trim, drop empties), and tidying a value the form
-      // still holds untidied would leave the editor reading a hidden draft nobody made.
-      const asStored = (key: string, written: unknown): unknown =>
-        decides && key in syncedSettings ? syncedSettings[key] : written;
-      const storedHandoff = (syncedSettings.handoff ?? {}) as Record<
-        string,
-        unknown
-      >;
-      const handoffJson = {
-        ...serializeHandoff({
-          ...handoff,
-          instructions: savedGuidance.handoffInstructions,
-        }),
-        ...(decides && "instructions" in storedHandoff
-          ? { instructions: storedHandoff.instructions as string | null }
-          : {}),
-      };
-      const kanbanJson = asStored("kanban", {
-        instructions: savedGuidance.kanbanInstructions.trim() || null,
-      });
-      const crossInboxCaseJson = asStored(
-        "crossInboxCase",
-        serializeCrossInboxCase(savedGuidance.crossInboxCase),
-      );
-      const sendImageJson = asStored(
-        "sendImage",
-        serializeSendImage(savedGuidance.sendImage),
-      );
-      const resolveConversationJson = asStored(
-        "resolveConversation",
-        serializeResolveConversation(savedGuidance.resolveConversation),
-      );
-      // Merge the per-tool guidance map: preserve any entries for other tools, set/clear ours.
-      const existingGuidance = (syncedSettings.toolGuidance ?? {}) as Record<
-        string,
-        unknown
-      >;
-      const toolGuidanceJson: Record<string, unknown> = { ...existingGuidance };
-      if (!decides) {
-        const attrNote = savedGuidance.customAttributeInstructions.trim();
-        const labelNote = savedGuidance.labelInstructions.trim();
-        const updateKanbanNote =
-          savedGuidance.updateKanbanTaskInstructions.trim();
-        if (attrNote) toolGuidanceJson.set_custom_attribute = attrNote;
-        else delete toolGuidanceJson.set_custom_attribute;
-        if (labelNote) toolGuidanceJson.set_labels = labelNote;
-        else delete toolGuidanceJson.set_labels;
-        if (updateKanbanNote)
-          toolGuidanceJson.update_kanban_task = updateKanbanNote;
-        else delete toolGuidanceJson.update_kanban_task;
-      }
-      const toolPreconditionsJson = serializeToolPreconditions(
-        toolPreconditions,
-        syncedSettings.toolPreconditions,
-      );
-      // The guard is stored under the tool's own block rather than beside the retired `labels` key,
-      // which the write boundary now refuses: what this list does is fence a tool, not describe a
-      // taxonomy. An empty list is written as an empty array rather than dropped, so clearing the
-      // field is a change the PATCH carries instead of a no-op the merge swallows.
-      const protectedList = protectedLabels
-        .split(",")
-        .map((l) => l.trim())
-        .filter(Boolean);
-      const allowedList = allowedLabels
-        .split(",")
-        .map((l) => l.trim())
-        .filter(Boolean);
-      const existingSetLabels = (syncedSettings.setLabels ?? {}) as Record<
-        string,
-        unknown
-      >;
-      const toolsSettings = {
-        ...syncedSettings,
-        handoff: handoffJson,
-        kanban: kanbanJson,
-        toolGuidance: toolGuidanceJson,
-        toolPreconditions: toolPreconditionsJson,
-        setLabels: {
-          ...existingSetLabels,
-          protected: protectedList,
-          allowed: allowedList,
-          outsideAllowed: outsideAllowedLabels,
-        },
-        crossInboxCase: crossInboxCaseJson,
-        sendImage: sendImageJson,
-        resolveConversation: resolveConversationJson,
-      };
+      const { toolsSettings, protectedList, allowedList } = toolsSave();
       // NOTE: Before either request: the grants PUT goes out first and the PATCH after it, and both can
       // answer a refusal about this bag.
       sent = sentFor({ settings: toolsSettings });
@@ -3534,21 +3568,10 @@ function AgentEditor() {
         ? ((await api.api.v1.agents({ id }).get()).data?.agent.settings ??
           syncedSettings)
         : syncedSettings;
-      const toolsText =
-        settingsTextError(toolsSettings, storedSettings) ??
-        protectedLabelsError(protectedList, storedSettings) ??
-        allowedLabelsError(allowedList, storedSettings) ??
-        resolveLabelsClashError(protectedResolveLabels(toolsSettings)) ??
-        // NOTE: the case attribute key is checked here, before the grants PUT.
-        // Refused by the PATCH, which goes out after that PUT, so a bad key would otherwise leave new
-        // grants written beside the old settings.
-        // Not on questions and rules, where the case inbox is not drawn and goes back as stored.
-        (!decides && invalidCaseAttributeKey(savedGuidance.crossInboxCase)
-          ? t(
-              "editor.crossInboxCase.attributeKeyInvalid",
-              "Use lowercase letters, digits and _, starting with a letter.",
-            )
-          : null);
+      const toolsText = toolsLocalError(
+        { toolsSettings, protectedList, allowedList },
+        storedSettings,
+      );
       if (toolsText) {
         showToast(toolsText, "error");
         return false;
@@ -4086,6 +4109,9 @@ function AgentEditor() {
       rechecked: new Map(),
       origin: tab,
     };
+    barModelRef.current = barSaveRef.current.sections.has("general")
+      ? "draft"
+      : "stored";
     void continueBarSave();
   }
 
@@ -4118,7 +4144,7 @@ function AgentEditor() {
     if (!plan) return;
     const end = () => {
       barSaveRef.current = null;
-      generalWrittenRef.current = false;
+      barModelRef.current = null;
     };
     const planned = (key: (typeof SAVE_SECTIONS)[number]) =>
       plan.sections.has(key);
@@ -4188,6 +4214,16 @@ function AgentEditor() {
       }
       if (planned("behavior") && dirty.behavior && behaviorPageHold() === false)
         return end();
+      const toolsText =
+        planned("tools") && dirty.tools && drawn("tools")
+          ? toolsLocalError(toolsSave(), syncedAgentRef.current?.settings ?? {})
+          : null;
+      if (toolsText) {
+        // On its own tab the reason is enough; from another one it names the tab to fix.
+        if (tab === "tools") showToast(toolsText, "error");
+        else heldIn("tools", toolsText);
+        return end();
+      }
       plan.judged = true;
     }
     // One write per pass, each pass on a fresh render: a section discarded while an earlier write
@@ -4203,7 +4239,7 @@ function AgentEditor() {
       if (key === "general") {
         if (!(await saveGeneral()))
           return stop(dirty.general ? "general" : "decisions");
-        generalWrittenRef.current = true;
+        barModelRef.current = "stored";
       } else if (!(await writeSection(key))) return stop(key);
       continueRef.current = { onTab: null };
       return;

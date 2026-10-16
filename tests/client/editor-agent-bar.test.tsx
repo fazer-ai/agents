@@ -660,4 +660,85 @@ describe("the editor's bar covers the whole agent", () => {
     );
     expect(screen.queryByText(/Fix the Behavior tab/)).toBeNull();
   });
+
+  // The Tools save's own checks hold no button on its tab, so the bar runs them before anything is
+  // written: too many protected labels keep General's edit from going out too.
+  test("a Tools check that fails keeps the whole save back", async () => {
+    const stub = stubEditorApi(
+      { name: "Atendente" },
+      { catalog: NATIVE_CATALOG },
+    );
+    await renderEditor(stub, "tools");
+    const card = document.getElementById(nativeToolAnchor("set_labels"));
+    const open = card?.querySelector<HTMLElement>("[aria-expanded]");
+    if (!open) throw new Error("the set_labels card has no settings toggle");
+    fireEvent.click(open);
+    const field = await screen.findByLabelText(/Labels off limits/);
+    fireEvent.change(field, {
+      target: {
+        value: Array.from({ length: 60 }, (_, i) => `l${i}`).join(", "),
+      },
+    });
+    await goTo("General");
+    editTab("general");
+    fireEvent.click(save());
+    await screen.findByText(/Fix the Tools tab before saving/);
+    expect(
+      stub.writes.filter((w) => w.method === "PATCH" || w.method === "PUT"),
+    ).toEqual([]);
+  });
+
+  // A save that does not write General judges against the stored model: a provider switched on
+  // General while it runs does not hold the Knowledge reviewer that inherits the stored endpoint.
+  test("a General edit made during a save that does not write General holds nothing", async () => {
+    const stub = stubEditorApi(
+      {
+        name: "Atendente",
+        modelConfig: {
+          provider: "openai-compatible",
+          model: "m",
+          baseURL: "https://llm.example.com/v1",
+        },
+      },
+      { catalog: NATIVE_CATALOG },
+    );
+    const served = globalThis.fetch;
+    let release: () => void = () => {};
+    const held = new Promise<void>((r) => {
+      release = r;
+    });
+    let putSent = false;
+    globalThis.fetch = (async (
+      input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      if ((init?.method ?? "GET") === "PUT" && !putSent) {
+        putSent = true;
+        await held;
+      }
+      return served(input, init);
+    }) as typeof fetch;
+    await renderEditor(stub, "knowledge");
+    const reviewer = document
+      .getElementById("kb-review")
+      ?.querySelector("select");
+    if (!reviewer) throw new Error("the reviewer's provider is not drawn");
+    fireEvent.change(reviewer, { target: { value: "openai-compatible" } });
+    await waitFor(() => expect(save().disabled).toBe(false));
+    await goTo("Tools");
+    editTab("tools");
+    fireEvent.click(save());
+    await waitFor(() => expect(putSent).toBe(true));
+    await goTo("General");
+    fireEvent.change(screen.getByLabelText("Provider"), {
+      target: { value: "openai" },
+    });
+    release();
+    await waitFor(
+      () =>
+        expect(stub.writes.filter((w) => w.method === "PUT").length).toBe(2),
+      { timeout: 5_000 },
+    );
+    expect(screen.queryByText(/Fix the Knowledge tab/)).toBeNull();
+  });
 });

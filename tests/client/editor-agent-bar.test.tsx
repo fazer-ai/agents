@@ -240,10 +240,10 @@ describe("the editor's bar covers the whole agent", () => {
     expect(screen.queryByText(/were not saved/)).toBeNull();
   });
 
-  // Behavior judges its fallback against the agent's SAVED model, so its hold can only change once
-  // General is written. The save writes General, then judges Behavior again before writing it: a
-  // fallback that inherited the old provider's endpoint now has none, and Behavior is held.
-  test("a hold General's save creates on another tab stops the rest of the save", async () => {
+  // Behavior judges its fallback against the model this save writes, General's draft: a fallback that
+  // inherited the old provider's endpoint has none under the new one, so Behavior holds the whole save
+  // and General is not written either.
+  test("a hold General's draft creates on another tab keeps the whole save back", async () => {
     const stub = stubEditorApi({
       name: "Atendente",
       modelConfig: {
@@ -270,13 +270,7 @@ describe("the editor's bar covers the whole agent", () => {
     await screen.findByText(/Fix the Behavior tab before saving/, undefined, {
       timeout: 5_000,
     });
-    const written = stub.writes.filter((w) => w.method === "PATCH");
-    // General went out; Behavior did not.
-    expect(written.length).toBe(1);
-    expect(
-      (written[0]?.body.modelConfig as { provider?: string } | undefined)
-        ?.provider,
-    ).toBe("openai");
+    expect(stub.writes.filter((w) => w.method === "PATCH")).toEqual([]);
   });
 
   // The engine cards are General's even when only the decision setup changed: General's own hold (an
@@ -334,9 +328,9 @@ describe("the editor's bar covers the whole agent", () => {
     expect(stub.writes).toEqual([]);
   });
 
-  // Phase two judges Behavior against the model General just saved: a fallback that had no endpoint
-  // to inherit under the old provider inherits the new one, and the whole save goes through.
-  test("a hold General's save resolves on another tab does not stop the save", async () => {
+  // Behavior judges its fallback against General's draft: a fallback that had no endpoint to inherit
+  // under the stored provider inherits the new one, and the whole save goes through.
+  test("a hold General's draft resolves on another tab does not stop the save", async () => {
     const stub = stubEditorApi({
       name: "Atendente",
       modelConfig: { provider: "openai", model: "gpt-4o-mini" },
@@ -590,63 +584,28 @@ describe("the editor's bar covers the whole agent", () => {
     invalidateVault();
   });
 
-  // A planned section undone while General's write is out needs no write, so a hold on its tab (the
-  // stored fallback here) does not stop the sections still edited.
-  test("a section undone while an earlier write is out does not hold the rest", async () => {
-    const stub = stubEditorApi(
-      {
-        name: "Atendente",
-        settings: {
-          modelFallback: {
-            provider: "openai-compatible",
-            model: "m",
-            baseURL: null,
-          },
+  // A hold on a tab edited before Save keeps every section back, General included, even when General
+  // comes first in the write order (the contact-authentication gate left empty, here).
+  test("a hold on a later tab keeps an earlier section from being written", async () => {
+    const stub = stubEditorApi({
+      name: "Atendente",
+      settings: {
+        modelFallback: {
+          provider: "openai-compatible",
+          model: "m",
+          baseURL: null,
         },
       },
-      { catalog: NATIVE_CATALOG },
-    );
-    const served = globalThis.fetch;
-    let release: () => void = () => {};
-    const held = new Promise<void>((r) => {
-      release = r;
     });
-    let patchSent = false;
-    globalThis.fetch = (async (
-      input: RequestInfo | URL,
-      init?: RequestInit,
-    ) => {
-      if ((init?.method ?? "GET") === "PATCH" && !patchSent) {
-        patchSent = true;
-        await held;
-      }
-      return served(input, init);
-    }) as typeof fetch;
     await renderEditor(stub, "behavior");
-    const number = () => {
-      const panel =
-        document.querySelector<HTMLElement>('[role="tabpanel"]') ??
-        document.body;
-      const n = panel.querySelector<HTMLInputElement>('input[type="number"]');
-      if (!n) throw new Error("no number field on Behavior");
-      return n;
-    };
-    const stored = number().value;
     editTab("behavior");
-    await goTo("Tools");
-    editTab("tools");
+    await waitFor(() => expect(save().disabled).toBe(true));
     await goTo("General");
     editTab("general");
     fireEvent.click(save());
-    await waitFor(() => expect(patchSent).toBe(true));
-    await goTo("Behavior");
-    fireEvent.change(number(), { target: { value: stored } });
-    release();
-    await waitFor(
-      () => expect(stub.writes.some((w) => w.method === "PUT")).toBe(true),
-      { timeout: 5_000 },
-    );
-    expect(screen.queryByText(/Fix the Behavior tab/)).toBeNull();
-    expect(stub.writes.filter((w) => w.method === "PATCH").length).toBe(2);
+    await screen.findByText(/Fix the Behavior tab before saving/);
+    expect(stub.writes.filter((w) => w.method === "PATCH")).toEqual([]);
+    await goTo("General");
+    expect(nameField().value).toBe("Atendente (editado)");
   });
 });

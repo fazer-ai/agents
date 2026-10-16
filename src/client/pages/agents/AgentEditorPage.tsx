@@ -2659,17 +2659,22 @@ function AgentEditor() {
   const knowledgeBasesNeedingIndex = (catalog?.knowledgeBases ?? [])
     .filter((k) => selectedKbIds.has(k.id) && k.unindexedCount > 0)
     .map((k) => ({ id: k.id, name: k.name }));
-  // The agent's model as STORED, which is what the speech rewrite inherits at runtime, not
-  // the model being edited on General. The tabs do not save together: a Behavior save carries none
-  // of General's pending edits, so judging the rewrite against them would bless a pairing that
-  // exists nowhere, and every audio reply would skip the rewrite as `credential_required`.
+  // The agent's model as STORED, what runs now: the config warnings describe it. What a tab's hold
+  // judges against is `modelAfterSave` below.
   const savedModel = syncedAgentRef.current
     ? readModelState(syncedAgentRef.current)
     : model;
   const savedModelBaseUrl =
     vaultBaseUrl(savedModel.credentialRef) ?? savedModel.baseURL;
-  // What a tab's hold reads from outside it (the engine and mode as edited, the agent's model as
-  // saved), as it stood when the tab was last drawn. A hold judged under other values is judged again
+  // The model the editor's Save writes (agents#1520): the bar saves every section together, General
+  // first, so the other tabs judge their overrides against General's draft. On questions and rules
+  // no save writes the chat model, and the stored one is the one that stays.
+  const modelAfterSave = decides ? savedModel : model;
+  const modelAfterSaveBaseUrl = decides
+    ? savedModelBaseUrl
+    : (modelCredBaseUrl ?? model.baseURL);
+  // What a tab's hold reads from outside it (the engine and mode as edited, the model this save
+  // writes), as it stood when the tab was last drawn. A hold judged under other values is judged again
   // before the save trusts it (agents#1520).
   // The vault's answers count too, by how many have arrived (a new lookup function each time), not by
   // what they say about the fields being edited: a credential's endpoint resolved after its tab was
@@ -2683,7 +2688,8 @@ function AgentEditor() {
   const crossTabKey = JSON.stringify([
     engine,
     agentMode,
-    syncedAgentRef.current?.modelConfig ?? null,
+    modelAfterSave,
+    modelAfterSaveBaseUrl,
     vaultAnswersRef.current.n,
   ]);
   const drawnWithRef = useRef<Partial<Record<TabKey, string>>>({});
@@ -4046,8 +4052,7 @@ function AgentEditor() {
   // `crossTabKey`, sends the save to that tab to report again. The whole contract is in docs/ui.md.
   type BarSave = {
     sections: Set<(typeof SAVE_SECTIONS)[number]>;
-    generalDone: boolean;
-    // Phase two's tabs were judged; the sections it has written.
+    // Every hold was judged; the sections written so far.
     judged: boolean;
     written: Set<(typeof SAVE_SECTIONS)[number]>;
     // Each tab judged again during this save, with the `crossTabKey` it was judged under.
@@ -4073,7 +4078,6 @@ function AgentEditor() {
           (key) => dirty[key] || (key === "general" && decisionsHeadDirty),
         ),
       ),
-      generalDone: false,
       judged: false,
       written: new Set(),
       rechecked: new Map(),
@@ -4146,53 +4150,56 @@ function AgentEditor() {
       end();
     };
 
-    // Phase 1: General, with the decision setup its engine cards edit.
-    if (!plan.generalDone && (planned("general") || planned("decisions"))) {
-      if (planned("general") && judge("general") !== "ok") return;
-      if (decisionsSetupHold()) return end();
-      if (!decides && dirty.general && !guardModelBeforeSave())
-        return stop("general");
-      if (!(await saveGeneral()))
-        return stop(dirty.general ? "general" : "decisions");
-      plan.generalDone = true;
-      const rest = [...plan.sections].some(
-        (key) => key !== "general" && key !== "decisions",
-      );
-      if (rest) {
-        continueRef.current = { onTab: null };
-        return;
-      }
-    }
-
-    // Phase 2: the rest, each judged by its own tab first, then written in order.
-    // A section whose tab this engine does not draw is not written: its edits are the other engine's,
-    // and the Tools save already writes the grants this engine hides as stored.
-    const rest = (
+    // General carries the decision setup its engine cards edit. A section whose tab this engine does
+    // not draw is not written: its edits are the other engine's, and the Tools save already writes
+    // the grants this engine hides as stored.
+    const order = (
       [
+        "general",
         "behavior",
         "channelRedirect",
         "guardrails",
         "tools",
         "knowledge",
       ] as const
-    ).filter((key) => planned(key) && drawn(key));
+    ).filter((key) =>
+      key === "general"
+        ? planned("general") || planned("decisions")
+        : planned(key) && drawn(key),
+    );
     // A planned section undone since is not written, so nothing on its tab can hold the save.
+    const stillDirty = (key: (typeof order)[number]) =>
+      key === "general"
+        ? dirty.general || dirty.decisions || decisionsHeadDirty
+        : dirty[key];
+    // Every hold is judged before anything is written, so a held section keeps the whole save back.
+    // The tabs judge against the model this save writes (General's draft), not the stored one.
     if (!plan.judged) {
-      for (const key of rest) if (dirty[key] && judge(key) !== "ok") return;
+      for (const key of order)
+        if (stillDirty(key) && planned(key) && judge(key) !== "ok") return;
+      if (stillDirty("general")) {
+        if (decisionsSetupHold()) return end();
+        if (!decides && dirty.general && !guardModelBeforeSave())
+          return stop("general");
+      }
       if (planned("behavior") && dirty.behavior && behaviorPageHold() === false)
         return end();
       plan.judged = true;
     }
     // One write per pass, each pass on a fresh render: a section discarded while an earlier write
-    // was out reads as clean here and is not sent.
-    const key = rest.find((item) => !plan.written.has(item) && dirty[item]);
+    // was out reads as clean here and is not sent, and one already written is not sent again.
+    const key = order.find(
+      (item) => !plan.written.has(item) && stillDirty(item),
+    );
     if (key) {
-      // Judged again right before its write: it may have been edited into a hold while an earlier
-      // write was out.
-      if (judge(key) !== "ok") return;
+      // Judged again right before its write: it may have been edited into a hold meanwhile.
+      if (planned(key) && judge(key) !== "ok") return;
       if (key === "behavior" && behaviorPageHold() === false) return end();
       plan.written.add(key);
-      if (!(await writeSection(key))) return stop(key);
+      if (key === "general") {
+        if (!(await saveGeneral()))
+          return stop(dirty.general ? "general" : "decisions");
+      } else if (!(await writeSection(key))) return stop(key);
       continueRef.current = { onTab: null };
       return;
     }
@@ -4801,11 +4808,11 @@ function AgentEditor() {
                 onCatalogChange={refreshCatalog}
                 review={review}
                 setReview={setReview}
-                // NOTE: The SAVED model and its effective endpoint, as Behavior's overrides read it.
+                // NOTE: The model this save writes and its effective endpoint, as Behavior's overrides read it.
                 agentModel={{
-                  provider: savedModel.provider,
-                  credentialRef: savedModel.credentialRef,
-                  baseURL: savedModelBaseUrl,
+                  provider: modelAfterSave.provider,
+                  credentialRef: modelAfterSave.credentialRef,
+                  baseURL: modelAfterSaveBaseUrl,
                 }}
                 reviewCredBaseUrl={vaultBaseUrl(review.credentialRef)}
                 reviewCredentialError={
@@ -4918,13 +4925,13 @@ function AgentEditor() {
                 setContactAuth={setContactAuth}
                 tts={tts}
                 setTts={setTts}
-                // NOTE: The SAVED model, not the one being edited on General (see savedModel above), and
-                // its EFFECTIVE endpoint: a credential that carries its own wins over the typed
-                // field, exactly as the runtime resolves it.
-                agentModelProvider={savedModel.provider}
-                agentModelName={savedModel.model}
-                agentModelCredentialRef={savedModel.credentialRef}
-                agentModelBaseUrl={savedModelBaseUrl}
+                // NOTE: The model this save writes (see modelAfterSave above), and its EFFECTIVE
+                // endpoint: a credential that carries its own wins over the typed field, exactly as
+                // the runtime resolves it.
+                agentModelProvider={modelAfterSave.provider}
+                agentModelName={modelAfterSave.model}
+                agentModelCredentialRef={modelAfterSave.credentialRef}
+                agentModelBaseUrl={modelAfterSaveBaseUrl}
                 ttsNormalizeCredBaseUrl={ttsNormalizeCredBaseUrl}
                 split={split}
                 setSplit={setSplit}

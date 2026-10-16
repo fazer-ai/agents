@@ -3314,6 +3314,7 @@
     "subtitle": "Fluxo de execução passo a passo de cada turno do agente: transcrição, geração, áudio, entrega e transferências.",
     "systemPrompt": "Prompt do sistema",
     "title": "Logs",
+    "toolResultSize": "{{chars}} caracteres · ~{{tokens}} tokens",
     "turn": "Turno"
   },
   "mcp": {

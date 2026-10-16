@@ -30,6 +30,7 @@ import {
   guardrailClassifierLabel,
   guardrailExternalLabel,
   guardrailUncheckedLabel,
+  toolResultSizeLabel,
 } from "@/client/lib/flowLabels";
 import { type LogGroupTitle, logGroupTitle } from "@/client/lib/logGroupTitle";
 import { cn, formatDateTime } from "@/client/lib/utils";
@@ -124,6 +125,13 @@ function StageRow({ row }: { row: LogItem }) {
     row.provider,
     row.model,
     row.durationMs != null ? `${row.durationMs}ms` : null,
+    row.stage === "tool"
+      ? toolResultSizeLabel(
+          (row.detail as Record<string, unknown> | null)?.resultSize,
+          t,
+          i18n.language,
+        )
+      : null,
   ]
     .filter(Boolean)
     .join(" · ");

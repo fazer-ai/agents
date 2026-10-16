@@ -1,4 +1,5 @@
 import type { BaseMessage } from "@langchain/core/messages";
+import { measureText, type TextSize } from "@/graph/token-count";
 import { redactSecretsDeep, scrubbedClip } from "@/lib/redact";
 import type { GuardrailReport } from "@/modules/guardrails/gate";
 
@@ -33,6 +34,10 @@ export interface TraceToolResult {
   id: string | null; // tool_call_id, to pair with the originating call
   name: string | null;
   output: string; // redacted + truncated
+  // The whole result as the model got it, before redaction and the clip above: what this call adds to
+  // every later model call of the turn. Optional only because a playground session saved before sizes
+  // were recorded replays its old trace without one.
+  size?: TextSize;
   isError: boolean;
   sources?: TraceSource[]; // present for search_knowledge (from the ToolMessage artifact)
   // Playground only: the result came from an operator-supplied mock, or a simulated conversation
@@ -247,11 +252,13 @@ export function buildPlaygroundTrace(
       const mocked = !!(name && labels.mockedNames?.has(name));
       // A mock takes precedence over the simulated label (the operator's mock overrode the no-op).
       const simulated = !mocked && !!(name && labels.simulatedNames?.has(name));
+      const text = contentToText(tm.content);
       entries.push({
         type: "tool_result",
         id: tm.tool_call_id ?? null,
         name,
-        output: scrubbedClip(contentToText(tm.content), OUTPUT_MAX),
+        output: scrubbedClip(text, OUTPUT_MAX),
+        size: measureText(text),
         isError: tm.status === "error",
         ...(sources ? { sources } : {}),
         ...(mocked ? { mocked: true } : {}),

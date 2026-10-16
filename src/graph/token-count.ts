@@ -25,3 +25,15 @@ export const countMessageTokens: TokenCounter = (message) => {
   if (Array.isArray(calls) && calls.length > 0) text += JSON.stringify(calls);
   return estimateTokenCount(text) + MESSAGE_OVERHEAD_TOKENS;
 };
+
+// The size of a text the model receives, for the operator to read: characters, and tokens by the same
+// estimate the history ceiling uses (so it runs low against a real tokenizer, like the ceiling does).
+// Used on each tool result, in the playground trace and on the flow-log line.
+export interface TextSize {
+  chars: number;
+  tokens: number;
+}
+
+export function measureText(text: string): TextSize {
+  return { chars: text.length, tokens: estimateTokenCount(text) };
+}

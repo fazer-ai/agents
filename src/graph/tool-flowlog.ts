@@ -1,8 +1,11 @@
 import { BaseCallbackHandler } from "@langchain/core/callbacks/base";
 import type { Serialized } from "@langchain/core/load/serializable";
+import type { MessageContent } from "@langchain/core/messages";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import { toJsonSchema } from "@langchain/core/utils/json_schema";
+import { contentToText } from "@/graph/message-text";
 import { SKIP_REPLY_TOOL, skipReplyReasonOf } from "@/graph/silence";
+import { measureText } from "@/graph/token-count";
 import { HANDOFF_TOOL_NAME } from "@/graph/tools/catalog";
 import { sanitizeErrorMessage } from "@/lib/redact";
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
@@ -210,6 +213,13 @@ export class ToolFlowLogger extends BaseCallbackHandler {
         tool: s.tool,
         args: s.args,
         output: this.describe(value, null),
+        // Logged whatever `logToolValues` says: a size is not customer data, and it is what tells which
+        // tool inflated a turn's input.
+        resultSize: measureText(
+          typeof value === "string" || Array.isArray(value)
+            ? contentToText(value as MessageContent)
+            : (JSON.stringify(value) ?? ""),
+        ),
         ...(retries !== undefined ? { retries } : {}),
         // NOTE: Asked HERE and not at handleToolStart, because a model may emit `skip_reply`
         // alongside the tool that speaks (the documented parallel batch), and ToolNode runs a batch

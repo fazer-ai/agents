@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   RealtimeToolRunner,
   realtimeToolDefs,
+  withDeadline,
 } from "@/modules/voice-call/providers/realtime-tools";
 import type { VoiceTool } from "@/modules/voice-call/providers/types";
 
@@ -32,6 +33,25 @@ describe("RealtimeToolRunner", () => {
       { type: "response.create" },
     ]);
     expect(await runner.flush()).toBe(false);
+  });
+
+  test("runs a tool under a deadline of its own", async () => {
+    const handed: Array<AbortSignal | undefined> = [];
+    const runner = new RealtimeToolRunner(
+      [
+        {
+          ...clock,
+          invoke: async (_a, _id, signal) => {
+            handed.push(signal);
+            return "10:30";
+          },
+        },
+      ],
+      () => {},
+    );
+    runner.start({ name: "get_current_time", call_id: "c1", arguments: "{}" });
+    await runner.flush();
+    expect(handed.map((s) => s instanceof AbortSignal)).toEqual([true]);
   });
 
   test("leaves end_call to the provider", () => {
@@ -66,5 +86,33 @@ describe("RealtimeToolRunner", () => {
       "end_call",
       "get_current_time",
     ]);
+  });
+});
+
+describe("a tool run past its deadline", () => {
+  test("is cut before the call hears it timed out, so it sends nothing after that answer", async () => {
+    let handed: AbortSignal | undefined;
+    const outcome = await withDeadline((signal) => {
+      handed = signal;
+      return new Promise<string>(() => {});
+    }, 5).catch((err: Error) => ({
+      message: err.message,
+      cutFirst: handed?.aborted === true,
+    }));
+    expect(outcome).toEqual({
+      message: "tool timed out after 5 ms",
+      cutFirst: true,
+    });
+  });
+
+  test("one that answers in time is not cut", async () => {
+    let handed: AbortSignal | undefined;
+    expect(
+      await withDeadline(async (signal) => {
+        handed = signal;
+        return "ok";
+      }, 1_000),
+    ).toBe("ok");
+    expect(handed?.aborted).toBe(false);
   });
 });

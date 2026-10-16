@@ -2,6 +2,7 @@ import { Elysia, t } from "elysia";
 import logger from "@/api/lib/logger";
 import { doc } from "@/api/lib/openapi";
 import { CONVERSATION_NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
+import { trackWork } from "@/lib/shutdown";
 import type { TenantContext } from "@/lib/tenancy";
 import { loadPlaygroundVoiceAgent } from "@/modules/playground/service";
 import { CallBridge } from "@/modules/voice-call/bridge";
@@ -148,8 +149,10 @@ export const voiceController = new Elysia({
           log: logCall,
           onFinished: (record) => {
             bridges.delete(id);
-            void route
-              .then(async (resolved) => {
+            // Tracked so a shutdown waits for it: the report is not retried, and a deploy landing
+            // on a call that just ended would lose its transcript and note for good.
+            void trackWork("voice-call-report", () =>
+              route.then(async (resolved) => {
                 if (!resolved) return;
                 await reportCall(resolved, ctx, record, {
                   summarize: async (done) =>
@@ -160,14 +163,14 @@ export const voiceController = new Elysia({
                         )
                       : null,
                 });
-              })
-              .catch((err: Error) => {
-                // Detached from the call: a failure here must not take the server down with it.
-                logger.warn(
-                  "voice-call: the call could not be reported: %s",
-                  err.message,
-                );
-              });
+              }),
+            ).catch((err: Error) => {
+              // Detached from the call: a failure here must not take the server down with it.
+              logger.warn(
+                "voice-call: the call could not be reported: %s",
+                err.message,
+              );
+            });
           },
         },
       );

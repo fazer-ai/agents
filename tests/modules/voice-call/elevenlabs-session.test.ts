@@ -74,6 +74,9 @@ function fakeEngine(calls: Array<{ tool_name: string; tool_call_id: string }>) {
   return { results, done, fetchImpl };
 }
 
+// The deadline each run of check_calendar was handed.
+const toolSignals: Array<AbortSignal | undefined> = [];
+
 const CONFIG: VoiceSessionConfig = {
   instructions: "x",
   greeting: "",
@@ -86,7 +89,10 @@ const CONFIG: VoiceSessionConfig = {
       name: "check_calendar",
       description: "d",
       parameters: { type: "object", properties: {} },
-      invoke: async () => "livre às 10h",
+      invoke: async (_args, _id, signal) => {
+        toolSignals.push(signal);
+        return "livre às 10h";
+      },
     },
   ],
 };
@@ -122,6 +128,10 @@ describe("a tool the agent runs on an ElevenLabs call", () => {
       { tool_call_id: "t1", result: "livre às 10h", is_error: false },
       { tool_call_id: "t2", is_error: true },
     ]);
+    // Run under the call's deadline, which had not passed when it answered.
+    expect(
+      toolSignals.map((s) => s instanceof AbortSignal && !s.aborted),
+    ).toEqual([true]);
   });
 });
 

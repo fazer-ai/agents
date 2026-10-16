@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { Elysia } from "elysia";
+import { inFlightWork } from "@/lib/shutdown";
 import * as service from "@/modules/voice-call/service";
 import * as setup from "@/modules/voice-call/setup";
 import * as tools from "@/modules/voice-call/tools";
@@ -40,6 +41,9 @@ const read: {
 } = { history: [], tools: [], reported: [], directions: [] };
 // Set by the test whose report fails.
 let failReport = false;
+// A report still writing to Chatwoot, released by the test.
+let reportHeld: (() => void) | null = null;
+let holdReport = false;
 // A fence still waiting on Chatwoot, released by the test.
 let fenceHeld: (() => void) | null = null;
 
@@ -57,6 +61,7 @@ stubExports(service, {
     read.reported.push(c.conversationId);
     read.directions.push(c.direction);
     if (c.conversationId === 10 && failReport) throw new Error("Chatwoot down");
+    if (holdReport) await new Promise<void>((go) => (reportHeld = go));
     return null;
   },
 });
@@ -153,6 +158,23 @@ describe("the call stream route", () => {
       () => read.directions.length > before,
     );
     expect(read.directions.slice(before)).toEqual(["outbound"]);
+  });
+
+  test("a report still being written holds a shutdown until it is done", async () => {
+    holdReport = true;
+    try {
+      await call(10);
+      await until("the report to start", () => reportHeld);
+      expect(inFlightWork().byKind["voice-call-report"]).toBe(1);
+      reportHeld?.();
+      await until(
+        "the report to finish",
+        () => !inFlightWork().byKind["voice-call-report"],
+      );
+    } finally {
+      holdReport = false;
+      reportHeld = null;
+    }
   });
 
   test("a report that fails is logged, and the server keeps taking calls", async () => {

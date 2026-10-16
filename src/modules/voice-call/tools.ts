@@ -38,13 +38,16 @@ export function toVoiceTools(all: StructuredToolInterface[]): VoiceTool[] {
             unknown
           >,
         ),
-        invoke: async (args, callId) => {
-          const out = await tool.invoke({
-            type: "tool_call",
-            id: callId,
-            name: tool.name,
-            args,
-          } as never);
+        invoke: async (args, callId, signal) => {
+          const out = await tool.invoke(
+            {
+              type: "tool_call",
+              id: callId,
+              name: tool.name,
+              args,
+            } as never,
+            signal ? { signal } : undefined,
+          );
           const content = (out as { content?: unknown })?.content ?? out;
           const text =
             typeof content === "string" ? content : JSON.stringify(content);

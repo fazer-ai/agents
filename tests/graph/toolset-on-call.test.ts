@@ -7,6 +7,8 @@ import { CROSS_INBOX_CASE_DEFAULTS } from "@/modules/cross-inbox-case/settings";
 import { HANDOFF_DEFAULTS } from "@/modules/handoff/settings";
 import { SEND_IMAGE_DEFAULTS } from "@/modules/images/settings";
 import { KANBAN_DEFAULTS } from "@/modules/kanban/settings";
+import { toVoiceTools } from "@/modules/voice-call/tools";
+import { until } from "@/tests/utils/poll";
 
 // A call's turn answers by voice: a slow tool's holding message is not posted to the chat, and the
 // tool still runs, on the deadline the call gives it.
@@ -136,5 +138,47 @@ describe("an HTTP tool on a call's turn", () => {
       })) as unknown as typeof fetch;
     await expect(runSlowTool(true, 5)).rejects.toThrow("within 0.005s");
     expect(aborted).toBe(true);
+  });
+});
+
+describe("an HTTP tool run under a call's deadline", () => {
+  test("has its request cancelled when that deadline passes, not at its own timeout", async () => {
+    let sent = false;
+    let aborted = false;
+    globalThis.fetch = ((_input: unknown, init?: RequestInit) =>
+      new Promise<Response>(() => {
+        sent = true;
+        init?.signal?.addEventListener("abort", () => {
+          aborted = true;
+        });
+      })) as unknown as typeof fetch;
+    const client = {
+      muted: false,
+      sendMessage: async () => ({}),
+      toggleTyping: async () => {},
+    } as unknown as ChatwootClient;
+    const tools = await buildToolset(
+      config(),
+      {
+        tenantId: 1n,
+        instanceId: 1n,
+        base: {} as unknown as PrismaClient,
+        client,
+        conversationId: 7,
+        threadId: "t-on-call-deadline",
+        onCall: true,
+        httpToolTimeoutMs: 60_000,
+      },
+      { buildNativeTools: () => [] },
+    );
+    const consulta = toVoiceTools(tools).find((t) => t.name === "consulta");
+    const deadline = new AbortController();
+    const run = consulta
+      ?.invoke({ __wait_message: "Só um instante." }, "c1", deadline.signal)
+      .catch((err: Error) => err.message);
+    await until("the request to be sent", () => sent);
+    deadline.abort(new Error("the call's deadline"));
+    await until("the request to be cancelled", () => aborted);
+    await run;
   });
 });

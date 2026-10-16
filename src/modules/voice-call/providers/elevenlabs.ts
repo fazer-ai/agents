@@ -8,7 +8,7 @@ import { withKeyedQueue } from "@/lib/locks";
 import { pcmFromBase64, pcmToBase64 } from "../pcm";
 import { forgetElevenLabsAgent } from "./elevenlabs-agent";
 import { syncElevenLabsTools, VOICE_TOOL_TIMEOUT_MS } from "./elevenlabs-tools";
-import { withTimeout } from "./realtime-tools";
+import { withDeadline } from "./realtime-tools";
 import type {
   VoiceProvider,
   VoiceSession,
@@ -156,8 +156,8 @@ async function openHeld(
     let isError = false;
     try {
       if (!tool) throw new Error(`unknown tool ${name}`);
-      result = await withTimeout(
-        tool.invoke(call.parameters ?? {}, id),
+      result = await withDeadline(
+        (signal) => tool.invoke(call.parameters ?? {}, id, signal),
         VOICE_TOOL_TIMEOUT_MS,
       );
     } catch (err) {

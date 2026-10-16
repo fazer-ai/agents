@@ -8,7 +8,8 @@ export interface VoiceTool {
   name: string;
   description: string;
   parameters: Record<string, unknown>;
-  invoke(args: unknown, callId: string): Promise<string>;
+  /** `signal` is the invocation's deadline: past it the tool sends nothing and cancels what it sent. */
+  invoke(args: unknown, callId: string, signal?: AbortSignal): Promise<string>;
 }
 
 export interface VoiceSessionConfig {

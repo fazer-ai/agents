@@ -1,7 +1,9 @@
 // What a call never offers out of an agent's tools, shared by the call's toolset and
 // the voice agent's Tools tab so the tab draws exactly what a call can run. Browser-safe: no imports.
 // Out: sending files or images, replying in text, closing the conversation under the call, and what
-// must not happen without a person confirming (a charge, an email). Document tools deliver a file.
+// must not happen without a person confirming (a charge, an email). Document tools deliver a file
+// too, and are named after their template (`send_<slug>`), so a call drops the agent's document
+// grants whole where its tools are assembled rather than by name here.
 
 export const VOICE_DENIED_TOOLS: ReadonlySet<string> = new Set([
   "send_image",
@@ -20,9 +22,5 @@ export const VOICE_DENIED_TOOLS: ReadonlySet<string> = new Set([
 ]);
 
 export function isVoiceDeniedTool(name: string): boolean {
-  return (
-    VOICE_DENIED_TOOLS.has(name) ||
-    name.startsWith("issue_") ||
-    name.startsWith("document_")
-  );
+  return VOICE_DENIED_TOOLS.has(name);
 }

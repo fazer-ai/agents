@@ -98,7 +98,7 @@ export async function loadVoiceAgent(
       botToken: cfg.agentBotToken ?? "",
     });
     const all = await buildToolset(
-      cfg,
+      { ...cfg, documentSelections: [] },
       {
         tenantId: route.tenantId,
         instanceId: route.instanceId,

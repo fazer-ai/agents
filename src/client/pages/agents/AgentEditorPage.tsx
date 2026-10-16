@@ -2668,6 +2668,18 @@ function AgentEditor() {
     : model;
   const savedModelBaseUrl =
     vaultBaseUrl(savedModel.credentialRef) ?? savedModel.baseURL;
+  // What a tab's hold reads from outside it (the engine and mode as edited, the agent's model as
+  // saved), as it stood when the tab was last drawn. A hold judged under other values is judged again
+  // before the save trusts it (agents#1520).
+  // The stored row only, not the vault's answer about its credential: that arrives on its own clock,
+  // and a key that moved with it would send every save around the tabs for nothing.
+  const crossTabKey = JSON.stringify([
+    engine,
+    agentMode,
+    syncedAgentRef.current?.modelConfig ?? null,
+  ]);
+  const drawnWithRef = useRef<Partial<Record<TabKey, string>>>({});
+  drawnWithRef.current[tab] = crossTabKey;
   // The summariser override is judged on the STORED bag (see `settings` on the input), so the
   // credential whose endpoint outranks it has to be the stored one too. Reading the form's instead
   // would judge a saved configuration against a credential the row does not name.
@@ -3887,8 +3899,19 @@ function AgentEditor() {
   // The editor bar's Save, on every tab.
   function saveFromBar() {
     recheckedRef.current = new Set();
+    saveStartedOnRef.current = tab;
     void saveAllDirty({ leaveHidden: true });
   }
+  const resumeAfterGeneralRef = useRef(false);
+  // Every render, guarded by the ref: resumes once the General write has landed and nothing is saving.
+  useEffect(() => {
+    if (!resumeAfterGeneralRef.current || anySaving) return;
+    resumeAfterGeneralRef.current = false;
+    void saveAllDirty({ leaveHidden: true });
+  });
+  // Where the operator pressed Save: a save that went to other tabs to judge their holds comes back
+  // here once everything is written.
+  const saveStartedOnRef = useRef<TabKey | null>(null);
   // A held section on a tab not on screen was judged when that tab was last drawn, and what it reads
   // may have changed since (the engine, the model). The save opens it, the tab reports again, and the
   // save resumes there: a hold that still stands is said on its own tab, a stale one lets it through.
@@ -3972,13 +3995,25 @@ function AgentEditor() {
     // The bar's own check: "Save and export" keeps the checks it always had, and the server answers
     // for the rest.
     for (const key of opts.leaveHidden ? SAVE_SECTIONS : []) {
-      if (dirty[key] && drawn(key) && blockedRef.current[key]) {
-        if (opts.leaveHidden && key !== tab && !recheckedRef.current.has(key)) {
-          recheckedRef.current.add(key);
-          resumeSaveOnRef.current = key;
-          openTab(key);
-          return false;
-        }
+      // General's hold covers the engine and mode drawn on it, whose edits count as the decision setup.
+      const sectionEdited =
+        dirty[key] || (key === "general" && decisionsHeadDirty);
+      if (!sectionEdited || !drawn(key)) continue;
+      // A tab never drawn reported no hold to doubt (the decision setup, edited through General's
+      // engine cards, is checked on the page itself).
+      const drawnWith = drawnWithRef.current[key];
+      const stale = drawnWith !== undefined && drawnWith !== crossTabKey;
+      if (
+        key !== tab &&
+        (blockedRef.current[key] || stale) &&
+        !recheckedRef.current.has(key)
+      ) {
+        recheckedRef.current.add(key);
+        resumeSaveOnRef.current = key;
+        openTab(key);
+        return false;
+      }
+      if (blockedRef.current[key]) {
         return held(
           key,
           t("editor.saveHeldField", "a field there cannot be saved as it is."),
@@ -4031,6 +4066,17 @@ function AgentEditor() {
         return stopped("general");
       if (!(await saveGeneral()))
         return stopped(dirty.general ? "general" : "decisions");
+      // General just changed what other tabs judge against (the saved model, the engine): the rest of
+      // the save resumes on the next render, where their holds are judged against it.
+      if (
+        opts.leaveHidden &&
+        SAVE_SECTIONS.some(
+          (key) => key !== "general" && key !== "decisions" && dirty[key],
+        )
+      ) {
+        resumeAfterGeneralRef.current = true;
+        return true;
+      }
     }
     if (
       dirty.behavior &&
@@ -4076,6 +4122,12 @@ function AgentEditor() {
       );
       return false;
     }
+    if (
+      opts.leaveHidden &&
+      saveStartedOnRef.current &&
+      saveStartedOnRef.current !== tab
+    )
+      openTab(saveStartedOnRef.current);
     return true;
   }
 

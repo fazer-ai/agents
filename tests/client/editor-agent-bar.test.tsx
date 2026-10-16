@@ -230,4 +230,98 @@ describe("the editor's bar covers the whole agent", () => {
     await waitFor(() => expect(save().disabled).toBe(true));
     expect(screen.queryByText(/were not saved/)).toBeNull();
   });
+
+  // Behavior judges its fallback against the agent's SAVED model, so its hold can only change once
+  // General is written. The save writes General, then judges Behavior again before writing it: a
+  // fallback that inherited the old provider's endpoint now has none, and Behavior is held.
+  test("a hold General's save creates on another tab stops the rest of the save", async () => {
+    const stub = stubEditorApi({
+      name: "Atendente",
+      modelConfig: {
+        provider: "openai-compatible",
+        model: "m",
+        baseURL: "https://llm.example.com/v1",
+      },
+      settings: {
+        modelFallback: {
+          provider: "openai-compatible",
+          model: "m",
+          baseURL: null,
+        },
+      },
+    });
+    await renderEditor(stub, "behavior");
+    editTab("behavior");
+    await waitFor(() => expect(save().disabled).toBe(false));
+    await goTo("General");
+    fireEvent.change(screen.getByLabelText("Provider"), {
+      target: { value: "openai" },
+    });
+    fireEvent.click(save());
+    await screen.findByText(/Fix the Behavior tab before saving/, undefined, {
+      timeout: 5_000,
+    });
+    const written = stub.writes.filter((w) => w.method === "PATCH");
+    // General went out; Behavior did not.
+    expect(written.length).toBe(1);
+    expect(
+      (written[0]?.body.modelConfig as { provider?: string } | undefined)
+        ?.provider,
+    ).toBe("openai");
+  });
+
+  // The engine cards are General's even when only the decision setup changed: General's own hold (an
+  // endpoint that is not a URL) stops a save pressed on Tools, and the switch is not written.
+  test("General's hold covers an engine switch saved from another tab", async () => {
+    const stub = stubEditorApi(
+      {
+        name: "Observador",
+        mode: "monitoring",
+        modelConfig: {
+          provider: "openai-compatible",
+          model: "m",
+          baseURL: "not a url",
+        },
+        settings: {
+          monitoring: {
+            engine: "decisions",
+            decisions: {
+              provider: "typesafe",
+              credentialRef: "vault:12",
+              questions: [
+                {
+                  name: "pede_reembolso",
+                  type: "yes_no",
+                  instructions: "Pede?",
+                },
+              ],
+              rules: [
+                {
+                  when: [{ question: "pede_reembolso", minProbability: 0.7 }],
+                  action: { tool: "set_labels", args: { add: ["reembolso"] } },
+                },
+              ],
+            },
+          },
+        },
+      },
+      { catalog: NATIVE_CATALOG },
+    );
+    await renderEditor(stub, "general");
+    fireEvent.click(
+      await waitFor(() => {
+        const el = document.querySelector<HTMLElement>(
+          '[data-testid="engine-llm"]',
+        );
+        if (!el) throw new Error("the engine cards are not there yet");
+        return el;
+      }),
+    );
+    await waitFor(() => expect(save().disabled).toBe(true));
+    await goTo("Tools");
+    editTab("tools");
+    fireEvent.click(save());
+    await screen.findByText(/Fix the General tab before saving/);
+    expect(stub.writes).toEqual([]);
+  });
 });

@@ -2,6 +2,7 @@
 
 import { afterAll, afterEach, expect, test } from "bun:test";
 import { act, cleanup, renderHook } from "@testing-library/react";
+import { hasUnsavedChanges } from "@/client/lib/unsavedGuard";
 import { usePlaygroundCall } from "@/client/pages/agents/usePlaygroundCall";
 import {
   installFakeWebSocket,
@@ -18,11 +19,17 @@ import { until } from "@/tests/utils/poll";
 const realFetch = globalThis.fetch;
 let answerSetup: (() => void) | null = null;
 let setupCalls = 0;
+// Set by the test whose setup answer cannot be read.
+let unreadableSetup = false;
 globalThis.fetch = (async () => {
   setupCalls++;
   await new Promise<void>((resolve) => {
     answerSetup = resolve;
   });
+  if (unreadableSetup)
+    return new Response("{ truncated", {
+      headers: { "content-type": "application/json" },
+    });
   return new Response(JSON.stringify({ ok: true, ticket: "t" }), {
     headers: { "content-type": "application/json" },
   });
@@ -50,8 +57,12 @@ afterAll(() => {
     Object.defineProperty(navigator, "mediaDevices", realDevices);
   restoreWebSocket();
 });
-afterEach(() => {
+afterEach(async () => {
   cleanup();
+  // A setup request left unanswered is a write in flight, which keeps every later file's reload
+  // guard (`hasUnsavedChanges`) on for the rest of the process.
+  answerSetup?.();
+  await until("the setup's write to settle", () => !hasUnsavedChanges());
   answerSetup = null;
   grant = null;
   setupCalls = 0;
@@ -104,4 +115,25 @@ test("leaving while the setup is pending releases the microphone at once, and no
   await until("the setup answered", () => setupCalls === 1);
   expect(micAsked).toBe(1);
   expect(sockets).toHaveLength(0);
+});
+
+test("a setup answer that cannot be read fails the call and releases the microphone", async () => {
+  unreadableSetup = true;
+  try {
+    const mic = fakeMic();
+    const hook = renderHook(() => usePlaygroundCall("7"));
+    act(() => void hook.result.current.start());
+    await until("the microphone prompt", () => grant !== null);
+    grant?.(mic.stream);
+    await until("the setup request", () => answerSetup !== null);
+    answerSetup?.();
+    await until(
+      "the call to fail",
+      () => hook.result.current.call.state === "failed",
+    );
+    expect(mic.counts.stopped).toBeGreaterThan(0);
+    expect(sockets).toHaveLength(0);
+  } finally {
+    unreadableSetup = false;
+  }
 });

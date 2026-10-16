@@ -256,6 +256,12 @@ const TABLE: Record<string, Row> = {
     pastOwnership:
       'measured, and it DIVERGED: a disconnected account, and an agent that does not exist. Fixed and covered in "a preview asks what the core asks once it has the row".',
   },
+  inbox_bind_voice: {
+    args: { inbox_id: NOPE },
+    why: "inbox does not exist",
+    pastOwnership:
+      'measured on an inbox that EXISTS: the preview and the apply ask the same `voiceBindingRefusal`, and both refuse an inbox that is not WhatsApp, a text agent and a disconnected account ("the MCP preview of a voice binding refuses what the bind refuses", tests/modules/voice-call/voice-inboxes.test.ts).',
+  },
   inbox_reconcile: {
     skip: "takes no arguments: every refusal it has is a property of the deployment, not of an input",
   },

@@ -213,8 +213,9 @@ describe("MCP tool descriptions", () => {
       desc += t.description.length;
       schema += t.schema.length;
     }
-    // Measured at 32_563, with conversation_decisions_test.
-    expect(desc).toBeLessThanOrEqual(32_640);
+    // Measured at 32_877, with conversation_decisions_test, inbox_bind_voice and the voice kind on
+    // agent_create.
+    expect(desc).toBeLessThanOrEqual(32_950);
     // Measured at 72_446, with `limits.maxProactivePerDay` and the `snoozedFollowUp` and
     // `otherInboxes` blocks on agent_settings_set, the approval switch and validity on the document
     // template writes, the next number on them, the search and cursor on issued_document_list, and the

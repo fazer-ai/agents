@@ -3251,13 +3251,19 @@ function AgentEditor() {
     section: "general" | "behavior",
     force = false,
     retry?: () => void,
+    // A voice agent's one save carries both sections (General's identity and its call settings),
+    // so both are re-synced from the answer.
+    alsoBehavior = false,
   ): Promise<boolean> {
     savingRef.current += 1;
     setSavingAgent(true);
     // Snapshotted BEFORE the request, never after: the staleness check compares what went out
     // with what the boxes hold when the answer lands, and `currentRef` is live.
     const sent = sentFor(patch);
-    const sentSnap = { [section]: sectionSnap[section] };
+    const sentSnap = {
+      [section]: sectionSnap[section],
+      ...(alsoBehavior ? { behavior: sectionSnap.behavior } : {}),
+    };
     try {
       const expected = expectedFor(force);
       const { data, error: err } = await api.api.v1.agents({ id }).patch({
@@ -3279,6 +3285,7 @@ function AgentEditor() {
       if (!untouchedSince(sentSnap)) syncedAgentRef.current = data.agent;
       else if (section === "general") {
         applyGeneral(data.agent, "systemPrompt" in patch);
+        if (alsoBehavior) applyBehavior(data.agent, !decides);
       } else applyBehavior(data.agent, !decides);
       markSynced(String(data.agent.updatedAt));
       bumpSync();
@@ -3783,6 +3790,7 @@ function AgentEditor() {
       dirty.general ? "general" : "behavior",
       force,
       () => void saveVoice(true),
+      dirty.general && dirty.behavior,
     );
     if (ok) void checkVoice();
     return ok;

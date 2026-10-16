@@ -223,9 +223,11 @@ export function usePlaygroundCall(agentId: string) {
     }
     // The ticket after the microphone: it lasts a minute, and the browser's prompt can take longer.
     pendingMic.current = mic;
+    // A body that cannot be read rejects instead of answering `error`: the same failure.
     const { data, error } = await api.api.v1
       .agents({ id: agentId })
-      .playground.call.post();
+      .playground.call.post()
+      .catch((err: unknown) => ({ data: null, error: err }));
     if (attempt.current !== mine) {
       dropMic();
       return;

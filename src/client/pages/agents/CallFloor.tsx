@@ -15,7 +15,7 @@ import type { CallFloor, CallFloorTool } from "@/modules/playground/service";
 
 export type { CallFloor, CallFloorTool };
 
-// The floor the editor loaded, for the Tools tab's per-tool numbers. Null until it loads, and when it
+// The floor the editor loaded, for the numbers on the General, Tools and Knowledge tabs. Null until it loads, and when it
 // cannot: a tool with no number is the safe reading of "not measured".
 export const CallFloorContext = createContext<CallFloor | null>(null);
 
@@ -88,7 +88,68 @@ function toolLabel(tl: CallFloorTool, t: TFunction): string {
   if (tl.category === "native" || tl.category === "utility")
     return nativeToolMeta(tl.name, t).label;
   if (tl.category === "integration") return toolpackToolMeta(tl.name, t).label;
+  // The Knowledge tab grants these by switch, with no row of their own; named after what they do.
+  if (tl.name === "search_knowledge")
+    return t("editor.callFloor.knowledgeSearch", "Knowledge search");
+  if (tl.name === "suggest_kb_entry")
+    return t(
+      "editor.callFloor.knowledgeSuggest",
+      "Knowledge entry suggestions",
+    );
   return tl.name;
+}
+
+// Under the instructions as they are typed: what they cost on every call, and what the system appends
+// to them. Nothing for a decisions engine (it sends no instructions) or before the floor loads.
+export function InstructionsTokens({ draftPrompt }: { draftPrompt: string }) {
+  const { t, i18n } = useTranslation();
+  const floor = useContext(CallFloorContext);
+  if (floor?.engine !== "llm") return null;
+  const n = fmt(estimateTokens(draftPrompt), i18n.language);
+  return (
+    <p className="mt-1 text-text-muted text-xs">
+      {floor.instructionsAdded > 0
+        ? t(
+            "editor.callFloor.instructionsLineAdded",
+            "These instructions add {{n}} tokens to every call, and the system appends {{added}} more (knowledge rules, MCP servers).",
+            { n, added: fmt(floor.instructionsAdded, i18n.language) },
+          )
+        : t(
+            "editor.callFloor.instructionsLine",
+            "These instructions add {{n}} tokens to every call.",
+            { n },
+          )}
+    </p>
+  );
+}
+
+// Next to a Knowledge tab switch: what turning it on costs every call, as saved. The search switch
+// brings the search tool and the grounding rules the runtime appends; the suggest switch its tool.
+export function KnowledgeTokens({ part }: { part: "search" | "suggest" }) {
+  const { t, i18n } = useTranslation();
+  const floor = useContext(CallFloorContext);
+  if (floor?.engine !== "llm") return null;
+  const tool = floor.tools.find(
+    (tl) =>
+      tl.name === (part === "search" ? "search_knowledge" : "suggest_kb_entry"),
+  );
+  if (!tool) return null;
+  const n =
+    tool.estimatedTokens +
+    (part === "search" ? floor.instructionsAddedBy.grounding : 0);
+  return (
+    <span className="font-mono text-text-muted text-xs">
+      {part === "search"
+        ? t(
+            "editor.callFloor.searchTokens",
+            "{{n}} tokens per call, the search and the rules it adds to the instructions",
+            { n: fmt(n, i18n.language) },
+          )
+        : t("editor.callFloor.tokens", "{{n}} tokens per call", {
+            n: fmt(n, i18n.language),
+          })}
+    </span>
+  );
 }
 
 export function CallFloorLine({

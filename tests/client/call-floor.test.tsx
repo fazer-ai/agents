@@ -11,6 +11,8 @@ import {
   type CallFloor,
   CallFloorContext,
   CallFloorLine,
+  InstructionsTokens,
+  KnowledgeTokens,
   ToolTokens,
 } from "@/client/pages/agents/CallFloor";
 import { estimateTokens } from "@/lib/token-estimate";
@@ -44,6 +46,7 @@ const FLOOR: CallFloor = {
   engine: "llm",
   instructions: 999,
   instructionsAdded: 120,
+  instructionsAddedBy: { grounding: 100, mcp: 20 },
   tools: [
     {
       name: "consultar_pedido",
@@ -119,7 +122,12 @@ describe("CallFloorLine", () => {
     await inLanguage(
       "en",
       <CallFloorLine
-        floor={{ ...FLOOR, instructionsAdded: 0, tools: [] }}
+        floor={{
+          ...FLOOR,
+          instructionsAdded: 0,
+          instructionsAddedBy: { grounding: 0, mcp: 0 },
+          tools: [],
+        }}
         draftPrompt={PROMPT}
       />,
     );
@@ -187,5 +195,74 @@ describe("ToolTokens", () => {
     // The second instance of a pack contributes nothing: its row shows no number.
     expect(screen.getByTestId("pack").textContent).toBe("~40 tokens per call");
     expect(screen.getByTestId("pack-shadowed").textContent).toBe("");
+  });
+});
+
+// The same estimate where the instructions are written and where knowledge is switched on.
+describe("InstructionsTokens and KnowledgeTokens", () => {
+  const KB: CallFloor = {
+    ...FLOOR,
+    tools: [
+      ...(FLOOR.engine === "llm" ? FLOOR.tools : []),
+      { name: "search_knowledge", category: "knowledge", estimatedTokens: 90 },
+      { name: "suggest_kb_entry", category: "knowledge", estimatedTokens: 70 },
+    ],
+  };
+
+  test("under the instructions: the draft's cost and what the system appends, live", async () => {
+    await inLanguage(
+      "pt-BR",
+      <CallFloorContext.Provider value={KB}>
+        <InstructionsTokens draftPrompt={PROMPT} />
+      </CallFloorContext.Provider>,
+    );
+    expect(
+      screen.getByText(
+        `Estas instruções somam ~${estimateTokens(PROMPT).toLocaleString("pt-BR")} tokens a cada chamada, e o sistema acrescenta mais ~120 (regras da base de conhecimento, servidores MCP).`,
+      ),
+    ).toBeTruthy();
+  });
+
+  test("the search switch costs its tool plus the grounding rules; the suggest switch its tool", async () => {
+    await inLanguage(
+      "pt-BR",
+      <CallFloorContext.Provider value={KB}>
+        <div data-testid="search">
+          <KnowledgeTokens part="search" />
+        </div>
+        <div data-testid="suggest">
+          <KnowledgeTokens part="suggest" />
+        </div>
+      </CallFloorContext.Provider>,
+    );
+    expect(screen.getByTestId("search").textContent).toBe(
+      "~190 tokens por chamada, entre a busca e as regras que ela acrescenta às instruções",
+    );
+    expect(screen.getByTestId("suggest").textContent).toBe(
+      "~70 tokens por chamada",
+    );
+  });
+
+  test("not granted (as saved): no number on the switch", async () => {
+    await inLanguage(
+      "en",
+      <CallFloorContext.Provider value={FLOOR}>
+        <div data-testid="search">
+          <KnowledgeTokens part="search" />
+        </div>
+      </CallFloorContext.Provider>,
+    );
+    expect(screen.getByTestId("search").textContent).toBe("");
+  });
+
+  test("the breakdown names the knowledge tools after what they do", async () => {
+    await inLanguage(
+      "pt-BR",
+      <CallFloorLine floor={KB} draftPrompt={PROMPT} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Cada chamada/ }));
+    const items = screen.getAllByRole("listitem").map((li) => li.textContent);
+    expect(items).toContain("Busca no conhecimento~90");
+    expect(items).toContain("Sugestão de entradas no conhecimento~70");
   });
 });

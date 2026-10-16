@@ -1417,7 +1417,12 @@
       "help": "An estimate: the count your provider bills can be higher, more so with many tools.\n\nIt is the floor of a call. Each conversation adds its history and what belongs to it, none of which is counted here: contact and conversation attributes and contact fields, appointments, the authorization check and context from other inboxes, the label and handoff vocabulary the built-in tools' descriptions gain in a conversation, and the notices of each turn. Tools count as they are saved; instructions count as you type them.",
       "helpLabel": "About this estimate",
       "instructions": "Agent instructions",
+      "instructionsLine": "These instructions add {{n}} tokens to every call.",
+      "instructionsLineAdded": "These instructions add {{n}} tokens to every call, and the system appends {{added}} more (knowledge rules, MCP servers).",
+      "knowledgeSearch": "Knowledge search",
+      "knowledgeSuggest": "Knowledge entry suggestions",
       "line": "Every call already sends {{n}} tokens before the history",
+      "searchTokens": "{{n}} tokens per call, the search and the rules it adds to the instructions",
       "tokens": "{{n}} tokens per call"
     },
     "capabilities": {

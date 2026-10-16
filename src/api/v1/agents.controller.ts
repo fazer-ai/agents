@@ -15,6 +15,7 @@ import { instanceIdentity } from "@/lib/instance";
 import type { TenantContext } from "@/lib/tenancy";
 import { readAgentConfigHealth } from "@/modules/agents/config-health-read";
 import { readLimitsConfig } from "@/modules/agents/limits";
+import type { AgentMode } from "@/modules/agents/mode";
 import {
   AGENT_MODES,
   type AgentCreate,
@@ -542,6 +543,7 @@ export const agentsController = new Elysia({
         agentId: requireDbId(params.id),
         grants: (body as { grants: ToolGrantInput[] }).grants,
         settings: (body as { settings?: Record<string, unknown> }).settings,
+        mode: (body as { mode?: AgentMode }).mode,
       }),
     }),
     {
@@ -566,6 +568,19 @@ export const agentsController = new Elysia({
             description:
               "The agent's settings to measure with, in place of the saved ones (the shape `PATCH /v1/agents/{id}` takes). Tools read them: the handoff instructions, the writable contact fields. Omit to use the saved settings.",
           }),
+        ),
+        mode: t.Optional(
+          t.Union(
+            [
+              t.Literal("test"),
+              t.Literal("production"),
+              t.Literal("monitoring"),
+            ],
+            {
+              description:
+                "The agent's mode to measure with, in place of the saved one: an observer (`monitoring`) is offered what an observation is, and one on the decisions engine (`settings.monitoring.engine`) gets no numbers.",
+            },
+          ),
         ),
       }),
     },

@@ -473,6 +473,33 @@ describe.skipIf(!dbUp)("estimateCallFloor", () => {
     expect(
       await estimateCallFloor({ ctx: ctx(), agentId: id, base: appDb }),
     ).toEqual({ engine: "decisions" });
+    // The editor's unsaved engine and mode decide, not the saved ones: switched to the model, the
+    // observer gets numbers; switched back to answering, it is measured as an answering agent.
+    // No NATIVE grant: the default natives, which include what delivers to the customer.
+    const natives = { source: "RAG", enabledTools: [] };
+    const asModel = await estimateCallFloor({
+      ctx: ctx(),
+      agentId: id,
+      base: appDb,
+      grants: [natives],
+      settings: { monitoring: { engine: "llm" } },
+    });
+    expect(asModel.engine).toBe("llm");
+    const answering = await estimateCallFloor({
+      ctx: ctx(),
+      agentId: id,
+      base: appDb,
+      grants: [natives],
+      mode: "production",
+    });
+    if (asModel.engine !== "llm" || answering.engine !== "llm")
+      throw new Error("engine");
+    // An observer is offered nothing that delivers to the customer; an answering agent is.
+    const delivering = [...CUSTOMER_DELIVERY_NATIVE_TOOL_NAMES] as string[];
+    expect(asModel.tools.filter((t) => delivering.includes(t.name))).toEqual(
+      [],
+    );
+    expect(answering.tools.some((t) => delivering.includes(t.name))).toBe(true);
   });
 
   test("another tenant's agent is not found", async () => {

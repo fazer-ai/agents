@@ -2558,8 +2558,17 @@ function AgentEditor() {
   const draftGrantsKey = canonicalGrants(savedGrants);
   const draftGrantsRef = useRef(savedGrants);
   draftGrantsRef.current = savedGrants;
-  // The settings too: a tool's schema reads them (handoff instructions, writable contact fields).
-  const draftSettings = buildToolsSettings(buildSettings()).toolsSettings;
+  // The settings and the mode too: a tool's schema reads the settings (handoff instructions, writable
+  // contact fields), and an observer, or one deciding by rules, is measured as one. The observation
+  // block is the form's whole, engine included, where a Behavior save keeps the stored decision setup.
+  const draftSettings = {
+    ...buildToolsSettings(buildSettings()).toolsSettings,
+    ...monitoringPatch(
+      observation,
+      agentMode === "monitoring",
+      customTools?.all ?? null,
+    ),
+  };
   const draftSettingsKey = JSON.stringify(draftSettings);
   const draftSettingsRef = useRef(draftSettings);
   draftSettingsRef.current = draftSettings;
@@ -2577,6 +2586,7 @@ function AgentEditor() {
         ["call-floor"].post({
           grants: draftGrantsRef.current,
           settings: draftSettingsRef.current,
+          mode: agentMode,
         })
         .then(({ data }) => {
           if (alive)
@@ -2590,7 +2600,14 @@ function AgentEditor() {
       alive = false;
       clearTimeout(timer);
     };
-  }, [id, serverSyncTick, catalogTick, draftGrantsKey, draftSettingsKey]);
+  }, [
+    id,
+    serverSyncTick,
+    catalogTick,
+    draftGrantsKey,
+    draftSettingsKey,
+    agentMode,
+  ]);
 
   // Live config-health: a feature on without its credential, or naming one whose secret is not
   // filled in (pending); each issue deep-links to its tab or the vault fill modal. Messages by issue.key:

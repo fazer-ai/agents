@@ -9554,6 +9554,14 @@
                     "patternProperties": {
                       "^(.*)$": {}
                     }
+                  },
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "test",
+                      "production",
+                      "monitoring"
+                    ]
                   }
                 }
               }
@@ -9644,6 +9652,14 @@
                     "patternProperties": {
                       "^(.*)$": {}
                     }
+                  },
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "test",
+                      "production",
+                      "monitoring"
+                    ]
                   }
                 }
               }
@@ -9734,6 +9750,14 @@
                     "patternProperties": {
                       "^(.*)$": {}
                     }
+                  },
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "test",
+                      "production",
+                      "monitoring"
+                    ]
                   }
                 }
               }

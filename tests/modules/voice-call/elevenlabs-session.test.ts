@@ -198,3 +198,46 @@ describe("two calls on one ElevenLabs agent", () => {
     ]);
   });
 });
+
+describe("an ElevenLabs socket that never opens", () => {
+  test("is closed when the open times out, and frees the agent for the next call", async () => {
+    const sockets: Array<{ closed: boolean }> = [];
+    class NeverOpens {
+      readyState = 0;
+      closed = false;
+      constructor() {
+        sockets.push(this);
+      }
+      addEventListener() {}
+      send() {}
+      close() {
+        this.closed = true;
+      }
+    }
+    globalThis.WebSocket = NeverOpens as unknown as typeof WebSocket;
+    const fetchImpl = (async (input: string) =>
+      input.includes("get-signed-url")
+        ? new Response(JSON.stringify({ signed_url: "ws://127.0.0.1:1/" }))
+        : new Response("{}")) as unknown as typeof fetch;
+    const provider = elevenLabsProvider({
+      apiKey: "k",
+      agentId: "agent-never-opens",
+      fetchImpl,
+      openTimeoutMs: 1,
+    });
+    const handlers: VoiceSessionHandlers = {
+      onAudio: () => {},
+      onInterrupt: () => {},
+      onTranscript: () => {},
+      onHangup: () => {},
+      onError: () => {},
+    };
+    await expect(provider.open(CONFIG, handlers)).rejects.toThrow(
+      "open timed out",
+    );
+    await expect(provider.open(CONFIG, handlers)).rejects.toThrow(
+      "open timed out",
+    );
+    expect(sockets.map((s) => s.closed)).toEqual([true, true]);
+  });
+});

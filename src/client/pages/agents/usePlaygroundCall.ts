@@ -194,22 +194,6 @@ export function usePlaygroundCall(agentId: string) {
     const mine = ++attempt.current;
     setLines([]);
     setCall({ state: "preparing" });
-    const { data, error } = await api.api.v1
-      .agents({ id: agentId })
-      .playground.call.post();
-    if (attempt.current !== mine) return;
-    if (error || !data) {
-      setCall({ state: "failed", problem: "unreachable", detail: null });
-      return;
-    }
-    if (!data.ok) {
-      setCall({
-        state: "failed",
-        problem: String(data.problem),
-        detail: data.detail ?? null,
-      });
-      return;
-    }
     let mic: MediaStream;
     try {
       mic = await navigator.mediaDevices.getUserMedia({
@@ -224,8 +208,33 @@ export function usePlaygroundCall(agentId: string) {
       });
       return;
     }
-    if (attempt.current !== mine) {
+    const dropMic = () => {
       for (const track of mic.getTracks()) track.stop();
+    };
+    if (attempt.current !== mine) {
+      dropMic();
+      return;
+    }
+    // The ticket after the microphone: it lasts a minute, and the browser's prompt can take longer.
+    const { data, error } = await api.api.v1
+      .agents({ id: agentId })
+      .playground.call.post();
+    if (attempt.current !== mine) {
+      dropMic();
+      return;
+    }
+    if (error || !data) {
+      dropMic();
+      setCall({ state: "failed", problem: "unreachable", detail: null });
+      return;
+    }
+    if (!data.ok) {
+      dropMic();
+      setCall({
+        state: "failed",
+        problem: String(data.problem),
+        detail: data.detail ?? null,
+      });
       return;
     }
     // The context runs at the call's rate, so the browser resamples the microphone and the agent.

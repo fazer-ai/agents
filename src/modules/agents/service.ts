@@ -2129,6 +2129,7 @@ export async function updateAgent(
   // The calls of the inboxes a voice agent answers follow its switch and mode.
   if (
     ctx.tenantId !== null &&
+    dto.kind === "voice" &&
     (rest.settings !== undefined ||
       rest.enabled !== undefined ||
       rest.mode !== undefined)

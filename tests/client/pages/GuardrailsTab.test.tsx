@@ -33,10 +33,12 @@ import {
 function renderWith(
   action: GuardrailAction,
   setGuardrails: (next: unknown) => void = () => {},
+  over: Partial<GuardrailsConfig> = {},
 ): GuardrailsConfig {
   const config: GuardrailsConfig = {
     ...structuredClone(GUARDRAILS_DEFAULTS),
     enabled: true,
+    ...over,
   };
   // Both directions, because the tab renders a block for each and the count below cannot tell them
   // apart: with only one switched, the other's template field would answer for it.
@@ -125,6 +127,17 @@ describe("GuardrailsTab template message", () => {
     ].map((f) => f.getAttribute("maxlength"));
     expect(handoff.length).toBe(2);
     expect(handoff.every((v) => v === String(TEMPLATE_MESSAGE_MAX))).toBe(true);
+  });
+
+  // The bug it catches: under hold the hand-over line is what a failed check sends, and with any
+  // other violation action the operator could neither read nor change it.
+  test("is shown beside the template under hold, since a check that cannot run sends it", () => {
+    renderWith("template", () => {}, { onFailure: "hold" });
+    const handoff = [
+      ...screen.queryAllByLabelText(/^Message to the customer/),
+      ...screen.queryAllByLabelText(/^Mensagem ao cliente/),
+    ].length;
+    expect([templateFields(), handoff]).toEqual([2, 2]);
   });
 
   // NOTE: the custom policy is clamped at CUSTOM_POLICY_MAX on read, so the field declares the cap

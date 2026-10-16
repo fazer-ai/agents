@@ -3503,6 +3503,8 @@
     "trace": {
       "guardrailClean": "approved",
       "guardrailHandedOff": "blocked, the case would go to the team",
+      "guardrailHeldInput": "could not be checked, so the message was held and the case would go to the team",
+      "guardrailHeldOutput": "could not be checked, so the reply was held and the case would go to the team",
       "guardrailInput": "Guardrail on the message",
       "guardrailOutput": "Guardrail on the reply",
       "guardrailReplaced": "replaced by the configured reply",

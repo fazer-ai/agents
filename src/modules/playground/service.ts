@@ -1412,6 +1412,7 @@ async function runPlaygroundFollowupOnce(
         systemPrompt: loaded.systemPrompt,
         makeModel: params.deps?.makeModel,
         langfuseCfg: loaded.langfuseCfg,
+        proactive: true,
       })
     : notScreened;
   const outGuard = drafted

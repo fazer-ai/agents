@@ -85,6 +85,7 @@ export function traceGuardrail(r: GuardrailReport): TraceGuardrail {
     direction: r.direction,
     outcome: r.outcome,
     ...(r.action ? { action: r.action } : {}),
+    ...(r.held ? { held: true as const } : {}),
     ...(r.categories?.length
       ? {
           // NOTE: Bounded in count as well as in length: the list is model-written, so nothing

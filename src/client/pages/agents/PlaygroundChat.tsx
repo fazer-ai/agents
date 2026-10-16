@@ -1352,9 +1352,19 @@ export function guardrailTraceLabel(
   t: (key: string, fallback: string) => string,
   entry: Pick<
     Extract<TraceEntry, { type: "guardrail" }>,
-    "direction" | "outcome" | "action"
+    "direction" | "outcome" | "action" | "held"
   >,
 ): string {
+  if (entry.held)
+    return entry.direction === "input"
+      ? t(
+          "playground.trace.guardrailHeldInput",
+          "could not be checked, so the message was held and the case would go to the team",
+        )
+      : t(
+          "playground.trace.guardrailHeldOutput",
+          "could not be checked, so the reply was held and the case would go to the team",
+        );
   switch (entry.outcome) {
     case "clean":
       return t("playground.trace.guardrailClean", "approved");

@@ -3607,6 +3607,8 @@
     "trace": {
       "guardrailClean": "aprovado",
       "guardrailHandedOff": "bloqueado, o caso iria para a equipe",
+      "guardrailHeldInput": "não pôde ser checada, então a mensagem foi segurada e o caso iria para a equipe",
+      "guardrailHeldOutput": "não pôde ser checada, então a resposta foi segurada e o caso iria para a equipe",
       "guardrailInput": "Guardrail na mensagem",
       "guardrailOutput": "Guardrail na resposta",
       "guardrailReplaced": "substituída pela resposta configurada",

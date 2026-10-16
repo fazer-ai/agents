@@ -349,8 +349,9 @@ export function GuardrailsTab({
                 replacement is written: when the model returns none, and always when the relevance
                 check is what tripped. It is the message customers actually receive then. */}
             {/* The hand-over's own sentence. Not the template: that one is a refusal, and this says
-                a person will continue. Empty is a choice, so the box may be left blank on purpose. */}
-            {d.action === "handoff" && (
+                a person will continue. Empty is a choice, so the box may be left blank on purpose.
+                Shown under hold too, where a check that cannot run sends it. */}
+            {(d.action === "handoff" || g.onFailure === "hold") && (
               <FormField
                 label={t(
                   "editor.guardrails.handoffMessage",

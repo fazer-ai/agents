@@ -139,10 +139,7 @@ import { llmNormalizeForSpeech } from "@/modules/tts/normalize";
 import { resolveNormalizeModel } from "@/modules/tts/normalize-model";
 import { readTtsConfig, type TtsConfig } from "@/modules/tts/settings";
 import { resolveInjectableCredential } from "@/modules/vault/injectable";
-import {
-  resolveVaultRefState,
-  tryResolveApiKeyEntry,
-} from "@/modules/vault/service";
+import { tryResolveApiKeyEntry } from "@/modules/vault/service";
 import { chatwootThreadId, getCheckpointer } from "./checkpointer";
 import {
   type FallbackConfig,
@@ -271,9 +268,10 @@ export interface AgentConfig {
   guardrails: GuardrailsConfig;
   guardrailsApiKey: string;
   guardrailsCredentialBaseUrl: string | null;
-  // The external check's signing secret: null when none is configured (unsigned), "missing" when
-  // the configured entry did not resolve, which the check treats as a failure.
-  guardrailsExternalSecret: string | null | "missing";
+  // The external check's signing secret: null when none is configured (unsigned) or when the
+  // configured entry did not resolve, which `guardrailsExternalSecretMissing` says.
+  guardrailsExternalSecret: string | null;
+  guardrailsExternalSecretMissing: boolean;
   transferWithSummary: boolean;
   nativeToolsAllow?: string[];
   httpToolDefs: LoadedHttpToolDef[];
@@ -591,20 +589,19 @@ export async function loadAgentConfig(
       );
     }
   }
-  let guardrailsExternalSecret: string | null | "missing" = null;
+  let guardrailsExternalSecret: string | null = null;
+  let guardrailsExternalSecretMissing = false;
   if (
     guardrails.enabled &&
     guardrails.external.url &&
     guardrails.external.credentialRef
   ) {
-    const sEntry = await resolveVaultRefState<unknown>(
+    const sEntry = await tryResolveApiKeyEntry(
       db,
       guardrails.external.credentialRef,
     );
-    guardrailsExternalSecret =
-      sEntry.state === "filled" && typeof sEntry.value === "string"
-        ? sEntry.value
-        : "missing";
+    if (sEntry.state === "ok") guardrailsExternalSecret = sEntry.secret;
+    else guardrailsExternalSecretMissing = true;
   }
   // Speech normalizer's own credential, when it runs on a separate model. Same fail-open shape as
   // guardrails: an unresolvable ref leaves the key empty, and buildSpeechNormalizer then SKIPS the
@@ -1030,6 +1027,7 @@ export async function loadAgentConfig(
     guardrailsApiKey,
     guardrailsCredentialBaseUrl,
     guardrailsExternalSecret,
+    guardrailsExternalSecretMissing,
     transferWithSummary: agent.transferWithSummary,
     nativeToolsAllow: sel.nativeToolsAllow,
     httpToolDefs: sel.httpToolDefs,

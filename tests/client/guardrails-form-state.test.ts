@@ -123,6 +123,15 @@ describe("playgroundGuardrailsUsable", () => {
         enabled: false,
         onFailure: "hold",
       }),
-    ]).toEqual([true, false, true, false]);
+      playgroundGuardrailsUsable({
+        ...on,
+        credentialRef: null,
+        external: {
+          url: "https://x.example/h",
+          credentialRef: null,
+          sendToolValues: true,
+        },
+      }),
+    ]).toEqual([true, false, true, false, true]);
   });
 });

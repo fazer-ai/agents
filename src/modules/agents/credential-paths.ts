@@ -51,12 +51,13 @@ export const SETTINGS_CREDENTIAL_PATHS = [
     sectionId: "gr-model",
     use: "apiKey",
   },
-  // The external check's HMAC signing secret: a plain string, never a provider key.
+  // The external check's HMAC signing secret: read as a plain string, like a key, so a managed
+  // OAuth entry (which holds an object) is refused at write instead of failing every check.
   {
     path: ["guardrails", "external", "credentialRef"],
     tab: "guardrails",
     sectionId: "gr-external",
-    use: "injectable",
+    use: "apiKey",
   },
   {
     path: ["memory", "compaction", "credentialRef"],

@@ -62,6 +62,16 @@ export interface ExternalToolCall {
   isError: boolean;
 }
 
+// The arguments as sent: redacted, and held to the cap as a whole. Past it they travel as their
+// serialized text cut to the cap, since a per-string bound alone lets many fields add up.
+function boundedArgs(args: unknown): unknown {
+  const redacted = redactSecretsDeep(args, 0, EXTERNAL_TOOL_VALUE_MAX);
+  const text = JSON.stringify(redacted) ?? "";
+  return text.length <= EXTERNAL_TOOL_VALUE_MAX
+    ? redacted
+    : scrubbedClip(text, EXTERNAL_TOOL_VALUE_MAX);
+}
+
 // The turn's tool calls, in the order the model made them, paired with their results. The turn is
 // everything after the last human or system message, the same slice the playground trace reads.
 export function turnToolCalls(
@@ -108,7 +118,7 @@ export function turnToolCalls(
         name: c.name ?? "tool",
         ...(sendValues
           ? {
-              args: redactSecretsDeep(c.args ?? {}, 0, EXTERNAL_TOOL_VALUE_MAX),
+              args: boundedArgs(c.args ?? {}),
               result: scrubbedClip(resultText, EXTERNAL_TOOL_VALUE_MAX),
             }
           : {}),
@@ -285,9 +295,14 @@ export async function askExternal(
 export interface ExternalCheckParams {
   cfg: GuardrailsConfig;
   ctx: ExternalContext;
-  // The resolved signing secret: a string, null for an unsigned check, or "missing" when the
-  // configured vault entry did not resolve (a failure: a receiver that verifies would refuse it).
-  secret: string | null | "missing";
+  // The resolved signing secret, or null for an unsigned check.
+  secret: string | null;
+  // The configured vault entry did not resolve: a failure, since a receiver that verifies would
+  // refuse the request unsigned.
+  secretMissing?: boolean;
+  // `observability.logToolValues`: the endpoint's reason, free text that may quote the customer,
+  // reaches the flow line only with it on. Otherwise the line keeps its length.
+  logValues?: boolean;
   flow: FlowContext;
   announce?: GuardrailAnnounce;
   deps?: ExternalCallDeps;
@@ -309,10 +324,9 @@ export function buildExternalCheck(
   return async (candidate) => {
     const started = now();
     const body = buildExternalRequest(p.ctx, candidate);
-    const answer: ExternalAnswer =
-      p.secret === "missing"
-        ? { ok: false, cause: "secret_not_found" }
-        : await askExternal(url, p.secret, body, p.deps);
+    const answer: ExternalAnswer = p.secretMissing
+      ? { ok: false, cause: "secret_not_found" }
+      : await askExternal(url, p.secret, body, p.deps);
     const latencyMs = Math.max(0, now() - started);
     let d: GuardrailDecision;
     let r: GuardrailReport;
@@ -374,7 +388,11 @@ export function buildExternalCheck(
           decision: answer.decision,
           latencyMs,
           ...(action ? { action } : {}),
-          ...(answer.reason ? { endpointReason: answer.reason } : {}),
+          ...(answer.reason
+            ? p.logValues
+              ? { endpointReason: answer.reason }
+              : { reasonChars: answer.reason.length }
+            : {}),
         },
       });
       if (answer.decision === "allow") {

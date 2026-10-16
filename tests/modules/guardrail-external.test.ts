@@ -1,6 +1,7 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { AIMessage, HumanMessage, ToolMessage } from "@langchain/core/messages";
 import { SsrfError } from "@/lib/ssrf";
+import * as flowlog from "@/modules/flowlog/service";
 import {
   askExternal,
   buildExternalCheck,
@@ -141,6 +142,28 @@ describe("the turn's tool calls", () => {
     expect(calls[1]?.resultSize).toBe(200_000 + "RESULTADO-DOIS".length);
   });
 
+  // The bug it catches: arguments held to the cap per string only, so many fields add up past it.
+  test("the arguments are bounded as a whole", () => {
+    const wide: Record<string, string> = {};
+    for (let i = 0; i < 20; i++) wide[`f${i}`] = "a".repeat(5000);
+    const calls = turnToolCalls(
+      [
+        new HumanMessage("MSG"),
+        new AIMessage({
+          content: "",
+          tool_calls: [{ id: "w", name: "larga", args: wide }],
+        }),
+        new ToolMessage({ tool_call_id: "w", content: "ok" }),
+        new AIMessage("FIM"),
+      ],
+      true,
+    );
+    expect(
+      JSON.stringify(calls[0]?.args).length <= EXTERNAL_TOOL_VALUE_MAX + 50,
+    ).toBe(true);
+    expect(calls[0]?.argsSize).toBe(JSON.stringify(wide).length);
+  });
+
   // The bug it catches: "send tool values" off still leaking an argument or a result.
   test("with values off, names and sizes go and nothing else", () => {
     const calls = turnToolCalls(messages(), false);
@@ -231,8 +254,9 @@ describe("what the check decides", () => {
   });
   const run = async (
     c: GuardrailsConfig,
-    secret: string | null | "missing",
+    secret: string | null,
     answer?: (b: Record<string, unknown>) => unknown,
+    extra: { secretMissing?: boolean; logValues?: boolean } = {},
   ) => {
     const reports: GuardrailReport[] = [];
     const check = buildExternalCheck({
@@ -246,6 +270,7 @@ describe("what the check decides", () => {
         customerMessage: "oi",
       },
       secret,
+      ...extra,
       // No database here: the lines are the runtime tests' business.
       flow: {
         tenantId: 0n,
@@ -296,13 +321,15 @@ describe("what the check decides", () => {
   // The bug it catches: a deleted signing secret sending the request unsigned, which a verifying
   // endpoint refuses, instead of following onFailure.
   test("a signing secret that did not resolve follows onFailure", async () => {
-    const pass = await run(cfg(), "missing");
+    const pass = await run(cfg(), null, undefined, { secretMissing: true });
     expect(pass.d).toEqual({ kind: "unavailable", modelRan: true });
     expect(pass.reports[0]?.external).toMatchObject({
       decision: "failed",
       cause: "secret_not_found",
     });
-    const hold = await run(cfg({ onFailure: "hold" }), "missing");
+    const hold = await run(cfg({ onFailure: "hold" }), null, undefined, {
+      secretMissing: true,
+    });
     expect(hold.d).toEqual({
       kind: "handed-off",
       reply: GUARDRAILS_DEFAULTS.output.handoffMessage,
@@ -311,6 +338,38 @@ describe("what the check decides", () => {
       held: true,
       outcome: "handed-off",
     });
+  });
+
+  // The bug it catches: a signing secret whose value happens to be a sentinel read as unresolved.
+  test("any resolved secret is used, whatever its value", async () => {
+    const { d } = await run(cfg(), "missing", (b) => ({
+      decision: "allow",
+      candidateId: b.candidateId,
+    }));
+    expect(d).toEqual({ kind: "clean" });
+  });
+
+  // The bug it catches: the endpoint's free text, which may quote the customer, stored in a flow
+  // line that promises no PII unless the operator turned tool values on.
+  test("the reason reaches the flow line only with tool values on", async () => {
+    const emit = spyOn(flowlog, "emitFlowEvent").mockImplementation(() => {});
+    try {
+      const block = (b: Record<string, unknown>) => ({
+        decision: "block",
+        candidateId: b.candidateId,
+        reason: "Maria, 11 99999-0000",
+      });
+      await run(cfg(), null, block);
+      await run(cfg(), null, block, { logValues: true });
+      const details = emit.mock.calls.map(
+        (c) => (c[1] as { detail: Record<string, unknown> }).detail,
+      );
+      expect(JSON.stringify(details[0])).not.toContain("Maria");
+      expect(details[0]?.reasonChars).toBe("Maria, 11 99999-0000".length);
+      expect(details[1]?.endpointReason).toBe("Maria, 11 99999-0000");
+    } finally {
+      emit.mockRestore();
+    }
   });
 
   // The bug it catches: generated with no judge-written text sending nothing, or the configured

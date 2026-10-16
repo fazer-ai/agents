@@ -1354,6 +1354,8 @@ async function runTurnBody(
       customerMessage: text,
     },
     secret: loaded.guardrailsExternalSecret,
+    secretMissing: loaded.guardrailsExternalSecretMissing,
+    logValues: loaded.logToolValues,
     flow,
     announce: chatwootNoteSink(client, conversationId),
     deps: params.deps?.externalCheck,

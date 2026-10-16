@@ -201,7 +201,13 @@ export function guardrailExternalLabel(
           defaultValue: "reason: {{reason}}",
           reason,
         })
-      : null,
+      : typeof detail.reasonChars === "number"
+        ? t("logs.guardrailExternal.reasonKept", {
+            defaultValue:
+              "a reason was given ({{chars}} characters), kept in the conversation's note",
+            chars: detail.reasonChars,
+          })
+        : null,
   ]
     .filter(Boolean)
     .join(" · ");

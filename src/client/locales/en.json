@@ -3112,6 +3112,7 @@
       "failedPassed": "The external check could not decide ({{cause}}), so the reply was let through unchecked",
       "latency": "took {{ms}} ms",
       "reason": "reason: {{reason}}",
+      "reasonKept": "a reason was given ({{chars}} characters), kept in the conversation's note",
       "replace": "The external check replaced the reply with its own text"
     },
     "guardrailHeld": {

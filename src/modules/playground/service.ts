@@ -1005,6 +1005,8 @@ async function runPlaygroundTurnOnce(
           customerMessage: text,
         },
         secret: loaded.guardrailsExternalSecret,
+        secretMissing: loaded.guardrailsExternalSecretMissing,
+        logValues: loaded.logToolValues,
         flow,
         announce: (r) => {
           gTrace.push(traceGuardrail(r));

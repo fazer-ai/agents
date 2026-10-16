@@ -3214,6 +3214,7 @@
       "failedPassed": "A verificação externa não conseguiu decidir ({{cause}}), então a resposta foi liberada sem checagem",
       "latency": "levou {{ms}} ms",
       "reason": "motivo: {{reason}}",
+      "reasonKept": "o endpoint deu um motivo ({{chars}} caracteres), guardado na nota da conversa",
       "replace": "A verificação externa trocou a resposta pelo texto dela"
     },
     "guardrailHeld": {

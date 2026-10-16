@@ -85,9 +85,27 @@ describe("reading the endpoint's answer", () => {
       candidateId: CID,
       reason: "y".repeat(EXTERNAL_REASON_MAX * 2),
     });
-    expect(long.ok && (long.reason?.length ?? 0) <= EXTERNAL_REASON_MAX).toBe(
-      true,
+    expect(
+      long.ok &&
+        (long.reason?.length ?? 0) <=
+          EXTERNAL_REASON_MAX + "…[truncated]".length,
+    ).toBe(true);
+  });
+
+  // The bug it catches: a secret straddling the cap cut to a prefix no redaction pattern matches,
+  // then stored in the trace and shown in the note.
+  test("a reason is redacted before it is cut", () => {
+    const token = `sk-${"a".repeat(48)}`;
+    const answer = readExternalAnswer(
+      200,
+      JSON.stringify({
+        decision: "block",
+        candidateId: CID,
+        reason: `${"x".repeat(EXTERNAL_REASON_MAX - 10)} ${token}`,
+      }),
+      CID,
     );
+    expect(answer.ok && answer.reason?.includes("sk-aaaa")).toBe(false);
   });
 
   // The bug it catches: the same text in two turns answered by one cached decision.

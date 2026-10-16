@@ -4,7 +4,6 @@ import { contentToText } from "@/graph/message-text";
 import { msgType } from "@/graph/trace";
 import { redactSecretsDeep, scrubbedClip } from "@/lib/redact";
 import { assertSafeOutboundUrl, SsrfError } from "@/lib/ssrf";
-import { clipText } from "@/lib/text";
 import { readBodyCapped, underSignal } from "@/modules/contact-auth/check";
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
 import { outboundHeaders } from "@/modules/webhooks/outbound/signing";
@@ -232,7 +231,8 @@ export function readExternalAnswer(
     return { ok: false, cause: "unverifiable", status };
   const reason =
     typeof a.reason === "string" && a.reason.trim()
-      ? clipText(a.reason.trim(), EXTERNAL_REASON_MAX)
+      ? // Redacted while whole: a cut first could leave a secret's prefix no pattern recognizes.
+        scrubbedClip(a.reason.trim(), EXTERNAL_REASON_MAX)
       : undefined;
   if (a.decision === "allow") return { ok: true, decision: "allow", status };
   if (a.decision === "block")

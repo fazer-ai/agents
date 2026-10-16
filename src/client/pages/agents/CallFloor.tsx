@@ -1,5 +1,15 @@
 import type { TFunction } from "i18next";
-import { ChevronDown } from "lucide-react";
+import {
+  BookOpen,
+  ChevronDown,
+  Code2,
+  FileText,
+  type LucideIcon,
+  Plug,
+  ScrollText,
+  Webhook,
+  Wrench,
+} from "lucide-react";
 import { createContext, useContext, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { HelpPopover } from "@/client/components/HelpPopover";
@@ -152,6 +162,20 @@ export function KnowledgeTokens({ part }: { part: "search" | "suggest" }) {
   );
 }
 
+// The icon the tool's row carries on the Tools tab (or the Knowledge tab, for the two it grants), so a
+// line of the breakdown and its row are recognisably the same thing.
+function toolIcon(tl: CallFloorTool, t: TFunction): LucideIcon {
+  if (tl.category === "native" || tl.category === "utility")
+    return nativeToolMeta(tl.name, t).icon;
+  if (tl.category === "integration") return toolpackToolMeta(tl.name, t).icon;
+  if (tl.category === "http") return Webhook;
+  if (tl.category === "code") return Code2;
+  if (tl.category === "mcp") return Plug;
+  if (tl.category === "knowledge") return BookOpen;
+  if (tl.templateId) return FileText;
+  return Wrench;
+}
+
 export function CallFloorLine({
   floor,
   draftPrompt,
@@ -177,9 +201,16 @@ export function CallFloorLine({
   const total = instructions + floor.instructionsAdded + tools;
   // As the model receives them: what the operator typed plus what the runtime appends, one entry,
   // with a note saying how much of it is the system's.
-  const rows: { key: string; label: string; note?: string; n: number }[] = [
+  const rows: {
+    key: string;
+    icon: LucideIcon;
+    label: string;
+    note?: string;
+    n: number;
+  }[] = [
     {
       key: "instructions",
+      icon: ScrollText,
       label: t("editor.callFloor.instructions", "Agent instructions"),
       ...(floor.instructionsAdded > 0
         ? {
@@ -194,6 +225,7 @@ export function CallFloorLine({
     },
     ...floor.tools.map((tl) => ({
       key: `tool:${tl.name}`,
+      icon: toolIcon(tl, t),
       label: toolLabel(tl, t),
       n: tl.estimatedTokens,
     })),
@@ -233,7 +265,11 @@ export function CallFloorLine({
       {open && (
         <ul className="flex flex-col gap-1 rounded-md border border-border bg-bg-secondary p-2">
           {rows.map((r) => (
-            <li key={r.key} className="flex items-baseline gap-2">
+            <li key={r.key} className="flex items-start gap-2">
+              <r.icon
+                className="mt-0.5 h-3.5 w-3.5 shrink-0 text-text-muted"
+                aria-hidden="true"
+              />
               <span className="flex min-w-0 flex-1 flex-col break-words text-text-secondary">
                 {r.label}
                 {r.note && <span className="text-text-muted">{r.note}</span>}

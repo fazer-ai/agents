@@ -378,6 +378,21 @@ describe("GuardrailsTab thresholds beside their checks", () => {
     });
   });
 
+  // The bug it catches: the action and template the external check's block uses, hidden while the
+  // built-in output screening is off and so impossible to set.
+  test("with only the external check on, the output action and its messages stay editable", () => {
+    mount((c) => {
+      c.input = { ...c.input, enabled: false };
+      c.output = { ...c.output, enabled: false };
+      c.external = {
+        url: "https://check.example.com/hook",
+        credentialRef: null,
+        sendToolValues: true,
+      };
+    });
+    expect(templateFields()).toBe(1);
+  });
+
   test("editing one direction's field shows the same text in the other, and stores one value", () => {
     mount();
     const [a, b] = fields("toxicity");

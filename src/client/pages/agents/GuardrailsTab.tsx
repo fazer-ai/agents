@@ -328,6 +328,12 @@ export function GuardrailsTab({
                 )}
               </div>
             </FormField>
+          </>
+        )}
+        {/* The action and its messages are also what the external check's block and a held failure
+            use, so they stay editable while it is configured, built-in screening on or off. */}
+        {(d.enabled || (dir === "output" && !!g.external.url)) && (
+          <>
             <FormField
               label={t("editor.guardrails.action", "On violation")}
               description={t(

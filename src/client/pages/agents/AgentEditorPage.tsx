@@ -4477,7 +4477,14 @@ function AgentEditor() {
                   if (decisionsBlocked("general", dirty.general)) return;
                   void saveGeneral();
                 }}
-                onDiscard={revertGeneral}
+                onDiscard={
+                  voiceAgent
+                    ? () => {
+                        revertGeneral();
+                        revertBehavior();
+                      }
+                    : revertGeneral
+                }
                 watcher={
                   watcher
                     ? {

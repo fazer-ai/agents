@@ -138,6 +138,22 @@ describe("the agent on ElevenLabs", () => {
     ).toBe("agent_again");
     expect(api.calls.map((c) => c.method)).toEqual(["PATCH", "PATCH", "POST"]);
   });
+
+  test("a new key is checked against ElevenLabs even with the settings unchanged", async () => {
+    const api = fakeApi([
+      [200, {}],
+      [404, {}],
+      [200, { agent_id: "agent_on_b" }],
+    ]);
+    expect(
+      await ensureElevenLabsAgent("key-a", "agent_y", spec, api.fetchImpl),
+    ).toBe("agent_y");
+    // The other account does not have agent_y: the agent is created there instead.
+    expect(
+      await ensureElevenLabsAgent("key-b", "agent_y", spec, api.fetchImpl),
+    ).toBe("agent_on_b");
+    expect(api.calls.map((c) => c.method)).toEqual(["PATCH", "PATCH", "POST"]);
+  });
 });
 
 describe("the agent's settings on ElevenLabs", () => {

@@ -186,6 +186,19 @@ export function readCallsConfig(settings: unknown): CallsConfig {
  * writes the block whole and never holds the id, and an editor opened before the server wrote it
  * would otherwise erase it: the next call would then create a second agent on the customer's account.
  */
+/**
+ * The settings without the ElevenLabs agent id, for a copy of the agent (a clone, an export): the
+ * copy creates its own agent there on its first save, instead of rewriting the original's.
+ */
+export function withoutCallsAgentId(
+  settings: Record<string, unknown>,
+): Record<string, unknown> {
+  const calls = settings.calls;
+  if (!calls || typeof calls !== "object") return settings;
+  const { elevenLabsAgentId: _id, ...rest } = calls as Record<string, unknown>;
+  return { ...settings, calls: rest };
+}
+
 export function keepCallsSystemFields(next: unknown, before: unknown): void {
   if (!next || typeof next !== "object") return;
   const calls = (next as Record<string, unknown>).calls;

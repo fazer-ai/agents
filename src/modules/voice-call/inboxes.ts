@@ -4,7 +4,8 @@
 // switch and mode. Only an enabled voice agent in production answers; a test one leaves the calls
 // ringing the human agents. The URL carries the inbox's own route token, minted once and never
 // rotated, and every write sends it whole: two racing writes differ only in the switch, and each
-// re-reads the binding afterwards and writes again when it moved, so the fork converges on the last.
+// re-reads the binding and whether it answers afterwards, and writes again when either moved, so the
+// fork converges on the last.
 
 import type { PrismaClient } from "@/../generated/prisma/client";
 import { decryptJson, encryptJson } from "@/api/lib/crypto";
@@ -43,10 +44,6 @@ const BINDING_SELECT = {
   voiceAgentId: true,
   voiceRouteToken: true,
 } as const;
-
-function sameBinding(a: VoiceBinding, b: VoiceBinding): boolean {
-  return a.voiceAgentId === b.voiceAgentId;
-}
 
 /** Whether the inbox's calls go to its voice agent: one is bound, switched on, in production. */
 async function answers(
@@ -108,18 +105,18 @@ async function syncInbox(
       db.inbox.findUnique({ where: { id: inboxId }, select: BINDING_SELECT }),
     );
   let binding = await read();
-  // NOTE: bounded: each pass follows a binding that committed after the previous one was read.
-  for (let pass = 0; binding && pass < 3; pass++) {
-    await writeToFork(
-      tenantId,
-      binding,
-      await answers(ctx, binding, base),
-      base,
-      deps,
-    );
+  if (!binding) return;
+  let on = await answers(ctx, binding, base);
+  // NOTE: bounded: each pass follows a binding, or an agent switch or mode, that committed after the
+  // previous one was read.
+  for (let pass = 0; pass < 3; pass++) {
+    await writeToFork(tenantId, binding, on, base, deps);
     const after = await read();
-    if (!after || sameBinding(binding, after)) return;
+    if (!after) return;
+    const nowOn = await answers(ctx, after, base);
+    if (after.voiceAgentId === binding.voiceAgentId && nowOn === on) return;
     binding = after;
+    on = nowOn;
   }
 }
 

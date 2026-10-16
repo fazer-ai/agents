@@ -124,14 +124,17 @@ import {
   VAULT_REF_PREFIX,
   type VaultEntryFacts,
 } from "@/modules/vault/service";
+import { withoutCallsAgentId } from "@/modules/voice-call/settings";
 import { generateRouteToken } from "@/modules/webhooks/inbound/route-token";
 import { ensureInboundSweep } from "@/modules/webhooks/inbound/sweep";
 import { withCreationDefaults } from "./creation-defaults";
 import {
+  AGENT_KINDS,
   AGENT_SELECT,
   type AgentDto,
   assertPromptSize,
   dropUnusableImportedSettingsInPlace,
+  normalizeAgentKind,
   requireTenant,
   toDto,
 } from "./service";
@@ -382,6 +385,8 @@ export const agentExportSchema = z.object({
     modelConfig: z.record(z.string(), z.unknown()),
     settings: z.record(z.string(), z.unknown()),
     transferWithSummary: z.boolean(),
+    // Absent in a bundle from before voice agents: a text agent.
+    kind: z.enum(AGENT_KINDS).optional(),
     businessHours: z.string().nullable(),
     followUpHours: z.string().nullable(),
     // Tolerant on the way IN: a grant of a source this build does not know is dropped rather than
@@ -611,6 +616,7 @@ export async function exportAgent(
         transferWithSummary: true,
         businessHoursId: true,
         followUpHoursId: true,
+        kind: true,
       },
     });
     if (!agent) {
@@ -1030,10 +1036,11 @@ export async function exportAgent(
     );
     // The logging switches describe how this instance records this agent, not the agent: an agent
     // exported from a development server would otherwise arrive elsewhere logging tool values.
-    const { observability: _observability, ...settings } = remapped as Record<
+    const { observability: _observability, ...exported } = remapped as Record<
       string,
       unknown
     >;
+    const settings = withoutCallsAgentId(exported);
 
     // Translate component credential refs id→name (deletes the ref when the id no longer resolves).
     const components: ExportedComponents | undefined = componentsRaw
@@ -1096,6 +1103,7 @@ export async function exportAgent(
         modelConfig,
         settings,
         transferWithSummary: agent.transferWithSummary,
+        kind: normalizeAgentKind(agent.kind),
         businessHours,
         followUpHours,
         tools,
@@ -1475,6 +1483,7 @@ export async function importAgent(
         modelConfig: modelConfig as Prisma.InputJsonValue,
         settings: withCreationDefaults(storable) as Prisma.InputJsonValue,
         transferWithSummary: exp.transferWithSummary,
+        kind: exp.kind ?? "text",
         businessHoursId,
         followUpHoursId,
         enabled: false,

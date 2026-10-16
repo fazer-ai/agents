@@ -82,7 +82,10 @@ import { isOneOf, SIGNATURE_CHOICES } from "@/modules/signature/domains";
 import { lockToolNames } from "@/modules/tool-definitions/namespace";
 import { requireVaultRefFor } from "@/modules/vault/service";
 import { syncVoiceAgentInboxes } from "@/modules/voice-call/inboxes";
-import { keepCallsSystemFields } from "@/modules/voice-call/settings";
+import {
+  keepCallsSystemFields,
+  withoutCallsAgentId,
+} from "@/modules/voice-call/settings";
 import { withCreationDefaults } from "./creation-defaults";
 import {
   AGENT_MODES,
@@ -2458,6 +2461,7 @@ export async function cloneAgent(
         businessHoursId: true,
         followUpHoursId: true,
         transferWithSummary: true,
+        kind: true,
       },
     });
     if (!src) {
@@ -2485,10 +2489,13 @@ export async function cloneAgent(
         name: newName?.trim() || `${src.name} (copy)`,
         systemPrompt: src.systemPrompt,
         modelConfig: (src.modelConfig ?? {}) as Prisma.InputJsonValue,
-        settings: (src.settings ?? {}) as Prisma.InputJsonValue,
+        settings: withoutCallsAgentId(
+          (src.settings ?? {}) as Record<string, unknown>,
+        ) as Prisma.InputJsonValue,
         businessHoursId: src.businessHoursId,
         followUpHoursId: src.followUpHoursId,
         transferWithSummary: src.transferWithSummary,
+        kind: src.kind,
         enabled: false,
       },
       select: AGENT_SELECT,

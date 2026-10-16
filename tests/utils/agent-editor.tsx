@@ -31,6 +31,7 @@ export interface EditorAgent {
   systemPrompt?: string;
   enabled?: boolean;
   mode?: string;
+  kind?: "text" | "voice";
   modelConfig?: Record<string, unknown>;
   settings?: Record<string, unknown>;
 }
@@ -91,6 +92,7 @@ export function stubEditorApi(
       transferWithSummary: false,
       enabled: seed.enabled ?? true,
       mode: seed.mode ?? "production",
+      kind: seed.kind ?? "text",
       settings: seed.settings ?? {},
       createdAt: "2026-01-01T00:00:00.000Z",
       updatedAt: "2026-01-01T00:00:00.000Z",

@@ -123,6 +123,9 @@ export function usePlaygroundCall(agentId: string) {
     agentSpeaking: false,
   });
   const live = useRef<Live | null>(null);
+  // Bumped when the screen goes away: a start still waiting on the setup or the microphone prompt
+  // sees it changed and stops there, releasing a microphone granted too late.
+  const attempt = useRef(0);
 
   // Releases the microphone and the socket at once; the audio context lingers for `afterSecs`, so the
   // end of the farewell and the busy tone are still heard.
@@ -140,7 +143,13 @@ export function usePlaygroundCall(agentId: string) {
     return l;
   }, []);
 
-  useEffect(() => () => void release(0), [release]);
+  useEffect(
+    () => () => {
+      attempt.current++;
+      release(0);
+    },
+    [release],
+  );
 
   // The meters, refreshed while the line is up.
   const up = call.state === "ringing" || call.state === "live";
@@ -182,11 +191,13 @@ export function usePlaygroundCall(agentId: string) {
 
   const start = useCallback(async () => {
     if (live.current) return;
+    const mine = ++attempt.current;
     setLines([]);
     setCall({ state: "preparing" });
     const { data, error } = await api.api.v1
       .agents({ id: agentId })
       .playground.call.post();
+    if (attempt.current !== mine) return;
     if (error || !data) {
       setCall({ state: "failed", problem: "unreachable", detail: null });
       return;
@@ -205,11 +216,16 @@ export function usePlaygroundCall(agentId: string) {
         audio: { echoCancellation: true, noiseSuppression: true },
       });
     } catch (err) {
+      if (attempt.current !== mine) return;
       setCall({
         state: "failed",
         problem: "microphone",
         detail: (err as Error).message,
       });
+      return;
+    }
+    if (attempt.current !== mine) {
+      for (const track of mic.getTracks()) track.stop();
       return;
     }
     // The context runs at the call's rate, so the browser resamples the microphone and the agent.

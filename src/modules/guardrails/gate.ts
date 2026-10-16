@@ -16,7 +16,11 @@ import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { literalForChatwoot } from "@/modules/chatwoot/liquid";
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
 import { analyzeGuardrail } from "./analyze";
-import { classifyGuardrail, type GuardrailScore } from "./classify";
+import {
+  classifyGuardrail,
+  type GuardrailScore,
+  guardrailAsks,
+} from "./classify";
 import { loggableCategories } from "./log-categories";
 import { judgesAnything } from "./prompts";
 import type { GuardrailAction, GuardrailsConfig } from "./settings";
@@ -393,6 +397,20 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
     subject: string,
     checks: GuardrailsConfig["input"]["checks"],
   ): Promise<{ d: GuardrailDecision; r: GuardrailReport | null }> => {
+    const params = {
+      direction,
+      text: subject,
+      checks,
+      competitors: gr.competitors,
+      customPolicy: gr.customPolicy,
+      systemPrompt: direction === "output" ? p.systemPrompt : undefined,
+      customerMessage: p.customerMessage,
+    };
+    // Nothing to ask (competitor mentions with no names) is the same answer with or without a key:
+    // checked first, so a missing credential cannot turn an empty screening into a failed one,
+    // which under `hold` would hand the conversation over for a question nobody asked.
+    if (guardrailAsks(params, gr.decisions.thresholds).length === 0)
+      return { d: { kind: "not-run" }, r: null };
     if (!p.apiKey) {
       emitFlowEvent(p.flow, {
         stage: "guardrail",
@@ -411,15 +429,7 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
     }
     const verdict = await classifyGuardrail(
       gr.decisions,
-      {
-        direction,
-        text: subject,
-        checks,
-        competitors: gr.competitors,
-        customPolicy: gr.customPolicy,
-        systemPrompt: direction === "output" ? p.systemPrompt : undefined,
-        customerMessage: p.customerMessage,
-      },
+      params,
       p.apiKey,
       p.credentialBaseUrl ?? null,
       p.decisionFetch,

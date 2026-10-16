@@ -310,6 +310,47 @@ const partlyCleanDecisions = (async (_url: string, init: RequestInit) => {
   });
 }) as unknown as typeof fetch;
 
+describe("an empty screening under hold", () => {
+  // The bug it catches: a missing key read before "is there anything to ask", so a decisions
+  // screening with nothing to ask hands the conversation over under hold.
+  test.skipIf(!dbUp)(
+    "with nothing to ask and no key, nothing is held and nothing is written",
+    async () => {
+      const f = flow();
+      const reports: GuardrailReport[] = [];
+      const onlyCompetitors = {
+        toxicity: false,
+        unsafeContent: false,
+        competitorMentions: true,
+        promptAdherence: false,
+        answerRelevance: false,
+      };
+      const gate = buildGuardrailGate({
+        langfuseCfg: null,
+        cfg: held({
+          classifier: "decisions",
+          competitors: [],
+          customPolicy: "",
+          input: {
+            ...GUARDRAILS_DEFAULTS.input,
+            enabled: true,
+            checks: onlyCompetitors,
+          },
+        }),
+        apiKey: "",
+        flow: f,
+        decisionFetch: failingDecisions,
+        announce: async (r) => {
+          reports.push(r);
+        },
+      });
+      expect(await gate("input", CUSTOMER)).toEqual({ kind: "not-run" });
+      expect(reports).toEqual([]);
+      expect(await lines(f.turnId)).toEqual([]);
+    },
+  );
+});
+
 describe("the scores a held screening keeps", () => {
   // The bug it catches: hold replacing the report and dropping which checks answered, so the note
   // and the playground trace can no longer say which one failed.

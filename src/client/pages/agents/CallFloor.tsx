@@ -16,6 +16,7 @@ import { HelpPopover } from "@/client/components/HelpPopover";
 import { nativeToolMeta } from "@/client/lib/nativeTools";
 import { toolpackToolMeta } from "@/client/lib/toolpackTools";
 import { cn } from "@/client/lib/utils";
+import { normalizeToolName } from "@/graph/tools/toolName";
 import { estimateTokens } from "@/lib/token-estimate";
 import type { CallFloor, CallFloorTool } from "@/modules/playground/service";
 
@@ -59,7 +60,9 @@ function findTool(
   return floor.tools.find((tl) => {
     if ("name" in ref)
       return (
-        tl.name === ref.name && KIND_CATEGORIES[ref.kind].includes(tl.category)
+        // By the exposed name: an operator's row may carry a legacy spelling the build normalizes.
+        tl.name === normalizeToolName(ref.name) &&
+        KIND_CATEGORIES[ref.kind].includes(tl.category)
       );
     if ("templateId" in ref) return tl.templateId === ref.templateId;
     if ("integration" in ref)

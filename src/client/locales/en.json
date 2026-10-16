@@ -1418,8 +1418,7 @@
       "helpLabel": "About this estimate",
       "instructions": "Agent instructions",
       "line": "Every call already sends {{n}} tokens before the history",
-      "tokens": "{{n}} tokens per call",
-      "toolHint": "Estimated tokens this tool's definition adds to every call"
+      "tokens": "{{n}} tokens per call"
     },
     "capabilities": {
       "agent": "Agent",

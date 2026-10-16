@@ -22,10 +22,21 @@ const fmt = (n: number, lang: string) => `~${n.toLocaleString(lang)}`;
 // Which tool of the floor a row of the Tools tab is. By the model's name for every kind whose row knows
 // it; an MCP or document row knows its grant instead, since that name is derived on the server.
 export type ToolRef =
-  | { name: string }
+  // A native, HTTP or code row: the name plus the kind of row, since an operator's tool can share a
+  // name with a pack's, and only one of the two is offered.
+  | { name: string; kind: "native" | "http" | "code" }
   | { mcp: { connectionId: string; tool: string } }
   | { templateId: string }
   | { integration: { instanceId: string; tool: string } };
+
+const KIND_CATEGORIES: Record<
+  "native" | "http" | "code",
+  readonly CallFloorTool["category"][]
+> = {
+  native: ["native", "utility"],
+  http: ["http"],
+  code: ["code"],
+};
 
 function findTool(
   floor: CallFloor | null,
@@ -33,7 +44,10 @@ function findTool(
 ): CallFloorTool | undefined {
   if (floor?.engine !== "llm") return undefined;
   return floor.tools.find((tl) => {
-    if ("name" in ref) return tl.name === ref.name;
+    if ("name" in ref)
+      return (
+        tl.name === ref.name && KIND_CATEGORIES[ref.kind].includes(tl.category)
+      );
     if ("templateId" in ref) return tl.templateId === ref.templateId;
     if ("integration" in ref)
       return (

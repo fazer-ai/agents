@@ -1200,7 +1200,7 @@ export function ToolGrantsEditor({
                   onToggle={() => toggleHttp(td.id)}
                   icon={Webhook}
                   title={td.label}
-                  meta={<ToolTokens tool={{ name: td.name }} />}
+                  meta={<ToolTokens tool={{ name: td.name, kind: "http" }} />}
                   badge={
                     !td.enabled ? (
                       <Badge variant="secondary">
@@ -1253,7 +1253,7 @@ export function ToolGrantsEditor({
                   onToggle={() => toggleCode(ct.id)}
                   icon={Code2}
                   title={ct.label}
-                  meta={<ToolTokens tool={{ name: ct.name }} />}
+                  meta={<ToolTokens tool={{ name: ct.name, kind: "code" }} />}
                   badge={
                     !ct.enabled ? (
                       <Badge variant="secondary">
@@ -1731,7 +1731,7 @@ export function ToolGrantsEditor({
                   onToggle={() => toggleNative(n.name)}
                   icon={meta.icon}
                   title={meta.label}
-                  meta={<ToolTokens tool={{ name: n.name }} />}
+                  meta={<ToolTokens tool={{ name: n.name, kind: "native" }} />}
                   description={meta.description}
                 />
               );
@@ -1744,7 +1744,7 @@ export function ToolGrantsEditor({
             onToggle={() => toggleNative(HANDOFF_TOOL)}
             icon={nativeToolMeta(HANDOFF_TOOL, t).icon}
             title={nativeToolMeta(HANDOFF_TOOL, t).label}
-            meta={<ToolTokens tool={{ name: HANDOFF_TOOL }} />}
+            meta={<ToolTokens tool={{ name: HANDOFF_TOOL, kind: "native" }} />}
             description={
               decides
                 ? t(
@@ -1947,7 +1947,7 @@ export function ToolGrantsEditor({
             onToggle={() => toggleNative(KANBAN_TOOL)}
             icon={nativeToolMeta(KANBAN_TOOL, t).icon}
             title={nativeToolMeta(KANBAN_TOOL, t).label}
-            meta={<ToolTokens tool={{ name: KANBAN_TOOL }} />}
+            meta={<ToolTokens tool={{ name: KANBAN_TOOL, kind: "native" }} />}
             description={nativeToolMeta(KANBAN_TOOL, t).description}
             configured={!decides && kanbanInstructions.trim() !== ""}
           >
@@ -1982,7 +1982,9 @@ export function ToolGrantsEditor({
             onToggle={() => toggleNative(UPDATE_KANBAN_TOOL)}
             icon={nativeToolMeta(UPDATE_KANBAN_TOOL, t).icon}
             title={nativeToolMeta(UPDATE_KANBAN_TOOL, t).label}
-            meta={<ToolTokens tool={{ name: UPDATE_KANBAN_TOOL }} />}
+            meta={
+              <ToolTokens tool={{ name: UPDATE_KANBAN_TOOL, kind: "native" }} />
+            }
             description={nativeToolMeta(UPDATE_KANBAN_TOOL, t).description}
             configured={!decides && updateKanbanTaskInstructions.trim() !== ""}
           >
@@ -2019,7 +2021,9 @@ export function ToolGrantsEditor({
             onToggle={() => toggleNative(OPEN_CASE_TOOL)}
             icon={nativeToolMeta(OPEN_CASE_TOOL, t).icon}
             title={nativeToolMeta(OPEN_CASE_TOOL, t).label}
-            meta={<ToolTokens tool={{ name: OPEN_CASE_TOOL }} />}
+            meta={
+              <ToolTokens tool={{ name: OPEN_CASE_TOOL, kind: "native" }} />
+            }
             description={nativeToolMeta(OPEN_CASE_TOOL, t).description}
             configured={crossInboxCase.targetInboxId !== ""}
             warning={
@@ -2046,7 +2050,9 @@ export function ToolGrantsEditor({
               onToggle={() => toggleNative(SEND_IMAGE_TOOL)}
               icon={nativeToolMeta(SEND_IMAGE_TOOL, t).icon}
               title={nativeToolMeta(SEND_IMAGE_TOOL, t).label}
-              meta={<ToolTokens tool={{ name: SEND_IMAGE_TOOL }} />}
+              meta={
+                <ToolTokens tool={{ name: SEND_IMAGE_TOOL, kind: "native" }} />
+              }
               description={nativeToolMeta(SEND_IMAGE_TOOL, t).description}
               configured={!sendImageNoHost}
               warning={
@@ -2071,7 +2077,7 @@ export function ToolGrantsEditor({
             onToggle={() => toggleNative(RESOLVE_TOOL)}
             icon={nativeToolMeta(RESOLVE_TOOL, t).icon}
             title={nativeToolMeta(RESOLVE_TOOL, t).label}
-            meta={<ToolTokens tool={{ name: RESOLVE_TOOL }} />}
+            meta={<ToolTokens tool={{ name: RESOLVE_TOOL, kind: "native" }} />}
             description={nativeToolMeta(RESOLVE_TOOL, t).description}
             configured={resolveConversation.assignLabels.length > 0}
           >
@@ -2089,7 +2095,7 @@ export function ToolGrantsEditor({
             onToggle={() => toggleNative(ATTR_TOOL)}
             icon={nativeToolMeta(ATTR_TOOL, t).icon}
             title={nativeToolMeta(ATTR_TOOL, t).label}
-            meta={<ToolTokens tool={{ name: ATTR_TOOL }} />}
+            meta={<ToolTokens tool={{ name: ATTR_TOOL, kind: "native" }} />}
             description={nativeToolMeta(ATTR_TOOL, t).description}
             configured={!decides && customAttributeInstructions.trim() !== ""}
           >
@@ -2126,7 +2132,7 @@ export function ToolGrantsEditor({
             onToggle={() => toggleNative(LABEL_TOOL)}
             icon={nativeToolMeta(LABEL_TOOL, t).icon}
             title={nativeToolMeta(LABEL_TOOL, t).label}
-            meta={<ToolTokens tool={{ name: LABEL_TOOL }} />}
+            meta={<ToolTokens tool={{ name: LABEL_TOOL, kind: "native" }} />}
             description={nativeToolMeta(LABEL_TOOL, t).description}
             configured={
               (!decides && labelInstructions.trim() !== "") ||

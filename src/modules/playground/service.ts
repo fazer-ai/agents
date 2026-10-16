@@ -690,6 +690,9 @@ export interface CallFloorTool {
   // For an integration tool, the instance it came from: two instances of one pack share tool names,
   // and only the first one's tool is offered.
   integrationInstanceId?: string;
+  // The name the Tools tab shows, for the kinds whose name is the operator's (HTTP, code, document).
+  // Native and pack tools are named by the console's own catalog, in the reader's language.
+  label?: string;
 }
 
 // What every model call of an agent sends before the first line of history (docs/graph.md, History
@@ -767,6 +770,27 @@ export async function estimateCallFloor(params: {
     muted: observing,
   });
   const classify = toolClassifier(loaded);
+  // The operator's display names, read once: the loaded definitions carry only the model-facing name.
+  const labelOf = new Map<string, string>(
+    loaded.documentSelections.map((d) => [documentToolName(d.slug), d.name]),
+  );
+  const httpNames = loaded.httpToolDefs.map((d) => d.name);
+  const codeNames = loaded.codeToolDefs.map((d) => d.name);
+  if (httpNames.length || codeNames.length) {
+    const [http, code] = await runScopedOn(base, params.ctx, (db) =>
+      Promise.all([
+        db.toolDefinition.findMany({
+          where: { name: { in: httpNames } },
+          select: { name: true, label: true },
+        }),
+        db.codeToolDefinition.findMany({
+          where: { name: { in: codeNames } },
+          select: { name: true, label: true },
+        }),
+      ]),
+    );
+    for (const d of [...http, ...code]) labelOf.set(d.name, d.label);
+  }
   const templateOf = new Map(
     loaded.documentSelections.map((d) => [
       documentToolName(d.slug),
@@ -798,6 +822,11 @@ export async function estimateCallFloor(params: {
         ),
         ...(meta?.integrationInstanceId
           ? { integrationInstanceId: meta.integrationInstanceId }
+          : {}),
+        ...(!meta?.mcpServer &&
+        !meta?.integrationInstanceId &&
+        labelOf.has(tl.name)
+          ? { label: labelOf.get(tl.name) }
           : {}),
         ...(templateOf.has(tl.name)
           ? { templateId: templateOf.get(tl.name) }

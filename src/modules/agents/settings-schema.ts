@@ -65,6 +65,12 @@ import {
   VISION_REASONING_EFFORTS,
 } from "@/modules/vision/output-limits";
 import { VISION_PROVIDER_NAMES } from "@/modules/vision/providers";
+import {
+  CALL_BACKGROUND_SOUNDS,
+  CALL_LIMITS,
+  CALL_TOOL_SOUNDS,
+  CALL_TURN_EAGERNESS,
+} from "@/modules/voice-call/settings";
 
 // The argument shape of the behavior blocks. Two rules, both in docs/mcp.md: type and choice, never
 // size (declare what a reader throws away, never a bound it clamps), and what the schema enforces is
@@ -131,6 +137,69 @@ const stt = z.looseObject({
     .describe('ISO-639-1, e.g. "pt" or "pt-BR"'),
   credentialRef: credentialRef(),
   baseURL: baseURL(),
+});
+
+// WhatsApp calls (modules/voice-call/settings). The engine is ElevenLabs Agents, on the customer's key.
+const calls = z.looseObject({
+  credentialRef: credentialRef().describe(
+    "the ElevenLabs key, with the Agents permission; a voice agent does not answer without one",
+  ),
+  voice: z
+    .string()
+    .optional()
+    .describe(
+      "ElevenLabs voice id; empty = the default Brazilian Portuguese voice",
+    ),
+  llm: z
+    .string()
+    .optional()
+    .describe(
+      "the model ElevenLabs runs, e.g. qwen36-35b-a3b (fastest measured)",
+    ),
+  speed: z
+    .number()
+    .optional()
+    .describe(`${CALL_LIMITS.speed[0]}-${CALL_LIMITS.speed[1]}, clamped`),
+  openingDelayMs: z
+    .number()
+    .optional()
+    .describe("how long a placed call waits for the person's hello, 0-5000 ms"),
+  turnEagerness: oneOf(CALL_TURN_EAGERNESS).optional(),
+  backgroundSound: oneOf(CALL_BACKGROUND_SOUNDS)
+    .nullable()
+    .optional()
+    .describe(
+      "ElevenLabs ambience under the agent's speech for the whole call; null for none",
+    ),
+  backgroundVolume: z
+    .number()
+    .optional()
+    .describe(
+      `ambience volume relative to the agent's speech, ${CALL_LIMITS.backgroundVolume[0]}-${CALL_LIMITS.backgroundVolume[1]}`,
+    ),
+  toolSound: oneOf(CALL_TOOL_SOUNDS)
+    .nullable()
+    .optional()
+    .describe("what plays while a tool runs; null for silence"),
+  silenceEndCallSecs: z
+    .number()
+    .nullable()
+    .optional()
+    .describe("10-600 s of silence end the call; null never"),
+  maxDurationSecs: z.number().optional().describe("60-3600, clamped"),
+  keywords: z
+    .array(z.string())
+    .optional()
+    .describe(
+      "words the transcription should expect (names, insurers); up to 50",
+    ),
+  elevenLabsAgentId: z
+    .string()
+    .nullable()
+    .optional()
+    .describe(
+      "written by the server once it created the agent on ElevenLabs; do not set",
+    ),
 });
 
 const tts = z.looseObject({
@@ -1144,6 +1213,7 @@ export const BEHAVIOR_PATCH_SHAPE = {
   debounce: debounce.optional(),
   stt: stt.optional(),
   tts: tts.optional(),
+  calls: calls.optional(),
   vision: vision.optional(),
   split: split.optional(),
   signature: signature.optional(),

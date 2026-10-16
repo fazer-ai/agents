@@ -1,0 +1,132 @@
+// A voice agent's call settings as the form holds them, read from and written to `settings.calls`
+// through the same reader the runtime uses (modules/voice-call/settings), so a field cannot exist on
+// one side only. Numbers are kept as typed text while editing; one out of range is refused on save
+// (`callsFormErrors`) rather than left to the reader's clamp. `elevenLabsAgentId` is not part of the
+// form: the server writes it and keeps it across saves.
+
+import {
+  CALL_LIMITS,
+  type CallBackgroundSound,
+  type CallToolSound,
+  type CallTurnEagerness,
+  readCallsConfig,
+} from "@/modules/voice-call/settings";
+
+export interface CallsFormState {
+  credentialRef: string;
+  voice: string;
+  llm: string;
+  speed: string;
+  // Seconds, as typed ("1,6"); stored in milliseconds.
+  openingDelaySecs: string;
+  turnEagerness: CallTurnEagerness;
+  endOnSilence: boolean;
+  silenceEndCallSecs: string;
+  maxDurationMin: string;
+  // One per line.
+  keywords: string;
+  // "" → none.
+  backgroundSound: CallBackgroundSound | "";
+  // Percent of the agent's speech, as typed.
+  backgroundVolume: string;
+  // "" → silence.
+  toolSound: CallToolSound | "";
+}
+
+export function readCallsFormState(
+  raw: Record<string, unknown>,
+): CallsFormState {
+  const c = readCallsConfig({ calls: raw });
+  return {
+    credentialRef: c.credentialRef ?? "",
+    voice: c.voice,
+    llm: c.llm,
+    speed: String(c.speed).replace(".", ","),
+    openingDelaySecs: String(c.openingDelayMs / 1000).replace(".", ","),
+    turnEagerness: c.turnEagerness,
+    endOnSilence: c.silenceEndCallSecs !== null,
+    silenceEndCallSecs: String(c.silenceEndCallSecs ?? 60),
+    maxDurationMin: String(Math.round(c.maxDurationSecs / 60)),
+    keywords: c.keywords.join("\n"),
+    backgroundSound: c.backgroundSound ?? "",
+    backgroundVolume: String(Math.round(c.backgroundVolume * 100)),
+    toolSound: c.toolSound ?? "",
+  };
+}
+
+const num = (v: string): number | undefined => {
+  const n = Number(v.replace(",", "."));
+  return v.trim() && Number.isFinite(n) ? n : undefined;
+};
+
+export function callsSettingsFrom(f: CallsFormState): Record<string, unknown> {
+  const maxMin = num(f.maxDurationMin);
+  const delaySecs = num(f.openingDelaySecs);
+  const volume = num(f.backgroundVolume);
+  return {
+    credentialRef: f.credentialRef || null,
+    voice: f.voice.trim(),
+    llm: f.llm.trim(),
+    speed: num(f.speed),
+    openingDelayMs:
+      delaySecs === undefined ? undefined : Math.round(delaySecs * 1000),
+    turnEagerness: f.turnEagerness,
+    silenceEndCallSecs: f.endOnSilence ? num(f.silenceEndCallSecs) : null,
+    maxDurationSecs: maxMin === undefined ? undefined : maxMin * 60,
+    keywords: f.keywords
+      .split(/[\n,]/)
+      .map((k) => k.trim())
+      .filter(Boolean),
+    backgroundSound: f.backgroundSound || null,
+    backgroundVolume: volume === undefined ? undefined : volume / 100,
+    toolSound: f.toolSound || null,
+  };
+}
+
+export type CallsRangeField =
+  | "speed"
+  | "openingDelaySecs"
+  | "silenceEndCallSecs"
+  | "maxDurationMin"
+  | "backgroundVolume";
+
+// Each number's accepted range, in the unit the form shows it in.
+export const CALLS_FORM_RANGES: Record<
+  CallsRangeField,
+  readonly [number, number]
+> = {
+  speed: CALL_LIMITS.speed,
+  openingDelaySecs: [
+    CALL_LIMITS.openingDelayMs[0] / 1000,
+    CALL_LIMITS.openingDelayMs[1] / 1000,
+  ],
+  silenceEndCallSecs: CALL_LIMITS.silenceEndCallSecs,
+  maxDurationMin: [
+    CALL_LIMITS.maxDurationSecs[0] / 60,
+    CALL_LIMITS.maxDurationSecs[1] / 60,
+  ],
+  backgroundVolume: [
+    CALL_LIMITS.backgroundVolume[0] * 100,
+    CALL_LIMITS.backgroundVolume[1] * 100,
+  ],
+};
+
+/**
+ * The numbers out of range, or not numbers, that the save refuses. The reader would clamp them, but a
+ * call that silently lasts one minute because someone typed -5 is a setting nobody chose. A field the
+ * form does not use (silence while ending on silence is off, volume without a background) is not judged.
+ */
+export function callsFormErrors(f: CallsFormState): CallsRangeField[] {
+  const judged: CallsRangeField[] = [
+    "speed",
+    "openingDelaySecs",
+    "maxDurationMin",
+    ...(f.endOnSilence ? (["silenceEndCallSecs"] as const) : []),
+    ...(f.backgroundSound ? (["backgroundVolume"] as const) : []),
+  ];
+  return judged.filter((field) => {
+    const n = num(f[field]);
+    const [min, max] = CALLS_FORM_RANGES[field];
+    return n === undefined || n < min || n > max;
+  });
+}

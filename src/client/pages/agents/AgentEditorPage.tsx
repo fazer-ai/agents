@@ -6,6 +6,7 @@ import {
   Download,
   ListChecks,
   MessageSquare,
+  Phone,
   RadioTower,
   Settings2,
   Share2,
@@ -89,6 +90,7 @@ import { modelOptionalFor } from "@/graph/model-defaults";
 import {
   computeConfigIssues,
   issueHasAction,
+  VOICE_AGENT_ISSUES,
 } from "@/modules/agents/config-health";
 import { configIssueMessage } from "@/modules/agents/config-health-message";
 import { worstFirst } from "@/modules/agents/config-health-severity";
@@ -122,6 +124,7 @@ import {
 import { readMemoryConfig } from "@/modules/memory/settings";
 import type { MonitoringEngine } from "@/modules/observe/settings";
 import { DEFAULT_EXTRACTION_PROMPT } from "@/modules/vision/prompt-default";
+import { DEFAULT_CALL_VOICE } from "@/modules/voice-call/settings";
 import {
   BehaviorTab,
   type ContactAuthState,
@@ -129,6 +132,7 @@ import {
   MONITORING_SECTIONS,
   type ModelFallbackState,
   type TakeoverState,
+  TtsOptionPicker,
 } from "./BehaviorTab";
 import {
   type BehaviorBlock,
@@ -147,6 +151,11 @@ import {
   readCrossInboxCaseState,
   serializeCrossInboxCase,
 } from "./CrossInboxCaseFields";
+import {
+  callsFormErrors,
+  callsSettingsFrom,
+  readCallsFormState,
+} from "./callsFormState";
 import {
   contactAuthGateEmpty,
   contactAuthRuleToSave,
@@ -169,6 +178,7 @@ import { DecisionsSetupMissing, EngineCards } from "./EngineChoice";
 import { ExportAgentModal } from "./ExportAgentModal";
 import {
   nativeToolAnchor,
+  VOICE_AGENT_TABS,
   watcherFieldUsed,
   watcherIssueUsed,
   watcherSectionUsed,
@@ -254,7 +264,7 @@ import {
   snoozedFollowUpToForm,
   snoozedFollowUpToStored,
 } from "./snoozedFollowUpFormState";
-import { TabActionBar } from "./TabActionBar";
+import { PlaygroundIsCallContext, TabActionBar } from "./TabActionBar";
 import {
   parseToolPreconditionRows,
   serializeToolPreconditions,
@@ -276,7 +286,15 @@ import type {
   VaultEntry,
 } from "./types";
 import { usePlaygroundChat } from "./usePlaygroundChat";
+import {
+  CallSettings,
+  VoiceCard,
+  type VoiceStatus,
+} from "./VoiceAgentSettings";
+import { VoiceChannelsTab } from "./VoiceChannelsTab";
+import { VoicePlayground } from "./VoicePlayground";
 import { visionToForm, visionToStored } from "./visionFormState";
+import { voiceToolCatalog } from "./voiceToolCatalog";
 
 // The Schedule a saved businessHoursId points at, built field by field rather than passed through:
 // rows can come back without windows/exceptions (the sibling picker guards them the same way), and
@@ -313,6 +331,7 @@ type GuardrailHealthResp = NonNullable<
 type TabKey =
   | "general"
   | "channels"
+  | "call"
   | "decisions"
   | "tools"
   | "knowledge"
@@ -326,6 +345,7 @@ type TabKey =
 const TAB_KEYS: TabKey[] = [
   "general",
   "channels",
+  "call",
   "decisions",
   "tools",
   "knowledge",
@@ -493,6 +513,7 @@ function readBehaviorState(a: Agent) {
   const d = (s.debounce ?? {}) as Record<string, unknown>;
   const st = (s.stt ?? {}) as Record<string, unknown>;
   const tt = (s.tts ?? {}) as Record<string, unknown>;
+  const cl = (s.calls ?? {}) as Record<string, unknown>;
   const sp = (s.split ?? {}) as Record<string, unknown>;
   const sw = (s.serviceWindow ?? {}) as Record<string, unknown>;
   const ho = (s.handoff ?? {}) as Record<string, unknown>;
@@ -585,6 +606,7 @@ function readBehaviorState(a: Agent) {
       operatorNoteEnabled: ca.operatorNoteEnabled !== false,
     },
     tts: readTtsFormState(tt),
+    calls: readCallsFormState(cl),
     split: {
       enabled: typeof sp.enabled === "boolean" ? sp.enabled : true,
       maxChars: num(sp.maxChars) || "600",
@@ -922,6 +944,8 @@ function AgentEditor() {
   // Same reader the saved agent goes through, so a new field can never exist in one and not the
   // other: the Behavior save REPLACES this block wholesale.
   const [tts, setTts] = useState(() => readTtsFormState({}));
+  // WhatsApp calls (modules/voice-call/settings): the agent bound to the inbox answers them.
+  const [calls, setCalls] = useState(() => readCallsFormState({}));
   // Reply in multiple messages (split + typing delay). Mirrors modules/split
   // (on by default, wpm 250 — matches SPLIT_DEFAULTS).
   const [split, setSplit] = useState({
@@ -974,6 +998,11 @@ function AgentEditor() {
   // The last server-synced agent/grants: what a discard restores, what every unsaved mark is
   // measured against, and what each save carries for the blocks it does not write.
   const syncedAgentRef = useRef<Agent | null>(null);
+  // A voice agent: fixed at creation, so the stored copy answers for the whole session.
+  const voiceAgent = syncedAgentRef.current?.kind === "voice";
+  const [voiceStatus, setVoiceStatus] = useState<VoiceStatus>({
+    state: "checking",
+  });
   const syncedGrantsRef = useRef<ToolSelectionView["grants"]>([]);
   const [observationDraft, setObservation] = useState<ObservationState>(() =>
     observationToForm({}),
@@ -1056,9 +1085,11 @@ function AgentEditor() {
   // and a link straight to Questions and rules would be sent to General before it could exist.
   useEffect(() => {
     if (loading) return;
-    const hidden = watcher
-      ? !watcherTabKeys(engine).has(tab)
-      : tab === "decisions";
+    const hidden = voiceAgent
+      ? !VOICE_AGENT_TABS.has(tab)
+      : watcher
+        ? !watcherTabKeys(engine).has(tab)
+        : tab === "decisions" || tab === "call";
     if (hidden) {
       navigate(
         `/agents/${id}/general${
@@ -1067,7 +1098,16 @@ function AgentEditor() {
         { replace: true },
       );
     }
-  }, [loading, watcher, engine, tab, id, navigate, backToConversation]);
+  }, [
+    loading,
+    voiceAgent,
+    watcher,
+    engine,
+    tab,
+    id,
+    navigate,
+    backToConversation,
+  ]);
   const [modelFallback, setModelFallback] = useState<ModelFallbackState>(() =>
     modelFallbackToForm({}),
   );
@@ -1617,6 +1657,7 @@ function AgentEditor() {
     setStt(b.stt);
     setContactAuth(b.contactAuth);
     setTts(b.tts);
+    setCalls(b.calls);
     setSplit(b.split);
     setSignature(b.signature);
     setServiceWindow(b.serviceWindow);
@@ -1667,6 +1708,7 @@ function AgentEditor() {
     setStt(b.stt);
     setContactAuth(b.contactAuth);
     setTts(b.tts);
+    setCalls(b.calls);
     setSplit(b.split);
     setSignature(b.signature);
     setServiceWindow(b.serviceWindow);
@@ -1910,6 +1952,7 @@ function AgentEditor() {
       stt: f.stt,
       contactAuth: f.contactAuth,
       tts: f.tts,
+      calls: f.calls,
       split: f.split,
       signature: f.signature,
       serviceWindow: f.serviceWindow,
@@ -1951,6 +1994,7 @@ function AgentEditor() {
       stt,
       contactAuth,
       tts,
+      calls,
       split,
       signature,
       serviceWindow,
@@ -2025,6 +2069,7 @@ function AgentEditor() {
         operatorNoteEnabled: contactAuth.operatorNoteEnabled,
       },
       tts: ttsSettingsFrom(tts),
+      calls: callsSettingsFrom(calls),
       split: {
         enabled: split.enabled,
         maxChars: Number(split.maxChars) || 600,
@@ -2167,6 +2212,7 @@ function AgentEditor() {
     stt: typeof stt;
     contactAuth: typeof contactAuth;
     tts: typeof tts;
+    calls: typeof calls;
     split: typeof split;
     signature: typeof signature;
     serviceWindow: typeof serviceWindow;
@@ -2207,6 +2253,7 @@ function AgentEditor() {
     stt,
     contactAuth,
     tts,
+    calls,
     split,
     signature,
     serviceWindow,
@@ -2253,6 +2300,7 @@ function AgentEditor() {
       stt: b.stt,
       contactAuth: b.contactAuth,
       tts: b.tts,
+      calls: b.calls,
       split: b.split,
       signature: b.signature,
       serviceWindow: b.serviceWindow,
@@ -2705,9 +2753,11 @@ function AgentEditor() {
   });
   // Worst first (`worstFirst`): what stops the agent reads above what only weakens it.
   const configIssues = worstFirst(
-    watcher
-      ? allConfigIssues.filter((issue) => watcherCanActOn(issue, engine))
-      : allConfigIssues,
+    voiceAgent
+      ? allConfigIssues.filter((issue) => VOICE_AGENT_ISSUES.has(issue.key))
+      : watcher
+        ? allConfigIssues.filter((issue) => watcherCanActOn(issue, engine))
+        : allConfigIssues,
   );
 
   // Deep-link to a config issue. For a PENDING credential the fix lives in the vault, so jump to the
@@ -3015,7 +3065,9 @@ function AgentEditor() {
   // The floating playground panel's open state lives here; its trigger is the editor save bar
   // (TabActionBar) on the config tabs, and the panel itself renders below (PlaygroundFab).
   const [playgroundOpen, setPlaygroundOpen] = useState(false);
-  const openPlayground = () => setPlaygroundOpen(true);
+  // A voice agent's playground is a call, which takes the whole tab rather than the floating panel.
+  const openPlayground = () =>
+    voiceAgent ? openTab("playground") : setPlaygroundOpen(true);
   // NOTE: ...AND THE PANEL CLOSES WITH ITS TRIGGER: flipping a production agent to monitoring
   // removes the entry point, and an ALREADY-OPEN playground would stay mounted and usable, a reply
   // surface for an agent whose answering UI is meant to be gone.
@@ -3066,6 +3118,7 @@ function AgentEditor() {
     setStt(b.stt);
     setContactAuth(b.contactAuth);
     setTts(b.tts);
+    setCalls(b.calls);
     setSplit(b.split);
     setSignature(b.signature);
     setServiceWindow(b.serviceWindow);
@@ -3651,7 +3704,92 @@ function AgentEditor() {
 
   // General's save: identity, and the decision setup when it changed. Under questions and rules the
   // instructions and the chat model are not drawn, so they are not written either.
+  // What ElevenLabs says about the SAVED voice agent: the save there runs on every call too, and this
+  // is where a key without the Agents permission shows before the first call does.
+  const checkVoice = useCallback(async () => {
+    setVoiceStatus({ state: "checking" });
+    try {
+      const { data, error: err } = await api.api.v1
+        .agents({ id })
+        .calls.check.post();
+      if (err || !data) throw err ?? new Error("no data");
+      setVoiceStatus(
+        data.ok
+          ? { state: "ready" }
+          : {
+              state: "problem",
+              problem: String(data.problem),
+              detail: data.detail ?? null,
+            },
+      );
+    } catch {
+      setVoiceStatus({
+        state: "problem",
+        problem: "unreachable",
+        detail: null,
+      });
+    }
+  }, [id]);
+
+  useEffect(() => {
+    if (!loading && voiceAgent) void checkVoice();
+  }, [loading, voiceAgent, checkVoice]);
+
+  // A voice agent's General and Call tabs save together: identity, instructions and the call
+  // settings in one write, then ElevenLabs is asked how the agent stands.
+  // A voice agent's Voice card: on General with the key and its status, on the Call tab with the speed.
+  const voiceCard = (placement: "general" | "call") => (
+    <VoiceCard
+      placement={placement}
+      calls={calls}
+      setCalls={setCalls}
+      status={placement === "general" ? voiceStatus : undefined}
+      dirty={dirty.general || dirty.behavior}
+      voicePicker={({ credentialRef, value, onChange }) => (
+        <TtsOptionPicker
+          kind="voices"
+          provider="elevenlabs"
+          credentialRef={credentialRef}
+          value={value}
+          onChange={onChange}
+          placeholder={DEFAULT_CALL_VOICE}
+          ariaLabel={t("editor.voiceVoice", "Voice")}
+        />
+      )}
+    />
+  );
+
+  async function saveVoice(force = false): Promise<boolean> {
+    // A number out of range is marked on its field; the save waits for it to be fixed.
+    if (callsFormErrors(calls).length > 0) {
+      openTab("call");
+      showToast(
+        t(
+          "editor.callsFixRanges",
+          "Some call settings are out of range. Fix the marked fields to save.",
+        ),
+        "error",
+      );
+      return false;
+    }
+    const ok = await saveAgent(
+      {
+        name: name.trim(),
+        systemPrompt,
+        enabled,
+        mode: agentMode,
+        settings: buildSettings(),
+      },
+      dirty.general ? "general" : "behavior",
+      force,
+      () => void saveVoice(true),
+    );
+    if (ok) void checkVoice();
+    return ok;
+  }
+
   async function saveGeneral(force = false): Promise<boolean> {
+    if (voiceAgent) return saveVoice(force);
     if (!decides && !guardModelBeforeSave()) return false;
     const identity = decides
       ? { name: name.trim(), enabled, mode: agentMode }
@@ -3877,7 +4015,10 @@ function AgentEditor() {
       );
       return false;
     }
-    if (dirty.general || dirty.decisions) {
+    if (voiceAgent) {
+      if ((dirty.general || dirty.behavior) && !(await saveVoice()))
+        return false;
+    } else if (dirty.general || dirty.decisions) {
       if (dirty.decisions && decisionsSetupIssues.size > 0) {
         showToast(
           t(
@@ -3891,7 +4032,7 @@ function AgentEditor() {
       if (!decides && dirty.general && !guardModelBeforeSave()) return false;
       if (!(await saveGeneral())) return false;
     }
-    if (dirty.behavior) {
+    if (dirty.behavior && !voiceAgent) {
       await saveAgent(
         {
           businessHoursId: businessHoursId || null,
@@ -3980,6 +4121,12 @@ function AgentEditor() {
       icon: RadioTower,
     },
     {
+      key: "call",
+      label: t("editor.tab.call", "Call settings"),
+      icon: Phone,
+      dirty: dirty.behavior,
+    },
+    {
       key: "decisions",
       label: t("editor.tab.decisions", "Questions and rules"),
       icon: ListChecks,
@@ -4021,9 +4168,11 @@ function AgentEditor() {
       icon: MessageSquare,
     },
   ];
-  const visibleTabs = watcher
-    ? tabs.filter((item) => watcherTabKeys(engine).has(item.key))
-    : tabs.filter((item) => item.key !== "decisions");
+  const visibleTabs = voiceAgent
+    ? tabs.filter((item) => VOICE_AGENT_TABS.has(item.key))
+    : watcher
+      ? tabs.filter((item) => watcherTabKeys(engine).has(item.key))
+      : tabs.filter((item) => item.key !== "decisions" && item.key !== "call");
 
   // One value for the card at the top and the compact line in every tab's save bar, so the two can
   // only show together and offer the same actions.
@@ -4318,7 +4467,11 @@ function AgentEditor() {
                 model={model}
                 setModel={setModel}
                 modelCredBaseUrl={modelCredBaseUrl}
-                dirty={dirty.general || decisionsHeadDirty}
+                dirty={
+                  voiceAgent
+                    ? dirty.general || dirty.behavior
+                    : dirty.general || decisionsHeadDirty
+                }
                 saving={savingAgent || savingDecisions}
                 onSave={() => {
                   if (decisionsBlocked("general", dirty.general)) return;
@@ -4389,15 +4542,26 @@ function AgentEditor() {
                       }
                     : undefined
                 }
+                voice={
+                  voiceAgent
+                    ? {
+                        voiceCard: voiceCard("general"),
+                      }
+                    : undefined
+                }
                 onOpenPlayground={watcher ? undefined : openPlayground}
                 onDelete={askDelete}
                 previewVars={playgroundChat.promptVars}
-                catalog={catalog}
+                catalog={voiceAgent ? voiceToolCatalog(catalog) : catalog}
                 grants={grants}
               />
             )}
 
-            {tab === "channels" && (
+            {tab === "channels" && voiceAgent && (
+              <VoiceChannelsTab agentId={id} />
+            )}
+
+            {tab === "channels" && !voiceAgent && (
               <ChannelsTab
                 agentId={id}
                 agentName={name}
@@ -4416,10 +4580,28 @@ function AgentEditor() {
               />
             )}
 
+            {tab === "call" && voiceAgent && (
+              <div className="flex grow flex-col gap-4">
+                {voiceCard("call")}
+                <CallSettings calls={calls} setCalls={setCalls} />
+                <TabActionBar
+                  dirty={dirty.general || dirty.behavior}
+                  saving={savingAgent}
+                  onSave={() => void saveVoice()}
+                  onDiscard={() => {
+                    revertGeneral();
+                    revertBehavior();
+                  }}
+                  onOpenPlayground={openPlayground}
+                />
+              </div>
+            )}
+
             {tab === "tools" && (
               <ToolsTab
                 agentId={id}
                 observing={watcher}
+                voice={voiceAgent}
                 decides={decides}
                 catalog={catalog}
                 grants={grants}
@@ -4826,7 +5008,16 @@ function AgentEditor() {
               />
             )}
 
-            {tab === "playground" && (
+            {tab === "playground" && voiceAgent && (
+              <VoicePlayground
+                agentId={id}
+                hasKey={!!calls.credentialRef}
+                unsaved={dirty.general || dirty.behavior}
+                onOpenGeneral={() => openTab("general")}
+              />
+            )}
+
+            {tab === "playground" && !voiceAgent && (
               <PlaygroundTab
                 chat={playgroundChat}
                 agentId={id}
@@ -4838,7 +5029,7 @@ function AgentEditor() {
 
             {/* Floating playground panel over the other tabs (opened from the save bar's "Test in
                 playground" button): tweak config + test live without leaving. */}
-            {tab !== "playground" && (
+            {tab !== "playground" && !voiceAgent && (
               <PlaygroundFab
                 chat={playgroundChat}
                 agentId={id}
@@ -4984,7 +5175,9 @@ function AgentEditor() {
 
   return (
     <StaleNoticeContext.Provider value={stale}>
-      {page}
+      <PlaygroundIsCallContext.Provider value={voiceAgent}>
+        {page}
+      </PlaygroundIsCallContext.Provider>
     </StaleNoticeContext.Provider>
   );
 }

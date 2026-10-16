@@ -27,6 +27,12 @@ export const SETTINGS_CREDENTIAL_PATHS = [
     use: "apiKey",
   },
   {
+    path: ["calls", "credentialRef"],
+    tab: "behavior",
+    sectionId: "calls",
+    use: "apiKey",
+  },
+  {
     path: ["tts", "normalizeCredentialRef"],
     tab: "behavior",
     sectionId: "tts",

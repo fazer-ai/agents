@@ -1071,6 +1071,8 @@ export interface InboxDto {
   // The agents watching this inbox: bound as observers on the fork, they receive every event and
   // answer nothing. Independent of `agentId`, the one responder.
   observerAgentIds: string[];
+  // The voice agent that answers the inbox's calls, independent of both.
+  voiceAgentId: string | null;
 }
 
 const INBOX_SELECT = {
@@ -1081,6 +1083,7 @@ const INBOX_SELECT = {
   channelType: true,
   provider: true,
   agentId: true,
+  voiceAgentId: true,
   observers: {
     // NOTE: the stamp travels with the id. The DTO ignores it (a pending row is an observer wherever
     // the answer gates a refusal); the audit line, which describes the state before this call, must
@@ -1109,6 +1112,7 @@ function toInboxDto(r: {
   channelType: string | null;
   provider: string | null;
   agentId: bigint | null;
+  voiceAgentId: bigint | null;
   observers: { agentId: bigint }[];
 }): InboxDto {
   return {
@@ -1120,6 +1124,7 @@ function toInboxDto(r: {
     channelType: r.channelType,
     provider: r.provider,
     agentId: r.agentId === null ? null : String(r.agentId),
+    voiceAgentId: r.voiceAgentId === null ? null : String(r.voiceAgentId),
   };
 }
 
@@ -1883,10 +1888,24 @@ export async function assertInboxBindable(
     if (agentId !== null) {
       const agent = await db.agent.findUnique({
         where: { id: agentId },
-        select: { name: true, settings: true, enabled: true, mode: true },
+        select: {
+          name: true,
+          settings: true,
+          enabled: true,
+          mode: true,
+          kind: true,
+        },
       });
       if (!agent) {
         throw new NotFoundError("agent not found", "errors.agentNotFound");
+      }
+      // A voice agent answers the inbox's calls, through its own binding (modules/voice-call/inboxes).
+      if (agent.kind === "voice") {
+        throw new AppError(
+          "a voice agent answers calls, not messages",
+          422,
+          "errors.voiceAgentNotResponder",
+        );
       }
       // A monitoring agent may be the responder (bound, reading, answering nothing, the
       // conversations starting `pending` for the team). The observer binding is for an inbox

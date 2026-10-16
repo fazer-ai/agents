@@ -293,7 +293,7 @@ export function buildAuthorizationRequest(
 
 // Reads at most `max` bytes; null when the body is larger (declared or streamed). The cap is applied
 // BEFORE parsing, so an oversized answer costs neither memory nor a JSON.parse of it.
-async function readBodyCapped(
+export async function readBodyCapped(
   res: Response,
   max: number,
 ): Promise<string | null> {

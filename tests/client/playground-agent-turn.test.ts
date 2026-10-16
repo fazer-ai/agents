@@ -73,6 +73,23 @@ describe("agentTurn", () => {
     ).toBe("blocked, the case would go to the team");
   });
 
+  // The bug it catches: an endpoint's block read as the built-in judge's, or its allow as silence.
+  test("the external check's decisions read as the endpoint's", () => {
+    const ext = (decision: "allow" | "replace" | "block", outcome: never) =>
+      guardrailTraceLabel(t, {
+        direction: "output",
+        outcome,
+        external: { decision, latencyMs: 10 },
+      });
+    expect(ext("allow", "clean" as never)).toBe("allowed by the endpoint");
+    expect(ext("replace", "replaced" as never)).toBe(
+      "replaced by the endpoint's text",
+    );
+    expect(ext("block", "handed-off" as never)).toBe(
+      "blocked by the endpoint, the case would go to the team",
+    );
+  });
+
   // The bug it catches: a held turn labelled as a policy block, hiding that no check answered.
   test("a held screening says the check could not run", () => {
     expect(

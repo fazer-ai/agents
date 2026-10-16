@@ -268,6 +268,10 @@ export interface AgentConfig {
   guardrails: GuardrailsConfig;
   guardrailsApiKey: string;
   guardrailsCredentialBaseUrl: string | null;
+  // The external check's signing secret: null when none is configured (unsigned) or when the
+  // configured entry did not resolve, which `guardrailsExternalSecretMissing` says.
+  guardrailsExternalSecret: string | null;
+  guardrailsExternalSecretMissing: boolean;
   transferWithSummary: boolean;
   nativeToolsAllow?: string[];
   httpToolDefs: LoadedHttpToolDef[];
@@ -584,6 +588,20 @@ export async function loadAgentConfig(
         gEntry.state === "unusable" ? gEntry.kind : "",
       );
     }
+  }
+  let guardrailsExternalSecret: string | null = null;
+  let guardrailsExternalSecretMissing = false;
+  if (
+    guardrails.enabled &&
+    guardrails.external.url &&
+    guardrails.external.credentialRef
+  ) {
+    const sEntry = await tryResolveApiKeyEntry(
+      db,
+      guardrails.external.credentialRef,
+    );
+    if (sEntry.state === "ok") guardrailsExternalSecret = sEntry.secret;
+    else guardrailsExternalSecretMissing = true;
   }
   // Speech normalizer's own credential, when it runs on a separate model. Same fail-open shape as
   // guardrails: an unresolvable ref leaves the key empty, and buildSpeechNormalizer then SKIPS the
@@ -1008,6 +1026,8 @@ export async function loadAgentConfig(
     guardrails,
     guardrailsApiKey,
     guardrailsCredentialBaseUrl,
+    guardrailsExternalSecret,
+    guardrailsExternalSecretMissing,
     transferWithSummary: agent.transferWithSummary,
     nativeToolsAllow: sel.nativeToolsAllow,
     httpToolDefs: sel.httpToolDefs,

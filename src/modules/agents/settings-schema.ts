@@ -44,6 +44,7 @@ import {
   GUARDRAIL_CLASSIFIERS,
   GUARDRAIL_FAILURE_MODES,
   GUARDRAIL_THRESHOLD_KEYS,
+  isExternalCheckUrl,
 } from "@/modules/guardrails/settings";
 import { HANDOFF_MODES } from "@/modules/handoff/settings";
 import {
@@ -903,6 +904,33 @@ const guardrails = z
     output: guardrailOutput
       .optional()
       .describe("screens the AGENT reply before it is sent"),
+    external: z
+      .looseObject({
+        url: z
+          .string()
+          .refine(
+            isExternalCheckUrl,
+            "must be an https URL with no credentials in it",
+          )
+          .nullable()
+          .optional()
+          .describe(
+            "the endpoint that judges each reply before delivery; null = no external check",
+          ),
+        credentialRef: credentialRef().describe(
+          "vault entry NAME or vault:<id> of the HMAC signing secret; null = unsigned",
+        ),
+        sendToolValues: z
+          .boolean()
+          .optional()
+          .describe(
+            "false sends tool call names and sizes without arguments and results (default true)",
+          ),
+      })
+      .optional()
+      .describe(
+        "an endpoint that answers allow, replace or block for each reply to a customer message; a block fires output.action, a failure follows onFailure",
+      ),
     onFailure: oneOf(GUARDRAIL_FAILURE_MODES)
       .optional()
       .describe(

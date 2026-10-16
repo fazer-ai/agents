@@ -67,9 +67,15 @@ import {
   stepDelayMinutes,
 } from "@/modules/followups/settings";
 import {
+  buildExternalCheck,
+  type ExternalCallDeps,
+  turnToolCalls,
+} from "@/modules/guardrails/external";
+import {
   buildGuardrailGate,
   type GuardrailGate,
   guardrailTripped,
+  screenedByOperator,
   screenedText,
 } from "@/modules/guardrails/gate";
 import { attachSignature, signatureFor } from "@/modules/signature/service";
@@ -146,6 +152,8 @@ export interface PlaygroundDeps {
   // The voice provider's fetch, injectable exactly as RuntimeDeps.ttsFetch is on the inbox path:
   // without this seam the playground's audio reply could only ever be exercised against the network.
   ttsFetch?: typeof fetch;
+  // The external check's network half (./guardrails/external.ts). Tests inject.
+  externalCheck?: ExternalCallDeps;
 }
 
 export interface PlaygroundTurnParams {
@@ -741,6 +749,8 @@ async function runPlaygroundTurnOnce(
     forceAudio: params.forceAudio,
   });
   const replyChoice: ReplyChoice = { textChosen: false };
+  // Whether the fallback model wrote the reply, for the external check's request.
+  let fallbackAnswered = false;
 
   const { graph, callbacks, loaded, tools, traceLabels } =
     await buildPlaygroundGraph({
@@ -768,7 +778,8 @@ async function runPlaygroundTurnOnce(
           model,
           detail: { retriedEmptyResponse: attempt },
         }),
-      onModelFallback: ({ provider, model, reason, failure }) =>
+      onModelFallback: ({ provider, model, reason, failure }) => {
+        fallbackAnswered = true;
         emitFlowEvent(flow, {
           stage: "generate",
           level: "warn",
@@ -776,7 +787,8 @@ async function runPlaygroundTurnOnce(
           provider,
           model,
           detail: { fallbackReason: reason, primaryFailure: failure },
-        }),
+        });
+      },
       // ATTRIBUTION, NOT A SECOND ALARM, which is why this one line is `info` while the failure it
       // describes is an error. The `generate` stage this call sits inside emits its OWN error when the
       // turn throws, and alert coalescing keys on (channel, stage, level): two `generate`/`error` events
@@ -978,7 +990,42 @@ async function runPlaygroundTurnOnce(
   const outGuard = raw
     ? await screen("output", raw)
     : { kind: "not-run" as const };
-  const reply = screenedText(outGuard, raw) ?? "";
+  let reply = screenedText(outGuard, raw) ?? "";
+  // The operator's endpoint, as the inbox asks it: after the built-in screening, on what would go
+  // out, unless that is already the operator's own text. Its line lands in the trace.
+  const external = screensThisTurn(params)
+    ? buildExternalCheck({
+        cfg: loaded.guardrails,
+        ctx: {
+          tenantId,
+          agentId,
+          conversationId: null,
+          chatwootConversationId: null,
+          turnId,
+          customerMessage: text,
+        },
+        secret: loaded.guardrailsExternalSecret,
+        secretMissing: loaded.guardrailsExternalSecretMissing,
+        logValues: loaded.logToolValues,
+        flow,
+        announce: (r) => {
+          gTrace.push(traceGuardrail(r));
+        },
+        deps: params.deps?.externalCheck,
+      })
+    : null;
+  if (external && reply && !screenedByOperator(outGuard)) {
+    const judged = await external({
+      text: reply,
+      attachments: [],
+      model: fallbackAnswered ? "fallback" : "primary",
+      toolCalls: turnToolCalls(
+        result.messages,
+        loaded.guardrails.external.sendToolValues,
+      ),
+    });
+    reply = screenedText(judged, reply) ?? "";
+  }
   const trace: TraceEntry[] = [
     ...gTrace.slice(0, beforeGraph),
     ...buildPlaygroundTrace(result.messages, traceLabels),

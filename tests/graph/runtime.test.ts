@@ -41,6 +41,7 @@ import {
 import { contentToText } from "@/graph/message-text";
 import type { ResolvedModelConfig } from "@/graph/models";
 import { FOLLOWUP_SKIP_SENTINEL } from "@/graph/nudge";
+import * as prepare from "@/graph/prepare";
 import { loadAgentConfig } from "@/graph/prepare";
 import { runAgentTurn, runLoadedTurn } from "@/graph/runtime";
 import * as threadClaim from "@/graph/thread-claim";
@@ -73,6 +74,7 @@ import { GuardrailHandoffFailedError } from "@/modules/guardrails/handoff";
 import { readGuardrailHealth } from "@/modules/guardrails/health";
 import { selectClosedPrefix } from "@/modules/memory/cut";
 import { SPOKEN_NOTICE_DEFAULT } from "@/modules/tts/settings-shared";
+import { verifyOutboundSignature } from "@/modules/webhooks/outbound/signing";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { expectFallbackLines, graphDepsOf } from "../utils/fallback-lines";
@@ -11945,6 +11947,423 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         expect(log.sent).toEqual([[7045, REPLY]]);
         expect(log.toggles).toEqual([]);
         expect(log.notes).toEqual([]);
+      });
+    });
+
+    // The operator's endpoint (docs/guardrails-external.md): asked after the built-in output screening, on the reply
+    // that would go out, and its answer applied the way a trip is.
+    describe("external check", () => {
+      const EXT_URL = "https://check.example.com/hook";
+      type Asked = { body: Record<string, unknown>; headers: Headers };
+
+      // An endpoint that answers by script and records what it was asked. `answer` sees the request
+      // body, so it can echo the candidate id the way a real endpoint has to.
+      const endpoint = (
+        asked: Asked[],
+        answer: (body: Record<string, unknown>) => Response | Promise<Response>,
+      ) => ({
+        assertSafe: async (u: string) => new URL(u),
+        fetchImpl: (async (_u: string, init: RequestInit) => {
+          const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+          asked.push({ body, headers: new Headers(init.headers) });
+          return answer(body);
+        }) as unknown as typeof fetch,
+      });
+      const json = (v: unknown, status = 200) =>
+        new Response(JSON.stringify(v), { status });
+
+      const withExternal = async (
+        output: { [k: string]: JsonValue },
+        extra: { [k: string]: JsonValue } = {},
+      ) => {
+        const secret = await suDb.vaultEntry.create({
+          data: {
+            tenantId: gTenantId,
+            name: `ext-secret-${Math.random()}`,
+            secret: encryptJson("s3gr3d0"),
+          },
+          select: { id: true },
+        });
+        await setGuardrails({
+          enabled: true,
+          provider: "openai",
+          model: GUARD_MODEL,
+          credentialRef: gVaultRef,
+          input: { enabled: false },
+          output: {
+            enabled: true,
+            checks: {
+              toxicity: true,
+              unsafeContent: false,
+              competitorMentions: false,
+              promptAdherence: false,
+            },
+            templateMessage: "TEMPLATE-OUT",
+            handoffMessage: "HANDOFF-OUT",
+            ...output,
+          },
+          external: { url: EXT_URL, credentialRef: `vault:${secret.id}` },
+          ...extra,
+        });
+      };
+      const clean = JSON.stringify({ violated: false, categories: [] });
+
+      const turn = (
+        convId: number,
+        sent: Array<[number, string]>,
+        notes: Array<[number, string]>,
+        toggles: Array<[number, string]>,
+        externalCheck: ReturnType<typeof endpoint>,
+      ) =>
+        runAgentTurn({
+          tenantId: gTenantId,
+          instanceId: gInstanceId,
+          agentBotId: G_BOT,
+          event: incoming({ conversationId: convId, inboxId: G_INBOX }),
+          base: appDb,
+          deps: {
+            makeModel: branchingModel(clean),
+            makeClient: guardStub(sent, notes, toggles),
+            checkpointer: new MemorySaver(),
+            externalCheck,
+          },
+        });
+
+      // The bug it catches: a request the endpoint cannot tie to the turn or verify, or that judges
+      // something other than the reply about to go out.
+      test("allow: the reply goes out, and the request is signed and names the turn", async () => {
+        await withExternal({ action: "template" });
+        await seedConv(14101);
+        const [sent, notes, toggles, asked] = [[], [], [], []] as [
+          Array<[number, string]>,
+          Array<[number, string]>,
+          Array<[number, string]>,
+          Asked[],
+        ];
+        const outcome = await turn(
+          14101,
+          sent,
+          notes,
+          toggles,
+          endpoint(asked, (b) =>
+            json({ decision: "allow", candidateId: b.candidateId }),
+          ),
+        );
+        expect(outcome).toBe("posted");
+        expect(sent).toEqual([[14101, REPLY]]);
+        expect(notes).toEqual([]);
+        expect(asked).toHaveLength(1);
+        const { body, headers } = asked[0] as Asked;
+        expect(body).toMatchObject({
+          type: "guardrail.output",
+          tenantId: String(gTenantId),
+          agentId: String(gAgentId),
+          chatwootConversationId: 14101,
+          customerMessage: "oi",
+          candidate: { text: REPLY, model: "primary" },
+          toolCalls: [],
+        });
+        expect(typeof body.turnId).toBe("string");
+        expect(typeof body.conversationId).toBe("string");
+        const ts = Number(headers.get("x-fazerai-timestamp"));
+        expect(
+          verifyOutboundSignature(
+            "s3gr3d0",
+            ts,
+            JSON.stringify(body),
+            headers.get("x-fazerai-signature") ?? "",
+          ),
+        ).toBe(true);
+      });
+
+      // The bug it catches: the endpoint's text sent raw (Liquid runs on it) or not at all.
+      test("replace: the endpoint's text goes out instead, escaped like a model's", async () => {
+        await withExternal({ action: "template" });
+        await seedConv(14102);
+        const sent: Array<[number, string]> = [];
+        const notes: Array<[number, string]> = [];
+        const outcome = await turn(
+          14102,
+          sent,
+          notes,
+          [],
+          endpoint([], (b) =>
+            json({
+              decision: "replace",
+              candidateId: b.candidateId,
+              text: "Atendemos {{x}}",
+            }),
+          ),
+        );
+        expect(outcome).toBe("posted");
+        expect(sent).toEqual([[14102, "Atendemos {{ '{{' }}x}}"]]);
+        expect(notes[0]?.[1]).toContain("Verificação externa (output)");
+      });
+
+      // The bug it catches: a block that delivers the reply, or fires an action the operator did not
+      // configure, or leaves no note saying why.
+      for (const [convId, action, expectSent, expectToggle] of [
+        [14103, "template", [[14103, "TEMPLATE-OUT"]], []],
+        [14104, "silent", [], []],
+        [14105, "handoff", [[14105, "HANDOFF-OUT"]], [[14105, "open"]]],
+        [14106, "generated", [[14106, "TEMPLATE-OUT"]], []],
+      ] as const) {
+        test(`block with ${action}: the output action fires and the note carries the reason`, async () => {
+          await withExternal({ action });
+          await seedConv(convId);
+          const sent: Array<[number, string]> = [];
+          const notes: Array<[number, string]> = [];
+          const toggles: Array<[number, string]> = [];
+          await turn(
+            convId,
+            sent,
+            notes,
+            toggles,
+            endpoint([], (b) =>
+              json({
+                decision: "block",
+                candidateId: b.candidateId,
+                reason: "MOTIVO-X",
+              }),
+            ),
+          );
+          expect(sent).toEqual(
+            expectSent as unknown as Array<[number, string]>,
+          );
+          expect(toggles).toEqual(
+            expectToggle as unknown as Array<[number, string]>,
+          );
+          expect(notes.some(([, n]) => n.includes("MOTIVO-X"))).toBe(true);
+        });
+      }
+
+      // The bug it catches: a failed check treated as a block, or ignoring onFailure.
+      test("a non-2xx passes under pass and holds under hold", async () => {
+        await withExternal({ action: "template" });
+        await seedConv(14107);
+        const sentPass: Array<[number, string]> = [];
+        await turn(
+          14107,
+          sentPass,
+          [],
+          [],
+          endpoint([], () => json({ decision: "block" }, 500)),
+        );
+        expect(sentPass).toEqual([[14107, REPLY]]);
+
+        await withExternal({ action: "template" }, { onFailure: "hold" });
+        await seedConv(14108);
+        const sentHold: Array<[number, string]> = [];
+        const notes: Array<[number, string]> = [];
+        const toggles: Array<[number, string]> = [];
+        await turn(
+          14108,
+          sentHold,
+          notes,
+          toggles,
+          endpoint([], () => json({ decision: "allow" }, 503)),
+        );
+        expect(sentHold).toEqual([[14108, "HANDOFF-OUT"]]);
+        expect(toggles).toEqual([[14108, "open"]]);
+        expect(notes[0]?.[1]).toContain("respondeu com erro HTTP (503)");
+      });
+
+      // The bug it catches: an answer for another candidate (a replayed or misrouted one) obeyed.
+      test("an answer that does not echo the candidate id follows onFailure", async () => {
+        await withExternal({ action: "template" }, { onFailure: "hold" });
+        await seedConv(14109);
+        const sent: Array<[number, string]> = [];
+        await turn(
+          14109,
+          sent,
+          [],
+          [],
+          endpoint([], () => json({ decision: "allow", candidateId: "other" })),
+        );
+        expect(sent).toEqual([[14109, "HANDOFF-OUT"]]);
+      });
+
+      // The bug it catches: a reply delivered after a person took the conversation over while the
+      // endpoint was thinking.
+      test("a person who takes the conversation over during the wait wins", async () => {
+        await withExternal({ action: "template" });
+        await seedConv(14110);
+        const sent: Array<[number, string]> = [];
+        const outcome = await turn(
+          14110,
+          sent,
+          [],
+          [],
+          endpoint([], async (b) => {
+            await suDb.conversation.updateMany({
+              where: { tenantId: gTenantId, chatwootConversationId: 14110 },
+              data: { assigneeType: "User", assigneeId: 77, status: "open" },
+            });
+            return json({ decision: "allow", candidateId: b.candidateId });
+          }),
+        );
+        expect(outcome).toBe("taken-over");
+        expect(sent).toEqual([]);
+      });
+
+      // The bug it catches: the closing line the model writes when it hands over reaching the customer
+      // with no question asked.
+      test("a hand-over's closing line is asked about, and a block replaces it", async () => {
+        await withExternal({ action: "template" });
+        await seedConv(14114);
+        const sent: Array<[number, string]> = [];
+        const toggles: Array<[number, string]> = [];
+        const asked: Asked[] = [];
+        class HandsOver {
+          bindTools(_t: unknown) {
+            let n = 0;
+            return {
+              async invoke() {
+                n++;
+                return n === 1
+                  ? new AIMessage({
+                      content: "",
+                      tool_calls: [
+                        {
+                          name: "handoff_to_human",
+                          args: { customerMessage: "DESPEDIDA-1514" },
+                          id: "h1",
+                        },
+                      ],
+                    })
+                  : new AIMessage("");
+              },
+            };
+          }
+          async invoke() {
+            return new AIMessage("");
+          }
+        }
+        await runAgentTurn({
+          tenantId: gTenantId,
+          instanceId: gInstanceId,
+          agentBotId: G_BOT,
+          event: incoming({ conversationId: 14114, inboxId: G_INBOX }),
+          base: appDb,
+          deps: {
+            makeModel: branchingWith(
+              clean,
+              new HandsOver() as unknown as BaseChatModel,
+            ),
+            makeClient: guardStub(sent, [], toggles),
+            checkpointer: new MemorySaver(),
+            externalCheck: endpoint(asked, (b) =>
+              json({ decision: "block", candidateId: b.candidateId }),
+            ),
+          },
+        });
+        expect(
+          asked.map((x) => (x.body.candidate as { text: string }).text),
+        ).toEqual(["DESPEDIDA-1514"]);
+        expect(sent).toEqual([[14114, "TEMPLATE-OUT"]]);
+        expect(toggles).toEqual([[14114, "open"]]);
+      });
+
+      // The bug it catches: a reply that is only a file (an image with its caption) going out with no
+      // question asked, past a block.
+      test("a reply that is only an image is asked about too, and a block keeps it", async () => {
+        await withExternal({ action: "template" });
+        await seedConv(14113);
+        const sent: Array<[number, string]> = [];
+        const attachments: Array<[number, string]> = [];
+        const asked: Asked[] = [];
+        await runAgentTurn({
+          tenantId: gTenantId,
+          instanceId: gInstanceId,
+          agentBotId: G_BOT,
+          event: incoming({ conversationId: 14113, inboxId: G_INBOX }),
+          base: appDb,
+          deps: {
+            makeModel: (cfg: ResolvedModelConfig): BaseChatModel =>
+              cfg.model === GUARD_MODEL
+                ? guardrailModel(async () => ({ content: clean }))
+                : (new SendImageThenReplyModel(
+                    "",
+                    IMG_URL,
+                    "LEGENDA-1514",
+                  ) as unknown as BaseChatModel),
+            makeClient: guardStub(sent, [], [], attachments),
+            checkpointer: new MemorySaver(),
+            imageDeps,
+            externalCheck: endpoint(asked, (b) =>
+              json({ decision: "block", candidateId: b.candidateId }),
+            ),
+          },
+        });
+        expect(asked).toHaveLength(1);
+        expect(asked[0]?.body.candidate).toMatchObject({
+          text: "",
+          attachments: [{ kind: "image", caption: "LEGENDA-1514" }],
+        });
+        expect(attachments).toEqual([]);
+        expect(sent).toEqual([[14113, "TEMPLATE-OUT"]]);
+      });
+
+      // The bug it catches: a reply the fallback wrote reported to the endpoint as the primary's.
+      test("a reply the fallback model wrote says so in the request", async () => {
+        await withExternal({ action: "template" });
+        await seedConv(14112);
+        const asked: Asked[] = [];
+        const real = prepare.buildModelAndGraph;
+        const build = spyOn(prepare, "buildModelAndGraph").mockImplementation(
+          async (loaded, tools, deps) => {
+            // The graph switched models before answering: the callback the runtime hands it fires.
+            deps?.onModelFallback?.({
+              provider: "openai",
+              model: "fallback-model",
+              reason: "primary_error",
+              failure: "server",
+            } as never);
+            return real(loaded, tools, deps);
+          },
+        );
+        try {
+          await turn(
+            14112,
+            [],
+            [],
+            [],
+            endpoint(asked, (b) =>
+              json({ decision: "allow", candidateId: b.candidateId }),
+            ),
+          );
+        } finally {
+          build.mockRestore();
+        }
+        expect(asked[0]?.body.candidate).toEqual({
+          text: REPLY,
+          attachments: [],
+          model: "fallback",
+        });
+      });
+
+      // The bug it catches: an agent with no endpoint calling out, or changing what it delivers.
+      test("with no endpoint configured, nothing is asked", async () => {
+        await setGuardrails({
+          enabled: true,
+          provider: "openai",
+          model: GUARD_MODEL,
+          credentialRef: gVaultRef,
+          input: { enabled: false },
+          output: { enabled: true, checks: { toxicity: true } },
+        });
+        await seedConv(14111);
+        const sent: Array<[number, string]> = [];
+        const asked: Asked[] = [];
+        await turn(
+          14111,
+          sent,
+          [],
+          [],
+          endpoint(asked, () => json({ decision: "block" })),
+        );
+        expect(asked).toEqual([]);
+        expect(sent).toEqual([[14111, REPLY]]);
       });
     });
   });

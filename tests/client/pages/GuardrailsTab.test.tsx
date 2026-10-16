@@ -72,6 +72,8 @@ const NO_REFUSALS: GuardrailsRefusals = {
   outputGenerationPrompt: null,
   inputHandoffMessage: null,
   outputHandoffMessage: null,
+  externalUrl: null,
+  externalSecret: null,
 };
 
 describe("GuardrailsTab template message", () => {
@@ -351,6 +353,44 @@ describe("GuardrailsTab thresholds beside their checks", () => {
       '[data-testid="gr-on-failure"]',
     )?.value;
     expect([before, after]).toEqual(["pass", "hold"]);
+  });
+
+  // The bug it catches: an external check configurable only through REST and MCP.
+  test("the external check section stores the URL and the tool-values switch", () => {
+    mount();
+    const url = document.querySelector<HTMLInputElement>(
+      '[data-testid="gr-external-url"]',
+    );
+    fireEvent.change(url as HTMLInputElement, {
+      target: { value: " https://check.example.com/hook " },
+    });
+    const toolValues = [
+      ...screen.queryAllByRole("switch", { name: /Send tool values/ }),
+      ...screen.queryAllByRole("switch", {
+        name: /Enviar valores das ferramentas/,
+      }),
+    ][0];
+    fireEvent.click(toolValues as HTMLElement);
+    expect(saved?.external).toEqual({
+      url: "https://check.example.com/hook",
+      credentialRef: null,
+      sendToolValues: false,
+    });
+  });
+
+  // The bug it catches: the action and template the external check's block uses, hidden while the
+  // built-in output screening is off and so impossible to set.
+  test("with only the external check on, the output action and its messages stay editable", () => {
+    mount((c) => {
+      c.input = { ...c.input, enabled: false };
+      c.output = { ...c.output, enabled: false };
+      c.external = {
+        url: "https://check.example.com/hook",
+        credentialRef: null,
+        sendToolValues: true,
+      };
+    });
+    expect(templateFields()).toBe(1);
   });
 
   test("editing one direction's field shows the same text in the other, and stores one value", () => {

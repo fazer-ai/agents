@@ -1374,6 +1374,8 @@ function AgentEditor() {
     "settings.guardrails.credentialRef": guardrails.credentialRef,
     "settings.guardrails.decisions.credentialRef":
       guardrails.decisions.credentialRef,
+    "settings.guardrails.external.credentialRef":
+      guardrails.external.credentialRef,
     "availability.awayMessage": awayMessage.trim(),
     "contactAuth.denyMessage": contactAuth.denyMessage.trim(),
     // NOTE: `buildSettings` stores null for an empty prompt or one still at the default, so an untouched
@@ -1392,6 +1394,7 @@ function AgentEditor() {
     "guardrails.input.handoffMessage": guardrails.input.handoffMessage,
     "guardrails.output.handoffMessage": guardrails.output.handoffMessage,
     "guardrails.output.generationPrompt": guardrails.output.generationPrompt,
+    "guardrails.external.url": guardrails.external.url,
     // NOTE: Through the serializer for the handoff note, and mirroring saveTools for the rest: it trims
     // every one of them, and a raw copy here reads surrounding whitespace as an edit made while the
     // request was out.
@@ -4790,6 +4793,16 @@ function AgentEditor() {
                   outputHandoffMessage: refusal.at(
                     "guardrails.output.handoffMessage",
                     currentRef.current["guardrails.output.handoffMessage"],
+                  ),
+                  externalUrl: refusal.at(
+                    "guardrails.external.url",
+                    currentRef.current["guardrails.external.url"],
+                  ),
+                  externalSecret: refusal.at(
+                    "settings.guardrails.external.credentialRef",
+                    currentRef.current[
+                      "settings.guardrails.external.credentialRef"
+                    ],
                   ),
                 }}
                 dirty={dirty.guardrails}

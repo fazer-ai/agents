@@ -25,7 +25,15 @@ const LEVEL_RANK: Record<string, number> = { info: 0, warn: 1, error: 2 };
 // that sets it, and a value is still dropped unless it looks like one.
 //
 // The CAUSE is the first of these present, printed bare: it answers the question on its own.
-const CAUSE_KEYS = ["skipped", "failed", "outcome", "state", "reason"] as const;
+// `decision` is the external guardrail check's answer (allow | replace | block).
+const CAUSE_KEYS = [
+  "skipped",
+  "failed",
+  "outcome",
+  "state",
+  "reason",
+  "decision",
+] as const;
 // CONTEXT for the cause, printed as `key=value` because the value alone would mislead: a turn
 // answered by the fallback ends `ok`, and `ok: timeout` reads as a turn that timed out.
 const LABELED_KEYS = [
@@ -42,6 +50,9 @@ const LABELED_KEYS = [
   // says what was done about it, not what the channel answered.
   "class",
   "code",
+  // The external guardrail check's lines: which check wrote it, and why it could not decide.
+  "check",
+  "cause",
 ] as const;
 // FLAGS whose value is a count or `true`, so only the key's presence carries the why.
 const FLAG_KEYS = [

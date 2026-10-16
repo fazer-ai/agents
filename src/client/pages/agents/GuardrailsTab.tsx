@@ -1,4 +1,10 @@
-import { MessageCircle, Send, ShieldCheck, TriangleAlert } from "lucide-react";
+import {
+  MessageCircle,
+  Send,
+  ShieldCheck,
+  TriangleAlert,
+  Webhook,
+} from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -32,6 +38,7 @@ import type {
   GuardrailsConfig,
   GuardrailThresholdKey,
 } from "@/modules/guardrails/settings";
+import { ExternalCheckContract } from "./ExternalCheckContract";
 import { Section, SectionNav } from "./SectionNav";
 import { TabActionBar } from "./TabActionBar";
 import type { GuardrailsRefusals } from "./types";
@@ -130,7 +137,14 @@ export function GuardrailsTab({
       icon: TriangleAlert,
       label: t("editor.guardrails.navPolicy", "Policy"),
     },
+    {
+      id: "gr-external",
+      icon: Webhook,
+      label: t("editor.guardrails.navExternal", "External check"),
+    },
   ];
+  const setExternal = (patch: Partial<GuardrailsConfig["external"]>) =>
+    setG((s) => ({ ...s, external: { ...s.external, ...patch } }));
 
   const setDir = (
     dir: "input" | "output",
@@ -315,6 +329,12 @@ export function GuardrailsTab({
                 )}
               </div>
             </FormField>
+          </>
+        )}
+        {/* The action and its messages are also what the external check's block and a held failure
+            use, so they stay editable while it is configured, built-in screening on or off. */}
+        {(d.enabled || (dir === "output" && !!g.external.url)) && (
+          <>
             <FormField
               label={t("editor.guardrails.action", "On violation")}
               description={t(
@@ -776,6 +796,69 @@ export function GuardrailsTab({
                     )}
                   </FormField>
                 )}
+              </Section>
+              <Section
+                id="gr-external"
+                icon={Webhook}
+                title={t("editor.guardrails.external", "External check")}
+                description={t(
+                  "editor.guardrails.externalDesc",
+                  "Before a reply to a customer is delivered, it is sent to your endpoint with the turn's messages and tool calls, and your endpoint answers allow, replace or block. A block uses the Output action; no answer within 15 s follows “When a check cannot run”.",
+                )}
+              >
+                <div>
+                  <ExternalCheckContract />
+                </div>
+                <FormField
+                  label={t("editor.guardrails.externalUrl", "Endpoint URL")}
+                  error={refusals.externalUrl}
+                  description={t(
+                    "editor.guardrails.externalUrlHint",
+                    "https only. Empty turns the external check off.",
+                  )}
+                >
+                  <Input
+                    value={g.external.url ?? ""}
+                    onChange={(e) =>
+                      setExternal({ url: e.target.value.trim() || null })
+                    }
+                    placeholder="https://"
+                    data-testid="gr-external-url"
+                  />
+                </FormField>
+                <FormField
+                  label={t(
+                    "editor.guardrails.externalSecret",
+                    "Signing secret",
+                  )}
+                  error={refusals.externalSecret}
+                  description={t(
+                    "editor.guardrails.externalSecretHint",
+                    "Signs each request with HMAC-SHA256, like the outbound webhooks. Empty sends it unsigned.",
+                  )}
+                  group
+                >
+                  <CredentialPicker
+                    value={g.external.credentialRef ?? ""}
+                    onChange={(v) => setExternal({ credentialRef: v || null })}
+                    ariaLabel={t(
+                      "editor.guardrails.externalSecret",
+                      "Signing secret",
+                    )}
+                  />
+                </FormField>
+                <SwitchField
+                  checked={g.external.sendToolValues}
+                  onCheckedChange={(v) => setExternal({ sendToolValues: v })}
+                  label={t(
+                    "editor.guardrails.externalToolValues",
+                    "Send tool values",
+                  )}
+                  help={t(
+                    "editor.guardrails.externalToolValuesHint",
+                    "Off sends each tool call's name and sizes, without its arguments and result.",
+                  )}
+                />
               </Section>
             </>
           )}

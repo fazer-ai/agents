@@ -86,6 +86,20 @@ export function traceGuardrail(r: GuardrailReport): TraceGuardrail {
     outcome: r.outcome,
     ...(r.action ? { action: r.action } : {}),
     ...(r.held ? { held: true as const } : {}),
+    // The external check's own fields; the reason is the operator endpoint's text, bounded here.
+    ...(r.external
+      ? {
+          external: {
+            decision: r.external.decision,
+            latencyMs: r.external.latencyMs,
+            ...(r.external.reason
+              ? { reason: scrubbedClip(r.external.reason, OUTPUT_MAX) }
+              : {}),
+            ...(r.external.cause ? { cause: r.external.cause } : {}),
+            ...(r.external.status ? { status: r.external.status } : {}),
+          },
+        }
+      : {}),
     ...(r.categories?.length
       ? {
           // NOTE: Bounded in count as well as in length: the list is model-written, so nothing
@@ -125,7 +139,7 @@ const OUTPUT_MAX = 2000;
 const CATEGORIES_MAX = 12;
 const CATEGORY_MAX = 80;
 
-function msgType(m: BaseMessage): string {
+export function msgType(m: BaseMessage): string {
   const anyM = m as unknown as {
     getType?: () => string;
     _getType?: () => string;

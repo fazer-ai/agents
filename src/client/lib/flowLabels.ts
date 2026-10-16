@@ -93,6 +93,8 @@ export function guardrailUncheckedLabel(
   t: TFunction,
 ): string | null {
   if (stage !== "guardrail" || !detail) return null;
+  // The external check's lines read through `guardrailExternalLabel`.
+  if (detail.check === "external") return null;
   if (detail.held === true) {
     switch (detail.direction) {
       case "input":
@@ -135,6 +137,80 @@ export function guardrailUncheckedLabel(
     default:
       return null;
   }
+}
+
+// A line the external check wrote (detail.check = "external"), as the row's headline: what the
+// operator's endpoint decided, how long it took, and its reason; or, on a failure, why and what
+// happened to the reply. Null for any other line.
+export function guardrailExternalLabel(
+  stage: string,
+  detail: Record<string, unknown> | null,
+  t: TFunction,
+): string | null {
+  if (stage !== "guardrail" || !detail || detail.check !== "external")
+    return null;
+  const ms = typeof detail.latencyMs === "number" ? detail.latencyMs : null;
+  const reason =
+    typeof detail.endpointReason === "string" ? detail.endpointReason : null;
+  let head: string;
+  if (detail.outcome === "external_failed") {
+    const cause =
+      typeof detail.cause === "string"
+        ? typeof detail.httpStatus === "number"
+          ? `${detail.cause} ${detail.httpStatus}`
+          : detail.cause
+        : "?";
+    head =
+      detail.held === true
+        ? t("logs.guardrailExternal.failedHeld", {
+            defaultValue:
+              "The external check could not decide ({{cause}}), so the reply was held and a hand-over to the team was requested",
+            cause,
+          })
+        : t("logs.guardrailExternal.failedPassed", {
+            defaultValue:
+              "The external check could not decide ({{cause}}), so the reply was let through unchecked",
+            cause,
+          });
+  } else if (detail.decision === "allow") {
+    head = t(
+      "logs.guardrailExternal.allow",
+      "The external check allowed the reply",
+    );
+  } else if (detail.decision === "replace") {
+    head = t(
+      "logs.guardrailExternal.replace",
+      "The external check replaced the reply with its own text",
+    );
+  } else if (detail.decision === "block") {
+    head = t("logs.guardrailExternal.block", {
+      defaultValue: "The external check blocked the reply ({{action}})",
+      action: typeof detail.action === "string" ? detail.action : "?",
+    });
+  } else return null;
+  return [
+    head,
+    ms === null
+      ? null
+      : t("logs.guardrailExternal.latency", {
+          defaultValue: "took {{ms}} ms",
+          ms,
+        }),
+    reason
+      ? t("logs.guardrailExternal.reason", {
+          defaultValue: "reason: {{reason}}",
+          reason,
+        })
+      : typeof detail.reasonChars === "number"
+        ? t("logs.guardrailExternal.reasonKept", {
+            defaultValue:
+              "a reason was given ({{chars}} characters), kept in the conversation's note",
+            chars: detail.reasonChars,
+          })
+        : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 }
 
 export function guardrailClassifierLabel(

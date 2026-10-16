@@ -64,6 +64,7 @@ let agentSilent = 0n;
 let agentInput = 0n;
 let agentBrokenGuard = 0n;
 let agentHeldBroken = 0n;
+let agentExternal = 0n;
 let agentDeadCredential = 0n;
 let agentBoth = 0n;
 let agentInputSilent = 0n;
@@ -241,6 +242,13 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
       guardrails: guardrails({ input: dir({ enabled: true }), output: dir() }),
     });
     agentBrokenGuard = await mk("Broken", outputOnly());
+    // The operator's endpoint judges the reply after a clean built-in screening.
+    agentExternal = await mk("External", {
+      guardrails: {
+        ...guardrails({ input: dir(), output: dir({ enabled: true }) }),
+        external: { url: "https://check.example.com/hook" },
+      },
+    });
     agentHeldBroken = await mk("HeldBroken", {
       guardrails: {
         ...guardrails({ input: dir(), output: dir({ enabled: true }) }),
@@ -568,6 +576,45 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
     expect(r.suppressed).toBe(false);
     expect(r.trace.filter((e) => e.type === "guardrail")).toMatchObject([
       { outcome: "unavailable" },
+    ]);
+  });
+
+  // The bug it catches: the playground skipping the operator's endpoint, or tracing its block without
+  // the reason and the time it took.
+  test("the external check's block shows in the reply and in the trace", async () => {
+    const m = models({ violated: false });
+    const r = await runPlaygroundTurn({
+      ctx: ctx(tenantId),
+      agentId: agentExternal,
+      message: "oi",
+      base: appDb,
+      deps: {
+        ...deps(m),
+        externalCheck: {
+          assertSafe: async (u: string) => new URL(u),
+          fetchImpl: (async (_u: string, init: RequestInit) => {
+            const b = JSON.parse(String(init.body)) as { candidateId: string };
+            return new Response(
+              JSON.stringify({
+                decision: "block",
+                candidateId: b.candidateId,
+                reason: "MOTIVO-PG",
+              }),
+            );
+          }) as unknown as typeof fetch,
+        },
+      },
+    });
+    expect(r.reply).toBe(TEMPLATE);
+    const external = r.trace.filter(
+      (e) => e.type === "guardrail" && "external" in e && e.external,
+    );
+    expect(external).toMatchObject([
+      {
+        outcome: "replaced",
+        action: "template",
+        external: { decision: "block", reason: "MOTIVO-PG" },
+      },
     ]);
   });
 

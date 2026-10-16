@@ -81,6 +81,11 @@ const TEXT_TARGETS: ReadonlyArray<{ match: RegExp } & EditorTarget> = [
   },
   { match: /^guardrails\.input\./, tab: "guardrails", sectionId: "gr-input" },
   { match: /^guardrails\.output\./, tab: "guardrails", sectionId: "gr-output" },
+  {
+    match: /^guardrails\.external\./,
+    tab: "guardrails",
+    sectionId: "gr-external",
+  },
   { match: /^vision\.extractionPrompt$/, tab: "behavior", sectionId: "vision" },
   {
     match: /^tts\.(spokenNoticeText|textChoiceNote)$/,
@@ -249,6 +254,7 @@ const CREDENTIAL_SWITCH: Readonly<Record<string, SwitchName>> = {
   "monitoring.decisions.credentialRef": "decisionsEngineShown",
   "guardrails.credentialRef": "guardrailsChatModelShown",
   "guardrails.decisions.credentialRef": "guardrailsClassifierShown",
+  "guardrails.external.credentialRef": "guardrailsEnabled",
 };
 
 interface OwnedField {
@@ -319,6 +325,11 @@ const OWNED_FIELDS: readonly OwnedField[] = [
   },
   {
     field: "guardrails.output.generationPrompt",
+    tab: "guardrails",
+    needs: "guardrailsEnabled",
+  },
+  {
+    field: "guardrails.external.url",
     tab: "guardrails",
     needs: "guardrailsEnabled",
   },

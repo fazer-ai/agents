@@ -1352,9 +1352,32 @@ export function guardrailTraceLabel(
   t: (key: string, fallback: string) => string,
   entry: Pick<
     Extract<TraceEntry, { type: "guardrail" }>,
-    "direction" | "outcome" | "action" | "held"
+    "direction" | "outcome" | "action" | "held" | "external"
   >,
 ): string {
+  // The operator's endpoint answered (or failed): say what it decided, not what a judge found.
+  if (entry.external?.decision === "allow")
+    return t("playground.trace.externalAllow", "allowed by the endpoint");
+  if (entry.external?.decision === "replace")
+    return t(
+      "playground.trace.externalReplace",
+      "replaced by the endpoint's text",
+    );
+  if (entry.external?.decision === "block")
+    return entry.outcome === "suppressed"
+      ? t(
+          "playground.trace.externalBlockSilent",
+          "blocked by the endpoint, nothing would be sent",
+        )
+      : entry.outcome === "handed-off"
+        ? t(
+            "playground.trace.externalBlockHandoff",
+            "blocked by the endpoint, the case would go to the team",
+          )
+        : t(
+            "playground.trace.externalBlockTemplate",
+            "blocked by the endpoint, the configured reply would be sent",
+          );
   if (entry.held)
     return entry.direction === "input"
       ? t(
@@ -1438,14 +1461,43 @@ function TraceRow({ entry }: { entry: TraceEntry }) {
           })}
         >
           <ShieldAlert className="h-3.5 w-3.5" aria-hidden="true" />
-          {entry.direction === "input"
-            ? t("playground.trace.guardrailInput", "Guardrail on the message")
-            : t("playground.trace.guardrailOutput", "Guardrail on the reply")}
+          {entry.external
+            ? t("playground.trace.externalCheck", "External check on the reply")
+            : entry.direction === "input"
+              ? t("playground.trace.guardrailInput", "Guardrail on the message")
+              : t("playground.trace.guardrailOutput", "Guardrail on the reply")}
           <span className="font-normal text-text-muted">
             {guardrailTraceLabel(t, entry)}
           </span>
         </span>
-        {tripped && !entry.scores && (
+        {entry.external && (
+          <p
+            className="whitespace-pre-wrap rounded bg-bg-tertiary px-2 py-1 text-text-muted"
+            data-testid="guardrail-external"
+          >
+            {[
+              t("playground.trace.externalLatency", {
+                defaultValue: "took {{ms}} ms",
+                ms: entry.external.latencyMs,
+              }),
+              entry.external.cause &&
+                t("playground.trace.externalCause", {
+                  defaultValue: "failure: {{cause}}",
+                  cause: entry.external.status
+                    ? `${entry.external.cause} (${entry.external.status})`
+                    : entry.external.cause,
+                }),
+              entry.external.reason &&
+                t("playground.trace.externalReason", {
+                  defaultValue: "reason: {{reason}}",
+                  reason: entry.external.reason,
+                }),
+            ]
+              .filter(Boolean)
+              .join(" · ")}
+          </p>
+        )}
+        {tripped && !entry.scores && !entry.external && (
           <pre className="overflow-x-auto whitespace-pre-wrap rounded bg-bg-tertiary px-2 py-1 text-text-muted">
             {[entry.categories?.join(", "), entry.rationale]
               .filter(Boolean)

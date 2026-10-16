@@ -13,6 +13,7 @@ import {
   CallFloorLine,
   InstructionsTokens,
   KnowledgeTokens,
+  SourceTokens,
   ToolTokens,
 } from "@/client/pages/agents/CallFloor";
 import { estimateTokens } from "@/lib/token-estimate";
@@ -149,6 +150,57 @@ describe("CallFloorLine", () => {
     );
     expect(screen.queryByText(/tokens/)).toBeNull();
     expect(screen.getByText(/não se aplicam/)).toBeTruthy();
+  });
+});
+
+// The row of an MCP server or an integration sums its own turned-on tools, and only its own.
+describe("SourceTokens", () => {
+  test("a source's row sums its tools; another source's tools, and a source with none on, add nothing", async () => {
+    const floor: CallFloor = {
+      ...FLOOR,
+      tools: [
+        ...(FLOOR.engine === "llm" ? FLOOR.tools : []),
+        {
+          name: "mcp__loja__reservar",
+          category: "mcp",
+          estimatedTokens: 120,
+          mcp: { connectionId: "7", tool: "reservar" },
+        },
+        {
+          name: "mcp__outra__buscar",
+          category: "mcp",
+          estimatedTokens: 999,
+          mcp: { connectionId: "8", tool: "buscar" },
+        },
+        {
+          name: "resend_send_email",
+          category: "integration",
+          estimatedTokens: 260,
+          integrationInstanceId: "3",
+        },
+      ],
+    } as CallFloor;
+    await inLanguage(
+      "pt-BR",
+      <CallFloorContext.Provider value={floor}>
+        <div data-testid="mcp">
+          <SourceTokens source={{ mcp: "7" }} />
+        </div>
+        <div data-testid="pack">
+          <SourceTokens source={{ integration: "3" }} />
+        </div>
+        <div data-testid="off">
+          <SourceTokens source={{ mcp: "9" }} />
+        </div>
+      </CallFloorContext.Provider>,
+    );
+    expect(screen.getByTestId("mcp").textContent).toBe(
+      "~420 tokens por chamada no total",
+    );
+    expect(screen.getByTestId("pack").textContent).toBe(
+      "~300 tokens por chamada no total",
+    );
+    expect(screen.getByTestId("off").textContent).toBe("");
   });
 });
 

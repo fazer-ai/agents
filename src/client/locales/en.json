@@ -1423,6 +1423,7 @@
       "knowledgeSuggest": "Knowledge entry suggestions",
       "line": "Every call already sends {{n}} tokens before the history",
       "searchTokens": "{{n}} tokens per call, the search and the rules it adds to the instructions",
+      "sourceTotal": "{{n}} tokens per call in total",
       "tokens": "{{n}} tokens per call"
     },
     "capabilities": {

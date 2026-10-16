@@ -35,13 +35,27 @@ export function realtimeToolDefs(tools: VoiceTool[] = []) {
   ];
 }
 
-export function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
+/**
+ * Runs a tool under one deadline for the whole invocation. The signal is aborted BEFORE the call is
+ * answered as timed out, so a tool still preparing its request sends nothing after that answer, and
+ * one already sent is cancelled: the model may retry a booking it was told failed.
+ */
+export function withDeadline<T>(
+  run: (signal: AbortSignal) => Promise<T>,
+  ms: number,
+): Promise<T> {
+  const deadline = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
   return Promise.race([
-    work,
-    new Promise<T>((_, reject) =>
-      setTimeout(() => reject(new Error(`tool timed out after ${ms} ms`)), ms),
-    ),
-  ]);
+    run(deadline.signal),
+    new Promise<T>((_, reject) => {
+      timer = setTimeout(() => {
+        const err = new Error(`tool timed out after ${ms} ms`);
+        deadline.abort(err);
+        reject(err);
+      }, ms);
+    }),
+  ]).finally(() => clearTimeout(timer));
 }
 
 export class RealtimeToolRunner {
@@ -68,7 +82,10 @@ export class RealtimeToolRunner {
       try {
         if (!tool) throw new Error(`unknown tool ${name}`);
         const args = JSON.parse(String(event.arguments ?? "{}"));
-        output = await withTimeout(tool.invoke(args, callId), TOOL_TIMEOUT_MS);
+        output = await withDeadline(
+          (signal) => tool.invoke(args, callId, signal),
+          TOOL_TIMEOUT_MS,
+        );
       } catch (err) {
         output = `Erro ao usar a ferramenta: ${(err as Error).message}`;
       }

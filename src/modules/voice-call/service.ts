@@ -13,6 +13,7 @@ import {
   loadAgentBot,
   loadChatwootClient,
 } from "@/modules/chatwoot/instance";
+import { literalForChatwoot } from "@/modules/chatwoot/liquid";
 import { mirrorChatwootEvent } from "@/modules/chatwoot/mirror";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import { hashRouteToken } from "@/modules/webhooks/inbound/route-token";
@@ -108,29 +109,15 @@ const VOICE_RULES = [
 
 const HISTORY_LIMIT = 20;
 
-// A conversation in an inbox with no text agent was never delivered to this product, so it has no
-// row: the agent's contact context and the tools that act on the contact read that row. Made here from
-// the live read, as its first webhook would, and only when there is none, so a row the webhooks keep
-// is never overwritten with this older read.
-async function mirrorUnseen(
+// The conversation as Chatwoot has it now, mirrored the way a webhook would be: on an inbox with no
+// text agent no webhook ever arrives, and the agent's contact context and its contact tools read this
+// row. Every call refreshes it, and the mirror's staleness rule keeps a newer delivery from being
+// overwritten by this read.
+async function mirrorLive(
   route: VoiceRoute,
-  conversationId: number,
   live: Record<string, unknown>,
   base: PrismaClient = basePrisma,
 ): Promise<void> {
-  const seen = await runScopedOn(base, sysCtx(route.tenantId), (db) =>
-    db.conversation.findUnique({
-      where: {
-        tenantId_chatwootInstanceId_chatwootConversationId: {
-          tenantId: route.tenantId,
-          chatwootInstanceId: route.instanceId,
-          chatwootConversationId: conversationId,
-        },
-      },
-      select: { id: true },
-    }),
-  );
-  if (seen) return;
   const n = normalizeChatwootEvent({ ...live, event: "conversation_updated" });
   if (n) await mirrorChatwootEvent(route.tenantId, route.instanceId, n, base);
 }
@@ -156,15 +143,13 @@ export async function fenceConversation(
       unknown
     > | null;
     if (conv && Number(conv.inbox_id) === route.inboxId) {
-      await mirrorUnseen(route, conversationId, conv, deps.base).catch(
-        (err: Error) => {
-          logger.warn(
-            "voice-call: could not record conversation %d: %s",
-            conversationId,
-            err.message,
-          );
-        },
-      );
+      await mirrorLive(route, conv, deps.base).catch((err: Error) => {
+        logger.warn(
+          "voice-call: could not record conversation %d: %s",
+          conversationId,
+          err.message,
+        );
+      });
       return conversationId;
     }
     logger.warn(
@@ -396,7 +381,10 @@ export async function reportCall(
       : 0;
     const header = `Ligação ${ctx.direction === "outbound" ? "feita" : "atendida"} por ${route.agentName}${minutes ? ` (${minutes} min)` : ""}`;
     await client
-      .sendPrivateNote(ctx.conversationId, `${header}\n\n${summary}`)
+      .sendPrivateNote(
+        ctx.conversationId,
+        literalForChatwoot(`${header}\n\n${summary}`),
+      )
       .catch((err: Error) => {
         logger.warn("voice-call: private note failed: %s", err.message);
       });

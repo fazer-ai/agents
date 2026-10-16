@@ -18,11 +18,13 @@ import {
   createChatwootClient,
 } from "@/modules/chatwoot/client";
 import * as chatwootInstance from "@/modules/chatwoot/instance";
+import { asRendered } from "@/modules/chatwoot/liquid";
 import {
   bindInbox,
   softDisconnectChatwootInstance,
 } from "@/modules/chatwoot/management";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
+import { agentCreate } from "@/modules/mcp/write-agents";
 import { inboxBindVoice } from "@/modules/mcp/write-channels";
 import { loadPlaygroundVoiceAgent } from "@/modules/playground/service";
 import type { CallRecord } from "@/modules/voice-call/bridge";
@@ -91,10 +93,13 @@ function fakeChatwoot(
     history?: Record<number, Array<{ id: number; call?: string }>>;
     // conversation id -> the contact Chatwoot names on it
     senders?: Record<number, { id: number; name: string }>;
+    // conversation id -> its last activity, epoch seconds, which positions what it states
+    activityAt?: Record<number, number>;
   } = {},
 ) {
   const writes: AiVoice[] = [];
   const reports: Array<{ provider_call_id: string }> = [];
+  const notes: string[] = [];
   const fetchImpl = (async (url: string, init?: RequestInit) => {
     const body = init?.body ? JSON.parse(init.body as string) : undefined;
     const path = new URL(url).pathname;
@@ -111,6 +116,8 @@ function fakeChatwoot(
       }
     } else if (path.endsWith("/whatsapp_calls/ai_report")) {
       reports.push(body);
+    } else if (/\/conversations\/\d+\/messages$/.test(path) && body) {
+      notes.push(body.content);
     } else if (/\/conversations\/\d+\/messages$/.test(path) && !body) {
       // A page is the twenty messages before `before`, the newest page without it.
       const id = Number(path.split("/").at(-2));
@@ -133,11 +140,15 @@ function fakeChatwoot(
       else {
         const id = Number(path.split("/").pop());
         const sender = opts.senders?.[id];
+        const activityAt = opts.activityAt?.[id];
         answer = {
           id,
           inbox_id: inbox,
           status: "open",
           ...(sender ? { meta: { sender } } : {}),
+          ...(activityAt
+            ? { last_activity_at: activityAt, updated_at: activityAt }
+            : {}),
         };
       }
     } else if (path.endsWith("/agent_bots")) {
@@ -158,7 +169,7 @@ function fakeChatwoot(
       fetchImpl,
       assertSafe: async (u: string) => new URL(u),
     });
-  return { writes, reports, makeClient };
+  return { writes, reports, notes, makeClient };
 }
 
 describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
@@ -362,6 +373,29 @@ describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
     ]);
   });
 
+  test("every call refreshes the recorded conversation from Chatwoot", async () => {
+    const route = await resolveVoiceRoute(await routeToken(), appDb);
+    if (!route) throw new Error("no route");
+    const opts = {
+      conversations: { 22: 501 },
+      senders: { 22: { id: 79, name: "Carla" } },
+      activityAt: { 22: 1_792_000_000 },
+    };
+    const cw = fakeChatwoot(opts);
+    const fence = () =>
+      fenceConversation(route, 22, { base: appDb, makeClient: cw.makeClient });
+    expect(await fence()).toBe(22);
+    // Renamed in Chatwoot between two calls, on an inbox no webhook reaches.
+    opts.senders[22] = { id: 79, name: "Carla Dias" };
+    opts.activityAt[22] = 1_792_000_600;
+    expect(await fence()).toBe(22);
+    const row = await suDb.conversation.findFirst({
+      where: { tenantId: tenant, chatwootConversationId: 22 },
+      select: { contact: { select: { name: true } } },
+    });
+    expect(row?.contact?.name).toBe("Carla Dias");
+  });
+
   test("a call is reported only when it is one of the fenced conversation's calls", async () => {
     const route = {
       tenantId: tenant,
@@ -403,6 +437,42 @@ describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
     await reportCall(route, ctxOf(10), record("other-inbox-call"), deps);
     await reportCall(route, ctxOf(null), record("own-call"), deps);
     expect(cw.reports.map((r) => r.provider_call_id)).toEqual(["own-call"]);
+  });
+
+  test("a summary that reads as Liquid reaches the note as written", async () => {
+    const cw = fakeChatwoot({ history: { 10: [{ id: 100, call: "c" }] } });
+    await reportCall(
+      {
+        tenantId: tenant,
+        instanceId,
+        inboxId: 501,
+        agentId: voiceId,
+        agentName: "Raquel",
+        systemPrompt: "",
+      },
+      { conversationId: 10, inboxId: 501, direction: "inbound" },
+      {
+        callId: "c",
+        direction: "inbound",
+        peer: null,
+        provider: "elevenlabs",
+        startedAt: "2026-10-16T10:00:00Z",
+        answeredAt: "2026-10-16T10:00:01Z",
+        endedAt: "2026-10-16T10:01:00Z",
+        endedBy: "connector",
+        endReason: null,
+        engineConversationId: null,
+        transcript: [],
+      },
+      {
+        summarize: async () => "Pediu o {{contact.email}} de volta",
+        base: appDb,
+        makeClient: cw.makeClient,
+      },
+    );
+    expect(cw.notes).toHaveLength(1);
+    expect(cw.notes[0]).not.toContain("{{contact");
+    expect(asRendered(cw.notes[0] ?? "")).toContain("{{contact.email}}");
   });
 
   test("the agent's switch and mode decide whether the bound inboxes' calls are on", async () => {
@@ -1085,6 +1155,29 @@ describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
     expect(seen).toHaveLength(1);
     expect(seen[0]?.httpToolTimeoutMs).toBe(CALL_HTTP_TOOL_TIMEOUT_MS);
     expect(configs[0]?.documentSelections).toEqual([]);
+  });
+
+  test("an agent created over MCP as a voice agent is one", async () => {
+    const principal = {
+      userId: 1n,
+      tenantId: tenant,
+      clientId: "c",
+      jti: "j",
+      role: "TENANT_ADMIN",
+      scopes: ["mcp:read", "mcp:write"],
+    } as unknown as VerifiedToken;
+    const name = `mcp-voice-${Date.now()}`;
+    const created = await agentCreate(
+      principal,
+      { name, kind: "voice", dry_run: false },
+      { base: appDb },
+    );
+    expect(created.ok).toBe(true);
+    const row = await suDb.agent.findFirst({
+      where: { tenantId: tenant, name },
+      select: { kind: true },
+    });
+    expect(row?.kind).toBe("voice");
   });
 
   test("the MCP preview of a voice binding refuses what the bind refuses", async () => {

@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  screen,
+  waitFor,
+} from "@testing-library/react";
+import { nativeToolAnchor } from "@/client/pages/agents/editorTabs";
+import { focusableIn } from "@/client/pages/agents/saveAttempt";
 import {
   editTab,
   NATIVE_CATALOG,
@@ -429,7 +437,8 @@ describe("the editor's bar covers the whole agent", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Discard all" }));
     release();
     await waitFor(() => expect(discard()).toBeNull());
-    await new Promise((r) => setTimeout(r, 50));
+    // The continuation runs on the renders after the write lands: let them run.
+    for (let i = 0; i < 5; i++) await act(async () => {});
     const patches = stub.writes.filter((w) => w.method === "PATCH");
     expect(patches.length).toBe(1);
     expect(
@@ -480,5 +489,54 @@ describe("the editor's bar covers the whole agent", () => {
     await screen.findByText(/Fix the Knowledge tab before saving/);
     expect(stub.writes.filter((w) => w.method === "PATCH").length).toBe(1);
     expect(stub.writes.some((w) => w.method === "PUT")).toBe(false);
+  });
+
+  // The grants are one list two tabs edit. A Tools toggle made while the Tools write is out is not
+  // written by the Knowledge write that follows (it sends the tools as stored) and stays pending.
+  test("a Tools edit made while the Tools write is out is not written by the Knowledge write", async () => {
+    const stub = stubEditorApi(
+      { name: "Atendente" },
+      { catalog: NATIVE_CATALOG },
+    );
+    const served = globalThis.fetch;
+    let release: () => void = () => {};
+    const held = new Promise<void>((r) => {
+      release = r;
+    });
+    let putSent = false;
+    globalThis.fetch = (async (
+      input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      if ((init?.method ?? "GET") === "PUT" && !putSent) {
+        putSent = true;
+        await held;
+      }
+      return served(input, init);
+    }) as typeof fetch;
+    await renderEditor(stub, "knowledge");
+    editTab("knowledge");
+    await goTo("Tools");
+    editTab("tools");
+    fireEvent.click(save());
+    await waitFor(() => expect(putSent).toBe(true));
+    const card = document.getElementById(nativeToolAnchor("set_labels"));
+    if (!card) throw new Error("the set_labels card is not drawn");
+    fireEvent.click(focusableIn(card) ?? card);
+    release();
+    await waitFor(
+      () =>
+        expect(stub.writes.filter((w) => w.method === "PUT").length).toBe(2),
+      { timeout: 5_000 },
+    );
+    const tools = (body: Record<string, unknown>) =>
+      JSON.stringify(
+        (body.grants as { source: string; enabledTools?: string[] }[])
+          .filter((g) => g.source !== "RAG")
+          .map((g) => [g.source, [...(g.enabledTools ?? [])].sort()]),
+      );
+    const [first, second] = stub.writes.filter((w) => w.method === "PUT");
+    expect(tools(second?.body ?? {})).toBe(tools(first?.body ?? {}));
+    await waitFor(() => expect(save().disabled).toBe(false));
   });
 });

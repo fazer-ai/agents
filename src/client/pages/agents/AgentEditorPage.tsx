@@ -3306,6 +3306,25 @@ function AgentEditor() {
     }
   }
 
+  // The grant set is one list two tabs edit: Knowledge owns the RAG grants, Tools the rest. A save
+  // sends its own half from the form and the other as stored, and takes back only its own half, so
+  // an edit the other tab made while the request was out is neither written nor overwritten.
+  const ragHalf = (g: GrantState) => g.source === "RAG";
+  function withStoredHalf(form: GrantState[], knowledge: boolean) {
+    const own = (g: GrantState) => ragHalf(g) === knowledge;
+    return [
+      ...mapGrants(syncedGrantsRef.current).filter((g) => !own(g)),
+      ...form.filter(own),
+    ];
+  }
+  function adoptHalf(written: GrantState[], knowledge: boolean) {
+    const own = (g: GrantState) => ragHalf(g) === knowledge;
+    setGrants((prev) => [
+      ...prev.filter((g) => !own(g)),
+      ...written.filter(own),
+    ]);
+  }
+
   async function saveGrants(force = false): Promise<boolean> {
     savingRef.current += 1;
     setSavingGrants(true);
@@ -3326,21 +3345,18 @@ function AgentEditor() {
       };
       const knowledgeSettings = { ...syncedSettings, knowledge: knowledgeJson };
       if (reviewChanged) sent = sentFor({ settings: knowledgeSettings });
-      const sentSnap = {
-        knowledge: sectionSnap.knowledge,
-        tools: sectionSnap.tools,
-      };
+      const sentSnap = { knowledge: sectionSnap.knowledge };
       const expected = expectedFor(force);
       const { data, error: err } = await api.api.v1
         .agents({ id })
         ["tool-selections"].put({
-          grants,
+          grants: withStoredHalf(grants, true),
           ...(expected ? { expectedUpdatedAt: expected } : {}),
         });
       if (handleConflict(err, () => void saveGrants(true))) return false;
       if (err || !data) throw err ?? new Error("no data");
       syncedGrantsRef.current = data.grants;
-      if (untouchedSince(sentSnap)) setGrants(mapGrants(data.grants));
+      if (untouchedSince(sentSnap)) adoptHalf(mapGrants(data.grants), true);
       setCatalog(data.catalog);
       const afterGrants = data.agentUpdatedAt
         ? String(data.agentUpdatedAt)
@@ -3391,9 +3407,6 @@ function AgentEditor() {
     setSavingGrants(true);
     let sent: Record<string, unknown> = {};
     const sentTools = { tools: sectionSnap.tools };
-    // The grants are one set the Knowledge tab edits too: a Knowledge edit made while this request
-    // runs (the bar saves Knowledge right after) must not be replaced by what this one wrote.
-    const sentGrants = { ...sentTools, knowledge: sectionSnap.knowledge };
     try {
       // Everything the PATCH will send, built BEFORE the grants PUT so the whole bag can be checked
       // against the write boundary's own rule first. None of it depends on the PUT's result.
@@ -3525,7 +3538,7 @@ function AgentEditor() {
       }
       const expected = expectedFor(force);
       const grantsRes = await api.api.v1.agents({ id })["tool-selections"].put({
-        grants: savedGrants,
+        grants: withStoredHalf(savedGrants, false),
         ...(expected ? { expectedUpdatedAt: expected } : {}),
       });
       if (handleConflict(grantsRes.error, () => void saveTools(true)))
@@ -3560,8 +3573,8 @@ function AgentEditor() {
       // On questions and rules the form keeps its hidden grant drafts and any toggle made while this
       // request ran; the baseline takes the written grants, not the form.
       const untouched = untouchedSince(sentTools);
-      if (!decides && untouchedSince(sentGrants))
-        setGrants(mapGrants(grantsRes.data.grants));
+      if (!decides && untouched)
+        adoptHalf(mapGrants(grantsRes.data.grants), false);
       setCatalog(grantsRes.data.catalog);
       syncedAgentRef.current = agentRes.data.agent;
       if (untouched) syncToolConfig(agentRes.data.agent, decides);

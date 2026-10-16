@@ -151,6 +151,72 @@ async function syncInbox(
 }
 
 /**
+ * What refuses a voice binding, asked by the bind under its locks and by the MCP preview without
+ * them: a disconnected account (409), an inbox that is not WhatsApp (422), an agent that does not
+ * exist or is not a voice agent. `agentKind` is undefined when no agent is being bound, null when the
+ * agent is gone.
+ */
+export function voiceBindingRefusal(state: {
+  channelType: string | null;
+  disconnected: boolean;
+  agentKind: string | null | undefined;
+}): AppError | null {
+  if (state.agentKind !== undefined && state.disconnected)
+    return new AppError(
+      "this account is disconnected; reconnect it before assigning an agent",
+      409,
+      "errors.chatwootAccountDisconnected",
+    );
+  if (state.channelType !== WHATSAPP_CHANNEL)
+    return new AppError(
+      "only a WhatsApp inbox takes calls",
+      422,
+      "errors.voiceInboxNotWhatsapp",
+    );
+  if (state.agentKind === null) return new NotFoundError("agent not found");
+  if (state.agentKind !== undefined && state.agentKind !== "voice")
+    return new AppError(
+      "only a voice agent answers calls",
+      422,
+      "errors.voiceAgentRequired",
+    );
+  return null;
+}
+
+/** The refusal `bindInboxVoiceAgent` would give, read without its locks (a preview). */
+export async function checkVoiceBinding(
+  ctx: TenantContext,
+  inboxId: bigint,
+  agentId: bigint | null,
+  base: PrismaClient = basePrisma,
+): Promise<void> {
+  const state = await runScopedOn(base, ctx, async (db) => {
+    const inbox = await db.inbox.findUnique({
+      where: { id: inboxId },
+      select: {
+        channelType: true,
+        instance: { select: { disconnectedAt: true } },
+      },
+    });
+    if (!inbox) throw new NotFoundError("inbox not found");
+    const agent =
+      agentId === null
+        ? undefined
+        : await db.agent.findUnique({
+            where: { id: agentId },
+            select: { kind: true },
+          });
+    return {
+      channelType: inbox.channelType,
+      disconnected: inbox.instance.disconnectedAt !== null,
+      agentKind: agent === undefined ? undefined : (agent?.kind ?? null),
+    };
+  });
+  const refusal = voiceBindingRefusal(state);
+  if (refusal) throw refusal;
+}
+
+/**
  * Binds a voice agent to an inbox's calls, or unbinds it (`agentId` null). Refuses an inbox that is
  * not WhatsApp (422), an agent that is not a voice agent (422) and a disconnected account (409). 502
  * when the fork could not be written; the binding is kept, and the next save of any voice agent
@@ -181,29 +247,17 @@ export async function bindInboxVoiceAgent(
     const account = await db.$queryRaw<{ disconnected_at: Date | null }[]>`
       SELECT disconnected_at FROM chatwoot_instances
        WHERE id = ${inbox.chatwootInstanceId} FOR NO KEY UPDATE`;
-    if (agentId !== null && account[0]?.disconnected_at != null)
-      throw new AppError(
-        "this account is disconnected; reconnect it before assigning an agent",
-        409,
-        "errors.chatwootAccountDisconnected",
-      );
-    if (inbox.channelType !== WHATSAPP_CHANNEL)
-      throw new AppError(
-        "only a WhatsApp inbox takes calls",
-        422,
-        "errors.voiceInboxNotWhatsapp",
-      );
-    if (agentId !== null) {
-      const agent = await db.$queryRaw<{ kind: string }[]>`
-        SELECT kind FROM agents WHERE id = ${agentId} FOR KEY SHARE`;
-      if (agent.length === 0) throw new NotFoundError("agent not found");
-      if (agent[0]?.kind !== "voice")
-        throw new AppError(
-          "only a voice agent answers calls",
-          422,
-          "errors.voiceAgentRequired",
-        );
-    }
+    const agent =
+      agentId === null
+        ? undefined
+        : await db.$queryRaw<{ kind: string }[]>`
+            SELECT kind FROM agents WHERE id = ${agentId} FOR KEY SHARE`;
+    const refusal = voiceBindingRefusal({
+      channelType: inbox.channelType,
+      disconnected: account[0]?.disconnected_at != null,
+      agentKind: agent === undefined ? undefined : (agent[0]?.kind ?? null),
+    });
+    if (refusal) throw refusal;
     const locked = await db.$queryRaw<
       { voice_route_token: string | null; voice_agent_id: bigint | null }[]
     >`

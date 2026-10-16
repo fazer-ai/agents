@@ -22,6 +22,8 @@ import {
   bindInbox,
   softDisconnectChatwootInstance,
 } from "@/modules/chatwoot/management";
+import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
+import { inboxBindVoice } from "@/modules/mcp/write-channels";
 import { loadPlaygroundVoiceAgent } from "@/modules/playground/service";
 import type { CallRecord } from "@/modules/voice-call/bridge";
 import * as voiceInboxes from "@/modules/voice-call/inboxes";
@@ -1083,5 +1085,40 @@ describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
     expect(seen).toHaveLength(1);
     expect(seen[0]?.httpToolTimeoutMs).toBe(CALL_HTTP_TOOL_TIMEOUT_MS);
     expect(configs[0]?.documentSelections).toEqual([]);
+  });
+
+  test("the MCP preview of a voice binding refuses what the bind refuses", async () => {
+    const principal = {
+      userId: 1n,
+      tenantId: tenant,
+      clientId: "c",
+      jti: "j",
+      role: "TENANT_ADMIN",
+      scopes: ["mcp:read", "mcp:write"],
+    } as unknown as VerifiedToken;
+    const both = async (inbox: bigint, agent: bigint) => {
+      const args = { inbox_id: String(inbox), agent_id: String(agent) };
+      const preview = await inboxBindVoice(principal, args, { base: appDb });
+      const apply = await inboxBindVoice(
+        principal,
+        { ...args, dry_run: false },
+        { base: appDb },
+      );
+      return [preview.ok, apply.ok];
+    };
+    expect(await both(apiInboxId, voiceId)).toEqual([false, false]);
+    expect(await both(whatsappInboxId, textId)).toEqual([false, false]);
+    await suDb.chatwootInstance.update({
+      where: { id: instanceId },
+      data: { disconnectedAt: new Date() },
+    });
+    try {
+      expect(await both(whatsappInboxId, voiceId)).toEqual([false, false]);
+    } finally {
+      await suDb.chatwootInstance.update({
+        where: { id: instanceId },
+        data: { disconnectedAt: null },
+      });
+    }
   });
 });

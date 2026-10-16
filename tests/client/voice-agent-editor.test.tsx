@@ -63,4 +63,25 @@ describe("the editor of a voice agent", () => {
     await act(async () => {});
     expect(modelSelect().value).toBe("gpt-4.1-mini");
   });
+
+  test("one save of the name and a call setting leaves nothing unsaved on either tab", async () => {
+    const stub = await open();
+    fireEvent.change(screen.getByLabelText(/^Name/), {
+      target: { value: "Raquel" },
+    });
+    fireEvent.click(screen.getByRole("tab", { name: "Call settings" }));
+    await act(async () => {});
+    // Stored as the number 1, which the form spells back as "1".
+    fireEvent.change(screen.getByLabelText(/^Speech speed/), {
+      target: { value: "1,00" },
+    });
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await act(async () => {});
+    expect(stub.writes.filter((w) => w.method === "PATCH")).toHaveLength(1);
+    expect(
+      (screen.getByLabelText(/^Speech speed/) as HTMLInputElement).value,
+    ).toBe("1");
+    expect(screen.queryByRole("button", { name: "Discard" })).toBeNull();
+  });
 });

@@ -72,6 +72,8 @@ const NO_REFUSALS: GuardrailsRefusals = {
   outputGenerationPrompt: null,
   inputHandoffMessage: null,
   outputHandoffMessage: null,
+  externalUrl: null,
+  externalSecret: null,
 };
 
 describe("GuardrailsTab template message", () => {
@@ -351,6 +353,29 @@ describe("GuardrailsTab thresholds beside their checks", () => {
       '[data-testid="gr-on-failure"]',
     )?.value;
     expect([before, after]).toEqual(["pass", "hold"]);
+  });
+
+  // The bug it catches: an external check configurable only through REST and MCP.
+  test("the external check section stores the URL and the tool-values switch", () => {
+    mount();
+    const url = document.querySelector<HTMLInputElement>(
+      '[data-testid="gr-external-url"]',
+    );
+    fireEvent.change(url as HTMLInputElement, {
+      target: { value: " https://check.example.com/hook " },
+    });
+    const toolValues = [
+      ...screen.queryAllByRole("switch", { name: /Send tool values/ }),
+      ...screen.queryAllByRole("switch", {
+        name: /Enviar valores das ferramentas/,
+      }),
+    ][0];
+    fireEvent.click(toolValues as HTMLElement);
+    expect(saved?.external).toEqual({
+      url: "https://check.example.com/hook",
+      secretRef: null,
+      sendToolValues: false,
+    });
   });
 
   test("editing one direction's field shows the same text in the other, and stores one value", () => {

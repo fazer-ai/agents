@@ -139,7 +139,10 @@ import { llmNormalizeForSpeech } from "@/modules/tts/normalize";
 import { resolveNormalizeModel } from "@/modules/tts/normalize-model";
 import { readTtsConfig, type TtsConfig } from "@/modules/tts/settings";
 import { resolveInjectableCredential } from "@/modules/vault/injectable";
-import { tryResolveApiKeyEntry } from "@/modules/vault/service";
+import {
+  resolveVaultRefState,
+  tryResolveApiKeyEntry,
+} from "@/modules/vault/service";
 import { chatwootThreadId, getCheckpointer } from "./checkpointer";
 import {
   type FallbackConfig,
@@ -268,6 +271,9 @@ export interface AgentConfig {
   guardrails: GuardrailsConfig;
   guardrailsApiKey: string;
   guardrailsCredentialBaseUrl: string | null;
+  // The external check's signing secret: null when none is configured (unsigned), "missing" when
+  // the configured entry did not resolve, which the check treats as a failure.
+  guardrailsExternalSecret: string | null | "missing";
   transferWithSummary: boolean;
   nativeToolsAllow?: string[];
   httpToolDefs: LoadedHttpToolDef[];
@@ -584,6 +590,21 @@ export async function loadAgentConfig(
         gEntry.state === "unusable" ? gEntry.kind : "",
       );
     }
+  }
+  let guardrailsExternalSecret: string | null | "missing" = null;
+  if (
+    guardrails.enabled &&
+    guardrails.external.url &&
+    guardrails.external.secretRef
+  ) {
+    const sEntry = await resolveVaultRefState<unknown>(
+      db,
+      guardrails.external.secretRef,
+    );
+    guardrailsExternalSecret =
+      sEntry.state === "filled" && typeof sEntry.value === "string"
+        ? sEntry.value
+        : "missing";
   }
   // Speech normalizer's own credential, when it runs on a separate model. Same fail-open shape as
   // guardrails: an unresolvable ref leaves the key empty, and buildSpeechNormalizer then SKIPS the
@@ -1008,6 +1029,7 @@ export async function loadAgentConfig(
     guardrails,
     guardrailsApiKey,
     guardrailsCredentialBaseUrl,
+    guardrailsExternalSecret,
     transferWithSummary: agent.transferWithSummary,
     nativeToolsAllow: sel.nativeToolsAllow,
     httpToolDefs: sel.httpToolDefs,

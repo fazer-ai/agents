@@ -2085,6 +2085,14 @@
       "decisionsProvider": "API de classificação",
       "directionEnabled": "Ativar",
       "enabled": "Ativar guardrails",
+      "external": "Verificação externa",
+      "externalDesc": "Antes de uma resposta ao cliente ser entregue, ela vai para o seu endpoint com as mensagens e as tool calls do turno, e o seu endpoint responde allow, replace ou block. Um block usa a ação da Saída; sem resposta em 15 s, vale o que está em “Quando uma checagem não consegue rodar”.",
+      "externalSecret": "Segredo de assinatura",
+      "externalSecretHint": "Assina cada requisição com HMAC-SHA256, como os webhooks de saída. Vazio envia sem assinatura.",
+      "externalToolValues": "Enviar valores das ferramentas",
+      "externalToolValuesHint": "Desligado envia o nome e os tamanhos de cada chamada de ferramenta, sem os argumentos e o resultado.",
+      "externalUrl": "URL do endpoint",
+      "externalUrlHint": "Só https. Vazio desliga a verificação externa.",
       "generationPrompt": "Orientação de geração",
       "generationPromptHint": "Orienta como o agente de guardrails escreve a resposta substituta (tom, o que oferecer ou evitar). Opcional.",
       "generationPromptPlaceholder": "ex.: Recuse com educação, mantenha um tom acolhedor e ofereça encaminhar para um atendente humano.",
@@ -2094,6 +2102,7 @@
       "inputDesc": "Analisa a mensagem do cliente antes de o agente processá-la.",
       "model": "Modelo do guardrails",
       "modelDesc": "Um agente de moderação dedicado analisa as mensagens. Desligado por padrão; escolha um modelo + chave de API.",
+      "navExternal": "Verificação externa",
       "navInput": "Entrada",
       "navModel": "Modelo",
       "navOutput": "Saída",
@@ -3198,6 +3207,15 @@
       "chat": "modelo de linguagem",
       "decisions": "API de classificação"
     },
+    "guardrailExternal": {
+      "allow": "A verificação externa liberou a resposta",
+      "block": "A verificação externa bloqueou a resposta ({{action}})",
+      "failedHeld": "A verificação externa não conseguiu decidir ({{cause}}), então a resposta foi segurada e a passagem para a equipe foi pedida",
+      "failedPassed": "A verificação externa não conseguiu decidir ({{cause}}), então a resposta foi liberada sem checagem",
+      "latency": "{{ms}} ms",
+      "reason": "motivo: {{reason}}",
+      "replace": "A verificação externa trocou a resposta pelo texto dela"
+    },
     "guardrailHeld": {
       "input": "A checagem falhou, então a mensagem do cliente foi segurada e a passagem para a equipe foi pedida",
       "output": "A checagem falhou, então a resposta foi segurada e a passagem para a equipe foi pedida"
@@ -3605,6 +3623,15 @@
       "title": "Simulação de ferramentas"
     },
     "trace": {
+      "externalAllow": "liberada pelo endpoint",
+      "externalBlockHandoff": "bloqueada pelo endpoint, o caso iria para a equipe",
+      "externalBlockSilent": "bloqueada pelo endpoint, nada seria enviado",
+      "externalBlockTemplate": "bloqueada pelo endpoint, a resposta configurada seria enviada",
+      "externalCause": "falha: {{cause}}",
+      "externalCheck": "Verificação externa na resposta",
+      "externalLatency": "{{ms}} ms",
+      "externalReason": "motivo: {{reason}}",
+      "externalReplace": "trocada pelo texto do endpoint",
       "guardrailClean": "aprovado",
       "guardrailHandedOff": "bloqueado, o caso iria para a equipe",
       "guardrailHeldInput": "não pôde ser checada, então a mensagem foi segurada e o caso iria para a equipe",

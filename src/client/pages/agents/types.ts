@@ -99,6 +99,8 @@ export interface GuardrailsRefusals {
   outputGenerationPrompt: string | null;
   inputHandoffMessage: string | null;
   outputHandoffMessage: string | null;
+  externalUrl: string | null;
+  externalSecret: string | null;
 }
 
 export interface ToolRefusals {

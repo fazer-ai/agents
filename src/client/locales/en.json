@@ -2018,6 +2018,14 @@
       "decisionsProvider": "Classification API",
       "directionEnabled": "Enable",
       "enabled": "Enable guardrails",
+      "external": "External check",
+      "externalDesc": "Before a reply to a customer is delivered, it is sent to your endpoint with the turn's messages and tool calls, and your endpoint answers allow, replace or block. A block uses the Output action; no answer within 15 s follows “When a check cannot run”.",
+      "externalSecret": "Signing secret",
+      "externalSecretHint": "Signs each request with HMAC-SHA256, like the outbound webhooks. Empty sends it unsigned.",
+      "externalToolValues": "Send tool values",
+      "externalToolValuesHint": "Off sends each tool call's name and sizes, without its arguments and result.",
+      "externalUrl": "Endpoint URL",
+      "externalUrlHint": "https only. Empty turns the external check off.",
       "generationPrompt": "Generation guidance",
       "generationPromptHint": "Steers how the guardrails agent writes the replacement reply (tone, what to offer or avoid). Optional.",
       "generationPromptPlaceholder": "e.g. Politely decline, keep a warm tone, and offer to connect them with a human agent.",
@@ -2027,6 +2035,7 @@
       "inputDesc": "Screen the customer's message before the agent processes it.",
       "model": "Guardrails model",
       "modelDesc": "A dedicated moderation agent screens messages. Off by default; pick a model + API key.",
+      "navExternal": "External check",
       "navInput": "Input",
       "navModel": "Model",
       "navOutput": "Output",
@@ -3096,6 +3105,15 @@
       "chat": "language model",
       "decisions": "classification API"
     },
+    "guardrailExternal": {
+      "allow": "The external check allowed the reply",
+      "block": "The external check blocked the reply ({{action}})",
+      "failedHeld": "The external check could not decide ({{cause}}), so the reply was held and a hand-over to the team was requested",
+      "failedPassed": "The external check could not decide ({{cause}}), so the reply was let through unchecked",
+      "latency": "{{ms}} ms",
+      "reason": "reason: {{reason}}",
+      "replace": "The external check replaced the reply with its own text"
+    },
     "guardrailHeld": {
       "input": "The check failed, so the customer's message was held and a hand-over to the team was requested",
       "output": "The check failed, so the reply was held and a hand-over to the team was requested"
@@ -3501,6 +3519,15 @@
       "title": "Tool simulation"
     },
     "trace": {
+      "externalAllow": "allowed by the endpoint",
+      "externalBlockHandoff": "blocked by the endpoint, the case would go to the team",
+      "externalBlockSilent": "blocked by the endpoint, nothing would be sent",
+      "externalBlockTemplate": "blocked by the endpoint, the configured reply would be sent",
+      "externalCause": "failure: {{cause}}",
+      "externalCheck": "External check on the reply",
+      "externalLatency": "{{ms}} ms",
+      "externalReason": "reason: {{reason}}",
+      "externalReplace": "replaced by the endpoint's text",
       "guardrailClean": "approved",
       "guardrailHandedOff": "blocked, the case would go to the team",
       "guardrailHeldInput": "could not be checked, so the message was held and the case would go to the team",

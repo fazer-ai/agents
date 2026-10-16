@@ -65,8 +65,14 @@ import {
 } from "@/modules/flowlog/service";
 import { ourSideHasSpoken } from "@/modules/followups/eligibility";
 import {
+  buildExternalCheck,
+  type ExternalCallDeps,
+  turnToolCalls,
+} from "@/modules/guardrails/external";
+import {
   buildGuardrailGate,
   chatwootNoteSink,
+  type GuardrailDecision,
   guardrailTripped,
   screenedByOperator,
   screenedText,
@@ -269,6 +275,8 @@ const { refused, settled } = turnSettlement;
 
 export interface RuntimeDeps {
   makeModel?: (cfg: ResolvedModelConfig) => BaseChatModel;
+  // The external check's network half (modules/guardrails/external.ts). Tests inject.
+  externalCheck?: ExternalCallDeps;
   makeClient?: (
     cfg: ConstructorParameters<typeof ChatwootClient>[0],
   ) => Promise<ChatwootClient>;
@@ -1154,6 +1162,8 @@ async function runTurnBody(
     { conversationId: loaded.conversationDbId, threadId },
     base,
   );
+  // Whether the fallback model wrote this turn's reply, for the external check's request.
+  let fallbackAnswered = false;
   const graph = await buildModelAndGraph(loaded, tools, {
     standingNotices,
     // NOTE: Asked by the graph when the silence retry would run. A completed transfer or something
@@ -1209,7 +1219,8 @@ async function runTurnBody(
       }),
     // NOTE: A fallback that answers is a successful turn, so this warn is the operator's one signal
     // that the primary provider is not taking their traffic.
-    onModelFallback: ({ provider, model, reason, failure }) =>
+    onModelFallback: ({ provider, model, reason, failure }) => {
+      fallbackAnswered = true;
       emitFlowEvent(flow, {
         stage: "generate",
         level: "warn",
@@ -1221,7 +1232,8 @@ async function runTurnBody(
           fallbackReason: reason,
           primaryFailure: failure,
         },
-      }),
+      });
+    },
     // NOTE: The fallback failed too. Attribution, not a second alarm: the wrapping `generate` stage
     // already emits the error (labelled with the primary), and alert coalescing keys on (channel,
     // stage, level), so a second error would page twice. `info` names which model died; `status`
@@ -1328,6 +1340,23 @@ async function runTurnBody(
     // NOTE: The same usage sink as the turn's own callbacks.
     persistUsage: params.deps?.persistUsage,
     langfuseCfg: loaded.langfuseCfg,
+  });
+  // The operator's own endpoint, asked after the built-in output screening (./external.ts). Null
+  // when guardrails are off or no endpoint is configured.
+  const runExternalCheck = buildExternalCheck({
+    cfg: loaded.guardrails,
+    ctx: {
+      tenantId,
+      agentId: loaded.agentId,
+      conversationId: loaded.conversationDbId,
+      chatwootConversationId: conversationId,
+      turnId: flow.turnId,
+      customerMessage: text,
+    },
+    secret: loaded.guardrailsExternalSecret,
+    flow,
+    announce: chatwootNoteSink(client, conversationId),
+    deps: params.deps?.externalCheck,
   });
   // The transfer a guardrail `handoff` verdict asks for, gated after the judge's model call:
   // not called off, not superseded, still the bot's. Not the reply claim, which means "answered";
@@ -2472,12 +2501,17 @@ async function runTurnBody(
       // NOTE: `postBlocked` answered before this model call, and the suppressed branch returns
       // "blocked" without a later ask.
       if (await writeCalledOff()) return refused(standDown());
-      if (outGuard && guardrailTripped(outGuard)) {
+      // A trip, from either judge: drops the queue and replaces, suppresses or hands over the
+      // reply. Null to go on delivering; otherwise the turn's refusal.
+      const settleOutputTrip = async (
+        decision: GuardrailDecision,
+        subject: string,
+      ) => {
         turnState.pendingAttachments.length = 0;
-        const replacement = screenedText(outGuard, screened);
+        const replacement = screenedText(decision, subject);
         // NOTE: The refused reply goes nowhere and the case goes to the team; the transfer is marked,
         // so the empty branch below does not resolve or hand over twice.
-        if (outGuard.kind === "handed-off") {
+        if (decision.kind === "handed-off") {
           const handed = await handOverForGuardrail("output");
           if (handed !== "handed" && handed !== "failed")
             return refused(handed);
@@ -2497,7 +2531,34 @@ async function runTurnBody(
           reply = replacement;
         }
         replyRecovered = false;
-        replyByOperator = screenedByOperator(outGuard);
+        replyByOperator = screenedByOperator(decision);
+        return null;
+      };
+      if (outGuard && guardrailTripped(outGuard)) {
+        const settled = await settleOutputTrip(outGuard, screened);
+        if (settled) return settled;
+      }
+      // The external check judges what would go out now: the reply after the built-in screening,
+      // unless that already stood the operator's own text in for it. One call per reply, before it
+      // is split, spoken or signed, so no piece of it gets past a block.
+      if (runExternalCheck && reply && !replyByOperator) {
+        const external = await runExternalCheck({
+          text: reply,
+          model: fallbackAnswered ? "fallback" : "primary",
+          toolCalls: turnToolCalls(
+            result.messages,
+            loaded.guardrails.external.sendToolValues,
+          ),
+        });
+        if (await writeCalledOff()) return refused(standDown());
+        // NOTE: A person who took the conversation over during the wait wins: nothing is delivered
+        // after the hand-over. A failed read lets the reply go on, as the gates above do.
+        if (!(await ownershipNow().catch(() => true)))
+          return refused("taken-over");
+        if (guardrailTripped(external)) {
+          const settled = await settleOutputTrip(external, reply);
+          if (settled) return settled;
+        }
       }
 
       // NOTE: Empty reply: queued attachments and a deferred resolve still apply. After the recheck and

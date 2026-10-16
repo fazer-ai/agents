@@ -19,6 +19,7 @@ import {
 } from "./calendar-slots";
 import {
   type IntegrationSelection,
+  mutedToolpackCtx,
   registerToolpack,
   type Toolpack,
   type ToolpackCtx,
@@ -126,7 +127,7 @@ function hasAttendees(ev: Record<string, unknown>): boolean {
 // nobody: the calendar still changes, the platform just does not announce it (docs/chatwoot.md,
 // "Observation").
 function mutedTurn(ctx: ToolpackCtx): boolean {
-  return ctx.chatwoot?.client?.muted === true;
+  return mutedToolpackCtx(ctx);
 }
 
 // The query a move or a cancel carries: guests are told, unless this turn may not speak.

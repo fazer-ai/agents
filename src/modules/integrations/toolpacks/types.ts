@@ -272,6 +272,12 @@ export function fencedFetch(
   }) as typeof fetch;
 }
 
+// Whether the turn never speaks to the customer: on the muted handle a real observation carries, or on
+// the flag a build with no conversation sets. Every pack asks here, so the two cannot disagree.
+export function mutedToolpackCtx(ctx: ToolpackCtx): boolean {
+  return ctx.muted === true || ctx.chatwoot?.client?.muted === true;
+}
+
 export function buildToolpackTools(
   selections: IntegrationSelection[],
   ctx: ToolpackCtx,
@@ -286,7 +292,7 @@ export function buildToolpackTools(
   // delivery this client refuses costs a model round and answers with a failure the operator reads
   // as a broken integration. Read off the client the ctx already carries, so the mute and the
   // toolset cannot disagree.
-  const muted = ctx.muted === true || ctx.chatwoot?.client?.muted === true;
+  const muted = mutedToolpackCtx(ctx);
   const out: StructuredToolInterface[] = [];
   for (const sel of selections) {
     if (sel.enabledTools.length === 0) continue;

@@ -38,6 +38,7 @@ import type {
   GuardrailsConfig,
   GuardrailThresholdKey,
 } from "@/modules/guardrails/settings";
+import { ExternalCheckContract } from "./ExternalCheckContract";
 import { Section, SectionNav } from "./SectionNav";
 import { TabActionBar } from "./TabActionBar";
 import type { GuardrailsRefusals } from "./types";
@@ -805,6 +806,9 @@ export function GuardrailsTab({
                   "Before a reply to a customer is delivered, it is sent to your endpoint with the turn's messages and tool calls, and your endpoint answers allow, replace or block. A block uses the Output action; no answer within 15 s follows “When a check cannot run”.",
                 )}
               >
+                <div>
+                  <ExternalCheckContract />
+                </div>
                 <FormField
                   label={t("editor.guardrails.externalUrl", "Endpoint URL")}
                   error={refusals.externalUrl}

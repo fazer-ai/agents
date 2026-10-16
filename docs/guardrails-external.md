@@ -12,6 +12,8 @@ An operator who already runs their own checks (a verifier that compares a reply 
 | `credentialRef` | Vault reference of the HMAC signing secret, a plain string (a managed OAuth entry is refused at write). Null sends the request unsigned. |
 | `sendToolValues` | Default `true`. `false` sends each tool call's name and sizes without its arguments and result. |
 
+The section's "Request and response format" button opens this contract in the console, in the operator's language (sample values only; keys, decisions and headers stay as on the wire), with a copy button per example and one that copies the whole thing as Markdown. `tests/client/external-check-contract.test.tsx` holds its examples to `buildExternalRequest` and `readExternalAnswer`.
+
 The check runs when `guardrails.enabled` is on and `url` is set. It does not need the built-in output direction to be on, but a `block` uses that direction's action and messages (`output.action`, `templateMessage`, `handoffMessage`). The call goes through the same outbound guard as every other outbound request (`assertSafeOutboundUrl`): a private or loopback address is refused at call time unless the instance allows private targets (`SSRF_ALLOW_PRIVATE_TARGETS`).
 
 ## When it runs

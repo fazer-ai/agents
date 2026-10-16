@@ -4,6 +4,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { z } from "zod";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { GROUNDING_DIRECTIVE } from "@/graph/prompt";
+import { CUSTOMER_DELIVERY_NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
 import type { TenantContext } from "@/lib/tenancy";
 import { estimateTokens } from "@/lib/token-estimate";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
@@ -231,6 +232,42 @@ describe.skipIf(!dbUp)("estimateCallFloor", () => {
       where: { mcpServerConnectionId: conn.id },
     });
     await suDb.mcpServerConnection.delete({ where: { id: conn.id } });
+  });
+
+  // An LLM observer runs on a muted client and is never offered what reaches the customer, so the
+  // floor it is shown has to leave those schemas out, or it reads high by every one of them.
+  test("an LLM observer's floor leaves out what an observation is never offered", async () => {
+    const make = async (mode?: "monitoring") =>
+      (
+        await suDb.agent.create({
+          data: {
+            tenantId,
+            name: `Obs ${mode ?? "reply"}`,
+            systemPrompt: PROMPT,
+            ...(mode ? { mode } : {}),
+            modelConfig: { provider: "openai", model: "gpt-4o-mini" },
+            settings: mode ? { monitoring: { engine: "llm" } } : {},
+          },
+        })
+      ).id;
+    const observer = await make("monitoring");
+    const responder = await make();
+    const names = async (id: bigint) => {
+      const f = await estimateCallFloor({
+        ctx: ctx(),
+        agentId: id,
+        base: appDb,
+      });
+      if (f.engine !== "llm") throw new Error("engine");
+      return f.tools.map((t) => t.name);
+    };
+    const delivering = [...CUSTOMER_DELIVERY_NATIVE_TOOL_NAMES] as string[];
+    const replying = await names(responder);
+    // Positive control: with the default natives, a replying agent is offered some of them.
+    expect(replying.some((n) => delivering.includes(n))).toBe(true);
+    const observing = await names(observer);
+    expect(observing.filter((n) => delivering.includes(n))).toEqual([]);
+    expect(observing).toContain("private_note");
   });
 
   test("a decisions-engine observer gets no numbers: it never sends this prompt", async () => {

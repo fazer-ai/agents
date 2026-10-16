@@ -73,4 +73,51 @@ describe("the editor's bar covers the whole agent", () => {
     await screen.findByRole("tab", { name: "General", selected: true });
     expect(stub.writes).toEqual([]);
   });
+
+  // A hold is judged when its tab is drawn, and what it reads can change while it is not: here the
+  // fallback model is checked only on the language model. Switched to questions and rules on General,
+  // the save goes to Behavior to judge again, finds nothing holding it, and writes.
+  test("a hold that no longer stands on its tab does not stop the save", async () => {
+    const stub = stubEditorApi({
+      name: "Observador",
+      mode: "monitoring",
+      settings: {
+        modelFallback: { provider: "gemini", model: "" },
+        monitoring: {
+          engine: "llm",
+          decisions: {
+            provider: "typesafe",
+            credentialRef: "vault:12",
+            questions: [
+              { name: "pede_reembolso", type: "yes_no", instructions: "Pede?" },
+            ],
+            rules: [
+              {
+                when: [{ question: "pede_reembolso", minProbability: 0.7 }],
+                action: { tool: "set_labels", args: { add: ["reembolso"] } },
+              },
+            ],
+          },
+        },
+      },
+    });
+    await renderEditor(stub, "behavior");
+    editTab("behavior");
+    await waitFor(() => expect(save().disabled).toBe(true));
+    await goTo("General");
+    fireEvent.click(
+      await waitFor(() => {
+        const el = document.querySelector<HTMLElement>(
+          '[data-testid="engine-decisions"]',
+        );
+        if (!el) throw new Error("the engine cards are not there yet");
+        return el;
+      }),
+    );
+    fireEvent.click(save());
+    await waitFor(() =>
+      expect(stub.writes.some((w) => w.method === "PATCH")).toBe(true),
+    );
+    expect(screen.queryByText(/Fix the Behavior tab/)).toBeNull();
+  });
 });

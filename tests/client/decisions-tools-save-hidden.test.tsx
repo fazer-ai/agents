@@ -465,12 +465,20 @@ test("a Knowledge draft made on the language model stays unsaved through a Tools
     if (!p) throw new Error("no PUT yet");
     return p;
   });
-  const sentRag = (put.body as { grants: { source: string }[] }).grants.some(
-    (g) => g.source === "RAG",
-  );
   await waitFor(() =>
     expect(asked.some((a) => a.method === "PATCH")).toBe(true),
   );
+  await waitFor(() => expect(text().includes("Tools updated.")).toBe(true));
+  // Every grant write of the save, not just the first: the Knowledge save, which this engine does not
+  // draw, must not follow the Tools one with the hidden draft.
+  const sentRag = asked
+    .filter((a) => a.method === "PUT")
+    .some((w) =>
+      (w.body as { grants: { source: string }[] }).grants.some(
+        (g) => g.source === "RAG",
+      ),
+    );
+  expect(put).toBeDefined();
   await engine("llm");
   await tab("Knowledge");
   await waitFor(() => expect(text().includes("FAQ do SAC")).toBe(true));

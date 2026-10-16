@@ -3882,8 +3882,20 @@ function AgentEditor() {
 
   // The editor bar's Save, on every tab.
   function saveFromBar() {
+    recheckedRef.current = new Set();
     void saveAllDirty({ leaveHidden: true });
   }
+  // A held section on a tab not on screen was judged when that tab was last drawn, and what it reads
+  // may have changed since (the engine, the model). The save opens it, the tab reports again, and the
+  // save resumes there: a hold that still stands is said on its own tab, a stale one lets it through.
+  const recheckedRef = useRef<Set<TabKey>>(new Set());
+  const resumeSaveOnRef = useRef<TabKey | null>(null);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: runs when the tab the save opened is drawn; the save reads the current render
+  useEffect(() => {
+    if (resumeSaveOnRef.current !== tab) return;
+    resumeSaveOnRef.current = null;
+    void saveAllDirty({ leaveHidden: true });
+  }, [tab]);
 
   // Saves every dirty section sequentially (so the optimistic-concurrency token chains through each
   // write), for the editor's bar on every tab and for "Save and export" (agents#1520). It stops at the
@@ -3950,8 +3962,17 @@ function AgentEditor() {
     // button, so it refuses the same state before writing any section.
     // NOTE: A tab's own Save rule, reported by its bar while it was drawn: a field there that cannot
     // be written as it is. Only a dirty section's rule holds, since only it would be written.
+    // Only a section this save would write: one the engine does not draw stays pending (below).
+    const drawn = (key: TabKey) =>
+      !opts.leaveHidden || visibleTabs.some((item) => item.key === key);
     for (const key of SAVE_SECTIONS) {
-      if (dirty[key] && blockedRef.current[key]) {
+      if (dirty[key] && drawn(key) && blockedRef.current[key]) {
+        if (opts.leaveHidden && key !== tab && !recheckedRef.current.has(key)) {
+          recheckedRef.current.add(key);
+          resumeSaveOnRef.current = key;
+          openTab(key);
+          return false;
+        }
         return held(
           key,
           t("editor.saveHeldField", "a field there cannot be saved as it is."),
@@ -4017,12 +4038,20 @@ function AgentEditor() {
       ))
     )
       return stopped("behavior");
-    if (dirty.channelRedirect && !(await saveChannelRedirect()))
+    // NOTE: A section whose tab this engine does not draw is not written by the bar: its edits are the
+    // other engine's, and the Tools save already writes the grants this engine hides as stored.
+    if (
+      dirty.channelRedirect &&
+      drawn("channelRedirect") &&
+      !(await saveChannelRedirect())
+    )
       return stopped("channelRedirect");
-    if (dirty.guardrails && !(await saveGuardrails()))
+    if (dirty.guardrails && drawn("guardrails") && !(await saveGuardrails()))
       return stopped("guardrails");
-    if (dirty.tools && !(await saveTools())) return stopped("tools");
-    if (dirty.knowledge && !(await saveGrants())) return stopped("knowledge");
+    if (dirty.tools && drawn("tools") && !(await saveTools()))
+      return stopped("tools");
+    if (dirty.knowledge && drawn("knowledge") && !(await saveGrants()))
+      return stopped("knowledge");
     if (opts.leaveHidden && sayHidden()) return false;
     return true;
   }

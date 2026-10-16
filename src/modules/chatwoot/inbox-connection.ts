@@ -121,7 +121,7 @@ export async function applyInboxConnectionChange(
     isOpen ? "channel.connected" : "channel.disconnected",
     {
       inbox_id: String(row.id),
-      chatwoot_inbox_id: change.chatwootInboxId,
+      chatwoot_inbox_id: String(change.chatwootInboxId),
       provider: change.provider,
       connection: change.connection,
       previous_connection: before,

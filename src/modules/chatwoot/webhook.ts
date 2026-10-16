@@ -41,6 +41,7 @@ import {
   runScopedOn,
   type ScopedDb,
   type TenantContext,
+  type TxBudget,
 } from "@/lib/tenancy";
 import { ingestsContinuously, isMonitoring } from "@/modules/agents/mode";
 import { agentObservesNow, agentStillSpeaks } from "@/modules/agents/speaks";
@@ -1092,6 +1093,12 @@ export async function receiveChatwootWebhook(
   };
 }
 
+// The ack pool's own bounds (2s to connect, 2s per statement) under one deadline, well inside Chatwoot's
+// ~5s: the general scoped budget would lift the statement timeout and let a held inbox lock stretch the ack.
+function inboxConnectionAckBudget(): TxBudget {
+  return { maxWait: 2_000, timeout: 2_000, deadline: Date.now() + 3_500 };
+}
+
 // A channel connection change is applied inside the ack, with no ledger row: it is one locked row and
 // at most one outbound insert, ordered by the fork's own write time, so a redelivery or the other
 // route's copy finds it already applied. A write that fails is a 503, for Chatwoot to retry.
@@ -1111,8 +1118,12 @@ async function receiveInboxConnection(
   const ackBase = params.ackBase ?? params.base ?? ackPrisma;
   let applied: Awaited<ReturnType<typeof applyInboxConnectionChange>>;
   try {
-    applied = await runScopedOn(ackBase, sysCtx(bot.tenantId), (db) =>
-      applyInboxConnectionChange(db, bot.tenantId, bot.instanceId, change),
+    applied = await runScopedOn(
+      ackBase,
+      sysCtx(bot.tenantId),
+      (db) =>
+        applyInboxConnectionChange(db, bot.tenantId, bot.instanceId, change),
+      inboxConnectionAckBudget(),
     );
   } catch (err) {
     logger.warn(

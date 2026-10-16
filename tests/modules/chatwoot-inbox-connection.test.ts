@@ -110,7 +110,7 @@ async function eventsFor(chatwootInboxId: number) {
       event: r.event,
       data: (r.payload as { data: Record<string, unknown> }).data,
     }))
-    .filter((r) => r.data.chatwoot_inbox_id === chatwootInboxId);
+    .filter((r) => r.data.chatwoot_inbox_id === String(chatwootInboxId));
 }
 
 async function seedInbox(chatwootInboxId: number) {
@@ -195,7 +195,7 @@ describe.skipIf(!dbUp)("channel connection events", () => {
         event: "channel.connected",
         data: {
           inbox_id: String(inbox.id),
-          chatwoot_inbox_id: 101,
+          chatwoot_inbox_id: "101",
           provider: "zapi",
           connection: "open",
           previous_connection: "close",
@@ -293,6 +293,39 @@ describe.skipIf(!dbUp)("channel connection events", () => {
     });
     expect(stored.connectionAt).toBeNull();
   });
+
+  // The bug it catches: the general transaction budget, which waits on a held inbox lock past
+  // Chatwoot's ~5s ack deadline instead of answering 503 for a retry.
+  test("a held inbox lock answers 503 inside the ack deadline", async () => {
+    const inbox = await seedInbox(108);
+    let release = () => {};
+    const held = new Promise<void>((r) => {
+      release = r;
+    });
+    let locked = () => {};
+    const isLocked = new Promise<void>((r) => {
+      locked = r;
+    });
+    const holder = suDb.$transaction(
+      async (tx) => {
+        await tx.$queryRaw`SELECT id FROM inboxes WHERE id = ${inbox.id} FOR UPDATE`;
+        locked();
+        await held;
+      },
+      { timeout: 20_000 },
+    );
+    await isLocked;
+    const started = Date.now();
+    try {
+      await expect(
+        deliver(report(108, "open", "close", at(1))),
+      ).rejects.toMatchObject({ statusCode: 503 });
+      expect(Date.now() - started).toBeLessThan(4_500);
+    } finally {
+      release();
+      await holder;
+    }
+  }, 15_000);
 
   // The bug it catches: an inbox nobody mirrored here, or a body missing the time that orders it,
   // written or announced anyway.

@@ -294,6 +294,66 @@ function decodeExtractKind(
     : undefined;
 }
 
+// One grant as the editor sends it, for the save and for the estimate of an unsaved set.
+const ToolGrantBody = t.Object({
+  source: t.Union(
+    [
+      t.Literal("NATIVE"),
+      t.Literal("RAG"),
+      t.Literal("HTTP"),
+      t.Literal("MCP"),
+      t.Literal("INTEGRATION"),
+      t.Literal("DOCUMENT"),
+      t.Literal("CODE"),
+    ],
+    {
+      description:
+        "Grant source: NATIVE (built-in tools), RAG (knowledge bases), HTTP (custom tool), MCP (MCP server connection), INTEGRATION (integration instance), DOCUMENT (document template), or CODE (operator-authored code tool).",
+    },
+  ),
+  toolDefinitionId: t.Optional(
+    t.Union([t.String(), t.Null()], {
+      description:
+        "Tool definition id (BigInt string) for NATIVE or HTTP grants, or null.",
+    }),
+  ),
+  mcpServerConnectionId: t.Optional(
+    t.Union([t.String(), t.Null()], {
+      description:
+        "MCP server connection id (BigInt string) for MCP grants, or null.",
+    }),
+  ),
+  integrationInstanceId: t.Optional(
+    t.Union([t.String(), t.Null()], {
+      description:
+        "Integration instance id (BigInt string) for INTEGRATION grants, or null.",
+    }),
+  ),
+  documentTemplateId: t.Optional(
+    t.Union([t.String(), t.Null()], {
+      description:
+        "Document template id (BigInt string) for DOCUMENT grants, or null.",
+    }),
+  ),
+  codeToolDefinitionId: t.Optional(
+    t.Union([t.String(), t.Null()], {
+      description: "Code tool id (BigInt string) for CODE grants, or null.",
+    }),
+  ),
+  knowledgeBaseIds: t.Optional(
+    t.Array(t.String(), {
+      description:
+        "Knowledge-base ids (BigInt strings) for a RAG grant; the bases the agent may search.",
+    }),
+  ),
+  enabledTools: t.Optional(
+    t.Array(t.String(), {
+      description:
+        "Subset of tool names to enable within the source; omit to enable the source's full set.",
+    }),
+  ),
+});
+
 export const agentsController = new Elysia({
   prefix: "/v1/agents",
   tags: ["Agents"],
@@ -469,6 +529,36 @@ export const agentsController = new Elysia({
       params: t.Object({
         id: t.String({
           description: "Agent id, a BigInt encoded as a decimal string.",
+        }),
+      }),
+    },
+  )
+  .post(
+    "/:id/call-floor",
+    async ({ tenantContext, params, body }) => ({
+      instance: instanceIdentity,
+      floor: await estimateCallFloor({
+        ctx: ctxOrThrow(tenantContext),
+        agentId: requireDbId(params.id),
+        grants: (body as { grants: ToolGrantInput[] }).grants,
+      }),
+    }),
+    {
+      detail: doc(
+        "Estimate the call floor of an unsaved tool set",
+        "The same estimate as `GET /v1/agents/{id}/call-floor`, measured with the given grants in place of the saved ones, so an editor can show what saving them would send. Nothing is written. The grants are validated as `PUT /v1/agents/{id}/tool-selections` validates them; a grant pointing at something this tenant does not have counts as absent, as it would at runtime.",
+      ),
+      response: errors(400, 401, 403, 404),
+      requireRole: "TENANT_ADMIN",
+      params: t.Object({
+        id: t.String({
+          description: "Agent id, a BigInt encoded as a decimal string.",
+        }),
+      }),
+      body: t.Object({
+        grants: t.Array(ToolGrantBody, {
+          description:
+            "The whole grant set to measure, in the shape the tool-selections replace takes.",
         }),
       }),
     },
@@ -1547,67 +1637,7 @@ export const agentsController = new Elysia({
         }),
       }),
       body: t.Object({
-        grants: t.Array(
-          t.Object({
-            source: t.Union(
-              [
-                t.Literal("NATIVE"),
-                t.Literal("RAG"),
-                t.Literal("HTTP"),
-                t.Literal("MCP"),
-                t.Literal("INTEGRATION"),
-                t.Literal("DOCUMENT"),
-                t.Literal("CODE"),
-              ],
-              {
-                description:
-                  "Grant source: NATIVE (built-in tools), RAG (knowledge bases), HTTP (custom tool), MCP (MCP server connection), INTEGRATION (integration instance), DOCUMENT (document template), or CODE (operator-authored code tool).",
-              },
-            ),
-            toolDefinitionId: t.Optional(
-              t.Union([t.String(), t.Null()], {
-                description:
-                  "Tool definition id (BigInt string) for NATIVE or HTTP grants, or null.",
-              }),
-            ),
-            mcpServerConnectionId: t.Optional(
-              t.Union([t.String(), t.Null()], {
-                description:
-                  "MCP server connection id (BigInt string) for MCP grants, or null.",
-              }),
-            ),
-            integrationInstanceId: t.Optional(
-              t.Union([t.String(), t.Null()], {
-                description:
-                  "Integration instance id (BigInt string) for INTEGRATION grants, or null.",
-              }),
-            ),
-            documentTemplateId: t.Optional(
-              t.Union([t.String(), t.Null()], {
-                description:
-                  "Document template id (BigInt string) for DOCUMENT grants, or null.",
-              }),
-            ),
-            codeToolDefinitionId: t.Optional(
-              t.Union([t.String(), t.Null()], {
-                description:
-                  "Code tool id (BigInt string) for CODE grants, or null.",
-              }),
-            ),
-            knowledgeBaseIds: t.Optional(
-              t.Array(t.String(), {
-                description:
-                  "Knowledge-base ids (BigInt strings) for a RAG grant; the bases the agent may search.",
-              }),
-            ),
-            enabledTools: t.Optional(
-              t.Array(t.String(), {
-                description:
-                  "Subset of tool names to enable within the source; omit to enable the source's full set.",
-              }),
-            ),
-          }),
-        ),
+        grants: t.Array(ToolGrantBody),
         expectedUpdatedAt: t.Optional(
           t.String({
             description:

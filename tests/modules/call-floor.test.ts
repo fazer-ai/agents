@@ -486,6 +486,75 @@ describe.skipIf(!dbUp)("estimateCallFloor", () => {
   });
 
   // The same number for a caller that never opens the console, fenced like every MCP read.
+  // The editor measures the set on screen, so a switch shows its cost before the save. The draft
+  // replaces the saved set whole, writes nothing, and reads its targets inside the tenant.
+  test("an unsaved grant set is measured in place of the saved one, and nothing is written", async () => {
+    const kb = await suDb.knowledgeBase.create({
+      data: { tenantId, name: "Rascunho" },
+    });
+    const mine = await suDb.codeToolDefinition.create({
+      data: {
+        tenantId,
+        name: "so_no_rascunho",
+        label: "Só no rascunho",
+        description: "Existe só no rascunho.",
+        inputSchema: { q: { type: "string", description: "q" } },
+        code: "return input.q;",
+      },
+    });
+    const foreign = await suDb.codeToolDefinition.create({
+      data: {
+        tenantId: otherTenantId,
+        name: "de_outro_tenant",
+        label: "De outro tenant",
+        description: "Pertence a outro tenant.",
+        inputSchema: { q: { type: "string", description: "q" } },
+        code: "return input.q;",
+      },
+    });
+    const savedBefore = await suDb.agentToolSelection.count({
+      where: { agentId },
+    });
+    const saved = await floorOf();
+    const draft = await estimateCallFloor({
+      ctx: ctx(),
+      agentId,
+      base: appDb,
+      grants: [
+        { source: "NATIVE", enabledTools: [] },
+        { source: "CODE", codeToolDefinitionId: String(mine.id) },
+        { source: "CODE", codeToolDefinitionId: String(foreign.id) },
+        {
+          source: "RAG",
+          enabledTools: ["suggest_kb_entry"],
+          knowledgeBaseIds: [String(kb.id)],
+        },
+      ],
+    });
+    if (draft.engine !== "llm") throw new Error("engine");
+    // Exactly the draft: the saved tools are gone, the draft's own is there, the foreign one is not.
+    expect(draft.tools.map((t) => t.name).sort()).toEqual([
+      "so_no_rascunho",
+      "suggest_kb_entry",
+    ]);
+    // Suggestions alone do not ground the answers, so the rules the saved search added are not sent.
+    expect(saved.instructionsAddedBy.grounding).toBeGreaterThan(0);
+    expect(draft.instructionsAddedBy.grounding).toBe(0);
+    expect(await suDb.agentToolSelection.count({ where: { agentId } })).toBe(
+      savedBefore,
+    );
+    expect(await floorOf()).toEqual(saved);
+    // A set the save refuses is refused here too, rather than measured as something else.
+    await expect(
+      estimateCallFloor({
+        ctx: ctx(),
+        agentId,
+        base: appDb,
+        grants: [{ source: "NATIVE", enabledTools: ["no_such_tool"] }],
+      }),
+    ).rejects.toMatchObject({ statusCode: 400 });
+  });
+
   test("agent_call_floor answers the console's number, inside the token's tenant only", async () => {
     const r = await agentCallFloor(
       principal(tenantId),

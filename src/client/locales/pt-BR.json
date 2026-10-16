@@ -1473,7 +1473,7 @@
     "callFloor": {
       "added": "inclui {{n}} que o sistema acrescenta (regras da base de conhecimento, servidores MCP)",
       "decisions": "Instruções e ferramentas não se aplicam: este agente decide com perguntas e regras e não envia instruções a um modelo.",
-      "help": "É uma estimativa: a contagem que o provedor cobra pode ser maior, ainda mais com muitas ferramentas.\n\nÉ o piso de uma chamada. Cada conversa soma a isso o histórico e o que é dela, e nada disso entra aqui: atributos do contato e da conversa e campos do contato, agendamentos, a verificação de autorização e o contexto de outras caixas de entrada, o vocabulário de etiquetas e de transferência que as descrições das ferramentas nativas ganham numa conversa, e os avisos de cada turno. As ferramentas contam como estão salvas; as instruções contam como você digita.",
+      "help": "É uma estimativa: a contagem que o provedor cobra pode ser maior, ainda mais com muitas ferramentas.\n\nÉ o piso de uma chamada. Cada conversa soma a isso o histórico e o que é dela, e nada disso entra aqui: atributos do contato e da conversa e campos do contato, agendamentos, a verificação de autorização e o contexto de outras caixas de entrada, o vocabulário de etiquetas e de transferência que as descrições das ferramentas nativas ganham numa conversa, e os avisos de cada turno. Ferramentas e instruções contam como estão na tela, antes de salvar.",
       "helpLabel": "Sobre esta estimativa",
       "instructions": "Instruções do agente",
       "instructionsLine": "Estas instruções somam {{n}} tokens a cada chamada.",

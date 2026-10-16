@@ -139,4 +139,95 @@ describe("the editor's bar covers the whole agent", () => {
     ).toBeUndefined();
     expect(save().disabled).toBe(false);
   });
+
+  // The Tools write replaces the shared grant set when it lands. A Knowledge edit made while it was out
+  // is newer than what it wrote, so it stays on screen, and unsaved.
+  test("a Knowledge edit made while the Tools write is out survives it", async () => {
+    const stub = stubEditorApi(
+      { name: "Atendente" },
+      {
+        catalog: {
+          ...NATIVE_CATALOG,
+          rag: [{ name: "search_knowledge" }, { name: "suggest_kb_entry" }],
+          knowledgeBases: [{ id: "5", name: "FAQ" }],
+        },
+      },
+    );
+    const served = globalThis.fetch;
+    let release: () => void = () => {};
+    const held = new Promise<void>((r) => {
+      release = r;
+    });
+    let putSent = false;
+    globalThis.fetch = (async (
+      input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      if ((init?.method ?? "GET") === "PUT" && !putSent) {
+        putSent = true;
+        await held;
+      }
+      return served(input, init);
+    }) as typeof fetch;
+    await renderEditor(stub, "tools");
+    editTab("tools");
+    await goTo("Knowledge");
+    const retrieval = () =>
+      screen.getByRole("switch", { name: "Enable knowledge retrieval" });
+    const before = retrieval().getAttribute("aria-checked");
+    fireEvent.click(save());
+    await waitFor(() => expect(putSent).toBe(true));
+    fireEvent.click(retrieval());
+    release();
+    await screen.findByText("Tools updated.");
+    expect(retrieval().getAttribute("aria-checked")).not.toBe(before);
+    expect(
+      screen
+        .getByRole("tab", { name: /Knowledge/ })
+        .querySelector(".bg-warning"),
+    ).not.toBeNull();
+  });
+
+  // The decision setup goes out with General whichever tab draws it: switched to the language model,
+  // the save writes it and says nothing about Questions and rules being left behind.
+  test("switching a watcher to the language model saves without a left-behind warning", async () => {
+    const stub = stubEditorApi({
+      name: "Observador",
+      mode: "monitoring",
+      settings: {
+        monitoring: {
+          engine: "decisions",
+          decisions: {
+            provider: "typesafe",
+            credentialRef: "vault:12",
+            questions: [
+              { name: "pede_reembolso", type: "yes_no", instructions: "Pede?" },
+            ],
+            rules: [
+              {
+                when: [{ question: "pede_reembolso", minProbability: 0.7 }],
+                action: { tool: "set_labels", args: { add: ["reembolso"] } },
+              },
+            ],
+          },
+        },
+      },
+    });
+    await renderEditor(stub, "general");
+    fireEvent.click(
+      await waitFor(() => {
+        const el = document.querySelector<HTMLElement>(
+          '[data-testid="engine-llm"]',
+        );
+        if (!el) throw new Error("the engine cards are not there yet");
+        return el;
+      }),
+    );
+    fireEvent.click(save());
+    await waitFor(() =>
+      expect(stub.writes.some((w) => w.method === "PATCH")).toBe(true),
+    );
+    await waitFor(() => expect(save().disabled).toBe(true));
+    expect(screen.queryByText(/were not saved/)).toBeNull();
+  });
 });

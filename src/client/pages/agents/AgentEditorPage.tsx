@@ -3379,6 +3379,9 @@ function AgentEditor() {
     setSavingGrants(true);
     let sent: Record<string, unknown> = {};
     const sentTools = { tools: sectionSnap.tools };
+    // The grants are one set the Knowledge tab edits too: a Knowledge edit made while this request
+    // runs (the bar saves Knowledge right after) must not be replaced by what this one wrote.
+    const sentGrants = { ...sentTools, knowledge: sectionSnap.knowledge };
     try {
       // Everything the PATCH will send, built BEFORE the grants PUT so the whole bag can be checked
       // against the write boundary's own rule first. None of it depends on the PUT's result.
@@ -3545,7 +3548,8 @@ function AgentEditor() {
       // On questions and rules the form keeps its hidden grant drafts and any toggle made while this
       // request ran; the baseline takes the written grants, not the form.
       const untouched = untouchedSince(sentTools);
-      if (!decides && untouched) setGrants(mapGrants(grantsRes.data.grants));
+      if (!decides && untouchedSince(sentGrants))
+        setGrants(mapGrants(grantsRes.data.grants));
       setCatalog(grantsRes.data.catalog);
       syncedAgentRef.current = agentRes.data.agent;
       if (untouched) syncToolConfig(agentRes.data.agent, decides);
@@ -4057,7 +4061,10 @@ function AgentEditor() {
     if (opts.leaveHidden && sayHidden()) return false;
     // A section of a tab this mode does not draw (Guardrails, Redirect on a watcher) was not written
     // either, and nothing above names it.
-    const skipped = SAVE_SECTIONS.filter((key) => dirty[key] && !drawn(key));
+    // The decision setup is not among them: it goes out with General whichever tab draws it.
+    const skipped = SAVE_SECTIONS.filter(
+      (key) => key !== "decisions" && dirty[key] && !drawn(key),
+    );
     if (skipped.length > 0) {
       showToast(
         t(

@@ -19,6 +19,8 @@ const CALL_RATE = 16_000;
 const HANGUP_TAIL_MS = 600;
 // After a farewell has been heard, how long the person has to say something before the call ends.
 const FAREWELL_SILENCE_MS = 2_500;
+// The most of the caller's voice kept while the engine connects; what comes after it is dropped.
+const EARLY_MAX_SAMPLES = CALL_RATE * 10;
 // Peak above which a frame from the person counts as speech, not line noise.
 const VOICE_PEAK = 1_500;
 
@@ -94,6 +96,7 @@ export class CallBridge {
   private farewellTimer: ReturnType<typeof setTimeout> | null = null;
   // The caller's voice from the answer until the engine is connected: their hello, often.
   private early: Int16Array[] = [];
+  private earlySamples = 0;
 
   constructor(
     private readonly socket: StreamSocket,
@@ -113,6 +116,7 @@ export class CallBridge {
     }
     switch (frame.event) {
       case "start":
+        if (this.start) return;
         this.start = {
           callId: typeof frame.call_id === "string" ? frame.call_id : null,
           direction: frame.direction === "outbound" ? "outbound" : "inbound",
@@ -122,12 +126,9 @@ export class CallBridge {
         this.opening = this.openSession();
         break;
       case "answered":
+        if (!this.start) return;
         // NOTE: a placed call only has its id once dialled, after the stream opened.
-        if (
-          this.start &&
-          !this.start.callId &&
-          typeof frame.call_id === "string"
-        )
+        if (!this.start.callId && typeof frame.call_id === "string")
           this.start.callId = frame.call_id;
         this.answered = true;
         this.answeredAt = new Date();
@@ -140,7 +141,10 @@ export class CallBridge {
         this.options.tap?.caller?.(pcm);
         if (this.farewellTimer && loud(pcm)) this.cancelFarewell();
         if (this.session) this.session.sendAudio(pcm);
-        else this.early.push(pcm);
+        else if (this.earlySamples + pcm.length <= EARLY_MAX_SAMPLES) {
+          this.early.push(pcm);
+          this.earlySamples += pcm.length;
+        }
         break;
       }
       case "stop":

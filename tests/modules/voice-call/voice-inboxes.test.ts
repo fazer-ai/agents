@@ -72,6 +72,7 @@ type AiVoice = { inbox_id: number; enabled: boolean; stream_url: string };
 function fakeChatwoot(
   opts: {
     failAiVoice?: boolean;
+    failAgentBots?: boolean;
     duringAiVoice?: () => Promise<void>;
     // conversation id -> the Chatwoot inbox it is in
     conversations?: Record<number, number>;
@@ -97,6 +98,7 @@ function fakeChatwoot(
       if (inbox === undefined) status = 404;
       else answer = { id: Number(path.split("/").pop()), inbox_id: inbox };
     } else if (path.endsWith("/agent_bots")) {
+      if (opts.failAgentBots) status = 503;
       answer =
         init?.method === "POST"
           ? { id: 900, access_token: "bot-token", secret: "bot-secret" }
@@ -447,6 +449,23 @@ describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
       fakeChatwoot(),
       appDb,
     );
+  });
+
+  test("a binding whose bot could not be created switches no calls on, and the next save creates it", async () => {
+    await suDb.chatwootAgentBot.deleteMany({ where: { agentId: voiceId } });
+    const down = fakeChatwoot({ failAgentBots: true });
+    await expect(
+      bindInboxVoiceAgent(ctx(tenant), whatsappInboxId, voiceId, down, appDb),
+    ).rejects.toMatchObject({ statusCode: 502 });
+    expect(down.writes).toEqual([]);
+    const cw = fakeChatwoot();
+    await syncVoiceAgentInboxes(ctx(tenant), voiceId, appDb, cw);
+    expect(
+      await suDb.chatwootAgentBot.count({ where: { agentId: voiceId } }),
+    ).toBe(1);
+    expect(cw.writes.map((w) => [w.inbox_id, w.enabled])).toEqual([
+      [501, true],
+    ]);
   });
 
   test("only a WhatsApp inbox takes calls, and only a voice agent answers them", async () => {

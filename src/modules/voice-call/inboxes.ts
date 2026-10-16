@@ -72,14 +72,18 @@ async function answers(
   );
 }
 
+// Before the calls are written, the bound agent's own bot: the identity its notes about a call are
+// posted under (`reportCall`), never attached to the inbox. Here and not only on binding, so the
+// write that repairs a binding also repairs a bot that could not be created then.
 async function writeToFork(
-  tenantId: bigint,
+  ctx: TenantContext,
   binding: VoiceBinding,
   on: boolean,
   base: PrismaClient,
   deps: LoadChatwootClientDeps,
 ): Promise<void> {
   if (!binding.voiceRouteToken) return;
+  const tenantId = ctx.tenantId as bigint;
   const client = await loadChatwootClient(
     tenantId,
     binding.chatwootInstanceId,
@@ -88,6 +92,21 @@ async function writeToFork(
       makeClient: deps.makeClient,
     },
   );
+  const agentId = binding.voiceAgentId;
+  if (agentId !== null) {
+    const agent = await runScopedOn(base, ctx, (db) =>
+      db.agent.findUnique({ where: { id: agentId }, select: { name: true } }),
+    );
+    if (agent)
+      await ensureAgentBot(
+        tenantId,
+        binding.chatwootInstanceId,
+        agentId,
+        agent.name,
+        client,
+        { base },
+      );
+  }
   await client.setVoiceAgent(
     binding.chatwootInboxId,
     on,
@@ -105,7 +124,6 @@ async function syncInbox(
   base: PrismaClient,
   deps: LoadChatwootClientDeps,
 ): Promise<void> {
-  const tenantId = ctx.tenantId as bigint;
   const read = () =>
     runScopedOn(base, ctx, (db) =>
       db.inbox.findUnique({ where: { id: inboxId }, select: BINDING_SELECT }),
@@ -116,7 +134,7 @@ async function syncInbox(
   // NOTE: bounded: each pass follows a binding, or an agent switch or mode, that committed after the
   // previous one was read.
   for (let pass = 0; pass < 3; pass++) {
-    await writeToFork(tenantId, binding, on, base, deps);
+    await writeToFork(ctx, binding, on, base, deps);
     const after = await read();
     if (!after) return;
     const nowOn = await answers(ctx, after, base);
@@ -145,7 +163,7 @@ export async function bindInboxVoiceAgent(
   base: PrismaClient = basePrisma,
 ): Promise<{ voiceAgentId: string | null }> {
   if (ctx.tenantId === null) throw new AppError("tenant required", 400);
-  const bound = await runScopedOn(base, ctx, async (db) => {
+  await runScopedOn(base, ctx, async (db) => {
     // Locked, so two first bindings do not both mint a token: the second reads the first's.
     await db.$queryRaw`SELECT id FROM inboxes WHERE id = ${inboxId} FOR NO KEY UPDATE`;
     const inbox = await db.inbox.findUnique({
@@ -153,7 +171,6 @@ export async function bindInboxVoiceAgent(
       select: {
         channelType: true,
         voiceRouteToken: true,
-        chatwootInstanceId: true,
         instance: { select: { disconnectedAt: true } },
       },
     });
@@ -170,11 +187,10 @@ export async function bindInboxVoiceAgent(
         422,
         "errors.voiceInboxNotWhatsapp",
       );
-    let agentName: string | null = null;
     if (agentId !== null) {
       const agent = await db.agent.findUnique({
         where: { id: agentId },
-        select: { kind: true, name: true },
+        select: { kind: true },
       });
       if (!agent) throw new NotFoundError("agent not found");
       if (agent.kind !== "voice")
@@ -183,7 +199,6 @@ export async function bindInboxVoiceAgent(
           422,
           "errors.voiceAgentRequired",
         );
-      agentName = agent.name;
     }
     const minted = inbox.voiceRouteToken ? null : generateRouteToken();
     await db.inbox.update({
@@ -198,25 +213,8 @@ export async function bindInboxVoiceAgent(
           : {}),
       },
     });
-    return { instanceId: inbox.chatwootInstanceId, agentName };
   });
   try {
-    // The agent's own bot, never attached to the inbox: the identity its notes about a call are
-    // posted under (`reportCall`).
-    if (agentId !== null && bound.agentName !== null) {
-      const client = await loadChatwootClient(ctx.tenantId, bound.instanceId, {
-        base,
-        makeClient: deps.makeClient,
-      });
-      await ensureAgentBot(
-        ctx.tenantId,
-        bound.instanceId,
-        agentId,
-        bound.agentName,
-        client,
-        { base },
-      );
-    }
     await syncInbox(ctx, inboxId, base, deps);
   } catch (err) {
     logger.warn(

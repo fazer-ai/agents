@@ -95,6 +95,47 @@ describe("CallBridge", () => {
     expect(state.begun).toBe(1);
   });
 
+  test("a stream takes no voice before it starts, opens one engine, and holds at most 10 s while it connects", async () => {
+    const { provider, state } = fakeEngine();
+    let connected: () => void = () => {};
+    let configured = 0;
+    const slow: VoiceProvider = {
+      name: "slow",
+      open: (config, handlers) =>
+        new Promise((resolve) => {
+          connected = () => resolve(provider.open(config, handlers));
+        }),
+    };
+    const bridge = new CallBridge(socket(), {
+      provider: slow,
+      configure: () => {
+        configured++;
+        return voiceSessionConfig(ROUTE, CTX);
+      },
+      onFinished: () => {},
+    });
+    const media = (fill: number) =>
+      JSON.stringify({
+        event: "media",
+        payload: pcmToBase64(new Int16Array(320).fill(fill)),
+      });
+    bridge.onMessage(JSON.stringify({ event: "answered" }));
+    bridge.onMessage(media(9));
+    bridge.onMessage(JSON.stringify({ event: "start", call_id: "c" }));
+    bridge.onMessage(JSON.stringify({ event: "start", call_id: "d" }));
+    bridge.onMessage(JSON.stringify({ event: "answered" }));
+    // 12 s of 20 ms frames at 16 kHz
+    for (let i = 0; i < 600; i++) bridge.onMessage(media(1));
+    await tick();
+    connected();
+    await tick();
+    expect(configured).toBe(1);
+    expect(state.received.some((pcm) => pcm[0] === 9)).toBe(false);
+    expect(state.received.reduce((n, pcm) => n + pcm.length, 0)).toBe(
+      16_000 * 10,
+    );
+  });
+
   test("speaks only once the call is answered, and carries voice both ways", async () => {
     const { provider, state } = fakeEngine();
     const ws = socket();

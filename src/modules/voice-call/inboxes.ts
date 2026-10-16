@@ -36,6 +36,7 @@ interface VoiceBinding {
   chatwootInboxId: number;
   voiceAgentId: bigint | null;
   voiceRouteToken: string | null;
+  instance: { disconnectedAt: Date | null };
 }
 
 const BINDING_SELECT = {
@@ -43,15 +44,20 @@ const BINDING_SELECT = {
   chatwootInboxId: true,
   voiceAgentId: true,
   voiceRouteToken: true,
+  instance: { select: { disconnectedAt: true } },
 } as const;
 
-/** Whether the inbox's calls go to its voice agent: one is bound, switched on, in production. */
+/**
+ * Whether the inbox's calls go to its voice agent: the account is connected, and one is bound,
+ * switched on, in production. The same question `resolveVoiceRoute` asks of a call.
+ */
 async function answers(
   ctx: TenantContext,
   binding: VoiceBinding,
   base: PrismaClient,
 ): Promise<boolean> {
-  if (binding.voiceAgentId === null) return false;
+  if (binding.voiceAgentId === null || binding.instance.disconnectedAt !== null)
+    return false;
   const agent = await runScopedOn(base, ctx, (db) =>
     db.agent.findUnique({
       where: { id: binding.voiceAgentId as bigint },
@@ -114,7 +120,12 @@ async function syncInbox(
     const after = await read();
     if (!after) return;
     const nowOn = await answers(ctx, after, base);
-    if (after.voiceAgentId === binding.voiceAgentId && nowOn === on) return;
+    if (
+      after.voiceAgentId === binding.voiceAgentId &&
+      after.voiceRouteToken === binding.voiceRouteToken &&
+      nowOn === on
+    )
+      return;
     binding = after;
     on = nowOn;
   }
@@ -122,8 +133,9 @@ async function syncInbox(
 
 /**
  * Binds a voice agent to an inbox's calls, or unbinds it (`agentId` null). Refuses an inbox that is
- * not WhatsApp (422) and an agent that is not a voice agent (422). 502 when the fork could not be
- * written; the binding is kept, and the next save of the agent writes it again.
+ * not WhatsApp (422), an agent that is not a voice agent (422) and a disconnected account (409). 502
+ * when the fork could not be written; the binding is kept, and the next save of any voice agent
+ * writes it again.
  */
 export async function bindInboxVoiceAgent(
   ctx: TenantContext,
@@ -134,15 +146,24 @@ export async function bindInboxVoiceAgent(
 ): Promise<{ voiceAgentId: string | null }> {
   if (ctx.tenantId === null) throw new AppError("tenant required", 400);
   const bound = await runScopedOn(base, ctx, async (db) => {
+    // Locked, so two first bindings do not both mint a token: the second reads the first's.
+    await db.$queryRaw`SELECT id FROM inboxes WHERE id = ${inboxId} FOR NO KEY UPDATE`;
     const inbox = await db.inbox.findUnique({
       where: { id: inboxId },
       select: {
         channelType: true,
         voiceRouteToken: true,
         chatwootInstanceId: true,
+        instance: { select: { disconnectedAt: true } },
       },
     });
     if (!inbox) throw new NotFoundError("inbox not found");
+    if (agentId !== null && inbox.instance.disconnectedAt !== null)
+      throw new AppError(
+        "this account is disconnected; reconnect it before assigning an agent",
+        409,
+        "errors.chatwootAccountDisconnected",
+      );
     if (inbox.channelType !== WHATSAPP_CHANNEL)
       throw new AppError(
         "only a WhatsApp inbox takes calls",
@@ -212,7 +233,11 @@ export async function bindInboxVoiceAgent(
   return { voiceAgentId: agentId === null ? null : String(agentId) };
 }
 
-/** Writes, on every inbox whose calls this voice agent answers, whether it answers them now. */
+/**
+ * Writes, on every inbox whose calls this voice agent answers, whether it answers them now; and on
+ * every inbox with no voice agent that ever had one, that its calls are off, which repairs an unbind
+ * whose write to the fork failed.
+ */
 export async function syncVoiceAgentInboxes(
   ctx: TenantContext,
   agentId: bigint,
@@ -222,10 +247,25 @@ export async function syncVoiceAgentInboxes(
   if (ctx.tenantId === null) return;
   const inboxes = await runScopedOn(base, ctx, (db) =>
     db.inbox.findMany({
-      where: { voiceAgentId: agentId },
+      where: {
+        OR: [
+          { voiceAgentId: agentId },
+          { voiceAgentId: null, voiceRouteToken: { not: null } },
+        ],
+      },
       select: { id: true },
     }),
   );
+  await syncVoiceInboxes(ctx, inboxes, base, deps);
+}
+
+/** Writes each inbox's calls to the fork, one failure not stopping the others. */
+export async function syncVoiceInboxes(
+  ctx: TenantContext,
+  inboxes: { id: bigint }[],
+  base: PrismaClient = basePrisma,
+  deps: LoadChatwootClientDeps = {},
+): Promise<void> {
   for (const inbox of inboxes) {
     try {
       await syncInbox(ctx, inbox.id, base, deps);

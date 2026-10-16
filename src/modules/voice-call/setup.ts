@@ -8,6 +8,7 @@ import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { tryResolveApiKeyEntry } from "@/modules/vault/service";
 import {
   checkElevenLabsAgentsAccess,
+  deleteElevenLabsAgent,
   ensureElevenLabsAgent,
 } from "./providers/elevenlabs-agent";
 import { type CallsConfig, readCallsConfig } from "./settings";
@@ -92,13 +93,33 @@ export async function setUpAgentCalls(
   if (elevenLabsAgentId !== calls.elevenLabsAgentId) {
     // A system write into the operator's block, by SQL so `updated_at` stays: an editor open on this
     // agent must not read it as somebody else's save. An agent saved before it had a calls block gets
-    // one, or the next call would create another agent on the tenant's account.
-    await runScopedOn(
+    // one, or the next call would create another agent on the tenant's account. Only over the id this
+    // setup read: two setups that both found none (a call and the editor's check) both create one, and
+    // the one that loses deletes its own and takes the winner's.
+    const stored = calls.elevenLabsAgentId;
+    const written = await runScopedOn(
       base,
       ctx,
       (db) =>
-        db.$executeRaw`UPDATE agents SET settings = jsonb_set(CASE WHEN jsonb_typeof(settings -> 'calls') = 'object' THEN settings ELSE settings || '{"calls": {}}'::jsonb END, '{calls,elevenLabsAgentId}', to_jsonb(${elevenLabsAgentId}::text), true) WHERE id = ${agentId}`,
+        db.$executeRaw`UPDATE agents SET settings = jsonb_set(CASE WHEN jsonb_typeof(settings -> 'calls') = 'object' THEN settings ELSE settings || '{"calls": {}}'::jsonb END, '{calls,elevenLabsAgentId}', to_jsonb(${elevenLabsAgentId}::text), true) WHERE id = ${agentId} AND (settings -> 'calls' ->> 'elevenLabsAgentId') IS NOT DISTINCT FROM ${stored}::text`,
     );
+    if (written === 0) {
+      await deleteElevenLabsAgent(apiKey, elevenLabsAgentId, opts.fetchImpl);
+      const winner = await runScopedOn(base, ctx, (db) =>
+        db.agent.findUnique({
+          where: { id: agentId },
+          select: { settings: true },
+        }),
+      );
+      const kept = readCallsConfig(winner?.settings).elevenLabsAgentId;
+      if (!kept)
+        return {
+          ok: false,
+          problem: "sync_failed",
+          detail: "the ElevenLabs agent id was cleared while it was being set",
+        };
+      elevenLabsAgentId = kept;
+    }
   }
   return { ok: true, setup: { calls, apiKey, voice, elevenLabsAgentId } };
 }

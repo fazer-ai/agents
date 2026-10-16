@@ -12,6 +12,7 @@ import type { VoiceProvider } from "@/modules/voice-call/providers/types";
 import {
   type CallContext,
   conversationHistory,
+  fenceConversation,
   reportCall,
   resolveVoiceRoute,
   voiceSessionConfig,
@@ -107,6 +108,10 @@ export const voiceController = new Elysia({
             const resolved = await route;
             if (!resolved) throw new Error("unknown route token");
             ctx.inboxId = resolved.inboxId;
+            ctx.conversationId = await fenceConversation(
+              resolved,
+              ctx.conversationId,
+            );
             const [history, agent, calls] = await Promise.all([
               conversationHistory(resolved, ctx.conversationId),
               loadVoiceAgent(resolved, ctx.conversationId),

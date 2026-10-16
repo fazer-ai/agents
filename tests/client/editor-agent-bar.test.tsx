@@ -608,4 +608,56 @@ describe("the editor's bar covers the whole agent", () => {
     await goTo("General");
     expect(nameField().value).toBe("Atendente (editado)");
   });
+
+  // Once General is written, the rest judge against what it wrote: a provider switched on General
+  // while its write is out stays a pending edit and does not hold Behavior's write.
+  test("a General edit made during its write does not hold the sections after it", async () => {
+    const stub = stubEditorApi({
+      name: "Atendente",
+      modelConfig: {
+        provider: "openai-compatible",
+        model: "m",
+        baseURL: "https://llm.example.com/v1",
+      },
+      settings: {
+        modelFallback: {
+          provider: "openai-compatible",
+          model: "m",
+          baseURL: null,
+        },
+      },
+    });
+    const served = globalThis.fetch;
+    let release: () => void = () => {};
+    const held = new Promise<void>((r) => {
+      release = r;
+    });
+    let patchSent = false;
+    globalThis.fetch = (async (
+      input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      if ((init?.method ?? "GET") === "PATCH" && !patchSent) {
+        patchSent = true;
+        await held;
+      }
+      return served(input, init);
+    }) as typeof fetch;
+    await renderEditor(stub, "behavior");
+    editTab("behavior");
+    await goTo("General");
+    editTab("general");
+    fireEvent.click(save());
+    await waitFor(() => expect(patchSent).toBe(true));
+    fireEvent.change(screen.getByLabelText("Provider"), {
+      target: { value: "openai" },
+    });
+    release();
+    await waitFor(
+      () =>
+        expect(stub.writes.filter((w) => w.method === "PATCH").length).toBe(2),
+      { timeout: 5_000 },
+    );
+    expect(screen.queryByText(/Fix the Behavior tab/)).toBeNull();
+  });
 });

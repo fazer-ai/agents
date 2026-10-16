@@ -2668,9 +2668,12 @@ function AgentEditor() {
     vaultBaseUrl(savedModel.credentialRef) ?? savedModel.baseURL;
   // The model the editor's Save writes (agents#1520): the bar saves every section together, General
   // first, so the other tabs judge their overrides against General's draft. On questions and rules
-  // no save writes the chat model, and the stored one is the one that stays.
-  const modelAfterSave = decides ? savedModel : model;
-  const modelAfterSaveBaseUrl = decides
+  // no save writes the chat model, and the stored one is the one that stays. Once a running save has
+  // written General, the rest judge against what it wrote, not an edit made since.
+  const generalWrittenRef = useRef(false);
+  const draftModelSaves = !decides && !generalWrittenRef.current;
+  const modelAfterSave = draftModelSaves ? model : savedModel;
+  const modelAfterSaveBaseUrl = !draftModelSaves
     ? savedModelBaseUrl
     : (modelCredBaseUrl ?? model.baseURL);
   // What a tab's hold reads from outside it (the engine and mode as edited, the model this save
@@ -4115,6 +4118,7 @@ function AgentEditor() {
     if (!plan) return;
     const end = () => {
       barSaveRef.current = null;
+      generalWrittenRef.current = false;
     };
     const planned = (key: (typeof SAVE_SECTIONS)[number]) =>
       plan.sections.has(key);
@@ -4199,6 +4203,7 @@ function AgentEditor() {
       if (key === "general") {
         if (!(await saveGeneral()))
           return stop(dirty.general ? "general" : "decisions");
+        generalWrittenRef.current = true;
       } else if (!(await writeSection(key))) return stop(key);
       continueRef.current = { onTab: null };
       return;

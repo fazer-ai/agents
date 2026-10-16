@@ -5714,7 +5714,7 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
         },
       },
       async () => {
-        await seedConv(9968, null);
+        await seedConv(9900, null);
         const s = stub();
         const inner = await s.makeClient();
         const client = {
@@ -5727,7 +5727,7 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
         } as unknown as ChatwootClient;
         await runAgentNudge({
           tenantId,
-          threadId: `${tenantId}:${instanceId}:9968`,
+          threadId: `${tenantId}:${instanceId}:9900`,
           nudge: { source: "followup", kind: "inactivity", step: 1 },
           postActions: { assignLabels: ["follow-up"], resolve: true },
           requireLiveBotOwnership: true,

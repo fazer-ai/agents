@@ -405,6 +405,9 @@ function buildPlaygroundToolset(
     replyChoice: ReplyChoice | undefined;
     // The simulated follow-up, built like production's nudge (ToolCtx.proactive).
     proactive?: boolean;
+    // Built as an observation is: on a muted client, which drops what delivers to the customer
+    // (those natives, documents, a pack's delivering tools) and gives the handoff its muted schema.
+    muted?: boolean;
   },
 ): Promise<StructuredToolInterface[]> {
   return buildToolset(
@@ -413,7 +416,7 @@ function buildPlaygroundToolset(
       tenantId: params.ctx.tenantId as bigint,
       instanceId: 0n,
       base: params.base,
-      client: {} as ChatwootClient,
+      client: (params.muted ? { muted: true } : {}) as ChatwootClient,
       conversationId: 0,
       threadId: params.threadId,
       replyChoice: params.replyChoice,
@@ -747,6 +750,9 @@ export async function estimateCallFloor(params: {
   );
   if (!loaded)
     throw new NotFoundError("agent not found", "errors.agentNotFound");
+  // An LLM observer is offered what an observation offers (observe/job.ts): a muted client and no
+  // `reply_as_text`, since it never speaks. Its playground turn is not what it sends in production.
+  const observing = isMonitoring(agent.mode);
   const tools = await buildPlaygroundToolset(loaded, {
     ctx: params.ctx,
     threadId,
@@ -754,7 +760,8 @@ export async function estimateCallFloor(params: {
     deps: params.deps,
     // An estimate, not a turn: nothing executes, so there is no tool-stage line to write.
     flow: undefined,
-    replyChoice: { textChosen: false },
+    replyChoice: observing ? undefined : { textChosen: false },
+    muted: observing,
   });
   const classify = toolClassifier(loaded);
   const templateOf = new Map(

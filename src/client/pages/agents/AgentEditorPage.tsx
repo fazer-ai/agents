@@ -1781,10 +1781,16 @@ function AgentEditor() {
   // When the operator returns from a Resources tab (opened via the "New" links in the tool/knowledge
   // editors), refetch ONLY the catalog so a freshly-created tool/server/integration/base appears,
   // without touching in-progress grant edits (grants stay local).
+  // Bumped whenever the catalog is re-read: a tool definition edited in its modal changes what the
+  // call floor measures without any agent save, so the floor is retaken with it.
+  const [catalogTick, setCatalogTick] = useState(0);
   const refreshCatalog = useCallback(async () => {
     try {
       const { data } = await api.api.v1.agents({ id })["tool-selections"].get();
-      if (data) setCatalog(data.catalog);
+      if (data) {
+        setCatalog(data.catalog);
+        setCatalogTick((n) => n + 1);
+      }
     } catch {
       // NOTE: best-effort
     }
@@ -2546,7 +2552,8 @@ function AgentEditor() {
 
   // What every call sends before the history (instructions, runtime additions, each saved tool), for
   // the line next to the history ceiling and the numbers on the Tools tab. Retaken on the same
-  // snapshot as the readings above: tools count as saved, so a save is when the number can move.
+  // snapshot as the readings above, and on every catalog re-read: tools count as saved, so a save of
+  // the agent or of a tool definition is when the number can move.
   const [callFloor, setCallFloor] = useState<CallFloor | null>(null);
   useEffect(() => {
     if (!id || serverSyncTick === 0) {
@@ -2566,7 +2573,7 @@ function AgentEditor() {
     return () => {
       alive = false;
     };
-  }, [id, serverSyncTick]);
+  }, [id, serverSyncTick, catalogTick]);
 
   // Live config-health: a feature on without its credential, or naming one whose secret is not
   // filled in (pending); each issue deep-links to its tab or the vault fill modal. Messages by issue.key:

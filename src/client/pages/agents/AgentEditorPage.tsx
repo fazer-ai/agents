@@ -4083,7 +4083,8 @@ function AgentEditor() {
     written: Set<(typeof SAVE_SECTIONS)[number]>;
     // Each tab judged again during this save, with the `crossTabKey` it was judged under.
     rechecked: Map<TabKey, string>;
-    origin: TabKey;
+    // The tab the operator was on when the save first took them elsewhere.
+    returnTo: TabKey | null;
     // The last tab the save opened to judge it again.
     wentTo: TabKey | null;
   };
@@ -4110,7 +4111,7 @@ function AgentEditor() {
       written: new Set(),
       rechecked: new Map(),
       wentTo: null,
-      origin: tab,
+      returnTo: null,
     };
     barModelRef.current = barSaveRef.current.sections.has("general")
       ? "draft"
@@ -4164,6 +4165,8 @@ function AgentEditor() {
         plan.rechecked.get(key) !== crossTabKey
       ) {
         plan.rechecked.set(key, crossTabKey);
+        // The tab to come back to is the last one the operator chose, not one this save opened.
+        if (tab !== plan.wentTo) plan.returnTo = tab;
         plan.wentTo = key;
         continueRef.current = { onTab: key };
         openTab(key);
@@ -4267,10 +4270,10 @@ function AgentEditor() {
       );
       return;
     }
-    // Back where Save was pressed only from a tab the save itself opened, never from one the
-    // operator moved to while it ran.
-    if (plan.wentTo !== null && plan.wentTo === tab && plan.origin !== tab)
-      openTab(plan.origin);
+    // Back to the tab the operator was on when the save took them elsewhere, and only from a tab the
+    // save itself opened: one the operator moved to keeps them there.
+    if (plan.wentTo === tab && plan.returnTo !== null && plan.returnTo !== tab)
+      openTab(plan.returnTo);
   }
 
   function askDelete() {

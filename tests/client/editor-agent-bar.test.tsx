@@ -779,4 +779,50 @@ describe("the editor's bar covers the whole agent", () => {
         .getAttribute("aria-selected"),
     ).toBe("true");
   });
+
+  // A recheck the save makes after the operator moved does not erase where they went: switched to
+  // Monitoring on General during the Tools write, Knowledge is judged again, and the save ends back
+  // on General, not on Tools where Save was pressed.
+  test("a recheck after the operator moved still leaves them where they went", async () => {
+    const stub = stubEditorApi(
+      { name: "Atendente" },
+      { catalog: NATIVE_CATALOG },
+    );
+    const served = globalThis.fetch;
+    let release: () => void = () => {};
+    const held = new Promise<void>((r) => {
+      release = r;
+    });
+    let putSent = false;
+    globalThis.fetch = (async (
+      input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      if ((init?.method ?? "GET") === "PUT" && !putSent) {
+        putSent = true;
+        await held;
+      }
+      return served(input, init);
+    }) as typeof fetch;
+    await renderEditor(stub, "knowledge");
+    editTab("knowledge");
+    await goTo("Tools");
+    editTab("tools");
+    fireEvent.click(save());
+    await waitFor(() => expect(putSent).toBe(true));
+    await goTo("General");
+    fireEvent.click(screen.getByRole("radio", { name: /^Monitoring/ }));
+    release();
+    await waitFor(
+      () =>
+        expect(stub.writes.filter((w) => w.method === "PUT").length).toBe(2),
+      { timeout: 5_000 },
+    );
+    for (let i = 0; i < 5; i++) await act(async () => {});
+    expect(
+      screen
+        .getByRole("tab", { name: "General" })
+        .getAttribute("aria-selected"),
+    ).toBe("true");
+  });
 });

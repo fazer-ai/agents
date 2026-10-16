@@ -2098,6 +2098,11 @@
       "navModel": "Modelo",
       "navOutput": "Saída",
       "navPolicy": "Política",
+      "onFailure": "Quando uma checagem não consegue rodar",
+      "onFailureHold": "Segurar e passar a conversa para a equipe",
+      "onFailureHoldHint": "A mensagem não segue e a conversa vai para a sua equipe, com a mensagem de transferência da direção. Os follow-ups que o agente inicia sozinho continuam saindo.",
+      "onFailurePass": "Deixar a mensagem seguir (padrão)",
+      "onFailurePassHint": "A mensagem segue sem checagem, e a página de Logs registra que a checagem falhou.",
       "output": "Saída (resposta do agente)",
       "outputDesc": "Analisa a resposta do agente antes de enviá-la.",
       "policy": "Política",
@@ -3192,6 +3197,10 @@
     "guardrailClassifier": {
       "chat": "modelo de linguagem",
       "decisions": "API de classificação"
+    },
+    "guardrailHeld": {
+      "input": "A checagem falhou, então a mensagem do cliente foi segurada e a conversa passou para a equipe",
+      "output": "A checagem falhou, então a resposta foi segurada e a conversa passou para a equipe"
     },
     "guardrailUnchecked": {
       "input": "A checagem falhou, e a mensagem do cliente foi liberada sem checagem",

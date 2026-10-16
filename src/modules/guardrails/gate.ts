@@ -110,6 +110,8 @@ export interface GuardrailReport {
   // every screening that ran (clean ones too, since "approved at 0.12 against 0.8" is what tells an
   // operator whether a threshold is right). Numbers and our own keys only; there is no rationale.
   scores?: GuardrailScore[];
+  // A hand-over the `hold` failure mode made: no check answered, so there is no verdict to report.
+  held?: true;
 }
 
 // The scores as one line an operator reads in the note: the tripped ones first.
@@ -147,9 +149,11 @@ export function chatwootNoteSink(
       r.outcome !== "handed-off"
     )
       return;
-    const head = r.scores
-      ? `Guardrail (${r.direction}): ${r.categories?.join(", ") || "policy"} — ${r.action}. ${scoresLine(r.scores)}`
-      : `Guardrail (${r.direction}): ${r.categories?.join(", ") || "policy"} — ${r.action}. ${r.rationale ?? ""}`;
+    const head = r.held
+      ? `Guardrail (${r.direction}): a checagem não pôde ser feita, e a mensagem foi segurada.`
+      : r.scores
+        ? `Guardrail (${r.direction}): ${r.categories?.join(", ") || "policy"} — ${r.action}. ${scoresLine(r.scores)}`
+        : `Guardrail (${r.direction}): ${r.categories?.join(", ") || "policy"} — ${r.action}. ${r.rationale ?? ""}`;
     await client
       // The rationale and the refused reply are model text, escaped for Chatwoot's Liquid.
       .sendPrivateNote(
@@ -203,6 +207,9 @@ export interface GuardrailGateParams {
   // handler never sees its calls, and the dollar ceiling (which sums Langfuse's generations) would miss
   // them. Required so no call site can forget it; null when the tenant has none.
   langfuseCfg: LangfuseConfig | null;
+  // A follow-up the agent starts on its own. A screening that cannot judge lets it through whatever
+  // `onFailure` says: there is no customer message waiting, and a hand-over would open a case nobody asked for.
+  proactive?: true;
 }
 
 export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
@@ -239,7 +246,10 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
   // Spread into the detail of a line for a screening that could not judge. `classifier` names the
   // judge that failed, and `unchecked` says whether the message continued anyway: true whenever the
   // gate fails open, false only when another check that did answer still tripped (`judgedPartly`).
-  const couldNotJudge = { classifier: gr.classifier, unchecked: true };
+  const holds = gr.onFailure === "hold" && !p.proactive;
+  const couldNotJudge = holds
+    ? { classifier: gr.classifier, unchecked: false, held: true }
+    : { classifier: gr.classifier, unchecked: true };
   const judgedPartly = (violated: boolean) =>
     violated ? { classifier: gr.classifier, unchecked: false } : couldNotJudge;
   // Built on FIRST CALL, not here, and never twice: a gate is constructed for every turn and every
@@ -540,8 +550,22 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
     );
   };
 
+  // `hold`: a screening that could not judge stops the message as a hand-over does, with the
+  // direction's own customer line, and the note says why there is no verdict.
+  const held = (
+    direction: "input" | "output",
+    subject: string,
+  ): { d: GuardrailDecision; r: GuardrailReport } => ({
+    d: { kind: "handed-off", reply: gr[direction].handoffMessage || null },
+    r: { direction, outcome: "handed-off", held: true, refused: subject },
+  });
+
   return async (direction, subject) => {
-    const { d, r } = await screen(direction, subject);
+    const screened = await screen(direction, subject);
+    const { d, r } =
+      holds && screened.d.kind === "unavailable"
+        ? held(direction, subject)
+        : screened;
     // The one announcement point. `not-run` is the only outcome with no report, and it is the only
     // one where nothing happened for anyone to read.
     if (r) await p.announce?.(r);

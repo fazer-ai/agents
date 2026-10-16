@@ -2031,6 +2031,11 @@
       "navModel": "Model",
       "navOutput": "Output",
       "navPolicy": "Policy",
+      "onFailure": "When a check cannot run",
+      "onFailureHold": "Hold it and hand the conversation to the team",
+      "onFailureHoldHint": "The message is stopped and the conversation goes to your team, with the direction's handoff message. Follow-ups the agent starts on its own still go out.",
+      "onFailurePass": "Let the message through (default)",
+      "onFailurePassHint": "The message continues unchecked, and the Logs page records that the check failed.",
       "output": "Output (agent reply)",
       "outputDesc": "Screen the agent's reply before it is sent.",
       "policy": "Policy",
@@ -3090,6 +3095,10 @@
     "guardrailClassifier": {
       "chat": "language model",
       "decisions": "classification API"
+    },
+    "guardrailHeld": {
+      "input": "The check failed, so the customer's message was held and the conversation handed to the team",
+      "output": "The check failed, so the reply was held and the conversation handed to the team"
     },
     "guardrailUnchecked": {
       "input": "The check failed, so the customer's message was let through unchecked",

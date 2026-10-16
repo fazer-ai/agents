@@ -42,6 +42,7 @@ import { FOLLOW_UP_DELAY_UNITS } from "@/modules/followups/settings";
 import {
   GUARDRAIL_ACTIONS,
   GUARDRAIL_CLASSIFIERS,
+  GUARDRAIL_FAILURE_MODES,
   GUARDRAIL_THRESHOLD_KEYS,
 } from "@/modules/guardrails/settings";
 import { HANDOFF_MODES } from "@/modules/handoff/settings";
@@ -902,6 +903,11 @@ const guardrails = z
     output: guardrailOutput
       .optional()
       .describe("screens the AGENT reply before it is sent"),
+    onFailure: oneOf(GUARDRAIL_FAILURE_MODES)
+      .optional()
+      .describe(
+        "when a check cannot judge (timeout, error, missing credential): pass = the message continues unchecked (default); hold = it is stopped and the conversation goes to the team with the direction's handoffMessage. Proactive sends always pass",
+      ),
   })
   .superRefine(
     (v, ctx) => {

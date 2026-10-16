@@ -185,7 +185,7 @@ export async function classifyGuardrail(
         const why = providerFailure(err, ctl.signal.aborted);
         logger.warn(
           { provider: cfg.provider, failure: why },
-          "guardrails classification failed (fail-open, message not blocked)",
+          "guardrails classification failed (the gate applies onFailure)",
         );
         return { ok: false as const, ask, error: why };
       } finally {

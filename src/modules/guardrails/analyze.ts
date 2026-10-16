@@ -268,7 +268,7 @@ async function runAnalysis(
   } catch (err) {
     logger.warn(
       { err },
-      "guardrails analysis failed (fail-open, message not blocked)",
+      "guardrails analysis failed (the gate applies onFailure)",
     );
     return unanalyzed(err instanceof Error ? err.message : String(err));
   }

@@ -324,6 +324,22 @@ describe("GuardrailsTab thresholds beside their checks", () => {
     ]).toEqual([1, 1, 1, 0, 1, 0, 0, 0]);
   });
 
+  // The bug it catches: the setting reachable by REST and MCP only, or a choice that never reaches state.
+  test("the failure choice starts on pass and stores hold", () => {
+    mount();
+    const select = document.querySelector<HTMLSelectElement>(
+      '[data-testid="gr-on-failure"]',
+    );
+    const before = select?.value ?? null;
+    fireEvent.change(select as HTMLSelectElement, {
+      target: { value: "hold" },
+    });
+    const after = document.querySelector<HTMLSelectElement>(
+      '[data-testid="gr-on-failure"]',
+    )?.value;
+    expect([before, after]).toEqual(["pass", "hold"]);
+  });
+
   test("editing one direction's field shows the same text in the other, and stores one value", () => {
     mount();
     const [a, b] = fields("toxicity");

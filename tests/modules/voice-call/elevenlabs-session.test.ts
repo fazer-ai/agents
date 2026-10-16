@@ -4,6 +4,7 @@ import type {
   VoiceSessionConfig,
   VoiceSessionHandlers,
 } from "@/modules/voice-call/providers/types";
+import { until } from "@/tests/utils/poll";
 
 // A tool the agent asks for on the call runs here, its result goes back on the call's socket, and
 // the caller hears about it: the playground shows each one as the call goes.
@@ -120,6 +121,80 @@ describe("a tool the agent runs on an ElevenLabs call", () => {
     expect(engine.results).toMatchObject([
       { tool_call_id: "t1", result: "livre às 10h", is_error: false },
       { tool_call_id: "t2", is_error: true },
+    ]);
+  });
+});
+
+describe("two calls on one ElevenLabs agent", () => {
+  test("the second declares its tools only once the first's conversation started", async () => {
+    const order: string[] = [];
+    server = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch(req, srv) {
+        return srv.upgrade(req, { data: undefined })
+          ? undefined
+          : new native.BunResponse("no", { status: 400 });
+      },
+      websocket: {
+        message(ws, raw) {
+          const frame = JSON.parse(String(raw));
+          if (frame.type !== "conversation_initiation_client_data") return;
+          order.push(
+            `started ${frame.conversation_config_override.agent.prompt.prompt}`,
+          );
+          ws.send(
+            JSON.stringify({
+              type: "conversation_initiation_metadata",
+              conversation_initiation_metadata_event: {
+                conversation_id: "c",
+                agent_output_audio_format: "pcm_16000",
+                user_input_audio_format: "pcm_16000",
+              },
+            }),
+          );
+        },
+      },
+    });
+    const url = `ws://127.0.0.1:${server.port}/`;
+    const fetchImpl = (async (input: string, init?: RequestInit) => {
+      if (input.includes("get-signed-url"))
+        return new Response(JSON.stringify({ signed_url: url }));
+      const tools = JSON.parse(String(init?.body)).conversation_config.agent
+        .prompt.tools as Array<{ description: string }>;
+      order.push(`declared ${tools[0]?.description}`);
+      return new Response("{}");
+    }) as unknown as typeof fetch;
+    const handlers: VoiceSessionHandlers = {
+      onAudio: () => {},
+      onInterrupt: () => {},
+      onTranscript: () => {},
+      onHangup: () => {},
+      onError: () => {},
+    };
+    const provider = elevenLabsProvider({
+      apiKey: "k",
+      agentId: "agent-shared-test",
+      fetchImpl,
+    });
+    const configFor = (card: string): VoiceSessionConfig => ({
+      ...CONFIG,
+      instructions: card,
+      tools: CONFIG.tools?.map((tool) => ({ ...tool, description: card })),
+    });
+    const first = await provider.open(configFor("A"), handlers);
+    const second = provider.open(configFor("B"), handlers);
+    first.begin();
+    const opened = await second;
+    opened.begin();
+    await until("the second conversation to start", () => order.length === 4);
+    first.close();
+    opened.close();
+    expect(order).toEqual([
+      "declared A",
+      "started A",
+      "declared B",
+      "started B",
     ]);
   });
 });

@@ -91,7 +91,6 @@ export async function loadVoiceAgent(
     const client = await loadChatwootClient(route.tenantId, route.instanceId, {
       base,
       botToken: cfg.agentBotToken ?? "",
-      mute: true,
     });
     const all = await buildToolset(
       cfg,
@@ -102,6 +101,7 @@ export async function loadVoiceAgent(
         client,
         conversationId,
         threadId,
+        onCall: true,
       },
       { buildNativeTools },
     );

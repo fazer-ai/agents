@@ -4,6 +4,7 @@
 // (platform_settings.overrides). The agent's tools are declared on it before the call opens and run
 // here, answered on the call's socket.
 
+import { withKeyedQueue } from "@/lib/locks";
 import { pcmFromBase64, pcmToBase64 } from "../pcm";
 import { syncElevenLabsTools } from "./elevenlabs-tools";
 import { TOOL_TIMEOUT_MS, withTimeout } from "./realtime-tools";
@@ -70,10 +71,39 @@ async function signedUrl(options: ElevenLabsOptions): Promise<string> {
   return body.signed_url;
 }
 
+// The tools are declared on the ElevenLabs agent, shared by every call it takes, and carry what this
+// call's conversation holds (its card, its labels); a conversation takes them as they are when it
+// starts. So one call holds the agent from declaring its tools until its conversation started, and
+// the next call declares its own only then. Within this process: calls are served by the single
+// replica that runs the workers (docs/deploy.md).
+function holdAgent(agentId: string): Promise<() => void> {
+  return new Promise((acquired) => {
+    void withKeyedQueue(
+      `elevenlabs-agent:${agentId}`,
+      () => new Promise<void>((release) => acquired(release)),
+    );
+  });
+}
+
 async function openSession(
   options: ElevenLabsOptions,
   config: VoiceSessionConfig,
   handlers: VoiceSessionHandlers,
+): Promise<VoiceSession> {
+  const release = await holdAgent(options.agentId);
+  try {
+    return await openHeld(options, config, handlers, release);
+  } catch (err) {
+    release();
+    throw err;
+  }
+}
+
+async function openHeld(
+  options: ElevenLabsOptions,
+  config: VoiceSessionConfig,
+  handlers: VoiceSessionHandlers,
+  release: () => void,
 ): Promise<VoiceSession> {
   await syncElevenLabsTools(options, config.tools);
   const ws = new WebSocket(await signedUrl(options));
@@ -141,6 +171,7 @@ async function openSession(
     }
     switch (event.type) {
       case "conversation_initiation_metadata": {
+        release();
         const meta = event.conversation_initiation_metadata_event ?? {};
         if (meta.conversation_id)
           handlers.onEngineConversation?.(meta.conversation_id);
@@ -200,6 +231,7 @@ async function openSession(
     }
   });
   ws.addEventListener("close", (closeEvent) => {
+    release();
     // NOTE: the agent's end_call system tool ends the conversation by closing the socket.
     if (!closed) handlers.onHangup(`elevenlabs_closed_${closeEvent.code}`);
   });
@@ -243,6 +275,7 @@ async function openSession(
     },
     close() {
       closed = true;
+      release();
       ws.close();
     },
   };

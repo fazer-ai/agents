@@ -16,7 +16,7 @@ The check runs when `guardrails.enabled` is on and `url` is set. It does not nee
 
 ## When it runs
 
-On a reply that answers an inbound message, in the inbox and in the playground, written by the primary or the fallback model. Once per reply: after the built-in output screening, on the text that would go out, before it is split, turned into audio or signed. When the built-in screening already put the operator's own text in its place (a template or a hand-over line), there is nothing of the model's left to judge and the endpoint is not asked. Proactive sends (follow-ups, nudges) and the input direction are not covered.
+On a reply that answers an inbound message, in the inbox and in the playground, written by the primary or the fallback model. The closing line the model writes when it hands the conversation over is a reply too and is asked about the same way; since the transfer already happened, a block there replaces or silences the line and hands nothing over again. Once per reply: after the built-in output screening, on the text that would go out, before it is split, turned into audio or signed. When the built-in screening already put the operator's own text in its place (a template or a hand-over line), there is nothing of the model's left to judge and the endpoint is not asked. Proactive sends (follow-ups, nudges) and the input direction are not covered.
 
 A person who takes the conversation over while the endpoint is answering wins: the turn re-reads ownership after the answer and delivers nothing.
 

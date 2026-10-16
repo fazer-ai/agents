@@ -1692,22 +1692,45 @@ async function runTurnBody(
   // The sentence the transfer promised, delivered on the way out of the turn whatever that
   // way is: once the tool set `open`, every retry stops at its ownership gate. Two exclusive call
   // sites (the failure path rethrows); a third would own the at-most-once question.
-  const deliverHandoffPromise = async (): Promise<void> => {
+  // `messages` are the turn's, for the external check's tool calls; empty when the graph threw.
+  const deliverHandoffPromise = async (
+    messages: BaseMessage[] = [],
+  ): Promise<void> => {
     if (!handoffAnsweredTheTurn(handoffState)) return;
     const line = handoffState.customerMessage;
     try {
-      const guarded = await runGuardrail("output", line);
+      let guarded = await runGuardrail("output", line);
       // NOTE: A trip here drops the queued images too, as the main gate below does: a verdict on
       // this turn's customer-facing text applies to every artefact.
       if (guardrailTripped(guarded)) turnState.pendingAttachments.length = 0;
-      const screened = screenedText(guarded, line);
+      let screened = screenedText(guarded, line);
       if (screened === null) return;
+      let byOperator = guardrailTripped(guarded)
+        ? screenedByOperator(guarded)
+        : handoffState.lineByOperator === true;
+      // The closing line the model wrote is a reply too, so the operator's endpoint judges it. The
+      // transfer already happened: a block only replaces or silences the line, it hands over nothing.
+      if (runExternalCheck && !byOperator) {
+        guarded = await runExternalCheck({
+          text: screened,
+          attachments: [],
+          model: fallbackAnswered ? "fallback" : "primary",
+          toolCalls: turnToolCalls(
+            messages,
+            loaded.guardrails.external.sendToolValues,
+          ),
+        });
+        if (guardrailTripped(guarded)) {
+          turnState.pendingAttachments.length = 0;
+          byOperator = screenedByOperator(guarded);
+        }
+        screened = screenedText(guarded, screened);
+        if (screened === null) return;
+      }
       const delivered = await deliverText(
         screened,
         await currentVoiceReply(),
-        guardrailTripped(guarded)
-          ? !screenedByOperator(guarded)
-          : handoffState.lineByOperator !== true,
+        !byOperator,
       );
       // NOTE: This line leaves before the later gates, so a called-off run stops here; the transfer
       // stays done. A partial send is not raised (the delivery is best-effort), and "superseded"
@@ -2417,7 +2440,7 @@ async function runTurnBody(
           replyRecovered = true;
         }
       }
-      await deliverHandoffPromise();
+      await deliverHandoffPromise(result.messages as BaseMessage[]);
 
       // Re-check the live assignee before posting. A small TOCTOU remains between this read and the
       // POST, which is a network call and cannot share a transaction with the read; single-replica

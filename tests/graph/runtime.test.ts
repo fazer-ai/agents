@@ -12206,6 +12206,64 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         expect(sent).toEqual([]);
       });
 
+      // The bug it catches: the closing line the model writes when it hands over reaching the customer
+      // with no question asked.
+      test("a hand-over's closing line is asked about, and a block replaces it", async () => {
+        await withExternal({ action: "template" });
+        await seedConv(14114);
+        const sent: Array<[number, string]> = [];
+        const toggles: Array<[number, string]> = [];
+        const asked: Asked[] = [];
+        class HandsOver {
+          bindTools(_t: unknown) {
+            let n = 0;
+            return {
+              async invoke() {
+                n++;
+                return n === 1
+                  ? new AIMessage({
+                      content: "",
+                      tool_calls: [
+                        {
+                          name: "handoff_to_human",
+                          args: { customerMessage: "DESPEDIDA-1514" },
+                          id: "h1",
+                        },
+                      ],
+                    })
+                  : new AIMessage("");
+              },
+            };
+          }
+          async invoke() {
+            return new AIMessage("");
+          }
+        }
+        await runAgentTurn({
+          tenantId: gTenantId,
+          instanceId: gInstanceId,
+          agentBotId: G_BOT,
+          event: incoming({ conversationId: 14114, inboxId: G_INBOX }),
+          base: appDb,
+          deps: {
+            makeModel: branchingWith(
+              clean,
+              new HandsOver() as unknown as BaseChatModel,
+            ),
+            makeClient: guardStub(sent, [], toggles),
+            checkpointer: new MemorySaver(),
+            externalCheck: endpoint(asked, (b) =>
+              json({ decision: "block", candidateId: b.candidateId }),
+            ),
+          },
+        });
+        expect(
+          asked.map((x) => (x.body.candidate as { text: string }).text),
+        ).toEqual(["DESPEDIDA-1514"]);
+        expect(sent).toEqual([[14114, "TEMPLATE-OUT"]]);
+        expect(toggles).toEqual([[14114, "open"]]);
+      });
+
       // The bug it catches: a reply that is only a file (an image with its caption) going out with no
       // question asked, past a block.
       test("a reply that is only an image is asked about too, and a block keeps it", async () => {

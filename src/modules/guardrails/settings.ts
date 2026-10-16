@@ -60,6 +60,14 @@ export interface GuardrailDecisionsConfig {
   thresholds: Record<GuardrailThresholdKey, number>;
 }
 
+// What a screening that could not judge does with the message: `pass` lets it continue unchecked (the
+// default), `hold` stops it and hands the conversation to the team. A check that answered is unaffected.
+export type GuardrailFailureMode = "pass" | "hold";
+export const GUARDRAIL_FAILURE_MODES: readonly GuardrailFailureMode[] = [
+  "pass",
+  "hold",
+];
+
 export interface GuardrailChecks {
   // Harassment, hate speech, insults, or abusive/threatening language.
   toxicity: boolean;
@@ -113,6 +121,7 @@ export interface GuardrailsConfig {
   customPolicy: string;
   input: GuardrailDirectionConfig;
   output: GuardrailDirectionConfig;
+  onFailure: GuardrailFailureMode;
 }
 
 const DEFAULT_TEMPLATE = "Desculpe, não consigo ajudar com isso.";
@@ -167,6 +176,7 @@ export const GUARDRAILS_DEFAULTS: GuardrailsConfig = {
     generationPrompt: "",
     handoffMessage: DEFAULT_HANDOFF_MESSAGE,
   },
+  onFailure: "pass",
 };
 
 const MAX_COMPETITORS = 50;
@@ -302,5 +312,6 @@ export function readGuardrailsConfig(settings: unknown): GuardrailsConfig {
     customPolicy: clipText(str(bag.customPolicy) ?? "", CUSTOM_POLICY_MAX),
     input: readDirection(bag.input, GUARDRAILS_DEFAULTS.input),
     output: readDirection(bag.output, GUARDRAILS_DEFAULTS.output),
+    onFailure: bag.onFailure === "hold" ? "hold" : "pass",
   };
 }

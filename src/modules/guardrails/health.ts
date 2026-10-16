@@ -8,7 +8,7 @@ import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 // vendor always rejects, chronic timeout, dead credential) looks like one that approved. The stage
 // writes a row only when a check trips ("ok") or cannot run ("error"), so this counts failures, never a
 // ratio, and a failure does not mean an unscreened send (the other direction or the other merged half
-// may still have caught it). Each row proves only that that check caught nothing and held nothing back.
+// may still have caught it). Each row proves only that that check judged nothing.
 export const GUARDRAIL_HEALTH_WINDOW_HOURS = 24;
 
 // The window's start, as a function so the unit conversion is reachable by a test. Written inline in

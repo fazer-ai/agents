@@ -114,6 +114,25 @@ describe("a guardrail line that could not judge, on the Logs page", () => {
     ).toBe(true);
   });
 
+  // The bug it catches: a held line read as one that let the message through.
+  test("says the reply was held and handed to the team under onFailure hold", async () => {
+    const text = await pageText([
+      guardrailLine("h", {
+        direction: "output",
+        outcome: "analysis_failed",
+        classifier: "chat",
+        unchecked: false,
+        held: true,
+      }),
+    ]);
+    expect(
+      text.includes(
+        "The check failed, so the reply was held and a hand-over to the team was requested · language model",
+      ),
+    ).toBe(true);
+    expect(text.includes("let through")).toBe(false);
+  });
+
   test("says the reply was let through unchecked under a classification API", async () => {
     const text = await pageText([
       guardrailLine("b", {

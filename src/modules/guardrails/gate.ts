@@ -16,7 +16,11 @@ import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { literalForChatwoot } from "@/modules/chatwoot/liquid";
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
 import { analyzeGuardrail } from "./analyze";
-import { classifyGuardrail, type GuardrailScore } from "./classify";
+import {
+  classifyGuardrail,
+  type GuardrailScore,
+  guardrailAsks,
+} from "./classify";
 import { loggableCategories } from "./log-categories";
 import { judgesAnything } from "./prompts";
 import type { GuardrailAction, GuardrailsConfig } from "./settings";
@@ -110,7 +114,27 @@ export interface GuardrailReport {
   // every screening that ran (clean ones too, since "approved at 0.12 against 0.8" is what tells an
   // operator whether a threshold is right). Numbers and our own keys only; there is no rationale.
   scores?: GuardrailScore[];
+  // A hand-over the `hold` failure mode made: the screening could not judge, so there is no verdict
+  // to report, only the scores of the checks that did answer (decisions provider).
+  held?: true;
+  // Why a screening could not judge, on `unavailable` and on a held hand-over: the flow line's own
+  // outcome word, so the note can say it without quoting provider text.
+  cause?: GuardrailFailureCause;
 }
+
+export type GuardrailFailureCause =
+  | "credential_not_found"
+  | "model_unavailable"
+  | "analysis_failed";
+
+// The cause in the words the note's reader uses. The provider's own error stays in the flow line.
+const HELD_CAUSE: Record<GuardrailFailureCause, string> = {
+  credential_not_found: "a credencial do guardrail não foi encontrada",
+  model_unavailable:
+    "o modelo do guardrail não pôde ser usado com essa configuração",
+  analysis_failed:
+    "o modelo do guardrail falhou ou não respondeu dentro do limite",
+};
 
 // The scores as one line an operator reads in the note: the tripped ones first.
 export function scoresLine(scores: GuardrailScore[]): string {
@@ -147,9 +171,11 @@ export function chatwootNoteSink(
       r.outcome !== "handed-off"
     )
       return;
-    const head = r.scores
-      ? `Guardrail (${r.direction}): ${r.categories?.join(", ") || "policy"} — ${r.action}. ${scoresLine(r.scores)}`
-      : `Guardrail (${r.direction}): ${r.categories?.join(", ") || "policy"} — ${r.action}. ${r.rationale ?? ""}`;
+    const head = r.held
+      ? `Guardrail (${r.direction}): a checagem não pôde ser feita${r.cause ? ` (${HELD_CAUSE[r.cause]})` : ""}, e a mensagem foi segurada.${r.scores?.length ? ` ${scoresLine(r.scores)}` : ""}`
+      : r.scores
+        ? `Guardrail (${r.direction}): ${r.categories?.join(", ") || "policy"} — ${r.action}. ${scoresLine(r.scores)}`
+        : `Guardrail (${r.direction}): ${r.categories?.join(", ") || "policy"} — ${r.action}. ${r.rationale ?? ""}`;
     await client
       // The rationale and the refused reply are model text, escaped for Chatwoot's Liquid.
       .sendPrivateNote(
@@ -203,6 +229,9 @@ export interface GuardrailGateParams {
   // handler never sees its calls, and the dollar ceiling (which sums Langfuse's generations) would miss
   // them. Required so no call site can forget it; null when the tenant has none.
   langfuseCfg: LangfuseConfig | null;
+  // A follow-up the agent starts on its own. A screening that cannot judge lets it through whatever
+  // `onFailure` says: there is no customer message waiting, and a hand-over would open a case nobody asked for.
+  proactive?: true;
 }
 
 export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
@@ -239,7 +268,10 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
   // Spread into the detail of a line for a screening that could not judge. `classifier` names the
   // judge that failed, and `unchecked` says whether the message continued anyway: true whenever the
   // gate fails open, false only when another check that did answer still tripped (`judgedPartly`).
-  const couldNotJudge = { classifier: gr.classifier, unchecked: true };
+  const holds = gr.onFailure === "hold" && !p.proactive;
+  const couldNotJudge = holds
+    ? { classifier: gr.classifier, unchecked: false, held: true }
+    : { classifier: gr.classifier, unchecked: true };
   const judgedPartly = (violated: boolean) =>
     violated ? { classifier: gr.classifier, unchecked: false } : couldNotJudge;
   // Built on FIRST CALL, not here, and never twice: a gate is constructed for every turn and every
@@ -250,7 +282,12 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
   // reports the follow-up as delivered. `undefined` is "not attempted yet"; `null` is "attempted
   // and unavailable", which is the same fail-open answer an analysis that could not run gives.
   let model: BaseChatModel | null | undefined;
-  let buildFailure: { outcome: string; message?: string } | undefined;
+  let buildFailure:
+    | {
+        outcome: "credential_not_found" | "model_unavailable";
+        message?: string;
+      }
+    | undefined;
   const reportedBuildFailure = new Set<"input" | "output">();
   const resolveModel = (
     direction: "input" | "output",
@@ -360,6 +397,20 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
     subject: string,
     checks: GuardrailsConfig["input"]["checks"],
   ): Promise<{ d: GuardrailDecision; r: GuardrailReport | null }> => {
+    const params = {
+      direction,
+      text: subject,
+      checks,
+      competitors: gr.competitors,
+      customPolicy: gr.customPolicy,
+      systemPrompt: direction === "output" ? p.systemPrompt : undefined,
+      customerMessage: p.customerMessage,
+    };
+    // Nothing to ask (competitor mentions with no names) is the same answer with or without a key:
+    // checked first, so a missing credential cannot turn an empty screening into a failed one,
+    // which under `hold` would hand the conversation over for a question nobody asked.
+    if (guardrailAsks(params, gr.decisions.thresholds).length === 0)
+      return { d: { kind: "not-run" }, r: null };
     if (!p.apiKey) {
       emitFlowEvent(p.flow, {
         stage: "guardrail",
@@ -373,20 +424,12 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
       });
       return {
         d: { kind: "unavailable", modelRan: false },
-        r: { direction, outcome: "unavailable" },
+        r: { direction, outcome: "unavailable", cause: "credential_not_found" },
       };
     }
     const verdict = await classifyGuardrail(
       gr.decisions,
-      {
-        direction,
-        text: subject,
-        checks,
-        competitors: gr.competitors,
-        customPolicy: gr.customPolicy,
-        systemPrompt: direction === "output" ? p.systemPrompt : undefined,
-        customerMessage: p.customerMessage,
-      },
+      params,
       p.apiKey,
       p.credentialBaseUrl ?? null,
       p.decisionFetch,
@@ -432,7 +475,12 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
         : { kind: "clean" };
       return {
         d,
-        r: { direction, outcome: d.kind, scores: verdict.scores },
+        r: {
+          direction,
+          outcome: d.kind,
+          scores: verdict.scores,
+          ...(verdict.error ? { cause: "analysis_failed" as const } : {}),
+        },
       };
     }
     return tripped(
@@ -475,7 +523,7 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
     if (!model)
       return {
         d: { kind: "unavailable", modelRan: false },
-        r: { direction, outcome: "unavailable" },
+        r: { direction, outcome: "unavailable", cause: buildFailure?.outcome },
       };
     const verdict = await analyzeGuardrail(
       model,
@@ -522,7 +570,14 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
       const d: GuardrailDecision = verdict.error
         ? { kind: "unavailable", modelRan: true }
         : { kind: "clean" };
-      return { d, r: { direction, outcome: d.kind } };
+      return {
+        d,
+        r: {
+          direction,
+          outcome: d.kind,
+          ...(verdict.error ? { cause: "analysis_failed" as const } : {}),
+        },
+      };
     }
     // NOTE: `categories` and `rationale` are both model-written, so neither can be copied into
     // the log row as it stands: `rationale` explains what in the message violated the policy, so it
@@ -540,8 +595,31 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
     );
   };
 
+  // `hold`: a screening that could not judge stops the message as a hand-over does, with the
+  // direction's own customer line, and the note says why there is no verdict. The scores of the
+  // checks that did answer stay, so the note and the trace still say which ones failed.
+  const held = (
+    direction: "input" | "output",
+    subject: string,
+    from: GuardrailReport | null,
+  ): { d: GuardrailDecision; r: GuardrailReport } => ({
+    d: { kind: "handed-off", reply: gr[direction].handoffMessage || null },
+    r: {
+      direction,
+      outcome: "handed-off",
+      held: true,
+      refused: subject,
+      ...(from?.scores?.length ? { scores: from.scores } : {}),
+      ...(from?.cause ? { cause: from.cause } : {}),
+    },
+  });
+
   return async (direction, subject) => {
-    const { d, r } = await screen(direction, subject);
+    const screened = await screen(direction, subject);
+    const { d, r } =
+      holds && screened.d.kind === "unavailable"
+        ? held(direction, subject, screened.r)
+        : screened;
     // The one announcement point. `not-run` is the only outcome with no report, and it is the only
     // one where nothing happened for anyone to read.
     if (r) await p.announce?.(r);

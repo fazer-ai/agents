@@ -177,7 +177,10 @@ import {
 import { followUpToForm, followUpToStored } from "./followUpFormState";
 import { GeneralTab } from "./GeneralTab";
 import { GuardrailsTab } from "./GuardrailsTab";
-import { readGuardrailsFormState } from "./guardrailsFormState";
+import {
+  playgroundGuardrailsUsable,
+  readGuardrailsFormState,
+} from "./guardrailsFormState";
 import { grantsToSave } from "./hiddenGrants";
 import { KnowledgeTab } from "./KnowledgeTab";
 import {
@@ -2556,11 +2559,11 @@ function AgentEditor() {
   // t('editor.configIssuePending.modelFallback', 'The fallback-provider credential is referenced but not filled in yet, so the fallback cannot take a turn.')
   // t('editor.configIssue.vision', 'Image/document reading is on but has no API key set.')
   // t('editor.configIssue.decisions', 'This agent decides with questions and rules, but its classifier has no API key set, so it decides nothing.')
-  // t('editor.configIssue.guardrails', 'Guardrails are on but have no API key set, so messages go out unscreened.')
-  // t('editor.configIssuePending.guardrails', 'The guardrails credential is referenced but not filled in yet, so messages go out unscreened.')
-  // t('editor.configIssueUnresolved.guardrails', 'The guardrails credential no longer exists, so messages go out unscreened.')
-  // t('editor.configIssueGuardrailsFailing', "Guardrails are on, but {{failures}} of the Checks could not run in the last {{hours}} hours (the most recent {{when}}). A check that could not run caught nothing and held nothing back. Check “Guardrails model”, “Base URL” and “API key”.")
-  // t('editor.configIssueGuardrailsFailingCause', "Guardrails are on, but {{failures}} of the Checks could not run in the last {{hours}} hours (the most recent {{when}}). A check that could not run caught nothing and held nothing back. The last one said: {{error}}")
+  // t('editor.configIssue.guardrails', 'Guardrails are on but have no API key set, so no check can run: messages go out unscreened, unless “When a check cannot run” is set to hold them.')
+  // t('editor.configIssuePending.guardrails', 'The guardrails credential is referenced but not filled in yet, so no check can run: messages go out unscreened, unless “When a check cannot run” is set to hold them.')
+  // t('editor.configIssueUnresolved.guardrails', 'The guardrails credential no longer exists, so no check can run: messages go out unscreened, unless “When a check cannot run” is set to hold them.')
+  // t('editor.configIssueGuardrailsFailing', "Guardrails are on, but {{failures}} of the Checks could not run in the last {{hours}} hours (the most recent {{when}}). A check that could not run judged nothing: the message went on unchecked, or was held if “When a check cannot run” is set to hold. Check “Guardrails model”, “Base URL” and “API key”.")
+  // t('editor.configIssueGuardrailsFailingCause', "Guardrails are on, but {{failures}} of the Checks could not run in the last {{hours}} hours (the most recent {{when}}). A check that could not run judged nothing: the message went on unchecked, or was held if “When a check cannot run” is set to hold. The last one said: {{error}}")
   // t('editor.configIssuePending.model', 'The model credential is referenced but not filled in yet.')
   // t('editor.configIssuePending.stt', 'The transcription credential is referenced but not filled in yet.')
   // t('editor.configIssuePending.tts', 'The audio-reply credential is referenced but not filled in yet.')
@@ -2597,7 +2600,7 @@ function AgentEditor() {
   // t('editor.configIssueWrongKind.modelFallback', 'The fallback-provider credential is a type that cannot be used as an API key, so the fallback cannot take a turn. Pick a credential that holds a single key.')
   // t('editor.configIssueWrongKind.vision', 'The image-reading credential is a type that cannot be used as an API key, so images and documents are not read. Pick a credential that holds a single key.')
   // t('editor.configIssueWrongKind.decisions', 'The classifier\'s credential is a type that cannot be used as an API key, so this agent decides nothing. Pick a credential that holds a single key.')
-  // t('editor.configIssueWrongKind.guardrails', 'The guardrails credential is a type that cannot be used as an API key, so messages go out unscreened. Pick a credential that holds a single key.')
+  // t('editor.configIssueWrongKind.guardrails', 'The guardrails credential is a type that cannot be used as an API key, so no check can run: messages go out unscreened, unless “When a check cannot run” is set to hold them. Pick a credential that holds a single key.')
   // t('editor.configIssueWrongKind.embedding', 'A knowledge base needs indexing, but the embedding credential is a type that cannot be used as an API key. Pick a credential that holds a single key.')
   // NOTE: The contact-authorization gate also accepts a connected account, so its sentence refuses the
   // opposite case: a credential this product only reads internally and never sends out.
@@ -2992,10 +2995,7 @@ function AgentEditor() {
       !!tts.credentialRef &&
       (tts.provider !== "elevenlabs" || !!tts.voice.trim()),
     fileInput: vision.enabled && !!vision.credentialRef,
-    // NOTE: Same two hard requirements the runtime has (modules/guardrails/gate): the feature switched on
-    // and its OWN credential resolved. A direction being off is not checked here — that is a per-
-    // direction answer, and the gate already returns "not-run" for it without costing anything.
-    guardrails: guardrails.enabled && !!guardrailCredentialRef(guardrails),
+    guardrails: playgroundGuardrailsUsable(guardrails),
   };
 
   // Live draft sent with each playground turn: the unsaved prompt/model/settings (never grants —

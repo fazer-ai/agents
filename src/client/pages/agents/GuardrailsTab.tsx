@@ -28,6 +28,7 @@ import type {
   GuardrailAction,
   GuardrailChecks,
   GuardrailClassifier,
+  GuardrailFailureMode,
   GuardrailsConfig,
   GuardrailThresholdKey,
 } from "@/modules/guardrails/settings";
@@ -348,8 +349,9 @@ export function GuardrailsTab({
                 replacement is written: when the model returns none, and always when the relevance
                 check is what tripped. It is the message customers actually receive then. */}
             {/* The hand-over's own sentence. Not the template: that one is a refusal, and this says
-                a person will continue. Empty is a choice, so the box may be left blank on purpose. */}
-            {d.action === "handoff" && (
+                a person will continue. Empty is a choice, so the box may be left blank on purpose.
+                Shown under hold too, where a check that cannot run sends it. */}
+            {(d.action === "handoff" || g.onFailure === "hold") && (
               <FormField
                 label={t(
                   "editor.guardrails.handoffMessage",
@@ -511,6 +513,49 @@ export function GuardrailsTab({
                     {t(
                       "editor.guardrails.classifierDecisions",
                       "A classification API (Jev, OpenAI Decisions)",
+                    )}
+                  </option>
+                </Select>
+              </FormField>
+            )}
+            {g.enabled && (
+              <FormField
+                label={t(
+                  "editor.guardrails.onFailure",
+                  "When a check cannot run",
+                )}
+                description={
+                  g.onFailure === "hold"
+                    ? t(
+                        "editor.guardrails.onFailureHoldHint",
+                        "The message is stopped and the conversation goes to your team, with the direction's handoff message. Follow-ups the agent starts on its own still go out.",
+                      )
+                    : t(
+                        "editor.guardrails.onFailurePassHint",
+                        "The message continues unchecked, and the Logs page records that the check failed.",
+                      )
+                }
+              >
+                <Select
+                  value={g.onFailure}
+                  onChange={(e) =>
+                    setG((s) => ({
+                      ...s,
+                      onFailure: e.target.value as GuardrailFailureMode,
+                    }))
+                  }
+                  data-testid="gr-on-failure"
+                >
+                  <option value="pass">
+                    {t(
+                      "editor.guardrails.onFailurePass",
+                      "Let the message through (default)",
+                    )}
+                  </option>
+                  <option value="hold">
+                    {t(
+                      "editor.guardrails.onFailureHold",
+                      "Hold it and hand the conversation to the team",
                     )}
                   </option>
                 </Select>

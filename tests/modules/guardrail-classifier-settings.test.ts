@@ -142,4 +142,12 @@ describe("write boundary", () => {
       }),
     ).toEqual([]);
   });
+
+  // The bug it catches: a typo stored and read as pass, so an operator who asked to hold never learns
+  // the save did nothing.
+  test("onFailure takes pass or hold and refuses anything else by name", () => {
+    expect(issuesOf({ onFailure: "hold" })).toEqual([]);
+    expect(issuesOf({ onFailure: "pass" })).toEqual([]);
+    expect(issuesOf({ onFailure: "segurar" })[0]?.path).toEqual(["onFailure"]);
+  });
 });

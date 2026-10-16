@@ -5691,6 +5691,67 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     );
   });
 
+  // The bug it catches: `hold` reaching a follow-up the agent started on its own, which would stop
+  // it and hand over a conversation where no customer is waiting.
+  test("onFailure hold still lets a follow-up through when the judge cannot run", async () => {
+    await withGuardrails(
+      {
+        enabled: true,
+        provider: "openai",
+        model: GUARD_MODEL,
+        onFailure: "hold",
+        input: { enabled: false },
+        output: {
+          enabled: true,
+          action: "template",
+          checks: {
+            toxicity: true,
+            unsafeContent: false,
+            competitorMentions: false,
+            promptAdherence: false,
+          },
+          templateMessage: "TEMPLATE-NUDGE",
+        },
+      },
+      async () => {
+        await seedConv(9900, null);
+        const s = stub();
+        const inner = await s.makeClient();
+        const client = {
+          ...inner,
+          getConversation: async (c: number) => ({
+            id: c,
+            status: "pending",
+            meta: {},
+          }),
+        } as unknown as ChatwootClient;
+        await runAgentNudge({
+          tenantId,
+          threadId: `${tenantId}:${instanceId}:9900`,
+          nudge: { source: "followup", kind: "inactivity", step: 1 },
+          postActions: { assignLabels: ["follow-up"], resolve: true },
+          requireLiveBotOwnership: true,
+          base: appDb,
+          deps: {
+            makeModel: ((cfg: { model: string }) =>
+              cfg.model === GUARD_MODEL
+                ? guardrailModel(async () => {
+                    throw new Error("guardrails provider 500");
+                  })
+                : new FakeListChatModel({
+                    responses: ["Ainda por aí?"],
+                  })) as never,
+            makeClient: async () => client,
+            checkpointer: new MemorySaver(),
+            persistUsage: async () => {},
+          },
+        });
+        expect(JSON.stringify(s.messages).includes("Ainda por aí?")).toBe(true);
+        expect(JSON.stringify(s.messages).includes("Encaminhei")).toBe(false);
+      },
+    );
+  });
+
   // The other half of THAT: a clean verdict leaves nothing behind, so abandoning the step is still
   // free and the follow-up is worth running again. Degrading here would drop a valid follow-up on a
   // transient Chatwoot failure, silently, because the handler stamps every outcome but this one.

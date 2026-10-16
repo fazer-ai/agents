@@ -93,6 +93,22 @@ export function guardrailUncheckedLabel(
   t: TFunction,
 ): string | null {
   if (stage !== "guardrail" || !detail) return null;
+  if (detail.held === true) {
+    switch (detail.direction) {
+      case "input":
+        return t(
+          "logs.guardrailHeld.input",
+          "The check failed, so the customer's message was held and a hand-over to the team was requested",
+        );
+      case "output":
+        return t(
+          "logs.guardrailHeld.output",
+          "The check failed, so the reply was held and a hand-over to the team was requested",
+        );
+      default:
+        return null;
+    }
+  }
   if (detail.unchecked === false) return null;
   const outcome = typeof detail.outcome === "string" ? detail.outcome : null;
   const unchecked =

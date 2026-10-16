@@ -63,6 +63,7 @@ let agentTemplate = 0n;
 let agentSilent = 0n;
 let agentInput = 0n;
 let agentBrokenGuard = 0n;
+let agentHeldBroken = 0n;
 let agentDeadCredential = 0n;
 let agentBoth = 0n;
 let agentInputSilent = 0n;
@@ -240,6 +241,12 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
       guardrails: guardrails({ input: dir({ enabled: true }), output: dir() }),
     });
     agentBrokenGuard = await mk("Broken", outputOnly());
+    agentHeldBroken = await mk("HeldBroken", {
+      guardrails: {
+        ...guardrails({ input: dir(), output: dir({ enabled: true }) }),
+        onFailure: "hold",
+      },
+    });
     // Enabled, with a credentialRef pointing at a vault entry that is not there (deleted, or from
     // another tenant). `prepare.ts` leaves the key empty and logs; the console shows a ref and an
     // available toggle, so this is the misconfiguration the operator cannot see from the editor.
@@ -546,6 +553,38 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
     expect(
       await suDb.playgroundTurnNote.count({ where: { threadId: r.threadId } }),
     ).toBe(0);
+  });
+
+  // The bug it catches: the simulated follow-up held while the same follow-up in production passes,
+  // so the playground shows the operator a behaviour the inbox never has.
+  test("under hold a follow-up whose judge cannot run still goes out, as in production", async () => {
+    const m = models({ violated: false, breakJudge: true });
+    const r = await runPlaygroundFollowup({
+      ctx: ctx(tenantId),
+      agentId: agentHeldBroken,
+      base: appDb,
+      deps: deps(m),
+    });
+    expect(r.suppressed).toBe(false);
+    expect(r.trace.filter((e) => e.type === "guardrail")).toMatchObject([
+      { outcome: "unavailable" },
+    ]);
+  });
+
+  // The bug it catches: a held turn traced as an ordinary policy hand-over, indistinguishable from a trip.
+  test("under hold a reply whose judge cannot run is held, and the trace says why", async () => {
+    const m = models({ violated: false, breakJudge: true });
+    const r = await runPlaygroundTurn({
+      ctx: ctx(tenantId),
+      agentId: agentHeldBroken,
+      message: "oi",
+      base: appDb,
+      deps: deps(m),
+    });
+    expect(r.reply === RAW_REPLY).toBe(false);
+    expect(r.trace.filter((e) => e.type === "guardrail")).toMatchObject([
+      { outcome: "handed-off", held: true },
+    ]);
   });
 
   // "Nothing was sent" has two causes and the operator needs them apart: reported as silence, the

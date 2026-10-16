@@ -73,6 +73,19 @@ describe("agentTurn", () => {
     ).toBe("blocked, the case would go to the team");
   });
 
+  // The bug it catches: a held turn labelled as a policy block, hiding that no check answered.
+  test("a held screening says the check could not run", () => {
+    expect(
+      guardrailTraceLabel(t, {
+        direction: "output",
+        outcome: "handed-off",
+        held: true,
+      }),
+    ).toBe(
+      "could not be checked, so the reply was held and the case would go to the team",
+    );
+  });
+
   test("suppression outranks silence, so a blocked follow-up reads as blocked", () => {
     const turn = agentTurn(t, {
       ...base,

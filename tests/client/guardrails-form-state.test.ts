@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { readGuardrailsFormState } from "@/client/pages/agents/guardrailsFormState";
+import {
+  playgroundGuardrailsUsable,
+  readGuardrailsFormState,
+} from "@/client/pages/agents/guardrailsFormState";
 import {
   CUSTOM_POLICY_MAX,
   GENERATION_PROMPT_MAX,
@@ -99,5 +102,27 @@ describe("guardrails form state", () => {
         guardrails: { input: { templateMessage: null } },
       }).input.templateMessage.length,
     ).toBeGreaterThan(0);
+  });
+});
+
+describe("playgroundGuardrailsUsable", () => {
+  // The bug it catches: under hold with no credential every playground turn is held, while the
+  // toggle that would switch moderation off reads disabled.
+  test("is usable with a credential, or with none under hold, and never when off", () => {
+    const on = readGuardrailsFormState({ guardrails: { enabled: true } });
+    expect([
+      playgroundGuardrailsUsable({ ...on, credentialRef: "vault:1" }),
+      playgroundGuardrailsUsable({ ...on, credentialRef: null }),
+      playgroundGuardrailsUsable({
+        ...on,
+        credentialRef: null,
+        onFailure: "hold",
+      }),
+      playgroundGuardrailsUsable({
+        ...on,
+        enabled: false,
+        onFailure: "hold",
+      }),
+    ]).toEqual([true, false, true, false]);
   });
 });

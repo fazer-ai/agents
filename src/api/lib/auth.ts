@@ -264,9 +264,17 @@ export interface AuthPool {
 // The instance health routes too: an instance alert links to them, and they must answer during the
 // saturation the alert is about (docs/logs.md, instance alerts).
 const OFF_MAIN_POOL = ["/api/v1/metrics", "/api/v1/instance-health"];
+// Single routes on the metrics pool whose siblings are not: a dashboard's reads (a panel's figures, the
+// editor's preview), while its writes stay on the main pool with the rest of the CRUD.
+const OFF_MAIN_POOL_ROUTES: RegExp[] = [
+  // Empty in an edition without such routes.
+];
 
 export function authPoolFor(path: string): AuthPool {
-  if (!OFF_MAIN_POOL.some((p) => path === p || path.startsWith(`${p}/`))) {
+  if (
+    !OFF_MAIN_POOL.some((p) => path === p || path.startsWith(`${p}/`)) &&
+    !OFF_MAIN_POOL_ROUTES.some((r) => r.test(path))
+  ) {
     return {
       db: mainPrisma,
       lookup: (fn) => fn(mainPrisma),

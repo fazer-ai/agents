@@ -5,6 +5,7 @@ import {
   Gauge,
   Globe,
   KeyRound,
+  LayoutDashboard,
   LibraryBig,
   LifeBuoy,
   MessagesSquare,
@@ -76,6 +77,7 @@ const MONITORING = {
 const SYSTEM = { labelKey: "nav.section.system", defaultLabel: "System" };
 
 // t('nav.dashboard', 'Dashboard')
+// t('nav.dashboards', 'Dashboards')
 // t('nav.conversations', 'Conversations')
 // t('nav.approvals', 'Approvals')
 // t('nav.agents', 'Agents')
@@ -93,6 +95,13 @@ export const NAV_ITEMS: NavItem[] = [
     labelKey: "nav.dashboard",
     defaultLabel: "Dashboard",
     icon: Gauge,
+    requireAdmin: true,
+  },
+  {
+    to: "/dashboards",
+    labelKey: "nav.dashboards",
+    defaultLabel: "Dashboards",
+    icon: LayoutDashboard,
     requireAdmin: true,
   },
   {

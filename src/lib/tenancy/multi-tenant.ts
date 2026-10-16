@@ -58,6 +58,8 @@ const TENANT_SCOPED_MODELS = new Set<string>([
   "IssuedDocument",
   "DocumentApprovalRequest",
   "Experiment",
+  "Dashboard",
+  "DashboardPanel",
   "PromptVariantAssignment",
   "LlmUsage",
   "ExecutionLog",

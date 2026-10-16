@@ -46,6 +46,7 @@ describe("navigation", () => {
     // The day-to-day work opens the list with no heading, the agents and what they use included.
     expect(groups[0]?.items.map((i) => i.to)).toEqual([
       "/",
+      "/dashboards",
       "/conversations",
       "/agents",
       "/approvals",

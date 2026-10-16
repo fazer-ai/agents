@@ -1157,6 +1157,11 @@
     "unpriced_other": "{{n}} requests in this period have no price and are not in the cost: {{models}}. Set this account's own price for the model in Advanced > Model prices, then re-price the calls already made.",
     "unpricedCta": "Open model prices"
   },
+  "dashboards": {
+    "proTitle": "Dashboards are a Pro feature",
+    "subtitle": "Panels you arrange yourself over your conversations and AI usage, each at its own address.",
+    "title": "Dashboards"
+  },
   "documentApproval": {
     "again": "Requested again, dated today. This is the new request.",
     "againFailed": "Could not request it again.",
@@ -3353,6 +3358,7 @@
     "collapsed": "Collapsed",
     "conversations": "Conversations",
     "dashboard": "Dashboard",
+    "dashboards": "Dashboards",
     "expand": "Expand",
     "github": "GitHub",
     "home": "Home",
@@ -4062,6 +4068,9 @@
       "description": "White-label branding (name, colors, logo, favicon) is a Pro feature. Upgrade to Pro to customize the app identity."
     },
     "cta": "Upgrade to Pro",
+    "dashboards": {
+      "description": "Build your own dashboards (conversations by event, label or outcome, AI cost by model) and share each one by its address. Upgrade to Pro to create them."
+    },
     "dismiss": "Maybe later",
     "multiTenant": {
       "description": "The Free edition runs a single tenant. Upgrade to Pro to create and manage multiple tenants."

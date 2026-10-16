@@ -2558,7 +2558,12 @@ function AgentEditor() {
   const draftGrantsKey = canonicalGrants(savedGrants);
   const draftGrantsRef = useRef(savedGrants);
   draftGrantsRef.current = savedGrants;
-  // biome-ignore lint/correctness/useExhaustiveDependencies: draftGrantsKey stands for the grants (read through the ref, compared by content); catalogTick is a refetch trigger — a tool definition saved in its modal changes what the floor measures.
+  // The settings too: a tool's schema reads them (handoff instructions, writable contact fields).
+  const draftSettings = buildToolsSettings(buildSettings()).toolsSettings;
+  const draftSettingsKey = JSON.stringify(draftSettings);
+  const draftSettingsRef = useRef(draftSettings);
+  draftSettingsRef.current = draftSettings;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: draftGrantsKey and draftSettingsKey stand for the draft (read through the refs, compared by content); catalogTick is a refetch trigger — a tool definition saved in its modal changes what the floor measures.
   useEffect(() => {
     if (!id || serverSyncTick === 0) {
       setCallFloor(null);
@@ -2569,7 +2574,10 @@ function AgentEditor() {
     const timer = setTimeout(() => {
       api.api.v1
         .agents({ id })
-        ["call-floor"].post({ grants: draftGrantsRef.current })
+        ["call-floor"].post({
+          grants: draftGrantsRef.current,
+          settings: draftSettingsRef.current,
+        })
         .then(({ data }) => {
           if (alive)
             setCallFloor((data?.floor as CallFloor | undefined) ?? null);
@@ -2582,7 +2590,7 @@ function AgentEditor() {
       alive = false;
       clearTimeout(timer);
     };
-  }, [id, serverSyncTick, catalogTick, draftGrantsKey]);
+  }, [id, serverSyncTick, catalogTick, draftGrantsKey, draftSettingsKey]);
 
   // Live config-health: a feature on without its credential, or naming one whose secret is not
   // filled in (pending); each issue deep-links to its tab or the vault fill modal. Messages by issue.key:
@@ -3360,6 +3368,104 @@ function AgentEditor() {
     }
   }
 
+  // The settings a Tools save writes: the handoff, kanban and per-tool blocks from the form, over
+  // `base`. The save puts them over the last-synced bag; the call-floor estimate over the whole draft.
+  function buildToolsSettings(base: Record<string, unknown>) {
+    const syncedSettings = (syncedAgentRef.current?.settings ?? {}) as Record<
+      string,
+      unknown
+    >;
+    // On questions and rules the guidance is not drawn and goes back AS STORED, byte for byte: the
+    // serializers below tidy what an operator typed (trim, drop empties), and tidying a value the form
+    // still holds untidied would leave the editor reading a hidden draft nobody made.
+    const asStored = (key: string, written: unknown): unknown =>
+      decides && key in syncedSettings ? syncedSettings[key] : written;
+    const storedHandoff = (syncedSettings.handoff ?? {}) as Record<
+      string,
+      unknown
+    >;
+    const handoffJson = {
+      ...serializeHandoff({
+        ...handoff,
+        instructions: savedGuidance.handoffInstructions,
+      }),
+      ...(decides && "instructions" in storedHandoff
+        ? { instructions: storedHandoff.instructions as string | null }
+        : {}),
+    };
+    const kanbanJson = asStored("kanban", {
+      instructions: savedGuidance.kanbanInstructions.trim() || null,
+    });
+    const crossInboxCaseJson = asStored(
+      "crossInboxCase",
+      serializeCrossInboxCase(savedGuidance.crossInboxCase),
+    );
+    const sendImageJson = asStored(
+      "sendImage",
+      serializeSendImage(savedGuidance.sendImage),
+    );
+    const resolveConversationJson = asStored(
+      "resolveConversation",
+      serializeResolveConversation(savedGuidance.resolveConversation),
+    );
+    // Merge the per-tool guidance map: preserve any entries for other tools, set/clear ours.
+    const existingGuidance = (syncedSettings.toolGuidance ?? {}) as Record<
+      string,
+      unknown
+    >;
+    const toolGuidanceJson: Record<string, unknown> = { ...existingGuidance };
+    if (!decides) {
+      const attrNote = savedGuidance.customAttributeInstructions.trim();
+      const labelNote = savedGuidance.labelInstructions.trim();
+      const updateKanbanNote =
+        savedGuidance.updateKanbanTaskInstructions.trim();
+      if (attrNote) toolGuidanceJson.set_custom_attribute = attrNote;
+      else delete toolGuidanceJson.set_custom_attribute;
+      if (labelNote) toolGuidanceJson.set_labels = labelNote;
+      else delete toolGuidanceJson.set_labels;
+      if (updateKanbanNote)
+        toolGuidanceJson.update_kanban_task = updateKanbanNote;
+      else delete toolGuidanceJson.update_kanban_task;
+    }
+    const toolPreconditionsJson = serializeToolPreconditions(
+      toolPreconditions,
+      syncedSettings.toolPreconditions,
+    );
+    // The guard is stored under the tool's own block rather than beside the retired `labels` key,
+    // which the write boundary now refuses: what this list does is fence a tool, not describe a
+    // taxonomy. An empty list is written as an empty array rather than dropped, so clearing the
+    // field is a change the PATCH carries instead of a no-op the merge swallows.
+    const protectedList = protectedLabels
+      .split(",")
+      .map((l) => l.trim())
+      .filter(Boolean);
+    const allowedList = allowedLabels
+      .split(",")
+      .map((l) => l.trim())
+      .filter(Boolean);
+    const existingSetLabels = (syncedSettings.setLabels ?? {}) as Record<
+      string,
+      unknown
+    >;
+    const toolsSettings = {
+      ...base,
+      handoff: handoffJson,
+      kanban: kanbanJson,
+      toolGuidance: toolGuidanceJson,
+      toolPreconditions: toolPreconditionsJson,
+      setLabels: {
+        ...existingSetLabels,
+        protected: protectedList,
+        allowed: allowedList,
+        outsideAllowed: outsideAllowedLabels,
+      },
+      crossInboxCase: crossInboxCaseJson,
+      sendImage: sendImageJson,
+      resolveConversation: resolveConversationJson,
+    };
+    return { toolsSettings, protectedList, allowedList };
+  }
+
   // Tools-tab save: the grant set PLUS the handoff_to_human + kanban config (which live on the tools,
   // not in Behavior). The config bits are merged onto the LAST-SYNCED settings so this never clobbers
   // unsaved edits pending in the Behavior tab (both write the same settings JSON column). Two writes
@@ -3377,94 +3483,8 @@ function AgentEditor() {
         string,
         unknown
       >;
-      // On questions and rules the guidance is not drawn and goes back AS STORED, byte for byte: the
-      // serializers below tidy what an operator typed (trim, drop empties), and tidying a value the form
-      // still holds untidied would leave the editor reading a hidden draft nobody made.
-      const asStored = (key: string, written: unknown): unknown =>
-        decides && key in syncedSettings ? syncedSettings[key] : written;
-      const storedHandoff = (syncedSettings.handoff ?? {}) as Record<
-        string,
-        unknown
-      >;
-      const handoffJson = {
-        ...serializeHandoff({
-          ...handoff,
-          instructions: savedGuidance.handoffInstructions,
-        }),
-        ...(decides && "instructions" in storedHandoff
-          ? { instructions: storedHandoff.instructions as string | null }
-          : {}),
-      };
-      const kanbanJson = asStored("kanban", {
-        instructions: savedGuidance.kanbanInstructions.trim() || null,
-      });
-      const crossInboxCaseJson = asStored(
-        "crossInboxCase",
-        serializeCrossInboxCase(savedGuidance.crossInboxCase),
-      );
-      const sendImageJson = asStored(
-        "sendImage",
-        serializeSendImage(savedGuidance.sendImage),
-      );
-      const resolveConversationJson = asStored(
-        "resolveConversation",
-        serializeResolveConversation(savedGuidance.resolveConversation),
-      );
-      // Merge the per-tool guidance map: preserve any entries for other tools, set/clear ours.
-      const existingGuidance = (syncedSettings.toolGuidance ?? {}) as Record<
-        string,
-        unknown
-      >;
-      const toolGuidanceJson: Record<string, unknown> = { ...existingGuidance };
-      if (!decides) {
-        const attrNote = savedGuidance.customAttributeInstructions.trim();
-        const labelNote = savedGuidance.labelInstructions.trim();
-        const updateKanbanNote =
-          savedGuidance.updateKanbanTaskInstructions.trim();
-        if (attrNote) toolGuidanceJson.set_custom_attribute = attrNote;
-        else delete toolGuidanceJson.set_custom_attribute;
-        if (labelNote) toolGuidanceJson.set_labels = labelNote;
-        else delete toolGuidanceJson.set_labels;
-        if (updateKanbanNote)
-          toolGuidanceJson.update_kanban_task = updateKanbanNote;
-        else delete toolGuidanceJson.update_kanban_task;
-      }
-      const toolPreconditionsJson = serializeToolPreconditions(
-        toolPreconditions,
-        syncedSettings.toolPreconditions,
-      );
-      // The guard is stored under the tool's own block rather than beside the retired `labels` key,
-      // which the write boundary now refuses: what this list does is fence a tool, not describe a
-      // taxonomy. An empty list is written as an empty array rather than dropped, so clearing the
-      // field is a change the PATCH carries instead of a no-op the merge swallows.
-      const protectedList = protectedLabels
-        .split(",")
-        .map((l) => l.trim())
-        .filter(Boolean);
-      const allowedList = allowedLabels
-        .split(",")
-        .map((l) => l.trim())
-        .filter(Boolean);
-      const existingSetLabels = (syncedSettings.setLabels ?? {}) as Record<
-        string,
-        unknown
-      >;
-      const toolsSettings = {
-        ...syncedSettings,
-        handoff: handoffJson,
-        kanban: kanbanJson,
-        toolGuidance: toolGuidanceJson,
-        toolPreconditions: toolPreconditionsJson,
-        setLabels: {
-          ...existingSetLabels,
-          protected: protectedList,
-          allowed: allowedList,
-          outsideAllowed: outsideAllowedLabels,
-        },
-        crossInboxCase: crossInboxCaseJson,
-        sendImage: sendImageJson,
-        resolveConversation: resolveConversationJson,
-      };
+      const { toolsSettings, protectedList, allowedList } =
+        buildToolsSettings(syncedSettings);
       // NOTE: Before either request: the grants PUT goes out first and the PATCH after it, and both can
       // answer a refusal about this bag.
       sent = sentFor({ settings: toolsSettings });

@@ -555,6 +555,33 @@ describe.skipIf(!dbUp)("estimateCallFloor", () => {
     ).rejects.toMatchObject({ statusCode: 400 });
   });
 
+  // A tool's schema reads the settings too, so a draft measured on the saved ones undercounts.
+  test("unsaved settings shape the handoff the draft measures", async () => {
+    const handoffOf = async (extra: { settings?: Record<string, unknown> }) => {
+      const f = await estimateCallFloor({
+        ctx: ctx(),
+        agentId,
+        base: appDb,
+        grants: [{ source: "NATIVE", enabledTools: ["handoff_to_human"] }],
+        ...extra,
+      });
+      if (f.engine !== "llm") throw new Error("engine");
+      const tool = f.tools.find((t) => t.name === "handoff_to_human");
+      if (!tool) throw new Error("no handoff");
+      return tool.estimatedTokens;
+    };
+    const saved = await handoffOf({});
+    const instructed = await handoffOf({
+      settings: {
+        handoff: {
+          instructions:
+            "Cobrança vai para o Financeiro; trocas e devoluções para o Pós-venda; entrega para a Logística, com o número do pedido.",
+        },
+      },
+    });
+    expect(instructed).toBeGreaterThan(saved);
+  });
+
   test("agent_call_floor answers the console's number, inside the token's tenant only", async () => {
     const r = await agentCallFloor(
       principal(tenantId),

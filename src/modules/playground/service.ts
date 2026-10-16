@@ -739,6 +739,9 @@ export async function estimateCallFloor(params: {
   // or a knowledge switch is turned on, before the save. Validated as the save validates it, so a set
   // the save would refuse is refused here too.
   grants?: ToolGrantInput[];
+  // The editor's unsaved settings, in place of the saved ones: a tool's schema reads them (the handoff
+  // instructions, the writable contact fields), so a draft set measured on saved settings undercounts.
+  settings?: Record<string, unknown>;
 }): Promise<CallFloor> {
   const base = params.base ?? basePrisma;
   const agent = await runScopedOn(base, params.ctx, (db) =>
@@ -751,7 +754,8 @@ export async function estimateCallFloor(params: {
     throw new NotFoundError("agent not found", "errors.agentNotFound");
   if (
     isMonitoring(agent.mode) &&
-    readMonitoringConfig(agent.settings).engine === "decisions"
+    readMonitoringConfig(params.settings ?? agent.settings).engine ===
+      "decisions"
   )
     return { engine: "decisions" };
   const threadId = newPlaygroundThreadId(
@@ -773,6 +777,9 @@ export async function estimateCallFloor(params: {
         ignoreDisabled: true,
         chatModelUnused: true,
         skipExperiment: true,
+        ...(params.settings
+          ? { overrides: { settings: params.settings } }
+          : {}),
         ...(draft
           ? { toolSelections: await selectionsFromGrants(db, draft) }
           : {}),

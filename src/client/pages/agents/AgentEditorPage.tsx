@@ -2671,12 +2671,20 @@ function AgentEditor() {
   // What a tab's hold reads from outside it (the engine and mode as edited, the agent's model as
   // saved), as it stood when the tab was last drawn. A hold judged under other values is judged again
   // before the save trusts it (agents#1520).
-  // The stored row only, not the vault's answer about its credential: that arrives on its own clock,
-  // and a key that moved with it would send every save around the tabs for nothing.
+  // The vault's answers count too, by how many have arrived (a new lookup function each time), not by
+  // what they say about the fields being edited: a credential's endpoint resolved after its tab was
+  // left can hold that tab, and only the arrival, not every edit, should send a save back to check.
+  const vaultAnswersRef = useRef({ lookup: vaultBaseUrl, n: 0 });
+  if (vaultAnswersRef.current.lookup !== vaultBaseUrl)
+    vaultAnswersRef.current = {
+      lookup: vaultBaseUrl,
+      n: vaultAnswersRef.current.n + 1,
+    };
   const crossTabKey = JSON.stringify([
     engine,
     agentMode,
     syncedAgentRef.current?.modelConfig ?? null,
+    vaultAnswersRef.current.n,
   ]);
   const drawnWithRef = useRef<Partial<Record<TabKey, string>>>({});
   drawnWithRef.current[tab] = crossTabKey;

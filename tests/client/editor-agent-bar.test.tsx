@@ -6,6 +6,7 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
+import { invalidateVault } from "@/client/lib/vaultCache";
 import { nativeToolAnchor } from "@/client/pages/agents/editorTabs";
 import { focusableIn } from "@/client/pages/agents/saveAttempt";
 import {
@@ -538,5 +539,54 @@ describe("the editor's bar covers the whole agent", () => {
     const [first, second] = stub.writes.filter((w) => w.method === "PUT");
     expect(tools(second?.body ?? {})).toBe(tools(first?.body ?? {}));
     await waitFor(() => expect(save().disabled).toBe(false));
+  });
+
+  // The vault answers on its own clock. Its answer, arriving after Behavior was left, makes the
+  // fallback's credential send an endpoint Anthropic never dials: the save goes back to Behavior to
+  // judge it again, and stops there.
+  test("a hold the vault's late answer creates on a tab left before it is caught", async () => {
+    invalidateVault();
+    let answer: () => void = () => {};
+    const vaultAnswered = new Promise<void>((r) => {
+      answer = r;
+    });
+    const stub = stubEditorApi({
+      name: "Atendente",
+      modelConfig: { provider: "openai", model: "gpt-4o-mini" },
+      settings: {
+        modelFallback: {
+          provider: "anthropic",
+          model: "claude-sonnet-4-5",
+          credentialRef: "vault:5",
+        },
+      },
+    });
+    stub.override = (method, path) =>
+      method === "GET" && path === "/api/v1/vault"
+        ? vaultAnswered.then(() =>
+            Response.json({
+              entries: [
+                {
+                  id: 5,
+                  name: "proxy",
+                  kind: null,
+                  baseUrl: "https://proxy.example.com/v1",
+                },
+              ],
+            }),
+          )
+        : undefined;
+    await renderEditor(stub, "behavior");
+    editTab("behavior");
+    await waitFor(() => expect(save().disabled).toBe(false));
+    await goTo("Tools");
+    answer();
+    for (let i = 0; i < 5; i++) await act(async () => {});
+    fireEvent.click(save());
+    await screen.findByText(/Fix the Behavior tab before saving/);
+    expect(
+      stub.writes.filter((w) => w.method === "PATCH" || w.method === "PUT"),
+    ).toEqual([]);
+    invalidateVault();
   });
 });

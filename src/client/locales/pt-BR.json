@@ -3199,8 +3199,8 @@
       "decisions": "API de classificação"
     },
     "guardrailHeld": {
-      "input": "A checagem falhou, então a mensagem do cliente foi segurada e a conversa passou para a equipe",
-      "output": "A checagem falhou, então a resposta foi segurada e a conversa passou para a equipe"
+      "input": "A checagem falhou, então a mensagem do cliente foi segurada e a passagem para a equipe foi pedida",
+      "output": "A checagem falhou, então a resposta foi segurada e a passagem para a equipe foi pedida"
     },
     "guardrailUnchecked": {
       "input": "A checagem falhou, e a mensagem do cliente foi liberada sem checagem",

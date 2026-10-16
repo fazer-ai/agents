@@ -127,7 +127,7 @@ describe("a guardrail line that could not judge, on the Logs page", () => {
     ]);
     expect(
       text.includes(
-        "The check failed, so the reply was held and the conversation handed to the team · language model",
+        "The check failed, so the reply was held and a hand-over to the team was requested · language model",
       ),
     ).toBe(true);
     expect(text.includes("let through")).toBe(false);

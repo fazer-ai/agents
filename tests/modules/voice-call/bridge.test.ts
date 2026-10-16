@@ -56,6 +56,45 @@ function socket() {
 const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
 
 describe("CallBridge", () => {
+  test("the caller's voice heard while the engine is still connecting reaches it, in order", async () => {
+    const { provider, state } = fakeEngine();
+    let connected: () => void = () => {};
+    const slow: VoiceProvider = {
+      name: "slow",
+      open: (config, handlers) =>
+        new Promise((resolve) => {
+          connected = () => resolve(provider.open(config, handlers));
+        }),
+    };
+    const ws = socket();
+    const bridge = new CallBridge(ws, {
+      provider: slow,
+      configure: () => voiceSessionConfig(ROUTE, CTX),
+      onFinished: () => {},
+    });
+    bridge.onMessage(
+      JSON.stringify({ event: "start", call_id: "c", direction: "inbound" }),
+    );
+    bridge.onMessage(JSON.stringify({ event: "answered" }));
+    const hello = new Int16Array(320).fill(1);
+    const request = new Int16Array(320).fill(2);
+    for (const pcm of [hello, request])
+      bridge.onMessage(
+        JSON.stringify({ event: "media", payload: pcmToBase64(pcm) }),
+      );
+    await tick();
+    connected();
+    await tick();
+    bridge.onMessage(
+      JSON.stringify({
+        event: "media",
+        payload: pcmToBase64(new Int16Array(320).fill(3)),
+      }),
+    );
+    expect(state.received.map((pcm) => pcm[0])).toEqual([1, 2, 3]);
+    expect(state.begun).toBe(1);
+  });
+
   test("speaks only once the call is answered, and carries voice both ways", async () => {
     const { provider, state } = fakeEngine();
     const ws = socket();

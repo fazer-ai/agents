@@ -115,7 +115,12 @@ export async function ensureElevenLabsAgent(
   fetchImpl: typeof fetch = fetch,
 ): Promise<string> {
   const body = JSON.stringify(elevenLabsAgentConfig(spec));
-  const digest = createHash("sha256").update(body).digest("hex");
+  // The key is part of what was written: the same settings under another account are unchecked there.
+  const digest = createHash("sha256")
+    .update(apiKey)
+    .update("\0")
+    .update(body)
+    .digest("hex");
   const headers = { "xi-api-key": apiKey, "content-type": "application/json" };
   if (agentId) {
     if (synced.get(agentId) === digest) return agentId;

@@ -92,6 +92,8 @@ export class CallBridge {
   private hangupTimer: ReturnType<typeof setTimeout> | null = null;
   private engineConversationId: string | null = null;
   private farewellTimer: ReturnType<typeof setTimeout> | null = null;
+  // The caller's voice from the answer until the engine is connected: their hello, often.
+  private early: Int16Array[] = [];
 
   constructor(
     private readonly socket: StreamSocket,
@@ -137,7 +139,8 @@ export class CallBridge {
         const pcm = pcmFromBase64(String(frame.payload ?? ""));
         this.options.tap?.caller?.(pcm);
         if (this.farewellTimer && loud(pcm)) this.cancelFarewell();
-        this.session?.sendAudio(pcm);
+        if (this.session) this.session.sendAudio(pcm);
+        else this.early.push(pcm);
         break;
       }
       case "stop":
@@ -190,6 +193,8 @@ export class CallBridge {
           if (!this.finished) this.hangupNow("error", error.message);
         },
       });
+      // In the same turn as the assignment, so nothing heard later can overtake it.
+      for (const pcm of this.early.splice(0)) this.session.sendAudio(pcm);
       if (this.finished) this.session.close();
       else this.options.onReady?.();
     } catch (error) {

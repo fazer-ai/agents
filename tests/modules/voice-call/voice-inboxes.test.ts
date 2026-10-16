@@ -5,11 +5,13 @@ import { decryptJson, encryptJson } from "@/api/lib/crypto";
 import config from "@/config";
 import type { TenantContext } from "@/lib/tenancy";
 import {
+  cloneAgent,
   createAgent,
   deleteAgent,
   listAgentsPaged,
   updateAgent,
 } from "@/modules/agents/service";
+import { exportAgent, importAgent } from "@/modules/agents/transfer";
 import {
   type ChatwootClient,
   createChatwootClient,
@@ -59,7 +61,9 @@ const ctx = (t: bigint): TenantContext => ({
 
 type AiVoice = { inbox_id: number; enabled: boolean; stream_url: string };
 
-function fakeChatwoot(opts: { failAiVoice?: boolean } = {}) {
+function fakeChatwoot(
+  opts: { failAiVoice?: boolean; duringAiVoice?: () => Promise<void> } = {},
+) {
   const writes: AiVoice[] = [];
   const fetchImpl = (async (url: string, init?: RequestInit) => {
     const body = init?.body ? JSON.parse(init.body as string) : undefined;
@@ -68,7 +72,13 @@ function fakeChatwoot(opts: { failAiVoice?: boolean } = {}) {
     let answer: unknown = body ?? {};
     if (path.endsWith("/whatsapp_calls/ai_voice")) {
       if (opts.failAiVoice) status = 503;
-      else writes.push(body);
+      else {
+        writes.push(body);
+        // Runs while this write is in flight, as a save that commits under it would.
+        const during = opts.duringAiVoice;
+        opts.duringAiVoice = undefined;
+        await during?.();
+      }
     } else if (path.endsWith("/agent_bots")) {
       answer =
         init?.method === "POST"
@@ -265,6 +275,21 @@ describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
     expect(await sync()).toEqual([[501, true, true]]);
   });
 
+  test("a mode change that commits while Chatwoot is being written is written too", async () => {
+    await setMode("production");
+    await bindInboxVoiceAgent(
+      ctx(tenant),
+      whatsappInboxId,
+      voiceId,
+      fakeChatwoot(),
+      appDb,
+    );
+    const cw = fakeChatwoot({ duringAiVoice: () => setMode("test") });
+    await syncVoiceAgentInboxes(ctx(tenant), voiceId, appDb, cw);
+    expect(cw.writes.map((w) => w.enabled)).toEqual([true, false]);
+    await setMode("production");
+  });
+
   test("only a WhatsApp inbox takes calls, and only a voice agent answers them", async () => {
     const cw = fakeChatwoot();
     await expect(
@@ -352,6 +377,41 @@ describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
     });
     await deleteAgent(ctx(tenant), spare.id, appDb);
     expect(await suDb.agent.count({ where: { id: spare.id } })).toBe(0);
+  });
+
+  test("a copy of a voice agent is a voice agent with an ElevenLabs agent of its own", async () => {
+    const source = await suDb.agent.create({
+      data: {
+        tenantId: tenant,
+        name: "Original",
+        kind: "voice",
+        systemPrompt: "x",
+        settings: {
+          calls: { elevenLabsAgentId: "agent_original", speed: 1.1 },
+        },
+      },
+    });
+    const clone = await cloneAgent(ctx(tenant), source.id, "Clone", appDb);
+    expect(clone.kind).toBe("voice");
+    expect(clone.settings.calls).toEqual({ speed: 1.1 });
+
+    const bundle = await exportAgent(ctx(tenant), source.id, appDb);
+    expect(bundle.agent.kind).toBe("voice");
+    expect(bundle.agent.settings.calls).toEqual({ speed: 1.1 });
+    const imported = await importAgent(
+      ctx(tenant),
+      { ...bundle, agent: { ...bundle.agent, name: "Importado" } },
+      appDb,
+    );
+    expect(imported.agent.kind).toBe("voice");
+    // A bundle from before voice agents has no kind: it is a text agent.
+    const { kind: _kind, ...legacy } = bundle.agent;
+    const old = await importAgent(
+      ctx(tenant),
+      { ...bundle, agent: { ...legacy, name: "Antigo" } },
+      appDb,
+    );
+    expect(old.agent.kind).toBe("text");
   });
 
   test("a voice agent is created as one, never in monitoring mode, and its kind does not change", async () => {

@@ -1412,9 +1412,9 @@
     "baseURLNotSentByProvider": "This provider does not send a base URL: the request would go to its own endpoint instead. Pick a credential without one, or use an OpenAI-compatible provider.",
     "businessHours": "Business hours",
     "callFloor": {
-      "added": "Added by the system (knowledge rules, MCP servers)",
+      "added": "includes {{n}} the system adds (knowledge rules, MCP servers)",
       "decisions": "Instructions and tools do not apply: this agent decides with questions and rules, and sends no instructions to a model.",
-      "help": "An estimate: the count your provider bills can be higher, more so with many tools.\n\nIt is the floor of a call. Each conversation adds its history and what belongs to it: the contact's attributes and fields, appointments, context from other inboxes and the notices of each turn. Tools count as they are saved; instructions count as you type them.",
+      "help": "An estimate: the count your provider bills can be higher, more so with many tools.\n\nIt is the floor of a call. Each conversation adds its history and what belongs to it, none of which is counted here: contact and conversation attributes and contact fields, appointments, the authorization check and context from other inboxes, the label and handoff vocabulary the built-in tools' descriptions gain in a conversation, and the notices of each turn. Tools count as they are saved; instructions count as you type them.",
       "helpLabel": "About this estimate",
       "instructions": "Agent instructions",
       "line": "Every call already sends {{n}} tokens before the history",

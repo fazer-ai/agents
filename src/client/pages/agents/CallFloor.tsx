@@ -1,7 +1,10 @@
+import type { TFunction } from "i18next";
 import { ChevronDown } from "lucide-react";
 import { createContext, useContext, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { HelpPopover } from "@/client/components/HelpPopover";
+import { nativeToolMeta } from "@/client/lib/nativeTools";
+import { toolpackToolMeta } from "@/client/lib/toolpackTools";
 import { cn } from "@/client/lib/utils";
 import { estimateTokens } from "@/lib/token-estimate";
 import type { CallFloor, CallFloorTool } from "@/modules/playground/service";
@@ -77,6 +80,17 @@ export function ToolTokens({ tool }: { tool: ToolRef }) {
   );
 }
 
+// The name the Tools tab shows for a tool: the operator's own for HTTP, code and documents, the
+// console's catalog for natives and packs, the server's for MCP (that row shows it too).
+function toolLabel(tl: CallFloorTool, t: TFunction): string {
+  if (tl.label) return tl.label;
+  if (tl.mcp) return tl.mcp.tool;
+  if (tl.category === "native" || tl.category === "utility")
+    return nativeToolMeta(tl.name, t).label;
+  if (tl.category === "integration") return toolpackToolMeta(tl.name, t).label;
+  return tl.name;
+}
+
 export function CallFloorLine({
   floor,
   draftPrompt,
@@ -100,29 +114,27 @@ export function CallFloorLine({
   const instructions = estimateTokens(draftPrompt);
   const tools = floor.tools.reduce((s, tl) => s + tl.estimatedTokens, 0);
   const total = instructions + floor.instructionsAdded + tools;
-  const rows: { key: string; label: string; n: number; mono?: boolean }[] = [
+  // As the model receives them: what the operator typed plus what the runtime appends, one entry,
+  // with a note saying how much of it is the system's.
+  const rows: { key: string; label: string; note?: string; n: number }[] = [
     {
       key: "instructions",
       label: t("editor.callFloor.instructions", "Agent instructions"),
-      n: instructions,
-    },
-    ...(floor.instructionsAdded > 0
-      ? [
-          {
-            key: "added",
-            label: t(
+      ...(floor.instructionsAdded > 0
+        ? {
+            note: t(
               "editor.callFloor.added",
-              "Added by the system (knowledge rules, MCP servers)",
+              "includes {{n}} the system adds (knowledge rules, MCP servers)",
+              { n: fmt(floor.instructionsAdded, i18n.language) },
             ),
-            n: floor.instructionsAdded,
-          },
-        ]
-      : []),
+          }
+        : {}),
+      n: instructions + floor.instructionsAdded,
+    },
     ...floor.tools.map((tl) => ({
       key: `tool:${tl.name}`,
-      label: tl.name,
+      label: toolLabel(tl, t),
       n: tl.estimatedTokens,
-      mono: true,
     })),
   ];
   return (
@@ -153,7 +165,7 @@ export function CallFloorLine({
           label={t("editor.callFloor.helpLabel", "About this estimate")}
           content={t(
             "editor.callFloor.help",
-            "An estimate: the count your provider bills can be higher, more so with many tools.\n\nIt is the floor of a call. Each conversation adds its history and what belongs to it: the contact's attributes and fields, appointments, context from other inboxes and the notices of each turn. Tools count as they are saved; instructions count as you type them.",
+            "An estimate: the count your provider bills can be higher, more so with many tools.\n\nIt is the floor of a call. Each conversation adds its history and what belongs to it, none of which is counted here: contact and conversation attributes and contact fields, appointments, the authorization check and context from other inboxes, the label and handoff vocabulary the built-in tools' descriptions gain in a conversation, and the notices of each turn. Tools count as they are saved; instructions count as you type them.",
           )}
         />
       </div>
@@ -161,13 +173,9 @@ export function CallFloorLine({
         <ul className="flex flex-col gap-1 rounded-md border border-border bg-bg-secondary p-2">
           {rows.map((r) => (
             <li key={r.key} className="flex items-baseline gap-2">
-              <span
-                className={cn(
-                  "min-w-0 flex-1 break-words text-text-secondary",
-                  r.mono && "font-mono",
-                )}
-              >
+              <span className="flex min-w-0 flex-1 flex-col break-words text-text-secondary">
                 {r.label}
+                {r.note && <span className="text-text-muted">{r.note}</span>}
               </span>
               <span className="shrink-0 font-mono text-text-muted">
                 {fmt(r.n, i18n.language)}

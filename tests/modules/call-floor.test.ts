@@ -159,6 +159,8 @@ describe.skipIf(!dbUp)("estimateCallFloor", () => {
     expect(names).toContain("handoff_to_human");
     const somar = after.tools.find((t) => t.name === "somar");
     expect(somar?.category).toBe("code");
+    // The name the Tools tab shows, for the client to print instead of the identifier.
+    expect(somar?.label).toBe("Somar");
     expect(somar?.estimatedTokens).toBeGreaterThan(10);
     // Largest first, so the breakdown names what to trim before what does not matter.
     const sizes = after.tools.map((t) => t.estimatedTokens);

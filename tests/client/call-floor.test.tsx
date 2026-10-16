@@ -45,14 +45,20 @@ const FLOOR: CallFloor = {
   instructions: 999,
   instructionsAdded: 120,
   tools: [
-    { name: "consultar_pedido", category: "http", estimatedTokens: 812 },
+    {
+      name: "consultar_pedido",
+      category: "http",
+      estimatedTokens: 812,
+      label: "Consultar pedido",
+    },
     {
       name: "mcp__loja__estoque",
       category: "mcp",
       estimatedTokens: 300,
       mcp: { connectionId: "7", tool: "estoque" },
     },
-    { name: "somar", category: "code", estimatedTokens: 64 },
+    { name: "handoff_to_human", category: "native", estimatedTokens: 255 },
+    { name: "somar", category: "code", estimatedTokens: 64, label: "Somar" },
     {
       name: "resend_email_status",
       category: "integration",
@@ -67,7 +73,7 @@ const PROMPT = "Você atende a loja e responde sobre pedidos. ".repeat(30);
 
 describe("CallFloorLine", () => {
   test("the total is the draft instructions plus what the server measured, and moves as they are typed", async () => {
-    const tools = 812 + 300 + 64 + 40;
+    const tools = 812 + 300 + 255 + 64 + 40;
     const { rerenderIn } = await inLanguage(
       "en",
       <CallFloorLine floor={FLOOR} draftPrompt={PROMPT} />,
@@ -90,7 +96,9 @@ describe("CallFloorLine", () => {
     ).toBeTruthy();
   });
 
-  test("opening it lists the instructions, the system's additions and each tool, largest first", async () => {
+  // By the names the Tools tab shows, never the model-facing identifier, and the instructions as the
+  // model receives them: the operator's text plus what the system appends, in one entry.
+  test("opening it lists the instructions as sent and each tool by its Tools-tab name, largest first", async () => {
     await inLanguage(
       "pt-BR",
       <CallFloorLine floor={FLOOR} draftPrompt={PROMPT} />,
@@ -98,12 +106,12 @@ describe("CallFloorLine", () => {
     fireEvent.click(screen.getByRole("button", { name: /Cada chamada/ }));
     const items = screen.getAllByRole("listitem").map((li) => li.textContent);
     expect(items).toEqual([
-      `Instruções do agente~${estimateTokens(PROMPT).toLocaleString("pt-BR")}`,
-      "Acrescentado pelo sistema (regras da base de conhecimento, servidores MCP)~120",
-      "consultar_pedido~812",
-      "mcp__loja__estoque~300",
-      "somar~64",
-      "resend_email_status~40",
+      `Instruções do agenteinclui ~120 que o sistema acrescenta (regras da base de conhecimento, servidores MCP)~${(estimateTokens(PROMPT) + 120).toLocaleString("pt-BR")}`,
+      "Consultar pedido~812",
+      "estoque~300",
+      "Transferir para humano~255",
+      "Somar~64",
+      "Status do e-mail~40",
     ]);
   });
 

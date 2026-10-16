@@ -3965,7 +3965,9 @@ function AgentEditor() {
     // Only a section this save would write: one the engine does not draw stays pending (below).
     const drawn = (key: TabKey) =>
       !opts.leaveHidden || visibleTabs.some((item) => item.key === key);
-    for (const key of SAVE_SECTIONS) {
+    // The bar's own check: "Save and export" keeps the checks it always had, and the server answers
+    // for the rest.
+    for (const key of opts.leaveHidden ? SAVE_SECTIONS : []) {
       if (dirty[key] && drawn(key) && blockedRef.current[key]) {
         if (opts.leaveHidden && key !== tab && !recheckedRef.current.has(key)) {
           recheckedRef.current.add(key);
@@ -4053,6 +4055,20 @@ function AgentEditor() {
     if (dirty.knowledge && drawn("knowledge") && !(await saveGrants()))
       return stopped("knowledge");
     if (opts.leaveHidden && sayHidden()) return false;
+    // A section of a tab this mode does not draw (Guardrails, Redirect on a watcher) was not written
+    // either, and nothing above names it.
+    const skipped = SAVE_SECTIONS.filter((key) => dirty[key] && !drawn(key));
+    if (skipped.length > 0) {
+      showToast(
+        t(
+          "editor.hiddenTabsPending",
+          "Changes on {{tabs}} were not saved: this agent does not use those tabs as it is set up now. Switch it back to save them, or discard them.",
+          { tabs: skipped.map(tabName).join(", ") },
+        ),
+        "error",
+      );
+      return false;
+    }
     return true;
   }
 

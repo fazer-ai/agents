@@ -120,4 +120,23 @@ describe("the editor's bar covers the whole agent", () => {
     );
     expect(screen.queryByText(/Fix the Behavior tab/)).toBeNull();
   });
+
+  // A watcher draws no Guardrails tab: an edit made there before the switch to Monitoring is not
+  // written by the save that switches, and the save says so instead of reading as done.
+  test("an edit on a tab the new mode does not draw stays unsaved, and the save says so", async () => {
+    const stub = stubEditorApi({ name: "Atendente" });
+    await renderEditor(stub, "guardrails");
+    editTab("guardrails");
+    await goTo("General");
+    fireEvent.click(screen.getByRole("radio", { name: /^Monitoring/ }));
+    fireEvent.click(save());
+    await screen.findByText(/Changes on Guardrails were not saved/);
+    const written = stub.writes.filter((w) => w.method === "PATCH");
+    expect(written.length).toBe(1);
+    expect(
+      (written[0]?.body.settings as { guardrails?: unknown } | undefined)
+        ?.guardrails,
+    ).toBeUndefined();
+    expect(save().disabled).toBe(false);
+  });
 });

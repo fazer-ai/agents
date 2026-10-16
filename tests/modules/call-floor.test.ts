@@ -105,6 +105,7 @@ describe.skipIf(!dbUp)("estimateCallFloor", () => {
       for (const table of [
         "agent_tool_selections",
         "code_tool_definitions",
+        "integration_instances",
         "knowledge_bases",
         "agents",
       ]) {
@@ -268,6 +269,60 @@ describe.skipIf(!dbUp)("estimateCallFloor", () => {
     const observing = await names(observer);
     expect(observing.filter((n) => delivering.includes(n))).toEqual([]);
     expect(observing).toContain("private_note");
+  });
+
+  // Two instances of one pack expose the same names and only the first is offered, so a number is
+  // tied to its instance; and an observer's pack tools are filtered like its natives.
+  test("integration tools carry their instance, and an observer drops a pack's delivering tool", async () => {
+    const make = async (mode?: "monitoring") =>
+      (
+        await suDb.agent.create({
+          data: {
+            tenantId,
+            name: `Pack ${mode ?? "reply"}`,
+            systemPrompt: PROMPT,
+            ...(mode ? { mode } : {}),
+            modelConfig: { provider: "openai", model: "gpt-4o-mini" },
+            settings: mode ? { monitoring: { engine: "llm" } } : {},
+          },
+        })
+      ).id;
+    const first = await suDb.integrationInstance.create({
+      data: { tenantId, catalogType: "RESEND", name: "envio-1" },
+    });
+    const second = await suDb.integrationInstance.create({
+      data: { tenantId, catalogType: "RESEND", name: "envio-2" },
+    });
+    const floorFor = async (id: bigint) => {
+      for (const inst of [first, second]) {
+        await suDb.agentToolSelection.create({
+          data: {
+            tenantId,
+            agentId: id,
+            source: "INTEGRATION",
+            integrationInstanceId: inst.id,
+            enabledTools: ["resend_send_email", "resend_email_status"],
+            knowledgeBaseIds: [],
+          },
+        });
+      }
+      const f = await estimateCallFloor({
+        ctx: ctx(),
+        agentId: id,
+        base: appDb,
+      });
+      if (f.engine !== "llm") throw new Error("engine");
+      return f.tools.filter((t) => t.name.startsWith("resend_"));
+    };
+    const replying = await floorFor(await make());
+    expect(
+      replying.map((t) => [t.name, t.integrationInstanceId]).sort(),
+    ).toEqual([
+      ["resend_email_status", String(first.id)],
+      ["resend_send_email", String(first.id)],
+    ]);
+    const observing = await floorFor(await make("monitoring"));
+    expect(observing.map((t) => t.name)).toEqual(["resend_email_status"]);
   });
 
   test("a decisions-engine observer gets no numbers: it never sends this prompt", async () => {

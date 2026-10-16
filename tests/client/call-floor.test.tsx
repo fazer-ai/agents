@@ -53,6 +53,12 @@ const FLOOR: CallFloor = {
       mcp: { connectionId: "7", tool: "estoque" },
     },
     { name: "somar", category: "code", estimatedTokens: 64 },
+    {
+      name: "resend_email_status",
+      category: "integration",
+      estimatedTokens: 40,
+      integrationInstanceId: "3",
+    },
   ],
   total: 0,
 };
@@ -61,7 +67,7 @@ const PROMPT = "Você atende a loja e responde sobre pedidos. ".repeat(30);
 
 describe("CallFloorLine", () => {
   test("the total is the draft instructions plus what the server measured, and moves as they are typed", async () => {
-    const tools = 812 + 300 + 64;
+    const tools = 812 + 300 + 64 + 40;
     const { rerenderIn } = await inLanguage(
       "en",
       <CallFloorLine floor={FLOOR} draftPrompt={PROMPT} />,
@@ -97,6 +103,7 @@ describe("CallFloorLine", () => {
       "consultar_pedido~812",
       "mcp__loja__estoque~300",
       "somar~64",
+      "resend_email_status~40",
     ]);
   });
 
@@ -141,14 +148,31 @@ describe("ToolTokens", () => {
         <div data-testid="other-server">
           <ToolTokens tool={{ mcp: { connectionId: "8", tool: "estoque" } }} />
         </div>
+        <div data-testid="pack">
+          <ToolTokens
+            tool={{
+              integration: { instanceId: "3", tool: "resend_email_status" },
+            }}
+          />
+        </div>
+        <div data-testid="pack-shadowed">
+          <ToolTokens
+            tool={{
+              integration: { instanceId: "4", tool: "resend_email_status" },
+            }}
+          />
+        </div>
         <div data-testid="unsaved">
           <ToolTokens tool={{ name: "nao_salva" }} />
         </div>
       </CallFloorContext.Provider>,
     );
-    expect(screen.getByTestId("http").textContent).toBe("~812 tokens");
-    expect(screen.getByTestId("mcp").textContent).toBe("~300 tokens");
+    expect(screen.getByTestId("http").textContent).toBe("~812 tokens per call");
+    expect(screen.getByTestId("mcp").textContent).toBe("~300 tokens per call");
     expect(screen.getByTestId("other-server").textContent).toBe("");
     expect(screen.getByTestId("unsaved").textContent).toBe("");
+    // The second instance of a pack contributes nothing: its row shows no number.
+    expect(screen.getByTestId("pack").textContent).toBe("~40 tokens per call");
+    expect(screen.getByTestId("pack-shadowed").textContent).toBe("");
   });
 });

@@ -104,7 +104,7 @@ export function configIssueMessage(
   }
   // A guardrail that HAS its credential and still could not run. The count is the whole point: the
   // panel's other lines describe a state ("no key set"), this one describes what already happened,
-  // and an operator has to be told that those turns went out unscreened rather than blocked.
+  // and an operator has to be told that those turns were not judged (let through, or held under hold).
   if (issue.key === "guardrailsFailing") {
     const params = {
       failures: issue.failures ?? 0,
@@ -115,17 +115,17 @@ export function configIssueMessage(
       error: deps.guardrailLastError ?? "",
     };
     // NOTE: The vendor's own words when they survived the write, since they name the setting. The
-    // sentence claims only what a failure row proves: that one check caught and held back nothing,
-    // not that the message went out unscreened (the other check may still have screened it).
+    // sentence claims only what a failure row proves: that one check judged nothing. What happened to
+    // the message is `onFailure`'s, and the other check may still have screened it.
     return params.error
       ? t(
           "editor.configIssueGuardrailsFailingCause",
-          "Guardrails are on, but {{failures}} of the Checks could not run in the last {{hours}} hours (the most recent {{when}}). A check that could not run caught nothing and held nothing back. The last one said: {{error}}",
+          "Guardrails are on, but {{failures}} of the Checks could not run in the last {{hours}} hours (the most recent {{when}}). A check that could not run judged nothing: the message went on unchecked, or was held if “When a check cannot run” is set to hold. The last one said: {{error}}",
           params,
         )
       : t(
           "editor.configIssueGuardrailsFailing",
-          "Guardrails are on, but {{failures}} of the Checks could not run in the last {{hours}} hours (the most recent {{when}}). A check that could not run caught nothing and held nothing back. Check “Guardrails model”, “Base URL” and “API key”.",
+          "Guardrails are on, but {{failures}} of the Checks could not run in the last {{hours}} hours (the most recent {{when}}). A check that could not run judged nothing: the message went on unchecked, or was held if “When a check cannot run” is set to hold. Check “Guardrails model”, “Base URL” and “API key”.",
           params,
         );
   }

@@ -40,6 +40,13 @@ export function webhookEventLabel(ev: string, t: TFunction): string {
         "webhooks.eventLabels.documentApprovalOutcome",
         "Document approval outcome",
       );
+    case "channel.connected":
+      return t("webhooks.eventLabels.channelConnected", "Channel connected");
+    case "channel.disconnected":
+      return t(
+        "webhooks.eventLabels.channelDisconnected",
+        "Channel disconnected",
+      );
     case "tenant.created":
       return t("webhooks.eventLabels.tenantCreated", "Workspace created");
     case "heartbeat":
@@ -59,6 +66,8 @@ export function webhookFamilyLabel(
       return t("webhooks.families.conversation", "Conversations");
     case "document":
       return t("webhooks.families.document", "Documents");
+    case "channel":
+      return t("webhooks.families.channel", "Channels");
     case "kanban":
       return t("webhooks.families.kanban", "Kanban board");
     case "llm":
@@ -122,6 +131,16 @@ export function webhookEventDescription(
       return t(
         "webhooks.eventDescriptions.documentApprovalOutcome",
         "What the decision came to in the conversation: delivered, noted, not sent or handed over.",
+      );
+    case "channel.connected":
+      return t(
+        "webhooks.eventDescriptions.channelConnected",
+        "A WhatsApp inbox's session comes back online. Inbox ids, provider and the previous state.",
+      );
+    case "channel.disconnected":
+      return t(
+        "webhooks.eventDescriptions.channelDisconnected",
+        "A WhatsApp inbox's session goes offline (closed, reconnecting or waiting for a new QR). Inbox ids, provider, the new state and the previous one.",
       );
     case "heartbeat":
       return t(

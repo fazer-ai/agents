@@ -637,6 +637,13 @@ model Inbox {
   // Channel::Whatsapp; null for other channels or until an inbox sync populates it. Drives the 24h
   // service-window gate (only the official providers have a window). Captured from the inbox-list sync.
   provider           String?
+  // The channel's connection as the Chatwoot fork last reported it (`open`, `close`, `connecting`,
+  // `reconnecting`, or NULL after a teardown), and WHEN the fork wrote it, with microseconds. The time
+  // orders deliveries: the same change reaches every bot route of the inbox, and two changes can
+  // arrive out of order, so only a report newer than the stored one is applied. Both NULL until the
+  // first report; only WhatsApp session inboxes ever get one. docs/chatwoot.md, "Channel connection".
+  connection         String?   @map("provider_connection")
+  connectionAt       DateTime? @map("provider_connection_at") @db.Timestamptz(6)
   agentId            BigInt?   @map("agent_id")
   // WHEN THE CURRENT RESPONDER BINDING WAS MADE (issue #476 review, round 31). Chatwoot picks a
   // message's webhook recipients from the bindings that exist AT EMISSION, so an observer beside a

@@ -4255,6 +4255,8 @@
     "emptyTitle": "No webhooks yet",
     "enabled": "Enabled",
     "eventDescriptions": {
+      "channelConnected": "A WhatsApp inbox's session comes back online. Inbox ids, provider and the previous state.",
+      "channelDisconnected": "A WhatsApp inbox's session goes offline (closed, reconnecting or waiting for a new QR). Inbox ids, provider, the new state and the previous one.",
       "conversationCreated": "A new conversation arrives. Ids, inbox, status and who it is assigned to.",
       "conversationHandoff": "A person is assigned to the conversation. Conversation and inbox ids.",
       "conversationStatusChanged": "A conversation changes status (open, pending, snoozed, resolved). The new and the previous one.",
@@ -4267,6 +4269,8 @@
       "tenantCreated": "A workspace is created on this instance."
     },
     "eventLabels": {
+      "channelConnected": "Channel connected",
+      "channelDisconnected": "Channel disconnected",
       "conversationCreated": "Conversation created",
       "conversationHandoff": "Handed off to a human",
       "conversationStatusChanged": "Conversation status changed",
@@ -4280,6 +4284,7 @@
     },
     "events": "Events",
     "families": {
+      "channel": "Channels",
       "conversation": "Conversations",
       "document": "Documents",
       "kanban": "Kanban board",

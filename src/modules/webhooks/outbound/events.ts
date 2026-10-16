@@ -23,6 +23,8 @@ export const OUTBOUND_EVENTS = [
   "document.approval_requested",
   "document.approval_decided",
   "document.approval_outcome",
+  "channel.connected",
+  "channel.disconnected",
   "heartbeat",
 ] as const;
 

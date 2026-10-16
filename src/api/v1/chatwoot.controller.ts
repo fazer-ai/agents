@@ -111,10 +111,11 @@ export const chatwootController = new Elysia({
                 t.Literal("queued"),
                 t.Literal("duplicate"),
                 t.Literal("ignored"),
+                t.Literal("processed"),
               ],
               {
                 description:
-                  "queued = accepted for async handling; duplicate = replay of an already-recorded event; ignored = an event shape the receiver does not handle, or a message update that repeats the last processed payload of the same message (a delivery receipt), acked with nothing recorded.",
+                  "queued = accepted for async handling; duplicate = replay of an already-recorded event; ignored = an event shape the receiver does not handle, or a message update that repeats the last processed payload of the same message (a delivery receipt), acked with nothing recorded, or a channel connection change that is not newer than the one stored or names an inbox not mirrored here; processed = a channel connection change applied before the ack.",
               },
             ),
           }),

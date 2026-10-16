@@ -8,7 +8,9 @@ import { until } from "@/tests/utils/poll";
 import { setupPrismaMock } from "@/tests/utils/prisma-mock";
 
 // The call stream route reads the conversation the query names only after it is fenced to the
-// token's inbox: the history and the tools of a conversation in another inbox never reach the call.
+// token's inbox: the history and the tools of a conversation in another inbox never reach the call,
+// and a call that ends before the fence answers reports to no conversation. A token that resolves to
+// no inbox closes the stream before any frame.
 
 setupPrismaMock();
 
@@ -30,20 +32,28 @@ const route: service.VoiceRoute = {
 };
 // conversation id -> the Chatwoot inbox it is in
 const conversations: Record<number, number> = { 10: 501, 11: 502 };
-const read: { history: (number | null)[]; tools: (number | null)[] } = {
-  history: [],
-  tools: [],
-};
+const read: {
+  history: (number | null)[];
+  tools: (number | null)[];
+  reported: (number | null)[];
+} = { history: [], tools: [], reported: [] };
+// A fence still waiting on Chatwoot, released by the test.
+let fenceHeld: (() => void) | null = null;
 
 stubExports(service, {
-  resolveVoiceRoute: async () => route,
-  fenceConversation: async (_r: service.VoiceRoute, id: number | null) =>
-    id !== null && conversations[id] === route.inboxId ? id : null,
+  resolveVoiceRoute: async (token: string) => (token === "tok" ? route : null),
+  fenceConversation: async (_r: service.VoiceRoute, id: number | null) => {
+    if (id === 12) await new Promise<void>((go) => (fenceHeld = go));
+    return id !== null && conversations[id] === route.inboxId ? id : null;
+  },
   conversationHistory: async (_r: service.VoiceRoute, id: number | null) => {
     read.history.push(id);
     return "";
   },
-  reportCall: async () => null,
+  reportCall: async (_r: service.VoiceRoute, c: service.CallContext) => {
+    read.reported.push(c.conversationId);
+    return null;
+  },
 });
 stubExports(tools, {
   loadVoiceAgent: async (_r: service.VoiceRoute, id: number | null) => {
@@ -75,15 +85,20 @@ afterAll(() => {
   (globalThis as { Response: typeof Response }).Response = happyResponse;
 });
 
-async function call(conversationId: number): Promise<void> {
-  const before = read.history.length;
+async function open(token: string, conversationId: number) {
   const ws = new nativeGlobals.BunWebSocket(
-    `ws://127.0.0.1:${server?.port}/api/v1/voice/stream/tok?conversation_id=${conversationId}`,
+    `ws://127.0.0.1:${server?.port}/api/v1/voice/stream/${token}?conversation_id=${conversationId}`,
   );
   await new Promise<void>((resolve, reject) => {
     ws.onopen = () => resolve();
     ws.onerror = () => reject(new Error("the stream did not open"));
   });
+  return ws;
+}
+
+async function call(conversationId: number): Promise<void> {
+  const before = read.history.length;
+  const ws = await open("tok", conversationId);
   ws.send(JSON.stringify({ event: "start", direction: "inbound" }));
   await until("the call to be configured", () => read.history.length > before);
   ws.close();
@@ -95,5 +110,25 @@ describe("the call stream route", () => {
     await call(11);
     expect(read.history).toEqual([10, null]);
     expect(read.tools).toEqual([10, null]);
+  });
+
+  test("a call that ends before the fence answers reports to no conversation", async () => {
+    const before = read.reported.length;
+    const ws = await open("tok", 12);
+    ws.send(JSON.stringify({ event: "start", direction: "inbound" }));
+    ws.send(JSON.stringify({ event: "answered" }));
+    await until("the fence to be asked", () => fenceHeld);
+    ws.close();
+    await until("the call to be reported", () => read.reported.length > before);
+    fenceHeld?.();
+    expect(read.reported.slice(before)).toEqual([null]);
+  });
+
+  test("a token of no inbox closes the stream", async () => {
+    const ws = await open("bad", 10);
+    await new Promise<void>((resolve) => {
+      ws.onclose = () => resolve();
+    });
+    expect(ws.readyState).toBe(ws.CLOSED);
   });
 });

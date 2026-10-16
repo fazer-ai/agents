@@ -91,9 +91,17 @@ export const voiceController = new Elysia({
     open(ws) {
       const id = String(ws.id);
       const route = resolveVoiceRoute(ws.data.params.routeToken);
-      // The inbox is the token's, never the query's.
+      void route.then(
+        (resolved) => {
+          if (!resolved) ws.close();
+        },
+        () => ws.close(),
+      );
+      // The inbox is the token's, never the query's; the conversation is the query's only once fenced
+      // to that inbox, so a call that ends before the fence reports to none.
+      const requested = intOrNull(ws.data.query.conversation_id);
       const ctx: CallContext = {
-        conversationId: intOrNull(ws.data.query.conversation_id),
+        conversationId: null,
         inboxId: null,
         direction:
           ws.data.query.direction === "outbound" ? "outbound" : "inbound",
@@ -108,10 +116,7 @@ export const voiceController = new Elysia({
             const resolved = await route;
             if (!resolved) throw new Error("unknown route token");
             ctx.inboxId = resolved.inboxId;
-            ctx.conversationId = await fenceConversation(
-              resolved,
-              ctx.conversationId,
-            );
+            ctx.conversationId = await fenceConversation(resolved, requested);
             const [history, agent, calls] = await Promise.all([
               conversationHistory(resolved, ctx.conversationId),
               loadVoiceAgent(resolved, ctx.conversationId),

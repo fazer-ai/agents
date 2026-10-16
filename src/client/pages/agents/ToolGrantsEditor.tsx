@@ -59,7 +59,7 @@ import { McpEditModal } from "@/client/pages/resources/McpEditModal";
 import { ToolEditModal } from "@/client/pages/resources/ToolEditModal";
 import { TOOL_INSTRUCTIONS_MAX } from "@/modules/agents/text-caps";
 import { DECISION_ACTION_TOOLS } from "@/modules/decisions/config";
-import { ToolTokens } from "./CallFloor";
+import { SourceTokens, ToolTokens } from "./CallFloor";
 import {
   CrossInboxCaseFields,
   type CrossInboxCaseState,
@@ -1306,6 +1306,7 @@ export function ToolGrantsEditor({
                     onToggle={() => toggleMcp(m.id)}
                     icon={Plug}
                     title={m.name}
+                    meta={<SourceTokens source={{ mcp: String(m.id) }} />}
                     badge={
                       !m.enabled ? (
                         <Badge variant="secondary">
@@ -1500,6 +1501,11 @@ export function ToolGrantsEditor({
                       onToggle={() => toggleIntegration(inst.id, allTools)}
                       icon={integrationIcon(inst.catalogType)}
                       title={inst.name}
+                      meta={
+                        <SourceTokens
+                          source={{ integration: String(inst.id) }}
+                        />
+                      }
                       badge={
                         <Badge variant="info">
                           {kindLabel(inst.kind ?? inst.catalogType)}

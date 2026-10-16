@@ -1482,6 +1482,7 @@
       "knowledgeSuggest": "Sugestão de entradas no conhecimento",
       "line": "Cada chamada já envia {{n}} tokens antes do histórico",
       "searchTokens": "{{n}} tokens por chamada, entre a busca e as regras que ela acrescenta às instruções",
+      "sourceTotal": "{{n}} tokens por chamada no total",
       "tokens": "{{n}} tokens por chamada"
     },
     "capabilities": {

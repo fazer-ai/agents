@@ -94,6 +94,33 @@ export function ToolTokens({ tool }: { tool: ToolRef }) {
   );
 }
 
+// On an MCP server's or an integration's own row: what all of its turned-on tools add to every call,
+// so the operator sees the source's weight without opening it. Nothing while none of them is in the
+// floor, for the same reason a tool's number is absent then.
+export function SourceTokens({
+  source,
+}: {
+  source: { mcp: string } | { integration: string };
+}) {
+  const { t, i18n } = useTranslation();
+  const floor = useContext(CallFloorContext);
+  if (floor?.engine !== "llm") return null;
+  const tools = floor.tools.filter((tl) =>
+    "mcp" in source
+      ? tl.mcp?.connectionId === source.mcp
+      : tl.integrationInstanceId === source.integration,
+  );
+  if (tools.length === 0) return null;
+  const n = tools.reduce((sum, tl) => sum + tl.estimatedTokens, 0);
+  return (
+    <span className="shrink-0 whitespace-nowrap font-mono text-text-muted text-xs">
+      {t("editor.callFloor.sourceTotal", "{{n}} tokens per call in total", {
+        n: fmt(n, i18n.language),
+      })}
+    </span>
+  );
+}
+
 // The name the Tools tab shows for a tool: the operator's own for HTTP, code and documents, the
 // console's catalog for natives and packs, the server's for MCP (that row shows it too).
 function toolLabel(tl: CallFloorTool, t: TFunction): string {

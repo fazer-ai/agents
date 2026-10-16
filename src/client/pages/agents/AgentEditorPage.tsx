@@ -4326,105 +4326,112 @@ function AgentEditor() {
             )}
 
             {tab === "general" && (
-              <GeneralTab
-                nameError={refusal.at("name", currentRef.current.name)}
-                promptError={refusal.at(
-                  "systemPrompt",
-                  currentRef.current.systemPrompt,
-                )}
-                modelCredentialError={refusal.at(
-                  "modelConfig.credentialRef",
-                  currentRef.current["modelConfig.credentialRef"],
-                )}
-                availability={promptAvailability}
-                name={name}
-                setName={setName}
-                systemPrompt={systemPrompt}
-                setSystemPrompt={setSystemPrompt}
-                enabled={enabled}
-                setEnabled={setEnabled}
-                mode={agentMode}
-                setMode={setAgentMode}
-                model={model}
-                setModel={setModel}
-                modelCredBaseUrl={modelCredBaseUrl}
-                dirty={dirty.general || decisionsHeadDirty}
-                saving={savingAgent || savingDecisions}
-                onSave={() => {
-                  if (decisionsBlocked("general", dirty.general)) return;
-                  void saveGeneral();
-                }}
-                onDiscard={revertGeneral}
-                watcher={
-                  watcher
-                    ? {
-                        engineCards: (
-                          <EngineCards
-                            engine={engine}
-                            onChange={switchEngine}
-                            missing={
-                              decides ? (
-                                <DecisionsSetupMissing
-                                  issues={decisionsSetupIssues}
-                                  onOpenDecisions={() => openTab("decisions")}
-                                  showErrors={decisionsAttempted}
-                                />
-                              ) : null
-                            }
-                          />
-                        ),
-                        decides,
-                        classifier:
-                          decides && observation.decisions ? (
-                            <Card
-                              id="general-classifier"
-                              className="flex scroll-mt-4 flex-col gap-4"
-                            >
-                              <div>
-                                <h3 className="font-medium text-sm text-text-primary">
-                                  {t("editor.classifierSection", "Classifier")}
-                                </h3>
-                                <p className="text-text-muted text-xs">
-                                  {t(
-                                    "editor.classifierSectionHint",
-                                    "The service that answers the questions about each conversation.",
-                                  )}
-                                </p>
-                              </div>
-                              <ClassifierFields
-                                decisions={observation.decisions}
-                                storedDecisions={decisionsBaseline(observation)}
-                                setDecisions={(next) =>
-                                  setObservation((prev) =>
-                                    editDecisions(prev, next),
-                                  )
-                                }
-                                credentialError={refusal.at(
-                                  "settings.monitoring.decisions.credentialRef",
-                                  currentRef.current[
-                                    "settings.monitoring.decisions.credentialRef"
-                                  ],
-                                )}
-                                serverRefusal={decisionsRefusalStanding(
-                                  decisionsRefused,
-                                  decisionsBlockToStore(
+              <CallFloorContext.Provider value={callFloor}>
+                <GeneralTab
+                  nameError={refusal.at("name", currentRef.current.name)}
+                  promptError={refusal.at(
+                    "systemPrompt",
+                    currentRef.current.systemPrompt,
+                  )}
+                  modelCredentialError={refusal.at(
+                    "modelConfig.credentialRef",
+                    currentRef.current["modelConfig.credentialRef"],
+                  )}
+                  availability={promptAvailability}
+                  name={name}
+                  setName={setName}
+                  systemPrompt={systemPrompt}
+                  setSystemPrompt={setSystemPrompt}
+                  enabled={enabled}
+                  setEnabled={setEnabled}
+                  mode={agentMode}
+                  setMode={setAgentMode}
+                  model={model}
+                  setModel={setModel}
+                  modelCredBaseUrl={modelCredBaseUrl}
+                  dirty={dirty.general || decisionsHeadDirty}
+                  saving={savingAgent || savingDecisions}
+                  onSave={() => {
+                    if (decisionsBlocked("general", dirty.general)) return;
+                    void saveGeneral();
+                  }}
+                  onDiscard={revertGeneral}
+                  watcher={
+                    watcher
+                      ? {
+                          engineCards: (
+                            <EngineCards
+                              engine={engine}
+                              onChange={switchEngine}
+                              missing={
+                                decides ? (
+                                  <DecisionsSetupMissing
+                                    issues={decisionsSetupIssues}
+                                    onOpenDecisions={() => openTab("decisions")}
+                                    showErrors={decisionsAttempted}
+                                  />
+                                ) : null
+                              }
+                            />
+                          ),
+                          decides,
+                          classifier:
+                            decides && observation.decisions ? (
+                              <Card
+                                id="general-classifier"
+                                className="flex scroll-mt-4 flex-col gap-4"
+                              >
+                                <div>
+                                  <h3 className="font-medium text-sm text-text-primary">
+                                    {t(
+                                      "editor.classifierSection",
+                                      "Classifier",
+                                    )}
+                                  </h3>
+                                  <p className="text-text-muted text-xs">
+                                    {t(
+                                      "editor.classifierSectionHint",
+                                      "The service that answers the questions about each conversation.",
+                                    )}
+                                  </p>
+                                </div>
+                                <ClassifierFields
+                                  decisions={observation.decisions}
+                                  storedDecisions={decisionsBaseline(
                                     observation,
-                                    true,
-                                    customTools?.all ?? null,
-                                  ),
-                                )}
-                              />
-                            </Card>
-                          ) : null,
-                      }
-                    : undefined
-                }
-                onOpenPlayground={watcher ? undefined : openPlayground}
-                onDelete={askDelete}
-                previewVars={playgroundChat.promptVars}
-                catalog={catalog}
-                grants={grants}
-              />
+                                  )}
+                                  setDecisions={(next) =>
+                                    setObservation((prev) =>
+                                      editDecisions(prev, next),
+                                    )
+                                  }
+                                  credentialError={refusal.at(
+                                    "settings.monitoring.decisions.credentialRef",
+                                    currentRef.current[
+                                      "settings.monitoring.decisions.credentialRef"
+                                    ],
+                                  )}
+                                  serverRefusal={decisionsRefusalStanding(
+                                    decisionsRefused,
+                                    decisionsBlockToStore(
+                                      observation,
+                                      true,
+                                      customTools?.all ?? null,
+                                    ),
+                                  )}
+                                />
+                              </Card>
+                            ) : null,
+                        }
+                      : undefined
+                  }
+                  onOpenPlayground={watcher ? undefined : openPlayground}
+                  onDelete={askDelete}
+                  previewVars={playgroundChat.promptVars}
+                  catalog={catalog}
+                  grants={grants}
+                />
+              </CallFloorContext.Provider>
             )}
 
             {tab === "channels" && (
@@ -4526,34 +4533,36 @@ function AgentEditor() {
             )}
 
             {tab === "knowledge" && (
-              <KnowledgeTab
-                catalog={catalog}
-                grants={grants}
-                onChange={setGrants}
-                onCatalogChange={refreshCatalog}
-                review={review}
-                setReview={setReview}
-                // NOTE: The SAVED model and its effective endpoint, as Behavior's overrides read it.
-                agentModel={{
-                  provider: savedModel.provider,
-                  credentialRef: savedModel.credentialRef,
-                  baseURL: savedModelBaseUrl,
-                }}
-                reviewCredBaseUrl={vaultBaseUrl(review.credentialRef)}
-                reviewCredentialError={
-                  refusal.at(
-                    "settings.knowledge.suggestionReview.credentialRef",
-                    currentRef.current[
-                      "settings.knowledge.suggestionReview.credentialRef"
-                    ],
-                  ) ?? undefined
-                }
-                dirty={dirty.knowledge}
-                saving={savingGrants}
-                onSave={() => saveGrants()}
-                onDiscard={revertKnowledge}
-                onOpenPlayground={watcher ? undefined : openPlayground}
-              />
+              <CallFloorContext.Provider value={callFloor}>
+                <KnowledgeTab
+                  catalog={catalog}
+                  grants={grants}
+                  onChange={setGrants}
+                  onCatalogChange={refreshCatalog}
+                  review={review}
+                  setReview={setReview}
+                  // NOTE: The SAVED model and its effective endpoint, as Behavior's overrides read it.
+                  agentModel={{
+                    provider: savedModel.provider,
+                    credentialRef: savedModel.credentialRef,
+                    baseURL: savedModelBaseUrl,
+                  }}
+                  reviewCredBaseUrl={vaultBaseUrl(review.credentialRef)}
+                  reviewCredentialError={
+                    refusal.at(
+                      "settings.knowledge.suggestionReview.credentialRef",
+                      currentRef.current[
+                        "settings.knowledge.suggestionReview.credentialRef"
+                      ],
+                    ) ?? undefined
+                  }
+                  dirty={dirty.knowledge}
+                  saving={savingGrants}
+                  onSave={() => saveGrants()}
+                  onDiscard={revertKnowledge}
+                  onOpenPlayground={watcher ? undefined : openPlayground}
+                />
+              </CallFloorContext.Provider>
             )}
 
             {tab === "decisions" && decides && observation.decisions && (

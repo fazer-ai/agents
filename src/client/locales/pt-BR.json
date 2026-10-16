@@ -1476,7 +1476,12 @@
       "help": "É uma estimativa: a contagem que o provedor cobra pode ser maior, ainda mais com muitas ferramentas.\n\nÉ o piso de uma chamada. Cada conversa soma a isso o histórico e o que é dela, e nada disso entra aqui: atributos do contato e da conversa e campos do contato, agendamentos, a verificação de autorização e o contexto de outras caixas de entrada, o vocabulário de etiquetas e de transferência que as descrições das ferramentas nativas ganham numa conversa, e os avisos de cada turno. As ferramentas contam como estão salvas; as instruções contam como você digita.",
       "helpLabel": "Sobre esta estimativa",
       "instructions": "Instruções do agente",
+      "instructionsLine": "Estas instruções somam {{n}} tokens a cada chamada.",
+      "instructionsLineAdded": "Estas instruções somam {{n}} tokens a cada chamada, e o sistema acrescenta mais {{added}} (regras da base de conhecimento, servidores MCP).",
+      "knowledgeSearch": "Busca no conhecimento",
+      "knowledgeSuggest": "Sugestão de entradas no conhecimento",
       "line": "Cada chamada já envia {{n}} tokens antes do histórico",
+      "searchTokens": "{{n}} tokens por chamada, entre a busca e as regras que ela acrescenta às instruções",
       "tokens": "{{n}} tokens por chamada"
     },
     "capabilities": {

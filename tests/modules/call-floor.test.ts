@@ -188,6 +188,9 @@ describe.skipIf(!dbUp)("estimateCallFloor", () => {
       estimateTokens(GROUNDING_DIRECTIVE),
     );
     expect(after.tools.map((t) => t.name)).toContain("search_knowledge");
+    expect(after.instructionsAddedBy.grounding).toBe(
+      estimateTokens(GROUNDING_DIRECTIVE),
+    );
   });
 
   // An MCP tool reaches the model under a namespaced, deduplicated name, so the editor finds its row by

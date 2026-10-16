@@ -707,6 +707,8 @@ export type CallFloor =
       // What the runtime appends to them on every call: the grounding rules when the agent can search
       // the knowledge base, and the block naming each MCP server.
       instructionsAdded: number;
+      // The same, by part: the Knowledge tab shows what the grounding rules cost next to its switch.
+      instructionsAddedBy: { grounding: number; mcp: number };
       // Each tool's schema as the model receives it, largest first.
       tools: CallFloorTool[];
       total: number;
@@ -843,14 +845,18 @@ export async function estimateCallFloor(params: {
     })
     .sort((a, b) => b.estimatedTokens - a.estimatedTokens);
   const grounded = !!loaded.ragConfig?.tools.includes("search_knowledge");
+  const instructionsAddedBy = {
+    grounding: grounded ? estimateTokens(GROUNDING_DIRECTIVE) : 0,
+    mcp: estimateTokens(buildMcpContextSection(tools) ?? ""),
+  };
   const instructionsAdded =
-    (grounded ? estimateTokens(GROUNDING_DIRECTIVE) : 0) +
-    estimateTokens(buildMcpContextSection(tools) ?? "");
+    instructionsAddedBy.grounding + instructionsAddedBy.mcp;
   const instructions = estimateTokens(agent.systemPrompt);
   return {
     engine: "llm",
     instructions,
     instructionsAdded,
+    instructionsAddedBy,
     tools: floorTools,
     total:
       instructions +

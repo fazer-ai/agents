@@ -1,4 +1,5 @@
 import { Eye, FlaskConical, MessagesSquare, Trash2 } from "lucide-react";
+import { useContext } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Button,
@@ -27,6 +28,11 @@ import {
 } from "@/graph/prompt-cache";
 import { AGENT_MODES, type AgentMode } from "@/modules/agents/mode";
 import type { Schedule } from "@/modules/business-hours/hours";
+import {
+  CallFloorContext,
+  CallFloorLine,
+  InstructionsTokens,
+} from "./CallFloor";
 import { CapabilityMap } from "./CapabilityMap";
 import { PromptPanel } from "./PromptPanel";
 import { TabActionBar } from "./TabActionBar";
@@ -128,6 +134,7 @@ export function GeneralTab({
   const promptModal = useModalController();
 
   const decides = watcher?.decides ?? false;
+  const callFloor = useContext(CallFloorContext);
   const modelBaseUrlInvalid =
     !decides &&
     model.provider === "openai-compatible" &&
@@ -148,6 +155,10 @@ export function GeneralTab({
         onExpand={() => promptModal.open()}
       />
       {promptError && <p className="mt-1 text-error text-xs">{promptError}</p>}
+      {/* What these instructions cost every call, where they are written (also next to the history
+          ceiling, on Behavior). */}
+      <InstructionsTokens draftPrompt={systemPrompt} />
+      <CallFloorLine floor={callFloor} draftPrompt={systemPrompt} />
     </FormField>
   );
 

@@ -9306,7 +9306,7 @@
           "Agents"
         ],
         "summary": "Estimate the agent's call floor",
-        "description": "An ESTIMATE, in tokens, of what every model call of the saved agent sends before the first line of history: its instructions, what the runtime appends to them (the knowledge-base grounding rules, the MCP server block) and each granted tool's schema, largest first. A heuristic count that can run low against what a provider bills. What only a conversation supplies (contact attributes, appointments, other-inbox context, per-turn notices) is not in it, so it is a floor, not the size of a call. An agent that observes with the decisions engine never sends this prompt and answers `{ engine: \"decisions\" }` with no numbers. Shape: `{ engine: \"llm\", instructions, instructionsAdded, tools[{ name, category, estimatedTokens }], total }`.",
+        "description": "An ESTIMATE, in tokens, of what every model call of the saved agent sends before the first line of history: its instructions, what the runtime appends to them (the knowledge-base grounding rules, the MCP server block) and each granted tool's schema, largest first. A heuristic count that can run low against what a provider bills. What only a conversation supplies (contact attributes, appointments, other-inbox context, per-turn notices) is not in it, so it is a floor, not the size of a call. An agent that observes with the decisions engine never sends this prompt and answers `{ engine: \"decisions\" }` with no numbers. Shape: `{ engine: \"llm\", instructions, instructionsAdded, instructionsAddedBy{ grounding, mcp }, tools[{ name, category, estimatedTokens }], total }`.",
         "parameters": [
           {
             "name": "id",

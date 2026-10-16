@@ -148,18 +148,26 @@ export const voiceController = new Elysia({
           log: logCall,
           onFinished: (record) => {
             bridges.delete(id);
-            void route.then(async (resolved) => {
-              if (!resolved) return;
-              await reportCall(resolved, ctx, record, {
-                summarize: async (done) =>
-                  setup && done.engineConversationId
-                    ? elevenLabsCallSummary(
-                        setup.apiKey,
-                        done.engineConversationId,
-                      )
-                    : null,
+            void route
+              .then(async (resolved) => {
+                if (!resolved) return;
+                await reportCall(resolved, ctx, record, {
+                  summarize: async (done) =>
+                    setup && done.engineConversationId
+                      ? elevenLabsCallSummary(
+                          setup.apiKey,
+                          done.engineConversationId,
+                        )
+                      : null,
+                });
+              })
+              .catch((err: Error) => {
+                // Detached from the call: a failure here must not take the server down with it.
+                logger.warn(
+                  "voice-call: the call could not be reported: %s",
+                  err.message,
+                );
               });
-            });
           },
         },
       );

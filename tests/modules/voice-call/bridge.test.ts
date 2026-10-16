@@ -17,6 +17,7 @@ import {
   transcriptText,
   voiceSessionConfig,
 } from "@/modules/voice-call/service";
+import { until } from "@/tests/utils/poll";
 
 function fakeEngine() {
   const state = {
@@ -134,6 +135,25 @@ describe("CallBridge", () => {
     expect(state.received.reduce((n, pcm) => n + pcm.length, 0)).toBe(
       16_000 * 10,
     );
+  });
+
+  test("a placed call opens the engine only once answered, so its ringing holds no agent", async () => {
+    const { provider, state } = fakeEngine();
+    let configured = 0;
+    const bridge = new CallBridge(socket(), {
+      provider,
+      configure: () => {
+        configured++;
+        return voiceSessionConfig(ROUTE, { ...CTX, direction: "outbound" });
+      },
+      onFinished: () => {},
+    });
+    bridge.onMessage(JSON.stringify({ event: "start", direction: "outbound" }));
+    await tick();
+    expect(configured).toBe(0);
+    bridge.onMessage(JSON.stringify({ event: "answered", call_id: "c" }));
+    await until("the engine to begin", () => state.begun === 1);
+    expect(configured).toBe(1);
   });
 
   test("speaks only once the call is answered, and carries voice both ways", async () => {

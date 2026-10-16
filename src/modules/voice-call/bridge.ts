@@ -123,7 +123,11 @@ export class CallBridge {
           peer: typeof frame.peer === "string" ? frame.peer : null,
         };
         this.log("call stream started", { direction: this.start.direction });
-        this.opening = this.openSession();
+        // A placed call may ring for long, and opening the engine holds its agent for every other
+        // call to it (providers/elevenlabs.ts): it opens once answered. A call to the inbox is
+        // answered at once, so it opens now.
+        if (this.start.direction === "inbound")
+          this.opening = this.openSession();
         break;
       case "answered":
         if (!this.start) return;
@@ -133,7 +137,8 @@ export class CallBridge {
         this.answered = true;
         this.answeredAt = new Date();
         this.log("call answered");
-        void this.opening?.then(() => this.session?.begin());
+        this.opening ??= this.openSession();
+        void this.opening.then(() => this.session?.begin());
         break;
       case "media": {
         if (!this.answered) return;

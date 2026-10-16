@@ -107,14 +107,16 @@ describe("CallFloorLine", () => {
       <CallFloorLine floor={FLOOR} draftPrompt={PROMPT} />,
     );
     fireEvent.click(screen.getByRole("button", { name: /Cada chamada/ }));
-    const items = screen.getAllByRole("listitem").map((li) => li.textContent);
+    const items = screen
+      .getAllByRole("listitem")
+      .map((li) => li.textContent?.replace(/\d+%$/, ""));
     expect(items).toEqual([
-      `Instruções do agenteinclui ~120 que o sistema acrescenta (regras da base de conhecimento, servidores MCP)~${(estimateTokens(PROMPT) + 120).toLocaleString("pt-BR")}`,
-      "Consultar pedido~812",
-      "estoque~300",
-      "Transferir para humano~255",
-      "Somar~64",
-      "Status do e-mail~40",
+      `~${(estimateTokens(PROMPT) + 120).toLocaleString("pt-BR")}Instruções do agenteinclui ~120 que o sistema acrescenta (regras da base de conhecimento, servidores MCP)`,
+      "~812Consultar pedido",
+      "~300estoque",
+      "~255Transferir para humano",
+      "~64Somar",
+      "~40Status do e-mail",
     ]);
   });
 
@@ -261,9 +263,11 @@ describe("InstructionsTokens and KnowledgeTokens", () => {
       <CallFloorLine floor={KB} draftPrompt={PROMPT} />,
     );
     fireEvent.click(screen.getByRole("button", { name: /Cada chamada/ }));
-    const items = screen.getAllByRole("listitem").map((li) => li.textContent);
-    expect(items).toContain("Busca no conhecimento~90");
-    expect(items).toContain("Sugestão de entradas no conhecimento~70");
+    const items = screen
+      .getAllByRole("listitem")
+      .map((li) => li.textContent?.replace(/\d+%$/, ""));
+    expect(items).toContain("~90Busca no conhecimento");
+    expect(items).toContain("~70Sugestão de entradas no conhecimento");
   });
 });
 
@@ -297,6 +301,31 @@ describe("breakdown icons", () => {
       "lucide-code-xml",
       expect.stringMatching(/^lucide-/),
       "lucide-book-open",
+    ]);
+  });
+});
+
+// Each line as its share of the call: a bar whose full width is the whole call, and the percent
+// written at the end, so the bar has a unit a reader can name.
+describe("breakdown shares", () => {
+  test("each line's bar and percent are its share of the total", async () => {
+    await inLanguage("en", <CallFloorLine floor={FLOOR} draftPrompt="" />);
+    fireEvent.click(screen.getByRole("button", { name: /Every call/ }));
+    const items = screen.getAllByRole("listitem");
+    // Instructions 0 + 120 added, then 812, 300, 255, 64, 40: 1591 in all.
+    expect(
+      items.map(
+        (li) =>
+          (li.querySelector("span[style]") as HTMLElement | null)?.style.width,
+      ),
+    ).toEqual(["8%", "51%", "19%", "16%", "4%", "3%"]);
+    expect(items.map((li) => li.textContent?.match(/\d+%$/)?.[0])).toEqual([
+      "8%",
+      "51%",
+      "19%",
+      "16%",
+      "4%",
+      "3%",
     ]);
   });
 });

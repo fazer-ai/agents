@@ -230,6 +230,9 @@ export function CallFloorLine({
       n: tl.estimatedTokens,
     })),
   ];
+  // Each line as its share of the whole call: the bar's full width is the call, and the percent says
+  // so, where a bar scaled to the largest line had no unit a reader could name.
+  const share = (n: number) => Math.round((n / Math.max(1, total)) * 100);
   return (
     <div className="mt-2 flex flex-col gap-2 text-xs">
       <div className="flex items-start gap-1.5">
@@ -263,19 +266,40 @@ export function CallFloorLine({
         />
       </div>
       {open && (
-        <ul className="flex flex-col gap-1 rounded-md border border-border bg-bg-secondary p-2">
+        // Number first, in a column of its own, so the eye reads value and name together; a bar per
+        // line shows its share of the call and uses the width a wide screen has.
+        <ul className="flex flex-col gap-1.5 rounded-md border border-border bg-bg-secondary p-2">
           {rows.map((r) => (
-            <li key={r.key} className="flex items-start gap-2">
-              <r.icon
-                className="mt-0.5 h-3.5 w-3.5 shrink-0 text-text-muted"
-                aria-hidden="true"
-              />
-              <span className="flex min-w-0 flex-1 flex-col break-words text-text-secondary">
-                {r.label}
-                {r.note && <span className="text-text-muted">{r.note}</span>}
-              </span>
-              <span className="shrink-0 font-mono text-text-muted">
+            <li
+              key={r.key}
+              className="grid grid-cols-[3.25rem_minmax(0,1fr)_2.5rem] items-start gap-x-2 sm:grid-cols-[3.25rem_minmax(0,16rem)_minmax(0,1fr)_2.5rem]"
+            >
+              <span className="text-right font-mono text-text-muted">
                 {fmt(r.n, i18n.language)}
+              </span>
+              <span className="flex min-w-0 items-start gap-1.5">
+                <r.icon
+                  className="mt-0.5 h-3.5 w-3.5 shrink-0 text-text-muted"
+                  aria-hidden="true"
+                />
+                <span className="flex min-w-0 flex-col break-words text-text-secondary">
+                  {r.label}
+                  {r.note && <span className="text-text-muted">{r.note}</span>}
+                </span>
+              </span>
+              <span
+                className="hidden h-4 items-center sm:flex"
+                aria-hidden="true"
+              >
+                <span className="h-1.5 w-full overflow-hidden rounded bg-bg-tertiary">
+                  <span
+                    className="block h-full bg-text-muted"
+                    style={{ width: `${share(r.n)}%` }}
+                  />
+                </span>
+              </span>
+              <span className="text-right font-mono text-text-muted">
+                {`${share(r.n)}%`}
               </span>
             </li>
           ))}

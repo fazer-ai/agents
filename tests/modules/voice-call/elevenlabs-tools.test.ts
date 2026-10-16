@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import { DEFAULT_HTTP_TOOL_TIMEOUT_MS } from "@/graph/tools/http";
 import {
   elevenLabsToolDefs,
   syncElevenLabsTools,
+  VOICE_TOOL_TIMEOUT_MS,
 } from "@/modules/voice-call/providers/elevenlabs-tools";
 import type { VoiceTool } from "@/modules/voice-call/providers/types";
 
@@ -16,6 +18,14 @@ const tool = (
 });
 
 describe("elevenlabs tool declarations", () => {
+  test("an HTTP tool settles before this side answers the engine, and the engine waits longer still", () => {
+    const [def] = elevenLabsToolDefs([tool("x", { type: "object" })]);
+    const engineMs = (def?.response_timeout_secs ?? 0) * 1000;
+    expect(VOICE_TOOL_TIMEOUT_MS).toBeGreaterThan(DEFAULT_HTTP_TOOL_TIMEOUT_MS);
+    expect(engineMs).toBeGreaterThan(VOICE_TOOL_TIMEOUT_MS);
+    expect(engineMs).toBeLessThanOrEqual(120_000);
+  });
+
   test("every property gets a description and nullable types collapse", () => {
     const defs = elevenLabsToolDefs([
       tool("x", {

@@ -45,9 +45,13 @@ export function toVoiceTools(all: StructuredToolInterface[]): VoiceTool[] {
             args,
           } as never);
           const content = (out as { content?: unknown })?.content ?? out;
-          return typeof content === "string"
-            ? content
-            : JSON.stringify(content);
+          const text =
+            typeof content === "string" ? content : JSON.stringify(content);
+          // A tool that failed without throwing answers a ToolMessage marked as an error: the call
+          // reports it as one, on the engine and to the caller.
+          if ((out as { status?: unknown })?.status === "error")
+            throw new Error(text);
+          return text;
         },
       };
     });

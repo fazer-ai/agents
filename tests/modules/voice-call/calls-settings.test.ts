@@ -3,11 +3,16 @@ import {
   callsFormErrors,
   readCallsFormState,
 } from "@/client/pages/agents/callsFormState";
+import { elevenLabsProvider } from "@/modules/voice-call/providers/elevenlabs";
 import {
   elevenLabsAgentConfig,
   elevenLabsCallSummary,
   ensureElevenLabsAgent,
 } from "@/modules/voice-call/providers/elevenlabs-agent";
+import type {
+  VoiceSessionConfig,
+  VoiceSessionHandlers,
+} from "@/modules/voice-call/providers/types";
 import {
   CALLS_DEFAULTS,
   DEFAULT_CALL_VOICE,
@@ -275,5 +280,70 @@ describe("the call settings form", () => {
         silenceEndCallSecs: "x",
       }),
     ).toEqual([]);
+  });
+});
+
+describe("an agent deleted on ElevenLabs after this process wrote it", () => {
+  const spec = {
+    name: "Maria (fazer.ai agents #1)",
+    voice: "v1",
+    calls: readCallsConfig({}),
+  };
+  const handlers: VoiceSessionHandlers = {
+    onAudio: () => {},
+    onInterrupt: () => {},
+    onTranscript: () => {},
+    onHangup: () => {},
+    onError: () => {},
+  };
+  const config: VoiceSessionConfig = {
+    instructions: "x",
+    greeting: "",
+    opensCall: false,
+    language: "pt",
+    direction: "inbound",
+    variables: {},
+    tools: [],
+  };
+
+  // Each request answered in turn: [status, body].
+  function api(answers: Array<[number, unknown]>) {
+    return (async () => {
+      const [status, body] = answers.shift() ?? [200, {}];
+      return new Response(JSON.stringify(body), { status });
+    }) as unknown as typeof fetch;
+  }
+
+  test("is created again by the next setup, whether its tools or its call found it gone", async () => {
+    const cases: Array<[string, Array<[number, unknown]>]> = [
+      ["agent_gone_tools", [[404, {}]]],
+      [
+        "agent_gone_call",
+        [
+          [200, {}],
+          [404, {}],
+        ],
+      ],
+    ];
+    for (const [agentId, gone] of cases) {
+      const fetchImpl = api([
+        [200, {}],
+        ...gone,
+        [404, {}],
+        [200, { agent_id: `${agentId}_back` }],
+      ]);
+      expect(await ensureElevenLabsAgent("k", agentId, spec, fetchImpl)).toBe(
+        agentId,
+      );
+      await expect(
+        elevenLabsProvider({ apiKey: "k", agentId, fetchImpl }).open(
+          config,
+          handlers,
+        ),
+      ).rejects.toThrow("404");
+      expect(await ensureElevenLabsAgent("k", agentId, spec, fetchImpl)).toBe(
+        `${agentId}_back`,
+      );
+    }
   });
 });

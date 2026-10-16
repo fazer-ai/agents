@@ -4,11 +4,21 @@
 // set changes, since every declaration creates tool resources on the ElevenLabs side.
 
 import { createHash } from "node:crypto";
+import config from "@/config";
 import { clipText } from "@/lib/text";
+import { forgetElevenLabsAgent } from "./elevenlabs-agent";
 import type { VoiceTool } from "./types";
 
 const API = "https://api.elevenlabs.io";
-const RESPONSE_TIMEOUT_SECS = 10;
+// Each link more patient than the one below it, as HTTP_TOOL_TIMEOUT_MS asks: a tool that writes
+// (a booking) settles on its own deadline before this side answers the engine, so a slow one is
+// never reported as failed and retried while it still commits. The engine waits longer still, up to
+// the 120 s it accepts.
+export const VOICE_TOOL_TIMEOUT_MS = Math.min(
+  config.agent.httpToolTimeoutMs + 5_000,
+  110_000,
+);
+const RESPONSE_TIMEOUT_SECS = Math.ceil(VOICE_TOOL_TIMEOUT_MS / 1000) + 5;
 
 // end_call goes in the same list, as a system tool. Declared beside the list under
 // built_in_tools, the platform accepts the request and drops end_call: the agent then has no way to
@@ -94,6 +104,7 @@ export interface ToolSyncOptions {
   agentId: string;
   toolSound?: string | null;
   fetchImpl?: typeof fetch;
+  signal?: AbortSignal;
 }
 
 /** Declares the call's tools and end_call on the ElevenLabs agent, unless that set is already there. */
@@ -119,6 +130,7 @@ export async function syncElevenLabsTools(
     `${API}/v1/convai/agents/${encodeURIComponent(options.agentId)}`,
     {
       method: "PATCH",
+      signal: options.signal,
       headers: {
         "xi-api-key": options.apiKey,
         "content-type": "application/json",
@@ -127,6 +139,7 @@ export async function syncElevenLabsTools(
     },
   );
   if (!res.ok) {
+    if (res.status === 404) forgetElevenLabsAgent(options.agentId);
     const detail = clipText(await res.text(), 300);
     throw new Error(
       `elevenlabs: declaring the tools failed with ${res.status}: ${detail}`,

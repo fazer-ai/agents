@@ -845,8 +845,6 @@ export class ChatwootClient {
       message_type: number;
       private: boolean;
       sender?: { name?: string };
-      // A WhatsApp call's message on the fork carries the call.
-      call?: { provider_call_id?: string };
     }>
   > {
     const body = (await this.request(
@@ -858,7 +856,6 @@ export class ChatwootClient {
         content: string | null;
         message_type: number;
         private: boolean;
-        call?: { provider_call_id?: string };
       }>;
     };
     return body.payload ?? [];

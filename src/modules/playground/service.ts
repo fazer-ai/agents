@@ -783,7 +783,10 @@ export async function estimateCallFloor(params: {
     // turns into agent_choice, a larger schema than any conversation on that account is sent.
     ...(loaded.handoffConfig.mode === "pinned" &&
     loaded.handoffConfig.targetInstanceId != null
-      ? { instanceId: BigInt(loaded.handoffConfig.targetInstanceId) }
+      ? {
+          // biome-ignore lint/plugin/no-bigint-cast: the operator's saved setting, already a positive integer (readHandoffConfig), not a caller's id
+          instanceId: BigInt(loaded.handoffConfig.targetInstanceId),
+        }
       : {}),
   });
   const classify = toolClassifier(loaded);

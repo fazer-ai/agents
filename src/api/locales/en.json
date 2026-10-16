@@ -389,7 +389,7 @@
     "voiceAgentMonitoring": "A calls agent cannot be in monitoring mode.",
     "voiceAgentNotResponder": "A calls agent does not answer messages. Choose it under Calls agent.",
     "voiceAgentRequired": "Only a calls agent answers calls.",
-    "voiceInboxChatwootUnreachable": "The binding was saved, but Chatwoot could not be reached. Save the agent again to retry.",
+    "voiceInboxChatwootUnreachable": "The binding was saved, but Chatwoot could not be reached. Saving any calls agent again retries it.",
     "voiceInboxNotWhatsapp": "Only a WhatsApp inbox takes calls.",
     "webhookDeliveryNotDead": "Only a dead delivery can be requeued; this one is {{status}}",
     "webhookDeliveryNotFound": "Webhook delivery not found",

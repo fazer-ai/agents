@@ -7,7 +7,11 @@ import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { normalizeAgentMode } from "@/modules/agents/mode";
-import { loadAgentBot, loadChatwootClient } from "@/modules/chatwoot/instance";
+import {
+  type LoadChatwootClientDeps,
+  loadAgentBot,
+  loadChatwootClient,
+} from "@/modules/chatwoot/instance";
 import { hashRouteToken } from "@/modules/webhooks/inbound/route-token";
 import type { CallRecord } from "./bridge";
 import type { CallDirection, VoiceSessionConfig } from "./providers/types";
@@ -102,6 +106,41 @@ const VOICE_RULES = [
 const HISTORY_LIMIT = 20;
 
 /** The conversation so far on WhatsApp, as lines the agent reads before the call: who said what. */
+/**
+ * The conversation the call names, kept only when Chatwoot says it is in the token's inbox: the token
+ * opens one inbox, and its history, tools and the call's note reach that inbox's conversations only.
+ * null when it is elsewhere or cannot be read, and the call goes on without one.
+ */
+export async function fenceConversation(
+  route: VoiceRoute,
+  conversationId: number | null,
+  deps: LoadChatwootClientDeps & { base?: PrismaClient } = {},
+): Promise<number | null> {
+  if (!conversationId || route.inboxId === null) return null;
+  try {
+    const client = await loadChatwootClient(route.tenantId, route.instanceId, {
+      base: deps.base,
+      makeClient: deps.makeClient,
+    });
+    const conv = (await client.getConversation(conversationId)) as {
+      inbox_id?: unknown;
+    } | null;
+    if (Number(conv?.inbox_id) === route.inboxId) return conversationId;
+    logger.warn(
+      "voice-call: conversation %d is not in inbox %d; the call goes on without it",
+      conversationId,
+      route.inboxId,
+    );
+  } catch (err) {
+    logger.warn(
+      "voice-call: could not read conversation %d: %s",
+      conversationId,
+      (err as Error).message,
+    );
+  }
+  return null;
+}
+
 export async function conversationHistory(
   route: VoiceRoute,
   conversationId: number | null,

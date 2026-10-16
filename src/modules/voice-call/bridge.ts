@@ -209,9 +209,10 @@ export class CallBridge {
     this.cancelFarewell();
     const check = () => {
       if (this.finished || this.hangupTimer) return;
-      const playing = this.playoutEnd - Date.now();
-      if (playing > 0) {
-        this.farewellTimer = setTimeout(check, playing + FAREWELL_SILENCE_MS);
+      // From the end of what is still playing: audio that arrived after the transcript moves it.
+      const left = this.playoutEnd + FAREWELL_SILENCE_MS - Date.now();
+      if (left > 0) {
+        this.farewellTimer = setTimeout(check, left);
         return;
       }
       this.farewellTimer = null;

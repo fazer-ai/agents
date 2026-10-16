@@ -16,13 +16,21 @@ import {
   type ChatwootClient,
   createChatwootClient,
 } from "@/modules/chatwoot/client";
-import { bindInbox } from "@/modules/chatwoot/management";
+import {
+  bindInbox,
+  softDisconnectChatwootInstance,
+} from "@/modules/chatwoot/management";
 import {
   bindInboxVoiceAgent,
   syncVoiceAgentInboxes,
   voiceStreamUrl,
 } from "@/modules/voice-call/inboxes";
-import { resolveVoiceRoute } from "@/modules/voice-call/service";
+import {
+  fenceConversation,
+  resolveVoiceRoute,
+} from "@/modules/voice-call/service";
+import { setUpAgentCalls } from "@/modules/voice-call/setup";
+import { generateRouteToken } from "@/modules/webhooks/inbound/route-token";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../../utils/chatwoot";
 
@@ -62,7 +70,12 @@ const ctx = (t: bigint): TenantContext => ({
 type AiVoice = { inbox_id: number; enabled: boolean; stream_url: string };
 
 function fakeChatwoot(
-  opts: { failAiVoice?: boolean; duringAiVoice?: () => Promise<void> } = {},
+  opts: {
+    failAiVoice?: boolean;
+    duringAiVoice?: () => Promise<void>;
+    // conversation id -> the Chatwoot inbox it is in
+    conversations?: Record<number, number>;
+  } = {},
 ) {
   const writes: AiVoice[] = [];
   const fetchImpl = (async (url: string, init?: RequestInit) => {
@@ -79,6 +92,10 @@ function fakeChatwoot(
         opts.duringAiVoice = undefined;
         await during?.();
       }
+    } else if (/\/conversations\/\d+$/.test(path)) {
+      const inbox = opts.conversations?.[Number(path.split("/").pop())];
+      if (inbox === undefined) status = 404;
+      else answer = { id: Number(path.split("/").pop()), inbox_id: inbox };
     } else if (path.endsWith("/agent_bots")) {
       answer =
         init?.method === "POST"
@@ -158,6 +175,7 @@ describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
       "agents",
       "chatwoot_instances",
       "chatwoot_deployments",
+      "vault_entries",
     ]) {
       await suDb.$executeRawUnsafe(
         `DELETE FROM ${tbl} WHERE tenant_id = ${tenant}`,
@@ -255,6 +273,25 @@ describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
     expect(await resolveVoiceRoute(token, appDb)).not.toBeNull();
   });
 
+  test("a call reaches only a conversation of its own inbox", async () => {
+    await bindInboxVoiceAgent(
+      ctx(tenant),
+      whatsappInboxId,
+      voiceId,
+      fakeChatwoot(),
+      appDb,
+    );
+    const route = await resolveVoiceRoute(await routeToken(), appDb);
+    if (!route) throw new Error("the bound inbox has no route");
+    const cw = fakeChatwoot({ conversations: { 10: 501, 11: 502 } });
+    const fence = (id: number | null) =>
+      fenceConversation(route, id, { base: appDb, makeClient: cw.makeClient });
+    expect(await fence(10)).toBe(10);
+    expect(await fence(11)).toBeNull();
+    expect(await fence(12)).toBeNull();
+    expect(await fence(null)).toBeNull();
+  });
+
   test("the agent's switch and mode decide whether the bound inboxes' calls are on", async () => {
     const token = await routeToken();
     const sync = async () => {
@@ -288,6 +325,128 @@ describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
     await syncVoiceAgentInboxes(ctx(tenant), voiceId, appDb, cw);
     expect(cw.writes.map((w) => w.enabled)).toEqual([true, false]);
     await setMode("production");
+  });
+
+  test("a token that changes while Chatwoot is being written is written too", async () => {
+    await bindInboxVoiceAgent(
+      ctx(tenant),
+      whatsappInboxId,
+      voiceId,
+      fakeChatwoot(),
+      appDb,
+    );
+    const before = await routeToken();
+    const cw = fakeChatwoot({
+      duringAiVoice: async () => {
+        await suDb.inbox.update({
+          where: { id: whatsappInboxId },
+          data: {
+            voiceRouteToken: encryptJson("rotated-token"),
+            voiceRouteTokenHash: "rotated-hash",
+          },
+        });
+      },
+    });
+    await syncVoiceAgentInboxes(ctx(tenant), voiceId, appDb, cw);
+    expect(cw.writes.map((w) => w.stream_url.split("/").pop())).toEqual([
+      before,
+      "rotated-token",
+    ]);
+    const restored = generateRouteToken();
+    await suDb.inbox.update({
+      where: { id: whatsappInboxId },
+      data: {
+        voiceRouteToken: encryptJson(restored.token),
+        voiceRouteTokenHash: restored.hash,
+      },
+    });
+  });
+
+  test("a disconnected account's inbox does not answer, even with its binding still there", async () => {
+    await bindInboxVoiceAgent(
+      ctx(tenant),
+      whatsappInboxId,
+      voiceId,
+      fakeChatwoot(),
+      appDb,
+    );
+    await suDb.chatwootInstance.update({
+      where: { id: instanceId },
+      data: { disconnectedAt: new Date() },
+    });
+    const cw = fakeChatwoot();
+    await syncVoiceAgentInboxes(ctx(tenant), voiceId, appDb, cw);
+    expect(cw.writes.map((w) => [w.inbox_id, w.enabled])).toEqual([
+      [501, false],
+    ]);
+    await expect(
+      bindInboxVoiceAgent(ctx(tenant), whatsappInboxId, voiceId, cw, appDb),
+    ).rejects.toMatchObject({
+      statusCode: 409,
+      translationKey: "errors.chatwootAccountDisconnected",
+    });
+    await suDb.chatwootInstance.update({
+      where: { id: instanceId },
+      data: { disconnectedAt: null },
+    });
+  });
+
+  test("disconnecting the account unbinds its voice agents and switches its calls off", async () => {
+    await bindInboxVoiceAgent(
+      ctx(tenant),
+      whatsappInboxId,
+      voiceId,
+      fakeChatwoot(),
+      appDb,
+    );
+    const cw = fakeChatwoot();
+    await softDisconnectChatwootInstance(ctx(tenant), instanceId, appDb, cw);
+    expect(cw.writes.map((w) => [w.inbox_id, w.enabled])).toEqual([
+      [501, false],
+    ]);
+    const inbox = await suDb.inbox.findUniqueOrThrow({
+      where: { id: whatsappInboxId },
+    });
+    expect(inbox.voiceAgentId).toBeNull();
+    await suDb.chatwootInstance.update({
+      where: { id: instanceId },
+      data: { disconnectedAt: null },
+    });
+    await suDb.inbox.update({
+      where: { id: whatsappInboxId },
+      data: { agentId: textId },
+    });
+  });
+
+  test("an unbind whose write to Chatwoot failed is repaired by the next save of a voice agent", async () => {
+    await bindInboxVoiceAgent(
+      ctx(tenant),
+      whatsappInboxId,
+      voiceId,
+      fakeChatwoot(),
+      appDb,
+    );
+    await expect(
+      bindInboxVoiceAgent(
+        ctx(tenant),
+        whatsappInboxId,
+        null,
+        fakeChatwoot({ failAiVoice: true }),
+        appDb,
+      ),
+    ).rejects.toMatchObject({ statusCode: 502 });
+    const cw = fakeChatwoot();
+    await syncVoiceAgentInboxes(ctx(tenant), voiceId, appDb, cw);
+    expect(cw.writes.map((w) => [w.inbox_id, w.enabled])).toEqual([
+      [501, false],
+    ]);
+    await bindInboxVoiceAgent(
+      ctx(tenant),
+      whatsappInboxId,
+      voiceId,
+      fakeChatwoot(),
+      appDb,
+    );
   });
 
   test("only a WhatsApp inbox takes calls, and only a voice agent answers them", async () => {
@@ -412,6 +571,58 @@ describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
       appDb,
     );
     expect(old.agent.kind).toBe("text");
+  });
+
+  test("two setups that both found no ElevenLabs agent keep one, and the loser deletes its own", async () => {
+    const key = await suDb.vaultEntry.create({
+      data: { tenantId: tenant, name: "eleven", secret: encryptJson("xi-key") },
+      select: { id: true },
+    });
+    const agent = await suDb.agent.create({
+      data: {
+        tenantId: tenant,
+        name: "Paralela",
+        kind: "voice",
+        systemPrompt: "x",
+        settings: { calls: { credentialRef: `vault:${key.id}` } },
+      },
+    });
+    const deleted: string[] = [];
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      if (init?.method === "DELETE") {
+        deleted.push(url.split("/").pop() ?? "");
+        return new Response("{}");
+      }
+      if (url.endsWith("/v1/convai/agents/create")) {
+        // The other setup, finishing first while this one waited on ElevenLabs.
+        await suDb.agent.update({
+          where: { id: agent.id },
+          data: {
+            settings: {
+              calls: {
+                credentialRef: `vault:${key.id}`,
+                elevenLabsAgentId: "agent_winner",
+              },
+            },
+          },
+        });
+        return new Response(JSON.stringify({ agent_id: "agent_mine" }));
+      }
+      return new Response("{}");
+    }) as unknown as typeof fetch;
+    const result = await setUpAgentCalls(ctx(tenant), agent.id, {
+      fetchImpl,
+      base: appDb,
+    });
+    expect(result.ok && result.setup.elevenLabsAgentId).toBe("agent_winner");
+    expect(deleted).toEqual(["agent_mine"]);
+    const stored = await suDb.agent.findUniqueOrThrow({
+      where: { id: agent.id },
+    });
+    expect(
+      (stored.settings as { calls: { elevenLabsAgentId: string } }).calls
+        .elevenLabsAgentId,
+    ).toBe("agent_winner");
   });
 
   test("a voice agent is created as one, never in monitoring mode, and its kind does not change", async () => {

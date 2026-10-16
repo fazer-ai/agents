@@ -71,7 +71,7 @@ import { bindInboxVoiceAgent } from "@/modules/voice-call/inboxes";
 // translate('errors.chatwootInboxProbeFailed', 'Could not confirm with Chatwoot that this inbox was deleted.')
 // translate('errors.voiceInboxNotWhatsapp', 'Only a WhatsApp inbox takes calls.')
 // translate('errors.voiceAgentRequired', 'Only a calls agent answers calls.')
-// translate('errors.voiceInboxChatwootUnreachable', 'The binding was saved, but Chatwoot could not be reached. Save the agent again to retry.')
+// translate('errors.voiceInboxChatwootUnreachable', 'The binding was saved, but Chatwoot could not be reached. Saving any calls agent again retries it.')
 // translate('errors.voiceAgentNotResponder', 'A calls agent does not answer messages. Choose it under Calls agent.')
 
 // Chatwoot instance + inbox management (per-tenant). TENANT_ADMIN. SEPARATE from the public webhook

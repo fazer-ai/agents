@@ -152,6 +152,23 @@ export async function ensureElevenLabsAgent(
   return created.agent_id;
 }
 
+/** Deletes an agent on ElevenLabs; best-effort, for one this process created and then did not keep. */
+export async function deleteElevenLabsAgent(
+  apiKey: string,
+  agentId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<void> {
+  synced.delete(agentId);
+  try {
+    await fetchImpl(`${API}/v1/convai/agents/${encodeURIComponent(agentId)}`, {
+      method: "DELETE",
+      headers: { "xi-api-key": apiKey },
+    });
+  } catch {
+    // An agent left behind is unused, not wrong: nothing points at it.
+  }
+}
+
 // How long the conversation's analysis takes to be ready once the call is over: ElevenLabs runs it
 // right after, and a few seconds is the usual.
 const SUMMARY_ATTEMPTS = 6;

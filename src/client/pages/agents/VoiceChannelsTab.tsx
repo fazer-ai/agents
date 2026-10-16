@@ -105,6 +105,8 @@ export function VoiceChannelsTab({ agentId }: { agentId: string }) {
         "success",
       );
     } catch (e) {
+      // A 502 saved the binding and only missed Chatwoot: the list shows what is stored.
+      void load();
       showToast(
         apiErrorMessage(e) ||
           t(

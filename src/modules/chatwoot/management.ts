@@ -20,6 +20,7 @@ import {
   type WidgetHealth,
   type WidgetHealthStatus,
 } from "@/modules/channel-redirect/link";
+import { syncVoiceInboxes } from "@/modules/voice-call/inboxes";
 import {
   ChatwootApiError,
   type ChatwootClient,
@@ -867,53 +868,70 @@ export async function softDisconnectChatwootInstance(
   }
   // One transaction for the three local writes (clear bindings, stamp, audit row), so a
   // failure cannot leave inboxes bound to nobody on an account still marked active.
-  const { stamped, detach } = await runScopedOn(base, ctx, async (db) => {
-    // NOTE: the account row first, before any inbox: `syncInboxes` takes the same lock then upserts
-    // inboxes, and the other order is an ABBA deadlock. NO KEY UPDATE, not FOR UPDATE (module-wide):
-    // an INSERT whose foreign key points here takes KEY SHARE, which FOR UPDATE conflicts with, so
-    // the webhook mirror inserting a conversation would deadlock with this. NO KEY UPDATE still
-    // excludes itself and ordinary UPDATEs, all the serialization needed.
-    await db.$queryRaw`SELECT id FROM chatwoot_instances WHERE id = ${id} FOR NO KEY UPDATE`;
-    // `RETURNING`, so the bindings removed are the same set the detach walks, and the count is
-    // that set. Listed first and cleared after, a bind in between would leave an inbox unbound here
-    // with its bot still attached in Chatwoot. `agent_id IS NOT NULL` makes the write its own filter.
-    const unbound = await db.$queryRaw<{ chatwoot_inbox_id: number }[]>`
+  const { stamped, detach, voiceOff } = await runScopedOn(
+    base,
+    ctx,
+    async (db) => {
+      // NOTE: the account row first, before any inbox: `syncInboxes` takes the same lock then upserts
+      // inboxes, and the other order is an ABBA deadlock. NO KEY UPDATE, not FOR UPDATE (module-wide):
+      // an INSERT whose foreign key points here takes KEY SHARE, which FOR UPDATE conflicts with, so
+      // the webhook mirror inserting a conversation would deadlock with this. NO KEY UPDATE still
+      // excludes itself and ordinary UPDATEs, all the serialization needed.
+      await db.$queryRaw`SELECT id FROM chatwoot_instances WHERE id = ${id} FOR NO KEY UPDATE`;
+      // `RETURNING`, so the bindings removed are the same set the detach walks, and the count is
+      // that set. Listed first and cleared after, a bind in between would leave an inbox unbound here
+      // with its bot still attached in Chatwoot. `agent_id IS NOT NULL` makes the write its own filter.
+      const unbound = await db.$queryRaw<{ chatwoot_inbox_id: number }[]>`
       UPDATE inboxes
          SET agent_id = NULL, updated_at = now()
        WHERE tenant_id = ${tenantId}
          AND chatwoot_instance_id = ${id}
          AND agent_id IS NOT NULL
       RETURNING chatwoot_inbox_id`;
-    // The stamp and row only where the account was still active, decided by the write: a retry
-    // would otherwise move the stamp, and two overlapping requests both read `null`.
-    const { count } = await db.chatwootInstance.updateMany({
-      where: { id, disconnectedAt: null },
-      data: { disconnectedAt: new Date() },
-    });
-    // NOTE: or the unbind, since clearing a binding is a mutation either way: a bind passing its
-    // check while the disconnect commits leaves an inbox bound on a disconnected account, and the
-    // retry that clears it must still leave a row. `stamped: false` says it completed a disconnect.
-    if (count > 0 || unbound.length > 0) {
-      await auditMutation(db, ctx, {
-        action: "instance.disconnect",
-        target: `chatwoot_instance:${id}`,
-        before: {
-          id: String(inst.id),
-          accountId: inst.accountId,
-          unboundInboxes: unbound.length,
-          stamped: count > 0,
-        },
+      // The voice agents too: the fork would keep routing the calls here, where a disconnected
+      // account's route answers nothing. The fork is told after the commit, like the detach below.
+      const voiceUnbound = await db.$queryRaw<{ id: bigint }[]>`
+      UPDATE inboxes
+         SET voice_agent_id = NULL, updated_at = now()
+       WHERE tenant_id = ${tenantId}
+         AND chatwoot_instance_id = ${id}
+         AND voice_agent_id IS NOT NULL
+      RETURNING id`;
+      // The stamp and row only where the account was still active, decided by the write: a retry
+      // would otherwise move the stamp, and two overlapping requests both read `null`.
+      const { count } = await db.chatwootInstance.updateMany({
+        where: { id, disconnectedAt: null },
+        data: { disconnectedAt: new Date() },
       });
-    }
-    return {
-      stamped: count > 0,
-      detach: unbound.map((r) => r.chatwoot_inbox_id),
-    };
-  });
+      // NOTE: or the unbind, since clearing a binding is a mutation either way: a bind passing its
+      // check while the disconnect commits leaves an inbox bound on a disconnected account, and the
+      // retry that clears it must still leave a row. `stamped: false` says it completed a disconnect.
+      if (count > 0 || unbound.length > 0 || voiceUnbound.length > 0) {
+        await auditMutation(db, ctx, {
+          action: "instance.disconnect",
+          target: `chatwoot_instance:${id}`,
+          before: {
+            id: String(inst.id),
+            accountId: inst.accountId,
+            unboundInboxes: unbound.length,
+            unboundVoiceInboxes: voiceUnbound.length,
+            stamped: count > 0,
+          },
+        });
+      }
+      return {
+        stamped: count > 0,
+        detach: unbound.map((r) => r.chatwoot_inbox_id),
+        voiceOff: voiceUnbound,
+      };
+    },
+  );
   // NOTE: the receiver caches "this route token resolves to a live bot". Invalidated once the
   // disconnect is durable and before the network work, which can take a whole timeout while warm
   // entries keep queueing webhooks for a disconnected account.
   invalidateRouteTokenCache();
+  // Best-effort like the detach: a write that fails is repaired by the next save of a voice agent.
+  await syncVoiceInboxes(ctx, voiceOff, base, deps);
   // NOTE: Chatwoot after our commit: detaching first and then rolling back would leave the account
   // active here while Chatwoot stopped delivering. This way a failed transaction changes nothing and
   // a failed detach is the accepted outcome (disconnected locally, stray events ignored).

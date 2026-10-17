@@ -21,13 +21,19 @@ import {
   keepCallsSystemFields,
   readCallsConfig,
 } from "@/modules/voice-call/settings";
-import { memoryConfigDigests } from "@/tests/utils/config-digests";
-import { memoryEngineHold } from "@/tests/utils/engine-hold";
+import {
+  memoryConfigDigests,
+  memoryEngineHold,
+} from "@/tests/utils/engine-hold";
 
 // What each ElevenLabs agent was last written with, as the shared row would hold it; fresh per test.
-let digests = memoryConfigDigests();
+let configs = new Map<string, string>();
+let digests = memoryConfigDigests(configs);
+let hold = memoryEngineHold(configs);
 beforeEach(() => {
-  digests = memoryConfigDigests();
+  configs = new Map();
+  digests = memoryConfigDigests(configs);
+  hold = memoryEngineHold(configs);
 });
 
 describe("calls settings", () => {
@@ -82,7 +88,7 @@ describe("calls settings", () => {
     ).toBe(1);
   });
 
-  test("a save that leaves the ElevenLabs agent id out keeps the stored one", () => {
+  test("a save keeps the stored ElevenLabs agent id, whether it leaves the id out or echoes another", () => {
     const before = { calls: { elevenLabsAgentId: "agent_1" } };
     const next: { calls: Record<string, unknown> } = {
       calls: { speed: 1.1 },
@@ -92,9 +98,16 @@ describe("calls settings", () => {
       speed: 1.1,
       elevenLabsAgentId: "agent_1",
     });
-    const other = { calls: { elevenLabsAgentId: "agent_2" } };
-    keepCallsSystemFields(other, before);
-    expect(other.calls.elevenLabsAgentId).toBe("agent_2");
+    // An editor opened before the agent was recreated echoes the id it replaced.
+    const stale = { calls: { elevenLabsAgentId: "agent_0" } };
+    keepCallsSystemFields(stale, before);
+    expect(stale.calls.elevenLabsAgentId).toBe("agent_1");
+    // And a write cannot name one the server never set up.
+    const named: { calls: Record<string, unknown> } = {
+      calls: { elevenLabsAgentId: "agent_2" },
+    };
+    keepCallsSystemFields(named, {});
+    expect(named.calls).toEqual({});
   });
 });
 
@@ -122,7 +135,14 @@ describe("the agent on ElevenLabs", () => {
   test("is created when the agent has none, in the call's audio format", async () => {
     const api = fakeApi([[200, { agent_id: "agent_new" }]]);
     expect(
-      await ensureElevenLabsAgent("k", null, spec, api.fetchImpl, digests),
+      await ensureElevenLabsAgent(
+        "k",
+        null,
+        spec,
+        api.fetchImpl,
+        digests,
+        hold,
+      ),
     ).toBe("agent_new");
     expect(api.calls[0]?.url).toEndWith("/v1/convai/agents/create");
     const created = api.calls[0]?.body as
@@ -141,10 +161,24 @@ describe("the agent on ElevenLabs", () => {
       [200, { agent_id: "agent_again" }],
     ]);
     expect(
-      await ensureElevenLabsAgent("k", "agent_x", spec, api.fetchImpl, digests),
+      await ensureElevenLabsAgent(
+        "k",
+        "agent_x",
+        spec,
+        api.fetchImpl,
+        digests,
+        hold,
+      ),
     ).toBe("agent_x");
     expect(
-      await ensureElevenLabsAgent("k", "agent_x", spec, api.fetchImpl, digests),
+      await ensureElevenLabsAgent(
+        "k",
+        "agent_x",
+        spec,
+        api.fetchImpl,
+        digests,
+        hold,
+      ),
     ).toBe("agent_x");
     expect(api.calls).toHaveLength(1);
     const changed = { ...spec, voice: "v2" };
@@ -155,6 +189,7 @@ describe("the agent on ElevenLabs", () => {
         changed,
         api.fetchImpl,
         digests,
+        hold,
       ),
     ).toBe("agent_again");
     expect(api.calls.map((c) => c.method)).toEqual(["PATCH", "PATCH", "POST"]);
@@ -173,6 +208,7 @@ describe("the agent on ElevenLabs", () => {
         spec,
         api.fetchImpl,
         digests,
+        hold,
       ),
     ).toBe("agent_y");
     // The other account does not have agent_y: the agent is created there instead.
@@ -183,6 +219,7 @@ describe("the agent on ElevenLabs", () => {
         spec,
         api.fetchImpl,
         digests,
+        hold,
       ),
     ).toBe("agent_on_b");
     expect(api.calls.map((c) => c.method)).toEqual(["PATCH", "PATCH", "POST"]);
@@ -361,19 +398,33 @@ describe("an agent deleted on ElevenLabs after this process wrote it", () => {
         [200, { agent_id: `${agentId}_back` }],
       ]);
       expect(
-        await ensureElevenLabsAgent("k", agentId, spec, fetchImpl, digests),
+        await ensureElevenLabsAgent(
+          "k",
+          agentId,
+          spec,
+          fetchImpl,
+          digests,
+          hold,
+        ),
       ).toBe(agentId);
       await expect(
         elevenLabsProvider({
           apiKey: "k",
           agentId,
           fetchImpl,
-          holdEngine: memoryEngineHold(),
+          holdEngine: hold,
           configDigests: digests,
         }).open(config, handlers),
       ).rejects.toThrow("404");
       expect(
-        await ensureElevenLabsAgent("k", agentId, spec, fetchImpl, digests),
+        await ensureElevenLabsAgent(
+          "k",
+          agentId,
+          spec,
+          fetchImpl,
+          digests,
+          hold,
+        ),
       ).toBe(`${agentId}_back`);
     }
   });
@@ -396,7 +447,14 @@ describe("the requests a call's setup makes to ElevenLabs", () => {
     }) as unknown as typeof fetch;
     const spec = { name: "Maria", voice: "v1", calls: readCallsConfig({}) };
     await checkElevenLabsAgentsAccess("k", fetchImpl);
-    await ensureElevenLabsAgent("k", "agent_old", spec, fetchImpl, digests);
+    await ensureElevenLabsAgent(
+      "k",
+      "agent_old",
+      spec,
+      fetchImpl,
+      digests,
+      hold,
+    );
     await deleteElevenLabsAgent("k", "agent_bounded", fetchImpl, digests);
     await elevenLabsCallSummary("k", "conv", { fetchImpl });
     expect(unbounded).toEqual([]);

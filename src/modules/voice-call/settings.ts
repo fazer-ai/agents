@@ -182,11 +182,6 @@ export function readCallsConfig(settings: unknown): CallsConfig {
 }
 
 /**
- * Carries the server-written `elevenLabsAgentId` into a settings write that left it out. The console
- * writes the block whole and never holds the id, and an editor opened before the server wrote it
- * would otherwise erase it: the next call would then create a second agent on the customer's account.
- */
-/**
  * The settings without the ElevenLabs agent id, for a copy of the agent (a clone, an export): the
  * copy creates its own agent there on its first save, instead of rewriting the original's.
  */
@@ -199,12 +194,19 @@ export function withoutCallsAgentId(
   return { ...settings, calls: rest };
 }
 
+/**
+ * Puts the stored `elevenLabsAgentId` on a settings write, whatever the write carries. Only the call
+ * setup writes it (by SQL, leaving `updated_at` alone), so a write's own value is at best an echo: the
+ * console writes the block whole, and an editor opened before the server created or recreated the
+ * agent would erase the id or put back the one it replaced. Either way the next call would create
+ * another agent on the customer's account and abandon the one in use.
+ */
 export function keepCallsSystemFields(next: unknown, before: unknown): void {
   if (!next || typeof next !== "object") return;
   const calls = (next as Record<string, unknown>).calls;
   if (!calls || typeof calls !== "object") return;
   const bag = calls as Record<string, unknown>;
-  if (str(bag.elevenLabsAgentId)) return;
   const kept = readCallsConfig(before).elevenLabsAgentId;
   if (kept) bag.elevenLabsAgentId = kept;
+  else delete bag.elevenLabsAgentId;
 }

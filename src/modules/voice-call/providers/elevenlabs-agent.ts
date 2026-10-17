@@ -8,6 +8,12 @@ import { createHash } from "node:crypto";
 import { clipText } from "@/lib/text";
 import type { CallsConfig } from "../settings";
 import { type ConfigDigests, dbConfigDigests } from "./config-digests";
+import {
+  CONFIG_HOLD_LEASE_MS,
+  CONFIG_HOLD_WAIT_MS,
+  dbEngineHold,
+  type HoldEngineAgent,
+} from "./engine-hold";
 
 const API = "https://api.elevenlabs.io";
 
@@ -119,6 +125,7 @@ export async function ensureElevenLabsAgent(
   spec: ElevenLabsAgentSpec,
   fetchImpl: typeof fetch = fetch,
   digests: ConfigDigests = dbConfigDigests(),
+  holdEngine: HoldEngineAgent = dbEngineHold(CONFIG_HOLD_LEASE_MS),
 ): Promise<string> {
   const body = JSON.stringify(elevenLabsAgentConfig(spec));
   // The key is part of what was written: the same settings under another account are unchecked there.
@@ -129,15 +136,28 @@ export async function ensureElevenLabsAgent(
     .digest("hex");
   const headers = { "xi-api-key": apiKey, "content-type": "application/json" };
   if (agentId) {
+    // Read without the hold first: a digest written under a hold is true, and most setups find it.
     if ((await digests.read(agentId)) === digest) return agentId;
-    await digests.write(agentId, null);
-    const res = await fetchImpl(
-      `${API}/v1/convai/agents/${encodeURIComponent(agentId)}`,
-      { method: "PATCH", headers, body, signal: deadline() },
+    // The write, its digest and the read before them under one hold, across processes: two writes
+    // whose answers came back out of order would otherwise record the one ElevenLabs no longer has.
+    const hold = await holdEngine(
+      agentId,
+      AbortSignal.timeout(CONFIG_HOLD_WAIT_MS),
     );
-    if (res.ok) {
-      await digests.write(agentId, digest);
-      return agentId;
+    let res: Response;
+    try {
+      if (hold.configDigest === digest) return agentId;
+      await hold.markConfigured(null);
+      res = await fetchImpl(
+        `${API}/v1/convai/agents/${encodeURIComponent(agentId)}`,
+        { method: "PATCH", headers, body, signal: deadline() },
+      );
+      if (res.ok) {
+        await hold.markConfigured(digest);
+        return agentId;
+      }
+    } finally {
+      await hold.release();
     }
     if (res.status !== 404)
       throw new Error(

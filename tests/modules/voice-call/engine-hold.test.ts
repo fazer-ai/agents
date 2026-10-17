@@ -4,13 +4,17 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { dbConfigDigests } from "@/modules/voice-call/providers/config-digests";
 import { elevenLabsProvider } from "@/modules/voice-call/providers/elevenlabs";
 import { ensureElevenLabsAgent } from "@/modules/voice-call/providers/elevenlabs-agent";
-import { dbEngineHold } from "@/modules/voice-call/providers/engine-hold";
+import {
+  CONFIG_HOLD_LEASE_MS,
+  dbEngineHold,
+} from "@/modules/voice-call/providers/engine-hold";
 import type {
   VoiceSessionConfig,
   VoiceSessionHandlers,
 } from "@/modules/voice-call/providers/types";
 import { readCallsConfig } from "@/modules/voice-call/settings";
 import { dbProbeFailed } from "@/tests/db-gate";
+import { until } from "@/tests/utils/poll";
 
 // Two processes starting calls on one ElevenLabs agent, as the leader and a web replica do: each has
 // its own client, and the only thing they share is the database. One holds the agent at a time, what
@@ -167,6 +171,7 @@ describe.skipIf(!dbUp)(
           spec(voice),
           p.fetchImpl,
           dbConfigDigests(db),
+          dbEngineHold(CONFIG_HOLD_LEASE_MS, db),
         );
       await write(a, one, "v1");
       await write(b, two, "v2");
@@ -178,6 +183,54 @@ describe.skipIf(!dbUp)(
       expect(b.sent).toEqual(["PATCH"]);
     });
 
+    test("a write whose answer comes back after a later one does not record itself", async () => {
+      const id = agentId();
+      const sent: string[] = [];
+      const stalled: { answer?: () => void } = {};
+      // A's write applies on ElevenLabs, and its answer is held past its hold's lease.
+      const slow = (async (_url: string, init?: RequestInit) => {
+        sent.push(`A ${String(init?.method)}`);
+        await new Promise<void>((go) => {
+          stalled.answer = go;
+        });
+        return new Response("{}");
+      }) as unknown as typeof fetch;
+      const fast = (async (_url: string, init?: RequestInit) => {
+        sent.push(`B ${String(init?.method)}`);
+        return new Response("{}");
+      }) as unknown as typeof fetch;
+      const first = ensureElevenLabsAgent(
+        "k",
+        id,
+        spec("v1"),
+        slow,
+        dbConfigDigests(one),
+        dbEngineHold(300, one),
+      );
+      await until("A's write to be sent", () => stalled.answer);
+      // B waits for A's hold, takes it when the lease passes, and writes v2.
+      await ensureElevenLabsAgent(
+        "k",
+        id,
+        spec("v2"),
+        fast,
+        dbConfigDigests(two),
+        dbEngineHold(CONFIG_HOLD_LEASE_MS, two),
+      );
+      stalled.answer?.();
+      await first;
+      // ElevenLabs carries v2, so restoring v1 is written.
+      await ensureElevenLabsAgent(
+        "k",
+        id,
+        spec("v1"),
+        fast,
+        dbConfigDigests(one),
+        dbEngineHold(CONFIG_HOLD_LEASE_MS, one),
+      );
+      expect(sent).toEqual(["A PATCH", "B PATCH", "B PATCH"]);
+    });
+
     test("a write whose answer is lost leaves the configuration unknown, so it is sent again", async () => {
       const id = agentId();
       const ok = patches();
@@ -187,12 +240,20 @@ describe.skipIf(!dbUp)(
         spec("v1"),
         ok.fetchImpl,
         dbConfigDigests(one),
+        dbEngineHold(CONFIG_HOLD_LEASE_MS, one),
       );
       const lost = (async () => {
         throw new Error("socket hang up");
       }) as unknown as typeof fetch;
       await expect(
-        ensureElevenLabsAgent("k", id, spec("v2"), lost, dbConfigDigests(two)),
+        ensureElevenLabsAgent(
+          "k",
+          id,
+          spec("v2"),
+          lost,
+          dbConfigDigests(two),
+          dbEngineHold(CONFIG_HOLD_LEASE_MS, two),
+        ),
       ).rejects.toThrow("socket hang up");
       await ensureElevenLabsAgent(
         "k",
@@ -200,6 +261,7 @@ describe.skipIf(!dbUp)(
         spec("v1"),
         ok.fetchImpl,
         dbConfigDigests(one),
+        dbEngineHold(CONFIG_HOLD_LEASE_MS, one),
       );
       expect(ok.sent).toEqual(["PATCH", "PATCH"]);
     });

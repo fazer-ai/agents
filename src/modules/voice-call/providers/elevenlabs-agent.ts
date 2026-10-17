@@ -34,13 +34,14 @@ export function elevenLabsAgentConfig(spec: ElevenLabsAgentSpec) {
     conversation_config: {
       asr: {
         user_input_audio_format: "pcm_16000",
+        provider: calls.asrModel,
         quality: "high",
         keywords: calls.keywords,
       },
       tts: {
         agent_output_audio_format: "pcm_16000",
         voice_id: spec.voice,
-        model_id: "eleven_flash_v2_5",
+        model_id: calls.ttsModel,
         speed: calls.speed,
       },
       turn: {

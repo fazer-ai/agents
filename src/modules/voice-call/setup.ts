@@ -20,7 +20,7 @@ export interface CallsSetup {
   calls: CallsConfig;
   apiKey: string;
   voice: string;
-  elevenLabsAgentId: string;
+  providerAgentId: string;
 }
 
 export type CallsProblem =
@@ -81,11 +81,11 @@ export async function setUpAgentCalls(
     if (!access.ok)
       return { ok: false, problem: access.reason, detail: access.detail };
   }
-  let elevenLabsAgentId: string;
+  let providerAgentId: string;
   try {
-    elevenLabsAgentId = await ensureElevenLabsAgent(
+    providerAgentId = await ensureElevenLabsAgent(
       apiKey,
-      calls.elevenLabsAgentId,
+      calls.providerAgentId,
       {
         name: `${read.name} (fazer.ai agents #${agentId})`,
         prompt: read.prompt,
@@ -111,7 +111,7 @@ export async function setUpAgentCalls(
       detail: (err as Error).message,
     };
   }
-  if (elevenLabsAgentId !== calls.elevenLabsAgentId) {
+  if (providerAgentId !== calls.providerAgentId) {
     // A system write into the operator's block, by SQL so `updated_at` stays: an editor open on this
     // agent must not read it as somebody else's save. An agent saved before it had a calls block gets
     // one, or the next call would create another agent on the tenant's account. Only over the id this
@@ -119,17 +119,17 @@ export async function setUpAgentCalls(
     // the one that loses deletes its own and takes the winner's. And only under the key it read: an id
     // is good only on the account that holds it, so one created on a key the operator has since
     // replaced is deleted there and the setup starts over on the new one.
-    const stored = calls.elevenLabsAgentId;
+    const stored = calls.providerAgentId;
     const written = await runScopedOn(
       base,
       ctx,
       (db) =>
-        db.$executeRaw`UPDATE agents SET settings = jsonb_set(CASE WHEN jsonb_typeof(settings -> 'calls') = 'object' THEN settings ELSE settings || '{"calls": {}}'::jsonb END, '{calls,elevenLabsAgentId}', to_jsonb(${elevenLabsAgentId}::text), true) WHERE id = ${agentId} AND (settings -> 'calls' ->> 'elevenLabsAgentId') IS NOT DISTINCT FROM ${stored}::text AND (settings -> 'calls' ->> 'credentialRef') IS NOT DISTINCT FROM ${calls.credentialRef}::text`,
+        db.$executeRaw`UPDATE agents SET settings = jsonb_set(CASE WHEN jsonb_typeof(settings -> 'calls') = 'object' THEN settings ELSE settings || '{"calls": {}}'::jsonb END, '{calls,providerAgentId}', to_jsonb(${providerAgentId}::text), true) WHERE id = ${agentId} AND (settings -> 'calls' ->> 'providerAgentId') IS NOT DISTINCT FROM ${stored}::text AND (settings -> 'calls' ->> 'credentialRef') IS NOT DISTINCT FROM ${calls.credentialRef}::text`,
     );
     if (written === 0) {
       await deleteElevenLabsAgent(
         apiKey,
-        elevenLabsAgentId,
+        providerAgentId,
         opts.fetchImpl,
         dbConfigDigests(base),
       );
@@ -145,5 +145,5 @@ export async function setUpAgentCalls(
       return setUpAgentCalls(ctx, agentId, { ...opts, retried: true });
     }
   }
-  return { ok: true, setup: { calls, apiKey, voice, elevenLabsAgentId } };
+  return { ok: true, setup: { calls, apiKey, voice, providerAgentId } };
 }

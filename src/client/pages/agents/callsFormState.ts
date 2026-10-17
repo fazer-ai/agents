@@ -1,21 +1,27 @@
 // A voice agent's call settings as the form holds them, read from and written to `settings.calls`
 // through the same reader the runtime uses (modules/voice-call/settings), so a field cannot exist on
 // one side only. Numbers are kept as typed text while editing; one out of range is refused on save
-// (`callsFormErrors`) rather than left to the reader's clamp. `elevenLabsAgentId` is not part of the
+// (`callsFormErrors`) rather than left to the reader's clamp. `providerAgentId` is not part of the
 // form: the server writes it and keeps it across saves.
 
 import {
   CALL_LIMITS,
+  type CallAsrModel,
   type CallBackgroundSound,
+  type CallProvider,
   type CallToolSound,
+  type CallTtsModel,
   type CallTurnEagerness,
   readCallsConfig,
 } from "@/modules/voice-call/settings";
 
 export interface CallsFormState {
+  provider: CallProvider;
   credentialRef: string;
   voice: string;
   llm: string;
+  ttsModel: CallTtsModel;
+  asrModel: CallAsrModel;
   speed: string;
   // Seconds, as typed ("1,6"); stored in milliseconds.
   openingDelaySecs: string;
@@ -43,9 +49,12 @@ export function readCallsFormState(
 ): CallsFormState {
   const c = readCallsConfig({ calls: raw });
   return {
+    provider: c.provider,
     credentialRef: c.credentialRef ?? "",
     voice: c.voice,
     llm: c.llm,
+    ttsModel: c.ttsModel,
+    asrModel: c.asrModel,
     speed: String(c.speed).replace(".", ","),
     openingDelaySecs: String(c.openingDelayMs / 1000).replace(".", ","),
     turnEagerness: c.turnEagerness,
@@ -69,9 +78,12 @@ export function callsSettingsFrom(f: CallsFormState): Record<string, unknown> {
   const delaySecs = num(f.openingDelaySecs);
   const volume = num(f.backgroundVolume);
   return {
+    provider: f.provider,
     credentialRef: f.credentialRef || null,
     voice: f.voice.trim(),
     llm: f.llm.trim(),
+    ttsModel: f.ttsModel,
+    asrModel: f.asrModel,
     speed: num(f.speed),
     openingDelayMs:
       delaySecs === undefined ? undefined : Math.round(delaySecs * 1000),
@@ -122,9 +134,10 @@ export const CALLS_FORM_RANGES: Record<
  * form does not use (silence while ending on silence is off, volume without a background) is not judged.
  */
 export function callsFormErrors(f: CallsFormState): CallsRangeField[] {
+  // The wait for the hello is not on the form (it applies to calls the agent places, which nothing
+  // places yet): a field the operator cannot see cannot hold the save.
   const judged: CallsRangeField[] = [
     "speed",
-    "openingDelaySecs",
     "maxDurationMin",
     ...(f.endOnSilence ? (["silenceEndCallSecs"] as const) : []),
     ...(f.backgroundSound ? (["backgroundVolume"] as const) : []),
@@ -136,7 +149,33 @@ export function callsFormErrors(f: CallsFormState): CallsRangeField[] {
   });
 }
 
-// A refused key is said in full by its sentence: ElevenLabs' own words would only repeat it, in English.
+// The fields drawn on General's Voice card; every other one is on the Call tab. Each tab's unsaved dot
+// follows its own fields, though one save writes them all.
+const ON_GENERAL = [
+  "provider",
+  "credentialRef",
+  "voice",
+  "speed",
+  "llm",
+  "ttsModel",
+  "asrModel",
+] as const satisfies readonly (keyof CallsFormState)[];
+
+/** The call settings split by the tab that draws them: `general` (the Voice card) and `call`. */
+export function callsByTab(f: CallsFormState): {
+  general: Partial<CallsFormState>;
+  call: Partial<CallsFormState>;
+} {
+  const general: Partial<CallsFormState> = {};
+  const call: Partial<CallsFormState> = { ...f };
+  for (const key of ON_GENERAL) {
+    Object.assign(general, { [key]: f[key] });
+    delete call[key];
+  }
+  return { general, call };
+}
+
+// A refused key is said in full by its sentence: the provider's own words would only repeat it, in English.
 export const KEY_PROBLEMS: ReadonlySet<string> = new Set([
   "invalid_key",
   "missing_permission",

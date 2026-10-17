@@ -465,7 +465,7 @@ export const agentsController = new Elysia({
         ...(result.ok
           ? {
               ok: true as const,
-              elevenLabsAgentId: result.setup.elevenLabsAgentId,
+              providerAgentId: result.setup.providerAgentId,
             }
           : {
               ok: false as const,
@@ -477,7 +477,7 @@ export const agentsController = new Elysia({
     {
       detail: doc(
         "Check and sync the agent's calls",
-        "Over the SAVED agent: resolves the ElevenLabs key `settings.calls` names (or the audio replies' one), checks it can run ElevenLabs Agents, and creates or updates the agent that carries this agent's WhatsApp calls on the customer's ElevenLabs account, writing its id to `settings.calls.elevenLabsAgentId`. Answers `{ ok: true, elevenLabsAgentId }`, or `{ ok: false, problem, detail }` with problem one of `disabled`, `no_credential`, `credential_unusable`, `invalid_key`, `missing_permission` (a text-to-speech-only key), `unreachable`, `sync_failed`. Every call runs the same sync as it opens; this is what the console runs after a save, so a bad key shows on the screen rather than on the first call.",
+        "Over the SAVED agent: resolves the key of the voice provider `settings.calls.provider` names (ElevenLabs Agents, the only one today; for it the audio replies' ElevenLabs key also serves), checks it can run that provider's agents, and creates or updates the agent that carries this agent's WhatsApp calls on the customer's account there, writing its id to `settings.calls.providerAgentId`. Answers `{ ok: true, providerAgentId }`, or `{ ok: false, problem, detail }` with problem one of `disabled`, `no_credential`, `credential_unusable`, `invalid_key`, `missing_permission` (a text-to-speech-only key), `unreachable`, `sync_failed`. Every call runs the same sync as it opens; this is what the console runs after a save, so a bad key shows on the screen rather than on the first call.",
       ),
       response: errors(400, 401, 403, 404),
       requireRole: "TENANT_ADMIN",

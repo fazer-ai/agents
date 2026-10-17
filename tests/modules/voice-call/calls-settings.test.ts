@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import {
+  callsByTab,
   callsFormErrors,
   callsSettingsFrom,
   readCallsFormState,
@@ -64,6 +65,76 @@ describe("calls settings", () => {
     expect(c.keywords).toEqual(["Unimed"]);
   });
 
+  test("the provider and its voice and transcription models are read from a list, the first by default", () => {
+    expect(readCallsConfig({})).toMatchObject({
+      provider: "elevenlabs",
+      ttsModel: "eleven_flash_v2_5",
+      asrModel: "scribe_realtime",
+    });
+    expect(
+      readCallsConfig({
+        calls: {
+          provider: "elevenlabs",
+          ttsModel: "eleven_v4_turbo",
+          asrModel: "scribe_v2_turbo",
+        },
+      }),
+    ).toMatchObject({
+      ttsModel: "eleven_v4_turbo",
+      asrModel: "scribe_v2_turbo",
+    });
+    // An English-only voice model, a provider this build does not have: the defaults, not the value.
+    expect(
+      readCallsConfig({
+        calls: {
+          provider: "vapi",
+          ttsModel: "eleven_flash_v2",
+          asrModel: "whisper",
+        },
+      }),
+    ).toMatchObject({
+      provider: "elevenlabs",
+      ttsModel: "eleven_flash_v2_5",
+      asrModel: "scribe_realtime",
+    });
+  });
+
+  test("the agent on ElevenLabs speaks with the chosen voice model and hears with the chosen transcription", () => {
+    const config = elevenLabsAgentConfig({
+      name: "Maria",
+      prompt: "p",
+      voice: "v1",
+      calls: readCallsConfig({
+        calls: {
+          ttsModel: "eleven_multilingual_v2",
+          asrModel: "scribe_v2_turbo",
+        },
+      }),
+    });
+    expect(config.conversation_config.tts.model_id).toBe(
+      "eleven_multilingual_v2",
+    );
+    expect(config.conversation_config.asr.provider).toBe("scribe_v2_turbo");
+  });
+
+  test("the call settings split between General's Voice card and the Call tab, each field on one", () => {
+    const form = readCallsFormState({});
+    const { general, call } = callsByTab(form);
+    expect(Object.keys(general).sort()).toEqual(
+      [
+        "asrModel",
+        "credentialRef",
+        "llm",
+        "provider",
+        "speed",
+        "ttsModel",
+        "voice",
+      ].sort(),
+    );
+    expect(Object.keys(call).some((k) => k in general)).toBe(false);
+    expect({ ...general, ...call }).toEqual(form);
+  });
+
   test("a null silence never ends the call", () => {
     expect(
       readCallsConfig({ calls: { silenceEndCallSecs: null } })
@@ -91,22 +162,22 @@ describe("calls settings", () => {
   });
 
   test("a save keeps the stored ElevenLabs agent id, whether it leaves the id out or echoes another", () => {
-    const before = { calls: { elevenLabsAgentId: "agent_1" } };
+    const before = { calls: { providerAgentId: "agent_1" } };
     const next: { calls: Record<string, unknown> } = {
       calls: { speed: 1.1 },
     };
     keepCallsSystemFields(next, before);
     expect(next.calls).toEqual({
       speed: 1.1,
-      elevenLabsAgentId: "agent_1",
+      providerAgentId: "agent_1",
     });
     // An editor opened before the agent was recreated echoes the id it replaced.
-    const stale = { calls: { elevenLabsAgentId: "agent_0" } };
+    const stale = { calls: { providerAgentId: "agent_0" } };
     keepCallsSystemFields(stale, before);
-    expect(stale.calls.elevenLabsAgentId).toBe("agent_1");
+    expect(stale.calls.providerAgentId).toBe("agent_1");
     // And a write cannot name one the server never set up.
     const named: { calls: Record<string, unknown> } = {
-      calls: { elevenLabsAgentId: "agent_2" },
+      calls: { providerAgentId: "agent_2" },
     };
     keepCallsSystemFields(named, {});
     expect(named.calls).toEqual({}); // A bag that leaves the block out keeps it, and one with no id to keep stays as written.
@@ -114,7 +185,7 @@ describe("calls settings", () => {
     keepCallsSystemFields(bare, before);
     expect(bare).toEqual({
       tone: "x",
-      calls: { elevenLabsAgentId: "agent_1" },
+      calls: { providerAgentId: "agent_1" },
     });
     const fresh: Record<string, unknown> = { tone: "x" };
     keepCallsSystemFields(fresh, {});
@@ -382,14 +453,16 @@ describe("the call settings form", () => {
   });
 
   test("each number is judged in the unit the form shows, and only when its field is in use", () => {
+    // The wait for the hello is not on the form, so it never holds the save.
     expect(
       callsFormErrors({
         ...valid,
         speed: "1,5",
+        maxDurationMin: "0",
         openingDelaySecs: "6",
         backgroundVolume: "0",
       }),
-    ).toEqual(["speed", "openingDelaySecs"]);
+    ).toEqual(["speed", "maxDurationMin"]);
     expect(
       callsFormErrors({
         ...valid,

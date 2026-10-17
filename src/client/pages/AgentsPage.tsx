@@ -36,7 +36,7 @@ import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
 import { providerLabel } from "@/client/lib/providerLabels";
 import { formatDateTime, formatRelativeTime } from "@/client/lib/utils";
-import { readCallsConfig } from "@/modules/voice-call/settings";
+import { CALL_LLMS, readCallsConfig } from "@/modules/voice-call/settings";
 
 // Types derived from the Eden treaty — never hand-declared (see docs/eden-treaty.md).
 type AgentsData = Awaited<ReturnType<typeof api.api.v1.agents.get>>["data"];
@@ -334,10 +334,10 @@ export function AgentsPage() {
         ) : (
           <div className="flex flex-col gap-3">
             {agents.map((a, i) => {
-              const label =
-                a.kind === "voice"
-                  ? `ElevenLabs · ${readCallsConfig(a.settings).llm}`
-                  : modelLabel(a.modelConfig);
+              const calls = a.kind === "voice" && readCallsConfig(a.settings);
+              const label = calls
+                ? `${providerLabel(calls.provider, t)} · ${CALL_LLMS.find((m) => m.id === calls.llm)?.label ?? calls.llm}`
+                : modelLabel(a.modelConfig);
               return (
                 <Link key={a.id} to={`/agents/${a.id}`} className="block">
                   <Card className="flex items-center justify-between gap-4 transition-colors hover:bg-bg-hover">
@@ -470,7 +470,7 @@ export function AgentsPage() {
             label={t("agents.kind", "What it answers")}
             description={t(
               "agents.kindHint",
-              "This cannot be changed later: a call and a message are configured differently.",
+              "The type is set at creation. For the other one, create another agent.",
             )}
           >
             <ChoiceCards
@@ -492,10 +492,10 @@ export function AgentsPage() {
                 {
                   value: "voice",
                   icon: Phone,
-                  title: t("agents.kindVoice", "Calls"),
+                  title: t("agents.kindVoice", "WhatsApp calls"),
                   hint: t(
                     "agents.kindVoiceHint",
-                    "Answers WhatsApp calls by voice, on your ElevenLabs account.",
+                    "Talks by voice with whoever calls your WhatsApp. You will need a key from a voice provider.",
                   ),
                   testId: "kind-voice",
                 },

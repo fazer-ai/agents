@@ -65,7 +65,7 @@ function callsProvider(setup: () => CallsSetup | null): VoiceProvider {
       if (!s) throw new Error("calls are not set up for this agent");
       return elevenLabsProvider({
         apiKey: s.apiKey,
-        agentId: s.elevenLabsAgentId,
+        agentId: s.providerAgentId,
         toolSound: s.calls.toolSound,
       }).open(config, handlers);
     },

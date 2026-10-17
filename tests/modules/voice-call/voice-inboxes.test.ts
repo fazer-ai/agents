@@ -943,7 +943,7 @@ describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
         kind: "voice",
         systemPrompt: "x",
         settings: {
-          calls: { elevenLabsAgentId: "agent_original", speed: 1.1 },
+          calls: { providerAgentId: "agent_original", speed: 1.1 },
         },
       },
     });
@@ -977,7 +977,7 @@ describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
         name: "Substituída",
         kind: "voice",
         systemPrompt: "x",
-        settings: { calls: { elevenLabsAgentId: "agent_in_use", speed: 1.1 } },
+        settings: { calls: { providerAgentId: "agent_in_use", speed: 1.1 } },
       },
     });
     const updated = await updateAgent(
@@ -988,14 +988,14 @@ describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
       { settingsMode: "replace" },
     );
     expect(updated.settings.calls).toEqual({
-      elevenLabsAgentId: "agent_in_use",
+      providerAgentId: "agent_in_use",
     });
   });
 
   test("an agent created or imported with another's ElevenLabs agent id gets none of its own", async () => {
     // A fresh bag per write: create strips the id from the one it is given.
     const copied = () => ({
-      calls: { elevenLabsAgentId: "agent_of_another", speed: 1.1 },
+      calls: { providerAgentId: "agent_of_another", speed: 1.1 },
     });
     const made = await createAgent(
       ctx(tenant),
@@ -1052,7 +1052,7 @@ describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
             settings: {
               calls: {
                 credentialRef: `vault:${key.id}`,
-                elevenLabsAgentId: "agent_winner",
+                providerAgentId: "agent_winner",
               },
             },
           },
@@ -1065,14 +1065,14 @@ describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
       fetchImpl,
       base: appDb,
     });
-    expect(result.ok && result.setup.elevenLabsAgentId).toBe("agent_winner");
+    expect(result.ok && result.setup.providerAgentId).toBe("agent_winner");
     expect(deleted).toEqual(["agent_mine"]);
     const stored = await suDb.agent.findUniqueOrThrow({
       where: { id: agent.id },
     });
     expect(
-      (stored.settings as { calls: { elevenLabsAgentId: string } }).calls
-        .elevenLabsAgentId,
+      (stored.settings as { calls: { providerAgentId: string } }).calls
+        .providerAgentId,
     ).toBe("agent_winner");
   });
 
@@ -1103,7 +1103,7 @@ describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
             settings: {
               calls: {
                 credentialRef: `vault:${theirs.id}`,
-                elevenLabsAgentId: "agent_on_b",
+                providerAgentId: "agent_on_b",
               },
             },
           },
@@ -1117,7 +1117,7 @@ describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
       base: appDb,
     });
     expect(
-      result.ok && [result.setup.elevenLabsAgentId, result.setup.apiKey],
+      result.ok && [result.setup.providerAgentId, result.setup.apiKey],
     ).toEqual(["agent_on_b", "xi-b"]);
   });
 
@@ -1244,7 +1244,7 @@ describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
       base: appDb,
     });
     expect(
-      result.ok && [result.setup.elevenLabsAgentId, result.setup.apiKey],
+      result.ok && [result.setup.providerAgentId, result.setup.apiKey],
     ).toEqual(["agent_on_xi-new", "xi-new"]);
     expect(created).toEqual(["xi-old", "xi-new"]);
     expect(deleted).toEqual(["agent_on_xi-old on xi-old"]);
@@ -1252,8 +1252,8 @@ describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
       where: { id: agent.id },
     });
     expect(
-      (stored.settings as { calls: { elevenLabsAgentId: string } }).calls
-        .elevenLabsAgentId,
+      (stored.settings as { calls: { providerAgentId: string } }).calls
+        .providerAgentId,
     ).toBe("agent_on_xi-new");
   });
 

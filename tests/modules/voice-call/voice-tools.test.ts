@@ -6,7 +6,7 @@ import {
   invocationDeadlineFetch,
   withinInvocation,
 } from "@/modules/voice-call/invocation-deadline";
-import { toVoiceTools } from "@/modules/voice-call/tools";
+import { toVoiceTools, voiceAgentFrom } from "@/modules/voice-call/tools";
 
 // A tool that failed without throwing (an HTTP 500, a refused contact update) answers a ToolMessage
 // marked as an error; on a call it is a failed tool, not a result the agent reads as success.
@@ -132,5 +132,46 @@ describe("a request a call's tool makes", () => {
     const { sent, fetch } = recorder();
     await fetch("https://8.8.8.8/book");
     expect(sent).toEqual([undefined]);
+  });
+});
+
+describe("the prompt a call is given", () => {
+  const plain = tool(async () => "ok", {
+    name: "agenda",
+    description: "d",
+    schema: z.object({}),
+  });
+  const fromServer = Object.assign(
+    tool(async () => "ok", {
+      name: "mcp__crm__busca",
+      description: "d",
+      schema: z.object({}),
+    }),
+    {
+      metadata: {
+        mcpServer: {
+          label: "crm",
+          instructions: "Busque pelo CPF antes do nome.",
+        },
+      },
+    },
+  );
+
+  test("carries each MCP server's scope and instructions, after the agent's own", () => {
+    const agent = voiceAgentFrom("Você é a Raquel.", [plain, fromServer]);
+    expect(agent.systemPrompt.startsWith("Você é a Raquel.\n\n")).toBe(true);
+    expect(agent.systemPrompt).toContain("### crm");
+    expect(agent.systemPrompt).toContain("Busque pelo CPF antes do nome.");
+    expect(agent.systemPrompt).toContain("Ferramentas: mcp__crm__busca");
+    expect(agent.tools.map((t) => t.name)).toEqual([
+      "agenda",
+      "mcp__crm__busca",
+    ]);
+  });
+
+  test("is the agent's own when no MCP tool is given", () => {
+    expect(voiceAgentFrom("Você é a Raquel.", [plain]).systemPrompt).toBe(
+      "Você é a Raquel.",
+    );
   });
 });

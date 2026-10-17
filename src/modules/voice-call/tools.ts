@@ -11,6 +11,7 @@ import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { chatwootThreadId } from "@/graph/checkpointer";
 import { buildToolset, loadAgentConfig } from "@/graph/prepare";
+import { buildMcpContextSection } from "@/graph/tools/mcp";
 import { buildNativeTools } from "@/graph/tools/native";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { createChatwootClient } from "@/modules/chatwoot/client";
@@ -32,6 +33,25 @@ function sysCtx(tenantId: bigint): TenantContext {
 }
 
 /** The tools a call may use, out of an agent's text toolset, in the shape the voice engine declares. */
+/**
+ * What a call is given: the tools it may use and the prompt that explains them. An MCP tool carries
+ * its server's scope and instructions, which a text turn appends in `buildModelAndGraph`; a call never
+ * builds the graph, so the same block is appended here, over the tools the call keeps.
+ */
+export function voiceAgentFrom(
+  systemPrompt: string,
+  all: StructuredToolInterface[],
+): VoiceAgent {
+  const kept = all.filter((tool) => !isVoiceDeniedTool(tool.name));
+  const mcpContext = buildMcpContextSection(kept);
+  return {
+    systemPrompt: mcpContext
+      ? `${systemPrompt}\n\n${mcpContext}`
+      : systemPrompt,
+    tools: toVoiceTools(kept),
+  };
+}
+
 export function toVoiceTools(all: StructuredToolInterface[]): VoiceTool[] {
   return all
     .filter((tool) => !isVoiceDeniedTool(tool.name))
@@ -130,13 +150,13 @@ export async function loadVoiceAgent(
       },
       { buildNativeTools },
     );
-    const tools = toVoiceTools(all);
+    const agent = voiceAgentFrom(cfg.systemPrompt, all);
     logger.info(
       "voice-call: %d tools for the call: %s",
-      tools.length,
-      tools.map((t) => t.name).join(", "),
+      agent.tools.length,
+      agent.tools.map((t) => t.name).join(", "),
     );
-    return { systemPrompt: cfg.systemPrompt, tools };
+    return agent;
   } catch (err) {
     logger.warn(
       "voice-call: could not load the agent's tools: %s",

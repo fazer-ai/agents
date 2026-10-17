@@ -47,7 +47,8 @@ describe("elevenlabs tool declarations", () => {
       },
     };
     const [def] = elevenLabsToolDefs([tool("buscar", schema)]);
-    const props = (def?.parameters as { properties: Record<string, unknown> })
+    if (!def) throw new Error("no tool definition");
+    const props = (def.parameters as { properties: Record<string, unknown> })
       .properties;
     expect(props.limite).toEqual({
       type: "string",

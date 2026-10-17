@@ -124,7 +124,10 @@ import {
   VAULT_REF_PREFIX,
   type VaultEntryFacts,
 } from "@/modules/vault/service";
-import { withoutCallsAgentId } from "@/modules/voice-call/settings";
+import {
+  keepCallsSystemFields,
+  withoutCallsAgentId,
+} from "@/modules/voice-call/settings";
 import { generateRouteToken } from "@/modules/webhooks/inbound/route-token";
 import { ensureInboundSweep } from "@/modules/webhooks/inbound/sweep";
 import { withCreationDefaults } from "./creation-defaults";
@@ -1475,6 +1478,9 @@ export async function importAgent(
         params: { count: unusable.count - named },
       });
     }
+    // Without an ElevenLabs agent id, whatever the bundle carries: an exported one is stripped, and a
+    // bundle written by hand must not point this agent at another's.
+    keepCallsSystemFields(storable, undefined);
     const created = await db.agent.create({
       data: {
         tenantId,

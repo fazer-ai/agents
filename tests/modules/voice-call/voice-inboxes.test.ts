@@ -779,12 +779,13 @@ describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
   });
 
   test("an agent created or imported with another's ElevenLabs agent id gets none of its own", async () => {
-    const copied = {
+    // A fresh bag per write: create strips the id from the one it is given.
+    const copied = () => ({
       calls: { elevenLabsAgentId: "agent_of_another", speed: 1.1 },
-    };
+    });
     const made = await createAgent(
       ctx(tenant),
-      { name: "Copiada", kind: "voice", systemPrompt: "x", settings: copied },
+      { name: "Copiada", kind: "voice", systemPrompt: "x", settings: copied() },
       appDb,
     );
     expect(made.settings.calls).toEqual({ speed: 1.1 });
@@ -802,7 +803,7 @@ describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
       ctx(tenant),
       {
         ...bundle,
-        agent: { ...bundle.agent, name: "Importada", settings: copied },
+        agent: { ...bundle.agent, name: "Importada", settings: copied() },
       },
       appDb,
     );

@@ -361,3 +361,87 @@ describe("an ElevenLabs conversation that never starts", () => {
     second.close();
   });
 });
+
+describe("a call this side opens", () => {
+  // The engine answers the conversation's start and, when told to, hears the person say something.
+  function openingEngine(personSpeaks: boolean) {
+    const userMessages: string[] = [];
+    server = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch(req, srv) {
+        return srv.upgrade(req, { data: undefined })
+          ? undefined
+          : new native.BunResponse("no", { status: 400 });
+      },
+      websocket: {
+        message(ws, raw) {
+          const frame = JSON.parse(String(raw));
+          if (frame.type === "user_message") userMessages.push(frame.text);
+          if (frame.type !== "conversation_initiation_client_data") return;
+          ws.send(
+            JSON.stringify({
+              type: "conversation_initiation_metadata",
+              conversation_initiation_metadata_event: {
+                conversation_id: "c",
+                agent_output_audio_format: "pcm_16000",
+                user_input_audio_format: "pcm_16000",
+              },
+            }),
+          );
+          if (personSpeaks)
+            ws.send(
+              JSON.stringify({
+                type: "user_transcript",
+                user_transcription_event: { user_transcript: "alô?" },
+              }),
+            );
+        },
+      },
+    });
+    const url = `ws://127.0.0.1:${server.port}/`;
+    const fetchImpl = (async (input: string) =>
+      input.includes("get-signed-url")
+        ? new Response(JSON.stringify({ signed_url: url }))
+        : new Response("{}")) as unknown as typeof fetch;
+    return { userMessages, fetchImpl };
+  }
+
+  async function call(personSpeaks: boolean) {
+    const engine = openingEngine(personSpeaks);
+    const heard: string[] = [];
+    const session = await elevenLabsProvider({
+      apiKey: "k",
+      holdEngine: memoryEngineHold(),
+      agentId: `agent-opens-${personSpeaks}`,
+      fetchImpl: engine.fetchImpl,
+    }).open(
+      { ...CONFIG, opensCall: true, greeting: "", openingDelayMs: 100 },
+      {
+        onAudio: () => {},
+        onInterrupt: () => {},
+        onTranscript: (entry) => heard.push(entry.text),
+        onHangup: () => {},
+        onError: () => {},
+      },
+    );
+    session.begin();
+    return { engine, heard, session };
+  }
+
+  test("asks the agent to open it when nobody spoke", async () => {
+    const { engine, session } = await call(false);
+    await until("the opening asked for", () => engine.userMessages.length > 0);
+    session.close();
+  });
+
+  test("does not, once the person was heard, however quietly", async () => {
+    const { engine, heard, session } = await call(true);
+    await until("the person heard", () => heard.includes("alô?"));
+    // Past the opening delay, with room: the opening would have been asked by now.
+    const past = Date.now() + 400;
+    await until("the opening delay to pass", () => Date.now() > past);
+    session.close();
+    expect(engine.userMessages).toEqual([]);
+  });
+});

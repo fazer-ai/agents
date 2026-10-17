@@ -19,6 +19,9 @@ const CALL_RATE = 16_000;
 const HANGUP_TAIL_MS = 600;
 // After a farewell has been heard, how long the person has to say something before the call ends.
 const FAREWELL_SILENCE_MS = 2_500;
+// How long a goodbye's transcript waits for its audio when the audio has not started: the engine can
+// send the words seconds before it speaks them, and the silence counts from the end of what is heard.
+const FAREWELL_AUDIO_WAIT_MS = 8_000;
 // The most of the caller's voice kept while the engine connects; what comes after it is dropped.
 const EARLY_MAX_SAMPLES = CALL_RATE * 10;
 // Peak above which a frame from the person counts as speech, not line noise.
@@ -88,6 +91,9 @@ export class CallBridge {
   private answered = false;
   private finished = false;
   private playoutEnd = 0;
+  // The pending goodbye: when it was said, and whether any of its audio reached the line yet.
+  private farewellAt = 0;
+  private farewellHeard = false;
   private readonly startedAt = new Date();
   private answeredAt: Date | null = null;
   private readonly transcript: TranscriptEntry[] = [];
@@ -178,6 +184,11 @@ export class CallBridge {
           const now = Date.now();
           this.playoutEnd =
             Math.max(this.playoutEnd, now) + pcmMs(pcm.length, CALL_RATE);
+          // The goodbye's audio started: its silence counts from the end of it, not from a bound.
+          if (this.farewellTimer && !this.farewellHeard) {
+            this.farewellHeard = true;
+            this.scheduleFarewell();
+          }
           this.socket.send(
             JSON.stringify({ event: "media", payload: pcmToBase64(pcm) }),
           );
@@ -225,22 +236,36 @@ export class CallBridge {
 
   private armFarewell() {
     this.cancelFarewell();
-    const check = () => {
-      if (this.finished || this.hangupTimer) return;
-      // From the end of what is still playing: audio that arrived after the transcript moves it.
-      const left = this.playoutEnd + FAREWELL_SILENCE_MS - Date.now();
-      if (left > 0) {
-        this.farewellTimer = setTimeout(check, left);
-        return;
-      }
-      this.farewellTimer = null;
-      this.log("farewell went unanswered; hanging up");
-      this.hangupNow("agent", "farewell");
-    };
-    this.farewellTimer = setTimeout(
-      check,
-      Math.max(0, this.playoutEnd - Date.now()) + FAREWELL_SILENCE_MS,
-    );
+    this.farewellAt = Date.now();
+    // Audio still playing when the words arrive is the goodbye's own.
+    this.farewellHeard = this.playoutEnd > this.farewellAt;
+    this.scheduleFarewell();
+  }
+
+  // The next look at the pending goodbye: once its audio has played and the silence after it passed,
+  // or, while its audio has not started, once the bound on waiting for it passed.
+  private scheduleFarewell() {
+    if (this.farewellTimer) clearTimeout(this.farewellTimer);
+    const now = Date.now();
+    const at = this.farewellHeard
+      ? Math.max(this.playoutEnd, now) + FAREWELL_SILENCE_MS
+      : this.farewellAt + FAREWELL_AUDIO_WAIT_MS;
+    this.farewellTimer = setTimeout(() => this.checkFarewell(), at - now);
+  }
+
+  private checkFarewell() {
+    this.farewellTimer = null;
+    if (this.finished || this.hangupTimer) return;
+    // From the end of what is still playing: audio that arrived after the transcript moves it.
+    if (
+      this.farewellHeard &&
+      this.playoutEnd + FAREWELL_SILENCE_MS > Date.now()
+    ) {
+      this.scheduleFarewell();
+      return;
+    }
+    this.log("farewell went unanswered; hanging up");
+    this.hangupNow("agent", "farewell");
   }
 
   private cancelFarewell() {

@@ -87,6 +87,7 @@ import { shouldReplyWithAudio } from "@/modules/tts/settings";
 import { logTextInsteadOfAudio, planAudioReply } from "@/modules/tts/speakable";
 import { extractPlaygroundFile } from "@/modules/vision/service";
 import { readVisionConfig } from "@/modules/vision/settings";
+import { invocationDeadlineFetch } from "@/modules/voice-call/invocation-deadline";
 import { CALL_HTTP_TOOL_TIMEOUT_MS } from "@/modules/voice-call/providers/elevenlabs-tools";
 import { toVoiceTools, type VoiceAgent } from "@/modules/voice-call/tools";
 import {
@@ -414,6 +415,8 @@ function buildPlaygroundToolset(
     proactive?: boolean;
     // A call's HTTP deadline, below what the voice engine waits (CALL_HTTP_TOOL_TIMEOUT_MS).
     httpToolTimeoutMs?: number;
+    // A call's outbound fetch, which holds each request to its tool invocation's deadline.
+    outboundFetch?: typeof fetch;
   },
 ): Promise<StructuredToolInterface[]> {
   return buildToolset(
@@ -430,6 +433,7 @@ function buildPlaygroundToolset(
       ...(params.httpToolTimeoutMs !== undefined
         ? { httpToolTimeoutMs: params.httpToolTimeoutMs }
         : {}),
+      ...(params.outboundFetch ? { outboundFetch: params.outboundFetch } : {}),
     },
     {
       // Conversation tools (handoff/resolve/…) are SIMULATED (no real effect); utility tools
@@ -2039,6 +2043,7 @@ export async function loadPlaygroundVoiceAgent(
       flow: undefined,
       replyChoice: undefined,
       httpToolTimeoutMs: CALL_HTTP_TOOL_TIMEOUT_MS,
+      outboundFetch: invocationDeadlineFetch(),
     },
   );
   return { systemPrompt: loaded.systemPrompt, tools: toVoiceTools(all) };

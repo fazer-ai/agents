@@ -34,6 +34,7 @@ import {
   syncVoiceAgentInboxes,
   voiceStreamUrl,
 } from "@/modules/voice-call/inboxes";
+import { withinInvocation } from "@/modules/voice-call/invocation-deadline";
 import { CALL_HTTP_TOOL_TIMEOUT_MS } from "@/modules/voice-call/providers/elevenlabs-tools";
 import {
   fenceConversation,
@@ -1105,14 +1106,17 @@ describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
           documentSelections: [{ templateId: "1" }],
         }) as unknown as Awaited<ReturnType<typeof prepare.loadAgentConfig>>,
     );
-    // A client that is only what it was asked to be: muted or not.
+    // A client that is only what it was asked to be: muted or not, and how it would be built.
+    const clientDeps: Array<
+      Parameters<typeof chatwootInstance.loadChatwootClient>[2]
+    > = [];
     const client = spyOn(
       chatwootInstance,
       "loadChatwootClient",
-    ).mockImplementation(
-      async (_tenant, _instance, deps) =>
-        ({ muted: deps?.mute === true }) as unknown as ChatwootClient,
-    );
+    ).mockImplementation(async (_tenant, _instance, deps) => {
+      clientDeps.push(deps);
+      return { muted: deps?.mute === true } as unknown as ChatwootClient;
+    });
     try {
       await loadVoiceAgent(route, 20, appDb);
     } finally {
@@ -1126,6 +1130,24 @@ describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
     expect(seen[0]?.httpToolTimeoutMs).toBe(CALL_HTTP_TOOL_TIMEOUT_MS);
     // A document is a file sent to the contact, which a call cannot do.
     expect(configs[0]?.documentSelections).toEqual([]);
+    // The outbound tools and the Chatwoot writes send nothing past their invocation's deadline.
+    const outbound = seen[0]?.outboundFetch;
+    await expect(
+      withinInvocation(AbortSignal.abort(), async () =>
+        outbound?.("https://8.8.8.8/x"),
+      ),
+    ).rejects.toThrow("deadline passed");
+    const built = await clientDeps[0]?.makeClient?.({
+      baseUrl: "https://8.8.8.8",
+      accountId: 1,
+      adminToken: "a",
+      botToken: "b",
+    });
+    await expect(
+      withinInvocation(AbortSignal.abort(), async () =>
+        built?.sendPrivateNote(1, "x"),
+      ),
+    ).rejects.toThrow("deadline passed");
   });
 
   test("the Playground's call builds its tools as a call does: no documents, the call's HTTP deadline", async () => {
@@ -1155,6 +1177,12 @@ describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
     expect(seen).toHaveLength(1);
     expect(seen[0]?.httpToolTimeoutMs).toBe(CALL_HTTP_TOOL_TIMEOUT_MS);
     expect(configs[0]?.documentSelections).toEqual([]);
+    const outbound = seen[0]?.outboundFetch;
+    await expect(
+      withinInvocation(AbortSignal.abort(), async () =>
+        outbound?.("https://8.8.8.8/x"),
+      ),
+    ).rejects.toThrow("deadline passed");
   });
 
   test("an agent created over MCP as a voice agent is one", async () => {

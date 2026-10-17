@@ -468,6 +468,20 @@ describe("farewell detection", () => {
     expect(hungUp()).toBe(true);
   });
 
+  test("a farewell whose audio starts seconds after its words is heard before the silence counts", async () => {
+    const { ws, handlers } = await answeredCall();
+    const hungUp = () => ws.sent.some((f) => f.event === "hangup");
+    handlers.onTranscript({ role: "agent", text: "Tchau!", atMs: 1 });
+    jest.advanceTimersByTime(3_000);
+    expect(hungUp()).toBe(false);
+    // One second of the farewell's audio, now: it plays until t=4000.
+    handlers.onAudio(new Int16Array(16_000));
+    jest.advanceTimersByTime(3_000);
+    expect(hungUp()).toBe(false);
+    jest.advanceTimersByTime(600);
+    expect(hungUp()).toBe(true);
+  });
+
   test("the person speaking after the farewell keeps the call open", async () => {
     const { bridge, ws, records, handlers } = await answeredCall();
     handlers.onTranscript({ role: "agent", text: "Tchau!", atMs: 1 });

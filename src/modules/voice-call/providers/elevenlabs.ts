@@ -260,6 +260,8 @@ async function openHeld(
         const text = String(
           event.user_transcription_event?.user_transcript ?? "",
         ).trim();
+        // Heard, however quietly said: the person has spoken and the agent is not to open the call.
+        if (text) heardVoice = true;
         if (text)
           handlers.onTranscript({
             role: "user",

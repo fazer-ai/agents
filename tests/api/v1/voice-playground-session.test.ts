@@ -60,7 +60,11 @@ const happyResponse = globalThis.Response;
 
 const OLD_HASH = "$2b$10$theoldpasswordhash";
 const NEW_HASH = "$2b$10$thenewpasswordhash";
-const row = (passwordHash: string) => ({ ...mockUser, passwordHash });
+// An admin of the ticket's tenant: the role the playground's call requires.
+const row = (
+  passwordHash: string,
+  role: typeof mockUser.role = "TENANT_ADMIN",
+) => ({ ...mockUser, passwordHash, role });
 
 interface ListeningApp {
   server: { port: number; stop(force: boolean): void };
@@ -157,11 +161,12 @@ function connect(
 }
 
 // How many session reads the upgrade makes before `open` re-checks it, measured on a call that
-// starts: every read up to the call's configuration but the re-check itself.
+// starts: every read up to the call's configuration but the two after the upgrade, the re-check at
+// `open` and the role read again when the call starts.
 async function readsBeforeOpen(): Promise<number> {
   const { ws, closed } = connect(ticketFor(mockUser.id));
   await until("the probe call to be configured", () => configured === 1);
-  const reads = mockFindUnique.mock.calls.length - 1;
+  const reads = mockFindUnique.mock.calls.length - 2;
   ws.close();
   await closed;
   mockFindUnique.mockReset();
@@ -296,6 +301,35 @@ describe("the playground call's socket and the operator's session", () => {
     } finally {
       mockEndedSessionCount.mockImplementation(() => Promise.resolve(0));
     }
+  });
+
+  test("an operator who is not an admin of the ticket's tenant is refused", async () => {
+    mockFindUnique.mockImplementation(() =>
+      Promise.resolve(row(OLD_HASH, "AGENT")),
+    );
+    const result = await connect(ticketFor(mockUser.id)).closed;
+    expect(result.code).toBe(WS_CLOSE.POLICY_VIOLATION);
+    expect(configured).toBe(0);
+  });
+
+  test("an operator demoted after the socket opened gets no call when it starts", async () => {
+    const before = await readsBeforeOpen();
+    mockFindUnique.mockImplementation(() => Promise.resolve(row(OLD_HASH)));
+    const { ws, closed } = connect(ticketFor(mockUser.id), cookie, false);
+    await until(
+      "the session to be re-checked at open",
+      () => mockFindUnique.mock.calls.length > before,
+    );
+    await new Promise<void>((done) => {
+      ws.addEventListener("pong", () => done());
+      (ws as unknown as { ping(): void }).ping();
+    });
+    mockFindUnique.mockImplementation(() =>
+      Promise.resolve(row(OLD_HASH, "AGENT")),
+    );
+    ws.send(JSON.stringify({ event: "start", direction: "inbound" }));
+    await closed;
+    expect(configured).toBe(0);
   });
 
   test("a ticket another operator was handed is refused", async () => {

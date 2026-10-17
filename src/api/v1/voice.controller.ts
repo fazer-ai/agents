@@ -1,4 +1,5 @@
 import { Elysia, t } from "elysia";
+import type { UserRole } from "@/../generated/prisma/client";
 import { untrackSocket } from "@/api/features/realtime/realtime.service";
 import { registerAndRecheck } from "@/api/features/realtime/socket-session";
 import { authPlugin } from "@/api/lib/auth";
@@ -8,7 +9,8 @@ import { originPlugin } from "@/api/lib/origin";
 import { WS_CLOSE } from "@/api/lib/realtime";
 import { CONVERSATION_NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
 import { beginWork } from "@/lib/shutdown";
-import type { TenantContext } from "@/lib/tenancy";
+import { roleAtLeast, type TenantContext } from "@/lib/tenancy";
+import { roleInTenant } from "@/lib/tenancy/membership";
 import { loadPlaygroundVoiceAgent } from "@/modules/playground/service";
 import { CallBridge, type CallRecord } from "@/modules/voice-call/bridge";
 import { readPlaygroundCallTicket } from "@/modules/voice-call/playground";
@@ -217,6 +219,16 @@ export const voiceController = new Elysia({
   close: relayClose,
 });
 
+// The operator's role in the tenant when it is an admin's (a tenant admin, or a super admin), else
+// null: a demoted or removed operator keeps their session but not this tenant's tools.
+function adminRoleIn(
+  user: Parameters<typeof roleInTenant>[0],
+  tenantId: bigint,
+): UserRole | null {
+  const role = roleInTenant(user, tenantId);
+  return role && roleAtLeast(role, "TENANT_ADMIN") ? role : null;
+}
+
 // Playground sockets whose `open` is still re-checking the operator's session: a frame arriving
 // meanwhile (the client sends `start` as soon as the socket opens) waits for the bridge instead of
 // being dropped, and frames keep their order since they all wait on the same promise.
@@ -259,10 +271,17 @@ export const voicePlaygroundController = new Elysia({
           }
           if (!(await registerAndRecheck(ws, user))) return null;
           if (!playgroundLive.has(id)) return null;
+          // The ticket was issued to an admin of its tenant; the role is the session's now, not the
+          // ticket's, and it is read again when the call starts (`configure`).
+          const role = adminRoleIn(user, claims.tenantId);
+          if (!role) {
+            ws.close(WS_CLOSE.POLICY_VIOLATION, "forbidden tenant");
+            return null;
+          }
           const ctx: TenantContext = {
             tenantId: claims.tenantId,
             userId: claims.userId,
-            role: "TENANT_ADMIN",
+            role,
           };
           let setup: CallsSetup | null = null;
           const bridge = new CallBridge(
@@ -270,6 +289,12 @@ export const voicePlaygroundController = new Elysia({
             {
               provider: callsProvider(() => setup),
               configure: async (start) => {
+                // A role taken away since the socket opened stops the call before any tool can run.
+                const now = await ws.data.getAuthUser();
+                if (!now || !adminRoleIn(now, claims.tenantId))
+                  throw new Error(
+                    "the operator is no longer an admin of the call's tenant",
+                  );
                 const [calls, agent] = await Promise.all([
                   setUpAgentCalls(ctx, claims.agentId),
                   loadPlaygroundVoiceAgent(ctx, claims.agentId),

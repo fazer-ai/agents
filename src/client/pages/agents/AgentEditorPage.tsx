@@ -3906,12 +3906,20 @@ function AgentEditor() {
     />
   );
 
+  // Where a voice save that stopped sends the operator: the tab of a number out of range (the speed
+  // is on General's Voice card, every other number on the Call tab), else the tab with the pending
+  // change, General first.
+  function voiceStopTab(): TabKey {
+    const wrong = callsFormErrors(calls);
+    if (wrong.length > 0)
+      return wrong.every((f) => f === "speed") ? "general" : "call";
+    return dirty.general ? "general" : "call";
+  }
+
   async function saveVoice(force = false): Promise<boolean> {
     // A number out of range is marked on its field; the save waits for it to be fixed.
-    const wrong = callsFormErrors(calls);
-    if (wrong.length > 0) {
-      // The speed is on General's Voice card; every other number is on the Call tab.
-      openTab(wrong.every((f) => f === "speed") ? "general" : "call");
+    if (callsFormErrors(calls).length > 0) {
+      openTab(voiceStopTab());
       showToast(
         t(
           "editor.callsFixRanges",
@@ -4212,7 +4220,7 @@ function AgentEditor() {
     if (voiceAgent) {
       // One write carries General and the call settings.
       if ((dirty.general || dirty.behavior) && !(await saveVoice()))
-        return stopped(dirty.general ? "general" : "call");
+        return stopped(voiceStopTab());
     } else if (dirty.general || dirty.decisions) {
       if (decisionsSetupHold()) return false;
       if (!decides && dirty.general && !guardModelBeforeSave())
@@ -4427,7 +4435,13 @@ function AgentEditor() {
       plan.written.add(key);
       if (key === "general") {
         if (!(await saveGeneral()))
-          return stop(dirty.general ? "general" : "decisions");
+          return stop(
+            voiceAgent
+              ? voiceStopTab()
+              : dirty.general
+                ? "general"
+                : "decisions",
+          );
         barModelRef.current = "stored";
       } else if (!(await writeSection(key))) return stop(key);
       continueRef.current = { onTab: null };

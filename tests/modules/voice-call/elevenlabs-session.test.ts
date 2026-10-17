@@ -445,3 +445,36 @@ describe("a call this side opens", () => {
     expect(engine.userMessages).toEqual([]);
   });
 });
+
+describe("a call that opens and is never answered", () => {
+  test("gives the agent up when its hold's lease passes, and the next call goes on", async () => {
+    const engine = fakeEngine([]);
+    const provider = elevenLabsProvider({
+      apiKey: "k",
+      holdEngine: memoryEngineHold(),
+      agentId: "agent-never-answered",
+      fetchImpl: engine.fetchImpl,
+      // The lease is three of these plus five seconds.
+      openTimeoutMs: 1_000,
+    });
+    const errors: string[] = [];
+    const handlers: VoiceSessionHandlers = {
+      onAudio: () => {},
+      onInterrupt: () => {},
+      onTranscript: () => {},
+      onHangup: () => {},
+      onError: (err) => errors.push(err.message),
+    };
+    // Opened on its start frame, and the answer that would begin it never comes.
+    const first = await provider.open(CONFIG, handlers);
+    const second = await provider.open(CONFIG, {
+      ...handlers,
+      onError: () => {},
+    });
+    expect(errors).toEqual([
+      "elevenlabs: the call did not start within the agent's hold",
+    ]);
+    first.close();
+    second.close();
+  }, 20_000);
+});

@@ -76,6 +76,10 @@ export function PlaygroundCallView({ call }: { call: Call }) {
       "playground.call.noMicrophone",
       "The browser did not allow the microphone.",
     ),
+    audio: t(
+      "playground.call.noAudio",
+      "The browser did not start the call's audio. Click Call again.",
+    ),
   };
 
   const endText = (end: CallEnd): string => {

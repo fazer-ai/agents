@@ -3584,6 +3584,7 @@
       "hint": "Talk as the customer would. The conversation tools are simulated, and nothing reaches Chatwoot.",
       "listening": "The agent is listening",
       "micLevel": "Your microphone",
+      "noAudio": "The browser did not start the call's audio. Click Call again.",
       "noMicrophone": "The browser did not allow the microphone.",
       "preparing": "Getting the line ready…",
       "preparingHint": "Checking the agent on ElevenLabs and asking for the microphone.",

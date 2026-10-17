@@ -129,6 +129,8 @@ export function usePlaygroundCall(agentId: string) {
   // A microphone granted while the ticket is still being asked for: no line holds it yet, so leaving
   // the screen releases it from here instead of waiting for the request to come back.
   const pendingMic = useRef<MediaStream | null>(null);
+  // The same for the audio context made on the click, before any line holds it.
+  const pendingAudio = useRef<AudioContext | null>(null);
 
   // Releases the microphone and the socket at once; the audio context lingers for `afterSecs`, so the
   // end of the farewell and the busy tone are still heard.
@@ -151,6 +153,8 @@ export function usePlaygroundCall(agentId: string) {
       attempt.current++;
       for (const track of pendingMic.current?.getTracks() ?? []) track.stop();
       pendingMic.current = null;
+      void pendingAudio.current?.close();
+      pendingAudio.current = null;
       release(0);
     },
     [release],
@@ -199,12 +203,23 @@ export function usePlaygroundCall(agentId: string) {
     const mine = ++attempt.current;
     setLines([]);
     setCall({ state: "preparing" });
+    // Made and resumed in the click itself: Safari starts Web Audio only inside a user gesture, and the
+    // microphone prompt and the setup request below both end it. The context runs at the call's rate,
+    // so the browser resamples the microphone and the agent.
+    const audio = new AudioContext({ sampleRate: RATE });
+    pendingAudio.current = audio;
+    const unlocked = audio.resume().catch(() => {});
+    const dropAudio = () => {
+      pendingAudio.current = null;
+      void audio.close();
+    };
     let mic: MediaStream;
     try {
       mic = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true },
       });
     } catch (err) {
+      dropAudio();
       if (attempt.current !== mine) return;
       setCall({
         state: "failed",
@@ -216,6 +231,7 @@ export function usePlaygroundCall(agentId: string) {
     const dropMic = () => {
       pendingMic.current = null;
       for (const track of mic.getTracks()) track.stop();
+      dropAudio();
     };
     if (attempt.current !== mine) {
       dropMic();
@@ -246,8 +262,18 @@ export function usePlaygroundCall(agentId: string) {
       });
       return;
     }
-    // The context runs at the call's rate, so the browser resamples the microphone and the agent.
-    const audio = new AudioContext({ sampleRate: RATE });
+    // A context the browser kept suspended would show a live call nobody hears and nothing is sent on.
+    await unlocked;
+    if (attempt.current !== mine) {
+      dropMic();
+      return;
+    }
+    if (audio.state !== "running") {
+      dropMic();
+      setCall({ state: "failed", problem: "audio", detail: null });
+      return;
+    }
+    pendingAudio.current = null;
     const node = audio.createScriptProcessor(FRAME, 1, 1);
     const scheme = location.protocol === "https:" ? "wss:" : "ws:";
     const ws = new WebSocket(

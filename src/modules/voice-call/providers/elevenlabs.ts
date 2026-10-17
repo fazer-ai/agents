@@ -129,9 +129,21 @@ async function openSession(
     );
   }
   let released = false;
+  // The hold is bounded from here, not from `begin`: an inbound call opens on its start frame and
+  // begins on its answer, and an answer that never comes would otherwise keep every later call to
+  // this agent waiting in this process after the lease let the others through. A call that has not
+  // started its conversation when the lease passes is failed, since its declaration may be gone.
+  const holdTimer = setTimeout(() => {
+    if (released) return;
+    release();
+    handlers.onError(
+      new Error("elevenlabs: the call did not start within the agent's hold"),
+    );
+  }, leaseMs);
   const release = () => {
     if (released) return;
     released = true;
+    clearTimeout(holdTimer);
     releaseHere();
     void hold.release().catch((err: Error) => {
       logger.warn(

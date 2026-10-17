@@ -3704,6 +3704,7 @@
       "endedByError": "A ligação terminou por um erro no motor de voz.",
       "endedByYou": "Você desligou.",
       "failed": "A ligação não começou",
+      "goLiveAndStart": "Colocar em produção e ligar",
       "hangUp": "Desligar",
       "hint": "Fale como o cliente falaria. As ferramentas de conversa são simuladas e nada chega ao Chatwoot.",
       "listening": "O agente está ouvindo",
@@ -3839,6 +3840,8 @@
       "noKey": "Escolha a chave de {{provider}} na aba Geral e salve antes.",
       "title": "Ligar para o agente",
       "unsaved": "Há alterações não salvas. Salve para testá-las, ou ligue com a versão salva.",
+      "unsavedGoingLive": "Ao salvar, este agente entra em produção e passa a atender as ligações das caixas marcadas em Canais.",
+      "unsavedLeavingLive": "Ao salvar, este agente sai de produção e deixa de atender as ligações das caixas marcadas em Canais.",
       "unsavedLive": "Há alterações não salvas. Este agente atende clientes: ao salvar, elas passam a valer nas ligações deles também."
     }
   },

@@ -180,3 +180,16 @@ export const KEY_PROBLEMS: ReadonlySet<string> = new Set([
   "invalid_key",
   "missing_permission",
 ]);
+
+/** What saving does to the customers' calls, from the saved mode and the one on the form. */
+export function liveness(
+  saved: string,
+  form: string,
+): "live" | "goingLive" | "leavingLive" | "test" {
+  const was = saved === "production";
+  const will = form === "production";
+  if (was && will) return "live";
+  if (will) return "goingLive";
+  if (was) return "leavingLive";
+  return "test";
+}

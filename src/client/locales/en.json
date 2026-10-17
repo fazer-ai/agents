@@ -3600,6 +3600,7 @@
       "endedByError": "The call ended on an error in the voice engine.",
       "endedByYou": "You hung up.",
       "failed": "The call did not start",
+      "goLiveAndStart": "Put in production and call",
       "hangUp": "Hang up",
       "hint": "Talk as the customer would. The conversation tools are simulated, and nothing reaches Chatwoot.",
       "listening": "The agent is listening",
@@ -3735,6 +3736,8 @@
       "noKey": "Choose the {{provider}} key on General and save first.",
       "title": "Call the agent",
       "unsaved": "There are unsaved changes. Save them to try them, or call the saved version.",
+      "unsavedGoingLive": "Saving puts this agent in production: it starts answering the calls of the inboxes marked on Channels.",
+      "unsavedLeavingLive": "Saving takes this agent out of production: it stops answering the calls of the inboxes marked on Channels.",
       "unsavedLive": "There are unsaved changes. This agent answers customers: saving puts them on its calls too."
     }
   },

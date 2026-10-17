@@ -15,7 +15,7 @@ export function VoicePlayground({
   provider,
   hasKey,
   unsaved,
-  live,
+  liveness,
   onSave,
   onOpenGeneral,
 }: {
@@ -23,8 +23,9 @@ export function VoicePlayground({
   provider: CallProvider;
   hasKey: boolean;
   unsaved: boolean;
-  /** The agent is (or the save would put it) in production: saving changes what customers hear. */
-  live: boolean;
+  /** What saving does to the customers' calls: the agent stays in production, enters it, leaves it,
+   * or stays in test. */
+  liveness: "live" | "goingLive" | "leavingLive" | "test";
   /** Saves the unsaved changes, when they are all ones this button can save (General and the call). */
   onSave?: () => Promise<boolean>;
   onOpenGeneral: () => void;
@@ -77,13 +78,14 @@ export function VoicePlayground({
       ) : unsaved && onSave ? (
         // The call runs on what is saved, so with changes pending the first action saves them.
         <div className="flex flex-wrap items-center justify-center gap-2">
-          <Button
-            onClick={async () => {
-              if (await onSave()) void call.start();
-            }}
-          >
+          <Button onClick={() => void call.start(onSave)}>
             <Phone className="h-4 w-4" aria-hidden="true" />
-            {t("playground.call.saveAndStart", "Save and call")}
+            {liveness === "goingLive"
+              ? t(
+                  "playground.call.goLiveAndStart",
+                  "Put in production and call",
+                )
+              : t("playground.call.saveAndStart", "Save and call")}
           </Button>
           <Button variant="secondary" onClick={() => void call.start()}>
             {t("playground.call.startSaved", "Call the saved version")}
@@ -114,15 +116,30 @@ export function VoicePlayground({
               className="mt-px h-3.5 w-3.5 shrink-0"
               aria-hidden="true"
             />
-            {live && onSave
+            {!onSave
               ? t(
-                  "playground.voice.unsavedLive",
-                  "There are unsaved changes. This agent answers customers: saving puts them on its calls too.",
-                )
-              : t(
                   "playground.voice.unsaved",
                   "There are unsaved changes. Save them to try them, or call the saved version.",
-                )}
+                )
+              : liveness === "goingLive"
+                ? t(
+                    "playground.voice.unsavedGoingLive",
+                    "Saving puts this agent in production: it starts answering the calls of the inboxes marked on Channels.",
+                  )
+                : liveness === "leavingLive"
+                  ? t(
+                      "playground.voice.unsavedLeavingLive",
+                      "Saving takes this agent out of production: it stops answering the calls of the inboxes marked on Channels.",
+                    )
+                  : liveness === "live"
+                    ? t(
+                        "playground.voice.unsavedLive",
+                        "There are unsaved changes. This agent answers customers: saving puts them on its calls too.",
+                      )
+                    : t(
+                        "playground.voice.unsaved",
+                        "There are unsaved changes. Save them to try them, or call the saved version.",
+                      )}
           </li>
         )}
       </ul>

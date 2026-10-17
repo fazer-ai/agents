@@ -129,29 +129,49 @@ describe("which save owns the block", () => {
   test("the Tools save writes it and keeps the shared bag in step", async () => {
     const stub = await openTools();
     await typeHosts("cdn.novo.com.br");
-    fireEvent.click(screen.getByRole("button", { name: "Save tools" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(savedHosts(stub)).toEqual(["cdn.novo.com.br"]));
     await saveBehaviorEdit(stub);
     expect(savedHosts(stub)).toEqual(["cdn.novo.com.br"]);
   });
 
+  // The bar saves the agent (agents#1520), Behavior before Tools: the Behavior PATCH carries the block
+  // as stored and the Tools PATCH after it carries the draft, so neither writes the other's form.
   test("the Behavior save does not name it, so it cannot write a stale form over it", async () => {
     const stub = await openTools();
     await typeHosts("rascunho.com.br");
-    await saveBehaviorEdit(stub);
-    expect(savedHosts(stub)).toEqual(STORED.allowedHosts);
+    await goTo(/Behavior/);
+    fireEvent.click(await behaviorSwitch());
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(patches(stub).length).toBe(2));
+    const hostsIn = (w: { body: Record<string, unknown> }) =>
+      (
+        (w.body.settings as Record<string, unknown>).sendImage as {
+          allowedHosts?: string[];
+        }
+      )?.allowedHosts;
+    const [behavior, tools] = patches(stub);
+    expect(behavior && hostsIn(behavior)).toEqual(STORED.allowedHosts);
+    expect(tools && hostsIn(tools)).toEqual(["rascunho.com.br"]);
   });
 
-  test("it is re-read with the other tool config, not by a Behavior load or revert", async () => {
+  // When the Tools write fails after Behavior's went through, the Behavior re-read does not put the
+  // stored list back over the draft: the field keeps it, and Tools stays unsaved.
+  test("it is re-read with the other tool config, not by a Behavior load", async () => {
     const stub = await openTools();
-    expect((await field()).value).toBe("cdn.loja.com.br");
     await typeHosts("rascunho.com.br");
-    // A Behavior save re-reads the Behavior blocks, and a Behavior Discard reverts them.
-    await saveBehaviorEdit(stub);
+    stub.override = (method, path) =>
+      method === "PUT" && path.endsWith("/tool-selections")
+        ? Response.json({ error: "boom" }, { status: 500 })
+        : undefined;
+    await goTo(/Behavior/);
     fireEvent.click(await behaviorSwitch());
-    fireEvent.click(screen.getByRole("button", { name: "Discard" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(patches(stub).length).toBe(1));
+    await waitFor(() => expect(dirty(/Behavior/)).toBe(false));
     await goTo(/Tools/);
     expect((await field()).value).toBe("rascunho.com.br");
+    expect(dirty(/Tools/)).toBe(true);
   });
 
   test("it lights the Tools tab's unsaved dot, not Behavior's", async () => {
@@ -173,9 +193,9 @@ describe("which save owns the block", () => {
     }).toEqual({ labelled: false, field: false });
   });
 
-  // The Knowledge save writes the grants and none of the Tools config, so an unsaved host list stays
-  // unsaved after it.
-  test("the Knowledge save leaves an unsaved host list dirty", async () => {
+  // The save stops at the first section that fails (agents#1520): Tools goes before Knowledge, so a
+  // refused Tools write leaves the host list and the reviewer both unsaved, and the reviewer unsent.
+  test("a failed Tools write leaves the host list and the Knowledge edit unsaved", async () => {
     const stub = await openTools();
     await typeHosts("rascunho.com.br");
     await waitFor(() => expect(dirty(/Tools/)).toBe(true));
@@ -186,10 +206,22 @@ describe("which save owns the block", () => {
     if (!provider)
       throw new Error("the reviewer's provider select is not drawn");
     fireEvent.change(provider, { target: { value: "anthropic" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save knowledge" }));
-    await waitFor(() => expect(dirty(/Knowledge/)).toBe(false));
-    expect(stub.requests).toContain("PUT /api/v1/agents/41/tool-selections");
+    stub.override = (method, path) =>
+      method === "PUT" && path.endsWith("/tool-selections")
+        ? Response.json({ error: "boom" }, { status: 500 })
+        : undefined;
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(
+        stub.requests.filter(
+          (r) => r === "PUT /api/v1/agents/41/tool-selections",
+        ).length,
+      ).toBe(1),
+    );
+    await act(async () => {});
     expect(dirty(/Tools/)).toBe(true);
+    expect(dirty(/Knowledge/)).toBe(true);
+    expect(patches(stub)).toEqual([]);
   });
 });
 

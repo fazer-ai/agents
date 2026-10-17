@@ -130,7 +130,7 @@ async function saveWithProtectedLabels(labels: string): Promise<string[]> {
       </ThemeProvider>
     </MemoryRouter>,
   );
-  await waitFor(() => expect(text().includes("Save tools")).toBe(true));
+  await waitFor(() => expect(text().includes("Save")).toBe(true));
   // The second card with settings is set_labels (resolve_conversation sits before it).
   const settings = [...document.querySelectorAll("button")].filter(
     (b) => b.getAttribute("aria-label") === "Settings",
@@ -145,7 +145,7 @@ async function saveWithProtectedLabels(labels: string): Promise<string[]> {
   });
   fireEvent.change(field, { target: { value: labels } });
   const save = [...document.querySelectorAll("button")].find(
-    (b) => b.textContent?.trim() === "Save tools",
+    (b) => b.textContent?.trim() === "Save",
   );
   fireEvent.click(save as HTMLElement);
   return asked;

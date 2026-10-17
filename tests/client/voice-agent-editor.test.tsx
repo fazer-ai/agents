@@ -148,11 +148,11 @@ describe("the editor of a voice agent", () => {
     };
     try {
       fireEvent.click(screen.getByRole("button", { name: "Save and call" }));
-      await act(async () => {});
-      expect(stub.writes.filter((w) => w.method === "PATCH")).toHaveLength(1);
+      // The save runs inside the call's attempt, then the microphone is asked for.
       expect(
-        screen.getByText("The browser did not allow the microphone."),
+        await screen.findByText("The browser did not allow the microphone."),
       ).not.toBeNull();
+      expect(stub.writes.filter((w) => w.method === "PATCH")).toHaveLength(1);
     } finally {
       g.AudioContext = realAudio;
     }

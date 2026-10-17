@@ -224,7 +224,7 @@ export function usePlaygroundCall(agentId: string) {
       attempt.current++;
       for (const track of pendingMic.current?.getTracks() ?? []) track.stop();
       pendingMic.current = null;
-      void pendingAudio.current?.close();
+      void pendingAudio.current?.close().catch(() => {});
       pendingAudio.current = null;
       release(0);
     },
@@ -281,9 +281,11 @@ export function usePlaygroundCall(agentId: string) {
     const audio = new AudioContext();
     pendingAudio.current = audio;
     const unlocked = audio.resume().catch(() => {});
+    // Closed once: leaving the screen or cancelling may have closed it already, and a second close
+    // rejects.
     const dropAudio = () => {
       pendingAudio.current = null;
-      void audio.close();
+      void audio.close().catch(() => {});
     };
     let mic: MediaStream;
     try {
@@ -480,5 +482,17 @@ export function usePlaygroundCall(agentId: string) {
     setLines([]);
   }, []);
 
-  return { call, lines, meters, start, hangUp, dismiss };
+  // Gives up a call still being prepared (the microphone prompt, the setup request): the start sees
+  // the attempt changed and stops there, and what it already holds is released now.
+  const cancel = useCallback(() => {
+    attempt.current++;
+    for (const track of pendingMic.current?.getTracks() ?? []) track.stop();
+    pendingMic.current = null;
+    void pendingAudio.current?.close().catch(() => {});
+    pendingAudio.current = null;
+    setCall({ state: "idle" });
+    setLines([]);
+  }, []);
+
+  return { call, lines, meters, start, hangUp, dismiss, cancel };
 }

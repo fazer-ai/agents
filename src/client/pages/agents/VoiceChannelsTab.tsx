@@ -36,7 +36,14 @@ type Inbox = NonNullable<InboxesData>["inboxes"][number];
 type AgentsData = Awaited<ReturnType<typeof api.api.v1.agents.get>>["data"];
 type AgentLite = NonNullable<AgentsData>["agents"][number];
 
-export function VoiceChannelsTab({ agentId }: { agentId: string }) {
+export function VoiceChannelsTab({
+  agentId,
+  testMode,
+}: {
+  agentId: string;
+  /** The SAVED mode is test: an inbox marked here keeps ringing the team until the agent goes live. */
+  testMode: boolean;
+}) {
   const { t } = useTranslation();
   const { showToast } = useToast();
   const navigate = useNavigate();
@@ -127,11 +134,17 @@ export function VoiceChannelsTab({ agentId }: { agentId: string }) {
     if (on && otherName) {
       confirm.open({
         title: t("editor.voiceChannels.replaceTitle", "Take over the calls?"),
-        message: t(
-          "editor.voiceChannels.replaceMessage",
-          "{{other}} answers the calls of {{inbox}} now. Only one agent answers an inbox's calls, so it stops.",
-          { other: otherName, inbox: ib.name },
-        ),
+        message: testMode
+          ? t(
+              "editor.voiceChannels.replaceMessageTest",
+              "{{other}} answers the calls of {{inbox}} now and stops. This agent is in test mode, so until it goes to production the inbox's calls ring your team.",
+              { other: otherName, inbox: ib.name },
+            )
+          : t(
+              "editor.voiceChannels.replaceMessage",
+              "{{other}} answers the calls of {{inbox}} now. Only one agent answers an inbox's calls, so it stops.",
+              { other: otherName, inbox: ib.name },
+            ),
         onConfirm: () => bind(ib, true),
       });
       return;
@@ -156,15 +169,32 @@ export function VoiceChannelsTab({ agentId }: { agentId: string }) {
       <div>
         <h2 className="flex items-center gap-2 font-medium text-text-primary">
           <InboxIcon className="h-4 w-4 text-accent" aria-hidden="true" />
-          {t("editor.voiceChannels.title", "Inboxes whose calls it answers")}
+          {t("editor.voiceChannels.title", "Inboxes")}
         </h2>
         <p className="mt-0.5 text-text-muted text-xs">
           {t(
             "editor.voiceChannels.desc",
-            "WhatsApp inboxes only. The agent answering an inbox's messages stays as it is. In test mode the calls keep ringing your team. Changes apply at once on Chatwoot.",
+            "Choose the WhatsApp inboxes whose calls this agent answers. The agent answering their messages stays as it is. A change applies at once.",
           )}
         </p>
       </div>
+      <p
+        className={
+          testMode
+            ? "rounded-md bg-warning/10 px-3 py-2 text-warning text-xs"
+            : "rounded-md bg-success/10 px-3 py-2 text-success text-xs"
+        }
+      >
+        {testMode
+          ? t(
+              "editor.voiceChannels.testMode",
+              "This agent is in test mode: in the inboxes marked here, calls ring your team until it goes to production on General.",
+            )
+          : t(
+              "editor.voiceChannels.production",
+              "This agent is in production: it answers the calls to the inboxes marked here.",
+            )}
+      </p>
 
       <DataBoundary loading={loading} error={error} onRetry={load}>
         {instances.length === 0 ? (
@@ -193,8 +223,13 @@ export function VoiceChannelsTab({ agentId }: { agentId: string }) {
               )}
               description={t(
                 "editor.voiceChannels.emptyDesc",
-                "Calls come through WhatsApp inboxes connected by the fazer.ai WhatsApp connector. Sync the inboxes under Channels.",
+                "Calls come through WhatsApp inboxes connected by the fazer.ai WhatsApp connector. Connect one, sync the inboxes, and it shows up here.",
               )}
+              action={
+                <Button onClick={() => navigate("/channels")}>
+                  {t("editor.channels.goToChannels", "Go to Channels")}
+                </Button>
+              }
             />
           </Card>
         ) : (
@@ -231,7 +266,7 @@ export function VoiceChannelsTab({ agentId }: { agentId: string }) {
                           key={ib.id}
                           name={ib.name}
                           chatwootInboxId={ib.chatwootInboxId}
-                          channelType={ib.channelType}
+                          channelType="WhatsApp"
                           instanceBaseUrl={baseUrl}
                           instanceAccountId={inst.accountId}
                           status={mine ? "active" : "none"}

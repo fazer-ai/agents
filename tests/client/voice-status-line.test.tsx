@@ -1,7 +1,7 @@
 /// <reference lib="dom" />
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { PlaygroundCallView } from "@/client/pages/agents/PlaygroundCall";
 import { VoiceStatusLine } from "@/client/pages/agents/VoiceAgentSettings";
 import { withI18n } from "../utils/i18n";
@@ -16,6 +16,7 @@ describe("the voice agent's status beside its key", () => {
     render(
       withI18n(
         <VoiceStatusLine
+          provider="elevenlabs"
           dirty={false}
           status={{
             state: "problem",
@@ -33,6 +34,7 @@ describe("the voice agent's status beside its key", () => {
     render(
       withI18n(
         <VoiceStatusLine
+          provider="elevenlabs"
           dirty={false}
           status={{
             state: "problem",
@@ -43,6 +45,43 @@ describe("the voice agent's status beside its key", () => {
       ),
     );
     expect(screen.getByText("voice not found")).not.toBeNull();
+  });
+});
+
+describe("a voice agent ready for calls", () => {
+  test("links to the agent on its provider, warning that the settings are changed here", () => {
+    render(
+      withI18n(
+        <VoiceStatusLine
+          provider="elevenlabs"
+          dirty={false}
+          status={{ state: "ready", agentId: "agent_42" }}
+        />,
+      ),
+    );
+    expect(
+      screen.getByText("Connection with ElevenLabs verified"),
+    ).not.toBeNull();
+    const link = screen.getByRole("link", {
+      name: /See calls and transcripts on ElevenLabs/,
+    });
+    expect(link.getAttribute("href")).toBe(
+      "https://elevenlabs.io/app/agents/agents/agent_42",
+    );
+    expect(link.getAttribute("title")).toContain("the next save overwrites");
+  });
+
+  test("has no link while the provider has not given the agent an id", () => {
+    render(
+      withI18n(
+        <VoiceStatusLine
+          provider="elevenlabs"
+          dirty={false}
+          status={{ state: "ready", agentId: null }}
+        />,
+      ),
+    );
+    expect(screen.queryByRole("link")).toBeNull();
   });
 });
 
@@ -60,7 +99,11 @@ describe("the Playground's call that did not start", () => {
   test("says a refused key as the key's tab does, without ElevenLabs' own words", () => {
     render(
       withI18n(
-        <PlaygroundCallView call={failed("invalid_key", "Invalid API key")} />,
+        <PlaygroundCallView
+          provider="elevenlabs"
+          onOpenGeneral={() => {}}
+          call={failed("invalid_key", "Invalid API key")}
+        />,
       ),
     );
     expect(screen.getByText("ElevenLabs refused the key.")).not.toBeNull();
@@ -70,9 +113,69 @@ describe("the Playground's call that did not start", () => {
   test("carries what ElevenLabs said when it refused the settings", () => {
     render(
       withI18n(
-        <PlaygroundCallView call={failed("sync_failed", "voice not found")} />,
+        <PlaygroundCallView
+          provider="elevenlabs"
+          onOpenGeneral={() => {}}
+          call={failed("sync_failed", "voice not found")}
+        />,
       ),
     );
     expect(screen.getByText("voice not found")).not.toBeNull();
+  });
+
+  test("sends a key or settings problem to where it is fixed", () => {
+    for (const [problem, button] of [
+      ["invalid_key", "Review the key"],
+      ["missing_permission", "Review the key"],
+      ["no_credential", "Review the key"],
+      ["sync_failed", "Review the settings"],
+    ] as const) {
+      let opened = 0;
+      const { unmount } = render(
+        withI18n(
+          <PlaygroundCallView
+            provider="elevenlabs"
+            onOpenGeneral={() => opened++}
+            call={failed(problem, "")}
+          />,
+        ),
+      );
+      fireEvent.click(screen.getByRole("button", { name: button }));
+      expect([problem, opened]).toEqual([problem, 1]);
+      unmount();
+    }
+    // A problem of the browser is not fixed on General.
+    render(
+      withI18n(
+        <PlaygroundCallView
+          provider="elevenlabs"
+          onOpenGeneral={() => {}}
+          call={failed("microphone", "")}
+        />,
+      ),
+    );
+    expect(screen.queryByRole("button", { name: /Review/ })).toBeNull();
+  });
+
+  test("a call still being prepared can be cancelled", () => {
+    let cancelled = 0;
+    render(
+      withI18n(
+        <PlaygroundCallView
+          provider="elevenlabs"
+          onOpenGeneral={() => {}}
+          call={
+            {
+              call: { state: "preparing" },
+              lines: [],
+              meters: { mic: 0, speaker: null },
+              cancel: () => cancelled++,
+            } as unknown as Parameters<typeof PlaygroundCallView>[0]["call"]
+          }
+        />,
+      ),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(cancelled).toBe(1);
   });
 });

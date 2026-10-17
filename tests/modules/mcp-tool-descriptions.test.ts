@@ -216,10 +216,11 @@ describe("MCP tool descriptions", () => {
     // Measured at 32_877, with conversation_decisions_test, inbox_bind_voice and the voice kind on
     // agent_create.
     expect(desc).toBeLessThanOrEqual(32_950);
-    // Measured at 72_631 on the tree that ships, with the `calls` block on agent_settings_set (its
-    // descriptions trimmed to the bounds and what a write cannot learn by trying), inbox_bind_voice and
-    // the voice kind on agent_create, over the guardrails and the proactive_breaker tools.
-    expect(schema).toBeLessThanOrEqual(72_700);
+    // Measured at 72_846 on the tree that ships, with the `calls` block on agent_settings_set (its
+    // provider and its voice and transcription models as enums, the descriptions trimmed to the bounds
+    // and what a write cannot learn by trying), inbox_bind_voice and the voice kind on agent_create, over
+    // the guardrails and the proactive_breaker tools.
+    expect(schema).toBeLessThanOrEqual(72_900);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

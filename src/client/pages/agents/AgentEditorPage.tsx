@@ -152,6 +152,7 @@ import {
   serializeCrossInboxCase,
 } from "./CrossInboxCaseFields";
 import {
+  callsByTab,
   callsFormErrors,
   callsSettingsFrom,
   readCallsFormState,
@@ -2368,12 +2369,16 @@ function AgentEditor() {
         enabled: f.enabled,
         agentMode: f.agentMode,
         model: chat.model,
+        voice: callsByTab(f.calls).general,
       }),
       // NOTE: Track the behavior FORM state directly (not buildSettings(), which spreads the whole
       // settings bag including tool-owned handoff/kanban) so a Tools save never falsely lights up
       // Behavior's dot. The blocks a watcher on questions and rules does not draw read as stored.
       behavior: behaviorSnapshot(
-        behaviorStateOf({ ...f, ...hidden }, snapshotNow),
+        {
+          ...behaviorStateOf({ ...f, ...hidden }, snapshotNow),
+          calls: callsByTab(f.calls).call,
+        },
         {
           businessHoursId: f.businessHoursId,
           followUpHoursId: f.followUpHoursId,
@@ -3712,8 +3717,8 @@ function AgentEditor() {
   // General's save: identity, and the decision setup when it changed. Under questions and rules the
   // instructions and the chat model are not drawn, so they are not written either.
   const voiceCheckSeq = useRef(0);
-  // What ElevenLabs says about the SAVED voice agent: the save there runs on every call too, and this
-  // is where a key without the Agents permission shows before the first call does.
+  // What the provider says about the SAVED voice agent: the save there runs on every call too, and this
+  // is where a key without the permission to run agents shows before the first call does.
   const checkVoice = useCallback(async () => {
     // Only the latest check speaks: an older one answering last would describe settings since replaced.
     const mine = ++voiceCheckSeq.current;
@@ -3726,7 +3731,7 @@ function AgentEditor() {
       if (err || !data) throw err ?? new Error("no data");
       setVoiceStatus(
         data.ok
-          ? { state: "ready" }
+          ? { state: "ready", agentId: data.providerAgentId ?? null }
           : {
               state: "problem",
               problem: String(data.problem),
@@ -3748,19 +3753,17 @@ function AgentEditor() {
   }, [loading, voiceAgent, checkVoice]);
 
   // A voice agent's General and Call tabs save together: identity, instructions and the call
-  // settings in one write, then ElevenLabs is asked how the agent stands.
-  // A voice agent's Voice card: on General with the key and its status, on the Call tab with the speed.
-  const voiceCard = (placement: "general" | "call") => (
+  // settings in one write, then the provider is asked how the agent stands.
+  const voiceCard = (
     <VoiceCard
-      placement={placement}
       calls={calls}
       setCalls={setCalls}
-      status={placement === "general" ? voiceStatus : undefined}
+      status={voiceStatus}
       dirty={dirty.general || dirty.behavior}
-      voicePicker={({ credentialRef, value, onChange }) => (
+      voicePicker={({ provider, credentialRef, value, onChange }) => (
         <TtsOptionPicker
           kind="voices"
-          provider="elevenlabs"
+          provider={provider}
           credentialRef={credentialRef}
           value={value}
           onChange={onChange}
@@ -3773,8 +3776,10 @@ function AgentEditor() {
 
   async function saveVoice(force = false): Promise<boolean> {
     // A number out of range is marked on its field; the save waits for it to be fixed.
-    if (callsFormErrors(calls).length > 0) {
-      openTab("call");
+    const wrong = callsFormErrors(calls);
+    if (wrong.length > 0) {
+      // The speed is on General's Voice card; every other number is on the Call tab.
+      openTab(wrong.every((f) => f === "speed") ? "general" : "call");
       showToast(
         t(
           "editor.callsFixRanges",
@@ -4565,7 +4570,14 @@ function AgentEditor() {
                 voice={
                   voiceAgent
                     ? {
-                        voiceCard: voiceCard("general"),
+                        voiceCard,
+                        instructionsNote:
+                          calls.ttsModel === "eleven_flash_v2_5"
+                            ? t(
+                                "editor.voiceFlashInstructions",
+                                "With the Flash voice model, write phone numbers, dates and times in words here.",
+                              )
+                            : null,
                       }
                     : undefined
                 }
@@ -4578,7 +4590,12 @@ function AgentEditor() {
             )}
 
             {tab === "channels" && voiceAgent && (
-              <VoiceChannelsTab agentId={id} />
+              <VoiceChannelsTab
+                agentId={id}
+                testMode={
+                  (syncedAgentRef.current?.mode ?? agentMode) === "test"
+                }
+              />
             )}
 
             {tab === "channels" && !voiceAgent && (
@@ -4602,7 +4619,6 @@ function AgentEditor() {
 
             {tab === "call" && voiceAgent && (
               <div className="flex grow flex-col gap-4">
-                {voiceCard("call")}
                 <CallSettings calls={calls} setCalls={setCalls} />
                 <TabActionBar
                   dirty={dirty.general || dirty.behavior}
@@ -5032,12 +5048,20 @@ function AgentEditor() {
             {tab === "playground" && voiceAgent && (
               <VoicePlayground
                 agentId={id}
+                provider={calls.provider}
                 hasKey={!!calls.credentialRef}
                 unsaved={
                   dirty.general ||
                   dirty.behavior ||
                   dirty.tools ||
                   dirty.knowledge
+                }
+                live={
+                  agentMode === "production" ||
+                  syncedAgentRef.current?.mode === "production"
+                }
+                onSave={
+                  dirty.tools || dirty.knowledge ? undefined : () => saveVoice()
                 }
                 onOpenGeneral={() => openTab("general")}
               />

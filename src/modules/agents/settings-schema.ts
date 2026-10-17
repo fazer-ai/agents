@@ -66,9 +66,12 @@ import {
 } from "@/modules/vision/output-limits";
 import { VISION_PROVIDER_NAMES } from "@/modules/vision/providers";
 import {
+  CALL_ASR_MODELS,
   CALL_BACKGROUND_SOUNDS,
   CALL_LIMITS,
+  CALL_PROVIDERS,
   CALL_TOOL_SOUNDS,
+  CALL_TTS_MODELS,
   CALL_TURN_EAGERNESS,
 } from "@/modules/voice-call/settings";
 
@@ -139,13 +142,16 @@ const stt = z.looseObject({
   baseURL: baseURL(),
 });
 
-// WhatsApp calls (modules/voice-call/settings). The engine is ElevenLabs Agents, on the customer's key.
+// WhatsApp calls (modules/voice-call/settings). The engine is the provider's, on the customer's key.
 const calls = z.looseObject({
+  provider: oneOf(CALL_PROVIDERS).optional(),
   credentialRef: credentialRef().describe(
-    "ElevenLabs key with the Agents permission; none = no answer",
+    "provider key that can run agents; none = no answer",
   ),
-  voice: z.string().optional().describe("ElevenLabs voice id; empty = default"),
-  llm: z.string().optional().describe("model ElevenLabs runs"),
+  voice: z.string().optional().describe("provider voice id; empty = default"),
+  llm: z.string().optional().describe("model the provider runs"),
+  ttsModel: oneOf(CALL_TTS_MODELS).optional(),
+  asrModel: oneOf(CALL_ASR_MODELS).optional(),
   speed: z
     .number()
     .optional()
@@ -179,7 +185,7 @@ const calls = z.looseObject({
     .array(z.string())
     .optional()
     .describe("terms the transcription expects; up to 50"),
-  elevenLabsAgentId: z
+  providerAgentId: z
     .string()
     .nullable()
     .optional()

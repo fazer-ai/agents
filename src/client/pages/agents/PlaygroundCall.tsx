@@ -1,19 +1,30 @@
 // A voice agent's call in the playground, the screen it fills while it lasts, over the agent's SAVED
-// call settings (the agent on ElevenLabs is set up from them, not from the form). Every step of the
+// call settings (the agent on the provider is set up from them, not from the form). Every step of the
 // line shows: preparing, ringing, on the call (who is talking, and that the microphone hears you),
 // and how it ended.
 
-import { Mic, Phone, PhoneOff, RotateCcw, Wrench, X } from "lucide-react";
+import {
+  Mic,
+  Phone,
+  PhoneOff,
+  RotateCcw,
+  Settings2,
+  Wrench,
+  X,
+} from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Badge, Button } from "@/client/components";
+import { providerLabel } from "@/client/lib/providerLabels";
 import { cn } from "@/client/lib/utils";
+import type { CallProvider } from "@/modules/voice-call/settings";
 import { KEY_PROBLEMS } from "./callsFormState";
 import type {
   CallEnd,
   CallState,
   usePlaygroundCall,
 } from "./usePlaygroundCall";
+import { useProblemText } from "./VoiceAgentSettings";
 
 type Call = ReturnType<typeof usePlaygroundCall>;
 
@@ -32,7 +43,16 @@ function useElapsed(call: CallState): string {
   return clock(Math.max(0, Math.floor((now - call.since) / 1000)));
 }
 
-export function PlaygroundCallView({ call }: { call: Call }) {
+export function PlaygroundCallView({
+  call,
+  provider,
+  onOpenGeneral,
+}: {
+  call: Call;
+  provider: CallProvider;
+  /** Where a key or settings problem is fixed. */
+  onOpenGeneral: () => void;
+}) {
   const { t } = useTranslation();
   const elapsed = useElapsed(call.call);
   const scrollRef = useRef<HTMLOListElement>(null);
@@ -44,44 +64,7 @@ export function PlaygroundCallView({ call }: { call: Call }) {
     if (el) el.scrollTop = el.scrollHeight;
   }, [call.lines.length]);
 
-  const problems: Record<string, string> = {
-    disabled: t(
-      "editor.callsProblemDisabled",
-      "Calls are off on the saved agent.",
-    ),
-    no_credential: t(
-      "editor.callsProblemNoCredential",
-      "No ElevenLabs key: pick one here, or use ElevenLabs on audio replies.",
-    ),
-    credential_unusable: t(
-      "editor.callsProblemCredential",
-      "The ElevenLabs key could not be read from the vault.",
-    ),
-    invalid_key: t(
-      "editor.callsProblemInvalidKey",
-      "ElevenLabs refused the key.",
-    ),
-    missing_permission: t(
-      "editor.callsProblemPermission",
-      "This key only does text-to-speech. Create one with the ElevenLabs Agents permission (read and write).",
-    ),
-    unreachable: t(
-      "editor.callsProblemUnreachable",
-      "Could not reach ElevenLabs.",
-    ),
-    sync_failed: t(
-      "editor.callsProblemSync",
-      "ElevenLabs refused the agent's settings.",
-    ),
-    microphone: t(
-      "playground.call.noMicrophone",
-      "The browser did not allow the microphone.",
-    ),
-    audio: t(
-      "playground.call.noAudio",
-      "The browser did not start the call's audio. Click Call again.",
-    ),
-  };
+  const problemText = useProblemText();
 
   const endText = (end: CallEnd): string => {
     switch (end.by) {
@@ -119,7 +102,8 @@ export function PlaygroundCallView({ call }: { call: Call }) {
     c.state === "preparing"
       ? t(
           "playground.call.preparingHint",
-          "Checking the agent on ElevenLabs and asking for the microphone.",
+          "Checking the agent on {{provider}} and asking for the microphone.",
+          { provider: providerLabel(provider, t) },
         )
       : c.state === "ringing"
         ? t("playground.call.ringingHint", "Connecting the agent's voice.")
@@ -141,7 +125,7 @@ export function PlaygroundCallView({ call }: { call: Call }) {
                 .filter(Boolean)
                 .join(" ")
             : c.state === "failed"
-              ? (problems[c.problem] ?? c.problem)
+              ? problemText(c.problem, provider)
               : "";
 
   const detail =
@@ -265,13 +249,29 @@ export function PlaygroundCallView({ call }: { call: Call }) {
       </ol>
 
       <div className="flex items-center gap-3 pb-1">
-        {c.state === "ringing" || live ? (
+        {c.state === "preparing" ? (
+          <Button variant="ghost" onClick={call.cancel}>
+            <X className="h-4 w-4" aria-hidden="true" />
+            {t("common.cancel", "Cancel")}
+          </Button>
+        ) : c.state === "ringing" || live ? (
           <Button variant="danger" onClick={call.hangUp}>
             <PhoneOff className="h-4 w-4" aria-hidden="true" />
             {t("playground.call.hangUp", "Hang up")}
           </Button>
         ) : over ? (
           <>
+            {c.state === "failed" &&
+              (KEY_PROBLEMS.has(c.problem) ||
+                c.problem === "no_credential" ||
+                c.problem === "sync_failed") && (
+                <Button onClick={onOpenGeneral}>
+                  <Settings2 className="h-4 w-4" aria-hidden="true" />
+                  {c.problem === "sync_failed"
+                    ? t("playground.call.reviewSettings", "Review the settings")
+                    : t("playground.call.reviewKey", "Review the key")}
+                </Button>
+              )}
             <Button variant="secondary" onClick={() => void call.start()}>
               <RotateCcw className="h-4 w-4" aria-hidden="true" />
               {t("playground.call.again", "Call again")}

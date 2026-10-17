@@ -60,6 +60,98 @@ describe("the editor of a voice agent", () => {
     ]);
   });
 
+  test("the provider, the key, the voice and the models are on General only, the line on Call settings", async () => {
+    await open();
+    expect(screen.getByRole("combobox", { name: "Provider" })).not.toBeNull();
+    // The models are folded, with what is chosen readable without opening them.
+    expect(
+      screen.getByText("GPT-4.1 mini · Flash v2.5 · Scribe Realtime"),
+    ).not.toBeNull();
+    fireEvent.click(screen.getByRole("tab", { name: "Call settings" }));
+    await act(async () => {});
+    for (const label of [
+      "Provider",
+      "Voice",
+      "Conversation model",
+      "Voice model",
+      "Transcription",
+    ])
+      expect([label, screen.queryByText(label)]).toEqual([label, null]);
+    expect(screen.queryByRole("slider", { name: /^Speech speed/ })).toBeNull();
+    expect(
+      screen.getByRole("combobox", { name: /^Wait after the person pauses/ }),
+    ).not.toBeNull();
+  });
+
+  test("without a key, General shows where to get one and no error", async () => {
+    const stub = stubEditorApi({ kind: "voice", settings: {} });
+    stub.override = (method, path) =>
+      method === "POST" && path.endsWith("/calls/check")
+        ? new Response(
+            JSON.stringify({ ok: false, problem: "no_credential" }),
+            { headers: { "content-type": "application/json" } },
+          )
+        : undefined;
+    await renderEditor(stub, "general");
+    await act(async () => {});
+    expect(
+      screen
+        .getByRole("link", { name: /Create a key on ElevenLabs/ })
+        .getAttribute("href"),
+    ).toBe("https://elevenlabs.io/app/settings/api-keys");
+    expect(
+      screen.queryByText("Choose the ElevenLabs key on General and save."),
+    ).toBeNull();
+    expect(screen.getByRole("button", { name: "Add key" })).not.toBeNull();
+    // Before a key the voice is named, not shown as an id.
+    expect(
+      (screen.getByRole("textbox", { name: "Voice" }) as HTMLInputElement)
+        .value,
+    ).toBe("Default voice");
+  });
+
+  test("the Playground saves a pending change to General before calling", async () => {
+    const stub = await open();
+    fireEvent.change(screen.getByRole("slider", { name: /^Speech speed/ }), {
+      target: { value: "1.1" },
+    });
+    await act(async () => {});
+    // The speed is on General, so General's tab is the one marked unsaved.
+    const marked = (tab: string) =>
+      screen.getByRole("tab", { name: tab }).querySelector(".bg-warning") !==
+      null;
+    expect([marked("General"), marked("Call settings")]).toEqual([true, false]);
+    fireEvent.click(screen.getByRole("tab", { name: "Playground" }));
+    await act(async () => {});
+    // This agent answers customers: saving to try a change also puts it on their calls.
+    expect(
+      screen.getByText(
+        "There are unsaved changes. This agent answers customers: saving puts them on its calls too.",
+      ),
+    ).not.toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Call the saved version" }),
+    ).not.toBeNull();
+    // An audio context that resumes, and no microphone: the call starts and stops at the prompt.
+    const g = globalThis as { AudioContext?: unknown };
+    const realAudio = g.AudioContext;
+    g.AudioContext = class {
+      state = "running";
+      resume = async () => {};
+      close = async () => {};
+    };
+    try {
+      fireEvent.click(screen.getByRole("button", { name: "Save and call" }));
+      await act(async () => {});
+      expect(stub.writes.filter((w) => w.method === "PATCH")).toHaveLength(1);
+      expect(
+        screen.getByText("The browser did not allow the microphone."),
+      ).not.toBeNull();
+    } finally {
+      g.AudioContext = realAudio;
+    }
+  });
+
   test("Knowledge offers search, and no suggestions or their reviewer, which a call never runs", async () => {
     await open("knowledge");
     expect(screen.queryByText("Suggestion reviewer")).toBeNull();
@@ -85,19 +177,34 @@ describe("the editor of a voice agent", () => {
     fireEvent.change(screen.getByLabelText(/^Name/), {
       target: { value: "Raquel" },
     });
+    fireEvent.change(screen.getByRole("slider", { name: /^Speech speed/ }), {
+      target: { value: "1.1" },
+    });
     fireEvent.click(screen.getByRole("tab", { name: "Call settings" }));
     await act(async () => {});
-    // Stored as the number 1, which the form spells back as "1".
-    fireEvent.change(screen.getByLabelText(/^Speech speed/), {
-      target: { value: "1,00" },
+    fireEvent.change(screen.getByRole("textbox", { name: /^Longest call/ }), {
+      target: { value: "7" },
     });
     await act(async () => {});
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await act(async () => {});
     expect(stub.writes.filter((w) => w.method === "PATCH")).toHaveLength(1);
     expect(
-      (screen.getByLabelText(/^Speech speed/) as HTMLInputElement).value,
-    ).toBe("1");
+      (
+        screen.getByRole("textbox", {
+          name: /^Longest call/,
+        }) as HTMLInputElement
+      ).value,
+    ).toBe("7");
+    fireEvent.click(screen.getByRole("tab", { name: "General" }));
+    await act(async () => {});
+    expect(
+      (
+        screen.getByRole("slider", {
+          name: /^Speech speed/,
+        }) as HTMLInputElement
+      ).value,
+    ).toBe("1.1");
     expect(screen.queryByRole("button", { name: "Discard" })).toBeNull();
   });
 
@@ -112,7 +219,7 @@ describe("the editor of a voice agent", () => {
     await act(async () => {});
     expect(
       screen.queryByText(
-        "You have unsaved changes. The call uses what is saved.",
+        "There are unsaved changes. Save them to try them, or call the saved version.",
       ),
     ).not.toBeNull();
   });
@@ -150,7 +257,7 @@ describe("the editor of a voice agent", () => {
     await act(async () => {});
     expect(
       screen.queryByText(
-        "You have unsaved changes. The call uses what is saved.",
+        "There are unsaved changes. Save them to try them, or call the saved version.",
       ),
     ).not.toBeNull();
   });

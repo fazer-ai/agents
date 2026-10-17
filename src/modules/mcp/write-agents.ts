@@ -6,16 +6,19 @@ import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { configHealthAfterWrite } from "@/modules/agents/config-health-read";
 import type { AgentMode } from "@/modules/agents/mode";
 import { isMonitoring } from "@/modules/agents/mode";
+import type { AgentKind } from "@/modules/agents/service";
 import {
   type AgentCreate,
   type AgentUpdate,
   assertAgentCreatable,
+  assertAgentNotAnsweringCalls,
   assertAgentNotObserving,
   assertAgentToolGrantsResolvable,
   assertAgentUpdatable,
   assertCredentialRefsUsable,
   assertDecisionActionArgsUsable,
   assertSchedulesExist,
+  assertVoiceAgentMode,
   cloneAgent,
   createAgent,
   deleteAgent,
@@ -115,6 +118,8 @@ export interface AgentCreateArgs {
   system_prompt?: string;
   enabled?: boolean;
   mode?: AgentMode;
+  // What the agent answers, fixed at creation: messages ("text", the default) or calls ("voice").
+  kind?: AgentKind;
   transfer_with_summary?: boolean;
   model_config?: Record<string, unknown>;
   business_hours_id?: string | null;
@@ -138,6 +143,7 @@ export async function agentCreate(
   if (args.system_prompt !== undefined) input.systemPrompt = args.system_prompt;
   if (args.enabled !== undefined) input.enabled = args.enabled;
   if (args.mode !== undefined) input.mode = args.mode;
+  if (args.kind !== undefined) input.kind = args.kind;
   if (args.transfer_with_summary !== undefined)
     input.transferWithSummary = args.transfer_with_summary;
   if (cred.config !== undefined) input.modelConfig = cred.config;
@@ -254,6 +260,8 @@ export async function agentUpdate(
       if (patch.mode !== undefined && !isMonitoring(patch.mode)) {
         await assertAgentNotObserving(ctx, id, base);
       }
+      // A voice agent is never put in monitoring: the apply refuses it, against the stored kind.
+      assertVoiceAgentMode(current.kind, patch.mode);
       return ok({
         dryRun: true,
         target,
@@ -410,6 +418,8 @@ export async function agentDelete(
       // the row and the route token while the fork kept delivering to a bot that is gone, and the
       // detach is a Chatwoot call the deletion's transaction cannot make.
       await assertAgentNotObserving(ctx, id, base);
+      // Nor one bound to an inbox's calls, which the fork keeps streaming to until it is unbound.
+      await assertAgentNotAnsweringCalls(ctx, id, base);
       return ok({
         dryRun: true,
         action: "delete",

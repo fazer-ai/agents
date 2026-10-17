@@ -75,6 +75,11 @@ describe("credentialFieldTargets", () => {
       tab: "guardrails",
       sectionId: "gr-model",
     });
+    // The calls key is edited on the voice agent's General tab, the only tab a voice agent has it on.
+    expect(targets.get("calls-credentialRef")).toEqual({
+      tab: "general",
+      sectionId: "general-voice",
+    });
     // And the nested one, for the same reason: a walk that stops one level short reads nothing here
     // and the loop above would pass on an empty expectation.
     expect(targets.get("memory-compaction-credentialRef")).toEqual({

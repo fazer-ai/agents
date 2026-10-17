@@ -56,6 +56,9 @@ interface CredentialPickerProps {
   // Called when the selected entry changes (or on initial load if value already resolves). Use to
   // read baseUrl / paramName of the selected credential without re-fetching the vault.
   onEntryChange?: (entry: VaultEntry | null) => void;
+  // A visible button beside an empty picker that opens the inline create form, for a screen where
+  // adding the first key is the next step rather than one option inside the menu.
+  createLabel?: string;
 }
 
 const itemCls =
@@ -78,6 +81,7 @@ export function CredentialPicker({
   ariaLabel,
   required = false,
   onEntryChange,
+  createLabel,
 }: CredentialPickerProps) {
   const { t } = useTranslation();
   const [entries, setEntries] = useState<VaultEntry[]>([]);
@@ -470,6 +474,17 @@ export function CredentialPicker({
           </DropdownMenuPrimitive.Portal>
         </DropdownMenuPrimitive.Root>
 
+        {!selected && createLabel && !disabled && (
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            onClick={() => createModal.open()}
+          >
+            <Plus className="h-4 w-4" aria-hidden="true" />
+            {createLabel}
+          </Button>
+        )}
         {selected && (
           <Button
             type="button"

@@ -21,6 +21,10 @@ import {
   type WidgetHealthStatus,
 } from "@/modules/channel-redirect/link";
 import {
+  switchOffVoiceRouting,
+  syncVoiceInboxes,
+} from "@/modules/voice-call/inboxes";
+import {
   ChatwootApiError,
   type ChatwootClient,
   fetchChatwootProfile,
@@ -176,8 +180,21 @@ export async function getChatwootDeployment(
 export async function disconnectChatwootDeployment(
   ctx: TenantContext,
   base: PrismaClient = basePrisma,
+  deps: LoadChatwootClientDeps = {},
 ): Promise<void> {
   if (ctx.tenantId === null) throw new AppError("tenant required", 400);
+  // While the credentials still exist: the delete takes them with the inboxes. The accounts are
+  // marked disconnected first, so a bind refuses them and every sync from then on, this one's or one
+  // already in flight, writes the calls off.
+  await runScopedOn(base, ctx, async (db) => {
+    // The module's lock order: the deployment before the accounts under it.
+    await db.$queryRaw`SELECT id FROM chatwoot_deployments FOR NO KEY UPDATE`;
+    await db.chatwootInstance.updateMany({
+      where: { disconnectedAt: null },
+      data: { disconnectedAt: new Date() },
+    });
+  });
+  await switchOffVoiceRouting(ctx, null, base, deps);
   await runScopedOn(base, ctx, async (db) => {
     const dep = await db.chatwootDeployment.findFirst({
       select: { id: true, baseUrl: true },
@@ -867,53 +884,70 @@ export async function softDisconnectChatwootInstance(
   }
   // One transaction for the three local writes (clear bindings, stamp, audit row), so a
   // failure cannot leave inboxes bound to nobody on an account still marked active.
-  const { stamped, detach } = await runScopedOn(base, ctx, async (db) => {
-    // NOTE: the account row first, before any inbox: `syncInboxes` takes the same lock then upserts
-    // inboxes, and the other order is an ABBA deadlock. NO KEY UPDATE, not FOR UPDATE (module-wide):
-    // an INSERT whose foreign key points here takes KEY SHARE, which FOR UPDATE conflicts with, so
-    // the webhook mirror inserting a conversation would deadlock with this. NO KEY UPDATE still
-    // excludes itself and ordinary UPDATEs, all the serialization needed.
-    await db.$queryRaw`SELECT id FROM chatwoot_instances WHERE id = ${id} FOR NO KEY UPDATE`;
-    // `RETURNING`, so the bindings removed are the same set the detach walks, and the count is
-    // that set. Listed first and cleared after, a bind in between would leave an inbox unbound here
-    // with its bot still attached in Chatwoot. `agent_id IS NOT NULL` makes the write its own filter.
-    const unbound = await db.$queryRaw<{ chatwoot_inbox_id: number }[]>`
+  const { stamped, detach, voiceOff } = await runScopedOn(
+    base,
+    ctx,
+    async (db) => {
+      // NOTE: the account row first, before any inbox: `syncInboxes` takes the same lock then upserts
+      // inboxes, and the other order is an ABBA deadlock. NO KEY UPDATE, not FOR UPDATE (module-wide):
+      // an INSERT whose foreign key points here takes KEY SHARE, which FOR UPDATE conflicts with, so
+      // the webhook mirror inserting a conversation would deadlock with this. NO KEY UPDATE still
+      // excludes itself and ordinary UPDATEs, all the serialization needed.
+      await db.$queryRaw`SELECT id FROM chatwoot_instances WHERE id = ${id} FOR NO KEY UPDATE`;
+      // `RETURNING`, so the bindings removed are the same set the detach walks, and the count is
+      // that set. Listed first and cleared after, a bind in between would leave an inbox unbound here
+      // with its bot still attached in Chatwoot. `agent_id IS NOT NULL` makes the write its own filter.
+      const unbound = await db.$queryRaw<{ chatwoot_inbox_id: number }[]>`
       UPDATE inboxes
          SET agent_id = NULL, updated_at = now()
        WHERE tenant_id = ${tenantId}
          AND chatwoot_instance_id = ${id}
          AND agent_id IS NOT NULL
       RETURNING chatwoot_inbox_id`;
-    // The stamp and row only where the account was still active, decided by the write: a retry
-    // would otherwise move the stamp, and two overlapping requests both read `null`.
-    const { count } = await db.chatwootInstance.updateMany({
-      where: { id, disconnectedAt: null },
-      data: { disconnectedAt: new Date() },
-    });
-    // NOTE: or the unbind, since clearing a binding is a mutation either way: a bind passing its
-    // check while the disconnect commits leaves an inbox bound on a disconnected account, and the
-    // retry that clears it must still leave a row. `stamped: false` says it completed a disconnect.
-    if (count > 0 || unbound.length > 0) {
-      await auditMutation(db, ctx, {
-        action: "instance.disconnect",
-        target: `chatwoot_instance:${id}`,
-        before: {
-          id: String(inst.id),
-          accountId: inst.accountId,
-          unboundInboxes: unbound.length,
-          stamped: count > 0,
-        },
+      // The voice agents too: the fork would keep routing the calls here, where a disconnected
+      // account's route answers nothing. The fork is told after the commit, like the detach below.
+      const voiceUnbound = await db.$queryRaw<{ id: bigint }[]>`
+      UPDATE inboxes
+         SET voice_agent_id = NULL, updated_at = now()
+       WHERE tenant_id = ${tenantId}
+         AND chatwoot_instance_id = ${id}
+         AND voice_agent_id IS NOT NULL
+      RETURNING id`;
+      // The stamp and row only where the account was still active, decided by the write: a retry
+      // would otherwise move the stamp, and two overlapping requests both read `null`.
+      const { count } = await db.chatwootInstance.updateMany({
+        where: { id, disconnectedAt: null },
+        data: { disconnectedAt: new Date() },
       });
-    }
-    return {
-      stamped: count > 0,
-      detach: unbound.map((r) => r.chatwoot_inbox_id),
-    };
-  });
+      // NOTE: or the unbind, since clearing a binding is a mutation either way: a bind passing its
+      // check while the disconnect commits leaves an inbox bound on a disconnected account, and the
+      // retry that clears it must still leave a row. `stamped: false` says it completed a disconnect.
+      if (count > 0 || unbound.length > 0 || voiceUnbound.length > 0) {
+        await auditMutation(db, ctx, {
+          action: "instance.disconnect",
+          target: `chatwoot_instance:${id}`,
+          before: {
+            id: String(inst.id),
+            accountId: inst.accountId,
+            unboundInboxes: unbound.length,
+            unboundVoiceInboxes: voiceUnbound.length,
+            stamped: count > 0,
+          },
+        });
+      }
+      return {
+        stamped: count > 0,
+        detach: unbound.map((r) => r.chatwoot_inbox_id),
+        voiceOff: voiceUnbound,
+      };
+    },
+  );
   // NOTE: the receiver caches "this route token resolves to a live bot". Invalidated once the
   // disconnect is durable and before the network work, which can take a whole timeout while warm
   // entries keep queueing webhooks for a disconnected account.
   invalidateRouteTokenCache();
+  // Best-effort like the detach: a write that fails is repaired by the next save of a voice agent.
+  await syncVoiceInboxes(ctx, voiceOff, base, deps);
   // NOTE: Chatwoot after our commit: detaching first and then rolling back would leave the account
   // active here while Chatwoot stopped delivering. This way a failed transaction changes nothing and
   // a failed detach is the accepted outcome (disconnected locally, stray events ignored).
@@ -1018,8 +1052,19 @@ export async function removeChatwootInstance(
   ctx: TenantContext,
   id: bigint,
   base: PrismaClient = basePrisma,
+  deps: LoadChatwootClientDeps = {},
 ): Promise<void> {
   if (ctx.tenantId === null) throw new AppError("tenant required", 400);
+  // While the credentials still exist: the delete takes them with the inboxes. The account is marked
+  // disconnected first, so a bind refuses it and every sync from then on, this one's or one already
+  // in flight, writes the calls off.
+  await runScopedOn(base, ctx, (db) =>
+    db.chatwootInstance.updateMany({
+      where: { id, disconnectedAt: null },
+      data: { disconnectedAt: new Date() },
+    }),
+  );
+  await switchOffVoiceRouting(ctx, [id], base, deps);
   await runScopedOn(base, ctx, async (db) => {
     // NOTE: LOCKED before the count, because the count is about what the delete below is going to
     // destroy. A sync holding this same lock is mirroring inboxes under the account right now; read
@@ -1071,6 +1116,8 @@ export interface InboxDto {
   // The agents watching this inbox: bound as observers on the fork, they receive every event and
   // answer nothing. Independent of `agentId`, the one responder.
   observerAgentIds: string[];
+  // The voice agent that answers the inbox's calls, independent of both.
+  voiceAgentId: string | null;
 }
 
 const INBOX_SELECT = {
@@ -1081,6 +1128,7 @@ const INBOX_SELECT = {
   channelType: true,
   provider: true,
   agentId: true,
+  voiceAgentId: true,
   observers: {
     // NOTE: the stamp travels with the id. The DTO ignores it (a pending row is an observer wherever
     // the answer gates a refusal); the audit line, which describes the state before this call, must
@@ -1109,6 +1157,7 @@ function toInboxDto(r: {
   channelType: string | null;
   provider: string | null;
   agentId: bigint | null;
+  voiceAgentId: bigint | null;
   observers: { agentId: bigint }[];
 }): InboxDto {
   return {
@@ -1120,6 +1169,7 @@ function toInboxDto(r: {
     channelType: r.channelType,
     provider: r.provider,
     agentId: r.agentId === null ? null : String(r.agentId),
+    voiceAgentId: r.voiceAgentId === null ? null : String(r.voiceAgentId),
   };
 }
 
@@ -1728,12 +1778,18 @@ async function agentInboxScope(
   agentId: bigint,
   base: PrismaClient,
 ): Promise<{ instanceIds: bigint[]; accountCount: number }> {
-  // The inboxes it ANSWERS and the ones it OBSERVES: a monitoring agent is attached through
-  // `InboxObserver` and answers none, and its editor lists labels and attributes too (the decisions
-  // engine's rules write them).
+  // The inboxes it ANSWERS, the ones whose CALLS it answers, and the ones it OBSERVES: a monitoring
+  // agent is attached through `InboxObserver` and answers none, and its editor lists labels and
+  // attributes too (the decisions engine's rules write them), as a voice agent's tool preconditions do.
   const inboxes = await runScopedOn(base, ctx, (db) =>
     db.inbox.findMany({
-      where: { OR: [{ agentId }, { observers: { some: { agentId } } }] },
+      where: {
+        OR: [
+          { agentId },
+          { voiceAgentId: agentId },
+          { observers: { some: { agentId } } },
+        ],
+      },
       select: {
         chatwootInstanceId: true,
         instance: { select: { accountId: true } },
@@ -1883,10 +1939,24 @@ export async function assertInboxBindable(
     if (agentId !== null) {
       const agent = await db.agent.findUnique({
         where: { id: agentId },
-        select: { name: true, settings: true, enabled: true, mode: true },
+        select: {
+          name: true,
+          settings: true,
+          enabled: true,
+          mode: true,
+          kind: true,
+        },
       });
       if (!agent) {
         throw new NotFoundError("agent not found", "errors.agentNotFound");
+      }
+      // A voice agent answers the inbox's calls, through its own binding (modules/voice-call/inboxes).
+      if (agent.kind === "voice") {
+        throw new AppError(
+          "a voice agent answers calls, not messages",
+          422,
+          "errors.voiceAgentNotResponder",
+        );
       }
       // A monitoring agent may be the responder (bound, reading, answering nothing, the
       // conversations starting `pending` for the team). The observer binding is for an inbox

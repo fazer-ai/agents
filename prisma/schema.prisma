@@ -675,6 +675,15 @@ model Inbox {
   // It says nothing about WHAT changed, and it does not need to. Every reader that consults it is
   // deciding whether a re-derivation is still applicable, and any movement is enough to answer no.
   bindingGeneration  Int       @default(0) @map("binding_generation")
+  // THE VOICE AGENT THAT ANSWERS THIS INBOX'S CALLS, independent of `agentId`, which
+  // answers its messages. NULL while none does.
+  voiceAgentId        BigInt?   @map("voice_agent_id")
+  // The route token of the inbox's call stream. A call never goes through the inbox's Agent Bot: the
+  // Chatwoot fork hands its audio to a stream URL carrying this token, minted once per inbox and
+  // never rotated, so every sync can send the same URL again (encryptJson blob) and the receiver
+  // finds the inbox by the hash. NULL until a voice agent is first bound.
+  voiceRouteToken     String?   @map("voice_route_token")
+  voiceRouteTokenHash String?   @unique @map("voice_route_token_hash")
   workingHours       Json?     @map("working_hours")
   // Channel::WebWidget provisioning blob (encryptJson of { websiteToken, hmacToken, hmacMandatory,
   // websiteUrl }) for the WhatsApp→chat redirect feature. The hmac_token is secret (used to compute the
@@ -1497,6 +1506,9 @@ model Agent {
   // New agents are created in "test"; existing rows default to "production" so live agents keep
   // answering after the migration.
   mode                String    @default("production")
+  // What the agent answers, fixed when it is created: "text" (messages) or "voice" (calls).
+  // A voice agent is bound to an inbox through `Inbox.voiceAgentId`, beside the text agent.
+  kind                String    @default("text")
   settings            Json      @default("{}")
   // NOTE: Watermark stamped when the EFFECTIVE follow-up state (enabled && production && followUp.enabled)
   // transitions OFF→ON. The sweep only STARTS a sequence for conversations whose lastInboundAt is at
@@ -2175,6 +2187,17 @@ model ProcessLease {
   pid         Int?
 
   @@map("process_leases")
+}
+
+// Who is starting a call on an ElevenLabs agent, across processes (migration 20261016220000).
+model VoiceEngineHold {
+  engineAgentId  String    @id @map("engine_agent_id")
+  holder         String?   @db.Uuid
+  heldUntil      DateTime? @map("held_until") @db.Timestamptz(3)
+  declaredDigest String?   @map("declared_digest")
+  configDigest   String?   @map("config_digest")
+
+  @@map("voice_engine_holds")
 }
 
 model SchedulerJob {

@@ -26,6 +26,10 @@ import {
   syncInboxes,
   unobserveInbox,
 } from "@/modules/chatwoot/management";
+import {
+  bindInboxVoiceAgent,
+  checkVoiceBinding,
+} from "@/modules/voice-call/inboxes";
 import type { VerifiedToken } from "./oauth/tokens";
 import {
   adminGate,
@@ -328,6 +332,47 @@ export async function inboxBind(
     }
     const updated = await bindInbox(ctx, inboxId, agentId, {}, base);
     return ok({ dryRun: false, applied: true, target, inbox: updated });
+  } catch (e) {
+    return failOf(e);
+  }
+}
+
+// The CALLS binding: which voice agent answers an inbox's WhatsApp calls, beside its text agent. The
+// preview asks the core's refusals without its locks (`checkVoiceBinding`).
+export async function inboxBindVoice(
+  principal: VerifiedToken,
+  args: { inbox_id: string; agent_id?: string | null; dry_run?: boolean },
+  deps: WriteDeps = {},
+): Promise<WriteResult> {
+  const base = deps.base ?? basePrisma;
+  const ctx = gate(principal);
+  if ("ok" in ctx) return ctx;
+  const inboxId = parseMcpId(args.inbox_id, "inbox_id");
+  if (typeof inboxId !== "bigint") return inboxId;
+  let agentId: bigint | null = null;
+  if (args.agent_id !== undefined && args.agent_id !== null) {
+    const parsed = parseMcpId(args.agent_id, "agent_id");
+    if (typeof parsed !== "bigint") return parsed;
+    agentId = parsed;
+  }
+  try {
+    const inboxes = await listInboxes(ctx, base);
+    const current = inboxes.find((i) => i.id === String(inboxId));
+    if (!current) return err("inbox not found");
+    const target = `inbox:${inboxId}`;
+    if (args.dry_run !== false) {
+      await checkVoiceBinding(ctx, inboxId, agentId, base);
+      return ok({
+        dryRun: true,
+        action: "bind_voice",
+        target,
+        currentVoiceAgentId: current.voiceAgentId,
+        newVoiceAgentId: agentId === null ? null : String(agentId),
+        note: "Binding writes the inbox's calls to Chatwoot.",
+      });
+    }
+    const bound = await bindInboxVoiceAgent(ctx, inboxId, agentId, {}, base);
+    return ok({ dryRun: false, applied: true, target, ...bound });
   } catch (e) {
     return failOf(e);
   }

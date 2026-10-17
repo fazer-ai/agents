@@ -94,6 +94,11 @@ interface GeneralTabProps {
     decides: boolean;
     classifier: React.ReactNode;
   };
+  // A voice agent: it has no chat model, so the `voiceCard` (key, voice and the model
+  // that speaks, on the voice provider) takes the Model card's place, and monitoring is not a mode it has.
+  // `instructionsNote` is what the voice settings ask of the instructions (numbers in words, for a
+  // voice model that reads them as written), shown where the instructions are written.
+  voice?: { voiceCard: React.ReactNode; instructionsNote?: string | null };
 }
 
 export function GeneralTab({
@@ -122,14 +127,17 @@ export function GeneralTab({
   catalog,
   grants,
   watcher,
+  voice,
 }: GeneralTabProps) {
   const { t } = useTranslation();
   const tenantName = useActiveTenantName();
   const promptModal = useModalController();
 
   const decides = watcher?.decides ?? false;
+  // Only where the Model card is drawn: a field the operator cannot see cannot block the save.
   const modelBaseUrlInvalid =
     !decides &&
+    !voice &&
     model.provider === "openai-compatible" &&
     !modelCredBaseUrl &&
     !isValidHttpUrl(model.baseURL);
@@ -148,6 +156,9 @@ export function GeneralTab({
         onExpand={() => promptModal.open()}
       />
       {promptError && <p className="mt-1 text-error text-xs">{promptError}</p>}
+      {voice?.instructionsNote && (
+        <p className="mt-1 text-text-muted text-xs">{voice.instructionsNote}</p>
+      )}
     </FormField>
   );
 
@@ -158,7 +169,9 @@ export function GeneralTab({
     production: MessagesSquare,
     monitoring: Eye,
   };
-  const modeOptions: ChoiceCardOption<AgentMode>[] = AGENT_MODES.map((m) => ({
+  const modeOptions: ChoiceCardOption<AgentMode>[] = AGENT_MODES.filter(
+    (m) => !voice || m !== "monitoring",
+  ).map((m) => ({
     value: m,
     icon: modeIcon[m],
     testId: `mode-${m}`,
@@ -168,8 +181,17 @@ export function GeneralTab({
         : m === "monitoring"
           ? t("editor.modeMonitoring", "Monitoring")
           : t("editor.modeProduction", "Production"),
-    hint:
-      m === "test"
+    hint: voice
+      ? m === "test"
+        ? t(
+            "editor.modeTestHintVoice",
+            "Calls keep ringing your team. Try the agent with a call from the Playground.",
+          )
+        : t(
+            "editor.modeProductionHintVoice",
+            "Once saved, answers every call to the inboxes it is bound to on Channels.",
+          )
+      : m === "test"
         ? t(
             "editor.modeTestHint",
             "Stays silent until the customer sends /teste, so it is safe to try on a real inbox.",
@@ -193,7 +215,7 @@ export function GeneralTab({
             {t("editor.identitySection", "Identity")}
           </h3>
           <p className="text-text-muted text-xs">
-            {watcher
+            {watcher || voice
               ? t(
                   "editor.identitySectionHintDecisions",
                   "Name, mode and whether the agent is active.",
@@ -225,19 +247,22 @@ export function GeneralTab({
             value={mode}
             onChange={setMode}
             aria-label={t("editor.mode", "Mode")}
-            className="sm:grid-cols-3"
+            className={voice ? "sm:grid-cols-2" : "sm:grid-cols-3"}
             options={modeOptions}
           />
         </FormField>
-        {!watcher && instructions}
+        {!watcher && !voice && instructions}
       </Card>
 
+      {/* A voice agent does not answer until it has a provider and a key, so that card comes before
+          the instructions instead of below a tall editor. */}
+      {voice?.voiceCard}
       {watcher?.engineCards}
-      {watcher && instructions && (
+      {(watcher || voice) && instructions && (
         <Card className="flex flex-col gap-4">{instructions}</Card>
       )}
 
-      {decides ? (
+      {voice ? null : decides ? (
         watcher?.classifier
       ) : (
         <Card id="general-model" className="flex scroll-mt-4 flex-col gap-4">

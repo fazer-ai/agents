@@ -12,6 +12,7 @@ import {
   deleteElevenLabsAgent,
   ensureElevenLabsAgent,
 } from "./providers/elevenlabs-agent";
+import { CONFIG_HOLD_LEASE_MS, dbEngineHold } from "./providers/engine-hold";
 import { type CallsConfig, readCallsConfig } from "./settings";
 
 export interface CallsSetup {
@@ -86,6 +87,7 @@ export async function setUpAgentCalls(
       { name: `${read.name} (fazer.ai agents #${agentId})`, voice, calls },
       opts.fetchImpl,
       dbConfigDigests(base),
+      dbEngineHold(CONFIG_HOLD_LEASE_MS, base),
     );
   } catch (err) {
     return {

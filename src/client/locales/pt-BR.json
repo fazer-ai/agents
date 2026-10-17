@@ -3688,6 +3688,7 @@
       "hint": "Fale como o cliente falaria. As ferramentas de conversa são simuladas e nada chega ao Chatwoot.",
       "listening": "O agente está ouvindo",
       "micLevel": "Seu microfone",
+      "noAudio": "O navegador não liberou o áudio da ligação. Clique em Ligar de novo.",
       "noMicrophone": "O navegador não liberou o microfone.",
       "preparing": "Preparando a ligação…",
       "preparingHint": "Conferindo o agente na ElevenLabs e pedindo o microfone.",

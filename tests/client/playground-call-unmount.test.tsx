@@ -35,6 +35,36 @@ globalThis.fetch = (async () => {
   });
 }) as unknown as typeof fetch;
 
+// The call's audio context. `suspendAudio` is the browser that keeps it suspended (Safari outside a
+// gesture); `contexts` is every one made, with when (relative to the microphone prompt) it was made.
+let suspendAudio = false;
+const contexts: Array<{
+  state: string;
+  closed: boolean;
+  beforeMic: boolean;
+  resumedBeforeMic: boolean | null;
+}> = [];
+const realAudioContext = (globalThis as { AudioContext?: unknown })
+  .AudioContext;
+class FakeAudioContext {
+  state = "suspended";
+  closed = false;
+  beforeMic = micAsked === 0;
+  resumedBeforeMic: boolean | null = null;
+  constructor() {
+    contexts.push(this);
+  }
+  async resume() {
+    this.resumedBeforeMic ??= micAsked === 0;
+    if (!suspendAudio) this.state = "running";
+  }
+  async close() {
+    this.closed = true;
+    this.state = "closed";
+  }
+}
+(globalThis as { AudioContext?: unknown }).AudioContext = FakeAudioContext;
+
 let grant: ((stream: MediaStream) => void) | null = null;
 let micAsked = 0;
 const realDevices = Object.getOwnPropertyDescriptor(navigator, "mediaDevices");
@@ -53,6 +83,7 @@ installFakeWebSocket();
 
 afterAll(() => {
   globalThis.fetch = realFetch;
+  (globalThis as { AudioContext?: unknown }).AudioContext = realAudioContext;
   if (realDevices)
     Object.defineProperty(navigator, "mediaDevices", realDevices);
   restoreWebSocket();
@@ -68,6 +99,8 @@ afterEach(async () => {
   setupCalls = 0;
   micAsked = 0;
   sockets.length = 0;
+  contexts.length = 0;
+  suspendAudio = false;
 });
 
 function fakeMic() {
@@ -136,4 +169,34 @@ test("a setup answer that cannot be read fails the call and releases the microph
   } finally {
     unreadableSetup = false;
   }
+});
+
+test("the call's audio is started in the click, before the microphone prompt", async () => {
+  const hook = renderHook(() => usePlaygroundCall("7"));
+  act(() => void hook.result.current.start());
+  await until("the microphone prompt", () => grant !== null);
+  expect(contexts.map((c) => [c.beforeMic, c.resumedBeforeMic])).toEqual([
+    [true, true],
+  ]);
+  hook.unmount();
+  expect(contexts[0]?.closed).toBe(true);
+});
+
+test("audio the browser kept suspended fails the call, and releases the microphone", async () => {
+  suspendAudio = true;
+  const mic = fakeMic();
+  const hook = renderHook(() => usePlaygroundCall("7"));
+  act(() => void hook.result.current.start());
+  await until("the microphone prompt", () => grant !== null);
+  grant?.(mic.stream);
+  await until("the setup request", () => answerSetup !== null);
+  answerSetup?.();
+  await until(
+    "the call to fail",
+    () => hook.result.current.call.state === "failed",
+  );
+  expect(hook.result.current.call).toMatchObject({ problem: "audio" });
+  expect(mic.counts.stopped).toBeGreaterThan(0);
+  expect(contexts[0]?.closed).toBe(true);
+  expect(sockets).toHaveLength(0);
 });

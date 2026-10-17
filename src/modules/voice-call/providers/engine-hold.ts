@@ -11,8 +11,11 @@ import basePrisma from "@/api/lib/prisma";
 export interface EngineHold {
   /** What the agent was last declared with, as written under a hold; null when unknown. */
   declaredDigest: string | null;
-  /** Records what this hold declared, so the next call skips the same declaration. */
-  markDeclared(digest: string): Promise<void>;
+  /**
+   * Records what this hold declared, so the next call skips the same declaration; null before a
+   * declaration is sent, since one that applies and then fails leaves the agent carrying it unknown.
+   */
+  markDeclared(digest: string | null): Promise<void>;
   release(): Promise<void>;
 }
 

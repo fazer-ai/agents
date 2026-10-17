@@ -273,6 +273,68 @@ describe("CallBridge", () => {
     expect(records[0]).toMatchObject({ endedBy: "agent", endReason: "done" });
   });
 
+  test("a call that ends while it is being configured opens no engine and begins nothing", async () => {
+    const { provider, state } = fakeEngine();
+    let opened = 0;
+    const counting: VoiceProvider = {
+      ...provider,
+      open: (config, handlers) => {
+        opened++;
+        return provider.open(config, handlers);
+      },
+    };
+    const configured: { go?: () => void } = {};
+    const bridge = new CallBridge(socket(), {
+      provider: counting,
+      configure: async () => {
+        await new Promise<void>((go) => {
+          configured.go = go;
+        });
+        return voiceSessionConfig(ROUTE, CTX);
+      },
+      onFinished: () => {},
+    });
+    bridge.onMessage(
+      JSON.stringify({ event: "start", call_id: "c", direction: "inbound" }),
+    );
+    bridge.onMessage(JSON.stringify({ event: "answered" }));
+    await until("the configuration to be asked", () => configured.go);
+    bridge.onClose();
+    configured.go?.();
+    await tick();
+    expect(opened).toBe(0);
+    expect(state.begun).toBe(0);
+  });
+
+  test("a session that opens after the call ended is closed and never begun", async () => {
+    const { provider, state } = fakeEngine();
+    const release: { go?: () => void } = {};
+    const slow: VoiceProvider = {
+      ...provider,
+      open: async (config, handlers) => {
+        await new Promise<void>((go) => {
+          release.go = go;
+        });
+        return provider.open(config, handlers);
+      },
+    };
+    const bridge = new CallBridge(socket(), {
+      provider: slow,
+      configure: () => voiceSessionConfig(ROUTE, CTX),
+      onFinished: () => {},
+    });
+    bridge.onMessage(
+      JSON.stringify({ event: "start", call_id: "c", direction: "inbound" }),
+    );
+    bridge.onMessage(JSON.stringify({ event: "answered" }));
+    await until("the engine to be opening", () => release.go);
+    bridge.onClose();
+    release.go?.();
+    await until("the late session closed", () => state.closed);
+    await tick();
+    expect(state.begun).toBe(0);
+  });
+
   test("a placed call takes its id from the answer", async () => {
     const { provider } = fakeEngine();
     const records: CallRecord[] = [];

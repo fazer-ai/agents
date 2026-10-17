@@ -24,7 +24,11 @@ import {
   softDisconnectChatwootInstance,
 } from "@/modules/chatwoot/management";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
-import { agentCreate } from "@/modules/mcp/write-agents";
+import {
+  agentCreate,
+  agentDelete,
+  agentUpdate,
+} from "@/modules/mcp/write-agents";
 import { inboxBindVoice } from "@/modules/mcp/write-channels";
 import { loadPlaygroundVoiceAgent } from "@/modules/playground/service";
 import type { CallRecord } from "@/modules/voice-call/bridge";
@@ -1206,6 +1210,42 @@ describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
       select: { kind: true },
     });
     expect(row?.kind).toBe("voice");
+  });
+
+  test("the MCP previews of a voice agent's mode and deletion refuse what the applies refuse", async () => {
+    const principal = {
+      userId: 1n,
+      tenantId: tenant,
+      clientId: "c",
+      jti: "j",
+      role: "TENANT_ADMIN",
+      scopes: ["mcp:read", "mcp:write"],
+    } as unknown as VerifiedToken;
+    await bindInboxVoiceAgent(
+      ctx(tenant),
+      whatsappInboxId,
+      voiceId,
+      fakeChatwoot(),
+      appDb,
+    );
+    const both = async (
+      write: (dryRun: boolean) => Promise<{ ok: boolean }>,
+    ) => [(await write(true)).ok, (await write(false)).ok];
+    const id = String(voiceId);
+    expect(
+      await both((dry) =>
+        agentUpdate(
+          principal,
+          { agent_id: id, mode: "monitoring", dry_run: dry },
+          { base: appDb },
+        ),
+      ),
+    ).toEqual([false, false]);
+    expect(
+      await both((dry) =>
+        agentDelete(principal, { agent_id: id, dry_run: dry }, { base: appDb }),
+      ),
+    ).toEqual([false, false]);
   });
 
   test("the MCP preview of a voice binding refuses what the bind refuses", async () => {

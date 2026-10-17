@@ -159,7 +159,12 @@ async function openHeld(
   // call to it, so both are bounded by the same deadline as the socket's opening.
   const signal = AbortSignal.timeout(options.openTimeoutMs ?? OPEN_TIMEOUT_MS);
   const declared = await syncElevenLabsTools(
-    { ...options, signal, declared: hold.declaredDigest },
+    {
+      ...options,
+      signal,
+      declared: hold.declaredDigest,
+      onDeclaring: () => hold.markDeclared(null),
+    },
     config.tools,
   );
   if (declared) await hold.markDeclared(declared);

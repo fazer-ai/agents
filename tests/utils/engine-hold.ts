@@ -28,7 +28,8 @@ export function memoryEngineHold(): HoldEngineAgent {
     const hold: EngineHold = {
       declaredDigest: declared.get(agentId) ?? null,
       markDeclared: async (digest) => {
-        declared.set(agentId, digest);
+        if (digest === null) declared.delete(agentId);
+        else declared.set(agentId, digest);
       },
       release: async () => free(),
     };

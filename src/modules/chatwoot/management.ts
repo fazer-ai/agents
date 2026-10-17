@@ -183,7 +183,17 @@ export async function disconnectChatwootDeployment(
   deps: LoadChatwootClientDeps = {},
 ): Promise<void> {
   if (ctx.tenantId === null) throw new AppError("tenant required", 400);
-  // While the credentials still exist: the delete takes them with the inboxes.
+  // While the credentials still exist: the delete takes them with the inboxes. The accounts are
+  // marked disconnected first, so a bind refuses them and every sync from then on, this one's or one
+  // already in flight, writes the calls off.
+  await runScopedOn(base, ctx, async (db) => {
+    // The module's lock order: the deployment before the accounts under it.
+    await db.$queryRaw`SELECT id FROM chatwoot_deployments FOR NO KEY UPDATE`;
+    await db.chatwootInstance.updateMany({
+      where: { disconnectedAt: null },
+      data: { disconnectedAt: new Date() },
+    });
+  });
   await switchOffVoiceRouting(ctx, null, base, deps);
   await runScopedOn(base, ctx, async (db) => {
     const dep = await db.chatwootDeployment.findFirst({
@@ -1045,7 +1055,15 @@ export async function removeChatwootInstance(
   deps: LoadChatwootClientDeps = {},
 ): Promise<void> {
   if (ctx.tenantId === null) throw new AppError("tenant required", 400);
-  // While the credentials still exist: the delete takes them with the inboxes.
+  // While the credentials still exist: the delete takes them with the inboxes. The account is marked
+  // disconnected first, so a bind refuses it and every sync from then on, this one's or one already
+  // in flight, writes the calls off.
+  await runScopedOn(base, ctx, (db) =>
+    db.chatwootInstance.updateMany({
+      where: { id, disconnectedAt: null },
+      data: { disconnectedAt: new Date() },
+    }),
+  );
   await switchOffVoiceRouting(ctx, [id], base, deps);
   await runScopedOn(base, ctx, async (db) => {
     // NOTE: LOCKED before the count, because the count is about what the delete below is going to

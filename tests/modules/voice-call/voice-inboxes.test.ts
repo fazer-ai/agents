@@ -42,6 +42,7 @@ import * as voiceInboxes from "@/modules/voice-call/inboxes";
 import {
   bindInboxVoiceAgent,
   syncVoiceAgentInboxes,
+  syncVoiceInboxes,
   voiceStreamUrl,
 } from "@/modules/voice-call/inboxes";
 import { withinInvocation } from "@/modules/voice-call/invocation-deadline";
@@ -540,6 +541,41 @@ describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
     await syncVoiceAgentInboxes(ctx(tenant), voiceId, appDb, cw);
     expect(cw.writes.map((w) => w.enabled)).toEqual([true, false]);
     await setMode("production");
+  });
+
+  test("an inbox removed while its calls were being switched on is switched off again", async () => {
+    await setMode("production");
+    // An account of its own, removed with its credentials, as a removal does.
+    const account = await seedChatwootInstance(suDb, {
+      tenantId: tenant,
+      baseUrl: "https://chat.voice.test",
+      accountId: 9,
+      adminToken: encryptJson("admintok"),
+    });
+    const doomed = await suDb.inbox.create({
+      data: {
+        tenantId: tenant,
+        chatwootInstanceId: BigInt(account.id),
+        chatwootInboxId: 702,
+        name: "Inbox 702",
+        channelType: "Channel::Whatsapp",
+        voiceAgentId: voiceId,
+        voiceRouteToken: encryptJson("rota-702"),
+      },
+    });
+    // The removal commits while the switch-on is on its way, after its own switch-off went out.
+    const cw = fakeChatwoot({
+      duringAiVoice: async () => {
+        await suDb.chatwootInstance.delete({
+          where: { id: BigInt(account.id) },
+        });
+      },
+    });
+    await syncVoiceInboxes(ctx(tenant), [{ id: doomed.id }], appDb, cw);
+    expect(cw.writes.map((w) => [w.inbox_id, w.enabled])).toEqual([
+      [702, true],
+      [702, false],
+    ]);
   });
 
   test("a binding still moving after every pass is written again a moment later", async () => {

@@ -16,6 +16,7 @@ import { AppError, NotFoundError } from "@/lib/errors";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { normalizeAgentMode } from "@/modules/agents/mode";
 import { auditMutation } from "@/modules/audit/service";
+import type { ChatwootClient } from "@/modules/chatwoot/client";
 import {
   type LoadChatwootClientDeps,
   loadChatwootClient,
@@ -82,17 +83,18 @@ async function writeToFork(
   on: boolean,
   base: PrismaClient,
   deps: LoadChatwootClientDeps,
+  // The account's client, kept by a caller that may have to write again after the rows are gone.
+  clients?: Map<bigint, ChatwootClient>,
 ): Promise<void> {
   if (!binding.voiceRouteToken) return;
   const tenantId = ctx.tenantId as bigint;
-  const client = await loadChatwootClient(
-    tenantId,
-    binding.chatwootInstanceId,
-    {
+  const client =
+    clients?.get(binding.chatwootInstanceId) ??
+    (await loadChatwootClient(tenantId, binding.chatwootInstanceId, {
       base,
       makeClient: deps.makeClient,
-    },
-  );
+    }));
+  clients?.set(binding.chatwootInstanceId, client);
   const agentId = binding.voiceAgentId;
   if (agentId !== null) {
     const agent = await runScopedOn(base, ctx, (db) =>
@@ -181,10 +183,25 @@ async function syncInbox(
   let on = await answers(ctx, binding, base);
   // NOTE: bounded: each pass follows a binding, or an agent switch or mode, that committed after the
   // previous one was read.
+  const clients = new Map<bigint, ChatwootClient>();
   for (let pass = 0; pass < 3; pass++) {
-    await writeToFork(ctx, binding, on, base, deps);
+    await writeToFork(ctx, binding, on, base, deps, clients);
     const after = await read();
-    if (!after) return;
+    if (!after) {
+      // Removed while this wrote (an account or deployment removal): its own switch-off may have
+      // landed before this write, so the calls are switched off again, with the client loaded
+      // before the credentials went.
+      if (on)
+        await writeToFork(
+          ctx,
+          { ...binding, voiceAgentId: null },
+          false,
+          base,
+          deps,
+          clients,
+        );
+      return;
+    }
     const nowOn = await answers(ctx, after, base);
     if (
       after.voiceAgentId === binding.voiceAgentId &&

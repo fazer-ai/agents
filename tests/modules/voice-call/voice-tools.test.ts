@@ -175,3 +175,24 @@ describe("the prompt a call is given", () => {
     );
   });
 });
+
+describe("a tool whose argument may be null", () => {
+  test("receives null, which clears where leaving it out keeps", async () => {
+    const seen: unknown[] = [];
+    const update = tool(
+      async (input: { horario: string | null }) => {
+        seen.push(input.horario);
+        return "ok";
+      },
+      {
+        name: "atualiza",
+        description: "d",
+        schema: z.object({ horario: z.string().nullable() }),
+      },
+    );
+    const [voice] = toVoiceTools([update]);
+    await voice?.invoke({ horario: "null" }, "c1");
+    await voice?.invoke({ horario: "comercial" }, "c2");
+    expect(seen).toEqual([null, "comercial"]);
+  });
+});

@@ -35,20 +35,36 @@ const END_CALL = {
 
 type Schema = Record<string, unknown>;
 
-// The alternatives a schema allows besides null, when there is more than one (`type: ["number",
-// "boolean"]`, an `anyOf`/`oneOf` of two shapes); null for a single type, nullable or not.
+const SCALARS = new Set(["string", "number", "integer", "boolean"]);
+const NULL: Schema = { type: "null" };
+
+// The types a value may take, when ElevenLabs cannot declare them as one: two or more, or one scalar
+// that may also be null. Null cannot be declared at all, and dropping it would take away what the
+// tool does with it (clearing a field, where leaving it out keeps it), so a nullable scalar travels
+// as a union too. A nullable object or array keeps its shape instead, and so cannot be null on a call.
 function unionAlternatives(schema: Schema): Schema[] | null {
-  if (Array.isArray(schema.type)) {
-    const types = schema.type.filter((t) => t !== "null");
-    return types.length > 1 ? types.map((type) => ({ type })) : null;
+  let all: Schema[] | null = null;
+  if (Array.isArray(schema.type))
+    all = schema.type.map((type) => ({ ...schema, type }) as Schema);
+  else {
+    const branches = schema.anyOf ?? schema.oneOf;
+    if (Array.isArray(branches)) all = branches as Schema[];
   }
-  const branches = schema.anyOf ?? schema.oneOf;
-  if (!Array.isArray(branches)) return null;
-  const alternatives = (branches as Schema[]).filter((b) => b.type !== "null");
-  return alternatives.length > 1 ? alternatives : null;
+  if (!all) return null;
+  const nonNull = all.filter((b) => b.type !== "null");
+  const nullable = nonNull.length < all.length;
+  const only = nonNull[0];
+  if (nonNull.length > 1) return nullable ? [...nonNull, NULL] : nonNull;
+  if (nullable && only && SCALARS.has(String(only.type))) return [only, NULL];
+  return null;
 }
 
-const typeName = (s: Schema) => (typeof s.type === "string" ? s.type : "value");
+const typeName = (s: Schema) => {
+  const name = typeof s.type === "string" ? s.type : "value";
+  return Array.isArray(s.enum)
+    ? `${name} (one of ${s.enum.map((v) => JSON.stringify(v)).join(", ")})`
+    : name;
+};
 
 /**
  * ElevenLabs takes a subset of JSON Schema, and every property has to carry a description. A union of
@@ -110,6 +126,8 @@ const matches = (alternative: Schema, value: unknown): boolean => {
       return Array.isArray(value);
     case "object":
       return !!value && typeof value === "object" && !Array.isArray(value);
+    case "null":
+      return value === null;
     default:
       return value !== null;
   }

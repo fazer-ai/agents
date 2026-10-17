@@ -951,6 +951,72 @@ describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
     ).toEqual(["agent_on_b", "xi-b"]);
   });
 
+  test("an agent created on a key replaced meanwhile is deleted there, and the setup starts over on the new key", async () => {
+    const old = await suDb.vaultEntry.create({
+      data: {
+        tenantId: tenant,
+        name: "eleven-old",
+        secret: encryptJson("xi-old"),
+      },
+      select: { id: true },
+    });
+    const replacement = await suDb.vaultEntry.create({
+      data: {
+        tenantId: tenant,
+        name: "eleven-new",
+        secret: encryptJson("xi-new"),
+      },
+      select: { id: true },
+    });
+    const agent = await suDb.agent.create({
+      data: {
+        tenantId: tenant,
+        name: "Chave trocada",
+        kind: "voice",
+        systemPrompt: "x",
+        settings: { calls: { credentialRef: `vault:${old.id}` } },
+      },
+    });
+    const created: string[] = [];
+    const deleted: string[] = [];
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      const key = new Headers(init?.headers).get("xi-api-key") ?? "";
+      if (init?.method === "DELETE") {
+        deleted.push(`${url.split("/").pop()} on ${key}`);
+        return new Response("{}");
+      }
+      if (url.endsWith("/v1/convai/agents/create")) {
+        created.push(key);
+        // The operator switches the key while the first create is in flight; no setup has set an id.
+        if (created.length === 1)
+          await suDb.agent.update({
+            where: { id: agent.id },
+            data: {
+              settings: { calls: { credentialRef: `vault:${replacement.id}` } },
+            },
+          });
+        return new Response(JSON.stringify({ agent_id: `agent_on_${key}` }));
+      }
+      return new Response("{}");
+    }) as unknown as typeof fetch;
+    const result = await setUpAgentCalls(ctx(tenant), agent.id, {
+      fetchImpl,
+      base: appDb,
+    });
+    expect(
+      result.ok && [result.setup.elevenLabsAgentId, result.setup.apiKey],
+    ).toEqual(["agent_on_xi-new", "xi-new"]);
+    expect(created).toEqual(["xi-old", "xi-new"]);
+    expect(deleted).toEqual(["agent_on_xi-old on xi-old"]);
+    const stored = await suDb.agent.findUniqueOrThrow({
+      where: { id: agent.id },
+    });
+    expect(
+      (stored.settings as { calls: { elevenLabsAgentId: string } }).calls
+        .elevenLabsAgentId,
+    ).toBe("agent_on_xi-new");
+  });
+
   test("a voice agent is created as one, never in monitoring mode, and its kind does not change", async () => {
     const made = await createAgent(
       ctx(tenant),

@@ -118,12 +118,59 @@ async function writeToFork(
   );
 }
 
+/**
+ * Switches the calls off on the fork for every inbox of these accounts (all of the tenant's when none
+ * are named) that routes them to us, before a removal deletes the rows: the route token and the account
+ * credentials go with them, and a call routed to a token that no longer resolves is answered by nobody,
+ * where a call with routing off rings the team. Best-effort, one failure not stopping the others.
+ */
+export async function switchOffVoiceRouting(
+  ctx: TenantContext,
+  instanceIds: bigint[] | null,
+  base: PrismaClient = basePrisma,
+  deps: LoadChatwootClientDeps = {},
+): Promise<void> {
+  if (ctx.tenantId === null) return;
+  const routed = await runScopedOn(base, ctx, (db) =>
+    db.inbox.findMany({
+      where: {
+        voiceRouteToken: { not: null },
+        ...(instanceIds ? { chatwootInstanceId: { in: instanceIds } } : {}),
+      },
+      select: BINDING_SELECT,
+    }),
+  );
+  for (const binding of routed) {
+    try {
+      // No agent: switching off needs no bot to post under.
+      await writeToFork(
+        ctx,
+        { ...binding, voiceAgentId: null },
+        false,
+        base,
+        deps,
+      );
+    } catch (err) {
+      logger.warn(
+        "voice-call: could not switch inbox %s's calls off before removing it: %s",
+        String(binding.chatwootInboxId),
+        (err as Error).message,
+      );
+    }
+  }
+}
+
+// A binding still moving after a sync's passes is written again this much later, this many times.
+const SYNC_RETRY_MS = 1_000;
+const SYNC_RETRIES = 2;
+
 /** Writes one inbox's binding to the fork, again while it keeps moving under the write. */
 async function syncInbox(
   ctx: TenantContext,
   inboxId: bigint,
   base: PrismaClient,
   deps: LoadChatwootClientDeps,
+  retries = SYNC_RETRIES,
 ): Promise<void> {
   const read = () =>
     runScopedOn(base, ctx, (db) =>
@@ -148,6 +195,24 @@ async function syncInbox(
     binding = after;
     on = nowOn;
   }
+  // Still moving after the last pass: the newest write on the fork may be an older state's, which no
+  // later save would correct. Written again shortly, apart from the caller, whose own write is done.
+  if (retries === 0) {
+    logger.warn(
+      "voice-call: inbox %s's voice binding kept changing while it was written; the next save repairs it",
+      String(inboxId),
+    );
+    return;
+  }
+  setTimeout(() => {
+    syncInbox(ctx, inboxId, base, deps, retries - 1).catch((err: Error) =>
+      logger.warn(
+        "voice-call: could not write inbox %s's voice agent to Chatwoot: %s",
+        String(inboxId),
+        err.message,
+      ),
+    );
+  }, SYNC_RETRY_MS).unref?.();
 }
 
 /**

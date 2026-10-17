@@ -132,8 +132,10 @@ export function GeneralTab({
   const promptModal = useModalController();
 
   const decides = watcher?.decides ?? false;
+  // Only where the Model card is drawn: a field the operator cannot see cannot block the save.
   const modelBaseUrlInvalid =
     !decides &&
+    !voice &&
     model.provider === "openai-compatible" &&
     !modelCredBaseUrl &&
     !isValidHttpUrl(model.baseURL);

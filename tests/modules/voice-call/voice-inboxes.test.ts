@@ -798,6 +798,28 @@ describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
     expect(old.agent.kind).toBe("text");
   });
 
+  test("a settings replacement that leaves the calls block out keeps the ElevenLabs agent id", async () => {
+    const stored = await suDb.agent.create({
+      data: {
+        tenantId: tenant,
+        name: "Substituída",
+        kind: "voice",
+        systemPrompt: "x",
+        settings: { calls: { elevenLabsAgentId: "agent_in_use", speed: 1.1 } },
+      },
+    });
+    const updated = await updateAgent(
+      ctx(tenant),
+      stored.id,
+      { settings: {} },
+      appDb,
+      { settingsMode: "replace" },
+    );
+    expect(updated.settings.calls).toEqual({
+      elevenLabsAgentId: "agent_in_use",
+    });
+  });
+
   test("an agent created or imported with another's ElevenLabs agent id gets none of its own", async () => {
     // A fresh bag per write: create strips the id from the one it is given.
     const copied = () => ({

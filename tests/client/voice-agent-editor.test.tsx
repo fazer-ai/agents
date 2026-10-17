@@ -100,4 +100,58 @@ describe("the editor of a voice agent", () => {
     ).toBe("1");
     expect(screen.queryByRole("button", { name: "Discard" })).toBeNull();
   });
+
+  test("the Playground's call warns of an unsaved change on Tools, which the call does not carry", async () => {
+    await open("tools");
+    fireEvent.click(screen.getByRole("button", { name: "Add a precondition" }));
+    await act(async () => {});
+    expect(screen.getByRole("button", { name: "Save tools" })).not.toBeNull();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Call in the playground" }),
+    );
+    await act(async () => {});
+    expect(
+      screen.queryByText(
+        "You have unsaved changes. The call uses what is saved.",
+      ),
+    ).not.toBeNull();
+  });
+
+  test("and of one on Knowledge", async () => {
+    const stub = stubEditorApi(
+      {
+        kind: "voice",
+        settings: { calls: { credentialRef: "vault:9", llm: "gpt-4.1-mini" } },
+      },
+      {
+        catalog: {
+          rag: [{ name: "search_knowledge" }],
+          knowledgeBases: [{ id: "kb1", name: "Perguntas frequentes" }],
+        },
+        grants: [
+          {
+            source: "RAG",
+            enabledTools: ["search_knowledge"],
+            knowledgeBaseIds: [],
+          },
+        ],
+      },
+    );
+    await renderEditor(stub, "knowledge");
+    await act(async () => {});
+    fireEvent.click(screen.getByText("Perguntas frequentes"));
+    await act(async () => {});
+    expect(
+      screen.getByRole("button", { name: "Save knowledge" }),
+    ).not.toBeNull();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Call in the playground" }),
+    );
+    await act(async () => {});
+    expect(
+      screen.queryByText(
+        "You have unsaved changes. The call uses what is saved.",
+      ),
+    ).not.toBeNull();
+  });
 });

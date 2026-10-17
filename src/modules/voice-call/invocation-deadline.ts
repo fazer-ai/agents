@@ -2,7 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { withDeadline } from "@/lib/outbound";
 
 // The deadline of the tool call a WhatsApp call is running, for every request that tool makes. A
-// call's tool runs under one deadline for the whole invocation (`withDeadline` in realtime-tools):
+// call's tool runs under one deadline for the whole invocation (`withDeadline` in tool-deadline):
 // past it the call has already told the model the tool failed, so a request still being prepared must
 // not leave, and one that left is cancelled. Aborting the invoke does not stop a handler mid-way, so
 // the deadline rides on the requests themselves: the outbound tools' fetch (HTTP tools, toolpacks) and

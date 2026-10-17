@@ -5028,7 +5028,12 @@ function AgentEditor() {
               <VoicePlayground
                 agentId={id}
                 hasKey={!!calls.credentialRef}
-                unsaved={dirty.general || dirty.behavior}
+                unsaved={
+                  dirty.general ||
+                  dirty.behavior ||
+                  dirty.tools ||
+                  dirty.knowledge
+                }
                 onOpenGeneral={() => openTab("general")}
               />
             )}

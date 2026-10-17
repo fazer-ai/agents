@@ -16,7 +16,7 @@ import {
   type EngineHold,
   type HoldEngineAgent,
 } from "./engine-hold";
-import { withDeadline } from "./realtime-tools";
+import { withDeadline } from "./tool-deadline";
 import type {
   VoiceProvider,
   VoiceSession,
@@ -191,6 +191,8 @@ async function openHeld(
   const ws = new WebSocket(await signedUrl(options, signal));
   const startedAt = Date.now();
   let closed = false;
+  // Aborted on close: a tool still running when the call ends sends nothing after it.
+  const ended = new AbortController();
   let started = false;
   const pending: Int16Array[] = [];
   let heardVoice = false;
@@ -232,6 +234,7 @@ async function openHeld(
       result = await withDeadline(
         (signal) => tool.invoke(call.parameters ?? {}, id, signal),
         VOICE_TOOL_TIMEOUT_MS,
+        ended.signal,
       );
     } catch (err) {
       result = `Erro ao usar a ferramenta: ${(err as Error).message}`;
@@ -370,6 +373,7 @@ async function openHeld(
     },
     close() {
       closed = true;
+      ended.abort();
       if (startTimer) clearTimeout(startTimer);
       release();
       ws.close();

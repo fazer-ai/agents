@@ -152,6 +152,98 @@ describe("the editor of a voice agent", () => {
     }
   });
 
+  test("a save from Call settings shows what was stored, and leaves both tabs clean", async () => {
+    const stub = await open("call");
+    // The server keeps a different value than the one sent: the form takes the answer's.
+    stub.override = (method, path, body) => {
+      if (method !== "PATCH" || !path.endsWith("/agents/41")) return undefined;
+      const { expectedUpdatedAt: _, ...patch } = body;
+      const settings = patch.settings as { calls: Record<string, unknown> };
+      settings.calls.maxDurationSecs = 360;
+      stub.agent = {
+        ...stub.agent,
+        ...patch,
+        updatedAt: "2026-01-01T00:05:00.000Z",
+      };
+      return new Response(JSON.stringify({ agent: stub.agent }), {
+        headers: { "content-type": "application/json" },
+      });
+    };
+    fireEvent.change(screen.getByRole("textbox", { name: /^Longest call/ }), {
+      target: { value: "7" },
+    });
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await act(async () => {});
+    const marked = (tab: string) =>
+      screen.getByRole("tab", { name: tab }).querySelector(".bg-warning") !==
+      null;
+    expect(
+      (
+        screen.getByRole("textbox", {
+          name: /^Longest call/,
+        }) as HTMLInputElement
+      ).value,
+    ).toBe("6");
+    expect([marked("General"), marked("Call settings")]).toEqual([
+      false,
+      false,
+    ]);
+  });
+
+  test("a save from Call settings keeps a speed changed on General while it runs", async () => {
+    const stub = await open();
+    let answer: (() => void) | null = null;
+    stub.override = (method, path, body) => {
+      if (method !== "PATCH" || !path.endsWith("/agents/41")) return undefined;
+      return new Promise<Response>((resolve) => {
+        answer = () => {
+          const { expectedUpdatedAt: _, ...patch } = body;
+          stub.agent = {
+            ...stub.agent,
+            ...patch,
+            updatedAt: "2026-01-01T00:05:00.000Z",
+          };
+          resolve(
+            new Response(JSON.stringify({ agent: stub.agent }), {
+              headers: { "content-type": "application/json" },
+            }),
+          );
+        };
+      });
+    };
+    fireEvent.click(screen.getByRole("tab", { name: "Call settings" }));
+    await act(async () => {});
+    fireEvent.change(screen.getByRole("textbox", { name: /^Longest call/ }), {
+      target: { value: "7" },
+    });
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await act(async () => {});
+    expect(answer).not.toBeNull();
+    // While the save is in flight, General's speed changes; the answer carries the old one.
+    fireEvent.click(screen.getByRole("tab", { name: "General" }));
+    await act(async () => {});
+    fireEvent.change(screen.getByRole("slider", { name: /^Speech speed/ }), {
+      target: { value: "1.1" },
+    });
+    await act(async () => {});
+    await act(async () => (answer as (() => void) | null)?.());
+    await act(async () => {});
+    expect(
+      (
+        screen.getByRole("slider", {
+          name: /^Speech speed/,
+        }) as HTMLInputElement
+      ).value,
+    ).toBe("1.1");
+    // The answer re-synced the Call tab, whose save it was; General keeps its pending speed.
+    const marked = (tab: string) =>
+      screen.getByRole("tab", { name: tab }).querySelector(".bg-warning") !==
+      null;
+    expect([marked("General"), marked("Call settings")]).toEqual([true, false]);
+  });
+
   test("Knowledge offers search, and no suggestions or their reviewer, which a call never runs", async () => {
     await open("knowledge");
     expect(screen.queryByText("Suggestion reviewer")).toBeNull();

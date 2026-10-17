@@ -3257,19 +3257,20 @@ function AgentEditor() {
     section: "general" | "behavior",
     force = false,
     retry?: () => void,
-    // A voice agent's one save carries both sections (General's identity and its call settings),
-    // so both are re-synced from the answer.
-    alsoBehavior = false,
+    // A voice agent's one save carries both sections (General's identity and its call settings,
+    // which General's Voice card and the Call tab split), so both are snapshotted before the request
+    // and both re-synced from the answer, whichever one was dirty: an edit to the other while the
+    // request runs is kept rather than overwritten by the answer.
+    bothSections = false,
   ): Promise<boolean> {
     savingRef.current += 1;
     setSavingAgent(true);
     // Snapshotted BEFORE the request, never after: the staleness check compares what went out
     // with what the boxes hold when the answer lands, and `currentRef` is live.
     const sent = sentFor(patch);
-    const sentSnap = {
-      [section]: sectionSnap[section],
-      ...(alsoBehavior ? { behavior: sectionSnap.behavior } : {}),
-    };
+    const sentSnap = bothSections
+      ? { general: sectionSnap.general, behavior: sectionSnap.behavior }
+      : { [section]: sectionSnap[section] };
     try {
       const expected = expectedFor(force);
       const { data, error: err } = await api.api.v1.agents({ id }).patch({
@@ -3289,10 +3290,12 @@ function AgentEditor() {
       // NOTE: Re-sync ONLY the saved section so the other tabs' unsaved edits are never clobbered, and
       // only when it was not edited while the request ran (`untouchedSince`).
       if (!untouchedSince(sentSnap)) syncedAgentRef.current = data.agent;
-      else if (section === "general") {
+      else if (bothSections) {
         applyGeneral(data.agent, "systemPrompt" in patch);
-        if (alsoBehavior) applyBehavior(data.agent, !decides);
-      } else applyBehavior(data.agent, !decides);
+        applyBehavior(data.agent, !decides);
+      } else if (section === "general")
+        applyGeneral(data.agent, "systemPrompt" in patch);
+      else applyBehavior(data.agent, !decides);
       markSynced(String(data.agent.updatedAt));
       bumpSync();
       // NOTE: Only for the section this holder DRAWS. One function writes both, and a Behavior save
@@ -3801,7 +3804,7 @@ function AgentEditor() {
       dirty.general ? "general" : "behavior",
       force,
       () => void saveVoice(true),
-      dirty.general && dirty.behavior,
+      true,
     );
     if (ok) void checkVoice();
     return ok;

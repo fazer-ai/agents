@@ -1930,6 +1930,27 @@ export async function assertAgentNotObserving(
   }
 }
 
+function answersCallsRefusal(): AppError {
+  return new AppError(
+    "this agent answers calls on inboxes; unbind it from them first",
+    422,
+    "errors.agentAnswersCalls",
+  );
+}
+
+// The deletion's refusal for a voice agent still bound to an inbox's calls, read without its locks,
+// for a preview (MCP `agent_delete`).
+export async function assertAgentNotAnsweringCalls(
+  ctx: TenantContext,
+  id: bigint,
+  base?: PrismaClient,
+): Promise<void> {
+  const answering = await runScopedOn(base ?? basePrisma, ctx, (db) =>
+    db.inbox.count({ where: { voiceAgentId: id } }),
+  );
+  if (answering > 0) throw answersCallsRefusal();
+}
+
 export async function updateAgent(
   ctx: TenantContext,
   id: bigint,
@@ -2173,7 +2194,7 @@ export function validateModelConfigForWrite(raw: unknown): void {
 }
 
 // A voice agent answers calls or stays out of them: monitoring watches messages, which it never sees.
-function assertVoiceAgentMode(kind: string, mode: string | undefined) {
+export function assertVoiceAgentMode(kind: string, mode: string | undefined) {
   if (kind === "voice" && mode !== undefined && isMonitoring(mode))
     throw new AppError(
       "a voice agent cannot be in monitoring mode",
@@ -2406,13 +2427,7 @@ export async function deleteAgent(
     const answeringCalls = await db.inbox.count({
       where: { voiceAgentId: id },
     });
-    if (answeringCalls > 0) {
-      throw new AppError(
-        "this agent answers calls on inboxes; unbind it from them first",
-        422,
-        "errors.agentAnswersCalls",
-      );
-    }
+    if (answeringCalls > 0) throw answersCallsRefusal();
     // Inbox.agentId and Experiment.agentId are plain references (no FK cascade) — null them so a
     // deleted agent leaves no dangling binding. AgentToolSelection cascades via its FK.
     await db.inbox.updateMany({

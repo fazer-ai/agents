@@ -81,6 +81,29 @@ describe.skipIf(!dbUp)(
       ).toBe("fresh");
     });
 
+    test("a declaration that fails after it was sent leaves the agent's tools unknown", async () => {
+      const id = agentId();
+      const before = await dbEngineHold(30_000, one)(id, wait(5_000));
+      await before.markDeclared("what an earlier call declared");
+      await before.release();
+      const fetchImpl = (async () => {
+        throw new Error("socket hang up");
+      }) as unknown as typeof fetch;
+      const opening = elevenLabsProvider({
+        apiKey: "k",
+        agentId: id,
+        fetchImpl,
+        base: two,
+      }).open(
+        { tools: [] } as unknown as VoiceSessionConfig,
+        {} as VoiceSessionHandlers,
+      );
+      await expect(opening).rejects.toThrow("socket hang up");
+      const after = await dbEngineHold(30_000, one)(id, wait(5_000));
+      expect(after.declaredDigest).toBeNull();
+      await after.release();
+    });
+
     test("a call started while another process holds the agent declares nothing, and gives up", async () => {
       const id = agentId();
       const other = await dbEngineHold(30_000, one)(id, wait(5_000));

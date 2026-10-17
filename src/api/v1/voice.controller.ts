@@ -2,7 +2,7 @@ import { Elysia, t } from "elysia";
 import logger from "@/api/lib/logger";
 import { doc } from "@/api/lib/openapi";
 import { CONVERSATION_NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
-import { beginWork, trackWork } from "@/lib/shutdown";
+import { beginWork } from "@/lib/shutdown";
 import type { TenantContext } from "@/lib/tenancy";
 import { loadPlaygroundVoiceAgent } from "@/modules/playground/service";
 import { CallBridge, type CallRecord } from "@/modules/voice-call/bridge";
@@ -31,17 +31,23 @@ const PLAYGROUND_SIMULATED_TOOLS: ReadonlySet<string> = new Set(
 const bridges = new Map<string, CallBridge>();
 
 /**
- * The engine's summary of a call that ended, asked for only when the call was not cut by a shutdown:
- * the summary takes longer than the cut leaves, and waiting on it would lose the transcript and note.
+ * The engine's summary of a call that ended, given up as soon as `cut` aborts: a shutdown at its bound
+ * leaves less time than the summary takes, and the transcript and note are written after it.
  */
 export async function callSummary(
   setup: CallsSetup | null,
-  cut: boolean,
   done: CallRecord,
+  cut: AbortSignal,
   fetchSummary = elevenLabsCallSummary,
 ): Promise<string | null> {
-  if (cut || !setup || !done.engineConversationId) return null;
-  return fetchSummary(setup.apiKey, done.engineConversationId);
+  if (cut.aborted || !setup || !done.engineConversationId) return null;
+  const given = new Promise<null>((resolve) =>
+    cut.addEventListener("abort", () => resolve(null), { once: true }),
+  );
+  return Promise.race([
+    fetchSummary(setup.apiKey, done.engineConversationId),
+    given,
+  ]);
 }
 
 function intOrNull(value: string | undefined): number | null {
@@ -122,10 +128,8 @@ export const voiceController = new Elysia({
           ws.data.query.direction === "outbound" ? "outbound" : "inbound",
       };
       let setup: CallsSetup | null = null;
-      // A live call is work a shutdown waits for, up to its bound; past it the call is hung up and
-      // reported without the engine's summary, which takes longer than the cut leaves.
+      // A live call is work a shutdown waits for, up to its bound; past it the call is hung up.
       let endWork = () => {};
-      let cut = false;
       const provider = callsProvider(() => setup);
       const bridge = new CallBridge(
         { send: (text) => ws.send(text), close: () => ws.close() },
@@ -167,32 +171,37 @@ export const voiceController = new Elysia({
           log: logCall,
           onFinished: (record) => {
             bridges.delete(id);
-            // Tracked so a shutdown waits for it: the report is not retried, and a deploy landing
-            // on a call that just ended would lose its transcript and note for good.
-            void trackWork("voice-call-report", () =>
-              route.then(async (resolved) => {
+            // Work a shutdown waits for: the report is not retried, and a deploy landing on a call
+            // that just ended would lose its transcript and note for good. Cut at the drain's bound
+            // (or at once, for a call the shutdown hung up), it gives up the engine's summary and
+            // writes the rest.
+            const summaryCut = new AbortController();
+            const endReport = beginWork("voice-call-report", () =>
+              summaryCut.abort(),
+            );
+            void route
+              .then(async (resolved) => {
                 if (!resolved) return;
                 await reportCall(resolved, ctx, record, {
-                  summarize: (done) => callSummary(setup, cut, done),
+                  summarize: (done) =>
+                    callSummary(setup, done, summaryCut.signal),
                 });
-              }),
-            ).catch((err: Error) => {
-              // Detached from the call: a failure here must not take the server down with it.
-              logger.warn(
-                "voice-call: the call could not be reported: %s",
-                err.message,
-              );
-            });
+              })
+              .catch((err: Error) => {
+                // Detached from the call: a failure here must not take the server down with it.
+                logger.warn(
+                  "voice-call: the call could not be reported: %s",
+                  err.message,
+                );
+              })
+              .finally(endReport);
             // After the report is registered, so the drain never sees the call's work at zero.
             endWork();
           },
         },
       );
       bridges.set(id, bridge);
-      endWork = beginWork("voice-call", () => {
-        cut = true;
-        bridge.hangup("shutdown");
-      });
+      endWork = beginWork("voice-call", () => bridge.hangup("shutdown"));
     },
     message: relayMessage,
     close: relayClose,

@@ -226,16 +226,34 @@ describe("the call stream route", () => {
 });
 
 describe("the summary of a call that ended", () => {
-  test("is asked of the engine, except for a call a shutdown cut", async () => {
+  const setup = { apiKey: "k" } as unknown as setup.CallsSetup;
+  const done = { engineConversationId: "conv-1" } as CallRecord;
+
+  test("is asked of the engine, except once a shutdown cut the report", async () => {
     const asked: string[] = [];
     const fetchSummary = async (_key: string, id: string) => {
       asked.push(id);
       return "resumo";
     };
-    const setup = { apiKey: "k" } as unknown as setup.CallsSetup;
-    const done = { engineConversationId: "conv-1" } as CallRecord;
-    expect(await callSummary(setup, false, done, fetchSummary)).toBe("resumo");
-    expect(await callSummary(setup, true, done, fetchSummary)).toBeNull();
+    const live = new AbortController();
+    expect(await callSummary(setup, done, live.signal, fetchSummary)).toBe(
+      "resumo",
+    );
+    expect(
+      await callSummary(setup, done, AbortSignal.abort(), fetchSummary),
+    ).toBeNull();
     expect(asked).toEqual(["conv-1"]);
+  });
+
+  test("still being waited for, is given up when the shutdown cuts the report", async () => {
+    const cut = new AbortController();
+    const summary = callSummary(
+      setup,
+      done,
+      cut.signal,
+      () => new Promise<string>(() => {}),
+    );
+    cut.abort();
+    expect(await summary).toBeNull();
   });
 });

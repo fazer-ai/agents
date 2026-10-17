@@ -106,6 +106,8 @@ export interface ToolSyncOptions {
   signal?: AbortSignal;
   /** What the agent was last declared with (`EngineHold.declaredDigest`). */
   declared?: string | null;
+  /** Runs before a declaration is sent, to forget the recorded one it may replace. */
+  onDeclaring?: () => Promise<void>;
 }
 
 /**
@@ -130,6 +132,7 @@ export async function syncElevenLabsTools(
   });
   const digest = createHash("sha256").update(body).digest("hex");
   if (options.declared === digest) return null;
+  await options.onDeclaring?.();
   const res = await (options.fetchImpl ?? fetch)(
     `${API}/v1/convai/agents/${encodeURIComponent(options.agentId)}`,
     {

@@ -89,6 +89,42 @@ describe("elevenlabs tool declarations", () => {
     ]);
   });
 
+  test("a declaration whose answer is lost leaves the agent's tools unknown, so the next one is sent", async () => {
+    const sent: string[] = [];
+    let loseAnswer = false;
+    const fetchImpl = (async (_url: string, init: RequestInit) => {
+      sent.push(String(init.body));
+      // Applied on ElevenLabs, but the answer never arrives.
+      if (loseAnswer) throw new Error("socket hang up");
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+    // What the hold keeps, as the row would.
+    let recorded: string | null = null;
+    const sync = async (set: Parameters<typeof syncElevenLabsTools>[1]) => {
+      const declared = await syncElevenLabsTools(
+        {
+          apiKey: "k",
+          agentId: "agent-lost-answer",
+          fetchImpl,
+          declared: recorded,
+          onDeclaring: async () => {
+            recorded = null;
+          },
+        },
+        set,
+      );
+      if (declared) recorded = declared;
+    };
+    const a = [tool("a", { type: "object", properties: {} })];
+    const b = [tool("b", { type: "object", properties: {} })];
+    await sync(a);
+    loseAnswer = true;
+    await expect(sync(b)).rejects.toThrow("socket hang up");
+    loseAnswer = false;
+    await sync(a);
+    expect(sent).toHaveLength(3);
+  });
+
   test("a refused declaration fails the call's opening and answers nothing to remember", async () => {
     let n = 0;
     const fetchImpl = (async () => {

@@ -11,12 +11,14 @@ import {
   type AgentCreate,
   type AgentUpdate,
   assertAgentCreatable,
+  assertAgentNotAnsweringCalls,
   assertAgentNotObserving,
   assertAgentToolGrantsResolvable,
   assertAgentUpdatable,
   assertCredentialRefsUsable,
   assertDecisionActionArgsUsable,
   assertSchedulesExist,
+  assertVoiceAgentMode,
   cloneAgent,
   createAgent,
   deleteAgent,
@@ -258,6 +260,8 @@ export async function agentUpdate(
       if (patch.mode !== undefined && !isMonitoring(patch.mode)) {
         await assertAgentNotObserving(ctx, id, base);
       }
+      // A voice agent is never put in monitoring: the apply refuses it, against the stored kind.
+      assertVoiceAgentMode(current.kind, patch.mode);
       return ok({
         dryRun: true,
         target,
@@ -414,6 +418,8 @@ export async function agentDelete(
       // the row and the route token while the fork kept delivering to a bot that is gone, and the
       // detach is a Chatwoot call the deletion's transaction cannot make.
       await assertAgentNotObserving(ctx, id, base);
+      // Nor one bound to an inbox's calls, which the fork keeps streaming to until it is unbound.
+      await assertAgentNotAnsweringCalls(ctx, id, base);
       return ok({
         dryRun: true,
         action: "delete",

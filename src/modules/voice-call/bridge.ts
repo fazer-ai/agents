@@ -144,7 +144,9 @@ export class CallBridge {
         this.answeredAt = new Date();
         this.log("call answered");
         this.opening ??= this.openSession();
-        void this.opening.then(() => this.session?.begin());
+        void this.opening.then(() => {
+          if (!this.finished) this.session?.begin();
+        });
         break;
       case "media": {
         if (!this.answered) return;
@@ -177,6 +179,8 @@ export class CallBridge {
     if (!this.start) return;
     try {
       const config = await this.options.configure(this.start);
+      // Ended while it was being configured: nothing to open, and no engine agent to hold.
+      if (this.finished) return;
       this.session = await this.options.provider.open(config, {
         onAudio: (pcm) => {
           if (this.finished) return;

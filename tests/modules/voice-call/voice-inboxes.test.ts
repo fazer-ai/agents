@@ -543,6 +543,23 @@ describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
     await setMode("production");
   });
 
+  test("switching the calls off does not wait on the agent's reporting bot", async () => {
+    await bindInboxVoiceAgent(
+      ctx(tenant),
+      whatsappInboxId,
+      voiceId,
+      fakeChatwoot(),
+      appDb,
+    );
+    await setMode("test");
+    const cw = fakeChatwoot({ failAgentBots: true });
+    await syncVoiceAgentInboxes(ctx(tenant), voiceId, appDb, cw);
+    expect(cw.writes.map((w) => [w.inbox_id, w.enabled])).toEqual([
+      [501, false],
+    ]);
+    await setMode("production");
+  });
+
   test("an inbox removed while its calls were being switched on is switched off again", async () => {
     await setMode("production");
     // An account of its own, removed with its credentials, as a removal does.
@@ -793,6 +810,15 @@ describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
         accountId: 7,
         adminToken: encryptJson("admintok"),
       });
+      const answering = await suDb.agent.create({
+        data: {
+          tenantId: t,
+          name: "Voz",
+          kind: "voice",
+          systemPrompt: "x",
+          mode: "production",
+        },
+      });
       const routed = await suDb.inbox.create({
         data: {
           tenantId: t,
@@ -800,15 +826,25 @@ describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
           chatwootInboxId: 701,
           name: "Inbox 701",
           channelType: "Channel::Whatsapp",
+          voiceAgentId: answering.id,
           voiceRouteToken: encryptJson("rota-701"),
         },
       });
-      const cw = fakeChatwoot();
+      // A save of the agent landing while the removal switches the calls off: it writes them off
+      // too, since the account is already marked gone.
+      const racing = fakeChatwoot();
+      const cw = fakeChatwoot({
+        duringAiVoice: () =>
+          syncVoiceAgentInboxes(ctx(t), answering.id, appDb, racing),
+      });
       try {
         if (removal === "the account")
           await removeChatwootInstance(ctx(t), BigInt(inst.id), appDb, cw);
         else await disconnectChatwootDeployment(ctx(t), appDb, cw);
         expect(cw.writes).toMatchObject([{ inbox_id: 701, enabled: false }]);
+        expect(racing.writes).toMatchObject([
+          { inbox_id: 701, enabled: false },
+        ]);
         expect(
           await suDb.inbox.findUnique({ where: { id: routed.id } }),
         ).toBeNull();

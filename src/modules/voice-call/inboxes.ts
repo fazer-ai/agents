@@ -96,7 +96,8 @@ async function writeToFork(
     }));
   clients?.set(binding.chatwootInstanceId, client);
   const agentId = binding.voiceAgentId;
-  if (agentId !== null) {
+  // Only to switch the calls on: switching them off must not wait on a bot it does not use.
+  if (on && agentId !== null) {
     const agent = await runScopedOn(base, ctx, (db) =>
       db.agent.findUnique({ where: { id: agentId }, select: { name: true } }),
     );

@@ -3571,7 +3571,6 @@
     "call": {
       "again": "Call again",
       "agentSpeaking": "The agent is talking",
-      "operatorSpeaking": "You are talking",
       "close": "Close",
       "dropped": "The line dropped.",
       "duration": "Length {{time}}.",
@@ -3587,6 +3586,7 @@
       "micLevel": "Your microphone",
       "noAudio": "The browser did not start the call's audio. Click Call again.",
       "noMicrophone": "The browser did not allow the microphone.",
+      "operatorSpeaking": "You are talking",
       "preparing": "Getting the line ready…",
       "preparingHint": "Checking the agent on ElevenLabs and asking for the microphone.",
       "ringing": "Ringing…",

@@ -9,7 +9,7 @@ import logger from "@/api/lib/logger";
 import { withKeyedQueue } from "@/lib/locks";
 import { pcmFromBase64, pcmToBase64 } from "../pcm";
 import { type ConfigDigests, dbConfigDigests } from "./config-digests";
-import { forgetElevenLabsAgent } from "./elevenlabs-agent";
+import { forgetElevenLabsAgent, keyedFetch } from "./elevenlabs-agent";
 import { syncElevenLabsTools, VOICE_TOOL_TIMEOUT_MS } from "./elevenlabs-tools";
 import {
   dbEngineHold,
@@ -78,9 +78,11 @@ async function signedUrl(
   signal: AbortSignal,
 ): Promise<string> {
   const fetchImpl = options.fetchImpl ?? fetch;
-  const res = await fetchImpl(
+  const res = await keyedFetch(
+    fetchImpl,
+    options.apiKey,
     `${API}/v1/convai/conversation/get-signed-url?agent_id=${encodeURIComponent(options.agentId)}`,
-    { headers: { "xi-api-key": options.apiKey }, signal },
+    { signal },
   );
   if (res.status === 404)
     await forgetElevenLabsAgent(

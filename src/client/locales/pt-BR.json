@@ -3675,7 +3675,6 @@
     "call": {
       "again": "Ligar de novo",
       "agentSpeaking": "O agente está falando",
-      "operatorSpeaking": "Você está falando",
       "close": "Fechar",
       "dropped": "A ligação caiu.",
       "duration": "Duração {{time}}.",
@@ -3691,6 +3690,7 @@
       "micLevel": "Seu microfone",
       "noAudio": "O navegador não liberou o áudio da ligação. Clique em Ligar de novo.",
       "noMicrophone": "O navegador não liberou o microfone.",
+      "operatorSpeaking": "Você está falando",
       "preparing": "Preparando a ligação…",
       "preparingHint": "Conferindo o agente na ElevenLabs e pedindo o microfone.",
       "ringing": "Chamando…",

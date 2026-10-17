@@ -126,6 +126,34 @@ export class ElevenLabsRefusal extends Error {
   }
 }
 
+// What Bun refuses in a header value: NUL, CR, LF, and anything past Latin-1.
+const UNSENDABLE_IN_HEADER = /[\0\r\n\u0100-\uffff]/;
+
+/**
+ * A request to ElevenLabs on a tenant's key. A key the runtime will not send as a header (a newline
+ * pasted with it) would fail inside fetch, and Bun's message for that carries the header VALUE, the
+ * write-only key, which would reach the caller, the call's hangup reason and the logs. Such a key is
+ * refused here instead, as what it is, a key ElevenLabs could never accept, without the key in it.
+ */
+export async function keyedFetch(
+  fetchImpl: typeof fetch,
+  apiKey: string,
+  url: string,
+  init: RequestInit & { headers?: Record<string, string> } = {},
+): Promise<Response> {
+  if (UNSENDABLE_IN_HEADER.test(apiKey))
+    throw new ElevenLabsRefusal(
+      "sending the key",
+      0,
+      "the stored key is not a valid header value",
+      "invalid_key",
+    );
+  return fetchImpl(url, {
+    ...init,
+    headers: { ...init.headers, "xi-api-key": apiKey },
+  });
+}
+
 async function refusal(
   what: string,
   res: Response,
@@ -146,11 +174,15 @@ export async function checkElevenLabsAgentsAccess(
 ): Promise<AccessCheck> {
   let res: Response;
   try {
-    res = await fetchImpl(`${API}/v1/convai/agents?page_size=1`, {
-      headers: { "xi-api-key": apiKey },
-      signal: deadline(),
-    });
+    res = await keyedFetch(
+      fetchImpl,
+      apiKey,
+      `${API}/v1/convai/agents?page_size=1`,
+      { signal: deadline() },
+    );
   } catch (err) {
+    if (err instanceof ElevenLabsRefusal && err.keyProblem)
+      return { ok: false, reason: err.keyProblem, detail: err.text };
     return { ok: false, reason: "unreachable", detail: (err as Error).message };
   }
   if (res.ok) return { ok: true };
@@ -189,7 +221,7 @@ export async function ensureElevenLabsAgent(
     .update("\0")
     .update(body)
     .digest("hex");
-  const headers = { "xi-api-key": apiKey, "content-type": "application/json" };
+  const headers = { "content-type": "application/json" };
   if (agentId) {
     // Read without the hold first: a digest written under a hold is true, and most setups find it.
     if ((await digests.read(agentId)) === digest) return agentId;
@@ -203,7 +235,9 @@ export async function ensureElevenLabsAgent(
     try {
       if (hold.configDigest === digest) return agentId;
       await hold.markConfigured(null);
-      res = await fetchImpl(
+      res = await keyedFetch(
+        fetchImpl,
+        apiKey,
         `${API}/v1/convai/agents/${encodeURIComponent(agentId)}`,
         { method: "PATCH", headers, body, signal: deadline() },
       );
@@ -216,12 +250,12 @@ export async function ensureElevenLabsAgent(
     }
     if (res.status !== 404) throw await refusal("updating the agent", res);
   }
-  const res = await fetchImpl(`${API}/v1/convai/agents/create`, {
-    method: "POST",
-    headers,
-    body,
-    signal: deadline(),
-  });
+  const res = await keyedFetch(
+    fetchImpl,
+    apiKey,
+    `${API}/v1/convai/agents/create`,
+    { method: "POST", headers, body, signal: deadline() },
+  );
   if (!res.ok) throw await refusal("creating the agent", res);
   const created = (await res.json()) as { agent_id?: string };
   if (!created.agent_id) throw new Error("elevenlabs: created agent has no id");
@@ -249,11 +283,12 @@ export async function deleteElevenLabsAgent(
 ): Promise<void> {
   try {
     await digests.write(agentId, null);
-    await fetchImpl(`${API}/v1/convai/agents/${encodeURIComponent(agentId)}`, {
-      method: "DELETE",
-      headers: { "xi-api-key": apiKey },
-      signal: deadline(),
-    });
+    await keyedFetch(
+      fetchImpl,
+      apiKey,
+      `${API}/v1/convai/agents/${encodeURIComponent(agentId)}`,
+      { method: "DELETE", signal: deadline() },
+    );
   } catch {
     // An agent left behind is unused, not wrong: nothing points at it.
   }
@@ -281,9 +316,11 @@ export async function elevenLabsCallSummary(
     deps.wait ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
   for (let attempt = 0; attempt < SUMMARY_ATTEMPTS; attempt++) {
     if (attempt > 0) await wait(SUMMARY_WAIT_MS);
-    const res = await fetchImpl(
+    const res = await keyedFetch(
+      fetchImpl,
+      apiKey,
       `${API}/v1/convai/conversations/${encodeURIComponent(conversationId)}`,
-      { headers: { "xi-api-key": apiKey }, signal: deadline() },
+      { signal: deadline() },
     ).catch(() => null);
     if (!res?.ok) continue;
     const body = (await res.json().catch(() => null)) as {

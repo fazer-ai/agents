@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import {
   callsFormErrors,
+  callsSettingsFrom,
   readCallsFormState,
 } from "@/client/pages/agents/callsFormState";
 import { elevenLabsProvider } from "@/modules/voice-call/providers/elevenlabs";
@@ -302,6 +303,28 @@ describe("the call's summary from ElevenLabs", () => {
 
 describe("the call settings form", () => {
   const valid = readCallsFormState({});
+
+  test("opening and saving the form writes back the numbers that were stored", () => {
+    const stored = {
+      maxDurationSecs: 90,
+      backgroundVolume: 0.155,
+      speed: 1.05,
+      openingDelayMs: 1250,
+      silenceEndCallSecs: 45,
+    };
+    const numbers = (c: ReturnType<typeof readCallsConfig>) => ({
+      maxDurationSecs: c.maxDurationSecs,
+      backgroundVolume: c.backgroundVolume,
+      speed: c.speed,
+      openingDelayMs: c.openingDelayMs,
+      silenceEndCallSecs: c.silenceEndCallSecs,
+    });
+    const saved = callsSettingsFrom(readCallsFormState(stored));
+    expect(numbers(readCallsConfig({ calls: saved }))).toEqual(
+      numbers(readCallsConfig({ calls: stored })),
+    );
+    expect(readCallsFormState(stored).maxDurationMin).toBe("1,5");
+  });
 
   test("a saved agent's numbers are all in range", () => {
     expect(callsFormErrors(valid)).toEqual([]);

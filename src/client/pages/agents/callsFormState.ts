@@ -33,6 +33,11 @@ export interface CallsFormState {
   toolSound: CallToolSound | "";
 }
 
+// A stored number as the form shows it: in the form's unit, with the decimals it needs and no more, so
+// opening and saving the form writes back the value that was there.
+const shown = (v: number): string =>
+  String(Math.round(v * 1000) / 1000).replace(".", ",");
+
 export function readCallsFormState(
   raw: Record<string, unknown>,
 ): CallsFormState {
@@ -46,10 +51,10 @@ export function readCallsFormState(
     turnEagerness: c.turnEagerness,
     endOnSilence: c.silenceEndCallSecs !== null,
     silenceEndCallSecs: String(c.silenceEndCallSecs ?? 60),
-    maxDurationMin: String(Math.round(c.maxDurationSecs / 60)),
+    maxDurationMin: shown(c.maxDurationSecs / 60),
     keywords: c.keywords.join("\n"),
     backgroundSound: c.backgroundSound ?? "",
-    backgroundVolume: String(Math.round(c.backgroundVolume * 100)),
+    backgroundVolume: shown(c.backgroundVolume * 100),
     toolSound: c.toolSound ?? "",
   };
 }
@@ -72,7 +77,7 @@ export function callsSettingsFrom(f: CallsFormState): Record<string, unknown> {
       delaySecs === undefined ? undefined : Math.round(delaySecs * 1000),
     turnEagerness: f.turnEagerness,
     silenceEndCallSecs: f.endOnSilence ? num(f.silenceEndCallSecs) : null,
-    maxDurationSecs: maxMin === undefined ? undefined : maxMin * 60,
+    maxDurationSecs: maxMin === undefined ? undefined : Math.round(maxMin * 60),
     keywords: f.keywords
       .split(/[\n,]/)
       .map((k) => k.trim())

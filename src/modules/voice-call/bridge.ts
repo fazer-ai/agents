@@ -183,6 +183,8 @@ export class CallBridge {
           );
         },
         onInterrupt: () => {
+          // The person spoke over the goodbye: the call goes on.
+          this.cancelFarewell();
           this.playoutEnd = Date.now();
           this.socket.send(JSON.stringify({ event: "clear" }));
         },
@@ -191,6 +193,8 @@ export class CallBridge {
           this.options.onTranscript?.(entry);
           if (entry.role === "agent" && isFarewell(entry.text))
             this.armFarewell();
+          // A new turn of the person's, however quietly said: the goodbye was not the end.
+          else if (entry.role === "user") this.cancelFarewell();
           this.log("transcript", {
             role: entry.role,
             chars: entry.text.length,

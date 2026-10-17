@@ -71,10 +71,11 @@ describe("elevenlabs tool declarations", () => {
     }) as unknown as typeof fetch;
     const opts = { apiKey: "k", agentId: "agent-sync-test", fetchImpl };
     const tools = [tool("x", { type: "object", properties: {} })];
-    await syncElevenLabsTools(opts, tools);
-    await syncElevenLabsTools(opts, tools);
+    const declared = await syncElevenLabsTools(opts, tools);
+    expect(declared).toBeString();
+    expect(await syncElevenLabsTools({ ...opts, declared }, tools)).toBeNull();
     expect(calls).toHaveLength(1);
-    await syncElevenLabsTools(opts, [
+    await syncElevenLabsTools({ ...opts, declared }, [
       ...tools,
       tool("y", { type: "object", properties: {} }),
     ]);
@@ -88,7 +89,7 @@ describe("elevenlabs tool declarations", () => {
     ]);
   });
 
-  test("a refused declaration fails the call's opening and is not remembered", async () => {
+  test("a refused declaration fails the call's opening and answers nothing to remember", async () => {
     let n = 0;
     const fetchImpl = (async () => {
       n += 1;

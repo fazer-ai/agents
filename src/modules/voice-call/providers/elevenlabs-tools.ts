@@ -98,21 +98,24 @@ export function elevenLabsToolDefs(
   });
 }
 
-const declared = new Map<string, string>();
-
 export interface ToolSyncOptions {
   apiKey: string;
   agentId: string;
   toolSound?: string | null;
   fetchImpl?: typeof fetch;
   signal?: AbortSignal;
+  /** What the agent was last declared with (`EngineHold.declaredDigest`). */
+  declared?: string | null;
 }
 
-/** Declares the call's tools and end_call on the ElevenLabs agent, unless that set is already there. */
+/**
+ * Declares the call's tools and end_call on the ElevenLabs agent, unless that set is already there.
+ * Answers the digest it declared, or null when it declared nothing.
+ */
 export async function syncElevenLabsTools(
   options: ToolSyncOptions,
   tools: VoiceTool[] = [],
-): Promise<void> {
+): Promise<string | null> {
   const body = JSON.stringify({
     conversation_config: {
       agent: {
@@ -126,7 +129,7 @@ export async function syncElevenLabsTools(
     },
   });
   const digest = createHash("sha256").update(body).digest("hex");
-  if (declared.get(options.agentId) === digest) return;
+  if (options.declared === digest) return null;
   const res = await (options.fetchImpl ?? fetch)(
     `${API}/v1/convai/agents/${encodeURIComponent(options.agentId)}`,
     {
@@ -146,5 +149,5 @@ export async function syncElevenLabsTools(
       `elevenlabs: declaring the tools failed with ${res.status}: ${detail}`,
     );
   }
-  declared.set(options.agentId, digest);
+  return digest;
 }

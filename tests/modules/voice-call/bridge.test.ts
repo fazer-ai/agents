@@ -480,6 +480,33 @@ describe("farewell detection", () => {
     expect(records).toHaveLength(0);
   });
 
+  test("a quiet reply the engine still heard keeps the call open", async () => {
+    const { bridge, ws, records, handlers } = await answeredCall();
+    handlers.onTranscript({ role: "agent", text: "Tchau!", atMs: 1 });
+    // Below the bridge's own voice threshold, so only the engine can tell it was speech.
+    const quiet = new Int16Array(960).fill(800);
+    bridge.onMessage(
+      JSON.stringify({ event: "media", payload: pcmToBase64(quiet) }),
+    );
+    handlers.onTranscript({
+      role: "user",
+      text: "Espera, mais uma coisa",
+      atMs: 2,
+    });
+    silence();
+    expect(ws.sent.some((f) => f.event === "hangup")).toBe(false);
+    expect(records).toHaveLength(0);
+  });
+
+  test("the person interrupting the goodbye keeps the call open", async () => {
+    const { ws, records, handlers } = await answeredCall();
+    handlers.onTranscript({ role: "agent", text: "Tchau!", atMs: 1 });
+    handlers.onInterrupt();
+    silence();
+    expect(ws.sent.some((f) => f.event === "hangup")).toBe(false);
+    expect(records).toHaveLength(0);
+  });
+
   test("an answer that asks something does not arm it", async () => {
     const { ws, handlers } = await answeredCall();
     handlers.onTranscript({

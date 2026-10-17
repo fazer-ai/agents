@@ -4,10 +4,17 @@
 // (platform_settings.overrides). The agent's tools are declared on it before the call opens and run
 // here, answered on the call's socket.
 
+import type { PrismaClient } from "@/../generated/prisma/client";
+import logger from "@/api/lib/logger";
 import { withKeyedQueue } from "@/lib/locks";
 import { pcmFromBase64, pcmToBase64 } from "../pcm";
 import { forgetElevenLabsAgent } from "./elevenlabs-agent";
 import { syncElevenLabsTools, VOICE_TOOL_TIMEOUT_MS } from "./elevenlabs-tools";
+import {
+  dbEngineHold,
+  type EngineHold,
+  type HoldEngineAgent,
+} from "./engine-hold";
 import { withDeadline } from "./realtime-tools";
 import type {
   VoiceProvider,
@@ -43,6 +50,9 @@ export interface ElevenLabsOptions {
   toolSound?: string | null;
   fetchImpl?: typeof fetch;
   openTimeoutMs?: number;
+  /** How a call holds the agent across processes; the database by default. */
+  holdEngine?: HoldEngineAgent;
+  base?: PrismaClient;
 }
 
 export function elevenLabsProvider(options: ElevenLabsOptions): VoiceProvider {
@@ -80,9 +90,9 @@ async function signedUrl(
 // The tools are declared on the ElevenLabs agent, shared by every call it takes, and carry what this
 // call's conversation holds (its card, its labels); a conversation takes them as they are when it
 // starts. So one call holds the agent from declaring its tools until its conversation started, and
-// the next call declares its own only then. Within this process: calls are served by the single
-// replica that runs the workers (docs/deploy.md).
-function holdAgent(agentId: string): Promise<() => void> {
+// the next call declares its own only then. In this process through a queue, and across the processes
+// that take calls (web replicas do) through the engine hold.
+function holdHere(agentId: string): Promise<() => void> {
   return new Promise((acquired) => {
     void withKeyedQueue(
       `elevenlabs-agent:${agentId}`,
@@ -91,14 +101,47 @@ function holdAgent(agentId: string): Promise<() => void> {
   });
 }
 
+// The longest a start holds the agent: the declaration and the signed URL, the socket's opening and
+// the conversation's start, each bounded by the open deadline, with a margin for the round trips.
+function holdLeaseMs(openTimeoutMs: number): number {
+  return openTimeoutMs * 3 + 5_000;
+}
+
 async function openSession(
   options: ElevenLabsOptions,
   config: VoiceSessionConfig,
   handlers: VoiceSessionHandlers,
 ): Promise<VoiceSession> {
-  const release = await holdAgent(options.agentId);
+  const openMs = options.openTimeoutMs ?? OPEN_TIMEOUT_MS;
+  const leaseMs = holdLeaseMs(openMs);
+  const releaseHere = await holdHere(options.agentId);
+  let hold: EngineHold;
   try {
-    return await openHeld(options, config, handlers, release);
+    // A holder elsewhere frees the agent within its lease, so waiting longer means it is stuck.
+    hold = await (options.holdEngine ?? dbEngineHold(leaseMs, options.base))(
+      options.agentId,
+      AbortSignal.timeout(leaseMs),
+    );
+  } catch (err) {
+    releaseHere();
+    throw new Error(
+      `elevenlabs: the agent is held by another call's start: ${(err as Error).message}`,
+    );
+  }
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    releaseHere();
+    void hold.release().catch((err: Error) => {
+      logger.warn(
+        "elevenlabs: the agent hold was not released: %s",
+        err.message,
+      );
+    });
+  };
+  try {
+    return await openHeld(options, config, handlers, hold, release);
   } catch (err) {
     release();
     throw err;
@@ -109,12 +152,17 @@ async function openHeld(
   options: ElevenLabsOptions,
   config: VoiceSessionConfig,
   handlers: VoiceSessionHandlers,
+  hold: EngineHold,
   release: () => void,
 ): Promise<VoiceSession> {
   // The agent is held from here: a declaration or a signed URL that hangs would hold every later
   // call to it, so both are bounded by the same deadline as the socket's opening.
   const signal = AbortSignal.timeout(options.openTimeoutMs ?? OPEN_TIMEOUT_MS);
-  await syncElevenLabsTools({ ...options, signal }, config.tools);
+  const declared = await syncElevenLabsTools(
+    { ...options, signal, declared: hold.declaredDigest },
+    config.tools,
+  );
+  if (declared) await hold.markDeclared(declared);
   const ws = new WebSocket(await signedUrl(options, signal));
   const startedAt = Date.now();
   let closed = false;

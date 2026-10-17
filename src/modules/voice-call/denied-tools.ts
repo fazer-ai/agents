@@ -19,6 +19,9 @@ export const VOICE_DENIED_TOOLS: ReadonlySet<string> = new Set([
   "asaas_payment_link_create",
   "asaas_create_pix_charge",
   "resend_send_email",
+  // The engine's own hang-up, declared beside the agent's tools: a custom tool of that name would
+  // make two declarations of it, and the engine could not tell the action from ending the call.
+  "end_call",
 ]);
 
 export function isVoiceDeniedTool(name: string): boolean {

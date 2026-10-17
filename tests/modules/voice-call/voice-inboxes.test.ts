@@ -778,6 +778,37 @@ describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
     expect(old.agent.kind).toBe("text");
   });
 
+  test("an agent created or imported with another's ElevenLabs agent id gets none of its own", async () => {
+    const copied = {
+      calls: { elevenLabsAgentId: "agent_of_another", speed: 1.1 },
+    };
+    const made = await createAgent(
+      ctx(tenant),
+      { name: "Copiada", kind: "voice", systemPrompt: "x", settings: copied },
+      appDb,
+    );
+    expect(made.settings.calls).toEqual({ speed: 1.1 });
+    const source = await suDb.agent.create({
+      data: {
+        tenantId: tenant,
+        name: "Fonte",
+        kind: "voice",
+        systemPrompt: "x",
+      },
+    });
+    const bundle = await exportAgent(ctx(tenant), source.id, appDb);
+    // A bundle written by hand, naming the other agent's id.
+    const imported = await importAgent(
+      ctx(tenant),
+      {
+        ...bundle,
+        agent: { ...bundle.agent, name: "Importada", settings: copied },
+      },
+      appDb,
+    );
+    expect(imported.agent.settings.calls).toEqual({ speed: 1.1 });
+  });
+
   test("two setups that both found no ElevenLabs agent keep one, and the loser deletes its own", async () => {
     const key = await suDb.vaultEntry.create({
       data: { tenantId: tenant, name: "eleven", secret: encryptJson("xi-key") },

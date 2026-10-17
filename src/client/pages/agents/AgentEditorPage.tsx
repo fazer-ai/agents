@@ -156,6 +156,7 @@ import {
   callsFormErrors,
   callsSettingsFrom,
   liveness,
+  playgroundHasKey,
   readCallsFormState,
 } from "./callsFormState";
 import {
@@ -4401,7 +4402,8 @@ function AgentEditor() {
         if (stillDirty(key) && planned(key) && judge(key) !== "ok") return;
       if (stillDirty("general")) {
         if (decisionsSetupHold()) return end();
-        if (!decides && dirty.general && !guardModelBeforeSave())
+        // A voice agent has no chat model to check: its save neither uses nor writes one.
+        if (!decides && !voiceAgent && dirty.general && !guardModelBeforeSave())
           return stop("general");
       }
       if (
@@ -5450,7 +5452,11 @@ function AgentEditor() {
               <VoicePlayground
                 agentId={id}
                 provider={calls.provider}
-                hasKey={!!calls.credentialRef}
+                // The saved version can still be called while a removal of its key is unsaved.
+                hasKey={playgroundHasKey(
+                  calls,
+                  syncedAgentRef.current?.settings,
+                )}
                 unsaved={
                   dirty.general ||
                   dirty.behavior ||

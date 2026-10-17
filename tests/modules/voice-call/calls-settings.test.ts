@@ -4,6 +4,7 @@ import {
   callsFormErrors,
   callsSettingsFrom,
   liveness,
+  playgroundHasKey,
   readCallsFormState,
 } from "@/client/pages/agents/callsFormState";
 import { elevenLabsProvider } from "@/modules/voice-call/providers/elevenlabs";
@@ -116,6 +117,22 @@ describe("calls settings", () => {
       "eleven_multilingual_v2",
     );
     expect(config.conversation_config.asr.provider).toBe("scribe_v2_turbo");
+  });
+
+  test("the Playground can call while the draft or the saved version has a key", () => {
+    const draft = (credentialRef: string) => ({
+      ...readCallsFormState({}),
+      credentialRef,
+    });
+    const saved = (credentialRef?: string) => ({
+      calls: credentialRef ? { credentialRef } : {},
+    });
+    expect([
+      playgroundHasKey(draft("vault:9"), saved()),
+      playgroundHasKey(draft(""), saved("vault:9")),
+      playgroundHasKey(draft(""), saved()),
+      playgroundHasKey(draft(""), undefined),
+    ]).toEqual([true, true, false, false]);
   });
 
   test("what saving does to the customers' calls follows the saved mode and the form's", () => {

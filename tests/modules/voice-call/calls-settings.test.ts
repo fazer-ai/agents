@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
 import {
   callsFormErrors,
   readCallsFormState,
@@ -21,7 +21,14 @@ import {
   keepCallsSystemFields,
   readCallsConfig,
 } from "@/modules/voice-call/settings";
+import { memoryConfigDigests } from "@/tests/utils/config-digests";
 import { memoryEngineHold } from "@/tests/utils/engine-hold";
+
+// What each ElevenLabs agent was last written with, as the shared row would hold it; fresh per test.
+let digests = memoryConfigDigests();
+beforeEach(() => {
+  digests = memoryConfigDigests();
+});
 
 describe("calls settings", () => {
   test("a voice agent that never configured its calls has the defaults, Raquel's voice included", () => {
@@ -114,9 +121,9 @@ describe("the agent on ElevenLabs", () => {
 
   test("is created when the agent has none, in the call's audio format", async () => {
     const api = fakeApi([[200, { agent_id: "agent_new" }]]);
-    expect(await ensureElevenLabsAgent("k", null, spec, api.fetchImpl)).toBe(
-      "agent_new",
-    );
+    expect(
+      await ensureElevenLabsAgent("k", null, spec, api.fetchImpl, digests),
+    ).toBe("agent_new");
     expect(api.calls[0]?.url).toEndWith("/v1/convai/agents/create");
     const created = api.calls[0]?.body as
       | { conversation_config: Record<string, Record<string, unknown>> }
@@ -134,15 +141,21 @@ describe("the agent on ElevenLabs", () => {
       [200, { agent_id: "agent_again" }],
     ]);
     expect(
-      await ensureElevenLabsAgent("k", "agent_x", spec, api.fetchImpl),
+      await ensureElevenLabsAgent("k", "agent_x", spec, api.fetchImpl, digests),
     ).toBe("agent_x");
     expect(
-      await ensureElevenLabsAgent("k", "agent_x", spec, api.fetchImpl),
+      await ensureElevenLabsAgent("k", "agent_x", spec, api.fetchImpl, digests),
     ).toBe("agent_x");
     expect(api.calls).toHaveLength(1);
     const changed = { ...spec, voice: "v2" };
     expect(
-      await ensureElevenLabsAgent("k", "agent_x", changed, api.fetchImpl),
+      await ensureElevenLabsAgent(
+        "k",
+        "agent_x",
+        changed,
+        api.fetchImpl,
+        digests,
+      ),
     ).toBe("agent_again");
     expect(api.calls.map((c) => c.method)).toEqual(["PATCH", "PATCH", "POST"]);
   });
@@ -154,11 +167,23 @@ describe("the agent on ElevenLabs", () => {
       [200, { agent_id: "agent_on_b" }],
     ]);
     expect(
-      await ensureElevenLabsAgent("key-a", "agent_y", spec, api.fetchImpl),
+      await ensureElevenLabsAgent(
+        "key-a",
+        "agent_y",
+        spec,
+        api.fetchImpl,
+        digests,
+      ),
     ).toBe("agent_y");
     // The other account does not have agent_y: the agent is created there instead.
     expect(
-      await ensureElevenLabsAgent("key-b", "agent_y", spec, api.fetchImpl),
+      await ensureElevenLabsAgent(
+        "key-b",
+        "agent_y",
+        spec,
+        api.fetchImpl,
+        digests,
+      ),
     ).toBe("agent_on_b");
     expect(api.calls.map((c) => c.method)).toEqual(["PATCH", "PATCH", "POST"]);
   });
@@ -335,20 +360,21 @@ describe("an agent deleted on ElevenLabs after this process wrote it", () => {
         [404, {}],
         [200, { agent_id: `${agentId}_back` }],
       ]);
-      expect(await ensureElevenLabsAgent("k", agentId, spec, fetchImpl)).toBe(
-        agentId,
-      );
+      expect(
+        await ensureElevenLabsAgent("k", agentId, spec, fetchImpl, digests),
+      ).toBe(agentId);
       await expect(
         elevenLabsProvider({
           apiKey: "k",
           agentId,
           fetchImpl,
           holdEngine: memoryEngineHold(),
+          configDigests: digests,
         }).open(config, handlers),
       ).rejects.toThrow("404");
-      expect(await ensureElevenLabsAgent("k", agentId, spec, fetchImpl)).toBe(
-        `${agentId}_back`,
-      );
+      expect(
+        await ensureElevenLabsAgent("k", agentId, spec, fetchImpl, digests),
+      ).toBe(`${agentId}_back`);
     }
   });
 });
@@ -370,8 +396,8 @@ describe("the requests a call's setup makes to ElevenLabs", () => {
     }) as unknown as typeof fetch;
     const spec = { name: "Maria", voice: "v1", calls: readCallsConfig({}) };
     await checkElevenLabsAgentsAccess("k", fetchImpl);
-    await ensureElevenLabsAgent("k", "agent_old", spec, fetchImpl);
-    await deleteElevenLabsAgent("k", "agent_bounded", fetchImpl);
+    await ensureElevenLabsAgent("k", "agent_old", spec, fetchImpl, digests);
+    await deleteElevenLabsAgent("k", "agent_bounded", fetchImpl, digests);
     await elevenLabsCallSummary("k", "conv", { fetchImpl });
     expect(unbounded).toEqual([]);
   });

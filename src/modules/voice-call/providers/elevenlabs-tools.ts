@@ -6,6 +6,7 @@
 import { createHash } from "node:crypto";
 import config from "@/config";
 import { clipText } from "@/lib/text";
+import type { ConfigDigests } from "./config-digests";
 import { forgetElevenLabsAgent } from "./elevenlabs-agent";
 import type { VoiceTool } from "./types";
 
@@ -108,6 +109,8 @@ export interface ToolSyncOptions {
   declared?: string | null;
   /** Runs before a declaration is sent, to forget the recorded one it may replace. */
   onDeclaring?: () => Promise<void>;
+  /** Where a gone agent's configuration is forgotten; the database by default. */
+  configDigests?: ConfigDigests;
 }
 
 /**
@@ -146,7 +149,8 @@ export async function syncElevenLabsTools(
     },
   );
   if (!res.ok) {
-    if (res.status === 404) forgetElevenLabsAgent(options.agentId);
+    if (res.status === 404)
+      await forgetElevenLabsAgent(options.agentId, options.configDigests);
     const detail = clipText(await res.text(), 300);
     throw new Error(
       `elevenlabs: declaring the tools failed with ${res.status}: ${detail}`,

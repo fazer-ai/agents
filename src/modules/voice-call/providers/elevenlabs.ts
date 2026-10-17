@@ -8,6 +8,7 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import { withKeyedQueue } from "@/lib/locks";
 import { pcmFromBase64, pcmToBase64 } from "../pcm";
+import { type ConfigDigests, dbConfigDigests } from "./config-digests";
 import { forgetElevenLabsAgent } from "./elevenlabs-agent";
 import { syncElevenLabsTools, VOICE_TOOL_TIMEOUT_MS } from "./elevenlabs-tools";
 import {
@@ -53,6 +54,8 @@ export interface ElevenLabsOptions {
   /** How a call holds the agent across processes; the database by default. */
   holdEngine?: HoldEngineAgent;
   base?: PrismaClient;
+  /** Where a gone agent's configuration is forgotten; the database (`base`) by default. */
+  configDigests?: ConfigDigests;
 }
 
 export function elevenLabsProvider(options: ElevenLabsOptions): VoiceProvider {
@@ -79,7 +82,11 @@ async function signedUrl(
     `${API}/v1/convai/conversation/get-signed-url?agent_id=${encodeURIComponent(options.agentId)}`,
     { headers: { "xi-api-key": options.apiKey }, signal },
   );
-  if (res.status === 404) forgetElevenLabsAgent(options.agentId);
+  if (res.status === 404)
+    await forgetElevenLabsAgent(
+      options.agentId,
+      options.configDigests ?? dbConfigDigests(options.base),
+    );
   if (!res.ok)
     throw new Error(`elevenlabs: signed url failed with ${res.status}`);
   const body = (await res.json()) as { signed_url?: string };
@@ -176,6 +183,7 @@ async function openHeld(
       signal,
       declared: hold.declaredDigest,
       onDeclaring: () => hold.markDeclared(null),
+      configDigests: options.configDigests ?? dbConfigDigests(options.base),
     },
     config.tools,
   );

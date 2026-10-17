@@ -1,7 +1,8 @@
 // A call from the playground: the operator's microphone in place of the WhatsApp line, on the same
 // bridge and engine a real call runs. The browser cannot send the session cookie's tenant header
 // on a WebSocket upgrade, so the authenticated POST hands it a short-lived ticket, signed with the
-// JWT secret, that names the tenant, the agent and the operator; the socket presents it.
+// JWT secret, that names the tenant, the agent and the operator; the socket presents it, under the
+// session cookie of that same operator, and a logout or a password change closes it.
 
 import { createHmac, timingSafeEqual } from "node:crypto";
 import config from "@/config";

@@ -3711,14 +3711,18 @@ function AgentEditor() {
 
   // General's save: identity, and the decision setup when it changed. Under questions and rules the
   // instructions and the chat model are not drawn, so they are not written either.
+  const voiceCheckSeq = useRef(0);
   // What ElevenLabs says about the SAVED voice agent: the save there runs on every call too, and this
   // is where a key without the Agents permission shows before the first call does.
   const checkVoice = useCallback(async () => {
+    // Only the latest check speaks: an older one answering last would describe settings since replaced.
+    const mine = ++voiceCheckSeq.current;
     setVoiceStatus({ state: "checking" });
     try {
       const { data, error: err } = await api.api.v1
         .agents({ id })
         .calls.check.post();
+      if (mine !== voiceCheckSeq.current) return;
       if (err || !data) throw err ?? new Error("no data");
       setVoiceStatus(
         data.ok
@@ -3730,6 +3734,7 @@ function AgentEditor() {
             },
       );
     } catch {
+      if (mine !== voiceCheckSeq.current) return;
       setVoiceStatus({
         state: "problem",
         problem: "unreachable",

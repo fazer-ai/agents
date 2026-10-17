@@ -154,4 +154,106 @@ describe("the editor of a voice agent", () => {
       ),
     ).not.toBeNull();
   });
+
+  test("Channels says the inboxes could not be read, instead of that there are none", async () => {
+    const stub = stubEditorApi({ kind: "voice", settings: {} });
+    const json = (body: unknown, status = 200) =>
+      new Response(JSON.stringify(body), {
+        status,
+        headers: { "content-type": "application/json" },
+      });
+    stub.override = (method, path) => {
+      if (method !== "GET") return undefined;
+      if (path === "/api/v1/chatwoot/deployment")
+        return json({
+          deployment: { baseUrl: "https://chat.example.com" },
+          accounts: [
+            {
+              id: "a1",
+              accountId: 1,
+              accountName: "Conta",
+              disconnectedAt: null,
+            },
+          ],
+        });
+      if (path === "/api/v1/chatwoot/inboxes")
+        return json({ error: "Chatwoot is down" }, 502);
+      // Answered, so the inboxes are the only thing that fails.
+      if (path === "/api/v1/agents") return json({ agents: [], total: 0 });
+      return undefined;
+    };
+    await renderEditor(stub, "channels");
+    await act(async () => {});
+    expect(await screen.findByRole("button", { name: "Retry" })).not.toBeNull();
+    expect(screen.queryByText("No WhatsApp inbox to take calls")).toBeNull();
+  });
+
+  test("Knowledge saves a grant even when the hidden reviewer's stored settings are incomplete", async () => {
+    const stub = stubEditorApi(
+      {
+        kind: "voice",
+        settings: {
+          calls: { credentialRef: "vault:9", llm: "gpt-4.1-mini" },
+          knowledge: { suggestionReview: { provider: "openai-compatible" } },
+        },
+      },
+      {
+        catalog: {
+          rag: [{ name: "search_knowledge" }],
+          knowledgeBases: [{ id: "kb1", name: "Perguntas frequentes" }],
+        },
+        grants: [
+          {
+            source: "RAG",
+            enabledTools: ["search_knowledge"],
+            knowledgeBaseIds: [],
+          },
+        ],
+      },
+    );
+    await renderEditor(stub, "knowledge");
+    await act(async () => {});
+    fireEvent.click(screen.getByText("Perguntas frequentes"));
+    await act(async () => {});
+    const save = screen.getByRole("button", { name: "Save knowledge" });
+    expect(save.hasAttribute("disabled")).toBe(false);
+  });
+
+  test("an older check answering last does not overwrite the newer one's verdict", async () => {
+    const stub = stubEditorApi({
+      kind: "voice",
+      settings: { calls: { credentialRef: "vault:9", llm: "gpt-4.1-mini" } },
+    });
+    const json = (body: unknown) =>
+      new Response(JSON.stringify(body), {
+        headers: { "content-type": "application/json" },
+      });
+    // The first check (on open) is held; the second (after the save) refuses at once.
+    const held: { answer?: () => void } = {};
+    let checks = 0;
+    stub.override = (method, path) => {
+      if (method !== "POST" || !path.endsWith("/calls/check")) return undefined;
+      checks++;
+      if (checks === 1)
+        return new Promise<Response>((go) => {
+          held.answer = () => go(json({ ok: true }));
+        });
+      return json({
+        ok: false,
+        problem: "sync_failed",
+        detail: "voice not found",
+      });
+    };
+    await renderEditor(stub, "general");
+    await act(async () => {});
+    fireEvent.change(screen.getByLabelText(/^Name/), {
+      target: { value: "Raquel" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await act(async () => {});
+    expect(await screen.findByText("voice not found")).not.toBeNull();
+    await act(async () => held.answer?.());
+    expect(screen.queryByText("Ready on ElevenLabs")).toBeNull();
+    expect(screen.getByText("voice not found")).not.toBeNull();
+  });
 });

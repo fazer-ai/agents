@@ -84,8 +84,11 @@ installFakeWebSocket();
 afterAll(() => {
   globalThis.fetch = realFetch;
   (globalThis as { AudioContext?: unknown }).AudioContext = realAudioContext;
+  // happy-dom keeps `mediaDevices` on the prototype: with no own property to put back, the fake is
+  // deleted, or every later file in the process would be handed this one's microphone.
   if (realDevices)
     Object.defineProperty(navigator, "mediaDevices", realDevices);
+  else delete (navigator as { mediaDevices?: unknown }).mediaDevices;
   restoreWebSocket();
 });
 afterEach(async () => {

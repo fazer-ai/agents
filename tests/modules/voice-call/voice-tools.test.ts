@@ -2,6 +2,10 @@ import { describe, expect, test } from "bun:test";
 import { ToolMessage } from "@langchain/core/messages";
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
+import {
+  invocationDeadlineFetch,
+  withinInvocation,
+} from "@/modules/voice-call/invocation-deadline";
 import { toVoiceTools } from "@/modules/voice-call/tools";
 
 // A tool that failed without throwing (an HTTP 500, a refused contact update) answers a ToolMessage
@@ -26,5 +30,52 @@ describe("the agent's tools on a call", () => {
     const [bad, good] = toVoiceTools([failing, working]);
     await expect(bad?.invoke({}, "c1")).rejects.toThrow("HTTP 500");
     expect(await good?.invoke({}, "c2")).toBe("livre às 10h");
+  });
+});
+
+// What a tool sends goes under the deadline of the invocation that sent it, whatever kind of tool it
+// is: the call already told the model the tool failed once that deadline passed.
+describe("a request a call's tool makes", () => {
+  const recorder = () => {
+    const sent: Array<AbortSignal | null | undefined> = [];
+    const inner = (async (_input: unknown, init?: RequestInit) => {
+      sent.push(init?.signal);
+      return new Response("ok");
+    }) as unknown as typeof fetch;
+    return { sent, fetch: invocationDeadlineFetch(inner) };
+  };
+
+  test("is cancelled with the invocation that made it", async () => {
+    const { sent, fetch } = recorder();
+    const booking = tool(
+      async () => {
+        await fetch("https://8.8.8.8/book");
+        return "ok";
+      },
+      { name: "agendar", description: "d", schema: z.object({}) },
+    );
+    const deadline = new AbortController();
+    const [voice] = toVoiceTools([booking]);
+    expect(await voice?.invoke({}, "c1", deadline.signal)).toBe("ok");
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.aborted).toBe(false);
+    deadline.abort();
+    expect(sent[0]?.aborted).toBe(true);
+  });
+
+  test("past the deadline is not sent", async () => {
+    const { sent, fetch } = recorder();
+    await expect(
+      withinInvocation(AbortSignal.abort(), () =>
+        fetch("https://8.8.8.8/book"),
+      ),
+    ).rejects.toThrow("deadline passed before the request was sent");
+    expect(sent).toEqual([]);
+  });
+
+  test("outside any invocation goes as it was", async () => {
+    const { sent, fetch } = recorder();
+    await fetch("https://8.8.8.8/book");
+    expect(sent).toEqual([undefined]);
   });
 });

@@ -13,8 +13,13 @@ import { chatwootThreadId } from "@/graph/checkpointer";
 import { buildToolset, loadAgentConfig } from "@/graph/prepare";
 import { buildNativeTools } from "@/graph/tools/native";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { createChatwootClient } from "@/modules/chatwoot/client";
 import { loadChatwootClient } from "@/modules/chatwoot/instance";
 import { isVoiceDeniedTool } from "./denied-tools";
+import {
+  invocationDeadlineFetch,
+  withinInvocation,
+} from "./invocation-deadline";
 import { CALL_HTTP_TOOL_TIMEOUT_MS } from "./providers/elevenlabs-tools";
 import type { VoiceTool } from "./providers/types";
 import type { VoiceRoute } from "./service";
@@ -39,14 +44,16 @@ export function toVoiceTools(all: StructuredToolInterface[]): VoiceTool[] {
           >,
         ),
         invoke: async (args, callId, signal) => {
-          const out = await tool.invoke(
-            {
-              type: "tool_call",
-              id: callId,
-              name: tool.name,
-              args,
-            } as never,
-            signal ? { signal } : undefined,
+          const out = await withinInvocation(signal, () =>
+            tool.invoke(
+              {
+                type: "tool_call",
+                id: callId,
+                name: tool.name,
+                args,
+              } as never,
+              signal ? { signal } : undefined,
+            ),
           );
           const content = (out as { content?: unknown })?.content ?? out;
           const text =
@@ -99,6 +106,8 @@ export async function loadVoiceAgent(
     const client = await loadChatwootClient(route.tenantId, route.instanceId, {
       base,
       botToken: cfg.agentBotToken ?? "",
+      makeClient: (config) =>
+        createChatwootClient(config, { fetchImpl: invocationDeadlineFetch() }),
     });
     const all = await buildToolset(
       { ...cfg, documentSelections: [] },
@@ -111,6 +120,7 @@ export async function loadVoiceAgent(
         threadId,
         onCall: true,
         httpToolTimeoutMs: CALL_HTTP_TOOL_TIMEOUT_MS,
+        outboundFetch: invocationDeadlineFetch(),
       },
       { buildNativeTools },
     );

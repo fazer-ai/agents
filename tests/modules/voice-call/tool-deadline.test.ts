@@ -48,18 +48,18 @@ describe("a tool still running when the call ends", () => {
     expect(handed?.aborted).toBe(true);
   });
 
-  test("started after the call ended is cut before it runs far", async () => {
-    let handed: AbortSignal | undefined;
+  test("asked for after the call ended does not run, even one that would answer at once", async () => {
+    let ran = false;
     await expect(
       withDeadline(
-        (signal) => {
-          handed = signal;
-          return new Promise<string>(() => {});
+        async () => {
+          ran = true;
+          return "ok";
         },
         60_000,
         AbortSignal.abort(),
       ),
     ).rejects.toThrow("the call ended");
-    expect(handed?.aborted).toBe(true);
+    expect(ran).toBe(false);
   });
 });

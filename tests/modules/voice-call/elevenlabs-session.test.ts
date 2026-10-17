@@ -138,43 +138,51 @@ describe("a tool the agent runs on an ElevenLabs call", () => {
 });
 
 describe("a tool still running when an ElevenLabs call ends", () => {
-  test("is cut at the hangup, so nothing it sends lands after it", async () => {
-    const engine = fakeEngine([{ tool_name: "book", tool_call_id: "t1" }]);
-    const handed: { signal?: AbortSignal } = {};
-    const session = await elevenLabsProvider({
-      apiKey: "k",
-      holdEngine: memoryEngineHold(),
-      agentId: "agent-session-close-test",
-      fetchImpl: engine.fetchImpl,
-    }).open(
-      {
-        ...CONFIG,
-        tools: [
-          {
-            name: "book",
-            description: "d",
-            parameters: { type: "object", properties: {} },
-            invoke: (_args, _id, signal) => {
-              handed.signal = signal;
-              return new Promise<string>(() => {});
+  // Either end: the bridge hangs up, or ElevenLabs closes the socket while the bridge still plays
+  // the audio out and has not closed the session yet.
+  for (const [ending, end] of [
+    ["the call hangs up", (session: { close(): void }) => session.close()],
+    ["ElevenLabs closes the socket", () => server?.stop(true)],
+  ] as const) {
+    test(`is cut when ${ending}, so nothing it sends lands after it`, async () => {
+      const engine = fakeEngine([{ tool_name: "book", tool_call_id: "t1" }]);
+      const handed: { signal?: AbortSignal } = {};
+      const session = await elevenLabsProvider({
+        apiKey: "k",
+        holdEngine: memoryEngineHold(),
+        agentId: "agent-session-close-test",
+        fetchImpl: engine.fetchImpl,
+      }).open(
+        {
+          ...CONFIG,
+          tools: [
+            {
+              name: "book",
+              description: "d",
+              parameters: { type: "object", properties: {} },
+              invoke: (_args, _id, signal) => {
+                handed.signal = signal;
+                return new Promise<string>(() => {});
+              },
             },
-          },
-        ],
-      },
-      {
-        onAudio: () => {},
-        onInterrupt: () => {},
-        onTranscript: () => {},
-        onHangup: () => {},
-        onError: () => {},
-      },
-    );
-    session.begin();
-    await until("the tool to start", () => handed.signal);
-    expect(handed.signal?.aborted).toBe(false);
-    session.close();
-    expect(handed.signal?.aborted).toBe(true);
-  });
+          ],
+        },
+        {
+          onAudio: () => {},
+          onInterrupt: () => {},
+          onTranscript: () => {},
+          onHangup: () => {},
+          onError: () => {},
+        },
+      );
+      session.begin();
+      await until("the tool to start", () => handed.signal);
+      expect(handed.signal?.aborted).toBe(false);
+      end(session);
+      await until("the tool to be cut", () => handed.signal?.aborted);
+      session.close();
+    });
+  }
 });
 
 describe("calls on one ElevenLabs agent", () => {

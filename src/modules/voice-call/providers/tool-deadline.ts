@@ -11,6 +11,9 @@ export function withDeadline<T>(
   ms: number,
   cut?: AbortSignal,
 ): Promise<T> {
+  // Asked before the tool runs: one that answers at once would otherwise win the race.
+  if (cut?.aborted)
+    return Promise.reject(new Error("the call ended before the tool answered"));
   const deadline = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   let onCut: (() => void) | undefined;
@@ -27,8 +30,7 @@ export function withDeadline<T>(
       );
       if (!cut) return;
       onCut = () => stop(new Error("the call ended before the tool answered"));
-      if (cut.aborted) onCut();
-      else cut.addEventListener("abort", onCut, { once: true });
+      cut.addEventListener("abort", onCut, { once: true });
     }),
   ]).finally(() => {
     clearTimeout(timer);

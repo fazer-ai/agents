@@ -65,6 +65,7 @@ import {
   listIntegrationInstances,
 } from "@/modules/integrations/service";
 import { listMcpConnections } from "@/modules/mcp-connections/service";
+import { estimateCallFloor } from "@/modules/playground/service";
 import { getProactiveBreakerStatus } from "@/modules/proactive-breaker/service";
 import { getDocument, listDocuments } from "@/modules/rag/documents";
 import {
@@ -155,6 +156,23 @@ export async function agentConfigHealth(
   if (typeof id !== "bigint") return id;
   try {
     return ok({ health: await readAgentConfigHealth(ctx, id, { base }) });
+  } catch (e) {
+    return failOf(e);
+  }
+}
+
+export async function agentCallFloor(
+  principal: VerifiedToken,
+  args: { agent_id: string },
+  deps: WriteDeps = {},
+): Promise<WriteResult> {
+  const base = deps.base ?? basePrisma;
+  const ctx = readGate(principal);
+  if ("ok" in ctx) return ctx;
+  const id = parseMcpId(args.agent_id, "agent_id");
+  if (typeof id !== "bigint") return id;
+  try {
+    return ok({ floor: await estimateCallFloor({ ctx, agentId: id, base }) });
   } catch (e) {
     return failOf(e);
   }

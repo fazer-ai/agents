@@ -11,6 +11,9 @@ interface SelectableCardProps {
   icon?: LucideIcon;
   // Top-right slot — e.g. a kind <Badge> or a "Disabled" tag.
   badge?: ReactNode;
+  // A short measurement beside the title (the tokens a tool adds to every call), kept apart from the
+  // badge so a card can carry both.
+  meta?: ReactNode;
   disabled?: boolean;
   className?: string;
   // An anchor a link can land on; the card is then the control the focus goes to.
@@ -27,6 +30,7 @@ export function SelectableCard({
   description,
   icon: Icon,
   badge,
+  meta,
   disabled,
   className,
   id,
@@ -72,6 +76,7 @@ export function SelectableCard({
             {title}
           </span>
           {badge && <span className="min-w-0 max-w-full">{badge}</span>}
+          {meta}
         </span>
         {description && (
           <span className="text-text-muted text-xs">{description}</span>

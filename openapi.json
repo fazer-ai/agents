@@ -9300,6 +9300,605 @@
         "operationId": "getV1AgentsByIdConfig-health"
       }
     },
+    "/v1/agents/{id}/call-floor": {
+      "get": {
+        "tags": [
+          "Agents"
+        ],
+        "summary": "Estimate the agent's call floor",
+        "description": "An ESTIMATE, in tokens, of what every model call of the saved agent sends before the first line of history: its instructions, what the runtime appends to them (the knowledge-base grounding rules, the MCP server block) and each granted tool's schema, largest first. A heuristic count that can run low against what a provider bills. What only a conversation supplies (contact attributes, appointments, other-inbox context, per-turn notices) is not in it, so it is a floor, not the size of a call. An agent that observes with the decisions engine never sends this prompt and answers `{ engine: \"decisions\" }` with no numbers. Shape: `{ engine: \"llm\", instructions, instructionsAdded, instructionsAddedBy{ grounding, mcp }, tools[{ name, category, estimatedTokens }], total }`.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "description": "Agent id, a BigInt encoded as a decimal string.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Bad request — validation failed or the input was malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Not found.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getV1AgentsByIdCall-floor"
+      },
+      "post": {
+        "tags": [
+          "Agents"
+        ],
+        "summary": "Estimate the call floor of an unsaved tool set",
+        "description": "The same estimate as `GET /v1/agents/{id}/call-floor`, measured with the given grants (and settings, when sent) in place of the saved ones, so an editor can show what saving them would send. Nothing is written. The grants are validated as `PUT /v1/agents/{id}/tool-selections` validates them; a grant pointing at something this tenant does not have counts as absent, as it would at runtime.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "description": "Agent id, a BigInt encoded as a decimal string.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "grants"
+                ],
+                "properties": {
+                  "grants": {
+                    "description": "The whole grant set to measure, in the shape the tool-selections replace takes.",
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "source"
+                      ],
+                      "properties": {
+                        "source": {
+                          "type": "string",
+                          "enum": [
+                            "NATIVE",
+                            "RAG",
+                            "HTTP",
+                            "MCP",
+                            "INTEGRATION",
+                            "DOCUMENT",
+                            "CODE"
+                          ]
+                        },
+                        "toolDefinitionId": {
+                          "description": "Tool definition id (BigInt string) for NATIVE or HTTP grants, or null.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "mcpServerConnectionId": {
+                          "description": "MCP server connection id (BigInt string) for MCP grants, or null.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "integrationInstanceId": {
+                          "description": "Integration instance id (BigInt string) for INTEGRATION grants, or null.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "documentTemplateId": {
+                          "description": "Document template id (BigInt string) for DOCUMENT grants, or null.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "codeToolDefinitionId": {
+                          "description": "Code tool id (BigInt string) for CODE grants, or null.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "knowledgeBaseIds": {
+                          "description": "Knowledge-base ids (BigInt strings) for a RAG grant; the bases the agent may search.",
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "enabledTools": {
+                          "description": "Subset of tool names to enable within the source; omit to enable the source's full set.",
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "settings": {
+                    "description": "The agent's settings to measure with, in place of the saved ones (the shape `PATCH /v1/agents/{id}` takes). Tools read them: the handoff instructions, the writable contact fields. Omit to use the saved settings.",
+                    "type": "object",
+                    "patternProperties": {
+                      "^(.*)$": {}
+                    }
+                  },
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "test",
+                      "production",
+                      "monitoring"
+                    ]
+                  }
+                }
+              }
+            },
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "grants"
+                ],
+                "properties": {
+                  "grants": {
+                    "description": "The whole grant set to measure, in the shape the tool-selections replace takes.",
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "source"
+                      ],
+                      "properties": {
+                        "source": {
+                          "type": "string",
+                          "enum": [
+                            "NATIVE",
+                            "RAG",
+                            "HTTP",
+                            "MCP",
+                            "INTEGRATION",
+                            "DOCUMENT",
+                            "CODE"
+                          ]
+                        },
+                        "toolDefinitionId": {
+                          "description": "Tool definition id (BigInt string) for NATIVE or HTTP grants, or null.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "mcpServerConnectionId": {
+                          "description": "MCP server connection id (BigInt string) for MCP grants, or null.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "integrationInstanceId": {
+                          "description": "Integration instance id (BigInt string) for INTEGRATION grants, or null.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "documentTemplateId": {
+                          "description": "Document template id (BigInt string) for DOCUMENT grants, or null.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "codeToolDefinitionId": {
+                          "description": "Code tool id (BigInt string) for CODE grants, or null.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "knowledgeBaseIds": {
+                          "description": "Knowledge-base ids (BigInt strings) for a RAG grant; the bases the agent may search.",
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "enabledTools": {
+                          "description": "Subset of tool names to enable within the source; omit to enable the source's full set.",
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "settings": {
+                    "description": "The agent's settings to measure with, in place of the saved ones (the shape `PATCH /v1/agents/{id}` takes). Tools read them: the handoff instructions, the writable contact fields. Omit to use the saved settings.",
+                    "type": "object",
+                    "patternProperties": {
+                      "^(.*)$": {}
+                    }
+                  },
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "test",
+                      "production",
+                      "monitoring"
+                    ]
+                  }
+                }
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "grants"
+                ],
+                "properties": {
+                  "grants": {
+                    "description": "The whole grant set to measure, in the shape the tool-selections replace takes.",
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "source"
+                      ],
+                      "properties": {
+                        "source": {
+                          "type": "string",
+                          "enum": [
+                            "NATIVE",
+                            "RAG",
+                            "HTTP",
+                            "MCP",
+                            "INTEGRATION",
+                            "DOCUMENT",
+                            "CODE"
+                          ]
+                        },
+                        "toolDefinitionId": {
+                          "description": "Tool definition id (BigInt string) for NATIVE or HTTP grants, or null.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "mcpServerConnectionId": {
+                          "description": "MCP server connection id (BigInt string) for MCP grants, or null.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "integrationInstanceId": {
+                          "description": "Integration instance id (BigInt string) for INTEGRATION grants, or null.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "documentTemplateId": {
+                          "description": "Document template id (BigInt string) for DOCUMENT grants, or null.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "codeToolDefinitionId": {
+                          "description": "Code tool id (BigInt string) for CODE grants, or null.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "knowledgeBaseIds": {
+                          "description": "Knowledge-base ids (BigInt strings) for a RAG grant; the bases the agent may search.",
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "enabledTools": {
+                          "description": "Subset of tool names to enable within the source; omit to enable the source's full set.",
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "settings": {
+                    "description": "The agent's settings to measure with, in place of the saved ones (the shape `PATCH /v1/agents/{id}` takes). Tools read them: the handoff instructions, the writable contact fields. Omit to use the saved settings.",
+                    "type": "object",
+                    "patternProperties": {
+                      "^(.*)$": {}
+                    }
+                  },
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "test",
+                      "production",
+                      "monitoring"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "400": {
+            "description": "Bad request — validation failed or the input was malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Not found.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postV1AgentsByIdCall-floor"
+      }
+    },
     "/v1/agents/{id}/inboxes/out-of-office": {
       "get": {
         "tags": [

@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { SelectableCard, SwitchField } from "@/client/components";
 import { Tooltip } from "@/client/components/Tooltip";
 import { useKnowledgeManager } from "@/client/pages/resources/useKnowledgeManager";
+import { KnowledgeTokens } from "./CallFloor";
 import type { GrantState, ToolCatalog } from "./types";
 
 interface Props {
@@ -100,6 +101,7 @@ export function KnowledgeGrantsEditor({
             "The agent can search the selected knowledge bases to ground its answers.",
           )}
         </p>
+        {enabled && <KnowledgeTokens part="search" />}
       </section>
 
       {enabled && (
@@ -198,6 +200,7 @@ export function KnowledgeGrantsEditor({
               "When on, the agent can propose new knowledge-base entries for your approval. Nothing is added without review.",
             )}
           </p>
+          {suggestEnabled && <KnowledgeTokens part="suggest" />}
         </section>
       )}
 

@@ -147,6 +147,87 @@ function byContestedName(
   return an < bn ? -1 : an > bn ? 1 : 0;
 }
 
+// What a grant row carries for assembly, one relation per source.
+const GRANT_SELECT = {
+  source: true,
+  enabledTools: true,
+  knowledgeBaseIds: true,
+  toolDefinition: {
+    select: {
+      name: true,
+      description: true,
+      method: true,
+      urlTemplate: true,
+      allowedHosts: true,
+      headers: true,
+      inputSchema: true,
+      query: true,
+      body: true,
+      credentialRef: true,
+      enabled: true,
+      ackEnabled: true,
+      ackMessage: true,
+      expectedStatuses: true,
+      appointment: true,
+      outputSchema: true,
+      conversationRefIntegrationId: true,
+      maxResponseChars: true,
+      silenceTruncationAlert: true,
+    },
+  },
+  mcpServerConnection: {
+    select: {
+      id: true,
+      name: true,
+      transport: true,
+      url: true,
+      command: true,
+      credentialRef: true,
+      headers: true,
+      enabled: true,
+    },
+  },
+  integrationInstance: {
+    select: {
+      id: true,
+      name: true,
+      catalogType: true,
+      config: true,
+      credentialRef: true,
+      enabled: true,
+    },
+  },
+  codeToolDefinition: {
+    select: {
+      name: true,
+      description: true,
+      inputSchema: true,
+      code: true,
+      enabled: true,
+      silenceTruncationAlert: true,
+    },
+  },
+  documentTemplate: {
+    select: {
+      id: true,
+      name: true,
+      slug: true,
+      description: true,
+      blocks: true,
+      fields: true,
+      // Selected only so the content check sees the whole template: the footer's tokens are
+      // validated with the blocks' (see parseTemplateContent), and the tool itself renders
+      // nothing — issuance loads the template again for that.
+      style: true,
+      enabled: true,
+    },
+  },
+} satisfies Prisma.AgentToolSelectionSelect;
+
+type GrantRow = Prisma.AgentToolSelectionGetPayload<{
+  select: typeof GRANT_SELECT;
+}>;
+
 // Loads every tool grant for an agent in one scoped read (DB only — no network; MCP connect/
 // discover and the toolpack build happen later, outside the tx). Resolves each MCP connection's
 // vault credential here (still a scoped DB read). A grant whose source is disabled
@@ -158,83 +239,86 @@ export async function loadToolSelections(
   const rows = await db.agentToolSelection.findMany({
     where: { agentId },
     orderBy: GRANT_ORDER,
-    select: {
-      source: true,
-      enabledTools: true,
-      knowledgeBaseIds: true,
-      toolDefinition: {
-        select: {
-          name: true,
-          description: true,
-          method: true,
-          urlTemplate: true,
-          allowedHosts: true,
-          headers: true,
-          inputSchema: true,
-          query: true,
-          body: true,
-          credentialRef: true,
-          enabled: true,
-          ackEnabled: true,
-          ackMessage: true,
-          expectedStatuses: true,
-          appointment: true,
-          outputSchema: true,
-          conversationRefIntegrationId: true,
-          maxResponseChars: true,
-          silenceTruncationAlert: true,
-        },
-      },
-      mcpServerConnection: {
-        select: {
-          id: true,
-          name: true,
-          transport: true,
-          url: true,
-          command: true,
-          credentialRef: true,
-          headers: true,
-          enabled: true,
-        },
-      },
-      integrationInstance: {
-        select: {
-          id: true,
-          name: true,
-          catalogType: true,
-          config: true,
-          credentialRef: true,
-          enabled: true,
-        },
-      },
-      codeToolDefinition: {
-        select: {
-          name: true,
-          description: true,
-          inputSchema: true,
-          code: true,
-          enabled: true,
-          silenceTruncationAlert: true,
-        },
-      },
-      documentTemplate: {
-        select: {
-          id: true,
-          name: true,
-          slug: true,
-          description: true,
-          blocks: true,
-          fields: true,
-          // Selected only so the content check sees the whole template: the footer's tokens are
-          // validated with the blocks' (see parseTemplateContent), and the tool itself renders
-          // nothing — issuance loads the template again for that.
-          style: true,
-          enabled: true,
-        },
-      },
-    },
+    select: GRANT_SELECT,
   });
+  return selectionsFromRows(db, rows);
+}
 
+// A grant as the editor holds it before saving: the ids of what it points at, not the rows.
+export interface GrantRef {
+  source: AgentToolSource;
+  toolDefinitionId: bigint | null;
+  mcpServerConnectionId: bigint | null;
+  integrationInstanceId: bigint | null;
+  documentTemplateId: bigint | null;
+  codeToolDefinitionId: bigint | null;
+  knowledgeBaseIds: bigint[];
+  enabledTools: string[];
+}
+
+// The selections an unsaved grant set would load, for the call-floor estimate of the editor's draft.
+// Each target is read through the scoped client, so an id from another tenant, or one that no longer
+// exists, reads as a missing relation and its grant is skipped, the way a saved one would be.
+export async function selectionsFromGrants(
+  db: ScopedDb,
+  grants: GrantRef[],
+): Promise<AgentToolSelections> {
+  const idsOf = (
+    k: Exclude<keyof GrantRef, "source" | "knowledgeBaseIds" | "enabledTools">,
+  ) => grants.map((g) => g[k]).filter((id): id is bigint => id != null);
+  // One after another: these run on the scoped transaction's single connection.
+  const http = await db.toolDefinition.findMany({
+    where: { id: { in: idsOf("toolDefinitionId") } },
+    select: { id: true, ...GRANT_SELECT.toolDefinition.select },
+  });
+  const mcp = await db.mcpServerConnection.findMany({
+    where: { id: { in: idsOf("mcpServerConnectionId") } },
+    select: GRANT_SELECT.mcpServerConnection.select,
+  });
+  const integration = await db.integrationInstance.findMany({
+    where: { id: { in: idsOf("integrationInstanceId") } },
+    select: GRANT_SELECT.integrationInstance.select,
+  });
+  const code = await db.codeToolDefinition.findMany({
+    where: { id: { in: idsOf("codeToolDefinitionId") } },
+    select: { id: true, ...GRANT_SELECT.codeToolDefinition.select },
+  });
+  const document = await db.documentTemplate.findMany({
+    where: { id: { in: idsOf("documentTemplateId") } },
+    select: GRANT_SELECT.documentTemplate.select,
+  });
+  const byId = <T extends { id: bigint }>(rows: T[]) =>
+    new Map(rows.map((r) => [r.id, r]));
+  const [h, m, i, c, d] = [
+    byId(http),
+    byId(mcp),
+    byId(integration),
+    byId(code),
+    byId(document),
+  ];
+  const pick = <T>(map: Map<bigint, T>, id: bigint | null): T | null =>
+    id == null ? null : (map.get(id) ?? null);
+  return selectionsFromRows(
+    db,
+    grants.map((g) => ({
+      source: g.source,
+      enabledTools: g.enabledTools,
+      knowledgeBaseIds: g.knowledgeBaseIds,
+      toolDefinition: pick(h, g.toolDefinitionId),
+      mcpServerConnection: pick(m, g.mcpServerConnectionId),
+      integrationInstance: pick(i, g.integrationInstanceId),
+      codeToolDefinition: pick(c, g.codeToolDefinitionId),
+      documentTemplate: pick(d, g.documentTemplateId),
+    })),
+  );
+}
+
+// The grants as assembly reads them. Shared by the agent's own grants and the tenant's catalog (what
+// the agent COULD be granted), so a tool is shaped the same way whichever list it came from.
+export async function selectionsFromRows(
+  db: ScopedDb,
+  rows: GrantRow[],
+): Promise<AgentToolSelections> {
   const result: AgentToolSelections = {
     httpToolDefs: [],
     codeToolDefs: [],

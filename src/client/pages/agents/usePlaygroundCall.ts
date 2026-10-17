@@ -269,206 +269,225 @@ export function usePlaygroundCall(agentId: string) {
     [release],
   );
 
-  const start = useCallback(async () => {
-    if (live.current) return;
-    const mine = ++attempt.current;
-    setLines([]);
-    setCall({ state: "preparing" });
-    // Made and resumed in the click itself: Safari starts Web Audio only inside a user gesture, and the
-    // microphone prompt and the setup request below both end it. The context runs at the device's
-    // rate: Firefox refuses a microphone into a context at another rate (`NotSupportedError`), so the
-    // microphone is brought to the call's 16 kHz here, and the agent's buffers by the browser.
-    const audio = new AudioContext();
-    pendingAudio.current = audio;
-    const unlocked = audio.resume().catch(() => {});
-    // Closed once: leaving the screen or cancelling may have closed it already, and a second close
-    // rejects.
-    const dropAudio = () => {
-      pendingAudio.current = null;
-      void audio.close().catch(() => {});
-    };
-    let mic: MediaStream;
-    try {
-      mic = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true },
-      });
-    } catch (err) {
-      dropAudio();
-      if (attempt.current !== mine) return;
-      setCall({
-        state: "failed",
-        problem: "microphone",
-        detail: (err as Error).message,
-      });
-      return;
-    }
-    const dropMic = () => {
-      pendingMic.current = null;
-      for (const track of mic.getTracks()) track.stop();
-      dropAudio();
-    };
-    if (attempt.current !== mine) {
-      dropMic();
-      return;
-    }
-    // The ticket after the microphone: it lasts a minute, and the browser's prompt can take longer.
-    pendingMic.current = mic;
-    // A body that cannot be read rejects instead of answering `error`: the same failure.
-    const { data, error } = await api.api.v1
-      .agents({ id: agentId })
-      .playground.call.post()
-      .catch((err: unknown) => ({ data: null, error: err }));
-    if (attempt.current !== mine) {
-      dropMic();
-      return;
-    }
-    if (error || !data) {
-      dropMic();
-      setCall({ state: "failed", problem: "unreachable", detail: null });
-      return;
-    }
-    if (!data.ok) {
-      dropMic();
-      setCall({
-        state: "failed",
-        problem: String(data.problem),
-        detail: data.detail ?? null,
-      });
-      return;
-    }
-    // A context the browser kept suspended would show a live call nobody hears and nothing is sent on.
-    await unlocked;
-    if (attempt.current !== mine) {
-      dropMic();
-      return;
-    }
-    if (audio.state !== "running") {
-      dropMic();
-      setCall({ state: "failed", problem: "audio", detail: null });
-      return;
-    }
-    // A browser that cannot build the audio graph fails the call here, with nothing left holding the
-    // microphone, instead of ringing with no line behind it.
-    let node: ScriptProcessorNode;
-    try {
-      node = audio.createScriptProcessor(FRAME, 1, 1);
-      audio.createMediaStreamSource(mic).connect(node);
-      // A ScriptProcessorNode only runs while connected; its output stays silent.
-      node.connect(audio.destination);
-    } catch (err) {
-      dropMic();
-      setCall({
-        state: "failed",
-        problem: "audio",
-        detail: (err as Error).message,
-      });
-      return;
-    }
-    pendingAudio.current = null;
-    const toCallRate = downsampler(audio.sampleRate);
-    const scheme = location.protocol === "https:" ? "wss:" : "ws:";
-    const ws = new WebSocket(
-      `${scheme}//${location.host}/api/v1/voice/playground/${encodeURIComponent(data.ticket)}`,
-    );
-    const l: Live = {
-      ws,
-      audio,
-      mic,
-      node,
-      playing: new Set(),
-      next: 0,
-      voiceUntil: 0,
-      micPeak: 0,
-      stopRingback: tone(audio, 1, 5, 12),
-      answeredAt: null,
-    };
-    pendingMic.current = null;
-    live.current = l;
-    setCall({ state: "ringing" });
-
-    node.onaudioprocess = (e) => {
-      const input = e.inputBuffer.getChannelData(0);
-      let peak = 0;
-      for (const s of input) peak = Math.max(peak, Math.abs(s));
-      l.micPeak = Math.max(l.micPeak, peak);
-      const samples = toCallRate(input);
-      if (ws.readyState !== WebSocket.OPEN || !l.answeredAt) return;
-      const pcm = Int16Array.from(samples, (s) =>
-        Math.max(-0x8000, Math.min(0x7fff, Math.round(s * 0x8000))),
-      );
-      ws.send(JSON.stringify({ event: "media", payload: toBase64(pcm) }));
-    };
-
-    ws.onopen = () => {
-      ws.send(
-        JSON.stringify({
-          event: "start",
-          direction: "inbound",
-          call_id: crypto.randomUUID(),
-        }),
-      );
-      ws.send(JSON.stringify({ event: "answered" }));
-    };
-    ws.onmessage = (msg) => {
-      let frame: {
-        event?: string;
-        payload?: string;
-        role?: string;
-        text?: string;
-        name?: string;
-        ok?: boolean;
-        simulated?: boolean;
-        by?: string;
-        reason?: string | null;
+  // `before` runs after the click has made the audio context and before the microphone is asked for:
+  // a save that has to land first happens inside this attempt, so leaving the screen or cancelling
+  // while it runs stops the call here, and the context was still made in the gesture.
+  const start = useCallback(
+    async (before?: () => Promise<boolean>) => {
+      if (live.current) return;
+      const mine = ++attempt.current;
+      setLines([]);
+      setCall({ state: "preparing" });
+      // Made and resumed in the click itself: Safari starts Web Audio only inside a user gesture, and the
+      // microphone prompt and the setup request below both end it. The context runs at the device's
+      // rate: Firefox refuses a microphone into a context at another rate (`NotSupportedError`), so the
+      // microphone is brought to the call's 16 kHz here, and the agent's buffers by the browser.
+      const audio = new AudioContext();
+      pendingAudio.current = audio;
+      const unlocked = audio.resume().catch(() => {});
+      // Closed once: leaving the screen or cancelling may have closed it already, and a second close
+      // rejects. The ref is cleared only while it still holds this attempt's context: a stale attempt
+      // finishing late must not let go of the one a newer call is holding.
+      const dropAudio = () => {
+        if (pendingAudio.current === audio) pendingAudio.current = null;
+        void audio.close().catch(() => {});
       };
+      if (before) {
+        const saved = await before();
+        if (attempt.current !== mine) {
+          dropAudio();
+          return;
+        }
+        if (!saved) {
+          dropAudio();
+          setCall({ state: "idle" });
+          return;
+        }
+      }
+      let mic: MediaStream;
       try {
-        frame = JSON.parse(String(msg.data));
-      } catch {
+        mic = await navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: true, noiseSuppression: true },
+        });
+      } catch (err) {
+        dropAudio();
+        if (attempt.current !== mine) return;
+        setCall({
+          state: "failed",
+          problem: "microphone",
+          detail: (err as Error).message,
+        });
         return;
       }
-      switch (frame.event) {
-        case "ready":
-          l.stopRingback?.();
-          l.stopRingback = null;
-          l.answeredAt = Date.now();
-          setCall({ state: "live", since: l.answeredAt });
-          break;
-        case "media":
-          if (frame.payload) play(l, frame.payload);
-          break;
-        case "clear":
-          clear(l);
-          break;
-        case "transcript":
-          if (frame.text) {
-            const line: CallLine = {
-              role: frame.role === "agent" ? "agent" : "user",
-              text: frame.text,
-            };
-            setLines((prev) => [...prev, line]);
-          }
-          break;
-        case "tool":
-          if (frame.name) {
-            const line: CallLine = {
-              role: "tool",
-              name: frame.name,
-              ok: frame.ok !== false,
-              simulated: frame.simulated === true,
-            };
-            setLines((prev) => [...prev, line]);
-          }
-          break;
-        case "hangup":
-          end({
-            by: frame.by === "error" ? "error" : "agent",
-            reason: frame.reason ?? null,
-          });
-          break;
+      const dropMic = () => {
+        if (pendingMic.current === mic) pendingMic.current = null;
+        for (const track of mic.getTracks()) track.stop();
+        dropAudio();
+      };
+      if (attempt.current !== mine) {
+        dropMic();
+        return;
       }
-    };
-    ws.onclose = () => end({ by: "dropped" });
-  }, [agentId, end]);
+      // The ticket after the microphone: it lasts a minute, and the browser's prompt can take longer.
+      pendingMic.current = mic;
+      // A body that cannot be read rejects instead of answering `error`: the same failure.
+      const { data, error } = await api.api.v1
+        .agents({ id: agentId })
+        .playground.call.post()
+        .catch((err: unknown) => ({ data: null, error: err }));
+      if (attempt.current !== mine) {
+        dropMic();
+        return;
+      }
+      if (error || !data) {
+        dropMic();
+        setCall({ state: "failed", problem: "unreachable", detail: null });
+        return;
+      }
+      if (!data.ok) {
+        dropMic();
+        setCall({
+          state: "failed",
+          problem: String(data.problem),
+          detail: data.detail ?? null,
+        });
+        return;
+      }
+      // A context the browser kept suspended would show a live call nobody hears and nothing is sent on.
+      await unlocked;
+      if (attempt.current !== mine) {
+        dropMic();
+        return;
+      }
+      if (audio.state !== "running") {
+        dropMic();
+        setCall({ state: "failed", problem: "audio", detail: null });
+        return;
+      }
+      // A browser that cannot build the audio graph fails the call here, with nothing left holding the
+      // microphone, instead of ringing with no line behind it.
+      let node: ScriptProcessorNode;
+      try {
+        node = audio.createScriptProcessor(FRAME, 1, 1);
+        audio.createMediaStreamSource(mic).connect(node);
+        // A ScriptProcessorNode only runs while connected; its output stays silent.
+        node.connect(audio.destination);
+      } catch (err) {
+        dropMic();
+        setCall({
+          state: "failed",
+          problem: "audio",
+          detail: (err as Error).message,
+        });
+        return;
+      }
+      pendingAudio.current = null;
+      const toCallRate = downsampler(audio.sampleRate);
+      const scheme = location.protocol === "https:" ? "wss:" : "ws:";
+      const ws = new WebSocket(
+        `${scheme}//${location.host}/api/v1/voice/playground/${encodeURIComponent(data.ticket)}`,
+      );
+      const l: Live = {
+        ws,
+        audio,
+        mic,
+        node,
+        playing: new Set(),
+        next: 0,
+        voiceUntil: 0,
+        micPeak: 0,
+        stopRingback: tone(audio, 1, 5, 12),
+        answeredAt: null,
+      };
+      pendingMic.current = null;
+      live.current = l;
+      setCall({ state: "ringing" });
+
+      node.onaudioprocess = (e) => {
+        const input = e.inputBuffer.getChannelData(0);
+        let peak = 0;
+        for (const s of input) peak = Math.max(peak, Math.abs(s));
+        l.micPeak = Math.max(l.micPeak, peak);
+        const samples = toCallRate(input);
+        if (ws.readyState !== WebSocket.OPEN || !l.answeredAt) return;
+        const pcm = Int16Array.from(samples, (s) =>
+          Math.max(-0x8000, Math.min(0x7fff, Math.round(s * 0x8000))),
+        );
+        ws.send(JSON.stringify({ event: "media", payload: toBase64(pcm) }));
+      };
+
+      ws.onopen = () => {
+        ws.send(
+          JSON.stringify({
+            event: "start",
+            direction: "inbound",
+            call_id: crypto.randomUUID(),
+          }),
+        );
+        ws.send(JSON.stringify({ event: "answered" }));
+      };
+      ws.onmessage = (msg) => {
+        let frame: {
+          event?: string;
+          payload?: string;
+          role?: string;
+          text?: string;
+          name?: string;
+          ok?: boolean;
+          simulated?: boolean;
+          by?: string;
+          reason?: string | null;
+        };
+        try {
+          frame = JSON.parse(String(msg.data));
+        } catch {
+          return;
+        }
+        switch (frame.event) {
+          case "ready":
+            l.stopRingback?.();
+            l.stopRingback = null;
+            l.answeredAt = Date.now();
+            setCall({ state: "live", since: l.answeredAt });
+            break;
+          case "media":
+            if (frame.payload) play(l, frame.payload);
+            break;
+          case "clear":
+            clear(l);
+            break;
+          case "transcript":
+            if (frame.text) {
+              const line: CallLine = {
+                role: frame.role === "agent" ? "agent" : "user",
+                text: frame.text,
+              };
+              setLines((prev) => [...prev, line]);
+            }
+            break;
+          case "tool":
+            if (frame.name) {
+              const line: CallLine = {
+                role: "tool",
+                name: frame.name,
+                ok: frame.ok !== false,
+                simulated: frame.simulated === true,
+              };
+              setLines((prev) => [...prev, line]);
+            }
+            break;
+          case "hangup":
+            end({
+              by: frame.by === "error" ? "error" : "agent",
+              reason: frame.reason ?? null,
+            });
+            break;
+        }
+      };
+      ws.onclose = () => end({ by: "dropped" });
+    },
+    [agentId, end],
+  );
 
   const hangUp = useCallback(() => {
     const l = live.current;

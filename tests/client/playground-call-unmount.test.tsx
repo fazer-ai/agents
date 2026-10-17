@@ -200,3 +200,63 @@ test("audio the browser kept suspended fails the call, and releases the micropho
   expect(contexts[0]?.closed).toBe(true);
   expect(sockets).toHaveLength(0);
 });
+
+// "Save and call": the save runs inside the call's attempt, after the click made the audio context
+// (the gesture Safari needs) and before the microphone is asked for.
+test("leaving while the save before the call is pending closes the audio, and asks for neither the microphone nor the ticket", async () => {
+  const pending: { finishSave?: (ok: boolean) => void } = {};
+  const save = () =>
+    new Promise<boolean>((resolve) => {
+      pending.finishSave = resolve;
+    });
+  const hook = renderHook(() => usePlaygroundCall("7"));
+  act(() => void hook.result.current.start(save));
+  await until("the save to start", () => pending.finishSave !== undefined);
+  expect(contexts.map((c) => c.beforeMic)).toEqual([true]);
+  hook.unmount();
+  pending.finishSave?.(true);
+  await until("the audio closed", () => contexts[0]?.closed === true);
+  expect(micAsked).toBe(0);
+  expect(setupCalls).toBe(0);
+  expect(sockets).toHaveLength(0);
+});
+
+test("a save that fails before the call goes back to the call button, with the audio closed", async () => {
+  const hook = renderHook(() => usePlaygroundCall("7"));
+  await act(() => hook.result.current.start(async () => false));
+  expect(hook.result.current.call.state).toBe("idle");
+  expect(contexts[0]?.closed).toBe(true);
+  expect(micAsked).toBe(0);
+  hook.unmount();
+});
+
+test("a cancelled call answering late does not let go of the microphone a newer call holds", async () => {
+  const first = fakeMic();
+  const second = fakeMic();
+  const hook = renderHook(() => usePlaygroundCall("7"));
+  act(() => void hook.result.current.start());
+  await until("the first microphone prompt", () => grant !== null);
+  grant?.(first.stream);
+  await until("the first setup request", () => answerSetup !== null);
+  const answerFirst = answerSetup as (() => void) | null;
+  act(() => hook.result.current.cancel());
+  grant = null;
+  act(() => void hook.result.current.start());
+  await until("the second microphone prompt", () => grant !== null);
+  (grant as ((stream: MediaStream) => void) | null)?.(second.stream);
+  await until("the second setup request", () => setupCalls === 2);
+  // Cancelling stopped the first microphone once; its late answer stopping it again is the sign the
+  // stale attempt has run its release.
+  expect(first.counts.stopped).toBe(1);
+  answerFirst?.();
+  await until(
+    "the first attempt's late answer",
+    () => first.counts.stopped === 2,
+  );
+  // The first attempt's late answer released what it held; cancelling now must still reach the
+  // second call's microphone and audio, which nothing else would stop while its request is pending.
+  act(() => hook.result.current.cancel());
+  expect(second.counts.stopped).toBe(1);
+  expect(contexts[1]?.closed).toBe(true);
+  hook.unmount();
+});

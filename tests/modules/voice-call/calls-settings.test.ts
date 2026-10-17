@@ -3,6 +3,7 @@ import {
   callsByTab,
   callsFormErrors,
   callsSettingsFrom,
+  liveness,
   readCallsFormState,
 } from "@/client/pages/agents/callsFormState";
 import { elevenLabsProvider } from "@/modules/voice-call/providers/elevenlabs";
@@ -115,6 +116,15 @@ describe("calls settings", () => {
       "eleven_multilingual_v2",
     );
     expect(config.conversation_config.asr.provider).toBe("scribe_v2_turbo");
+  });
+
+  test("what saving does to the customers' calls follows the saved mode and the form's", () => {
+    expect([
+      liveness("production", "production"),
+      liveness("test", "production"),
+      liveness("production", "test"),
+      liveness("test", "test"),
+    ]).toEqual(["live", "goingLive", "leavingLive", "test"]);
   });
 
   test("the call settings split between General's Voice card and the Call tab, each field on one", () => {

@@ -4,6 +4,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { PlaygroundCallView } from "@/client/pages/agents/PlaygroundCall";
 import { VoiceStatusLine } from "@/client/pages/agents/VoiceAgentSettings";
+import { VoicePlayground } from "@/client/pages/agents/VoicePlayground";
 import { withI18n } from "../utils/i18n";
 
 // The line beside the ElevenLabs key: a refused key is said by its sentence alone, and a refusal of the
@@ -178,4 +179,47 @@ describe("the Playground's call that did not start", () => {
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(cancelled).toBe(1);
   });
+});
+
+describe("the Playground with unsaved changes says what saving does to the customers' calls", () => {
+  const cases = [
+    {
+      liveness: "goingLive",
+      button: "Put in production and call",
+      text: "Saving puts this agent in production: it starts answering the calls of the inboxes marked on Channels.",
+    },
+    {
+      liveness: "leavingLive",
+      button: "Save and call",
+      text: "Saving takes this agent out of production: it stops answering the calls of the inboxes marked on Channels.",
+    },
+    {
+      liveness: "live",
+      button: "Save and call",
+      text: "There are unsaved changes. This agent answers customers: saving puts them on its calls too.",
+    },
+    {
+      liveness: "test",
+      button: "Save and call",
+      text: "There are unsaved changes. Save them to try them, or call the saved version.",
+    },
+  ] as const;
+  for (const c of cases)
+    test(c.liveness, () => {
+      render(
+        withI18n(
+          <VoicePlayground
+            agentId="7"
+            provider="elevenlabs"
+            hasKey
+            unsaved
+            liveness={c.liveness}
+            onSave={async () => true}
+            onOpenGeneral={() => {}}
+          />,
+        ),
+      );
+      expect(screen.getByRole("button", { name: c.button })).not.toBeNull();
+      expect(screen.getByText(c.text)).not.toBeNull();
+    });
 });

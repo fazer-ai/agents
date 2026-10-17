@@ -155,6 +155,7 @@ import {
   callsByTab,
   callsFormErrors,
   callsSettingsFrom,
+  liveness,
   readCallsFormState,
 } from "./callsFormState";
 import {
@@ -5056,10 +5057,10 @@ function AgentEditor() {
                   dirty.tools ||
                   dirty.knowledge
                 }
-                live={
-                  agentMode === "production" ||
-                  syncedAgentRef.current?.mode === "production"
-                }
+                liveness={liveness(
+                  syncedAgentRef.current?.mode ?? agentMode,
+                  agentMode,
+                )}
                 onSave={
                   dirty.tools || dirty.knowledge ? undefined : () => saveVoice()
                 }

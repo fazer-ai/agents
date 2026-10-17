@@ -53,6 +53,30 @@ describe("a tool whose argument is a union of types", () => {
   });
 });
 
+describe("a union inside an argument that may be null", () => {
+  test("is read back as the declaration carried it", async () => {
+    const seen: unknown[] = [];
+    const filtered = tool(
+      async (input: { filtro: { limite: number | boolean } | null }) => {
+        seen.push(input.filtro);
+        return "ok";
+      },
+      {
+        name: "listar",
+        description: "d",
+        schema: z.object({
+          filtro: z
+            .object({ limite: z.union([z.number(), z.boolean()]) })
+            .nullable(),
+        }),
+      },
+    );
+    const [voice] = toVoiceTools([filtered]);
+    expect(await voice?.invoke({ filtro: { limite: "5" } }, "c1")).toBe("ok");
+    expect(seen).toEqual([{ limite: 5 }]);
+  });
+});
+
 describe("a custom tool named end_call", () => {
   test("is not offered on a call, where the engine's own hang-up has that name", () => {
     const custom = tool(async () => "ok", {

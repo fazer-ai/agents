@@ -131,6 +131,12 @@ export function fromElevenLabsArgs(schema: Schema, value: unknown): unknown {
       return value;
     }
   }
+  // A nullable shape is declared as its one non-null branch (`elevenLabsSchema`), and read the same.
+  const branches = schema.anyOf ?? schema.oneOf;
+  if (!schema.type && Array.isArray(branches)) {
+    const branch = (branches as Schema[]).find((s) => s.type !== "null");
+    if (branch) return fromElevenLabsArgs(branch, value);
+  }
   if (Array.isArray(value) && schema.items && typeof schema.items === "object")
     return value.map((item) =>
       fromElevenLabsArgs(schema.items as Schema, item),

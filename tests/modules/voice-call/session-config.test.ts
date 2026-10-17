@@ -1,5 +1,10 @@
-import { describe, expect, test } from "bun:test";
-import { voiceSessionConfig } from "@/modules/voice-call/service";
+import { describe, expect, spyOn, test } from "bun:test";
+import type { ChatwootClient, RecentMessage } from "@/modules/chatwoot/client";
+import * as chatwootInstance from "@/modules/chatwoot/instance";
+import {
+  conversationHistory,
+  voiceSessionConfig,
+} from "@/modules/voice-call/service";
 
 // The call's instructions carry the WhatsApp conversation as something the agent answers from: the
 // caller is that conversation's contact, and what the contact or the team wrote there is not asked
@@ -37,5 +42,55 @@ describe("the conversation in a call's instructions", () => {
     expect(voiceSessionConfig(route, ctx).instructions).not.toContain(
       "# Conversa até agora",
     );
+  });
+});
+
+describe("the conversation a call reads", () => {
+  test("keeps what a voice note said, whoever sent it, and leaves out private notes", async () => {
+    const page: RecentMessage[] = [
+      { content: "Oi, é sobre o pedido 4821", message_type: 0, private: false },
+      {
+        content: "",
+        message_type: 0,
+        private: false,
+        attachments: [
+          { file_type: "audio", transcribed_text: "ele sai quando?" },
+        ],
+      },
+      {
+        content: null,
+        message_type: 1,
+        private: false,
+        attachments: [
+          { file_type: "audio", transcribed_text: "sai amanhã de manhã" },
+        ],
+      },
+      { content: "nota interna", message_type: 1, private: true },
+      // An audio nobody transcribed yet says nothing, and is left out.
+      {
+        content: "",
+        message_type: 0,
+        private: false,
+        attachments: [{ file_type: "audio", transcribed_text: "" }],
+      },
+    ];
+    const client = spyOn(
+      chatwootInstance,
+      "loadChatwootClient",
+    ).mockImplementation(
+      async () =>
+        ({ listRecentMessages: async () => page }) as unknown as ChatwootClient,
+    );
+    try {
+      expect(await conversationHistory(route, 10)).toBe(
+        [
+          "Contato: Oi, é sobre o pedido 4821",
+          "Contato: ele sai quando?",
+          "Atendimento: sai amanhã de manhã",
+        ].join("\n"),
+      );
+    } finally {
+      client.mockRestore();
+    }
   });
 });

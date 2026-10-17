@@ -176,13 +176,13 @@ async function saveToolsEdited() {
   });
   fireEvent.click(focusableIn(privateNote) ?? privateNote);
   await waitFor(() =>
-    expect((button("Save tools") as HTMLButtonElement)?.disabled).toBe(false),
+    expect((button("Save") as HTMLButtonElement)?.disabled).toBe(false),
   );
-  fireEvent.click(button("Save tools"));
+  fireEvent.click(button("Save"));
 }
 
 test("a close label removed on the language model is not saved by a Tools save on questions and rules", async () => {
-  const asked = stubApi();
+  const asked = stubApi(READY_TO_DECIDE);
   render(
     <MemoryRouter initialEntries={["/agents/1/tools"]}>
       <ThemeProvider>
@@ -198,7 +198,7 @@ test("a close label removed on the language model is not saved by a Tools save o
       </ThemeProvider>
     </MemoryRouter>,
   );
-  await waitFor(() => expect(text().includes("Save tools")).toBe(true));
+  await waitFor(() => expect(text().includes("Save")).toBe(true));
   // The first card with settings is resolve_conversation; its chip "vip" has a Remove button.
   const settings = [...document.querySelectorAll("button")].filter(
     (b) => b.getAttribute("aria-label") === "Settings",
@@ -234,11 +234,10 @@ test("a close label removed on the language model is not saved by a Tools save o
   );
   await saveToolsEdited();
 
-  const patch = await waitFor(() => {
-    const p = asked.find((a) => a.method === "PATCH");
-    if (!p) throw new Error("no PATCH yet");
-    return p;
-  });
+  // The engine switch goes out first, with General; the Tools PATCH is the last one.
+  await waitFor(() => expect(text().includes("Tools updated.")).toBe(true));
+  const patch = asked.filter((a) => a.method === "PATCH").at(-1);
+  if (!patch) throw new Error("no PATCH");
   const settingsSent = (patch.body as { settings: Record<string, unknown> })
     .settings;
   expect(JSON.stringify(settingsSent.resolveConversation)).toBe(
@@ -257,7 +256,7 @@ test("a close label removed on the language model is not saved by a Tools save o
 // The same holds for the grants: a tool this engine does not draw, revoked on the language model
 // before the switch, stays granted through a Tools save on questions and rules.
 test("a hidden tool revoked on the language model stays granted through a Tools save on questions and rules", async () => {
-  const asked = stubApi();
+  const asked = stubApi(READY_TO_DECIDE);
   render(
     <MemoryRouter initialEntries={["/agents/1/tools"]}>
       <ThemeProvider>
@@ -403,8 +402,8 @@ test("an Allow keeps a hidden revocation made on the language model", async () =
   // Back on the language model, a Tools save writes the revocation and the allowed tool.
   await engine("llm");
   await tab("Tools");
-  await waitFor(() => expect(Boolean(button("Save tools"))).toBe(true));
-  fireEvent.click(button("Save tools"));
+  await waitFor(() => expect(Boolean(button("Save"))).toBe(true));
+  fireEvent.click(button("Save"));
   const put = await waitFor(() => {
     const puts = asked.filter((a) => a.method === "PUT");
     if (puts.length < 2) throw new Error("no second PUT yet");
@@ -422,7 +421,7 @@ test("an Allow keeps a hidden revocation made on the language model", async () =
 // Knowledge is not drawn on questions and rules either: a base granted on the language model before
 // the switch is not written by a Tools save there, and Knowledge still reads unsaved afterwards.
 test("a Knowledge draft made on the language model stays unsaved through a Tools save on questions and rules", async () => {
-  const asked = stubApi();
+  const asked = stubApi(READY_TO_DECIDE);
   render(
     <MemoryRouter initialEntries={["/agents/1/knowledge"]}>
       <ThemeProvider>
@@ -466,12 +465,20 @@ test("a Knowledge draft made on the language model stays unsaved through a Tools
     if (!p) throw new Error("no PUT yet");
     return p;
   });
-  const sentRag = (put.body as { grants: { source: string }[] }).grants.some(
-    (g) => g.source === "RAG",
-  );
   await waitFor(() =>
     expect(asked.some((a) => a.method === "PATCH")).toBe(true),
   );
+  await waitFor(() => expect(text().includes("Tools updated.")).toBe(true));
+  // Every grant write of the save, not just the first: the Knowledge save, which this engine does not
+  // draw, must not follow the Tools one with the hidden draft.
+  const sentRag = asked
+    .filter((a) => a.method === "PUT")
+    .some((w) =>
+      (w.body as { grants: { source: string }[] }).grants.some(
+        (g) => g.source === "RAG",
+      ),
+    );
+  expect(put).toBeDefined();
   await engine("llm");
   await tab("Knowledge");
   await waitFor(() => expect(text().includes("FAQ do SAC")).toBe(true));
@@ -499,6 +506,31 @@ const renderAt = (path: string) =>
       </ThemeProvider>
     </MemoryRouter>,
   );
+
+// On the language model, with a complete decision setup already stored: the switch to questions and
+// rules can be saved, and the bar saves it with the rest of the agent (agents#1520).
+const READY_TO_DECIDE = {
+  ...AGENT,
+  settings: {
+    ...AGENT.settings,
+    monitoring: {
+      engine: "llm",
+      decisions: {
+        provider: "typesafe",
+        credentialRef: "vault:12",
+        questions: [
+          { name: "pede_reembolso", type: "yes_no", instructions: "Pede?" },
+        ],
+        rules: [
+          {
+            when: [{ question: "pede_reembolso", minProbability: 0.7 }],
+            action: { tool: "set_labels", args: { add: ["reembolso"] } },
+          },
+        ],
+      },
+    },
+  },
+};
 
 const DECIDING = {
   ...AGENT,
@@ -590,7 +622,7 @@ test("a tool toggled while Save tools is in flight stays unsaved on questions an
   // An edit so Save tools has something to write.
   fireEvent.click(focusableIn(privateNote) ?? privateNote);
   await waitFor(() => expect(Boolean(button("Discard"))).toBe(true));
-  fireEvent.click(button("Save tools"));
+  fireEvent.click(button("Save"));
   await waitFor(() => expect(putSent).toBe(true));
   // While the grants PUT is held, enable handoff.
   const handoff = document.getElementById(
@@ -653,7 +685,7 @@ test("a Tools save on questions and rules writes hidden guidance verbatim", asyn
 // The engine switched back while a Tools save on questions and rules is out: the request wrote the
 // language model's settings as stored, so the edit made there before the switch is still unsaved.
 test("a switch back to the language model while Save tools is out keeps its draft unsaved", async () => {
-  const asked = stubApi();
+  const asked = stubApi(READY_TO_DECIDE);
   const served = globalThis.fetch;
   let release: () => void = () => {};
   const held = new Promise<void>((r) => {
@@ -668,7 +700,7 @@ test("a switch back to the language model while Save tools is out keeps its draf
     return served(input, init);
   }) as typeof fetch;
   renderAt("/agents/1/tools");
-  await waitFor(() => expect(text().includes("Save tools")).toBe(true));
+  await waitFor(() => expect(text().includes("Save")).toBe(true));
   // Remove "vip" from "Labels on close", a setting questions and rules do not draw.
   const settings = [...document.querySelectorAll("button")].filter(
     (b) => b.getAttribute("aria-label") === "Settings",
@@ -692,7 +724,10 @@ test("a switch back to the language model while Save tools is out keeps its draf
     expect(asked.some((a) => a.method === "PATCH")).toBe(true),
   );
   await waitFor(() => expect(text().includes("Tools updated.")).toBe(true));
-  const patch = asked.find((a) => a.method === "PATCH") as { body: unknown };
+  // The engine switch went out first, with General; the Tools PATCH is the last one.
+  const patch = asked.filter((a) => a.method === "PATCH").at(-1) as {
+    body: unknown;
+  };
   const sent = (patch.body as { settings: Record<string, unknown> }).settings;
   expect(
     `${JSON.stringify(sent.resolveConversation)} ${Boolean(button("Discard all"))}`,

@@ -1,11 +1,17 @@
 /// <reference lib="dom" />
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { act, cleanup, fireEvent, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { renderEditor, stubEditorApi } from "../utils/agent-editor";
 
-// A voice agent's editor: its own tabs, and the Voice card on General, whose edits General's own
-// Discard takes back like any other field on that tab.
+// A voice agent's editor: its own tabs, and the Voice card on General, whose edits the bar's Discard
+// takes back like any other field.
 
 const realFetch = globalThis.fetch;
 afterEach(() => {
@@ -253,13 +259,109 @@ describe("the editor of a voice agent", () => {
     expect(screen.queryByText("Suggestion reviewer")).not.toBeNull();
   });
 
-  test("General's Discard takes back a change to the Voice card", async () => {
+  // The bar saves the agent from any tab (agents#1520); a voice agent's General and call settings go
+  // out in its one write, so a call setting is neither written apart nor reported as left unsaved.
+  test("Save pressed on Tools writes a pending call setting in the one voice save", async () => {
+    const stub = await open("call");
+    fireEvent.change(screen.getByRole("textbox", { name: /^Longest call/ }), {
+      target: { value: "7" },
+    });
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("tab", { name: "Tools" }));
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    const anyMarked = () =>
+      screen
+        .getAllByRole("tab")
+        .some((tab) => tab.querySelector(".bg-warning") !== null);
+    await waitFor(() =>
+      expect(stub.writes.filter((w) => w.method === "PATCH")).toHaveLength(1),
+    );
+    await waitFor(() => expect(anyMarked()).toBe(false));
+    const patches = stub.writes.filter((w) => w.method === "PATCH");
+    expect(patches).toHaveLength(1);
+    const body = patches[0]?.body as {
+      name?: string;
+      settings: { calls: { maxDurationSecs: number } };
+    };
+    expect(body.name).toBe("Atendente");
+    expect(body.settings.calls.maxDurationSecs).toBe(420);
+    expect(screen.queryByText(/were not saved/)).toBeNull();
+  });
+
+  test("a call setting edited while the bar's save is out stays pending, on its own tab", async () => {
+    const stub = await open("call");
+    let answer: (() => void) | null = null;
+    stub.override = (method, path, body) => {
+      if (method !== "PATCH" || !path.endsWith("/agents/41")) return undefined;
+      return new Promise<Response>((resolve) => {
+        answer = () => {
+          const { expectedUpdatedAt: _, ...patch } = body;
+          stub.agent = {
+            ...stub.agent,
+            ...patch,
+            updatedAt: "2026-01-01T00:05:00.000Z",
+          };
+          resolve(
+            new Response(JSON.stringify({ agent: stub.agent }), {
+              headers: { "content-type": "application/json" },
+            }),
+          );
+        };
+      });
+    };
+    const longest = () =>
+      screen.getByRole("textbox", { name: /^Longest call/ });
+    fireEvent.change(longest(), { target: { value: "7" } });
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await act(async () => {});
+    expect(answer).not.toBeNull();
+    fireEvent.change(longest(), { target: { value: "8" } });
+    await act(async () => {});
+    await act(async () => (answer as (() => void) | null)?.());
+    for (let i = 0; i < 5; i++) await act(async () => {});
+    // The edit made meanwhile was not in the save: no second write, no word of tabs this agent does
+    // not use, and the Call tab still owes it.
+    expect(stub.writes.filter((w) => w.method === "PATCH")).toHaveLength(1);
+    expect(screen.queryByText(/were not saved/)).toBeNull();
+    expect((longest() as HTMLInputElement).value).toBe("8");
+    expect(
+      screen
+        .getByRole("tab", { name: "Call settings" })
+        .querySelector(".bg-warning"),
+    ).not.toBeNull();
+  });
+
+  test("Save and export writes a pending call setting in the voice save", async () => {
+    const stub = await open("call");
+    fireEvent.change(screen.getByRole("textbox", { name: /^Longest call/ }), {
+      target: { value: "7" },
+    });
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("button", { name: "Export" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Save and export" }),
+    );
+    await waitFor(() =>
+      expect(stub.writes.filter((w) => w.method === "PATCH")).toHaveLength(1),
+    );
+    const body = stub.writes.find((w) => w.method === "PATCH")?.body as {
+      name?: string;
+      settings: { calls: { maxDurationSecs: number } };
+    };
+    expect(body.name).toBe("Atendente");
+    expect(body.settings.calls.maxDurationSecs).toBe(420);
+  });
+
+  test("Discard takes back a change to the Voice card, after asking", async () => {
     await open();
     expect(modelSelect().value).toBe("gpt-4.1-mini");
     fireEvent.change(modelSelect(), { target: { value: "qwen36-35b-a3b" } });
     await act(async () => {});
     expect(modelSelect().value).toBe("qwen36-35b-a3b");
     fireEvent.click(screen.getByRole("button", { name: "Discard" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Discard all" }));
     await act(async () => {});
     expect(modelSelect().value).toBe("gpt-4.1-mini");
   });
@@ -304,7 +406,7 @@ describe("the editor of a voice agent", () => {
     await open("tools");
     fireEvent.click(screen.getByRole("button", { name: "Add a precondition" }));
     await act(async () => {});
-    expect(screen.getByRole("button", { name: "Save tools" })).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Save" })).not.toBeNull();
     fireEvent.click(
       screen.getByRole("button", { name: "Call in the playground" }),
     );
@@ -340,9 +442,7 @@ describe("the editor of a voice agent", () => {
     await act(async () => {});
     fireEvent.click(screen.getByText("Perguntas frequentes"));
     await act(async () => {});
-    expect(
-      screen.getByRole("button", { name: "Save knowledge" }),
-    ).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Save" })).not.toBeNull();
     fireEvent.click(
       screen.getByRole("button", { name: "Call in the playground" }),
     );
@@ -442,7 +542,7 @@ describe("the editor of a voice agent", () => {
     await act(async () => {});
     fireEvent.click(screen.getByText("Perguntas frequentes"));
     await act(async () => {});
-    const save = screen.getByRole("button", { name: "Save knowledge" });
+    const save = screen.getByRole("button", { name: "Save" });
     expect(save.hasAttribute("disabled")).toBe(false);
   });
 

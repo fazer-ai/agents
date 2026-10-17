@@ -480,6 +480,11 @@ describe("farewell detection", () => {
     ["Clínica Moreira, bom dia! Aqui é a Maria. Como posso ajudar?", false],
     ["Até logo! Posso ajudar em mais alguma coisa?", false],
     ["Sim, aceitamos Unimed.", false],
+    // A greeting that names the time of day, and an answer that says "até mais tarde", end nothing.
+    ["Uma ótima tarde! Aqui é a Ana, da clínica.", false],
+    ["Hoje a clínica fica aberta até mais tarde.", false],
+    ["Tenha uma ótima tarde! O retorno é na quinta.", false],
+    ["Anotado, a equipe te retorna. Uma ótima tarde!", true],
   ])("%s -> %p", (text, expected) => {
     expect(isFarewell(text)).toBe(expected);
   });

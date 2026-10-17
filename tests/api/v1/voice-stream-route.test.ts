@@ -1,6 +1,11 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { Elysia } from "elysia";
-import { inFlightWork } from "@/lib/shutdown";
+import {
+  drainInFlight,
+  inFlightWork,
+  resetShutdownForTest,
+} from "@/lib/shutdown";
+import type { CallRecord } from "@/modules/voice-call/bridge";
 import * as service from "@/modules/voice-call/service";
 import * as setup from "@/modules/voice-call/setup";
 import * as tools from "@/modules/voice-call/tools";
@@ -15,7 +20,9 @@ import { setupPrismaMock } from "@/tests/utils/prisma-mock";
 
 setupPrismaMock();
 
-const { voiceController } = await import("@/api/v1/voice.controller");
+const { voiceController, callSummary } = await import(
+  "@/api/v1/voice.controller"
+);
 
 const nativeGlobals = globalThis as unknown as {
   BunWebSocket: typeof WebSocket;
@@ -177,6 +184,32 @@ describe("the call stream route", () => {
     }
   });
 
+  test("a live call holds a shutdown, and one still live at the bound is hung up and reported", async () => {
+    const before = read.reported.length;
+    const ws = await open("tok", 12);
+    const closed = new Promise<void>((resolve) => {
+      ws.onclose = () => resolve();
+    });
+    ws.send(JSON.stringify({ event: "start", direction: "inbound" }));
+    ws.send(JSON.stringify({ event: "answered" }));
+    await until("the fence to be asked", () => fenceHeld);
+    expect(inFlightWork().byKind["voice-call"]).toBe(1);
+    try {
+      const drained = await drainInFlight({ boundMs: 10, settleMs: 1_000 });
+      expect(drained.stillRunning.byKind["voice-call"]).toBe(1);
+      await closed;
+      await until(
+        "the call to be reported",
+        () => read.reported.length > before,
+      );
+      expect(inFlightWork().byKind["voice-call"]).toBeUndefined();
+    } finally {
+      fenceHeld?.();
+      fenceHeld = null;
+      resetShutdownForTest();
+    }
+  });
+
   test("a report that fails is logged, and the server keeps taking calls", async () => {
     failReport = true;
     try {
@@ -189,5 +222,20 @@ describe("the call stream route", () => {
     const after = read.history.length;
     await call(10);
     expect(read.history.length).toBe(after + 1);
+  });
+});
+
+describe("the summary of a call that ended", () => {
+  test("is asked of the engine, except for a call a shutdown cut", async () => {
+    const asked: string[] = [];
+    const fetchSummary = async (_key: string, id: string) => {
+      asked.push(id);
+      return "resumo";
+    };
+    const setup = { apiKey: "k" } as unknown as setup.CallsSetup;
+    const done = { engineConversationId: "conv-1" } as CallRecord;
+    expect(await callSummary(setup, false, done, fetchSummary)).toBe("resumo");
+    expect(await callSummary(setup, true, done, fetchSummary)).toBeNull();
+    expect(asked).toEqual(["conv-1"]);
   });
 });

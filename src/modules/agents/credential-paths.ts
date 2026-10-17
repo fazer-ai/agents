@@ -28,8 +28,8 @@ export const SETTINGS_CREDENTIAL_PATHS = [
   },
   {
     path: ["calls", "credentialRef"],
-    tab: "behavior",
-    sectionId: "calls",
+    tab: "general",
+    sectionId: "general-voice",
     use: "apiKey",
   },
   {

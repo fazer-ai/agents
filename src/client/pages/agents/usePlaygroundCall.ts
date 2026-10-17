@@ -9,7 +9,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@/client/lib/api";
 
 const RATE = 16_000;
-// 64 ms per frame: what ScriptProcessorNode accepts closest to the 20 to 60 ms a call sends.
+// The microphone's frame at the device's rate: 21 ms at 48 kHz, 23 ms at 44.1 kHz, inside the 20 to
+// 60 ms a call sends.
 const FRAME = 1024;
 // The Brazilian line tones: 425 Hz, ringback 1 s on and 4 s off, busy 250 ms on and off.
 const TONE_HZ = 425;
@@ -38,6 +39,37 @@ export function voiceEndIn(samples: Float32Array, at: number): number | null {
     if (Math.sqrt(sum / (stop - i)) > SPEECH_RMS) end = at + stop / RATE;
   }
   return end;
+}
+
+/**
+ * The microphone at the audio context's rate brought down to the call's 16 kHz, frame after frame:
+ * each sample the mean of the input it spans, what is left of a frame carried into the next one.
+ */
+export function downsampler(
+  fromRate: number,
+): (input: Float32Array) => Float32Array {
+  const step = fromRate / RATE;
+  let carry = new Float32Array(0);
+  // Where the next sample starts, in `carry` followed by the new frame.
+  let pos = 0;
+  return (input) => {
+    const buf = new Float32Array(carry.length + input.length);
+    buf.set(carry);
+    buf.set(input, carry.length);
+    const out: number[] = [];
+    while (pos + step <= buf.length) {
+      const from = Math.floor(pos);
+      const to = Math.max(from + 1, Math.floor(pos + step));
+      let sum = 0;
+      for (let i = from; i < to; i++) sum += buf[i] as number;
+      out.push(sum / (to - from));
+      pos += step;
+    }
+    const kept = Math.floor(pos);
+    carry = buf.slice(kept);
+    pos -= kept;
+    return Float32Array.from(out);
+  };
 }
 
 /** Who the screen says is talking: the agent while its voice plays, the operator while the microphone hears them. */
@@ -243,9 +275,10 @@ export function usePlaygroundCall(agentId: string) {
     setLines([]);
     setCall({ state: "preparing" });
     // Made and resumed in the click itself: Safari starts Web Audio only inside a user gesture, and the
-    // microphone prompt and the setup request below both end it. The context runs at the call's rate,
-    // so the browser resamples the microphone and the agent.
-    const audio = new AudioContext({ sampleRate: RATE });
+    // microphone prompt and the setup request below both end it. The context runs at the device's
+    // rate: Firefox refuses a microphone into a context at another rate (`NotSupportedError`), so the
+    // microphone is brought to the call's 16 kHz here, and the agent's buffers by the browser.
+    const audio = new AudioContext();
     pendingAudio.current = audio;
     const unlocked = audio.resume().catch(() => {});
     const dropAudio = () => {
@@ -312,8 +345,25 @@ export function usePlaygroundCall(agentId: string) {
       setCall({ state: "failed", problem: "audio", detail: null });
       return;
     }
+    // A browser that cannot build the audio graph fails the call here, with nothing left holding the
+    // microphone, instead of ringing with no line behind it.
+    let node: ScriptProcessorNode;
+    try {
+      node = audio.createScriptProcessor(FRAME, 1, 1);
+      audio.createMediaStreamSource(mic).connect(node);
+      // A ScriptProcessorNode only runs while connected; its output stays silent.
+      node.connect(audio.destination);
+    } catch (err) {
+      dropMic();
+      setCall({
+        state: "failed",
+        problem: "audio",
+        detail: (err as Error).message,
+      });
+      return;
+    }
     pendingAudio.current = null;
-    const node = audio.createScriptProcessor(FRAME, 1, 1);
+    const toCallRate = downsampler(audio.sampleRate);
     const scheme = location.protocol === "https:" ? "wss:" : "ws:";
     const ws = new WebSocket(
       `${scheme}//${location.host}/api/v1/voice/playground/${encodeURIComponent(data.ticket)}`,
@@ -339,15 +389,13 @@ export function usePlaygroundCall(agentId: string) {
       let peak = 0;
       for (const s of input) peak = Math.max(peak, Math.abs(s));
       l.micPeak = Math.max(l.micPeak, peak);
+      const samples = toCallRate(input);
       if (ws.readyState !== WebSocket.OPEN || !l.answeredAt) return;
-      const pcm = Int16Array.from(input, (s) =>
+      const pcm = Int16Array.from(samples, (s) =>
         Math.max(-0x8000, Math.min(0x7fff, Math.round(s * 0x8000))),
       );
       ws.send(JSON.stringify({ event: "media", payload: toBase64(pcm) }));
     };
-    audio.createMediaStreamSource(mic).connect(node);
-    // A ScriptProcessorNode only runs while connected; its output stays silent.
-    node.connect(audio.destination);
 
     ws.onopen = () => {
       ws.send(

@@ -40,6 +40,25 @@ export function isFarewell(text: string): boolean {
   return FAREWELL.test(t) && !t.includes("?");
 }
 
+// The agent's audio carries the background sound the whole call, so its VOICE is read by level: 50 ms
+// windows above this RMS. Measured on a call with the background on, 100 ms windows: the background
+// between 0.009 and 0.016 of full scale, the voice above 0.05.
+const AGENT_VOICE_RMS = 0.035 * 32_768;
+const VOICE_WINDOW = CALL_RATE / 20;
+
+/** Where the voice in a chunk of the agent's audio ends, in ms after the chunk starts; null for none. */
+export function voiceEndInMs(pcm: Int16Array): number | null {
+  let end: number | null = null;
+  for (let i = 0; i < pcm.length; i += VOICE_WINDOW) {
+    const stop = Math.min(pcm.length, i + VOICE_WINDOW);
+    let sum = 0;
+    for (let j = i; j < stop; j++) sum += (pcm[j] as number) ** 2;
+    if (Math.sqrt(sum / (stop - i)) > AGENT_VOICE_RMS)
+      end = pcmMs(stop, CALL_RATE);
+  }
+  return end;
+}
+
 function loud(pcm: Int16Array): boolean {
   for (const sample of pcm) if (Math.abs(sample) > VOICE_PEAK) return true;
   return false;
@@ -93,6 +112,8 @@ export class CallBridge {
   private answered = false;
   private finished = false;
   private playoutEnd = 0;
+  // When the agent's voice (not its background sound) stops playing on the line.
+  private voiceEnd = 0;
   // The pending goodbye: when it was said, and whether any of its audio reached the line yet.
   private farewellAt = 0;
   private farewellHeard = false;
@@ -191,9 +212,17 @@ export class CallBridge {
           if (this.finished) return;
           this.options.tap?.agent?.(pcm);
           const now = Date.now();
-          this.playoutEnd =
-            Math.max(this.playoutEnd, now) + pcmMs(pcm.length, CALL_RATE);
-          // The goodbye's audio started: its silence counts from the end of it, not from a bound.
+          const startsAt = Math.max(this.playoutEnd, now);
+          this.playoutEnd = startsAt + pcmMs(pcm.length, CALL_RATE);
+          const voice = voiceEndInMs(pcm);
+          if (voice === null) {
+            this.socket.send(
+              JSON.stringify({ event: "media", payload: pcmToBase64(pcm) }),
+            );
+            return;
+          }
+          this.voiceEnd = Math.max(this.voiceEnd, startsAt + voice);
+          // The goodbye's voice started: its silence counts from the end of it, not from a bound.
           if (this.farewellTimer && !this.farewellHeard) {
             this.farewellHeard = true;
             this.scheduleFarewell();
@@ -206,6 +235,7 @@ export class CallBridge {
           // The person spoke over the goodbye: the call goes on.
           this.cancelFarewell();
           this.playoutEnd = Date.now();
+          this.voiceEnd = this.playoutEnd;
           this.socket.send(JSON.stringify({ event: "clear" }));
         },
         onTranscript: (entry) => {
@@ -246,8 +276,8 @@ export class CallBridge {
   private armFarewell() {
     this.cancelFarewell();
     this.farewellAt = Date.now();
-    // Audio still playing when the words arrive is the goodbye's own.
-    this.farewellHeard = this.playoutEnd > this.farewellAt;
+    // A voice still playing when the words arrive is the goodbye's own.
+    this.farewellHeard = this.voiceEnd > this.farewellAt;
     this.scheduleFarewell();
   }
 
@@ -257,7 +287,7 @@ export class CallBridge {
     if (this.farewellTimer) clearTimeout(this.farewellTimer);
     const now = Date.now();
     const at = this.farewellHeard
-      ? Math.max(this.playoutEnd, now) + FAREWELL_SILENCE_MS
+      ? Math.max(this.voiceEnd, now) + FAREWELL_SILENCE_MS
       : this.farewellAt + FAREWELL_AUDIO_WAIT_MS;
     this.farewellTimer = setTimeout(() => this.checkFarewell(), at - now);
   }
@@ -265,10 +295,11 @@ export class CallBridge {
   private checkFarewell() {
     this.farewellTimer = null;
     if (this.finished || this.hangupTimer) return;
-    // From the end of what is still playing: audio that arrived after the transcript moves it.
+    // From the end of the voice still playing: a voice that arrived after the transcript moves it,
+    // and the background sound, which never stops, does not.
     if (
       this.farewellHeard &&
-      this.playoutEnd + FAREWELL_SILENCE_MS > Date.now()
+      this.voiceEnd + FAREWELL_SILENCE_MS > Date.now()
     ) {
       this.scheduleFarewell();
       return;

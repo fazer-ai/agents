@@ -496,6 +496,15 @@ class AttributeBatch {
   ) {}
 }
 
+/** A message as the conversation's page lists it; an audio's words ride on its attachment. */
+export interface RecentMessage {
+  content: string | null;
+  message_type: number;
+  private: boolean;
+  sender?: { name?: string };
+  attachments?: Array<{ file_type?: string; transcribed_text?: string | null }>;
+}
+
 export class ChatwootClient {
   private readonly fetchImpl: typeof fetch;
   private readonly accountBase: string;
@@ -839,25 +848,12 @@ export class ChatwootClient {
 
   // Assign a TEAM (same assignments endpoint, `team_id` instead of `assignee_id`). Bot-accessible like
   // The latest page of a conversation's messages, oldest first, for a voice agent's opening context.
-  async listRecentMessages(conversationId: number): Promise<
-    Array<{
-      content: string | null;
-      message_type: number;
-      private: boolean;
-      sender?: { name?: string };
-    }>
-  > {
+  async listRecentMessages(conversationId: number): Promise<RecentMessage[]> {
     const body = (await this.request(
       this.config.adminToken,
       "GET",
       `/conversations/${conversationId}/messages`,
-    )) as {
-      payload?: Array<{
-        content: string | null;
-        message_type: number;
-        private: boolean;
-      }>;
-    };
+    )) as { payload?: RecentMessage[] };
     return body.payload ?? [];
   }
 

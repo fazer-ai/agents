@@ -7,7 +7,7 @@ import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { normalizeAgentMode } from "@/modules/agents/mode";
-import type { ChatwootClient } from "@/modules/chatwoot/client";
+import type { ChatwootClient, RecentMessage } from "@/modules/chatwoot/client";
 import {
   type LoadChatwootClientDeps,
   loadAgentBot,
@@ -16,6 +16,7 @@ import {
 import { literalForChatwoot } from "@/modules/chatwoot/liquid";
 import { mirrorChatwootEvent } from "@/modules/chatwoot/mirror";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
+import { cleanTranscription } from "@/modules/chatwoot/render";
 import { hashRouteToken } from "@/modules/webhooks/inbound/route-token";
 import type { CallRecord } from "./bridge";
 import type { CallDirection, VoiceSessionConfig } from "./providers/types";
@@ -172,6 +173,17 @@ export async function fenceConversation(
   return null;
 }
 
+/**
+ * What a message says: its text, or the words of the voice note it carries, which arrive on the audio
+ * attachment's `transcribed_text` with an empty `content`.
+ */
+function said(m: RecentMessage): string {
+  const text = m.content?.trim();
+  if (text) return text;
+  const audio = m.attachments?.find((a) => a.file_type === "audio");
+  return cleanTranscription(audio?.transcribed_text ?? "");
+}
+
 /** The conversation so far on WhatsApp, as lines the agent reads before the call: who said what. */
 export async function conversationHistory(
   route: VoiceRoute,
@@ -186,16 +198,15 @@ export async function conversationHistory(
     const messages = await client.listRecentMessages(conversationId);
     return messages
       .filter(
-        (m) =>
-          !m.private &&
-          (m.message_type === 0 || m.message_type === 1) &&
-          m.content?.trim(),
+        (m) => !m.private && (m.message_type === 0 || m.message_type === 1),
       )
+      .map((m) => ({
+        who: m.message_type === 0 ? "Contato" : "Atendimento",
+        text: said(m),
+      }))
+      .filter((m) => m.text)
       .slice(-HISTORY_LIMIT)
-      .map(
-        (m) =>
-          `${m.message_type === 0 ? "Contato" : "Atendimento"}: ${m.content?.trim()}`,
-      )
+      .map((m) => `${m.who}: ${m.text}`)
       .join("\n");
   } catch (err) {
     logger.warn(

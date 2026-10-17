@@ -547,7 +547,7 @@ describe("farewell detection", () => {
     handlers.onTranscript({ role: "agent", text: "Tchau!", atMs: 1 });
     jest.advanceTimersByTime(1_000);
     // One second of the farewell's audio, now: it plays until t=2000.
-    handlers.onAudio(new Int16Array(16_000));
+    handlers.onAudio(new Int16Array(16_000).fill(6_000));
     jest.advanceTimersByTime(3_000);
     expect(hungUp()).toBe(false);
     jest.advanceTimersByTime(600);
@@ -561,10 +561,44 @@ describe("farewell detection", () => {
     jest.advanceTimersByTime(3_000);
     expect(hungUp()).toBe(false);
     // One second of the farewell's audio, now: it plays until t=4000.
-    handlers.onAudio(new Int16Array(16_000));
+    handlers.onAudio(new Int16Array(16_000).fill(6_000));
     jest.advanceTimersByTime(3_000);
     expect(hungUp()).toBe(false);
     jest.advanceTimersByTime(600);
+    expect(hungUp()).toBe(true);
+  });
+
+  test("the background sound that keeps playing after a farewell does not hold the call open", async () => {
+    const { ws, handlers } = await answeredCall();
+    const hungUp = () => ws.sent.some((f) => f.event === "hangup");
+    handlers.onTranscript({ role: "agent", text: "Tchau!", atMs: 1 });
+    // The goodbye's voice, one second of it, then the background alone every half second.
+    handlers.onAudio(new Int16Array(16_000).fill(6_000));
+    for (let i = 0; i < 8; i++) {
+      jest.advanceTimersByTime(500);
+      handlers.onAudio(new Int16Array(8_000).fill(300));
+    }
+    expect(hungUp()).toBe(true);
+  });
+
+  test("a farewell that goes on hangs up its silence after its last word, not after the background queued behind it", async () => {
+    const { ws, handlers } = await answeredCall();
+    const hungUp = () => ws.sent.some((f) => f.event === "hangup");
+    const voice = (secs: number) => new Int16Array(16_000 * secs).fill(6_000);
+    const background = (secs: number) =>
+      new Int16Array(16_000 * secs).fill(300);
+    handlers.onTranscript({ role: "agent", text: "Tchau!", atMs: 1 });
+    // Voice until t=1, background until t=2, voice again until t=3: the last word ends at t=3.
+    handlers.onAudio(voice(1));
+    handlers.onAudio(background(1));
+    handlers.onAudio(voice(1));
+    // And the background keeps arriving, half a second at a time, a second ahead of the line.
+    for (let i = 0; i < 12; i++) {
+      handlers.onAudio(background(0.5));
+      jest.advanceTimersByTime(500);
+      if (i === 9) expect(hungUp()).toBe(false); // t=5.0
+    }
+    // t=6.0: the silence after the last word (2.5 s from t=3) has passed.
     expect(hungUp()).toBe(true);
   });
 

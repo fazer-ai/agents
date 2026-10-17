@@ -21,6 +21,7 @@ import {
   keepCallsSystemFields,
   readCallsConfig,
 } from "@/modules/voice-call/settings";
+import { memoryEngineHold } from "@/tests/utils/engine-hold";
 
 describe("calls settings", () => {
   test("a voice agent that never configured its calls has the defaults, Raquel's voice included", () => {
@@ -338,10 +339,12 @@ describe("an agent deleted on ElevenLabs after this process wrote it", () => {
         agentId,
       );
       await expect(
-        elevenLabsProvider({ apiKey: "k", agentId, fetchImpl }).open(
-          config,
-          handlers,
-        ),
+        elevenLabsProvider({
+          apiKey: "k",
+          agentId,
+          fetchImpl,
+          holdEngine: memoryEngineHold(),
+        }).open(config, handlers),
       ).rejects.toThrow("404");
       expect(await ensureElevenLabsAgent("k", agentId, spec, fetchImpl)).toBe(
         `${agentId}_back`,

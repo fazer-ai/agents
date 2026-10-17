@@ -2189,6 +2189,16 @@ model ProcessLease {
   @@map("process_leases")
 }
 
+// Who is starting a call on an ElevenLabs agent, across processes (migration 20261016220000).
+model VoiceEngineHold {
+  engineAgentId  String    @id @map("engine_agent_id")
+  holder         String?   @db.Uuid
+  heldUntil      DateTime? @map("held_until") @db.Timestamptz(3)
+  declaredDigest String?   @map("declared_digest")
+
+  @@map("voice_engine_holds")
+}
+
 model SchedulerJob {
   id            BigInt             @id @default(autoincrement())
   tenantId      BigInt             @map("tenant_id")

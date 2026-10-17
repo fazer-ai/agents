@@ -4,6 +4,7 @@ import type {
   VoiceSessionConfig,
   VoiceSessionHandlers,
 } from "@/modules/voice-call/providers/types";
+import { memoryEngineHold } from "@/tests/utils/engine-hold";
 import { until } from "@/tests/utils/poll";
 
 // A tool the agent asks for on the call runs here, its result goes back on the call's socket, and
@@ -114,6 +115,7 @@ describe("a tool the agent runs on an ElevenLabs call", () => {
     };
     const session = await elevenLabsProvider({
       apiKey: "k",
+      holdEngine: memoryEngineHold(),
       agentId: "agent-session-test",
       fetchImpl: engine.fetchImpl,
     }).open(CONFIG, handlers);
@@ -135,8 +137,8 @@ describe("a tool the agent runs on an ElevenLabs call", () => {
   });
 });
 
-describe("two calls on one ElevenLabs agent", () => {
-  test("the second declares its tools only once the first's conversation started", async () => {
+describe("calls on one ElevenLabs agent", () => {
+  test("each declares its tools once the previous conversation started, and a set already there is not declared again", async () => {
     const order: string[] = [];
     server = Bun.serve({
       port: 0,
@@ -184,6 +186,7 @@ describe("two calls on one ElevenLabs agent", () => {
     };
     const provider = elevenLabsProvider({
       apiKey: "k",
+      holdEngine: memoryEngineHold(),
       agentId: "agent-shared-test",
       fetchImpl,
     });
@@ -198,12 +201,18 @@ describe("two calls on one ElevenLabs agent", () => {
     const opened = await second;
     opened.begin();
     await until("the second conversation to start", () => order.length === 4);
+    // A third with the second's tools finds them already on the agent, as the hold recorded.
+    const third = await provider.open(configFor("B"), handlers);
+    third.begin();
+    await until("the third conversation to start", () => order.length === 5);
     first.close();
     opened.close();
+    third.close();
     expect(order).toEqual([
       "declared A",
       "started A",
       "declared B",
+      "started B",
       "started B",
     ]);
   });
@@ -231,6 +240,7 @@ describe("an ElevenLabs socket that never opens", () => {
         : new Response("{}")) as unknown as typeof fetch;
     const provider = elevenLabsProvider({
       apiKey: "k",
+      holdEngine: memoryEngineHold(),
       agentId: "agent-never-opens",
       fetchImpl,
       openTimeoutMs: 1,
@@ -288,6 +298,7 @@ describe("an ElevenLabs request that hangs while the agent is held", () => {
       const api = hangingOn(hangs);
       const provider = elevenLabsProvider({
         apiKey: "k",
+        holdEngine: memoryEngineHold(),
         agentId: `agent-hangs-${hangs}`,
         fetchImpl: api.fetchImpl,
         openTimeoutMs: 5,
@@ -336,6 +347,7 @@ describe("an ElevenLabs conversation that never starts", () => {
     };
     const provider = elevenLabsProvider({
       apiKey: "k",
+      holdEngine: memoryEngineHold(),
       agentId: "agent-never-starts",
       fetchImpl,
       openTimeoutMs: 200,

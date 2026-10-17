@@ -110,8 +110,12 @@ const VOICE_RULES = [
 
 // The call is from the contact of this conversation, and what was said there holds on the call: the
 // agent answers from it instead of asking again for what the contact or the team already wrote.
+// Measured on ElevenLabs' conversation simulation with gpt-4.1-mini at temperature 0, asking for an
+// order number and date the conversation holds: the conversation after the voice rules was answered
+// 0 times in 5 with this note and 0 in 5 without it moved alone; right after the agent's own prompt,
+// with this note, 12 in 13, and an asked-for fact the conversation does not hold was not invented.
 const HISTORY_NOTE =
-  "Quem está ligando é o contato desta conversa. O que está escrito aqui vale na ligação: use, responda com base nisso e não peça de novo o que o contato ou a equipe já disseram.";
+  "Quem está ligando é o contato desta conversa, e você já sabe o que está escrito abaixo. Quando a pessoa perguntar algo que esta conversa responde (um número de pedido, um prazo, o que a equipe disse), responda com isso na hora. Não peça nome, número nem outro dado para localizar o que já está aqui.";
 
 const HISTORY_LIMIT = 20;
 
@@ -266,10 +270,11 @@ export function voiceSessionConfig(
   return {
     instructions: [
       route.systemPrompt,
-      `# Ligação de voz\n${VOICE_RULES}\n${opening}\nAgora é ${nowInSaoPaulo()} (horário de Brasília).\n${upcomingDays()}`,
+      // Before the voice rules: placed after them, the model asked for what the conversation held.
       history
         ? `# Conversa até agora no WhatsApp (mais recente por último)\n${HISTORY_NOTE}\n${history}`
         : "",
+      `# Ligação de voz\n${VOICE_RULES}\n${opening}\nAgora é ${nowInSaoPaulo()} (horário de Brasília).\n${upcomingDays()}`,
     ]
       .filter(Boolean)
       .join("\n\n"),

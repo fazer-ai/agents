@@ -25,13 +25,16 @@ describe("the conversation in a call's instructions", () => {
     const history =
       "Contato: queria saber do pedido 4821\nAtendimento: o pedido 4821 sai amanhã";
     const { instructions } = voiceSessionConfig(route, ctx, undefined, history);
-    const section = instructions.slice(
-      instructions.indexOf("# Conversa até agora no WhatsApp"),
-    );
+    const at = instructions.indexOf("# Conversa até agora no WhatsApp");
+    const rules = instructions.indexOf("# Ligação de voz");
+    const section = instructions.slice(at, rules);
     expect(instructions.startsWith("Você é a Raquel.")).toBe(true);
-    expect(section).toContain("Quem está ligando é o contato desta conversa.");
-    expect(section).toContain("não peça de novo");
-    expect(section.endsWith(history)).toBe(true);
+    // Right after the agent's own prompt, before the voice rules (see HISTORY_NOTE for the measure).
+    expect(at).toBeGreaterThan(0);
+    expect(rules).toBeGreaterThan(at);
+    expect(section).toContain("Quem está ligando é o contato desta conversa");
+    expect(section).toContain("responda com isso na hora");
+    expect(section.trimEnd().endsWith(history)).toBe(true);
     // And the rule on what the agent may say counts the conversation as a source.
     expect(instructions).toContain(
       "nestas instruções, na conversa do WhatsApp abaixo ou no retorno de uma ferramenta",

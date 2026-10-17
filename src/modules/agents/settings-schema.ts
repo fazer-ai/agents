@@ -142,20 +142,10 @@ const stt = z.looseObject({
 // WhatsApp calls (modules/voice-call/settings). The engine is ElevenLabs Agents, on the customer's key.
 const calls = z.looseObject({
   credentialRef: credentialRef().describe(
-    "the ElevenLabs key, with the Agents permission; a voice agent does not answer without one",
+    "ElevenLabs key with the Agents permission; none = no answer",
   ),
-  voice: z
-    .string()
-    .optional()
-    .describe(
-      "ElevenLabs voice id; empty = the default Brazilian Portuguese voice",
-    ),
-  llm: z
-    .string()
-    .optional()
-    .describe(
-      "the model ElevenLabs runs, e.g. qwen36-35b-a3b (fastest measured)",
-    ),
+  voice: z.string().optional().describe("ElevenLabs voice id; empty = default"),
+  llm: z.string().optional().describe("model ElevenLabs runs"),
   speed: z
     .number()
     .optional()
@@ -163,43 +153,37 @@ const calls = z.looseObject({
   openingDelayMs: z
     .number()
     .optional()
-    .describe("how long a placed call waits for the person's hello, 0-5000 ms"),
+    .describe("placed call's wait for hello, 0-5000 ms"),
   turnEagerness: oneOf(CALL_TURN_EAGERNESS).optional(),
   backgroundSound: oneOf(CALL_BACKGROUND_SOUNDS)
     .nullable()
     .optional()
-    .describe(
-      "ElevenLabs ambience under the agent's speech for the whole call; null for none",
-    ),
+    .describe("ambience under the speech; null = none"),
   backgroundVolume: z
     .number()
     .optional()
     .describe(
-      `ambience volume relative to the agent's speech, ${CALL_LIMITS.backgroundVolume[0]}-${CALL_LIMITS.backgroundVolume[1]}`,
+      `relative to the speech, ${CALL_LIMITS.backgroundVolume[0]}-${CALL_LIMITS.backgroundVolume[1]}`,
     ),
   toolSound: oneOf(CALL_TOOL_SOUNDS)
     .nullable()
     .optional()
-    .describe("what plays while a tool runs; null for silence"),
+    .describe("plays while a tool runs; null = silence"),
   silenceEndCallSecs: z
     .number()
     .nullable()
     .optional()
-    .describe("10-600 s of silence end the call; null never"),
+    .describe("silence that ends the call, 10-600 s; null = never"),
   maxDurationSecs: z.number().optional().describe("60-3600, clamped"),
   keywords: z
     .array(z.string())
     .optional()
-    .describe(
-      "words the transcription should expect (names, insurers); up to 50",
-    ),
+    .describe("terms the transcription expects; up to 50"),
   elevenLabsAgentId: z
     .string()
     .nullable()
     .optional()
-    .describe(
-      "written by the server once it created the agent on ElevenLabs; do not set",
-    ),
+    .describe("server-owned; a write is ignored"),
 });
 
 const tts = z.looseObject({

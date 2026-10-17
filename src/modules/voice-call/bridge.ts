@@ -28,7 +28,7 @@ const EARLY_MAX_SAMPLES = CALL_RATE * 10;
 const VOICE_PEAK = 1_500;
 
 const FAREWELL =
-  /\b(tchau|até logo|até mais|até a próxima|até breve|tenha um (ótimo|bom|excelente|lindo) (dia|tarde|noite|fim de semana)|uma ótima (tarde|noite)|fique bem|boa (tarde|noite) pra você)\b/i;
+  /\b(tchau|até logo|até mais(?! tarde)|até a próxima|até breve|tenha um (ótimo|bom|excelente|lindo) (dia|tarde|noite|fim de semana)|uma ótima (tarde|noite)|fique bem|boa (tarde|noite) pra você)\b/i;
 
 /**
  * Whether an answer of the agent closes the call: it says goodbye and asks nothing. The model is told
@@ -37,7 +37,11 @@ const FAREWELL =
  */
 export function isFarewell(text: string): boolean {
   const t = text.trim();
-  return FAREWELL.test(t) && !t.includes("?");
+  if (t.includes("?")) return false;
+  // A goodbye closes what is said: the phrase in an opening ("Uma ótima tarde! Aqui é a Ana") or in
+  // the middle of an answer is no farewell, so only the last sentence is read.
+  const sentences = t.split(/(?<=[.!…])\s+/).filter(Boolean);
+  return FAREWELL.test(sentences.at(-1) ?? "");
 }
 
 // The agent's audio carries the background sound the whole call, so its VOICE is read by level: 50 ms

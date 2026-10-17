@@ -33,6 +33,17 @@ describe("the agent's tools on a call", () => {
   });
 });
 
+describe("a custom tool named end_call", () => {
+  test("is not offered on a call, where the engine's own hang-up has that name", () => {
+    const custom = tool(async () => "ok", {
+      name: "end_call",
+      description: "d",
+      schema: z.object({}),
+    });
+    expect(toVoiceTools([custom])).toEqual([]);
+  });
+});
+
 // What a tool sends goes under the deadline of the invocation that sent it, whatever kind of tool it
 // is: the call already told the model the tool failed once that deadline passed.
 describe("a request a call's tool makes", () => {

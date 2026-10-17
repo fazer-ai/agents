@@ -2282,6 +2282,9 @@ export function assertAgentCreatable(input: AgentCreate): {
   assertSettingsRetiredLabelKeys(input.settings);
   stripRetiredNoteFlagInPlace(input.settings);
   stripDerivedFullDetailInPlace(input.settings);
+  // A new agent has no ElevenLabs agent of its own yet: an id copied from another would make both
+  // write the same one. Its first setup creates it.
+  keepCallsSystemFields(input.settings, undefined);
   assertSettingsProtectedLabels(input.settings, undefined);
   assertResolveLabelsNotProtected(input.settings);
   assertSettingsClosedValues(input.settings, undefined);

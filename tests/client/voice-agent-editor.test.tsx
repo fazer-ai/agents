@@ -354,6 +354,51 @@ describe("the editor of a voice agent", () => {
     expect(body.settings.calls.maxDurationSecs).toBe(420);
   });
 
+  // A call setting out of range keeps the save back and shows the field: the bar's Save, from that
+  // tab or from General, ends on Call settings, never on a tab this agent does not have.
+  for (const from of ["Call settings", "General"] as const)
+    test(`a longest call out of range, saved from ${from}, ends on Call settings with the field marked`, async () => {
+      const stub = await open("call");
+      fireEvent.change(screen.getByRole("textbox", { name: /^Longest call/ }), {
+        target: { value: "-5" },
+      });
+      await act(async () => {});
+      if (from === "General") {
+        fireEvent.click(screen.getByRole("tab", { name: "General" }));
+        await act(async () => {});
+      }
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
+      for (let i = 0; i < 5; i++) await act(async () => {});
+      expect(stub.writes.filter((w) => w.method === "PATCH")).toHaveLength(0);
+      expect(
+        screen
+          .getByRole("tab", { name: "Call settings" })
+          .getAttribute("aria-selected"),
+      ).toBe("true");
+      expect(screen.getByText("Use a number from 1 to 60.")).not.toBeNull();
+    });
+
+  test("a longest call out of range keeps Save and export back, on Call settings", async () => {
+    const stub = await open("call");
+    fireEvent.change(screen.getByRole("textbox", { name: /^Longest call/ }), {
+      target: { value: "-5" },
+    });
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("tab", { name: "General" }));
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("button", { name: "Export" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Save and export" }),
+    );
+    for (let i = 0; i < 5; i++) await act(async () => {});
+    expect(stub.writes.filter((w) => w.method === "PATCH")).toHaveLength(0);
+    expect(
+      screen
+        .getByRole("tab", { name: "Call settings" })
+        .getAttribute("aria-selected"),
+    ).toBe("true");
+  });
+
   test("Discard takes back a change to the Voice card, after asking", async () => {
     await open();
     expect(modelSelect().value).toBe("gpt-4.1-mini");

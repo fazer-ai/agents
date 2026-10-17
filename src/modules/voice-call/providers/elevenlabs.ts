@@ -323,6 +323,8 @@ async function openHeld(
   });
   ws.addEventListener("close", (closeEvent) => {
     release();
+    // A tool's answer can no longer reach the engine, whatever audio the bridge still plays out.
+    ended.abort();
     // NOTE: the agent's end_call system tool ends the conversation by closing the socket.
     if (!closed) handlers.onHangup(`elevenlabs_closed_${closeEvent.code}`);
   });

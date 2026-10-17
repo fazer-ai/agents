@@ -39,6 +39,7 @@ import {
   type CallsFormState,
   type CallsRangeField,
   callsFormErrors,
+  KEY_PROBLEMS,
 } from "./callsFormState";
 
 type SetCalls = React.Dispatch<React.SetStateAction<CallsFormState>>;
@@ -149,7 +150,7 @@ export function VoiceStatusLine({
       />
       <span>
         {problemText(status.problem)}
-        {status.detail && (
+        {status.detail && !KEY_PROBLEMS.has(status.problem) && (
           <span className="block text-text-muted">{status.detail}</span>
         )}
       </span>

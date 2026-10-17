@@ -706,6 +706,28 @@ describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
     });
   });
 
+  test("unbinding the inbox's text agent leaves its calls agent bound", async () => {
+    await bindInboxVoiceAgent(
+      ctx(tenant),
+      whatsappInboxId,
+      voiceId,
+      fakeChatwoot(),
+      appDb,
+    );
+    await bindInbox(ctx(tenant), whatsappInboxId, null, fakeChatwoot(), appDb);
+    const row = await suDb.inbox.findUniqueOrThrow({
+      where: { id: whatsappInboxId },
+    });
+    expect([row.agentId, row.voiceAgentId]).toEqual([null, voiceId]);
+    await bindInbox(
+      ctx(tenant),
+      whatsappInboxId,
+      textId,
+      fakeChatwoot(),
+      appDb,
+    );
+  });
+
   test("a voice agent bound to an inbox cannot be deleted", async () => {
     await expect(
       deleteAgent(ctx(tenant), voiceId, appDb),
@@ -949,6 +971,76 @@ describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
     expect(
       result.ok && [result.setup.elevenLabsAgentId, result.setup.apiKey],
     ).toEqual(["agent_on_b", "xi-b"]);
+  });
+
+  test("a key ElevenLabs refuses while the agent is written is the key's problem, not the settings'", async () => {
+    const key = await suDb.vaultEntry.create({
+      data: {
+        tenantId: tenant,
+        name: "eleven-bad",
+        secret: encryptJson("xi-bad"),
+      },
+      select: { id: true },
+    });
+    const agent = await suDb.agent.create({
+      data: {
+        tenantId: tenant,
+        name: "Chave ruim",
+        kind: "voice",
+        systemPrompt: "x",
+        settings: { calls: { credentialRef: `vault:${key.id}` } },
+      },
+    });
+    const fetchImpl = (async () =>
+      new Response(
+        JSON.stringify({
+          detail: { status: "invalid_api_key", message: "Invalid API key" },
+        }),
+        { status: 401 },
+      )) as unknown as typeof fetch;
+    expect(
+      await setUpAgentCalls(ctx(tenant), agent.id, { fetchImpl, base: appDb }),
+    ).toEqual({ ok: false, problem: "invalid_key", detail: "Invalid API key" });
+  });
+
+  test("the agent created on ElevenLabs carries the voice agent's prompt", async () => {
+    const key = await suDb.vaultEntry.create({
+      data: {
+        tenantId: tenant,
+        name: "eleven-prompt",
+        secret: encryptJson("xi-p"),
+      },
+      select: { id: true },
+    });
+    const agent = await suDb.agent.create({
+      data: {
+        tenantId: tenant,
+        name: "Paula",
+        kind: "voice",
+        systemPrompt: "Você é a Paula, da padaria.",
+        settings: { calls: { credentialRef: `vault:${key.id}` } },
+      },
+    });
+    const bodies: unknown[] = [];
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      if (url.endsWith("/v1/convai/agents/create")) {
+        bodies.push(JSON.parse(String(init?.body)));
+        return new Response(JSON.stringify({ agent_id: "agent_paula" }));
+      }
+      return new Response("{}");
+    }) as unknown as typeof fetch;
+    const result = await setUpAgentCalls(ctx(tenant), agent.id, {
+      fetchImpl,
+      base: appDb,
+    });
+    expect(result.ok).toBe(true);
+    expect(bodies).toMatchObject([
+      {
+        conversation_config: {
+          agent: { prompt: { prompt: "Você é a Paula, da padaria." } },
+        },
+      },
+    ]);
   });
 
   test("an agent created on a key replaced meanwhile is deleted there, and the setup starts over on the new key", async () => {

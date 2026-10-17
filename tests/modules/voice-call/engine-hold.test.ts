@@ -144,6 +144,7 @@ describe.skipIf(!dbUp)(
   () => {
     const spec = (voice: string) => ({
       name: "Maria",
+      prompt: "Você é a Maria.",
       voice,
       calls: readCallsConfig({}),
     });

@@ -102,10 +102,15 @@ const VOICE_RULES = [
   "Diga valores, datas e horários por extenso do jeito que se fala.",
   "Se não entender, peça para a pessoa repetir. Se a pessoa pedir um atendente humano, diga que vai registrar o pedido e que alguém retorna pelo WhatsApp.",
   "Não chame a pessoa de senhor ou senhora: use o nome dela quando souber, ou fale sem tratamento.",
-  "Nunca ofereça horário, valor ou informação que não esteja nestas instruções ou no retorno de uma ferramenta.",
+  "Nunca ofereça horário, valor ou informação que não esteja nestas instruções, na conversa do WhatsApp abaixo ou no retorno de uma ferramenta.",
   "Não anuncie que vai usar uma ferramenta: use e responda com o resultado.",
   "Quando a pessoa disser que não quer mais nada, que vai desligar, ou se despedir, despeça-se em uma frase curta e chame end_call nessa mesma resposta. Depois de se despedir, não cumprimente de novo.",
 ].join("\n");
+
+// The call is from the contact of this conversation, and what was said there holds on the call: the
+// agent answers from it instead of asking again for what the contact or the team already wrote.
+const HISTORY_NOTE =
+  "Quem está ligando é o contato desta conversa. O que está escrito aqui vale na ligação: use, responda com base nisso e não peça de novo o que o contato ou a equipe já disseram.";
 
 const HISTORY_LIMIT = 20;
 
@@ -252,7 +257,7 @@ export function voiceSessionConfig(
       route.systemPrompt,
       `# Ligação de voz\n${VOICE_RULES}\n${opening}\nAgora é ${nowInSaoPaulo()} (horário de Brasília).\n${upcomingDays()}`,
       history
-        ? `# Conversa até agora no WhatsApp (mais recente por último)\n${history}`
+        ? `# Conversa até agora no WhatsApp (mais recente por último)\n${HISTORY_NOTE}\n${history}`
         : "",
     ]
       .filter(Boolean)

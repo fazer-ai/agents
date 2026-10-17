@@ -3675,6 +3675,7 @@
     "call": {
       "again": "Ligar de novo",
       "agentSpeaking": "O agente está falando",
+      "operatorSpeaking": "Você está falando",
       "close": "Fechar",
       "dropped": "A ligação caiu.",
       "duration": "Duração {{time}}.",

@@ -137,6 +137,46 @@ describe("a tool the agent runs on an ElevenLabs call", () => {
   });
 });
 
+describe("a tool still running when an ElevenLabs call ends", () => {
+  test("is cut at the hangup, so nothing it sends lands after it", async () => {
+    const engine = fakeEngine([{ tool_name: "book", tool_call_id: "t1" }]);
+    const handed: { signal?: AbortSignal } = {};
+    const session = await elevenLabsProvider({
+      apiKey: "k",
+      holdEngine: memoryEngineHold(),
+      agentId: "agent-session-close-test",
+      fetchImpl: engine.fetchImpl,
+    }).open(
+      {
+        ...CONFIG,
+        tools: [
+          {
+            name: "book",
+            description: "d",
+            parameters: { type: "object", properties: {} },
+            invoke: (_args, _id, signal) => {
+              handed.signal = signal;
+              return new Promise<string>(() => {});
+            },
+          },
+        ],
+      },
+      {
+        onAudio: () => {},
+        onInterrupt: () => {},
+        onTranscript: () => {},
+        onHangup: () => {},
+        onError: () => {},
+      },
+    );
+    session.begin();
+    await until("the tool to start", () => handed.signal);
+    expect(handed.signal?.aborted).toBe(false);
+    session.close();
+    expect(handed.signal?.aborted).toBe(true);
+  });
+});
+
 describe("calls on one ElevenLabs agent", () => {
   test("each declares its tools once the previous conversation started, and a set already there is not declared again", async () => {
     const order: string[] = [];

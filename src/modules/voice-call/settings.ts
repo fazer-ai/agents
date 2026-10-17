@@ -203,10 +203,15 @@ export function withoutCallsAgentId(
  */
 export function keepCallsSystemFields(next: unknown, before: unknown): void {
   if (!next || typeof next !== "object") return;
-  const calls = (next as Record<string, unknown>).calls;
-  if (!calls || typeof calls !== "object") return;
-  const bag = calls as Record<string, unknown>;
+  const settings = next as Record<string, unknown>;
   const kept = readCallsConfig(before).elevenLabsAgentId;
+  // A replacement that leaves the calls block out still keeps the id: the agent it names exists on
+  // the customer's account whatever the write carries.
+  if (!settings.calls || typeof settings.calls !== "object") {
+    if (kept) settings.calls = { elevenLabsAgentId: kept };
+    return;
+  }
+  const bag = settings.calls as Record<string, unknown>;
   if (kept) bag.elevenLabsAgentId = kept;
   else delete bag.elevenLabsAgentId;
 }

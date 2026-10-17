@@ -108,7 +108,16 @@ describe("calls settings", () => {
       calls: { elevenLabsAgentId: "agent_2" },
     };
     keepCallsSystemFields(named, {});
-    expect(named.calls).toEqual({});
+    expect(named.calls).toEqual({}); // A bag that leaves the block out keeps it, and one with no id to keep stays as written.
+    const bare: Record<string, unknown> = { tone: "x" };
+    keepCallsSystemFields(bare, before);
+    expect(bare).toEqual({
+      tone: "x",
+      calls: { elevenLabsAgentId: "agent_1" },
+    });
+    const fresh: Record<string, unknown> = { tone: "x" };
+    keepCallsSystemFields(fresh, {});
+    expect(fresh).toEqual({ tone: "x" });
   });
 });
 

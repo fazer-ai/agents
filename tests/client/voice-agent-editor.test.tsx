@@ -532,33 +532,37 @@ describe("the editor of a voice agent", () => {
     expect(screen.queryByText("No WhatsApp inbox to take calls")).toBeNull();
   });
 
-  test("General saves even when the hidden chat model's stored settings are incomplete", async () => {
-    const stub = stubEditorApi({
-      kind: "voice",
-      // A base URL the Model card would refuse (no scheme), on a model that card is not drawn for.
-      modelConfig: {
-        provider: "openai-compatible",
-        model: "m",
-        baseURL: "localhost:8000",
-      },
-      settings: { calls: { credentialRef: "vault:9", llm: "gpt-4.1-mini" } },
+  // The Model card is not drawn for a voice agent, so nothing it would refuse can hold the save: a
+  // base URL with no scheme, or no model at all (an imported agent).
+  for (const [label, modelConfig] of [
+    [
+      "a base URL with no scheme",
+      { provider: "openai-compatible", model: "m", baseURL: "localhost:8000" },
+    ],
+    ["no model", { provider: "openai", model: "" }],
+  ] as const)
+    test(`General saves even when the hidden chat model has ${label}`, async () => {
+      const stub = stubEditorApi({
+        kind: "voice",
+        modelConfig,
+        settings: { calls: { credentialRef: "vault:9", llm: "gpt-4.1-mini" } },
+      });
+      stub.override = (method, path) =>
+        method === "POST" && path.endsWith("/calls/check")
+          ? new Response(JSON.stringify({ ok: true }), {
+              headers: { "content-type": "application/json" },
+            })
+          : undefined;
+      await renderEditor(stub, "general");
+      await act(async () => {});
+      fireEvent.change(screen.getByLabelText(/^Name/), {
+        target: { value: "Raquel" },
+      });
+      await act(async () => {});
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
+      await act(async () => {});
+      expect(stub.writes.filter((w) => w.method === "PATCH")).toHaveLength(1);
     });
-    stub.override = (method, path) =>
-      method === "POST" && path.endsWith("/calls/check")
-        ? new Response(JSON.stringify({ ok: true }), {
-            headers: { "content-type": "application/json" },
-          })
-        : undefined;
-    await renderEditor(stub, "general");
-    await act(async () => {});
-    fireEvent.change(screen.getByLabelText(/^Name/), {
-      target: { value: "Raquel" },
-    });
-    await act(async () => {});
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    await act(async () => {});
-    expect(stub.writes.filter((w) => w.method === "PATCH")).toHaveLength(1);
-  });
 
   test("Knowledge saves a grant even when the hidden reviewer's stored settings are incomplete", async () => {
     const stub = stubEditorApi(

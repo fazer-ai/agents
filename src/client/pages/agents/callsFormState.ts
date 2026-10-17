@@ -193,3 +193,15 @@ export function liveness(
   if (was) return "leavingLive";
   return "test";
 }
+
+/** Whether the Playground can call: the draft has a key, or the saved version does (a removal of its
+ * key that is not saved yet still leaves the saved version callable). */
+export function playgroundHasKey(
+  draft: CallsFormState,
+  savedSettings: unknown,
+): boolean {
+  if (draft.credentialRef) return true;
+  const saved = (savedSettings as { calls?: Record<string, unknown> } | null)
+    ?.calls;
+  return !!readCallsFormState(saved ?? {}).credentialRef;
+}

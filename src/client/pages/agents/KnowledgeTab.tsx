@@ -216,7 +216,8 @@ export function KnowledgeTab({
         onDiscard={onDiscard}
         saveLabel={t("editor.saveKnowledge", "Save knowledge")}
         onOpenPlayground={onOpenPlayground}
-        saveDisabled={baseUrlInvalid || baseUrlUnsupported}
+        // The reviewer's fields are not drawn without suggestions, so they cannot hold the save.
+        saveDisabled={suggestions && (baseUrlInvalid || baseUrlUnsupported)}
       />
     </div>
   );

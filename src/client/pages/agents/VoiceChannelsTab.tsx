@@ -59,9 +59,12 @@ export function VoiceChannelsTab({ agentId }: { agentId: string }) {
         api.api.v1.agents.get({ query: { pageSize: 100 } }),
       ]);
       if (dep.error || !dep.data) throw dep.error;
+      // Required as the deployment is: without it the tab would say there is no WhatsApp inbox, or
+      // keep switches a failed binding left out of step with what the server saved.
+      if (inb.error || !inb.data) throw inb.error;
       setInstances([...dep.data.accounts]);
       setBaseUrl(dep.data.deployment?.baseUrl ?? "");
-      if (inb.data) setInboxes([...inb.data.inboxes]);
+      setInboxes([...inb.data.inboxes]);
       if (ag.data) setAgents([...ag.data.agents]);
     } catch {
       setError(true);

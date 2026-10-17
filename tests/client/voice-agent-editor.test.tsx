@@ -138,7 +138,8 @@ describe("the editor of a voice agent", () => {
     expect(
       screen.getByRole("button", { name: "Call the saved version" }),
     ).not.toBeNull();
-    // An audio context that resumes, and no microphone: the call starts and stops at the prompt.
+    // An audio context that resumes, and a microphone the browser refuses: the call starts and stops
+    // at the prompt. Both are this test's own, whatever another file left on the globals.
     const g = globalThis as { AudioContext?: unknown };
     const realAudio = g.AudioContext;
     g.AudioContext = class {
@@ -146,6 +147,14 @@ describe("the editor of a voice agent", () => {
       resume = async () => {};
       close = async () => {};
     };
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: {
+        getUserMedia: async () => {
+          throw new Error("Permission denied");
+        },
+      },
+    });
     try {
       fireEvent.click(screen.getByRole("button", { name: "Save and call" }));
       // The save runs inside the call's attempt, then the microphone is asked for.
@@ -155,6 +164,7 @@ describe("the editor of a voice agent", () => {
       expect(stub.writes.filter((w) => w.method === "PATCH")).toHaveLength(1);
     } finally {
       g.AudioContext = realAudio;
+      delete (navigator as { mediaDevices?: unknown }).mediaDevices;
     }
   });
 

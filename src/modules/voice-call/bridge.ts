@@ -162,6 +162,11 @@ export class CallBridge {
     this.finish("connector", "socket_closed");
   }
 
+  /** Ends the call from this side now, as a shutdown that cannot wait for it does. */
+  hangup(reason: string) {
+    this.hangupNow("error", reason);
+  }
+
   private async openSession() {
     if (!this.start) return;
     try {

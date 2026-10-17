@@ -2,10 +2,10 @@ import { Elysia, t } from "elysia";
 import logger from "@/api/lib/logger";
 import { doc } from "@/api/lib/openapi";
 import { CONVERSATION_NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
-import { trackWork } from "@/lib/shutdown";
+import { beginWork, trackWork } from "@/lib/shutdown";
 import type { TenantContext } from "@/lib/tenancy";
 import { loadPlaygroundVoiceAgent } from "@/modules/playground/service";
-import { CallBridge } from "@/modules/voice-call/bridge";
+import { CallBridge, type CallRecord } from "@/modules/voice-call/bridge";
 import { readPlaygroundCallTicket } from "@/modules/voice-call/playground";
 import { elevenLabsProvider } from "@/modules/voice-call/providers/elevenlabs";
 import { elevenLabsCallSummary } from "@/modules/voice-call/providers/elevenlabs-agent";
@@ -29,6 +29,20 @@ const PLAYGROUND_SIMULATED_TOOLS: ReadonlySet<string> = new Set(
 // hands it a call this agent takes. The Agent Bot's opaque route token resolves tenant, instance and
 // agent, as on the webhook; the query carries the thread the call belongs to.
 const bridges = new Map<string, CallBridge>();
+
+/**
+ * The engine's summary of a call that ended, asked for only when the call was not cut by a shutdown:
+ * the summary takes longer than the cut leaves, and waiting on it would lose the transcript and note.
+ */
+export async function callSummary(
+  setup: CallsSetup | null,
+  cut: boolean,
+  done: CallRecord,
+  fetchSummary = elevenLabsCallSummary,
+): Promise<string | null> {
+  if (cut || !setup || !done.engineConversationId) return null;
+  return fetchSummary(setup.apiKey, done.engineConversationId);
+}
 
 function intOrNull(value: string | undefined): number | null {
   const n = Number(value);
@@ -108,6 +122,10 @@ export const voiceController = new Elysia({
           ws.data.query.direction === "outbound" ? "outbound" : "inbound",
       };
       let setup: CallsSetup | null = null;
+      // A live call is work a shutdown waits for, up to its bound; past it the call is hung up and
+      // reported without the engine's summary, which takes longer than the cut leaves.
+      let endWork = () => {};
+      let cut = false;
       const provider = callsProvider(() => setup);
       const bridge = new CallBridge(
         { send: (text) => ws.send(text), close: () => ws.close() },
@@ -155,13 +173,7 @@ export const voiceController = new Elysia({
               route.then(async (resolved) => {
                 if (!resolved) return;
                 await reportCall(resolved, ctx, record, {
-                  summarize: async (done) =>
-                    setup && done.engineConversationId
-                      ? elevenLabsCallSummary(
-                          setup.apiKey,
-                          done.engineConversationId,
-                        )
-                      : null,
+                  summarize: (done) => callSummary(setup, cut, done),
                 });
               }),
             ).catch((err: Error) => {
@@ -171,10 +183,16 @@ export const voiceController = new Elysia({
                 err.message,
               );
             });
+            // After the report is registered, so the drain never sees the call's work at zero.
+            endWork();
           },
         },
       );
       bridges.set(id, bridge);
+      endWork = beginWork("voice-call", () => {
+        cut = true;
+        bridge.hangup("shutdown");
+      });
     },
     message: relayMessage,
     close: relayClose,

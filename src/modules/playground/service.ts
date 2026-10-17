@@ -89,7 +89,7 @@ import { extractPlaygroundFile } from "@/modules/vision/service";
 import { readVisionConfig } from "@/modules/vision/settings";
 import { invocationDeadlineFetch } from "@/modules/voice-call/invocation-deadline";
 import { CALL_HTTP_TOOL_TIMEOUT_MS } from "@/modules/voice-call/providers/elevenlabs-tools";
-import { toVoiceTools, type VoiceAgent } from "@/modules/voice-call/tools";
+import { type VoiceAgent, voiceAgentFrom } from "@/modules/voice-call/tools";
 import {
   listThreadMedia,
   type PlaygroundMediaKind,
@@ -2046,5 +2046,5 @@ export async function loadPlaygroundVoiceAgent(
       outboundFetch: invocationDeadlineFetch(),
     },
   );
-  return { systemPrompt: loaded.systemPrompt, tools: toVoiceTools(all) };
+  return voiceAgentFrom(loaded.systemPrompt, all);
 }

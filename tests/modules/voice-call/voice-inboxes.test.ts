@@ -1,5 +1,7 @@
 import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
+import { tool } from "@langchain/core/tools";
 import { PrismaPg } from "@prisma/adapter-pg";
+import { z } from "zod";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { decryptJson, encryptJson } from "@/api/lib/crypto";
 import config from "@/config";
@@ -176,6 +178,24 @@ function fakeChatwoot(
     });
   return { writes, reports, notes, makeClient };
 }
+
+// A tool from an MCP server, carrying the server's scope as the toolset stamps it.
+const mcpTool = () =>
+  Object.assign(
+    tool(async () => "ok", {
+      name: "mcp__crm__busca",
+      description: "d",
+      schema: z.object({}),
+    }),
+    {
+      metadata: {
+        mcpServer: {
+          label: "crm",
+          instructions: "Busque pelo CPF antes do nome.",
+        },
+      },
+    },
+  );
 
 describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
   let tenant = 0n;
@@ -1129,7 +1149,7 @@ describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
       async (cfg, toolsetCtx) => {
         configs.push(cfg);
         seen.push(toolsetCtx);
-        return [];
+        return [mcpTool()];
       },
     );
     // The agent's configuration as the turn would load it; what is asked here is how the call
@@ -1153,8 +1173,9 @@ describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
       clientDeps.push(deps);
       return { muted: deps?.mute === true } as unknown as ChatwootClient;
     });
+    let agent: Awaited<ReturnType<typeof loadVoiceAgent>> | undefined;
     try {
-      await loadVoiceAgent(route, 20, appDb);
+      agent = await loadVoiceAgent(route, 20, appDb);
     } finally {
       build.mockRestore();
       load.mockRestore();
@@ -1164,6 +1185,8 @@ describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
     expect(seen[0]?.client.muted).toBe(false);
     expect(seen[0]?.onCall).toBe(true);
     expect(seen[0]?.httpToolTimeoutMs).toBe(CALL_HTTP_TOOL_TIMEOUT_MS);
+    // An MCP server's instructions reach the call's prompt, as they reach a text turn's.
+    expect(agent?.systemPrompt).toContain("Busque pelo CPF antes do nome.");
     // A document is a file sent to the contact, which a call cannot do.
     expect(configs[0]?.documentSelections).toEqual([]);
     // The outbound tools and the Chatwoot writes send nothing past their invocation's deadline.
@@ -1193,7 +1216,7 @@ describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
       async (cfg, toolsetCtx) => {
         configs.push(cfg);
         seen.push(toolsetCtx);
-        return [];
+        return [mcpTool()];
       },
     );
     // An agent granted a document, as the API or an import can leave a voice agent.
@@ -1204,8 +1227,9 @@ describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
           documentSelections: [{ templateId: "1" }],
         }) as unknown as Awaited<ReturnType<typeof prepare.loadAgentConfig>>,
     );
+    let agent: Awaited<ReturnType<typeof loadPlaygroundVoiceAgent>> | undefined;
     try {
-      await loadPlaygroundVoiceAgent(ctx(tenant), voiceId, appDb);
+      agent = await loadPlaygroundVoiceAgent(ctx(tenant), voiceId, appDb);
     } finally {
       build.mockRestore();
       load.mockRestore();
@@ -1213,6 +1237,7 @@ describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
     expect(seen).toHaveLength(1);
     expect(seen[0]?.httpToolTimeoutMs).toBe(CALL_HTTP_TOOL_TIMEOUT_MS);
     expect(configs[0]?.documentSelections).toEqual([]);
+    expect(agent?.systemPrompt).toContain("Busque pelo CPF antes do nome.");
     const outbound = seen[0]?.outboundFetch;
     await expect(
       withinInvocation(AbortSignal.abort(), async () =>

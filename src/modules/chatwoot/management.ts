@@ -20,7 +20,10 @@ import {
   type WidgetHealth,
   type WidgetHealthStatus,
 } from "@/modules/channel-redirect/link";
-import { syncVoiceInboxes } from "@/modules/voice-call/inboxes";
+import {
+  switchOffVoiceRouting,
+  syncVoiceInboxes,
+} from "@/modules/voice-call/inboxes";
 import {
   ChatwootApiError,
   type ChatwootClient,
@@ -177,8 +180,11 @@ export async function getChatwootDeployment(
 export async function disconnectChatwootDeployment(
   ctx: TenantContext,
   base: PrismaClient = basePrisma,
+  deps: LoadChatwootClientDeps = {},
 ): Promise<void> {
   if (ctx.tenantId === null) throw new AppError("tenant required", 400);
+  // While the credentials still exist: the delete takes them with the inboxes.
+  await switchOffVoiceRouting(ctx, null, base, deps);
   await runScopedOn(base, ctx, async (db) => {
     const dep = await db.chatwootDeployment.findFirst({
       select: { id: true, baseUrl: true },
@@ -1036,8 +1042,11 @@ export async function removeChatwootInstance(
   ctx: TenantContext,
   id: bigint,
   base: PrismaClient = basePrisma,
+  deps: LoadChatwootClientDeps = {},
 ): Promise<void> {
   if (ctx.tenantId === null) throw new AppError("tenant required", 400);
+  // While the credentials still exist: the delete takes them with the inboxes.
+  await switchOffVoiceRouting(ctx, [id], base, deps);
   await runScopedOn(base, ctx, async (db) => {
     // NOTE: LOCKED before the count, because the count is about what the delete below is going to
     // destroy. A sync holding this same lock is mirroring inboxes under the account right now; read

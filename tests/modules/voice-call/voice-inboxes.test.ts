@@ -23,8 +23,10 @@ import * as chatwootInstance from "@/modules/chatwoot/instance";
 import { asRendered } from "@/modules/chatwoot/liquid";
 import {
   bindInbox,
+  disconnectChatwootDeployment,
   listInboxCustomAttributes,
   listInboxLabels,
+  removeChatwootInstance,
   softDisconnectChatwootInstance,
 } from "@/modules/chatwoot/management";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
@@ -53,6 +55,7 @@ import { setUpAgentCalls } from "@/modules/voice-call/setup";
 import { loadVoiceAgent } from "@/modules/voice-call/tools";
 import { generateRouteToken } from "@/modules/webhooks/inbound/route-token";
 import { dbProbeFailed } from "@/tests/db-gate";
+import { until } from "@/tests/utils/poll";
 import { seedChatwootInstance } from "../../utils/chatwoot";
 import { underConcurrentEdit } from "../../utils/pg-waits";
 
@@ -96,6 +99,8 @@ function fakeChatwoot(
     failAiVoice?: boolean;
     failAgentBots?: boolean;
     duringAiVoice?: () => Promise<void>;
+    // One per write, in order: a binding that keeps moving while it is written.
+    duringEachAiVoice?: Array<() => Promise<void>>;
     // conversation id -> the Chatwoot inbox it is in
     conversations?: Record<number, number>;
     // conversation id -> its messages, oldest first, each a call's when it names one
@@ -119,7 +124,7 @@ function fakeChatwoot(
       else {
         writes.push(body);
         // Runs while this write is in flight, as a save that commits under it would.
-        const during = opts.duringAiVoice;
+        const during = opts.duringAiVoice ?? opts.duringEachAiVoice?.shift();
         opts.duringAiVoice = undefined;
         await during?.();
       }
@@ -537,6 +542,33 @@ describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
     await setMode("production");
   });
 
+  test("a binding still moving after every pass is written again a moment later", async () => {
+    await setMode("production");
+    await bindInboxVoiceAgent(
+      ctx(tenant),
+      whatsappInboxId,
+      voiceId,
+      fakeChatwoot(),
+      appDb,
+    );
+    // A switch on every one of the three passes: the last write is the older state.
+    const cw = fakeChatwoot({
+      duringEachAiVoice: [
+        () => setMode("test"),
+        () => setMode("production"),
+        () => setMode("test"),
+      ],
+    });
+    await syncVoiceAgentInboxes(ctx(tenant), voiceId, appDb, cw);
+    expect(cw.writes.map((w) => w.enabled)).toEqual([true, false, true]);
+    await until(
+      "the retry to write what is stored",
+      () => cw.writes.length === 4,
+    );
+    expect(cw.writes.at(-1)?.enabled).toBe(false);
+    await setMode("production");
+  });
+
   test("a token that changes while Chatwoot is being written is written too", async () => {
     await bindInboxVoiceAgent(
       ctx(tenant),
@@ -705,6 +737,50 @@ describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
       translationKey: "errors.voiceAgentNotResponder",
     });
   });
+
+  // Removing an account, or the whole deployment, deletes its inboxes with their route tokens and
+  // credentials: their calls are switched off on the fork first, so they ring the team instead of a
+  // token nothing answers. Each on a tenant of its own, since the removal takes everything with it.
+  for (const removal of ["the account", "the deployment"] as const) {
+    test(`removing ${removal} switches its inboxes' calls off first`, async () => {
+      const t = (
+        await suDb.tenant.create({
+          data: {
+            name: "Remoção",
+            slug: `voice-rm-${removal.length}-${process.pid}`,
+          },
+        })
+      ).id;
+      const inst = await seedChatwootInstance(suDb, {
+        tenantId: t,
+        baseUrl: "https://chat.removal.test",
+        accountId: 7,
+        adminToken: encryptJson("admintok"),
+      });
+      const routed = await suDb.inbox.create({
+        data: {
+          tenantId: t,
+          chatwootInstanceId: BigInt(inst.id),
+          chatwootInboxId: 701,
+          name: "Inbox 701",
+          channelType: "Channel::Whatsapp",
+          voiceRouteToken: encryptJson("rota-701"),
+        },
+      });
+      const cw = fakeChatwoot();
+      try {
+        if (removal === "the account")
+          await removeChatwootInstance(ctx(t), BigInt(inst.id), appDb, cw);
+        else await disconnectChatwootDeployment(ctx(t), appDb, cw);
+        expect(cw.writes).toMatchObject([{ inbox_id: 701, enabled: false }]);
+        expect(
+          await suDb.inbox.findUnique({ where: { id: routed.id } }),
+        ).toBeNull();
+      } finally {
+        await suDb.tenant.delete({ where: { id: t } });
+      }
+    });
+  }
 
   test("unbinding the inbox's text agent leaves its calls agent bound", async () => {
     await bindInboxVoiceAgent(

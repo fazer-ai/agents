@@ -7,6 +7,7 @@
 import { createHash } from "node:crypto";
 import { clipText } from "@/lib/text";
 import type { CallsConfig } from "../settings";
+import { type ConfigDigests, dbConfigDigests } from "./config-digests";
 
 const API = "https://api.elevenlabs.io";
 
@@ -103,8 +104,6 @@ export async function checkElevenLabsAgentsAccess(
   };
 }
 
-const synced = new Map<string, string>();
-
 // Every request to ElevenLabs is bounded, its body included: a call's setup and the Playground's
 // ticket wait on them, and a provider that stalls would leave the person in silence.
 const REQUEST_TIMEOUT_MS = 15_000;
@@ -112,13 +111,14 @@ const deadline = () => AbortSignal.timeout(REQUEST_TIMEOUT_MS);
 
 /**
  * The id of the agent carrying these calls on ElevenLabs, created when `agentId` is null or no longer
- * exists there, and patched when the configuration changed since this process last wrote it.
+ * exists there, and patched when the configuration changed since it was last written (`digests`).
  */
 export async function ensureElevenLabsAgent(
   apiKey: string,
   agentId: string | null,
   spec: ElevenLabsAgentSpec,
   fetchImpl: typeof fetch = fetch,
+  digests: ConfigDigests = dbConfigDigests(),
 ): Promise<string> {
   const body = JSON.stringify(elevenLabsAgentConfig(spec));
   // The key is part of what was written: the same settings under another account are unchecked there.
@@ -129,13 +129,14 @@ export async function ensureElevenLabsAgent(
     .digest("hex");
   const headers = { "xi-api-key": apiKey, "content-type": "application/json" };
   if (agentId) {
-    if (synced.get(agentId) === digest) return agentId;
+    if ((await digests.read(agentId)) === digest) return agentId;
+    await digests.write(agentId, null);
     const res = await fetchImpl(
       `${API}/v1/convai/agents/${encodeURIComponent(agentId)}`,
       { method: "PATCH", headers, body, signal: deadline() },
     );
     if (res.ok) {
-      synced.set(agentId, digest);
+      await digests.write(agentId, digest);
       return agentId;
     }
     if (res.status !== 404)
@@ -155,16 +156,19 @@ export async function ensureElevenLabsAgent(
     );
   const created = (await res.json()) as { agent_id?: string };
   if (!created.agent_id) throw new Error("elevenlabs: created agent has no id");
-  synced.set(created.agent_id, digest);
+  await digests.write(created.agent_id, digest);
   return created.agent_id;
 }
 
 /**
- * Forgets that this process wrote an agent, for one ElevenLabs says is gone: the next setup then
- * finds out for itself, and creates it again, instead of trusting a write to an agent that is no more.
+ * Forgets what an agent was written with, for one ElevenLabs says is gone: the next setup then finds
+ * out for itself, and creates it again, instead of trusting a write to an agent that is no more.
  */
-export function forgetElevenLabsAgent(agentId: string): void {
-  synced.delete(agentId);
+export async function forgetElevenLabsAgent(
+  agentId: string,
+  digests: ConfigDigests = dbConfigDigests(),
+): Promise<void> {
+  await digests.write(agentId, null);
 }
 
 /** Deletes an agent on ElevenLabs; best-effort, for one this process created and then did not keep. */
@@ -172,9 +176,10 @@ export async function deleteElevenLabsAgent(
   apiKey: string,
   agentId: string,
   fetchImpl: typeof fetch = fetch,
+  digests: ConfigDigests = dbConfigDigests(),
 ): Promise<void> {
-  synced.delete(agentId);
   try {
+    await digests.write(agentId, null);
     await fetchImpl(`${API}/v1/convai/agents/${encodeURIComponent(agentId)}`, {
       method: "DELETE",
       headers: { "xi-api-key": apiKey },

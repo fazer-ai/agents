@@ -1,12 +1,15 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
+import { dbConfigDigests } from "@/modules/voice-call/providers/config-digests";
 import { elevenLabsProvider } from "@/modules/voice-call/providers/elevenlabs";
+import { ensureElevenLabsAgent } from "@/modules/voice-call/providers/elevenlabs-agent";
 import { dbEngineHold } from "@/modules/voice-call/providers/engine-hold";
 import type {
   VoiceSessionConfig,
   VoiceSessionHandlers,
 } from "@/modules/voice-call/providers/types";
+import { readCallsConfig } from "@/modules/voice-call/settings";
 import { dbProbeFailed } from "@/tests/db-gate";
 
 // Two processes starting calls on one ElevenLabs agent, as the leader and a web replica do: each has
@@ -129,5 +132,76 @@ describe.skipIf(!dbUp)(
       expect(asked).toEqual([]);
       await other.release();
     }, 15_000);
+  },
+);
+
+describe.skipIf(!dbUp)(
+  "an ElevenLabs agent's configuration, written from two processes",
+  () => {
+    const spec = (voice: string) => ({
+      name: "Maria",
+      voice,
+      calls: readCallsConfig({}),
+    });
+    const patches = () => {
+      const sent: string[] = [];
+      const fetchImpl = (async (_url: string, init?: RequestInit) => {
+        sent.push(String(init?.method));
+        return new Response("{}");
+      }) as unknown as typeof fetch;
+      return { sent, fetchImpl };
+    };
+
+    test("a process that wrote a version is not fooled by one written elsewhere since", async () => {
+      const id = agentId();
+      const a = patches();
+      const b = patches();
+      const write = (
+        p: ReturnType<typeof patches>,
+        db: PrismaClient,
+        voice: string,
+      ) =>
+        ensureElevenLabsAgent(
+          "k",
+          id,
+          spec(voice),
+          p.fetchImpl,
+          dbConfigDigests(db),
+        );
+      await write(a, one, "v1");
+      await write(b, two, "v2");
+      // The operator restores v1, and the process that wrote it first is the one that saves.
+      await write(a, one, "v1");
+      expect(a.sent).toEqual(["PATCH", "PATCH"]);
+      // Written by either, the same version is not written again.
+      await write(b, two, "v1");
+      expect(b.sent).toEqual(["PATCH"]);
+    });
+
+    test("a write whose answer is lost leaves the configuration unknown, so it is sent again", async () => {
+      const id = agentId();
+      const ok = patches();
+      await ensureElevenLabsAgent(
+        "k",
+        id,
+        spec("v1"),
+        ok.fetchImpl,
+        dbConfigDigests(one),
+      );
+      const lost = (async () => {
+        throw new Error("socket hang up");
+      }) as unknown as typeof fetch;
+      await expect(
+        ensureElevenLabsAgent("k", id, spec("v2"), lost, dbConfigDigests(two)),
+      ).rejects.toThrow("socket hang up");
+      await ensureElevenLabsAgent(
+        "k",
+        id,
+        spec("v1"),
+        ok.fetchImpl,
+        dbConfigDigests(one),
+      );
+      expect(ok.sent).toEqual(["PATCH", "PATCH"]);
+    });
   },
 );

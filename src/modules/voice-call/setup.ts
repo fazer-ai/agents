@@ -6,6 +6,7 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { tryResolveApiKeyEntry } from "@/modules/vault/service";
+import { dbConfigDigests } from "./providers/config-digests";
 import {
   checkElevenLabsAgentsAccess,
   deleteElevenLabsAgent,
@@ -84,6 +85,7 @@ export async function setUpAgentCalls(
       calls.elevenLabsAgentId,
       { name: `${read.name} (fazer.ai agents #${agentId})`, voice, calls },
       opts.fetchImpl,
+      dbConfigDigests(base),
     );
   } catch (err) {
     return {
@@ -106,7 +108,12 @@ export async function setUpAgentCalls(
         db.$executeRaw`UPDATE agents SET settings = jsonb_set(CASE WHEN jsonb_typeof(settings -> 'calls') = 'object' THEN settings ELSE settings || '{"calls": {}}'::jsonb END, '{calls,elevenLabsAgentId}', to_jsonb(${elevenLabsAgentId}::text), true) WHERE id = ${agentId} AND (settings -> 'calls' ->> 'elevenLabsAgentId') IS NOT DISTINCT FROM ${stored}::text`,
     );
     if (written === 0) {
-      await deleteElevenLabsAgent(apiKey, elevenLabsAgentId, opts.fetchImpl);
+      await deleteElevenLabsAgent(
+        apiKey,
+        elevenLabsAgentId,
+        opts.fetchImpl,
+        dbConfigDigests(base),
+      );
       // The winner's id is checked as this setup checked its own: read again, key included, since the
       // key may have changed with it and an id is only good on the account that holds it. Once.
       if (opts.retried)

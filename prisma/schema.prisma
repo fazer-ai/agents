@@ -2195,6 +2195,7 @@ model VoiceEngineHold {
   holder         String?   @db.Uuid
   heldUntil      DateTime? @map("held_until") @db.Timestamptz(3)
   declaredDigest String?   @map("declared_digest")
+  configDigest   String?   @map("config_digest")
 
   @@map("voice_engine_holds")
 }

@@ -23,6 +23,8 @@ import * as chatwootInstance from "@/modules/chatwoot/instance";
 import { asRendered } from "@/modules/chatwoot/liquid";
 import {
   bindInbox,
+  listInboxCustomAttributes,
+  listInboxLabels,
   softDisconnectChatwootInstance,
 } from "@/modules/chatwoot/management";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
@@ -1113,6 +1115,54 @@ describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
         after: { voiceAgentId: null },
       },
     ]);
+  });
+
+  // The voice editor's Tools tab offers the account's attributes for a tool's preconditions, and a
+  // voice agent reaches an inbox only through its calls.
+  test("the editor's label and attribute listings cover the inboxes whose calls the agent answers", async () => {
+    const caller = await suDb.agent.create({
+      data: {
+        tenantId: tenant,
+        name: "Só ligações",
+        kind: "voice",
+        systemPrompt: "x",
+      },
+    });
+    const calls = await suDb.inbox.create({
+      data: {
+        tenantId: tenant,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: 504,
+        name: "Inbox 504",
+        channelType: "Channel::Whatsapp",
+        voiceAgentId: caller.id,
+      },
+    });
+    const makeClient = async () =>
+      ({
+        listLabelsDetailed: async () => [{ title: "retorno", color: null }],
+        listCustomAttributeDefinitions: async () => [],
+      }) as unknown as ChatwootClient;
+    try {
+      const labels = await listInboxLabels(
+        ctx(tenant),
+        caller.id,
+        { makeClient },
+        appDb,
+      );
+      expect(labels.accountCount).toBe(1);
+      expect(labels.labels.map((l) => l.title)).toEqual(["retorno"]);
+      const attributes = await listInboxCustomAttributes(
+        ctx(tenant),
+        caller.id,
+        { makeClient },
+        appDb,
+      );
+      expect(attributes.accountCount).toBe(1);
+    } finally {
+      await suDb.inbox.delete({ where: { id: calls.id } });
+      await suDb.agent.delete({ where: { id: caller.id } });
+    }
   });
 
   test("two first bindings of one inbox mint one route token: the second reads the first's", async () => {

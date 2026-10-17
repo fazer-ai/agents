@@ -102,9 +102,9 @@ afterAll(() => {
   (globalThis as { Response: typeof Response }).Response = happyResponse;
 });
 
-async function open(token: string, conversationId: number) {
+async function open(token: string, conversationId: number, query = "") {
   const ws = new nativeGlobals.BunWebSocket(
-    `ws://127.0.0.1:${server?.port}/api/v1/voice/stream/${token}?conversation_id=${conversationId}`,
+    `ws://127.0.0.1:${server?.port}/api/v1/voice/stream/${token}?conversation_id=${conversationId}${query}`,
   );
   await new Promise<void>((resolve, reject) => {
     ws.onopen = () => resolve();
@@ -208,6 +208,24 @@ describe("the call stream route", () => {
       fenceHeld = null;
       resetShutdownForTest();
     }
+  });
+
+  test("a call the URL names as placed is configured only once answered", async () => {
+    const before = read.history.length;
+    const ws = await open("tok", 10, "&direction=outbound");
+    ws.send(JSON.stringify({ event: "start", call_id: "c" }));
+    // A call to the inbox is configured from its start frame within milliseconds (the stubs answer at
+    // once); this one has to still be waiting for the answer well past that.
+    const past = Date.now() + 200;
+    await until("the start frame's moment to pass", () => Date.now() > past);
+    const configuredEarly = read.history.length > before;
+    ws.send(JSON.stringify({ event: "answered" }));
+    await until(
+      "the call to be configured",
+      () => read.history.length > before,
+    );
+    ws.close();
+    expect(configuredEarly).toBe(false);
   });
 
   test("a report that fails is logged, and the server keeps taking calls", async () => {

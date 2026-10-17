@@ -335,6 +335,30 @@ describe("CallBridge", () => {
     expect(state.begun).toBe(0);
   });
 
+  test("a call the stream's URL names as placed waits for its answer, when the start frame says nothing", async () => {
+    const { provider, state } = fakeEngine();
+    let opened = 0;
+    const counting: VoiceProvider = {
+      ...provider,
+      open: (config, handlers) => {
+        opened++;
+        return provider.open(config, handlers);
+      },
+    };
+    const bridge = new CallBridge(socket(), {
+      provider: counting,
+      configure: () => voiceSessionConfig(ROUTE, CTX),
+      onFinished: () => {},
+      direction: "outbound",
+    });
+    bridge.onMessage(JSON.stringify({ event: "start", call_id: "c" }));
+    await tick();
+    expect(opened).toBe(0);
+    bridge.onMessage(JSON.stringify({ event: "answered" }));
+    await until("the engine to begin", () => state.begun === 1);
+    expect(opened).toBe(1);
+  });
+
   test("a placed call takes its id from the answer", async () => {
     const { provider } = fakeEngine();
     const records: CallRecord[] = [];

@@ -82,6 +82,8 @@ export interface CallBridgeOptions {
   /** Taps for tests and recordings: what the person said and what the agent said, 16 kHz. */
   tap?: { caller?(pcm: Int16Array): void; agent?(pcm: Int16Array): void };
   log?: (message: string, fields?: Record<string, unknown>) => void;
+  /** The direction the stream's URL named, for a start frame that leaves it out. */
+  direction?: CallDirection;
 }
 
 export class CallBridge {
@@ -125,7 +127,10 @@ export class CallBridge {
         if (this.start) return;
         this.start = {
           callId: typeof frame.call_id === "string" ? frame.call_id : null,
-          direction: frame.direction === "outbound" ? "outbound" : "inbound",
+          direction:
+            frame.direction === "outbound" || frame.direction === "inbound"
+              ? frame.direction
+              : (this.options.direction ?? "inbound"),
           peer: typeof frame.peer === "string" ? frame.peer : null,
         };
         this.log("call stream started", { direction: this.start.direction });

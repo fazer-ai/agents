@@ -23,6 +23,15 @@ describe("the tools a voice agent's Tools tab offers", () => {
         tools: named("asaas_create_pix_charge", "asaas_get_customer"),
       },
     ],
+    // An operator's own tools, one named after the engine's hang-up.
+    toolDefinitions: [
+      { id: "10", name: "Agenda", toolName: "consultar_agenda" },
+      { id: "11", name: "Desligar", toolName: "end_call" },
+    ],
+    codeTools: [
+      { id: "20", name: "calcular_frete" },
+      { id: "21", name: "end_call" },
+    ],
   } as unknown as ToolCatalog;
 
   test("drop what sends to the contact or closes the conversation, keep the rest", () => {
@@ -34,5 +43,9 @@ describe("the tools a voice agent's Tools tab offers", () => {
     expect(
       shown.integrationInstances.map((inst) => inst.tools.map((t) => t.name)),
     ).toEqual([["drive_search_files"], ["asaas_get_customer"]]);
+    expect(shown.toolDefinitions.map((t) => t.toolName)).toEqual([
+      "consultar_agenda",
+    ]);
+    expect(shown.codeTools.map((t) => t.name)).toEqual(["calcular_frete"]);
   });
 });

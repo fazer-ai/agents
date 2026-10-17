@@ -23,6 +23,7 @@ describe("the tools a voice agent's Tools tab offers", () => {
         tools: named("asaas_create_pix_charge", "asaas_get_customer"),
       },
     ],
+    rag: named("search_knowledge", "suggest_kb_entry"),
     // An operator's own tools, one named after the engine's hang-up.
     toolDefinitions: [
       { id: "10", name: "Agenda", toolName: "consultar_agenda" },
@@ -47,5 +48,7 @@ describe("the tools a voice agent's Tools tab offers", () => {
       "consultar_agenda",
     ]);
     expect(shown.codeTools.map((t) => t.name)).toEqual(["calcular_frete"]);
+    // A call searches the knowledge base and never suggests an entry for it.
+    expect(shown.rag.map((r) => r.name)).toEqual(["search_knowledge"]);
   });
 });

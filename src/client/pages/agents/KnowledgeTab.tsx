@@ -10,7 +10,7 @@ import {
 import { credentialCompat } from "@/client/lib/credentialCompat";
 import { providerLabel } from "@/client/lib/providerLabels";
 import { MODEL_PROVIDERS } from "@/graph/model-config";
-import { KnowledgeGrantsEditor } from "./KnowledgeGrantsEditor";
+import { KnowledgeGrantsEditor, SUGGEST_TOOL } from "./KnowledgeGrantsEditor";
 import type { SuggestionReviewState } from "./knowledgeFormState";
 import {
   type AgentModelSource,
@@ -82,6 +82,8 @@ export function KnowledgeTab({
     true,
   );
   const sameAsAgent = t("editor.reviewSameAsAgent", "Same as the agent");
+  // The reviewer judges suggestions: with no suggestion tool on offer (a voice agent) it has nothing to do.
+  const suggestions = catalog.rag.some((r) => r.name === SUGGEST_TOOL);
 
   return (
     <div className="flex grow flex-col gap-4">
@@ -91,114 +93,121 @@ export function KnowledgeTab({
         onChange={onChange}
         onCatalogChange={onCatalogChange}
       />
-      <Section
-        id="kb-review"
-        icon={ShieldCheck}
-        title={t("editor.reviewModel", "Suggestion reviewer")}
-        help={t(
-          "editor.reviewModelHelp",
-          "Before a suggestion from this agent reaches the approval queue, a model compares it with what the knowledge base, the queue and earlier rejections already hold.\n\nA repeat goes to the Discarded tab of Approvals, with what it matched; a correction of an existing document comes with that document to replace. Nothing is ever lost: if the review fails, the suggestion goes to the queue unreviewed.\n\nBy default it runs on the agent's own model.",
-        )}
-      >
-        {/* Locked while the tab saves: the save decides whether to write the reviewer from the values
+      {suggestions && (
+        <Section
+          id="kb-review"
+          icon={ShieldCheck}
+          title={t("editor.reviewModel", "Suggestion reviewer")}
+          help={t(
+            "editor.reviewModelHelp",
+            "Before a suggestion from this agent reaches the approval queue, a model compares it with what the knowledge base, the queue and earlier rejections already hold.\n\nA repeat goes to the Discarded tab of Approvals, with what it matched; a correction of an existing document comes with that document to replace. Nothing is ever lost: if the review fails, the suggestion goes to the queue unreviewed.\n\nBy default it runs on the agent's own model.",
+          )}
+        >
+          {/* Locked while the tab saves: the save decides whether to write the reviewer from the values
           it read when it started, so an edit made meanwhile would be marked saved and never sent. */}
-        <fieldset disabled={saving} className="contents">
-          <FormField label={t("editor.provider", "Provider")}>
-            <Select
-              value={review.provider}
-              onChange={(e) =>
-                setReview((prev) =>
-                  overrideProviderChanged(prev, e.target.value),
-                )
-              }
-            >
-              <option value="">{sameAsAgent}</option>
-              {MODEL_PROVIDERS.map((p) => (
-                <option key={p} value={p}>
-                  {providerLabel(p, t)}
-                </option>
-              ))}
-            </Select>
-          </FormField>
-          <FormField
-            label={t("editor.credential", "API key")}
-            error={reviewCredentialError}
-            description={t(
-              "editor.reviewCredentialHint",
-              "Required when the reviewer uses another provider; without its own key, suggestions reach the queue unreviewed.",
-            )}
-            group
-          >
-            <CredentialPicker
-              value={review.credentialRef}
-              onChange={(v) =>
-                setReview((prev) =>
-                  overridePicked(prev, "credentialRef", v, agentModel.provider),
-                )
-              }
-              required={needsOwnCredential}
-              compatibleTypes={credentialCompat.model(effectiveProvider)}
-              defaultCreateType={credentialCompat.model(effectiveProvider)[0]}
-              ariaLabel={t("editor.credential", "API key")}
-            />
-          </FormField>
-          <FormField label={t("editor.model", "Model")} group>
-            <ModelPicker
-              value={review.model}
-              onChange={(v) =>
-                setReview((prev) =>
-                  overridePicked(prev, "model", v, agentModel.provider),
-                )
-              }
-              provider={effectiveProvider}
-              credentialRef={source.credentialRef || undefined}
-              baseURL={source.baseURL || undefined}
-              placeholder={
-                effectiveProvider === agentModel.provider
-                  ? sameAsAgent
-                  : undefined
-              }
-            />
-          </FormField>
-          {(effectiveProvider === "openai-compatible" ||
-            !!reviewCredBaseUrl ||
-            !!review.baseURL.trim()) && (
-            <FormField
-              label={t("editor.baseURL", "Base URL")}
-              description={
-                reviewCredBaseUrl
-                  ? t(
-                      "editor.baseURLFromCredential",
-                      "Defined by the selected credential.",
-                    )
-                  : t(
-                      "editor.reviewBaseURLHint",
-                      "Required for OpenAI-compatible endpoints, unless the credential already carries one.",
-                    )
-              }
-              error={
-                baseUrlUnsupported
-                  ? t(
-                      "editor.baseURLNotSentByProvider",
-                      "This provider does not send a base URL: the request would go to its own endpoint instead. Pick a credential without one, or use an OpenAI-compatible provider.",
-                    )
-                  : baseUrlInvalid && review.baseURL.trim()
-                    ? t("common.invalidUrl", "Must be a valid http(s) URL.")
-                    : null
-              }
-            >
-              <Input
-                value={reviewCredBaseUrl ?? review.baseURL}
+          <fieldset disabled={saving} className="contents">
+            <FormField label={t("editor.provider", "Provider")}>
+              <Select
+                value={review.provider}
                 onChange={(e) =>
-                  setReview((prev) => ({ ...prev, baseURL: e.target.value }))
+                  setReview((prev) =>
+                    overrideProviderChanged(prev, e.target.value),
+                  )
                 }
-                disabled={!!reviewCredBaseUrl}
-                placeholder="https://api.groq.com/openai/v1"
+              >
+                <option value="">{sameAsAgent}</option>
+                {MODEL_PROVIDERS.map((p) => (
+                  <option key={p} value={p}>
+                    {providerLabel(p, t)}
+                  </option>
+                ))}
+              </Select>
+            </FormField>
+            <FormField
+              label={t("editor.credential", "API key")}
+              error={reviewCredentialError}
+              description={t(
+                "editor.reviewCredentialHint",
+                "Required when the reviewer uses another provider; without its own key, suggestions reach the queue unreviewed.",
+              )}
+              group
+            >
+              <CredentialPicker
+                value={review.credentialRef}
+                onChange={(v) =>
+                  setReview((prev) =>
+                    overridePicked(
+                      prev,
+                      "credentialRef",
+                      v,
+                      agentModel.provider,
+                    ),
+                  )
+                }
+                required={needsOwnCredential}
+                compatibleTypes={credentialCompat.model(effectiveProvider)}
+                defaultCreateType={credentialCompat.model(effectiveProvider)[0]}
+                ariaLabel={t("editor.credential", "API key")}
               />
             </FormField>
-          )}
-        </fieldset>
-      </Section>
+            <FormField label={t("editor.model", "Model")} group>
+              <ModelPicker
+                value={review.model}
+                onChange={(v) =>
+                  setReview((prev) =>
+                    overridePicked(prev, "model", v, agentModel.provider),
+                  )
+                }
+                provider={effectiveProvider}
+                credentialRef={source.credentialRef || undefined}
+                baseURL={source.baseURL || undefined}
+                placeholder={
+                  effectiveProvider === agentModel.provider
+                    ? sameAsAgent
+                    : undefined
+                }
+              />
+            </FormField>
+            {(effectiveProvider === "openai-compatible" ||
+              !!reviewCredBaseUrl ||
+              !!review.baseURL.trim()) && (
+              <FormField
+                label={t("editor.baseURL", "Base URL")}
+                description={
+                  reviewCredBaseUrl
+                    ? t(
+                        "editor.baseURLFromCredential",
+                        "Defined by the selected credential.",
+                      )
+                    : t(
+                        "editor.reviewBaseURLHint",
+                        "Required for OpenAI-compatible endpoints, unless the credential already carries one.",
+                      )
+                }
+                error={
+                  baseUrlUnsupported
+                    ? t(
+                        "editor.baseURLNotSentByProvider",
+                        "This provider does not send a base URL: the request would go to its own endpoint instead. Pick a credential without one, or use an OpenAI-compatible provider.",
+                      )
+                    : baseUrlInvalid && review.baseURL.trim()
+                      ? t("common.invalidUrl", "Must be a valid http(s) URL.")
+                      : null
+                }
+              >
+                <Input
+                  value={reviewCredBaseUrl ?? review.baseURL}
+                  onChange={(e) =>
+                    setReview((prev) => ({ ...prev, baseURL: e.target.value }))
+                  }
+                  disabled={!!reviewCredBaseUrl}
+                  placeholder="https://api.groq.com/openai/v1"
+                />
+              </FormField>
+            )}
+          </fieldset>
+        </Section>
+      )}
       <TabActionBar
         dirty={dirty}
         saving={saving}

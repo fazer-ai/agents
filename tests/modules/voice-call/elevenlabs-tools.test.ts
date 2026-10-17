@@ -3,6 +3,7 @@ import { DEFAULT_HTTP_TOOL_TIMEOUT_MS } from "@/graph/tools/http";
 import {
   CALL_HTTP_TOOL_TIMEOUT_MS,
   elevenLabsToolDefs,
+  fromElevenLabsArgs,
   syncElevenLabsTools,
   VOICE_TOOL_TIMEOUT_MS,
 } from "@/modules/voice-call/providers/elevenlabs-tools";
@@ -28,6 +29,49 @@ describe("elevenlabs tool declarations", () => {
     expect(VOICE_TOOL_TIMEOUT_MS).toBeGreaterThan(CALL_HTTP_TOOL_TIMEOUT_MS);
     expect(engineMs).toBeGreaterThan(VOICE_TOOL_TIMEOUT_MS);
     expect(engineMs).toBeLessThanOrEqual(120_000);
+  });
+
+  test("a union of types travels as JSON text naming its types, and comes back as the value", () => {
+    const schema = {
+      type: "object",
+      properties: {
+        limite: { type: ["number", "boolean"], description: "o limite" },
+        filtro: {
+          anyOf: [
+            { type: "null" },
+            { type: "string" },
+            { type: "array", items: { type: "string" } },
+          ],
+        },
+        nome: { type: "string" },
+      },
+    };
+    const [def] = elevenLabsToolDefs([tool("buscar", schema)]);
+    const props = (def?.parameters as { properties: Record<string, unknown> })
+      .properties;
+    expect(props.limite).toEqual({
+      type: "string",
+      description: "o limite (a JSON value: number or boolean)",
+    });
+    expect(props.filtro).toEqual({
+      type: "string",
+      description: "filtro (a JSON value: string or array)",
+    });
+    expect(
+      fromElevenLabsArgs(schema, {
+        limite: "5",
+        filtro: '["a","b"]',
+        nome: "42",
+      }),
+    ).toEqual({ limite: 5, filtro: ["a", "b"], nome: "42" });
+    // Text that is not one of its types is left as it came, for the tool to refuse.
+    expect(fromElevenLabsArgs(schema, { limite: "muito" })).toEqual({
+      limite: "muito",
+    });
+    // Nor is JSON of another type: an object where a number or a boolean goes.
+    expect(fromElevenLabsArgs(schema, { limite: '{"a":1}' })).toEqual({
+      limite: '{"a":1}',
+    });
   });
 
   test("every property gets a description and nullable types collapse", () => {

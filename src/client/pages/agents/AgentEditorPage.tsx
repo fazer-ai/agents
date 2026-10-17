@@ -4691,6 +4691,7 @@ function AgentEditor() {
             {tab === "knowledge" && (
               <KnowledgeTab
                 catalog={voiceAgent ? voiceToolCatalog(catalog) : catalog}
+                suggestions={!voiceAgent}
                 grants={grants}
                 onChange={setGrants}
                 onCatalogChange={refreshCatalog}

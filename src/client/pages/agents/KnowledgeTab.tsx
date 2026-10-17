@@ -10,7 +10,7 @@ import {
 import { credentialCompat } from "@/client/lib/credentialCompat";
 import { providerLabel } from "@/client/lib/providerLabels";
 import { MODEL_PROVIDERS } from "@/graph/model-config";
-import { KnowledgeGrantsEditor, SUGGEST_TOOL } from "./KnowledgeGrantsEditor";
+import { KnowledgeGrantsEditor } from "./KnowledgeGrantsEditor";
 import type { SuggestionReviewState } from "./knowledgeFormState";
 import {
   type AgentModelSource,
@@ -43,6 +43,8 @@ interface KnowledgeTabProps {
   onDiscard: () => void;
   // Absent for a WATCHER, for the reason ToolsTab states.
   onOpenPlayground?: () => void;
+  // False on a voice agent: a call never suggests an entry, so the reviewer has nothing to judge.
+  suggestions?: boolean;
 }
 
 export function KnowledgeTab({
@@ -60,6 +62,7 @@ export function KnowledgeTab({
   onSave,
   onDiscard,
   onOpenPlayground,
+  suggestions = true,
 }: KnowledgeTabProps) {
   const { t } = useTranslation();
   const source = overridePickerSource(review, agentModel, reviewCredBaseUrl);
@@ -82,8 +85,6 @@ export function KnowledgeTab({
     true,
   );
   const sameAsAgent = t("editor.reviewSameAsAgent", "Same as the agent");
-  // The reviewer judges suggestions: with no suggestion tool on offer (a voice agent) it has nothing to do.
-  const suggestions = catalog.rag.some((r) => r.name === SUGGEST_TOOL);
 
   return (
     <div className="flex grow flex-col gap-4">

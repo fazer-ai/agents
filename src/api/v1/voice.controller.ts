@@ -136,8 +136,15 @@ export const voiceController = new Elysia({
         {
           provider,
           configure: async (start) => {
-            const resolved = await route;
-            if (!resolved) throw new Error("unknown route token");
+            const opened = await route;
+            if (!opened) throw new Error("unknown route token");
+            // Read again: an outbound call is configured once answered, and while it rang the agent
+            // may have been disabled, switched to test mode or unbound, or its account disconnected.
+            const resolved = await resolveVoiceRoute(ws.data.params.routeToken);
+            if (!resolved || resolved.agentId !== opened.agentId)
+              throw new Error(
+                "the voice route changed before the call started",
+              );
             ctx.inboxId = resolved.inboxId;
             // The start frame may name the direction the query left out; the report reads it too.
             if (start.direction === "outbound") ctx.direction = "outbound";

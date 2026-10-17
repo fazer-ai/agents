@@ -51,11 +51,22 @@ let failReport = false;
 // A report still writing to Chatwoot, released by the test.
 let reportHeld: (() => void) | null = null;
 let holdReport = false;
+// How often the "unbound" token was resolved.
+let unboundReads = 0;
+let reboundReads = 0;
 // A fence still waiting on Chatwoot, released by the test.
 let fenceHeld: (() => void) | null = null;
 
 stubExports(service, {
-  resolveVoiceRoute: async (token: string) => (token === "tok" ? route : null),
+  resolveVoiceRoute: async (token: string) => {
+    if (token === "tok") return route;
+    // A route that answered when the stream opened, and is gone by the time the call is configured.
+    if (token === "unbound") return unboundReads++ === 0 ? route : null;
+    // And one whose inbox was bound to another voice agent meanwhile.
+    if (token === "rebound")
+      return reboundReads++ === 0 ? route : { ...route, agentId: 4n };
+    return null;
+  },
   fenceConversation: async (_r: service.VoiceRoute, id: number | null) => {
     if (id === 12) await new Promise<void>((go) => (fenceHeld = go));
     return id !== null && conversations[id] === route.inboxId ? id : null;
@@ -122,6 +133,25 @@ async function call(conversationId: number): Promise<void> {
 }
 
 describe("the call stream route", () => {
+  for (const [token, change, reads] of [
+    ["unbound", "unbound", () => unboundReads],
+    ["rebound", "replaced by another", () => reboundReads],
+  ] as const) {
+    test(`a call whose agent was ${change} while it rang is not started`, async () => {
+      const before = { history: read.history.length, tools: read.tools.length };
+      const ws = await open(token, 10);
+      const closed = new Promise<void>((done) => {
+        ws.onclose = () => done();
+      });
+      ws.send(JSON.stringify({ event: "start", direction: "outbound" }));
+      ws.send(JSON.stringify({ event: "answered" }));
+      await closed;
+      expect(reads()).toBe(2);
+      expect(read.history.length).toBe(before.history);
+      expect(read.tools.length).toBe(before.tools);
+    });
+  }
+
   test("reads a conversation of the token's inbox, and none of another inbox", async () => {
     await call(10);
     await call(11);

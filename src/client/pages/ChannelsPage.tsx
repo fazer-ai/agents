@@ -1038,6 +1038,9 @@ export function ChannelsPage() {
       .inboxes({ id: inboxId })
       ["voice-agent"].put({ agentId });
     if (err || !data) {
+      // A 502 saved the binding and only missed Chatwoot: the row shows what is stored, so the
+      // previous agent can be picked again to put it back.
+      void refreshInboxes();
       showToast(
         apiErrorMessage(err) ||
           t("channels.voiceBindError", "Could not change the inbox's calls."),

@@ -592,3 +592,123 @@ describe("a key ElevenLabs refuses", () => {
     ).rejects.toMatchObject({ keyProblem: null, text: "voice not found" });
   });
 });
+
+describe("a stored key the runtime will not send as a header", () => {
+  // A newline pasted with the key: Bun refuses the header before any request, and names its value.
+  const key = "sk_secret_part\nrest_of_the_key";
+  // Bun's own fetch (the DOM setup replaces the global one, and its AbortSignal with it), on a port
+  // nothing listens on: its header validation refuses the key before the connect.
+  const bunFetch = (globalThis as unknown as { BunFetch: typeof fetch })
+    .BunFetch;
+  const sends = (input: string, init?: RequestInit) =>
+    bunFetch(`http://127.0.0.1:9/${input.length}`, {
+      ...init,
+      signal: undefined,
+    });
+  const sendingAll = sends as unknown as typeof fetch;
+  // Only the request named goes through the validation; every other one is answered.
+  const sendingOnly = (part: string) =>
+    (async (input: string, init?: RequestInit) =>
+      input.includes(part)
+        ? sends(input, init)
+        : new Response("{}")) as unknown as typeof fetch;
+  const spec = {
+    name: "Maria",
+    prompt: "p",
+    voice: "v1",
+    calls: readCallsConfig({}),
+  };
+  const config: VoiceSessionConfig = {
+    instructions: "x",
+    greeting: "",
+    opensCall: false,
+    language: "pt",
+    direction: "inbound",
+    variables: {},
+    tools: [],
+  };
+  const handlers: VoiceSessionHandlers = {
+    onAudio: () => {},
+    onInterrupt: () => {},
+    onTranscript: () => {},
+    onHangup: () => {},
+    onError: () => {},
+  };
+  const leaked = (text: string) =>
+    text.includes("sk_secret_part") || text.includes("rest_of_the_key");
+
+  test("is called an invalid key by the access check, without the key in what it says", async () => {
+    // Each character Bun refuses in a header value, and one it takes (Latin-1) that stays a key.
+    for (const bad of ["\n", "\r", "\0", "\u0100"]) {
+      const result = await checkElevenLabsAgentsAccess(
+        `sk_secret_part${bad}rest_of_the_key`,
+        sendingAll,
+      );
+      expect(result, JSON.stringify(bad)).toMatchObject({
+        ok: false,
+        reason: "invalid_key",
+      });
+      expect(leaked(JSON.stringify(result)), JSON.stringify(bad)).toBe(false);
+    }
+    expect(
+      await checkElevenLabsAgentsAccess(
+        "sk_latin_\u00fc",
+        (async () => new Response("{}")) as unknown as typeof fetch,
+      ),
+    ).toEqual({ ok: true });
+  });
+
+  test("fails each request of a call's setup and of the call as the key's problem, never echoing it", async () => {
+    const cases: Array<[string, () => Promise<unknown>]> = [
+      [
+        "writing the agent",
+        () => ensureElevenLabsAgent(key, null, spec, sendingAll, digests, hold),
+      ],
+      [
+        "declaring the tools",
+        () =>
+          elevenLabsProvider({
+            apiKey: key,
+            agentId: "agent_key_tools",
+            fetchImpl: sendingOnly("/v1/convai/agents/"),
+            holdEngine: hold,
+            configDigests: digests,
+          }).open(config, handlers),
+      ],
+      [
+        "asking for the call's URL",
+        async () => {
+          // The tools declared by an earlier call, so this one goes straight to the URL.
+          await elevenLabsProvider({
+            apiKey: "k",
+            agentId: "agent_key_url",
+            fetchImpl: (async (input: string) =>
+              new Response("{}", {
+                status: input.includes("get-signed-url") ? 500 : 200,
+              })) as unknown as typeof fetch,
+            holdEngine: hold,
+            configDigests: digests,
+          })
+            .open(config, handlers)
+            .catch(() => {});
+          return elevenLabsProvider({
+            apiKey: key,
+            agentId: "agent_key_url",
+            fetchImpl: sendingOnly("get-signed-url"),
+            holdEngine: hold,
+            configDigests: digests,
+          }).open(config, handlers);
+        },
+      ],
+    ];
+    for (const [what, run] of cases) {
+      const err = await run().then(
+        () => null,
+        (e: unknown) => e,
+      );
+      expect(err, what).toBeInstanceOf(ElevenLabsRefusal);
+      expect(err, what).toMatchObject({ keyProblem: "invalid_key" });
+      expect(leaked(String((err as Error).message)), what).toBe(false);
+    }
+  });
+});

@@ -7,7 +7,7 @@ import { createHash } from "node:crypto";
 import config from "@/config";
 import { clipText } from "@/lib/text";
 import type { ConfigDigests } from "./config-digests";
-import { forgetElevenLabsAgent } from "./elevenlabs-agent";
+import { forgetElevenLabsAgent, keyedFetch } from "./elevenlabs-agent";
 import type { VoiceTool } from "./types";
 
 const API = "https://api.elevenlabs.io";
@@ -238,15 +238,14 @@ export async function syncElevenLabsTools(
   const digest = createHash("sha256").update(body).digest("hex");
   if (options.declared === digest) return null;
   await options.onDeclaring?.();
-  const res = await (options.fetchImpl ?? fetch)(
+  const res = await keyedFetch(
+    options.fetchImpl ?? fetch,
+    options.apiKey,
     `${API}/v1/convai/agents/${encodeURIComponent(options.agentId)}`,
     {
       method: "PATCH",
       signal: options.signal,
-      headers: {
-        "xi-api-key": options.apiKey,
-        "content-type": "application/json",
-      },
+      headers: { "content-type": "application/json" },
       body,
     },
   );

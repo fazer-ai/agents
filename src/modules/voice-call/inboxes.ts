@@ -182,9 +182,9 @@ async function syncInbox(
   let binding = await read();
   if (!binding) return;
   let on = await answers(ctx, binding, base);
+  const clients = new Map<bigint, ChatwootClient>();
   // NOTE: bounded: each pass follows a binding, or an agent switch or mode, that committed after the
   // previous one was read.
-  const clients = new Map<bigint, ChatwootClient>();
   for (let pass = 0; pass < 3; pass++) {
     await writeToFork(ctx, binding, on, base, deps, clients);
     const after = await read();

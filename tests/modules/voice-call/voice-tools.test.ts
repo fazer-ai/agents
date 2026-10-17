@@ -33,6 +33,26 @@ describe("the agent's tools on a call", () => {
   });
 });
 
+describe("a tool whose argument is a union of types", () => {
+  test("receives the value, not the JSON text the call carried it as", async () => {
+    const seen: unknown[] = [];
+    const limited = tool(
+      async (input: { limite: number | boolean }) => {
+        seen.push(input.limite);
+        return "ok";
+      },
+      {
+        name: "buscar",
+        description: "d",
+        schema: z.object({ limite: z.union([z.number(), z.boolean()]) }),
+      },
+    );
+    const [voice] = toVoiceTools([limited]);
+    expect(await voice?.invoke({ limite: "5" }, "c1")).toBe("ok");
+    expect(seen).toEqual([5]);
+  });
+});
+
 describe("a custom tool named end_call", () => {
   test("is not offered on a call, where the engine's own hang-up has that name", () => {
     const custom = tool(async () => "ok", {

@@ -13,11 +13,18 @@ afterEach(() => {
   globalThis.fetch = realFetch;
 });
 
-async function open(tab = "general") {
-  const stub = stubEditorApi({
-    kind: "voice",
-    settings: { calls: { credentialRef: "vault:9", llm: "gpt-4.1-mini" } },
-  });
+async function open(tab = "general", kind: "voice" | "text" = "voice") {
+  const stub = stubEditorApi(
+    {
+      kind,
+      settings: { calls: { credentialRef: "vault:9", llm: "gpt-4.1-mini" } },
+    },
+    {
+      catalog: {
+        rag: [{ name: "search_knowledge" }, { name: "suggest_kb_entry" }],
+      },
+    },
+  );
   stub.override = (method, path) =>
     method === "POST" && path.endsWith("/calls/check")
       ? new Response(JSON.stringify({ ok: true }), {
@@ -51,6 +58,15 @@ describe("the editor of a voice agent", () => {
       "Knowledge",
       "Playground",
     ]);
+  });
+
+  test("Knowledge offers search, and no suggestions or their reviewer, which a call never runs", async () => {
+    await open("knowledge");
+    expect(screen.queryByText("Suggestion reviewer")).toBeNull();
+    cleanup();
+    // A text agent's tab, with the same catalog, still has them.
+    await open("knowledge", "text");
+    expect(screen.queryByText("Suggestion reviewer")).not.toBeNull();
   });
 
   test("General's Discard takes back a change to the Voice card", async () => {

@@ -16,7 +16,7 @@ interface Props {
 // Stable RAG tool identifier (RAG_TOOL_NAMES in src/graph/tools/catalog.ts). The agent's
 // `enabledTools` allowlist is filtered server-side by tool name, so the client gates the suggestion
 // tool by including/excluding this exact name.
-const SUGGEST_TOOL = "suggest_kb_entry";
+export const SUGGEST_TOOL = "suggest_kb_entry";
 
 // Controlled editor for the single RAG grant. Enabling sets the RAG tools +
 // selected knowledge bases; disabling drops the grant. Preserves non-RAG grants.

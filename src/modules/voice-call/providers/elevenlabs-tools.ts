@@ -35,20 +35,47 @@ const END_CALL = {
 
 type Schema = Record<string, unknown>;
 
-/** ElevenLabs takes a subset of JSON Schema, and every property has to carry a description. */
+// The alternatives a schema allows besides null, when there is more than one (`type: ["number",
+// "boolean"]`, an `anyOf`/`oneOf` of two shapes); null for a single type, nullable or not.
+function unionAlternatives(schema: Schema): Schema[] | null {
+  if (Array.isArray(schema.type)) {
+    const types = schema.type.filter((t) => t !== "null");
+    return types.length > 1 ? types.map((type) => ({ type })) : null;
+  }
+  const branches = schema.anyOf ?? schema.oneOf;
+  if (!Array.isArray(branches)) return null;
+  const alternatives = (branches as Schema[]).filter((b) => b.type !== "null");
+  return alternatives.length > 1 ? alternatives : null;
+}
+
+const typeName = (s: Schema) => (typeof s.type === "string" ? s.type : "value");
+
+/**
+ * ElevenLabs takes a subset of JSON Schema, and every property has to carry a description. A union of
+ * types, which it cannot declare, travels as a string holding the value as JSON, and the description
+ * names the types it may be; `fromElevenLabsArgs` turns it back before the tool runs.
+ */
 export function elevenLabsSchema(schema: Schema, name: string): Schema {
+  const description =
+    typeof schema.description === "string" && schema.description.trim()
+      ? schema.description
+      : name;
+  const alternatives = unionAlternatives(schema);
+  if (alternatives)
+    return {
+      type: "string",
+      description: `${description} (a JSON value: ${alternatives.map(typeName).join(" or ")})`,
+    };
   let type = schema.type;
   if (Array.isArray(type)) type = type.find((t) => t !== "null");
-  if (!type && Array.isArray(schema.anyOf)) {
-    const branch = (schema.anyOf as Schema[]).find((s) => s.type !== "null");
+  const branches = schema.anyOf ?? schema.oneOf;
+  if (!type && Array.isArray(branches)) {
+    const branch = (branches as Schema[]).find((s) => s.type !== "null");
     if (branch) return elevenLabsSchema({ ...branch, ...pick(schema) }, name);
   }
   const out: Schema = {
     type: typeof type === "string" ? type : "string",
-    description:
-      typeof schema.description === "string" && schema.description.trim()
-        ? schema.description
-        : name,
+    description,
   };
   if (Array.isArray(schema.enum)) out.enum = schema.enum;
   if (out.type === "object") {
@@ -67,6 +94,57 @@ export function elevenLabsSchema(schema: Schema, name: string): Schema {
       `${name} (item)`,
     );
   return out;
+}
+
+const matches = (alternative: Schema, value: unknown): boolean => {
+  switch (alternative.type) {
+    case "number":
+      return typeof value === "number";
+    case "integer":
+      return Number.isInteger(value);
+    case "boolean":
+      return typeof value === "boolean";
+    case "string":
+      return typeof value === "string";
+    case "array":
+      return Array.isArray(value);
+    case "object":
+      return !!value && typeof value === "object" && !Array.isArray(value);
+    default:
+      return value !== null;
+  }
+};
+
+/**
+ * The arguments the engine sent, as the tool's own schema takes them: a union declared as a JSON
+ * string (`elevenLabsSchema`) is parsed back when the result is one of its types, and left as it came
+ * otherwise, for the tool's own validation to answer.
+ */
+export function fromElevenLabsArgs(schema: Schema, value: unknown): unknown {
+  const alternatives = unionAlternatives(schema);
+  if (alternatives) {
+    if (typeof value !== "string") return value;
+    try {
+      const parsed: unknown = JSON.parse(value);
+      return alternatives.some((a) => matches(a, parsed)) ? parsed : value;
+    } catch {
+      return value;
+    }
+  }
+  if (Array.isArray(value) && schema.items && typeof schema.items === "object")
+    return value.map((item) =>
+      fromElevenLabsArgs(schema.items as Schema, item),
+    );
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const props = (schema.properties ?? {}) as Record<string, Schema>;
+    return Object.fromEntries(
+      Object.entries(value).map(([key, v]) => [
+        key,
+        props[key] ? fromElevenLabsArgs(props[key], v) : v,
+      ]),
+    );
+  }
+  return value;
 }
 
 function pick(schema: Schema): Schema {

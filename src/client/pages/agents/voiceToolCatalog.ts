@@ -8,6 +8,7 @@ export function voiceToolCatalog(catalog: ToolCatalog): ToolCatalog {
   return {
     ...catalog,
     native: catalog.native.filter((n) => !isVoiceDeniedTool(n.name)),
+    rag: catalog.rag.filter((r) => !isVoiceDeniedTool(r.name)),
     // An operator's own tool can carry a denied name (`end_call`); by the name the agent calls it.
     toolDefinitions: catalog.toolDefinitions.filter(
       (t) => !isVoiceDeniedTool(t.toolName),

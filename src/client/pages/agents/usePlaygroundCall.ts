@@ -15,6 +15,40 @@ const FRAME = 1024;
 const TONE_HZ = 425;
 // How often the meters on the screen are refreshed.
 const METER_MS = 100;
+// What the agent's audio carries besides its voice: the background sound plays the whole call, so
+// "audio is queued" is not "the agent is talking". Measured on a call with the background on, 100 ms
+// windows: the background between 0.009 and 0.016 RMS, the voice above 0.05.
+const SPEECH_RMS = 0.035;
+const SPEECH_WINDOW = 800; // 50 ms at 16 kHz
+// Kept on through the pauses between words, so the line does not flicker mid-sentence.
+const SPEECH_HANGOVER_S = 0.3;
+// The loudest microphone sample of a refresh that counts as the operator talking.
+const MIC_SPEECH_PEAK = 0.08;
+
+/**
+ * When the voice in a chunk of the agent's audio ends, on the audio clock, the chunk starting at
+ * `at`; null for a chunk with no voice in it (the background alone, or silence).
+ */
+export function voiceEndIn(samples: Float32Array, at: number): number | null {
+  let end: number | null = null;
+  for (let i = 0; i < samples.length; i += SPEECH_WINDOW) {
+    const stop = Math.min(samples.length, i + SPEECH_WINDOW);
+    let sum = 0;
+    for (let j = i; j < stop; j++) sum += (samples[j] as number) ** 2;
+    if (Math.sqrt(sum / (stop - i)) > SPEECH_RMS) end = at + stop / RATE;
+  }
+  return end;
+}
+
+/** Who the screen says is talking: the agent while its voice plays, the operator while the microphone hears them. */
+export function speakerNow(
+  voiceUntil: number,
+  now: number,
+  micPeak: number,
+): "agent" | "operator" | null {
+  if (now < voiceUntil + SPEECH_HANGOVER_S) return "agent";
+  return micPeak > MIC_SPEECH_PEAK ? "operator" : null;
+}
 
 export type CallEnd =
   | { by: "agent"; reason: string | null }
@@ -38,7 +72,7 @@ export type CallLine =
 export interface CallMeters {
   // 0 to 1, the loudest sample since the last refresh.
   mic: number;
-  agentSpeaking: boolean;
+  speaker: "agent" | "operator" | null;
 }
 
 function toBase64(pcm: Int16Array): string {
@@ -89,6 +123,8 @@ interface Live {
   node: ScriptProcessorNode;
   playing: Set<AudioBufferSourceNode>;
   next: number;
+  // When the agent's voice (not its background) stops playing, on the audio clock.
+  voiceUntil: number;
   micPeak: number;
   stopRingback: (() => void) | null;
   answeredAt: number | null;
@@ -105,6 +141,8 @@ function play(l: Live, b64: string) {
   const at = Math.max(l.next, l.audio.currentTime);
   source.start(at);
   l.next = at + buffer.duration;
+  const voiceEnd = voiceEndIn(samples, at);
+  if (voiceEnd !== null) l.voiceUntil = Math.max(l.voiceUntil, voiceEnd);
   l.playing.add(source);
   source.onended = () => l.playing.delete(source);
 }
@@ -113,6 +151,7 @@ function clear(l: Live) {
   for (const source of l.playing) source.stop();
   l.playing.clear();
   l.next = l.audio.currentTime;
+  l.voiceUntil = l.audio.currentTime;
 }
 
 export function usePlaygroundCall(agentId: string) {
@@ -120,7 +159,7 @@ export function usePlaygroundCall(agentId: string) {
   const [lines, setLines] = useState<CallLine[]>([]);
   const [meters, setMeters] = useState<CallMeters>({
     mic: 0,
-    agentSpeaking: false,
+    speaker: null,
   });
   const live = useRef<Live | null>(null);
   // Bumped when the screen goes away: a start still waiting on the setup or the microphone prompt
@@ -164,7 +203,7 @@ export function usePlaygroundCall(agentId: string) {
   const up = call.state === "ringing" || call.state === "live";
   useEffect(() => {
     if (!up) {
-      setMeters({ mic: 0, agentSpeaking: false });
+      setMeters({ mic: 0, speaker: null });
       return;
     }
     const timer = setInterval(() => {
@@ -172,7 +211,7 @@ export function usePlaygroundCall(agentId: string) {
       if (!l) return;
       setMeters({
         mic: l.micPeak,
-        agentSpeaking: l.next > l.audio.currentTime,
+        speaker: speakerNow(l.voiceUntil, l.audio.currentTime, l.micPeak),
       });
       l.micPeak = 0;
     }, METER_MS);
@@ -286,6 +325,7 @@ export function usePlaygroundCall(agentId: string) {
       node,
       playing: new Set(),
       next: 0,
+      voiceUntil: 0,
       micPeak: 0,
       stopRingback: tone(audio, 1, 5, 12),
       answeredAt: null,

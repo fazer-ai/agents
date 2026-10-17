@@ -135,3 +135,9 @@ export function callsFormErrors(f: CallsFormState): CallsRangeField[] {
     return n === undefined || n < min || n > max;
   });
 }
+
+// A refused key is said in full by its sentence: ElevenLabs' own words would only repeat it, in English.
+export const KEY_PROBLEMS: ReadonlySet<string> = new Set([
+  "invalid_key",
+  "missing_permission",
+]);

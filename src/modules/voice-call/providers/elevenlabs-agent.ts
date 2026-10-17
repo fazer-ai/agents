@@ -19,6 +19,9 @@ const API = "https://api.elevenlabs.io";
 
 export interface ElevenLabsAgentSpec {
   name: string;
+  /** The agent's own prompt. Each call replaces it with the prompt it builds (the conversation's
+   *  history included); stored here so the agent on the account reads as the one configured. */
+  prompt: string;
   voice: string;
   calls: CallsConfig;
 }
@@ -57,7 +60,7 @@ export function elevenLabsAgentConfig(spec: ElevenLabsAgentSpec) {
       agent: {
         language: "pt",
         first_message: "",
-        prompt: { prompt: "Configurado pelo fazer.ai agents.", llm: calls.llm },
+        prompt: { prompt: spec.prompt, llm: calls.llm },
       },
     },
     platform_settings: {
@@ -84,6 +87,58 @@ export type AccessCheck =
       detail: string;
     };
 
+/** What ElevenLabs says in a refusal, without the JSON around it: `detail.message`, or `detail`. */
+export function refusalText(body: string): string {
+  try {
+    const parsed = JSON.parse(body) as { detail?: unknown };
+    const detail = parsed.detail;
+    if (typeof detail === "string") return clipText(detail, 300);
+    if (detail && typeof detail === "object") {
+      const message = (detail as { message?: unknown }).message;
+      if (typeof message === "string") return clipText(message, 300);
+    }
+  } catch {
+    // Not JSON: the body as it came.
+  }
+  return clipText(body, 300);
+}
+
+/** The key's problem a 401 names, whichever request it answered. */
+function keyRefusal(
+  status: number,
+  body: string,
+): "invalid_key" | "missing_permission" | null {
+  if (status !== 401) return null;
+  return /permission|missing_permissions/i.test(body)
+    ? "missing_permission"
+    : "invalid_key";
+}
+
+/** A request ElevenLabs answered with a refusal; `keyProblem` when the refusal is the key's. */
+export class ElevenLabsRefusal extends Error {
+  constructor(
+    what: string,
+    readonly status: number,
+    readonly text: string,
+    readonly keyProblem: "invalid_key" | "missing_permission" | null,
+  ) {
+    super(`elevenlabs: ${what} failed with ${status}: ${text}`);
+  }
+}
+
+async function refusal(
+  what: string,
+  res: Response,
+): Promise<ElevenLabsRefusal> {
+  const body = await res.text();
+  return new ElevenLabsRefusal(
+    what,
+    res.status,
+    refusalText(body),
+    keyRefusal(res.status, body),
+  );
+}
+
 /** Whether a key can run ElevenLabs Agents: a text-to-speech-only key answers 401 on the agents list. */
 export async function checkElevenLabsAgentsAccess(
   apiKey: string,
@@ -99,10 +154,10 @@ export async function checkElevenLabsAgentsAccess(
     return { ok: false, reason: "unreachable", detail: (err as Error).message };
   }
   if (res.ok) return { ok: true };
-  const detail = clipText(await res.text(), 300);
-  if (res.status === 401 && /permission|missing_permissions/i.test(detail))
-    return { ok: false, reason: "missing_permission", detail };
-  if (res.status === 401) return { ok: false, reason: "invalid_key", detail };
+  const body = await res.text();
+  const detail = refusalText(body);
+  const keyProblem = keyRefusal(res.status, body);
+  if (keyProblem) return { ok: false, reason: keyProblem, detail };
   return {
     ok: false,
     reason: "unreachable",
@@ -159,10 +214,7 @@ export async function ensureElevenLabsAgent(
     } finally {
       await hold.release();
     }
-    if (res.status !== 404)
-      throw new Error(
-        `elevenlabs: updating the agent failed with ${res.status}: ${clipText(await res.text(), 300)}`,
-      );
+    if (res.status !== 404) throw await refusal("updating the agent", res);
   }
   const res = await fetchImpl(`${API}/v1/convai/agents/create`, {
     method: "POST",
@@ -170,10 +222,7 @@ export async function ensureElevenLabsAgent(
     body,
     signal: deadline(),
   });
-  if (!res.ok)
-    throw new Error(
-      `elevenlabs: creating the agent failed with ${res.status}: ${clipText(await res.text(), 300)}`,
-    );
+  if (!res.ok) throw await refusal("creating the agent", res);
   const created = (await res.json()) as { agent_id?: string };
   if (!created.agent_id) throw new Error("elevenlabs: created agent has no id");
   await digests.write(created.agent_id, digest);

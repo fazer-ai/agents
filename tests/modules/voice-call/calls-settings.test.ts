@@ -8,6 +8,7 @@ import { elevenLabsProvider } from "@/modules/voice-call/providers/elevenlabs";
 import {
   checkElevenLabsAgentsAccess,
   deleteElevenLabsAgent,
+  ElevenLabsRefusal,
   elevenLabsAgentConfig,
   elevenLabsCallSummary,
   ensureElevenLabsAgent,
@@ -124,6 +125,7 @@ describe("calls settings", () => {
 describe("the agent on ElevenLabs", () => {
   const spec = {
     name: "Maria (fazer.ai agents #1)",
+    prompt: "Você é a Maria.",
     voice: "v1",
     calls: readCallsConfig({}),
   };
@@ -162,6 +164,31 @@ describe("the agent on ElevenLabs", () => {
     expect(cc.asr?.user_input_audio_format).toBe("pcm_16000");
     expect(cc.tts?.agent_output_audio_format).toBe("pcm_16000");
     expect(cc.tts?.voice_id).toBe("v1");
+    // The agent on the account carries the agent's own prompt; each call still sends its own.
+    expect(cc.agent?.prompt).toMatchObject({ prompt: "Você é a Maria." });
+  });
+
+  test("a changed prompt is written to the agent there", async () => {
+    const api = fakeApi([
+      [200, { agent_id: "agent_p" }],
+      [200, {}],
+    ]);
+    await ensureElevenLabsAgent("k", null, spec, api.fetchImpl, digests, hold);
+    await ensureElevenLabsAgent(
+      "k",
+      "agent_p",
+      { ...spec, prompt: "Você é a Maria, agora da loja nova." },
+      api.fetchImpl,
+      digests,
+      hold,
+    );
+    expect(api.calls.map((c) => c.method)).toEqual(["POST", "PATCH"]);
+    const patched = api.calls[1]?.body as {
+      conversation_config: { agent: { prompt: { prompt: string } } };
+    };
+    expect(patched.conversation_config.agent.prompt.prompt).toBe(
+      "Você é a Maria, agora da loja nova.",
+    );
   });
 
   test("is patched once per change, and recreated when it was deleted there", async () => {
@@ -240,6 +267,7 @@ describe("the agent's settings on ElevenLabs", () => {
   test("carry the background sound, and spell it off with nulls so a save switches it off", () => {
     const on = elevenLabsAgentConfig({
       name: "a",
+      prompt: "p",
       voice: "v",
       calls: readCallsConfig({
         calls: { backgroundSound: "restaurant", backgroundVolume: 0.3 },
@@ -253,6 +281,7 @@ describe("the agent's settings on ElevenLabs", () => {
     });
     const off = elevenLabsAgentConfig({
       name: "a",
+      prompt: "p",
       voice: "v",
       calls: readCallsConfig({}),
     });
@@ -383,6 +412,7 @@ describe("the call settings form", () => {
 describe("an agent deleted on ElevenLabs after this process wrote it", () => {
   const spec = {
     name: "Maria (fazer.ai agents #1)",
+    prompt: "Você é a Maria.",
     voice: "v1",
     calls: readCallsConfig({}),
   };
@@ -477,7 +507,12 @@ describe("the requests a call's setup makes to ElevenLabs", () => {
         }),
       );
     }) as unknown as typeof fetch;
-    const spec = { name: "Maria", voice: "v1", calls: readCallsConfig({}) };
+    const spec = {
+      name: "Maria",
+      prompt: "p",
+      voice: "v1",
+      calls: readCallsConfig({}),
+    };
     await checkElevenLabsAgentsAccess("k", fetchImpl);
     await ensureElevenLabsAgent(
       "k",
@@ -490,5 +525,70 @@ describe("the requests a call's setup makes to ElevenLabs", () => {
     await deleteElevenLabsAgent("k", "agent_bounded", fetchImpl, digests);
     await elevenLabsCallSummary("k", "conv", { fetchImpl });
     expect(unbounded).toEqual([]);
+  });
+});
+
+describe("a key ElevenLabs refuses", () => {
+  const refused = (status: number, body: unknown) =>
+    (async () =>
+      new Response(JSON.stringify(body), {
+        status,
+      })) as unknown as typeof fetch;
+  const invalid = {
+    detail: { status: "invalid_api_key", message: "Invalid API key" },
+  };
+  const scoped = {
+    detail: {
+      status: "missing_permissions",
+      message: "The API key is missing the permission convai_read",
+    },
+  };
+
+  test("is named by the access check, with ElevenLabs' words and not its JSON", async () => {
+    expect(
+      await checkElevenLabsAgentsAccess("k", refused(401, invalid)),
+    ).toEqual({ ok: false, reason: "invalid_key", detail: "Invalid API key" });
+    expect(
+      await checkElevenLabsAgentsAccess("k", refused(401, scoped)),
+    ).toMatchObject({ ok: false, reason: "missing_permission" });
+  });
+
+  test("is named the same when the agent is written without that check", async () => {
+    const writing = ensureElevenLabsAgent(
+      "k",
+      null,
+      {
+        name: "Maria",
+        prompt: "p",
+        voice: "v1",
+        calls: readCallsConfig({}),
+      },
+      refused(401, invalid),
+      digests,
+      hold,
+    );
+    await expect(writing).rejects.toBeInstanceOf(ElevenLabsRefusal);
+    await expect(writing).rejects.toMatchObject({
+      keyProblem: "invalid_key",
+      text: "Invalid API key",
+    });
+  });
+
+  test("a refusal of the settings is not the key's", async () => {
+    await expect(
+      ensureElevenLabsAgent(
+        "k",
+        null,
+        {
+          name: "Maria",
+          prompt: "p",
+          voice: "v1",
+          calls: readCallsConfig({}),
+        },
+        refused(422, { detail: "voice not found" }),
+        digests,
+        hold,
+      ),
+    ).rejects.toMatchObject({ keyProblem: null, text: "voice not found" });
   });
 });

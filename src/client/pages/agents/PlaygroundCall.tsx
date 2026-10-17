@@ -8,6 +8,7 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Badge, Button } from "@/client/components";
 import { cn } from "@/client/lib/utils";
+import { KEY_PROBLEMS } from "./callsFormState";
 import type {
   CallEnd,
   CallState,
@@ -123,9 +124,11 @@ export function PlaygroundCallView({ call }: { call: Call }) {
       : c.state === "ringing"
         ? t("playground.call.ringingHint", "Connecting the agent's voice.")
         : c.state === "live"
-          ? call.meters.agentSpeaking
+          ? call.meters.speaker === "agent"
             ? t("playground.call.agentSpeaking", "The agent is talking")
-            : t("playground.call.listening", "The agent is listening")
+            : call.meters.speaker === "operator"
+              ? t("playground.call.operatorSpeaking", "You are talking")
+              : t("playground.call.listening", "The agent is listening")
           : c.state === "ended"
             ? [
                 endText(c.end),
@@ -142,7 +145,7 @@ export function PlaygroundCallView({ call }: { call: Call }) {
               : "";
 
   const detail =
-    (c.state === "failed" && c.detail) ||
+    (c.state === "failed" && !KEY_PROBLEMS.has(c.problem) && c.detail) ||
     (c.state === "ended" && c.end.by === "error" && c.end.reason) ||
     null;
 
@@ -162,7 +165,8 @@ export function PlaygroundCallView({ call }: { call: Call }) {
                 : "bg-success/15 text-success",
           )}
         >
-          {(c.state === "ringing" || (live && call.meters.agentSpeaking)) && (
+          {(c.state === "ringing" ||
+            (live && call.meters.speaker === "agent")) && (
             <span
               className="absolute inset-0 animate-ping rounded-full bg-success/25"
               aria-hidden="true"

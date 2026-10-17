@@ -10,6 +10,7 @@ import { dbConfigDigests } from "./providers/config-digests";
 import {
   checkElevenLabsAgentsAccess,
   deleteElevenLabsAgent,
+  ElevenLabsRefusal,
   ensureElevenLabsAgent,
 } from "./providers/elevenlabs-agent";
 import { CONFIG_HOLD_LEASE_MS, dbEngineHold } from "./providers/engine-hold";
@@ -52,7 +53,7 @@ export async function setUpAgentCalls(
   const read = await runScopedOn(base, ctx, async (db) => {
     const agent = await db.agent.findUnique({
       where: { id: agentId },
-      select: { name: true, kind: true, settings: true },
+      select: { name: true, kind: true, settings: true, systemPrompt: true },
     });
     if (!agent)
       return { ok: false as const, problem: "agent_not_found" as const };
@@ -67,6 +68,7 @@ export async function setUpAgentCalls(
     return {
       ok: true as const,
       name: agent.name,
+      prompt: agent.systemPrompt,
       calls,
       apiKey: key.secret,
       voice: calls.voice,
@@ -84,12 +86,25 @@ export async function setUpAgentCalls(
     elevenLabsAgentId = await ensureElevenLabsAgent(
       apiKey,
       calls.elevenLabsAgentId,
-      { name: `${read.name} (fazer.ai agents #${agentId})`, voice, calls },
+      {
+        name: `${read.name} (fazer.ai agents #${agentId})`,
+        prompt: read.prompt,
+        voice,
+        calls,
+      },
       opts.fetchImpl,
       dbConfigDigests(base),
       dbEngineHold(CONFIG_HOLD_LEASE_MS, base),
     );
   } catch (err) {
+    // A key ElevenLabs refuses is the key's problem, said as the access check says it: the Playground
+    // and a call set up without that check would otherwise call it the agent's settings.
+    if (err instanceof ElevenLabsRefusal)
+      return {
+        ok: false,
+        problem: err.keyProblem ?? "sync_failed",
+        detail: err.text,
+      };
     return {
       ok: false,
       problem: "sync_failed",

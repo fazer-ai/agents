@@ -169,6 +169,7 @@ export const voiceController = new Elysia({
             };
           },
           log: logCall,
+          direction: ctx.direction,
           onFinished: (record) => {
             bridges.delete(id);
             // Work a shutdown waits for: the report is not retried, and a deploy landing on a call

@@ -136,7 +136,7 @@ const SECTIONS: Section[] = [
     route: "tools",
     tab: /^Tools/,
     seed: {},
-    save: "Save tools",
+    save: "Save",
     first: () => toggleTool("private_note"),
     meanwhile: () => toggleTool("handoff_to_human"),
   },
@@ -145,7 +145,7 @@ const SECTIONS: Section[] = [
     route: "tools",
     tab: /^Tools/,
     seed: {},
-    save: "Save tools",
+    save: "Save",
     first: () => toggleTool("private_note"),
     meanwhile: () =>
       fireEvent.click(
@@ -157,7 +157,7 @@ const SECTIONS: Section[] = [
     route: "knowledge",
     tab: /^Knowledge/,
     seed: {},
-    save: "Save knowledge",
+    save: "Save",
     first: () => change(panel().querySelector("select"), "openai"),
     meanwhile: () => change(panel().querySelector("select"), "anthropic"),
   },

@@ -97,6 +97,8 @@ export function stubEditorApi(
     },
   };
   let version = 0;
+  // The grants as stored: a PUT replaces them and answers with them, as the server does.
+  let storedGrants: unknown[] = opts.grants ?? [];
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(
       input instanceof Request ? input.url : String(input),
@@ -117,8 +119,19 @@ export function stubEditorApi(
     if (answered) return await answered;
     if (path === "/api/auth/me") return json({ user: null });
     if (path === `/api/v1/agents/${id}/tool-selections`) {
+      if (method === "PUT")
+        storedGrants = (body.grants as Record<string, unknown>[]).map((g) => ({
+          toolDefinitionId: null,
+          mcpServerConnectionId: null,
+          integrationInstanceId: null,
+          documentTemplateId: null,
+          codeToolDefinitionId: null,
+          knowledgeBaseIds: [],
+          enabledTools: [],
+          ...g,
+        }));
       return json({
-        grants: opts.grants ?? [],
+        grants: storedGrants,
         catalog: { ...EMPTY_CATALOG, ...(opts.catalog ?? {}) },
         agentUpdatedAt: stub.agent.updatedAt,
       });

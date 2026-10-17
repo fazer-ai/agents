@@ -101,13 +101,15 @@ export async function setUpAgentCalls(
     // agent must not read it as somebody else's save. An agent saved before it had a calls block gets
     // one, or the next call would create another agent on the tenant's account. Only over the id this
     // setup read: two setups that both found none (a call and the editor's check) both create one, and
-    // the one that loses deletes its own and takes the winner's.
+    // the one that loses deletes its own and takes the winner's. And only under the key it read: an id
+    // is good only on the account that holds it, so one created on a key the operator has since
+    // replaced is deleted there and the setup starts over on the new one.
     const stored = calls.elevenLabsAgentId;
     const written = await runScopedOn(
       base,
       ctx,
       (db) =>
-        db.$executeRaw`UPDATE agents SET settings = jsonb_set(CASE WHEN jsonb_typeof(settings -> 'calls') = 'object' THEN settings ELSE settings || '{"calls": {}}'::jsonb END, '{calls,elevenLabsAgentId}', to_jsonb(${elevenLabsAgentId}::text), true) WHERE id = ${agentId} AND (settings -> 'calls' ->> 'elevenLabsAgentId') IS NOT DISTINCT FROM ${stored}::text`,
+        db.$executeRaw`UPDATE agents SET settings = jsonb_set(CASE WHEN jsonb_typeof(settings -> 'calls') = 'object' THEN settings ELSE settings || '{"calls": {}}'::jsonb END, '{calls,elevenLabsAgentId}', to_jsonb(${elevenLabsAgentId}::text), true) WHERE id = ${agentId} AND (settings -> 'calls' ->> 'elevenLabsAgentId') IS NOT DISTINCT FROM ${stored}::text AND (settings -> 'calls' ->> 'credentialRef') IS NOT DISTINCT FROM ${calls.credentialRef}::text`,
     );
     if (written === 0) {
       await deleteElevenLabsAgent(

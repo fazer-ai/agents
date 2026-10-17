@@ -56,7 +56,7 @@ describe("elevenlabs tool declarations", () => {
     });
     expect(props.filtro).toEqual({
       type: "string",
-      description: "filtro (a JSON value: string or array)",
+      description: "filtro (a JSON value: string or array or null)",
     });
     expect(
       fromElevenLabsArgs(schema, {
@@ -65,6 +65,10 @@ describe("elevenlabs tool declarations", () => {
         nome: "42",
       }),
     ).toEqual({ limite: 5, filtro: ["a", "b"], nome: "42" });
+    // Null, which a nullable union allows, is sent as JSON too.
+    expect(fromElevenLabsArgs(schema, { filtro: "null" })).toEqual({
+      filtro: null,
+    });
     // Text that is not one of its types is left as it came, for the tool to refuse.
     expect(fromElevenLabsArgs(schema, { limite: "muito" })).toEqual({
       limite: "muito",
@@ -75,7 +79,7 @@ describe("elevenlabs tool declarations", () => {
     });
   });
 
-  test("every property gets a description and nullable types collapse", () => {
+  test("every property gets a description, and a nullable scalar may still be null", () => {
     const defs = elevenLabsToolDefs([
       tool("x", {
         type: "object",
@@ -96,8 +100,11 @@ describe("elevenlabs tool declarations", () => {
     expect(defs[0]?.parameters).toEqual({
       type: "object",
       properties: {
-        a: { type: "string", description: "a" },
-        b: { type: "integer", description: "bê" },
+        a: { type: "string", description: "a (a JSON value: string or null)" },
+        b: {
+          type: "string",
+          description: "bê (a JSON value: integer or null)",
+        },
         c: {
           type: "array",
           description: "c",
@@ -106,6 +113,24 @@ describe("elevenlabs tool declarations", () => {
       },
       required: ["a"],
     });
+    const original = {
+      type: "object",
+      properties: {
+        a: { type: ["string", "null"] },
+        b: { anyOf: [{ type: "null" }, { type: "integer" }] },
+      },
+    };
+    // Null clears where leaving the field out keeps it, so it comes back as null; text stays text,
+    // and a number the integer branch takes comes back as one.
+    expect(fromElevenLabsArgs(original, { a: "null", b: "null" })).toEqual({
+      a: null,
+      b: null,
+    });
+    expect(fromElevenLabsArgs(original, { a: "Maria", b: "7" })).toEqual({
+      a: "Maria",
+      b: 7,
+    });
+    expect(fromElevenLabsArgs(original, { a: "123" })).toEqual({ a: "123" });
   });
 
   test("the same set is declared once; a changed set is declared again", async () => {

@@ -235,9 +235,11 @@ async function syncInbox(
 
 /**
  * What refuses a voice binding, asked by the bind under its locks and by the MCP preview without
- * them: a disconnected account (409), an inbox that is not WhatsApp (422), an agent that does not
- * exist or is not a voice agent. `agentKind` is undefined when no agent is being bound, null when the
- * agent is gone.
+ * them: a disconnected account (409), an inbox that is not WhatsApp or not on the connector (422), an
+ * agent that does not exist or is not a voice agent. `agentKind` is undefined when no agent is being
+ * bound, null when the agent is gone. An unbind is never refused: a binding stored while the inbox's
+ * provider was still unknown must stay clearable once the provider turns out to take no calls, or
+ * it keeps the agent from being deleted.
  */
 export function voiceBindingRefusal(state: {
   channelType: string | null;
@@ -245,7 +247,8 @@ export function voiceBindingRefusal(state: {
   disconnected: boolean;
   agentKind: string | null | undefined;
 }): AppError | null {
-  if (state.agentKind !== undefined && state.disconnected)
+  if (state.agentKind === undefined) return null;
+  if (state.disconnected)
     return new AppError(
       "this account is disconnected; reconnect it before assigning an agent",
       409,
@@ -264,7 +267,7 @@ export function voiceBindingRefusal(state: {
       "errors.voiceInboxNotConnector",
     );
   if (state.agentKind === null) return new NotFoundError("agent not found");
-  if (state.agentKind !== undefined && state.agentKind !== "voice")
+  if (state.agentKind !== "voice")
     return new AppError(
       "only a voice agent answers calls",
       422,

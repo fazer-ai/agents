@@ -825,6 +825,55 @@ describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
     await bindInboxVoiceAgent(ctx(tenant), cloud.id, null, cw, appDb);
   });
 
+  // A binding stored while the provider was unknown (null takes calls) outlives the discovery that the
+  // inbox is on Cloud: clearing it is never refused, or the agent could not be deleted.
+  test("a binding on an inbox that turned out not to take calls can still be cleared", async () => {
+    const later = await suDb.inbox.create({
+      data: {
+        tenantId: tenant,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: 532,
+        name: "Inbox 532",
+        channelType: "Channel::Whatsapp",
+        provider: null,
+      },
+    });
+    const cw = fakeChatwoot();
+    await bindInboxVoiceAgent(ctx(tenant), later.id, voiceId, cw, appDb);
+    await suDb.inbox.update({
+      where: { id: later.id },
+      data: { provider: "whatsapp_cloud" },
+    });
+    await expect(
+      bindInboxVoiceAgent(ctx(tenant), later.id, voiceId, cw, appDb),
+    ).rejects.toMatchObject({
+      statusCode: 422,
+      translationKey: "errors.voiceInboxNotConnector",
+    });
+    await checkVoiceBinding(ctx(tenant), later.id, null, appDb);
+    await bindInboxVoiceAgent(ctx(tenant), later.id, null, cw, appDb);
+    expect(
+      (await suDb.inbox.findUniqueOrThrow({ where: { id: later.id } }))
+        .voiceAgentId,
+    ).toBeNull();
+    // The same for an inbox that is no longer WhatsApp at all.
+    await bindInboxVoiceAgent(ctx(tenant), whatsappInboxId, voiceId, cw, appDb);
+    await suDb.inbox.update({
+      where: { id: whatsappInboxId },
+      data: { channelType: "Channel::Api" },
+    });
+    await checkVoiceBinding(ctx(tenant), whatsappInboxId, null, appDb);
+    await bindInboxVoiceAgent(ctx(tenant), whatsappInboxId, null, cw, appDb);
+    await suDb.inbox.update({
+      where: { id: whatsappInboxId },
+      data: { channelType: "Channel::Whatsapp" },
+    });
+    expect(
+      (await suDb.inbox.findUniqueOrThrow({ where: { id: whatsappInboxId } }))
+        .voiceAgentId,
+    ).toBeNull();
+  });
+
   test("a voice agent is never an inbox's text responder", async () => {
     await expect(
       bindInbox(ctx(tenant), whatsappInboxId, voiceId, fakeChatwoot(), appDb),

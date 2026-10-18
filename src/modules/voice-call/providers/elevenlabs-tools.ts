@@ -52,6 +52,9 @@ const unconstrained = (schema: Schema) =>
 // as a union too. A nullable object or array keeps its shape instead, and so cannot be null on a call.
 function unionAlternatives(schema: Schema): Schema[] | null {
   if (unconstrained(schema)) return [ANY];
+  // A dictionary (an object whose keys are the caller's, `additionalProperties` with no `properties`)
+  // has no fields ElevenLabs could list: declared as an empty object, it reaches the tool empty.
+  if (isDictionary(schema)) return [{ type: "object" }];
   // An enum with no type whose values are not all one scalar type (`[1, "a"]`, or one with null)
   // cannot be declared as a list of one type: it travels as JSON, and only its own values are read.
   if (
@@ -221,6 +224,16 @@ function enumType(values: unknown[]): string | undefined {
   if (types.size === 2 && types.has("integer") && types.has("number"))
     return "number";
   return types.size === 1 ? [...types][0] : undefined;
+}
+
+function isDictionary(schema: Schema): boolean {
+  const props = schema.properties as Record<string, unknown> | undefined;
+  return (
+    schema.type === "object" &&
+    (!props || Object.keys(props).length === 0) &&
+    schema.additionalProperties !== undefined &&
+    schema.additionalProperties !== false
+  );
 }
 
 function pick(schema: Schema): Schema {

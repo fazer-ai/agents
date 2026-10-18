@@ -184,6 +184,60 @@ describe("elevenlabs tool declarations", () => {
     ]).toEqual([1, "a", null, "2", "b"]);
   });
 
+  // A dictionary input (`z.record`, an HTTP tool's object field) has keys the caller chooses: declared
+  // as an empty object the engine would send it empty, so it travels as JSON and comes back an object.
+  test("a dictionary travels as JSON text and comes back as the object it holds", () => {
+    const schema = {
+      type: "object",
+      properties: {
+        meta: {
+          type: "object",
+          propertyNames: { type: "string" },
+          additionalProperties: {},
+        },
+        flags: { type: "object", additionalProperties: true },
+        fixed: { type: "object", properties: {}, additionalProperties: false },
+        // Fields of its own keep the shape, extra keys or not; and an object that says nothing about
+        // extra keys is not a dictionary (a tool with no arguments is that).
+        named: {
+          type: "object",
+          properties: { id: { type: "string" } },
+          additionalProperties: { type: "string" },
+        },
+        empty: { type: "object" },
+      },
+      required: ["meta"],
+      additionalProperties: false,
+    };
+    const declared = (
+      elevenLabsSchema(schema, "t") as { properties: Record<string, Schema> }
+    ).properties;
+    expect([
+      declared.meta,
+      declared.flags,
+      declared.fixed,
+      declared.named,
+      declared.empty,
+    ]).toEqual([
+      { type: "string", description: "meta (a JSON value: object)" },
+      { type: "string", description: "flags (a JSON value: object)" },
+      { type: "object", description: "fixed", properties: {}, required: [] },
+      {
+        type: "object",
+        description: "named",
+        properties: { id: { type: "string", description: "id" } },
+        required: [],
+      },
+      { type: "object", description: "empty", properties: {}, required: [] },
+    ]);
+    expect(
+      fromElevenLabsArgs(schema, {
+        meta: '{"origem":"site","lote":3}',
+        flags: "[1]",
+      }),
+    ).toEqual({ meta: { origem: "site", lote: 3 }, flags: "[1]" });
+  });
+
   test("every property gets a description, and a nullable scalar may still be null", () => {
     const defs = elevenLabsToolDefs([
       tool("x", {

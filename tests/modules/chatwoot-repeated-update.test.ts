@@ -378,13 +378,19 @@ describe.skipIf(!dbUp)("repeated message updates", () => {
     expect((await deliver(conversationUpdated(s))).rows).toBe(1);
   });
 
-  // Every meaningful field: the update that carries a change is processed, and becomes the record.
-  const variants: [string, Partial<Shape>][] = [
+  // Every meaningful field: the update that carries a change is processed, and becomes the record. The
+  // conversation's version stays the one the creation carried, so only the named field differs. The
+  // card is already there before its attribute changes, so the card's id does not move with it.
+  const variants: [string, Partial<Shape>, Partial<Shape>?][] = [
     ["an edit", { content: "resposta editada" }],
     ["a deletion", { content: "This message was deleted", deleted: true }],
     ["a label", { labels: ["vendas"] }],
     ["a conversation attribute", { customAttributes: { pedido: "123" } }],
-    ["a kanban card attribute", { kanban: { etapa: "proposta" } }],
+    [
+      "a kanban card attribute",
+      { kanban: { etapa: "proposta" } },
+      { kanban: { etapa: "lead" } },
+    ],
     ["the contact's name", { contactName: "Cliente Renomeado" }],
     ["the contact's phone", { contactPhone: "+5511999990000" }],
     ["the contact's email", { contactEmail: "cliente@example.com" }],
@@ -392,11 +398,11 @@ describe.skipIf(!dbUp)("repeated message updates", () => {
     ["the status", { status: "open" }],
     ["the inbox name", { inboxName: "Vendas" }],
   ];
-  variants.forEach(([label, change], i) => {
+  variants.forEach(([label, change, before], i) => {
     test(`an update carrying ${label} is processed, and its repeat is then dropped`, async () => {
-      const s = { conv: 1100 + i, msg: 91100 + i };
+      const s = { conv: 1100 + i, msg: 91100 + i, ...before };
       await deliver(body("message_created", s));
-      const changed = { ...s, ...change, updatedAt: 1_791_000_200.5 };
+      const changed = { ...s, ...change };
       const first = await deliver(body("message_updated", changed));
       expect(first.rows).toBe(1);
       expect(first.processError).toBeNull();

@@ -246,6 +246,19 @@ describe("the starting points of a decisions agent", () => {
     const first = labelRules[0]?.args as { add: string[]; remove: string[] };
     expect(first.add).toEqual(["sentimento-muito-negativo"]);
     expect(first.remove.length).toBe(4);
+    // Every level, not just the first: its own band, its own label on, and exactly the other four off.
+    const all = NAMES.sentimentLabels;
+    expect(
+      labelRules.map((r) => ({
+        band: r.when.map((c) => [c.minLevel, c.maxLevel]),
+        args: r.args,
+      })),
+    ).toEqual(
+      all.map((label, i) => ({
+        band: [[String(i), String(i)]],
+        args: { add: [label], remove: all.filter((l) => l !== label) },
+      })),
+    );
   });
 
   test("a starter whose rules would pass the limit is not offered and adds nothing", () => {
@@ -272,11 +285,20 @@ describe("the starting points of a decisions agent", () => {
   test("a starter added to a stored block keeps the stored questions and rules", () => {
     const base = decisionsToForm(BLOCK);
     if (!base) throw new Error("fixture");
+    const before = structuredClone(base);
     const form = withStarter(base, "human", NAMES);
     expect(form.questions.map((q) => q.name)[0]).toBe("pede_reembolso");
     expect(form.rules.length).toBe(2);
     expect(form.rules[0]?.origin).toBe(0);
     expect(form.rules[1]?.origin).toBeNull();
+    // The stored question and rule come through whole, label arguments included, and the stored
+    // rule still adds the fixture's label.
+    expect(form.questions[0]).toEqual(before.questions[0]);
+    expect(form.rules[0]).toEqual(before.rules[0]);
+    expect(form.rules[0]?.args).toEqual({ add: ["reembolso"] });
+    // What follows is the starter's own question and rule.
+    expect(form.questions[1]?.name).toBe("asks_human");
+    expect(form.rules[1]?.args).toEqual({ add: ["quer-humano"] });
   });
 });
 

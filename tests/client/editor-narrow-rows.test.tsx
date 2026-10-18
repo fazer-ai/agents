@@ -75,6 +75,10 @@ describe("the General tab", () => {
     const cards = classesOf(screen.getByRole("radiogroup", { name: "Mode" }));
     expect(cards).toContain("grid");
     expect(cards).toContain("sm:grid-cols-3");
+    // The whole column contract: no column class below sm, so a phone gets the grid's single column.
+    expect(cards.filter((c) => /(^|:)grid-cols-/.test(c))).toEqual([
+      "sm:grid-cols-3",
+    ]);
   });
 
   test("the capability map's title row wraps View graph under the title", async () => {

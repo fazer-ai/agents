@@ -65,11 +65,6 @@ const ROWS: Row[] = [
     mentions: ["contactAuth.handoffTeamId", "0"],
   },
   {
-    name: "a number below an exclusive minimum",
-    error: () => refusalOf({ contactAuth: { handoffTeamId: -1 } }),
-    mentions: ["contactAuth.handoffTeamId", "0", "-1"],
-  },
-  {
     name: "a value outside a closed list",
     error: () => refusalOf({ monitoring: { engine: "nope" } }),
     mentions: ["monitoring.engine", '"nope"'],

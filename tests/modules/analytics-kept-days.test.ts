@@ -1971,17 +1971,57 @@ describe.skipIf(!dbUp)("the kept days of the dashboard", () => {
 
   test("the Langfuse link is read on a budget of its own, not on what the request spent on its days", async () => {
     let opened = 0;
+    // The budget each transaction opened with, and whether its work finished. The metrics budget is
+    // moved away from the general one so the two cannot be told apart by accident.
+    const budgets: Array<{ timeout?: number; done?: boolean }> = [];
+    const watched = <C extends object>(client: C): C =>
+      new Proxy(client, {
+        get(target, key) {
+          const value = Reflect.get(target, key, target);
+          if (key !== "$transaction" || typeof value !== "function")
+            return value;
+          return async (fn: unknown, opts?: { timeout?: number }) => {
+            const seen: { timeout?: number; done?: boolean } = {
+              timeout: opts?.timeout,
+            };
+            budgets.push(seen);
+            const out = await value.call(target, fn, opts);
+            seen.done = true;
+            return out;
+          };
+        },
+      });
     const counting = new Proxy(appDb, {
       get(target, key, receiver) {
-        if (key === "$extends") opened++;
-        return Reflect.get(target, key, receiver);
+        const value = Reflect.get(target, key, receiver);
+        if (key !== "$extends") return value;
+        opened++;
+        return (...args: unknown[]) =>
+          watched(value.apply(target, args) as object);
       },
     });
-    await requestContext.run(
-      { locale: "en", startedAt: Date.now() - config.metrics.timeoutMs - 1 },
-      () => costsLink(ctx(), counting),
-    );
-    expect(opened).toBeGreaterThan(0);
+    const metricsTimeout = config.metrics.timeoutMs;
+    config.metrics.timeoutMs = config.dbTx.timeoutMs + 60_000;
+    const before = Date.now();
+    try {
+      await requestContext.run(
+        { locale: "en", startedAt: Date.now() - config.metrics.timeoutMs - 1 },
+        () => costsLink(ctx(), counting),
+      );
+      expect(opened).toBeGreaterThan(0);
+      // A fresh metrics budget: counted from the call, not from the request that already spent its own.
+      const elapsed = Date.now() - before;
+      expect(budgets.length).toBeGreaterThan(0);
+      for (const b of budgets) {
+        expect(b.timeout).toBeLessThanOrEqual(config.metrics.timeoutMs);
+        expect(b.timeout).toBeGreaterThanOrEqual(
+          config.metrics.timeoutMs - elapsed - 1,
+        );
+        expect(b.done).toBe(true);
+      }
+    } finally {
+      config.metrics.timeoutMs = metricsTimeout;
+    }
   });
 
   test("a deleted tenant leaves nothing in the queue", async () => {

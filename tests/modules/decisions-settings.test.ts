@@ -72,16 +72,16 @@ describe("the decisions block at the write boundary", () => {
   });
 
   // Every rule that fires runs, so `apply` is not a field: it is refused by name rather than kept and
-  // ignored, whichever value it carries.
-  test.each(["shadow", "enforce"])(
-    "a block that still carries apply (%s) is refused, naming the field",
-    (apply) => {
-      const r = refusal({ ...valid, decisions: { ...valid.decisions, apply } });
-      expect(r?.statusCode).toBe(400);
-      expect(r?.field).toBe("monitoring.decisions.apply");
-      expect(r?.message).toContain("Unknown field");
-    },
-  );
+  // ignored, whichever value it carries (the value is never read, so one row covers both).
+  test("a block that still carries apply is refused, naming the field", () => {
+    const r = refusal({
+      ...valid,
+      decisions: { ...valid.decisions, apply: "enforce" },
+    });
+    expect(r?.statusCode).toBe(400);
+    expect(r?.field).toBe("monitoring.decisions.apply");
+    expect(r?.message).toContain("Unknown field");
+  });
 
   // When a rule acts: a closed vocabulary, refused by name like any other field.
   test("a rule's trigger outside the vocabulary is refused, naming the field", () => {

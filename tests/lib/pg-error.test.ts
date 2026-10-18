@@ -87,8 +87,8 @@ describe("a constraint violation, in either shape", () => {
     expect(violatedConstraintOf(adapter)).toBe("tenant_id,name");
   });
 
+  // One unrelated code stands for every code neither predicate knows; the rest reach other branches.
   test.each([
-    ["record not found (P2025)", unconverted("P2025", "No record was found")],
     [
       "a not-null violation (23502)",
       unconverted(

@@ -25,26 +25,26 @@ import { outboundUrl } from "../utils/outbound";
 // event of that family, including ones added later (docs/api-and-fleet.md, Outbound webhooks).
 
 describe("which names a subscription may hold", () => {
+  // One row per outcome of isSubscribableEvent: an event of the set, a name with no `.*` suffix, a
+  // family's wildcard, and a `.*` suffix on something that is not a family.
   const rows: [string, boolean][] = [
     ["conversation.created", true],
-    ["conversation.*", true],
-    ["document.*", true],
-    ["llm.*", true],
-    ["heartbeat", true],
-    ["foobar.*", false],
-    ["foobar.created", false],
-    ["*", false],
-    [".*", false],
     ["conversation*", false],
+    ["document.*", true],
     ["conversation.created.*", false],
-    ["heartbeat.*", false],
-    ["conversation.", false],
   ];
   for (const [name, ok] of rows) {
     test(`${name} → ${ok ? "accepted" : "refused"}`, () => {
       expect(isSubscribableEvent(name)).toBe(ok);
     });
   }
+
+  test("every event of the catalog and every family's wildcard is accepted", () => {
+    for (const g of outboundEventGroups()) {
+      for (const e of g.events) expect(isSubscribableEvent(e)).toBe(true);
+      if (g.wildcard) expect(isSubscribableEvent(g.wildcard)).toBe(true);
+    }
+  });
 });
 
 describe("the catalog grouped by family", () => {

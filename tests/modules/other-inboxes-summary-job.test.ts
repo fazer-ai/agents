@@ -10,7 +10,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import config from "@/config";
-import type { Semaphore } from "@/lib/semaphore";
+import { modelSemaphore } from "@/graph/model-limit";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { summarizeTranscript } from "@/modules/memory/summarize";
 import { SUMMARY_MIN_INTERVAL_MS } from "@/modules/other-inboxes/context";
@@ -18,6 +18,7 @@ import { runOtherInboxSummary } from "@/modules/other-inboxes/summary-job";
 import type { ClaimedJob } from "@/modules/scheduler/service";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { until } from "../utils/poll";
 import { burnSchedulerJobId } from "../utils/scheduler";
 import { UsageReportingModel } from "../utils/scripted-models";
 
@@ -553,16 +554,15 @@ describe.skipIf(!dbUp)("the summary of a conversation in another inbox", () => {
   });
 
   test("a run cancelled while waiting for model capacity leaves the queue without calling", async () => {
-    const sem = (globalThis as unknown as Record<symbol, Semaphore>)[
-      Symbol.for("fazerai.model.semaphore")
-    ] as Semaphore;
+    // The accessor creates the shared semaphore when no earlier test did, so this runs alone too.
+    const sem = modelSemaphore();
     const held: (() => void)[] = [];
     for (let r = sem.tryAcquire(); r; r = sem.tryAcquire()) held.push(r);
     try {
       const model = new UsageReportingModel(["R"]);
       const ac = new AbortController();
-      ac.abort();
-      const out = await summarizeTranscript(
+      const queuedBefore = sem.waiting;
+      const out = summarizeTranscript(
         model,
         "s",
         "Cliente: oi",
@@ -571,8 +571,16 @@ describe.skipIf(!dbUp)("the summary of a conversation in another inbox", () => {
         1_000,
         ac.signal,
       );
-      expect(out.error).toBeDefined();
+      // Cancelled only once it is really queued behind the held permits.
+      await until("the summary to queue for a model permit", () =>
+        sem.waiting > queuedBefore ? true : null,
+      );
+      ac.abort();
+      expect(sem.waiting).toBe(queuedBefore);
+      const result = await out;
+      expect(result.error).toBeDefined();
       expect(model.calls).toHaveLength(0);
+      expect(sem.free).toBe(0);
     } finally {
       for (const r of held) r();
     }

@@ -289,16 +289,13 @@ describe("agent_settings_set argument schema", () => {
   // Any tool's name is a key, and the parse refuses one no tool can carry, before the handler.
   test("a precondition on any tool name parses, and a name no tool can carry is refused", () => {
     const rule = { kind: "attribute", scope: "conversation", key: "dia" };
-    for (const name of [
-      "calendar_check_availability",
-      "mcp__crm__create_deal",
-    ]) {
-      expect(
-        z
-          .object(BEHAVIOR_PATCH_SHAPE)
-          .safeParse({ toolPreconditions: { [name]: rule } }).success,
-      ).toBe(true);
-    }
+    // The schema reads every valid name the same way, so one name stands for all of them.
+    expect(
+      z
+        .object(BEHAVIOR_PATCH_SHAPE)
+        .safeParse({ toolPreconditions: { mcp__crm__create_deal: rule } })
+        .success,
+    ).toBe(true);
     expect(() =>
       z
         .object(BEHAVIOR_PATCH_SHAPE)

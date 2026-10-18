@@ -50,7 +50,7 @@ const SAVED = {
   spokenNoticeText: "Fale curto, é áudio.",
   textChoice: true,
   textChoiceNote: "Tabela de preços vai por escrito.",
-  timeoutMs: 20_000,
+  fallbackTimeoutMs: 20_000,
   fallbackProvider: "openai",
   fallbackModel: "tts-1",
   fallbackVoice: "nova",
@@ -644,33 +644,53 @@ describe("the rewrite's endpoint has to be usable before saving", () => {
 describe("agent editor TTS timeout and fallback voice", () => {
   // Seconds on screen, milliseconds in the bag, clamped as the runtime reads it, and a cleared
   // field stored as null so the agent follows the default instead of a pinned copy of it.
-  test("the timeout is shown in seconds, stored in ms, clamped, and cleared to the default", () => {
-    const form = readTtsFormState({ mode: "mirror", timeoutMs: 15_000 });
-    expect(form.timeoutSeconds).toBe("15");
-    expect(ttsSettingsFrom({ ...form, timeoutSeconds: "20" }).timeoutMs).toBe(
+  test("the fallback timeout is shown in seconds, stored in ms, clamped, and cleared to the default", () => {
+    const form = readTtsFormState({
+      mode: "mirror",
+      fallbackProvider: "openai",
+      fallbackTimeoutMs: 15_000,
+    });
+    expect(form.fallbackTimeoutSeconds).toBe("15");
+    const saved = (s: string) =>
+      ttsSettingsFrom({ ...form, fallbackTimeoutSeconds: s }).fallbackTimeoutMs;
+    expect([saved("20"), saved("900"), saved("")]).toEqual([
       20_000,
-    );
-    expect(ttsSettingsFrom({ ...form, timeoutSeconds: "900" }).timeoutMs).toBe(
       120_000,
-    );
-    expect(ttsSettingsFrom({ ...form, timeoutSeconds: "" }).timeoutMs).toBe(
       null,
+    ]);
+  });
+
+  test("the timeout survives a switch of fallback provider and goes with the fallback", () => {
+    const form = readTtsFormState({
+      mode: "mirror",
+      fallbackProvider: "openai",
+      fallbackTimeoutMs: 15_000,
+    });
+    expect(
+      ttsFallbackProviderChanged(form, "elevenlabs").fallbackTimeoutSeconds,
+    ).toBe("15");
+    expect(ttsFallbackProviderChanged(form, "").fallbackTimeoutSeconds).toBe(
+      "",
     );
   });
 
   // REST and MCP store any whole ms, so a timeout of 1500 shows as 1.5 and must not hold the Save of
   // an unrelated edit in the same section.
   test("a timeout stored in ms that is not whole seconds is in range on screen", () => {
-    const form = readTtsFormState({ mode: "mirror", timeoutMs: 1500 });
-    expect(form.timeoutSeconds).toBe("1.5");
+    const form = readTtsFormState({
+      mode: "mirror",
+      fallbackProvider: "openai",
+      fallbackTimeoutMs: 1500,
+    });
+    expect(form.fallbackTimeoutSeconds).toBe("1.5");
     expect(
       numberProblem(
-        form.timeoutSeconds,
-        TTS_TIMEOUT_RANGES.timeoutSeconds,
+        form.fallbackTimeoutSeconds,
+        TTS_TIMEOUT_RANGES.fallbackTimeoutSeconds,
         true,
       ),
     ).toBe(null);
-    expect(ttsSettingsFrom(form).timeoutMs).toBe(1500);
+    expect(ttsSettingsFrom(form).fallbackTimeoutMs).toBe(1500);
   });
 
   test("switching the fallback's provider clears what belonged to the previous one", () => {

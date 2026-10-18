@@ -153,7 +153,7 @@ import {
   type SilenceRetryInfo,
 } from "./graph";
 import { DEFAULT_MODEL_CONFIG } from "./model-config";
-import { PRIMARY_MAX_RETRIES, PRIMARY_TIMEOUT_MS } from "./model-fallback";
+import { fallbackDeadlineMs, PRIMARY_MAX_RETRIES } from "./model-fallback";
 import type {
   ModelLabels,
   ModelRetryInfo,
@@ -2291,7 +2291,7 @@ export function buildFallbackModel(
       ? { reasoningEffort: cfg.mc.reasoningEffort }
       : {}),
     maxRetries: PRIMARY_MAX_RETRIES,
-    timeoutMs: PRIMARY_TIMEOUT_MS,
+    timeoutMs: fallbackDeadlineMs(cfg.modelFallback),
   };
   // NOTE: `createChatModel` REFUSES some configurations synchronously (openai-compatible with no effective
   // base URL throws a 400). Uncaught here that would cost the turn the fallback exists to save, and
@@ -2301,7 +2301,7 @@ export function buildFallbackModel(
       model: makeModel(mc),
       provider: mc.provider,
       modelId: mc.model,
-      deadlineMs: PRIMARY_TIMEOUT_MS,
+      deadlineMs: fallbackDeadlineMs(cfg.modelFallback),
     };
   } catch (err) {
     logger.warn(
@@ -2326,7 +2326,7 @@ export async function buildModelAndGraph(
   const effectiveBaseUrl = cfg.credentialBaseUrl ?? cfg.mc.baseURL;
   const fallback = buildFallbackModel(cfg, makeModel, deps);
   // Two bounds, and exactly one of them applies. With a fallback behind it, the primary gets
-  // one attempt with the SDK's 45 s ceiling (see ./model-fallback). With none, it keeps LangChain's
+  // one attempt under the fallback's ceiling (`fallbackDeadlineMs`, 45 s by default). With none, it keeps LangChain's
   // six retries, and the whole call, retries included, runs under `config.agent.modelCallTimeoutMs`:
   // a per-attempt ceiling alone does not bound it, because the SDK retries a timeout and the Google
   // adapter drops it.
@@ -2335,7 +2335,10 @@ export async function buildModelAndGraph(
     apiKey: cfg.apiKey,
     baseURL: effectiveBaseUrl,
     ...(fallback
-      ? { maxRetries: PRIMARY_MAX_RETRIES, timeoutMs: PRIMARY_TIMEOUT_MS }
+      ? {
+          maxRetries: PRIMARY_MAX_RETRIES,
+          timeoutMs: fallbackDeadlineMs(cfg.modelFallback),
+        }
       : {}),
   });
   const checkpointer = deps.checkpointer ?? (await getCheckpointer());
@@ -2372,7 +2375,7 @@ export async function buildModelAndGraph(
     retrySilence: deps.retrySilence,
     onSilenceRetry: deps.onSilenceRetry,
     primaryDeadlineMs: fallback
-      ? PRIMARY_TIMEOUT_MS
+      ? fallbackDeadlineMs(cfg.modelFallback)
       : config.agent.modelCallTimeoutMs,
   });
 }

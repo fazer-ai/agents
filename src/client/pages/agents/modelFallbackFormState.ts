@@ -1,4 +1,7 @@
-import { readModelFallbackConfig } from "@/graph/fallback-settings";
+import {
+  clampModelFallbackTimeout,
+  readModelFallbackConfig,
+} from "@/graph/fallback-settings";
 import { modelOptionalFor } from "@/graph/model-defaults";
 import type { ModelFallbackState } from "./BehaviorTab";
 
@@ -15,6 +18,7 @@ export function modelFallbackToForm(settings: unknown): ModelFallbackState {
     model: c.model ?? "",
     credentialRef: c.credentialRef ?? "",
     baseURL: c.baseURL ?? "",
+    timeoutSeconds: c.timeoutMs === null ? "" : String(c.timeoutMs / 1000),
   };
 }
 
@@ -23,6 +27,7 @@ export function modelFallbackToStored(form: ModelFallbackState): {
   model: string | null;
   credentialRef: string | null;
   baseURL: string | null;
+  timeoutMs: number | null;
 } {
   return {
     // NOTE: blank is stored as null, not "". The reader treats both as absent, but null is what a
@@ -32,7 +37,16 @@ export function modelFallbackToStored(form: ModelFallbackState): {
     model: form.model || null,
     credentialRef: form.credentialRef || null,
     baseURL: form.baseURL || null,
+    timeoutMs: modelFallbackTimeoutMsFrom(form.timeoutSeconds),
   };
+}
+
+// The reader's clamp, applied before storing: the save persists what the form holds, which is
+// whatever was typed, and the write refuses a value outside the band.
+export function modelFallbackTimeoutMsFrom(seconds: string): number | null {
+  const n = Number(seconds.trim());
+  if (!seconds.trim() || !Number.isFinite(n)) return null;
+  return clampModelFallbackTimeout(n * 1000);
 }
 
 // The keys the reader produces, for the test that asserts the form carries all of them. Exported

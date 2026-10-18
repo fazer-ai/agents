@@ -341,6 +341,7 @@ describe("with a fallback, nothing about the primary changes", () => {
           model: "claude-haiku-4-5",
           credentialRef: "vault:9",
           baseURL: null,
+          timeoutMs: null,
         },
         modelFallbackApiKey: "sk-fallback",
       }),
@@ -364,6 +365,69 @@ describe("with a fallback, nothing about the primary changes", () => {
     expect(seen.find((m) => m.provider !== "anthropic")?.timeoutMs).toBe(
       45_000,
     );
+  });
+
+  // The agent's own ceiling replaces the 45 s: the primary is cut at it and the fallback answers,
+  // and both models are built with it.
+  test("the agent's fallback timeout cuts the primary and hands the turn over", async () => {
+    const seen: ResolvedModelConfig[] = [];
+    const graph = await buildModelAndGraph(
+      makeConfig({
+        modelFallback: {
+          provider: "anthropic",
+          model: "claude-haiku-4-5",
+          credentialRef: "vault:9",
+          baseURL: null,
+          timeoutMs: DEADLINE_MS,
+        },
+        modelFallbackApiKey: "sk-fallback",
+      }),
+      [],
+      {
+        makeModel: (mc: ResolvedModelConfig) => {
+          seen.push(mc);
+          return mc.provider === "anthropic"
+            ? new DeafModel(0, "fallback")
+            : new DeafModel(new Promise<void>(() => {}), "primario");
+        },
+        checkpointer: new MemorySaver(),
+      },
+    );
+    const out = await graph.invoke(
+      { messages: [new HumanMessage("oi")] },
+      THREAD,
+    );
+    expect(String(out.messages.at(-1)?.content)).toBe("fallback");
+    expect(seen.map((m) => m.timeoutMs)).toEqual([DEADLINE_MS, DEADLINE_MS]);
+  });
+
+  // The fallback is held to the same ceiling by the race, not by its SDK alone: a fallback that
+  // hangs too ends the turn at twice the agent's timeout, never at the 45 s default.
+  test("a fallback that hangs too is cut at the agent's timeout", async () => {
+    const graph = await buildModelAndGraph(
+      makeConfig({
+        modelFallback: {
+          provider: "anthropic",
+          model: "claude-haiku-4-5",
+          credentialRef: "vault:9",
+          baseURL: null,
+          timeoutMs: DEADLINE_MS,
+        },
+        modelFallbackApiKey: "sk-fallback",
+      }),
+      [],
+      {
+        makeModel: (mc: ResolvedModelConfig) =>
+          new DeafModel(new Promise<void>(() => {}), mc.provider),
+        checkpointer: new MemorySaver(),
+      },
+    );
+    const res = await within(
+      outcome(graph.invoke({ messages: [new HumanMessage("oi")] }, THREAD)),
+      GENEROUS_DEADLINE_MS,
+    );
+    expect(res).not.toBe("pending");
+    expect(res !== "pending" && res.ok).toBe(false);
   });
 });
 

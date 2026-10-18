@@ -85,9 +85,10 @@ export interface TtsConfig extends TtsVoiceSettings {
   spokenNoticeText: string | null;
   textChoice: boolean;
   textChoiceNote: string | null;
-  // How long ONE synthesis may take before it counts as failed, in ms. null = TTS_TIMEOUT_DEFAULT_MS.
-  // Per attempt: with a fallback voice behind it, the worst case is two of these.
-  timeoutMs: number | null;
+  // How long each attempt may take while a fallback voice is set, the primary's and the fallback's,
+  // in ms. null = TTS_TIMEOUT_DEFAULT_MS. With no fallback, synthesis keeps that default: the knob
+  // exists to hand a slow primary over, like the model fallback's `timeoutMs`.
+  fallbackTimeoutMs: number | null;
   // The fallback voice, tried once when the primary times out or the provider answers a transient
   // status (5xx, 429), before the reply goes as text. It exists once `fallbackProvider` is named,
   // like the model fallback (graph/fallback-settings). Model and voice "" = that provider's default.
@@ -105,7 +106,7 @@ export interface TtsConfig extends TtsVoiceSettings {
 export const TTS_TIMEOUT_DEFAULT_MS = 60_000;
 
 // The reader's clamp, for a value stored before the schema refused it.
-export const TTS_TIMEOUT_RANGE_MS = pair(TTS_TIMEOUT_RANGES.timeoutMs);
+export const TTS_TIMEOUT_RANGE_MS = pair(TTS_TIMEOUT_RANGES.fallbackTimeoutMs);
 
 export function clampTtsTimeout(value: unknown): number | null {
   if (typeof value !== "number" || !Number.isFinite(value)) return null;
@@ -204,7 +205,7 @@ export const TTS_DEFAULTS: TtsConfig = {
   spokenNoticeText: null,
   textChoice: false,
   textChoiceNote: null,
-  timeoutMs: null,
+  fallbackTimeoutMs: null,
   fallbackProvider: null,
   fallbackModel: "",
   fallbackVoice: "",

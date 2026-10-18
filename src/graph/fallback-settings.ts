@@ -1,3 +1,4 @@
+import { MODEL_FALLBACK_RANGES } from "@/modules/agents/number-ranges";
 import { modelOptionalFor } from "./model-defaults";
 import {
   type ModelOverrideResolution,
@@ -23,6 +24,27 @@ export interface FallbackConfig {
   model: string | null;
   credentialRef: string | null;
   baseURL: string | null;
+  // How long each attempt may take, the primary's and the fallback's, in ms. null =
+  // MODEL_FALLBACK_TIMEOUT_DEFAULT_MS. Read only while a fallback exists: with none, the call keeps
+  // its retries under `config.agent.modelCallTimeoutMs`.
+  timeoutMs: number | null;
+}
+
+// The ceiling before this was configurable, kept as the default (see ./model-fallback). Here, not
+// there, because the editor reads it and ./model-fallback pulls in the provider-failure module.
+export const MODEL_FALLBACK_TIMEOUT_DEFAULT_MS = 45_000;
+
+// The reader's clamp, for a value stored before the schema refused it. The range itself lives with
+// every other configurable number (MODEL_FALLBACK_RANGES).
+export const MODEL_FALLBACK_TIMEOUT_RANGE_MS = [
+  MODEL_FALLBACK_RANGES.timeoutMs.min,
+  MODEL_FALLBACK_RANGES.timeoutMs.max,
+] as const;
+
+export function clampModelFallbackTimeout(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  const [min, max] = MODEL_FALLBACK_TIMEOUT_RANGE_MS;
+  return Math.min(max, Math.max(min, Math.round(value)));
 }
 
 function str(v: unknown): string | null {
@@ -43,6 +65,7 @@ export function readModelFallbackConfig(settings: unknown): FallbackConfig {
     model: str(f.model),
     credentialRef: str(f.credentialRef),
     baseURL: str(f.baseURL),
+    timeoutMs: clampModelFallbackTimeout(f.timeoutMs),
   };
 }
 

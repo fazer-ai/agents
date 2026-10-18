@@ -51,6 +51,7 @@ const FALLBACK = {
   model: "claude-haiku-4-5",
   credentialRef: "vault:9",
   baseURL: null,
+  timeoutMs: null,
 };
 
 describe("what the model factory is asked to build", () => {
@@ -81,6 +82,16 @@ describe("what the model factory is asked to build", () => {
     const fb = seen.find((m) => m.provider === "anthropic");
     expect(fb?.model).toBe("claude-haiku-4-5");
     expect(fb?.apiKey).toBe("sk-fallback");
+  });
+
+  test("the agent's fallback timeout is the ceiling both models are built with", async () => {
+    const seen = await configsHandedToTheFactory(
+      makeConfig({
+        modelFallback: { ...FALLBACK, timeoutMs: 20_000 },
+        modelFallbackApiKey: "sk-fallback",
+      }),
+    );
+    expect(seen.map((m) => m.timeoutMs)).toEqual([20_000, 20_000]);
   });
 
   // The agent's sampling DOES carry, unlike the two sibling overrides, and that is a decision rather

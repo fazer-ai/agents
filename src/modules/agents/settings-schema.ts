@@ -13,6 +13,7 @@ import {
   GROUNDING_RANGES,
   GUARDRAIL_RANGES,
   LIMITS_RANGES,
+  MODEL_FALLBACK_RANGES,
   MONITORING_RANGES,
   SERVICE_WINDOW_RANGES,
   SPLIT_RANGES,
@@ -277,10 +278,10 @@ const tts = z.looseObject({
   normalizeModel: z.string().nullable().optional(),
   normalizeCredentialRef: credentialRef(),
   normalizeBaseURL: baseURL(),
-  timeoutMs: ranged(TTS_TIMEOUT_RANGES.timeoutMs)
+  fallbackTimeoutMs: ranged(TTS_TIMEOUT_RANGES.fallbackTimeoutMs)
     .nullable()
     .optional()
-    .describe("per synthesis, ms; null = 60000"),
+    .describe("per attempt, only with a fallback, ms; null = 60000"),
   // The fallback voice, tried once before the reply goes as text. It exists once the provider is
   // named; null removes it.
   fallbackProvider: oneOf(TTS_PROVIDER_NAMES)
@@ -894,6 +895,10 @@ const modelFallback = z.looseObject({
     .describe("the fallback's model id; absent = no fallback"),
   credentialRef: credentialRef(),
   baseURL: baseURL(),
+  timeoutMs: ranged(MODEL_FALLBACK_RANGES.timeoutMs)
+    .nullable()
+    .optional()
+    .describe("per attempt, both models, ms; null = 45000"),
 });
 
 // The 18 behavior blocks of `agent_settings_set`, each a partial patch over the stored block.

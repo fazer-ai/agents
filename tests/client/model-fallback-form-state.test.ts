@@ -27,6 +27,7 @@ describe("agent editor fallback-provider round-trip", () => {
         model: "claude-haiku-4-5",
         credentialRef: "vault:7",
         baseURL: "https://proxy.example/v1",
+        timeoutMs: 20_000,
       },
     };
     const round = modelFallbackToStored(modelFallbackToForm(stored));
@@ -35,6 +36,7 @@ describe("agent editor fallback-provider round-trip", () => {
       model: "claude-haiku-4-5",
       credentialRef: "vault:7",
       baseURL: "https://proxy.example/v1",
+      timeoutMs: 20_000,
     });
   });
 
@@ -46,6 +48,7 @@ describe("agent editor fallback-provider round-trip", () => {
       model: null,
       credentialRef: null,
       baseURL: null,
+      timeoutMs: null,
     });
   });
 
@@ -130,6 +133,7 @@ describe("the editor's fallback verdicts", () => {
     model: "",
     credentialRef: "",
     baseURL: "",
+    timeoutSeconds: "",
     ...over,
   });
 

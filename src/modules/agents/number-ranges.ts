@@ -55,15 +55,26 @@ export const TTS_SPEAKABLE_RANGES = {
   textOverNumbers: intRange(2, 50),
 } as const;
 
-// One synthesis, in ms. Below a second no provider answers, and past two minutes the customer is gone
-// before the text fallback. The console asks for it in seconds, fractional because REST and MCP store
-// any whole number of ms (1500 reads as 1.5).
+// One synthesis attempt while a fallback voice is set, in ms. Below a second no provider answers, and
+// past two minutes the customer is gone before the text fallback. The console asks for it in seconds,
+// fractional because REST and MCP store any whole number of ms (1500 reads as 1.5).
 const TTS_TIMEOUT_MS = intRange(1000, 120_000);
 export const TTS_TIMEOUT_RANGES = {
-  timeoutMs: TTS_TIMEOUT_MS,
-  timeoutSeconds: numberRange(
+  fallbackTimeoutMs: TTS_TIMEOUT_MS,
+  fallbackTimeoutSeconds: numberRange(
     TTS_TIMEOUT_MS.min / 1000,
     TTS_TIMEOUT_MS.max / 1000,
+  ),
+} as const;
+
+// One model call while a fallback model is set, primary and fallback alike, in ms. Below five seconds
+// a healthy reply with tools is cut; the ceiling is the no-fallback call deadline's default.
+const MODEL_FALLBACK_TIMEOUT_MS = intRange(5000, 120_000);
+export const MODEL_FALLBACK_RANGES = {
+  timeoutMs: MODEL_FALLBACK_TIMEOUT_MS,
+  timeoutSeconds: numberRange(
+    MODEL_FALLBACK_TIMEOUT_MS.min / 1000,
+    MODEL_FALLBACK_TIMEOUT_MS.max / 1000,
   ),
 } as const;
 

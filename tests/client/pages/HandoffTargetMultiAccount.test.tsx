@@ -225,6 +225,7 @@ function renderContactAuth(
         model: "",
         credentialRef: "",
         baseURL: "",
+        timeoutSeconds: "",
       },
       setModelFallback: noop,
       modelFallbackCredBaseUrl: null,

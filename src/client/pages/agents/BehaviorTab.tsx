@@ -56,6 +56,7 @@ import { providerLabel } from "@/client/lib/providerLabels";
 import { serverNow, serverNowDate } from "@/client/lib/serverClock";
 import { cn } from "@/client/lib/utils";
 import { isValidHttpUrl } from "@/client/lib/validation";
+import { MODEL_FALLBACK_TIMEOUT_DEFAULT_MS } from "@/graph/fallback-settings";
 import { MODEL_PROVIDERS } from "@/graph/model-config";
 import { PROVIDER_DEFAULT_MODEL } from "@/graph/model-defaults";
 import {
@@ -67,6 +68,7 @@ import {
   PROMPT_PREVIEW_CONTACT,
   type PromptRenderOpts,
 } from "@/graph/prompt";
+import type { NumberRange } from "@/lib/number-range";
 import { clipText } from "@/lib/text";
 import type { AgentMode } from "@/modules/agents/mode";
 import {
@@ -74,6 +76,7 @@ import {
   DEBOUNCE_RANGES,
   delayRange,
   LIMITS_RANGES,
+  MODEL_FALLBACK_RANGES,
   SERVICE_WINDOW_RANGES,
   SPLIT_RANGES,
   TTS_SPEAKABLE_RANGES,
@@ -105,6 +108,7 @@ import { SNOOZED_FOLLOW_UP_MAX_LABELED_CADENCES } from "@/modules/followups/snoo
 import {
   SPOKEN_NOTICE_DEFAULT,
   TTS_CHECK_MODES,
+  TTS_TIMEOUT_DEFAULT_MS,
   type TtsCheckMode,
   VOICE_CHOICE_TEXT_MAX,
 } from "@/modules/tts/settings-shared";
@@ -361,6 +365,8 @@ export interface ModelFallbackState {
   model: string;
   credentialRef: string;
   baseURL: string;
+  // Seconds in the form, milliseconds in the bag; "" = the default, stored as null.
+  timeoutSeconds: string;
 }
 
 // Mirrors agent.settings.takeover / readTakeoverConfig. Its own block rather than a field on
@@ -1583,6 +1589,41 @@ export const MONITORING_SECTIONS: ReadonlySet<string> = new Set([
   "vision",
 ]);
 
+// The one timeout field both fallbacks draw, under the fallback it bounds: each attempt, the
+// primary's and the fallback's, gets this long before the next one runs. Seconds on screen.
+function FallbackTimeoutField({
+  value,
+  onChange,
+  defaultSeconds,
+  range,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  defaultSeconds: number;
+  // In seconds, as the field asks for it.
+  range: NumberRange;
+}) {
+  const { t } = useTranslation();
+  return (
+    <FormField
+      label={t("editor.fallbackTimeout", "Timeout per attempt (seconds)")}
+      description={t(
+        "editor.fallbackTimeoutHint",
+        "Empty = {{seconds}} s ({{min}}-{{max}}). Past it, the request goes to the fallback; the fallback gets the same time.",
+        { seconds: defaultSeconds, min: range.min, max: range.max },
+      )}
+    >
+      <NumberInput
+        range={range}
+        optional
+        placeholder={String(defaultSeconds)}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      />
+    </FormField>
+  );
+}
+
 export function BehaviorTab({
   agentId,
   agentName,
@@ -2711,126 +2752,6 @@ export function BehaviorTab({
                     />
                   </FormField>
                 </div>
-                <div className="grid gap-4 sm:grid-cols-2">
-                  <FormField
-                    label={t(
-                      "editor.ttsTimeout",
-                      "Timeout per attempt (seconds)",
-                    )}
-                    description={t(
-                      "editor.ttsTimeoutHint",
-                      "Empty = 60 s (1-120). Past it, the fallback voice is tried, or the reply goes as text.",
-                    )}
-                  >
-                    <NumberInput
-                      range={TTS_TIMEOUT_RANGES.timeoutSeconds}
-                      optional
-                      placeholder="60"
-                      value={tts.timeoutSeconds}
-                      onChange={(e) =>
-                        setTts({ ...tts, timeoutSeconds: e.target.value })
-                      }
-                    />
-                  </FormField>
-                  <FormField
-                    label={t("editor.ttsFallback", "Fallback voice")}
-                    help={t(
-                      "editor.ttsFallbackHelp",
-                      "Tried once when the main voice times out or its provider is overloaded (5xx, 429), before the reply goes as text. An invalid key or request (400, 401, 404) goes straight to text, so the fallback never hides a broken main voice.",
-                    )}
-                  >
-                    <Select
-                      value={tts.fallbackProvider}
-                      onChange={(e) =>
-                        setTts(ttsFallbackProviderChanged(tts, e.target.value))
-                      }
-                    >
-                      <option value="">
-                        {t("editor.ttsFallbackNone", "No fallback voice")}
-                      </option>
-                      {TTS_PROVIDERS.map((p) => (
-                        <option key={p} value={p}>
-                          {providerLabel(p, t)}
-                        </option>
-                      ))}
-                    </Select>
-                  </FormField>
-                </div>
-                {tts.fallbackProvider && (
-                  <div className="grid gap-4 sm:grid-cols-3">
-                    <FormField
-                      label={t(
-                        "editor.ttsFallbackCredential",
-                        "Fallback API key",
-                      )}
-                      error={refusals.ttsFallbackCredential}
-                      description={t(
-                        "editor.ttsFallbackCredentialHint",
-                        "Empty uses the main voice's key on the same provider. Another provider needs its own: a key is never sent to another vendor.",
-                      )}
-                      group
-                    >
-                      <CredentialPicker
-                        value={tts.fallbackCredentialRef}
-                        onChange={(v) =>
-                          setTts({ ...tts, fallbackCredentialRef: v })
-                        }
-                        required={ttsFallbackNeedsOwnCredential(tts)}
-                        compatibleTypes={credentialCompat.tts(
-                          tts.fallbackProvider,
-                        )}
-                        defaultCreateType={
-                          credentialCompat.tts(tts.fallbackProvider)[0]
-                        }
-                        ariaLabel={t(
-                          "editor.ttsFallbackCredential",
-                          "Fallback API key",
-                        )}
-                      />
-                    </FormField>
-                    <FormField
-                      label={t("editor.ttsFallbackVoice", "Fallback voice id")}
-                      // A ComboBox-based picker, not one focusable control: `group` per the
-                      // repo rule, so the label names the group instead of dangling.
-                      group
-                    >
-                      <TtsOptionPicker
-                        kind="voices"
-                        provider={tts.fallbackProvider}
-                        credentialRef={fallbackPickerCredential}
-                        value={tts.fallbackVoice}
-                        onChange={(v) => setTts({ ...tts, fallbackVoice: v })}
-                        placeholder={
-                          TTS_DEFAULT_VOICE[tts.fallbackProvider] ||
-                          t("editor.ttsVoiceRequired", "required")
-                        }
-                        ariaLabel={t(
-                          "editor.ttsFallbackVoice",
-                          "Fallback voice id",
-                        )}
-                      />
-                    </FormField>
-                    <FormField
-                      label={t("editor.ttsFallbackModel", "Fallback model")}
-                      group
-                    >
-                      <TtsOptionPicker
-                        kind="models"
-                        provider={tts.fallbackProvider}
-                        credentialRef={fallbackPickerCredential}
-                        value={tts.fallbackModel}
-                        onChange={(v) => setTts({ ...tts, fallbackModel: v })}
-                        placeholder={
-                          TTS_DEFAULT_MODEL[tts.fallbackProvider] ?? ""
-                        }
-                        ariaLabel={t(
-                          "editor.ttsFallbackModel",
-                          "Fallback model",
-                        )}
-                      />
-                    </FormField>
-                  </div>
-                )}
                 <div className="flex flex-col gap-1.5">
                   <SwitchField
                     checked={tts.normalize}
@@ -3001,6 +2922,105 @@ export function BehaviorTab({
                     )}
                   </div>
                 )}
+                {/* Fallback voice */}
+                <div className="flex flex-col gap-3 border-border border-t pt-4">
+                  <div>
+                    <h4 className="font-medium text-sm text-text-secondary">
+                      {t("editor.ttsFallback", "Fallback voice")}
+                    </h4>
+                    <p className="text-text-muted text-xs">
+                      {t(
+                        "editor.ttsFallbackHint",
+                        "Tried once when the main voice times out or its provider is overloaded (5xx, 429). An invalid key or request goes straight to text, so a broken main voice is never hidden.",
+                      )}
+                    </p>
+                  </div>
+                  <FormField label={t("editor.provider", "Provider")}>
+                    <Select
+                      value={tts.fallbackProvider}
+                      onChange={(e) =>
+                        setTts(ttsFallbackProviderChanged(tts, e.target.value))
+                      }
+                    >
+                      <option value="">
+                        {t("editor.ttsFallbackNone", "No fallback voice")}
+                      </option>
+                      {TTS_PROVIDERS.map((p) => (
+                        <option key={p} value={p}>
+                          {providerLabel(p, t)}
+                        </option>
+                      ))}
+                    </Select>
+                  </FormField>
+                  {tts.fallbackProvider && (
+                    <>
+                      <FormField
+                        label={t("editor.credential", "API key")}
+                        error={refusals.ttsFallbackCredential}
+                        description={t(
+                          "editor.ttsFallbackCredentialHint",
+                          "Empty uses the main voice's key on the same provider. Another provider needs its own: a key is never sent to another vendor.",
+                        )}
+                        group
+                      >
+                        <CredentialPicker
+                          value={tts.fallbackCredentialRef}
+                          onChange={(v) =>
+                            setTts({ ...tts, fallbackCredentialRef: v })
+                          }
+                          required={ttsFallbackNeedsOwnCredential(tts)}
+                          compatibleTypes={credentialCompat.tts(
+                            tts.fallbackProvider,
+                          )}
+                          defaultCreateType={
+                            credentialCompat.tts(tts.fallbackProvider)[0]
+                          }
+                          ariaLabel={t("editor.credential", "API key")}
+                        />
+                      </FormField>
+                      <FormField
+                        label={t("editor.ttsVoice", "Voice")}
+                        // A ComboBox-based picker, not one focusable control: `group` per the
+                        // repo rule, so the label names the group instead of dangling.
+                        group
+                      >
+                        <TtsOptionPicker
+                          kind="voices"
+                          provider={tts.fallbackProvider}
+                          credentialRef={fallbackPickerCredential}
+                          value={tts.fallbackVoice}
+                          onChange={(v) => setTts({ ...tts, fallbackVoice: v })}
+                          placeholder={
+                            TTS_DEFAULT_VOICE[tts.fallbackProvider] ||
+                            t("editor.ttsVoiceRequired", "required")
+                          }
+                          ariaLabel={t("editor.ttsVoice", "Voice")}
+                        />
+                      </FormField>
+                      <FormField label={t("editor.ttsModel", "Model")} group>
+                        <TtsOptionPicker
+                          kind="models"
+                          provider={tts.fallbackProvider}
+                          credentialRef={fallbackPickerCredential}
+                          value={tts.fallbackModel}
+                          onChange={(v) => setTts({ ...tts, fallbackModel: v })}
+                          placeholder={
+                            TTS_DEFAULT_MODEL[tts.fallbackProvider] ?? ""
+                          }
+                          ariaLabel={t("editor.ttsModel", "Model")}
+                        />
+                      </FormField>
+                      <FallbackTimeoutField
+                        value={tts.fallbackTimeoutSeconds}
+                        onChange={(v) =>
+                          setTts({ ...tts, fallbackTimeoutSeconds: v })
+                        }
+                        defaultSeconds={TTS_TIMEOUT_DEFAULT_MS / 1000}
+                        range={TTS_TIMEOUT_RANGES.fallbackTimeoutSeconds}
+                      />
+                    </>
+                  )}
+                </div>
                 {tts.provider === "elevenlabs" && (
                   <div className="flex flex-col gap-3">
                     <div>
@@ -4412,6 +4432,8 @@ export function BehaviorTab({
                 onChange={(e) =>
                   setModelFallback((prev) => ({
                     ...prev,
+                    // NOTE: the timeout goes with the fallback, and survives a switch of provider.
+                    ...(e.target.value ? {} : { timeoutSeconds: "" }),
                     ...overrideProviderChanged(
                       {
                         provider: prev.provider,
@@ -4554,6 +4576,14 @@ export function BehaviorTab({
                     />
                   </FormField>
                 )}
+                <FallbackTimeoutField
+                  value={modelFallback.timeoutSeconds}
+                  onChange={(v) =>
+                    setModelFallback((prev) => ({ ...prev, timeoutSeconds: v }))
+                  }
+                  defaultSeconds={MODEL_FALLBACK_TIMEOUT_DEFAULT_MS / 1000}
+                  range={MODEL_FALLBACK_RANGES.timeoutSeconds}
+                />
               </div>
             )}
           </Section>

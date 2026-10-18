@@ -71,11 +71,11 @@ export interface TtsFormState {
   spokenNoticeText: string;
   textChoice: boolean;
   textChoiceNote: string;
-  // Seconds in the form, milliseconds in the bag. "" = the default, stored as null, so saving the
-  // tab never pins the agent to today's default.
-  timeoutSeconds: string;
   // The fallback voice: "" = none. Its baseURL, like the primary's, has no field and is carried.
   fallbackProvider: string;
+  // Seconds in the form, milliseconds in the bag (`fallbackTimeoutMs`). "" = the default, stored as
+  // null, so saving the tab never pins the agent to today's default.
+  fallbackTimeoutSeconds: string;
   fallbackModel: string;
   fallbackVoice: string;
   fallbackCredentialRef: string;
@@ -111,7 +111,7 @@ export function readTtsFormState(block: unknown): TtsFormState {
   const provider = str(tt.provider);
   const limits = readSpeakableLimits(tt);
   const choice = readVoiceChoiceSettings(tt);
-  const timeoutMs = clampTtsTimeout(tt.timeoutMs);
+  const fallbackTimeoutMs = clampTtsTimeout(tt.fallbackTimeoutMs);
   const fallbackProvider = str(tt.fallbackProvider);
   return {
     mode: mode && TTS_MODES.includes(mode as TtsMode) ? mode : "never",
@@ -147,13 +147,15 @@ export function readTtsFormState(block: unknown): TtsFormState {
     spokenNoticeText: str(tt.spokenNoticeText),
     textChoice: choice.textChoice,
     textChoiceNote: str(tt.textChoiceNote),
-    timeoutSeconds: timeoutMs === null ? "" : String(timeoutMs / 1000),
+
     // Allowlisted like the primary: the runtime reads an unknown name as no fallback at all.
     fallbackProvider: (TTS_PROVIDERS as readonly string[]).includes(
       fallbackProvider,
     )
       ? fallbackProvider
       : "",
+    fallbackTimeoutSeconds:
+      fallbackTimeoutMs === null ? "" : String(fallbackTimeoutMs / 1000),
     fallbackModel: str(tt.fallbackModel),
     fallbackVoice: str(tt.fallbackVoice),
     fallbackCredentialRef: str(tt.fallbackCredentialRef),
@@ -204,12 +206,12 @@ export function ttsSettingsFrom(tts: TtsFormState): Record<string, unknown> {
     spokenNoticeText: tts.spokenNoticeText.trim() || null,
     textChoice: tts.textChoice,
     textChoiceNote: tts.textChoiceNote.trim() || null,
-    timeoutMs: ttsTimeoutMsFrom(tts.timeoutSeconds),
     fallbackProvider: tts.fallbackProvider || null,
     fallbackModel: tts.fallbackModel.trim(),
     fallbackVoice: tts.fallbackVoice.trim(),
     fallbackCredentialRef: tts.fallbackCredentialRef || null,
     fallbackBaseURL: tts.fallbackBaseURL.trim() || null,
+    fallbackTimeoutMs: ttsTimeoutMsFrom(tts.fallbackTimeoutSeconds),
   };
 }
 
@@ -221,7 +223,8 @@ export function ttsTimeoutMsFrom(seconds: string): number | null {
 
 // A model, voice, key and endpoint belong to the vendor they were picked from, so switching the
 // fallback's provider clears them, and "" (no fallback) clears them too: a model left behind would
-// reappear on the next provider picked.
+// reappear on the next provider picked. The timeout is the operator's patience, not the vendor's, so
+// it survives a switch and goes only with the fallback.
 export function ttsFallbackProviderChanged(
   tts: TtsFormState,
   provider: string,
@@ -234,6 +237,7 @@ export function ttsFallbackProviderChanged(
     fallbackVoice: "",
     fallbackCredentialRef: "",
     fallbackBaseURL: "",
+    fallbackTimeoutSeconds: provider ? tts.fallbackTimeoutSeconds : "",
   };
 }
 

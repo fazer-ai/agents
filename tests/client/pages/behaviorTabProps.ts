@@ -149,6 +149,7 @@ export function behaviorTabProps(
       model: "",
       credentialRef: "",
       baseURL: "",
+      timeoutSeconds: "",
     },
     setModelFallback: noop,
     modelFallbackCredBaseUrl: null,

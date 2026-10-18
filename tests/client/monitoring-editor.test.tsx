@@ -334,6 +334,7 @@ describe("the Channels tab of a watcher", () => {
       model: "m",
       credentialRef: null,
       baseURL: "https://b.example/v1",
+      timeoutMs: null,
     });
   });
 

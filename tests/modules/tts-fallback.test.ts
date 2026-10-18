@@ -10,6 +10,7 @@ import {
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import { readModelFallbackConfig } from "@/graph/fallback-settings";
 import { providerFailure } from "@/lib/provider-failure";
 import { BEHAVIOR_PATCH_SHAPE } from "@/modules/agents/settings-schema";
 import type { FlowContext } from "@/modules/flowlog/service";
@@ -145,8 +146,8 @@ const run = (
 
 describe("reading the timeout and the fallback voice", () => {
   test("the timeout is read clamped, and absent is the default", () => {
-    const read = (timeoutMs: unknown) =>
-      readTtsConfig({ tts: { timeoutMs } }).timeoutMs;
+    const read = (fallbackTimeoutMs: unknown) =>
+      readTtsConfig({ tts: { fallbackTimeoutMs } }).fallbackTimeoutMs;
     expect([read(15_000), read(10), read(900_000), read(undefined)]).toEqual([
       15_000,
       1_000,
@@ -155,11 +156,32 @@ describe("reading the timeout and the fallback voice", () => {
     ]);
   });
 
+  // `tts.timeoutMs` is an older name that never shipped: a bag still carrying it sets nothing.
+  test("the old key is not read as the fallback's timeout", () => {
+    const cfg = readTtsConfig({
+      tts: { fallbackProvider: "openai", timeoutMs: 5000 },
+    });
+    expect(cfg.fallbackTimeoutMs).toBeNull();
+  });
+
+  test("the model fallback's timeout is read clamped to its band", () => {
+    const read = (timeoutMs: unknown) =>
+      readModelFallbackConfig({
+        modelFallback: { provider: "anthropic", model: "m", timeoutMs },
+      }).timeoutMs;
+    expect([read(20_000), read(10), read(900_000), read("30000")]).toEqual([
+      20_000,
+      5_000,
+      120_000,
+      null,
+    ]);
+  });
+
   // REST stores the bag as sent, so a value outside the band is refused at the write instead of
   // being stored and shown while synthesis runs at the clamped one.
   test("a write outside the band is refused, on REST and MCP alike", () => {
-    const ok = (timeoutMs: unknown) =>
-      BEHAVIOR_PATCH_SHAPE.tts.safeParse({ timeoutMs }).success;
+    const ok = (fallbackTimeoutMs: unknown) =>
+      BEHAVIOR_PATCH_SHAPE.tts.safeParse({ fallbackTimeoutMs }).success;
     expect([ok(0), ok(-5000), ok(999), ok(120_001), ok(1e12)]).toEqual([
       false,
       false,
@@ -168,6 +190,23 @@ describe("reading the timeout and the fallback voice", () => {
       false,
     ]);
     expect([ok(1000), ok(15_000), ok(120_000), ok(null)]).toEqual([
+      true,
+      true,
+      true,
+      true,
+    ]);
+  });
+
+  test("the model fallback's timeout is refused outside its band too", () => {
+    const ok = (timeoutMs: unknown) =>
+      BEHAVIOR_PATCH_SHAPE.modelFallback.safeParse({ timeoutMs }).success;
+    expect([ok(0), ok(4_999), ok(120_001), ok("30000")]).toEqual([
+      false,
+      false,
+      false,
+      false,
+    ]);
+    expect([ok(5_000), ok(30_000), ok(120_000), ok(null)]).toEqual([
       true,
       true,
       true,
@@ -292,11 +331,22 @@ describe.skipIf(!dbUp)("tts timeout and fallback voice", () => {
       spy = null;
     });
 
-    test("the agent's timeout is the one the request is sent with", async () => {
+    test("with a fallback voice, the agent's timeout is the one the request is sent with", async () => {
       const p = provider({});
       watch();
-      await run(cfgOf({ timeoutMs: 15_000 }), p.fetchImpl);
+      await run(
+        cfgOf({ fallbackProvider: "openai", fallbackTimeoutMs: 15_000 }),
+        p.fetchImpl,
+      );
       expect(timeouts).toEqual([15_000]);
+    });
+
+    // The knob hands a slow primary over: with nothing to hand it to, synthesis keeps its default.
+    test("without a fallback voice, a stored timeout is not applied", async () => {
+      const p = provider({});
+      watch();
+      await run(cfgOf({ fallbackTimeoutMs: 15_000 }), p.fetchImpl);
+      expect(timeouts).toEqual([60_000]);
     });
 
     test("an agent that never set one waits the 60 s it always did", async () => {

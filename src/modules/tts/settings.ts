@@ -70,7 +70,7 @@ export function readTtsConfig(settings: unknown): TtsConfig {
     ...readVoiceChoiceSettings(bag),
     // NOTE: in TTS_DEFAULTS' order: an absent block reads as those defaults, and a writer comparing
     // the two by serialization would otherwise record a change nobody made.
-    timeoutMs: clampTtsTimeout(bag.timeoutMs),
+    fallbackTimeoutMs: clampTtsTimeout(bag.fallbackTimeoutMs),
     // An unknown name is no fallback at all, never "the primary's provider": that would retry the
     // provider that just failed.
     fallbackProvider: TTS_PROVIDER_NAMES.includes(

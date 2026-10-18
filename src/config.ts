@@ -575,8 +575,8 @@ const config = {
     ),
     // How long one call to an agent's own model may take, retries included, when no fallback
     // model is configured, so a provider that accepts the connection and never answers cannot hold
-    // the turn. A turn with a fallback is bounded by the fallback's own 45 s ceiling instead
-    // (src/graph/model-fallback.ts).
+    // the turn. A turn with a fallback is bounded by the fallback's own ceiling instead, the agent's
+    // `modelFallback.timeoutMs` or 45 s (src/graph/model-fallback.ts).
     modelCallTimeoutMs: parseIntSetting(
       AGENT_MODEL_CALL_TIMEOUT_MS,
       "AGENT_MODEL_CALL_TIMEOUT_MS",

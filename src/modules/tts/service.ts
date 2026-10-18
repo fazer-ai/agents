@@ -173,7 +173,9 @@ export async function synthesizeReply(
           fetchImpl: params.deps?.fetchImpl ?? fetch,
           format: voice.format,
           voiceSettings: voiceSettingsOf(cfg),
-          ...(cfg.timeoutMs !== null ? { timeoutMs: cfg.timeoutMs } : {}),
+          ...(cfg.fallbackProvider && cfg.fallbackTimeoutMs !== null
+            ? { timeoutMs: cfg.fallbackTimeoutMs }
+            : {}),
         }),
     );
 

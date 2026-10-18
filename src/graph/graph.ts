@@ -144,7 +144,7 @@ export interface BuildAgentGraphParams {
   // document still waiting on the team's approval. They travel where the spoken notice does, after the
   // history, so the cached prefix survives and a customer cannot forge them.
   standingNotices?: string[];
-  // The deadline on each call to the PRIMARY, retries included: the fallback's 45 s when one was built
+  // The deadline on each call to the PRIMARY, retries included: the fallback's ceiling when one was built
   // (the primary then has one attempt), the agent's `modelCallTimeoutMs` when none was (see
   // buildModelAndGraph). Absent means that same default, so no call runs unbounded.
   primaryDeadlineMs?: number;
@@ -861,7 +861,7 @@ export function buildAgentGraph({
       fallback && fallbackLlm
         ? {
             labels: { provider: fallback.provider, model: fallback.modelId },
-            // The same 45 s the fallback's SDK is given, held by the race on an adapter that drops it.
+            // The same ceiling the fallback's SDK is given, held by the race on an adapter that drops it.
             deadlineMs: fallback.deadlineMs ?? PRIMARY_TIMEOUT_MS,
             run: (deadline: AbortSignal) => {
               // NOTE: a primary ended by the job's deadline reads as a timeout, which is what hands

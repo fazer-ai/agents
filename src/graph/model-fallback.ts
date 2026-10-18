@@ -4,6 +4,10 @@ import {
   statusOf,
 } from "@/lib/provider-failure";
 import { isEmptyCompletionFault } from "./empty-completion";
+import {
+  type FallbackConfig,
+  MODEL_FALLBACK_TIMEOUT_DEFAULT_MS,
+} from "./fallback-settings";
 
 // When a failed turn is worth asking a different provider, and how long the first may hold it: one
 // decision, one file. LangChain's default AsyncCaller turns one 503 into seven requests over more
@@ -22,8 +26,9 @@ export const PRIMARY_MAX_RETRIES = 0;
 // that accepts the connection and never answers would hold the turn forever and the fallback would
 // never get it. Generous rather than tight: it bounds ONE attempt of a turn that may legitimately be
 // slow (a reasoning model with tools), where too tight abandons an answer that was coming. The
-// fallback gets the same ceiling, so the worst case is two honest attempts.
-export const PRIMARY_TIMEOUT_MS = 45_000;
+// fallback gets the same ceiling, so the worst case is two honest attempts. The default: an agent's
+// `modelFallback.timeoutMs` replaces it (`fallbackDeadlineMs`).
+export const PRIMARY_TIMEOUT_MS = MODEL_FALLBACK_TIMEOUT_DEFAULT_MS;
 
 export function isFallbackWorthy(err: unknown): boolean {
   // NOTE: a 200 carrying no completion is a PROVIDER fault, and the only one here already retried:
@@ -35,4 +40,11 @@ export function isFallbackWorthy(err: unknown): boolean {
   if (providerFailure(err) === "timeout") return true;
   const status = statusOf(err);
   return status !== null && isTransientProviderStatus(status);
+}
+
+// The ceiling of each attempt while a fallback exists: the agent's, or the default.
+export function fallbackDeadlineMs(
+  cfg: Pick<FallbackConfig, "timeoutMs">,
+): number {
+  return cfg.timeoutMs ?? PRIMARY_TIMEOUT_MS;
 }

@@ -75,6 +75,10 @@ export interface ToolpackCtx {
     conversationId: number;
     onSent?: () => void;
   };
+  // The turn never speaks to the customer (an observation). Said here as well as on `chatwoot.client`,
+  // because a build with no conversation (the editor's call-floor estimate of an observer) has no
+  // handle to carry it and must still leave out what it would never be offered.
+  muted?: boolean;
   // Resolves an integration's chosen BusinessHours by id → the whole schedule (weekly windows, date
   // exceptions, timezone; short scoped DB read, no network). The Calendar availability tool uses it to
   // bound bookable slots to the service hours; null when unset/deleted/other-tenant ⇒ "always on".
@@ -268,6 +272,12 @@ export function fencedFetch(
   }) as typeof fetch;
 }
 
+// Whether the turn never speaks to the customer: on the muted handle a real observation carries, or on
+// the flag a build with no conversation sets. Every pack asks here, so the two cannot disagree.
+export function mutedToolpackCtx(ctx: ToolpackCtx): boolean {
+  return ctx.muted === true || ctx.chatwoot?.client?.muted === true;
+}
+
 export function buildToolpackTools(
   selections: IntegrationSelection[],
   ctx: ToolpackCtx,
@@ -282,7 +292,7 @@ export function buildToolpackTools(
   // delivery this client refuses costs a model round and answers with a failure the operator reads
   // as a broken integration. Read off the client the ctx already carries, so the mute and the
   // toolset cannot disagree.
-  const muted = ctx.chatwoot?.client?.muted === true;
+  const muted = mutedToolpackCtx(ctx);
   const out: StructuredToolInterface[] = [];
   for (const sel of selections) {
     if (sel.enabledTools.length === 0) continue;
@@ -292,6 +302,13 @@ export function buildToolpackTools(
     // happens where the refusal is raised, which is the only place the pack's own catch cannot
     // swallow it (see `calledOffFrame` above).
     const built = pack.build(sel, bounded).map((t) => {
+      // Which instance a tool came from, for a reader of the toolset: two instances of one pack expose
+      // the same names, and only the first survives assembly (unique-names.ts).
+      const tagged = t as { metadata?: Record<string, unknown> };
+      tagged.metadata = {
+        ...(tagged.metadata ?? {}),
+        integrationInstanceId: String(sel.instanceId),
+      };
       if (!ctx.onNoEffect || !ctx.stillWanted) return t;
       const seen = Object.create(t) as typeof t;
       seen.invoke = ((input: unknown, config?: unknown) =>

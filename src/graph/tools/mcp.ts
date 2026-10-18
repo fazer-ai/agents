@@ -219,9 +219,12 @@ export function namespacedToolName(
 
 // Per-tool metadata stamped on every exposed MCP tool, so the prompt builder can group the tools back
 // by server and surface its context (label + native `instructions`) — see buildMcpContextSection.
-interface McpServerMeta {
+export interface McpServerMeta {
   label: string;
   instructions: string | null;
+  // The connection row, so a reader of the toolset can point back at the grant a tool came from (the
+  // editor's call-floor estimate puts each tool's number on its own row).
+  connectionId: string;
 }
 
 // Re-exposes a server tool under its namespaced name WITHOUT mutating the cached original (the client
@@ -244,6 +247,8 @@ function exposeMcpTool(
   clone.metadata = {
     ...((tool as { metadata?: Record<string, unknown> }).metadata ?? {}),
     mcpServer: server,
+    // The server-side name, before namespacing: what the grant's allowlist stores.
+    mcpTool: tool.name,
   };
   const func = (tool as unknown as { func?: (...a: unknown[]) => unknown })
     .func;
@@ -733,6 +738,7 @@ export async function loadMcpToolsForAgent(
       const server: McpServerMeta = {
         label: sel.name,
         instructions: instructions ?? null,
+        connectionId: String(sel.connId),
       };
       const call: CallHeaders | undefined =
         Object.keys(sel.headers ?? {}).length > 0

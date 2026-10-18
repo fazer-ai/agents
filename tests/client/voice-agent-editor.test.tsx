@@ -707,6 +707,49 @@ describe("the editor of a voice agent", () => {
     });
   }
 
+  // A voice agent makes no model call of its own, so the "tokens per call" estimate is neither asked
+  // for nor shown; a text agent on the same server gets both, which keeps the absence meaningful.
+  for (const kind of ["text", "voice"] as const) {
+    test(`a ${kind} agent ${kind === "voice" ? "asks for no" : "shows its"} call-floor estimate`, async () => {
+      const stub = stubEditorApi({ kind, settings: {} });
+      stub.override = (method, path) =>
+        method === "POST" && path === "/api/v1/agents/41/call-floor"
+          ? new Response(
+              JSON.stringify({
+                floor: {
+                  engine: "llm",
+                  instructions: 120,
+                  instructionsAdded: 0,
+                  instructionsAddedBy: { grounding: 0, mcp: 0 },
+                  tools: [],
+                  total: 120,
+                },
+              }),
+              { headers: { "content-type": "application/json" } },
+            )
+          : undefined;
+      await renderEditor(stub, "general");
+      await screen.findByDisplayValue("Você atende.");
+      if (kind === "text") {
+        expect(
+          await screen.findByText(
+            /These instructions add ~?\d+ tokens to every call/,
+          ),
+        ).not.toBeNull();
+        return;
+      }
+      await waitFor(() =>
+        expect(stub.requests).toContain(
+          "GET /api/v1/agents/41/tool-selections",
+        ),
+      );
+      expect(stub.requests.filter((r) => r.endsWith("/call-floor"))).toEqual(
+        [],
+      );
+      expect(screen.queryByText(/tokens to every call/)).toBeNull();
+    });
+  }
+
   // The Model card is not drawn for a voice agent, so nothing it would refuse can hold the save: a
   // base URL with no scheme, or no model at all (an imported agent).
   for (const [label, modelConfig] of [

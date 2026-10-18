@@ -1,4 +1,5 @@
 import { Eye, FlaskConical, MessagesSquare, Trash2 } from "lucide-react";
+import { useContext } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Button,
@@ -27,6 +28,11 @@ import {
 } from "@/graph/prompt-cache";
 import { AGENT_MODES, type AgentMode } from "@/modules/agents/mode";
 import type { Schedule } from "@/modules/business-hours/hours";
+import {
+  CallFloorContext,
+  CallFloorLine,
+  InstructionsTokens,
+} from "./CallFloor";
 import { CapabilityMap } from "./CapabilityMap";
 import { PromptPanel } from "./PromptPanel";
 import { TabActionBar } from "./TabActionBar";
@@ -134,6 +140,7 @@ export function GeneralTab({
   const promptModal = useModalController();
 
   const decides = watcher?.decides ?? false;
+  const callFloor = useContext(CallFloorContext);
   // Only where the Model card is drawn: a field the operator cannot see cannot block the save.
   const modelBaseUrlInvalid =
     !decides &&
@@ -159,6 +166,10 @@ export function GeneralTab({
       {voice?.instructionsNote && (
         <p className="mt-1 text-text-muted text-xs">{voice.instructionsNote}</p>
       )}
+      {/* What these instructions cost every call, where they are written (also next to the history
+          ceiling, on Behavior). Absent for a voice agent, which has no estimate to show. */}
+      <InstructionsTokens draftPrompt={systemPrompt} />
+      <CallFloorLine floor={callFloor} draftPrompt={systemPrompt} />
     </FormField>
   );
 

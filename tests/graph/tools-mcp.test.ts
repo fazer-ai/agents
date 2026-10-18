@@ -409,6 +409,7 @@ describe("loadMcpToolsForAgent", () => {
     expect(meta).toEqual({
       label: "Hub",
       instructions: "Manages licenses and instances.",
+      connectionId: String(sel({}).connId),
     });
   });
 });

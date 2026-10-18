@@ -213,17 +213,17 @@ describe("MCP tool descriptions", () => {
       desc += t.description.length;
       schema += t.schema.length;
     }
-    // Measured at 32_877 on the Free tree, with conversation_decisions_test, inbox_bind_voice and the
-    // voice kind on agent_create; 33_645 with the 15 dashboard tools (Pro only).
-    expect(desc).toBeLessThanOrEqual(32_950);
-    // Measured at 73_522 on the Free tree, with `limits.maxProactivePerDay` and the `snoozedFollowUp` and
+    // Measured at 33_086 on the Free tree, with conversation_decisions_test, inbox_bind_voice, the voice
+    // kind on agent_create and agent_call_floor; 33_645 with the 15 dashboard tools (Pro only).
+    expect(desc).toBeLessThanOrEqual(33_160);
+    // Measured at 73_659 on the Free tree, with agent_call_floor, with `limits.maxProactivePerDay` and the `snoozedFollowUp` and
     // `otherInboxes` blocks on agent_settings_set, the approval switch and validity on the document
     // template writes, the next number on them, the search and cursor on issued_document_list, the
     // three proactive_breaker tools, the voice binding and kind, and the tts block's timeout and fallback
     // voice (six fields). 75_514 with `guardrails.onFailure`, the guardrail endpoint check and the 15
     // dashboard tools (Pro only), the last being dashboard_query_schema, whose input is empty and whose
     // contract is served on demand.
-    expect(schema).toBeLessThanOrEqual(73_600);
+    expect(schema).toBeLessThanOrEqual(73_740);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

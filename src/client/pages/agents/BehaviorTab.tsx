@@ -99,6 +99,7 @@ import {
 import { visionAcceptsDocuments } from "@/modules/vision/document-support";
 import type { VisionReasoningEffort } from "@/modules/vision/output-limits";
 import { DEFAULT_EXTRACTION_PROMPT } from "@/modules/vision/prompt-default";
+import { type CallFloor, CallFloorLine } from "./CallFloor";
 import { ContactAuthConditionList } from "./ContactAuthConditionFields";
 import {
   type ContactAuthRuleForm,
@@ -426,6 +427,10 @@ interface BehaviorTabProps {
   agentModelCredentialRef: string;
   agentModelBaseUrl: string;
   ttsNormalizeCredBaseUrl: string | null;
+  // What every call sends before the history, loaded by the editor; null until it loads.
+  callFloor: CallFloor | null;
+  // The instructions as typed on General, unsaved included: the floor counts them live.
+  draftPrompt: string;
   split: SplitState;
   setSplit: React.Dispatch<React.SetStateAction<SplitState>>;
   signature: SignatureState;
@@ -1595,6 +1600,8 @@ export function BehaviorTab({
   agentModelCredentialRef,
   agentModelBaseUrl,
   ttsNormalizeCredBaseUrl,
+  callFloor,
+  draftPrompt,
   split,
   setSplit,
   signature,
@@ -4113,41 +4120,45 @@ export function BehaviorTab({
                   }
                 />
               </FormField>
-              <FormField
-                label={t(
-                  "editor.limitsMaxHistoryTokens",
-                  "History ceiling (tokens)",
-                )}
-                description={t(
-                  "editor.limitsMaxHistoryTokensHint",
-                  "Empty means no ceiling. Between 2,000 and 1,000,000.",
-                )}
-                // NOTE: Not the same for a watcher: an observation rebuilds the conversation from Chatwoot
-                // each tick, so the ceiling never trims one, but `runCompaction` hands this same ceiling to
-                // the summariser, bounding the transcript the watcher's memory reads. The help says which applies.
-                help={
-                  watcher
-                    ? t(
-                        "editor.limitsMaxHistoryTokensHelpObserving",
-                        "An observation does not carry this contact's history: each tick rebuilds the conversation from the channel, so this ceiling never trims one.\n\nWhat it does bound is this agent's memory: when an attendance closes, the transcript handed to the summariser is cut to fit.\n\nThe count is in tokens, about 4 characters of text each, and an estimate: it runs low on tool-heavy threads and leaves out the instructions and the tool definitions.",
-                      )
-                    : t(
-                        "editor.limitsMaxHistoryTokensHelp",
-                        "The agent sends this contact's whole history on every turn. The more a customer talks, the slower and costlier their answers get.\n\nThe ceiling cuts that off: once it is reached, the oldest attendances stop travelling. The conversation being answered never does.\n\nThe count is in tokens, about 4 characters of text each, and an estimate: it runs low on tool-heavy threads and leaves out the instructions and the tool definitions. Set it under the budget you actually have.",
-                      )
-                }
-              >
-                <Input
-                  type="number"
-                  min={2000}
-                  max={1000000}
-                  placeholder={t("editor.limitsNoCeiling", "No ceiling")}
-                  value={limits.maxHistoryTokens}
-                  onChange={(e) =>
-                    setLimits({ ...limits, maxHistoryTokens: e.target.value })
+              {/* The part of every call this ceiling does not govern, next to the number it sizes. */}
+              <div>
+                <FormField
+                  label={t(
+                    "editor.limitsMaxHistoryTokens",
+                    "History ceiling (tokens)",
+                  )}
+                  description={t(
+                    "editor.limitsMaxHistoryTokensHint",
+                    "Empty means no ceiling. Between 2,000 and 1,000,000.",
+                  )}
+                  // NOTE: Not the same for a watcher: an observation rebuilds the conversation from Chatwoot
+                  // each tick, so the ceiling never trims one, but `runCompaction` hands this same ceiling to
+                  // the summariser, bounding the transcript the watcher's memory reads. The help says which applies.
+                  help={
+                    watcher
+                      ? t(
+                          "editor.limitsMaxHistoryTokensHelpObserving",
+                          "An observation does not carry this contact's history: each tick rebuilds the conversation from the channel, so this ceiling never trims one.\n\nWhat it does bound is this agent's memory: when an attendance closes, the transcript handed to the summariser is cut to fit.\n\nThe count is in tokens, about 4 characters of text each, and an estimate: it runs low on tool-heavy threads and leaves out the instructions and the tool definitions.",
+                        )
+                      : t(
+                          "editor.limitsMaxHistoryTokensHelp",
+                          "The agent sends this contact's whole history on every turn. The more a customer talks, the slower and costlier their answers get.\n\nThe ceiling cuts that off: once it is reached, the oldest attendances stop travelling. The conversation being answered never does.\n\nThe count is in tokens, about 4 characters of text each, and an estimate: it runs low on tool-heavy threads and leaves out the instructions and the tool definitions. Set it under the budget you actually have.",
+                        )
                   }
-                />
-              </FormField>
+                >
+                  <Input
+                    type="number"
+                    min={2000}
+                    max={1000000}
+                    placeholder={t("editor.limitsNoCeiling", "No ceiling")}
+                    value={limits.maxHistoryTokens}
+                    onChange={(e) =>
+                      setLimits({ ...limits, maxHistoryTokens: e.target.value })
+                    }
+                  />
+                </FormField>
+                <CallFloorLine floor={callFloor} draftPrompt={draftPrompt} />
+              </div>
               {!watcher && (
                 <FormField
                   label={t(

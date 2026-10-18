@@ -198,6 +198,33 @@ describe("the deadline covers the body", () => {
       .catch((e: unknown) => e);
     expect(providerFailure(err)).toBe("timeout");
   });
+
+  // The status arrived before the deadline; only the optional error code was still being read.
+  test("a 401 whose error body stalls stays a 401, never a timeout", async () => {
+    const fetchImpl = (async (_url: string, init: RequestInit) => {
+      const signal = init.signal as AbortSignal;
+      const body = new ReadableStream<Uint8Array>({
+        start(c) {
+          signal.addEventListener("abort", () => c.error(new Error("aborted")));
+        },
+      });
+      return new Response(body, { status: 401 });
+    }) as unknown as typeof fetch;
+    const err = await (getTtsProvider("openai") as TtsProvider)
+      .synthesize({
+        text: "oi",
+        voice: "alloy",
+        model: "gpt-4o-mini-tts",
+        language: "",
+        apiKey: "sk",
+        baseURL: null,
+        fetchImpl,
+        format: "ogg_opus",
+        timeoutMs: 20,
+      })
+      .catch((e: unknown) => e);
+    expect(providerFailure(err)).toBe("HTTP 401");
+  });
 });
 
 describe.skipIf(!dbUp)("tts timeout and fallback voice", () => {
@@ -433,5 +460,22 @@ describe.skipIf(!dbUp)("tts timeout and fallback voice", () => {
       "tts-1",
       "tts-1",
     ]);
+  });
+
+  // A turn called off while the primary was pending pays for no second synthesis.
+  test("a turn called off before the fallback starts never asks it", async () => {
+    const p = provider({ "gpt-4o-mini-tts": "timeout" });
+    await expect(
+      synthesizeReply({
+        tenantId,
+        cfg: cfgOf({ fallbackProvider: "openai", fallbackModel: "tts-1" }),
+        text: "Claro, posso ajudar.",
+        base: appDb,
+        deps: { fetchImpl: p.fetchImpl },
+        check: OFF,
+        shouldStop: async () => true,
+      }),
+    ).rejects.toThrow(/timed out/);
+    expect(p.calls.map((c) => c.model)).toEqual(["gpt-4o-mini-tts"]);
   });
 });

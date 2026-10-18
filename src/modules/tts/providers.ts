@@ -168,7 +168,8 @@ export function pickTtsFormat(
 // One request under its deadline, body included. An abort while the body is still streaming surfaces
 // as a read error that names no timeout (`EncodingError: Failed to read response body` in Bun), so
 // once our own signal fired its reason is what is thrown: a slow provider is a timeout, and the
-// fallback voice is asked for exactly that.
+// fallback voice is asked for exactly that. A `TtsError` is kept: its status arrived before the
+// deadline, and only the optional error code was being read when it fired.
 async function underDeadline(
   req: TtsRequest,
   run: (signal: AbortSignal) => Promise<TtsResult>,
@@ -177,7 +178,7 @@ async function underDeadline(
   try {
     return await run(signal);
   } catch (err) {
-    if (signal.aborted) throw signal.reason;
+    if (signal.aborted && !(err instanceof TtsError)) throw signal.reason;
     throw err;
   }
 }

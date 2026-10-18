@@ -189,6 +189,9 @@ export async function synthesizeReply(
       const fallbackCfg = ttsFallbackConfig(cfg);
       if (fallbackTried || !fallbackCfg || !isTtsFallbackWorthy(err)) throw err;
       fallbackTried = true;
+      // NOTE: one more billed synthesis and one more wait, not worth paying for a reply this turn
+      // will not send.
+      if (params.shouldStop && (await params.shouldStop())) throw err;
       const fallback = await resolveVoice(
         fallbackCfg,
         true,

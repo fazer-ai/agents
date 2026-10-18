@@ -526,6 +526,14 @@ describe("farewell detection", () => {
     ["Hoje a clínica fica aberta até mais tarde.", false],
     ["Tenha uma ótima tarde! O retorno é na quinta.", false],
     ["Anotado, a equipe te retorna. Uma ótima tarde!", true],
+    // A phrase that ends on an accented letter is still a whole phrase at the end of the sentence.
+    ["Boa tarde pra você!", true],
+    ["Obrigada pela ligação. Boa noite pra você", true],
+    ["Até logo", true],
+    // And a phrase glued to a longer word is no farewell.
+    ["Boa tarde pra vocês da recepção.", false],
+    ["Pode falar com o tchauzinho", false],
+    ["O nome dele é Pitchau", false],
   ])("%s -> %p", (text, expected) => {
     expect(isFarewell(text)).toBe(expected);
   });

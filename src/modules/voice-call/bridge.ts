@@ -27,8 +27,9 @@ const EARLY_MAX_SAMPLES = CALL_RATE * 10;
 // Peak above which a frame from the person counts as speech, not line noise.
 const VOICE_PEAK = 1_500;
 
+// Bounded by letters on both sides, not `\b`: an ASCII boundary that never sees the end of "você".
 const FAREWELL =
-  /\b(tchau|até logo|até mais(?! tarde)|até a próxima|até breve|tenha um (ótimo|bom|excelente|lindo) (dia|tarde|noite|fim de semana)|uma ótima (tarde|noite)|fique bem|boa (tarde|noite) pra você)\b/i;
+  /(?<![\p{L}\p{N}])(tchau|até logo|até mais(?! tarde)|até a próxima|até breve|tenha um (ótimo|bom|excelente|lindo) (dia|tarde|noite|fim de semana)|uma ótima (tarde|noite)|fique bem|boa (tarde|noite) pra você)(?![\p{L}\p{N}])/iu;
 
 /**
  * Whether an answer of the agent closes the call: it says goodbye and asks nothing. The model is told

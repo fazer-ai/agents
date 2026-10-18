@@ -11,6 +11,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { providerFailure } from "@/lib/provider-failure";
+import { BEHAVIOR_PATCH_SHAPE } from "@/modules/agents/settings-schema";
 import type { FlowContext } from "@/modules/flowlog/service";
 import type { TtsCheckConfig } from "@/modules/tts/check";
 import { getTtsProvider, type TtsProvider } from "@/modules/tts/providers";
@@ -151,6 +152,26 @@ describe("reading the timeout and the fallback voice", () => {
       1_000,
       120_000,
       null,
+    ]);
+  });
+
+  // REST stores the bag as sent, so a value outside the band is refused at the write instead of
+  // being stored and shown while synthesis runs at the clamped one.
+  test("a write outside the band is refused, on REST and MCP alike", () => {
+    const ok = (timeoutMs: unknown) =>
+      BEHAVIOR_PATCH_SHAPE.tts.safeParse({ timeoutMs }).success;
+    expect([ok(0), ok(-5000), ok(999), ok(120_001), ok(1e12)]).toEqual([
+      false,
+      false,
+      false,
+      false,
+      false,
+    ]);
+    expect([ok(1000), ok(15_000), ok(120_000), ok(null)]).toEqual([
+      true,
+      true,
+      true,
+      true,
     ]);
   });
 

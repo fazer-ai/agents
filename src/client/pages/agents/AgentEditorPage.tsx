@@ -4998,6 +4998,8 @@ function AgentEditor() {
                 testMode={
                   (syncedAgentRef.current?.mode ?? agentMode) === "test"
                 }
+                // NOTE: Saved, like the mode: a call routes on the stored switch (`answers`).
+                disabled={syncedAgentRef.current?.enabled === false}
               />
             )}
 

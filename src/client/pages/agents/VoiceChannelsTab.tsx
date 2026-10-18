@@ -39,10 +39,13 @@ type AgentLite = NonNullable<AgentsData>["agents"][number];
 export function VoiceChannelsTab({
   agentId,
   testMode,
+  disabled,
 }: {
   agentId: string;
   /** The SAVED mode is test: an inbox marked here keeps ringing the team until the agent goes live. */
   testMode: boolean;
+  /** The SAVED agent is turned off: an inbox marked here keeps ringing the team until it is on. */
+  disabled: boolean;
 }) {
   const { t } = useTranslation();
   const { showToast } = useToast();
@@ -134,17 +137,23 @@ export function VoiceChannelsTab({
     if (on && otherName) {
       confirm.open({
         title: t("editor.voiceChannels.replaceTitle", "Take over the calls?"),
-        message: testMode
+        message: disabled
           ? t(
-              "editor.voiceChannels.replaceMessageTest",
-              "{{other}} answers the calls of {{inbox}} now and stops. This agent is in test mode, so until it goes to production the inbox's calls ring your team.",
+              "editor.voiceChannels.replaceMessageOff",
+              "{{other}} stops answering the calls of {{inbox}}. This agent is turned off, so until it is turned on the inbox's calls ring your team.",
               { other: otherName, inbox: ib.name },
             )
-          : t(
-              "editor.voiceChannels.replaceMessage",
-              "{{other}} answers the calls of {{inbox}} now. Only one agent answers an inbox's calls, so it stops.",
-              { other: otherName, inbox: ib.name },
-            ),
+          : testMode
+            ? t(
+                "editor.voiceChannels.replaceMessageTest",
+                "{{other}} answers the calls of {{inbox}} now and stops. This agent is in test mode, so until it goes to production the inbox's calls ring your team.",
+                { other: otherName, inbox: ib.name },
+              )
+            : t(
+                "editor.voiceChannels.replaceMessage",
+                "{{other}} answers the calls of {{inbox}} now. Only one agent answers an inbox's calls, so it stops.",
+                { other: otherName, inbox: ib.name },
+              ),
         onConfirm: () => bind(ib, true),
       });
       return;
@@ -185,20 +194,25 @@ export function VoiceChannelsTab({
       </div>
       <p
         className={
-          testMode
+          disabled || testMode
             ? "rounded-md bg-warning/10 px-3 py-2 text-warning text-xs"
             : "rounded-md bg-success/10 px-3 py-2 text-success text-xs"
         }
       >
-        {testMode
+        {disabled
           ? t(
-              "editor.voiceChannels.testMode",
-              "This agent is in test mode: in the inboxes marked here, calls ring your team until it goes to production on General.",
+              "editor.voiceChannels.off",
+              "This agent is turned off: in the inboxes marked here, calls ring your team until it is turned on.",
             )
-          : t(
-              "editor.voiceChannels.production",
-              "This agent is in production: it answers the calls to the inboxes marked here.",
-            )}
+          : testMode
+            ? t(
+                "editor.voiceChannels.testMode",
+                "This agent is in test mode: in the inboxes marked here, calls ring your team until it goes to production on General.",
+              )
+            : t(
+                "editor.voiceChannels.production",
+                "This agent is in production: it answers the calls to the inboxes marked here.",
+              )}
       </p>
 
       <DataBoundary loading={loading} error={error} onRetry={load}>

@@ -620,6 +620,93 @@ describe("the editor of a voice agent", () => {
     );
   });
 
+  // A call routes only to an agent that is switched on and in production (`answers`): the tab says
+  // which of the three the SAVED agent is, and so does taking an inbox's calls over from another.
+  for (const [label, seed, banner, takeover] of [
+    [
+      "turned off",
+      { enabled: false, mode: "production" },
+      "This agent is turned off: in the inboxes marked here, calls ring your team until it is turned on.",
+      "Outra voz stops answering the calls of Loja. This agent is turned off, so until it is turned on the inbox's calls ring your team.",
+    ],
+    [
+      "in test mode",
+      { enabled: true, mode: "test" },
+      "This agent is in test mode: in the inboxes marked here, calls ring your team until it goes to production on General.",
+      "Outra voz answers the calls of Loja now and stops. This agent is in test mode, so until it goes to production the inbox's calls ring your team.",
+    ],
+    [
+      "in production",
+      { enabled: true, mode: "production" },
+      "This agent is in production: it answers the calls to the inboxes marked here.",
+      "Outra voz answers the calls of Loja now. Only one agent answers an inbox's calls, so it stops.",
+    ],
+  ] as const) {
+    test(`Channels says the saved agent is ${label}`, async () => {
+      const stub = stubEditorApi({ kind: "voice", settings: {}, ...seed });
+      const json = (body: unknown) =>
+        new Response(JSON.stringify(body), {
+          headers: { "content-type": "application/json" },
+        });
+      stub.override = (method, path) => {
+        if (method !== "GET") return undefined;
+        if (path === "/api/v1/chatwoot/deployment")
+          return json({
+            deployment: { baseUrl: "https://chat.example.com" },
+            accounts: [
+              {
+                id: "a1",
+                accountId: 1,
+                accountName: "Conta",
+                disconnectedAt: null,
+              },
+            ],
+          });
+        if (path === "/api/v1/chatwoot/inboxes")
+          return json({
+            inboxes: [
+              {
+                id: "1",
+                name: "Loja",
+                agentId: null,
+                observerAgentIds: [],
+                voiceAgentId: "77",
+                chatwootInstanceId: "a1",
+                chatwootInboxId: 1,
+                channelType: "Channel::Whatsapp",
+                provider: "native",
+              },
+            ],
+          });
+        if (path === "/api/v1/agents")
+          return json({
+            agents: [
+              {
+                id: "77",
+                name: "Outra voz",
+                kind: "voice",
+                mode: "production",
+                enabled: true,
+              },
+            ],
+            total: 1,
+          });
+        return undefined;
+      };
+      await renderEditor(stub, "channels");
+      // Green only when the calls are answered: off and test both ring the team.
+      expect((await screen.findByText(banner)).className).toContain(
+        label === "in production" ? "text-success" : "text-warning",
+      );
+      fireEvent.click(
+        await screen.findByRole("switch", {
+          name: "Answer the calls of Loja with this agent",
+        }),
+      );
+      expect(await screen.findByText(takeover)).not.toBeNull();
+    });
+  }
+
   // The Model card is not drawn for a voice agent, so nothing it would refuse can hold the save: a
   // base URL with no scheme, or no model at all (an imported agent).
   for (const [label, modelConfig] of [

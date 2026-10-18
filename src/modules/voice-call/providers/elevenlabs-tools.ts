@@ -37,12 +37,21 @@ type Schema = Record<string, unknown>;
 
 const SCALARS = new Set(["string", "number", "integer", "boolean"]);
 const NULL: Schema = { type: "null" };
+// A value whose type the schema does not constrain (`{}`, a description alone, or `items` or
+// `properties` with no `type`, which only apply when the value is an array or an object) may be any
+// JSON value: declared as a plain string it would reach the tool as text, a number or an object
+// included.
+const ANY: Schema = { type: "any" };
+const CONSTRAINTS = ["type", "anyOf", "oneOf", "enum", "const"];
+const unconstrained = (schema: Schema) =>
+  CONSTRAINTS.every((key) => schema[key] === undefined);
 
 // The types a value may take, when ElevenLabs cannot declare them as one: two or more, or one scalar
 // that may also be null. Null cannot be declared at all, and dropping it would take away what the
 // tool does with it (clearing a field, where leaving it out keeps it), so a nullable scalar travels
 // as a union too. A nullable object or array keeps its shape instead, and so cannot be null on a call.
 function unionAlternatives(schema: Schema): Schema[] | null {
+  if (unconstrained(schema)) return [ANY];
   let all: Schema[] | null = null;
   if (Array.isArray(schema.type))
     all = schema.type.map((type) => ({ ...schema, type }) as Schema);
@@ -60,6 +69,7 @@ function unionAlternatives(schema: Schema): Schema[] | null {
 }
 
 const typeName = (s: Schema) => {
+  if (s === ANY) return "any type";
   const name = typeof s.type === "string" ? s.type : "value";
   return Array.isArray(s.enum)
     ? `${name} (one of ${s.enum.map((v) => JSON.stringify(v)).join(", ")})`
@@ -69,7 +79,8 @@ const typeName = (s: Schema) => {
 /**
  * ElevenLabs takes a subset of JSON Schema, and every property has to carry a description. A union of
  * types, which it cannot declare, travels as a string holding the value as JSON, and the description
- * names the types it may be; `fromElevenLabsArgs` turns it back before the tool runs.
+ * names the types it may be; `fromElevenLabsArgs` turns it back before the tool runs. A value the
+ * schema leaves unconstrained travels the same way, as any type.
  */
 export function elevenLabsSchema(schema: Schema, name: string): Schema {
   const description =
@@ -128,6 +139,8 @@ const matches = (alternative: Schema, value: unknown): boolean => {
       return !!value && typeof value === "object" && !Array.isArray(value);
     case "null":
       return value === null;
+    case "any":
+      return true;
     default:
       return value !== null;
   }

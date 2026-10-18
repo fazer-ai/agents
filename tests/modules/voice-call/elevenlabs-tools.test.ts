@@ -2,12 +2,15 @@ import { describe, expect, test } from "bun:test";
 import { DEFAULT_HTTP_TOOL_TIMEOUT_MS } from "@/graph/tools/http";
 import {
   CALL_HTTP_TOOL_TIMEOUT_MS,
+  elevenLabsSchema,
   elevenLabsToolDefs,
   fromElevenLabsArgs,
   syncElevenLabsTools,
   VOICE_TOOL_TIMEOUT_MS,
 } from "@/modules/voice-call/providers/elevenlabs-tools";
 import type { VoiceTool } from "@/modules/voice-call/providers/types";
+
+type Schema = Record<string, unknown>;
 
 const tool = (
   name: string,
@@ -76,6 +79,52 @@ describe("elevenlabs tool declarations", () => {
     // Nor is JSON of another type: an object where a number or a boolean goes.
     expect(fromElevenLabsArgs(schema, { limite: '{"a":1}' })).toEqual({
       limite: '{"a":1}',
+    });
+  });
+
+  // An MCP tool may leave a value unconstrained (`value: {}`): declared as a plain string, a number or
+  // an object would reach the tool as its text. It travels as JSON text instead, as a union does.
+  test("an unconstrained value travels as JSON text, and comes back as the value it holds", () => {
+    const schema = {
+      type: "object",
+      properties: { key: { type: "string" }, value: {} },
+      required: ["key", "value"],
+    };
+    const declared = elevenLabsSchema(schema, "set_field") as {
+      properties: Record<string, { type: string; description: string }>;
+    };
+    expect(declared.properties.value).toEqual({
+      type: "string",
+      description: "value (a JSON value: any type)",
+    });
+    expect(declared.properties.key?.type).toBe("string");
+    const read = (value: string) =>
+      (fromElevenLabsArgs(schema, { key: "k", value }) as { value: unknown })
+        .value;
+    expect([
+      read("42"),
+      read("true"),
+      read('{"a":1}'),
+      read("[1,2]"),
+      read("null"),
+      read('"texto"'),
+      // Text that is not JSON is what the model meant to send: it stays text.
+      read("texto"),
+    ]).toEqual([42, true, { a: 1 }, [1, 2], null, "texto", "texto"]);
+    // A value an enum or a const holds keeps its declaration; `items` alone does not hold a type.
+    const kept = (value: Schema) =>
+      elevenLabsSchema({ type: "object", properties: { value } }, "t") as {
+        properties: { value: Schema };
+      };
+    expect(kept({ enum: ["a", "b"] }).properties.value).toEqual({
+      type: "string",
+      description: "value",
+      enum: ["a", "b"],
+    });
+    expect(kept({ const: "x" }).properties.value.description).toBe("value");
+    expect(kept({ items: { type: "number" } }).properties.value).toEqual({
+      type: "string",
+      description: "value (a JSON value: any type)",
     });
   });
 

@@ -1,5 +1,5 @@
 import type { BaseMessage } from "@langchain/core/messages";
-import { estimateTokenCount } from "tokenx";
+import { estimateTokens } from "@/lib/token-estimate";
 import { contentToText } from "./message-text";
 
 // Token estimation for the per-agent history ceiling (agent.settings.limits.maxHistoryTokens).
@@ -23,7 +23,7 @@ export const countMessageTokens: TokenCounter = (message) => {
   // heaviest messages of a tool-driven thread at zero.
   const calls = (message as { tool_calls?: unknown[] }).tool_calls;
   if (Array.isArray(calls) && calls.length > 0) text += JSON.stringify(calls);
-  return estimateTokenCount(text) + MESSAGE_OVERHEAD_TOKENS;
+  return estimateTokens(text) + MESSAGE_OVERHEAD_TOKENS;
 };
 
 // The size of a text the model receives, for the operator to read: characters, and tokens by the same
@@ -35,5 +35,5 @@ export interface TextSize {
 }
 
 export function measureText(text: string): TextSize {
-  return { chars: text.length, tokens: estimateTokenCount(text) };
+  return { chars: text.length, tokens: estimateTokens(text) };
 }

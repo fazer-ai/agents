@@ -1,6 +1,7 @@
 import { TTS_PROVIDER_NAMES } from "./providers";
 
 import {
+  clampTtsTimeout,
   readSpeakableLimits,
   readVoiceChoiceSettings,
   readVoiceSettings,
@@ -67,6 +68,20 @@ export function readTtsConfig(settings: unknown): TtsConfig {
       : null,
     ...readSpeakableLimits(bag),
     ...readVoiceChoiceSettings(bag),
+    // NOTE: in TTS_DEFAULTS' order: an absent block reads as those defaults, and a writer comparing
+    // the two by serialization would otherwise record a change nobody made.
+    timeoutMs: clampTtsTimeout(bag.timeoutMs),
+    // An unknown name is no fallback at all, never "the primary's provider": that would retry the
+    // provider that just failed.
+    fallbackProvider: TTS_PROVIDER_NAMES.includes(
+      str(bag.fallbackProvider) ?? "",
+    )
+      ? str(bag.fallbackProvider)
+      : null,
+    fallbackModel: str(bag.fallbackModel) ?? "",
+    fallbackVoice: str(bag.fallbackVoice) ?? "",
+    fallbackCredentialRef: str(bag.fallbackCredentialRef),
+    fallbackBaseURL: str(bag.fallbackBaseURL),
     ...readVoiceSettings(bag),
   };
 }
@@ -86,6 +101,24 @@ export function voiceSettingsOf(cfg: TtsConfig): TtsVoiceSettings | null {
     speakerBoost: cfg.speakerBoost ?? null,
   };
   return Object.values(v).some((x) => x !== null) ? v : null;
+}
+
+// The fallback voice as a config of its own, so it goes through the same checks and the same
+// synthesis as the primary, or null when none is configured. Everything that is not the voice (mode,
+// rewrite, delivery knobs, audio check, timeout) is the agent's and stays.
+export function ttsFallbackConfig(cfg: TtsConfig): TtsConfig | null {
+  if (!cfg.fallbackProvider) return null;
+  const same = cfg.fallbackProvider === cfg.provider;
+  return {
+    ...cfg,
+    provider: cfg.fallbackProvider,
+    model: cfg.fallbackModel,
+    voice: cfg.fallbackVoice,
+    credentialRef:
+      cfg.fallbackCredentialRef ?? (same ? cfg.credentialRef : null),
+    baseURL: cfg.fallbackBaseURL ?? (same ? cfg.baseURL : null),
+    fallbackProvider: null,
+  };
 }
 
 // The audio-vs-text decision (pure). contactVoiceReply: true=audio, false=text, null=unknown.

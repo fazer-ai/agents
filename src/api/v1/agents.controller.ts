@@ -15,6 +15,7 @@ import { instanceIdentity } from "@/lib/instance";
 import type { TenantContext } from "@/lib/tenancy";
 import { readAgentConfigHealth } from "@/modules/agents/config-health-read";
 import { readLimitsConfig } from "@/modules/agents/limits";
+import type { AgentMode } from "@/modules/agents/mode";
 import {
   AGENT_MODES,
   type AgentCreate,
@@ -39,6 +40,7 @@ import {
 import { listProviderModels } from "@/modules/models/service";
 import { getPlaygroundMedia } from "@/modules/playground/media";
 import {
+  estimateCallFloor,
   listPlaygroundTools,
   runPlaygroundAudioTurn,
   runPlaygroundExtract,
@@ -293,6 +295,66 @@ function decodeExtractKind(
     : undefined;
 }
 
+// One grant as the editor sends it, for the save and for the estimate of an unsaved set.
+const ToolGrantBody = t.Object({
+  source: t.Union(
+    [
+      t.Literal("NATIVE"),
+      t.Literal("RAG"),
+      t.Literal("HTTP"),
+      t.Literal("MCP"),
+      t.Literal("INTEGRATION"),
+      t.Literal("DOCUMENT"),
+      t.Literal("CODE"),
+    ],
+    {
+      description:
+        "Grant source: NATIVE (built-in tools), RAG (knowledge bases), HTTP (custom tool), MCP (MCP server connection), INTEGRATION (integration instance), DOCUMENT (document template), or CODE (operator-authored code tool).",
+    },
+  ),
+  toolDefinitionId: t.Optional(
+    t.Union([t.String(), t.Null()], {
+      description:
+        "Tool definition id (BigInt string) for NATIVE or HTTP grants, or null.",
+    }),
+  ),
+  mcpServerConnectionId: t.Optional(
+    t.Union([t.String(), t.Null()], {
+      description:
+        "MCP server connection id (BigInt string) for MCP grants, or null.",
+    }),
+  ),
+  integrationInstanceId: t.Optional(
+    t.Union([t.String(), t.Null()], {
+      description:
+        "Integration instance id (BigInt string) for INTEGRATION grants, or null.",
+    }),
+  ),
+  documentTemplateId: t.Optional(
+    t.Union([t.String(), t.Null()], {
+      description:
+        "Document template id (BigInt string) for DOCUMENT grants, or null.",
+    }),
+  ),
+  codeToolDefinitionId: t.Optional(
+    t.Union([t.String(), t.Null()], {
+      description: "Code tool id (BigInt string) for CODE grants, or null.",
+    }),
+  ),
+  knowledgeBaseIds: t.Optional(
+    t.Array(t.String(), {
+      description:
+        "Knowledge-base ids (BigInt strings) for a RAG grant; the bases the agent may search.",
+    }),
+  ),
+  enabledTools: t.Optional(
+    t.Array(t.String(), {
+      description:
+        "Subset of tool names to enable within the source; omit to enable the source's full set.",
+    }),
+  ),
+});
+
 export const agentsController = new Elysia({
   prefix: "/v1/agents",
   tags: ["Agents"],
@@ -444,6 +506,82 @@ export const agentsController = new Elysia({
         id: t.String({
           description: "Agent id, a BigInt encoded as a decimal string.",
         }),
+      }),
+    },
+  )
+  // What every model call of the agent sends before the history: the editor shows it next to the
+  // history ceiling, so an operator sizing that ceiling sees the part of the call it does not govern.
+  .get(
+    "/:id/call-floor",
+    async ({ tenantContext, params }) => ({
+      instance: instanceIdentity,
+      floor: await estimateCallFloor({
+        ctx: ctxOrThrow(tenantContext),
+        agentId: requireDbId(params.id),
+      }),
+    }),
+    {
+      detail: doc(
+        "Estimate the agent's call floor",
+        'An ESTIMATE, in tokens, of what every model call of the saved agent sends before the first line of history: its instructions, what the runtime appends to them (the knowledge-base grounding rules, the MCP server block) and each granted tool\'s schema, largest first. A heuristic count that can run low against what a provider bills. What only a conversation supplies (contact attributes, appointments, other-inbox context, per-turn notices) is not in it, so it is a floor, not the size of a call. An agent that observes with the decisions engine never sends this prompt and answers `{ engine: "decisions" }` with no numbers. Shape: `{ engine: "llm", instructions, instructionsAdded, instructionsAddedBy{ grounding, mcp }, tools[{ name, category, estimatedTokens }], total }`.',
+      ),
+      response: errors(400, 401, 403, 404),
+      requireRole: "TENANT_ADMIN",
+      params: t.Object({
+        id: t.String({
+          description: "Agent id, a BigInt encoded as a decimal string.",
+        }),
+      }),
+    },
+  )
+  .post(
+    "/:id/call-floor",
+    async ({ tenantContext, params, body }) => ({
+      instance: instanceIdentity,
+      floor: await estimateCallFloor({
+        ctx: ctxOrThrow(tenantContext),
+        agentId: requireDbId(params.id),
+        grants: (body as { grants: ToolGrantInput[] }).grants,
+        settings: (body as { settings?: Record<string, unknown> }).settings,
+        mode: (body as { mode?: AgentMode }).mode,
+      }),
+    }),
+    {
+      detail: doc(
+        "Estimate the call floor of an unsaved tool set",
+        "The same estimate as `GET /v1/agents/{id}/call-floor`, measured with the given grants (and settings, when sent) in place of the saved ones, so an editor can show what saving them would send. Nothing is written. The grants are validated as `PUT /v1/agents/{id}/tool-selections` validates them; a grant pointing at something this tenant does not have counts as absent, as it would at runtime.",
+      ),
+      response: errors(400, 401, 403, 404, 422),
+      requireRole: "TENANT_ADMIN",
+      params: t.Object({
+        id: t.String({
+          description: "Agent id, a BigInt encoded as a decimal string.",
+        }),
+      }),
+      body: t.Object({
+        grants: t.Array(ToolGrantBody, {
+          description:
+            "The whole grant set to measure, in the shape the tool-selections replace takes.",
+        }),
+        settings: t.Optional(
+          t.Record(t.String(), t.Unknown(), {
+            description:
+              "The agent's settings to measure with, in place of the saved ones (the shape `PATCH /v1/agents/{id}` takes). Tools read them: the handoff instructions, the writable contact fields. Omit to use the saved settings.",
+          }),
+        ),
+        mode: t.Optional(
+          t.Union(
+            [
+              t.Literal("test"),
+              t.Literal("production"),
+              t.Literal("monitoring"),
+            ],
+            {
+              description:
+                "The agent's mode to measure with, in place of the saved one: an observer (`monitoring`) is offered what an observation is, and one on the decisions engine (`settings.monitoring.engine`) gets no numbers.",
+            },
+          ),
+        ),
       }),
     },
   )
@@ -1521,67 +1659,7 @@ export const agentsController = new Elysia({
         }),
       }),
       body: t.Object({
-        grants: t.Array(
-          t.Object({
-            source: t.Union(
-              [
-                t.Literal("NATIVE"),
-                t.Literal("RAG"),
-                t.Literal("HTTP"),
-                t.Literal("MCP"),
-                t.Literal("INTEGRATION"),
-                t.Literal("DOCUMENT"),
-                t.Literal("CODE"),
-              ],
-              {
-                description:
-                  "Grant source: NATIVE (built-in tools), RAG (knowledge bases), HTTP (custom tool), MCP (MCP server connection), INTEGRATION (integration instance), DOCUMENT (document template), or CODE (operator-authored code tool).",
-              },
-            ),
-            toolDefinitionId: t.Optional(
-              t.Union([t.String(), t.Null()], {
-                description:
-                  "Tool definition id (BigInt string) for NATIVE or HTTP grants, or null.",
-              }),
-            ),
-            mcpServerConnectionId: t.Optional(
-              t.Union([t.String(), t.Null()], {
-                description:
-                  "MCP server connection id (BigInt string) for MCP grants, or null.",
-              }),
-            ),
-            integrationInstanceId: t.Optional(
-              t.Union([t.String(), t.Null()], {
-                description:
-                  "Integration instance id (BigInt string) for INTEGRATION grants, or null.",
-              }),
-            ),
-            documentTemplateId: t.Optional(
-              t.Union([t.String(), t.Null()], {
-                description:
-                  "Document template id (BigInt string) for DOCUMENT grants, or null.",
-              }),
-            ),
-            codeToolDefinitionId: t.Optional(
-              t.Union([t.String(), t.Null()], {
-                description:
-                  "Code tool id (BigInt string) for CODE grants, or null.",
-              }),
-            ),
-            knowledgeBaseIds: t.Optional(
-              t.Array(t.String(), {
-                description:
-                  "Knowledge-base ids (BigInt strings) for a RAG grant; the bases the agent may search.",
-              }),
-            ),
-            enabledTools: t.Optional(
-              t.Array(t.String(), {
-                description:
-                  "Subset of tool names to enable within the source; omit to enable the source's full set.",
-              }),
-            ),
-          }),
-        ),
+        grants: t.Array(ToolGrantBody),
         expectedUpdatedAt: t.Optional(
           t.String({
             description:

@@ -114,7 +114,9 @@ export function stubEditorApi(
         : {};
     const path = url.pathname;
     stub.requests.push(`${method} ${path}`);
-    if (method !== "GET") stub.writes.push({ method, path, body });
+    // The call-floor estimate is a POST that writes nothing: it measures the draft on screen.
+    if (method !== "GET" && path !== `/api/v1/agents/${id}/call-floor`)
+      stub.writes.push({ method, path, body });
     const answered = stub.override?.(method, path, body);
     if (answered) return await answered;
     if (path === "/api/auth/me") return json({ user: null });

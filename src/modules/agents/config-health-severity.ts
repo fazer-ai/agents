@@ -35,6 +35,8 @@ const SEVERITY: Record<ConfigIssueKey, ConfigIssueSeverity> = {
   tts: "degraded",
   // Best-effort at runtime: the audio still goes out, unrewritten.
   ttsNormalize: "degraded",
+  // The reply still goes out, as text, on the day the primary voice fails.
+  ttsFallback: "degraded",
   // The attendance is never summarized, and nothing goes back for it later.
   memoryModel: "degraded",
   // Suggestions still reach the queue, unreviewed.

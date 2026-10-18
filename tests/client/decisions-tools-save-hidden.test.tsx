@@ -593,7 +593,11 @@ test("a reviewer edited on the language model is a hidden draft on questions and
   await waitFor(() =>
     expect(text().includes("questions and rules do not use")).toBe(true),
   );
-  expect(asked.filter((a) => a.method !== "GET").length).toBe(0);
+  // The call-floor estimate is a POST that writes nothing.
+  expect(
+    asked.filter((a) => a.method !== "GET" && !a.path.endsWith("/call-floor"))
+      .length,
+  ).toBe(0);
 });
 
 // A tool toggled on questions and rules while Save tools is in flight was not in the grants that

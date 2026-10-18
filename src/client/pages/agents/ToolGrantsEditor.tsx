@@ -59,6 +59,7 @@ import { McpEditModal } from "@/client/pages/resources/McpEditModal";
 import { ToolEditModal } from "@/client/pages/resources/ToolEditModal";
 import { TOOL_INSTRUCTIONS_MAX } from "@/modules/agents/text-caps";
 import { DECISION_ACTION_TOOLS } from "@/modules/decisions/config";
+import { SourceTokens, ToolTokens } from "./CallFloor";
 import {
   CrossInboxCaseFields,
   type CrossInboxCaseState,
@@ -393,6 +394,7 @@ function ConfigurableToolCard({
   description,
   icon: Icon,
   badge,
+  meta,
   configured,
   warning,
   children,
@@ -406,6 +408,8 @@ function ConfigurableToolCard({
   description?: React.ReactNode;
   icon?: LucideIcon;
   badge?: React.ReactNode;
+  // The tokens this tool adds to every call (SelectableCard's slot of the same name).
+  meta?: React.ReactNode;
   // True when the config holds non-default content: shows a dot on the collapsed header so the
   // operator knows there is hidden config worth opening.
   configured?: boolean;
@@ -465,6 +469,7 @@ function ConfigurableToolCard({
                 {title}
               </span>
               {badge}
+              {meta}
               {configured && !expanded && (
                 <span
                   className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent-solid"
@@ -1195,6 +1200,7 @@ export function ToolGrantsEditor({
                   onToggle={() => toggleHttp(td.id)}
                   icon={Webhook}
                   title={td.label}
+                  meta={<ToolTokens tool={{ name: td.name, kind: "http" }} />}
                   badge={
                     !td.enabled ? (
                       <Badge variant="secondary">
@@ -1247,6 +1253,7 @@ export function ToolGrantsEditor({
                   onToggle={() => toggleCode(ct.id)}
                   icon={Code2}
                   title={ct.label}
+                  meta={<ToolTokens tool={{ name: ct.name, kind: "code" }} />}
                   badge={
                     !ct.enabled ? (
                       <Badge variant="secondary">
@@ -1299,6 +1306,7 @@ export function ToolGrantsEditor({
                     onToggle={() => toggleMcp(m.id)}
                     icon={Plug}
                     title={m.name}
+                    meta={<SourceTokens source={{ mcp: String(m.id) }} />}
                     badge={
                       !m.enabled ? (
                         <Badge variant="secondary">
@@ -1411,6 +1419,13 @@ export function ToolGrantsEditor({
                                 {tool.name}
                               </span>
                             }
+                            meta={
+                              <ToolTokens
+                                tool={{
+                                  mcp: { connectionId: m.id, tool: tool.name },
+                                }}
+                              />
+                            }
                             description={
                               <span className="flex flex-col gap-1.5">
                                 {tool.description && (
@@ -1486,6 +1501,11 @@ export function ToolGrantsEditor({
                       onToggle={() => toggleIntegration(inst.id, allTools)}
                       icon={integrationIcon(inst.catalogType)}
                       title={inst.name}
+                      meta={
+                        <SourceTokens
+                          source={{ integration: String(inst.id) }}
+                        />
+                      }
                       badge={
                         <Badge variant="info">
                           {kindLabel(inst.kind ?? inst.catalogType)}
@@ -1544,6 +1564,16 @@ export function ToolGrantsEditor({
                               }
                               icon={meta.icon}
                               title={meta.label}
+                              meta={
+                                <ToolTokens
+                                  tool={{
+                                    integration: {
+                                      instanceId: inst.id,
+                                      tool: tool.name,
+                                    },
+                                  }}
+                                />
+                              }
                               description={
                                 <span className="flex flex-col gap-1.5">
                                   {meta.description && (
@@ -1619,6 +1649,7 @@ export function ToolGrantsEditor({
                     onToggle={() => toggleDocument(tpl.id)}
                     icon={FileText}
                     title={tpl.name}
+                    meta={<ToolTokens tool={{ templateId: String(tpl.id) }} />}
                     badge={
                       <Badge variant="secondary" className="break-all">
                         {tpl.toolName}
@@ -1706,6 +1737,7 @@ export function ToolGrantsEditor({
                   onToggle={() => toggleNative(n.name)}
                   icon={meta.icon}
                   title={meta.label}
+                  meta={<ToolTokens tool={{ name: n.name, kind: "native" }} />}
                   description={meta.description}
                 />
               );
@@ -1718,6 +1750,7 @@ export function ToolGrantsEditor({
             onToggle={() => toggleNative(HANDOFF_TOOL)}
             icon={nativeToolMeta(HANDOFF_TOOL, t).icon}
             title={nativeToolMeta(HANDOFF_TOOL, t).label}
+            meta={<ToolTokens tool={{ name: HANDOFF_TOOL, kind: "native" }} />}
             description={
               decides
                 ? t(
@@ -1920,6 +1953,7 @@ export function ToolGrantsEditor({
             onToggle={() => toggleNative(KANBAN_TOOL)}
             icon={nativeToolMeta(KANBAN_TOOL, t).icon}
             title={nativeToolMeta(KANBAN_TOOL, t).label}
+            meta={<ToolTokens tool={{ name: KANBAN_TOOL, kind: "native" }} />}
             description={nativeToolMeta(KANBAN_TOOL, t).description}
             configured={!decides && kanbanInstructions.trim() !== ""}
           >
@@ -1954,6 +1988,9 @@ export function ToolGrantsEditor({
             onToggle={() => toggleNative(UPDATE_KANBAN_TOOL)}
             icon={nativeToolMeta(UPDATE_KANBAN_TOOL, t).icon}
             title={nativeToolMeta(UPDATE_KANBAN_TOOL, t).label}
+            meta={
+              <ToolTokens tool={{ name: UPDATE_KANBAN_TOOL, kind: "native" }} />
+            }
             description={nativeToolMeta(UPDATE_KANBAN_TOOL, t).description}
             configured={!decides && updateKanbanTaskInstructions.trim() !== ""}
           >
@@ -1990,6 +2027,9 @@ export function ToolGrantsEditor({
             onToggle={() => toggleNative(OPEN_CASE_TOOL)}
             icon={nativeToolMeta(OPEN_CASE_TOOL, t).icon}
             title={nativeToolMeta(OPEN_CASE_TOOL, t).label}
+            meta={
+              <ToolTokens tool={{ name: OPEN_CASE_TOOL, kind: "native" }} />
+            }
             description={nativeToolMeta(OPEN_CASE_TOOL, t).description}
             configured={crossInboxCase.targetInboxId !== ""}
             warning={
@@ -2016,6 +2056,9 @@ export function ToolGrantsEditor({
               onToggle={() => toggleNative(SEND_IMAGE_TOOL)}
               icon={nativeToolMeta(SEND_IMAGE_TOOL, t).icon}
               title={nativeToolMeta(SEND_IMAGE_TOOL, t).label}
+              meta={
+                <ToolTokens tool={{ name: SEND_IMAGE_TOOL, kind: "native" }} />
+              }
               description={nativeToolMeta(SEND_IMAGE_TOOL, t).description}
               configured={!sendImageNoHost}
               warning={
@@ -2040,6 +2083,7 @@ export function ToolGrantsEditor({
             onToggle={() => toggleNative(RESOLVE_TOOL)}
             icon={nativeToolMeta(RESOLVE_TOOL, t).icon}
             title={nativeToolMeta(RESOLVE_TOOL, t).label}
+            meta={<ToolTokens tool={{ name: RESOLVE_TOOL, kind: "native" }} />}
             description={nativeToolMeta(RESOLVE_TOOL, t).description}
             configured={resolveConversation.assignLabels.length > 0}
           >
@@ -2057,6 +2101,7 @@ export function ToolGrantsEditor({
             onToggle={() => toggleNative(ATTR_TOOL)}
             icon={nativeToolMeta(ATTR_TOOL, t).icon}
             title={nativeToolMeta(ATTR_TOOL, t).label}
+            meta={<ToolTokens tool={{ name: ATTR_TOOL, kind: "native" }} />}
             description={nativeToolMeta(ATTR_TOOL, t).description}
             configured={!decides && customAttributeInstructions.trim() !== ""}
           >
@@ -2093,6 +2138,7 @@ export function ToolGrantsEditor({
             onToggle={() => toggleNative(LABEL_TOOL)}
             icon={nativeToolMeta(LABEL_TOOL, t).icon}
             title={nativeToolMeta(LABEL_TOOL, t).label}
+            meta={<ToolTokens tool={{ name: LABEL_TOOL, kind: "native" }} />}
             description={nativeToolMeta(LABEL_TOOL, t).description}
             configured={
               (!decides && labelInstructions.trim() !== "") ||

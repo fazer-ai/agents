@@ -2583,7 +2583,7 @@ export interface ToolSelectionView {
   agentUpdatedAt: Date | null;
 }
 
-interface NormalizedGrant {
+export interface NormalizedGrant {
   source: AgentToolSourceLit;
   toolDefinitionId: bigint | null;
   mcpServerConnectionId: bigint | null;
@@ -2624,7 +2624,7 @@ function bigOrThrow(v: string | null | undefined, field: string): bigint {
 
 // Shape + enum-membership validation (no DB). Ownership of referenced ids and the integration
 // tool-name allowlist are validated inside the scoped tx (cross-tenant ids are invisible there).
-function normalizeGrants(input: ToolGrantInput[]): NormalizedGrant[] {
+export function normalizeGrants(input: ToolGrantInput[]): NormalizedGrant[] {
   const out: NormalizedGrant[] = [];
   let sawNative = false;
   let sawRag = false;

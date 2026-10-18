@@ -113,6 +113,7 @@ function renderContactAuth(
         sttCredential: null,
         ttsCredential: null,
         ttsNormalizeCredential: null,
+        ttsFallbackCredential: null,
         visionCredential: null,
         visionExtractionPrompt: null,
         ttsSpokenNoticeText: null,
@@ -167,6 +168,8 @@ function renderContactAuth(
       agentModelName: "gpt-4o",
       agentModelCredentialRef: "",
       agentModelBaseUrl: "",
+      callFloor: null,
+      draftPrompt: "",
       ttsNormalizeCredBaseUrl: null,
       split: {
         enabled: false,

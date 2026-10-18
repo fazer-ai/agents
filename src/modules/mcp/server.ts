@@ -27,6 +27,7 @@ import { hasReservedFieldName } from "@/modules/tool-definitions/normalize";
 import { OUTBOUND_DELIVERY_STATUSES } from "@/modules/webhooks/outbound/deliveries";
 import { hasScope, type VerifiedToken } from "./oauth/tokens";
 import {
+  agentCallFloor,
   agentConfigHealth,
   agentGet,
   agentToolsGet,
@@ -540,6 +541,21 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       },
       async (args: { agent_id: string }, eff) =>
         writeContent(await agentConfigHealth(eff, args)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
+      "agent_call_floor",
+      {
+        description:
+          'Estimated tokens every model call of an agent sends before the history, per part and per tool. Runs low: conversation-only context is not counted. A decisions-engine observer returns `{ engine: "decisions" }`.',
+        inputSchema: {
+          agent_id: z.string(),
+        },
+      },
+      async (args: { agent_id: string }, eff) =>
+        writeContent(await agentCallFloor(eff, args)),
     );
 
     registerTenantTool(

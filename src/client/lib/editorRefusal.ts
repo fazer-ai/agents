@@ -202,6 +202,8 @@ export interface EditorControlsShown {
   // TTS has no boolean: any mode other than "never" means audio replies are on.
   ttsOn: boolean;
   ttsNormalize: boolean;
+  // The fallback voice's fields are drawn once audio is on and a fallback provider is picked.
+  ttsFallbackChosen: boolean;
   // Each of the two TTS texts (the spoken notice, the text choice) sits behind audio being on AND its
   // own switch, which is one name here because a field can only need one.
   ttsSpokenNoticeShown: boolean;
@@ -247,6 +249,7 @@ const CREDENTIAL_SWITCH: Readonly<Record<string, SwitchName>> = {
   "stt.credentialRef": "sttEnabled",
   "tts.credentialRef": "ttsOn",
   "tts.normalizeCredentialRef": "ttsNormalize",
+  "tts.fallbackCredentialRef": "ttsFallbackChosen",
   "vision.credentialRef": "visionEnabled",
   "contactAuth.credentialRef": "contactAuthEndpointShown",
   "memory.compaction.credentialRef": "memoryCompactionEnabled",

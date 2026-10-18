@@ -59,7 +59,11 @@ import {
 import { STT_PROVIDER_NAMES } from "@/modules/stt/providers";
 import { LANG_RE } from "@/modules/stt/settings";
 import { TTS_PROVIDER_NAMES } from "@/modules/tts/providers";
-import { TTS_CHECK_MODES, TTS_MODES } from "@/modules/tts/settings-shared";
+import {
+  TTS_CHECK_MODES,
+  TTS_MODES,
+  TTS_TIMEOUT_RANGE_MS,
+} from "@/modules/tts/settings-shared";
 import {
   ANTHROPIC_VISION_DEFAULT_MAX_TOKENS,
   VISION_REASONING_EFFORTS,
@@ -159,6 +163,25 @@ const tts = z.looseObject({
   normalizeModel: z.string().nullable().optional(),
   normalizeCredentialRef: credentialRef(),
   normalizeBaseURL: baseURL(),
+  // Refused outside the band rather than clamped: REST stores the bag as sent, so a clamp would leave
+  // a 0 on the read while synthesis waits a second.
+  timeoutMs: z
+    .number()
+    .min(TTS_TIMEOUT_RANGE_MS[0])
+    .max(TTS_TIMEOUT_RANGE_MS[1])
+    .nullable()
+    .optional()
+    .describe("per synthesis, ms; null = 60000"),
+  // The fallback voice, tried once before the reply goes as text. It exists once the provider is
+  // named; null removes it.
+  fallbackProvider: oneOf(TTS_PROVIDER_NAMES)
+    .nullable()
+    .optional()
+    .describe("tried on a timeout or 5xx/429; null = none"),
+  fallbackModel: modelId(),
+  fallbackVoice: z.string().optional(),
+  fallbackCredentialRef: credentialRef(),
+  fallbackBaseURL: baseURL(),
   stability: z
     .number()
     .nullable()

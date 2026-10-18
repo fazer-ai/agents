@@ -4,10 +4,11 @@
 // Chatwoot shows the message sent. elevenlabs has no aac/wav, so its PCM gets a local RIFF header
 // (pcmToWav, not a transcode); openrouter emits only mp3 and cannot serve Instagram (text fallback).
 
-import type { TtsVoiceSettings } from "./settings-shared";
+import {
+  TTS_TIMEOUT_DEFAULT_MS,
+  type TtsVoiceSettings,
+} from "./settings-shared";
 import { pcmToWav } from "./wav";
-
-const TTS_TIMEOUT_MS = 60_000;
 
 // The audio container the reply is delivered in, decided per destination channel by pickTtsFormat.
 export type TtsOutputFormat = "ogg_opus" | "aac" | "wav" | "mp3";
@@ -26,6 +27,8 @@ export interface TtsRequest {
   // NOTE: how the words are delivered (see TtsVoiceSettings). Omitted/null = the operator set nothing,
   // so the adapter drops the field entirely instead of sending its own idea of a default.
   voiceSettings?: TtsVoiceSettings | null;
+  // NOTE: how long this one request may take, body included. Omitted = TTS_TIMEOUT_DEFAULT_MS.
+  timeoutMs?: number;
 }
 
 export interface TtsResult {
@@ -162,6 +165,24 @@ export function pickTtsFormat(
   return provider.formats.includes("ogg_opus") ? "ogg_opus" : "mp3";
 }
 
+// One request under its deadline, body included. An abort while the body is still streaming surfaces
+// as a read error that names no timeout (`EncodingError: Failed to read response body` in Bun), so
+// once our own signal fired its reason is what is thrown: a slow provider is a timeout, and the
+// fallback voice is asked for exactly that. A `TtsError` is kept: its status arrived before the
+// deadline, and only the optional error code was being read when it fired.
+async function underDeadline(
+  req: TtsRequest,
+  run: (signal: AbortSignal) => Promise<TtsResult>,
+): Promise<TtsResult> {
+  const signal = AbortSignal.timeout(req.timeoutMs ?? TTS_TIMEOUT_DEFAULT_MS);
+  try {
+    return await run(signal);
+  } catch (err) {
+    if (signal.aborted && !(err instanceof TtsError)) throw signal.reason;
+    throw err;
+  }
+}
+
 // OpenAI speech: POST /audio/speech; response_format maps 1:1 from the requested container ("opus"
 // returns an Ogg-Opus stream, the WhatsApp voice-note format; "aac" serves Instagram natively).
 const OPENAI_FORMAT: Record<TtsOutputFormat, string> = {
@@ -171,7 +192,10 @@ const OPENAI_FORMAT: Record<TtsOutputFormat, string> = {
   mp3: "mp3",
 };
 
-async function openaiSynthesize(req: TtsRequest): Promise<TtsResult> {
+async function openaiSynthesize(
+  req: TtsRequest,
+  signal: AbortSignal,
+): Promise<TtsResult> {
   const base = (req.baseURL ?? "https://api.openai.com/v1").replace(/\/+$/, "");
   const res = await req.fetchImpl(`${base}/audio/speech`, {
     method: "POST",
@@ -186,7 +210,7 @@ async function openaiSynthesize(req: TtsRequest): Promise<TtsResult> {
       response_format: OPENAI_FORMAT[req.format],
     }),
     redirect: "error",
-    signal: AbortSignal.timeout(TTS_TIMEOUT_MS),
+    signal,
   });
   if (!res.ok)
     throw new TtsError("openai", res.status, await readProviderErrorCode(res));
@@ -229,7 +253,10 @@ function elevenlabsVoiceSettings(
   return Object.keys(out).length ? out : undefined;
 }
 
-async function elevenlabsSynthesize(req: TtsRequest): Promise<TtsResult> {
+async function elevenlabsSynthesize(
+  req: TtsRequest,
+  signal: AbortSignal,
+): Promise<TtsResult> {
   const base = (req.baseURL ?? "https://api.elevenlabs.io/v1").replace(
     /\/+$/,
     "",
@@ -252,7 +279,7 @@ async function elevenlabsSynthesize(req: TtsRequest): Promise<TtsResult> {
         voice_settings: elevenlabsVoiceSettings(req.voiceSettings),
       }),
       redirect: "error",
-      signal: AbortSignal.timeout(TTS_TIMEOUT_MS),
+      signal,
     },
   );
   if (!res.ok)
@@ -277,7 +304,10 @@ async function elevenlabsSynthesize(req: TtsRequest): Promise<TtsResult> {
 // attachment instead of a native voice note (PTT) — surfaced as a warning in the editor — and
 // Instagram cannot be served at all (pickTtsFormat returns null there; the service falls back to a
 // text reply). The `format` field is accepted but always rendered as mp3.
-async function openrouterSynthesize(req: TtsRequest): Promise<TtsResult> {
+async function openrouterSynthesize(
+  req: TtsRequest,
+  signal: AbortSignal,
+): Promise<TtsResult> {
   const base = (req.baseURL ?? "https://openrouter.ai/api/v1").replace(
     /\/+$/,
     "",
@@ -295,7 +325,7 @@ async function openrouterSynthesize(req: TtsRequest): Promise<TtsResult> {
       response_format: "mp3",
     }),
     redirect: "error",
-    signal: AbortSignal.timeout(TTS_TIMEOUT_MS),
+    signal,
   });
   if (!res.ok)
     throw new TtsError(
@@ -312,7 +342,8 @@ const PROVIDERS: Record<string, TtsProvider> = {
     defaultVoice: "alloy",
     formats: ["ogg_opus", "aac", "wav", "mp3"],
     providerFormat: (format) => OPENAI_FORMAT[format],
-    synthesize: openaiSynthesize,
+    synthesize: (req) =>
+      underDeadline(req, (signal) => openaiSynthesize(req, signal)),
   },
   elevenlabs: {
     defaultModel: "eleven_flash_v2_5",
@@ -320,7 +351,8 @@ const PROVIDERS: Record<string, TtsProvider> = {
     requiresVoice: true,
     formats: ["ogg_opus", "wav", "mp3"],
     providerFormat: elevenlabsOutput,
-    synthesize: elevenlabsSynthesize,
+    synthesize: (req) =>
+      underDeadline(req, (signal) => elevenlabsSynthesize(req, signal)),
   },
   openrouter: {
     // Verified live end-to-end (GET /models?output_modalities=speech + a real /audio/speech call).
@@ -334,7 +366,8 @@ const PROVIDERS: Record<string, TtsProvider> = {
     defaultVoice: "af_alloy",
     formats: ["mp3"],
     providerFormat: () => "mp3",
-    synthesize: openrouterSynthesize,
+    synthesize: (req) =>
+      underDeadline(req, (signal) => openrouterSynthesize(req, signal)),
   },
 };
 

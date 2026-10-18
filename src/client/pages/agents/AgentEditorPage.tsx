@@ -136,6 +136,7 @@ import {
   behaviorSnapshot,
   editedBlocks,
 } from "./behaviorSave";
+import { type CallFloor, CallFloorContext } from "./CallFloor";
 import {
   type ChannelRedirectFormState,
   ChannelRedirectTab,
@@ -1262,6 +1263,7 @@ function AgentEditor() {
     sttEnabled: stt.enabled,
     ttsOn: tts.mode !== "never",
     ttsNormalize: tts.normalize,
+    ttsFallbackChosen: tts.mode !== "never" && !!tts.fallbackProvider,
     ttsSpokenNoticeShown: tts.mode !== "never" && tts.spokenNotice,
     ttsTextChoiceShown: tts.mode !== "never" && tts.textChoice,
     visionEnabled: vision.enabled,
@@ -1372,6 +1374,7 @@ function AgentEditor() {
     "settings.stt.credentialRef": stt.credentialRef,
     "settings.tts.credentialRef": tts.credentialRef,
     "settings.tts.normalizeCredentialRef": tts.normalizeCredentialRef,
+    "settings.tts.fallbackCredentialRef": tts.fallbackCredentialRef,
     "settings.vision.credentialRef": vision.credentialRef,
     "settings.contactAuth.credentialRef": contactAuth.credentialRef,
     "settings.memory.compaction.credentialRef": memory.credentialRef,
@@ -1795,10 +1798,16 @@ function AgentEditor() {
   // When the operator returns from a Resources tab (opened via the "New" links in the tool/knowledge
   // editors), refetch ONLY the catalog so a freshly-created tool/server/integration/base appears,
   // without touching in-progress grant edits (grants stay local).
+  // Bumped whenever the catalog is re-read: a tool definition edited in its modal changes what the
+  // call floor measures without any agent save, so the floor is retaken with it.
+  const [catalogTick, setCatalogTick] = useState(0);
   const refreshCatalog = useCallback(async () => {
     try {
       const { data } = await api.api.v1.agents({ id })["tool-selections"].get();
-      if (data) setCatalog(data.catalog);
+      if (data) {
+        setCatalog(data.catalog);
+        setCatalogTick((n) => n + 1);
+      }
     } catch {
       // NOTE: best-effort
     }
@@ -2590,6 +2599,78 @@ function AgentEditor() {
     };
   }, [id, serverSyncTick]);
 
+  // What every call sends before the history (instructions, runtime additions, each tool), for the
+  // line under the instructions and the numbers on the Tools and Knowledge tabs. Measured on the grant
+  // set as it stands on screen, so a tool or a knowledge switch shows its cost before the save; retaken
+  // on every sync and catalog re-read too, since a saved tool definition changes what it measures.
+  const [callFloor, setCallFloor] = useState<CallFloor | null>(null);
+  const draftGrantsKey = canonicalGrants(savedGrants);
+  const draftGrantsRef = useRef(savedGrants);
+  draftGrantsRef.current = savedGrants;
+  // The settings and the mode too: a tool's schema reads the settings (handoff instructions, writable
+  // contact fields), and an observer, or one deciding by rules, is measured as one. The observation
+  // block is the form's whole, engine included, where a Behavior save keeps the stored decision setup.
+  // Observability shapes no tool and arms a clock of its own, so it goes as saved: a switch there is
+  // not an edit of the floor, and must not cost a request.
+  const draftSettings: Record<string, unknown> = {
+    ...buildToolsSettings(buildSettings()).toolsSettings,
+    ...monitoringPatch(
+      observation,
+      agentMode === "monitoring",
+      customTools?.all ?? null,
+    ),
+  };
+  delete draftSettings.observability;
+  const draftSettingsKey = JSON.stringify(draftSettings);
+  const draftSettingsRef = useRef(draftSettings);
+  draftSettingsRef.current = draftSettings;
+  const measuredSyncRef = useRef<string | null>(null);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: draftGrantsKey and draftSettingsKey stand for the draft (read through the refs, compared by content); catalogTick is a refetch trigger — a tool definition saved in its modal changes what the floor measures.
+  useEffect(() => {
+    if (!id || serverSyncTick === 0) {
+      setCallFloor(null);
+      return;
+    }
+    let alive = true;
+    const measure = () =>
+      api.api.v1
+        .agents({ id })
+        ["call-floor"].post({
+          grants: draftGrantsRef.current,
+          settings: draftSettingsRef.current,
+          mode: agentMode,
+        })
+        .then(({ data }) => {
+          if (alive)
+            setCallFloor((data?.floor as CallFloor | undefined) ?? null);
+        })
+        .catch(() => {
+          if (alive) setCallFloor(null);
+        });
+    // A load or a sync is measured at once, as the page's other reads are; an edit waits, so a burst
+    // of clicks is one request and the number lands once the operator stops toggling.
+    const syncKey = `${id}:${serverSyncTick}:${catalogTick}`;
+    if (measuredSyncRef.current !== syncKey) {
+      measuredSyncRef.current = syncKey;
+      measure();
+      return () => {
+        alive = false;
+      };
+    }
+    const timer = setTimeout(measure, 300);
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
+  }, [
+    id,
+    serverSyncTick,
+    catalogTick,
+    draftGrantsKey,
+    draftSettingsKey,
+    agentMode,
+  ]);
+
   // Live config-health: a feature on without its credential, or naming one whose secret is not
   // filled in (pending); each issue deep-links to its tab or the vault fill modal. Messages by issue.key:
   // t('editor.configIssue.model', 'The model has no API key set, so the agent cannot reply.')
@@ -2600,6 +2681,8 @@ function AgentEditor() {
   // t('editor.configIssue.tts', 'Audio replies are on but have no API key set.')
   // t('editor.configIssue.ttsNormalize', 'The speech rewrite is on but its model configuration cannot run, so replies will be spoken without it. Check its provider, model, key and endpoint.')
   // t('editor.configIssuePending.ttsNormalize', 'The speech-rewrite credential is referenced but not filled in yet.')
+  // t('editor.configIssue.ttsFallback', 'A fallback voice is set on another provider with no API key of its own, so it cannot take a reply the main voice drops.')
+  // t('editor.configIssuePending.ttsFallback', 'The fallback-voice credential is referenced but not filled in yet, so the fallback voice cannot take a reply.')
   // t('editor.configIssue.memoryModel', 'A separate model is set for attendance summaries but its configuration cannot run, so attendances that end will not be summarized and the contact keeps no memory of them. Check its provider, model, key and endpoint.')
   // t('editor.configIssue.modelFallback', 'A fallback provider is set but its configuration cannot run, so a turn the primary provider drops is still lost. Check its provider, model, key and endpoint.')
   // t('editor.configIssuePending.memoryModel', 'The summary-model credential is referenced but not filled in yet, so attendances that end are not summarized.')
@@ -2628,6 +2711,7 @@ function AgentEditor() {
   // t('editor.configIssueUnresolved.stt', 'The transcription credential no longer exists, so voice messages are not transcribed.')
   // t('editor.configIssueUnresolved.tts', 'The audio-reply credential no longer exists, so replies are sent as text.')
   // t('editor.configIssueUnresolved.ttsNormalize', 'The speech-rewrite credential no longer exists, so replies are spoken without the rewrite.')
+  // t('editor.configIssueUnresolved.ttsFallback', 'The fallback-voice credential no longer exists, so the fallback voice cannot take a reply.')
   // t('editor.configIssueUnresolved.memoryModel', 'The summary-model credential no longer exists, so attendances that end are not summarized.')
   // t('editor.configIssueUnresolved.modelFallback', 'The fallback-provider credential no longer exists, so the fallback cannot take a turn.')
   // t('editor.configIssue.suggestionReviewModel', 'A separate model is set for the suggestion reviewer but its configuration cannot run, so the agent\'s knowledge suggestions reach the approval queue unreviewed. Check its provider, model, key and endpoint.')
@@ -2643,6 +2727,7 @@ function AgentEditor() {
   // t('editor.configIssueWrongKind.stt', 'The transcription credential is a type that cannot be used as an API key, so voice messages are not transcribed. Pick a credential that holds a single key.')
   // t('editor.configIssueWrongKind.tts', 'The audio-reply credential is a type that cannot be used as an API key, so replies are sent as text. Pick a credential that holds a single key.')
   // t('editor.configIssueWrongKind.ttsNormalize', 'The speech-rewrite credential is a type that cannot be used as an API key, so replies are spoken without the rewrite. Pick a credential that holds a single key.')
+  // t('editor.configIssueWrongKind.ttsFallback', 'The fallback-voice credential is a type that cannot be used as an API key, so the fallback voice cannot take a reply. Pick a credential that holds a single key.')
   // t('editor.configIssueWrongKind.memoryModel', 'The summary-model credential is a type that cannot be used as an API key, so attendances that end are not summarized. Pick a credential that holds a single key.')
   // t('editor.configIssueWrongKind.modelFallback', 'The fallback-provider credential is a type that cannot be used as an API key, so the fallback cannot take a turn. Pick a credential that holds a single key.')
   // t('editor.configIssueWrongKind.vision', 'The image-reading credential is a type that cannot be used as an API key, so images and documents are not read. Pick a credential that holds a single key.')
@@ -2749,6 +2834,9 @@ function AgentEditor() {
     ttsNormalizeModel: tts.normalizeModel,
     ttsNormalizeCredentialRef: tts.normalizeCredentialRef,
     ttsNormalizeBaseURL: ttsNormalizeCredBaseUrl ?? tts.normalizeBaseURL,
+    ttsProvider: tts.provider,
+    ttsFallbackProvider: tts.fallbackProvider,
+    ttsFallbackCredentialRef: tts.fallbackCredentialRef,
     visionEnabled: vision.enabled,
     visionCredentialRef: vision.credentialRef,
     contactAuthEnabled: contactAuth.enabled,
@@ -3413,6 +3501,104 @@ function AgentEditor() {
       savingRef.current -= 1;
       setSavingGrants(false);
     }
+  }
+
+  // The settings a Tools save writes: the handoff, kanban and per-tool blocks from the form, over
+  // `base`. The save puts them over the last-synced bag; the call-floor estimate over the whole draft.
+  function buildToolsSettings(base: Record<string, unknown>) {
+    const syncedSettings = (syncedAgentRef.current?.settings ?? {}) as Record<
+      string,
+      unknown
+    >;
+    // On questions and rules the guidance is not drawn and goes back AS STORED, byte for byte: the
+    // serializers below tidy what an operator typed (trim, drop empties), and tidying a value the form
+    // still holds untidied would leave the editor reading a hidden draft nobody made.
+    const asStored = (key: string, written: unknown): unknown =>
+      decides && key in syncedSettings ? syncedSettings[key] : written;
+    const storedHandoff = (syncedSettings.handoff ?? {}) as Record<
+      string,
+      unknown
+    >;
+    const handoffJson = {
+      ...serializeHandoff({
+        ...handoff,
+        instructions: savedGuidance.handoffInstructions,
+      }),
+      ...(decides && "instructions" in storedHandoff
+        ? { instructions: storedHandoff.instructions as string | null }
+        : {}),
+    };
+    const kanbanJson = asStored("kanban", {
+      instructions: savedGuidance.kanbanInstructions.trim() || null,
+    });
+    const crossInboxCaseJson = asStored(
+      "crossInboxCase",
+      serializeCrossInboxCase(savedGuidance.crossInboxCase),
+    );
+    const sendImageJson = asStored(
+      "sendImage",
+      serializeSendImage(savedGuidance.sendImage),
+    );
+    const resolveConversationJson = asStored(
+      "resolveConversation",
+      serializeResolveConversation(savedGuidance.resolveConversation),
+    );
+    // Merge the per-tool guidance map: preserve any entries for other tools, set/clear ours.
+    const existingGuidance = (syncedSettings.toolGuidance ?? {}) as Record<
+      string,
+      unknown
+    >;
+    const toolGuidanceJson: Record<string, unknown> = { ...existingGuidance };
+    if (!decides) {
+      const attrNote = savedGuidance.customAttributeInstructions.trim();
+      const labelNote = savedGuidance.labelInstructions.trim();
+      const updateKanbanNote =
+        savedGuidance.updateKanbanTaskInstructions.trim();
+      if (attrNote) toolGuidanceJson.set_custom_attribute = attrNote;
+      else delete toolGuidanceJson.set_custom_attribute;
+      if (labelNote) toolGuidanceJson.set_labels = labelNote;
+      else delete toolGuidanceJson.set_labels;
+      if (updateKanbanNote)
+        toolGuidanceJson.update_kanban_task = updateKanbanNote;
+      else delete toolGuidanceJson.update_kanban_task;
+    }
+    const toolPreconditionsJson = serializeToolPreconditions(
+      toolPreconditions,
+      syncedSettings.toolPreconditions,
+    );
+    // The guard is stored under the tool's own block rather than beside the retired `labels` key,
+    // which the write boundary now refuses: what this list does is fence a tool, not describe a
+    // taxonomy. An empty list is written as an empty array rather than dropped, so clearing the
+    // field is a change the PATCH carries instead of a no-op the merge swallows.
+    const protectedList = protectedLabels
+      .split(",")
+      .map((l) => l.trim())
+      .filter(Boolean);
+    const allowedList = allowedLabels
+      .split(",")
+      .map((l) => l.trim())
+      .filter(Boolean);
+    const existingSetLabels = (syncedSettings.setLabels ?? {}) as Record<
+      string,
+      unknown
+    >;
+    const toolsSettings = {
+      ...base,
+      handoff: handoffJson,
+      kanban: kanbanJson,
+      toolGuidance: toolGuidanceJson,
+      toolPreconditions: toolPreconditionsJson,
+      setLabels: {
+        ...existingSetLabels,
+        protected: protectedList,
+        allowed: allowedList,
+        outsideAllowed: outsideAllowedLabels,
+      },
+      crossInboxCase: crossInboxCaseJson,
+      sendImage: sendImageJson,
+      resolveConversation: resolveConversationJson,
+    };
+    return { toolsSettings, protectedList, allowedList };
   }
 
   // Tools-tab save: the grant set PLUS the handoff_to_human + kanban config (which live on the tools,
@@ -4656,105 +4842,112 @@ function AgentEditor() {
             )}
 
             {tab === "general" && (
-              <GeneralTab
-                nameError={refusal.at("name", currentRef.current.name)}
-                promptError={refusal.at(
-                  "systemPrompt",
-                  currentRef.current.systemPrompt,
-                )}
-                modelCredentialError={refusal.at(
-                  "modelConfig.credentialRef",
-                  currentRef.current["modelConfig.credentialRef"],
-                )}
-                availability={promptAvailability}
-                name={name}
-                setName={setName}
-                systemPrompt={systemPrompt}
-                setSystemPrompt={setSystemPrompt}
-                enabled={enabled}
-                setEnabled={setEnabled}
-                mode={agentMode}
-                setMode={setAgentMode}
-                model={model}
-                setModel={setModel}
-                modelCredBaseUrl={modelCredBaseUrl}
-                dirty={dirty.general || decisionsHeadDirty}
-                saving={savingAgent || savingDecisions}
-                onSave={() => {
-                  if (decisionsBlocked("general", dirty.general)) return;
-                  void saveGeneral();
-                }}
-                onDiscard={revertGeneral}
-                watcher={
-                  watcher
-                    ? {
-                        engineCards: (
-                          <EngineCards
-                            engine={engine}
-                            onChange={switchEngine}
-                            missing={
-                              decides ? (
-                                <DecisionsSetupMissing
-                                  issues={decisionsSetupIssues}
-                                  onOpenDecisions={() => openTab("decisions")}
-                                  showErrors={decisionsAttempted}
-                                />
-                              ) : null
-                            }
-                          />
-                        ),
-                        decides,
-                        classifier:
-                          decides && observation.decisions ? (
-                            <Card
-                              id="general-classifier"
-                              className="flex scroll-mt-4 flex-col gap-4"
-                            >
-                              <div>
-                                <h3 className="font-medium text-sm text-text-primary">
-                                  {t("editor.classifierSection", "Classifier")}
-                                </h3>
-                                <p className="text-text-muted text-xs">
-                                  {t(
-                                    "editor.classifierSectionHint",
-                                    "The service that answers the questions about each conversation.",
-                                  )}
-                                </p>
-                              </div>
-                              <ClassifierFields
-                                decisions={observation.decisions}
-                                storedDecisions={decisionsBaseline(observation)}
-                                setDecisions={(next) =>
-                                  setObservation((prev) =>
-                                    editDecisions(prev, next),
-                                  )
-                                }
-                                credentialError={refusal.at(
-                                  "settings.monitoring.decisions.credentialRef",
-                                  currentRef.current[
-                                    "settings.monitoring.decisions.credentialRef"
-                                  ],
-                                )}
-                                serverRefusal={decisionsRefusalStanding(
-                                  decisionsRefused,
-                                  decisionsBlockToStore(
+              <CallFloorContext.Provider value={callFloor}>
+                <GeneralTab
+                  nameError={refusal.at("name", currentRef.current.name)}
+                  promptError={refusal.at(
+                    "systemPrompt",
+                    currentRef.current.systemPrompt,
+                  )}
+                  modelCredentialError={refusal.at(
+                    "modelConfig.credentialRef",
+                    currentRef.current["modelConfig.credentialRef"],
+                  )}
+                  availability={promptAvailability}
+                  name={name}
+                  setName={setName}
+                  systemPrompt={systemPrompt}
+                  setSystemPrompt={setSystemPrompt}
+                  enabled={enabled}
+                  setEnabled={setEnabled}
+                  mode={agentMode}
+                  setMode={setAgentMode}
+                  model={model}
+                  setModel={setModel}
+                  modelCredBaseUrl={modelCredBaseUrl}
+                  dirty={dirty.general || decisionsHeadDirty}
+                  saving={savingAgent || savingDecisions}
+                  onSave={() => {
+                    if (decisionsBlocked("general", dirty.general)) return;
+                    void saveGeneral();
+                  }}
+                  onDiscard={revertGeneral}
+                  watcher={
+                    watcher
+                      ? {
+                          engineCards: (
+                            <EngineCards
+                              engine={engine}
+                              onChange={switchEngine}
+                              missing={
+                                decides ? (
+                                  <DecisionsSetupMissing
+                                    issues={decisionsSetupIssues}
+                                    onOpenDecisions={() => openTab("decisions")}
+                                    showErrors={decisionsAttempted}
+                                  />
+                                ) : null
+                              }
+                            />
+                          ),
+                          decides,
+                          classifier:
+                            decides && observation.decisions ? (
+                              <Card
+                                id="general-classifier"
+                                className="flex scroll-mt-4 flex-col gap-4"
+                              >
+                                <div>
+                                  <h3 className="font-medium text-sm text-text-primary">
+                                    {t(
+                                      "editor.classifierSection",
+                                      "Classifier",
+                                    )}
+                                  </h3>
+                                  <p className="text-text-muted text-xs">
+                                    {t(
+                                      "editor.classifierSectionHint",
+                                      "The service that answers the questions about each conversation.",
+                                    )}
+                                  </p>
+                                </div>
+                                <ClassifierFields
+                                  decisions={observation.decisions}
+                                  storedDecisions={decisionsBaseline(
                                     observation,
-                                    true,
-                                    customTools?.all ?? null,
-                                  ),
-                                )}
-                              />
-                            </Card>
-                          ) : null,
-                      }
-                    : undefined
-                }
-                onOpenPlayground={watcher ? undefined : openPlayground}
-                onDelete={askDelete}
-                previewVars={playgroundChat.promptVars}
-                catalog={catalog}
-                grants={grants}
-              />
+                                  )}
+                                  setDecisions={(next) =>
+                                    setObservation((prev) =>
+                                      editDecisions(prev, next),
+                                    )
+                                  }
+                                  credentialError={refusal.at(
+                                    "settings.monitoring.decisions.credentialRef",
+                                    currentRef.current[
+                                      "settings.monitoring.decisions.credentialRef"
+                                    ],
+                                  )}
+                                  serverRefusal={decisionsRefusalStanding(
+                                    decisionsRefused,
+                                    decisionsBlockToStore(
+                                      observation,
+                                      true,
+                                      customTools?.all ?? null,
+                                    ),
+                                  )}
+                                />
+                              </Card>
+                            ) : null,
+                        }
+                      : undefined
+                  }
+                  onOpenPlayground={watcher ? undefined : openPlayground}
+                  onDelete={askDelete}
+                  previewVars={playgroundChat.promptVars}
+                  catalog={catalog}
+                  grants={grants}
+                />
+              </CallFloorContext.Provider>
             )}
 
             {tab === "channels" && (
@@ -4777,109 +4970,115 @@ function AgentEditor() {
             )}
 
             {tab === "tools" && (
-              <ToolsTab
-                agentId={id}
-                observing={watcher}
-                decides={decides}
-                catalog={catalog}
-                grants={grants}
-                onChange={setGrants}
-                onCatalogChange={refreshCatalog}
-                transferWithSummary={transferWithSummary}
-                setTransferWithSummary={setTransferWithSummary}
-                handoff={handoff}
-                setHandoff={setHandoff}
-                kanbanInstructions={kanbanInstructions}
-                setKanbanInstructions={setKanbanInstructions}
-                customAttributeInstructions={customAttributeInstructions}
-                setCustomAttributeInstructions={setCustomAttributeInstructions}
-                crossInboxCase={crossInboxCase}
-                setCrossInboxCase={setCrossInboxCase}
-                sendImage={sendImage}
-                setSendImage={setSendImage}
-                resolveConversation={resolveConversation}
-                setResolveConversation={setResolveConversation}
-                labelInstructions={labelInstructions}
-                setLabelInstructions={setLabelInstructions}
-                protectedLabels={protectedLabels}
-                setProtectedLabels={setProtectedLabels}
-                allowedLabels={allowedLabels}
-                setAllowedLabels={setAllowedLabels}
-                outsideAllowedLabels={outsideAllowedLabels}
-                setOutsideAllowedLabels={setOutsideAllowedLabels}
-                updateKanbanTaskInstructions={updateKanbanTaskInstructions}
-                toolPreconditions={toolPreconditions}
-                setToolPreconditions={setToolPreconditions}
-                setUpdateKanbanTaskInstructions={
-                  setUpdateKanbanTaskInstructions
-                }
-                mcpTools={mcpTools}
-                setMcpTools={setMcpTools}
-                mcpInstructions={mcpInstructions}
-                setMcpInstructions={setMcpInstructions}
-                mcpCollapsed={mcpCollapsed}
-                setMcpCollapsed={setMcpCollapsed}
-                integrationCollapsed={integrationCollapsed}
-                setIntegrationCollapsed={setIntegrationCollapsed}
-                refusals={{
-                  handoffInstructions: refusal.at(
-                    "handoff.instructions",
-                    currentRef.current["handoff.instructions"],
-                  ),
-                  kanbanInstructions: refusal.at(
-                    "kanban.instructions",
-                    currentRef.current["kanban.instructions"],
-                  ),
-                  attributeInstructions: refusal.at(
-                    "toolGuidance.set_custom_attribute",
-                    currentRef.current["toolGuidance.set_custom_attribute"],
-                  ),
-                  labelInstructions: refusal.at(
-                    "toolGuidance.set_labels",
-                    currentRef.current["toolGuidance.set_labels"],
-                  ),
-                  updateKanbanInstructions: refusal.at(
-                    "toolGuidance.update_kanban_task",
-                    currentRef.current["toolGuidance.update_kanban_task"],
-                  ),
-                }}
-                dirty={dirty.tools}
-                saving={savingGrants}
-                onSave={() => saveTools()}
-                onDiscard={revertTools}
-                onOpenPlayground={watcher ? undefined : openPlayground}
-              />
+              <CallFloorContext.Provider value={callFloor}>
+                <ToolsTab
+                  agentId={id}
+                  observing={watcher}
+                  decides={decides}
+                  catalog={catalog}
+                  grants={grants}
+                  onChange={setGrants}
+                  onCatalogChange={refreshCatalog}
+                  transferWithSummary={transferWithSummary}
+                  setTransferWithSummary={setTransferWithSummary}
+                  handoff={handoff}
+                  setHandoff={setHandoff}
+                  kanbanInstructions={kanbanInstructions}
+                  setKanbanInstructions={setKanbanInstructions}
+                  customAttributeInstructions={customAttributeInstructions}
+                  setCustomAttributeInstructions={
+                    setCustomAttributeInstructions
+                  }
+                  crossInboxCase={crossInboxCase}
+                  setCrossInboxCase={setCrossInboxCase}
+                  sendImage={sendImage}
+                  setSendImage={setSendImage}
+                  resolveConversation={resolveConversation}
+                  setResolveConversation={setResolveConversation}
+                  labelInstructions={labelInstructions}
+                  setLabelInstructions={setLabelInstructions}
+                  protectedLabels={protectedLabels}
+                  setProtectedLabels={setProtectedLabels}
+                  allowedLabels={allowedLabels}
+                  setAllowedLabels={setAllowedLabels}
+                  outsideAllowedLabels={outsideAllowedLabels}
+                  setOutsideAllowedLabels={setOutsideAllowedLabels}
+                  updateKanbanTaskInstructions={updateKanbanTaskInstructions}
+                  toolPreconditions={toolPreconditions}
+                  setToolPreconditions={setToolPreconditions}
+                  setUpdateKanbanTaskInstructions={
+                    setUpdateKanbanTaskInstructions
+                  }
+                  mcpTools={mcpTools}
+                  setMcpTools={setMcpTools}
+                  mcpInstructions={mcpInstructions}
+                  setMcpInstructions={setMcpInstructions}
+                  mcpCollapsed={mcpCollapsed}
+                  setMcpCollapsed={setMcpCollapsed}
+                  integrationCollapsed={integrationCollapsed}
+                  setIntegrationCollapsed={setIntegrationCollapsed}
+                  refusals={{
+                    handoffInstructions: refusal.at(
+                      "handoff.instructions",
+                      currentRef.current["handoff.instructions"],
+                    ),
+                    kanbanInstructions: refusal.at(
+                      "kanban.instructions",
+                      currentRef.current["kanban.instructions"],
+                    ),
+                    attributeInstructions: refusal.at(
+                      "toolGuidance.set_custom_attribute",
+                      currentRef.current["toolGuidance.set_custom_attribute"],
+                    ),
+                    labelInstructions: refusal.at(
+                      "toolGuidance.set_labels",
+                      currentRef.current["toolGuidance.set_labels"],
+                    ),
+                    updateKanbanInstructions: refusal.at(
+                      "toolGuidance.update_kanban_task",
+                      currentRef.current["toolGuidance.update_kanban_task"],
+                    ),
+                  }}
+                  dirty={dirty.tools}
+                  saving={savingGrants}
+                  onSave={() => saveTools()}
+                  onDiscard={revertTools}
+                  onOpenPlayground={watcher ? undefined : openPlayground}
+                />
+              </CallFloorContext.Provider>
             )}
 
             {tab === "knowledge" && (
-              <KnowledgeTab
-                catalog={catalog}
-                grants={grants}
-                onChange={setGrants}
-                onCatalogChange={refreshCatalog}
-                review={review}
-                setReview={setReview}
-                // NOTE: The model this save writes and its effective endpoint, as Behavior's overrides read it.
-                agentModel={{
-                  provider: modelAfterSave.provider,
-                  credentialRef: modelAfterSave.credentialRef,
-                  baseURL: modelAfterSaveBaseUrl,
-                }}
-                reviewCredBaseUrl={vaultBaseUrl(review.credentialRef)}
-                reviewCredentialError={
-                  refusal.at(
-                    "settings.knowledge.suggestionReview.credentialRef",
-                    currentRef.current[
-                      "settings.knowledge.suggestionReview.credentialRef"
-                    ],
-                  ) ?? undefined
-                }
-                dirty={dirty.knowledge}
-                saving={savingGrants}
-                onSave={() => saveGrants()}
-                onDiscard={revertKnowledge}
-                onOpenPlayground={watcher ? undefined : openPlayground}
-              />
+              <CallFloorContext.Provider value={callFloor}>
+                <KnowledgeTab
+                  catalog={catalog}
+                  grants={grants}
+                  onChange={setGrants}
+                  onCatalogChange={refreshCatalog}
+                  review={review}
+                  setReview={setReview}
+                  // NOTE: The model this save writes and its effective endpoint, as Behavior's overrides read it.
+                  agentModel={{
+                    provider: modelAfterSave.provider,
+                    credentialRef: modelAfterSave.credentialRef,
+                    baseURL: modelAfterSaveBaseUrl,
+                  }}
+                  reviewCredBaseUrl={vaultBaseUrl(review.credentialRef)}
+                  reviewCredentialError={
+                    refusal.at(
+                      "settings.knowledge.suggestionReview.credentialRef",
+                      currentRef.current[
+                        "settings.knowledge.suggestionReview.credentialRef"
+                      ],
+                    ) ?? undefined
+                  }
+                  dirty={dirty.knowledge}
+                  saving={savingGrants}
+                  onSave={() => saveGrants()}
+                  onDiscard={revertKnowledge}
+                  onOpenPlayground={watcher ? undefined : openPlayground}
+                />
+              </CallFloorContext.Provider>
             )}
 
             {tab === "decisions" && decides && observation.decisions && (
@@ -4983,6 +5182,8 @@ function AgentEditor() {
                 agentModelName={modelAfterSave.model}
                 agentModelCredentialRef={modelAfterSave.credentialRef}
                 agentModelBaseUrl={modelAfterSaveBaseUrl}
+                callFloor={callFloor}
+                draftPrompt={systemPrompt}
                 ttsNormalizeCredBaseUrl={ttsNormalizeCredBaseUrl}
                 split={split}
                 setSplit={setSplit}
@@ -5037,6 +5238,10 @@ function AgentEditor() {
                   ttsNormalizeCredential: refusal.at(
                     "settings.tts.normalizeCredentialRef",
                     currentRef.current["settings.tts.normalizeCredentialRef"],
+                  ),
+                  ttsFallbackCredential: refusal.at(
+                    "settings.tts.fallbackCredentialRef",
+                    currentRef.current["settings.tts.fallbackCredentialRef"],
                   ),
                   visionCredential: refusal.at(
                     "settings.vision.credentialRef",

@@ -1040,7 +1040,7 @@ export async function removeChatwootInstance(
 ): Promise<void> {
   if (ctx.tenantId === null) throw new AppError("tenant required", 400);
   const tenantId = ctx.tenantId;
-  await runScopedOn(base, ctx, async (db) => {
+  const generation = await runScopedOn(base, ctx, async (db) => {
     await db.$queryRaw`SELECT id FROM chatwoot_instances WHERE id = ${id} FOR NO KEY UPDATE`;
     const inst = await db.chatwootInstance.findUnique({
       where: { id },
@@ -1090,6 +1090,10 @@ export async function removeChatwootInstance(
         },
       });
     }
+    const [row] = await db.$queryRaw<{ generation: bigint }[]>`
+      SELECT (EXTRACT(EPOCH FROM disconnected_at) * 1000000)::bigint AS generation
+        FROM chatwoot_instances WHERE id = ${id}`;
+    return row!.generation;
   });
   // NOTE: The account's route tokens stop resolving at the disconnect, not at the delete: the batches
   // take long enough for the receiver to keep authenticating a cached token through all of them.
@@ -1097,13 +1101,16 @@ export async function removeChatwootInstance(
   // Every batch, and the delete, first locks the account row and reads that it is still disconnected.
   // Reconnecting (`reconnectChatwootInstance`, `connectAccount`) writes the same row, so it waits for
   // the batch in flight and the next one sees it: the removal stops there, refused, rather than
-  // erasing an account that is taking traffic again. No row means a concurrent removal finished it.
+  // erasing an account that is taking traffic again. The disconnect it checks is the one this call
+  // opened with, to the microsecond, so reconnecting and disconnecting again between two batches
+  // still stops it. No row means a concurrent removal finished it.
   const stillRemoving = async (db: ScopedDb): Promise<boolean> => {
-    const [row] = await db.$queryRaw<{ disconnected: boolean }[]>`
-      SELECT disconnected_at IS NOT NULL AS disconnected
+    const [row] = await db.$queryRaw<{ same: boolean }[]>`
+      SELECT (EXTRACT(EPOCH FROM disconnected_at) * 1000000)::bigint IS NOT DISTINCT FROM ${generation}
+             AS same
         FROM chatwoot_instances WHERE id = ${id} FOR NO KEY UPDATE`;
     if (!row) return false;
-    if (!row.disconnected) {
+    if (!row.same) {
       throw new ConflictError(
         "this Chatwoot account was reconnected while it was being removed; remove it again to finish",
         "errors.chatwootRemovalReconnected",

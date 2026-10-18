@@ -306,8 +306,11 @@ export const chatwootAdminController = new Elysia({
   // name (or id) AND the acting user's password. Irreversible.
   .post(
     "/instances/:id/remove",
-    async ({ tenantContext, params, body }) => {
+    async ({ tenantContext, params, body, request, server }) => {
       const ctx = ctxOrThrow(tenantContext);
+      // A large account is emptied in batches that outlast the server's idle timeout, and nothing is
+      // sent until they end; without lifting it the console shows a failure while the removal goes on.
+      server?.timeout(request, 0);
       const b = body as { confirmName: string; password?: string };
       const id = requireDbId(params.id);
       const instance = await getChatwootInstance(ctx, id);

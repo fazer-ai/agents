@@ -407,11 +407,42 @@ describe.skipIf(!dbUp)("removing a large Chatwoot account", () => {
     expect(await auditOf(big.id)).not.toContain("instance.remove");
   }, 120_000);
 
+  // Disconnected again right after the reconnect, the account carries a timestamp once more, but
+  // not the one the removal opened with: the operator brought it back in between, so the removal
+  // that began before still has to stop rather than erase it.
+  test("an account reconnected and disconnected again in the middle of its removal still stops it", async () => {
+    const big = await account(15317);
+    await seedVolume(tenantId, big.id, {
+      contacts: 500,
+      conversations: 3_000,
+      deliveries: 3_000,
+    });
+    const flipping = beforeTransaction(3, async () => {
+      await reconnectChatwootInstance(ctx(tenantId), big.id, appDb);
+      await suDb.chatwootInstance.update({
+        where: { id: big.id },
+        data: { disconnectedAt: new Date() },
+      });
+    });
+
+    await expect(
+      removeChatwootInstance(ctx(tenantId), big.id, flipping),
+    ).rejects.toBeInstanceOf(ConflictError);
+
+    expect(await rowsOf(big.id)).toMatchObject({
+      instances: 1,
+      contacts: 500,
+      conversations: 3_000,
+      deliveries: 2_000,
+    });
+    expect(await auditOf(big.id)).not.toContain("instance.remove");
+  }, 120_000);
+
   // A soft-disconnected account has no responder left but keeps its observers, and the removal
   // deletes them. That is a change of its own, so the trail has to show it even when the flag and
   // the bindings were already as the removal leaves them.
   test("removing a soft-disconnected account records the observers it takes", async () => {
-    const big = await account(15317);
+    const big = await account(15318);
     await seedVolume(tenantId, big.id, {
       contacts: 100,
       conversations: 300,

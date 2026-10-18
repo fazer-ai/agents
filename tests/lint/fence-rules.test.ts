@@ -55,6 +55,8 @@ const RULES = {
   staleness: "makes the check a tautology",
   marker: "Write an audit marker through",
   dynamicImport: "A dynamic import in the console goes through",
+  chartImport: "Import charts only from a chart module",
+  viewerCookie: "Only the dashboard viewer's controller and module read",
   unusedWaiver: "Suppression comment has no effect",
 } as const;
 type Rule = keyof typeof RULES;
@@ -112,6 +114,18 @@ const PROBES: Record<string, string> = {
     'declare const lazy: (f: () => unknown) => unknown;\nexport const A = lazy(() => import("./a"));\nexport async function b() {\n  return (await import("./b")).default;\n}\n',
   [P("dynamic-import-wrapped.ts")]:
     'declare const lazyWithReload: (f: () => unknown) => unknown;\ndeclare const importWithReload: (f: () => Promise<{ default: unknown }>) => Promise<{ default: unknown }>;\nexport const A = lazyWithReload(() => import("./a").then((m) => m));\nexport async function b() {\n  return (await importWithReload(() => import("./b"))).default;\n}\n',
+
+  // no-static-chart-import
+  [P("chart-static.tsx")]:
+    'import { AreaChart } from "recharts";\nimport { useChartPalette } from "@/client/pages/dashboard/charts";\nexport const a = [AreaChart, useChartPalette];\n',
+  [P("chart-lazy.tsx")]:
+    'import type { ChartRow } from "./charts";\ndeclare const lazyWithReload: (f: () => unknown) => unknown;\nexport const A = lazyWithReload(() => import("./charts"));\nexport type R = ChartRow;\n',
+
+  // one-dashboard-viewer-cookie-reader
+  [P("viewer-cookie-read.ts")]:
+    'declare const cookie: Record<string, { value?: string }>;\ndeclare const VIEWER_COOKIE: string;\nexport const a = cookie.fazerai_dashboard_viewer;\nexport const b = cookie["fazerai_dashboard_viewer"]?.value;\nexport const c = cookie[VIEWER_COOKIE]?.value;\n',
+  [P("viewer-cookie-other.ts")]:
+    'declare const cookie: Record<string, { value?: string }>;\nexport const a = cookie.fazerai_auth_token?.value;\nexport const b = "dashboard viewer";\n',
 
   // require-textarea-cap, require-highlighted-cap
   [P("textarea-uncapped.tsx")]:
@@ -446,6 +460,10 @@ describe("each fence refuses its shape and nothing else", () => {
     ["window-open-blob.ts", {}],
     ["dynamic-import-bare.ts", { dynamicImport: 2 }],
     ["dynamic-import-wrapped.ts", {}],
+    ["chart-static.tsx", { chartImport: 2 }],
+    ["chart-lazy.tsx", {}],
+    ["viewer-cookie-read.ts", { viewerCookie: 2 }],
+    ["viewer-cookie-other.ts", {}],
     ["textarea-uncapped.tsx", { textarea: 1 }],
     ["textarea-capped.tsx", {}],
     ["textarea-waived.tsx", {}],

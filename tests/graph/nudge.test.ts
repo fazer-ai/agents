@@ -535,6 +535,25 @@ async function speechOf(convId: number) {
   return { ...row, proactiveTurns };
 }
 
+// Every message a memory thread holds, as [type, text], read without looking for the directive.
+async function threadIn(
+  saver: MemorySaver,
+  graphThreadId: string,
+): Promise<Array<[string, string]>> {
+  const messages =
+    (
+      (
+        await buildThreadStateGraph(saver).getState({
+          configurable: { thread_id: graphThreadId },
+        })
+      ).values as { messages?: BaseMessage[] }
+    ).messages ?? [];
+  return messages.map((m) => [
+    m.getType(),
+    typeof m.content === "string" ? m.content : JSON.stringify(m.content),
+  ]);
+}
+
 // What the proactive turn left in a memory thread: its directive and every message after it. A
 // refused turn leaves nothing, and a delivered one leaves its directive and its answer.
 async function turnLeftIn(
@@ -7284,6 +7303,9 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
       expect(
         await turnLeftIn(saver, `${tenantId}:${instanceId}:47101`),
       ).toEqual([]);
+      expect(await threadIn(saver, `${tenantId}:${instanceId}:47101`)).toEqual(
+        [],
+      );
     });
 
     test("a document revoked while the model wrote is noted, and the line leaves the thread", async () => {
@@ -7309,6 +7331,9 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
       expect(
         await turnLeftIn(saver, `${tenantId}:${instanceId}:47102`),
       ).toEqual([]);
+      expect(await threadIn(saver, `${tenantId}:${instanceId}:47102`)).toEqual(
+        [],
+      );
     });
 
     // The window closes between the last ask and the document's own: `stillValid` is the last wait
@@ -7343,6 +7368,9 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
       expect(
         await turnLeftIn(saver, `${tenantId}:${instanceId}:47103`),
       ).toEqual([]);
+      expect(await threadIn(saver, `${tenantId}:${instanceId}:47103`)).toEqual(
+        [],
+      );
     });
 
     // The live probe answers twice after the model: once for the stretch the model took (still
@@ -7388,6 +7416,9 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
       expect(
         await turnLeftIn(saver, `${tenantId}:${instanceId}:47104`),
       ).toEqual([]);
+      expect(await threadIn(saver, `${tenantId}:${instanceId}:47104`)).toEqual(
+        [],
+      );
     });
 
     // The control for the four above: the document that went out keeps the line it rode on.
@@ -7447,6 +7478,9 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
         expect(
           await turnLeftIn(saver, `${tenantId}:${instanceId}:47106`),
         ).toEqual([]);
+        expect(
+          await threadIn(saver, `${tenantId}:${instanceId}:47106`),
+        ).toEqual([]);
       });
     });
 
@@ -7492,6 +7526,9 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
         expect(s.statuses).toEqual([]);
         expect(
           await turnLeftIn(saver, `${tenantId}:${instanceId}:47107`),
+        ).toEqual([]);
+        expect(
+          await threadIn(saver, `${tenantId}:${instanceId}:47107`),
         ).toEqual([]);
       });
     });

@@ -1,4 +1,12 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  test,
+} from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { z } from "zod";
 import { PrismaClient } from "@/../generated/prisma/client";
@@ -72,16 +80,16 @@ describe("the decisions block at the write boundary", () => {
   });
 
   // Every rule that fires runs, so `apply` is not a field: it is refused by name rather than kept and
-  // ignored, whichever value it carries.
-  test.each(["shadow", "enforce"])(
-    "a block that still carries apply (%s) is refused, naming the field",
-    (apply) => {
-      const r = refusal({ ...valid, decisions: { ...valid.decisions, apply } });
-      expect(r?.statusCode).toBe(400);
-      expect(r?.field).toBe("monitoring.decisions.apply");
-      expect(r?.message).toContain("Unknown field");
-    },
-  );
+  // ignored, whichever value it carries (the value is never read, so one row covers both).
+  test("a block that still carries apply is refused, naming the field", () => {
+    const r = refusal({
+      ...valid,
+      decisions: { ...valid.decisions, apply: "enforce" },
+    });
+    expect(r?.statusCode).toBe(400);
+    expect(r?.field).toBe("monitoring.decisions.apply");
+    expect(r?.message).toContain("Unknown field");
+  });
 
   // When a rule acts: a closed vocabulary, refused by name like any other field.
   test("a rule's trigger outside the vocabulary is refused, naming the field", () => {
@@ -483,6 +491,7 @@ describe.skipIf(!dbUp)("the decisions block through MCP", () => {
   let tenantId = 0n;
   let agentId = 0n;
   let keyId = 0n;
+  let agentSeq = 0;
   const keyName = `typesafe-teste-${process.pid}`;
   const principal = (): VerifiedToken => ({
     userId: 1n,
@@ -517,11 +526,22 @@ describe.skipIf(!dbUp)("the decisions block through MCP", () => {
         select: { id: true },
       })
     ).id;
+  });
+
+  // Each test gets a monitoring agent of its own with no block, so none reads a block another test
+  // stored or changed; a test about an existing block stores it first through withBlock.
+  beforeEach(async () => {
+    const name = `Obs-${++agentSeq}`;
     agentId = (
       await suDb.agent.create({
-        data: { tenantId, name: "Obs", systemPrompt: "p", mode: "monitoring" },
+        data: { tenantId, name, systemPrompt: "p", mode: "monitoring" },
       })
     ).id;
+  });
+
+  afterEach(async () => {
+    await suDb.toolDefinition.deleteMany({ where: { tenantId } });
+    await suDb.agent.deleteMany({ where: { tenantId } });
   });
 
   afterAll(async () => {
@@ -544,6 +564,15 @@ describe.skipIf(!dbUp)("the decisions block through MCP", () => {
       rules: RULES,
     },
   };
+
+  async function withBlock() {
+    const r = await agentSettingsSet(
+      principal(),
+      { agent_id: String(agentId), dry_run: false, monitoring: block } as never,
+      { base: appDb },
+    );
+    expect(r.ok).toBe(true);
+  }
 
   // agents#1223: the preview asks the tenant's tool as the apply does, so a dry run never approves a
   // rule whose custom tool lacks a required argument.
@@ -613,6 +642,7 @@ describe.skipIf(!dbUp)("the decisions block through MCP", () => {
   });
 
   test("agent_settings_get answers the block with the credential's NAME, never the secret", async () => {
+    await withBlock();
     const g = await agentSettingsGet(
       principal(),
       { agent_id: String(agentId) },
@@ -633,6 +663,7 @@ describe.skipIf(!dbUp)("the decisions block through MCP", () => {
   });
 
   test("a partial patch of the block passes the MCP argument parse, merges, and keeps the rest", async () => {
+    await withBlock();
     const args = {
       agent_id: String(agentId),
       dry_run: false,
@@ -677,6 +708,7 @@ describe.skipIf(!dbUp)("the decisions block through MCP", () => {
   });
 
   test("a patch whose rule carries a trigger outside the vocabulary is refused, naming the field, and stores nothing", async () => {
+    await withBlock();
     const before = JSON.stringify((await stored())?.decisions);
     const r = await agentSettingsSet(
       principal(),
@@ -695,6 +727,7 @@ describe.skipIf(!dbUp)("the decisions block through MCP", () => {
   });
 
   test("a patch that carries the removed apply is refused, naming the field", async () => {
+    await withBlock();
     const r = await agentSettingsSet(
       principal(),
       {
@@ -711,6 +744,7 @@ describe.skipIf(!dbUp)("the decisions block through MCP", () => {
   });
 
   test("a later MCP write to another monitoring field keeps the engine and the block", async () => {
+    await withBlock();
     const r = await agentSettingsSet(
       principal(),
       {

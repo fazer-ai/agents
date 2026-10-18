@@ -1,6 +1,7 @@
 import {
   afterAll,
   beforeAll,
+  beforeEach,
   describe,
   expect,
   setDefaultTimeout,
@@ -504,12 +505,25 @@ async function clearKept() {
   await suDb.$executeRaw`DELETE FROM dashboard_days WHERE tenant_id = ${tenantId}`;
 }
 
+// Back to the state the seed leaves: no change waiting in the queue, every queued change an hour
+// old, and no day kept. A test that leaves a change unsettled, a change from the last minutes or a
+// kept day then cannot make the next one skip a day, count a batch short or find its window in.
+async function fromHistory() {
+  const settle = (db: tenancy.ScopedDb) =>
+    settleDirty(db, `dashboard-settle|${tenantId}`);
+  while ((await runScopedOn(appDb, ctx(), settle)) > 0);
+  await suDb.$executeRaw`UPDATE dashboard_dirty SET created_at = created_at - interval '1 hour' WHERE tenant_id = ${tenantId}`;
+  await clearKept();
+}
+
 describe.skipIf(!dbUp)("the kept days of the dashboard", () => {
   beforeAll(async () => {
     retention = config.flowlog.retentionDays;
     config.flowlog.retentionDays = 3650;
     await seed();
   });
+
+  beforeEach(fromHistory);
 
   afterAll(async () => {
     config.flowlog.retentionDays = retention;
@@ -1971,17 +1985,57 @@ describe.skipIf(!dbUp)("the kept days of the dashboard", () => {
 
   test("the Langfuse link is read on a budget of its own, not on what the request spent on its days", async () => {
     let opened = 0;
+    // The budget each transaction opened with, and whether its work finished. The metrics budget is
+    // moved away from the general one so the two cannot be told apart by accident.
+    const budgets: Array<{ timeout?: number; done?: boolean }> = [];
+    const watched = <C extends object>(client: C): C =>
+      new Proxy(client, {
+        get(target, key) {
+          const value = Reflect.get(target, key, target);
+          if (key !== "$transaction" || typeof value !== "function")
+            return value;
+          return async (fn: unknown, opts?: { timeout?: number }) => {
+            const seen: { timeout?: number; done?: boolean } = {
+              timeout: opts?.timeout,
+            };
+            budgets.push(seen);
+            const out = await value.call(target, fn, opts);
+            seen.done = true;
+            return out;
+          };
+        },
+      });
     const counting = new Proxy(appDb, {
       get(target, key, receiver) {
-        if (key === "$extends") opened++;
-        return Reflect.get(target, key, receiver);
+        const value = Reflect.get(target, key, receiver);
+        if (key !== "$extends") return value;
+        opened++;
+        return (...args: unknown[]) =>
+          watched(value.apply(target, args) as object);
       },
     });
-    await requestContext.run(
-      { locale: "en", startedAt: Date.now() - config.metrics.timeoutMs - 1 },
-      () => costsLink(ctx(), counting),
-    );
-    expect(opened).toBeGreaterThan(0);
+    const metricsTimeout = config.metrics.timeoutMs;
+    config.metrics.timeoutMs = config.dbTx.timeoutMs + 60_000;
+    const before = Date.now();
+    try {
+      await requestContext.run(
+        { locale: "en", startedAt: Date.now() - config.metrics.timeoutMs - 1 },
+        () => costsLink(ctx(), counting),
+      );
+      expect(opened).toBeGreaterThan(0);
+      // A fresh metrics budget: counted from the call, not from the request that already spent its own.
+      const elapsed = Date.now() - before;
+      expect(budgets.length).toBeGreaterThan(0);
+      for (const b of budgets) {
+        expect(b.timeout).toBeLessThanOrEqual(config.metrics.timeoutMs);
+        expect(b.timeout).toBeGreaterThanOrEqual(
+          config.metrics.timeoutMs - elapsed - 1,
+        );
+        expect(b.done).toBe(true);
+      }
+    } finally {
+      config.metrics.timeoutMs = metricsTimeout;
+    }
   });
 
   test("a deleted tenant leaves nothing in the queue", async () => {

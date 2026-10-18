@@ -24,6 +24,8 @@ interface DynamicRoute {
 // Static routes are matched by exact prefix during the walk, so adding a
 // new page here makes it appear automatically in the trail.
 // t('nav.agents', 'Agents')
+// t('nav.dashboards', 'Dashboards')
+// t('breadcrumbs.dashboard', 'Loading…')
 // t('editor.tab.general', 'General')
 // t('editor.tab.model', 'Model')
 // t('editor.tab.tools', 'Tools')
@@ -51,6 +53,11 @@ interface DynamicRoute {
 // t('settings.mcp', 'MCP')
 const STATIC_ROUTES: StaticRoute[] = [
   { path: "/agents", labelKey: "nav.agents", defaultLabel: "Agents" },
+  {
+    path: "/dashboards",
+    labelKey: "nav.dashboards",
+    defaultLabel: "Dashboards",
+  },
   { path: "/resources", labelKey: "nav.resources", defaultLabel: "Components" },
   {
     path: "/resources/tools",
@@ -155,6 +162,14 @@ const DYNAMIC_ROUTES: DynamicRoute[] = [
   {
     pattern: /^\/agents\/([^/]+)$/,
     resolve: () => ({ labelKey: "breadcrumbs.agent", defaultLabel: "Agent" }),
+  },
+  // A dashboard's slug, with its name arriving the same way; until it does, the crumb says so.
+  {
+    pattern: /^\/dashboards\/([^/]+)$/,
+    resolve: () => ({
+      labelKey: "breadcrumbs.dashboard",
+      defaultLabel: "Loading…",
+    }),
   },
   {
     pattern: /^\/agents\/[^/]+\/([^/]+)$/,

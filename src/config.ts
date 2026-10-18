@@ -86,6 +86,15 @@ const {
   TTS_CHECK_MODE,
   TTS_CHECK_TOKEN,
   TTS_CHECK_TIMEOUT_MS,
+  MAIL_PROVIDER,
+  MAIL_FROM,
+  MAIL_REPLY_TO,
+  RESEND_API_KEY,
+  SMTP_HOST,
+  SMTP_PORT,
+  SMTP_SECURE,
+  SMTP_USER,
+  SMTP_PASSWORD,
 } = process.env;
 
 // Domain entries are trimmed, lowercased, and have a leading "@" stripped
@@ -279,6 +288,87 @@ const agentPromptMaxChars = parseIntSetting(
   MAX_COUNT,
 );
 
+export type MailProvider = "resend" | "smtp" | "console" | "memory" | "none";
+
+const MAIL_PROVIDERS: readonly MailProvider[] = [
+  "resend",
+  "smtp",
+  "console",
+  "memory",
+  "none",
+];
+
+// "Name <address>" or a bare address. Loose on purpose: the provider is the real validator, this only
+// turns an obvious typo into a boot failure that names the variable instead of a refused send on the
+// first sign-in code.
+const MAIL_FROM_RE =
+  /^(?:[^<>]*<[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+>|[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+)$/;
+
+// Which transport sends mail. An explicit MAIL_PROVIDER wins; otherwise the credentials decide. With
+// neither set, the suite gets the in-memory outbox, dev logs to the console, and production has no mail,
+// which turns off sign-in by code for dashboard viewers (Google sign-in still works). Both sets of
+// credentials without MAIL_PROVIDER is refused rather than resolved by precedence: a leftover SMTP_HOST
+// silently losing to a new RESEND_API_KEY is the kind of drift nobody notices.
+const resolveMailProvider = (env: string): MailProvider => {
+  const raw = (MAIL_PROVIDER ?? "").trim().toLowerCase();
+  const hasResend = !!RESEND_API_KEY?.trim();
+  const hasSmtp = !!SMTP_HOST?.trim();
+  if (raw) {
+    if (!MAIL_PROVIDERS.includes(raw as MailProvider)) {
+      throw new Error(
+        `MAIL_PROVIDER must be one of ${MAIL_PROVIDERS.filter((p) => p !== "memory").join(", ")}, got "${MAIL_PROVIDER}".`,
+      );
+    }
+    return raw as MailProvider;
+  }
+  if (hasResend && hasSmtp) {
+    throw new Error(
+      "Both RESEND_API_KEY and SMTP_HOST are set. Set MAIL_PROVIDER to resend or smtp to say which one sends mail.",
+    );
+  }
+  if (hasResend) return "resend";
+  if (hasSmtp) return "smtp";
+  if (env === "test") return "memory";
+  return env === "production" ? "none" : "console";
+};
+
+const parseMailFrom = (raw: string | undefined, required: boolean) => {
+  const value = (raw ?? "").trim();
+  if (!value) {
+    if (required) {
+      throw new Error(
+        'MAIL_FROM must be set when mail is sent through Resend or SMTP, e.g. MAIL_FROM="Atendimento <no-reply@example.com>". The address has to belong to a domain the provider has verified.',
+      );
+    }
+    return "fazer.ai agents <no-reply@localhost.test>";
+  }
+  if (!MAIL_FROM_RE.test(value)) {
+    throw new Error(
+      `MAIL_FROM must be an address or "Name <address>", got "${raw}".`,
+    );
+  }
+  return value;
+};
+
+const parseSmtpSecure = (raw: string | undefined, port: number) => {
+  const value = (raw ?? "").trim().toLowerCase();
+  // 465 is implicit TLS; 587 and 25 start in plain text and upgrade with STARTTLS, which nodemailer
+  // does on its own when the server offers it.
+  if (value === "") return port === 465;
+  if (value === "true") return true;
+  if (value === "false") return false;
+  throw new Error(`SMTP_SECURE must be "true" or "false", got "${raw}".`);
+};
+
+const mailProvider = resolveMailProvider(NODE_ENV || "development");
+const smtpPort = parseIntSetting(
+  SMTP_PORT,
+  "SMTP_PORT",
+  587,
+  "It is the port the SMTP transport connects to.",
+  MAX_PORT,
+);
+
 const config = {
   packageInfo: {
     name: packageInfo.name,
@@ -436,6 +526,25 @@ const config = {
   cdnUrl: CDN_URL ?? "",
   googleClientId,
   googleOAuthEnabled: googleClientId.length > 0,
+  // Transactional mail. Today only the sign-in code of dashboard viewers uses it, and `enabled` is what
+  // decides whether that sign-in method is offered at all.
+  mail: {
+    provider: mailProvider,
+    enabled: mailProvider !== "none",
+    from: parseMailFrom(
+      MAIL_FROM,
+      mailProvider === "resend" || mailProvider === "smtp",
+    ),
+    replyTo: (MAIL_REPLY_TO ?? "").trim() || undefined,
+    resendApiKey: (RESEND_API_KEY ?? "").trim(),
+    smtp: {
+      host: (SMTP_HOST ?? "").trim(),
+      port: smtpPort,
+      secure: parseSmtpSecure(SMTP_SECURE, smtpPort),
+      user: (SMTP_USER ?? "").trim(),
+      password: SMTP_PASSWORD ?? "",
+    },
+  },
   allowedSignupDomains: parseDomainList(
     ALLOWED_SIGNUP_DOMAINS,
     "ALLOWED_SIGNUP_DOMAINS",
@@ -939,6 +1048,24 @@ assertCredentialBudgetIsTighter(
   config.rateLimit.credentialWindowMinutes,
   config.rateLimit.userPerMin,
 );
+
+if (config.mail.provider === "resend" && !config.mail.resendApiKey) {
+  throw new Error("MAIL_PROVIDER=resend needs RESEND_API_KEY.");
+}
+if (config.mail.provider === "smtp" && !config.mail.smtp.host) {
+  throw new Error("MAIL_PROVIDER=smtp needs SMTP_HOST.");
+}
+// The console transport prints every message, sign-in codes included, into the log. In production that
+// hands a viewer session to anyone who can read the logs.
+if (config.mail.provider === "console" && config.env === "production") {
+  throw new Error(
+    "MAIL_PROVIDER=console prints sign-in codes into the log and is refused in production. Configure Resend or SMTP, or set MAIL_PROVIDER=none to disable mail.",
+  );
+}
+// The in-memory outbox only exists for the test suite.
+if (config.mail.provider === "memory" && config.env !== "test") {
+  throw new Error("MAIL_PROVIDER=memory is only available to the test suite.");
+}
 
 if (config.env === "production") {
   if (config.jwtSecret === "change-me-in-production") {

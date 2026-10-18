@@ -74,6 +74,7 @@ const ACTOR_PILL: Record<string, string> = {
   mcp: "bg-bg-tertiary text-text-secondary",
   api_key: "bg-bg-tertiary text-text-secondary",
   system: "bg-bg-tertiary text-text-muted",
+  dashboard_viewer: "bg-bg-tertiary text-text-secondary",
 };
 
 function actorTypeLabel(kind: string, t: (k: string, d: string) => string) {
@@ -86,6 +87,8 @@ function actorTypeLabel(kind: string, t: (k: string, d: string) => string) {
       return t("audit.actor.apiKey", "API key");
     case "system":
       return t("audit.actor.system", "System");
+    case "dashboard_viewer":
+      return t("audit.actor.dashboardViewer", "Dashboard viewer");
     default:
       return kind;
   }

@@ -35,6 +35,10 @@ import { ChatwootConversationLinkPage } from "@/client/pages/ChatwootConversatio
 import { ConversationDetailPage } from "@/client/pages/ConversationDetailPage";
 import { ConversationsPage } from "@/client/pages/ConversationsPage";
 import { DashboardPage } from "@/client/pages/DashboardPage";
+import {
+  DashboardsRoutes,
+  PublicDashboardRoute,
+} from "@/client/pages/DashboardsRoutes";
 import { DocumentApprovalPage } from "@/client/pages/DocumentApprovalPage";
 import { LoginPage } from "@/client/pages/LoginPage";
 import { LogsPage } from "@/client/pages/LogsPage";
@@ -80,6 +84,14 @@ export function App() {
                                   element={
                                     <ProtectedRoute requireAdmin>
                                       <DashboardPage />
+                                    </ProtectedRoute>
+                                  }
+                                />
+                                <Route
+                                  path="/dashboards/*"
+                                  element={
+                                    <ProtectedRoute requireAdmin>
+                                      <DashboardsRoutes />
                                     </ProtectedRoute>
                                   }
                                 />
@@ -239,6 +251,10 @@ export function App() {
                                   element={<AcceptInvitePage />}
                                 />
                                 <Route path="/login" element={<LoginPage />} />
+                                <Route
+                                  path="/d/:tenant/:slug"
+                                  element={<PublicDashboardRoute />}
+                                />
                                 <Route
                                   path="/signup"
                                   element={<SignupPage />}

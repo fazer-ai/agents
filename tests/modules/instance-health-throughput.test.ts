@@ -177,23 +177,28 @@ describe("the sampler's throughput readings", () => {
 
   test("an unreadable database leaves the stalled signal at its last point, the rates still refresh (catches a stall invented from a failed read)", async () => {
     const t0 = 10_000_000;
-    await sampleOnce(sources(t0, { INGEST_MESSAGE: 50_000 }), {
+    // The process has sampled for two minutes, so the last good read is a stall above zero.
+    await sampleOnce(sources(t0, {}), { database: false });
+    const t1 = t0 + 120_000;
+    const good = await sampleOnce(sources(t1, { INGEST_MESSAGE: 50_000 }), {
       database: true,
     });
+    expect(good[schedulerStalledSignal("INGEST_MESSAGE")]).toBe(50_000);
     const failing: SamplerSources = {
-      ...sources(t0 + 15_000, {}),
+      ...sources(t1 + 15_000, {}),
       readDatabase: async () => {
         throw new Error("down");
       },
     };
-    recordJobOutcome("INGEST_MESSAGE", "done", t0 + 14_000);
+    recordJobOutcome("INGEST_MESSAGE", "done", t1 + 14_000);
     const values = await sampleOnce(failing, { database: true });
     expect(values[schedulerStalledSignal("INGEST_MESSAGE")]).toBeUndefined();
     expect(values[schedulerDoneSignal("INGEST_MESSAGE")]).toBe(1);
-    const stalled = snapshot(t0 + 15_000).signals.find(
+    const stalled = snapshot(t1 + 15_000).signals.find(
       (s) => s.signal === schedulerStalledSignal("INGEST_MESSAGE"),
     );
-    expect(stalled?.at).toBe(t0);
+    expect(stalled?.at).toBe(t1);
+    expect(stalled?.value).toBe(50_000);
   });
 });
 

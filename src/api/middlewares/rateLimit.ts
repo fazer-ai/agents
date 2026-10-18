@@ -106,9 +106,18 @@ const CREDENTIAL_ROUTES = new Set([
 // HEAD folds into GET because Elysia dispatches HEAD to the GET handler, so `HEAD /auth/invite`
 // leaks the same status. Every GET in the set covers its HEAD alias; `HEAD /auth/login` still maps
 // to a GET that is not in it.
+// A dashboard viewer's code: guessing it is the attack on `verify`, and `code` mails anyone a list's
+// domain admits, so both spend this budget (docs/dashboards.md, "Viewer access").
+const CREDENTIAL_PATTERNS: RegExp[] = [
+  // Empty in an edition without such routes.
+];
+
 export const isCredentialRequest = (request: Request): boolean => {
   const method = request.method === "HEAD" ? "GET" : request.method;
-  return CREDENTIAL_ROUTES.has(`${method} ${canonicalPath(request)}`);
+  const key = `${method} ${canonicalPath(request)}`;
+  return (
+    CREDENTIAL_ROUTES.has(key) || CREDENTIAL_PATTERNS.some((r) => r.test(key))
+  );
 };
 
 // A second, tighter bucket layered on top of the global one: a complementary pair (the global limiter

@@ -30800,7 +30800,7 @@
             "in": "query",
             "required": false,
             "schema": {
-              "description": "How the actor authenticated: user | api_key | mcp | system.",
+              "description": "How the actor authenticated: user | api_key | mcp | system | dashboard_viewer.",
               "type": "string"
             }
           },
@@ -30992,7 +30992,7 @@
             "in": "query",
             "required": false,
             "schema": {
-              "description": "How the actor authenticated: user | api_key | mcp | system.",
+              "description": "How the actor authenticated: user | api_key | mcp | system | dashboard_viewer.",
               "type": "string"
             }
           },

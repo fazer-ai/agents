@@ -1,4 +1,5 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import { createHmac } from "node:crypto";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { decryptJson } from "@/api/lib/crypto";
@@ -572,7 +573,13 @@ describe.skipIf(!dbUp)("instance alert delivery", () => {
     expect(body.stage).toBe("instance_health");
     expect(body.tenant).toEqual({ id: null, name: null });
     expect(body.links[0].url).toContain("/admin/instance-health");
-    expect(posted[0]?.headers.get("x-fazerai-signature")).toBeTruthy();
+    // Signed with the secret the channel was created with, over the timestamp and the exact body.
+    const ts = posted[0]?.headers.get("x-fazerai-timestamp");
+    expect(ts).toMatch(/^\d+$/);
+    const mac = createHmac("sha256", "k")
+      .update(`${ts}.${posted[0]?.body}`)
+      .digest("hex");
+    expect(posted[0]?.headers.get("x-fazerai-signature")).toBe(`sha256=${mac}`);
     expect((await deliveries())[0]?.status).toBe("DELIVERED");
   });
 

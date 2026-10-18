@@ -11,7 +11,12 @@ import {
   violatedConstraintOf,
 } from "@/lib/pg-error";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
-import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
+import {
+  asSuperAdminOn,
+  runScopedOn,
+  type ScopedDb,
+  type TenantContext,
+} from "@/lib/tenancy";
 import { isMonitoring } from "@/modules/agents/mode";
 import { redactEndpoint } from "@/modules/audit/projection";
 import { auditMutation } from "@/modules/audit/service";
@@ -1064,8 +1069,9 @@ export async function removeChatwootInstance(
         inboxes: await db.inbox.count({ where: { chatwootInstanceId: id } }),
       },
     });
-    // NOTE: Disconnected before the first batch, so no delivery writes under the account while it is
-    // being emptied, and a removal that stops halfway leaves an account that answers nothing.
+    // NOTE: Disconnected before the first batch: no new delivery is admitted under the account while
+    // it is emptied, and a removal that stops halfway leaves an account that answers nothing. A
+    // delivery already admitted may still write a few rows behind a batch; the final cascade takes them.
     await db.chatwootInstance.update({
       where: { id },
       data: { disconnectedAt: new Date() },
@@ -1074,34 +1080,55 @@ export async function removeChatwootInstance(
   // NOTE: The account's route tokens stop resolving at the disconnect, not at the delete: the batches
   // take long enough for the receiver to keep authenticating a cached token through all of them.
   invalidateRouteTokenCache();
+  // Every batch, and the delete, first locks the account row and reads that it is still disconnected.
+  // Reconnecting (`reconnectChatwootInstance`, `connectAccount`) writes the same row, so it waits for
+  // the batch in flight and the next one sees it: the removal stops there, refused, rather than
+  // erasing an account that is taking traffic again. No row means a concurrent removal finished it.
+  const stillRemoving = async (db: ScopedDb): Promise<boolean> => {
+    const [row] = await db.$queryRaw<{ disconnected: boolean }[]>`
+      SELECT disconnected_at IS NOT NULL AS disconnected
+        FROM chatwoot_instances WHERE id = ${id} FOR NO KEY UPDATE`;
+    if (!row) return false;
+    if (!row.disconnected) {
+      throw new ConflictError(
+        "this Chatwoot account was reconnected while it was being removed; remove it again to finish",
+        "errors.chatwootRemovalReconnected",
+      );
+    }
+    return true;
+  };
   for (const table of REMOVAL_BATCHES) {
     const name = Prisma.raw(table);
-    // SKIP LOCKED: a second removal of the same account (two clicks) takes the next batch instead of
-    // waiting on this one's, and an empty batch then means the table is empty, not that it lost a race.
-    // NO KEY UPDATE, the module's mode (see the lock fence in tests/modules/audit-channel-family): it
-    // still excludes the other remover, and the DELETE takes what it needs on the rows it picked.
+    // SKIP LOCKED: a row an admitted delivery is writing right now is left for the next batch (or
+    // the final cascade) instead of holding this one up to its lock timeout.
+    // NO KEY UPDATE, the module's mode (see the lock fence in tests/modules/audit-channel-family).
     // MATERIALIZED: as a plain `IN (subquery)` the planner may rerun the locking subquery per outer
     // row, and on a table with stale statistics it does, one scan per row. Picked once, the batch is
     // a thousand primary-key deletes.
     for (;;) {
-      const deleted = await runScopedOn(
-        base,
-        ctx,
-        (db) => db.$executeRaw`
-          WITH batch AS MATERIALIZED (
-            SELECT id FROM ${name}
-             WHERE tenant_id = ${tenantId} AND chatwoot_instance_id = ${id}
-             LIMIT ${REMOVAL_BATCH_ROWS}
-               FOR NO KEY UPDATE SKIP LOCKED)
-          DELETE FROM ${name} WHERE id IN (SELECT id FROM batch)`,
+      const deleted = await runScopedOn(base, ctx, async (db) =>
+        (await stillRemoving(db))
+          ? db.$executeRaw`
+              WITH batch AS MATERIALIZED (
+                SELECT id FROM ${name}
+                 WHERE tenant_id = ${tenantId} AND chatwoot_instance_id = ${id}
+                 LIMIT ${REMOVAL_BATCH_ROWS}
+                   FOR NO KEY UPDATE SKIP LOCKED)
+              DELETE FROM ${name} WHERE id IN (SELECT id FROM batch)`
+          : null,
       );
+      if (deleted === null) {
+        invalidateRouteTokenCache();
+        return;
+      }
       if (deleted === 0) break;
     }
   }
-  // `deleteMany`: a concurrent removal may have deleted the row already, and that is this one done too.
-  await runScopedOn(base, ctx, (db) =>
-    db.chatwootInstance.deleteMany({ where: { id } }),
-  );
+  await runScopedOn(base, ctx, async (db) => {
+    if (await stillRemoving(db)) {
+      await db.chatwootInstance.delete({ where: { id } });
+    }
+  });
   // NOTE: The delete cascades this instance's ChatwootAgentBot rows (schema.prisma: `onDelete: Cascade`),
   // so every route token it owned now resolves to nothing. Without this the receiver keeps
   // authenticating a retired token from memory, and the detached processing behind it fails on rows

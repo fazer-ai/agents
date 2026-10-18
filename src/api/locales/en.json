@@ -32,6 +32,7 @@
     "chatwootObserverUnsupported": "This Chatwoot has no observer binding on inboxes. Observers need the fazer.ai Chatwoot with agent bot observers.",
     "chatwootProfileFailed": "Chatwoot could not be reached with the URL and token provided.",
     "chatwootRebindFailed": "The bot could not be reconnected to Chatwoot.",
+    "chatwootRemovalReconnected": "This Chatwoot account was reconnected while it was being removed; remove it again to finish.",
     "chatwootTooManyAccounts": "Too many accounts in one request ({{count}}); at most {{max}} accounts can be set at once.",
     "codeToolNameTaken": "That tool name is already in use by another tool.",
     "codeToolNotFound": "Code tool not found.",

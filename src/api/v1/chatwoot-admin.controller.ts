@@ -59,6 +59,7 @@ import {
 // translate('errors.chatwootDeploymentNotFound', 'No Chatwoot deployment is connected.')
 // translate('errors.chatwootDifferentDeployment', 'This tenant is already connected to a different Chatwoot deployment. Disconnect it first to switch servers.')
 // translate('errors.chatwootInstanceNotFound', 'Chatwoot instance not found.')
+// translate('errors.chatwootRemovalReconnected', 'This Chatwoot account was reconnected while it was being removed; remove it again to finish.')
 // NOTE: the account bound and the cap are separate keys because they send the operator to
 // different places: one to the account list, the other to a smaller request.
 // translate('errors.chatwootAccountNotOnDeployment', 'This Chatwoot deployment does not report account(s) {{accounts}}. Pick from the accounts its token can reach.')

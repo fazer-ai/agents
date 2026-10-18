@@ -32,6 +32,7 @@
     "chatwootObserverUnsupported": "Este Chatwoot não tem vínculo de observador em caixas de entrada. Observadores exigem o Chatwoot da fazer.ai com observadores de agent bot.",
     "chatwootProfileFailed": "Não foi possível acessar o Chatwoot com a URL e o token informados.",
     "chatwootRebindFailed": "Não foi possível reconectar o bot ao Chatwoot.",
+    "chatwootRemovalReconnected": "Esta conta do Chatwoot foi reconectada durante a remoção; remova de novo para concluir.",
     "chatwootTooManyAccounts": "Contas demais em uma única requisição ({{count}}); no máximo {{max}} contas podem ser definidas de uma vez.",
     "codeToolNameTaken": "Esse nome já está em uso por outra ferramenta.",
     "codeToolNotFound": "Ferramenta de código não encontrada.",

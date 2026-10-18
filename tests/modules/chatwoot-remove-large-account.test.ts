@@ -2,9 +2,12 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
-import { NotFoundError } from "@/lib/errors";
+import { ConflictError, NotFoundError } from "@/lib/errors";
 import type { TenantContext } from "@/lib/tenancy";
-import { removeChatwootInstance } from "@/modules/chatwoot/management";
+import {
+  reconnectChatwootInstance,
+  removeChatwootInstance,
+} from "@/modules/chatwoot/management";
 import {
   readRouteTokenCache,
   writeRouteTokenCache,
@@ -93,6 +96,36 @@ async function rowsOf(instanceId: bigint) {
   return Object.fromEntries(
     Object.entries(row ?? {}).map(([k, v]) => [k, Number(v)]),
   );
+}
+
+// The app client with a hook in front of the N-th scoped transaction it opens: the removal is a
+// sequence of them (disconnect, then one per batch), so this is where "between two of them" is.
+function beforeTransaction(n: number, hook: () => Promise<void>) {
+  let scoped = 0;
+  return new Proxy(appDb, {
+    get(target, prop, receiver) {
+      if (prop !== "$extends") return Reflect.get(target, prop, receiver);
+      return (...args: unknown[]) => {
+        const ext = (
+          target as unknown as { $extends: (...a: unknown[]) => object }
+        ).$extends(...args);
+        return new Proxy(ext, {
+          get(et, ep, er) {
+            if (ep !== "$transaction") return Reflect.get(et, ep, er);
+            return async (...targs: unknown[]) => {
+              scoped++;
+              if (scoped === n) await hook();
+              return (
+                et as unknown as {
+                  $transaction: (...a: unknown[]) => Promise<unknown>;
+                }
+              ).$transaction(...targs);
+            };
+          },
+        });
+      };
+    },
+  });
 }
 
 describe.skipIf(!dbUp)("removing a large Chatwoot account", () => {
@@ -243,32 +276,9 @@ describe.skipIf(!dbUp)("removing a large Chatwoot account", () => {
       deliveries: 3_000,
     });
     // The first scoped transaction disconnects; the third is a batch in the middle of the log.
-    let scoped = 0;
-    const dying = new Proxy(appDb, {
-      get(target, prop, receiver) {
-        if (prop !== "$extends") return Reflect.get(target, prop, receiver);
-        return (...args: unknown[]) => {
-          const ext = (
-            target as unknown as { $extends: (...a: unknown[]) => object }
-          ).$extends(...args);
-          return new Proxy(ext, {
-            get(et, ep, er) {
-              if (ep !== "$transaction") return Reflect.get(et, ep, er);
-              return async (...targs: unknown[]) => {
-                scoped++;
-                if (scoped >= 3) throw new Error("connection lost");
-                return (
-                  et as unknown as {
-                    $transaction: (...a: unknown[]) => Promise<unknown>;
-                  }
-                ).$transaction(...targs);
-              };
-            },
-          });
-        };
-      },
+    const dying = beforeTransaction(3, async () => {
+      throw new Error("connection lost");
     });
-
     // A route token the receiver cached before the removal: through the batches it would keep
     // authenticating the account's webhooks out of memory, disconnected or not.
     writeRouteTokenCache("large-removal-hash", {
@@ -323,6 +333,37 @@ describe.skipIf(!dbUp)("removing a large Chatwoot account", () => {
       contacts: 0,
       conversations: 0,
       deliveries: 0,
+    });
+  }, 120_000);
+
+  // Reconnecting is the other door to an account under removal: the operator can reconnect it from
+  // the console while the batches run. From then on it takes traffic again, so the removal has to
+  // stop at the next batch rather than keep erasing it, and never delete the row at the end.
+  test("an account reconnected in the middle of its removal stops the removal and survives", async () => {
+    const big = await account(15316);
+    await seedVolume(tenantId, big.id, {
+      contacts: 500,
+      conversations: 3_000,
+      deliveries: 3_000,
+    });
+    const reconnecting = beforeTransaction(3, async () => {
+      await reconnectChatwootInstance(ctx(tenantId), big.id, appDb);
+    });
+
+    await expect(
+      removeChatwootInstance(ctx(tenantId), big.id, reconnecting),
+    ).rejects.toBeInstanceOf(ConflictError);
+
+    const after = await suDb.chatwootInstance.findUnique({
+      where: { id: big.id },
+      select: { disconnectedAt: true },
+    });
+    expect(after).toEqual({ disconnectedAt: null });
+    expect(await rowsOf(big.id)).toMatchObject({
+      instances: 1,
+      contacts: 500,
+      conversations: 3_000,
+      deliveries: 2_000,
     });
   }, 120_000);
 });

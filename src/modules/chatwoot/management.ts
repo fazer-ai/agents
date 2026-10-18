@@ -1057,6 +1057,13 @@ export async function removeChatwootInstance(
     // while it is emptied or if the removal stops halfway. Local only, like the rest of the removal:
     // the bots left in Chatwoot are rejected at the route token. A delivery already admitted may still
     // write a few rows behind a batch; the final cascade takes them.
+    // Every inbox of the account locked first, in id order, bound or not: deleting an observer row
+    // bumps its inbox (`bump_binding_generation_on_observer`), and `unobserveInbox` locks the inbox
+    // before the observer, so taking the observer first would invert that order.
+    await db.$queryRaw`
+      SELECT id FROM inboxes
+       WHERE tenant_id = ${tenantId} AND chatwoot_instance_id = ${id}
+       ORDER BY id FOR NO KEY UPDATE`;
     const unbound = await db.$executeRaw`
       UPDATE inboxes SET agent_id = NULL, updated_at = now()
        WHERE tenant_id = ${tenantId} AND chatwoot_instance_id = ${id} AND agent_id IS NOT NULL`;

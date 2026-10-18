@@ -1261,6 +1261,11 @@ model Conversation {
   /// one contact-inbox.
   @@index([tenantId, chatwootInstanceId, contactInboxId])
   @@index([tenantId, createdAt])
+  /// WHAT A DELETED CONTACT'S `SetNull` READS (issue #1531). Every contact that goes makes Postgres
+  /// find the conversations pointing at it; unindexed, that is a scan of the whole table per contact,
+  /// and removing an account of 10k contacts spent 48.8 s of its 49.9 s there. Built CONCURRENTLY in
+  /// 20261018190000.
+  @@index([contactId])
   @@map("conversations")
 }
 

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { PrismaClient } from "@/../generated/prisma/client";
+import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import { decryptJson, encryptJson } from "@/api/lib/crypto";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
@@ -1008,18 +1008,33 @@ export async function reconnectChatwootInstance(
   return dto;
 }
 
-// HARD-remove ONE account: delete the ChatwootInstance row (cascading its inboxes / conversations /
-// bots / webhook deliveries / agent threads), freeing the (serverKey, accountId) slot so the account
-// can be moved to ANOTHER tenant. Contacts are tenant-level (no FK) and are KEPT — they may belong to
-// the tenant's other accounts. Irreversible; the caller (controller) hard-gates it (SUPER_ADMIN +
-// re-typed name + password). Best-effort: the abandoned Chatwoot bots are left as-is — their route
-// token no longer resolves once this row is gone, so their webhooks are simply rejected.
+// The tables that grow with an account, emptied a batch per transaction before the account row goes,
+// in this order: conversations before contacts, so a contact's `SetNull` finds nothing left to null.
+// Each leads an index with (tenant_id, chatwoot_instance_id) except the delivery log, whose own
+// leads with chatwoot_instance_id; the batch is found through it either way.
+const REMOVAL_BATCHES = [
+  "chatwoot_webhook_deliveries",
+  "conversations",
+  "contacts",
+  "agent_threads",
+  "attendance_summaries",
+] as const;
+const REMOVAL_BATCH_ROWS = 1_000;
+
+// HARD-remove ONE account and everything under it, freeing the (serverKey, accountId) slot so the
+// account can be moved to ANOTHER tenant. Irreversible; the controller hard-gates it (SUPER_ADMIN +
+// re-typed name + password). Not one transaction, since a real account's cascade outgrows the
+// request's budget: the first locks, counts, audits and disconnects the account (its abandoned
+// Chatwoot bots are left as-is, their webhooks rejected from then on), batches empty its large
+// tables, and the last deletes the row. Stopped anywhere between, the account stays disconnected
+// and the same call finishes it (docs/chatwoot.md).
 export async function removeChatwootInstance(
   ctx: TenantContext,
   id: bigint,
   base: PrismaClient = basePrisma,
 ): Promise<void> {
   if (ctx.tenantId === null) throw new AppError("tenant required", 400);
+  const tenantId = ctx.tenantId;
   await runScopedOn(base, ctx, async (db) => {
     // NOTE: LOCKED before the count, because the count is about what the delete below is going to
     // destroy. A sync holding this same lock is mirroring inboxes under the account right now; read
@@ -1049,8 +1064,44 @@ export async function removeChatwootInstance(
         inboxes: await db.inbox.count({ where: { chatwootInstanceId: id } }),
       },
     });
-    await db.chatwootInstance.delete({ where: { id } });
+    // NOTE: Disconnected before the first batch, so no delivery writes under the account while it is
+    // being emptied, and a removal that stops halfway leaves an account that answers nothing.
+    await db.chatwootInstance.update({
+      where: { id },
+      data: { disconnectedAt: new Date() },
+    });
   });
+  // NOTE: The account's route tokens stop resolving at the disconnect, not at the delete: the batches
+  // take long enough for the receiver to keep authenticating a cached token through all of them.
+  invalidateRouteTokenCache();
+  for (const table of REMOVAL_BATCHES) {
+    const name = Prisma.raw(table);
+    // SKIP LOCKED: a second removal of the same account (two clicks) takes the next batch instead of
+    // waiting on this one's, and an empty batch then means the table is empty, not that it lost a race.
+    // NO KEY UPDATE, the module's mode (see the lock fence in tests/modules/audit-channel-family): it
+    // still excludes the other remover, and the DELETE takes what it needs on the rows it picked.
+    // MATERIALIZED: as a plain `IN (subquery)` the planner may rerun the locking subquery per outer
+    // row, and on a table with stale statistics it does, one scan per row. Picked once, the batch is
+    // a thousand primary-key deletes.
+    for (;;) {
+      const deleted = await runScopedOn(
+        base,
+        ctx,
+        (db) => db.$executeRaw`
+          WITH batch AS MATERIALIZED (
+            SELECT id FROM ${name}
+             WHERE tenant_id = ${tenantId} AND chatwoot_instance_id = ${id}
+             LIMIT ${REMOVAL_BATCH_ROWS}
+               FOR NO KEY UPDATE SKIP LOCKED)
+          DELETE FROM ${name} WHERE id IN (SELECT id FROM batch)`,
+      );
+      if (deleted === 0) break;
+    }
+  }
+  // `deleteMany`: a concurrent removal may have deleted the row already, and that is this one done too.
+  await runScopedOn(base, ctx, (db) =>
+    db.chatwootInstance.deleteMany({ where: { id } }),
+  );
   // NOTE: The delete cascades this instance's ChatwootAgentBot rows (schema.prisma: `onDelete: Cascade`),
   // so every route token it owned now resolves to nothing. Without this the receiver keeps
   // authenticating a retired token from memory, and the detached processing behind it fails on rows

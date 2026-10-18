@@ -1,0 +1,328 @@
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { PrismaPg } from "@prisma/adapter-pg";
+import { PrismaClient } from "@/../generated/prisma/client";
+import { encryptJson } from "@/api/lib/crypto";
+import { NotFoundError } from "@/lib/errors";
+import type { TenantContext } from "@/lib/tenancy";
+import { removeChatwootInstance } from "@/modules/chatwoot/management";
+import {
+  readRouteTokenCache,
+  writeRouteTokenCache,
+} from "@/modules/chatwoot/route-token-cache";
+import { dbProbeFailed } from "@/tests/db-gate";
+import { seedChatwootInstance } from "../utils/chatwoot";
+
+// REMOVING AN ACCOUNT HAS TO WORK AT THE SIZE A REAL ACCOUNT REACHES. The removal is the only way
+// to free an account for another tenant, and each statement of it is held to the request's budget.
+// Each test seeds an account in bulk and removes it through the real function on the app role, so a
+// removal that only works on the handful of rows the other suites seed fails here.
+const appUrl = process.env.TEST_APP_DATABASE_URL;
+const suUrl = process.env.MIGRATION_DATABASE_URL;
+let dbUp = false;
+let su: PrismaClient | undefined;
+let app: PrismaClient | undefined;
+if (appUrl && suUrl) {
+  try {
+    su = new PrismaClient({
+      adapter: new PrismaPg({ connectionString: suUrl }),
+    });
+    await su.$queryRaw`SELECT 1`;
+    app = new PrismaClient({
+      adapter: new PrismaPg({ connectionString: appUrl }),
+    });
+    await app.$queryRaw`SELECT 1`;
+    dbUp = true;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
+  }
+}
+const appDb = app as PrismaClient;
+const suDb = su as PrismaClient;
+
+function ctx(tenantId: bigint): TenantContext {
+  return { tenantId, userId: 1n, role: "SUPER_ADMIN" };
+}
+
+// The account in bulk, straight in SQL: contacts, conversations spread over them and over the
+// account's inboxes, and webhook deliveries. Ids come from the sequences, so seeding never collides
+// with what other suites wrote in the same database.
+async function seedVolume(
+  tenantId: bigint,
+  instanceId: bigint,
+  n: { contacts: number; conversations: number; deliveries: number },
+) {
+  const tag = `${instanceId}`;
+  await suDb.$executeRaw`
+    INSERT INTO inboxes (tenant_id, chatwoot_instance_id, chatwoot_inbox_id, name, updated_at)
+    SELECT ${tenantId}, ${instanceId}, g, 'inbox ' || g, now() FROM generate_series(1, 3) g`;
+  await suDb.$executeRaw`
+    INSERT INTO contacts (tenant_id, chatwoot_instance_id, chatwoot_contact_id, updated_at)
+    SELECT ${tenantId}, ${instanceId}, g, now() FROM generate_series(1, ${n.contacts}::int) g`;
+  await suDb.$executeRaw`
+    WITH c AS (SELECT array_agg(id) a FROM contacts WHERE chatwoot_instance_id = ${instanceId}),
+         i AS (SELECT array_agg(id) a FROM inboxes WHERE chatwoot_instance_id = ${instanceId})
+    INSERT INTO conversations
+      (tenant_id, chatwoot_instance_id, inbox_id, contact_id, chatwoot_conversation_id, status, thread_id, updated_at)
+    SELECT ${tenantId}, ${instanceId}, i.a[1 + g % 3], c.a[1 + g % array_length(c.a, 1)], g, 'open',
+           ${tag} || '-' || g, now()
+      FROM generate_series(1, ${n.conversations}::int) g, c, i`;
+  await suDb.$executeRaw`
+    INSERT INTO chatwoot_webhook_deliveries (tenant_id, chatwoot_instance_id, delivery_id, event)
+    SELECT ${tenantId}, ${instanceId}, ${tag} || '-' || g, 'message_created'
+      FROM generate_series(1, ${n.deliveries}::int) g`;
+}
+
+async function rowsOf(instanceId: bigint) {
+  const [row] = await suDb.$queryRaw<
+    {
+      instances: bigint;
+      contacts: bigint;
+      conversations: bigint;
+      deliveries: bigint;
+      inboxes: bigint;
+      orphaned: bigint;
+    }[]
+  >`
+    SELECT (SELECT count(*) FROM chatwoot_instances WHERE id = ${instanceId}) AS instances,
+           (SELECT count(*) FROM contacts WHERE chatwoot_instance_id = ${instanceId}) AS contacts,
+           (SELECT count(*) FROM conversations WHERE chatwoot_instance_id = ${instanceId}) AS conversations,
+           (SELECT count(*) FROM chatwoot_webhook_deliveries WHERE chatwoot_instance_id = ${instanceId}) AS deliveries,
+           (SELECT count(*) FROM inboxes WHERE chatwoot_instance_id = ${instanceId}) AS inboxes,
+           (SELECT count(*) FROM conversations
+             WHERE chatwoot_instance_id = ${instanceId} AND (contact_id IS NULL OR inbox_id IS NULL)) AS orphaned`;
+  return Object.fromEntries(
+    Object.entries(row ?? {}).map(([k, v]) => [k, Number(v)]),
+  );
+}
+
+describe.skipIf(!dbUp)("removing a large Chatwoot account", () => {
+  let tenantId = 0n;
+
+  beforeAll(async () => {
+    const t = await suDb.tenant.create({
+      data: { name: "Large removal", slug: `large-removal-${process.pid}` },
+    });
+    tenantId = t.id;
+  });
+
+  afterAll(async () => {
+    await suDb.$executeRaw`DELETE FROM chatwoot_webhook_deliveries WHERE tenant_id = ${tenantId}`;
+    await suDb.$executeRaw`DELETE FROM conversations WHERE tenant_id = ${tenantId}`;
+    await suDb.$executeRaw`DELETE FROM tenants WHERE id = ${tenantId}`;
+    await suDb.$disconnect();
+    await appDb.$disconnect();
+  });
+
+  async function account(accountId: number) {
+    return seedChatwootInstance(suDb, {
+      tenantId,
+      accountId,
+      accountName: `Account ${accountId}`,
+      baseUrl: "https://chat.large-removal.example.com",
+      adminToken: encryptJson("ADMIN"),
+    });
+  }
+
+  // The production failure: every deleted contact nulls `conversations.contact_id` through its
+  // foreign key, and with that column unindexed each one walked the whole conversations table, a
+  // billion rows for the account in the issue. Here a smaller account still takes the base past the
+  // default five-second budget; the neighbour shows nothing outside the account moved.
+  test("an account whose contacts carry its conversations is removed within the default budget", async () => {
+    const big = await account(15311);
+    const neighbour = await account(15312);
+    await seedVolume(tenantId, big.id, {
+      contacts: 6_000,
+      conversations: 60_000,
+      deliveries: 20_000,
+    });
+    await seedVolume(tenantId, neighbour.id, {
+      contacts: 50,
+      conversations: 200,
+      deliveries: 100,
+    });
+
+    await removeChatwootInstance(ctx(tenantId), big.id, appDb);
+
+    expect(await rowsOf(big.id)).toEqual({
+      instances: 0,
+      contacts: 0,
+      conversations: 0,
+      deliveries: 0,
+      inboxes: 0,
+      orphaned: 0,
+    });
+    expect(await rowsOf(neighbour.id)).toEqual({
+      instances: 1,
+      contacts: 50,
+      conversations: 200,
+      deliveries: 100,
+      inboxes: 3,
+      orphaned: 0,
+    });
+  }, 120_000);
+
+  // The batches empty an account's conversations before its contacts, so the removal above passes on
+  // its own even without the index. The index is for every other place a contact goes while other
+  // conversations stay: a batch of contacts beside a neighbour's 100k conversations, a deployment
+  // disconnected (`contact.deleteMany` over the tenant), a tenant deleted. Each deleted contact then
+  // looks its conversations up, and that lookup has to be an index, valid, led by the column.
+  test("a deleted contact finds its conversations through an index on the column", async () => {
+    const rows = await suDb.$queryRaw<{ name: string }[]>`
+      SELECT c.relname AS name
+        FROM pg_index i
+        JOIN pg_class c ON c.oid = i.indexrelid
+        JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = i.indkey[0]
+       WHERE i.indrelid = 'conversations'::regclass
+         AND a.attname = 'contact_id'
+         AND i.indisvalid
+         AND i.indpred IS NULL`;
+    expect(rows.map((r) => r.name)).toEqual(["conversations_contact_id_idx"]);
+  });
+
+  // How big an account gets is not bounded, and the request's budget applies to each statement: a
+  // removal that deletes the webhook log in one statement fails once the log outgrows the budget,
+  // whatever the indexes. Timing that here would measure this machine's load, so the test counts
+  // instead: a statement-level trigger on each large table refuses any single statement, the
+  // cascade's internal ones included, that deletes more of this tenant's rows than the cap.
+  test("no statement of the removal deletes more than a bounded number of rows", async () => {
+    const big = await account(15313);
+    await seedVolume(tenantId, big.id, {
+      contacts: 6_000,
+      conversations: 12_000,
+      deliveries: 12_000,
+    });
+    const tables = ["chatwoot_webhook_deliveries", "conversations", "contacts"];
+    await suDb.$executeRawUnsafe(`
+      CREATE FUNCTION test_1531_statement_cap() RETURNS trigger LANGUAGE plpgsql AS $$
+      DECLARE n bigint;
+      BEGIN
+        SELECT count(*) INTO n FROM old_rows WHERE tenant_id = ${tenantId};
+        IF n > 5000 THEN
+          RAISE EXCEPTION 'one statement deleted % rows of %', n, TG_TABLE_NAME;
+        END IF;
+        RETURN NULL;
+      END $$`);
+    try {
+      for (const table of tables) {
+        await suDb.$executeRawUnsafe(
+          `CREATE TRIGGER test_1531_statement_cap AFTER DELETE ON ${table}
+             REFERENCING OLD TABLE AS old_rows
+             FOR EACH STATEMENT EXECUTE FUNCTION test_1531_statement_cap()`,
+        );
+      }
+
+      await removeChatwootInstance(ctx(tenantId), big.id, appDb);
+    } finally {
+      for (const table of tables) {
+        await suDb.$executeRawUnsafe(
+          `DROP TRIGGER IF EXISTS test_1531_statement_cap ON ${table}`,
+        );
+      }
+      await suDb.$executeRawUnsafe(
+        "DROP FUNCTION IF EXISTS test_1531_statement_cap()",
+      );
+    }
+
+    expect(await rowsOf(big.id)).toMatchObject({
+      instances: 0,
+      contacts: 0,
+      conversations: 0,
+      deliveries: 0,
+    });
+  }, 120_000);
+
+  // The removal is many transactions, so it can stop between them: the process dies, the database
+  // drops the connection. What it leaves has to be an account that takes no traffic (a half-emptied
+  // mirror that kept answering would rebuild conversations under a removal in progress), and the
+  // operator's only move, running the same removal again, has to finish it.
+  test("a removal stopped halfway leaves the account disconnected, and running it again finishes", async () => {
+    const big = await account(15314);
+    await seedVolume(tenantId, big.id, {
+      contacts: 500,
+      conversations: 3_000,
+      deliveries: 3_000,
+    });
+    // The first scoped transaction disconnects; the third is a batch in the middle of the log.
+    let scoped = 0;
+    const dying = new Proxy(appDb, {
+      get(target, prop, receiver) {
+        if (prop !== "$extends") return Reflect.get(target, prop, receiver);
+        return (...args: unknown[]) => {
+          const ext = (
+            target as unknown as { $extends: (...a: unknown[]) => object }
+          ).$extends(...args);
+          return new Proxy(ext, {
+            get(et, ep, er) {
+              if (ep !== "$transaction") return Reflect.get(et, ep, er);
+              return async (...targs: unknown[]) => {
+                scoped++;
+                if (scoped >= 3) throw new Error("connection lost");
+                return (
+                  et as unknown as {
+                    $transaction: (...a: unknown[]) => Promise<unknown>;
+                  }
+                ).$transaction(...targs);
+              };
+            },
+          });
+        };
+      },
+    });
+
+    // A route token the receiver cached before the removal: through the batches it would keep
+    // authenticating the account's webhooks out of memory, disconnected or not.
+    writeRouteTokenCache("large-removal-hash", {
+      tenantId,
+      instanceId: big.id,
+      agentBotId: 1,
+      webhookSecret: "enc",
+    });
+    await expect(
+      removeChatwootInstance(ctx(tenantId), big.id, dying),
+    ).rejects.toThrow("connection lost");
+    expect(readRouteTokenCache("large-removal-hash")).toBeUndefined();
+    const halfway = await suDb.chatwootInstance.findUnique({
+      where: { id: big.id },
+      select: { disconnectedAt: true },
+    });
+    expect(halfway?.disconnectedAt).not.toBeNull();
+    expect((await rowsOf(big.id)).deliveries).toBe(2_000);
+
+    await removeChatwootInstance(ctx(tenantId), big.id, appDb);
+    expect(await rowsOf(big.id)).toMatchObject({
+      instances: 0,
+      contacts: 0,
+      conversations: 0,
+      deliveries: 0,
+    });
+  }, 120_000);
+
+  // Two clicks on "Remove account" are two removals of the same account running together. Neither
+  // may fail on the row the other one already deleted; the one that arrives after the account is
+  // gone may say so (404), which is what the console shows for an account that no longer exists.
+  test("two removals of the same account at once both end without an error other than not found", async () => {
+    const big = await account(15315);
+    await seedVolume(tenantId, big.id, {
+      contacts: 1_000,
+      conversations: 6_000,
+      deliveries: 6_000,
+    });
+
+    const results = await Promise.allSettled([
+      removeChatwootInstance(ctx(tenantId), big.id, appDb),
+      removeChatwootInstance(ctx(tenantId), big.id, appDb),
+    ]);
+
+    expect(results.some((r) => r.status === "fulfilled")).toBe(true);
+    for (const r of results) {
+      if (r.status === "rejected")
+        expect(r.reason).toBeInstanceOf(NotFoundError);
+    }
+    expect(await rowsOf(big.id)).toMatchObject({
+      instances: 0,
+      contacts: 0,
+      conversations: 0,
+      deliveries: 0,
+    });
+  }, 120_000);
+});

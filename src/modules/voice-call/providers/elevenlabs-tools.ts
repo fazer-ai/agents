@@ -93,7 +93,7 @@ export function elevenLabsSchema(schema: Schema, name: string): Schema {
       type: "string",
       description: `${description} (a JSON value: ${alternatives.map(typeName).join(" or ")})`,
     };
-  let type = schema.type;
+  let type = schema.type ?? constType(schema.const);
   if (Array.isArray(type)) type = type.find((t) => t !== "null");
   const branches = schema.anyOf ?? schema.oneOf;
   if (!type && Array.isArray(branches)) {
@@ -105,6 +105,9 @@ export function elevenLabsSchema(schema: Schema, name: string): Schema {
     description,
   };
   if (Array.isArray(schema.enum)) out.enum = schema.enum;
+  // A constant (a discriminator such as `kind: { const: "person" }`) is the one value the tool takes:
+  // ElevenLabs has no `const`, so it is declared as an enum of one.
+  else if (constType(schema.const)) out.enum = [schema.const];
   if (out.type === "object") {
     const props = (schema.properties ?? {}) as Record<string, Schema>;
     out.properties = Object.fromEntries(
@@ -182,6 +185,15 @@ export function fromElevenLabsArgs(schema: Schema, value: unknown): unknown {
     );
   }
   return value;
+}
+
+// The JSON type of a scalar constant, or undefined for none (or one ElevenLabs cannot list).
+function constType(value: unknown): string | undefined {
+  if (typeof value === "string" || typeof value === "boolean")
+    return typeof value;
+  if (typeof value === "number")
+    return Number.isInteger(value) ? "integer" : "number";
+  return undefined;
 }
 
 function pick(schema: Schema): Schema {

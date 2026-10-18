@@ -121,7 +121,18 @@ describe("elevenlabs tool declarations", () => {
       description: "value",
       enum: ["a", "b"],
     });
-    expect(kept({ const: "x" }).properties.value.description).toBe("value");
+    // A constant is the one value the tool takes, so it is declared as an enum of one.
+    expect([
+      kept({ const: "person" }).properties.value,
+      kept({ const: 2 }).properties.value,
+      kept({ const: true }).properties.value,
+      kept({ type: "string", const: "x" }).properties.value,
+    ]).toEqual([
+      { type: "string", description: "value", enum: ["person"] },
+      { type: "integer", description: "value", enum: [2] },
+      { type: "boolean", description: "value", enum: [true] },
+      { type: "string", description: "value", enum: ["x"] },
+    ]);
     expect(kept({ items: { type: "number" } }).properties.value).toEqual({
       type: "string",
       description: "value (a JSON value: any type)",

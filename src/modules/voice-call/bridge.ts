@@ -150,6 +150,9 @@ export class CallBridge {
     } catch {
       return;
     }
+    // `null` is the one JSON value whose event cannot be read (a number or a string reads undefined):
+    // the throw would leave a socket handler, where nothing catches it.
+    if (frame === null) return;
     switch (frame.event) {
       case "start":
         if (this.start) return;

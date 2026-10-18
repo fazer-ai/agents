@@ -82,6 +82,22 @@ describe("CallBridge", () => {
     expect(handed[0]?.aborted).toBe(true);
   });
 
+  // A socket's message handler runs outside anything that catches: a frame that throws there is an
+  // unhandled rejection, which takes the whole process (and every other call) down.
+  test("JSON that is not an object is ignored, and the stream still starts", async () => {
+    const { provider, state } = fakeEngine();
+    const bridge = new CallBridge(socket(), {
+      provider,
+      configure: () => voiceSessionConfig(ROUTE, CTX),
+      onFinished: () => {},
+    });
+    for (const raw of ["null", "1", "true", '"start"', "[]"])
+      expect(() => bridge.onMessage(raw)).not.toThrow();
+    bridge.onMessage(JSON.stringify({ event: "start", call_id: "c" }));
+    await until("the engine to open", () => state.handlers !== null);
+    bridge.onClose();
+  });
+
   test("the caller's voice heard while the engine is still connecting reaches it, in order", async () => {
     const { provider, state } = fakeEngine();
     let connected: () => void = () => {};

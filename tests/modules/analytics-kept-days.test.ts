@@ -1,6 +1,7 @@
 import {
   afterAll,
   beforeAll,
+  beforeEach,
   describe,
   expect,
   setDefaultTimeout,
@@ -504,12 +505,25 @@ async function clearKept() {
   await suDb.$executeRaw`DELETE FROM dashboard_days WHERE tenant_id = ${tenantId}`;
 }
 
+// Back to the state the seed leaves: no change waiting in the queue, every queued change an hour
+// old, and no day kept. A test that leaves a change unsettled, a change from the last minutes or a
+// kept day then cannot make the next one skip a day, count a batch short or find its window in.
+async function fromHistory() {
+  const settle = (db: tenancy.ScopedDb) =>
+    settleDirty(db, `dashboard-settle|${tenantId}`);
+  while ((await runScopedOn(appDb, ctx(), settle)) > 0);
+  await suDb.$executeRaw`UPDATE dashboard_dirty SET created_at = created_at - interval '1 hour' WHERE tenant_id = ${tenantId}`;
+  await clearKept();
+}
+
 describe.skipIf(!dbUp)("the kept days of the dashboard", () => {
   beforeAll(async () => {
     retention = config.flowlog.retentionDays;
     config.flowlog.retentionDays = 3650;
     await seed();
   });
+
+  beforeEach(fromHistory);
 
   afterAll(async () => {
     config.flowlog.retentionDays = retention;

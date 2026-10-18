@@ -121,6 +121,7 @@ interface Shape {
   contactPhone?: string | null;
   contactEmail?: string | null;
   redirectOrigin?: number | null;
+  inbox?: number;
   inboxClock?: number;
   contactClock?: number;
   contactAttrs?: Record<string, unknown>;
@@ -148,7 +149,7 @@ const body = (event: string, s: Shape) =>
       ...(s.deleted ? { deleted: true } : {}),
     },
     inbox: {
-      id: 7,
+      id: s.inbox ?? 7,
       name: s.inboxName ?? "WhatsApp",
       ...(s.inboxClock !== undefined ? { updated_at: s.inboxClock } : {}),
     },
@@ -157,7 +158,7 @@ const body = (event: string, s: Shape) =>
 
 const conversation = (s: Shape) => ({
   id: s.conv,
-  inbox_id: 7,
+  inbox_id: s.inbox ?? 7,
   status: s.status ?? "pending",
   channel: "Channel::Api",
   last_activity_at: s.lastActivityAt ?? 1_791_000_000,
@@ -440,8 +441,8 @@ describe.skipIf(!dbUp)("repeated message updates", () => {
   // value goes A, B, A while the conversation's clock stands still is left with B by a dropped repeat,
   // and the next delivery that is not a receipt writes A back.
   test("a value that went back while the clock stood still waits for the next delivery that is not a receipt", async () => {
-    // A clock ahead of every other test's, since the inbox row is shared by the whole file.
-    const s = { conv: 1017, msg: 91017, updatedAt: 1_791_000_900.5 };
+    // An inbox of its own: the shared one may already carry another test's name or its own clock.
+    const s = { conv: 1017, msg: 91017, inbox: 17, updatedAt: 1_791_000_900.5 };
     await deliver(body("message_created", s));
     const other = { ...s, msg: 91117 };
     await deliver(body("message_created", other));
@@ -450,7 +451,7 @@ describe.skipIf(!dbUp)("repeated message updates", () => {
     const name = async () =>
       (
         await suDb.inbox.findFirst({
-          where: { tenantId, chatwootInboxId: 7 },
+          where: { tenantId, chatwootInboxId: 17 },
           select: { name: true },
         })
       )?.name;
@@ -487,6 +488,7 @@ describe.skipIf(!dbUp)("repeated message updates", () => {
     const s = {
       conv: 1019,
       msg: 91019,
+      inbox: 19,
       updatedAt: 1_791_001_100.5,
       inboxClock: 1_791_001_100.25,
       contactClock: 1_791_001_100.25,
@@ -505,7 +507,7 @@ describe.skipIf(!dbUp)("repeated message updates", () => {
     const kept = async () => ({
       inbox: (
         await suDb.inbox.findFirst({
-          where: { tenantId, chatwootInboxId: 7 },
+          where: { tenantId, chatwootInboxId: 19 },
           select: { name: true },
         })
       )?.name,

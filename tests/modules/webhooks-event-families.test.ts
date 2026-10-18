@@ -1,4 +1,12 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  test,
+} from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { runScopedOn, type ScopedDb } from "@/lib/tenancy";
@@ -137,6 +145,17 @@ async function deliveredTo(event: string) {
   return rows.map((r) => r.subscription.url).sort();
 }
 
+async function wipeTenantRows() {
+  for (const table of [
+    "outbound_webhook_deliveries",
+    "webhook_subscriptions",
+    "audit_logs",
+  ])
+    await suDb.$executeRawUnsafe(
+      `DELETE FROM ${table} WHERE tenant_id = ${tenantId}`,
+    );
+}
+
 describe.skipIf(!dbUp)("family wildcards on a real subscription", () => {
   beforeAll(async () => {
     tenantId = (
@@ -144,6 +163,11 @@ describe.skipIf(!dbUp)("family wildcards on a real subscription", () => {
         data: { name: "WHFam", slug: `wh-fam-${process.pid}` },
       })
     ).id;
+  });
+
+  // Every test starts from the same five subscriptions and no deliveries, so a subscription another
+  // test created (a stored wildcard, a patch target) never receives this test's events.
+  beforeEach(async () => {
     await subscribe("/conversations-all", ["conversation.*"]);
     await subscribe("/documents-all", ["document.*"]);
     await subscribe("/explicit", ["conversation.created"]);
@@ -151,16 +175,11 @@ describe.skipIf(!dbUp)("family wildcards on a real subscription", () => {
     await subscribe("/heartbeat", ["heartbeat"]);
   });
 
+  afterEach(wipeTenantRows);
+
   afterAll(async () => {
     if (tenantId) {
-      for (const table of [
-        "outbound_webhook_deliveries",
-        "webhook_subscriptions",
-        "audit_logs",
-      ])
-        await suDb.$executeRawUnsafe(
-          `DELETE FROM ${table} WHERE tenant_id = ${tenantId}`,
-        );
+      await wipeTenantRows();
       await suDb.$executeRawUnsafe(
         `DELETE FROM tenants WHERE id = ${tenantId}`,
       );

@@ -275,6 +275,23 @@ describe.skipIf(!dbUp)("removing a large Chatwoot account", () => {
       conversations: 3_000,
       deliveries: 3_000,
     });
+    // An agent answering one of its inboxes and observing another: a follow-up or a nudge sends
+    // through the binding, and neither asks whether the account is disconnected.
+    const agent = await suDb.agent.create({
+      data: { tenantId, name: "Bound to a removed account", systemPrompt: "x" },
+    });
+    const inboxes = await suDb.inbox.findMany({
+      where: { chatwootInstanceId: big.id },
+      select: { id: true },
+      orderBy: { id: "asc" },
+    });
+    await suDb.inbox.update({
+      where: { id: inboxes[0]?.id },
+      data: { agentId: agent.id },
+    });
+    await suDb.inboxObserver.create({
+      data: { tenantId, inboxId: inboxes[1]?.id as bigint, agentId: agent.id },
+    });
     // The first scoped transaction disconnects; the third is a batch in the middle of the log.
     const dying = beforeTransaction(3, async () => {
       throw new Error("connection lost");
@@ -296,6 +313,14 @@ describe.skipIf(!dbUp)("removing a large Chatwoot account", () => {
       select: { disconnectedAt: true },
     });
     expect(halfway?.disconnectedAt).not.toBeNull();
+    expect(
+      await suDb.inbox.count({
+        where: { chatwootInstanceId: big.id, agentId: { not: null } },
+      }),
+    ).toBe(0);
+    expect(
+      await suDb.inboxObserver.count({ where: { agentId: agent.id } }),
+    ).toBe(0);
     expect((await rowsOf(big.id)).deliveries).toBe(2_000);
 
     await removeChatwootInstance(ctx(tenantId), big.id, appDb);

@@ -1069,9 +1069,17 @@ export async function removeChatwootInstance(
         inboxes: await db.inbox.count({ where: { chatwootInstanceId: id } }),
       },
     });
-    // NOTE: Disconnected before the first batch: no new delivery is admitted under the account while
-    // it is emptied, and a removal that stops halfway leaves an account that answers nothing. A
-    // delivery already admitted may still write a few rows behind a batch; the final cascade takes them.
+    // NOTE: Disconnected and unbound before the first batch: no new delivery is admitted under the
+    // account, and no follow-up, nudge or observe tick finds an agent on its inboxes to send through,
+    // while it is emptied or if the removal stops halfway. Local only, like the rest of the removal:
+    // the bots left in Chatwoot are rejected at the route token. A delivery already admitted may still
+    // write a few rows behind a batch; the final cascade takes them.
+    await db.$executeRaw`
+      UPDATE inboxes SET agent_id = NULL, updated_at = now()
+       WHERE tenant_id = ${tenantId} AND chatwoot_instance_id = ${id} AND agent_id IS NOT NULL`;
+    await db.$executeRaw`
+      DELETE FROM inbox_observers WHERE inbox_id IN (
+        SELECT id FROM inboxes WHERE tenant_id = ${tenantId} AND chatwoot_instance_id = ${id})`;
     await db.chatwootInstance.update({
       where: { id },
       data: { disconnectedAt: new Date() },

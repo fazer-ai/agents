@@ -178,14 +178,14 @@ export async function fenceConversation(
 }
 
 /**
- * What a message says: its text, or the words of the voice note it carries, which arrive on the audio
- * attachment's `transcribed_text` with an empty `content`.
+ * What a message says: its text, or the words of the voice note it carries, which the REST list puts
+ * on the audio attachment's `meta.transcribed_text`, with an empty `content`.
  */
 function said(m: RecentMessage): string {
   const text = m.content?.trim();
   if (text) return text;
   const audio = m.attachments?.find((a) => a.file_type === "audio");
-  return cleanTranscription(audio?.transcribed_text ?? "");
+  return cleanTranscription(audio?.meta?.transcribed_text ?? "");
 }
 
 /** The conversation so far on WhatsApp, as lines the agent reads before the call: who said what. */

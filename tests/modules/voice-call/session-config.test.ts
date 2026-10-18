@@ -49,6 +49,7 @@ describe("the conversation in a call's instructions", () => {
 });
 
 describe("the conversation a call reads", () => {
+  // The page is the REST list's shape: a voice note's words sit on the attachment's `meta`.
   test("keeps what a voice note said, whoever sent it, and leaves out private notes", async () => {
     const page: RecentMessage[] = [
       { content: "Oi, é sobre o pedido 4821", message_type: 0, private: false },
@@ -57,7 +58,7 @@ describe("the conversation a call reads", () => {
         message_type: 0,
         private: false,
         attachments: [
-          { file_type: "audio", transcribed_text: "ele sai quando?" },
+          { file_type: "audio", meta: { transcribed_text: "ele sai quando?" } },
         ],
       },
       {
@@ -65,7 +66,10 @@ describe("the conversation a call reads", () => {
         message_type: 1,
         private: false,
         attachments: [
-          { file_type: "audio", transcribed_text: "sai amanhã de manhã" },
+          {
+            file_type: "audio",
+            meta: { transcribed_text: "sai amanhã de manhã" },
+          },
         ],
       },
       { content: "nota interna", message_type: 1, private: true },
@@ -74,7 +78,7 @@ describe("the conversation a call reads", () => {
         content: "",
         message_type: 0,
         private: false,
-        attachments: [{ file_type: "audio", transcribed_text: "" }],
+        attachments: [{ file_type: "audio", meta: { transcribed_text: "" } }],
       },
     ];
     const client = spyOn(

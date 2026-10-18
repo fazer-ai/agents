@@ -502,7 +502,12 @@ export interface RecentMessage {
   message_type: number;
   private: boolean;
   sender?: { name?: string };
-  attachments?: Array<{ file_type?: string; transcribed_text?: string | null }>;
+  // The REST list carries a voice note's words under the attachment's `meta`, not at its top level
+  // as the webhook does.
+  attachments?: Array<{
+    file_type?: string;
+    meta?: { transcribed_text?: string | null } | null;
+  }>;
 }
 
 export class ChatwootClient {

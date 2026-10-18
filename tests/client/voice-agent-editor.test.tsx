@@ -550,18 +550,28 @@ describe("the editor of a voice agent", () => {
       new Response(JSON.stringify(body), {
         headers: { "content-type": "application/json" },
       });
-    const inbox = (id: string, name: string, provider: string | null) => ({
+    const inbox = (
+      id: string,
+      name: string,
+      provider: string | null,
+      voiceAgentId: string | null = null,
+    ) => ({
       id,
       name,
       agentId: null,
       observerAgentIds: [],
-      voiceAgentId: null,
+      voiceAgentId,
       chatwootInstanceId: "a1",
       chatwootInboxId: Number(id),
       channelType: "Channel::Whatsapp",
       provider,
     });
-    stub.override = (method, path) => {
+    const unbinds: string[] = [];
+    stub.override = (method, path, body) => {
+      if (method === "PUT" && path.endsWith("/voice-agent")) {
+        unbinds.push(`${path} ${JSON.stringify(body)}`);
+        return json({ voiceAgentId: null });
+      }
       if (method !== "GET") return undefined;
       if (path === "/api/v1/chatwoot/deployment")
         return json({
@@ -581,6 +591,8 @@ describe("the editor of a voice agent", () => {
             inbox("1", "Loja conector", "native"),
             inbox("2", "Loja ainda sem sync", null),
             inbox("3", "Loja Cloud", "whatsapp_cloud"),
+            // Bound while its provider was unknown: it stays, to be turned off.
+            inbox("4", "Loja Cloud com voz", "whatsapp_cloud", "41"),
           ],
         });
       if (path === "/api/v1/agents") return json({ agents: [], total: 0 });
@@ -590,6 +602,22 @@ describe("the editor of a voice agent", () => {
     expect(await screen.findByText("Loja conector")).not.toBeNull();
     expect(screen.queryByText("Loja ainda sem sync")).not.toBeNull();
     expect(screen.queryByText("Loja Cloud")).toBeNull();
+    expect(screen.queryByText("Loja Cloud com voz")).not.toBeNull();
+    expect(
+      screen.getAllByText(
+        "This inbox does not take calls. Turn it off to release the agent.",
+      ),
+    ).toHaveLength(1);
+    const bound = screen.getByRole("switch", {
+      name: "Answer the calls of Loja Cloud com voz with this agent",
+    });
+    expect(bound.getAttribute("aria-checked")).toBe("true");
+    fireEvent.click(bound);
+    await waitFor(() =>
+      expect(unbinds).toEqual([
+        '/api/v1/chatwoot/inboxes/4/voice-agent {"agentId":null}',
+      ]),
+    );
   });
 
   // The Model card is not drawn for a voice agent, so nothing it would refuse can hold the save: a

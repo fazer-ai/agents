@@ -1598,23 +1598,27 @@ export function ChannelsPage() {
                                   bindInbox(ib.id, agentId)
                                 }
                               />
-                              {takesCalls(ib) &&
-                                (ib.voiceAgentId !== null ||
-                                  agents.some((a) => a.kind === "voice")) && (
-                                  <InboxAgentPicker
-                                    value={ib.voiceAgentId}
-                                    agents={agents.filter(
-                                      (a) => a.kind === "voice",
-                                    )}
-                                    label={t(
-                                      "channels.voiceBindLabel",
-                                      "Calls agent",
-                                    )}
-                                    onChange={(agentId) =>
-                                      bindVoiceAgent(ib.id, agentId)
-                                    }
-                                  />
-                                )}
+                              {/* An inbox that takes no calls keeps a picker only while a voice
+                                  agent is still bound, offering just that agent, to unbind it. */}
+                              {(ib.voiceAgentId !== null ||
+                                (takesCalls(ib) &&
+                                  agents.some((a) => a.kind === "voice"))) && (
+                                <InboxAgentPicker
+                                  value={ib.voiceAgentId}
+                                  agents={agents.filter((a) =>
+                                    takesCalls(ib)
+                                      ? a.kind === "voice"
+                                      : a.id === ib.voiceAgentId,
+                                  )}
+                                  label={t(
+                                    "channels.voiceBindLabel",
+                                    "Calls agent",
+                                  )}
+                                  onChange={(agentId) =>
+                                    bindVoiceAgent(ib.id, agentId)
+                                  }
+                                />
+                              )}
                               <InboxObserversStrip
                                 observerAgentIds={ib.observerAgentIds}
                                 responderAgentId={ib.agentId}

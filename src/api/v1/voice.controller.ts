@@ -284,17 +284,22 @@ export const voicePlaygroundController = new Elysia({
             role,
           };
           let setup: CallsSetup | null = null;
+          // The role is the session's at each step that acts as the operator: the call's start and
+          // every tool it runs. One taken away meanwhile closes the call instead of running the tool.
+          const stillAdmin = async () => {
+            const now = await ws.data.getAuthUser();
+            return !!now && !!adminRoleIn(now, claims.tenantId);
+          };
+          const revoked = () =>
+            new Error(
+              "the operator is no longer an admin of the call's tenant",
+            );
           const bridge = new CallBridge(
             { send: (text) => ws.send(text), close: () => ws.close() },
             {
               provider: callsProvider(() => setup),
               configure: async (start) => {
-                // A role taken away since the socket opened stops the call before any tool can run.
-                const now = await ws.data.getAuthUser();
-                if (!now || !adminRoleIn(now, claims.tenantId))
-                  throw new Error(
-                    "the operator is no longer an admin of the call's tenant",
-                  );
+                if (!(await stillAdmin())) throw revoked();
                 const [calls, agent] = await Promise.all([
                   setUpAgentCalls(ctx, claims.agentId),
                   loadPlaygroundVoiceAgent(ctx, claims.agentId),
@@ -320,7 +325,16 @@ export const voicePlaygroundController = new Elysia({
                     "",
                     calls.setup.calls.openingDelayMs,
                   ),
-                  tools: agent.tools,
+                  tools: agent.tools.map((tool) => ({
+                    ...tool,
+                    invoke: async (args, callId, signal) => {
+                      if (!(await stillAdmin())) {
+                        ws.close(WS_CLOSE.POLICY_VIOLATION, "forbidden tenant");
+                        throw revoked();
+                      }
+                      return tool.invoke(args, callId, signal);
+                    },
+                  })),
                 };
               },
               log: logCall,

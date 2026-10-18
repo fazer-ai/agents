@@ -2796,6 +2796,7 @@
       "empty": "Nenhuma caixa do WhatsApp para receber ligações",
       "emptyDesc": "As ligações chegam pelas caixas do WhatsApp conectadas pelo conector de WhatsApp da fazer.ai. Conecte uma, sincronize as caixas e ela aparece aqui.",
       "error": "Não foi possível mudar as ligações da caixa.",
+      "noCalls": "Esta caixa não recebe ligações. Desligue para liberar o agente.",
       "production": "Este agente está em produção: ele atende as ligações das caixas marcadas aqui.",
       "replaceMessage": "{{other}} atende as ligações de {{inbox}} agora. Só um agente atende as ligações de uma caixa, então ele deixa de atender.",
       "replaceMessageTest": "{{other}} atende as ligações de {{inbox}} agora e deixa de atender. Este agente está em teste, então até ele ir para produção as ligações dessa caixa tocam para a sua equipe.",

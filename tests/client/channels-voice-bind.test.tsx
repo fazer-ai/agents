@@ -57,7 +57,7 @@ const AGENTS = [
   },
 ];
 
-function serve() {
+function serve(cloudVoiceAgentId: string | null = null) {
   // What the server holds: the PUT saves before it reaches Chatwoot.
   let voiceAgentId: string | null = "v1";
   const reads: string[] = [];
@@ -101,7 +101,7 @@ function serve() {
             name: "WhatsApp Cloud",
             agentId: "p1",
             observerAgentIds: [],
-            voiceAgentId: null,
+            voiceAgentId: cloudVoiceAgentId,
             chatwootInstanceId: "a1",
             chatwootInboxId: 101,
             channelType: WHATSAPP_CHANNEL,
@@ -128,6 +128,39 @@ function serve() {
 }
 
 describe("the calls picker on the Channels page", () => {
+  // Bound while its provider was unknown, then found on Cloud: the picker stays, offering only the
+  // bound agent and "No agent", so the binding can be cleared and nothing new bound there.
+  test("an inbox that takes no calls keeps a picker only to clear its binding", async () => {
+    serve("v2");
+    render(
+      withI18n(
+        <MemoryRouter>
+          <ThemeProvider>
+            <AuthProvider>
+              <ToastProvider>
+                <TooltipPrimitive.Provider>
+                  <ChannelsPage />
+                </TooltipPrimitive.Provider>
+              </ToastProvider>
+            </AuthProvider>
+          </ThemeProvider>
+        </MemoryRouter>,
+      ),
+    );
+    await screen.findByText("WhatsApp Cloud");
+    const pickers = await screen.findAllByRole("button", {
+      name: "Calls agent",
+    });
+    expect(pickers).toHaveLength(2);
+    const cloud = pickers.find((p) => p.textContent?.includes("Voz nova"));
+    expect(cloud).toBeDefined();
+    fireEvent.pointerDown(cloud as HTMLElement, { button: 0, ctrlKey: false });
+    await screen.findByRole("menuitem", { name: "No agent" });
+    expect(
+      screen.getAllByRole("menuitem").map((item) => item.textContent),
+    ).toEqual(["No agent", "Voz nova"]);
+  });
+
   test("a binding that saved but missed Chatwoot shows what is stored", async () => {
     const reads = serve();
     render(

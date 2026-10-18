@@ -52,6 +52,16 @@ const unconstrained = (schema: Schema) =>
 // as a union too. A nullable object or array keeps its shape instead, and so cannot be null on a call.
 function unionAlternatives(schema: Schema): Schema[] | null {
   if (unconstrained(schema)) return [ANY];
+  // An enum with no type whose values are not all one scalar type (`[1, "a"]`, or one with null)
+  // cannot be declared as a list of one type: it travels as JSON, and only its own values are read.
+  if (
+    schema.type === undefined &&
+    schema.anyOf === undefined &&
+    schema.oneOf === undefined &&
+    Array.isArray(schema.enum) &&
+    !enumType(schema.enum)
+  )
+    return [{ enum: schema.enum }];
   let all: Schema[] | null = null;
   if (Array.isArray(schema.type))
     all = schema.type.map((type) => ({ ...schema, type }) as Schema);
@@ -93,7 +103,10 @@ export function elevenLabsSchema(schema: Schema, name: string): Schema {
       type: "string",
       description: `${description} (a JSON value: ${alternatives.map(typeName).join(" or ")})`,
     };
-  let type = schema.type ?? constType(schema.const);
+  let type =
+    schema.type ??
+    constType(schema.const) ??
+    (Array.isArray(schema.enum) ? enumType(schema.enum) : undefined);
   if (Array.isArray(type)) type = type.find((t) => t !== "null");
   const branches = schema.anyOf ?? schema.oneOf;
   if (!type && Array.isArray(branches)) {
@@ -127,6 +140,10 @@ export function elevenLabsSchema(schema: Schema, name: string): Schema {
 }
 
 const matches = (alternative: Schema, value: unknown): boolean => {
+  if (alternative.type === undefined && Array.isArray(alternative.enum))
+    return alternative.enum.some(
+      (allowed) => JSON.stringify(allowed) === JSON.stringify(value),
+    );
   switch (alternative.type) {
     case "number":
       return typeof value === "number";
@@ -194,6 +211,16 @@ function constType(value: unknown): string | undefined {
   if (typeof value === "number")
     return Number.isInteger(value) ? "integer" : "number";
   return undefined;
+}
+
+// The one JSON type every value of an enum has (integers among numbers count as numbers), or
+// undefined when they differ or one is not a scalar ElevenLabs can list (its type is undefined, which
+// differs from any other, or is the only one).
+function enumType(values: unknown[]): string | undefined {
+  const types = new Set(values.map(constType));
+  if (types.size === 2 && types.has("integer") && types.has("number"))
+    return "number";
+  return types.size === 1 ? [...types][0] : undefined;
 }
 
 function pick(schema: Schema): Schema {

@@ -139,6 +139,51 @@ describe("elevenlabs tool declarations", () => {
     });
   });
 
+  // An enum with no type is declared with the one type its values share; values of different types,
+  // or null among them, cannot be listed as one, so they travel as JSON and only the enum's own values
+  // come back parsed.
+  test("an untyped enum keeps the type of its values, or travels as JSON when they differ", () => {
+    const declared = (value: Schema) =>
+      (
+        elevenLabsSchema({ type: "object", properties: { value } }, "t") as {
+          properties: { value: Schema };
+        }
+      ).properties.value;
+    expect([
+      declared({ enum: [1, 2] }),
+      declared({ enum: [1, 2.5] }),
+      declared({ enum: [true, false] }),
+      declared({ enum: [1, "a"] }),
+      declared({ enum: ["a", null] }),
+    ]).toEqual([
+      { type: "integer", description: "value", enum: [1, 2] },
+      { type: "number", description: "value", enum: [1, 2.5] },
+      { type: "boolean", description: "value", enum: [true, false] },
+      {
+        type: "string",
+        description: 'value (a JSON value: value (one of 1, "a"))',
+      },
+      {
+        type: "string",
+        description: 'value (a JSON value: value (one of "a", null))',
+      },
+    ]);
+    const read = (value: string) =>
+      (
+        fromElevenLabsArgs(
+          { type: "object", properties: { value: { enum: [1, "a", null] } } },
+          { value },
+        ) as { value: unknown }
+      ).value;
+    expect([
+      read("1"),
+      read('"a"'),
+      read("null"),
+      read("2"),
+      read("b"),
+    ]).toEqual([1, "a", null, "2", "b"]);
+  });
+
   test("every property gets a description, and a nullable scalar may still be null", () => {
     const defs = elevenLabsToolDefs([
       tool("x", {

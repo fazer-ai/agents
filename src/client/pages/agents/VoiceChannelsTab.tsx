@@ -156,7 +156,11 @@ export function VoiceChannelsTab({
     inst.accountName ??
     t("channels.account", "Account {{id}}", { id: inst.accountId });
   // Only the inboxes that can take calls: WhatsApp on the connector (the fork refuses the others).
-  const whatsapp = inboxes.filter(takesCalls);
+  // One already bound to this agent stays, to be turned off: its provider may have turned out to take
+  // no calls after the binding, and the binding keeps the agent from being deleted.
+  const whatsapp = inboxes.filter(
+    (ib) => takesCalls(ib) || ib.voiceAgentId === agentId,
+  );
   const groups = instances
     .map((inst) => ({
       inst,
@@ -272,6 +276,14 @@ export function VoiceChannelsTab({
                           instanceAccountId={inst.accountId}
                           status={mine ? "active" : "none"}
                         >
+                          {!takesCalls(ib) && (
+                            <span className="text-warning text-xs">
+                              {t(
+                                "editor.voiceChannels.noCalls",
+                                "This inbox does not take calls. Turn it off to release the agent.",
+                              )}
+                            </span>
+                          )}
                           {otherName && (
                             <span className="text-text-muted text-xs">
                               {t(

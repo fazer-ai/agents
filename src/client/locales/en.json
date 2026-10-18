@@ -2709,6 +2709,7 @@
       "empty": "No WhatsApp inbox to take calls",
       "emptyDesc": "Calls come through WhatsApp inboxes connected by the fazer.ai WhatsApp connector. Connect one, sync the inboxes, and it shows up here.",
       "error": "Could not change the inbox's calls.",
+      "noCalls": "This inbox does not take calls. Turn it off to release the agent.",
       "production": "This agent is in production: it answers the calls to the inboxes marked here.",
       "replaceMessage": "{{other}} answers the calls of {{inbox}} now. Only one agent answers an inbox's calls, so it stops.",
       "replaceMessageTest": "{{other}} answers the calls of {{inbox}} now and stops. This agent is in test mode, so until it goes to production the inbox's calls ring your team.",

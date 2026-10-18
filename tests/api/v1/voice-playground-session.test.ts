@@ -14,6 +14,8 @@ import {
 } from "bun:test";
 import { Elysia } from "elysia";
 import * as playgroundService from "@/modules/playground/service";
+import * as elevenlabs from "@/modules/voice-call/providers/elevenlabs";
+import type { VoiceSessionConfig } from "@/modules/voice-call/providers/types";
 import * as setup from "@/modules/voice-call/setup";
 import { stubExports } from "@/tests/utils/module-stub";
 import { POLL_DEADLINE_MS, until } from "@/tests/utils/poll";
@@ -41,15 +43,54 @@ let configured = 0;
 // Set by a test that needs the call still up when the session ends: the configuration waits.
 let holdSetup = false;
 let releaseSetup: () => void = () => {};
+// Set by a test that needs the call to reach its engine: the setup succeeds, the agent has one tool
+// (which counts its runs) and the engine only records what it was opened with.
+let callsReady = false;
+let toolRuns = 0;
+let engineOpenedWith: VoiceSessionConfig | null = null;
 stubExports(setup, {
   setUpAgentCalls: async () => {
     configured++;
     if (holdSetup) await new Promise<void>((go) => (releaseSetup = go));
+    if (callsReady)
+      return {
+        ok: true,
+        setup: {
+          calls: { openingDelayMs: 1_600, toolSound: null },
+          apiKey: "key",
+          voice: "voice",
+          providerAgentId: "agent",
+        },
+      };
     return { ok: false, problem: "no_credential" };
   },
 });
 stubExports(playgroundService, {
-  loadPlaygroundVoiceAgent: async () => ({ systemPrompt: "", tools: [] }),
+  loadPlaygroundVoiceAgent: async () => ({
+    systemPrompt: "",
+    tools: callsReady
+      ? [
+          {
+            name: "lookup",
+            description: "",
+            parameters: { type: "object", properties: {} },
+            invoke: async () => {
+              toolRuns++;
+              return "ran";
+            },
+          },
+        ]
+      : [],
+  }),
+});
+stubExports(elevenlabs, {
+  elevenLabsProvider: () => ({
+    name: "elevenlabs",
+    open: async (config: VoiceSessionConfig) => {
+      engineOpenedWith = config;
+      return { sendAudio() {}, begin() {}, close() {} };
+    },
+  }),
 });
 
 const nativeGlobals = globalThis as unknown as {
@@ -115,6 +156,9 @@ beforeEach(() => {
   configured = 0;
   holdSetup = false;
   releaseSetup();
+  callsReady = false;
+  toolRuns = 0;
+  engineOpenedWith = null;
 });
 
 const jtiOf = (sessionCookie: string): string =>
@@ -330,6 +374,25 @@ describe("the playground call's socket and the operator's session", () => {
     ws.send(JSON.stringify({ event: "start", direction: "inbound" }));
     await closed;
     expect(configured).toBe(0);
+  });
+
+  // The call runs the agent's real tools as the operator: the role is read again before each one, so
+  // an operator demoted mid-call runs nothing more, and the call ends.
+  test("an operator demoted during the call runs no further tool, and the call closes", async () => {
+    callsReady = true;
+    const { closed } = connect(ticketFor(mockUser.id));
+    await until("the call's engine to open", () => engineOpenedWith !== null);
+    const [tool] = (engineOpenedWith as VoiceSessionConfig | null)?.tools ?? [];
+    expect(await tool?.invoke({}, "call-1")).toBe("ran");
+    expect(toolRuns).toBe(1);
+    mockFindUnique.mockImplementation(() =>
+      Promise.resolve(row(OLD_HASH, "AGENT")),
+    );
+    await expect(tool?.invoke({}, "call-2")).rejects.toThrow(
+      "no longer an admin",
+    );
+    expect(toolRuns).toBe(1);
+    expect((await closed).code).toBe(WS_CLOSE.POLICY_VIOLATION);
   });
 
   test("a ticket another operator was handed is refused", async () => {

@@ -73,6 +73,7 @@ export interface BehaviorRefusals {
   sttCredential: string | null;
   ttsCredential: string | null;
   ttsNormalizeCredential: string | null;
+  ttsFallbackCredential: string | null;
   visionCredential: string | null;
   visionExtractionPrompt: string | null;
   // The spoken-reply notice and the reply_as_text note.

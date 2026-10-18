@@ -33,6 +33,12 @@ export const SETTINGS_CREDENTIAL_PATHS = [
     use: "apiKey",
   },
   {
+    path: ["tts", "fallbackCredentialRef"],
+    tab: "behavior",
+    sectionId: "tts",
+    use: "apiKey",
+  },
+  {
     path: ["vision", "credentialRef"],
     tab: "behavior",
     sectionId: "vision",

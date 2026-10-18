@@ -1262,6 +1262,7 @@ function AgentEditor() {
     sttEnabled: stt.enabled,
     ttsOn: tts.mode !== "never",
     ttsNormalize: tts.normalize,
+    ttsFallbackChosen: tts.mode !== "never" && !!tts.fallbackProvider,
     ttsSpokenNoticeShown: tts.mode !== "never" && tts.spokenNotice,
     ttsTextChoiceShown: tts.mode !== "never" && tts.textChoice,
     visionEnabled: vision.enabled,
@@ -1372,6 +1373,7 @@ function AgentEditor() {
     "settings.stt.credentialRef": stt.credentialRef,
     "settings.tts.credentialRef": tts.credentialRef,
     "settings.tts.normalizeCredentialRef": tts.normalizeCredentialRef,
+    "settings.tts.fallbackCredentialRef": tts.fallbackCredentialRef,
     "settings.vision.credentialRef": vision.credentialRef,
     "settings.contactAuth.credentialRef": contactAuth.credentialRef,
     "settings.memory.compaction.credentialRef": memory.credentialRef,
@@ -2600,6 +2602,8 @@ function AgentEditor() {
   // t('editor.configIssue.tts', 'Audio replies are on but have no API key set.')
   // t('editor.configIssue.ttsNormalize', 'The speech rewrite is on but its model configuration cannot run, so replies will be spoken without it. Check its provider, model, key and endpoint.')
   // t('editor.configIssuePending.ttsNormalize', 'The speech-rewrite credential is referenced but not filled in yet.')
+  // t('editor.configIssue.ttsFallback', 'A fallback voice is set on another provider with no API key of its own, so it cannot take a reply the main voice drops.')
+  // t('editor.configIssuePending.ttsFallback', 'The fallback-voice credential is referenced but not filled in yet, so the fallback voice cannot take a reply.')
   // t('editor.configIssue.memoryModel', 'A separate model is set for attendance summaries but its configuration cannot run, so attendances that end will not be summarized and the contact keeps no memory of them. Check its provider, model, key and endpoint.')
   // t('editor.configIssue.modelFallback', 'A fallback provider is set but its configuration cannot run, so a turn the primary provider drops is still lost. Check its provider, model, key and endpoint.')
   // t('editor.configIssuePending.memoryModel', 'The summary-model credential is referenced but not filled in yet, so attendances that end are not summarized.')
@@ -2628,6 +2632,7 @@ function AgentEditor() {
   // t('editor.configIssueUnresolved.stt', 'The transcription credential no longer exists, so voice messages are not transcribed.')
   // t('editor.configIssueUnresolved.tts', 'The audio-reply credential no longer exists, so replies are sent as text.')
   // t('editor.configIssueUnresolved.ttsNormalize', 'The speech-rewrite credential no longer exists, so replies are spoken without the rewrite.')
+  // t('editor.configIssueUnresolved.ttsFallback', 'The fallback-voice credential no longer exists, so the fallback voice cannot take a reply.')
   // t('editor.configIssueUnresolved.memoryModel', 'The summary-model credential no longer exists, so attendances that end are not summarized.')
   // t('editor.configIssueUnresolved.modelFallback', 'The fallback-provider credential no longer exists, so the fallback cannot take a turn.')
   // t('editor.configIssue.suggestionReviewModel', 'A separate model is set for the suggestion reviewer but its configuration cannot run, so the agent\'s knowledge suggestions reach the approval queue unreviewed. Check its provider, model, key and endpoint.')
@@ -2643,6 +2648,7 @@ function AgentEditor() {
   // t('editor.configIssueWrongKind.stt', 'The transcription credential is a type that cannot be used as an API key, so voice messages are not transcribed. Pick a credential that holds a single key.')
   // t('editor.configIssueWrongKind.tts', 'The audio-reply credential is a type that cannot be used as an API key, so replies are sent as text. Pick a credential that holds a single key.')
   // t('editor.configIssueWrongKind.ttsNormalize', 'The speech-rewrite credential is a type that cannot be used as an API key, so replies are spoken without the rewrite. Pick a credential that holds a single key.')
+  // t('editor.configIssueWrongKind.ttsFallback', 'The fallback-voice credential is a type that cannot be used as an API key, so the fallback voice cannot take a reply. Pick a credential that holds a single key.')
   // t('editor.configIssueWrongKind.memoryModel', 'The summary-model credential is a type that cannot be used as an API key, so attendances that end are not summarized. Pick a credential that holds a single key.')
   // t('editor.configIssueWrongKind.modelFallback', 'The fallback-provider credential is a type that cannot be used as an API key, so the fallback cannot take a turn. Pick a credential that holds a single key.')
   // t('editor.configIssueWrongKind.vision', 'The image-reading credential is a type that cannot be used as an API key, so images and documents are not read. Pick a credential that holds a single key.')
@@ -2749,6 +2755,9 @@ function AgentEditor() {
     ttsNormalizeModel: tts.normalizeModel,
     ttsNormalizeCredentialRef: tts.normalizeCredentialRef,
     ttsNormalizeBaseURL: ttsNormalizeCredBaseUrl ?? tts.normalizeBaseURL,
+    ttsProvider: tts.provider,
+    ttsFallbackProvider: tts.fallbackProvider,
+    ttsFallbackCredentialRef: tts.fallbackCredentialRef,
     visionEnabled: vision.enabled,
     visionCredentialRef: vision.credentialRef,
     contactAuthEnabled: contactAuth.enabled,
@@ -5037,6 +5046,10 @@ function AgentEditor() {
                   ttsNormalizeCredential: refusal.at(
                     "settings.tts.normalizeCredentialRef",
                     currentRef.current["settings.tts.normalizeCredentialRef"],
+                  ),
+                  ttsFallbackCredential: refusal.at(
+                    "settings.tts.fallbackCredentialRef",
+                    currentRef.current["settings.tts.fallbackCredentialRef"],
                   ),
                   visionCredential: refusal.at(
                     "settings.vision.credentialRef",

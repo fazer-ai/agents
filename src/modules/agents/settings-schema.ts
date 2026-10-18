@@ -159,6 +159,21 @@ const tts = z.looseObject({
   normalizeModel: z.string().nullable().optional(),
   normalizeCredentialRef: credentialRef(),
   normalizeBaseURL: baseURL(),
+  timeoutMs: z
+    .number()
+    .nullable()
+    .optional()
+    .describe("per synthesis, 1000-120000 ms; null = 60000"),
+  // The fallback voice, tried once before the reply goes as text. It exists once the provider is
+  // named; null removes it.
+  fallbackProvider: oneOf(TTS_PROVIDER_NAMES)
+    .nullable()
+    .optional()
+    .describe("tried on a timeout or 5xx/429; null = none"),
+  fallbackModel: modelId(),
+  fallbackVoice: z.string().optional(),
+  fallbackCredentialRef: credentialRef(),
+  fallbackBaseURL: baseURL(),
   stability: z
     .number()
     .nullable()

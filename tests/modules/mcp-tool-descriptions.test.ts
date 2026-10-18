@@ -220,8 +220,9 @@ describe("MCP tool descriptions", () => {
     // template writes, the next number on them, the search and cursor on issued_document_list, and the
     // three proactive_breaker tools. 74_896 with `guardrails.onFailure`, the guardrail endpoint check
     // and the 15 dashboard tools (Pro only), the last being dashboard_query_schema, whose input is
-    // empty and whose contract is served on demand.
-    expect(schema).toBeLessThanOrEqual(74_980);
+    // empty and whose contract is served on demand. 75_514 with the tts block's timeout and fallback
+    // voice (six fields).
+    expect(schema).toBeLessThanOrEqual(75_600);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

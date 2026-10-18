@@ -3,6 +3,8 @@ import {
   type AgentModelSource,
   readTtsFormState,
   type TtsFormState,
+  ttsFallbackNeedsOwnCredential,
+  ttsFallbackProviderChanged,
   ttsNormalizerBaseUrlInvalid,
   ttsNormalizerBaseUrlUnsupported,
   ttsNormalizerNeedsOwnCredential,
@@ -46,6 +48,12 @@ const SAVED = {
   spokenNoticeText: "Fale curto, é áudio.",
   textChoice: true,
   textChoiceNote: "Tabela de preços vai por escrito.",
+  timeoutMs: 20_000,
+  fallbackProvider: "openai",
+  fallbackModel: "tts-1",
+  fallbackVoice: "nova",
+  fallbackCredentialRef: "vault:12",
+  fallbackBaseURL: "https://tts-fallback.example.com/v1",
 };
 
 describe("agent editor TTS round-trip", () => {
@@ -628,5 +636,55 @@ describe("the rewrite's endpoint has to be usable before saving", () => {
         null,
       ),
     ).toBe(false);
+  });
+});
+
+describe("agent editor TTS timeout and fallback voice", () => {
+  // Seconds on screen, milliseconds in the bag, clamped as the runtime reads it, and a cleared
+  // field stored as null so the agent follows the default instead of a pinned copy of it.
+  test("the timeout is shown in seconds, stored in ms, clamped, and cleared to the default", () => {
+    const form = readTtsFormState({ mode: "mirror", timeoutMs: 15_000 });
+    expect(form.timeoutSeconds).toBe("15");
+    expect(ttsSettingsFrom({ ...form, timeoutSeconds: "20" }).timeoutMs).toBe(
+      20_000,
+    );
+    expect(ttsSettingsFrom({ ...form, timeoutSeconds: "900" }).timeoutMs).toBe(
+      120_000,
+    );
+    expect(ttsSettingsFrom({ ...form, timeoutSeconds: "" }).timeoutMs).toBe(
+      null,
+    );
+  });
+
+  test("switching the fallback's provider clears what belonged to the previous one", () => {
+    const form = readTtsFormState({
+      mode: "mirror",
+      fallbackProvider: "openai",
+      fallbackModel: "tts-1",
+      fallbackVoice: "nova",
+      fallbackCredentialRef: "vault:12",
+      fallbackBaseURL: "https://proxy.example.com/v1",
+    });
+    const next = ttsFallbackProviderChanged(form, "elevenlabs");
+    expect([
+      next.fallbackProvider,
+      next.fallbackModel,
+      next.fallbackVoice,
+      next.fallbackCredentialRef,
+      next.fallbackBaseURL,
+    ]).toEqual(["elevenlabs", "", "", "", ""]);
+  });
+
+  test("a fallback on another provider asks for its own key, on the same one it borrows", () => {
+    const form = readTtsFormState({ mode: "mirror", provider: "openai" });
+    expect(
+      ttsFallbackNeedsOwnCredential({ ...form, fallbackProvider: "openai" }),
+    ).toBe(false);
+    expect(
+      ttsFallbackNeedsOwnCredential({
+        ...form,
+        fallbackProvider: "elevenlabs",
+      }),
+    ).toBe(true);
   });
 });

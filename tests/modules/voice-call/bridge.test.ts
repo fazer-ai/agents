@@ -57,6 +57,31 @@ function socket() {
 const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
 
 describe("CallBridge", () => {
+  // The engine's start is cut when the call ends: a stream that stops while the engine is still
+  // connecting leaves nothing starting behind it (providers/elevenlabs.ts gives the agent up).
+  test("a call that ends while its engine is starting aborts the start", async () => {
+    const handed: AbortSignal[] = [];
+    const starting: VoiceProvider = {
+      name: "starting",
+      open: (_config, _handlers, signal) => {
+        if (signal) handed.push(signal);
+        return new Promise(() => {});
+      },
+    };
+    const bridge = new CallBridge(socket(), {
+      provider: starting,
+      configure: () => voiceSessionConfig(ROUTE, CTX),
+      onFinished: () => {},
+    });
+    bridge.onMessage(
+      JSON.stringify({ event: "start", call_id: "c", direction: "inbound" }),
+    );
+    await until("the engine to be starting", () => handed.length === 1);
+    expect(handed[0]?.aborted).toBe(false);
+    bridge.onMessage(JSON.stringify({ event: "stop" }));
+    expect(handed[0]?.aborted).toBe(true);
+  });
+
   test("the caller's voice heard while the engine is still connecting reaches it, in order", async () => {
     const { provider, state } = fakeEngine();
     let connected: () => void = () => {};

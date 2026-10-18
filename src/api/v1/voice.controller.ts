@@ -67,14 +67,14 @@ function intOrNull(value: string | undefined): number | null {
 function callsProvider(setup: () => CallsSetup | null): VoiceProvider {
   return {
     name: "elevenlabs",
-    open: (config, handlers) => {
+    open: (config, handlers, signal) => {
       const s = setup();
       if (!s) throw new Error("calls are not set up for this agent");
       return elevenLabsProvider({
         apiKey: s.apiKey,
         agentId: s.providerAgentId,
         toolSound: s.calls.toolSound,
-      }).open(config, handlers);
+      }).open(config, handlers, signal);
     },
   };
 }

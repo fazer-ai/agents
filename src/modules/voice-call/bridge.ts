@@ -115,6 +115,9 @@ export class CallBridge {
   private start: CallStart | null = null;
   private answered = false;
   private finished = false;
+  // Aborted when the call ends: an engine still starting (queued for its agent, holding it, or in
+  // its handshake) gives up then, instead of finishing a start nobody is on the line for.
+  private readonly ended = new AbortController();
   private playoutEnd = 0;
   // When the agent's voice (not its background sound) stops playing on the line.
   private voiceEnd = 0;
@@ -211,60 +214,64 @@ export class CallBridge {
       const config = await this.options.configure(this.start);
       // Ended while it was being configured: nothing to open, and no engine agent to hold.
       if (this.finished) return;
-      this.session = await this.options.provider.open(config, {
-        onAudio: (pcm) => {
-          if (this.finished) return;
-          this.options.tap?.agent?.(pcm);
-          const now = Date.now();
-          const startsAt = Math.max(this.playoutEnd, now);
-          this.playoutEnd = startsAt + pcmMs(pcm.length, CALL_RATE);
-          const voice = voiceEndInMs(pcm);
-          if (voice === null) {
+      this.session = await this.options.provider.open(
+        config,
+        {
+          onAudio: (pcm) => {
+            if (this.finished) return;
+            this.options.tap?.agent?.(pcm);
+            const now = Date.now();
+            const startsAt = Math.max(this.playoutEnd, now);
+            this.playoutEnd = startsAt + pcmMs(pcm.length, CALL_RATE);
+            const voice = voiceEndInMs(pcm);
+            if (voice === null) {
+              this.socket.send(
+                JSON.stringify({ event: "media", payload: pcmToBase64(pcm) }),
+              );
+              return;
+            }
+            this.voiceEnd = Math.max(this.voiceEnd, startsAt + voice);
+            // The goodbye's voice started: its silence counts from the end of it, not from a bound.
+            if (this.farewellTimer && !this.farewellHeard) {
+              this.farewellHeard = true;
+              this.scheduleFarewell();
+            }
             this.socket.send(
               JSON.stringify({ event: "media", payload: pcmToBase64(pcm) }),
             );
-            return;
-          }
-          this.voiceEnd = Math.max(this.voiceEnd, startsAt + voice);
-          // The goodbye's voice started: its silence counts from the end of it, not from a bound.
-          if (this.farewellTimer && !this.farewellHeard) {
-            this.farewellHeard = true;
-            this.scheduleFarewell();
-          }
-          this.socket.send(
-            JSON.stringify({ event: "media", payload: pcmToBase64(pcm) }),
-          );
+          },
+          onInterrupt: () => {
+            // The person spoke over the goodbye: the call goes on.
+            this.cancelFarewell();
+            this.playoutEnd = Date.now();
+            this.voiceEnd = this.playoutEnd;
+            this.socket.send(JSON.stringify({ event: "clear" }));
+          },
+          onTranscript: (entry) => {
+            this.transcript.push(entry);
+            this.options.onTranscript?.(entry);
+            if (entry.role === "agent" && isFarewell(entry.text))
+              this.armFarewell();
+            // A new turn of the person's, however quietly said: the goodbye was not the end.
+            else if (entry.role === "user") this.cancelFarewell();
+            this.log("transcript", {
+              role: entry.role,
+              chars: entry.text.length,
+            });
+          },
+          onHangup: (reason) => this.hangupAfterPlayout(reason),
+          onEngineConversation: (id) => {
+            this.engineConversationId = id;
+          },
+          onTool: (name, ok) => this.options.onTool?.(name, ok),
+          onMetric: (name, value) => this.log("metric", { name, value }),
+          onError: (error) => {
+            this.log("voice engine error", { error: error.message });
+            if (!this.finished) this.hangupNow("error", error.message);
+          },
         },
-        onInterrupt: () => {
-          // The person spoke over the goodbye: the call goes on.
-          this.cancelFarewell();
-          this.playoutEnd = Date.now();
-          this.voiceEnd = this.playoutEnd;
-          this.socket.send(JSON.stringify({ event: "clear" }));
-        },
-        onTranscript: (entry) => {
-          this.transcript.push(entry);
-          this.options.onTranscript?.(entry);
-          if (entry.role === "agent" && isFarewell(entry.text))
-            this.armFarewell();
-          // A new turn of the person's, however quietly said: the goodbye was not the end.
-          else if (entry.role === "user") this.cancelFarewell();
-          this.log("transcript", {
-            role: entry.role,
-            chars: entry.text.length,
-          });
-        },
-        onHangup: (reason) => this.hangupAfterPlayout(reason),
-        onEngineConversation: (id) => {
-          this.engineConversationId = id;
-        },
-        onTool: (name, ok) => this.options.onTool?.(name, ok),
-        onMetric: (name, value) => this.log("metric", { name, value }),
-        onError: (error) => {
-          this.log("voice engine error", { error: error.message });
-          if (!this.finished) this.hangupNow("error", error.message);
-        },
-      });
+        this.ended.signal,
+      );
       // In the same turn as the assignment, so nothing heard later can overtake it.
       for (const pcm of this.early.splice(0)) this.session.sendAudio(pcm);
       if (this.finished) this.session.close();
@@ -334,6 +341,7 @@ export class CallBridge {
   private finish(by: CallRecord["endedBy"], reason: string | null) {
     if (this.finished) return;
     this.finished = true;
+    this.ended.abort();
     if (this.hangupTimer) clearTimeout(this.hangupTimer);
     this.cancelFarewell();
     this.session?.close();

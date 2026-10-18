@@ -390,6 +390,7 @@
     "voiceAgentNotResponder": "Um agente de ligações não responde mensagens. Escolha-o em Agente de ligações.",
     "voiceAgentRequired": "Só um agente de ligações atende ligações.",
     "voiceInboxChatwootUnreachable": "O vínculo foi salvo, mas o Chatwoot não respondeu. Salvar qualquer agente de ligações tenta de novo.",
+    "voiceInboxNotConnector": "Só uma caixa do WhatsApp no conector da fazer.ai recebe ligações.",
     "voiceInboxNotWhatsapp": "Só uma caixa do WhatsApp recebe ligações.",
     "webhookDeliveryNotDead": "Só uma entrega morta pode ser reenfileirada; esta está em {{status}}",
     "webhookDeliveryNotFound": "Entrega de webhook não encontrada",

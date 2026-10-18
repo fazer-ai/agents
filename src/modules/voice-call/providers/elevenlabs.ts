@@ -61,7 +61,8 @@ export interface ElevenLabsOptions {
 export function elevenLabsProvider(options: ElevenLabsOptions): VoiceProvider {
   return {
     name: "elevenlabs",
-    open: (config, handlers) => openSession(options, config, handlers),
+    open: (config, handlers, signal) =>
+      openSession(options, config, handlers, signal),
   };
 }
 
@@ -101,17 +102,36 @@ async function signedUrl(
 // starts. So one call holds the agent from declaring its tools until its conversation started, and
 // the next call declares its own only then. In this process through a queue, and across the processes
 // that take calls (web replicas do) through the engine hold.
-function holdHere(agentId: string): Promise<() => void> {
-  return new Promise((acquired) => {
+// A call that ended while queued leaves the wait at once, and gives its turn up when it comes, so the
+// calls behind it do not wait for an abandoned start.
+function holdHere(
+  agentId: string,
+  signal: AbortSignal | undefined,
+): Promise<() => void> {
+  return new Promise((acquired, refused) => {
+    const gaveUp = () =>
+      refused(new Error("elevenlabs: the call ended before it started"));
+    if (signal?.aborted) return gaveUp();
+    signal?.addEventListener("abort", gaveUp, { once: true });
     void withKeyedQueue(
       `elevenlabs-agent:${agentId}`,
-      () => new Promise<void>((release) => acquired(release)),
+      () =>
+        new Promise<void>((release) => {
+          signal?.removeEventListener("abort", gaveUp);
+          if (signal?.aborted) release();
+          else acquired(release);
+        }),
     );
   });
 }
 
 // The longest a start holds the agent: the declaration and the signed URL, the socket's opening and
 // the conversation's start, each bounded by the open deadline, with a margin for the round trips.
+// A deadline, cut short by the call's end when there is one.
+function withEnd(deadline: AbortSignal, ended: AbortSignal | undefined) {
+  return ended ? AbortSignal.any([deadline, ended]) : deadline;
+}
+
 function holdLeaseMs(openTimeoutMs: number): number {
   return openTimeoutMs * 3 + 5_000;
 }
@@ -120,16 +140,17 @@ async function openSession(
   options: ElevenLabsOptions,
   config: VoiceSessionConfig,
   handlers: VoiceSessionHandlers,
+  callEnded?: AbortSignal,
 ): Promise<VoiceSession> {
   const openMs = options.openTimeoutMs ?? OPEN_TIMEOUT_MS;
   const leaseMs = holdLeaseMs(openMs);
-  const releaseHere = await holdHere(options.agentId);
+  const releaseHere = await holdHere(options.agentId, callEnded);
   let hold: EngineHold;
   try {
     // A holder elsewhere frees the agent within its lease, so waiting longer means it is stuck.
     hold = await (options.holdEngine ?? dbEngineHold(leaseMs, options.base))(
       options.agentId,
-      AbortSignal.timeout(leaseMs),
+      withEnd(AbortSignal.timeout(leaseMs), callEnded),
     );
   } catch (err) {
     releaseHere();
@@ -162,7 +183,7 @@ async function openSession(
     });
   };
   try {
-    return await openHeld(options, config, handlers, hold, release);
+    return await openHeld(options, config, handlers, hold, release, callEnded);
   } catch (err) {
     release();
     throw err;
@@ -175,10 +196,15 @@ async function openHeld(
   handlers: VoiceSessionHandlers,
   hold: EngineHold,
   release: () => void,
+  callEnded: AbortSignal | undefined,
 ): Promise<VoiceSession> {
   // The agent is held from here: a declaration or a signed URL that hangs would hold every later
-  // call to it, so both are bounded by the same deadline as the socket's opening.
-  const signal = AbortSignal.timeout(options.openTimeoutMs ?? OPEN_TIMEOUT_MS);
+  // call to it, so both are bounded by the same deadline as the socket's opening, and both stop
+  // when the call ends.
+  const signal = withEnd(
+    AbortSignal.timeout(options.openTimeoutMs ?? OPEN_TIMEOUT_MS),
+    callEnded,
+  );
   const declared = await syncElevenLabsTools(
     {
       ...options,
@@ -203,16 +229,28 @@ async function openHeld(
 
   await new Promise<void>((resolve, reject) => {
     // A handshake that lands after the call gave up would be a socket nobody closes.
-    const timer = setTimeout(() => {
+    const giveUp = (why: string) => {
+      clearTimeout(timer);
+      callEnded?.removeEventListener("abort", onEnded);
       ws.close();
-      reject(new Error("elevenlabs: open timed out"));
-    }, options.openTimeoutMs ?? OPEN_TIMEOUT_MS);
+      reject(new Error(why));
+    };
+    const timer = setTimeout(
+      () => giveUp("elevenlabs: open timed out"),
+      options.openTimeoutMs ?? OPEN_TIMEOUT_MS,
+    );
+    const onEnded = () =>
+      giveUp("elevenlabs: the call ended before it started");
+    if (callEnded?.aborted) return onEnded();
+    callEnded?.addEventListener("abort", onEnded, { once: true });
     ws.addEventListener("open", () => {
       clearTimeout(timer);
+      callEnded?.removeEventListener("abort", onEnded);
       resolve();
     });
     ws.addEventListener("error", () => {
       clearTimeout(timer);
+      callEnded?.removeEventListener("abort", onEnded);
       reject(new Error("elevenlabs: could not open the socket"));
     });
   });

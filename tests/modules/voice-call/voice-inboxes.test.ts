@@ -41,6 +41,7 @@ import type { CallRecord } from "@/modules/voice-call/bridge";
 import * as voiceInboxes from "@/modules/voice-call/inboxes";
 import {
   bindInboxVoiceAgent,
+  checkVoiceBinding,
   syncVoiceAgentInboxes,
   syncVoiceInboxes,
   voiceStreamUrl,
@@ -780,6 +781,48 @@ describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
       where: { id: whatsappInboxId },
     });
     expect(inbox.voiceAgentId).toBe(voiceId);
+  });
+
+  // The fork takes a voice agent only on the connector's own WhatsApp provider: a Cloud inbox is
+  // refused here, before the binding is stored, rather than by Chatwoot after it (502, kept).
+  test("a WhatsApp inbox on another provider is refused before anything is stored", async () => {
+    const cloud = await suDb.inbox.create({
+      data: {
+        tenantId: tenant,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: 531,
+        name: "Inbox 531",
+        channelType: "Channel::Whatsapp",
+        provider: "whatsapp_cloud",
+      },
+    });
+    const cw = fakeChatwoot();
+    const refused = {
+      statusCode: 422,
+      translationKey: "errors.voiceInboxNotConnector",
+    };
+    await expect(
+      checkVoiceBinding(ctx(tenant), cloud.id, voiceId, appDb),
+    ).rejects.toMatchObject(refused);
+    await expect(
+      bindInboxVoiceAgent(ctx(tenant), cloud.id, voiceId, cw, appDb),
+    ).rejects.toMatchObject(refused);
+    expect(cw.writes).toEqual([]);
+    const stored = await suDb.inbox.findUniqueOrThrow({
+      where: { id: cloud.id },
+    });
+    expect([stored.voiceAgentId, stored.voiceRouteToken]).toEqual([null, null]);
+    // On the connector's provider it binds.
+    await suDb.inbox.update({
+      where: { id: cloud.id },
+      data: { provider: "native" },
+    });
+    await bindInboxVoiceAgent(ctx(tenant), cloud.id, voiceId, cw, appDb);
+    expect(
+      (await suDb.inbox.findUniqueOrThrow({ where: { id: cloud.id } }))
+        .voiceAgentId,
+    ).toBe(voiceId);
+    await bindInboxVoiceAgent(ctx(tenant), cloud.id, null, cw, appDb);
   });
 
   test("a voice agent is never an inbox's text responder", async () => {

@@ -70,6 +70,7 @@ import { bindInboxVoiceAgent } from "@/modules/voice-call/inboxes";
 // translate('errors.inboxStillExists', 'This inbox still exists in Chatwoot. Delete it there first.')
 // translate('errors.chatwootInboxProbeFailed', 'Could not confirm with Chatwoot that this inbox was deleted.')
 // translate('errors.voiceInboxNotWhatsapp', 'Only a WhatsApp inbox takes calls.')
+// translate('errors.voiceInboxNotConnector', 'Only a WhatsApp inbox on the fazer.ai connector takes calls.')
 // translate('errors.voiceAgentRequired', 'Only a calls agent answers calls.')
 // translate('errors.voiceInboxChatwootUnreachable', 'The binding was saved, but Chatwoot could not be reached. Saving any calls agent again retries it.')
 // translate('errors.voiceAgentNotResponder', 'A calls agent does not answer messages. Choose it under Calls agent.')

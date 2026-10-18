@@ -23,7 +23,7 @@ import {
 } from "@/modules/chatwoot/instance";
 import { ensureAgentBot } from "@/modules/chatwoot/provisioning";
 import { generateRouteToken } from "@/modules/webhooks/inbound/route-token";
-import { WHATSAPP_CHANNEL } from "./channel";
+import { takesCalls, WHATSAPP_CHANNEL } from "./channel";
 
 export const VOICE_STREAM_MOUNT = "/api/v1/voice/stream";
 
@@ -241,6 +241,7 @@ async function syncInbox(
  */
 export function voiceBindingRefusal(state: {
   channelType: string | null;
+  provider: string | null;
   disconnected: boolean;
   agentKind: string | null | undefined;
 }): AppError | null {
@@ -255,6 +256,12 @@ export function voiceBindingRefusal(state: {
       "only a WhatsApp inbox takes calls",
       422,
       "errors.voiceInboxNotWhatsapp",
+    );
+  if (!takesCalls(state))
+    return new AppError(
+      "only a WhatsApp inbox on the fazer.ai connector takes calls",
+      422,
+      "errors.voiceInboxNotConnector",
     );
   if (state.agentKind === null) return new NotFoundError("agent not found");
   if (state.agentKind !== undefined && state.agentKind !== "voice")
@@ -278,6 +285,7 @@ export async function checkVoiceBinding(
       where: { id: inboxId },
       select: {
         channelType: true,
+        provider: true,
         instance: { select: { disconnectedAt: true } },
       },
     });
@@ -291,6 +299,7 @@ export async function checkVoiceBinding(
           });
     return {
       channelType: inbox.channelType,
+      provider: inbox.provider,
       disconnected: inbox.instance.disconnectedAt !== null,
       agentKind: agent === undefined ? undefined : (agent?.kind ?? null),
     };
@@ -318,6 +327,7 @@ export async function bindInboxVoiceAgent(
       where: { id: inboxId },
       select: {
         channelType: true,
+        provider: true,
         chatwootInstanceId: true,
       },
     });
@@ -337,6 +347,7 @@ export async function bindInboxVoiceAgent(
             SELECT kind FROM agents WHERE id = ${agentId} FOR KEY SHARE`;
     const refusal = voiceBindingRefusal({
       channelType: inbox.channelType,
+      provider: inbox.provider,
       disconnected: account[0]?.disconnected_at != null,
       agentKind: agent === undefined ? undefined : (agent[0]?.kind ?? null),
     });

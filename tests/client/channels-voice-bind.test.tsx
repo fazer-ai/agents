@@ -93,6 +93,19 @@ function serve() {
             chatwootInstanceId: "a1",
             chatwootInboxId: 100,
             channelType: WHATSAPP_CHANNEL,
+            provider: "native",
+          },
+          // A WhatsApp inbox the connector does not carry: Chatwoot refuses a voice agent there.
+          {
+            id: "i2",
+            name: "WhatsApp Cloud",
+            agentId: "p1",
+            observerAgentIds: [],
+            voiceAgentId: null,
+            chatwootInstanceId: "a1",
+            chatwootInboxId: 101,
+            channelType: WHATSAPP_CHANNEL,
+            provider: "whatsapp_cloud",
           },
         ],
       });
@@ -133,6 +146,11 @@ describe("the calls picker on the Channels page", () => {
       ),
     );
     const picker = await screen.findByRole("button", { name: "Calls agent" });
+    await screen.findByText("WhatsApp Cloud");
+    // Only the connector's inbox offers the calls picker.
+    expect(screen.getAllByRole("button", { name: "Calls agent" })).toHaveLength(
+      1,
+    );
     expect(picker.textContent).toContain("Voz antiga");
     fireEvent.pointerDown(picker, { button: 0, ctrlKey: false });
     fireEvent.click(await screen.findByRole("menuitem", { name: "Voz nova" }));

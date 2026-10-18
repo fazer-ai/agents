@@ -59,8 +59,10 @@ export interface VoiceSession {
 
 export interface VoiceProvider {
   readonly name: string;
+  /** `signal` aborts when the call's stream ended before the session opened: the start gives up. */
   open(
     config: VoiceSessionConfig,
     handlers: VoiceSessionHandlers,
+    signal?: AbortSignal,
   ): Promise<VoiceSession>;
 }

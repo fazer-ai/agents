@@ -526,3 +526,149 @@ describe("a call that opens and is never answered", () => {
     second.close();
   }, 20_000);
 });
+
+// A call that ends (the person hung up, the stream dropped) while its engine is still starting gives
+// the start up at once: queued behind another call to the same agent, acquiring the agent's hold, in
+// a request, or in the socket's handshake. A start nobody is on the line for would otherwise hold the
+// agent, and every later call to it, until its own deadlines passed.
+describe("a call that ends while its engine is starting", () => {
+  const handlers: VoiceSessionHandlers = {
+    onAudio: () => {},
+    onInterrupt: () => {},
+    onTranscript: () => {},
+    onHangup: () => {},
+    onError: () => {},
+  };
+  // Every declaration waits for its own abort; `asked` names each open that reached one.
+  function declarationsHang() {
+    const asked: string[] = [];
+    const fetchImpl = ((input: string, init?: RequestInit) => {
+      if (input.includes("get-signed-url"))
+        return Promise.resolve(
+          new Response(JSON.stringify({ signed_url: "ws://127.0.0.1:1/" })),
+        );
+      asked.push(String(init?.body ?? ""));
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () =>
+          reject(new Error("aborted")),
+        );
+      });
+    }) as unknown as typeof fetch;
+    return { asked, fetchImpl };
+  }
+  // A start that should give up and does not would otherwise leave the test waiting with no end: it
+  // fails here, naming the start, at a bound well under the suite's.
+  const settles = async <T>(start: Promise<T>): Promise<T> => {
+    let outcome: { value: T } | { error: unknown } | null = null;
+    start.then(
+      (value) => {
+        outcome = { value };
+      },
+      (error: unknown) => {
+        outcome = { error };
+      },
+    );
+    const settled = await until("the start to settle", () => outcome, {
+      deadlineMs: 3_000,
+    });
+    if ("error" in settled) throw settled.error;
+    return settled.value;
+  };
+  const opened = (
+    provider: ReturnType<typeof elevenLabsProvider>,
+    n: number,
+    signal: AbortSignal,
+  ) =>
+    provider.open(
+      {
+        ...CONFIG,
+        tools: CONFIG.tools?.map((t) => ({ ...t, description: `v${n}` })),
+      },
+      handlers,
+      signal,
+    );
+
+  test("queued behind another call, it leaves the queue, and the call after it is not held by it", async () => {
+    const api = declarationsHang();
+    const provider = elevenLabsProvider({
+      apiKey: "k",
+      holdEngine: memoryEngineHold(),
+      agentId: "agent-ends-queued",
+      fetchImpl: api.fetchImpl,
+      openTimeoutMs: 60_000,
+    });
+    const first = new AbortController();
+    const second = new AbortController();
+    const third = new AbortController();
+    const one = opened(provider, 1, first.signal);
+    await until("the first call to declare", () => api.asked.length === 1);
+    const two = opened(provider, 2, second.signal);
+    const three = opened(provider, 3, third.signal);
+    second.abort();
+    await expect(settles(two)).rejects.toThrow("ended before it started");
+    first.abort();
+    await expect(settles(one)).rejects.toThrow("aborted");
+    // The second gave its turn up: the third declares next.
+    await until("the third call to declare", () => api.asked.length === 2);
+    expect(api.asked[1]).toContain("v3");
+    third.abort();
+    await expect(settles(three)).rejects.toThrow("aborted");
+  });
+
+  test("acquiring the agent's hold, it stops waiting", async () => {
+    let waiting = false;
+    const provider = elevenLabsProvider({
+      apiKey: "k",
+      // Another process holds the agent: the hold is only ever given up by the signal.
+      holdEngine: (_agentId, signal) =>
+        new Promise((_resolve, reject) => {
+          waiting = true;
+          signal.addEventListener("abort", () => reject(signal.reason), {
+            once: true,
+          });
+        }),
+      agentId: "agent-ends-holding",
+      fetchImpl: declarationsHang().fetchImpl,
+      openTimeoutMs: 60_000,
+    });
+    const ended = new AbortController();
+    const one = opened(provider, 1, ended.signal);
+    await until("the call to wait for the hold", () => waiting);
+    ended.abort();
+    await expect(settles(one)).rejects.toThrow("held by another call's start");
+  });
+
+  test("in the socket's handshake, it closes the socket", async () => {
+    const sockets: Array<{ closed: boolean }> = [];
+    class NeverOpens {
+      readyState = 0;
+      closed = false;
+      constructor() {
+        sockets.push(this);
+      }
+      addEventListener() {}
+      send() {}
+      close() {
+        this.closed = true;
+      }
+    }
+    globalThis.WebSocket = NeverOpens as unknown as typeof WebSocket;
+    const fetchImpl = (async (input: string) =>
+      input.includes("get-signed-url")
+        ? new Response(JSON.stringify({ signed_url: "ws://127.0.0.1:1/" }))
+        : new Response("{}")) as unknown as typeof fetch;
+    const provider = elevenLabsProvider({
+      apiKey: "k",
+      holdEngine: memoryEngineHold(),
+      agentId: "agent-ends-handshake",
+      fetchImpl,
+      openTimeoutMs: 60_000,
+    });
+    const ended = new AbortController();
+    const one = opened(provider, 1, ended.signal);
+    await until("the socket to be dialled", () => sockets.length === 1);
+    ended.abort();
+    await expect(settles(one)).rejects.toThrow("ended before it started");
+    expect(sockets.map((s) => s.closed)).toEqual([true]);
+  });
+});

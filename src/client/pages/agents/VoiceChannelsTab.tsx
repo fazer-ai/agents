@@ -23,7 +23,7 @@ import {
 import { ServiceLogo } from "@/client/components/icons/ServiceLogo";
 import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
-import { WHATSAPP_CHANNEL } from "@/modules/voice-call/channel";
+import { takesCalls } from "@/modules/voice-call/channel";
 
 type DeploymentData = Awaited<
   ReturnType<typeof api.api.v1.chatwoot.deployment.get>
@@ -155,7 +155,8 @@ export function VoiceChannelsTab({
   const accountLabel = (inst: Instance) =>
     inst.accountName ??
     t("channels.account", "Account {{id}}", { id: inst.accountId });
-  const whatsapp = inboxes.filter((ib) => ib.channelType === WHATSAPP_CHANNEL);
+  // Only the inboxes that can take calls: WhatsApp on the connector (the fork refuses the others).
+  const whatsapp = inboxes.filter(takesCalls);
   const groups = instances
     .map((inst) => ({
       inst,

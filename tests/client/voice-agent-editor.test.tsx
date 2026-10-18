@@ -542,6 +542,56 @@ describe("the editor of a voice agent", () => {
     expect(screen.queryByText("No WhatsApp inbox to take calls")).toBeNull();
   });
 
+  // Chatwoot refuses a voice agent on a WhatsApp inbox the connector does not carry: the tab lists
+  // only the inboxes that can take calls.
+  test("Channels lists only the WhatsApp inboxes on the connector", async () => {
+    const stub = stubEditorApi({ kind: "voice", settings: {} });
+    const json = (body: unknown) =>
+      new Response(JSON.stringify(body), {
+        headers: { "content-type": "application/json" },
+      });
+    const inbox = (id: string, name: string, provider: string | null) => ({
+      id,
+      name,
+      agentId: null,
+      observerAgentIds: [],
+      voiceAgentId: null,
+      chatwootInstanceId: "a1",
+      chatwootInboxId: Number(id),
+      channelType: "Channel::Whatsapp",
+      provider,
+    });
+    stub.override = (method, path) => {
+      if (method !== "GET") return undefined;
+      if (path === "/api/v1/chatwoot/deployment")
+        return json({
+          deployment: { baseUrl: "https://chat.example.com" },
+          accounts: [
+            {
+              id: "a1",
+              accountId: 1,
+              accountName: "Conta",
+              disconnectedAt: null,
+            },
+          ],
+        });
+      if (path === "/api/v1/chatwoot/inboxes")
+        return json({
+          inboxes: [
+            inbox("1", "Loja conector", "native"),
+            inbox("2", "Loja ainda sem sync", null),
+            inbox("3", "Loja Cloud", "whatsapp_cloud"),
+          ],
+        });
+      if (path === "/api/v1/agents") return json({ agents: [], total: 0 });
+      return undefined;
+    };
+    await renderEditor(stub, "channels");
+    expect(await screen.findByText("Loja conector")).not.toBeNull();
+    expect(screen.queryByText("Loja ainda sem sync")).not.toBeNull();
+    expect(screen.queryByText("Loja Cloud")).toBeNull();
+  });
+
   // The Model card is not drawn for a voice agent, so nothing it would refuse can hold the save: a
   // base URL with no scheme, or no model at all (an imported agent).
   for (const [label, modelConfig] of [

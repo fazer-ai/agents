@@ -47,7 +47,7 @@ import { apiErrorMessage } from "@/client/lib/apiError";
 import { chatwootInboxNewUrl } from "@/client/lib/chatwootLinks";
 import { cn } from "@/client/lib/utils";
 import { isValidHttpUrl } from "@/client/lib/validation";
-import { WHATSAPP_CHANNEL } from "@/modules/voice-call/channel";
+import { takesCalls } from "@/modules/voice-call/channel";
 
 type DeploymentData = Awaited<
   ReturnType<typeof api.api.v1.chatwoot.deployment.get>
@@ -1598,7 +1598,7 @@ export function ChannelsPage() {
                                   bindInbox(ib.id, agentId)
                                 }
                               />
-                              {ib.channelType === WHATSAPP_CHANNEL &&
+                              {takesCalls(ib) &&
                                 (ib.voiceAgentId !== null ||
                                   agents.some((a) => a.kind === "voice")) && (
                                   <InboxAgentPicker

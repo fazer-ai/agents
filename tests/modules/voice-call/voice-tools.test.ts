@@ -6,6 +6,7 @@ import {
   invocationDeadlineFetch,
   withinInvocation,
 } from "@/modules/voice-call/invocation-deadline";
+import { elevenLabsToolDefs } from "@/modules/voice-call/providers/elevenlabs-tools";
 import { toVoiceTools, voiceAgentFrom } from "@/modules/voice-call/tools";
 
 // A tool that failed without throwing (an HTTP 500, a refused contact update) answers a ToolMessage
@@ -194,5 +195,45 @@ describe("a tool whose argument may be null", () => {
     await voice?.invoke({ horario: "null" }, "c1");
     await voice?.invoke({ horario: "comercial" }, "c2");
     expect(seen).toEqual([null, "comercial"]);
+  });
+});
+
+// An MCP tool may take a dictionary as its whole argument (keys the caller chooses). ElevenLabs takes
+// only an object of declared fields, so the dictionary travels as one JSON field and is unwrapped
+// before the tool runs.
+describe("a tool whose whole argument is a dictionary", () => {
+  test("is declared as one JSON field and receives the object it held", async () => {
+    const seen: unknown[] = [];
+    const free = tool(
+      async (input: Record<string, unknown>) => {
+        seen.push(input);
+        return "ok";
+      },
+      {
+        name: "registrar",
+        description: "d",
+        schema: {
+          type: "object",
+          properties: {},
+          additionalProperties: true,
+        },
+      },
+    );
+    const [voice] = toVoiceTools([free]);
+    const [declared] = elevenLabsToolDefs(voice ? [voice] : []);
+    expect(declared?.parameters).toEqual({
+      type: "object",
+      properties: {
+        arguments: {
+          type: "string",
+          description: "registrar (a JSON value: object)",
+        },
+      },
+      required: ["arguments"],
+    });
+    expect(
+      await voice?.invoke({ arguments: '{"origem":"site","lote":3}' }, "c1"),
+    ).toBe("ok");
+    expect(seen).toEqual([{ origem: "site", lote: 3 }]);
   });
 });

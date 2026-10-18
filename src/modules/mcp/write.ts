@@ -67,6 +67,7 @@ import {
   tryResolveVaultSecret,
   vaultNameByRef,
 } from "@/modules/vault/service";
+import { keepCallsSystemFields } from "@/modules/voice-call/settings";
 import { vaultCreateUrl, vaultFillUrl } from "./console-links";
 import { hasScope, type VerifiedToken } from "./oauth/tokens";
 
@@ -673,6 +674,9 @@ export async function agentSettingsSet(
       (current.settings ?? {}) as Record<string, unknown>,
       patch,
     );
+    // The server-owned id on the voice provider, as the apply keeps it (`updateAgent`): the preview's
+    // diff would otherwise promise a change the write ignores.
+    keepCallsSystemFields(nextBag, current.settings);
     // On the MERGED bag, not the patch: fields merge within a block, so a stored fence survives a
     // patch that touches the same block, and the preview must refuse what the apply would.
     assertResolveLabelsNotProtected(nextBag);

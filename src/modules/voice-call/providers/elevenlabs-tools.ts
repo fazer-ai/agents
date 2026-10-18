@@ -242,15 +242,55 @@ function pick(schema: Schema): Schema {
     : {};
 }
 
+// A tool's arguments, when they are a dictionary themselves (keys the caller chooses), are one JSON
+// field under this name: ElevenLabs takes only an object of declared fields as a tool's parameters.
+const ROOT_DICTIONARY_FIELD = "arguments";
+
+/** A tool's parameters as ElevenLabs takes them: always an object of declared fields. */
+export function elevenLabsParameters(parameters: Schema, name: string): Schema {
+  const root = { type: "object", ...parameters };
+  if (isDictionary(root))
+    return {
+      type: "object",
+      properties: {
+        [ROOT_DICTIONARY_FIELD]: {
+          type: "string",
+          description: `${name} (a JSON value: object)`,
+        },
+      },
+      required: [ROOT_DICTIONARY_FIELD],
+    };
+  const { description: _, ...declared } = elevenLabsSchema(root, name);
+  return declared;
+}
+
+/** The arguments the engine sent for a tool, as the tool's own schema takes them. */
+export function fromElevenLabsToolArgs(
+  parameters: Schema,
+  value: unknown,
+): unknown {
+  const root = { type: "object", ...parameters };
+  if (!isDictionary(root)) return fromElevenLabsArgs(root, value);
+  const raw = (value as Record<string, unknown> | null)?.[
+    ROOT_DICTIONARY_FIELD
+  ];
+  if (typeof raw !== "string") return value;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed
+      : value;
+  } catch {
+    return value;
+  }
+}
+
 export function elevenLabsToolDefs(
   tools: VoiceTool[] = [],
   toolSound: string | null = null,
 ) {
   return tools.map((tool) => {
-    const { description: _, ...parameters } = elevenLabsSchema(
-      { type: "object", ...tool.parameters },
-      tool.name,
-    );
+    const parameters = elevenLabsParameters(tool.parameters, tool.name);
     return {
       type: "client",
       name: tool.name,

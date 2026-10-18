@@ -23,7 +23,7 @@ import {
 } from "./invocation-deadline";
 import {
   CALL_HTTP_TOOL_TIMEOUT_MS,
-  fromElevenLabsArgs,
+  fromElevenLabsToolArgs,
 } from "./providers/elevenlabs-tools";
 import type { VoiceTool } from "./providers/types";
 import type { VoiceRoute } from "./service";
@@ -73,7 +73,7 @@ export function toVoiceTools(all: StructuredToolInterface[]): VoiceTool[] {
                 type: "tool_call",
                 id: callId,
                 name: tool.name,
-                args: fromElevenLabsArgs(
+                args: fromElevenLabsToolArgs(
                   (fn.parameters ?? {}) as Record<string, unknown>,
                   args,
                 ),

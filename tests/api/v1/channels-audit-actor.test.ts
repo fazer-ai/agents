@@ -361,6 +361,7 @@ describe.skipIf(!dbUp)("the Channels page names who wrote", () => {
       "inbox.bind",
       "inbox.reconnect",
       "inbox.remove",
+      "instance.disconnect",
       "instance.remove",
       "deployment.disconnect",
     ]);

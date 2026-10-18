@@ -98,6 +98,13 @@ async function rowsOf(instanceId: bigint) {
   );
 }
 
+// The audit rows a removal of this account wrote, by action, in order.
+async function auditOf(instanceId: bigint) {
+  const rows = await suDb.$queryRaw<{ action: string }[]>`
+    SELECT action FROM audit_logs WHERE target = ${`chatwoot_instance:${instanceId}`} ORDER BY id`;
+  return rows.map((r) => r.action);
+}
+
 // The app client with a hook in front of the N-th scoped transaction it opens: the removal is a
 // sequence of them (disconnect, then one per batch), so this is where "between two of them" is.
 function beforeTransaction(n: number, hook: () => Promise<void>) {
@@ -322,8 +329,15 @@ describe.skipIf(!dbUp)("removing a large Chatwoot account", () => {
       await suDb.inboxObserver.count({ where: { agentId: agent.id } }),
     ).toBe(0);
     expect((await rowsOf(big.id)).deliveries).toBe(2_000);
+    // Disconnected, not removed: the trail says exactly that until the delete happens.
+    expect(await auditOf(big.id)).toEqual(["instance.disconnect"]);
 
     await removeChatwootInstance(ctx(tenantId), big.id, appDb);
+    // The retry finds nothing left to disconnect, so the trail gains the removal and nothing else.
+    expect(await auditOf(big.id)).toEqual([
+      "instance.disconnect",
+      "instance.remove",
+    ]);
     expect(await rowsOf(big.id)).toMatchObject({
       instances: 0,
       contacts: 0,
@@ -390,5 +404,6 @@ describe.skipIf(!dbUp)("removing a large Chatwoot account", () => {
       conversations: 3_000,
       deliveries: 2_000,
     });
+    expect(await auditOf(big.id)).not.toContain("instance.remove");
   }, 120_000);
 });

@@ -1156,7 +1156,10 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
       select: { id: true },
     });
     await removeChatwootInstance(ctx(), inst.id, appDb);
-    const [row] = await rows();
+    // Two rows: the disconnect that opens the removal, and the removal, written by the delete itself.
+    const [disconnect, row] = await rows();
+    expect(disconnect?.action).toBe("instance.disconnect");
+    expect(disconnect?.before).toMatchObject({ accountId: 2, removal: true });
     expect(row?.action).toBe("instance.remove");
     expect(row?.target).toBe(`chatwoot_instance:${inst.id}`);
     expect(row?.before).toMatchObject({ accountId: 2 });

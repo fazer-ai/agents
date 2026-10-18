@@ -181,7 +181,25 @@ describe.skipIf(!dbUp)("removing a large Chatwoot account", () => {
       deliveries: 100,
     });
 
-    await removeChatwootInstance(ctx(tenantId), big.id, appDb);
+    let polling = true;
+    const poll = (async () => {
+      while (polling) {
+        const rows = await suDb.$queryRawUnsafe<unknown[]>(`
+          SELECT pid, state, wait_event_type, wait_event, round(extract(epoch from now() - query_start)::numeric, 2) AS secs,
+                 left(regexp_replace(query, '\\s+', ' ', 'g'), 300) AS q, pg_blocking_pids(pid) AS blockers
+            FROM pg_stat_activity
+           WHERE datname = current_database() AND pid <> pg_backend_pid() AND state <> 'idle'
+             AND now() - query_start > interval '700 milliseconds'`);
+        if (rows.length) console.error("DIAG", JSON.stringify(rows, (_k, v) => typeof v === "bigint" ? String(v) : v));
+        await new Promise((r) => setTimeout(r, 500));
+      }
+    })();
+    try {
+      await removeChatwootInstance(ctx(tenantId), big.id, appDb);
+    } finally {
+      polling = false;
+      await poll;
+    }
 
     expect(await rowsOf(big.id)).toEqual({
       instances: 0,

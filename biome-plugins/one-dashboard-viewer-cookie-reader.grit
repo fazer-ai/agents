@@ -1,0 +1,14 @@
+// Refuses naming the dashboard viewer's cookie outside the viewer's controller and module (scoped in
+// biome.jsonc). A viewer session reaches the viewer's routes and nothing else because nothing else
+// reads it: the console's routes and the WebSocket authenticate through `authPlugin`, which reads the
+// console's own cookie. A second reader is how a person outside the account would reach the console
+// (docs/dashboards.md, "Viewer access").
+language js;
+
+or {
+    JsStringLiteralExpression() as $site where { $site <: r"[\s\S]*fazerai_dashboard_viewer[\s\S]*" },
+    JsTemplateExpression() as $site where { $site <: r"[\s\S]*fazerai_dashboard_viewer[\s\S]*" },
+    JsReferenceIdentifier() as $site where { $site <: r"VIEWER_COOKIE" }
+} where {
+    register_diagnostic(span = $site, message = "Only the dashboard viewer's controller and module read the viewer's cookie: a second reader would let a viewer session reach another route.")
+}

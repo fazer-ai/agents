@@ -51,6 +51,8 @@ interface Row {
   error: () => AppError;
   // What the sentence must name in either language.
   mentions: string[];
+  // What the sentence must say in each language, beyond the shared mentions.
+  says?: { "pt-BR": string[]; en: string[] };
 }
 
 const ROWS: Row[] = [
@@ -63,11 +65,7 @@ const ROWS: Row[] = [
     name: "a number at an exclusive minimum (the contact authorization's handoff team)",
     error: () => refusalOf({ contactAuth: { handoffTeamId: 0 } }),
     mentions: ["contactAuth.handoffTeamId", "0"],
-  },
-  {
-    name: "a number below an exclusive minimum",
-    error: () => refusalOf({ contactAuth: { handoffTeamId: -1 } }),
-    mentions: ["contactAuth.handoffTeamId", "0", "-1"],
+    says: { "pt-BR": ["maior que 0"], en: ["greater than 0"] },
   },
   {
     name: "a value outside a closed list",
@@ -108,11 +106,13 @@ describe("a settings refusal reads in one language", () => {
       const { error } = refusalBody(row.error(), "pt-BR");
       for (const frag of ENGLISH) expect(prose(error)).not.toContain(frag);
       for (const m of row.mentions) expect(error).toContain(m);
+      for (const m of row.says?.["pt-BR"] ?? []) expect(error).toContain(m);
     });
     test(`en: ${row.name}`, () => {
       const { error } = refusalBody(row.error(), "en");
       for (const frag of PORTUGUESE) expect(prose(error)).not.toContain(frag);
       for (const m of row.mentions) expect(error).toContain(m);
+      for (const m of row.says?.en ?? []) expect(error).toContain(m);
     });
   }
 

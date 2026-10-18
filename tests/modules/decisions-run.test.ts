@@ -5,6 +5,7 @@ import { fenceReporterOf } from "@/graph/tools/fence-report";
 import { ChatwootExpiredError } from "@/modules/chatwoot/client";
 import { ruleStateKey } from "@/modules/decisions/config";
 import { applyDecisions, type DecisionProgress } from "@/modules/decisions/run";
+import { until } from "../utils/poll";
 
 // The tick's deadline inside `applyDecisions`, without the observation's fence (here always still
 // wanted), so each of the two checks is the only thing that can stop the next rule.
@@ -623,7 +624,7 @@ describe("applyDecisions and the trigger state", () => {
 
   test("a call given up on at the deadline that then says it wrote nothing is undone, and the caller is told", async () => {
     const controller = new AbortController();
-    let say: () => void = () => {};
+    let say: (() => void) | null = null;
     const progress: DecisionProgress = {};
     const run = applyDecisions(
       {
@@ -654,13 +655,16 @@ describe("applyDecisions and the trigger state", () => {
       new Set(),
       progress,
     );
-    await Bun.sleep(5);
+    void run.catch(() => {});
+    const late = await until("the tool to be dispatched", () => say);
     expect(progress.undo).toEqual([]);
     let told = 0;
     progress.onChange = () => {
       told++;
     };
-    say();
+    // The deadline passes first, so the report below is one the tick has already given up on.
+    controller.abort(new Error("deadline"));
+    late();
     const key = ruleStateKey({
       when,
       action: { tool: "set_labels", args: {} },
@@ -668,12 +672,11 @@ describe("applyDecisions and the trigger state", () => {
     });
     expect(progress.undo).toEqual([key]);
     expect(told).toBe(1);
-    controller.abort(new Error("deadline"));
-    void run.catch(() => {});
   });
 
   test("a whole refusal said after the call was given up on undoes the latch too", async () => {
-    let say: () => void = () => {};
+    const controller = new AbortController();
+    let say: (() => void) | null = null;
     const progress: DecisionProgress = {};
     const run = applyDecisions(
       {
@@ -697,7 +700,7 @@ describe("applyDecisions and the trigger state", () => {
         ),
       ],
       [],
-      new AbortController().signal,
+      controller.signal,
       async () => true,
       10,
       () => null,
@@ -705,8 +708,15 @@ describe("applyDecisions and the trigger state", () => {
       new Set(),
       progress,
     );
-    await Bun.sleep(5);
-    say();
+    void run.catch(() => {});
+    const late = await until("the tool to be dispatched", () => say);
+    let told = 0;
+    progress.onChange = () => {
+      told++;
+    };
+    controller.abort(new Error("deadline"));
+    late();
+    expect(told).toBe(1);
     expect(progress.undo).toEqual([
       ruleStateKey({
         when,
@@ -714,7 +724,6 @@ describe("applyDecisions and the trigger state", () => {
         trigger: "once",
       }),
     ]);
-    void run.catch(() => {});
   });
 
   test("a group after the deadline writes no latch", async () => {

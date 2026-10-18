@@ -26,6 +26,7 @@ export function behaviorTabProps(
       sttCredential: null,
       ttsCredential: null,
       ttsNormalizeCredential: null,
+      ttsFallbackCredential: null,
       visionCredential: null,
       visionExtractionPrompt: null,
       ttsSpokenNoticeText: null,

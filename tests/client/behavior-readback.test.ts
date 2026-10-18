@@ -169,6 +169,32 @@ describe("the Behavior tab reads back everything it writes", () => {
   test("the load: nothing reads as edited, so there is nothing to save", async () => {
     const stub = stubEditorApi({ settings: STORED });
     await renderEditor(stub, "behavior");
+    // The controls show STORED's off-default values, not what the editor would draw for an empty
+    // bag: a reader that dropped a block would agree with itself and leave Save disabled anyway.
+    const shown = (label: string) =>
+      (screen.getByLabelText(label) as HTMLInputElement | HTMLTextAreaElement)
+        .value;
+    expect({
+      away: shown("Out-of-hours message"),
+      debounce: shown("Wait window (s)"),
+      split: shown("Max chars / message"),
+      signature: shown("Signature"),
+      otherInboxes: shown("Conversations at most"),
+      lookback: shown("Last days"),
+      transcript: shown("Whole up to (characters)"),
+      toolCalls: shown("Max tool calls / turn"),
+      proactive: shown("Max proactive / conversation / 24h"),
+    }).toEqual({
+      away: "Voltamos às 9h.",
+      debounce: "25",
+      split: "400",
+      signature: "Alex",
+      otherInboxes: "3",
+      lookback: "30",
+      transcript: "1500",
+      toolCalls: "7",
+      proactive: "4",
+    });
     expect(saveButton()).toHaveProperty("disabled", true);
   });
 
@@ -206,7 +232,9 @@ describe("the Behavior tab reads back everything it writes", () => {
     await renderEditor(stub, "behavior");
     await editEveryBlock();
     expect(screen.queryAllByText("Unsaved changes").length).toBeGreaterThan(0);
+    // The agent's discard asks first (agents#1520).
     fireEvent.click(screen.getByRole("button", { name: "Discard" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Discard all" }));
     // Nothing left that differs from the server's copy: no mark, no Discard, no Save.
     await waitFor(() =>
       expect(screen.queryAllByText("Unsaved changes").length).toBe(0),
@@ -225,7 +253,9 @@ describe("the Behavior tab reads back everything it writes", () => {
     const read = screen.getByLabelText("Messages read") as HTMLInputElement;
     changeTo(read, String(Number(read.value) + 5));
     expect(saveButton()).toHaveProperty("disabled", false);
+    // The agent's discard asks first (agents#1520).
     fireEvent.click(screen.getByRole("button", { name: "Discard" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Discard all" }));
     await waitFor(() => expect(saveButton()).toHaveProperty("disabled", true));
   });
 });

@@ -2003,3 +2003,51 @@ describe("the summariser and fallback of a decisions observer", () => {
     expect(keys("llm")).toEqual(["memoryModel", "modelFallback"]);
   });
 });
+
+// The fallback voice borrows the main voice's key only on the main voice's provider.
+describe("computeConfigIssues — fallback voice", () => {
+  const audio = {
+    ...base,
+    ttsMode: "mirror",
+    ttsCredentialRef: "vault:2",
+    ttsProvider: "openai",
+  };
+  const ISSUE = {
+    key: "ttsFallback",
+    tab: "behavior",
+    sectionId: "tts",
+  } as const;
+
+  test("on the main voice's provider it needs no key of its own", () => {
+    expect(
+      computeConfigIssues({ ...audio, ttsFallbackProvider: "openai" }),
+    ).toEqual([]);
+  });
+
+  test("on another provider with no key of its own it is flagged", () => {
+    expect(
+      computeConfigIssues({ ...audio, ttsFallbackProvider: "elevenlabs" }),
+    ).toEqual([ISSUE]);
+  });
+
+  test("its own key, referenced and not filled in, is pending", () => {
+    expect(
+      computeConfigIssues({
+        ...audio,
+        ttsFallbackProvider: "elevenlabs",
+        ttsFallbackCredentialRef: "vault:9",
+        pendingRefs: new Set(["vault:9"]),
+      }),
+    ).toEqual([{ ...ISSUE, pending: true, vaultId: "9" }]);
+  });
+
+  test("with audio replies off nothing is said about it", () => {
+    expect(
+      computeConfigIssues({
+        ...audio,
+        ttsMode: "never",
+        ttsFallbackProvider: "elevenlabs",
+      }),
+    ).toEqual([]);
+  });
+});

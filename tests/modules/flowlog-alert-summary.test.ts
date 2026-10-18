@@ -309,6 +309,8 @@ const NOT_A_CAUSE: Record<string, string> = {
   verdict: "tts_check: the detector's label; `outcome` is the printed cause",
   waitedMs:
     "a duration, also in `durationMs`; the stage and its other keys say what waited",
+  latencyMs:
+    "guardrail: how long the external check took; `decision` or `outcome` is the cause",
 };
 
 async function sourceFiles(dir: string): Promise<string[]> {

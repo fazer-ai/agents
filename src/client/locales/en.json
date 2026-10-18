@@ -294,6 +294,7 @@
     "actionSearch": "Search actions",
     "actor": {
       "apiKey": "API key",
+      "dashboardViewer": "Dashboard viewer",
       "mcp": "MCP client",
       "system": "System",
       "user": "User"
@@ -382,6 +383,9 @@
   "branding": {
     "subtitle": "Customize the app's global appearance (name, colors, logo, favicon).",
     "title": "Branding"
+  },
+  "breadcrumbs": {
+    "dashboard": "Loading…"
   },
   "channels": {
     "account": "Account {{id}}",
@@ -1157,6 +1161,11 @@
     "unpriced_other": "{{n}} requests in this period have no price and are not in the cost: {{models}}. Set this account's own price for the model in Advanced > Model prices, then re-price the calls already made.",
     "unpricedCta": "Open model prices"
   },
+  "dashboards": {
+    "proTitle": "Dashboards are a Pro feature",
+    "subtitle": "Panels you arrange yourself over your conversations and AI usage, each at its own address.",
+    "title": "Dashboards"
+  },
   "documentApproval": {
     "again": "Requested again, dated today. This is the new request.",
     "againFailed": "Could not request it again.",
@@ -1548,6 +1557,7 @@
       "stt": "Voice transcription is on but has no API key set.",
       "suggestionReviewModel": "A separate model is set for the suggestion reviewer but its configuration cannot run, so the agent's knowledge suggestions reach the approval queue unreviewed. Check its provider, model, key and endpoint.",
       "tts": "Audio replies are on but have no API key set.",
+      "ttsFallback": "A fallback voice is set on another provider with no API key of its own, so it cannot take a reply the main voice drops.",
       "ttsNormalize": "The speech rewrite is on but its model configuration cannot run, so replies will be spoken without it. Check its provider, model, key and endpoint.",
       "vision": "Image/document reading is on but has no API key set."
     },
@@ -1567,6 +1577,7 @@
       "stt": "The transcription credential is referenced but not filled in yet.",
       "suggestionReviewModel": "The suggestion-reviewer credential is referenced but not filled in yet, so knowledge suggestions reach the queue unreviewed.",
       "tts": "The audio-reply credential is referenced but not filled in yet.",
+      "ttsFallback": "The fallback-voice credential is referenced but not filled in yet, so the fallback voice cannot take a reply.",
       "ttsNormalize": "The speech-rewrite credential is referenced but not filled in yet.",
       "vision": "The image-reading credential is referenced but not filled in yet."
     },
@@ -1584,6 +1595,7 @@
       "stt": "The transcription credential no longer exists, so voice messages are not transcribed.",
       "suggestionReviewModel": "The suggestion-reviewer credential no longer exists, so knowledge suggestions reach the queue unreviewed.",
       "tts": "The audio-reply credential no longer exists, so replies are sent as text.",
+      "ttsFallback": "The fallback-voice credential no longer exists, so the fallback voice cannot take a reply.",
       "ttsNormalize": "The speech-rewrite credential no longer exists, so replies are spoken without the rewrite.",
       "vision": "The image-reading credential no longer exists, so images and documents are not read."
     },
@@ -1604,6 +1616,7 @@
       "stt": "The transcription credential is a type that cannot be used as an API key, so voice messages are not transcribed. Pick a credential that holds a single key.",
       "suggestionReviewModel": "The suggestion-reviewer credential is a type that cannot be used as an API key, so knowledge suggestions reach the queue unreviewed. Pick a credential that holds a single key.",
       "tts": "The audio-reply credential is a type that cannot be used as an API key, so replies are sent as text. Pick a credential that holds a single key.",
+      "ttsFallback": "The fallback-voice credential is a type that cannot be used as an API key, so the fallback voice cannot take a reply. Pick a credential that holds a single key.",
       "ttsNormalize": "The speech-rewrite credential is a type that cannot be used as an API key, so replies are spoken without the rewrite. Pick a credential that holds a single key.",
       "vision": "The image-reading credential is a type that cannot be used as an API key, so images and documents are not read. Pick a credential that holds a single key."
     },
@@ -2023,6 +2036,39 @@
       "classifierDecisionsHint": "A classification API answers one yes/no question per check. Faster, but it gives only numbers and writes no reply.",
       "competitors": "Competitors",
       "competitorsHint": "One per line. Used by the competitor-mentions check.",
+      "contract": {
+        "allow": "the reply goes out as written.",
+        "block": "the reply does not go out and the Output section's “On violation” setting runs: a template message is sent, nothing is sent, or the conversation goes to the team with its message to the customer. A guardrails-generated message falls back to the template, since no model writes one here.",
+        "copyAll": "Copy as Markdown",
+        "example": {
+          "blockReason": "price not found in the sources the agent used",
+          "candidate": "Yes, the 12-month plan includes support by chat.",
+          "customerMessage": "Does the 12-month plan include support?",
+          "query": "12-month plan support",
+          "replaceReason": "plan wording out of date",
+          "replaceText": "Support by chat comes with the 12-month plan.",
+          "verifyComment": "rawBody: the request body exactly as received, before JSON.parse"
+        },
+        "failure": "No answer within 15 seconds, a status outside 2xx, a body that is not one of the decisions above, a different candidateId, a URL the outbound guard refuses, or a signing secret that no longer exists: the reply follows “When a check cannot run”. By default it goes out unchecked; with hold it is held and the conversation goes to the team.",
+        "failureTitle": "When the check cannot decide",
+        "fieldAttachments": "candidate.attachments lists the files sent with the reply (kind, fileName, caption, and text for a document the model wrote).",
+        "fieldCandidate": "candidateId identifies this exact reply. Your answer must repeat it.",
+        "fieldPlayground": "In the playground, conversationId and chatwootConversationId are null.",
+        "fieldTools": "toolCalls are this turn's, in order, at most 50, each value cut to 8000 characters (argsSize and resultSize are the sizes before the cut). Secrets are redacted. With “Send tool values” off, args and result are left out.",
+        "intro": "What your endpoint receives, what it must answer, and what happens when it cannot.",
+        "open": "Request and response format",
+        "reason": "reason is optional on replace and block (up to 500 characters). It shows in the private note and the playground, and in the flow log only while tool values are logged.",
+        "replace": "your text goes out instead (required, at most 4096 characters). It is split, voiced and signed like the agent's own reply and is not checked again. Any files of the reply are dropped.",
+        "requestHeaders": "POST to your URL with content-type: application/json and the x-fazerai-delivery header. The whole call, answer included, has 15 seconds.",
+        "requestTitle": "Request",
+        "response": "Answer with a 2xx and a JSON body that repeats candidateId and has a decision.",
+        "responseTitle": "Response",
+        "signature": "With a signing secret, each request also carries x-fazerai-timestamp and x-fazerai-signature: sha256= followed by the hex HMAC-SHA256 of “timestamp.raw body” with the secret, the same scheme as the outbound webhooks. Without one, the request goes unsigned.",
+        "signatureTitle": "Signature",
+        "title": "External check: request and response",
+        "when": "Once per reply to a customer message, in the inbox and in the playground, after the built-in output check and before the reply is split, turned into audio or signed. The hand-over line and a reply that is only files are asked about too. Follow-ups and nudges are not.",
+        "whenTitle": "When it is called"
+      },
       "customPolicy": "Custom policy",
       "customPolicyHint": "Extra rules appended to every analysis.",
       "customPolicyQuestionHelp": "For example: “Does the reply promise the customer a refund?”\n\nA rule written as a statement (“the assistant must not…”) is read the wrong way round, and clean replies trip it.",
@@ -2033,6 +2079,14 @@
       "decisionsProvider": "Classification API",
       "directionEnabled": "Enable",
       "enabled": "Enable guardrails",
+      "external": "External check",
+      "externalDesc": "Before a reply to a customer is delivered, it is sent to your endpoint with the turn's messages and tool calls, and your endpoint answers allow, replace or block. A block uses the Output action; no answer within 15 s follows “When a check cannot run”.",
+      "externalSecret": "Signing secret",
+      "externalSecretHint": "Signs each request with HMAC-SHA256, like the outbound webhooks. Empty sends it unsigned.",
+      "externalToolValues": "Send tool values",
+      "externalToolValuesHint": "Off sends each tool call's name and sizes, without its arguments and result.",
+      "externalUrl": "Endpoint URL",
+      "externalUrlHint": "https only. Empty turns the external check off.",
       "generationPrompt": "Generation guidance",
       "generationPromptHint": "Steers how the guardrails agent writes the replacement reply (tone, what to offer or avoid). Optional.",
       "generationPromptPlaceholder": "e.g. Politely decline, keep a warm tone, and offer to connect them with a human agent.",
@@ -2042,6 +2096,7 @@
       "inputDesc": "Screen the customer's message before the agent processes it.",
       "model": "Guardrails model",
       "modelDesc": "A dedicated moderation agent screens messages. Off by default; pick a model + API key.",
+      "navExternal": "External check",
       "navInput": "Input",
       "navModel": "Model",
       "navOutput": "Output",
@@ -2082,6 +2137,7 @@
     "handoffTeams": "Teams",
     "hiddenDecisionsPending": "There are unsaved changes to the questions and rules, which only a monitoring agent uses. Switch the mode back to Monitoring on General to save them, or discard them.",
     "hiddenDraftsPending": "There are unsaved changes that questions and rules do not use (the instructions, the model, memory, the fallback provider, Knowledge, or tools it does not show). Switch back to the language model on General to save them, or discard them.",
+    "hiddenTabsPending": "Changes on {{tabs}} were not saved: this agent does not use those tabs as it is set up now. Switch it back to save them, or discard them.",
     "identitySection": "Identity",
     "identitySectionHint": "Name, system prompt and whether the agent is active.",
     "identitySectionHintDecisions": "Name, mode and whether the agent is active.",
@@ -2314,6 +2370,8 @@
     "saveAndExport": "Save and export",
     "saved": "Agent saved.",
     "saveError": "Could not save the agent.",
+    "saveHeldField": "a field there cannot be saved as it is.",
+    "saveHeldIn": "Fix the {{tab}} tab before saving: {{reason}}",
     "saveKnowledge": "Save knowledge",
     "saveTools": "Save tools",
     "sectionsNav": "Sections",
@@ -2541,6 +2599,13 @@
     "ttsCredential": "API key",
     "ttsDelivery": "Voice delivery",
     "ttsDeliveryHint": "Leave a field blank to use the voice's own saved setting. Lower stability makes the delivery more expressive; high stability sounds monotone.",
+    "ttsFallback": "Fallback voice",
+    "ttsFallbackCredential": "Fallback API key",
+    "ttsFallbackCredentialHint": "Empty uses the main voice's key on the same provider. Another provider needs its own: a key is never sent to another vendor.",
+    "ttsFallbackHelp": "Tried once when the main voice times out or its provider is overloaded (5xx, 429), before the reply goes as text. An invalid key or request (400, 401, 404) goes straight to text, so the fallback never hides a broken main voice.",
+    "ttsFallbackModel": "Fallback model",
+    "ttsFallbackNone": "No fallback voice",
+    "ttsFallbackVoice": "Fallback voice id",
     "ttsHint": "Optionally answer with a voice note.",
     "ttsMode": "When to reply with audio",
     "ttsModel": "Model",
@@ -2583,6 +2648,8 @@
     "ttsTextOverListItemsHint": "Bullets, numbered steps or table rows (2-50).",
     "ttsTextOverNumbers": "Prices or long numbers, from",
     "ttsTextOverNumbersHint": "Money values, or numbers of 4+ digits (2-50).",
+    "ttsTimeout": "Timeout per attempt (seconds)",
+    "ttsTimeoutHint": "Empty = 60 s (1-120). Past it, the fallback voice is tried, or the reply goes as text.",
     "ttsVoice": "Voice",
     "ttsVoiceDefault": "Voice default",
     "ttsVoiceHint": "Voice id/name (required for ElevenLabs).",
@@ -3111,6 +3178,16 @@
       "chat": "language model",
       "decisions": "classification API"
     },
+    "guardrailExternal": {
+      "allow": "The external check allowed the reply",
+      "block": "The external check blocked the reply ({{action}})",
+      "failedHeld": "The external check could not decide ({{cause}}), so the reply was held and a hand-over to the team was requested",
+      "failedPassed": "The external check could not decide ({{cause}}), so the reply was let through unchecked",
+      "latency": "took {{ms}} ms",
+      "reason": "reason: {{reason}}",
+      "reasonKept": "a reason was given ({{chars}} characters), kept in the conversation's note",
+      "replace": "The external check replaced the reply with its own text"
+    },
     "guardrailHeld": {
       "input": "The check failed, so the customer's message was held and a hand-over to the team was requested",
       "output": "The check failed, so the reply was held and a hand-over to the team was requested"
@@ -3173,6 +3250,7 @@
     "subtitle": "Per-step execution flow for each agent turn: transcription, generation, audio, delivery and handoffs.",
     "systemPrompt": "System prompt",
     "title": "Logs",
+    "toolResultSize": "{{chars}} chars · ~{{tokens}} tokens",
     "turn": "Turn"
   },
   "mcp": {
@@ -3377,6 +3455,7 @@
     "collapsed": "Collapsed",
     "conversations": "Conversations",
     "dashboard": "Dashboard",
+    "dashboards": "Dashboards",
     "expand": "Expand",
     "github": "GitHub",
     "home": "Home",
@@ -3516,6 +3595,15 @@
       "title": "Tool simulation"
     },
     "trace": {
+      "externalAllow": "allowed by the endpoint",
+      "externalBlockHandoff": "blocked by the endpoint, the case would go to the team",
+      "externalBlockSilent": "blocked by the endpoint, nothing would be sent",
+      "externalBlockTemplate": "blocked by the endpoint, the configured reply would be sent",
+      "externalCause": "failure: {{cause}}",
+      "externalCheck": "External check on the reply",
+      "externalLatency": "took {{ms}} ms",
+      "externalReason": "reason: {{reason}}",
+      "externalReplace": "replaced by the endpoint's text",
       "guardrailClean": "approved",
       "guardrailHandedOff": "blocked, the case would go to the team",
       "guardrailHeldInput": "could not be checked, so the message was held and the case would go to the team",
@@ -4088,6 +4176,9 @@
       "description": "White-label branding (name, colors, logo, favicon) is a Pro feature. Upgrade to Pro to customize the app identity."
     },
     "cta": "Upgrade to Pro",
+    "dashboards": {
+      "description": "Build your own dashboards (conversations by event, label or outcome, AI cost by model) and share each one by its address. Upgrade to Pro to create them."
+    },
     "dismiss": "Maybe later",
     "multiTenant": {
       "description": "The Free edition runs a single tenant. Upgrade to Pro to create and manage multiple tenants."

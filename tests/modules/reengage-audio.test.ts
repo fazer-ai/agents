@@ -99,16 +99,23 @@ function voice(id: number, attachmentId: number, transcribed?: string) {
   };
 }
 
+// Every attachment URL the stub client was asked to download, in order, so a test can tell which
+// voice note was transcribed: the provider stub answers the same text for any of them.
+const downloaded: string[] = [];
+
 function makeStub(payload: unknown[]) {
   const client = {
     getMessages: async () => ({ payload }),
     sendMessage: async () => ({}),
     toggleTyping: async () => ({}),
     updateAttachmentMeta: async () => ({}),
-    downloadAttachment: async () => ({
-      bytes: new Uint8Array([0x4f, 0x67, 0x67, 0x53]),
-      contentType: "audio/ogg",
-    }),
+    downloadAttachment: async (url: string) => {
+      downloaded.push(url);
+      return {
+        bytes: new Uint8Array([0x4f, 0x67, 0x67, 0x53]),
+        contentType: "audio/ogg",
+      };
+    },
   } as unknown as ChatwootClient;
   return async () => client;
 }
@@ -247,6 +254,7 @@ describe.skipIf(!dbUp)("reengage: the voice note nobody transcribed", () => {
 
   beforeEach(() => {
     clearMediaAnnotations();
+    downloaded.length = 0;
   });
 
   afterAll(async () => {
@@ -326,6 +334,7 @@ describe.skipIf(!dbUp)("reengage: the voice note nobody transcribed", () => {
       provider.fetchImpl,
     );
     expect(provider.calls.n).toBe(1);
+    expect(downloaded).toEqual(["https://chat.example.com/a/42.ogg"]);
     expect(seen).toContain("só a segunda");
   });
 

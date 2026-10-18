@@ -31,7 +31,10 @@ export function SegmentedControl<T extends string>({
       role="radiogroup"
       aria-label={aria["aria-label"]}
       aria-labelledby={aria["aria-labelledby"]}
-      className="inline-flex max-w-full flex-wrap gap-0.5 rounded-md border border-border bg-bg-tertiary p-0.5"
+      // NOTE: `w-fit`, not just `inline-flex`: inside a flex column (FormField, a card's stack) the
+      // item is stretched to the column's width whatever its display, and the pill then ran to the
+      // form's edge with empty track after its options. tests/client/segmented-control.test.tsx.
+      className="inline-flex w-fit max-w-full flex-wrap gap-0.5 rounded-md border border-border bg-bg-tertiary p-0.5"
     >
       {options.map((option) => {
         const selected = option.value === value;

@@ -164,16 +164,22 @@ describe("which save owns the block", () => {
   test("the Tools save writes it, and a later Behavior save keeps what it wrote", async () => {
     const stub = await openTools();
     await typeKey("protocolo_novo");
-    fireEvent.click(screen.getByRole("button", { name: "Save tools" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(savedKey(stub)).toBe("protocolo_novo"));
 
     await saveBehaviorEdit(stub);
     expect(savedKey(stub)).toBe("protocolo_novo");
   });
 
+  // The bar saves the agent, Behavior before Tools (agents#1520). With the Tools write failing, the
+  // Behavior PATCH that went out carries the stored key, and its re-read leaves the draft on the field.
   test("an unsaved Tools edit is neither written by a Behavior save nor wiped by it", async () => {
     const stub = await openTools();
     await typeKey("rascunho");
+    stub.override = (method, path) =>
+      method === "PUT" && path.endsWith("/tool-selections")
+        ? Response.json({ error: "boom" }, { status: 500 })
+        : undefined;
 
     await saveBehaviorEdit(stub);
     expect(savedKey(stub)).toBe("protocolo");
@@ -196,7 +202,7 @@ describe("which save owns the block", () => {
     const stub = await openTools();
     await typeKey("Ticket-ID");
     expect(screen.getAllByText(KEY_ERROR).length).toBe(1);
-    fireEvent.click(screen.getByRole("button", { name: "Save tools" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(screen.getAllByText(KEY_ERROR).length).toBe(2));
     expect(stub.writes).toEqual([]);
   });

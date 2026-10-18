@@ -25,6 +25,10 @@ const READABLE_STRING_FIELDS = [
   "ssrf.internalTargets",
   "hub.url",
   "hub.updateCheckUrl",
+  "mail.provider",
+  "mail.from",
+  "mail.smtp.host",
+  "mail.smtp.user",
 ];
 
 function clearStrings(obj: unknown, path = "", out: string[] = []): string[] {

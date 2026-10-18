@@ -334,7 +334,7 @@ describe("round 2: the Tools save puts back everything it wrote", () => {
       await screen.findByPlaceholderText("case_conversation_id"),
       { target: { value: "protocolo" } },
     );
-    fireEvent.click(screen.getByRole("button", { name: "Save tools" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(patches(stub).length).toBe(1));
     const tools = patches(stub)[0] as Record<string, unknown>;
     // NOTE: the bag has to hold the tab's blocks, or the comparison below passes over nothing.
@@ -527,7 +527,7 @@ describe("the Tools tab offers every granted tool, and flags a rule on one that 
     fireEvent.change(screen.getByRole("combobox", { name: "Attribute" }), {
       target: { value: "dia_turno" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Save tools" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() =>
       expect(
         stub.writes.some((w) => w.method === "PATCH" && w.body.settings),
@@ -695,7 +695,7 @@ describe("the Tools tab offers every granted tool, and flags a rule on one that 
       target: { value: "ok" },
     });
     const saved = async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Save tools" }));
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
       await waitFor(() =>
         expect(
           stub.writes.some((w) => w.method === "PATCH" && w.body.settings),

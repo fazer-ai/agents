@@ -122,6 +122,18 @@ export interface GuardrailsConfig {
   input: GuardrailDirectionConfig;
   output: GuardrailDirectionConfig;
   onFailure: GuardrailFailureMode;
+  external: GuardrailExternalConfig;
+}
+
+// An endpoint the operator runs that judges a reply before it is delivered (./external.ts). Active
+// when guardrails are on and `url` is set; a block fires the output direction's action.
+export interface GuardrailExternalConfig {
+  // An https URL, or null when there is no external check.
+  url: string | null;
+  // `vault:<id>` ref of the HMAC signing secret, or null to send the request unsigned.
+  credentialRef: string | null;
+  // Off sends each tool call's name and sizes without its arguments and result.
+  sendToolValues: boolean;
 }
 
 const DEFAULT_TEMPLATE = "Desculpe, não consigo ajudar com isso.";
@@ -177,7 +189,34 @@ export const GUARDRAILS_DEFAULTS: GuardrailsConfig = {
     handoffMessage: DEFAULT_HANDOFF_MESSAGE,
   },
   onFailure: "pass",
+  external: { url: null, credentialRef: null, sendToolValues: true },
 };
+
+// The endpoint as stored, or null when it cannot be one: unparseable, not https, or carrying
+// credentials in the URL itself (those belong in the vault). The write boundary refuses the same
+// three by name (`isExternalCheckUrl`), so a stored value that fails here came from outside it.
+export function isExternalCheckUrl(raw: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return false;
+  }
+  return url.protocol === "https:" && !url.username && !url.password;
+}
+
+function readExternal(v: unknown): GuardrailExternalConfig {
+  const bag = v && typeof v === "object" ? (v as Record<string, unknown>) : {};
+  const url = str(bag.url);
+  return {
+    url: url && isExternalCheckUrl(url) ? url : null,
+    credentialRef: str(bag.credentialRef),
+    sendToolValues: bool(
+      bag.sendToolValues,
+      GUARDRAILS_DEFAULTS.external.sendToolValues,
+    ),
+  };
+}
 
 const MAX_COMPETITORS = 50;
 const MAX_COMPETITOR_LEN = 100;
@@ -313,5 +352,6 @@ export function readGuardrailsConfig(settings: unknown): GuardrailsConfig {
     input: readDirection(bag.input, GUARDRAILS_DEFAULTS.input),
     output: readDirection(bag.output, GUARDRAILS_DEFAULTS.output),
     onFailure: bag.onFailure === "hold" ? "hold" : "pass",
+    external: readExternal(bag.external),
   };
 }

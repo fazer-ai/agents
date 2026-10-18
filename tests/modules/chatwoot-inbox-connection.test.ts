@@ -246,17 +246,26 @@ describe.skipIf(!dbUp)("channel connection events", () => {
   // as the channel going up and down.
   test("a move between two states that are not open is stored and announces nothing", async () => {
     const inbox = await seedInbox(104);
-    await deliver(report(104, "connecting", "close", at(1)));
-    await deliver(report(104, "reconnecting", "connecting", at(2)));
-    await deliver(report(104, null, "reconnecting", at(3)));
+    const stored = () =>
+      suDb.inbox.findUniqueOrThrow({
+        where: { id: inbox.id },
+        select: { connection: true, connectionAt: true },
+      });
+    // Each state is read back after its own delivery, with the time the report carried.
+    for (const [second, connection, previous] of [
+      [1, "connecting", "close"],
+      [2, "reconnecting", "connecting"],
+      [3, null, "reconnecting"],
+    ] as const) {
+      await deliver(report(104, connection, previous, at(second)));
+      const row = await stored();
+      expect(row.connection).toBe(connection);
+      expect(row.connectionAt?.toISOString()).toBe(
+        new Date(at(second)).toISOString(),
+      );
+    }
 
     expect(await eventsFor(104)).toEqual([]);
-    const stored = await suDb.inbox.findUniqueOrThrow({
-      where: { id: inbox.id },
-      select: { connection: true, connectionAt: true },
-    });
-    expect(stored.connection).toBeNull();
-    expect(stored.connectionAt).not.toBeNull();
   });
 
   // The bug it catches: the edge read off the body's previous value, which misses a drop when the

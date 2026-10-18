@@ -150,4 +150,19 @@ describe("write boundary", () => {
     expect(issuesOf({ onFailure: "pass" })).toEqual([]);
     expect(issuesOf({ onFailure: "segurar" })[0]?.path).toEqual(["onFailure"]);
   });
+
+  // The bug it catches: a plaintext endpoint, or one carrying its password in the URL, stored and
+  // then silently read as no external check at all.
+  test("the external check URL is https with no credentials in it", () => {
+    const at = (url: string) =>
+      issuesOf({ external: { url } })[0]?.path ?? null;
+    expect(at("https://check.example.com/hook")).toBeNull();
+    expect(issuesOf({ external: { url: null } })).toEqual([]);
+    expect(at("http://check.example.com/hook")).toEqual(["external", "url"]);
+    expect(at("https://u:p@check.example.com/hook")).toEqual([
+      "external",
+      "url",
+    ]);
+    expect(at("not a url")).toEqual(["external", "url"]);
+  });
 });

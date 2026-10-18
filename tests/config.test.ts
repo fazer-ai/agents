@@ -374,6 +374,33 @@ describe("database pools and budgets", () => {
   });
 });
 
+// Without these the image runs with no mail provider whatever the stack's variables say, and a
+// dashboard's viewers never receive a sign-in code.
+describe("mail settings in the deploy composes", () => {
+  test("every deploy compose forwards them, empty for the app default", () => {
+    for (const file of [
+      "docker-compose.prod.yml",
+      "docker-compose.coolify.yml",
+      "docker-compose.portainer.yml",
+    ]) {
+      const compose = readFileSync(file, "utf8");
+      for (const v of [
+        "MAIL_PROVIDER",
+        "MAIL_FROM",
+        "MAIL_REPLY_TO",
+        "RESEND_API_KEY",
+        "SMTP_HOST",
+        "SMTP_PORT",
+        "SMTP_SECURE",
+        "SMTP_USER",
+        "SMTP_PASSWORD",
+      ]) {
+        expect(compose).toContain(`${v}=\${${v}:-}`);
+      }
+    }
+  });
+});
+
 // A turn slot is held for the whole turn and a model permit only for the model call inside it, so the
 // two are sized apart. Unset, the lane follows the permits at a multiple, so an upgrade
 // without the new variable still moves both with AGENT_MODEL_CONCURRENCY.
@@ -490,5 +517,69 @@ describe("the model semaphore's background share and aging bound", () => {
       expect(refusal).toContain(`${env} must be`);
       expect(refusal).toContain(`"${raw}"`);
     }
+  });
+});
+
+describe("the mail provider", () => {
+  const NONE = {
+    MAIL_PROVIDER: undefined,
+    RESEND_API_KEY: undefined,
+    SMTP_HOST: undefined,
+    MAIL_FROM: undefined,
+  };
+  const mailOf = async (env: Record<string, string | undefined>) =>
+    (await loadConfig({ ...NONE, ...env })).mail as {
+      provider: string;
+      enabled: boolean;
+    };
+
+  test("with nothing set, the suite gets the in-memory outbox", async () => {
+    expect((await mailOf({})).provider).toBe("memory");
+  });
+
+  test("the credentials decide when MAIL_PROVIDER is unset, and both at once are refused", async () => {
+    expect(
+      (await mailOf({ RESEND_API_KEY: "re_x", MAIL_FROM: "a@b.co" })).provider,
+    ).toBe("resend");
+    expect(
+      (await mailOf({ SMTP_HOST: "smtp.local", MAIL_FROM: "a@b.co" })).provider,
+    ).toBe("smtp");
+    expect(
+      await refusalOf({
+        ...NONE,
+        RESEND_API_KEY: "re_x",
+        SMTP_HOST: "smtp.local",
+        MAIL_FROM: "a@b.co",
+      }),
+    ).toContain("Both RESEND_API_KEY and SMTP_HOST are set");
+  });
+
+  test("a sending provider needs a sender, and none turns mail off", async () => {
+    expect(await refusalOf({ ...NONE, SMTP_HOST: "smtp.local" })).toContain(
+      "MAIL_FROM must be set",
+    );
+    expect(await mailOf({ MAIL_PROVIDER: "none" })).toMatchObject({
+      provider: "none",
+      enabled: false,
+    });
+  });
+
+  test("the console transport is refused in production, and the outbox outside the suite", async () => {
+    expect(
+      await refusalOf({
+        ...NONE,
+        NODE_ENV: "production",
+        JWT_SECRET: "a-real-secret",
+        ENCRYPTION_KEY: "a-real-key",
+        MAIL_PROVIDER: "console",
+      }),
+    ).toContain("MAIL_PROVIDER=console");
+    expect(
+      await refusalOf({
+        ...NONE,
+        NODE_ENV: "development",
+        MAIL_PROVIDER: "memory",
+      }),
+    ).toContain("only available to the test suite");
   });
 });

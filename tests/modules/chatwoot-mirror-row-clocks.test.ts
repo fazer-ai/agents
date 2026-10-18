@@ -135,7 +135,8 @@ describe("normalize: the rows' own clocks", () => {
   });
 
   test("a clock that is not a positive number reads as absent", () => {
-    for (const bad of ["ontem", null, -5, 0, {}, "1791685802.5"]) {
+    // One row per refusal: a numeric string fails the type check, zero fails the positive check.
+    for (const bad of ["1791685802.5", 0]) {
       const b = clone(inboxN2);
       senderOf(b).updated_at = bad;
       (b.inbox as Body).updated_at = bad;

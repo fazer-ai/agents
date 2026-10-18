@@ -21,6 +21,7 @@ import {
   type GuardrailScore,
   guardrailAsks,
 } from "./classify";
+import type { ExternalReport } from "./external";
 import { loggableCategories } from "./log-categories";
 import { judgesAnything } from "./prompts";
 import type { GuardrailAction, GuardrailsConfig } from "./settings";
@@ -120,6 +121,8 @@ export interface GuardrailReport {
   // Why a screening could not judge, on `unavailable` and on a held hand-over: the flow line's own
   // outcome word, so the note can say it without quoting provider text.
   cause?: GuardrailFailureCause;
+  // Set when the external check (./external.ts) made this report: its decision, latency and reason.
+  external?: ExternalReport;
 }
 
 export type GuardrailFailureCause =
@@ -157,6 +160,35 @@ export function scoresLine(scores: GuardrailScore[]): string {
 // conversation. Errors are the sink's to swallow: a failed announcement must not fail the turn.
 export type GuardrailAnnounce = (r: GuardrailReport) => void | Promise<void>;
 
+// The external check's failure causes in the note reader's words.
+const EXTERNAL_CAUSE: Record<NonNullable<ExternalReport["cause"]>, string> = {
+  timeout: "não respondeu dentro de 15 s",
+  http_status: "respondeu com erro HTTP",
+  network: "não pôde ser alcançado",
+  malformed: "respondeu algo que não é uma decisão válida",
+  unverifiable: "respondeu sem o candidateId do pedido",
+  unsafe_url: "tem um endereço que as chamadas de saída recusam",
+  secret_not_found: "tem um segredo de assinatura que não está no cofre",
+};
+
+// What the external check decided, as the first line of its note. The reason is the endpoint's own
+// text, escaped with the rest of the note by the sink.
+function externalNoteHead(r: GuardrailReport): string {
+  const x = r.external as ExternalReport;
+  const ms = `${x.latencyMs} ms`;
+  if (x.decision === "failed") {
+    const cause = x.cause
+      ? `${EXTERNAL_CAUSE[x.cause]}${x.status ? ` (${x.status})` : ""}`
+      : "falhou";
+    return `Verificação externa (${r.direction}): o endpoint ${cause}, e a mensagem foi segurada. (${ms})`;
+  }
+  const what =
+    x.decision === "replace"
+      ? "substituiu a resposta pelo texto do endpoint"
+      : `bloqueou a resposta (ação: ${r.action})`;
+  return `Verificação externa (${r.direction}): ${what}. (${ms})${x.reason ? `\nMotivo: ${x.reason}` : ""}`;
+}
+
 // The inbox announcement, shared by the reactive and proactive paths so the two cannot drift. Only
 // a trip is posted: a private note per clean screening would bury the conversation in notes about
 // nothing having happened, and `unavailable` already pages through the warn the gate emits.
@@ -171,11 +203,13 @@ export function chatwootNoteSink(
       r.outcome !== "handed-off"
     )
       return;
-    const head = r.held
-      ? `Guardrail (${r.direction}): a checagem não pôde ser feita${r.cause ? ` (${HELD_CAUSE[r.cause]})` : ""}, e a mensagem foi segurada.${r.scores?.length ? ` ${scoresLine(r.scores)}` : ""}`
-      : r.scores
-        ? `Guardrail (${r.direction}): ${r.categories?.join(", ") || "policy"} — ${r.action}. ${scoresLine(r.scores)}`
-        : `Guardrail (${r.direction}): ${r.categories?.join(", ") || "policy"} — ${r.action}. ${r.rationale ?? ""}`;
+    const head = r.external
+      ? externalNoteHead(r)
+      : r.held
+        ? `Guardrail (${r.direction}): a checagem não pôde ser feita${r.cause ? ` (${HELD_CAUSE[r.cause]})` : ""}, e a mensagem foi segurada.${r.scores?.length ? ` ${scoresLine(r.scores)}` : ""}`
+        : r.scores
+          ? `Guardrail (${r.direction}): ${r.categories?.join(", ") || "policy"} — ${r.action}. ${scoresLine(r.scores)}`
+          : `Guardrail (${r.direction}): ${r.categories?.join(", ") || "policy"} — ${r.action}. ${r.rationale ?? ""}`;
     await client
       // The rationale and the refused reply are model text, escaped for Chatwoot's Liquid.
       .sendPrivateNote(

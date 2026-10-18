@@ -48,7 +48,7 @@ describe("forced saves in the agent editor", () => {
   for (const [tab, save] of [
     ["general", "Save"],
     ["behavior", "Save"],
-    ["tools", "Save tools"],
+    ["tools", "Save"],
     ["guardrails", "Save"],
     ["channelRedirect", "Save"],
   ] as const) {

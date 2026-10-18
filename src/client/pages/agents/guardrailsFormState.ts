@@ -13,9 +13,13 @@ import {
 // Whether the playground's "Run guardrails" toggle is usable: the same hard requirements the runtime
 // has (modules/guardrails/gate), the feature switched on and its OWN credential. Under `hold` a
 // missing credential still screens (every turn is held), so the operator has to be able to turn it
-// off. A direction being off is not checked here: the gate returns "not-run" for it at no cost.
+// off. A configured external check calls out on every turn, so it also needs the switch. A direction
+// being off is not checked here: the gate returns "not-run" for it at no cost.
 export function playgroundGuardrailsUsable(g: GuardrailsConfig): boolean {
-  return g.enabled && (!!guardrailCredentialRef(g) || g.onFailure === "hold");
+  return (
+    g.enabled &&
+    (!!guardrailCredentialRef(g) || g.onFailure === "hold" || !!g.external.url)
+  );
 }
 
 // The agent editor's view of the stored `guardrails` block: the runtime reader, with the capped

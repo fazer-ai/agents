@@ -4,6 +4,8 @@ import { tenantSwitchTarget } from "@/client/lib/tenantSwitch";
 describe("tenantSwitchTarget", () => {
   test("agent detail route -> /agents", () => {
     expect(tenantSwitchTarget("/agents/abc123")).toBe("/agents");
+    expect(tenantSwitchTarget("/dashboards/operacao-sac")).toBe("/dashboards");
+    expect(tenantSwitchTarget("/dashboards")).toBeNull();
   });
 
   test("agent detail route with tab -> /agents", () => {

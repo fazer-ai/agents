@@ -59,6 +59,8 @@ export function makeConfig(
     guardrails: GUARDRAILS_DEFAULTS,
     guardrailsApiKey: "",
     guardrailsCredentialBaseUrl: null,
+    guardrailsExternalSecret: null,
+    guardrailsExternalSecretMissing: false,
     transferWithSummary: false,
     nativeToolsAllow: undefined,
     httpToolDefs: [],

@@ -87,6 +87,17 @@ services:
       - TTS_CHECK_MODE=${TTS_CHECK_MODE:-}
       - TTS_CHECK_TOKEN=${TTS_CHECK_TOKEN:-}
       - TTS_CHECK_TIMEOUT_MS=${TTS_CHECK_TIMEOUT_MS:-}
+      # Outgoing mail (the sign-in code of a dashboard's viewers). Unset, the provider follows the
+      # credentials, and with none production sends no mail (.env.example).
+      - MAIL_PROVIDER=${MAIL_PROVIDER:-}
+      - MAIL_FROM=${MAIL_FROM:-}
+      - MAIL_REPLY_TO=${MAIL_REPLY_TO:-}
+      - RESEND_API_KEY=${RESEND_API_KEY:-}
+      - SMTP_HOST=${SMTP_HOST:-}
+      - SMTP_PORT=${SMTP_PORT:-}
+      - SMTP_SECURE=${SMTP_SECURE:-}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
       # Persist uploaded branding (logo/favicon) + issued document PDFs on the `storage` volume.
       # The defaults (./data/*) live on the ephemeral container FS and vanish on every redeploy.
       - BRANDING_STORAGE_DIR=/app/storage/branding

@@ -201,6 +201,25 @@
       "includes": ["tests/**/*.{ts,tsx}", "!tests/utils/**"],
       "plugins": ["./biome-plugins/no-test-sleep-wrapper.grit"]
     },
+    {
+      "includes": [
+        "src/client/**/*.{ts,tsx}",
+        "!src/client/pages/dashboard/charts.tsx",
+        "!src/client/pages/admin/instance-health/Sparkline.tsx",
+        "!src/client/pages/dashboards/SeriesChart.tsx",
+        "tests/lint/.probe-fence-*/**/*.{ts,tsx}"
+      ],
+      "plugins": ["./biome-plugins/no-static-chart-import.grit"]
+    },
+    {
+      "includes": [
+        "src/**/*.{ts,tsx}",
+        "!src/api/features/dashboard-viewer/viewer.controller.ts",
+        "!src/modules/dashboards/viewers.ts",
+        "tests/lint/.probe-fence-*/**/*.{ts,tsx}"
+      ],
+      "plugins": ["./biome-plugins/one-dashboard-viewer-cookie-reader.grit"]
+    },
     // The fences that were sweeps in tests/ (api, client, graph, modules). Each also applies under
     // tests/lint/.probe-fence-*, where tests/lint/fence-rules.test.ts feeds it a violating and a
     // conforming snippet. A negated path is the module that owns what the rule keeps everyone else off.

@@ -28,7 +28,9 @@ import {
   flowLevelLabel,
   flowStageLabel,
   guardrailClassifierLabel,
+  guardrailExternalLabel,
   guardrailUncheckedLabel,
+  toolResultSizeLabel,
 } from "@/client/lib/flowLabels";
 import { type LogGroupTitle, logGroupTitle } from "@/client/lib/logGroupTitle";
 import { cn, formatDateTime } from "@/client/lib/utils";
@@ -123,6 +125,13 @@ function StageRow({ row }: { row: LogItem }) {
     row.provider,
     row.model,
     row.durationMs != null ? `${row.durationMs}ms` : null,
+    row.stage === "tool"
+      ? toolResultSizeLabel(
+          (row.detail as Record<string, unknown> | null)?.resultSize,
+          t,
+          i18n.language,
+        )
+      : null,
   ]
     .filter(Boolean)
     .join(" · ");
@@ -162,10 +171,22 @@ function StageRow({ row }: { row: LogItem }) {
     : null;
   // Outside the toggle on purpose: whether the message went on unchecked is the row's headline, not
   // a detail to expand.
-  const uncheckedLine = unchecked && (
+  const external = guardrailExternalLabel(row.stage, rowDetail, t);
+  const uncheckedLine = unchecked ? (
     <p className="mt-1 pl-5.5 text-warning text-xs">
       {classifier ? `${unchecked} · ${classifier}` : unchecked}
     </p>
+  ) : (
+    external && (
+      <p
+        className={cn("mt-1 pl-5.5 text-xs", {
+          "text-warning": rowDetail?.decision !== "allow",
+          "text-text-muted": rowDetail?.decision === "allow",
+        })}
+      >
+        {external}
+      </p>
+    )
   );
   if (!hasDetail)
     return (

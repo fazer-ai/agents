@@ -61,6 +61,10 @@ afterEach(() => {
 
 process.env.NODE_ENV = "test";
 process.env.DATABASE_URL = "postgresql://test:test@localhost:5432/test";
+// The in-memory outbox, whatever a dev `.env` picks: an explicit MAIL_PROVIDER wins over NODE_ENV in
+// src/config.ts, so a `.env` set to smtp, resend or none would make the mail tests send for real or
+// refuse, instead of filling `mailOutbox`. A test about another transport builds that one itself.
+process.env.MAIL_PROVIDER = "memory";
 
 // Integration tests run against a DEDICATED test database, identified SOLELY by
 // TEST_MIGRATION_DATABASE_URL (superuser). MIGRATION_DATABASE_URL and TEST_APP_DATABASE_URL are

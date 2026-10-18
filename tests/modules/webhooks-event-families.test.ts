@@ -1,4 +1,12 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  test,
+} from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { runScopedOn, type ScopedDb } from "@/lib/tenancy";
@@ -25,26 +33,26 @@ import { outboundUrl } from "../utils/outbound";
 // event of that family, including ones added later (docs/api-and-fleet.md, Outbound webhooks).
 
 describe("which names a subscription may hold", () => {
+  // One row per outcome of isSubscribableEvent: an event of the set, a name with no `.*` suffix, a
+  // family's wildcard, and a `.*` suffix on something that is not a family.
   const rows: [string, boolean][] = [
     ["conversation.created", true],
-    ["conversation.*", true],
-    ["document.*", true],
-    ["llm.*", true],
-    ["heartbeat", true],
-    ["foobar.*", false],
-    ["foobar.created", false],
-    ["*", false],
-    [".*", false],
     ["conversation*", false],
+    ["document.*", true],
     ["conversation.created.*", false],
-    ["heartbeat.*", false],
-    ["conversation.", false],
   ];
   for (const [name, ok] of rows) {
     test(`${name} → ${ok ? "accepted" : "refused"}`, () => {
       expect(isSubscribableEvent(name)).toBe(ok);
     });
   }
+
+  test("every event of the catalog and every family's wildcard is accepted", () => {
+    for (const g of outboundEventGroups()) {
+      for (const e of g.events) expect(isSubscribableEvent(e)).toBe(true);
+      if (g.wildcard) expect(isSubscribableEvent(g.wildcard)).toBe(true);
+    }
+  });
 });
 
 describe("the catalog grouped by family", () => {
@@ -137,6 +145,17 @@ async function deliveredTo(event: string) {
   return rows.map((r) => r.subscription.url).sort();
 }
 
+async function wipeTenantRows() {
+  for (const table of [
+    "outbound_webhook_deliveries",
+    "webhook_subscriptions",
+    "audit_logs",
+  ])
+    await suDb.$executeRawUnsafe(
+      `DELETE FROM ${table} WHERE tenant_id = ${tenantId}`,
+    );
+}
+
 describe.skipIf(!dbUp)("family wildcards on a real subscription", () => {
   beforeAll(async () => {
     tenantId = (
@@ -144,6 +163,11 @@ describe.skipIf(!dbUp)("family wildcards on a real subscription", () => {
         data: { name: "WHFam", slug: `wh-fam-${process.pid}` },
       })
     ).id;
+  });
+
+  // Every test starts from the same five subscriptions and no deliveries, so a subscription another
+  // test created (a stored wildcard, a patch target) never receives this test's events.
+  beforeEach(async () => {
     await subscribe("/conversations-all", ["conversation.*"]);
     await subscribe("/documents-all", ["document.*"]);
     await subscribe("/explicit", ["conversation.created"]);
@@ -151,16 +175,11 @@ describe.skipIf(!dbUp)("family wildcards on a real subscription", () => {
     await subscribe("/heartbeat", ["heartbeat"]);
   });
 
+  afterEach(wipeTenantRows);
+
   afterAll(async () => {
     if (tenantId) {
-      for (const table of [
-        "outbound_webhook_deliveries",
-        "webhook_subscriptions",
-        "audit_logs",
-      ])
-        await suDb.$executeRawUnsafe(
-          `DELETE FROM ${table} WHERE tenant_id = ${tenantId}`,
-        );
+      await wipeTenantRows();
       await suDb.$executeRawUnsafe(
         `DELETE FROM tenants WHERE id = ${tenantId}`,
       );

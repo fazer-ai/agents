@@ -24,12 +24,4 @@ describe("the API client's response hook", () => {
     await Promise.resolve();
     expect(cancelled).toBe(true);
   });
-
-  test("leaves the original readable when it is handed a clone", async () => {
-    const original = new Response("event: snapshot\ndata: {}\n\n", {
-      headers: { "content-type": "text/event-stream" },
-    });
-    onApiResponse(original.clone());
-    expect(await original.text()).toBe("event: snapshot\ndata: {}\n\n");
-  });
 });

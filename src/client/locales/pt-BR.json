@@ -298,6 +298,7 @@
     "actionSearch": "Buscar ações",
     "actor": {
       "apiKey": "Chave de API",
+      "dashboardViewer": "Visualizador de dashboard",
       "mcp": "Cliente MCP",
       "system": "Sistema",
       "user": "Usuário"
@@ -394,6 +395,9 @@
   "branding": {
     "subtitle": "Personalize a aparência global do app (nome, cores, logo, favicon).",
     "title": "Identidade visual"
+  },
+  "breadcrumbs": {
+    "dashboard": "Carregando…"
   },
   "channels": {
     "account": "Conta {{id}}",
@@ -1210,6 +1214,11 @@
     "unpriced_other": "{{n}} requisições deste período não têm preço e estão fora do custo: {{models}}. Defina o preço próprio da conta para o modelo em Avançado > Preços dos modelos e depois reprecifique as chamadas já feitas.",
     "unpricedCta": "Abrir preços dos modelos"
   },
+  "dashboards": {
+    "proTitle": "Dashboards são um recurso do Pro",
+    "subtitle": "Painéis que você mesmo monta sobre as suas conversas e o uso de IA, cada um no seu próprio endereço.",
+    "title": "Dashboards"
+  },
   "documentApproval": {
     "again": "Pedido de novo, com a data de hoje. Este é o pedido novo.",
     "againFailed": "Não foi possível pedir de novo.",
@@ -1609,6 +1618,7 @@
       "stt": "A transcrição de voz está ligada, mas sem chave de API definida.",
       "suggestionReviewModel": "O avaliador de sugestões tem um modelo próprio que não consegue rodar com a configuração atual, então as sugestões de conhecimento do agente chegam à fila de aprovação sem avaliação. Confira fornecedor, modelo, chave e endpoint.",
       "tts": "As respostas em áudio estão ligadas, mas sem chave de API definida.",
+      "ttsFallback": "A voz reserva está num outro provedor e não tem chave de API própria, então não consegue assumir uma resposta que a voz principal perder.",
       "ttsNormalize": "A reescrita para fala está ligada mas a configuração de modelo dela não pode rodar, então o áudio sai sem ela. Confira provedor, modelo, chave e endpoint.",
       "vision": "A leitura de imagens/documentos está ligada, mas sem chave de API definida."
     },
@@ -1628,6 +1638,7 @@
       "stt": "A credencial de transcrição está referenciada, mas ainda não foi preenchida.",
       "suggestionReviewModel": "A credencial do avaliador de sugestões está referenciada, mas ainda não foi preenchida, então as sugestões chegam à fila sem avaliação.",
       "tts": "A credencial de resposta em áudio está referenciada, mas ainda não foi preenchida.",
+      "ttsFallback": "A credencial da voz reserva está referenciada, mas ainda não foi preenchida, então a voz reserva não consegue assumir uma resposta.",
       "ttsNormalize": "A credencial da reescrita para fala está referenciada, mas ainda não foi preenchida.",
       "vision": "A credencial de leitura de imagens está referenciada, mas ainda não foi preenchida."
     },
@@ -1645,6 +1656,7 @@
       "stt": "A credencial de transcrição não existe mais, então as mensagens de voz não são transcritas.",
       "suggestionReviewModel": "A credencial do avaliador de sugestões não existe mais, então as sugestões chegam à fila sem avaliação.",
       "tts": "A credencial de resposta em áudio não existe mais, então as respostas saem como texto.",
+      "ttsFallback": "A credencial da voz reserva não existe mais, então a voz reserva não consegue assumir uma resposta.",
       "ttsNormalize": "A credencial da reescrita para fala não existe mais, então o áudio sai sem a reescrita.",
       "vision": "A credencial de leitura de imagens não existe mais, então imagens e documentos não são lidos."
     },
@@ -1665,6 +1677,7 @@
       "stt": "A credencial da transcrição é de um tipo que não pode ser usado como chave de API, então as mensagens de voz não são transcritas. Escolha uma credencial que guarde uma única chave.",
       "suggestionReviewModel": "A credencial do avaliador de sugestões é de um tipo que não pode ser usado como chave de API, então as sugestões chegam à fila sem avaliação. Escolha uma credencial que guarde uma única chave.",
       "tts": "A credencial da resposta em áudio é de um tipo que não pode ser usado como chave de API, então as respostas saem em texto. Escolha uma credencial que guarde uma única chave.",
+      "ttsFallback": "A credencial da voz reserva é de um tipo que não pode ser usado como chave de API, então a voz reserva não consegue assumir uma resposta. Escolha uma credencial que guarde uma única chave.",
       "ttsNormalize": "A credencial da reescrita para fala é de um tipo que não pode ser usado como chave de API, então as respostas são faladas sem a reescrita. Escolha uma credencial que guarde uma única chave.",
       "vision": "A credencial da leitura de imagens é de um tipo que não pode ser usado como chave de API, então imagens e documentos não são lidos. Escolha uma credencial que guarde uma única chave."
     },
@@ -2090,6 +2103,39 @@
       "classifierDecisionsHint": "Uma API de classificação responde uma pergunta de sim ou não por checagem. É mais rápida, mas devolve só números e não escreve resposta.",
       "competitors": "Concorrentes",
       "competitorsHint": "Um por linha. Usado pela checagem de menção a concorrentes.",
+      "contract": {
+        "allow": "a resposta sai como foi escrita.",
+        "block": "a resposta não sai e vale o “Ao violar” da seção Saída: envia a mensagem template, não envia nada, ou passa a conversa para a equipe com a mensagem ao cliente. A mensagem gerada pelo guardrails vira a template, porque aqui nenhum modelo escreve a substituta.",
+        "copyAll": "Copiar como Markdown",
+        "example": {
+          "blockReason": "preço não encontrado nas fontes que o agente usou",
+          "candidate": "Sim, o plano de 12 meses inclui suporte por chat.",
+          "customerMessage": "O plano de 12 meses inclui suporte?",
+          "query": "suporte plano 12 meses",
+          "replaceReason": "texto do plano desatualizado",
+          "replaceText": "O suporte por chat vem com o plano de 12 meses.",
+          "verifyComment": "rawBody: o corpo da requisição exatamente como chegou, antes do JSON.parse"
+        },
+        "failure": "Sem resposta em 15 segundos, status fora de 2xx, corpo que não é uma das decisões acima, candidateId diferente, URL recusada pela proteção de saída, ou segredo de assinatura que não existe mais: a resposta segue “Quando uma checagem não consegue rodar”. Por padrão ela sai sem verificação; com segurar, ela fica retida e a conversa vai para a equipe.",
+        "failureTitle": "Quando a verificação não consegue decidir",
+        "fieldAttachments": "candidate.attachments lista os arquivos enviados com a resposta (kind, fileName, caption, e text quando é um documento escrito pelo modelo).",
+        "fieldCandidate": "candidateId identifica exatamente esta resposta. A sua resposta precisa repeti-lo.",
+        "fieldPlayground": "No playground, conversationId e chatwootConversationId vêm null.",
+        "fieldTools": "toolCalls são as chamadas deste turno, em ordem, no máximo 50, cada valor cortado em 8000 caracteres (argsSize e resultSize são os tamanhos antes do corte). Segredos vêm mascarados. Com “Enviar valores das ferramentas” desligado, args e result não vão.",
+        "intro": "O que o seu endpoint recebe, o que ele precisa responder, e o que acontece quando ele não consegue.",
+        "open": "Formato da requisição e da resposta",
+        "reason": "reason é opcional em replace e block (até 500 caracteres). Aparece na nota privada e no playground, e no log de fluxo só enquanto os valores das ferramentas são registrados.",
+        "replace": "o seu texto sai no lugar (obrigatório, até 4096 caracteres). Ele é dividido, convertido em áudio e assinado como a resposta do próprio agente, e não passa por nova verificação. Arquivos da resposta são descartados.",
+        "requestHeaders": "POST na sua URL com content-type: application/json e o cabeçalho x-fazerai-delivery. A chamada inteira, resposta incluída, tem 15 segundos.",
+        "requestTitle": "Requisição",
+        "response": "Responda com um 2xx e um JSON que repete o candidateId e traz uma decisão.",
+        "responseTitle": "Resposta",
+        "signature": "Com um segredo de assinatura, cada requisição leva também x-fazerai-timestamp e x-fazerai-signature: sha256= seguido do HMAC-SHA256 em hex de “timestamp.corpo bruto” com o segredo, o mesmo esquema dos webhooks de saída. Sem segredo, a requisição vai sem assinatura.",
+        "signatureTitle": "Assinatura",
+        "title": "Verificação externa: requisição e resposta",
+        "when": "Uma vez por resposta a uma mensagem do cliente, na caixa de entrada e no playground, depois da verificação de saída embutida e antes de a resposta ser dividida, convertida em áudio ou assinada. A frase de transferência e uma resposta só com arquivos também passam por ela. Follow-ups e lembretes não passam.",
+        "whenTitle": "Quando é chamado"
+      },
       "customPolicy": "Política personalizada",
       "customPolicyHint": "Regras extras anexadas a cada análise.",
       "customPolicyQuestionHelp": "Por exemplo: “A resposta promete reembolso ao cliente?”\n\nUma regra escrita como afirmação (“o assistente não deve…”) é lida ao contrário, e respostas corretas disparam a checagem.",
@@ -2100,6 +2146,14 @@
       "decisionsProvider": "API de classificação",
       "directionEnabled": "Ativar",
       "enabled": "Ativar guardrails",
+      "external": "Verificação externa",
+      "externalDesc": "Antes de uma resposta ao cliente ser entregue, ela vai para o seu endpoint com as mensagens e as tool calls do turno, e o seu endpoint responde allow, replace ou block. Um block usa a ação da Saída; sem resposta em 15 s, vale o que está em “Quando uma checagem não consegue rodar”.",
+      "externalSecret": "Segredo de assinatura",
+      "externalSecretHint": "Assina cada requisição com HMAC-SHA256, como os webhooks de saída. Vazio envia sem assinatura.",
+      "externalToolValues": "Enviar valores das ferramentas",
+      "externalToolValuesHint": "Desligado envia o nome e os tamanhos de cada chamada de ferramenta, sem os argumentos e o resultado.",
+      "externalUrl": "URL do endpoint",
+      "externalUrlHint": "Só https. Vazio desliga a verificação externa.",
       "generationPrompt": "Orientação de geração",
       "generationPromptHint": "Orienta como o agente de guardrails escreve a resposta substituta (tom, o que oferecer ou evitar). Opcional.",
       "generationPromptPlaceholder": "ex.: Recuse com educação, mantenha um tom acolhedor e ofereça encaminhar para um atendente humano.",
@@ -2109,6 +2163,7 @@
       "inputDesc": "Analisa a mensagem do cliente antes de o agente processá-la.",
       "model": "Modelo do guardrails",
       "modelDesc": "Um agente de moderação dedicado analisa as mensagens. Desligado por padrão; escolha um modelo + chave de API.",
+      "navExternal": "Verificação externa",
       "navInput": "Entrada",
       "navModel": "Modelo",
       "navOutput": "Saída",
@@ -2149,6 +2204,7 @@
     "handoffTeams": "Times",
     "hiddenDecisionsPending": "Há alterações não salvas nas perguntas e regras, que só um agente de monitoramento usa. Volte o modo para Monitoramento em Geral para salvá-las, ou descarte.",
     "hiddenDraftsPending": "Há alterações não salvas no que Perguntas e regras não usa (instruções, modelo, memória, provedor reserva, Conhecimento ou ferramentas que ele não mostra). Volte para Modelo de linguagem em Geral para salvá-las, ou descarte.",
+    "hiddenTabsPending": "As alterações em {{tabs}} não foram salvas: do jeito que o agente está configurado agora, ele não usa essas abas. Volte a configuração para salvá-las, ou descarte.",
     "identitySection": "Identidade",
     "identitySectionHint": "Nome, prompt do sistema e se o agente está ativo.",
     "identitySectionHintDecisions": "Nome, modo e se o agente está ativo.",
@@ -2397,6 +2453,8 @@
     "saveAndExport": "Salvar e exportar",
     "saved": "Agente salvo.",
     "saveError": "Não foi possível salvar o agente.",
+    "saveHeldField": "um campo ali não pode ser salvo como está.",
+    "saveHeldIn": "Corrija a aba {{tab}} antes de salvar: {{reason}}",
     "saveKnowledge": "Salvar conhecimento",
     "saveTools": "Salvar ferramentas",
     "sectionsNav": "Seções",
@@ -2628,6 +2686,13 @@
     "ttsCredential": "Chave de API",
     "ttsDelivery": "Entrega da voz",
     "ttsDeliveryHint": "Deixe um campo em branco para usar o ajuste salvo na própria voz. Estabilidade mais baixa deixa a fala mais expressiva; estabilidade alta soa monótona.",
+    "ttsFallback": "Voz reserva",
+    "ttsFallbackCredential": "Chave de API da reserva",
+    "ttsFallbackCredentialHint": "Em branco, usa a chave da voz principal quando o provedor é o mesmo. Outro provedor precisa da própria: uma chave nunca é enviada a outro fornecedor.",
+    "ttsFallbackHelp": "Tentada uma vez quando a voz principal estoura o tempo ou o provedor dela está sobrecarregado (5xx, 429), antes de a resposta sair em texto. Chave ou pedido inválido (400, 401, 404) vai direto para texto, então a reserva nunca esconde uma voz principal quebrada.",
+    "ttsFallbackModel": "Modelo da reserva",
+    "ttsFallbackNone": "Sem voz reserva",
+    "ttsFallbackVoice": "Voz da reserva",
     "ttsHint": "Opcionalmente responde com mensagem de áudio.",
     "ttsMode": "Quando responder em áudio",
     "ttsModel": "Modelo",
@@ -2670,6 +2735,8 @@
     "ttsTextOverListItemsHint": "Marcadores, passos numerados ou linhas de tabela (2-50).",
     "ttsTextOverNumbers": "Preços ou números longos, a partir de",
     "ttsTextOverNumbersHint": "Valores em dinheiro, ou números de 4 dígitos ou mais (2-50).",
+    "ttsTimeout": "Tempo limite por tentativa (segundos)",
+    "ttsTimeoutHint": "Em branco = 60 s (1-120). Passado esse tempo, a voz reserva é tentada, ou a resposta sai em texto.",
     "ttsVoice": "Voz",
     "ttsVoiceDefault": "Padrão da voz",
     "ttsVoiceHint": "ID/nome da voz (obrigatório para ElevenLabs).",
@@ -3213,6 +3280,16 @@
       "chat": "modelo de linguagem",
       "decisions": "API de classificação"
     },
+    "guardrailExternal": {
+      "allow": "A verificação externa liberou a resposta",
+      "block": "A verificação externa bloqueou a resposta ({{action}})",
+      "failedHeld": "A verificação externa não conseguiu decidir ({{cause}}), então a resposta foi segurada e a passagem para a equipe foi pedida",
+      "failedPassed": "A verificação externa não conseguiu decidir ({{cause}}), então a resposta foi liberada sem checagem",
+      "latency": "levou {{ms}} ms",
+      "reason": "motivo: {{reason}}",
+      "reasonKept": "o endpoint deu um motivo ({{chars}} caracteres), guardado na nota da conversa",
+      "replace": "A verificação externa trocou a resposta pelo texto dela"
+    },
     "guardrailHeld": {
       "input": "A checagem falhou, então a mensagem do cliente foi segurada e a passagem para a equipe foi pedida",
       "output": "A checagem falhou, então a resposta foi segurada e a passagem para a equipe foi pedida"
@@ -3277,6 +3354,7 @@
     "subtitle": "Fluxo de execução passo a passo de cada turno do agente: transcrição, geração, áudio, entrega e transferências.",
     "systemPrompt": "Prompt do sistema",
     "title": "Logs",
+    "toolResultSize": "{{chars}} caracteres · ~{{tokens}} tokens",
     "turn": "Turno"
   },
   "mcp": {
@@ -3481,6 +3559,7 @@
     "collapsed": "Recolhido",
     "conversations": "Conversas",
     "dashboard": "Painel",
+    "dashboards": "Dashboards",
     "expand": "Expandir",
     "github": "GitHub",
     "home": "Início",
@@ -3620,6 +3699,15 @@
       "title": "Simulação de ferramentas"
     },
     "trace": {
+      "externalAllow": "liberada pelo endpoint",
+      "externalBlockHandoff": "bloqueada pelo endpoint, o caso iria para a equipe",
+      "externalBlockSilent": "bloqueada pelo endpoint, nada seria enviado",
+      "externalBlockTemplate": "bloqueada pelo endpoint, a resposta configurada seria enviada",
+      "externalCause": "falha: {{cause}}",
+      "externalCheck": "Verificação externa na resposta",
+      "externalLatency": "levou {{ms}} ms",
+      "externalReason": "motivo: {{reason}}",
+      "externalReplace": "trocada pelo texto do endpoint",
       "guardrailClean": "aprovado",
       "guardrailHandedOff": "bloqueado, o caso iria para a equipe",
       "guardrailHeldInput": "não pôde ser checada, então a mensagem foi segurada e o caso iria para a equipe",
@@ -4208,6 +4296,9 @@
       "description": "A identidade visual white-label (nome, cores, logo, favicon) é um recurso Pro. Faça upgrade para o Pro para personalizar a identidade do app."
     },
     "cta": "Fazer upgrade",
+    "dashboards": {
+      "description": "Monte os seus próprios dashboards (conversas por evento, etiqueta ou desfecho, custo de IA por modelo) e compartilhe cada um pelo endereço. Faça upgrade para o Pro para criá-los."
+    },
     "dismiss": "Agora não",
     "multiTenant": {
       "description": "A edição Free roda com um único tenant. Faça upgrade para o Pro para criar e gerenciar vários tenants."

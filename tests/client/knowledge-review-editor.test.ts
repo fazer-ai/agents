@@ -70,7 +70,9 @@ const savedReviewer = (stub: EditorStub) =>
     );
 
 describe("the reviewer model in the agent editor", () => {
-  test("a Tools save does not mark an unsaved reviewer model as saved", async () => {
+  // The bar saves the agent, not the tab (agents#1520): pressed on Tools, it writes the reviewer too,
+  // through the Knowledge save that carries it, and only then reads the Knowledge tab as saved.
+  test("a save pressed on Tools writes the unsaved reviewer model too", async () => {
     const stub = await openKnowledge();
     pickAnthropic();
     await waitFor(() => expect(dirty(/Knowledge/)).toBe(true));
@@ -84,12 +86,13 @@ describe("the reviewer model in the agent editor", () => {
         target: { value: "protocolo_novo" },
       },
     );
-    fireEvent.click(screen.getByRole("button", { name: "Save tools" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(dirty(/Tools/)).toBe(false));
-    expect(stub.writes.some((w) => w.method === "PATCH")).toBe(true);
-    // The Tools save did not carry the reviewer, so the Knowledge tab still owes it.
-    expect(savedReviewer(stub)).not.toContain("anthropic");
-    expect(dirty(/Knowledge/)).toBe(true);
+    await waitFor(() => expect(dirty(/Knowledge/)).toBe(false));
+    // The Tools PATCH goes first and does not carry it; the Knowledge one after it does.
+    const sent = savedReviewer(stub);
+    expect(sent[0]).not.toBe("anthropic");
+    expect(sent.at(-1)).toBe("anthropic");
   });
 
   test("save all writes the Knowledge section through its own save", async () => {
@@ -137,7 +140,7 @@ describe("the reviewer model in the agent editor", () => {
         : undefined;
     pickAnthropic();
     expect(locked(reviewerProvider())).toBe(false);
-    fireEvent.click(screen.getByRole("button", { name: "Save knowledge" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() =>
       expect(stub.requests).toContain("PUT /api/v1/agents/41/tool-selections"),
     );

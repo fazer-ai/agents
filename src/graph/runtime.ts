@@ -65,8 +65,14 @@ import {
 } from "@/modules/flowlog/service";
 import { ourSideHasSpoken } from "@/modules/followups/eligibility";
 import {
+  buildExternalCheck,
+  type ExternalCallDeps,
+  turnToolCalls,
+} from "@/modules/guardrails/external";
+import {
   buildGuardrailGate,
   chatwootNoteSink,
+  type GuardrailDecision,
   guardrailTripped,
   screenedByOperator,
   screenedText,
@@ -269,6 +275,8 @@ const { refused, settled } = turnSettlement;
 
 export interface RuntimeDeps {
   makeModel?: (cfg: ResolvedModelConfig) => BaseChatModel;
+  // The external check's network half (modules/guardrails/external.ts). Tests inject.
+  externalCheck?: ExternalCallDeps;
   makeClient?: (
     cfg: ConstructorParameters<typeof ChatwootClient>[0],
   ) => Promise<ChatwootClient>;
@@ -1154,6 +1162,8 @@ async function runTurnBody(
     { conversationId: loaded.conversationDbId, threadId },
     base,
   );
+  // Whether the fallback model wrote this turn's reply, for the external check's request.
+  let fallbackAnswered = false;
   const graph = await buildModelAndGraph(loaded, tools, {
     standingNotices,
     // NOTE: Asked by the graph when the silence retry would run. A completed transfer or something
@@ -1209,7 +1219,8 @@ async function runTurnBody(
       }),
     // NOTE: A fallback that answers is a successful turn, so this warn is the operator's one signal
     // that the primary provider is not taking their traffic.
-    onModelFallback: ({ provider, model, reason, failure }) =>
+    onModelFallback: ({ provider, model, reason, failure }) => {
+      fallbackAnswered = true;
       emitFlowEvent(flow, {
         stage: "generate",
         level: "warn",
@@ -1221,7 +1232,8 @@ async function runTurnBody(
           fallbackReason: reason,
           primaryFailure: failure,
         },
-      }),
+      });
+    },
     // NOTE: The fallback failed too. Attribution, not a second alarm: the wrapping `generate` stage
     // already emits the error (labelled with the primary), and alert coalescing keys on (channel,
     // stage, level), so a second error would page twice. `info` names which model died; `status`
@@ -1328,6 +1340,25 @@ async function runTurnBody(
     // NOTE: The same usage sink as the turn's own callbacks.
     persistUsage: params.deps?.persistUsage,
     langfuseCfg: loaded.langfuseCfg,
+  });
+  // The operator's own endpoint, asked after the built-in output screening (./external.ts). Null
+  // when guardrails are off or no endpoint is configured.
+  const runExternalCheck = buildExternalCheck({
+    cfg: loaded.guardrails,
+    ctx: {
+      tenantId,
+      agentId: loaded.agentId,
+      conversationId: loaded.conversationDbId,
+      chatwootConversationId: conversationId,
+      turnId: flow.turnId,
+      customerMessage: text,
+    },
+    secret: loaded.guardrailsExternalSecret,
+    secretMissing: loaded.guardrailsExternalSecretMissing,
+    logValues: loaded.logToolValues,
+    flow,
+    announce: chatwootNoteSink(client, conversationId),
+    deps: params.deps?.externalCheck,
   });
   // The transfer a guardrail `handoff` verdict asks for, gated after the judge's model call:
   // not called off, not superseded, still the bot's. Not the reply claim, which means "answered";
@@ -1661,22 +1692,45 @@ async function runTurnBody(
   // The sentence the transfer promised, delivered on the way out of the turn whatever that
   // way is: once the tool set `open`, every retry stops at its ownership gate. Two exclusive call
   // sites (the failure path rethrows); a third would own the at-most-once question.
-  const deliverHandoffPromise = async (): Promise<void> => {
+  // `messages` are the turn's, for the external check's tool calls; empty when the graph threw.
+  const deliverHandoffPromise = async (
+    messages: BaseMessage[] = [],
+  ): Promise<void> => {
     if (!handoffAnsweredTheTurn(handoffState)) return;
     const line = handoffState.customerMessage;
     try {
-      const guarded = await runGuardrail("output", line);
+      let guarded = await runGuardrail("output", line);
       // NOTE: A trip here drops the queued images too, as the main gate below does: a verdict on
       // this turn's customer-facing text applies to every artefact.
       if (guardrailTripped(guarded)) turnState.pendingAttachments.length = 0;
-      const screened = screenedText(guarded, line);
+      let screened = screenedText(guarded, line);
       if (screened === null) return;
+      let byOperator = guardrailTripped(guarded)
+        ? screenedByOperator(guarded)
+        : handoffState.lineByOperator === true;
+      // The closing line the model wrote is a reply too, so the operator's endpoint judges it. The
+      // transfer already happened: a block only replaces or silences the line, it hands over nothing.
+      if (runExternalCheck && !byOperator) {
+        guarded = await runExternalCheck({
+          text: screened,
+          attachments: [],
+          model: fallbackAnswered ? "fallback" : "primary",
+          toolCalls: turnToolCalls(
+            messages,
+            loaded.guardrails.external.sendToolValues,
+          ),
+        });
+        if (guardrailTripped(guarded)) {
+          turnState.pendingAttachments.length = 0;
+          byOperator = screenedByOperator(guarded);
+        }
+        screened = screenedText(guarded, screened);
+        if (screened === null) return;
+      }
       const delivered = await deliverText(
         screened,
         await currentVoiceReply(),
-        guardrailTripped(guarded)
-          ? !screenedByOperator(guarded)
-          : handoffState.lineByOperator !== true,
+        !byOperator,
       );
       // NOTE: This line leaves before the later gates, so a called-off run stops here; the transfer
       // stays done. A partial send is not raised (the delivery is best-effort), and "superseded"
@@ -2386,7 +2440,7 @@ async function runTurnBody(
           replyRecovered = true;
         }
       }
-      await deliverHandoffPromise();
+      await deliverHandoffPromise(result.messages as BaseMessage[]);
 
       // Re-check the live assignee before posting. A small TOCTOU remains between this read and the
       // POST, which is a network call and cannot share a transaction with the read; single-replica
@@ -2472,12 +2526,17 @@ async function runTurnBody(
       // NOTE: `postBlocked` answered before this model call, and the suppressed branch returns
       // "blocked" without a later ask.
       if (await writeCalledOff()) return refused(standDown());
-      if (outGuard && guardrailTripped(outGuard)) {
+      // A trip, from either judge: drops the queue and replaces, suppresses or hands over the
+      // reply. Null to go on delivering; otherwise the turn's refusal.
+      const settleOutputTrip = async (
+        decision: GuardrailDecision,
+        subject: string,
+      ) => {
         turnState.pendingAttachments.length = 0;
-        const replacement = screenedText(outGuard, screened);
+        const replacement = screenedText(decision, subject);
         // NOTE: The refused reply goes nowhere and the case goes to the team; the transfer is marked,
         // so the empty branch below does not resolve or hand over twice.
-        if (outGuard.kind === "handed-off") {
+        if (decision.kind === "handed-off") {
           const handed = await handOverForGuardrail("output");
           if (handed !== "handed" && handed !== "failed")
             return refused(handed);
@@ -2497,7 +2556,47 @@ async function runTurnBody(
           reply = replacement;
         }
         replyRecovered = false;
-        replyByOperator = screenedByOperator(outGuard);
+        replyByOperator = screenedByOperator(decision);
+        return null;
+      };
+      if (outGuard && guardrailTripped(outGuard)) {
+        const settled = await settleOutputTrip(outGuard, screened);
+        if (settled) return settled;
+      }
+      // The external check judges what would go out now: the reply after the built-in screening,
+      // unless that already stood the operator's own text in for it. One call per reply, before it
+      // is split, spoken or signed, so no piece of it gets past a block.
+      // A reply that is only files (an image with its caption, a document) goes out too, so it is
+      // asked about as well.
+      const outgoingFiles = turnState.pendingAttachments.map((i) => ({
+        kind: i.kind,
+        fileName: i.fileName,
+        ...(i.caption?.trim() ? { caption: i.caption.trim() } : {}),
+        ...(i.screenText?.trim() ? { text: i.screenText.trim() } : {}),
+      }));
+      if (
+        runExternalCheck &&
+        (reply || outgoingFiles.length > 0) &&
+        !replyByOperator
+      ) {
+        const external = await runExternalCheck({
+          text: reply,
+          attachments: outgoingFiles,
+          model: fallbackAnswered ? "fallback" : "primary",
+          toolCalls: turnToolCalls(
+            result.messages,
+            loaded.guardrails.external.sendToolValues,
+          ),
+        });
+        if (await writeCalledOff()) return refused(standDown());
+        // NOTE: A person who took the conversation over during the wait wins: nothing is delivered
+        // after the hand-over. A failed read lets the reply go on, as the gates above do.
+        if (!(await ownershipNow().catch(() => true)))
+          return refused("taken-over");
+        if (guardrailTripped(external)) {
+          const settled = await settleOutputTrip(external, reply);
+          if (settled) return settled;
+        }
       }
 
       // NOTE: Empty reply: queued attachments and a deferred resolve still apply. After the recheck and

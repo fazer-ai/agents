@@ -77,6 +77,33 @@ export interface TtsConfig extends TtsVoiceSettings {
   spokenNoticeText: string | null;
   textChoice: boolean;
   textChoiceNote: string | null;
+  // How long ONE synthesis may take before it counts as failed, in ms. null = TTS_TIMEOUT_DEFAULT_MS.
+  // Per attempt: with a fallback voice behind it, the worst case is two of these.
+  timeoutMs: number | null;
+  // The fallback voice, tried once when the primary times out or the provider answers a transient
+  // status (5xx, 429), before the reply goes as text. It exists once `fallbackProvider` is named,
+  // like the model fallback (graph/fallback-settings). Model and voice "" = that provider's default.
+  // A null credential or baseURL inherits the primary's only when the provider is the same: a key
+  // is never sent to another vendor. Flat, for the mergeBehaviorSettings reason above.
+  fallbackProvider: string | null;
+  fallbackModel: string;
+  fallbackVoice: string;
+  fallbackCredentialRef: string | null;
+  fallbackBaseURL: string | null;
+}
+
+// The provider's own ceiling before this was configurable, kept as the default so an agent that never
+// set one waits exactly as long as it did.
+export const TTS_TIMEOUT_DEFAULT_MS = 60_000;
+
+// Clamped rather than rejected, like every knob in this block. Below a second no provider answers,
+// and past two minutes the customer is gone before the text fallback.
+export const TTS_TIMEOUT_RANGE_MS = [1000, 120_000] as const;
+
+export function clampTtsTimeout(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  const [min, max] = TTS_TIMEOUT_RANGE_MS;
+  return Math.min(max, Math.max(min, Math.round(value)));
 }
 
 // The notice used when the operator turns it on without writing one: long answers and lists are
@@ -170,6 +197,12 @@ export const TTS_DEFAULTS: TtsConfig = {
   spokenNoticeText: null,
   textChoice: false,
   textChoiceNote: null,
+  timeoutMs: null,
+  fallbackProvider: null,
+  fallbackModel: "",
+  fallbackVoice: "",
+  fallbackCredentialRef: null,
+  fallbackBaseURL: null,
   ...VOICE_SETTINGS_DEFAULTS,
 };
 

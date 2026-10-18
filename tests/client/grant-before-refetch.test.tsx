@@ -127,7 +127,7 @@ const catalogReads = (stub: EditorStub) =>
 
 async function savedGrants(stub: EditorStub): Promise<unknown[]> {
   await act(async () => {});
-  fireEvent.click(screen.getByRole("button", { name: "Save tools" }));
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
   const put = await waitFor(() => {
     const w = stub.writes.find(
       (x) => x.method === "PUT" && x.path.endsWith("/tool-selections"),

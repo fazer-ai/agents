@@ -79,7 +79,8 @@ describe("a quote that runs past one page", () => {
         description: pageOf(pages, (s) => s.startsWith(`Item ${it.quantity} `)),
         quantity: pageOf(pages, (s) => s === String(it.quantity)),
       }))
-      .filter((row) => row.description !== row.quantity);
+      // A row printed on no page is reported too: -1 on both sides would otherwise read as one page.
+      .filter((row) => row.description < 0 || row.description !== row.quantity);
     expect(split).toEqual([]);
   });
 

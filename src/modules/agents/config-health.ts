@@ -59,6 +59,8 @@ export type ConfigIssueKey =
   | "stt"
   | "tts"
   | "ttsNormalize"
+  // The fallback voice is named and cannot run: found out on the day the primary voice fails.
+  | "ttsFallback"
   | "memoryModel"
   // The knowledge suggestion reviewer's own model is set and cannot run: suggestions reach the
   // queue unreviewed, with nothing else saying so.
@@ -222,6 +224,11 @@ export interface ConfigHealthInput {
   ttsNormalizeModel?: string;
   ttsNormalizeCredentialRef?: string;
   ttsNormalizeBaseURL?: string;
+  // The fallback voice. Its credential is optional only on the primary's provider, which lends it
+  // the primary's key; any other provider needs a key of its own.
+  ttsProvider?: string;
+  ttsFallbackProvider?: string;
+  ttsFallbackCredentialRef?: string;
   visionEnabled: boolean;
   visionCredentialRef: string;
   // The contact authorization gate. Its credential is OPTIONAL (a public or IP-fenced endpoint
@@ -545,6 +552,24 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
         vault,
       ),
     );
+  }
+  // The fallback voice, judged like the model fallback: one that cannot run is the same as none. No
+  // own key is a settled fact only on another provider; on the primary's, the "tts" line above
+  // already speaks for the key it borrows.
+  if (input.ttsMode !== "never" && input.ttsFallbackProvider) {
+    const fallbackIssue: ConfigIssue = {
+      key: "ttsFallback",
+      tab: "behavior",
+      sectionId: "tts",
+    };
+    if (input.ttsFallbackCredentialRef) {
+      push(
+        fallbackIssue,
+        credIssue(true, input.ttsFallbackCredentialRef, "apiKey", vault),
+      );
+    } else if (input.ttsFallbackProvider !== input.ttsProvider) {
+      issues.push(fallbackIssue);
+    }
   }
   // The attendance summariser's own model. Its job dies with the reason on its line, but nothing
   // in the console says so, and an attendance that ends while it is broken is never summarised. Read

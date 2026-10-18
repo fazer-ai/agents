@@ -129,8 +129,10 @@ describe("agent editor save errors", () => {
     const policy = screen.getByRole("textbox", { name: "Custom policy" });
     fireEvent.change(policy, { target: { value: "Seja breve. Sempre." } });
     await waitFor(() => expect(bannerRows()).toEqual([]));
-    // The discard puts the refused value back. Unanswered, the refusal would stand on it again.
+    // The discard puts the refused value back. Unanswered, the refusal would stand on it again. It is
+    // the agent's discard, so it asks first (agents#1520).
     fireEvent.click(screen.getByRole("button", { name: "Discard" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Discard all" }));
     await waitFor(() =>
       expect(
         (screen.getByRole("textbox", { name: "Custom policy" }) as HTMLElement)
@@ -141,24 +143,29 @@ describe("agent editor save errors", () => {
     expect(onScreen("The policy is too long.")).toBe(0);
   });
 
+  // The save writes the agent's sections in order and stops at the first refused (agents#1520), so the
+  // later section is refused first: General, edited after, goes out first on the next save and is
+  // refused too, and Behavior, never re-sent, keeps its row.
   test("two forms refused in turn both stay on the banner, in tab order", async () => {
     const stub = stubEditorApi({ settings: GUARDRAILS_ON });
-    refuseNextPatch(stub, {
-      error: "That name is taken.",
-      field: "name",
-    });
-    await renderEditor(stub, "general");
-    editTab("general");
-    save();
-    await waitFor(() => expect(bannerRows()).toEqual(["That name is taken."]));
-
-    await goTo("Behavior");
+    await renderEditor(stub, "behavior");
     refuseNextPatch(stub, {
       error: "The policy is too long.",
       field: "guardrails.customPolicy",
     });
     editTab("behavior");
     save();
+    await waitFor(() => expect(bannerRows().length).toBe(1));
+
+    await goTo("General");
+    refuseNextPatch(stub, {
+      error: "That name is taken.",
+      field: "name",
+    });
+    editTab("general");
+    save();
+    await waitFor(() => expect(bannerRows().length).toBe(2));
+    await goTo("Behavior");
     await waitFor(() =>
       expect(bannerRows()).toEqual([
         "That name is taken.Fix",
@@ -350,7 +357,7 @@ describe("the Tools save checks before it writes anything", () => {
       }
     };
     editTab("tools");
-    save("Save tools");
+    save("Save");
     fireEvent.click(
       (
         await screen.findAllByRole("button", { name: "Save anyway" })
@@ -373,7 +380,7 @@ describe("the Tools save checks before it writes anything", () => {
 
     // Saved as stored, the legacy list is not this save's to refuse.
     editTab("tools");
-    save("Save tools");
+    save("Save");
     await screen.findByText("Tools updated.");
     expect(stub.writes.map((w) => w.method)).toEqual(["PUT", "PATCH"]);
 
@@ -384,7 +391,7 @@ describe("the Tools save checks before it writes anything", () => {
     fireEvent.change(field, {
       target: { value: [...stored, "mais-um"].join(", ") },
     });
-    save("Save tools");
+    save("Save");
     await screen.findByText(
       `Labels off limits takes at most ${PROTECTED_LABELS_MAX} labels.`,
     );
@@ -396,8 +403,8 @@ describe("every save that writes the agent shows what the server said", () => {
   for (const [tab, button, path] of [
     ["general", "Save", "agent"],
     ["behavior", "Save", "agent"],
-    ["tools", "Save tools", "grants"],
-    ["knowledge", "Save knowledge", "grants"],
+    ["tools", "Save", "grants"],
+    ["knowledge", "Save", "grants"],
     ["guardrails", "Save", "agent"],
     ["channelRedirect", "Save", "agent"],
   ] as const) {

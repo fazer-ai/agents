@@ -597,6 +597,11 @@ describe("instance health screen", () => {
     )) as HTMLInputElement;
     fireEvent.change(input, { target: { value: "200.5" } });
     expect(input.checkValidity()).toBe(true);
+    // And Save sends the fraction as typed, not a rounded number.
+    fireEvent.click(screen.getByText("Save"));
+    await waitFor(() => expect(puts.length).toBe(1));
+    expect(puts[0]?.body).toMatchObject({ threshold: 200.5 });
+    (releaseSave as (() => void) | null)?.();
   });
 
   test("the link a tool hands back opens the waiting channel's dialog, which asks for its URL (catches a fillAt link that lands nowhere)", async () => {

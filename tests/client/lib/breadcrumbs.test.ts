@@ -62,4 +62,28 @@ describe("breadcrumbs", () => {
     // Unrelated crumbs carry no override.
     expect(crumbs[2]?.override).toBeUndefined();
   });
+
+  test("builds a dashboard's trail, named by the dashboard once it loads", () => {
+    const crumbs = buildBreadcrumbs("/dashboards/sac", {
+      "/dashboards/sac": "Agora no SAC",
+    });
+    expect(crumbs).toHaveLength(2);
+    expect(crumbs[0]).toMatchObject({
+      labelKey: "nav.dashboards",
+      to: "/dashboards",
+    });
+    expect(crumbs[1]).toMatchObject({
+      labelKey: "breadcrumbs.dashboard",
+      to: undefined,
+      override: "Agora no SAC",
+    });
+    expect(buildBreadcrumbs("/dashboards")).toEqual([
+      {
+        labelKey: "nav.dashboards",
+        defaultLabel: "Dashboards",
+        to: undefined,
+        override: undefined,
+      },
+    ]);
+  });
 });

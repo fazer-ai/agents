@@ -1,4 +1,5 @@
 import { MessageSquare, TriangleAlert } from "lucide-react";
+import { createContext, useContext, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/client/components";
 import { useStaleNotice } from "./StaleNotice";
@@ -9,6 +10,23 @@ import { useStaleNotice } from "./StaleNotice";
 // edit there is nothing to write, the same on every tab (Gabriel's call on agents#1365). Inside the agent editor, while the "changed
 // elsewhere" notice is up, it repeats the notice on a row of its own, since on a long tab the card
 // at the top is off screen. Both rows wrap, so a narrow viewport keeps Save on screen.
+
+// The agent editor's bar is about the agent, not the tab (agents#1520): inside the editor, every tab's
+// bar reads this instead of its own props. Dirty when any section is, Save writes every dirty section,
+// Discard discards them all. A tab's own hold (`saveDisabled`) holds the button while its section is
+// dirty, and is reported up, so a Save pressed on another tab stops there too and names the tab.
+export interface EditorBar {
+  dirty: boolean;
+  saving: boolean;
+  onSave: () => void;
+  onDiscard: () => void;
+  // Whether the section this tab edits is the dirty one: its own hold matters only then.
+  sectionDirty: boolean;
+  // Stable per section; called whenever the tab's own hold changes.
+  reportBlocked: (blocked: boolean) => void;
+}
+export const EditorBarContext = createContext<EditorBar | null>(null);
+
 export function TabActionBar({
   dirty,
   saving,
@@ -28,6 +46,17 @@ export function TabActionBar({
 }) {
   const { t } = useTranslation();
   const stale = useStaleNotice();
+  const bar = useContext(EditorBarContext);
+  const held = !!saveDisabled;
+  const report = bar?.reportBlocked;
+  useEffect(() => {
+    report?.(held);
+  }, [report, held]);
+  const isDirty = bar ? bar.dirty : dirty;
+  const isSaving = bar ? bar.saving : saving;
+  const save = bar ? bar.onSave : onSave;
+  const discard = bar ? bar.onDiscard : onDiscard;
+  const holds = held && (bar ? bar.sectionDirty : true);
   return (
     <div className="sticky bottom-0 z-10 mt-auto">
       <div className="flex flex-col gap-3 rounded-xl border border-border bg-bg-secondary px-4 py-3 shadow-lg">
@@ -65,17 +94,18 @@ export function TabActionBar({
             <span />
           )}
           <div className="ml-auto flex items-center gap-2">
-            {dirty && (
-              <Button variant="secondary" onClick={onDiscard}>
+            {isDirty && (
+              <Button variant="secondary" onClick={discard}>
                 {t("editor.discard", "Discard")}
               </Button>
             )}
             <Button
-              onClick={onSave}
-              loading={saving}
-              disabled={saving || !dirty || !!saveDisabled}
+              onClick={save}
+              loading={isSaving}
+              disabled={isSaving || !isDirty || holds}
             >
-              {saveLabel ?? t("common.save", "Save")}
+              {/* The tab's own label names one section; the agent's bar saves them all. */}
+              {(!bar && saveLabel) || t("common.save", "Save")}
             </Button>
           </div>
         </div>

@@ -26,6 +26,7 @@ const ALL_KEYS: Record<ConfigIssueKey, true> = {
   stt: true,
   tts: true,
   ttsNormalize: true,
+  ttsFallback: true,
   memoryModel: true,
   suggestionReviewModel: true,
   modelFallback: true,

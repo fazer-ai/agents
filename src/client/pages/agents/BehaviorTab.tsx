@@ -140,6 +140,8 @@ import {
 import { TabActionBar } from "./TabActionBar";
 import {
   type TtsFormState,
+  ttsFallbackNeedsOwnCredential,
+  ttsFallbackProviderChanged,
   ttsNormalizerBaseUrlInvalid,
   ttsNormalizerBaseUrlUnsupported,
   ttsNormalizerNeedsOwnCredential,
@@ -1847,6 +1849,11 @@ export function BehaviorTab({
   // Blank means "the agent's", both here and in the resolver, so the fields below follow THIS
   // rather than the raw override: an openai-compatible agent whose rewrite inherits the provider
   // still runs against an endpoint, and hiding that field made it un-inspectable.
+  // The key the fallback's voice and model lists are read with: its own, or the main voice's on the
+  // same provider (the one it would run on).
+  const fallbackPickerCredential =
+    tts.fallbackCredentialRef ||
+    (tts.fallbackProvider === tts.provider ? tts.credentialRef : "");
   const normalizeEffectiveProvider =
     tts.normalizeProvider || agentModelProvider;
 
@@ -2692,6 +2699,128 @@ export function BehaviorTab({
                     />
                   </FormField>
                 </div>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <FormField
+                    label={t(
+                      "editor.ttsTimeout",
+                      "Timeout per attempt (seconds)",
+                    )}
+                    description={t(
+                      "editor.ttsTimeoutHint",
+                      "Empty = 60 s (1-120). Past it, the fallback voice is tried, or the reply goes as text.",
+                    )}
+                  >
+                    <Input
+                      type="number"
+                      min={1}
+                      max={120}
+                      step={1}
+                      placeholder="60"
+                      value={tts.timeoutSeconds}
+                      onChange={(e) =>
+                        setTts({ ...tts, timeoutSeconds: e.target.value })
+                      }
+                    />
+                  </FormField>
+                  <FormField
+                    label={t("editor.ttsFallback", "Fallback voice")}
+                    help={t(
+                      "editor.ttsFallbackHelp",
+                      "Tried once when the main voice times out or its provider is overloaded (5xx, 429), before the reply goes as text. An invalid key or request (400, 401, 404) goes straight to text, so the fallback never hides a broken main voice.",
+                    )}
+                  >
+                    <Select
+                      value={tts.fallbackProvider}
+                      onChange={(e) =>
+                        setTts(ttsFallbackProviderChanged(tts, e.target.value))
+                      }
+                    >
+                      <option value="">
+                        {t("editor.ttsFallbackNone", "No fallback voice")}
+                      </option>
+                      {TTS_PROVIDERS.map((p) => (
+                        <option key={p} value={p}>
+                          {providerLabel(p, t)}
+                        </option>
+                      ))}
+                    </Select>
+                  </FormField>
+                </div>
+                {tts.fallbackProvider && (
+                  <div className="grid gap-4 sm:grid-cols-3">
+                    <FormField
+                      label={t(
+                        "editor.ttsFallbackCredential",
+                        "Fallback API key",
+                      )}
+                      error={refusals.ttsFallbackCredential}
+                      description={t(
+                        "editor.ttsFallbackCredentialHint",
+                        "Empty uses the main voice's key on the same provider. Another provider needs its own: a key is never sent to another vendor.",
+                      )}
+                      group
+                    >
+                      <CredentialPicker
+                        value={tts.fallbackCredentialRef}
+                        onChange={(v) =>
+                          setTts({ ...tts, fallbackCredentialRef: v })
+                        }
+                        required={ttsFallbackNeedsOwnCredential(tts)}
+                        compatibleTypes={credentialCompat.tts(
+                          tts.fallbackProvider,
+                        )}
+                        defaultCreateType={
+                          credentialCompat.tts(tts.fallbackProvider)[0]
+                        }
+                        ariaLabel={t(
+                          "editor.ttsFallbackCredential",
+                          "Fallback API key",
+                        )}
+                      />
+                    </FormField>
+                    <FormField
+                      label={t("editor.ttsFallbackVoice", "Fallback voice id")}
+                      // A ComboBox-based picker, not one focusable control: `group` per the
+                      // repo rule, so the label names the group instead of dangling.
+                      group
+                    >
+                      <TtsOptionPicker
+                        kind="voices"
+                        provider={tts.fallbackProvider}
+                        credentialRef={fallbackPickerCredential}
+                        value={tts.fallbackVoice}
+                        onChange={(v) => setTts({ ...tts, fallbackVoice: v })}
+                        placeholder={
+                          TTS_DEFAULT_VOICE[tts.fallbackProvider] ||
+                          t("editor.ttsVoiceRequired", "required")
+                        }
+                        ariaLabel={t(
+                          "editor.ttsFallbackVoice",
+                          "Fallback voice id",
+                        )}
+                      />
+                    </FormField>
+                    <FormField
+                      label={t("editor.ttsFallbackModel", "Fallback model")}
+                      group
+                    >
+                      <TtsOptionPicker
+                        kind="models"
+                        provider={tts.fallbackProvider}
+                        credentialRef={fallbackPickerCredential}
+                        value={tts.fallbackModel}
+                        onChange={(v) => setTts({ ...tts, fallbackModel: v })}
+                        placeholder={
+                          TTS_DEFAULT_MODEL[tts.fallbackProvider] ?? ""
+                        }
+                        ariaLabel={t(
+                          "editor.ttsFallbackModel",
+                          "Fallback model",
+                        )}
+                      />
+                    </FormField>
+                  </div>
+                )}
                 <div className="flex flex-col gap-1.5">
                   <SwitchField
                     checked={tts.normalize}

@@ -406,4 +406,47 @@ describe.skipIf(!dbUp)("removing a large Chatwoot account", () => {
     });
     expect(await auditOf(big.id)).not.toContain("instance.remove");
   }, 120_000);
+
+  // A soft-disconnected account has no responder left but keeps its observers, and the removal
+  // deletes them. That is a change of its own, so the trail has to show it even when the flag and
+  // the bindings were already as the removal leaves them.
+  test("removing a soft-disconnected account records the observers it takes", async () => {
+    const big = await account(15317);
+    await seedVolume(tenantId, big.id, {
+      contacts: 100,
+      conversations: 300,
+      deliveries: 300,
+    });
+    const agent = await suDb.agent.create({
+      data: {
+        tenantId,
+        name: "Observer of a disconnected account",
+        systemPrompt: "x",
+      },
+    });
+    const inbox = await suDb.inbox.findFirstOrThrow({
+      where: { chatwootInstanceId: big.id },
+      select: { id: true },
+    });
+    await suDb.inboxObserver.create({
+      data: { tenantId, inboxId: inbox.id, agentId: agent.id },
+    });
+    await suDb.chatwootInstance.update({
+      where: { id: big.id },
+      data: { disconnectedAt: new Date() },
+    });
+    const dying = beforeTransaction(2, async () => {
+      throw new Error("connection lost");
+    });
+
+    await expect(
+      removeChatwootInstance(ctx(tenantId), big.id, dying),
+    ).rejects.toThrow("connection lost");
+
+    const [row] = await suDb.$queryRaw<{ action: string; before: unknown }[]>`
+      SELECT action, before FROM audit_logs
+       WHERE target = ${`chatwoot_instance:${big.id}`} ORDER BY id`;
+    expect(row?.action).toBe("instance.disconnect");
+    expect(row?.before).toMatchObject({ removedObservers: 1, stamped: false });
+  }, 120_000);
 });

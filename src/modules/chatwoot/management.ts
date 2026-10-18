@@ -1067,7 +1067,7 @@ export async function removeChatwootInstance(
     const unbound = await db.$executeRaw`
       UPDATE inboxes SET agent_id = NULL, updated_at = now()
        WHERE tenant_id = ${tenantId} AND chatwoot_instance_id = ${id} AND agent_id IS NOT NULL`;
-    await db.$executeRaw`
+    const unobserved = await db.$executeRaw`
       DELETE FROM inbox_observers WHERE inbox_id IN (
         SELECT id FROM inboxes WHERE tenant_id = ${tenantId} AND chatwoot_instance_id = ${id})`;
     const { count: stamped } = await db.chatwootInstance.updateMany({
@@ -1076,7 +1076,7 @@ export async function removeChatwootInstance(
     });
     // NOTE: Recorded as the disconnect it is, and only when it changed something, so a retry of a
     // removal that stopped halfway adds no row. `instance.remove` is written by the delete itself.
-    if (stamped > 0 || unbound > 0) {
+    if (stamped > 0 || unbound > 0 || unobserved > 0) {
       await auditMutation(db, ctx, {
         action: "instance.disconnect",
         target: `chatwoot_instance:${id}`,
@@ -1084,6 +1084,7 @@ export async function removeChatwootInstance(
           id: String(inst.id),
           accountId: inst.accountId,
           unboundInboxes: unbound,
+          removedObservers: unobserved,
           stamped: stamped > 0,
           removal: true,
         },

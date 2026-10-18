@@ -1090,10 +1090,10 @@ export async function removeChatwootInstance(
         },
       });
     }
-    const [row] = await db.$queryRaw<{ generation: bigint }[]>`
+    const [row] = await db.$queryRaw<[{ generation: bigint }]>`
       SELECT (EXTRACT(EPOCH FROM disconnected_at) * 1000000)::bigint AS generation
         FROM chatwoot_instances WHERE id = ${id}`;
-    return row!.generation;
+    return row.generation;
   });
   // NOTE: The account's route tokens stop resolving at the disconnect, not at the delete: the batches
   // take long enough for the receiver to keep authenticating a cached token through all of them.

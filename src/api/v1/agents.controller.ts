@@ -95,6 +95,7 @@ import { setUpAgentCalls } from "@/modules/voice-call/setup";
 // translate('errors.invalidSettingsValue', '`{{field}}` expects {{expected}}, not {{got}}. The agent would ignore that value and use its default, so it is not stored.')
 // translate('errors.settingsExpectedOneOf', 'one of {{values}}')
 // translate('errors.settingsExpectedType', 'a value of type {{type}}')
+// translate('errors.settingsExpectedWholeNumber', 'a whole number')
 // translate('errors.settingsExpectedAtLeast', 'a number of at least {{min}}')
 // translate('errors.settingsExpectedGreaterThan', 'a number greater than {{min}}')
 // translate('errors.settingsExpectedAtMost', 'a number of at most {{max}}')

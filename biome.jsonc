@@ -109,6 +109,14 @@
     },
     {
       "includes": [
+        "src/client/**/*.tsx",
+        "!src/client/components/NumberInput.tsx",
+        "tests/lint/.probe-src-*/**/*.tsx"
+      ],
+      "plugins": ["./biome-plugins/no-bare-number-input.grit"]
+    },
+    {
+      "includes": [
         "src/**/*.{ts,tsx}",
         "tests/lint/.probe-src-*/**/*.{ts,tsx}"
       ],

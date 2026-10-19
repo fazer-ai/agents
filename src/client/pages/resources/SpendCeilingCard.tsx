@@ -4,7 +4,8 @@ import {
   Button,
   Card,
   FormField,
-  Input,
+  NumberInput,
+  RangeHolds,
   Skeleton,
   SpendBar,
   SpendHealthLines,
@@ -14,6 +15,7 @@ import {
 } from "@/client/components";
 import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
+import { SPEND_CEILING_RANGES } from "@/modules/spend-ceiling/settings";
 
 type Usage = NonNullable<
   Awaited<
@@ -220,197 +222,197 @@ export function SpendCeilingCard({
       : value.legacyTokens;
 
   return (
-    <Card className="flex flex-col gap-4">
-      <div>
-        <h2 className="font-medium text-text-primary">
-          {t("spendCeiling.title", "Spend ceiling")}
-        </h2>
-        <p className="mt-0.5 text-sm text-text-muted">
-          {t(
-            "spendCeiling.desc",
-            "Stop spending once a calendar month reaches a dollar budget, as this app's usage records price the month's calls. Customer traffic and the playground are counted apart, so testing can never silence the agent for customers.",
-          )}
-        </p>
-      </div>
-
-      {legacy && (
-        <div
-          role="status"
-          className="rounded-lg border border-warning bg-warning-soft px-3 py-2 text-sm text-text-primary"
-        >
-          {t(
-            "spendCeiling.legacy",
-            "This ceiling was set in tokens ({{inbox}} for customers, {{playground}} for the playground) before the unit changed to dollars, and tokens do not convert. It is not enforced until you set it in dollars below.",
-            {
-              inbox: nf.format(legacy.inbox),
-              playground: nf.format(legacy.playground),
-            },
-          )}
+    <RangeHolds>
+      <Card className="flex flex-col gap-4">
+        <div>
+          <h2 className="font-medium text-text-primary">
+            {t("spendCeiling.title", "Spend ceiling")}
+          </h2>
+          <p className="mt-0.5 text-sm text-text-muted">
+            {t(
+              "spendCeiling.desc",
+              "Stop spending once a calendar month reaches a dollar budget, as this app's usage records price the month's calls. Customer traffic and the playground are counted apart, so testing can never silence the agent for customers.",
+            )}
+          </p>
         </div>
-      )}
 
-      <div className="flex flex-col gap-3 rounded-lg border border-border px-3 py-3">
-        <div className="flex items-baseline justify-between gap-2">
-          <span className="font-medium text-sm text-text-primary">
-            {t("spendCeiling.usage.title", "Spent this month")}
-          </span>
-          <span className="text-text-muted text-xs">{period}</span>
-        </div>
-        {usageError ? (
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-sm text-text-muted">
-              {t("spendCeiling.usage.error", "Could not read the usage.")}
-            </span>
-            <Button size="sm" variant="secondary" onClick={loadUsage}>
-              {t("common.retry", "Retry")}
-            </Button>
+        {legacy && (
+          <div
+            role="status"
+            className="rounded-lg border border-warning bg-warning-soft px-3 py-2 text-sm text-text-primary"
+          >
+            {t(
+              "spendCeiling.legacy",
+              "This ceiling was set in tokens ({{inbox}} for customers, {{playground}} for the playground) before the unit changed to dollars, and tokens do not convert. It is not enforced until you set it in dollars below.",
+              {
+                inbox: nf.format(legacy.inbox),
+                playground: nf.format(legacy.playground),
+              },
+            )}
           </div>
-        ) : usage === null ? (
-          <div role="status" className="flex flex-col gap-3">
-            <span className="sr-only">{t("common.loading", "Loading…")}</span>
-            <Skeleton className="h-8 w-full" />
-            <Skeleton className="h-8 w-full" />
-          </div>
-        ) : (
-          <>
-            <BarRow
-              label={t("spendCeiling.source.inbox", "Customer conversations")}
-              entry={entry("inbox")}
-              money={money}
-              when={when}
-              enabled={usage.enabled}
-            />
-            <BarRow
-              label={t(
-                "spendCeiling.source.playground",
-                "Playground (your own tests)",
-              )}
-              entry={entry("playground")}
-              money={money}
-              when={when}
-              enabled={usage.enabled}
-            />
-          </>
         )}
-      </div>
 
-      <SwitchField
-        checked={form.enabled}
-        onCheckedChange={(v) => set("enabled", v)}
-        label={t("spendCeiling.enabled", "Enforce the ceiling")}
-      />
-
-      <div className="grid gap-3 sm:grid-cols-3">
-        <FormField
-          label={t("spendCeiling.inboxUsd", "Monthly ceiling: customers (USD)")}
-          description={t(
-            "spendCeiling.usdHint",
-            "US dollars per calendar month, as this app's usage records price the calls. 0 means no ceiling on this half.",
+        <div className="flex flex-col gap-3 rounded-lg border border-border px-3 py-3">
+          <div className="flex items-baseline justify-between gap-2">
+            <span className="font-medium text-sm text-text-primary">
+              {t("spendCeiling.usage.title", "Spent this month")}
+            </span>
+            <span className="text-text-muted text-xs">{period}</span>
+          </div>
+          {usageError ? (
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-sm text-text-muted">
+                {t("spendCeiling.usage.error", "Could not read the usage.")}
+              </span>
+              <Button size="sm" variant="secondary" onClick={loadUsage}>
+                {t("common.retry", "Retry")}
+              </Button>
+            </div>
+          ) : usage === null ? (
+            <div role="status" className="flex flex-col gap-3">
+              <span className="sr-only">{t("common.loading", "Loading…")}</span>
+              <Skeleton className="h-8 w-full" />
+              <Skeleton className="h-8 w-full" />
+            </div>
+          ) : (
+            <>
+              <BarRow
+                label={t("spendCeiling.source.inbox", "Customer conversations")}
+                entry={entry("inbox")}
+                money={money}
+                when={when}
+                enabled={usage.enabled}
+              />
+              <BarRow
+                label={t(
+                  "spendCeiling.source.playground",
+                  "Playground (your own tests)",
+                )}
+                entry={entry("playground")}
+                money={money}
+                when={when}
+                enabled={usage.enabled}
+              />
+            </>
           )}
-          error={usdInvalid.inbox ? usdError : null}
+        </div>
+
+        <SwitchField
+          checked={form.enabled}
+          onCheckedChange={(v) => set("enabled", v)}
+          label={t("spendCeiling.enabled", "Enforce the ceiling")}
+        />
+
+        <div className="grid gap-3 sm:grid-cols-3">
+          <FormField
+            label={t(
+              "spendCeiling.inboxUsd",
+              "Monthly ceiling: customers (USD)",
+            )}
+            description={t(
+              "spendCeiling.usdHint",
+              "US dollars per calendar month, as this app's usage records price the calls. 0 means no ceiling on this half.",
+            )}
+            error={usdInvalid.inbox ? usdError : null}
+          >
+            <NumberInput
+              range={SPEND_CEILING_RANGES.monthlyUsd}
+              step={0.01}
+              value={usdText.inbox}
+              onChange={(e) => setUsd("inbox", e.target.value)}
+            />
+          </FormField>
+          <FormField
+            label={t(
+              "spendCeiling.playgroundUsd",
+              "Monthly ceiling: playground (USD)",
+            )}
+            description={t(
+              "spendCeiling.usdHint",
+              "US dollars per calendar month, as this app's usage records price the calls. 0 means no ceiling on this half.",
+            )}
+            error={usdInvalid.playground ? usdError : null}
+          >
+            <NumberInput
+              range={SPEND_CEILING_RANGES.monthlyUsd}
+              step={0.01}
+              value={usdText.playground}
+              onChange={(e) => setUsd("playground", e.target.value)}
+            />
+          </FormField>
+          <FormField
+            label={t("spendCeiling.warnAt", "Warn at (%)")}
+            description={t(
+              "spendCeiling.warnAtHint",
+              "Percentage of a ceiling that triggers a warning on your alert channels, so you hear about it before the agent goes quiet. 0 disables the warning.",
+            )}
+          >
+            <NumberInput
+              range={SPEND_CEILING_RANGES.warnAtPercent}
+              value={String(form.warnAtPercent)}
+              onChange={(e) =>
+                set(
+                  "warnAtPercent",
+                  Math.min(100, Math.max(0, Number(e.target.value) || 0)),
+                )
+              }
+            />
+          </FormField>
+        </div>
+
+        <FormField
+          label={t("spendCeiling.message", "Message to the customer")}
+          description={t(
+            "spendCeiling.messageHint",
+            "Sent once per conversation while the ceiling is reached. Leave it empty to say nothing.",
+          )}
         >
-          <Input
-            type="number"
-            min={0}
-            step={0.01}
-            value={usdText.inbox}
-            onChange={(e) => setUsd("inbox", e.target.value)}
+          <Textarea
+            rows={2}
+            value={form.overCeilingMessage ?? ""}
+            onChange={(e) => set("overCeilingMessage", e.target.value || null)}
           />
         </FormField>
-        <FormField
+
+        <SwitchField
+          checked={form.handoffEnabled}
+          onCheckedChange={(v) => set("handoffEnabled", v)}
           label={t(
-            "spendCeiling.playgroundUsd",
-            "Monthly ceiling: playground (USD)",
+            "spendCeiling.handoff",
+            "Hand refused conversations to a human",
           )}
-          description={t(
-            "spendCeiling.usdHint",
-            "US dollars per calendar month, as this app's usage records price the calls. 0 means no ceiling on this half.",
-          )}
-          error={usdInvalid.playground ? usdError : null}
-        >
-          <Input
-            type="number"
-            min={0}
-            step={0.01}
-            value={usdText.playground}
-            onChange={(e) => setUsd("playground", e.target.value)}
-          />
-        </FormField>
+        />
+
         <FormField
-          label={t("spendCeiling.warnAt", "Warn at (%)")}
+          label={t("spendCeiling.cooldown", "Notice cooldown (seconds)")}
           description={t(
-            "spendCeiling.warnAtHint",
-            "Percentage of a ceiling that triggers a warning on your alert channels, so you hear about it before the agent goes quiet. 0 disables the warning.",
+            "spendCeiling.cooldownHint",
+            "How long before the same conversation is told again. The ceiling itself is checked on every message regardless.",
           )}
         >
-          <Input
-            type="number"
-            min={0}
-            max={100}
-            value={String(form.warnAtPercent)}
+          <NumberInput
+            range={SPEND_CEILING_RANGES.noticeCooldownSeconds}
+            value={String(form.noticeCooldownSeconds)}
             onChange={(e) =>
               set(
-                "warnAtPercent",
-                Math.min(100, Math.max(0, Number(e.target.value) || 0)),
+                "noticeCooldownSeconds",
+                Math.min(3600, Math.max(0, Number(e.target.value) || 0)),
               )
             }
           />
         </FormField>
-      </div>
 
-      <FormField
-        label={t("spendCeiling.message", "Message to the customer")}
-        description={t(
-          "spendCeiling.messageHint",
-          "Sent once per conversation while the ceiling is reached. Leave it empty to say nothing.",
-        )}
-      >
-        <Textarea
-          rows={2}
-          value={form.overCeilingMessage ?? ""}
-          onChange={(e) => set("overCeilingMessage", e.target.value || null)}
-        />
-      </FormField>
-
-      <SwitchField
-        checked={form.handoffEnabled}
-        onCheckedChange={(v) => set("handoffEnabled", v)}
-        label={t(
-          "spendCeiling.handoff",
-          "Hand refused conversations to a human",
-        )}
-      />
-
-      <FormField
-        label={t("spendCeiling.cooldown", "Notice cooldown (seconds)")}
-        description={t(
-          "spendCeiling.cooldownHint",
-          "How long before the same conversation is told again. The ceiling itself is checked on every message regardless.",
-        )}
-      >
-        <Input
-          type="number"
-          min={0}
-          max={3600}
-          value={String(form.noticeCooldownSeconds)}
-          onChange={(e) =>
-            set(
-              "noticeCooldownSeconds",
-              Math.min(3600, Math.max(0, Number(e.target.value) || 0)),
-            )
-          }
-        />
-      </FormField>
-
-      <div className="flex justify-end">
-        <Button
-          onClick={save}
-          loading={saving}
-          disabled={usdInvalid.inbox || usdInvalid.playground}
-        >
-          {t("common.save", "Save")}
-        </Button>
-      </div>
-    </Card>
+        <div className="flex justify-end">
+          <Button
+            onClick={save}
+            loading={saving}
+            disabled={usdInvalid.inbox || usdInvalid.playground}
+            holdOnRange
+          >
+            {t("common.save", "Save")}
+          </Button>
+        </div>
+      </Card>
+    </RangeHolds>
   );
 }

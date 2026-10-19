@@ -6,6 +6,14 @@ import { getGlobalBranding } from "@/api/features/branding/branding.service";
 import config from "@/config";
 import { AUDIT_SCOPES, isAuditScope } from "@/lib/audit/scope";
 import { AppError } from "@/lib/errors";
+import {
+  CHATWOOT_ID_RANGE,
+  HTTP_STATUS_RANGE,
+  intRange,
+  numberRange,
+  ROW_ID_RANGE,
+  WEEKDAY_RANGE,
+} from "@/lib/number-range";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import type { TenantContext } from "@/lib/tenancy";
 import { ACTOR_TYPES } from "@/lib/tenancy/actor";
@@ -14,9 +22,13 @@ import { AGENT_KINDS, type AgentKind } from "@/modules/agents/service";
 import {
   BEHAVIOR_PATCH_ARGS_SHAPE,
   type BehaviorPatchArgs,
+  ranged,
 } from "@/modules/agents/settings-schema";
 import { exportAgent } from "@/modules/agents/transfer";
 import { listConversations } from "@/modules/conversations/service";
+import { NEXT_NUMBER_RANGE } from "@/modules/documents/numbering";
+import { APPROVAL_TTL_HOURS } from "@/modules/documents/templates";
+import { EXPERIMENT_WEIGHT_RANGE } from "@/modules/experiments/service";
 import { FLOW_LEVELS, FLOW_STAGES } from "@/modules/flowlog/stages";
 import { mcpHeadersArg } from "@/modules/mcp-connections/headers";
 import {
@@ -24,7 +36,13 @@ import {
   runPlaygroundFileTurn,
   runPlaygroundTurn,
 } from "@/modules/playground/service";
+import {
+  CHUNK_OVERLAP_RANGE,
+  CHUNK_SIZE_RANGE,
+  SYNC_INTERVAL_MINUTES,
+} from "@/modules/rag/ranges";
 import { hasReservedFieldName } from "@/modules/tool-definitions/normalize";
+import { MODEL_RESPONSE_CHAR_RANGE } from "@/modules/tool-definitions/response-template";
 import { OUTBOUND_DELIVERY_STATUSES } from "@/modules/webhooks/outbound/deliveries";
 import { hasScope, type VerifiedToken } from "./oauth/tokens";
 import {
@@ -178,7 +196,11 @@ import {
   APPROVAL_LINK_MODES,
   APPROVAL_LINK_TEMPLATE_MAX,
 } from "@/modules/documents/approval-link";
-import { PRICE_OVERRIDES_MAX } from "@/modules/pricing/overrides";
+import {
+  PRICE_OVERRIDE_RATE_MAX,
+  PRICE_OVERRIDES_MAX,
+} from "@/modules/pricing/overrides";
+import { FIXED_LIMIT_RANGE } from "@/modules/proactive-breaker/settings";
 import {
   knowledgeApprove,
   knowledgeCreate,
@@ -303,6 +325,9 @@ function registerTenantTool(
     },
   );
 }
+
+// The same ceiling the REST body declares for a price override rate (USD per million tokens).
+const PRICE_RATE_RANGE = numberRange(0, PRICE_OVERRIDE_RATE_MAX);
 
 // Matches the playground service's own audio/file upload caps so the MCP path rejects oversized
 // media before any provider call.
@@ -1805,19 +1830,18 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           credential_ref: z.string().nullable().optional(),
           enabled: z.boolean().optional(),
           expected_statuses: z
-            .array(z.number().int())
+            .array(ranged(HTTP_STATUS_RANGE))
             .optional()
             .describe(
               "HTTP statuses this tool treats as ordinary results instead of integration failures (e.g. [404] where 'not found' is data). The model receives the same 'HTTP <status>' text either way; only the log level and the alert dispatch change. Empty keeps every non-2xx a failure.",
             ),
           ack_enabled: z.boolean().optional(),
           ack_message: z.string().nullable().optional(),
-          max_response_chars: z
-            .number()
+          max_response_chars: ranged(MODEL_RESPONSE_CHAR_RANGE)
             .nullable()
             .optional()
             .describe(
-              "Characters of the response the model gets: 500-20000; null is the default, 4000.",
+              "Characters of the response the model gets; null is the default, 4000.",
             ),
           silence_truncation_alert: z
             .boolean()
@@ -1826,7 +1850,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
               "true: an expected cut of the response logs at info and stops alerting. Default false.",
             ),
           conversation_ref_integration_id: z
-            .union([z.string(), z.number().int()])
+            .union([z.string(), ranged(ROW_ID_RANGE)])
             .nullable()
             .optional()
             .describe(
@@ -1890,19 +1914,18 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           credential_ref: z.string().nullable().optional(),
           enabled: z.boolean().optional(),
           expected_statuses: z
-            .array(z.number().int())
+            .array(ranged(HTTP_STATUS_RANGE))
             .optional()
             .describe(
               "HTTP statuses this tool treats as ordinary results instead of integration failures (e.g. [404] where 'not found' is data). The model receives the same 'HTTP <status>' text either way; only the log level and the alert dispatch change. Empty keeps every non-2xx a failure.",
             ),
           ack_enabled: z.boolean().optional(),
           ack_message: z.string().nullable().optional(),
-          max_response_chars: z
-            .number()
+          max_response_chars: ranged(MODEL_RESPONSE_CHAR_RANGE)
             .nullable()
             .optional()
             .describe(
-              "Characters of the response the model gets: 500-20000; null is the default, 4000.",
+              "Characters of the response the model gets; null is the default, 4000.",
             ),
           silence_truncation_alert: z
             .boolean()
@@ -1911,7 +1934,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
               "true: an expected cut of the response logs at info and stops alerting. Default false.",
             ),
           conversation_ref_integration_id: z
-            .union([z.string(), z.number().int()])
+            .union([z.string(), ranged(ROW_ID_RANGE)])
             .nullable()
             .optional()
             .describe(
@@ -2049,7 +2072,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           fields: z.array(z.record(z.string(), z.unknown())).optional(),
           style: z.record(z.string(), z.unknown()).optional(),
           number_prefix: z.string().nullable().optional(),
-          next_number: z.number().optional(),
+          next_number: ranged(NEXT_NUMBER_RANGE).optional(),
           enabled: z.boolean().optional(),
           requires_approval: z
             .boolean()
@@ -2057,11 +2080,12 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
             .describe(
               "A person approves each document issued from this template before the customer gets it. Off by default.",
             ),
-          approval_ttl_hours: z
-            .number()
+          approval_ttl_hours: ranged(
+            intRange(APPROVAL_TTL_HOURS.min, APPROVAL_TTL_HOURS.max),
+          )
             .optional()
             .describe(
-              "How long an approval request waits, in whole hours from 1 to 168. Defaults to 24.",
+              "How long an approval request waits, in whole hours. Defaults to 24.",
             ),
           starter: z.string().optional(),
           locale: z.enum(["pt-BR", "en-US"]).optional(),
@@ -2088,7 +2112,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           fields: z.array(z.record(z.string(), z.unknown())).optional(),
           style: z.record(z.string(), z.unknown()).optional(),
           number_prefix: z.string().nullable().optional(),
-          next_number: z.number().optional(),
+          next_number: ranged(NEXT_NUMBER_RANGE).optional(),
           enabled: z.boolean().optional(),
           requires_approval: z
             .boolean()
@@ -2096,11 +2120,12 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
             .describe(
               "A person approves each document issued from this template before the customer gets it. Off by default.",
             ),
-          approval_ttl_hours: z
-            .number()
+          approval_ttl_hours: ranged(
+            intRange(APPROVAL_TTL_HOURS.min, APPROVAL_TTL_HOURS.max),
+          )
             .optional()
             .describe(
-              "How long an approval request waits, in whole hours from 1 to 168. Defaults to 24.",
+              "How long an approval request waits, in whole hours. Defaults to 24.",
             ),
           dry_run: z.boolean().optional(),
         },
@@ -2712,8 +2737,8 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           knowledge_base_id: z.string(),
           name: z.string().optional(),
           description: z.string().nullable().optional(),
-          chunk_size: z.number().int().optional(),
-          chunk_overlap: z.number().int().optional(),
+          chunk_size: ranged(CHUNK_SIZE_RANGE).optional(),
+          chunk_overlap: ranged(CHUNK_OVERLAP_RANGE).optional(),
           strip_contact_footers: z.boolean().optional(),
           dry_run: z.boolean().optional(),
         },
@@ -2868,8 +2893,8 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           base_url: z.string(),
           slug: z.string(),
           locale: z.string(),
-          exclude_ids: z.array(z.number()).optional(),
-          interval_minutes: z.number().optional(),
+          exclude_ids: z.array(ranged(CHATWOOT_ID_RANGE)).optional(),
+          interval_minutes: ranged(SYNC_INTERVAL_MINUTES).optional(),
           dry_run: z.boolean().optional(),
         },
       },
@@ -3016,7 +3041,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           variants: z.array(
             z.object({
               key: z.string(),
-              weight: z.number().optional(),
+              weight: ranged(EXPERIMENT_WEIGHT_RANGE).optional(),
               system_prompt: z.string().optional(),
             }),
           ),
@@ -3055,7 +3080,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
             .array(
               z.object({
                 key: z.string(),
-                weight: z.number().optional(),
+                weight: ranged(EXPERIMENT_WEIGHT_RANGE).optional(),
                 system_prompt: z.string().optional(),
               }),
             )
@@ -3110,7 +3135,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           windows: z
             .array(
               z.object({
-                day: z.number().int(),
+                day: ranged(WEEKDAY_RANGE),
                 start: z.string(),
                 end: z.string(),
               }),
@@ -3164,7 +3189,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           windows: z
             .array(
               z.object({
-                day: z.number().int(),
+                day: ranged(WEEKDAY_RANGE),
                 start: z.string(),
                 end: z.string(),
               }),
@@ -3245,10 +3270,10 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
               z.object({
                 provider: z.string(),
                 model: z.string(),
-                input: z.number(),
-                output: z.number(),
-                cached_input: z.number().optional(),
-                cache_write: z.number().optional(),
+                input: ranged(PRICE_RATE_RANGE),
+                output: ranged(PRICE_RATE_RANGE),
+                cached_input: ranged(PRICE_RATE_RANGE).optional(),
+                cache_write: ranged(PRICE_RATE_RANGE).optional(),
               }),
             )
             .max(PRICE_OVERRIDES_MAX)
@@ -3295,7 +3320,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           "Set the account-wide proactive breaker: mode auto, fixed (needs limit, per 24h) or off. Does not reopen a tripped breaker. Previews unless dry_run is false.",
         inputSchema: {
           mode: z.enum(["auto", "fixed", "off"]).optional(),
-          limit: z.number().int().nullable().optional(),
+          limit: ranged(FIXED_LIMIT_RANGE).nullable().optional(),
           dry_run: z.boolean().optional(),
         },
       },
@@ -3380,7 +3405,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           "Hand a conversation off to a human (optionally assignee_id; status → open, bot stops). Calls Chatwoot. Previews and acts ONLY when dry_run is false.",
         inputSchema: {
           conversation_id: z.string(),
-          assignee_id: z.number().int().nullable().optional(),
+          assignee_id: ranged(CHATWOOT_ID_RANGE).nullable().optional(),
           dry_run: z.boolean().optional(),
         },
       },

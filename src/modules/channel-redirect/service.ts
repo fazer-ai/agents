@@ -1,3 +1,9 @@
+import {
+  CHANNEL_REDIRECT_RANGES,
+  DELAY_MAX_MINUTES,
+  delayRange,
+} from "@/modules/agents/number-ranges";
+
 // WhatsApp → website-chat redirect (per-agent). Receive a lead on the OFFICIAL WhatsApp inbox, answer
 // with a fixed (no-AI) message linking to the Chatwoot web widget, and let the AI serve the conversation
 // there (no per-message WhatsApp cost). The widget conversation is merged onto the same contact via the
@@ -95,7 +101,7 @@ export function redirectDelayMinutes(
 ): number {
   const minutes =
     unit === "days" ? value * 1440 : unit === "hours" ? value * 60 : value;
-  return Math.min(Math.max(Math.round(minutes), 1), 43200);
+  return Math.min(Math.max(Math.round(minutes), 1), DELAY_MAX_MINUTES);
 }
 
 function str(v: unknown, fallback: string): string {
@@ -132,6 +138,18 @@ function delayUnit(v: unknown, fallback: RedirectDelayUnit): RedirectDelayUnit {
     : fallback;
 }
 
+// A delay's value in its unit's range. The default is clamped too: it is a number of the DEFAULT unit,
+// so a stored `days` with no value would otherwise read as 60 days.
+function delayValueIn(v: unknown, unit: unknown, fallback: number): number {
+  const r = delayRange(unit);
+  return clampInt(
+    typeof v === "number" && Number.isFinite(v) ? v : fallback,
+    r.min,
+    r.max,
+    fallback,
+  );
+}
+
 // A chatwootInboxId reference: a positive integer, or null when absent/invalid.
 function inboxRef(v: unknown): number | null {
   return typeof v === "number" && Number.isInteger(v) && v > 0 ? v : null;
@@ -152,21 +170,24 @@ export function readChannelRedirectConfig(
     entryInboxId: inboxRef(bag.entryInboxId),
     widgetInboxId: inboxRef(bag.widgetInboxId),
     redirectMessage: str(bag.redirectMessage, D.redirectMessage),
-    resendDelayValue: clampInt(
+    resendDelayValue: delayValueIn(
       bag.resendDelayValue,
-      1,
-      100_000,
+      delayUnit(bag.resendDelayUnit, D.resendDelayUnit),
       D.resendDelayValue,
     ),
     resendDelayUnit: delayUnit(bag.resendDelayUnit, D.resendDelayUnit),
-    maxResends: clampInt(bag.maxResends, 0, 10, D.maxResends),
+    maxResends: clampInt(
+      bag.maxResends,
+      CHANNEL_REDIRECT_RANGES.maxResends.min,
+      CHANNEL_REDIRECT_RANGES.maxResends.max,
+      D.maxResends,
+    ),
     openWidget: bool(bag.openWidget, D.openWidget),
     cloneWaMessage: bool(bag.cloneWaMessage, D.cloneWaMessage),
     chatFollowupEnabled: bool(bag.chatFollowupEnabled, D.chatFollowupEnabled),
-    chatFollowupDelayValue: clampInt(
+    chatFollowupDelayValue: delayValueIn(
       bag.chatFollowupDelayValue,
-      1,
-      100_000,
+      delayUnit(bag.chatFollowupDelayUnit, D.chatFollowupDelayUnit),
       D.chatFollowupDelayValue,
     ),
     chatFollowupDelayUnit: delayUnit(
@@ -178,10 +199,9 @@ export function readChannelRedirectConfig(
       D.chatFollowupInstructions,
     ),
     waFollowupEnabled: bool(bag.waFollowupEnabled, D.waFollowupEnabled),
-    waFollowupDelayValue: clampInt(
+    waFollowupDelayValue: delayValueIn(
       bag.waFollowupDelayValue,
-      1,
-      100_000,
+      delayUnit(bag.waFollowupDelayUnit, D.waFollowupDelayUnit),
       D.waFollowupDelayValue,
     ),
     waFollowupDelayUnit: delayUnit(
@@ -190,10 +210,9 @@ export function readChannelRedirectConfig(
     ),
     waFollowupMessage: str(bag.waFollowupMessage, D.waFollowupMessage),
     closingEnabled: bool(bag.closingEnabled, D.closingEnabled),
-    closingDelayValue: clampInt(
+    closingDelayValue: delayValueIn(
       bag.closingDelayValue,
-      1,
-      100_000,
+      delayUnit(bag.closingDelayUnit, D.closingDelayUnit),
       D.closingDelayValue,
     ),
     closingDelayUnit: delayUnit(bag.closingDelayUnit, D.closingDelayUnit),

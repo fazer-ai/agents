@@ -3,6 +3,7 @@ import { getLocaleFromHeader, translateWithLocale } from "@/api/lib/i18n";
 import type { RefusalBody } from "@/api/lib/refusal";
 
 // translate('errors.invalidRequestValue', 'The value sent in {{field}} is not valid.')
+// translate('errors.invalidRequestRange', '{{field}} must be between {{min}} and {{max}}.')
 // translate('errors.invalidRequest', 'The request is not valid.')
 // translate('errors.internalError', 'Something went wrong')
 
@@ -75,6 +76,28 @@ export function fieldFromPointer(
   return named.length > 0 ? named.join(".") : undefined;
 }
 
+// The range a refused number declares (`tRanged`), so the sentence can say it: it is
+// read off our own schema, never off the value. Elysia checks an integer as a union with its string
+// form, so a branch carrying both bounds counts too.
+function declaredRange(
+  schema: unknown,
+): { min: number; max: number } | undefined {
+  if (typeof schema !== "object" || schema === null) return undefined;
+  const node = schema as {
+    minimum?: unknown;
+    maximum?: unknown;
+    anyOf?: unknown;
+  };
+  if (typeof node.minimum === "number" && typeof node.maximum === "number")
+    return { min: node.minimum, max: node.maximum };
+  if (!Array.isArray(node.anyOf)) return undefined;
+  for (const branch of node.anyOf) {
+    const range = declaredRange(branch);
+    if (range) return range;
+  }
+  return undefined;
+}
+
 // The schema the failing value was checked against. Elysia hands over the compiled validator and
 // reads the schema off it the same way (`validator?.schema ?? validator`, elysia/dist/error.js).
 function validatedSchema(error: ValidationError): unknown {
@@ -116,23 +139,34 @@ export function schemaRefusal(
     };
   }
 
-  const body: RefusalBody = field
+  const range = field ? declaredRange(error.valueError?.schema) : undefined;
+  const body: RefusalBody = range
     ? {
         error: translateWithLocale(
           locale,
-          "errors.invalidRequestValue",
-          "The value sent in {{field}} is not valid.",
-          { field },
+          "errors.invalidRequestRange",
+          "{{field}} must be between {{min}} and {{max}}.",
+          { field: field as string, min: range.min, max: range.max },
         ),
         field,
       }
-    : {
-        error: translateWithLocale(
-          locale,
-          "errors.invalidRequest",
-          "The request is not valid.",
-        ),
-      };
+    : field
+      ? {
+          error: translateWithLocale(
+            locale,
+            "errors.invalidRequestValue",
+            "The value sent in {{field}} is not valid.",
+            { field },
+          ),
+          field,
+        }
+      : {
+          error: translateWithLocale(
+            locale,
+            "errors.invalidRequest",
+            "The request is not valid.",
+          ),
+        };
 
   return {
     status: 422,

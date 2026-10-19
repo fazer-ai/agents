@@ -89,10 +89,11 @@ describe("what the write boundary answers for the window", () => {
     for (const ok of [0, 1, 2]) expect(caught(withWindow(ok))).toBeNull();
   });
 
+  // Out of range is 422; a value of the wrong type stays 400, below.
   test("a negative window is refused by path, with what was expected", () => {
     const err = caught(withWindow(-1));
     expect(err).toBeInstanceOf(InvalidSettingsValueError);
-    expect(err?.statusCode).toBe(400);
+    expect(err?.statusCode).toBe(422);
     expect(err?.field).toBe("monitoring.debounce.windowSeconds");
     expect(err?.translationKey).toBe("errors.invalidSettingsValue");
     expect(String(err?.translationParams?.expected)).toBe(
@@ -122,12 +123,12 @@ describe("what the write boundary answers for the window", () => {
     }
   });
 
-  test("a stored negative window re-sent untouched still saves, and a value above the ceiling is not refused", () => {
+  test("a stored negative window re-sent untouched still saves, and a value above the ceiling is refused", () => {
     expect(caught(withWindow(-5), withWindow(-5))).toBeNull();
     expect(caught(withWindow(-4), withWindow(-5))?.field).toBe(
       "monitoring.debounce.windowSeconds",
     );
-    expect(caught(withWindow(100_000))).toBeNull();
+    expect(caught(withWindow(100_000))?.statusCode).toBe(422);
   });
 
   test("the MCP patch refuses a negative window and takes zero", () => {

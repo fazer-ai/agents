@@ -1,7 +1,9 @@
-// Per-agent debounce configuration, read from the free-form `agent.settings.debounce` bag (same
-// pattern as grounding.maxDistance). The writer (UI/REST/MCP) is opaque to validation, so this
-// reader is the single source of defaults + clamping: any malformed/out-of-range value collapses to
-// a safe default, so a bad setting can never break the flush. Surfaced in the agent editor UI.
+import { clampToRange } from "@/lib/number-range";
+import { DEBOUNCE_RANGES } from "@/modules/agents/number-ranges";
+
+// Per-agent debounce configuration, read from `agent.settings.debounce`. The write schema refuses a
+// number outside DEBOUNCE_RANGES; this reader still falls back on a malformed value and
+// clamps one stored before that, so a bad row can never break the flush. Surfaced in the agent editor.
 
 export interface DebounceConfig {
   enabled: boolean;
@@ -23,24 +25,6 @@ export const DEBOUNCE_DEFAULTS: DebounceConfig = {
   maxWindowSeconds: 60,
 };
 
-// windowSeconds floor is tied to the worker cadence (a window shorter than the tick is pointless);
-// keep it in sync with DEBOUNCE_WORKER_INTERVAL_MS's documented minimum (3s).
-export const WINDOW_MIN_SECONDS = 3;
-export const WINDOW_MAX_SECONDS = 120;
-const MAX_MESSAGES_FLOOR = 1;
-const MAX_MESSAGES_CEIL = 50;
-const MAX_WINDOW_CEIL = 600;
-
-function clampInt(
-  v: unknown,
-  min: number,
-  max: number,
-  fallback: number,
-): number {
-  if (typeof v !== "number" || !Number.isFinite(v)) return fallback;
-  return Math.min(Math.max(Math.round(v), min), max);
-}
-
 // Reads agent.settings.debounce, applying defaults + clamps. Returns DEBOUNCE_DEFAULTS when absent.
 export function readDebounceConfig(settings: unknown): DebounceConfig {
   const d =
@@ -51,23 +35,20 @@ export function readDebounceConfig(settings: unknown): DebounceConfig {
   const bag = d as Record<string, unknown>;
   const enabled =
     typeof bag.enabled === "boolean" ? bag.enabled : DEBOUNCE_DEFAULTS.enabled;
-  const windowSeconds = clampInt(
+  const windowSeconds = clampToRange(
     bag.windowSeconds,
-    WINDOW_MIN_SECONDS,
-    WINDOW_MAX_SECONDS,
+    DEBOUNCE_RANGES.windowSeconds,
     DEBOUNCE_DEFAULTS.windowSeconds,
   );
-  const maxMessagesPerBurst = clampInt(
+  const maxMessagesPerBurst = clampToRange(
     bag.maxMessagesPerBurst,
-    MAX_MESSAGES_FLOOR,
-    MAX_MESSAGES_CEIL,
+    DEBOUNCE_RANGES.maxMessagesPerBurst,
     DEBOUNCE_DEFAULTS.maxMessagesPerBurst,
   );
   // maxWindow can never be shorter than the window itself.
-  const maxWindowSeconds = clampInt(
+  const maxWindowSeconds = clampToRange(
     bag.maxWindowSeconds,
-    windowSeconds,
-    MAX_WINDOW_CEIL,
+    { ...DEBOUNCE_RANGES.maxWindowSeconds, min: windowSeconds },
     Math.max(DEBOUNCE_DEFAULTS.maxWindowSeconds, windowSeconds),
   );
   return { enabled, windowSeconds, maxMessagesPerBurst, maxWindowSeconds };

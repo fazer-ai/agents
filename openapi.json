@@ -6044,6 +6044,8 @@
                 "type": "object",
                 "properties": {
                   "assigneeId": {
+                    "minimum": 1,
+                    "maximum": 2147483647,
                     "description": "Chatwoot agent id to assign; omit to hand off without assigning a specific human.",
                     "anyOf": [
                       {
@@ -6052,6 +6054,8 @@
                         "type": "string"
                       },
                       {
+                        "minimum": 1,
+                        "maximum": 2147483647,
                         "description": "Chatwoot agent id to assign; omit to hand off without assigning a specific human.",
                         "type": "integer"
                       }
@@ -6065,6 +6069,8 @@
                 "type": "object",
                 "properties": {
                   "assigneeId": {
+                    "minimum": 1,
+                    "maximum": 2147483647,
                     "description": "Chatwoot agent id to assign; omit to hand off without assigning a specific human.",
                     "anyOf": [
                       {
@@ -6073,6 +6079,8 @@
                         "type": "string"
                       },
                       {
+                        "minimum": 1,
+                        "maximum": 2147483647,
                         "description": "Chatwoot agent id to assign; omit to hand off without assigning a specific human.",
                         "type": "integer"
                       }
@@ -6086,6 +6094,8 @@
                 "type": "object",
                 "properties": {
                   "assigneeId": {
+                    "minimum": 1,
+                    "maximum": 2147483647,
                     "description": "Chatwoot agent id to assign; omit to hand off without assigning a specific human.",
                     "anyOf": [
                       {
@@ -6094,6 +6104,8 @@
                         "type": "string"
                       },
                       {
+                        "minimum": 1,
+                        "maximum": 2147483647,
                         "description": "Chatwoot agent id to assign; omit to hand off without assigning a specific human.",
                         "type": "integer"
                       }
@@ -15984,9 +15996,11 @@
                     "type": "boolean"
                   },
                   "expectedStatuses": {
-                    "description": "HTTP statuses this tool treats as ordinary results instead of integration failures (e.g. [404] for a lookup where 'not found' is data). The model receives the same 'HTTP <status>' text either way; only the log level and the alert dispatch change. Empty (the default) keeps every non-2xx a failure. 2xx entries and values outside 100-599 are dropped on save.",
+                    "description": "HTTP statuses this tool treats as ordinary results instead of integration failures (e.g. [404] for a lookup where 'not found' is data). The model receives the same 'HTTP <status>' text either way; only the log level and the alert dispatch change. Empty (the default) keeps every non-2xx a failure. 2xx entries are dropped on save.",
                     "type": "array",
                     "items": {
+                      "minimum": 100,
+                      "maximum": 599,
                       "anyOf": [
                         {
                           "format": "integer",
@@ -15994,6 +16008,8 @@
                           "type": "string"
                         },
                         {
+                          "minimum": 100,
+                          "maximum": 599,
                           "type": "integer"
                         }
                       ]
@@ -16016,6 +16032,8 @@
                         "type": "string"
                       },
                       {
+                        "minimum": 1,
+                        "maximum": 9007199254740991,
                         "anyOf": [
                           {
                             "format": "integer",
@@ -16023,6 +16041,8 @@
                             "type": "string"
                           },
                           {
+                            "minimum": 1,
+                            "maximum": 9007199254740991,
                             "type": "integer"
                           }
                         ]
@@ -16037,10 +16057,27 @@
                     "type": "boolean"
                   },
                   "maxResponseChars": {
-                    "description": "How many characters of this tool's response the model receives: the raw body, or the rendered response template, is cut there with `…[truncated]`, and one value inside a template may take all but 2000 of it. An integer from 500 to 20000; anything else is refused with 400. Null or absent is the default, 4000.",
-                    "type": [
-                      "number",
-                      "null"
+                    "description": "How many characters of this tool's response the model receives: the raw body, or the rendered response template, is cut there with `…[truncated]`, and one value inside a template may take all but 2000 of it. Null or absent is the default, 4000.",
+                    "anyOf": [
+                      {
+                        "minimum": 500,
+                        "maximum": 20000,
+                        "anyOf": [
+                          {
+                            "format": "integer",
+                            "default": 0,
+                            "type": "string"
+                          },
+                          {
+                            "minimum": 500,
+                            "maximum": 20000,
+                            "type": "integer"
+                          }
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
                     ]
                   },
                   "silenceTruncationAlert": {
@@ -16146,9 +16183,11 @@
                     "type": "boolean"
                   },
                   "expectedStatuses": {
-                    "description": "HTTP statuses this tool treats as ordinary results instead of integration failures (e.g. [404] for a lookup where 'not found' is data). The model receives the same 'HTTP <status>' text either way; only the log level and the alert dispatch change. Empty (the default) keeps every non-2xx a failure. 2xx entries and values outside 100-599 are dropped on save.",
+                    "description": "HTTP statuses this tool treats as ordinary results instead of integration failures (e.g. [404] for a lookup where 'not found' is data). The model receives the same 'HTTP <status>' text either way; only the log level and the alert dispatch change. Empty (the default) keeps every non-2xx a failure. 2xx entries are dropped on save.",
                     "type": "array",
                     "items": {
+                      "minimum": 100,
+                      "maximum": 599,
                       "anyOf": [
                         {
                           "format": "integer",
@@ -16156,6 +16195,8 @@
                           "type": "string"
                         },
                         {
+                          "minimum": 100,
+                          "maximum": 599,
                           "type": "integer"
                         }
                       ]
@@ -16178,6 +16219,8 @@
                         "type": "string"
                       },
                       {
+                        "minimum": 1,
+                        "maximum": 9007199254740991,
                         "anyOf": [
                           {
                             "format": "integer",
@@ -16185,6 +16228,8 @@
                             "type": "string"
                           },
                           {
+                            "minimum": 1,
+                            "maximum": 9007199254740991,
                             "type": "integer"
                           }
                         ]
@@ -16199,10 +16244,27 @@
                     "type": "boolean"
                   },
                   "maxResponseChars": {
-                    "description": "How many characters of this tool's response the model receives: the raw body, or the rendered response template, is cut there with `…[truncated]`, and one value inside a template may take all but 2000 of it. An integer from 500 to 20000; anything else is refused with 400. Null or absent is the default, 4000.",
-                    "type": [
-                      "number",
-                      "null"
+                    "description": "How many characters of this tool's response the model receives: the raw body, or the rendered response template, is cut there with `…[truncated]`, and one value inside a template may take all but 2000 of it. Null or absent is the default, 4000.",
+                    "anyOf": [
+                      {
+                        "minimum": 500,
+                        "maximum": 20000,
+                        "anyOf": [
+                          {
+                            "format": "integer",
+                            "default": 0,
+                            "type": "string"
+                          },
+                          {
+                            "minimum": 500,
+                            "maximum": 20000,
+                            "type": "integer"
+                          }
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
                     ]
                   },
                   "silenceTruncationAlert": {
@@ -16308,9 +16370,11 @@
                     "type": "boolean"
                   },
                   "expectedStatuses": {
-                    "description": "HTTP statuses this tool treats as ordinary results instead of integration failures (e.g. [404] for a lookup where 'not found' is data). The model receives the same 'HTTP <status>' text either way; only the log level and the alert dispatch change. Empty (the default) keeps every non-2xx a failure. 2xx entries and values outside 100-599 are dropped on save.",
+                    "description": "HTTP statuses this tool treats as ordinary results instead of integration failures (e.g. [404] for a lookup where 'not found' is data). The model receives the same 'HTTP <status>' text either way; only the log level and the alert dispatch change. Empty (the default) keeps every non-2xx a failure. 2xx entries are dropped on save.",
                     "type": "array",
                     "items": {
+                      "minimum": 100,
+                      "maximum": 599,
                       "anyOf": [
                         {
                           "format": "integer",
@@ -16318,6 +16382,8 @@
                           "type": "string"
                         },
                         {
+                          "minimum": 100,
+                          "maximum": 599,
                           "type": "integer"
                         }
                       ]
@@ -16340,6 +16406,8 @@
                         "type": "string"
                       },
                       {
+                        "minimum": 1,
+                        "maximum": 9007199254740991,
                         "anyOf": [
                           {
                             "format": "integer",
@@ -16347,6 +16415,8 @@
                             "type": "string"
                           },
                           {
+                            "minimum": 1,
+                            "maximum": 9007199254740991,
                             "type": "integer"
                           }
                         ]
@@ -16361,10 +16431,27 @@
                     "type": "boolean"
                   },
                   "maxResponseChars": {
-                    "description": "How many characters of this tool's response the model receives: the raw body, or the rendered response template, is cut there with `…[truncated]`, and one value inside a template may take all but 2000 of it. An integer from 500 to 20000; anything else is refused with 400. Null or absent is the default, 4000.",
-                    "type": [
-                      "number",
-                      "null"
+                    "description": "How many characters of this tool's response the model receives: the raw body, or the rendered response template, is cut there with `…[truncated]`, and one value inside a template may take all but 2000 of it. Null or absent is the default, 4000.",
+                    "anyOf": [
+                      {
+                        "minimum": 500,
+                        "maximum": 20000,
+                        "anyOf": [
+                          {
+                            "format": "integer",
+                            "default": 0,
+                            "type": "string"
+                          },
+                          {
+                            "minimum": 500,
+                            "maximum": 20000,
+                            "type": "integer"
+                          }
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
                     ]
                   },
                   "silenceTruncationAlert": {
@@ -16827,9 +16914,11 @@
                     "type": "boolean"
                   },
                   "expectedStatuses": {
-                    "description": "HTTP statuses this tool treats as ordinary results instead of integration failures (e.g. [404] for a lookup where 'not found' is data). The model receives the same 'HTTP <status>' text either way; only the log level and the alert dispatch change. Empty (the default) keeps every non-2xx a failure. 2xx entries and values outside 100-599 are dropped on save.",
+                    "description": "HTTP statuses this tool treats as ordinary results instead of integration failures (e.g. [404] for a lookup where 'not found' is data). The model receives the same 'HTTP <status>' text either way; only the log level and the alert dispatch change. Empty (the default) keeps every non-2xx a failure. 2xx entries are dropped on save.",
                     "type": "array",
                     "items": {
+                      "minimum": 100,
+                      "maximum": 599,
                       "anyOf": [
                         {
                           "format": "integer",
@@ -16837,6 +16926,8 @@
                           "type": "string"
                         },
                         {
+                          "minimum": 100,
+                          "maximum": 599,
                           "type": "integer"
                         }
                       ]
@@ -16859,6 +16950,8 @@
                         "type": "string"
                       },
                       {
+                        "minimum": 1,
+                        "maximum": 9007199254740991,
                         "anyOf": [
                           {
                             "format": "integer",
@@ -16866,6 +16959,8 @@
                             "type": "string"
                           },
                           {
+                            "minimum": 1,
+                            "maximum": 9007199254740991,
                             "type": "integer"
                           }
                         ]
@@ -16880,10 +16975,27 @@
                     "type": "boolean"
                   },
                   "maxResponseChars": {
-                    "description": "How many characters of this tool's response the model receives: the raw body, or the rendered response template, is cut there with `…[truncated]`, and one value inside a template may take all but 2000 of it. An integer from 500 to 20000; anything else is refused with 400. Null or absent is the default, 4000.",
-                    "type": [
-                      "number",
-                      "null"
+                    "description": "How many characters of this tool's response the model receives: the raw body, or the rendered response template, is cut there with `…[truncated]`, and one value inside a template may take all but 2000 of it. Null or absent is the default, 4000.",
+                    "anyOf": [
+                      {
+                        "minimum": 500,
+                        "maximum": 20000,
+                        "anyOf": [
+                          {
+                            "format": "integer",
+                            "default": 0,
+                            "type": "string"
+                          },
+                          {
+                            "minimum": 500,
+                            "maximum": 20000,
+                            "type": "integer"
+                          }
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
                     ]
                   },
                   "silenceTruncationAlert": {
@@ -16983,9 +17095,11 @@
                     "type": "boolean"
                   },
                   "expectedStatuses": {
-                    "description": "HTTP statuses this tool treats as ordinary results instead of integration failures (e.g. [404] for a lookup where 'not found' is data). The model receives the same 'HTTP <status>' text either way; only the log level and the alert dispatch change. Empty (the default) keeps every non-2xx a failure. 2xx entries and values outside 100-599 are dropped on save.",
+                    "description": "HTTP statuses this tool treats as ordinary results instead of integration failures (e.g. [404] for a lookup where 'not found' is data). The model receives the same 'HTTP <status>' text either way; only the log level and the alert dispatch change. Empty (the default) keeps every non-2xx a failure. 2xx entries are dropped on save.",
                     "type": "array",
                     "items": {
+                      "minimum": 100,
+                      "maximum": 599,
                       "anyOf": [
                         {
                           "format": "integer",
@@ -16993,6 +17107,8 @@
                           "type": "string"
                         },
                         {
+                          "minimum": 100,
+                          "maximum": 599,
                           "type": "integer"
                         }
                       ]
@@ -17015,6 +17131,8 @@
                         "type": "string"
                       },
                       {
+                        "minimum": 1,
+                        "maximum": 9007199254740991,
                         "anyOf": [
                           {
                             "format": "integer",
@@ -17022,6 +17140,8 @@
                             "type": "string"
                           },
                           {
+                            "minimum": 1,
+                            "maximum": 9007199254740991,
                             "type": "integer"
                           }
                         ]
@@ -17036,10 +17156,27 @@
                     "type": "boolean"
                   },
                   "maxResponseChars": {
-                    "description": "How many characters of this tool's response the model receives: the raw body, or the rendered response template, is cut there with `…[truncated]`, and one value inside a template may take all but 2000 of it. An integer from 500 to 20000; anything else is refused with 400. Null or absent is the default, 4000.",
-                    "type": [
-                      "number",
-                      "null"
+                    "description": "How many characters of this tool's response the model receives: the raw body, or the rendered response template, is cut there with `…[truncated]`, and one value inside a template may take all but 2000 of it. Null or absent is the default, 4000.",
+                    "anyOf": [
+                      {
+                        "minimum": 500,
+                        "maximum": 20000,
+                        "anyOf": [
+                          {
+                            "format": "integer",
+                            "default": 0,
+                            "type": "string"
+                          },
+                          {
+                            "minimum": 500,
+                            "maximum": 20000,
+                            "type": "integer"
+                          }
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
                     ]
                   },
                   "silenceTruncationAlert": {
@@ -17139,9 +17276,11 @@
                     "type": "boolean"
                   },
                   "expectedStatuses": {
-                    "description": "HTTP statuses this tool treats as ordinary results instead of integration failures (e.g. [404] for a lookup where 'not found' is data). The model receives the same 'HTTP <status>' text either way; only the log level and the alert dispatch change. Empty (the default) keeps every non-2xx a failure. 2xx entries and values outside 100-599 are dropped on save.",
+                    "description": "HTTP statuses this tool treats as ordinary results instead of integration failures (e.g. [404] for a lookup where 'not found' is data). The model receives the same 'HTTP <status>' text either way; only the log level and the alert dispatch change. Empty (the default) keeps every non-2xx a failure. 2xx entries are dropped on save.",
                     "type": "array",
                     "items": {
+                      "minimum": 100,
+                      "maximum": 599,
                       "anyOf": [
                         {
                           "format": "integer",
@@ -17149,6 +17288,8 @@
                           "type": "string"
                         },
                         {
+                          "minimum": 100,
+                          "maximum": 599,
                           "type": "integer"
                         }
                       ]
@@ -17171,6 +17312,8 @@
                         "type": "string"
                       },
                       {
+                        "minimum": 1,
+                        "maximum": 9007199254740991,
                         "anyOf": [
                           {
                             "format": "integer",
@@ -17178,6 +17321,8 @@
                             "type": "string"
                           },
                           {
+                            "minimum": 1,
+                            "maximum": 9007199254740991,
                             "type": "integer"
                           }
                         ]
@@ -17192,10 +17337,27 @@
                     "type": "boolean"
                   },
                   "maxResponseChars": {
-                    "description": "How many characters of this tool's response the model receives: the raw body, or the rendered response template, is cut there with `…[truncated]`, and one value inside a template may take all but 2000 of it. An integer from 500 to 20000; anything else is refused with 400. Null or absent is the default, 4000.",
-                    "type": [
-                      "number",
-                      "null"
+                    "description": "How many characters of this tool's response the model receives: the raw body, or the rendered response template, is cut there with `…[truncated]`, and one value inside a template may take all but 2000 of it. Null or absent is the default, 4000.",
+                    "anyOf": [
+                      {
+                        "minimum": 500,
+                        "maximum": 20000,
+                        "anyOf": [
+                          {
+                            "format": "integer",
+                            "default": 0,
+                            "type": "string"
+                          },
+                          {
+                            "minimum": 500,
+                            "maximum": 20000,
+                            "type": "integer"
+                          }
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
                     ]
                   },
                   "silenceTruncationAlert": {
@@ -17716,7 +17878,20 @@
                       "expectedStatuses": {
                         "type": "array",
                         "items": {
-                          "type": "number"
+                          "minimum": 100,
+                          "maximum": 599,
+                          "anyOf": [
+                            {
+                              "format": "integer",
+                              "default": 0,
+                              "type": "string"
+                            },
+                            {
+                              "minimum": 100,
+                              "maximum": 599,
+                              "type": "integer"
+                            }
+                          ]
                         }
                       },
                       "outputSchema": {
@@ -17726,9 +17901,26 @@
                         }
                       },
                       "maxResponseChars": {
-                        "type": [
-                          "number",
-                          "null"
+                        "anyOf": [
+                          {
+                            "minimum": 500,
+                            "maximum": 20000,
+                            "anyOf": [
+                              {
+                                "format": "integer",
+                                "default": 0,
+                                "type": "string"
+                              },
+                              {
+                                "minimum": 500,
+                                "maximum": 20000,
+                                "type": "integer"
+                              }
+                            ]
+                          },
+                          {
+                            "type": "null"
+                          }
                         ]
                       }
                     }
@@ -17809,7 +18001,20 @@
                       "expectedStatuses": {
                         "type": "array",
                         "items": {
-                          "type": "number"
+                          "minimum": 100,
+                          "maximum": 599,
+                          "anyOf": [
+                            {
+                              "format": "integer",
+                              "default": 0,
+                              "type": "string"
+                            },
+                            {
+                              "minimum": 100,
+                              "maximum": 599,
+                              "type": "integer"
+                            }
+                          ]
                         }
                       },
                       "outputSchema": {
@@ -17819,9 +18024,26 @@
                         }
                       },
                       "maxResponseChars": {
-                        "type": [
-                          "number",
-                          "null"
+                        "anyOf": [
+                          {
+                            "minimum": 500,
+                            "maximum": 20000,
+                            "anyOf": [
+                              {
+                                "format": "integer",
+                                "default": 0,
+                                "type": "string"
+                              },
+                              {
+                                "minimum": 500,
+                                "maximum": 20000,
+                                "type": "integer"
+                              }
+                            ]
+                          },
+                          {
+                            "type": "null"
+                          }
                         ]
                       }
                     }
@@ -17902,7 +18124,20 @@
                       "expectedStatuses": {
                         "type": "array",
                         "items": {
-                          "type": "number"
+                          "minimum": 100,
+                          "maximum": 599,
+                          "anyOf": [
+                            {
+                              "format": "integer",
+                              "default": 0,
+                              "type": "string"
+                            },
+                            {
+                              "minimum": 100,
+                              "maximum": 599,
+                              "type": "integer"
+                            }
+                          ]
                         }
                       },
                       "outputSchema": {
@@ -17912,9 +18147,26 @@
                         }
                       },
                       "maxResponseChars": {
-                        "type": [
-                          "number",
-                          "null"
+                        "anyOf": [
+                          {
+                            "minimum": 500,
+                            "maximum": 20000,
+                            "anyOf": [
+                              {
+                                "format": "integer",
+                                "default": 0,
+                                "type": "string"
+                              },
+                              {
+                                "minimum": 500,
+                                "maximum": 20000,
+                                "type": "integer"
+                              }
+                            ]
+                          },
+                          {
+                            "type": "null"
+                          }
                         ]
                       }
                     }
@@ -22367,6 +22619,7 @@
                         },
                         "weight": {
                           "minimum": 0,
+                          "maximum": 1000,
                           "description": "Relative assignment weight; higher means more threads land on this variant.",
                           "type": "number"
                         },
@@ -22420,6 +22673,7 @@
                         },
                         "weight": {
                           "minimum": 0,
+                          "maximum": 1000,
                           "description": "Relative assignment weight; higher means more threads land on this variant.",
                           "type": "number"
                         },
@@ -22473,6 +22727,7 @@
                         },
                         "weight": {
                           "minimum": 0,
+                          "maximum": 1000,
                           "description": "Relative assignment weight; higher means more threads land on this variant.",
                           "type": "number"
                         },
@@ -22839,6 +23094,7 @@
                         },
                         "weight": {
                           "minimum": 0,
+                          "maximum": 1000,
                           "description": "Relative assignment weight; higher means more threads land on this variant.",
                           "type": "number"
                         },
@@ -22887,6 +23143,7 @@
                         },
                         "weight": {
                           "minimum": 0,
+                          "maximum": 1000,
                           "description": "Relative assignment weight; higher means more threads land on this variant.",
                           "type": "number"
                         },
@@ -22935,6 +23192,7 @@
                         },
                         "weight": {
                           "minimum": 0,
+                          "maximum": 1000,
                           "description": "Relative assignment weight; higher means more threads land on this variant.",
                           "type": "number"
                         },
@@ -39421,6 +39679,8 @@
                     "items": {}
                   },
                   "intervalMinutes": {
+                    "minimum": 5,
+                    "maximum": 1440,
                     "description": "Minutes between periodic syncs (default 10).",
                     "anyOf": [
                       {
@@ -39429,6 +39689,8 @@
                         "type": "string"
                       },
                       {
+                        "minimum": 5,
+                        "maximum": 1440,
                         "description": "Minutes between periodic syncs (default 10).",
                         "type": "integer"
                       }
@@ -39467,6 +39729,8 @@
                     "items": {}
                   },
                   "intervalMinutes": {
+                    "minimum": 5,
+                    "maximum": 1440,
                     "description": "Minutes between periodic syncs (default 10).",
                     "anyOf": [
                       {
@@ -39475,6 +39739,8 @@
                         "type": "string"
                       },
                       {
+                        "minimum": 5,
+                        "maximum": 1440,
                         "description": "Minutes between periodic syncs (default 10).",
                         "type": "integer"
                       }
@@ -39513,6 +39779,8 @@
                     "items": {}
                   },
                   "intervalMinutes": {
+                    "minimum": 5,
+                    "maximum": 1440,
                     "description": "Minutes between periodic syncs (default 10).",
                     "anyOf": [
                       {
@@ -39521,6 +39789,8 @@
                         "type": "string"
                       },
                       {
+                        "minimum": 5,
+                        "maximum": 1440,
                         "description": "Minutes between periodic syncs (default 10).",
                         "type": "integer"
                       }
@@ -43389,8 +43659,22 @@
                     ]
                   },
                   "nextNumber": {
+                    "minimum": 1,
+                    "maximum": 2147483647,
                     "description": "The number the next document issued from this template prints (without the prefix), to continue a sequence started elsewhere. Refused (409) at or below a number this workspace already issued under the template's prefix, by any template; a new prefix starts a new sequence. The template's `nextNumber` reads where numbering continues now.",
-                    "type": "number"
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "minimum": 1,
+                        "maximum": 2147483647,
+                        "description": "The number the next document issued from this template prints (without the prefix), to continue a sequence started elsewhere. Refused (409) at or below a number this workspace already issued under the template's prefix, by any template; a new prefix starts a new sequence. The template's `nextNumber` reads where numbering continues now.",
+                        "type": "integer"
+                      }
+                    ]
                   },
                   "enabled": {
                     "description": "Whether agents may issue this document.",
@@ -43401,8 +43685,22 @@
                     "type": "boolean"
                   },
                   "approvalTtlHours": {
-                    "description": "How long an approval request waits, in whole hours from 1 to 168. Defaults to 24.",
-                    "type": "number"
+                    "minimum": 1,
+                    "maximum": 168,
+                    "description": "How long an approval request waits, in whole hours. Defaults to 24.",
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "minimum": 1,
+                        "maximum": 168,
+                        "description": "How long an approval request waits, in whole hours. Defaults to 24.",
+                        "type": "integer"
+                      }
+                    ]
                   }
                 }
               }
@@ -43472,8 +43770,22 @@
                     ]
                   },
                   "nextNumber": {
+                    "minimum": 1,
+                    "maximum": 2147483647,
                     "description": "The number the next document issued from this template prints (without the prefix), to continue a sequence started elsewhere. Refused (409) at or below a number this workspace already issued under the template's prefix, by any template; a new prefix starts a new sequence. The template's `nextNumber` reads where numbering continues now.",
-                    "type": "number"
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "minimum": 1,
+                        "maximum": 2147483647,
+                        "description": "The number the next document issued from this template prints (without the prefix), to continue a sequence started elsewhere. Refused (409) at or below a number this workspace already issued under the template's prefix, by any template; a new prefix starts a new sequence. The template's `nextNumber` reads where numbering continues now.",
+                        "type": "integer"
+                      }
+                    ]
                   },
                   "enabled": {
                     "description": "Whether agents may issue this document.",
@@ -43484,8 +43796,22 @@
                     "type": "boolean"
                   },
                   "approvalTtlHours": {
-                    "description": "How long an approval request waits, in whole hours from 1 to 168. Defaults to 24.",
-                    "type": "number"
+                    "minimum": 1,
+                    "maximum": 168,
+                    "description": "How long an approval request waits, in whole hours. Defaults to 24.",
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "minimum": 1,
+                        "maximum": 168,
+                        "description": "How long an approval request waits, in whole hours. Defaults to 24.",
+                        "type": "integer"
+                      }
+                    ]
                   }
                 }
               }
@@ -43555,8 +43881,22 @@
                     ]
                   },
                   "nextNumber": {
+                    "minimum": 1,
+                    "maximum": 2147483647,
                     "description": "The number the next document issued from this template prints (without the prefix), to continue a sequence started elsewhere. Refused (409) at or below a number this workspace already issued under the template's prefix, by any template; a new prefix starts a new sequence. The template's `nextNumber` reads where numbering continues now.",
-                    "type": "number"
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "minimum": 1,
+                        "maximum": 2147483647,
+                        "description": "The number the next document issued from this template prints (without the prefix), to continue a sequence started elsewhere. Refused (409) at or below a number this workspace already issued under the template's prefix, by any template; a new prefix starts a new sequence. The template's `nextNumber` reads where numbering continues now.",
+                        "type": "integer"
+                      }
+                    ]
                   },
                   "enabled": {
                     "description": "Whether agents may issue this document.",
@@ -43567,8 +43907,22 @@
                     "type": "boolean"
                   },
                   "approvalTtlHours": {
-                    "description": "How long an approval request waits, in whole hours from 1 to 168. Defaults to 24.",
-                    "type": "number"
+                    "minimum": 1,
+                    "maximum": 168,
+                    "description": "How long an approval request waits, in whole hours. Defaults to 24.",
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "minimum": 1,
+                        "maximum": 168,
+                        "description": "How long an approval request waits, in whole hours. Defaults to 24.",
+                        "type": "integer"
+                      }
+                    ]
                   }
                 }
               }
@@ -44449,8 +44803,22 @@
                     ]
                   },
                   "nextNumber": {
+                    "minimum": 1,
+                    "maximum": 2147483647,
                     "description": "The number the next document issued from this template prints (without the prefix), to continue a sequence started elsewhere. Refused (409) at or below a number this workspace already issued under the template's prefix, by any template; a new prefix starts a new sequence. The template's `nextNumber` reads where numbering continues now.",
-                    "type": "number"
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "minimum": 1,
+                        "maximum": 2147483647,
+                        "description": "The number the next document issued from this template prints (without the prefix), to continue a sequence started elsewhere. Refused (409) at or below a number this workspace already issued under the template's prefix, by any template; a new prefix starts a new sequence. The template's `nextNumber` reads where numbering continues now.",
+                        "type": "integer"
+                      }
+                    ]
                   },
                   "enabled": {
                     "description": "Whether agents may issue this document.",
@@ -44461,8 +44829,22 @@
                     "type": "boolean"
                   },
                   "approvalTtlHours": {
-                    "description": "How long an approval request waits, in whole hours from 1 to 168. Defaults to 24.",
-                    "type": "number"
+                    "minimum": 1,
+                    "maximum": 168,
+                    "description": "How long an approval request waits, in whole hours. Defaults to 24.",
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "minimum": 1,
+                        "maximum": 168,
+                        "description": "How long an approval request waits, in whole hours. Defaults to 24.",
+                        "type": "integer"
+                      }
+                    ]
                   }
                 }
               }
@@ -44532,8 +44914,22 @@
                     ]
                   },
                   "nextNumber": {
+                    "minimum": 1,
+                    "maximum": 2147483647,
                     "description": "The number the next document issued from this template prints (without the prefix), to continue a sequence started elsewhere. Refused (409) at or below a number this workspace already issued under the template's prefix, by any template; a new prefix starts a new sequence. The template's `nextNumber` reads where numbering continues now.",
-                    "type": "number"
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "minimum": 1,
+                        "maximum": 2147483647,
+                        "description": "The number the next document issued from this template prints (without the prefix), to continue a sequence started elsewhere. Refused (409) at or below a number this workspace already issued under the template's prefix, by any template; a new prefix starts a new sequence. The template's `nextNumber` reads where numbering continues now.",
+                        "type": "integer"
+                      }
+                    ]
                   },
                   "enabled": {
                     "description": "Whether agents may issue this document.",
@@ -44544,8 +44940,22 @@
                     "type": "boolean"
                   },
                   "approvalTtlHours": {
-                    "description": "How long an approval request waits, in whole hours from 1 to 168. Defaults to 24.",
-                    "type": "number"
+                    "minimum": 1,
+                    "maximum": 168,
+                    "description": "How long an approval request waits, in whole hours. Defaults to 24.",
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "minimum": 1,
+                        "maximum": 168,
+                        "description": "How long an approval request waits, in whole hours. Defaults to 24.",
+                        "type": "integer"
+                      }
+                    ]
                   }
                 }
               }
@@ -44615,8 +45025,22 @@
                     ]
                   },
                   "nextNumber": {
+                    "minimum": 1,
+                    "maximum": 2147483647,
                     "description": "The number the next document issued from this template prints (without the prefix), to continue a sequence started elsewhere. Refused (409) at or below a number this workspace already issued under the template's prefix, by any template; a new prefix starts a new sequence. The template's `nextNumber` reads where numbering continues now.",
-                    "type": "number"
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "minimum": 1,
+                        "maximum": 2147483647,
+                        "description": "The number the next document issued from this template prints (without the prefix), to continue a sequence started elsewhere. Refused (409) at or below a number this workspace already issued under the template's prefix, by any template; a new prefix starts a new sequence. The template's `nextNumber` reads where numbering continues now.",
+                        "type": "integer"
+                      }
+                    ]
                   },
                   "enabled": {
                     "description": "Whether agents may issue this document.",
@@ -44627,8 +45051,22 @@
                     "type": "boolean"
                   },
                   "approvalTtlHours": {
-                    "description": "How long an approval request waits, in whole hours from 1 to 168. Defaults to 24.",
-                    "type": "number"
+                    "minimum": 1,
+                    "maximum": 168,
+                    "description": "How long an approval request waits, in whole hours. Defaults to 24.",
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "minimum": 1,
+                        "maximum": 168,
+                        "description": "How long an approval request waits, in whole hours. Defaults to 24.",
+                        "type": "integer"
+                      }
+                    ]
                   }
                 }
               }
@@ -51234,6 +51672,8 @@
                     "description": "The Chatwoot account ids that should be connected.",
                     "type": "array",
                     "items": {
+                      "minimum": 1,
+                      "maximum": 2147483647,
                       "anyOf": [
                         {
                           "format": "integer",
@@ -51241,6 +51681,8 @@
                           "type": "string"
                         },
                         {
+                          "minimum": 1,
+                          "maximum": 2147483647,
                           "type": "integer"
                         }
                       ]
@@ -51260,6 +51702,8 @@
                     "description": "The Chatwoot account ids that should be connected.",
                     "type": "array",
                     "items": {
+                      "minimum": 1,
+                      "maximum": 2147483647,
                       "anyOf": [
                         {
                           "format": "integer",
@@ -51267,6 +51711,8 @@
                           "type": "string"
                         },
                         {
+                          "minimum": 1,
+                          "maximum": 2147483647,
                           "type": "integer"
                         }
                       ]
@@ -51286,6 +51732,8 @@
                     "description": "The Chatwoot account ids that should be connected.",
                     "type": "array",
                     "items": {
+                      "minimum": 1,
+                      "maximum": 2147483647,
                       "anyOf": [
                         {
                           "format": "integer",
@@ -51293,6 +51741,8 @@
                           "type": "string"
                         },
                         {
+                          "minimum": 1,
+                          "maximum": 2147483647,
                           "type": "integer"
                         }
                       ]

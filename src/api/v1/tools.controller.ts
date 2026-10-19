@@ -1,10 +1,13 @@
 import { Elysia, t } from "elysia";
 import { doc, errors } from "@/api/lib/openapi";
+import { tRanged } from "@/api/lib/ranged";
 import { tenancyPlugin } from "@/api/middlewares/tenancy";
 import { requireDbId } from "@/lib/db-id";
 import { ForbiddenError, TenantTargetRequiredError } from "@/lib/errors";
 import { instanceIdentity } from "@/lib/instance";
+import { HTTP_STATUS_RANGE, ROW_ID_RANGE } from "@/lib/number-range";
 import type { TenantContext } from "@/lib/tenancy";
+import { MODEL_RESPONSE_CHAR_RANGE } from "@/modules/tool-definitions/response-template";
 import {
   createToolDefinition,
   deleteToolDefinition,
@@ -134,9 +137,9 @@ export const writeBody = t.Object({
     t.Boolean({ description: "Whether the tool is available to agents." }),
   ),
   expectedStatuses: t.Optional(
-    t.Array(t.Integer(), {
+    t.Array(tRanged(HTTP_STATUS_RANGE), {
       description:
-        "HTTP statuses this tool treats as ordinary results instead of integration failures (e.g. [404] for a lookup where 'not found' is data). The model receives the same 'HTTP <status>' text either way; only the log level and the alert dispatch change. Empty (the default) keeps every non-2xx a failure. 2xx entries and values outside 100-599 are dropped on save.",
+        "HTTP statuses this tool treats as ordinary results instead of integration failures (e.g. [404] for a lookup where 'not found' is data). The model receives the same 'HTTP <status>' text either way; only the log level and the alert dispatch change. Empty (the default) keeps every non-2xx a failure. 2xx entries are dropped on save.",
     }),
   ),
   appointment: t.Optional(
@@ -146,7 +149,7 @@ export const writeBody = t.Object({
     }),
   ),
   conversationRefIntegrationId: t.Optional(
-    t.Union([t.String(), t.Integer(), t.Null()], {
+    t.Union([t.String(), tRanged(ROW_ID_RANGE), t.Null()], {
       description:
         "The GENERIC (generic webhook) integration instance this tool hands `{{conversation_ref}}` for: an opaque handle to the current conversation, stable per (instance, conversation), that the operator's own system later sends back to that instance's webhook as `conversation_ref` to make the agent speak into this conversation. Required when any template of the tool uses `{{conversation_ref}}`, refused otherwise; null clears it. A tool using the variable refuses to run where there is no conversation (the playground, the test endpoint).",
     }),
@@ -158,9 +161,9 @@ export const writeBody = t.Object({
     }),
   ),
   maxResponseChars: t.Optional(
-    t.Union([t.Number(), t.Null()], {
+    t.Union([tRanged(MODEL_RESPONSE_CHAR_RANGE), t.Null()], {
       description:
-        "How many characters of this tool's response the model receives: the raw body, or the rendered response template, is cut there with `…[truncated]`, and one value inside a template may take all but 2000 of it. An integer from 500 to 20000; anything else is refused with 400. Null or absent is the default, 4000.",
+        "How many characters of this tool's response the model receives: the raw body, or the rendered response template, is cut there with `…[truncated]`, and one value inside a template may take all but 2000 of it. Null or absent is the default, 4000.",
     }),
   ),
   silenceTruncationAlert: t.Optional(
@@ -318,9 +321,11 @@ export const toolsController = new Elysia({
           query: t.Optional(t.Record(t.String(), t.Unknown())),
           body: t.Optional(t.Record(t.String(), t.Unknown())),
           credentialRef: t.Optional(t.Union([t.String(), t.Null()])),
-          expectedStatuses: t.Optional(t.Array(t.Number())),
+          expectedStatuses: t.Optional(t.Array(tRanged(HTTP_STATUS_RANGE))),
           outputSchema: t.Optional(t.Record(t.String(), t.Unknown())),
-          maxResponseChars: t.Optional(t.Union([t.Number(), t.Null()])),
+          maxResponseChars: t.Optional(
+            t.Union([tRanged(MODEL_RESPONSE_CHAR_RANGE), t.Null()]),
+          ),
         }),
         args: t.Optional(
           t.Record(t.String(), t.Unknown(), {

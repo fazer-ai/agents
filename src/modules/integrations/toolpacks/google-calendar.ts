@@ -7,6 +7,7 @@ import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { xmlAttr } from "@/lib/xml";
 import { readAppointmentReminderConfig } from "@/modules/appointments/settings";
 import type { Schedule } from "@/modules/business-hours/hours";
+import { CALENDAR_CONFIG_RANGES } from "@/modules/integrations/calendar-config-ranges";
 import {
   bookingWindow,
   type CalendarSource,
@@ -293,9 +294,10 @@ function resolveTimeZone(config: Record<string, unknown>): string {
 // default, then the toolpack default.
 const DEFAULT_SLOT_MINUTES = 30;
 const DEFAULT_GRANULARITY_MINUTES = 15;
-const MIN_GRAIN_MINUTES = 5;
-const MAX_SLOT_MINUTES = 480;
-const MAX_GRANULARITY_MINUTES = 240;
+const MIN_GRAIN_MINUTES = CALENDAR_CONFIG_RANGES.slotDurationMinutes.min;
+const MAX_SLOT_MINUTES = CALENDAR_CONFIG_RANGES.slotDurationMinutes.max;
+const MAX_GRANULARITY_MINUTES =
+  CALENDAR_CONFIG_RANGES.slotGranularityMinutes.max;
 // Availability is queried one day at a time: cap the range so the (now unsampled) slot list stays small
 // and the model pages through longer searches itself, a day per call.
 const MAX_AVAILABILITY_RANGE_MS = 24 * 60 * 60 * 1000;
@@ -373,7 +375,8 @@ function resolveSlotGranularity(config: Record<string, unknown>): number {
 }
 
 function resolveMinLead(config: Record<string, unknown>): number {
-  return clampMinutes(config.minLeadMinutes, 0, 100_000, 0);
+  const { min, max } = CALENDAR_CONFIG_RANGES.minLeadMinutes;
+  return clampMinutes(config.minLeadMinutes, min, max, 0);
 }
 
 // The integration's chosen availability schedule (a BusinessHours id), bound to config. Null ⇒ the

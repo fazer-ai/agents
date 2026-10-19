@@ -177,7 +177,7 @@ describe.skipIf(!dbUp)("knowledge base source routes (issue #794)", () => {
     const cases: [unknown, number][] = [
       [{ ...GOOD, slug: "a/b" }, 400],
       [{ ...GOOD, kind: "url_crawl" }, 400],
-      [{ ...GOOD, intervalMinutes: 1 }, 400],
+      [{ ...GOOD, intervalMinutes: 1 }, 422],
       [{ ...GOOD, excludeIds: ["x"] }, 400],
       [{ ...GOOD, baseUrl: 42 }, 422],
     ];
@@ -238,11 +238,6 @@ describe.skipIf(!dbUp)("knowledge base source routes (issue #794)", () => {
         "excludeIds",
         "Os artigos excluídos precisam ser uma lista de ids de artigo.",
       ],
-      [
-        { ...GOOD, intervalMinutes: 1 },
-        "intervalMinutes",
-        "O intervalo precisa estar entre 5 e 1440 minutos.",
-      ],
     ];
     for (const [body, field, sentence] of cases) {
       const res = await call(
@@ -285,6 +280,24 @@ describe.skipIf(!dbUp)("knowledge base source routes (issue #794)", () => {
     expect(
       await su?.knowledgeSource.findUnique({ where: { knowledgeBaseId: kb } }),
     ).toBeNull();
+  });
+
+  // The range is declared on the body, so the schema layer refuses it before the
+  // service, and its sentence names the range.
+  test("an interval outside its range is refused in Portuguese with the range", async () => {
+    const res = await call(
+      "PUT",
+      `/bases/${kb}/source`,
+      adminKey,
+      { ...GOOD, intervalMinutes: 1 },
+      "pt-BR",
+    );
+    const payload = (await res.json()) as { error?: string; field?: string };
+    expect([res.status, payload.field, payload.error]).toEqual([
+      422,
+      "intervalMinutes",
+      "intervalMinutes precisa estar entre 5 e 1440.",
+    ]);
   });
 
   test("another tenant's base and a base that does not exist answer 404", async () => {

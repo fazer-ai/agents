@@ -38,7 +38,10 @@ import {
 import { readBehaviorSettings } from "@/modules/agents/behavior-settings";
 import { collectCredentialRefWrites } from "@/modules/agents/credential-paths";
 import { protectedResolveLabels } from "@/modules/agents/resolve-labels";
-import { BEHAVIOR_PATCH_SHAPE } from "@/modules/agents/settings-schema";
+import {
+  BEHAVIOR_PATCH_SHAPE,
+  BLOCK_REFINEMENTS,
+} from "@/modules/agents/settings-schema";
 import { settingsForStorage } from "@/modules/agents/settings-storage";
 import { collectOversizedTextChanges } from "@/modules/agents/text-caps";
 import {
@@ -863,11 +866,13 @@ export function assertSettingsProtectedLabels(
 
 // A closed settings value the reader would throw away, refused on REST by asking the schema MCP uses
 // (`BEHAVIOR_PATCH_SHAPE`), so REST and MCP share one list of domains.
+// A number outside its range answers 422, the status a schema refusal of any other REST
+// body carries: the request is well formed and the value is what is refused.
 export class InvalidSettingsValueError extends AppError {
-  constructor(path: string, expected: Expected, got: string) {
+  constructor(path: string, expected: Expected, got: string, status = 400) {
     super(
       `settings.${path} expects ${expected.message}, got ${got}`,
-      400,
+      status,
       "errors.invalidSettingsValue",
       { field: path, expected: expected.message, got },
       path,
@@ -935,6 +940,13 @@ function describeExpected(issue: z.core.$ZodIssue): Expected {
       params: { values },
     };
   }
+  // A count or a whole unit: "a value of type int" names the schema, not the field.
+  if (issue.code === "invalid_type" && issue.expected === "int") {
+    return {
+      message: "a whole number",
+      key: "errors.settingsExpectedWholeNumber",
+    };
+  }
   if (issue.code === "invalid_type") return expectedType(issue.expected);
   if (issue.code === "too_small" && issue.origin === "number") {
     const min = String(issue.minimum);
@@ -984,16 +996,38 @@ interface ClosedValueIssue {
   // What was sent, when its type alone would not say why it was refused: a number outside its range
   // is "a number" either way, so the refusal quotes the value.
   got?: string;
+  // A number refused for its range or for not being whole, rather than for its type.
+  outOfRange?: boolean;
   // Where the write boundary asks "did this write change it?" when that is not `path` itself: a
   // refinement over a whole object (`params.wholeBlock`) is changed by any edit to that object.
   changedAt?: PropertyKey[];
   // A key that no longer exists, refused by name with the schema's own sentence.
   unknownField?: string;
+  // The sibling key whose change also changes this value's meaning (a delay's unit): the write
+  // changed the value if it changed either.
+  pairedWith?: string;
 }
 
 // Every closed value in `bag` the schema MCP asks would refuse, block by block. Shared by the write
 // boundary below, which refuses the first one the write changes, and by the import, which
 // normalizes all of them, so the two cannot disagree about what a closed value outside its domain is.
+// A number refused by a union (`0` or a range) carries the range's verdict inside a branch, which is
+// what classifies it as a number out of its domain rather than a value of the wrong kind.
+function numericBranchOf(issue: z.core.$ZodIssue): z.core.$ZodIssue {
+  if (issue.code !== "invalid_union") return issue;
+  for (const branch of issue.errors) {
+    const hit = branch.find(
+      (i) =>
+        i.path.length === 0 &&
+        (i.code === "too_small" ||
+          i.code === "too_big" ||
+          (i.code === "invalid_type" && i.expected === "int")),
+    );
+    if (hit) return { ...hit, path: issue.path };
+  }
+  return issue;
+}
+
 function closedValueIssues(bag: Record<string, unknown>): ClosedValueIssue[] {
   const out: ClosedValueIssue[] = [];
   for (const [block, schema] of Object.entries(BEHAVIOR_PATCH_SHAPE)) {
@@ -1003,8 +1037,29 @@ function closedValueIssues(bag: Record<string, unknown>): ClosedValueIssue[] {
     // echoing `null` claims nothing the runtime reads differently.
     if (value === null) continue;
     const parsed = schema.safeParse(value);
-    if (parsed.success) continue;
-    for (const issue of parsed.error.issues) {
+    const issues = parsed.success ? [] : [...parsed.error.issues];
+    // The block's refinements on their own too, since they are skipped once another of its fields
+    // fails (BLOCK_REFINEMENTS): each added unless the block's refinement already ran and named it.
+    // Another failure at the same path (a fraction) does not count: it is judged by the value alone,
+    // and only the refinement's issue knows that a changed unit, or a changed engine, matters.
+    const refined = BLOCK_REFINEMENTS[block]?.safeParse(value);
+    const ownRefinement = (i: {
+      params?: { pairedWith?: unknown; wholeBlock?: unknown };
+    }) =>
+      typeof i.params?.pairedWith === "string" ||
+      i.params?.wholeBlock !== undefined;
+    const named = new Set(
+      issues
+        .filter((i) => ownRefinement(i as never))
+        .map((i) => i.path.join(".")),
+    );
+    for (const issue of refined?.success === false
+      ? refined.error.issues
+      : []) {
+      if (ownRefinement(issue as never) && !named.has(issue.path.join(".")))
+        issues.push(issue);
+    }
+    for (const issue of issues.map(numericBranchOf)) {
       const next = valueAt(value, issue.path);
       // `never` marks a key the runtime does not read here (reply-only checks under `input`).
       // REST cannot refuse it outright, since the console's Guardrails save materialises it, so the
@@ -1025,15 +1080,27 @@ function closedValueIssues(bag: Record<string, unknown>): ClosedValueIssue[] {
       }
       const whole =
         issue.code === "custom" ? issue.params?.wholeBlock : undefined;
+      // Carried on a `too_big` (refineDelay), which zod's issue type does not declare `params` on.
+      const paired = (issue as { params?: { pairedWith?: unknown } }).params
+        ?.pairedWith;
       out.push({
         block,
         path: issue.path,
         next,
         expected: expected ?? describeExpected(issue),
-        ...((issue.code === "too_small" || issue.code === "too_big") &&
+        ...((issue.code === "too_small" ||
+          issue.code === "too_big" ||
+          (issue.code === "invalid_type" && issue.expected === "int")) &&
         typeof next === "number"
           ? { got: String(next) }
           : {}),
+        ...(typeof next === "number" &&
+        (issue.code === "too_small" ||
+          issue.code === "too_big" ||
+          (issue.code === "invalid_type" && issue.expected === "int"))
+          ? { outOfRange: true }
+          : {}),
+        ...(typeof paired === "string" ? { pairedWith: paired } : {}),
         ...(issue.code === "custom" && issue.params?.problem === "unknown_field"
           ? { unknownField: issue.message }
           : {}),
@@ -1079,6 +1146,8 @@ export function assertSettingsClosedValues(
     got,
     changedAt,
     unknownField,
+    outOfRange,
+    pairedWith,
   } of closedValueIssues(bag)) {
     if (
       changedAt &&
@@ -1091,9 +1160,17 @@ export function assertSettingsClosedValues(
     // ONLY WHAT THIS WRITE INTRODUCES OR CHANGES, by value and per path, so a legacy row re-sent
     // untouched saves and a list element is judged field by field. Path by index: a value that moved
     // to another index is a change, and naming its new path is what lets the caller find it.
+    const sibling = pairedWith
+      ? [...path.filter((_, i) => i < path.length - 1), pairedWith]
+      : null;
     if (
       !changedAt &&
-      isDeepStrictEqual(next, valueAt(storedBag?.[block], path))
+      isDeepStrictEqual(next, valueAt(storedBag?.[block], path)) &&
+      (!sibling ||
+        isDeepStrictEqual(
+          valueAt(bag[block], sibling),
+          valueAt(storedBag?.[block], sibling),
+        ))
     )
       continue;
     if (unknownField) {
@@ -1106,6 +1183,7 @@ export function assertSettingsClosedValues(
       [block, ...path.map(String)].join("."),
       expected,
       got ?? describeGot(next),
+      outOfRange ? 422 : 400,
     );
   }
 }
@@ -1207,6 +1285,8 @@ function absorbTaken(into: ImportTaken, from: ImportTaken): void {
 
 type ImportFix =
   | { kind: "trim"; path: PropertyKey[]; trimmed: string }
+  // A number outside its range, stored as the value the reader already ran it at.
+  | { kind: "clamp"; path: PropertyKey[]; read: number }
   | { kind: "remove"; path: PropertyKey[] };
 
 // Applies every fix to a copy of the block and answers it with the paths it took out, or null when the
@@ -1231,6 +1311,7 @@ function applyImportFixes(
   const taken = newTaken();
   for (const fix of fixes) {
     if (fix.kind === "trim") setAt(trial, fix.path, fix.trimmed);
+    if (fix.kind === "clamp") setAt(trial, fix.path, fix.read);
   }
   // Keys first, elements after: a key is addressed inside an element the bundle numbered, so removing
   // elements first would renumber the list under the paths still to be applied.
@@ -1377,6 +1458,29 @@ export function dropUnusableImportedSettingsInPlace(
         unknown
       >
     )[block];
+  // What the reader makes of one value, read with every list on its path cut down to the element on
+  // the path: the reader drops unusable siblings (a null step), so the value's index in the reading is
+  // not its index in the bag. Built by shallow copies along the path only, so a block of N steps costs
+  // the same per value however long it is.
+  const narrowTo = (
+    node: unknown,
+    path: PropertyKey[],
+  ): [unknown, PropertyKey[]] | undefined => {
+    const [key, ...rest] = path;
+    if (key === undefined) return [node, []];
+    if (!node || typeof node !== "object") return undefined;
+    const inner = narrowTo((node as Record<PropertyKey, unknown>)[key], rest);
+    if (!inner) return undefined;
+    if (Array.isArray(node) && typeof key === "number")
+      return [[inner[0]], [0, ...inner[1]]];
+    return [{ ...node, [key]: inner[0] }, [key, ...inner[1]]];
+  };
+  const readAlone = (block: string, value: unknown, path: PropertyKey[]) => {
+    const narrowed = narrowTo(value, path);
+    return narrowed
+      ? valueAt(readBlock(block, narrowed[0]), narrowed[1])
+      : undefined;
+  };
   const budget = { left: IMPORT_READING_CHECKS };
   const byBlock = new Map<string, ClosedValueIssue[]>();
   for (const issue of closedValueIssues(bag)) {
@@ -1427,14 +1531,21 @@ export function dropUnusableImportedSettingsInPlace(
           .filter((key) => !stillFlagged.has(key)),
       );
     }
-    const fixFor = (issue: ClosedValueIssue): ImportFix =>
-      trimmable.has(issue.path.map(String).join("."))
-        ? {
-            kind: "trim",
-            path: issue.path,
-            trimmed: (issue.next as string).trim(),
-          }
+    const fixFor = (issue: ClosedValueIssue): ImportFix => {
+      if (trimmable.has(issue.path.map(String).join("."))) {
+        return {
+          kind: "trim",
+          path: issue.path,
+          trimmed: (issue.next as string).trim(),
+        };
+      }
+      const read = issue.outOfRange
+        ? readAlone(block, bag[block], issue.path)
+        : undefined;
+      return typeof read === "number"
+        ? { kind: "clamp", path: issue.path, read }
         : { kind: "remove", path: issue.path };
+    };
     const fixes = issues.map(fixFor);
     // The whole block in one pass first, which is what a bundle with many unusable entries costs.
     // Half the block's share, so the second attempt below still has one.

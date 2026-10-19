@@ -160,8 +160,19 @@ const condition = z.looseObject({
   minProbability: unit.optional(),
   equals: z.string().min(1).optional(),
   minConfidence: unit.optional(),
-  minLevel: z.number().int().min(0).optional(),
-  maxLevel: z.number().int().min(0).optional(),
+  // A level is an index into `levels`, so at most the last one.
+  minLevel: z
+    .number()
+    .int()
+    .min(0)
+    .max(SCORE_LEVELS_MAX - 1)
+    .optional(),
+  maxLevel: z
+    .number()
+    .int()
+    .min(0)
+    .max(SCORE_LEVELS_MAX - 1)
+    .optional(),
 });
 const rule = z.looseObject({
   when: z.array(condition).min(1).optional(),
@@ -511,6 +522,32 @@ export type DecisionsReading =
 
 // THE TICK'S READER: the same rules as the schema, answered as a problem rather than thrown. The
 // first problem is enough: the tick stops on it and the operator fixes the block.
+// A level only means something on a score question, and `conditionFor` drops it from any other; a
+// stray one stored before the levels were capped must not fail the whole block on read.
+function withoutInapplicableLevels(bag: unknown): unknown {
+  if (!bag || typeof bag !== "object") return bag;
+  const b = bag as { questions?: unknown; rules?: unknown };
+  if (!Array.isArray(b.rules)) return bag;
+  const scored = new Set(
+    (Array.isArray(b.questions) ? b.questions : [])
+      .filter((q) => q && typeof q === "object" && q.type === "score")
+      .map((q) => q.name),
+  );
+  const rules = b.rules.map((rule) => {
+    if (!rule || typeof rule !== "object" || !Array.isArray(rule.when))
+      return rule;
+    const when = rule.when.map((cond: unknown) => {
+      if (!cond || typeof cond !== "object") return cond;
+      const c = cond as Record<string, unknown>;
+      if (scored.has(c.question)) return cond;
+      const { minLevel: _min, maxLevel: _max, ...rest } = c;
+      return rest;
+    });
+    return { ...rule, when };
+  });
+  return { ...b, rules };
+}
+
 export function readDecisionsConfig(monitoring: unknown): DecisionsReading {
   const bag =
     monitoring && typeof monitoring === "object"
@@ -519,7 +556,7 @@ export function readDecisionsConfig(monitoring: unknown): DecisionsReading {
   if (bag === undefined || bag === null) {
     return { ok: false, problem: "monitoring.decisions is missing" };
   }
-  const parsed = decisionsSchema.safeParse(bag);
+  const parsed = decisionsSchema.safeParse(withoutInapplicableLevels(bag));
   if (!parsed.success) {
     const issue = parsed.error.issues[0];
     const path = ["monitoring", "decisions", ...(issue?.path ?? [])]

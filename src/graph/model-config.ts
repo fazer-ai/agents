@@ -6,6 +6,7 @@ import {
   reasonList,
   type TranslatedParam,
 } from "@/lib/errors";
+import { numberRange } from "@/lib/number-range";
 import { modelOptionalFor } from "./model-defaults";
 import { REASONING_EFFORTS } from "./openai-reasoning";
 import {
@@ -14,6 +15,9 @@ import {
   PROVIDERS_WITH_PROMPT_CACHE,
   PROVIDERS_WITH_PROMPT_CACHE_1H,
 } from "./prompt-cache";
+
+// The sampling temperature every provider here accepts; the console holds Save outside it.
+export const TEMPERATURE_RANGE = numberRange(0, 2);
 
 // Per-agent/per-node model config SCHEMA, deliberately LangChain-free so the config/HTTP layer
 // can validate a modelConfig without importing the provider SDKs (those live in ./models, which
@@ -78,7 +82,11 @@ export const modelConfigSchema = z
     // finds no credential and the agent produces nothing. Refused at the write boundary.
     credentialRef: z.string().min(1).optional(),
     baseURL: z.string().url().optional(),
-    temperature: z.number().min(0).max(2).optional(),
+    temperature: z
+      .number()
+      .min(TEMPERATURE_RANGE.min)
+      .max(TEMPERATURE_RANGE.max)
+      .optional(),
     // How much the model may reason before answering. Absent = the provider's own default.
     // See ./openai-reasoning for the table behind the values and the transport.
     reasoningEffort: z.enum(REASONING_EFFORTS).optional(),

@@ -675,20 +675,26 @@ describe.skipIf(!dbUp)("the agent family records its own changes", () => {
   });
 
   test("a settings edit the readers clamp to the same value leaves no row", async () => {
-    // Raw-different, canonically equal: `debounce.windowSeconds` of 1 and of 2 both read as
-    // 3. This is NOT the unread-configuration case, and the distinction is the one the
-    // residue draws: `windowSeconds` is a field the readers see, so it is not in the residue, and
-    // what moved is a value the platform then replaced. Nothing the runtime does changed and nothing
-    // is being kept from anyone, so there is nothing to record.
+    // Raw-different, canonically equal: a `debounce.windowSeconds` of 1, stored before the write
+    // refused it, reads as 3, the floor, and the edit writes 3. This is NOT the
+    // unread-configuration case, and the distinction is the one the residue draws: `windowSeconds` is
+    // a field the readers see, so it is not in the residue, and what moved is a value the platform
+    // had already replaced. Nothing the runtime does changed and nothing is being kept from anyone,
+    // so there is nothing to record.
     const agent = await seedAgent({
-      settings: { debounce: { enabled: true, windowSeconds: 1 } },
+      settings: { debounce: { enabled: true, windowSeconds: 3 } },
+    });
+    // Written past the boundary, the way a row from before it looks.
+    await su?.agent.update({
+      where: { id: BigInt(agent.id) },
+      data: { settings: { debounce: { enabled: true, windowSeconds: 1 } } },
     });
     await clearAudit();
 
     await updateAgent(
       ctx(),
       BigInt(agent.id),
-      { settings: { debounce: { enabled: true, windowSeconds: 2 } } },
+      { settings: { debounce: { enabled: true, windowSeconds: 3 } } },
       appDb,
     );
 

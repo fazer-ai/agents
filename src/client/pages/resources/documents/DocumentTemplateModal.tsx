@@ -7,6 +7,7 @@ import {
   Modal,
   ModalCancelButton,
   type ModalController,
+  NumberInput,
   Select,
   SwitchField,
   Textarea,
@@ -16,6 +17,7 @@ import {
 import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
 import type { DocumentFieldType } from "@/modules/documents/blocks";
+import { BASE_FONT_SIZE_RANGE } from "@/modules/documents/blocks";
 import {
   documentToolName,
   slugifyTemplateName,
@@ -434,6 +436,7 @@ export function DocumentTemplateModal({
             onClick={save}
             loading={saving}
             disabled={Boolean(slugIssue || nextNumberIssue)}
+            holdOnRange
           >
             {t("common.save", "Save")}
           </Button>
@@ -584,10 +587,8 @@ export function DocumentTemplateModal({
                 </Select>
               </FormField>
               <FormField label={t("documents.style.size", "Base font size")}>
-                <Input
-                  type="number"
-                  min={8}
-                  max={14}
+                <NumberInput
+                  range={BASE_FONT_SIZE_RANGE}
                   value={style.baseFontSize}
                   onChange={(e) =>
                     setStyle({ ...style, baseFontSize: Number(e.target.value) })

@@ -1,3 +1,4 @@
+import { MONITORING_RANGES } from "@/modules/agents/number-ranges";
 import { projectDecisionsBlock } from "@/modules/decisions/config";
 
 // What a monitoring agent DOES with what it reads, configured under `agent.settings.monitoring`.
@@ -37,14 +38,14 @@ export const MONITORING_DEFAULTS: Readonly<MonitoringConfig> = Object.freeze({
   debounce: { windowSeconds: 20, maxWindowSeconds: 60 },
 });
 
-export const WINDOW_MESSAGES_MIN = 4;
-export const WINDOW_MESSAGES_MAX = 60;
+export const WINDOW_MESSAGES_MIN = MONITORING_RANGES.windowMessages.min;
+export const WINDOW_MESSAGES_MAX = MONITORING_RANGES.windowMessages.max;
 // ZERO IS A SETTING, not a floor to round up from: the observation is due the moment the message is
 // ingested, one model call per customer message, for an operator who wants the verdict while the
 // conversation is happening. The drain is woken at the row's own instant (`wakeObserveDrainAt`), so
 // a window below the drain's interval is honored and not rounded up to it.
-export const OBSERVE_WINDOW_MIN_SECONDS = 0;
-export const OBSERVE_WINDOW_MAX_SECONDS = 600;
+export const OBSERVE_WINDOW_MIN_SECONDS = MONITORING_RANGES.windowSeconds.min;
+export const OBSERVE_WINDOW_MAX_SECONDS = MONITORING_RANGES.windowSeconds.max;
 
 function clampInt(v: unknown, min: number, max: number, fallback: number) {
   if (typeof v !== "number" || !Number.isFinite(v)) return fallback;

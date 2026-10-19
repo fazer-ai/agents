@@ -51,6 +51,13 @@ export {
   useUnsavedChanges,
 } from "./Modal";
 export { ModelPicker } from "./ModelPicker";
+export {
+  NumberInput,
+  numberProblem,
+  RangeHolds,
+  RangeHoldsSuspended,
+  useRangeHeld,
+} from "./NumberInput";
 export { OutOfHoursBadge } from "./OutOfHoursBadge";
 export { PageContainer } from "./PageContainer";
 export { Popover } from "./Popover";

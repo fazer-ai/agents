@@ -7,7 +7,7 @@ import {
   useState,
 } from "react";
 import { useTranslation } from "react-i18next";
-import { Card, HelpPopover } from "@/client/components";
+import { Card, HelpPopover, RangeHoldsSuspended } from "@/client/components";
 import { cn } from "@/client/lib/utils";
 
 // Shared building blocks for the heavy editor tabs: a titled <Section> card with an anchor id + icon,
@@ -87,7 +87,7 @@ export function Section({
           )}
         </div>
       </div>
-      {children}
+      <RangeHoldsSuspended suspended={!!hidden}>{children}</RangeHoldsSuspended>
     </Card>
   );
 }

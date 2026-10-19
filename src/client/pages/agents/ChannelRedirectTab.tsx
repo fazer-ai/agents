@@ -3,13 +3,17 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   FormField,
-  Input,
+  NumberInput,
   Select,
   Switch,
   SwitchField,
   Textarea,
 } from "@/client/components";
 import { api } from "@/client/lib/api";
+import {
+  CHANNEL_REDIRECT_RANGES,
+  delayRange,
+} from "@/modules/agents/number-ranges";
 import type { RedirectDelayUnit } from "@/modules/channel-redirect/service";
 import { Section, SectionNav } from "./SectionNav";
 import { TabActionBar } from "./TabActionBar";
@@ -62,9 +66,8 @@ function DelayField({
   return (
     <FormField label={label} description={description} group>
       <div className="flex items-stretch gap-2">
-        <Input
-          type="number"
-          min={1}
+        <NumberInput
+          range={delayRange(unit)}
           value={value}
           onChange={(e) => onValueChange(e.target.value)}
           className="w-24 text-sm"
@@ -591,10 +594,8 @@ export function ChannelRedirectTab({
                   "How many times the link may be re-sent before going silent. 0-10.",
                 )}
               >
-                <Input
-                  type="number"
-                  min={0}
-                  max={10}
+                <NumberInput
+                  range={CHANNEL_REDIRECT_RANGES.maxResends}
                   value={cr.maxResends}
                   onChange={(e) => setCr({ ...cr, maxResends: e.target.value })}
                 />

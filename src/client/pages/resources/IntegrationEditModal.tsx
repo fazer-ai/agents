@@ -22,6 +22,7 @@ import {
   Modal,
   ModalCancelButton,
   type ModalController,
+  NumberInput,
   type ScheduleOption,
   SchedulePicker,
   Select,
@@ -44,6 +45,11 @@ import {
   toolpackToolMeta,
   withToolpackArgNotes,
 } from "@/client/lib/toolpackTools";
+import { inRange, intRange } from "@/lib/number-range";
+import {
+  CALENDAR_CONFIG_RANGES,
+  REMINDER_OFFSET_RANGE,
+} from "@/modules/integrations/calendar-config-ranges";
 
 type CatalogData = Awaited<
   ReturnType<typeof api.api.v1.integrations.catalog.get>
@@ -232,6 +238,16 @@ function defaultConfig(catalogType: string): Record<string, unknown> {
 }
 
 type ReminderUnit = "hours" | "days";
+
+// The server's offset range, in the unit the row is typed in.
+function reminderAmountRange(unit: ReminderUnit) {
+  return unit === "days"
+    ? intRange(
+        REMINDER_OFFSET_RANGE.min,
+        Math.floor(REMINDER_OFFSET_RANGE.max / 24),
+      )
+    : REMINDER_OFFSET_RANGE;
+}
 interface ReminderRow {
   value: string;
   unit: ReminderUnit;
@@ -284,7 +300,7 @@ function rowsToHours(rows: ReminderRow[]): number[] {
 // half-typed/empty row survives the keystroke) and the canonical hours[] is synced into the shared
 // integration config on every change. The policy lives on the integration (every agent that uses this
 // Calendar inherits it), NOT on the agent.
-function ReminderConfigEditor({
+export function ReminderConfigEditor({
   cfg,
   setCfg,
 }: {
@@ -302,16 +318,24 @@ function ReminderConfigEditor({
   const [askConfirmation, setAskConfirmation] = useState(
     initial.askConfirmationOnLast,
   );
+  // The offsets as loaded. With reminders on, an offset out of range is on screen and holds Save; off,
+  // the rows are not drawn, so a draft out of range goes back as loaded rather than being refused.
+  const [loadedOffsets] = useState(initial.offsetsHours);
 
   function persist(next: {
     enabled?: boolean;
     rows?: ReminderRow[];
     askConfirmation?: boolean;
   }) {
+    const on = next.enabled ?? enabled;
+    const hours = rowsToHours(next.rows ?? rows);
     setCfg({
       appointmentReminders: {
-        enabled: next.enabled ?? enabled,
-        offsetsHours: rowsToHours(next.rows ?? rows),
+        enabled: on,
+        offsetsHours:
+          on || hours.every((h) => inRange(h, REMINDER_OFFSET_RANGE))
+            ? hours
+            : loadedOffsets,
         askConfirmationOnLast: next.askConfirmation ?? askConfirmation,
       },
     });
@@ -353,9 +377,8 @@ function ReminderConfigEditor({
                   className="flex items-center gap-2"
                 >
                   <div className="w-24 shrink-0">
-                    <Input
-                      type="number"
-                      min={1}
+                    <NumberInput
+                      range={reminderAmountRange(row.unit)}
                       value={row.value}
                       aria-label={t(
                         "integrations.config.remindersAmount",
@@ -1126,6 +1149,7 @@ export function IntegrationEditModal({
                 !form.name.trim() ||
                 !form.catalogType
               }
+              holdOnRange
             >
               {t("common.save", "Save")}
             </Button>
@@ -1546,9 +1570,10 @@ export function IntegrationEditModal({
                           </div>
                           {durationCustom && (
                             <div className="w-24 shrink-0">
-                              <Input
-                                type="number"
-                                min={5}
+                              <NumberInput
+                                range={
+                                  CALENDAR_CONFIG_RANGES.slotDurationMinutes
+                                }
                                 value={
                                   typeof cfg.slotDurationMinutes === "number"
                                     ? String(cfg.slotDurationMinutes)
@@ -1628,9 +1653,10 @@ export function IntegrationEditModal({
                           </div>
                           {granularityCustom && (
                             <div className="w-24 shrink-0">
-                              <Input
-                                type="number"
-                                min={5}
+                              <NumberInput
+                                range={
+                                  CALENDAR_CONFIG_RANGES.slotGranularityMinutes
+                                }
                                 value={
                                   typeof cfg.slotGranularityMinutes === "number"
                                     ? String(cfg.slotGranularityMinutes)

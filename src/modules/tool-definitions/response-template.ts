@@ -1,3 +1,4 @@
+import { intRange } from "@/lib/number-range";
 // What an operator-authored HTTP tool says its response should LOOK LIKE by the time it reaches the
 // model, and how that is rendered off a response body. Pure: no I/O, no clock.
 //
@@ -28,6 +29,10 @@ export const MODEL_RESPONSE_CHAR_LIMIT = 4000;
 // where a structured answer stops fitting at all; the ceiling is what one tool result may cost a turn.
 export const MODEL_RESPONSE_CHAR_MIN = 500;
 export const MODEL_RESPONSE_CHAR_MAX = 20_000;
+export const MODEL_RESPONSE_CHAR_RANGE = intRange(
+  MODEL_RESPONSE_CHAR_MIN,
+  MODEL_RESPONSE_CHAR_MAX,
+);
 
 // The clip a tool's model input meets: its declared `maxResponseChars`, or the default when it
 // declares none. Clamped rather than refused, because this is the READER: the writers refuse a value

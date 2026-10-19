@@ -1,6 +1,7 @@
 import { Elysia, t } from "elysia";
 import { doc, errors } from "@/api/lib/openapi";
 import metricsPrisma from "@/api/lib/prisma-metrics";
+import { tRanged } from "@/api/lib/ranged";
 import { tenancyPlugin } from "@/api/middlewares/tenancy";
 import config from "@/config";
 import { requireDbId } from "@/lib/db-id";
@@ -21,6 +22,7 @@ import {
   readInstanceHealth,
   requireFleet,
 } from "@/modules/instance-health/read";
+import { INSTANCE_THRESHOLD_RANGES } from "@/modules/instance-health/signals";
 
 // The instance's own load and its alert channels (docs/logs.md, instance alerts). SUPER_ADMIN only:
 // a session or a fleet API key; a tenant principal is refused by the role gate and by the service.
@@ -271,9 +273,7 @@ export const instanceHealthController = new Elysia({
           description:
             "Alert when the value is above this, in the signal's unit.",
         }),
-        durationSeconds: t.Integer({
-          minimum: 0,
-          maximum: 3600,
+        durationSeconds: tRanged(INSTANCE_THRESHOLD_RANGES.durationSeconds, {
           description:
             "How long the value must stay above before it alerts; 0 alerts on the first sample.",
         }),

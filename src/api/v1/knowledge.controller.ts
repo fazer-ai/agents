@@ -1,6 +1,7 @@
 import { Elysia, t } from "elysia";
 import { doc, errors } from "@/api/lib/openapi";
 import { parseQueryCount, parseQueryText } from "@/api/lib/query-filters";
+import { tRanged } from "@/api/lib/ranged";
 import { tenancyPlugin } from "@/api/middlewares/tenancy";
 import { requireDbId } from "@/lib/db-id";
 import { ForbiddenError, TenantTargetRequiredError } from "@/lib/errors";
@@ -18,6 +19,11 @@ import {
   updateDocument,
 } from "@/modules/rag/documents";
 import { extractText } from "@/modules/rag/loaders";
+import {
+  CHUNK_OVERLAP_RANGE,
+  CHUNK_SIZE_RANGE,
+  SYNC_INTERVAL_MINUTES,
+} from "@/modules/rag/ranges";
 import {
   approveApprovalItem,
   createKnowledgeBase,
@@ -251,17 +257,13 @@ export const knowledgeController = new Elysia({
           }),
         ),
         chunkSize: t.Optional(
-          t.Integer({
-            minimum: 100,
-            maximum: 8000,
+          tRanged(CHUNK_SIZE_RANGE, {
             description:
               "Maximum characters per chunk when splitting documents for embedding.",
           }),
         ),
         chunkOverlap: t.Optional(
-          t.Integer({
-            minimum: 0,
-            maximum: 4000,
+          tRanged(CHUNK_OVERLAP_RANGE, {
             description:
               "Number of overlapping characters between consecutive chunks.",
           }),
@@ -310,7 +312,7 @@ export const knowledgeController = new Elysia({
           }),
         ),
         intervalMinutes: t.Optional(
-          t.Integer({
+          tRanged(SYNC_INTERVAL_MINUTES, {
             description: "Minutes between periodic syncs (default 10).",
           }),
         ),

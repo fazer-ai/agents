@@ -1,5 +1,6 @@
 import { Elysia, t } from "elysia";
 import { doc, errors } from "@/api/lib/openapi";
+import { tRanged } from "@/api/lib/ranged";
 import { tenancyPlugin } from "@/api/middlewares/tenancy";
 import config from "@/config";
 import { optionalDbId, requireDbId } from "@/lib/db-id";
@@ -9,6 +10,7 @@ import type { TenantContext } from "@/lib/tenancy";
 import {
   createExperiment,
   deleteExperiment,
+  EXPERIMENT_WEIGHT_RANGE,
   experimentResults,
   getExperiment,
   listExperiments,
@@ -56,8 +58,7 @@ const variantSchemaT = t.Object({
     description: "Stable identifier for this variant within the experiment.",
   }),
   weight: t.Optional(
-    t.Number({
-      minimum: 0,
+    tRanged(EXPERIMENT_WEIGHT_RANGE, {
       description:
         "Relative assignment weight; higher means more threads land on this variant.",
     }),

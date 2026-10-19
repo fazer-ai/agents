@@ -670,6 +670,28 @@ export async function agentSettingsSet(
     assertSettingsRetiredLabelKeys(patch);
     assertSettingsRemovedFields(patch);
     assertSettingsProtectedLabels(patch, current.settings);
+    // A delay's range follows its unit, which the arguments cannot publish and a patch may name only
+    // half of: asked of the raw block before the merge, whose readers would clamp `40` under a stored
+    // `days` to 30 and answer ok.
+    for (const block of [
+      "followUp",
+      "snoozedFollowUp",
+      "channelRedirect",
+    ] as const) {
+      if (patch[block] === undefined) continue;
+      const stored = (current.settings as Record<string, unknown> | null)?.[
+        block
+      ];
+      assertSettingsClosedValues(
+        {
+          [block]: {
+            ...(stored && typeof stored === "object" ? stored : {}),
+            ...patch[block],
+          },
+        },
+        current.settings,
+      );
+    }
     const nextBag = mergeBehaviorSettings(
       (current.settings ?? {}) as Record<string, unknown>,
       patch,

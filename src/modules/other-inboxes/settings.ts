@@ -1,3 +1,4 @@
+import { intRange } from "@/lib/number-range";
 // Per-agent config for the contact's conversations in other inboxes, read from
 // `agent.settings.otherInboxes`. Off by default, and an inbox is read only when the operator picked
 // it: an account can hold inboxes this agent must not see (another brand, an internal team), so
@@ -21,9 +22,9 @@ export interface OtherInboxesConfig {
 }
 
 export const OTHER_INBOXES_LIMITS = {
-  maxConversations: { min: 1, max: 10 },
-  lookbackDays: { min: 1, max: 365 },
-  fullTranscriptMaxChars: { min: 500, max: 8000 },
+  maxConversations: intRange(1, 10),
+  lookbackDays: intRange(1, 365),
+  fullTranscriptMaxChars: intRange(500, 8000),
 } as const;
 
 export const OTHER_INBOXES_MAX_INBOXES = 50;

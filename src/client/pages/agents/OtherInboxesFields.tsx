@@ -1,6 +1,11 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ComboBox, FormField, Input, SwitchField } from "@/client/components";
+import {
+  ComboBox,
+  FormField,
+  NumberInput,
+  SwitchField,
+} from "@/client/components";
 import { api } from "@/client/lib/api";
 import {
   OTHER_INBOXES_LIMITS,
@@ -240,10 +245,8 @@ export function OtherInboxesFields({
                 OTHER_INBOXES_LIMITS.maxConversations,
               )}
             >
-              <Input
-                type="number"
-                min={OTHER_INBOXES_LIMITS.maxConversations.min}
-                max={OTHER_INBOXES_LIMITS.maxConversations.max}
+              <NumberInput
+                range={OTHER_INBOXES_LIMITS.maxConversations}
                 value={value.maxConversations}
                 onChange={(e) =>
                   onChange({ ...value, maxConversations: e.target.value })
@@ -261,10 +264,8 @@ export function OtherInboxesFields({
                 OTHER_INBOXES_LIMITS.lookbackDays,
               )}
             >
-              <Input
-                type="number"
-                min={OTHER_INBOXES_LIMITS.lookbackDays.min}
-                max={OTHER_INBOXES_LIMITS.lookbackDays.max}
+              <NumberInput
+                range={OTHER_INBOXES_LIMITS.lookbackDays}
                 value={value.lookbackDays}
                 onChange={(e) =>
                   onChange({ ...value, lookbackDays: e.target.value })
@@ -285,10 +286,8 @@ export function OtherInboxesFields({
                 OTHER_INBOXES_LIMITS.fullTranscriptMaxChars,
               )}
             >
-              <Input
-                type="number"
-                min={OTHER_INBOXES_LIMITS.fullTranscriptMaxChars.min}
-                max={OTHER_INBOXES_LIMITS.fullTranscriptMaxChars.max}
+              <NumberInput
+                range={OTHER_INBOXES_LIMITS.fullTranscriptMaxChars}
                 value={value.fullTranscriptMaxChars}
                 onChange={(e) =>
                   onChange({

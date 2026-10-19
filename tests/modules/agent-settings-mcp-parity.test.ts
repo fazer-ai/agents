@@ -315,11 +315,8 @@ describe("the new blocks declare type and choice", () => {
   // SIZE IS A DESCRIPTION, NOT A REFUSAL. `readMonitoringConfig` clamps every number here and
   // truncates both lists, so copying those bounds into zod would turn a clamp into a refusal that the
   // console does not make. The block still declares type and choice.
-  test("a monitoring size the reader CLAMPS still parses", () => {
+  test("a monitoring list the reader truncates still parses", () => {
     for (const monitoring of [
-      { window: { messages: 100 } },
-      { window: { messages: 4.5 } },
-      { debounce: { windowSeconds: 1, maxWindowSeconds: 10_000 } },
       {
         // NOTE: distinct values per group: sharing one is refused on its own terms (a label is one
         // row in a flat set), and this fixture is about SIZE.
@@ -338,6 +335,17 @@ describe("the new blocks declare type and choice", () => {
       },
     ]) {
       expect(patch.safeParse({ monitoring }).success).toBe(true);
+    }
+  });
+
+  // The numbers were clamped by the reader too, and are refused now.
+  test("a monitoring number outside its range is refused", () => {
+    for (const monitoring of [
+      { window: { messages: 100 } },
+      { window: { messages: 4.5 } },
+      { debounce: { windowSeconds: 1, maxWindowSeconds: 10_000 } },
+    ]) {
+      expect(patch.safeParse({ monitoring }).success).toBe(false);
     }
   });
 

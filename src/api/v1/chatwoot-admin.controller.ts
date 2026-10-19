@@ -1,5 +1,6 @@
 import { Elysia, t } from "elysia";
 import { doc, errors } from "@/api/lib/openapi";
+import { tRanged } from "@/api/lib/ranged";
 import { confirmStepUp, STEP_UP_PASSWORD_DESCRIPTION } from "@/api/lib/step-up";
 import { tenancyPlugin } from "@/api/middlewares/tenancy";
 import { optionalDbId, requireDbId } from "@/lib/db-id";
@@ -10,6 +11,7 @@ import {
   TenantTargetRequiredError,
 } from "@/lib/errors";
 import { instanceIdentity } from "@/lib/instance";
+import { CHATWOOT_ID_RANGE } from "@/lib/number-range";
 import type { TenantContext } from "@/lib/tenancy";
 import {
   bindInbox,
@@ -257,7 +259,7 @@ export const chatwootAdminController = new Elysia({
         "Connect the selected accounts (syncing their inboxes) and soft-disconnect the de-selected ones, keeping their history.",
       ),
       body: t.Object({
-        accountIds: t.Array(t.Integer(), {
+        accountIds: t.Array(tRanged(CHATWOOT_ID_RANGE), {
           description: "The Chatwoot account ids that should be connected.",
         }),
       }),

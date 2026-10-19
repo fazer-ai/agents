@@ -22,6 +22,7 @@ import {
   Modal,
   ModalCancelButton,
   type ModalController,
+  NumberInput,
   Select,
   Skeleton,
   Switch,
@@ -69,6 +70,7 @@ import {
   MODEL_RESPONSE_CHAR_LIMIT,
   MODEL_RESPONSE_CHAR_MAX,
   MODEL_RESPONSE_CHAR_MIN,
+  MODEL_RESPONSE_CHAR_RANGE,
   maxResponseCharsAcceptable,
   type ProjectedResponse,
   projectToolResponse,
@@ -1936,7 +1938,12 @@ export function ToolEditModal({
             <span className="text-error text-xs">{formError}</span>
             <div className="flex gap-2">
               <ModalCancelButton disabled={saving} />
-              <Button onClick={save} loading={saving} disabled={!valid}>
+              <Button
+                onClick={save}
+                loading={saving}
+                disabled={!valid}
+                holdOnRange
+              >
                 {t("common.save", "Save")}
               </Button>
             </div>
@@ -2750,12 +2757,11 @@ export function ToolEditModal({
                     : refusal.at("maxResponseChars", current.maxResponseChars)
                 }
               >
-                <Input
-                  type="number"
-                  inputMode="numeric"
-                  min={MODEL_RESPONSE_CHAR_MIN}
-                  max={MODEL_RESPONSE_CHAR_MAX}
+                <NumberInput
+                  range={MODEL_RESPONSE_CHAR_RANGE}
                   step={500}
+                  optional
+                  inputMode="numeric"
                   value={form.maxResponseChars}
                   onChange={(e) =>
                     setForm({ ...form, maxResponseChars: e.target.value })

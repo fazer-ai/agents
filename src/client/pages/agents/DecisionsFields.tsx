@@ -17,6 +17,7 @@ import {
   CredentialPicker,
   FormField,
   Input,
+  NumberInput,
   Select,
   Textarea,
   Tooltip,
@@ -24,6 +25,7 @@ import {
 import { api } from "@/client/lib/api";
 import { credentialCompat } from "@/client/lib/credentialCompat";
 import { cn } from "@/client/lib/utils";
+import { numberRange } from "@/lib/number-range";
 import { SCOPE_MODEL } from "@/modules/chatwoot/attributes";
 import {
   CHOICE_OPTIONS_MAX,
@@ -83,6 +85,9 @@ import {
   withStarter,
 } from "./decisionsStarters";
 import { type InboxLabelOption, LabelPicker } from "./LabelPicker";
+
+// A condition's confidence and probability are a 0-1 unit stored, typed here as a percent.
+const DECISION_PERCENT_RANGE = numberRange(0, 100);
 
 // The decisions engine's block in the agent editor (docs/decisions.md, "The console"): which
 // classification API answers, the typed questions it is asked, and the rules that turn the answers
@@ -1374,11 +1379,10 @@ export function DecisionsFields({
     const confidence = (
       <span className="flex items-center gap-1.5 text-text-secondary text-xs">
         {t("editor.decisionsMinConfidence", "confidence at least")}
-        <Input
-          type="number"
-          min={0}
-          max={100}
+        <NumberInput
+          range={DECISION_PERCENT_RANGE}
           step={5}
+          optional
           value={cond.minConfidence}
           error={!!at(`${base}.minConfidence`)}
           onChange={(e) => set({ minConfidence: e.target.value })}
@@ -1466,11 +1470,10 @@ export function DecisionsFields({
                 "editor.decisionsMinProbability",
                 "probability of yes at least",
               )}
-              <Input
-                type="number"
-                min={0}
-                max={100}
+              <NumberInput
+                range={DECISION_PERCENT_RANGE}
                 step={5}
+                optional
                 value={cond.minProbability}
                 error={!!at(`${base}.minProbability`)}
                 onChange={(e) => set({ minProbability: e.target.value })}

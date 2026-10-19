@@ -3,10 +3,14 @@ import type { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
 import { AppError, NotFoundError } from "@/lib/errors";
+import { numberRange } from "@/lib/number-range";
 import { parseInput } from "@/lib/parse-input";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { markUndisclosed, undisclosedMoved } from "@/modules/audit/projection";
 import { auditMutation, projectionMoved } from "@/modules/audit/service";
+
+// A variant's share is relative; 1000 to 1 is already a variant nobody lands on.
+export const EXPERIMENT_WEIGHT_RANGE = numberRange(0, 1000);
 
 // Prompt A/B experiments. A thread is bucketed to a variant DETERMINISTICALLY (so re-resolution is
 // stable), and the assignment is persisted race-safely via createMany({skipDuplicates}) — an
@@ -16,6 +20,8 @@ import { auditMutation, projectionMoved } from "@/modules/audit/service";
 
 export const variantSchema = z.object({
   key: z.string().min(1),
+  // No ceiling here either, for the same reason as the prompt below: a stored weight from before the
+  // range existed must not disable the experiment. The ceiling is on `variantWriteSchema`.
   weight: z.number().nonnegative().optional(),
   // NO length bound here, deliberately: this is a READER over the stored ARRAY, so one oversized
   // prompt in an existing row would fail the whole parse and silently disable the experiment. The
@@ -30,6 +36,11 @@ export type Variant = z.infer<typeof variantSchema>;
 // bounding a write refuses the caller, who can act on it; bounding a read refuses the tenant, who
 // cannot. Applied on the two functions both write paths converge on (the MCP tool has no schema).
 export const variantWriteSchema = variantSchema.extend({
+  weight: z
+    .number()
+    .min(EXPERIMENT_WEIGHT_RANGE.min)
+    .max(EXPERIMENT_WEIGHT_RANGE.max)
+    .optional(),
   systemPrompt: z.string().max(config.agent.promptMaxChars).optional(),
 });
 

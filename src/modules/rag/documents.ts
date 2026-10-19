@@ -8,6 +8,7 @@ import {
   type EmbeddingBlockReason,
 } from "@/lib/embedding-block";
 import { AppError, ConflictError, NotFoundError } from "@/lib/errors";
+import { inRange } from "@/lib/number-range";
 import { assertUsableCount, badQueryParam } from "@/lib/query-param";
 import { sanitizeErrorMessage } from "@/lib/redact";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
@@ -29,6 +30,7 @@ import { readEmbeddingSettings } from "@/modules/tenant-settings/service";
 import { resolveVaultEntryState } from "@/modules/vault/service";
 import { chunkText } from "./chunk";
 import { type EmbeddingConfig, embedTexts } from "./embeddings";
+import { CHUNK_SIZE_RANGE, chunkOverlapRange } from "./ranges";
 import { toVectorLiteral } from "./sql";
 
 function sysCtx(tenantId: bigint): TenantContext {
@@ -153,15 +155,17 @@ export function assertChunkingUpdatable(
   );
 }
 
-// Validation: chunkSize 100–8000, chunkOverlap 0–floor(chunkSize/2)
 export function validateChunkParams(
   chunkSize: number,
   chunkOverlap: number,
 ): void {
-  if (chunkSize < 100 || chunkSize > 8000) {
-    throw new AppError("chunkSize must be between 100 and 8000", 400);
+  if (!inRange(chunkSize, CHUNK_SIZE_RANGE)) {
+    throw new AppError(
+      `chunkSize must be between ${CHUNK_SIZE_RANGE.min} and ${CHUNK_SIZE_RANGE.max}`,
+      400,
+    );
   }
-  if (chunkOverlap < 0 || chunkOverlap > Math.floor(chunkSize / 2)) {
+  if (!inRange(chunkOverlap, chunkOverlapRange(chunkSize))) {
     // NOTE: the ceiling is spelled out because a patch may not carry the chunk size it is measured
     // against: an operator sending only `chunkOverlap` cannot otherwise tell which number lost.
     throw new AppError(

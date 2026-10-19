@@ -229,7 +229,8 @@ describe("MCP tool descriptions", () => {
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in
   // document_template_schema instead: a six-variant discriminated union publishes as JSON Schema by
   // inlining every variant, about 3.2k characters PER TOOL, on both the create and the update. That
-  // trade is part of why the totals above are where they are, so it is asserted here.
+  // trade is part of why the totals above are where they are, so it is asserted here. Measured at
+  // 1_040 once next_number and approval_ttl_hours declared their ranges.
   test("the document write tools keep their schemas compact", async () => {
     const all = await listed();
     for (const name of [
@@ -239,7 +240,7 @@ describe("MCP tool descriptions", () => {
       const t = all.get(name);
       expect(t).toBeDefined();
       expect((t as { schema: string }).schema.length).toBeLessThanOrEqual(
-        1_000,
+        1_100,
       );
     }
   });

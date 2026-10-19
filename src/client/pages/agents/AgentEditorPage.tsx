@@ -37,6 +37,7 @@ import {
   Input,
   Modal,
   PageContainer,
+  RangeHolds,
   Skeleton,
   StrongConfirmModal,
   type StrongConfirmPayload,
@@ -160,6 +161,7 @@ import {
   playgroundHasKey,
   readCallsFormState,
 } from "./callsFormState";
+import { fromChannelRedirectForm } from "./channelRedirectSave";
 import {
   contactAuthGateEmpty,
   contactAuthRuleToSave,
@@ -694,11 +696,6 @@ function readBehaviorState(a: Agent) {
   };
 }
 
-function intFieldOr(v: string, fallback: number): number {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : fallback;
-}
-
 // Map a normalized ChannelRedirectConfig into the editor's form shape (numbers as strings, inbox refs
 // as select values). Both inboxes (entry + widget) are picked manually from the tenant's synced inboxes.
 function toChannelRedirectForm(
@@ -732,44 +729,6 @@ function toChannelRedirectForm(
 // Read the agent's channelRedirect block into the form (the shared reader normalizes + clamps).
 function readChannelRedirectState(a: Agent): ChannelRedirectFormState {
   return toChannelRedirectForm(readChannelRedirectConfig(a.settings));
-}
-
-// Serialize the channelRedirect form back to the config shape. The backend re-clamps every numeric
-// field (readChannelRedirectConfig), so out-of-range values are corrected server-side; we still parse
-// defensively here so a cleared input persists the default, not NaN.
-function fromChannelRedirectForm(
-  f: ChannelRedirectFormState,
-): ChannelRedirectConfig {
-  const D = CHANNEL_REDIRECT_DEFAULTS;
-  return {
-    enabled: f.enabled,
-    entryInboxId: f.entryInboxId ? intFieldOr(f.entryInboxId, 0) || null : null,
-    widgetInboxId: f.widgetInboxId,
-    redirectMessage: f.redirectMessage,
-    resendDelayValue: intFieldOr(f.resendDelayValue, D.resendDelayValue),
-    resendDelayUnit: f.resendDelayUnit,
-    maxResends: intFieldOr(f.maxResends, D.maxResends),
-    openWidget: f.openWidget,
-    cloneWaMessage: f.cloneWaMessage,
-    chatFollowupEnabled: f.chatFollowupEnabled,
-    chatFollowupDelayValue: intFieldOr(
-      f.chatFollowupDelayValue,
-      D.chatFollowupDelayValue,
-    ),
-    chatFollowupDelayUnit: f.chatFollowupDelayUnit,
-    chatFollowupInstructions: f.chatFollowupInstructions,
-    waFollowupEnabled: f.waFollowupEnabled,
-    waFollowupDelayValue: intFieldOr(
-      f.waFollowupDelayValue,
-      D.waFollowupDelayValue,
-    ),
-    waFollowupDelayUnit: f.waFollowupDelayUnit,
-    waFollowupMessage: f.waFollowupMessage,
-    closingEnabled: f.closingEnabled,
-    closingDelayValue: intFieldOr(f.closingDelayValue, D.closingDelayValue),
-    closingDelayUnit: f.closingDelayUnit,
-    closingMessage: f.closingMessage,
-  };
 }
 
 // The dirty-tracking snapshot of the channelRedirect form.
@@ -2078,12 +2037,10 @@ function AgentEditor() {
         includeMessageText: contactAuth.includeMessageText,
         denyMessage: contactAuth.denyMessage.trim() || null,
         mode: contactAuth.mode === "once" ? "once" : "perMessage",
-        // NOTE: `|| 86_400` would turn a typed (or imported) ZERO into a day, which is the wrong
-        // direction for the one field here that decides how long an authorization counts: the reader
-        // clamps 0 up to the 60-second floor, so passing it through honours "as short as possible"
-        // instead of silently granting the opposite. Same shape as noticeCooldownSeconds above, and
-        // the twelve other `Number(x) || default` fields in this block keep theirs — they share the
-        // spelling, not the risk, since a zeroed debounce window or balloon size is cosmetic.
+        // NOTE: `|| 86_400` would turn a typed ZERO into a day, the opposite of "as short as possible"
+        // for the field that decides how long an authorization counts. A zero cannot get here from the
+        // field (it holds Save below the 60-second floor), so only an emptied field takes
+        // the default; passing the rest through keeps any other value from becoming a day either.
         grantTtlSeconds:
           contactAuth.grantTtlSeconds.trim() === ""
             ? 86_400
@@ -2538,16 +2495,27 @@ function AgentEditor() {
     dirty.knowledge;
   // What holds each section's Save on its own tab, as that tab's bar last reported it (agents#1520).
   const blockedRef = useRef<Partial<Record<TabKey, boolean>>>({});
+  // The part of that hold a number out of range makes, with the mode and engine it was judged under:
+  // it depends on that tab's draft and on which of its sections are shown, so it still stands for a tab
+  // not on screen while those two have not changed, where a rule judged against another tab's draft may not.
+  const rangeHeldByTabRef = useRef<
+    Partial<Record<TabKey, { held: boolean; under: string }>>
+  >({});
+  const visibilityKeyRef = useRef("");
   const reportBlockedFor = useMemo(
     () =>
       Object.fromEntries(
         TAB_KEYS.map((key) => [
           key,
-          (blocked: boolean) => {
+          (blocked: boolean, rangeHeld: boolean) => {
             blockedRef.current[key] = blocked;
+            rangeHeldByTabRef.current[key] = {
+              held: rangeHeld,
+              under: visibilityKeyRef.current,
+            };
           },
         ]),
-      ) as Record<TabKey, (blocked: boolean) => void>,
+      ) as Record<TabKey, (blocked: boolean, rangeHeld: boolean) => void>,
     [],
   );
   const anySaving =
@@ -2845,6 +2813,13 @@ function AgentEditor() {
   ]);
   const drawnWithRef = useRef<Partial<Record<TabKey, string>>>({});
   drawnWithRef.current[tab] = crossTabKey;
+  visibilityKeyRef.current = JSON.stringify([engine, agentMode]);
+  // The tab on screen is judged under the current mode on every render; its bar reports only when its
+  // verdict changes, so the mode its last report carries is brought up to date here, after the bar's.
+  useEffect(() => {
+    const report = rangeHeldByTabRef.current[tab];
+    if (report) report.under = visibilityKeyRef.current;
+  });
   // The summariser override is judged on the STORED bag (see `settings` on the input), so the
   // credential whose endpoint outranks it has to be the stored one too. Reading the form's instead
   // would judge a saved configuration against a credential the row does not name.
@@ -3916,7 +3891,10 @@ function AgentEditor() {
         string,
         unknown
       >;
-      const crJson = fromChannelRedirectForm(channelRedirect);
+      const crJson = fromChannelRedirectForm(
+        channelRedirect,
+        syncedSettings.channelRedirect,
+      );
       const patch = {
         settings: { ...syncedSettings, channelRedirect: crJson },
         ...(expected ? { expectedUpdatedAt: expected } : {}),
@@ -4398,7 +4376,55 @@ function AgentEditor() {
   // "Save and export": every dirty section, in order, so the optimistic-concurrency token chains
   // through each write and the export reads the version just saved. It refuses up front what the file
   // would leave out, and stops at the first section held or refused (agents#1520).
+  // Whether a drawn number is out of range, for "Save and export", which runs outside the bar: the
+  // field already says so, and without this the save would send the value back as stored.
+  const rangeHeldRef = useRef(false);
+  const onRangeHeld = useCallback((held: boolean) => {
+    rangeHeldRef.current = held;
+  }, []);
+
   async function saveAllDirty(): Promise<boolean> {
+    // Only a section this save writes is held: an untouched one keeps its stored number, in range or not.
+    if (
+      rangeHeldRef.current &&
+      (sectionDirty(tab) || (tab === "general" && decisionsHeadDirty))
+    ) {
+      showToast(
+        t(
+          "editor.saveHeldByRange",
+          "A number on this tab is outside its range. Fix it, then save.",
+        ),
+        "error",
+      );
+      return false;
+    }
+    // A tab not on screen holds nothing live; the numbers it reported out of range when last drawn
+    // still stand while the mode and engine it was drawn under have not changed (its other rules may
+    // have been judged against a draft another tab has changed since). Under another mode a section may
+    // be hidden or shown now, held or clear, so the tab is opened to judge again instead.
+    for (const key of SAVE_SECTIONS) {
+      const report = rangeHeldByTabRef.current[key];
+      // A tab this mode does not draw cannot be judged again; its draft is the hidden-drafts notice's.
+      const drawn = visibleTabs.some((item) => item.key === key);
+      if (key === tab || !drawn || !sectionDirty(key) || !report) continue;
+      if (report.under === visibilityKeyRef.current) {
+        if (!report.held) continue;
+        return heldIn(
+          key,
+          t("editor.saveHeldField", "a field there cannot be saved as it is."),
+        );
+      }
+      openTab(key);
+      showToast(
+        t(
+          "editor.recheckBeforeExport",
+          "The agent's mode changed since you left the {{tab}} tab. Check it, then save again.",
+          { tab: tabName(key) },
+        ),
+        "error",
+      );
+      return false;
+    }
     if (sayHiddenDrafts()) return false;
     if (!voiceAgent && dirty.behavior && behaviorPageHold() === false)
       return false;
@@ -4540,7 +4566,9 @@ function AgentEditor() {
         openTab(key);
         return "away";
       }
-      if (blockedRef.current[key]) {
+      // The tab on screen answers for its numbers as they are reported; what its bar reported may
+      // still be the render before them.
+      if (blockedRef.current[key] || (key === tab && rangeHeldRef.current)) {
         heldIn(
           key,
           t("editor.saveHeldField", "a field there cannot be saved as it is."),
@@ -5843,7 +5871,8 @@ function AgentEditor() {
     <StaleNoticeContext.Provider value={stale}>
       <EditorBarContext.Provider value={editorBar}>
         <PlaygroundIsCallContext.Provider value={voiceAgent}>
-          {page}
+          {/* Only the drawn tab's fields are mounted, so its bar holds for its own numbers. */}
+          <RangeHolds onHeldChange={onRangeHeld}>{page}</RangeHolds>
         </PlaygroundIsCallContext.Provider>
       </EditorBarContext.Provider>
     </StaleNoticeContext.Provider>

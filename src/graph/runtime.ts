@@ -2853,15 +2853,16 @@ async function runTurnBody(
       return settled("posted");
     };
     const ended = await afterGeneration();
-    // NOTE: The note above tells the next turn; this tells the operator, since the customer was not
-    // told either. Read off the same slice the rollback reads, so the two cannot disagree.
+    // NOTE: A record for whoever reads the conversation, at `info`: the next turn tells the customer
+    // from the note, so there is nothing to alert on. Read off the same slice the rollback reads, so
+    // the two cannot disagree.
     if (
       owesUndeliveredNote(ended.outcome) &&
       turnActedBeforeItsReply(result.messages, inertTools)
     ) {
       emitFlowEvent(flow, {
         stage: "generate",
-        level: "warn",
+        level: "info",
         status: "ok",
         detail: {
           reason: "superseded_after_action",

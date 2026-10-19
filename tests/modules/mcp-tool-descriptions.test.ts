@@ -112,9 +112,9 @@ const SETTINGS_DESC_CEILING = 2_000;
 // learn by trying, re-measure instead of summing) is in docs/mcp.md, "Full admin surface".
 // Includes `monitoring.engine` and the `decisions` block (questions, rules): they are configured only
 // through REST and MCP until the console has a screen for them, so their shape has to be in
-// tools/list, and `snoozedFollowUp` too (the step shape it shares with `followUp`). Measured at 35_546,
-// with the tts block's timeout and fallback voice and the voice agent's ranged `calls` block.
-const SETTINGS_SCHEMA_CEILING = 35_630;
+// tools/list, and `snoozedFollowUp` too (the step shape it shares with `followUp`). Measured at 35_724,
+// with both fallbacks' timeouts, the fallback voice and the voice agent's ranged `calls` block.
+const SETTINGS_SCHEMA_CEILING = 35_800;
 
 describe("MCP tool descriptions", () => {
   test("agent_settings_set stays under its ceiling", async () => {
@@ -216,14 +216,14 @@ describe("MCP tool descriptions", () => {
     // Measured at 34_168 with the 15 dashboard tools (Pro only), conversation_decisions_test,
     // inbox_bind_voice, the voice kind on agent_create and agent_call_floor; 33_086 on the Free tree.
     expect(desc).toBeLessThanOrEqual(34_240);
-    // Measured at 77_763 with `limits.maxProactivePerDay` and the `snoozedFollowUp` and `otherInboxes`
+    // Measured at 78_391 with `limits.maxProactivePerDay` and the `snoozedFollowUp` and `otherInboxes`
     // blocks on agent_settings_set, the approval switch and validity on the document template writes,
     // the next number on them, the search and cursor on issued_document_list, the three
     // proactive_breaker tools, the voice binding and kind, both fallbacks' timeouts, the fallback voice,
     // agent_call_floor's draft input, `guardrails.onFailure`, the guardrail endpoint check and the 15
     // dashboard tools (Pro only), the last being dashboard_query_schema, whose input is empty and whose
-    // contract is served on demand. 73_659 on the Free tree; 622 more with the `calls` numbers ranged.
-    expect(schema).toBeLessThanOrEqual(78_290);
+    // contract is served on demand, and the `calls` numbers ranged. 74_540 on the Free tree.
+    expect(schema).toBeLessThanOrEqual(78_470);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

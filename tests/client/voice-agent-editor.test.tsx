@@ -58,11 +58,11 @@ describe("the editor of a voice agent", () => {
     await open();
     expect(tabNames()).toEqual([
       "General",
-      "Channels",
       "Call settings",
       "Tools",
       "Knowledge",
       "Playground",
+      "Channels",
     ]);
   });
 

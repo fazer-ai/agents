@@ -808,6 +808,22 @@ const DECISIONS_REFUSAL_FIELD = /^(settings\.)?monitoring\.decisions(\.|$)/;
 // playground turns `usePlaygroundChat` does not reload. Keyed rather than reset field by field,
 // since each reset would have to know when its field is repopulated. `:tab` is NOT in the key, so
 // moving between tabs of the same agent keeps everything.
+
+// Config-health warnings whose fix is the model card itself, and those whose fix is picking a key.
+const MODEL_SETUP_ISSUES: ReadonlySet<string> = new Set([
+  "modelNotRunnable",
+  "modelNoEndpoint",
+  "modelBadEndpoint",
+]);
+const KEY_ISSUES: ReadonlySet<string> = new Set([
+  "model",
+  "stt",
+  "tts",
+  "vision",
+  "guardrails",
+  "decisions",
+]);
+
 export function AgentEditorPage() {
   const { id = "" } = useParams();
   return <AgentEditor key={id} />;
@@ -2704,7 +2720,7 @@ function AgentEditor() {
   // Live config-health: a feature on without its credential, or naming one whose secret is not
   // filled in (pending); each issue deep-links to its tab or the vault fill modal. Messages by issue.key:
   // t('editor.configIssue.model', 'The model has no API key set, so the agent cannot reply.')
-  // t('editor.configIssue.modelNotRunnable', 'This model configuration cannot be built, so the agent cannot reply. Check the provider and the model.')
+  // t('editor.configIssue.modelNotRunnable', 'Choose a provider, a model and an API key for the agent to reply.')
   // t('editor.configIssue.modelNoEndpoint', 'This model needs a base URL and has none, so it cannot be reached and the agent cannot reply.')
   // t('editor.configIssue.modelBadEndpoint', 'The model\'s base URL is not an http(s) address, so every request goes nowhere and the agent cannot reply.')
   // t('editor.configIssue.stt', 'Voice transcription is on but has no API key set.')
@@ -2910,6 +2926,18 @@ function AgentEditor() {
         ? allConfigIssues.filter((issue) => watcherCanActOn(issue, engine))
         : allConfigIssues,
   );
+
+  // The button says what it opens: the model card or a key picker where the warning is about one, and
+  // the generic "Fix" only for the rest.
+  function issueActionLabel(issue: (typeof configIssues)[number]): string {
+    if (issue.key === "knowledge") return t("editor.indexKnowledge", "Index");
+    if (issue.pending) return t("editor.fillCredential", "Fill");
+    if (MODEL_SETUP_ISSUES.has(issue.key))
+      return t("editor.goToModelSetup", "Set up the model");
+    if (KEY_ISSUES.has(issue.key))
+      return t("editor.goToKeyPicker", "Choose a key");
+    return t("editor.goToIssue", "Fix");
+  }
 
   // Deep-link to a config issue. For a PENDING credential the fix lives in the vault, so jump to the
   // vault list with the fill modal pre-opened (?fill=<id>). Otherwise switch to the issue's tab
@@ -4743,6 +4771,9 @@ function AgentEditor() {
       }`,
     );
 
+  // The order follows the work: set the agent up (General, then its kind's own settings), give it
+  // tools and knowledge, try it in the Playground, and only then connect it to a channel. Every kind
+  // draws a subset of this one list, so they share the order.
   const tabs: TabItem[] = [
     {
       key: "general",
@@ -4751,11 +4782,6 @@ function AgentEditor() {
       // NOTE: The engine and the classifier are drawn here, so a pending change to them lights
       // this dot too.
       dirty: dirty.general || decisionsHeadDirty,
-    },
-    {
-      key: "channels",
-      label: t("editor.tab.channels", "Channels"),
-      icon: RadioTower,
     },
     {
       key: "call",
@@ -4768,18 +4794,6 @@ function AgentEditor() {
       label: t("editor.tab.decisions", "Questions and rules"),
       icon: ListChecks,
       dirty: dirty.decisions,
-    },
-    {
-      key: "tools",
-      label: t("editor.tab.tools", "Tools"),
-      icon: Wrench,
-      dirty: dirty.tools,
-    },
-    {
-      key: "knowledge",
-      label: t("editor.tab.knowledge", "Knowledge"),
-      icon: BookOpen,
-      dirty: dirty.knowledge,
     },
     {
       key: "behavior",
@@ -4800,9 +4814,26 @@ function AgentEditor() {
       dirty: dirty.channelRedirect,
     },
     {
+      key: "tools",
+      label: t("editor.tab.tools", "Tools"),
+      icon: Wrench,
+      dirty: dirty.tools,
+    },
+    {
+      key: "knowledge",
+      label: t("editor.tab.knowledge", "Knowledge"),
+      icon: BookOpen,
+      dirty: dirty.knowledge,
+    },
+    {
       key: "playground",
       label: t("editor.tab.playground", "Playground"),
       icon: MessageSquare,
+    },
+    {
+      key: "channels",
+      label: t("editor.tab.channels", "Channels"),
+      icon: RadioTower,
     },
   ];
   const visibleTabs = voiceAgent
@@ -5029,11 +5060,7 @@ function AgentEditor() {
                           onClick={() => goToIssue(issue)}
                           className="shrink-0 rounded font-medium text-accent text-xs hover:underline focus-visible:underline"
                         >
-                          {issue.key === "knowledge"
-                            ? t("editor.indexKnowledge", "Index")
-                            : issue.pending
-                              ? t("editor.fillCredential", "Fill")
-                              : t("editor.goToIssue", "Fix")}
+                          {issueActionLabel(issue)}
                         </button>
                       )}
                     </li>

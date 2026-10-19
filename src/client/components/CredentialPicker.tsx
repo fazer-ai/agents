@@ -551,7 +551,7 @@ export function CredentialPicker({
         <span className="text-warning text-xs" role="status">
           {t(
             "credentialPicker.requiredMissing",
-            "This feature is enabled but has no credential. Select one.",
+            "Select an API key to use this feature.",
           )}
         </span>
       )}

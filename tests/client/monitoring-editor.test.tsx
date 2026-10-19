@@ -92,15 +92,15 @@ describe("the editor of a monitoring agent", () => {
     expect({ all, watcher: tabs().map((t) => t.name) }).toEqual({
       all: [
         "General",
-        "Channels",
-        "Tools",
-        "Knowledge",
         "Behavior",
         "Guardrails",
         "Redirect",
+        "Tools",
+        "Knowledge",
         "Playground",
+        "Channels",
       ],
-      watcher: ["General", "Channels", "Tools", "Knowledge", "Behavior"],
+      watcher: ["General", "Behavior", "Tools", "Knowledge", "Channels"],
     });
     cleanup();
     // A URL naming a hidden tab lands on General rather than rendering a tab the page hides.

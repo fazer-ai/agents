@@ -3,7 +3,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { ConflictError, NotFoundError } from "@/lib/errors";
-import type { TenantContext } from "@/lib/tenancy";
+import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import {
   reconnectChatwootInstance,
   removeChatwootInstance,
@@ -197,6 +197,17 @@ describe.skipIf(!dbUp)("removing a large Chatwoot account", () => {
         SELECT l.pid, l.locktype, l.relation::regclass::text AS rel, l.mode, l.granted
           FROM pg_locks l WHERE l.pid <> pg_backend_pid() AND l.database = (SELECT oid FROM pg_database WHERE datname = current_database())
            AND l.locktype IN ('relation', 'advisory', 'transactionid', 'tuple') ORDER BY l.pid`)));
+      await runScopedOn(appDb, ctx(tenantId), async (tx) => {
+          await tx.$executeRawUnsafe("SET LOCAL statement_timeout = 0");
+          const plan = await tx.$queryRawUnsafe<{ "QUERY PLAN": string }[]>(`
+            EXPLAIN (ANALYZE, BUFFERS) WITH batch AS MATERIALIZED (
+              SELECT id FROM conversations WHERE tenant_id = ${tenantId} AND chatwoot_instance_id = ${big.id}
+               LIMIT 100 FOR NO KEY UPDATE SKIP LOCKED)
+            DELETE FROM conversations WHERE id IN (SELECT id FROM batch)`);
+          console.error("DIAG appplan\n" + plan.map((r) => r["QUERY PLAN"]).join("\n"));
+          throw new Error("rollback");
+        })
+        .catch((x) => console.error("DIAG appplan error", String(x)));
       await suDb
         .$transaction(async (tx) => {
           await tx.$executeRawUnsafe("SET LOCAL statement_timeout = 0");

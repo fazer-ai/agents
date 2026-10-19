@@ -5,12 +5,14 @@ import {
   act,
   cleanup,
   fireEvent,
+  render,
   screen,
   waitFor,
   within,
 } from "@testing-library/react";
+import { TtsOptionPicker } from "@/client/pages/agents/BehaviorTab";
 import { renderEditor, stubEditorApi } from "../utils/agent-editor";
-import { createTestI18n } from "../utils/i18n";
+import { createTestI18n, withI18n } from "../utils/i18n";
 
 // The Voice card plays the sample ElevenLabs ships for a voice: beside the field for the chosen one,
 // and on each row of the list. Listening never chooses, and a sample that fails frees its control.
@@ -265,6 +267,53 @@ describe("the voice sample", () => {
     fireEvent.click(within(menu).getByRole("menuitem", { name: /Raquel/ }));
     await act(async () => {});
     expect(pauses).toBe(playing);
+    expect(
+      screen
+        .getByRole("button", { name: "Stop the sample of Raquel" })
+        .getAttribute("aria-pressed"),
+    ).toBe("true");
+  });
+
+  test("a picker that goes away stops only its own sample, not the same voice another picker is playing", async () => {
+    globalThis.fetch = (async () =>
+      json({
+        instance: {},
+        items: [{ id: "a", label: "Raquel", previewUrl: A }],
+      })) as unknown as typeof fetch;
+    const picker = (label: string) => (
+      <TtsOptionPicker
+        kind="voices"
+        provider="elevenlabs"
+        credentialRef="vault:1"
+        value="a"
+        onChange={() => {}}
+        ariaLabel={label}
+      />
+    );
+    const view = render(
+      withI18n(
+        <>
+          {picker("Primary")}
+          {picker("Fallback")}
+        </>,
+      ),
+    );
+    const [primary, fallback] = await screen.findAllByRole("button", {
+      name: "Play a sample of Raquel",
+    });
+    // The fallback plays and stops it; then the primary plays the same voice.
+    fireEvent.click(fallback as HTMLElement);
+    fireEvent.click(
+      screen.getAllByRole("button", {
+        name: "Stop the sample of Raquel",
+      })[1] as HTMLElement,
+    );
+    fireEvent.click(primary as HTMLElement);
+    const before = pauses;
+    // The fallback goes away (disabled): the primary's sample plays on.
+    view.rerender(withI18n(picker("Primary")));
+    await act(async () => {});
+    expect(pauses).toBe(before);
     expect(
       screen
         .getByRole("button", { name: "Stop the sample of Raquel" })

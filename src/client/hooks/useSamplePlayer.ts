@@ -5,6 +5,9 @@ import { useSyncExternalStore } from "react";
 
 let audio: HTMLAudioElement | null = null;
 let playing: string | null = null;
+// Who started the sample playing now: two pickers can play the same URL, so the URL alone cannot say
+// whose it is.
+let owner: symbol | null = null;
 // Bumped on every start, so the rejection of a play() that a later toggle replaced is ignored.
 let attempt = 0;
 const listeners = new Set<() => void>();
@@ -27,8 +30,9 @@ function element(): HTMLAudioElement {
   return el;
 }
 
-export function stopSample() {
+function stopSample() {
   attempt++;
+  owner = null;
   if (audio) {
     audio.pause();
     audio.removeAttribute("src");
@@ -37,12 +41,13 @@ export function stopSample() {
   setPlaying(null);
 }
 
-// Plays `url`, or stops it when it is the one already playing.
-function toggle(url: string) {
+// Plays `url` for `by`, or stops it when it is the one already playing.
+function toggle(url: string, by: symbol) {
   if (playing === url) {
     stopSample();
     return;
   }
+  owner = by;
   const el = element();
   el.pause();
   el.src = url;
@@ -53,9 +58,10 @@ function toggle(url: string) {
   });
 }
 
-// The sample playing right now, read outside React (a cleanup that must not act on a stale render).
-export function currentSample(): string | null {
-  return playing;
+// Stops the sample playing now only when `by` started it, and it is not `unless`. Read outside React,
+// so a cleanup acts on what is playing now and not on a stale render.
+export function stopSampleOf(by: symbol, unless?: string): void {
+  if (owner === by && playing !== null && playing !== unless) stopSample();
 }
 
 function subscribe(notify: () => void) {

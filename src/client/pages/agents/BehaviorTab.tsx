@@ -44,11 +44,7 @@ import {
 } from "@/client/components";
 import { Markdown } from "@/client/components/Markdown";
 import { useTtsCheckInfo } from "@/client/contexts/AuthContext";
-import {
-  currentSample,
-  stopSample,
-  useSamplePlayer,
-} from "@/client/hooks/useSamplePlayer";
+import { stopSampleOf, useSamplePlayer } from "@/client/hooks/useSamplePlayer";
 import { api } from "@/client/lib/api";
 import { credentialCompat } from "@/client/lib/credentialCompat";
 import { AGENTS_REPO_URL } from "@/client/lib/navigation";
@@ -712,30 +708,17 @@ export function TtsOptionPicker({
     return url && voice ? { url, name: voice.name } : undefined;
   };
   const chosenSample = sampleOf(value);
-  // The sample this picker last started. A new listing (another key, provider or language) and leaving
-  // the page stop it, so it never plays on with no control left to stop it.
-  const started = useRef<string | null>(null);
-  const play = (url: string) => {
-    started.current = url;
-    player.toggle(url);
-  };
+  // This picker, as the owner of the samples it starts. A new listing (another key, provider or
+  // language) and leaving the page stop its sample, so it never plays on with no control left to stop
+  // it; a sample another picker started is left alone, even when it is the same voice.
+  const me = useRef(Symbol("voice picker")).current;
+  const play = (url: string) => player.toggle(url, me);
   // biome-ignore lint/correctness/useExhaustiveDependencies: each listing or language change is the trigger.
-  useEffect(
-    () => () => {
-      if (started.current !== null && currentSample() === started.current)
-        stopSample();
-      started.current = null;
-    },
-    [loaderKey, i18n.language],
-  );
-  // Choosing another voice stops a sample of the old one, whose control is gone from the field; a
-  // sample of the voice just chosen (heard on its row, then picked) plays on under the field's Stop.
+  useEffect(() => () => stopSampleOf(me), [loaderKey, i18n.language]);
+  // Choosing another voice stops this picker's sample of the old one, whose control is gone from the
+  // field; a sample of the voice just chosen (heard on its row, then picked) plays on under its Stop.
   // biome-ignore lint/correctness/useExhaustiveDependencies: the chosen voice is the trigger.
-  useEffect(() => {
-    const url = started.current;
-    if (url !== null && currentSample() === url && url !== chosenSample?.url)
-      stopSample();
-  }, [value]);
+  useEffect(() => stopSampleOf(me, chosenSample?.url), [value]);
   const sampleLabel = (name: string, on: boolean) =>
     on
       ? t("editor.voiceSampleStop", "Stop the sample of {{name}}", { name })

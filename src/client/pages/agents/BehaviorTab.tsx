@@ -44,7 +44,11 @@ import {
 } from "@/client/components";
 import { Markdown } from "@/client/components/Markdown";
 import { useTtsCheckInfo } from "@/client/contexts/AuthContext";
-import { useSamplePlayer } from "@/client/hooks/useSamplePlayer";
+import {
+  currentSample,
+  stopSample,
+  useSamplePlayer,
+} from "@/client/hooks/useSamplePlayer";
 import { api } from "@/client/lib/api";
 import { credentialCompat } from "@/client/lib/credentialCompat";
 import { AGENTS_REPO_URL } from "@/client/lib/navigation";
@@ -708,58 +712,38 @@ export function TtsOptionPicker({
     return url && voice ? { url, name: voice.name } : undefined;
   };
   const chosenSample = sampleOf(value);
-  // Leaving the page stops a sample this picker started, instead of it playing on over the next one.
-  const ownsPlaying =
-    player.playing !== null &&
-    [...samples.keys()].some((id) => sampleOf(id)?.url === player.playing);
-  const stopOnUnmount = useRef<() => void>(() => {});
-  stopOnUnmount.current = ownsPlaying ? player.stop : () => {};
-  useEffect(() => () => stopOnUnmount.current(), []);
-  const sampleButton = (
-    { url, name }: { url: string; name: string },
-    className: string,
-    // Beside the field the control says what it does in words; on a row of the list the icon is enough.
-    withText = false,
-  ) => {
-    const on = player.playing === url;
-    return (
-      <button
-        type="button"
-        aria-pressed={on}
-        aria-label={
-          on
-            ? t("editor.voiceSampleStop", "Stop the sample of {{name}}", {
-                name,
-              })
-            : t("editor.voiceSamplePlay", "Play a sample of {{name}}", { name })
-        }
-        title={
-          on
-            ? t("editor.voiceSampleStopShort", "Stop sample")
-            : t("editor.voiceSamplePlayShort", "Play sample")
-        }
-        onClick={() => player.toggle(url)}
-        className={cn(
-          "inline-flex shrink-0 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-bg-hover hover:text-text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-soft",
-          { "text-accent": on },
-          className,
-        )}
-      >
-        {on ? (
-          <Square className="h-3.5 w-3.5" aria-hidden="true" />
-        ) : (
-          <Play className="h-3.5 w-3.5" aria-hidden="true" />
-        )}
-        {withText && (
-          <span>
-            {on
-              ? t("editor.voiceSampleStopText", "Stop")
-              : t("editor.voiceSamplePlayText", "Listen")}
-          </span>
-        )}
-      </button>
-    );
+  // The sample this picker last started. A new listing (another key, provider or language) and leaving
+  // the page stop it, so it never plays on with no control left to stop it.
+  const started = useRef<string | null>(null);
+  const play = (url: string) => {
+    started.current = url;
+    player.toggle(url);
   };
+  // biome-ignore lint/correctness/useExhaustiveDependencies: each listing or language change is the trigger.
+  useEffect(
+    () => () => {
+      if (started.current !== null && currentSample() === started.current)
+        stopSample();
+      started.current = null;
+    },
+    [loaderKey, i18n.language],
+  );
+  const sampleLabel = (name: string, on: boolean) =>
+    on
+      ? t("editor.voiceSampleStop", "Stop the sample of {{name}}", { name })
+      : t("editor.voiceSamplePlay", "Play a sample of {{name}}", { name });
+  const sampleTitle = (on: boolean) =>
+    on
+      ? t("editor.voiceSampleStopShort", "Stop sample")
+      : t("editor.voiceSamplePlayShort", "Play sample");
+  const sampleIcon = (on: boolean) =>
+    on ? (
+      <Square className="h-3.5 w-3.5" aria-hidden="true" />
+    ) : (
+      <Play className="h-3.5 w-3.5" aria-hidden="true" />
+    );
+  const chosenOn =
+    chosenSample !== undefined && player.playing === chosenSample.url;
   return (
     <div className="flex w-full items-center gap-1.5">
       <div className="min-w-0 flex-1">
@@ -775,16 +759,39 @@ export function TtsOptionPicker({
           aria-label={ariaLabel}
           itemAction={(item) => {
             const sample = sampleOf(item.id);
-            return sample ? sampleButton(sample, "h-7 w-7") : null;
+            if (!sample) return null;
+            const on = player.playing === sample.url;
+            return {
+              label: sampleLabel(sample.name, on),
+              title: sampleTitle(on),
+              pressed: on,
+              icon: sampleIcon(on),
+              onPress: () => play(sample.url),
+            };
           }}
         />
       </div>
-      {chosenSample &&
-        sampleButton(
-          chosenSample,
-          "h-8 gap-1.5 border border-border-hover px-2.5 text-sm",
-          true,
-        )}
+      {chosenSample && (
+        // Beside the field the control says what it does in words; on a row of the list the icon is enough.
+        <button
+          type="button"
+          aria-pressed={chosenOn}
+          aria-label={sampleLabel(chosenSample.name, chosenOn)}
+          title={sampleTitle(chosenOn)}
+          onClick={() => play(chosenSample.url)}
+          className={cn(
+            "inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-md border border-border-hover px-2.5 text-sm text-text-muted transition-colors hover:bg-bg-hover hover:text-text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-soft",
+            { "text-accent": chosenOn },
+          )}
+        >
+          {sampleIcon(chosenOn)}
+          <span>
+            {chosenOn
+              ? t("editor.voiceSampleStopText", "Stop")
+              : t("editor.voiceSamplePlayText", "Listen")}
+          </span>
+        </button>
+      )}
     </div>
   );
 }

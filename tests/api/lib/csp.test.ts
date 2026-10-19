@@ -56,7 +56,13 @@ describe("buildCspDirectives", () => {
     expect(d.imgSrc).toEqual(["'self'", "data:", "blob:"]);
     // Inter + JetBrains Mono load as woff2 from Google's font CDN (public/index.css @font-face).
     expect(d.fontSrc).toEqual(["'self'", "data:"]);
-    expect(d.mediaSrc).toEqual(["'self'", "blob:"]);
+    // ElevenLabs' voice samples play from where ElevenLabs serves them.
+    expect(d.mediaSrc).toEqual([
+      "'self'",
+      "blob:",
+      "https://*.elevenlabs.io",
+      "https://storage.googleapis.com/eleven-public-prod/",
+    ]);
     expect(d.connectSrc).toEqual(["'self'"]);
     // blob: lets the console embed a PDF it rendered itself (the document-template preview) in an
     // <iframe>. Without it the frame is blocked and the only trace is a line in the browser console,

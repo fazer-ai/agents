@@ -15,7 +15,7 @@ export {
   type CodeEditorProps,
   scopeKeyLabel,
 } from "./CodeEditor";
-export { ComboBox, type ComboItem } from "./ComboBox";
+export { ComboBox, type ComboItem, type ComboItemAction } from "./ComboBox";
 export { ConfirmDialog, type ConfirmPayload } from "./ConfirmDialog";
 export { CredentialForm } from "./CredentialForm";
 export { CredentialPicker } from "./CredentialPicker";

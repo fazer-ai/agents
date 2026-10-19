@@ -27,7 +27,7 @@ function element(): HTMLAudioElement {
   return el;
 }
 
-function stop() {
+export function stopSample() {
   attempt++;
   if (audio) {
     audio.pause();
@@ -40,7 +40,7 @@ function stop() {
 // Plays `url`, or stops it when it is the one already playing.
 function toggle(url: string) {
   if (playing === url) {
-    stop();
+    stopSample();
     return;
   }
   const el = element();
@@ -51,6 +51,11 @@ function toggle(url: string) {
   el.play().catch(() => {
     if (mine === attempt) setPlaying(null);
   });
+}
+
+// The sample playing right now, read outside React (a cleanup that must not act on a stale render).
+export function currentSample(): string | null {
+  return playing;
 }
 
 function subscribe(notify: () => void) {
@@ -66,5 +71,5 @@ export function useSamplePlayer() {
     () => playing,
     () => null,
   );
-  return { playing: current, toggle, stop };
+  return { playing: current, toggle };
 }

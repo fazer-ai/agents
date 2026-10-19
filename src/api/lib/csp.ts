@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import config from "@/config";
+import { ELEVENLABS_MEDIA_SOURCES } from "@/lib/elevenlabs-media";
 import { OAUTH_CALLBACK_SCRIPT } from "@/modules/vault/oauth-core";
 
 // Every OAuth consent popup (google_oauth, mcp_oauth) renders the SAME FIXED inline script
@@ -101,7 +102,8 @@ export function buildCspDirectives(
     imgSrc: ["'self'", "data:", "blob:", ...cdn],
     // Inter and JetBrains Mono are self-hosted under /assets/fonts/ (public/index.html).
     fontSrc: ["'self'", "data:", ...cdn],
-    mediaSrc: ["'self'", "blob:", ...cdn],
+    // The voice picker plays ElevenLabs' voice samples from where ElevenLabs serves them.
+    mediaSrc: ["'self'", "blob:", ...cdn, ...ELEVENLABS_MEDIA_SOURCES],
     // NOTE: Same-origin WebSocket upgrades (`ws:` in dev, `wss:` in prod)
     // are covered by `'self'` per CSP3 in all evergreen browsers.
     connectSrc: ["'self'", ...cdn, ...gsi],

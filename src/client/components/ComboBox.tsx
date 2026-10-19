@@ -14,6 +14,16 @@ export interface ComboItem {
   color?: string;
 }
 
+// A toggle drawn at the end of an option's row (the voice picker's "play sample"). It is a menu item of
+// its own, so the arrow keys reach it and Enter presses it, and pressing it never selects the option.
+export interface ComboItemAction {
+  label: string;
+  title?: string;
+  pressed: boolean;
+  icon: ReactNode;
+  onPress: () => void;
+}
+
 type LoadState =
   | { status: "idle" }
   | { status: "loading" }
@@ -38,9 +48,7 @@ type CommonProps = {
   needsCredential?: boolean;
   // A floor for the open menu's width, for a narrow field whose options carry a line of description.
   menuMinWidth?: string;
-  // A control drawn at the end of an option's row (the voice picker's "play sample"). It sits beside
-  // the menu item, not inside it, so pressing it never selects the option.
-  itemAction?: (item: ComboItem) => ReactNode;
+  itemAction?: (item: ComboItem) => ComboItemAction | null;
   "aria-label"?: string;
 };
 
@@ -383,7 +391,18 @@ export function ComboBox(props: ComboBoxProps) {
                 return (
                   <div key={m.id} className="flex items-center gap-1">
                     {item}
-                    {action}
+                    <DropdownMenuPrimitive.CheckboxItem
+                      checked={action.pressed}
+                      aria-label={action.label}
+                      title={action.title}
+                      onSelect={(e) => {
+                        e.preventDefault();
+                        action.onPress();
+                      }}
+                      className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-text-muted outline-none transition-colors data-[highlighted]:bg-bg-hover data-[highlighted]:text-text-primary data-[state=checked]:text-accent"
+                    >
+                      {action.icon}
+                    </DropdownMenuPrimitive.CheckboxItem>
                   </div>
                 );
               })}

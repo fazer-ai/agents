@@ -80,9 +80,10 @@ async function open(voice = "a", language = "en") {
           ],
         })
       : undefined;
-  await renderEditor(stub, "general", createTestI18n(language));
+  const i18n = createTestI18n(language);
+  await renderEditor(stub, "general", i18n);
   await act(async () => {});
-  return stub;
+  return Object.assign(stub, { i18n });
 }
 
 const writes = (requests: string[]) =>
@@ -113,7 +114,9 @@ describe("the voice sample", () => {
     });
     const menu = await screen.findByRole("menu");
     fireEvent.click(
-      within(menu).getByRole("button", { name: "Play a sample of Bruno" }),
+      within(menu).getByRole("menuitemcheckbox", {
+        name: "Play a sample of Bruno",
+      }),
     );
     expect(played).toEqual([B]);
     expect(screen.queryByRole("menu")).not.toBeNull();
@@ -124,7 +127,7 @@ describe("the voice sample", () => {
     expect(writes(stub.requests).length).toBe(before);
     // A voice the provider ships no sample for has no control to press.
     expect(
-      within(menu).queryByRole("button", { name: /sample of Clone/ }),
+      within(menu).queryByRole("menuitemcheckbox", { name: /sample of Clone/ }),
     ).toBeNull();
   });
 
@@ -185,14 +188,52 @@ describe("the voice sample", () => {
       ctrlKey: false,
     });
     const menu = await screen.findByRole("menu");
-    const bruno = within(menu).getByRole("button", {
+    const bruno = within(menu).getByRole("menuitemcheckbox", {
       name: "Play a sample of Bruno",
     });
     fireEvent.click(bruno);
     await act(async () => {
       abortFirst(new Error("AbortError"));
     });
-    expect(bruno.getAttribute("aria-pressed")).toBe("true");
+    expect(bruno.getAttribute("aria-checked")).toBe("true");
+  });
+
+  test("a row's sample is reached from the keyboard, and Enter plays it without choosing it", async () => {
+    await open();
+    await screen.findByRole("button", { name: "Play a sample of Raquel" });
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Voice" }), {
+      button: 0,
+      ctrlKey: false,
+    });
+    const menu = await screen.findByRole("menu");
+    // A menu item of its own: the arrow keys walk menu items, and only menu items.
+    const bruno = within(menu).getByRole("menuitemcheckbox", {
+      name: "Play a sample of Bruno",
+    });
+    bruno.focus();
+    fireEvent.keyDown(bruno, { key: "Enter" });
+    expect(played).toEqual([B]);
+    expect(screen.queryByRole("menu")).not.toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Voice", hidden: true }).textContent,
+    ).toContain("Raquel");
+  });
+
+  test("switching the console's language stops a sample the picker started", async () => {
+    const stub = await open();
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Play a sample of Raquel" }),
+    );
+    const before = pauses;
+    await act(async () => {
+      await stub.i18n.changeLanguage("pt-BR");
+    });
+    expect(pauses).toBe(before + 1);
+    expect(
+      screen
+        .getByRole("button", { name: /Raquel/ })
+        .getAttribute("aria-pressed"),
+    ).toBe("false");
   });
 
   test("leaving the page stops the sample it started", async () => {

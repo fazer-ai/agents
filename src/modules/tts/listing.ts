@@ -1,5 +1,6 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
+import { isElevenLabsMediaUrl } from "@/lib/elevenlabs-media";
 import { AppError } from "@/lib/errors";
 import { assertSafeOutboundUrl as defaultAssertSafeOutboundUrl } from "@/lib/ssrf";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
@@ -190,7 +191,7 @@ export async function listTtsOptions(
         .map((v) => ({
           id: typeof v?.voice_id === "string" ? v.voice_id : "",
           label: typeof v?.name === "string" ? v.name : undefined,
-          previewUrl: httpsUrlOrUndefined(v?.preview_url),
+          previewUrl: playableSampleOrUndefined(v?.preview_url),
           languageSamples: languageSamplesOf(v?.verified_languages),
         }))
         .filter((v) => v.id.length > 0);
@@ -236,15 +237,13 @@ export async function listTtsOptions(
   }
 }
 
-// The console hands this URL straight to an <audio> element, so only an absolute https URL passes:
-// anything else (null on a cloned voice, a relative path) would resolve against the console's own origin.
-function httpsUrlOrUndefined(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  try {
-    return new URL(value).protocol === "https:" ? value : undefined;
-  } catch {
-    return undefined;
-  }
+// The console hands this URL straight to an <audio> element, so only a sample the page's CSP lets it
+// load passes: anything else (null on a cloned voice, a relative path that would resolve against the
+// console, another host) would leave a control that can never play.
+function playableSampleOrUndefined(value: unknown): string | undefined {
+  return typeof value === "string" && isElevenLabsMediaUrl(value)
+    ? value
+    : undefined;
 }
 
 function languageSamplesOf(value: unknown): TtsLanguageSample[] | undefined {
@@ -255,7 +254,7 @@ function languageSamplesOf(value: unknown): TtsLanguageSample[] | undefined {
       locale?: unknown;
       preview_url?: unknown;
     } | null;
-    const url = httpsUrlOrUndefined(e?.preview_url);
+    const url = playableSampleOrUndefined(e?.preview_url);
     if (!url || typeof e?.language !== "string" || !e.language) return [];
     return [
       {

@@ -563,6 +563,7 @@ export function VoiceCard({
         </summary>
         <div className="grid gap-4 border-border-default border-t p-3 sm:grid-cols-3">
           <FormField
+            group
             label={t("editor.voiceModel", "Conversation model")}
             description={t(
               "editor.voiceModelHint",

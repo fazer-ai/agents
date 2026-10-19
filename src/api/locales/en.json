@@ -1,6 +1,7 @@
 {
   "errors": {
     "agentAlreadyObserves": "This agent already observes this inbox. Remove it as an observer before making it the answering agent.",
+    "agentAnswersCalls": "This agent answers the calls of an inbox. Take it off the inbox first.",
     "agentConfirmMismatch": "The agent name does not match",
     "agentIsResponder": "This agent already answers this inbox; it cannot observe it too.",
     "agentModifiedElsewhere": "This agent was changed somewhere else. Reload it and try again.",
@@ -386,6 +387,12 @@
     "visionCredentialMissing": "Vision credential not found",
     "visionFailed": "Image/document extraction failed",
     "visionNotConfigured": "Image/document reading is not configured",
+    "voiceAgentMonitoring": "A calls agent cannot be in monitoring mode.",
+    "voiceAgentNotResponder": "A calls agent does not answer messages. Choose it under Calls agent.",
+    "voiceAgentRequired": "Only a calls agent answers calls.",
+    "voiceInboxChatwootUnreachable": "The binding was saved, but Chatwoot could not be reached. Saving any calls agent again retries it.",
+    "voiceInboxNotConnector": "Only a WhatsApp inbox on the fazer.ai connector takes calls.",
+    "voiceInboxNotWhatsapp": "Only a WhatsApp inbox takes calls.",
     "webhookDeliveryNotDead": "Only a dead delivery can be requeued; this one is {{status}}",
     "webhookDeliveryNotFound": "Webhook delivery not found",
     "webhookSubscriptionNotFound": "Webhook subscription not found"

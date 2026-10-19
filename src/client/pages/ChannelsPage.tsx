@@ -47,6 +47,7 @@ import { apiErrorMessage } from "@/client/lib/apiError";
 import { chatwootInboxNewUrl } from "@/client/lib/chatwootLinks";
 import { cn } from "@/client/lib/utils";
 import { isValidHttpUrl } from "@/client/lib/validation";
+import { takesCalls } from "@/modules/voice-call/channel";
 
 type DeploymentData = Awaited<
   ReturnType<typeof api.api.v1.chatwoot.deployment.get>
@@ -1031,6 +1032,30 @@ export function ChannelsPage() {
     showToast(t("channels.bound", "Inbox updated."), "success");
   }
 
+  // The voice binding: which voice agent answers the inbox's calls, beside the responder.
+  async function bindVoiceAgent(inboxId: string, agentId: string | null) {
+    const { data, error: err } = await api.api.v1.chatwoot
+      .inboxes({ id: inboxId })
+      ["voice-agent"].put({ agentId });
+    if (err || !data) {
+      // A 502 saved the binding and only missed Chatwoot: the row shows what is stored, so the
+      // previous agent can be picked again to put it back.
+      void refreshInboxes();
+      showToast(
+        apiErrorMessage(err) ||
+          t("channels.voiceBindError", "Could not change the inbox's calls."),
+        "error",
+      );
+      throw err;
+    }
+    setInboxes((prev) =>
+      prev.map((i) =>
+        i.id === inboxId ? { ...i, voiceAgentId: data.voiceAgentId } : i,
+      ),
+    );
+    showToast(t("channels.bound", "Inbox updated."), "success");
+  }
+
   // The observer binding: both calls reach Chatwoot, and the row's list moves only on success, like
   // the responder binding above.
   async function observeInbox(inboxId: string, agentId: string) {
@@ -1559,8 +1584,11 @@ export function ChannelsPage() {
                                 // NOTE: Without this inbox's observers: the two bindings are exclusive per (inbox, agent), so
                                 // `bindInbox` refuses an agent that already observes it. The current responder is never among
                                 // them, so nothing selectable is lost.
+                                // A voice agent answers calls, through its own picker below.
                                 agents={agents.filter(
-                                  (a) => !ib.observerAgentIds.includes(a.id),
+                                  (a) =>
+                                    a.kind !== "voice" &&
+                                    !ib.observerAgentIds.includes(a.id),
                                 )}
                                 label={t(
                                   "channels.bindLabel",
@@ -1570,6 +1598,27 @@ export function ChannelsPage() {
                                   bindInbox(ib.id, agentId)
                                 }
                               />
+                              {/* An inbox that takes no calls keeps a picker only while a voice
+                                  agent is still bound, offering just that agent, to unbind it. */}
+                              {(ib.voiceAgentId !== null ||
+                                (takesCalls(ib) &&
+                                  agents.some((a) => a.kind === "voice"))) && (
+                                <InboxAgentPicker
+                                  value={ib.voiceAgentId}
+                                  agents={agents.filter((a) =>
+                                    takesCalls(ib)
+                                      ? a.kind === "voice"
+                                      : a.id === ib.voiceAgentId,
+                                  )}
+                                  label={t(
+                                    "channels.voiceBindLabel",
+                                    "Calls agent",
+                                  )}
+                                  onChange={(agentId) =>
+                                    bindVoiceAgent(ib.id, agentId)
+                                  }
+                                />
+                              )}
                               <InboxObserversStrip
                                 observerAgentIds={ib.observerAgentIds}
                                 responderAgentId={ib.agentId}

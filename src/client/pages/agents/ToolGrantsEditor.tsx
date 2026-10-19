@@ -138,6 +138,8 @@ interface Props {
   // would be a control that cannot fire. Grants already saved are left ALONE, so flipping the mode
   // back returns the agent as it was.
   observing?: boolean;
+  // A voice agent: no Documents block, a document is a file sent to the contact.
+  voice?: boolean;
   // An agent on questions and rules: its rules fire fixed actions and no model reads a tool's
   // description, so the fields written for that reader are not drawn. What a tool enforces on its
   // own (grants, transfer destination, label lists, preconditions) stays.
@@ -546,6 +548,7 @@ export function offeredPackTools<T extends { deliversToCustomer?: boolean }>(
 export function ToolGrantsEditor({
   agentId,
   observing,
+  voice,
   decides,
   catalog,
   grants,
@@ -1604,7 +1607,7 @@ export function ToolGrantsEditor({
 
       {/* A DOCUMENT IS AN ATTACHMENT TO THE CUSTOMER, so the muted assembly does not build one: the
           tools this section grants would exist in the console and never in the turn. */}
-      {!observing && !decides && (
+      {!observing && !voice && !decides && (
         <Section
           id="tools-documents"
           icon={FileText}

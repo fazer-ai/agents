@@ -1152,6 +1152,12 @@ export interface ToolsetCtx {
   client: ChatwootClient;
   conversationId: number;
   threadId: string;
+  // A WhatsApp call's turn: it answers by voice, so no slow-tool acknowledgement is posted to the
+  // chat (the call fills the pause with its own sound). Unlike a muted client, the conversation's
+  // reference and an appointment's reminders stay, since the call is answering this customer.
+  onCall?: boolean;
+  // The HTTP tools' deadline on this turn, when it is not the instance's (HTTP_TOOL_TIMEOUT_MS).
+  httpToolTimeoutMs?: number;
   // The turn's OUTPUT guardrail, for customer-facing text a tool sends itself. Absent ⇒ nothing
   // screens it on this path. See ToolCtx.screenCustomerText.
   screenCustomerText?: (text: string) => Promise<CustomerTextVerdict>;
@@ -1424,7 +1430,7 @@ export async function buildToolset(
   // boundary, so a run called off inside it (the operator's flip to monitoring) shows no typing and
   // makes no request after it. Only an explicit `false` stops the tool; an unanswered fence does not.
   const emitAck =
-    ctx.conversationId > 0 && !ctx.client.muted
+    ctx.conversationId > 0 && !ctx.client.muted && !ctx.onCall
       ? async (message: string): Promise<boolean> => {
           try {
             await ctx.client.sendMessage(ctx.conversationId, message);
@@ -1852,6 +1858,9 @@ export async function buildToolset(
       ...buildHttpTools(cfg.httpToolDefs, {
         resolveCredential,
         emitAck,
+        ...(ctx.httpToolTimeoutMs !== undefined
+          ? { timeoutMs: ctx.httpToolTimeoutMs }
+          : {}),
         expiresOn: ctx.expiresOn,
         // NOTE: The same fence the native tools and the precondition wrapper ask, at the same point: past
         // every wait, immediately before the request leaves for somebody else's system.

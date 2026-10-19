@@ -24,12 +24,15 @@ import type {
   ToolPreconditionRow,
   ToolRefusals,
 } from "./types";
+import { voiceToolCatalog } from "./voiceToolCatalog";
 
 interface ToolsTabProps {
   agentId: string;
   // Passed straight through: a watcher's toolset is assembled MUTED, so the editor must not offer
   // the tools that assembly drops.
   observing?: boolean;
+  // A voice agent: the tab draws only what a call can run (`isVoiceDeniedTool`).
+  voice?: boolean;
   // Questions and rules: see ToolGrantsEditor.
   decides?: boolean;
   catalog: ToolCatalog;
@@ -98,6 +101,7 @@ interface ToolsTabProps {
 export function ToolsTab({
   agentId,
   observing,
+  voice,
   decides,
   catalog,
   grants,
@@ -145,12 +149,13 @@ export function ToolsTab({
   onOpenPlayground,
 }: ToolsTabProps) {
   const { t } = useTranslation();
+  const shown = voice ? voiceToolCatalog(catalog) : catalog;
   // Every granted tool a precondition can be put on, by the name the model calls it.
-  const guardableTools = guardableToolsOf(catalog, grants, {
+  const guardableTools = guardableToolsOf(shown, grants, {
     observing,
     decides,
   });
-  const assembledTools = assembledToolNames(catalog, grants, {
+  const assembledTools = assembledToolNames(shown, grants, {
     observing,
     decides,
   });
@@ -180,7 +185,7 @@ export function ToolsTab({
     },
     // NOTE: the index has to agree with what the editor DRAWS: a watcher has no Documents block
     // (its tools deliver to the customer), and a nav entry with no target scrolls nowhere.
-    ...(observing
+    ...(observing || voice
       ? []
       : [
           {
@@ -221,8 +226,9 @@ export function ToolsTab({
           <ToolGrantsEditor
             agentId={agentId}
             observing={observing}
+            voice={voice}
             decides={decides}
-            catalog={catalog}
+            catalog={shown}
             grants={grants}
             onChange={onChange}
             onCatalogChange={onCatalogChange}

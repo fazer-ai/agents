@@ -6,6 +6,7 @@ import {
   Download,
   ListChecks,
   MessageSquare,
+  Phone,
   RadioTower,
   Settings2,
   Share2,
@@ -89,6 +90,7 @@ import { modelOptionalFor } from "@/graph/model-defaults";
 import {
   computeConfigIssues,
   issueHasAction,
+  VOICE_AGENT_ISSUES,
 } from "@/modules/agents/config-health";
 import { configIssueMessage } from "@/modules/agents/config-health-message";
 import { worstFirst } from "@/modules/agents/config-health-severity";
@@ -122,6 +124,7 @@ import {
 import { readMemoryConfig } from "@/modules/memory/settings";
 import type { MonitoringEngine } from "@/modules/observe/settings";
 import { DEFAULT_EXTRACTION_PROMPT } from "@/modules/vision/prompt-default";
+import { DEFAULT_CALL_VOICE } from "@/modules/voice-call/settings";
 import {
   BehaviorTab,
   type ContactAuthState,
@@ -129,6 +132,7 @@ import {
   MONITORING_SECTIONS,
   type ModelFallbackState,
   type TakeoverState,
+  TtsOptionPicker,
 } from "./BehaviorTab";
 import {
   type BehaviorBlock,
@@ -148,6 +152,14 @@ import {
   readCrossInboxCaseState,
   serializeCrossInboxCase,
 } from "./CrossInboxCaseFields";
+import {
+  callsByTab,
+  callsFormErrors,
+  callsSettingsFrom,
+  liveness,
+  playgroundHasKey,
+  readCallsFormState,
+} from "./callsFormState";
 import {
   contactAuthGateEmpty,
   contactAuthRuleToSave,
@@ -170,6 +182,7 @@ import { DecisionsSetupMissing, EngineCards } from "./EngineChoice";
 import { ExportAgentModal } from "./ExportAgentModal";
 import {
   nativeToolAnchor,
+  VOICE_AGENT_TABS,
   watcherFieldUsed,
   watcherIssueUsed,
   watcherSectionUsed,
@@ -255,7 +268,12 @@ import {
   snoozedFollowUpToForm,
   snoozedFollowUpToStored,
 } from "./snoozedFollowUpFormState";
-import { type EditorBar, EditorBarContext, TabActionBar } from "./TabActionBar";
+import {
+  type EditorBar,
+  EditorBarContext,
+  PlaygroundIsCallContext,
+  TabActionBar,
+} from "./TabActionBar";
 import {
   parseToolPreconditionRows,
   serializeToolPreconditions,
@@ -277,7 +295,15 @@ import type {
   VaultEntry,
 } from "./types";
 import { usePlaygroundChat } from "./usePlaygroundChat";
+import {
+  CallSettings,
+  VoiceCard,
+  type VoiceStatus,
+} from "./VoiceAgentSettings";
+import { VoiceChannelsTab } from "./VoiceChannelsTab";
+import { VoicePlayground } from "./VoicePlayground";
 import { visionToForm, visionToStored } from "./visionFormState";
+import { voiceToolCatalog } from "./voiceToolCatalog";
 
 // The Schedule a saved businessHoursId points at, built field by field rather than passed through:
 // rows can come back without windows/exceptions (the sibling picker guards them the same way), and
@@ -314,6 +340,7 @@ type GuardrailHealthResp = NonNullable<
 type TabKey =
   | "general"
   | "channels"
+  | "call"
   | "decisions"
   | "tools"
   | "knowledge"
@@ -339,6 +366,7 @@ const SAVE_SECTIONS = [
 const TAB_KEYS: TabKey[] = [
   "general",
   "channels",
+  "call",
   "decisions",
   "tools",
   "knowledge",
@@ -506,6 +534,7 @@ function readBehaviorState(a: Agent) {
   const d = (s.debounce ?? {}) as Record<string, unknown>;
   const st = (s.stt ?? {}) as Record<string, unknown>;
   const tt = (s.tts ?? {}) as Record<string, unknown>;
+  const cl = (s.calls ?? {}) as Record<string, unknown>;
   const sp = (s.split ?? {}) as Record<string, unknown>;
   const sw = (s.serviceWindow ?? {}) as Record<string, unknown>;
   const ho = (s.handoff ?? {}) as Record<string, unknown>;
@@ -598,6 +627,7 @@ function readBehaviorState(a: Agent) {
       operatorNoteEnabled: ca.operatorNoteEnabled !== false,
     },
     tts: readTtsFormState(tt),
+    calls: readCallsFormState(cl),
     split: {
       enabled: typeof sp.enabled === "boolean" ? sp.enabled : true,
       maxChars: num(sp.maxChars) || "600",
@@ -935,6 +965,8 @@ function AgentEditor() {
   // Same reader the saved agent goes through, so a new field can never exist in one and not the
   // other: the Behavior save REPLACES this block wholesale.
   const [tts, setTts] = useState(() => readTtsFormState({}));
+  // WhatsApp calls (modules/voice-call/settings): the agent bound to the inbox answers them.
+  const [calls, setCalls] = useState(() => readCallsFormState({}));
   // Reply in multiple messages (split + typing delay). Mirrors modules/split
   // (on by default, wpm 250 — matches SPLIT_DEFAULTS).
   const [split, setSplit] = useState({
@@ -987,6 +1019,11 @@ function AgentEditor() {
   // The last server-synced agent/grants: what a discard restores, what every unsaved mark is
   // measured against, and what each save carries for the blocks it does not write.
   const syncedAgentRef = useRef<Agent | null>(null);
+  // A voice agent: fixed at creation, so the stored copy answers for the whole session.
+  const voiceAgent = syncedAgentRef.current?.kind === "voice";
+  const [voiceStatus, setVoiceStatus] = useState<VoiceStatus>({
+    state: "checking",
+  });
   const syncedGrantsRef = useRef<ToolSelectionView["grants"]>([]);
   const [observationDraft, setObservation] = useState<ObservationState>(() =>
     observationToForm({}),
@@ -1069,9 +1106,11 @@ function AgentEditor() {
   // and a link straight to Questions and rules would be sent to General before it could exist.
   useEffect(() => {
     if (loading) return;
-    const hidden = watcher
-      ? !watcherTabKeys(engine).has(tab)
-      : tab === "decisions";
+    const hidden = voiceAgent
+      ? !VOICE_AGENT_TABS.has(tab)
+      : watcher
+        ? !watcherTabKeys(engine).has(tab)
+        : tab === "decisions" || tab === "call";
     if (hidden) {
       navigate(
         `/agents/${id}/general${
@@ -1080,7 +1119,16 @@ function AgentEditor() {
         { replace: true },
       );
     }
-  }, [loading, watcher, engine, tab, id, navigate, backToConversation]);
+  }, [
+    loading,
+    voiceAgent,
+    watcher,
+    engine,
+    tab,
+    id,
+    navigate,
+    backToConversation,
+  ]);
   const [modelFallback, setModelFallback] = useState<ModelFallbackState>(() =>
     modelFallbackToForm({}),
   );
@@ -1632,6 +1680,7 @@ function AgentEditor() {
     setStt(b.stt);
     setContactAuth(b.contactAuth);
     setTts(b.tts);
+    setCalls(b.calls);
     setSplit(b.split);
     setSignature(b.signature);
     setServiceWindow(b.serviceWindow);
@@ -1682,6 +1731,7 @@ function AgentEditor() {
     setStt(b.stt);
     setContactAuth(b.contactAuth);
     setTts(b.tts);
+    setCalls(b.calls);
     setSplit(b.split);
     setSignature(b.signature);
     setServiceWindow(b.serviceWindow);
@@ -1931,6 +1981,7 @@ function AgentEditor() {
       stt: f.stt,
       contactAuth: f.contactAuth,
       tts: f.tts,
+      calls: f.calls,
       split: f.split,
       signature: f.signature,
       serviceWindow: f.serviceWindow,
@@ -1972,6 +2023,7 @@ function AgentEditor() {
       stt,
       contactAuth,
       tts,
+      calls,
       split,
       signature,
       serviceWindow,
@@ -2046,6 +2098,7 @@ function AgentEditor() {
         operatorNoteEnabled: contactAuth.operatorNoteEnabled,
       },
       tts: ttsSettingsFrom(tts),
+      calls: callsSettingsFrom(calls),
       split: {
         enabled: split.enabled,
         maxChars: Number(split.maxChars) || 600,
@@ -2188,6 +2241,7 @@ function AgentEditor() {
     stt: typeof stt;
     contactAuth: typeof contactAuth;
     tts: typeof tts;
+    calls: typeof calls;
     split: typeof split;
     signature: typeof signature;
     serviceWindow: typeof serviceWindow;
@@ -2228,6 +2282,7 @@ function AgentEditor() {
     stt,
     contactAuth,
     tts,
+    calls,
     split,
     signature,
     serviceWindow,
@@ -2274,6 +2329,7 @@ function AgentEditor() {
       stt: b.stt,
       contactAuth: b.contactAuth,
       tts: b.tts,
+      calls: b.calls,
       split: b.split,
       signature: b.signature,
       serviceWindow: b.serviceWindow,
@@ -2341,12 +2397,16 @@ function AgentEditor() {
         enabled: f.enabled,
         agentMode: f.agentMode,
         model: chat.model,
+        voice: callsByTab(f.calls).general,
       }),
       // NOTE: Track the behavior FORM state directly (not buildSettings(), which spreads the whole
       // settings bag including tool-owned handoff/kanban) so a Tools save never falsely lights up
       // Behavior's dot. The blocks a watcher on questions and rules does not draw read as stored.
       behavior: behaviorSnapshot(
-        behaviorStateOf({ ...f, ...hidden }, snapshotNow),
+        {
+          ...behaviorStateOf({ ...f, ...hidden }, snapshotNow),
+          calls: callsByTab(f.calls).call,
+        },
         {
           businessHoursId: f.businessHoursId,
           followUpHoursId: f.followUpHoursId,
@@ -2627,7 +2687,9 @@ function AgentEditor() {
   const measuredSyncRef = useRef<string | null>(null);
   // biome-ignore lint/correctness/useExhaustiveDependencies: draftGrantsKey and draftSettingsKey stand for the draft (read through the refs, compared by content); catalogTick is a refetch trigger — a tool definition saved in its modal changes what the floor measures.
   useEffect(() => {
-    if (!id || serverSyncTick === 0) {
+    // A voice agent makes no model call of its own (its engine reads the instructions and the tools),
+    // so it has no floor to show: nothing is measured, and every number stays absent.
+    if (!id || serverSyncTick === 0 || voiceAgent) {
       setCallFloor(null);
       return;
     }
@@ -2867,9 +2929,11 @@ function AgentEditor() {
   });
   // Worst first (`worstFirst`): what stops the agent reads above what only weakens it.
   const configIssues = worstFirst(
-    watcher
-      ? allConfigIssues.filter((issue) => watcherCanActOn(issue, engine))
-      : allConfigIssues,
+    voiceAgent
+      ? allConfigIssues.filter((issue) => VOICE_AGENT_ISSUES.has(issue.key))
+      : watcher
+        ? allConfigIssues.filter((issue) => watcherCanActOn(issue, engine))
+        : allConfigIssues,
   );
 
   // Deep-link to a config issue. For a PENDING credential the fix lives in the vault, so jump to the
@@ -3177,7 +3241,9 @@ function AgentEditor() {
   // The floating playground panel's open state lives here; its trigger is the editor save bar
   // (TabActionBar) on the config tabs, and the panel itself renders below (PlaygroundFab).
   const [playgroundOpen, setPlaygroundOpen] = useState(false);
-  const openPlayground = () => setPlaygroundOpen(true);
+  // A voice agent's playground is a call, which takes the whole tab rather than the floating panel.
+  const openPlayground = () =>
+    voiceAgent ? openTab("playground") : setPlaygroundOpen(true);
   // NOTE: ...AND THE PANEL CLOSES WITH ITS TRIGGER: flipping a production agent to monitoring
   // removes the entry point, and an ALREADY-OPEN playground would stay mounted and usable, a reply
   // surface for an agent whose answering UI is meant to be gone.
@@ -3228,6 +3294,7 @@ function AgentEditor() {
     setStt(b.stt);
     setContactAuth(b.contactAuth);
     setTts(b.tts);
+    setCalls(b.calls);
     setSplit(b.split);
     setSignature(b.signature);
     setServiceWindow(b.serviceWindow);
@@ -3360,13 +3427,20 @@ function AgentEditor() {
     section: "general" | "behavior",
     force = false,
     retry?: () => void,
+    // A voice agent's one save carries both sections (General's identity and its call settings,
+    // which General's Voice card and the Call tab split), so both are snapshotted before the request
+    // and both re-synced from the answer, whichever one was dirty: an edit to the other while the
+    // request runs is kept rather than overwritten by the answer.
+    bothSections = false,
   ): Promise<boolean> {
     savingRef.current += 1;
     setSavingAgent(true);
     // Snapshotted BEFORE the request, never after: the staleness check compares what went out
     // with what the boxes hold when the answer lands, and `currentRef` is live.
     const sent = sentFor(patch);
-    const sentSnap = { [section]: sectionSnap[section] };
+    const sentSnap = bothSections
+      ? { general: sectionSnap.general, behavior: sectionSnap.behavior }
+      : { [section]: sectionSnap[section] };
     try {
       const expected = expectedFor(force);
       const { data, error: err } = await api.api.v1.agents({ id }).patch({
@@ -3386,9 +3460,12 @@ function AgentEditor() {
       // NOTE: Re-sync ONLY the saved section so the other tabs' unsaved edits are never clobbered, and
       // only when it was not edited while the request ran (`untouchedSince`).
       if (!untouchedSince(sentSnap)) syncedAgentRef.current = data.agent;
-      else if (section === "general") {
+      else if (bothSections) {
         applyGeneral(data.agent, "systemPrompt" in patch);
-      } else applyBehavior(data.agent, !decides);
+        applyBehavior(data.agent, !decides);
+      } else if (section === "general")
+        applyGeneral(data.agent, "systemPrompt" in patch);
+      else applyBehavior(data.agent, !decides);
       markSynced(String(data.agent.updatedAt));
       bumpSync();
       // NOTE: Only for the section this holder DRAWS. One function writes both, and a Behavior save
@@ -3960,7 +4037,106 @@ function AgentEditor() {
 
   // General's save: identity, and the decision setup when it changed. Under questions and rules the
   // instructions and the chat model are not drawn, so they are not written either.
+  const voiceCheckSeq = useRef(0);
+  // What the provider says about the SAVED voice agent: the save there runs on every call too, and this
+  // is where a key without the permission to run agents shows before the first call does.
+  const checkVoice = useCallback(async () => {
+    // Only the latest check speaks: an older one answering last would describe settings since replaced.
+    const mine = ++voiceCheckSeq.current;
+    setVoiceStatus({ state: "checking" });
+    try {
+      const { data, error: err } = await api.api.v1
+        .agents({ id })
+        .calls.check.post();
+      if (mine !== voiceCheckSeq.current) return;
+      if (err || !data) throw err ?? new Error("no data");
+      setVoiceStatus(
+        data.ok
+          ? { state: "ready", agentId: data.providerAgentId ?? null }
+          : {
+              state: "problem",
+              problem: String(data.problem),
+              detail: data.detail ?? null,
+            },
+      );
+    } catch {
+      if (mine !== voiceCheckSeq.current) return;
+      setVoiceStatus({
+        state: "problem",
+        problem: "unreachable",
+        detail: null,
+      });
+    }
+  }, [id]);
+
+  useEffect(() => {
+    if (!loading && voiceAgent) void checkVoice();
+  }, [loading, voiceAgent, checkVoice]);
+
+  // A voice agent's General and Call tabs save together: identity, instructions and the call
+  // settings in one write, then the provider is asked how the agent stands.
+  const voiceCard = (
+    <VoiceCard
+      calls={calls}
+      setCalls={setCalls}
+      status={voiceStatus}
+      dirty={dirty.general || dirty.behavior}
+      voicePicker={({ provider, credentialRef, value, onChange }) => (
+        <TtsOptionPicker
+          kind="voices"
+          provider={provider}
+          credentialRef={credentialRef}
+          value={value}
+          onChange={onChange}
+          placeholder={DEFAULT_CALL_VOICE}
+          ariaLabel={t("editor.voiceVoice", "Voice")}
+        />
+      )}
+    />
+  );
+
+  // Where a voice save that stopped sends the operator: the tab of a number out of range (the speed
+  // is on General's Voice card, every other number on the Call tab), else the tab with the pending
+  // change, General first.
+  function voiceStopTab(): TabKey {
+    const wrong = callsFormErrors(calls);
+    if (wrong.length > 0)
+      return wrong.every((f) => f === "speed") ? "general" : "call";
+    return dirty.general ? "general" : "call";
+  }
+
+  async function saveVoice(force = false): Promise<boolean> {
+    // A number out of range is marked on its field; the save waits for it to be fixed.
+    if (callsFormErrors(calls).length > 0) {
+      openTab(voiceStopTab());
+      showToast(
+        t(
+          "editor.callsFixRanges",
+          "Some call settings are out of range. Fix the marked fields to save.",
+        ),
+        "error",
+      );
+      return false;
+    }
+    const ok = await saveAgent(
+      {
+        name: name.trim(),
+        systemPrompt,
+        enabled,
+        mode: agentMode,
+        settings: buildSettings(),
+      },
+      dirty.general ? "general" : "behavior",
+      force,
+      () => void saveVoice(true),
+      true,
+    );
+    if (ok) void checkVoice();
+    return ok;
+  }
+
   async function saveGeneral(force = false): Promise<boolean> {
+    if (voiceAgent) return saveVoice(force);
     if (!decides && !guardModelBeforeSave()) return false;
     const identity = decides
       ? { name: name.trim(), enabled, mode: agentMode }
@@ -4224,12 +4400,17 @@ function AgentEditor() {
   // would leave out, and stops at the first section held or refused (agents#1520).
   async function saveAllDirty(): Promise<boolean> {
     if (sayHiddenDrafts()) return false;
-    if (dirty.behavior && behaviorPageHold() === false) return false;
+    if (!voiceAgent && dirty.behavior && behaviorPageHold() === false)
+      return false;
     const stopped = (key: TabKey) => {
       openTab(key);
       return false;
     };
-    if (dirty.general || dirty.decisions) {
+    if (voiceAgent) {
+      // One write carries General and the call settings.
+      if ((dirty.general || dirty.behavior) && !(await saveVoice()))
+        return stopped(voiceStopTab());
+    } else if (dirty.general || dirty.decisions) {
       if (decisionsSetupHold()) return false;
       if (!decides && dirty.general && !guardModelBeforeSave())
         return stopped("general");
@@ -4237,6 +4418,7 @@ function AgentEditor() {
         return stopped(dirty.general ? "general" : "decisions");
     }
     if (
+      !voiceAgent &&
       dirty.behavior &&
       !(await saveAgent(
         {
@@ -4387,13 +4569,19 @@ function AgentEditor() {
       ] as const
     ).filter((key) =>
       key === "general"
-        ? planned("general") || planned("decisions")
-        : planned(key) && drawn(key),
+        ? planned("general") ||
+          planned("decisions") ||
+          // A voice agent's General write carries its call settings too (saveVoice).
+          (voiceAgent && planned("behavior"))
+        : planned(key) && drawn(key) && !(voiceAgent && key === "behavior"),
     );
     // A planned section undone since is not written, so nothing on its tab can hold the save.
     const stillDirty = (key: (typeof order)[number]) =>
       key === "general"
-        ? dirty.general || dirty.decisions || decisionsHeadDirty
+        ? dirty.general ||
+          dirty.decisions ||
+          decisionsHeadDirty ||
+          (voiceAgent && dirty.behavior)
         : dirty[key];
     // Every hold is judged before anything is written, so a held section keeps the whole save back.
     // The tabs judge against the model this save writes (General's draft), not the stored one.
@@ -4402,10 +4590,16 @@ function AgentEditor() {
         if (stillDirty(key) && planned(key) && judge(key) !== "ok") return;
       if (stillDirty("general")) {
         if (decisionsSetupHold()) return end();
-        if (!decides && dirty.general && !guardModelBeforeSave())
+        // A voice agent has no chat model to check: its save neither uses nor writes one.
+        if (!decides && !voiceAgent && dirty.general && !guardModelBeforeSave())
           return stop("general");
       }
-      if (planned("behavior") && dirty.behavior && behaviorPageHold() === false)
+      if (
+        !voiceAgent &&
+        planned("behavior") &&
+        dirty.behavior &&
+        behaviorPageHold() === false
+      )
         return end();
       const toolsText =
         planned("tools") && dirty.tools && drawn("tools")
@@ -4431,7 +4625,13 @@ function AgentEditor() {
       plan.written.add(key);
       if (key === "general") {
         if (!(await saveGeneral()))
-          return stop(dirty.general ? "general" : "decisions");
+          return stop(
+            voiceAgent
+              ? voiceStopTab()
+              : dirty.general
+                ? "general"
+                : "decisions",
+          );
         barModelRef.current = "stored";
       } else if (!(await writeSection(key))) return stop(key);
       continueRef.current = { onTab: null };
@@ -4443,7 +4643,11 @@ function AgentEditor() {
     // written either, and nothing above names it. The decision setup is not among them: it goes out
     // with General whichever tab draws it.
     const skipped = [...plan.sections].filter(
-      (item) => item !== "decisions" && !drawn(item) && dirty[item],
+      (item) =>
+        item !== "decisions" &&
+        !(voiceAgent && item === "behavior") &&
+        !drawn(item) &&
+        dirty[item],
     );
     if (skipped.length > 0) {
       showToast(
@@ -4526,6 +4730,12 @@ function AgentEditor() {
       icon: RadioTower,
     },
     {
+      key: "call",
+      label: t("editor.tab.call", "Call settings"),
+      icon: Phone,
+      dirty: dirty.behavior,
+    },
+    {
       key: "decisions",
       label: t("editor.tab.decisions", "Questions and rules"),
       icon: ListChecks,
@@ -4567,9 +4777,11 @@ function AgentEditor() {
       icon: MessageSquare,
     },
   ];
-  const visibleTabs = watcher
-    ? tabs.filter((item) => watcherTabKeys(engine).has(item.key))
-    : tabs.filter((item) => item.key !== "decisions");
+  const visibleTabs = voiceAgent
+    ? tabs.filter((item) => VOICE_AGENT_TABS.has(item.key))
+    : watcher
+      ? tabs.filter((item) => watcherTabKeys(engine).has(item.key))
+      : tabs.filter((item) => item.key !== "decisions" && item.key !== "call");
 
   // One value for the card at the top and the compact line in every tab's save bar, so the two can
   // only show together and offer the same actions.
@@ -4865,13 +5077,24 @@ function AgentEditor() {
                   model={model}
                   setModel={setModel}
                   modelCredBaseUrl={modelCredBaseUrl}
-                  dirty={dirty.general || decisionsHeadDirty}
+                  dirty={
+                    voiceAgent
+                      ? dirty.general || dirty.behavior
+                      : dirty.general || decisionsHeadDirty
+                  }
                   saving={savingAgent || savingDecisions}
                   onSave={() => {
                     if (decisionsBlocked("general", dirty.general)) return;
                     void saveGeneral();
                   }}
-                  onDiscard={revertGeneral}
+                  onDiscard={
+                    voiceAgent
+                      ? () => {
+                          revertGeneral();
+                          revertBehavior();
+                        }
+                      : revertGeneral
+                  }
                   watcher={
                     watcher
                       ? {
@@ -4941,16 +5164,41 @@ function AgentEditor() {
                         }
                       : undefined
                   }
+                  voice={
+                    voiceAgent
+                      ? {
+                          voiceCard,
+                          instructionsNote:
+                            calls.ttsModel === "eleven_flash_v2_5"
+                              ? t(
+                                  "editor.voiceFlashInstructions",
+                                  "With the Flash voice model, write phone numbers, dates and times in words here.",
+                                )
+                              : null,
+                        }
+                      : undefined
+                  }
                   onOpenPlayground={watcher ? undefined : openPlayground}
                   onDelete={askDelete}
                   previewVars={playgroundChat.promptVars}
-                  catalog={catalog}
+                  catalog={voiceAgent ? voiceToolCatalog(catalog) : catalog}
                   grants={grants}
                 />
               </CallFloorContext.Provider>
             )}
 
-            {tab === "channels" && (
+            {tab === "channels" && voiceAgent && (
+              <VoiceChannelsTab
+                agentId={id}
+                testMode={
+                  (syncedAgentRef.current?.mode ?? agentMode) === "test"
+                }
+                // NOTE: Saved, like the mode: a call routes on the stored switch (`answers`).
+                disabled={syncedAgentRef.current?.enabled === false}
+              />
+            )}
+
+            {tab === "channels" && !voiceAgent && (
               <ChannelsTab
                 agentId={id}
                 agentName={name}
@@ -4969,11 +5217,28 @@ function AgentEditor() {
               />
             )}
 
+            {tab === "call" && voiceAgent && (
+              <div className="flex grow flex-col gap-4">
+                <CallSettings calls={calls} setCalls={setCalls} />
+                <TabActionBar
+                  dirty={dirty.general || dirty.behavior}
+                  saving={savingAgent}
+                  onSave={() => void saveVoice()}
+                  onDiscard={() => {
+                    revertGeneral();
+                    revertBehavior();
+                  }}
+                  onOpenPlayground={openPlayground}
+                />
+              </div>
+            )}
+
             {tab === "tools" && (
               <CallFloorContext.Provider value={callFloor}>
                 <ToolsTab
                   agentId={id}
                   observing={watcher}
+                  voice={voiceAgent}
                   decides={decides}
                   catalog={catalog}
                   grants={grants}
@@ -5051,7 +5316,8 @@ function AgentEditor() {
             {tab === "knowledge" && (
               <CallFloorContext.Provider value={callFloor}>
                 <KnowledgeTab
-                  catalog={catalog}
+                  catalog={voiceAgent ? voiceToolCatalog(catalog) : catalog}
+                  suggestions={!voiceAgent}
                   grants={grants}
                   onChange={setGrants}
                   onCatalogChange={refreshCatalog}
@@ -5391,7 +5657,33 @@ function AgentEditor() {
               />
             )}
 
-            {tab === "playground" && (
+            {tab === "playground" && voiceAgent && (
+              <VoicePlayground
+                agentId={id}
+                provider={calls.provider}
+                // The saved version can still be called while a removal of its key is unsaved.
+                hasKey={playgroundHasKey(
+                  calls,
+                  syncedAgentRef.current?.settings,
+                )}
+                unsaved={
+                  dirty.general ||
+                  dirty.behavior ||
+                  dirty.tools ||
+                  dirty.knowledge
+                }
+                liveness={liveness(
+                  syncedAgentRef.current?.mode ?? agentMode,
+                  agentMode,
+                )}
+                onSave={
+                  dirty.tools || dirty.knowledge ? undefined : () => saveVoice()
+                }
+                onOpenGeneral={() => openTab("general")}
+              />
+            )}
+
+            {tab === "playground" && !voiceAgent && (
               <PlaygroundTab
                 chat={playgroundChat}
                 agentId={id}
@@ -5403,7 +5695,7 @@ function AgentEditor() {
 
             {/* Floating playground panel over the other tabs (opened from the save bar's "Test in
                 playground" button): tweak config + test live without leaving. */}
-            {tab !== "playground" && (
+            {tab !== "playground" && !voiceAgent && (
               <PlaygroundFab
                 chat={playgroundChat}
                 agentId={id}
@@ -5550,7 +5842,9 @@ function AgentEditor() {
   return (
     <StaleNoticeContext.Provider value={stale}>
       <EditorBarContext.Provider value={editorBar}>
-        {page}
+        <PlaygroundIsCallContext.Provider value={voiceAgent}>
+          {page}
+        </PlaygroundIsCallContext.Provider>
       </EditorBarContext.Provider>
     </StaleNoticeContext.Provider>
   );

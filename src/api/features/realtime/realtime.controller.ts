@@ -8,17 +8,16 @@ import {
   resolveEventsTenant,
   sendToUser,
   TOPICS,
-  trackSocket,
   tryAttachEvents,
   tryAttachUser,
   untrackSocket,
 } from "@/api/features/realtime/realtime.service";
-import { authPlugin, isSessionLoggedOut } from "@/api/lib/auth";
+import { registerAndRecheck } from "@/api/features/realtime/socket-session";
+import { authPlugin } from "@/api/lib/auth";
 import logger from "@/api/lib/logger";
 import { doc, errors } from "@/api/lib/openapi";
 import { originPlugin } from "@/api/lib/origin";
 import { realtimeConfig, WS_CLOSE } from "@/api/lib/realtime";
-import { ServiceUnavailableError } from "@/lib/errors";
 import { roleAtLeast } from "@/lib/tenancy";
 
 // `ws.id` strings (not `ws` wrappers) that reserved a slot via `tryAttachUser`: Elysia 1.4.x rewraps
@@ -39,44 +38,6 @@ const eventsLive = new Set<string>();
 // revocation. A message arriving meanwhile waits on it instead of being dropped, since the client
 // already sees the socket as open; all messages await the same promise, so they keep their order.
 const readiness = new Map<string, Promise<boolean>>();
-
-// Registers a just-upgraded socket for revocation FIRST, then re-reads its session. The upgrade
-// authenticated earlier, and a password change landing in between would sweep before this socket
-// existed; in this order either the sweep closes it or the re-check refuses it. True when the
-// session still holds; otherwise the socket is already closed (1011 on a transient DB failure, so
-// the client retries).
-async function registerAndRecheck(
-  ws: {
-    id: unknown;
-    raw: { close(code?: number, reason?: string): void };
-    close(code?: number, reason?: string): void;
-    data: { getAuthUser(): Promise<unknown> };
-  },
-  user: { id: bigint; sessionId?: string },
-): Promise<boolean> {
-  trackSocket(user.id, String(ws.id), ws.raw, user.sessionId);
-  let current: unknown;
-  try {
-    current = await ws.data.getAuthUser();
-  } catch (error) {
-    if (error instanceof ServiceUnavailableError) {
-      ws.close(WS_CLOSE.INTERNAL_ERROR, "retry");
-      return false;
-    }
-    current = null;
-  }
-  if (!current) {
-    // A logout signs the tab out (4401); a password change asks it to reconnect under the
-    // re-issued cookie (4409), which the tab holding that cookie can.
-    const loggedOut =
-      user.sessionId !== undefined &&
-      (await isSessionLoggedOut(user.sessionId).catch(() => false));
-    if (loggedOut) ws.close(WS_CLOSE.UNAUTHORIZED, "session ended");
-    else ws.close(WS_CLOSE.CREDENTIALS_CHANGED, "session revoked");
-    return false;
-  }
-  return true;
-}
 
 const ClientMessage = t.Object({
   type: t.Union([

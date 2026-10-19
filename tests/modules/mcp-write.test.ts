@@ -727,6 +727,52 @@ describe.skipIf(!dbUp)("MCP write tools (DB)", () => {
     expect(audits).toBe(0);
   });
 
+  // The voice provider's agent id is the server's (the call setup writes it): a write's own value is
+  // ignored by the apply, so the preview must not promise it either.
+  test("agent_settings_set previews the stored voice provider id, as the apply keeps it", async () => {
+    await suDb.agent.update({
+      where: { id: agentA },
+      data: { settings: { calls: { providerAgentId: "agent_stored" } } },
+    });
+    const since = new Date();
+    try {
+      const p = principal({ tenantId: tenantA });
+      const args = {
+        agent_id: String(agentA),
+        calls: { providerAgentId: "agent_other", maxDurationSecs: 300 },
+      };
+      const preview = await agentSettingsSet(p, args, { base: appDb });
+      expect(preview.ok).toBe(true);
+      const text = JSON.stringify(preview.ok ? preview.data.diff : null);
+      expect(text).toContain("300");
+      expect(text).not.toContain("agent_other");
+      const applied = await agentSettingsSet(
+        p,
+        { ...args, dry_run: false },
+        { base: appDb },
+      );
+      expect(applied.ok).toBe(true);
+      const row = await suDb.agent.findUnique({ where: { id: agentA } });
+      expect(
+        (row?.settings as { calls?: { providerAgentId?: string } } | undefined)
+          ?.calls?.providerAgentId,
+      ).toBe("agent_stored");
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentA },
+        data: { settings: {} },
+      });
+      // A sibling counts this tenant's settings audits: the one this apply wrote goes with it.
+      await suDb.auditLog.deleteMany({
+        where: {
+          tenantId: tenantA,
+          action: "agent.settings_set",
+          createdAt: { gte: since },
+        },
+      });
+    }
+  });
+
   // NOTE: Operator prose (handoff/kanban/tool guidance, guardrails policy, vision prompt, follow-up steps) is
   // clamped by the readers, so an over-cap note would come back as a SUCCESSFUL diff already showing
   // the shortened value, which reads as "applied" rather than "cut". The dry run is checked too: a

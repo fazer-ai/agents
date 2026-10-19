@@ -496,6 +496,20 @@ class AttributeBatch {
   ) {}
 }
 
+/** A message as the conversation's page lists it; an audio's words ride on its attachment. */
+export interface RecentMessage {
+  content: string | null;
+  message_type: number;
+  private: boolean;
+  sender?: { name?: string };
+  // The REST list carries a voice note's words under the attachment's `meta`, not at its top level
+  // as the webhook does.
+  attachments?: Array<{
+    file_type?: string;
+    meta?: { transcribed_text?: string | null } | null;
+  }>;
+}
+
 export class ChatwootClient {
   private readonly fetchImpl: typeof fetch;
   private readonly accountBase: string;
@@ -838,6 +852,47 @@ export class ChatwootClient {
   }
 
   // Assign a TEAM (same assignments endpoint, `team_id` instead of `assignee_id`). Bot-accessible like
+  // The latest page of a conversation's messages, oldest first, for a voice agent's opening context.
+  async listRecentMessages(conversationId: number): Promise<RecentMessage[]> {
+    const body = (await this.request(
+      this.config.adminToken,
+      "GET",
+      `/conversations/${conversationId}/messages`,
+    )) as { payload?: RecentMessage[] };
+    return body.payload ?? [];
+  }
+
+  // What a voice agent reports once a WhatsApp call it carried is over (the fork's
+  // whatsapp_calls/ai_report): the transcript lands on the Call, the summary in its meta.
+  reportVoiceCall(body: {
+    provider_call_id: string;
+    transcript: string;
+    summary: string;
+  }): Promise<unknown> {
+    return this.request(
+      this.config.adminToken,
+      "POST",
+      "/whatsapp_calls/ai_report",
+      body,
+    );
+  }
+
+  // Says to the fork whether this product's voice agent answers one inbox's calls, and where to send
+  // their audio (the fork's whatsapp_calls/ai_voice). The URL travels on every call, so a fork that
+  // lost it is repaired by the next sync.
+  setVoiceAgent(
+    inboxId: number,
+    enabled: boolean,
+    streamUrl: string,
+  ): Promise<{ inbox_id: number; enabled: boolean }> {
+    return this.request(
+      this.config.adminToken,
+      "PATCH",
+      "/whatsapp_calls/ai_voice",
+      { inbox_id: inboxId, enabled, stream_url: streamUrl },
+    ) as Promise<{ inbox_id: number; enabled: boolean }>;
+  }
+
   // assignToAgent. Used by the handoff "pinned"/"agent_choice" targeting.
   assignTeam(
     conversationId: number,

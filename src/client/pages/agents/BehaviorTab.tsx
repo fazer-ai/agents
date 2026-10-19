@@ -622,7 +622,7 @@ function ServiceWindowTemplateField({
 // ElevenLabs is fetched with the vault credential so the operator picks a real per-account voice by
 // name. Eager-loads (when it won't error for lack of a credential) so the trigger shows the human
 // label; typing a custom value still works.
-function TtsOptionPicker({
+export function TtsOptionPicker({
   kind,
   provider,
   credentialRef,

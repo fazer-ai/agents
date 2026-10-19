@@ -535,6 +535,14 @@ const BARE_SLICES: Record<
   // Read only to be substring-matched against the provider's auth-failure shapes, then dropped:
   // never stored, never shown, never sent anywhere.
   "src/modules/vault/secret-test.ts": [1, "parse-only"],
+  // Spike demo calendar: the first free slots a voice tool returns, an array of "HH:MM" strings.
+  "src/modules/voice-call/playground.ts": [1, "array"],
+  // The words a call's transcription is told to expect: an array of strings, capped at a count.
+  "src/modules/voice-call/settings.ts": [1, "array"],
+  // The words of an answer streamed to the voice so far, cut at the last space the code found: an
+  // index on an ASCII delimiter, which cannot land inside a surrogate pair.
+  // The last messages a voice call opens with: an array of messages.
+  "src/modules/voice-call/service.ts": [1, "array"],
   // The page's own overshoot row, dropped: the list takes `limit + 1` to learn whether a next page
   // exists. Same shape as flowlog/read.ts, and it cuts an array of rows, never a string.
   "src/modules/webhooks/outbound/deliveries.ts": [1, "array"],

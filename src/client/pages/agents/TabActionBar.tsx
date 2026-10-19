@@ -1,4 +1,4 @@
-import { MessageSquare, TriangleAlert } from "lucide-react";
+import { MessageSquare, Phone, TriangleAlert } from "lucide-react";
 import { createContext, useContext, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/client/components";
@@ -10,6 +10,8 @@ import { useStaleNotice } from "./StaleNotice";
 // edit there is nothing to write, the same on every tab (Gabriel's call on agents#1365). Inside the agent editor, while the "changed
 // elsewhere" notice is up, it repeats the notice on a row of its own, since on a long tab the card
 // at the top is off screen. Both rows wrap, so a narrow viewport keeps Save on screen.
+// Set by the editor of a voice agent, whose playground is a call: the button says so.
+export const PlaygroundIsCallContext = createContext(false);
 
 // The agent editor's bar is about the agent, not the tab (agents#1520): inside the editor, every tab's
 // bar reads this instead of its own props. Dirty when any section is, Save writes every dirty section,
@@ -46,6 +48,7 @@ export function TabActionBar({
 }) {
   const { t } = useTranslation();
   const stale = useStaleNotice();
+  const isCall = useContext(PlaygroundIsCallContext);
   const bar = useContext(EditorBarContext);
   const held = !!saveDisabled;
   const report = bar?.reportBlocked;
@@ -87,8 +90,14 @@ export function TabActionBar({
         <div className="flex flex-wrap items-center justify-between gap-2">
           {onOpenPlayground ? (
             <Button variant="secondary" onClick={onOpenPlayground}>
-              <MessageSquare className="h-4 w-4" aria-hidden="true" />
-              {t("editor.openPlayground", "Test in playground")}
+              {isCall ? (
+                <Phone className="h-4 w-4" aria-hidden="true" />
+              ) : (
+                <MessageSquare className="h-4 w-4" aria-hidden="true" />
+              )}
+              {isCall
+                ? t("editor.openPlaygroundCall", "Call in the playground")
+                : t("editor.openPlayground", "Test in playground")}
             </Button>
           ) : (
             <span />

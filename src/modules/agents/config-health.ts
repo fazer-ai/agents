@@ -400,6 +400,15 @@ function endpointVerdict(
   return null;
 }
 
+// The warnings that still apply to a voice agent: it has no chat model and answers no
+// message, so only what its knowledge bases need and the prompt's size. Its ElevenLabs key is checked
+// with ElevenLabs on the editor's Voice card, where the answer can say what the key lacks.
+export const VOICE_AGENT_ISSUES: ReadonlySet<string> = new Set([
+  "knowledge",
+  "embedding",
+  "textCap",
+]);
+
 export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
   const issues: ConfigIssue[] = [];
   const vault: VaultView = {

@@ -12,7 +12,7 @@ import {
   normalizeExpectedStatuses,
 } from "@/graph/tools/http-status";
 import { AppError } from "@/lib/errors";
-import { fetchBounded } from "@/lib/outbound";
+import { fetchBounded, withDeadline } from "@/lib/outbound";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { zonedWallClock } from "@/modules/integrations/toolpacks/calendar-slots";
 import {
@@ -630,6 +630,10 @@ export function buildHttpTool(
     callConfig: ToolRunnableConfig,
     sent: { request: boolean; reported: boolean },
   ) => {
+    // The run's deadline and, when the caller gives one, the invocation's own (a call's tool turn).
+    const expiresOn = callConfig?.signal
+      ? withDeadline(deps.expiresOn, callConfig.signal)
+      : deps.expiresOn;
     let input = rawInput;
     // The call sent nothing: said to the caller that asked on this call's config (a decisions
     // rule, whose latch is released), besides the turn's own count where the step counts it.
@@ -957,7 +961,7 @@ export function buildHttpTool(
       return "Could not call the tool (the run was called off before the request was sent).";
     }
     // After the withdrawal check, which awaits: a budget that ran out during it sends nothing.
-    if (deps.expiresOn?.aborted) {
+    if (expiresOn?.aborted) {
       sentNothing(false);
       return "Could not call the tool (the run's time budget ran out before the request was sent).";
     }
@@ -967,7 +971,7 @@ export function buildHttpTool(
       // NOTE: The deadline rides in `init.signal`, which `bounded` relays onto its own
       // controller, so a sent request is cancelled when the budget ends. Not a new option: that
       // timer must also cut the BODY read, and two controllers racing for it lose the body bound.
-      { method, headers, body, redirect: "error", signal: deps.expiresOn },
+      { method, headers, body, redirect: "error", signal: expiresOn },
       { timeoutMs, fetchImpl: doFetch },
     );
 

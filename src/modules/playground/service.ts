@@ -99,6 +99,9 @@ import { shouldReplyWithAudio } from "@/modules/tts/settings";
 import { logTextInsteadOfAudio, planAudioReply } from "@/modules/tts/speakable";
 import { extractPlaygroundFile } from "@/modules/vision/service";
 import { readVisionConfig } from "@/modules/vision/settings";
+import { invocationDeadlineFetch } from "@/modules/voice-call/invocation-deadline";
+import { CALL_HTTP_TOOL_TIMEOUT_MS } from "@/modules/voice-call/providers/elevenlabs-tools";
+import { type VoiceAgent, voiceAgentFrom } from "@/modules/voice-call/tools";
 import {
   listThreadMedia,
   type PlaygroundMediaKind,
@@ -360,6 +363,8 @@ async function loadPlaygroundConfig(params: {
   threadId: string;
   base: PrismaClient;
   overrides?: AgentConfigOverrides;
+  // A call talks through the voice engine: the agent's chat model is never built for it.
+  chatModelUnused?: boolean;
 }): Promise<AgentConfig> {
   const { ctx, agentId, threadId, base } = params;
   const tenantId = ctx.tenantId as bigint;
@@ -376,7 +381,11 @@ async function loadPlaygroundConfig(params: {
         // EMPTY. The literal rather than a `Date` so the time simulation moves it too (`prepare.ts`).
         lastIncomingAt: "now" as const,
       },
-      { ignoreDisabled: true, overrides: params.overrides },
+      {
+        ignoreDisabled: true,
+        overrides: params.overrides,
+        chatModelUnused: params.chatModelUnused,
+      },
     ),
   );
   if (!loaded) {
@@ -416,6 +425,10 @@ function buildPlaygroundToolset(
     replyChoice: ReplyChoice | undefined;
     // The simulated follow-up, built like production's nudge (ToolCtx.proactive).
     proactive?: boolean;
+    // A call's HTTP deadline, below what the voice engine waits (CALL_HTTP_TOOL_TIMEOUT_MS).
+    httpToolTimeoutMs?: number;
+    // A call's outbound fetch, which holds each request to its tool invocation's deadline.
+    outboundFetch?: typeof fetch;
     // Built as an observation is: on a muted client, which drops what delivers to the customer
     // (those natives, documents, a pack's delivering tools) and gives the handoff its muted schema.
     muted?: boolean;
@@ -434,6 +447,10 @@ function buildPlaygroundToolset(
       threadId: params.threadId,
       replyChoice: params.replyChoice,
       ...(params.proactive ? { proactive: true } : {}),
+      ...(params.httpToolTimeoutMs !== undefined
+        ? { httpToolTimeoutMs: params.httpToolTimeoutMs }
+        : {}),
+      ...(params.outboundFetch ? { outboundFetch: params.outboundFetch } : {}),
     },
     {
       // Conversation tools (handoff/resolve/…) are SIMULATED (no real effect); utility tools
@@ -2245,4 +2262,38 @@ async function runPlaygroundFileTurnOnce(
     ...turn,
     trace: [...visionTrace, ...turn.trace],
   };
+}
+
+/**
+ * The agent as a call from the playground hears it: the rendered prompt and the playground's own
+ * toolset (conversation tools simulated, the rest real), narrowed to what a call may use.
+ */
+export async function loadPlaygroundVoiceAgent(
+  ctx: TenantContext,
+  agentId: bigint,
+  base: PrismaClient = basePrisma,
+): Promise<VoiceAgent> {
+  const threadId = newPlaygroundThreadId(ctx.tenantId as bigint, agentId);
+  const loaded = await loadPlaygroundConfig({
+    ctx,
+    agentId,
+    threadId,
+    base,
+    chatModelUnused: true,
+  });
+  // A call delivers no document and waits its own deadline on an HTTP tool, as in production
+  // (`loadVoiceAgent`).
+  const all = await buildPlaygroundToolset(
+    { ...loaded, documentSelections: [] },
+    {
+      ctx,
+      threadId,
+      base,
+      flow: undefined,
+      replyChoice: undefined,
+      httpToolTimeoutMs: CALL_HTTP_TOOL_TIMEOUT_MS,
+      outboundFetch: invocationDeadlineFetch(),
+    },
+  );
+  return voiceAgentFrom(loaded.systemPrompt, all);
 }

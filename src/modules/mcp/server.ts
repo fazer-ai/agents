@@ -10,6 +10,7 @@ import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import type { TenantContext } from "@/lib/tenancy";
 import { ACTOR_TYPES } from "@/lib/tenancy/actor";
 import { AGENT_MODES, type AgentMode } from "@/modules/agents/mode";
+import { AGENT_KINDS, type AgentKind } from "@/modules/agents/service";
 import {
   BEHAVIOR_PATCH_ARGS_SHAPE,
   type BehaviorPatchArgs,
@@ -112,6 +113,7 @@ import {
   deploymentRotateToken,
   deploymentSetAccounts,
   inboxBind,
+  inboxBindVoice,
   inboxObserve,
   inboxReconcile,
   inboxReconnect,
@@ -1606,12 +1608,13 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "agent_create",
       {
         description:
-          "Create an agent. Previews the normalized input and creates NOTHING unless dry_run is false. model_config may carry a credentialRef as a vault entry NAME (resolved server-side; never a raw key). Use prompt_set for the system prompt and agent_settings_set for behavior.",
+          'Create an agent. kind is fixed at creation: "text" (default) or "voice" (WhatsApp calls; bind with inbox_bind_voice). Previews the normalized input and creates NOTHING unless dry_run is false. model_config may carry a credentialRef as a vault entry NAME (resolved server-side; never a raw key). Use prompt_set for the system prompt and agent_settings_set for behavior.',
         inputSchema: {
           name: z.string(),
           system_prompt: z.string().optional(),
           enabled: z.boolean().optional(),
           mode: z.enum(AGENT_MODES).optional(),
+          kind: z.enum(AGENT_KINDS).optional(),
           transfer_with_summary: z.boolean().optional(),
           model_config: z.record(z.string(), z.unknown()).optional(),
           business_hours_id: z.string().nullable().optional(),
@@ -1625,6 +1628,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           system_prompt?: string;
           enabled?: boolean;
           mode?: AgentMode;
+          kind?: AgentKind;
           transfer_with_summary?: boolean;
           model_config?: Record<string, unknown>;
           business_hours_id?: string | null;
@@ -2270,6 +2274,29 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
         },
         eff,
       ) => writeContent(await inboxBind(eff, args)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
+      "inbox_bind_voice",
+      {
+        description:
+          "Bind a voice agent to an inbox's WhatsApp calls, or unbind it (agent_id null); the text agent stays. Calls ring only while the agent is enabled and in production. Previews; applies NOTHING unless dry_run is false.",
+        inputSchema: {
+          inbox_id: z.string(),
+          agent_id: z.string().nullable().optional(),
+          dry_run: z.boolean().optional(),
+        },
+      },
+      async (
+        args: {
+          inbox_id: string;
+          agent_id?: string | null;
+          dry_run?: boolean;
+        },
+        eff,
+      ) => writeContent(await inboxBindVoice(eff, args)),
     );
 
     registerTenantTool(

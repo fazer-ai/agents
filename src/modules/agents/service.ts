@@ -81,6 +81,11 @@ import {
 import { isOneOf, SIGNATURE_CHOICES } from "@/modules/signature/domains";
 import { lockToolNames } from "@/modules/tool-definitions/namespace";
 import { requireVaultRefFor } from "@/modules/vault/service";
+import { syncVoiceAgentInboxes } from "@/modules/voice-call/inboxes";
+import {
+  keepCallsSystemFields,
+  withoutCallsAgentId,
+} from "@/modules/voice-call/settings";
 import { withCreationDefaults } from "./creation-defaults";
 import {
   AGENT_MODES,
@@ -108,9 +113,18 @@ export interface AgentDto {
   transferWithSummary: boolean;
   enabled: boolean;
   mode: AgentMode;
+  kind: AgentKind;
   settings: Record<string, unknown>;
   createdAt: Date;
   updatedAt: Date;
+}
+
+// What an agent answers, fixed at creation: messages, or calls.
+export const AGENT_KINDS = ["text", "voice"] as const;
+export type AgentKind = (typeof AGENT_KINDS)[number];
+
+export function normalizeAgentKind(kind: string): AgentKind {
+  return kind === "voice" ? "voice" : "text";
 }
 
 export const AGENT_SELECT = {
@@ -123,6 +137,7 @@ export const AGENT_SELECT = {
   transferWithSummary: true,
   enabled: true,
   mode: true,
+  kind: true,
   settings: true,
   createdAt: true,
   updatedAt: true,
@@ -138,6 +153,7 @@ export function toDto(a: {
   transferWithSummary: boolean;
   enabled: boolean;
   mode: string;
+  kind: string;
   settings: unknown;
   createdAt: Date;
   updatedAt: Date;
@@ -154,6 +170,7 @@ export function toDto(a: {
     transferWithSummary: a.transferWithSummary,
     enabled: a.enabled,
     mode: normalizeAgentMode(a.mode),
+    kind: normalizeAgentKind(a.kind),
     settings: (a.settings ?? {}) as Record<string, unknown>,
     createdAt: a.createdAt,
     updatedAt: a.updatedAt,
@@ -183,9 +200,9 @@ export interface ListAgentsOptions {
   enabled?: boolean;
 }
 
-// The console list view enriches each agent with the inboxes it answers (Inbox.agentId reverse
-// lookup). Kept off the canonical AgentDto (and the unpaged `listAgents`/`getAgent` used by the MCP
-// transport) so only the paged REST list carries it.
+// The console list view enriches each agent with the inboxes it answers (Inbox.agentId, and
+// Inbox.voiceAgentId for a voice agent, reverse lookup). Kept off the canonical AgentDto (and the
+// unpaged `listAgents`/`getAgent` used by the MCP transport) so only the paged REST list carries it.
 export interface PagedAgentItem extends AgentDto {
   inboxes: { id: string; name: string }[];
   // True when the agent's availability schedule (businessHoursId) is currently closed (item 23).
@@ -235,17 +252,22 @@ export async function listAgentsPaged(
     const ids = rows.map((r) => r.id);
     const inboxRows = ids.length
       ? await db.inbox.findMany({
-          where: { agentId: { in: ids } },
-          select: { id: true, name: true, agentId: true },
+          // A voice agent answers an inbox's calls through its own binding.
+          where: {
+            OR: [{ agentId: { in: ids } }, { voiceAgentId: { in: ids } }],
+          },
+          select: { id: true, name: true, agentId: true, voiceAgentId: true },
           orderBy: { name: "asc" },
         })
       : [];
     const byAgent = new Map<bigint, { id: string; name: string }[]>();
     for (const ib of inboxRows) {
-      if (ib.agentId === null) continue;
-      const list = byAgent.get(ib.agentId) ?? [];
-      list.push({ id: String(ib.id), name: ib.name });
-      byAgent.set(ib.agentId, list);
+      for (const owner of [ib.agentId, ib.voiceAgentId]) {
+        if (owner === null) continue;
+        const list = byAgent.get(owner) ?? [];
+        list.push({ id: String(ib.id), name: ib.name });
+        byAgent.set(owner, list);
+      }
     }
     // Out-of-hours per agent (item 23): batch-load the distinct availability schedules referenced by
     // the page, evaluate "now" in each schedule's timezone. One query, no N+1.
@@ -1908,6 +1930,27 @@ export async function assertAgentNotObserving(
   }
 }
 
+function answersCallsRefusal(): AppError {
+  return new AppError(
+    "this agent answers calls on inboxes; unbind it from them first",
+    422,
+    "errors.agentAnswersCalls",
+  );
+}
+
+// The deletion's refusal for a voice agent still bound to an inbox's calls, read without its locks,
+// for a preview (MCP `agent_delete`).
+export async function assertAgentNotAnsweringCalls(
+  ctx: TenantContext,
+  id: bigint,
+  base?: PrismaClient,
+): Promise<void> {
+  const answering = await runScopedOn(base ?? basePrisma, ctx, (db) =>
+    db.inbox.count({ where: { voiceAgentId: id } }),
+  );
+  if (answering > 0) throw answersCallsRefusal();
+}
+
 export async function updateAgent(
   ctx: TenantContext,
   id: bigint,
@@ -1976,6 +2019,7 @@ export async function updateAgent(
     // FIRST of the settings rules, because it is the only structural one: the others ask whether a
     // value is allowed, this one asks whether the write keeps the blocks it does not mention. A bag
     // that is both partial and carries a bad value has a bigger problem than the value.
+    if (beforeRow) assertVoiceAgentMode(beforeRow.kind, rest.mode);
     if (opts.settingsMode !== "replace") {
       assertSettingsBlocksKept(rest.settings, before?.settings);
     }
@@ -1987,6 +2031,7 @@ export async function updateAgent(
     assertSettingsContactAuthRule(rest.settings, before?.settings);
     assertSettingsContactFields(rest.settings, before?.settings);
     assertSettingsRetiredLabelKeys(rest.settings);
+    keepCallsSystemFields(rest.settings, before?.settings);
     stripRetiredNoteFlagInPlace(rest.settings);
     stripDerivedFullDetailInPlace(rest.settings);
     assertSettingsProtectedLabels(rest.settings, before?.settings);
@@ -2102,6 +2147,16 @@ export async function updateAgent(
   if (rest.name !== undefined && ctx.tenantId !== null) {
     await renameAgentBots(ctx.tenantId, id, dto.name, { base });
   }
+  // The calls of the inboxes a voice agent answers follow its switch and mode.
+  if (
+    ctx.tenantId !== null &&
+    dto.kind === "voice" &&
+    (rest.settings !== undefined ||
+      rest.enabled !== undefined ||
+      rest.mode !== undefined)
+  ) {
+    await syncVoiceAgentInboxes(ctx, id, base);
+  }
   // Heads-up for any open editor (other tab / another operator) that this agent's config changed, so
   // it can warn before overwriting. Best-effort, metadata-only; the save precondition is the real gate.
   if (ctx.tenantId !== null) {
@@ -2138,6 +2193,16 @@ export function validateModelConfigForWrite(raw: unknown): void {
   }
 }
 
+// A voice agent answers calls or stays out of them: monitoring watches messages, which it never sees.
+export function assertVoiceAgentMode(kind: string, mode: string | undefined) {
+  if (kind === "voice" && mode !== undefined && isMonitoring(mode))
+    throw new AppError(
+      "a voice agent cannot be in monitoring mode",
+      422,
+      "errors.voiceAgentMonitoring",
+    );
+}
+
 export function requireTenant(ctx: TenantContext): bigint {
   if (ctx.tenantId === null) throw new TenantTargetRequiredError();
   return ctx.tenantId;
@@ -2149,6 +2214,8 @@ export const agentCreateSchema = z
     systemPrompt: z.string().max(config.agent.promptMaxChars).optional(),
     enabled: z.boolean().optional(),
     mode: z.enum(AGENT_MODES).optional(),
+    // Fixed once created: the update schema has no such key, so a write that names it is refused.
+    kind: z.enum(AGENT_KINDS).optional(),
     transferWithSummary: z.boolean().optional(),
     modelConfig: z.record(z.string(), z.unknown()).optional(),
     settings: z.record(z.string(), z.unknown()).optional(),
@@ -2215,10 +2282,14 @@ export function assertAgentCreatable(input: AgentCreate): {
   assertSettingsRetiredLabelKeys(input.settings);
   stripRetiredNoteFlagInPlace(input.settings);
   stripDerivedFullDetailInPlace(input.settings);
+  // A new agent has no ElevenLabs agent of its own yet: an id copied from another would make both
+  // write the same one. Its first setup creates it.
+  keepCallsSystemFields(input.settings, undefined);
   assertSettingsProtectedLabels(input.settings, undefined);
   assertResolveLabelsNotProtected(input.settings);
   assertSettingsClosedValues(input.settings, undefined);
   const data = parseInput(agentCreateSchema, input);
+  assertVoiceAgentMode(data.kind ?? "text", data.mode);
   validateModelConfigForWrite(data.modelConfig);
   // NOTE: the two schedule ids are parsed HERE and handed back, not left to the caller. They are a
   // pure judgement about the input — a malformed id, or one past the column's range — and leaving
@@ -2292,6 +2363,7 @@ export async function createAgent(
         systemPrompt: data.systemPrompt ?? "",
         enabled: createShape.enabled,
         mode: createShape.mode,
+        kind: data.kind ?? "text",
         transferWithSummary: data.transferWithSummary ?? true,
         modelConfig: (data.modelConfig ??
           DEFAULT_MODEL_CONFIG) as Prisma.InputJsonValue,
@@ -2353,6 +2425,12 @@ export async function deleteAgent(
         "errors.agentObservesInboxes",
       );
     }
+    // The same for a voice agent's calls: the fork keeps sending an inbox's call audio to it until
+    // told otherwise, which is a Chatwoot call this transaction cannot make.
+    const answeringCalls = await db.inbox.count({
+      where: { voiceAgentId: id },
+    });
+    if (answeringCalls > 0) throw answersCallsRefusal();
     // Inbox.agentId and Experiment.agentId are plain references (no FK cascade) — null them so a
     // deleted agent leaves no dangling binding. AgentToolSelection cascades via its FK.
     await db.inbox.updateMany({
@@ -2402,6 +2480,7 @@ export async function cloneAgent(
         businessHoursId: true,
         followUpHoursId: true,
         transferWithSummary: true,
+        kind: true,
       },
     });
     if (!src) {
@@ -2429,10 +2508,13 @@ export async function cloneAgent(
         name: newName?.trim() || `${src.name} (copy)`,
         systemPrompt: src.systemPrompt,
         modelConfig: (src.modelConfig ?? {}) as Prisma.InputJsonValue,
-        settings: (src.settings ?? {}) as Prisma.InputJsonValue,
+        settings: withoutCallsAgentId(
+          (src.settings ?? {}) as Record<string, unknown>,
+        ) as Prisma.InputJsonValue,
         businessHoursId: src.businessHoursId,
         followUpHoursId: src.followUpHoursId,
         transferWithSummary: src.transferWithSummary,
+        kind: src.kind,
         enabled: false,
       },
       select: AGENT_SELECT,

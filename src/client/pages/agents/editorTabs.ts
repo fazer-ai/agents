@@ -87,3 +87,15 @@ export function watcherFieldUsed(
 export function nativeToolAnchor(name: string): string {
   return `tools-native-${name}`;
 }
+
+// The tabs a voice agent's editor draws. It takes calls, so what only applies to text
+// (Behavior's message settings, guardrails on replies, the redirect to another channel) is not drawn,
+// and the Call tab holds how the line behaves. Its playground is a call.
+export const VOICE_AGENT_TABS: ReadonlySet<string> = new Set([
+  "general",
+  "channels",
+  "call",
+  "tools",
+  "knowledge",
+  "playground",
+]);

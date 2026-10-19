@@ -624,33 +624,33 @@ model ChatwootWebhookDelivery {
 }
 
 model Inbox {
-  id                 BigInt    @id @default(autoincrement())
-  tenantId           BigInt    @map("tenant_id")
-  chatwootInstanceId BigInt    @map("chatwoot_instance_id")
-  chatwootInboxId    Int       @map("chatwoot_inbox_id")
-  name               String
-  channelType        String?   @map("channel_type")
+  id                  BigInt    @id @default(autoincrement())
+  tenantId            BigInt    @map("tenant_id")
+  chatwootInstanceId  BigInt    @map("chatwoot_instance_id")
+  chatwootInboxId     Int       @map("chatwoot_inbox_id")
+  name                String
+  channelType         String?   @map("channel_type")
   // THE SOURCE POSITION OF `name` AND `channelType`: the newest Chatwoot timestamp of a
   // delivery that changed either. The mirror writes the two only when a value differs and the payload
   // is positioned after this, so an unchanged inbox is never rewritten and a late delivery cannot
   // restore a replaced name. NULL until the first change.
-  metadataAt         DateTime? @map("metadata_at")
+  metadataAt          DateTime? @map("metadata_at")
   // The INBOX'S OWN version (`inbox.updated_at`, unix seconds) as of the name and channel stored, when
   // the payload that wrote them carried it (message events only). Once set, a payload with
   // its own clock is ordered by it alone; one without keeps the `metadataAt` rule. NULL: never stated.
-  metadataClock      Float?    @map("metadata_clock")
+  metadataClock       Float?    @map("metadata_clock")
   // WhatsApp provider (whatsapp_cloud | default(=360dialog) | baileys | zapi) when channelType is
   // Channel::Whatsapp; null for other channels or until an inbox sync populates it. Drives the 24h
   // service-window gate (only the official providers have a window). Captured from the inbox-list sync.
-  provider           String?
+  provider            String?
   // The channel's connection as the Chatwoot fork last reported it (`open`, `close`, `connecting`,
   // `reconnecting`, or NULL after a teardown), and WHEN the fork wrote it, with microseconds. The time
   // orders deliveries: the same change reaches every bot route of the inbox, and two changes can
   // arrive out of order, so only a report newer than the stored one is applied. Both NULL until the
   // first report; only WhatsApp session inboxes ever get one. docs/chatwoot.md, "Channel connection".
-  connection         String?   @map("provider_connection")
-  connectionAt       DateTime? @map("provider_connection_at") @db.Timestamptz(6)
-  agentId            BigInt?   @map("agent_id")
+  connection          String?   @map("provider_connection")
+  connectionAt        DateTime? @map("provider_connection_at") @db.Timestamptz(6)
+  agentId             BigInt?   @map("agent_id")
   // WHEN THE CURRENT RESPONDER BINDING WAS MADE (issue #476 review, round 31). Chatwoot picks a
   // message's webhook recipients from the bindings that exist AT EMISSION, so an observer beside a
   // responder can only stand down for the responder's own delivery when that responder was already
@@ -660,7 +660,7 @@ model Inbox {
   // editor with the same agent leaves a binding that never lapsed, and its age with it. NULL while
   // the inbox is unbound, and on every row bound before this column existed, where the reader falls
   // back to treating the binding as older than any delivery (the behaviour that predates it).
-  responderBoundAt   DateTime? @map("responder_bound_at")
+  responderBoundAt    DateTime? @map("responder_bound_at")
   // HOW MANY TIMES WHO ROUTES THIS INBOX HAS CHANGED (issue #540). Stepped by a DATABASE TRIGGER on
   // every write that moves a binding — the responder bound, rebound or unbound, an observer attached
   // or detached — so the counter and the world it describes commit together and no writer can miss
@@ -680,14 +680,23 @@ model Inbox {
   //
   // It says nothing about WHAT changed, and it does not need to. Every reader that consults it is
   // deciding whether a re-derivation is still applicable, and any movement is enough to answer no.
-  bindingGeneration  Int       @default(0) @map("binding_generation")
-  workingHours       Json?     @map("working_hours")
+  bindingGeneration   Int       @default(0) @map("binding_generation")
+  // THE VOICE AGENT THAT ANSWERS THIS INBOX'S CALLS, independent of `agentId`, which
+  // answers its messages. NULL while none does.
+  voiceAgentId        BigInt?   @map("voice_agent_id")
+  // The route token of the inbox's call stream. A call never goes through the inbox's Agent Bot: the
+  // Chatwoot fork hands its audio to a stream URL carrying this token, minted once per inbox and
+  // never rotated, so every sync can send the same URL again (encryptJson blob) and the receiver
+  // finds the inbox by the hash. NULL until a voice agent is first bound.
+  voiceRouteToken     String?   @map("voice_route_token")
+  voiceRouteTokenHash String?   @unique @map("voice_route_token_hash")
+  workingHours        Json?     @map("working_hours")
   // Channel::WebWidget provisioning blob (encryptJson of { websiteToken, hmacToken, hmacMandatory,
   // websiteUrl }) for the WhatsApp→chat redirect feature. The hmac_token is secret (used to compute the
   // per-lead identifier_hash), so the whole blob is encrypted at rest. NULL for non-web-widget inboxes.
-  webWidget          String?   @map("web_widget")
-  createdAt          DateTime  @default(now()) @map("created_at")
-  updatedAt          DateTime  @updatedAt @map("updated_at")
+  webWidget           String?   @map("web_widget")
+  createdAt           DateTime  @default(now()) @map("created_at")
+  updatedAt           DateTime  @updatedAt @map("updated_at")
 
   tenant        Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   instance      ChatwootInstance @relation(fields: [chatwootInstanceId], references: [id], onDelete: Cascade)
@@ -1508,6 +1517,9 @@ model Agent {
   // New agents are created in "test"; existing rows default to "production" so live agents keep
   // answering after the migration.
   mode                   String    @default("production")
+  // What the agent answers, fixed when it is created: "text" (messages) or "voice" (calls).
+  // A voice agent is bound to an inbox through `Inbox.voiceAgentId`, beside the text agent.
+  kind                   String    @default("text")
   settings               Json      @default("{}")
   // NOTE: Watermark stamped when the EFFECTIVE follow-up state (enabled && production && followUp.enabled)
   // transitions OFF→ON. The sweep only STARTS a sequence for conversations whose lastInboundAt is at
@@ -2311,6 +2323,17 @@ model ProcessLease {
   pid         Int?
 
   @@map("process_leases")
+}
+
+// Who is starting a call on an ElevenLabs agent, across processes (migration 20261016220000).
+model VoiceEngineHold {
+  engineAgentId  String    @id @map("engine_agent_id")
+  holder         String?   @db.Uuid
+  heldUntil      DateTime? @map("held_until") @db.Timestamptz(3)
+  declaredDigest String?   @map("declared_digest")
+  configDigest   String?   @map("config_digest")
+
+  @@map("voice_engine_holds")
 }
 
 model SchedulerJob {

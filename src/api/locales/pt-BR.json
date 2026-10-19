@@ -1,6 +1,7 @@
 {
   "errors": {
     "agentAlreadyObserves": "Este agente já observa esta caixa de entrada. Remova-o como observador antes de torná-lo o agente que atende.",
+    "agentAnswersCalls": "Este agente atende as ligações de uma caixa. Tire-o da caixa antes.",
     "agentConfirmMismatch": "O nome do agente não confere",
     "agentIsResponder": "Este agente já atende esta caixa de entrada; ele não pode observá-la também.",
     "agentModifiedElsewhere": "Este agente foi alterado em outro lugar. Recarregue-o e tente novamente.",
@@ -386,6 +387,12 @@
     "visionCredentialMissing": "Credencial de visão não encontrada",
     "visionFailed": "Falha ao extrair imagem/documento",
     "visionNotConfigured": "A leitura de imagens/documentos não está configurada",
+    "voiceAgentMonitoring": "Um agente de ligações não pode ficar em modo de monitoramento.",
+    "voiceAgentNotResponder": "Um agente de ligações não responde mensagens. Escolha-o em Agente de ligações.",
+    "voiceAgentRequired": "Só um agente de ligações atende ligações.",
+    "voiceInboxChatwootUnreachable": "O vínculo foi salvo, mas o Chatwoot não respondeu. Salvar qualquer agente de ligações tenta de novo.",
+    "voiceInboxNotConnector": "Só uma caixa do WhatsApp no conector da fazer.ai recebe ligações.",
+    "voiceInboxNotWhatsapp": "Só uma caixa do WhatsApp recebe ligações.",
     "webhookDeliveryNotDead": "Só uma entrega morta pode ser reenfileirada; esta está em {{status}}",
     "webhookDeliveryNotFound": "Entrega de webhook não encontrada",
     "webhookSubscriptionNotFound": "Assinatura de webhook não encontrada"

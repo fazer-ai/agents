@@ -34,6 +34,8 @@ const PICKER = "options for a console picker, read live to fill a form field";
 const PLAYGROUND =
   "playground session plumbing for the console chat; agent_playground is the MCP turn";
 const TRANSPORT = "the MCP transport itself";
+const CALL_AUDIO =
+  "a call's audio over a WebSocket, in real time; the MCP transport carries JSON turns";
 
 export const ROUTE_COVERAGE: Record<string, Coverage> = {
   "GET /v1/agents/": { tool: "agent_list" },
@@ -57,6 +59,12 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   "POST /v1/agents/import": { tool: "agent_import" },
   "GET /v1/agents/:id/tool-selections": { tool: "agent_tools_get" },
   "POST /v1/agents/:id/playground": { tool: "agent_playground" },
+  "POST /v1/agents/:id/playground/call": { none: CALL_AUDIO },
+  "POST /v1/agents/:id/calls/check": {
+    gap: "whether a voice agent's calls are set up on ElevenLabs, and why not",
+  },
+  "WS /v1/voice/stream/:routeToken": { none: CALL_AUDIO },
+  "WS /v1/voice/playground/:ticket": { none: CALL_AUDIO },
   "GET /v1/agents/:id/playground/tools": { none: PLAYGROUND },
   "POST /v1/agents/:id/playground/followup": { none: PLAYGROUND },
   "POST /v1/agents/:id/playground/audio/transcribe": { none: BINARY },
@@ -117,6 +125,7 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   "GET /v1/chatwoot/labels/:agentId": { none: PICKER },
   "GET /v1/chatwoot/custom-attributes/:agentId": { none: PICKER },
   "PATCH /v1/chatwoot/inboxes/:id": { tool: "inbox_bind" },
+  "PUT /v1/chatwoot/inboxes/:id/voice-agent": { tool: "inbox_bind_voice" },
   "POST /v1/chatwoot/inboxes/:id/observers": { tool: "inbox_observe" },
   "DELETE /v1/chatwoot/inboxes/:id/observers/:agentId": {
     tool: "inbox_unobserve",

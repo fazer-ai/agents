@@ -212,6 +212,8 @@ red test.
 | `suggestion_review` | the `SUGGESTION_REVIEW` job (`rag/suggestion-review.ts`), asked after the proposal is embedded and has candidates, immediately before the reviewer's model call; a refusal queues the proposal unreviewed |
 | `other_inbox_summary` | the `OTHER_INBOX_SUMMARY` job (`other-inboxes/summary-job.ts`), asked after the conversation is known to have public messages the stored summary does not cover, immediately before the summariser's model call; a refusal leaves the conversation listed without content until a later turn arms the job again |
 
+**WhatsApp calls are outside the ceiling, by decision.** A voice agent's call runs its model, its voice and its transcription on the tenant's own ElevenLabs account, and writes no `llm_usage` row, so the figure the ceiling reads never moves with a call. Gating calls on it would stop them for spend they did not cause, while their own cost stayed as unbounded as before; the cap on that cost is the usage limit of the ElevenLabs account. The same holds for audio replies synthesised on that account. Nor does a call's tool reach a ledger node: every node in `coverage.ts` is a model call made by a text turn or by a job of its own.
+
 A refusal says that **spend** was what stood in the way, so it is asked only where spend was
 actually next: after everything that would have stopped the call anyway, and immediately before the
 call. Three shapes, all the same rule:

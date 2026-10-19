@@ -38,6 +38,7 @@ import { readSplitConfig } from "@/modules/split/service";
 import { readSttConfig } from "@/modules/stt/settings";
 import { readTtsConfig } from "@/modules/tts/settings";
 import { readVisionConfig } from "@/modules/vision/settings";
+import { readCallsConfig } from "@/modules/voice-call/settings";
 
 // Normalized read of the per-agent BEHAVIOR config that lives in the free-form `agent.settings` bag
 // (debounce / stt / tts / split / serviceWindow + grounding + followUp). The same typed readers the
@@ -63,6 +64,8 @@ export interface BehaviorSettings {
   debounce: ReturnType<typeof readDebounceConfig>;
   stt: ReturnType<typeof readSttConfig>;
   tts: ReturnType<typeof readTtsConfig>;
+  // WhatsApp calls the agent answers and places (modules/voice-call/settings).
+  calls: ReturnType<typeof readCallsConfig>;
   vision: ReturnType<typeof readVisionConfig>;
   split: ReturnType<typeof readSplitConfig>;
   signature: ReturnType<typeof readSignatureConfig>;
@@ -116,6 +119,7 @@ export const BEHAVIOR_SETTINGS_KEYS = [
   "debounce",
   "stt",
   "tts",
+  "calls",
   "vision",
   "split",
   "signature",
@@ -159,6 +163,7 @@ export function readBehaviorSettings(
     debounce: readDebounceConfig(settings),
     stt: readSttConfig(settings),
     tts: readTtsConfig(settings),
+    calls: readCallsConfig(settings),
     vision: readVisionConfig(settings),
     split: readSplitConfig(settings),
     signature: readSignatureConfig(settings),
@@ -201,6 +206,7 @@ export interface BehaviorSettingsPatch {
   debounce?: Record<string, unknown>;
   stt?: Record<string, unknown>;
   tts?: Record<string, unknown>;
+  calls?: Record<string, unknown>;
   vision?: Record<string, unknown>;
   split?: Record<string, unknown>;
   signature?: Record<string, unknown>;

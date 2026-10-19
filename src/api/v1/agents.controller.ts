@@ -17,6 +17,7 @@ import { readAgentConfigHealth } from "@/modules/agents/config-health-read";
 import { readLimitsConfig } from "@/modules/agents/limits";
 import type { AgentMode } from "@/modules/agents/mode";
 import {
+  AGENT_KINDS,
   AGENT_MODES,
   type AgentCreate,
   type AgentUpdate,
@@ -57,11 +58,15 @@ import {
   startPlaygroundThread,
 } from "@/modules/playground/sessions";
 import { listTtsOptions } from "@/modules/tts/listing";
+import { issuePlaygroundCallTicket } from "@/modules/voice-call/playground";
+import { setUpAgentCalls } from "@/modules/voice-call/setup";
 
 // translate('errors.agentConfirmMismatch', 'The agent name does not match')
 // translate('errors.agentModifiedElsewhere', 'This agent was changed somewhere else. Reload it and try again.')
 // translate('errors.agentObservesInboxes', 'This agent observes inboxes. Remove it as an observer first.')
 // translate('errors.agentNotRunnable', 'This agent has no runnable model configured.')
+// translate('errors.voiceAgentMonitoring', 'A calls agent cannot be in monitoring mode.')
+// translate('errors.agentAnswersCalls', 'This agent answers the calls of an inbox. Take it off the inbox first.')
 // translate('errors.audioTooLarge', 'Audio file is too large')
 // translate('errors.baseUrlRequired', 'A base URL is required for this provider.')
 // translate('errors.credentialRequired', 'A credential is required to list provider models.')
@@ -585,6 +590,76 @@ export const agentsController = new Elysia({
       }),
     },
   )
+  .post(
+    "/:id/calls/check",
+    async ({ tenantContext, params }) => {
+      const result = await setUpAgentCalls(
+        ctxOrThrow(tenantContext),
+        requireDbId(params.id),
+        { checkAccess: true },
+      );
+      return {
+        instance: instanceIdentity,
+        ...(result.ok
+          ? {
+              ok: true as const,
+              providerAgentId: result.setup.providerAgentId,
+            }
+          : {
+              ok: false as const,
+              problem: result.problem,
+              detail: result.detail ?? null,
+            }),
+      };
+    },
+    {
+      detail: doc(
+        "Check and sync the agent's calls",
+        "Over the SAVED agent: resolves the key of the voice provider `settings.calls.provider` names (ElevenLabs Agents, the only one today; for it the audio replies' ElevenLabs key also serves), checks it can run that provider's agents, and creates or updates the agent that carries this agent's WhatsApp calls on the customer's account there, writing its id to `settings.calls.providerAgentId`. Answers `{ ok: true, providerAgentId }`, or `{ ok: false, problem, detail }` with problem one of `disabled`, `no_credential`, `credential_unusable`, `invalid_key`, `missing_permission` (a text-to-speech-only key), `unreachable`, `sync_failed`. Every call runs the same sync as it opens; this is what the console runs after a save, so a bad key shows on the screen rather than on the first call.",
+      ),
+      response: errors(400, 401, 403, 404),
+      requireRole: "TENANT_ADMIN",
+      params: t.Object({
+        id: t.String({
+          description: "Agent id, a BigInt encoded as a decimal string.",
+        }),
+      }),
+    },
+  )
+  .post(
+    "/:id/playground/call",
+    async ({ tenantContext, params }) => {
+      const ctx = ctxOrThrow(tenantContext);
+      const agentId = requireDbId(params.id);
+      const result = await setUpAgentCalls(ctx, agentId);
+      return {
+        instance: instanceIdentity,
+        ...(result.ok
+          ? {
+              ok: true as const,
+              ticket: issuePlaygroundCallTicket(ctx, agentId),
+            }
+          : {
+              ok: false as const,
+              problem: result.problem,
+              detail: result.detail ?? null,
+            }),
+      };
+    },
+    {
+      detail: doc(
+        "Start a playground call",
+        "Over the SAVED agent's calls settings: answers `{ ok: true, ticket }`, a ticket valid for one minute to open the call's media stream at `/api/v1/voice/playground/{ticket}`, or `{ ok: false, problem, detail }` with the same problems as the calls check. The call runs the playground's toolset (conversation tools simulated) and leaves nothing in Chatwoot.",
+      ),
+      response: errors(400, 401, 403, 404),
+      requireRole: "TENANT_ADMIN",
+      params: t.Object({
+        id: t.String({
+          description: "Agent id, a BigInt encoded as a decimal string.",
+        }),
+      }),
+    },
+  )
   // Which of this agent's bound inboxes ALREADY answer out of hours from Chatwoot's side. The editor's
   // warning panel needs it for the same reason it needs guardrail health: the answer is not in this
   // product's configuration at all, and the collision it warns about is invisible from either console.
@@ -648,6 +723,17 @@ export const agentsController = new Elysia({
             {
               description:
                 "Operating mode: 'test' stays silent in a conversation until the customer sends /teste; 'production' answers normally; 'monitoring' receives and remembers every message and never answers.",
+            },
+          ),
+        ),
+        kind: t.Optional(
+          t.Union(
+            // NOTE: spelled out rather than mapped from AGENT_KINDS: a mapped union reaches the
+            // typed client as `undefined`, and the console sends this key.
+            [t.Literal(AGENT_KINDS[0]), t.Literal(AGENT_KINDS[1])],
+            {
+              description:
+                "What the agent answers, fixed once created: 'text' (messages, the default) or 'voice' (WhatsApp calls, on an ElevenLabs agent configured in `settings.calls`, bound to an inbox with PUT /v1/chatwoot/inboxes/{id}/voice-agent). A voice agent cannot be in monitoring mode.",
             },
           ),
         ),

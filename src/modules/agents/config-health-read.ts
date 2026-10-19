@@ -8,6 +8,7 @@ import type { TenantContext } from "@/lib/tenancy";
 import {
   type ConfigIssue,
   computeConfigIssues,
+  VOICE_AGENT_ISSUES,
 } from "@/modules/agents/config-health";
 import { configIssueTranslator } from "@/modules/agents/config-health-copy";
 import { configIssueMessage } from "@/modules/agents/config-health-message";
@@ -225,7 +226,7 @@ export async function readAgentConfigHealth(
     if (guardrails.enabled) unchecked.push("guardrailHealth");
   }
 
-  const issues = computeConfigIssues({
+  const computed = computeConfigIssues({
     settings,
     agentEnabled: agent.enabled,
     // Saved and "being edited" are the same value here: nothing is being typed. The pair stays in
@@ -287,6 +288,12 @@ export async function readAgentConfigHealth(
     outOfOfficeInboxes: outOfOffice,
     savedSchedule: schedule,
   });
+
+  // A voice agent answers calls only (VOICE_AGENT_ISSUES says which warnings still apply to it).
+  const issues =
+    agent.kind === "voice"
+      ? computed.filter((i) => VOICE_AGENT_ISSUES.has(i.key))
+      : computed;
 
   const translate = configIssueTranslator(opts.locale ?? "en");
   const counts: Record<ConfigIssueSeverity, number> = {

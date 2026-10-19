@@ -526,6 +526,8 @@ export interface HttpToolBuildDeps {
   // one rather than spread from HttpToolDeps, so a new runtime dep does not silently widen what this
   // layer forwards.
   timezone?: HttpToolDeps["timezone"];
+  // A turn that cannot wait the default (a call, whose engine stops waiting at its own deadline).
+  timeoutMs?: HttpToolDeps["timeoutMs"];
   appointmentBooked?: HttpToolDeps["appointmentBooked"];
   cancelAppointment?: HttpToolDeps["cancelAppointment"];
   onSideEffectError?: HttpToolDeps["onSideEffectError"];

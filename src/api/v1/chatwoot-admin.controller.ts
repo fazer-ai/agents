@@ -36,6 +36,7 @@ import {
   syncInboxes,
   unobserveInbox,
 } from "@/modules/chatwoot/management";
+import { bindInboxVoiceAgent } from "@/modules/voice-call/inboxes";
 
 // The error catalog this controller's routes answer with. `bun i18n:extract` materialises
 // src/api/locales/*.json from these lines and prunes anything nothing references, and
@@ -69,6 +70,11 @@ import {
 // translate('errors.inboxNotFound', 'Inbox not found.')
 // translate('errors.inboxStillExists', 'This inbox still exists in Chatwoot. Delete it there first.')
 // translate('errors.chatwootInboxProbeFailed', 'Could not confirm with Chatwoot that this inbox was deleted.')
+// translate('errors.voiceInboxNotWhatsapp', 'Only a WhatsApp inbox takes calls.')
+// translate('errors.voiceInboxNotConnector', 'Only a WhatsApp inbox on the fazer.ai connector takes calls.')
+// translate('errors.voiceAgentRequired', 'Only a calls agent answers calls.')
+// translate('errors.voiceInboxChatwootUnreachable', 'The binding was saved, but Chatwoot could not be reached. Saving any calls agent again retries it.')
+// translate('errors.voiceAgentNotResponder', 'A calls agent does not answer messages. Choose it under Calls agent.')
 
 // Chatwoot instance + inbox management (per-tenant). TENANT_ADMIN. SEPARATE from the public webhook
 // receiver controller (same /v1/chatwoot prefix; no path overlap: /instances* + /inboxes* here vs
@@ -550,6 +556,36 @@ export const chatwootAdminController = new Elysia({
         agentId: t.Union([t.String(), t.Null()], {
           description:
             "Agent id (BigInt string) to bind, or null to unbind the inbox.",
+        }),
+      }),
+      response: errors(400, 401, 403, 404, 422, 502),
+    },
+  )
+  // The VOICE binding: the voice agent that answers the inbox's calls, beside the
+  // responder above, which answers its messages.
+  .put(
+    "/inboxes/:id/voice-agent",
+    async ({ tenantContext, params, body }) => ({
+      instance: instanceIdentity,
+      ...(await bindInboxVoiceAgent(
+        ctxOrThrow(tenantContext),
+        requireDbId(params.id),
+        optionalDbId((body as { agentId: string | null }).agentId, "agentId") ??
+          null,
+      )),
+    }),
+    {
+      requireRole: "TENANT_ADMIN",
+      detail: doc(
+        "Set the voice agent of an inbox",
+        "Set or clear (`agentId: null`) which voice agent answers the inbox's WhatsApp calls, and write it to the fazer.ai Chatwoot: the inbox's call audio goes to this deployment, and only an enabled voice agent in production takes the calls (otherwise they ring the human agents). Independent of the agent that answers the inbox's messages. 422 for an inbox that is not WhatsApp or an agent that is not a voice agent; 502 when Chatwoot could not be written (the binding is kept, and saving the agent writes it again).",
+      ),
+      params: t.Object({
+        id: t.String({ description: "Inbox id (BigInt string)." }),
+      }),
+      body: t.Object({
+        agentId: t.Union([t.String(), t.Null()], {
+          description: "Voice agent id (BigInt string), or null to unbind.",
         }),
       }),
       response: errors(400, 401, 403, 404, 422, 502),

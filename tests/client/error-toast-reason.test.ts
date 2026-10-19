@@ -556,6 +556,8 @@ export function unaskedToasts(src: string, file = "<memory>"): Offender[] {
 // Keyed by the SENTENCE, not the line: a line number moves on an unrelated edit, while a rewritten
 // sentence SHOULD bring the waiver back for review.
 const WAIVED: Record<string, string> = {
+  "pages/agents/AgentEditorPage.tsx :: editor.callsFixRanges":
+    "The voice agent's call settings, judged in the form before any request: a number out of range stops the save, so the server never answered anything.",
   "pages/agents/AgentEditorPage.tsx :: toolsText":
     "settingsTextError is OUR OWN preflight over the bag, run after a re-read of the stored settings. There is no refusal: the request it would have made was never sent.",
   "pages/resources/KnowledgeApprovals.tsx :: approvals.editGone":
@@ -1040,7 +1042,7 @@ describe("an error toast shows what the server said", () => {
   // like the `popupBlocked`/`authFailed`/`googleSignInFailed` pairs). Extracting the two pages'
   // shared handler would only relocate the `t(...)` sentences to the call sites.
   test("the waiver ledger is pinned to its size", () => {
-    expectWaiverLedger("WAIVED", WAIVED, 14);
+    expectWaiverLedger("WAIVED", WAIVED, 15);
   });
 
   test("every toast the scanner cannot ask about is named", () => {

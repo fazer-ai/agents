@@ -69,6 +69,15 @@ import {
   VISION_REASONING_EFFORTS,
 } from "@/modules/vision/output-limits";
 import { VISION_PROVIDER_NAMES } from "@/modules/vision/providers";
+import {
+  CALL_ASR_MODELS,
+  CALL_BACKGROUND_SOUNDS,
+  CALL_LIMITS,
+  CALL_PROVIDERS,
+  CALL_TOOL_SOUNDS,
+  CALL_TTS_MODELS,
+  CALL_TURN_EAGERNESS,
+} from "@/modules/voice-call/settings";
 
 // The argument shape of the behavior blocks. Two rules, both in docs/mcp.md: type and choice, never
 // size (declare what a reader throws away, never a bound it clamps), and what the schema enforces is
@@ -135,6 +144,56 @@ const stt = z.looseObject({
     .describe('ISO-639-1, e.g. "pt" or "pt-BR"'),
   credentialRef: credentialRef(),
   baseURL: baseURL(),
+});
+
+// WhatsApp calls (modules/voice-call/settings). The engine is the provider's, on the customer's key.
+const calls = z.looseObject({
+  provider: oneOf(CALL_PROVIDERS).optional(),
+  credentialRef: credentialRef().describe(
+    "provider key that can run agents; none = no answer",
+  ),
+  voice: z.string().optional().describe("provider voice id; empty = default"),
+  llm: z.string().optional().describe("model the provider runs"),
+  ttsModel: oneOf(CALL_TTS_MODELS).optional(),
+  asrModel: oneOf(CALL_ASR_MODELS).optional(),
+  speed: z
+    .number()
+    .optional()
+    .describe(`${CALL_LIMITS.speed[0]}-${CALL_LIMITS.speed[1]}, clamped`),
+  openingDelayMs: z
+    .number()
+    .optional()
+    .describe("placed call's wait for hello, 0-5000 ms"),
+  turnEagerness: oneOf(CALL_TURN_EAGERNESS).optional(),
+  backgroundSound: oneOf(CALL_BACKGROUND_SOUNDS)
+    .nullable()
+    .optional()
+    .describe("ambience under the speech; null = none"),
+  backgroundVolume: z
+    .number()
+    .optional()
+    .describe(
+      `relative to the speech, ${CALL_LIMITS.backgroundVolume[0]}-${CALL_LIMITS.backgroundVolume[1]}`,
+    ),
+  toolSound: oneOf(CALL_TOOL_SOUNDS)
+    .nullable()
+    .optional()
+    .describe("plays while a tool runs; null = silence"),
+  silenceEndCallSecs: z
+    .number()
+    .nullable()
+    .optional()
+    .describe("silence that ends the call, 10-600 s; null = never"),
+  maxDurationSecs: z.number().optional().describe("60-3600, clamped"),
+  keywords: z
+    .array(z.string())
+    .optional()
+    .describe("terms the transcription expects; up to 50"),
+  providerAgentId: z
+    .string()
+    .nullable()
+    .optional()
+    .describe("server-owned; a write is ignored"),
 });
 
 const tts = z.looseObject({
@@ -1167,6 +1226,7 @@ export const BEHAVIOR_PATCH_SHAPE = {
   debounce: debounce.optional(),
   stt: stt.optional(),
   tts: tts.optional(),
+  calls: calls.optional(),
   vision: vision.optional(),
   split: split.optional(),
   signature: signature.optional(),

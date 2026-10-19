@@ -45,6 +45,10 @@ import { tenantSettingsController } from "@/api/v1/tenant-settings.controller";
 import { toolsController } from "@/api/v1/tools.controller";
 import { v1Controller } from "@/api/v1/v1.controller";
 import { vaultController } from "@/api/v1/vault.controller";
+import {
+  voiceController,
+  voicePlaygroundController,
+} from "@/api/v1/voice.controller";
 import { webhooksController } from "@/api/v1/webhooks.controller";
 import config from "@/config";
 
@@ -268,6 +272,8 @@ const api = new Elysia()
   .use(mcpMeController)
   .use(mcpAdminController)
   .use(chatwootController)
+  .use(voiceController)
+  .use(voicePlaygroundController)
   .use(chatwootAdminController);
 
 export default api;

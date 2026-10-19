@@ -155,6 +155,7 @@ import {
 import { DEFAULT_MODEL_CONFIG } from "./model-config";
 import { fallbackDeadlineMs, PRIMARY_MAX_RETRIES } from "./model-fallback";
 import type {
+  FallbackFailedInfo,
   ModelLabels,
   ModelRetryInfo,
   PermitWaitInfo,
@@ -2191,12 +2192,7 @@ export interface GraphBuildDeps {
   }) => void;
   // Fired when the fallback ALSO failed, which is the turn's real ending. Its own line, because the
   // `generate` stage is labelled with the primary by construction.
-  onModelFallbackFailed?: (info: {
-    provider: string;
-    model: string;
-    reason: string;
-    failure: string;
-  }) => void;
+  onModelFallbackFailed?: (info: FallbackFailedInfo) => void;
   // The caller's own "is this run still wanted", carried down to the graph's TOOL BOUNDARY, which is
   // the one seam inside the invoke. The reactive turn and the nudge both pass one; the playground
   // passes none and the tool node then runs unfenced. No `strict`: the graph states why.

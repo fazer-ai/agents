@@ -96,6 +96,16 @@ export interface ModelLabels {
   model: string;
 }
 
+// A fallback that failed, and, when it had been handed the turn by a failing primary, that primary's
+// failure: the one a fallback that answers reports as `primaryFailure`, which needs a line of its own
+// when nothing answered. Absent when the fallback already had the turn (an earlier round demoted the
+// primary) and no primary was asked.
+export interface FallbackFailedInfo extends ModelLabels {
+  reason: string;
+  failure: string;
+  primary?: ModelLabels & { reason: string; failure: string };
+}
+
 export interface ModelFallback<T> {
   // The same call, against the other provider. A thunk rather than a model, because only the caller
   // knows what "the same call" means: which messages, which bound tools, and which metadata names
@@ -105,15 +115,20 @@ export interface ModelFallback<T> {
   deadlineMs: number;
   // What it runs on, for the lines this module writes about it.
   labels: ModelLabels;
-  // Fired when the fallback takes the turn, so the runtime can leave a warn on the trail. `reason`
-  // is already the redacted word: the request carried the whole conversation, so the provider's own
-  // sentence may be the customer's coming back.
+  // Fired once the fallback ANSWERED, so the runtime can leave a warn on the trail; never before the
+  // outcome is known, or a fallback that fails a moment later reads as having taken the turn.
+  // `reason` is the primary's, already the redacted word: the request carried the whole conversation,
+  // so the provider's own sentence may be the customer's coming back.
   onFallback?: (info: { reason: string; failure: string }) => void;
-  // Fired when the fallback ALSO failed, which is the turn's real ending. Its own line, because the
-  // `generate` stage wrapping this call is labelled with the PRIMARY by construction: without it an
-  // operator reads "the fallback took the turn (ok)" followed by an error attributed to the model
-  // that never made the second call, which reads as the primary failing twice.
-  onFallbackFailed?: (info: { reason: string; failure: string }) => void;
+  // Fired when the fallback ALSO failed, which is the turn's real ending, with both failures: the
+  // fallback's (`reason`, `failure`) and the primary's that handed it the turn, so the primary's
+  // failure still reaches a line of its own.
+  onFallbackFailed?: (info: {
+    reason: string;
+    failure: string;
+    primaryReason: string;
+    primaryFailure: string;
+  }) => void;
 }
 
 // Which model an event is about, carried on every event and NOT optional: only this module knows
@@ -277,9 +292,10 @@ export async function runModelCall<T>(
             { err },
             "primary model provider failed; handing the turn to the fallback",
           );
-          fallback.onFallback?.({ reason, failure: providerFailure(err) });
+          const primaryFailure = providerFailure(err);
+          let answered: T;
           try {
-            return await attemptOn(
+            answered = await attemptOn(
               fallback.run,
               fallback.labels,
               fallback.deadlineMs,
@@ -293,11 +309,15 @@ export async function runModelCall<T>(
               fallback.onFallbackFailed({
                 reason: out instanceof Error ? out.message : "provider error",
                 failure,
+                primaryReason: reason,
+                primaryFailure,
               });
               markReportedElsewhere(out, failure);
             }
             throw out;
           }
+          fallback.onFallback?.({ reason, failure: primaryFailure });
+          return answered;
         };
         try {
           return await attemptOn(fn, opts?.primary, deadlineMs);

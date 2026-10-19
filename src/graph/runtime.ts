@@ -59,6 +59,10 @@ import {
 import { approvalNoticesForTurn } from "@/modules/documents/approval";
 import { emitCapacityWait } from "@/modules/flowlog/capacity";
 import {
+  emitFallbackAnswered,
+  emitFallbackFailed,
+} from "@/modules/flowlog/fallback-lines";
+import {
   emitFlowEvent,
   type FlowContext,
   withFlowStage,
@@ -1164,6 +1168,8 @@ async function runTurnBody(
   );
   // Whether the fallback model wrote this turn's reply, for the external check's request.
   let fallbackAnswered = false;
+  // The model that answered once the fallback took the turn, for the stage's closing line.
+  let answeredBy: { provider: string; model: string } | null = null;
   const graph = await buildModelAndGraph(loaded, tools, {
     standingNotices,
     // NOTE: Asked by the graph when the silence retry would run. A completed transfer or something
@@ -1219,35 +1225,16 @@ async function runTurnBody(
       }),
     // NOTE: A fallback that answers is a successful turn, so this warn is the operator's one signal
     // that the primary provider is not taking their traffic.
-    onModelFallback: ({ provider, model, reason, failure }) => {
+    onModelFallback: (info) => {
       fallbackAnswered = true;
-      emitFlowEvent(flow, {
-        stage: "generate",
-        level: "warn",
-        status: "ok",
-        provider,
-        model,
-        detail: {
-          fallbackFrom: loaded.mc.provider,
-          fallbackReason: reason,
-          primaryFailure: failure,
-        },
-      });
+      answeredBy = { provider: info.provider, model: info.model };
+      emitFallbackAnswered(flow, "generate", loaded.mc.provider, info);
     },
     // NOTE: The fallback failed too. Attribution, not a second alarm: the wrapping `generate` stage
     // already emits the error (labelled with the primary), and alert coalescing keys on (channel,
     // stage, level), so a second error would page twice. `info` names which model died; `status`
     // stays "error".
-    onModelFallbackFailed: ({ provider, model, reason, failure }) =>
-      emitFlowEvent(flow, {
-        stage: "generate",
-        level: "info",
-        status: "error",
-        provider,
-        model,
-        detail: { fallbackFailed: reason, failure },
-        errorMessage: reason,
-      }),
+    onModelFallbackFailed: (info) => emitFallbackFailed(flow, "generate", info),
     // NOTE: A configured fallback that cannot be built, reported once per turn build rather than on
     // a failure, when it would be too late to warn.
     onModelFallbackUnavailable: ({ provider, model, reason }) =>
@@ -2239,6 +2226,7 @@ async function runTurnBody(
         // NOTE: The resolved prompt of this turn is audited, since it is where the contact's data
         // entered (./prompt-audit.ts).
         detail: { systemPrompt: loaded.systemPromptAudit },
+        labelsOf: () => answeredBy,
         ...(params.afterThrow
           ? {
               failureOf: () => ({

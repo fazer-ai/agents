@@ -81,6 +81,10 @@ import {
   writeTriggerState,
 } from "@/modules/decisions/trigger-state";
 import { emitCapacityWait } from "@/modules/flowlog/capacity";
+import {
+  emitFallbackAnswered,
+  emitFallbackFailed,
+} from "@/modules/flowlog/fallback-lines";
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
 import {
   type ClaimedJob,
@@ -1687,6 +1691,8 @@ export async function runObserve(
     return seen;
   });
 
+  // The model that answered once the fallback took the tick, for the tick's closing line.
+  let answeredBy: { provider: string; model: string } | null = null;
   // THE `decisions` ENGINE BUILDS NO MODEL: its brain is the provider call below.
   let graph: Awaited<ReturnType<typeof buildModelAndGraph>> | null = null;
   try {
@@ -1715,29 +1721,12 @@ export async function runObserve(
             model,
             detail: { retry: attempt, node: "observer", willRetry: true },
           }),
-        onModelFallback: ({ provider, model, reason: why, failure }) =>
-          emitFlowEvent(flow, {
-            stage: "observe",
-            level: "warn",
-            status: "ok",
-            provider,
-            model,
-            detail: {
-              fallbackFrom: cfg.mc.provider,
-              fallbackReason: why,
-              primaryFailure: failure,
-            },
-          }),
-        onModelFallbackFailed: ({ provider, model, reason: why, failure }) =>
-          emitFlowEvent(flow, {
-            stage: "observe",
-            level: "info",
-            status: "error",
-            provider,
-            model,
-            detail: { fallbackFailed: why, failure },
-            errorMessage: why,
-          }),
+        onModelFallback: (info) => {
+          answeredBy = { provider: info.provider, model: info.model };
+          emitFallbackAnswered(flow, "observe", cfg.mc.provider, info);
+        },
+        onModelFallbackFailed: (info) =>
+          emitFallbackFailed(flow, "observe", info),
         // ...AND THE ONE THAT FIRES BEFORE ANY FAILURE. A fallback the operator configured and that
         // cannot be BUILT — credential deleted, configuration unrunnable — leaves the turn with
         // nothing behind it, which is indistinguishable from having configured none. Reported at
@@ -2214,8 +2203,7 @@ export async function runObserve(
     stage: "observe",
     level: "info",
     status: "ok",
-    provider: cfg.mc.provider,
-    model: cfg.mc.model,
+    ...(answeredBy ?? { provider: cfg.mc.provider, model: cfg.mc.model }),
     durationMs: Date.now() - startedAt,
     detail: {
       reason,

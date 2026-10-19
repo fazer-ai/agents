@@ -302,13 +302,13 @@ describe.skipIf(!dbUp)("error text reaches every column that holds it", () => {
 type ErrorSite = "flow-event" | "guarded" | "cleared" | "read" | "unrelated";
 
 const ERROR_COLUMN_LINES: Record<string, [number, ErrorSite | string]> = {
-  "src/graph/nudge.ts": [2, "flow-event"],
+  "src/graph/nudge.ts": [1, "flow-event"],
   "src/graph/prepare.ts": [2, "flow-event"],
-  "src/graph/runtime.ts": [7, "flow-event"],
+  "src/graph/runtime.ts": [6, "flow-event"],
   "src/graph/tool-flowlog.ts": [3, "flow-event"],
   // A playground turn that failed unhandled: a fixed sentence, never the error's text. And the two
   // fallback-failed lines, the redacted reason.
-  "src/modules/playground/service.ts": [3, "flow-event"],
+  "src/modules/playground/service.ts": [1, "flow-event"],
   // An upload row's own failure in the console, which never reaches a column.
   "src/client/pages/resources/useKnowledgeManager.tsx": [1, "unrelated"],
   // The reconcile sweep's headline: a fixed sentence and a count, through writeFlowEvent.
@@ -329,6 +329,7 @@ const ERROR_COLUMN_LINES: Record<string, [number, ErrorSite | string]> = {
   // line a lost follow-up sequence writes, a fixed English sentence.
   "src/modules/followups/handlers.ts": [2, "read + flow-event"],
   "src/modules/flowlog/dead-letter.ts": [1, "flow-event"],
+  "src/modules/flowlog/fallback-lines.ts": [2, "flow-event"],
   "src/modules/flowlog/read.ts": [4, "read"],
   "src/modules/flowlog/service.ts": [2, "guarded"],
   "src/modules/flowlog/webhook.ts": [1, "flow-event"],
@@ -337,7 +338,7 @@ const ERROR_COLUMN_LINES: Record<string, [number, ErrorSite | string]> = {
   "src/modules/guardrails/handoff.ts": [1, "flow-event"],
   "src/modules/guardrails/health.ts": [4, "read"],
   "src/modules/memory/compact.ts": [1, "flow-event"],
-  "src/modules/observe/job.ts": [2, "flow-event"],
+  "src/modules/observe/job.ts": [1, "flow-event"],
   "src/modules/other-inboxes/context.ts": [1, "flow-event"],
   // The follow-up sweep's re-arm reads the column to tell the scheduler's failure backoff from a row
   // that stood down: a select and the type it is handed as.

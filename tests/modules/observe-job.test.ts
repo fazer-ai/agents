@@ -285,11 +285,17 @@ class SilentModel {
 // ONE reader for this file, parameterised by stage: the tool logger writes `tool` lines and the
 // tick writes `observe` ones, and a second `flowLogRows` call here would be a second reader for
 // `flowlog-reader-scope.test.ts` to account for. Scoping stays in one place either way.
-const stageLines = (stage: "observe" | "tool") =>
+const stageLines = (stage: "observe" | "tool", withModel = false) =>
   flowLogRows(suDb, {
     where: { conversationId: convRowId, stage },
     orderBy: { id: "asc" },
-    select: { status: true, level: true, detail: true, agentId: true },
+    select: {
+      status: true,
+      level: true,
+      detail: true,
+      agentId: true,
+      ...(withModel ? { model: true } : {}),
+    },
   });
 const observeLines = () => stageLines("observe");
 
@@ -2351,6 +2357,80 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
       expect(
         (errors[0]?.detail as Record<string, unknown> | null)?.fallbackFailure,
       ).toBe("HTTP 503");
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { settings: { monitoring: MONITORING } },
+      });
+      await clearFlowLog(suDb, {
+        tenantId,
+        conversationId: convRowId,
+        stage: "observe",
+      });
+    }
+  });
+
+  // NOTE: the tick's closing line names the model that answered: with the primary down and the
+  // fallback answering, a line under the primary's name would read as the primary having worked.
+  test("a tick the fallback answered closes under the fallback's name", async () => {
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: {
+        settings: {
+          monitoring: MONITORING,
+          modelFallback: { provider: "openai", model: "gpt-5.4" },
+        },
+      },
+    });
+    // Only THIS tick's lines: the rows accumulate on the conversation across the file.
+    const before = (await observeLines()).length;
+    try {
+      const res = await runObserve(
+        tenantId,
+        {
+          instanceId,
+          conversationId: CONV,
+          agentId,
+          reason: "burst",
+          atMessageId: null,
+        },
+        appDb,
+        {
+          makeClient: async () =>
+            stubClient([message(1, "quero cancelar")], [], log),
+          makeModel: ((mc: { model: string }) => {
+            if (mc.model === "gpt-5.4")
+              return new SilentModel() as unknown as BaseChatModel;
+            const unavailable = async (): Promise<never> => {
+              throw Object.assign(new Error("service unavailable"), {
+                status: 503,
+              });
+            };
+            return {
+              invoke: unavailable,
+              bindTools: () => ({ invoke: unavailable }),
+            } as unknown as BaseChatModel;
+          }) as never,
+        },
+      );
+      expect(res).toEqual({ outcome: "done" });
+      const lines = (await stageLines("observe", true)) as {
+        status: string;
+        model?: string | null;
+        detail: unknown;
+      }[];
+      const tick = lines.slice(before);
+      const took = tick.find(
+        (l) => (l.detail as Record<string, unknown> | null)?.fallbackFrom,
+      );
+      expect(took?.model).toBe("gpt-5.4");
+      // The rows are written fire-and-forget, so the closing line is found by what it says, not by id.
+      const closing = tick.find(
+        (l) =>
+          (l.detail as Record<string, unknown> | null)?.acted !== undefined,
+      );
+      expect(closing).toMatchObject({ status: "ok", model: "gpt-5.4" });
     } finally {
       await suDb.agent.update({
         where: { id: agentId },

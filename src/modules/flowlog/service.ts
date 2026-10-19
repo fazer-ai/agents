@@ -210,6 +210,10 @@ export async function withFlowStage<T>(
     // RECOVERS from (e.g. TTS → text fallback) pass "warn" so the conversation/Logs show an advisory
     // rather than a red error. The status stays "error" (the stage itself did fail).
     errorLevel?: FlowLevel;
+    // The labels of the success line, decided once the work returned, for a stage whose model can
+    // change inside it (a fallback that took the turn answers under its own name). Null keeps
+    // `provider`/`model`.
+    labelsOf?: () => { provider: string; model: string } | null;
     // The failure line's level and extra detail, decided by the caller from the error, for a caller
     // that knows what comes next: a retry it is about to make is `info` with `willRetry`, and only the
     // failure that ends the work keeps the severity. Wins over `errorLevel`. A throw here falls back
@@ -239,6 +243,7 @@ export async function withFlowStage<T>(
       status: "ok",
       provider: meta.provider ?? null,
       model: meta.model ?? null,
+      ...(meta.labelsOf?.() ?? {}),
       durationMs: Date.now() - start,
       detail,
     });

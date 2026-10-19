@@ -38,6 +38,10 @@ import {
 import { recordResolutionOrigin } from "@/modules/conversations/record-resolution";
 import { approvalNoticesForTurn } from "@/modules/documents/approval";
 import { emitCapacityWait } from "@/modules/flowlog/capacity";
+import {
+  emitFallbackAnswered,
+  emitFallbackFailed,
+} from "@/modules/flowlog/fallback-lines";
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
 import {
   buildGuardrailGate,
@@ -1846,34 +1850,14 @@ async function runAgentNudgeBody(
     // primary was down: the reply went out, the customer was served, and the only trace would be a
     // usage row under another model's name. Warn rather than info — this is the operator's one
     // signal that a provider they are paying for is not taking their traffic.
-    onModelFallback: ({ provider, model, reason, failure }) =>
-      emitFlowEvent(flow, {
-        stage: "generate",
-        level: "warn",
-        status: "ok",
-        provider,
-        model,
-        detail: {
-          fallbackFrom: cfg.mc.provider,
-          fallbackReason: reason,
-          primaryFailure: failure,
-        },
-      }),
+    onModelFallback: (info) =>
+      emitFallbackAnswered(flow, "generate", cfg.mc.provider, info),
     // NOTE: the turn's real ending when there was a second provider and it failed too. ATTRIBUTION,
     // not a second alarm, so `info` while `status` stays "error": the `generate` stage around this
     // call emits its OWN error when the turn throws, and alert coalescing keys on (channel, stage,
     // level), so a second `generate`/`error` would page twice for one outage. This line only says
     // WHICH model died, since the stage is labelled with the primary by construction.
-    onModelFallbackFailed: ({ provider, model, reason, failure }) =>
-      emitFlowEvent(flow, {
-        stage: "generate",
-        level: "info",
-        status: "error",
-        provider,
-        model,
-        detail: { fallbackFailed: reason, failure },
-        errorMessage: reason,
-      }),
+    onModelFallbackFailed: (info) => emitFallbackFailed(flow, "generate", info),
     // The mirror image, and it fires BEFORE any failure: a fallback the operator configured and that
     // cannot be built leaves the turn with nothing behind it, which is indistinguishable from having
     // configured none. Reported once per turn build rather than on the failure, because by then it

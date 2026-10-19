@@ -10,7 +10,7 @@ import config from "@/config";
 import { getCheckpointer } from "@/graph/checkpointer";
 import { lastAssistantText, recursionLimitFor } from "@/graph/graph";
 import { sentAtStamp } from "@/graph/markers";
-import type { ModelRetryInfo } from "@/graph/model-limit";
+import type { FallbackFailedInfo, ModelRetryInfo } from "@/graph/model-limit";
 import type { ResolvedModelConfig } from "@/graph/models";
 import { type AgentNudge, renderNudge } from "@/graph/nudge";
 import {
@@ -67,6 +67,10 @@ import { normalizeGrants, type ToolGrantInput } from "@/modules/agents/service";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { renderInboundMessage } from "@/modules/chatwoot/render";
 import { documentToolName } from "@/modules/documents/templates";
+import {
+  emitFallbackAnswered,
+  emitFallbackFailed,
+} from "@/modules/flowlog/fallback-lines";
 import {
   emitFlowEvent,
   type FlowContext,
@@ -499,12 +503,7 @@ async function buildPlaygroundGraph(params: {
     reason: string;
     failure: string;
   }) => void;
-  onModelFallbackFailed?: (info: {
-    provider: string;
-    model: string;
-    reason: string;
-    failure: string;
-  }) => void;
+  onModelFallbackFailed?: (info: FallbackFailedInfo) => void;
   onModelFallbackUnavailable?: (info: {
     provider: string;
     model: string;
@@ -1017,6 +1016,8 @@ async function runPlaygroundTurnOnce(
   const replyChoice: ReplyChoice = { textChosen: false };
   // Whether the fallback model wrote the reply, for the external check's request.
   let fallbackAnswered = false;
+  // The model that answered once the fallback took the turn, for the stage's closing line.
+  let answeredBy: { provider: string; model: string } | null = null;
 
   const { graph, callbacks, loaded, tools, traceLabels } =
     await buildPlaygroundGraph({
@@ -1044,16 +1045,10 @@ async function runPlaygroundTurnOnce(
           model,
           detail: { retriedEmptyResponse: attempt },
         }),
-      onModelFallback: ({ provider, model, reason, failure }) => {
+      onModelFallback: (info) => {
         fallbackAnswered = true;
-        emitFlowEvent(flow, {
-          stage: "generate",
-          level: "warn",
-          status: "ok",
-          provider,
-          model,
-          detail: { fallbackReason: reason, primaryFailure: failure },
-        });
+        answeredBy = { provider: info.provider, model: info.model };
+        emitFallbackAnswered(flow, "generate", loadedConfig.mc.provider, info);
       },
       // ATTRIBUTION, NOT A SECOND ALARM, which is why this one line is `info` while the failure it
       // describes is an error. The `generate` stage this call sits inside emits its OWN error when the
@@ -1063,16 +1058,8 @@ async function runPlaygroundTurnOnce(
       // The stage owns the alarm; this line exists only to say WHICH model died, because the stage is
       // labelled with the primary by construction and would otherwise blame the model that never made
       // the second call. `status` stays "error": the call did fail.
-      onModelFallbackFailed: ({ provider, model, reason, failure }) =>
-        emitFlowEvent(flow, {
-          stage: "generate",
-          level: "info",
-          status: "error",
-          provider,
-          model,
-          detail: { fallbackFailed: reason, failure },
-          errorMessage: reason,
-        }),
+      onModelFallbackFailed: (info) =>
+        emitFallbackFailed(flow, "generate", info),
       onModelFallbackUnavailable: ({ provider, model, reason }) =>
         emitFlowEvent(flow, {
           stage: "generate",
@@ -1196,7 +1183,11 @@ async function runPlaygroundTurnOnce(
     result = await withFlowStage(
       flow,
       "generate",
-      { provider: loaded.mc.provider, model: loaded.mc.model },
+      {
+        provider: loaded.mc.provider,
+        model: loaded.mc.model,
+        labelsOf: () => answeredBy,
+      },
       () =>
         graph.invoke(
           { messages: [human] },
@@ -1573,15 +1564,8 @@ async function runPlaygroundFollowupOnce(
           model,
           detail: { retriedEmptyResponse: attempt },
         }),
-      onModelFallback: ({ provider, model, reason, failure }) =>
-        emitFlowEvent(flow, {
-          stage: "generate",
-          level: "warn",
-          status: "ok",
-          provider,
-          model,
-          detail: { fallbackReason: reason, primaryFailure: failure },
-        }),
+      onModelFallback: (info) =>
+        emitFallbackAnswered(flow, "generate", loadedConfig.mc.provider, info),
       // ATTRIBUTION, NOT A SECOND ALARM, which is why this one line is `info` while the failure it
       // describes is an error. The `generate` stage this call sits inside emits its OWN error when the
       // turn throws, and alert coalescing keys on (channel, stage, level): two `generate`/`error` events
@@ -1590,16 +1574,8 @@ async function runPlaygroundFollowupOnce(
       // The stage owns the alarm; this line exists only to say WHICH model died, because the stage is
       // labelled with the primary by construction and would otherwise blame the model that never made
       // the second call. `status` stays "error": the call did fail.
-      onModelFallbackFailed: ({ provider, model, reason, failure }) =>
-        emitFlowEvent(flow, {
-          stage: "generate",
-          level: "info",
-          status: "error",
-          provider,
-          model,
-          detail: { fallbackFailed: reason, failure },
-          errorMessage: reason,
-        }),
+      onModelFallbackFailed: (info) =>
+        emitFallbackFailed(flow, "generate", info),
       onModelFallbackUnavailable: ({ provider, model, reason }) =>
         emitFlowEvent(flow, {
           stage: "generate",

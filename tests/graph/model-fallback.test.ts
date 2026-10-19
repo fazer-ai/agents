@@ -354,9 +354,8 @@ describe("runModelCall with something behind the primary", () => {
     expect(retries).toEqual([PRIMARY]);
   });
 
-  // The turn's real ending, and its own line. The `generate` stage wrapping the call is labelled
-  // with the primary by construction, so without this an operator reads "the fallback took the turn
-  // (ok)" followed by an error attributed to the model that never made the second call.
+  // The turn's real ending, and its own line, with the primary's failure beside it. Nothing answered,
+  // so `onFallback` is never told the fallback took the turn.
   test("when the fallback fails too, that failure is reported under the FALLBACK", async () => {
     const primary = failing(
       Object.assign(new Error("overloaded"), { status: 503 }),
@@ -375,15 +374,42 @@ describe("runModelCall with something behind the primary", () => {
             }),
           ),
         onFallback: ({ reason, failure }) => took.push(`${reason}|${failure}`),
-        onFallbackFailed: ({ reason }) => died.push(reason),
+        onFallbackFailed: ({ reason, primaryReason, primaryFailure }) =>
+          died.push(`${reason}|${primaryReason}|${primaryFailure}`),
       },
     }).catch((e) => e)) as Error;
+    expect(took).toEqual([]);
     // The primary's failure class rides along, for its rate (flowlog/alerts.ts).
-    expect(took).toEqual(["HTTP 503|HTTP 503"]);
-    expect(died).toEqual(["HTTP 500"]);
+    expect(died).toEqual(["HTTP 500|HTTP 503|HTTP 503"]);
     // What the turn reports is still the fallback's failure, redacted the same way.
     expect(err.message).toBe("HTTP 500");
     expect(err.message).not.toContain("prose");
+  });
+});
+
+// The line that says the fallback took the turn is written once it answered: a slow fallback that
+// fails would otherwise read as having taken it.
+describe("when the fallback is told it took the turn", () => {
+  test("only after its answer arrived", async () => {
+    const primary = failing(
+      Object.assign(new Error("overloaded"), { status: 503 }),
+    );
+    const order: string[] = [];
+    const out = await runModelCall<string>(primary.fn, {
+      primary: PRIMARY,
+      fallback: {
+        labels: FALLBACK_LABELS,
+        deadlineMs: 5_000,
+        run: async () => {
+          await Bun.sleep(20);
+          order.push("answered");
+          return "ok";
+        },
+        onFallback: () => order.push("took"),
+      },
+    });
+    expect(out).toBe("ok");
+    expect(order).toEqual(["answered", "took"]);
   });
 });
 

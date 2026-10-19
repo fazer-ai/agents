@@ -21,6 +21,7 @@ import { selectHistoryWindow } from "@/graph/history-window";
 import { contentToText } from "@/graph/message-text";
 import { PRIMARY_TIMEOUT_MS } from "@/graph/model-fallback";
 import {
+  type FallbackFailedInfo,
   type ModelLabels,
   type ModelRetryInfo,
   type PermitWaitInfo,
@@ -95,13 +96,8 @@ export interface BuildAgentGraphParams {
     // fallback, and a degraded primary still has to count toward its own rate (flowlog/alerts.ts).
     failure: string;
   }) => void;
-  onModelFallbackFailed?: (info: {
-    provider: string;
-    model: string;
-    reason: string;
-    // `providerFailure`'s closed word, for the line's `detail.failure` (flowlog/alerts.ts).
-    failure: string;
-  }) => void;
+  // `failure` is `providerFailure`'s closed word, for the line's `detail.failure` (flowlog/alerts.ts).
+  onModelFallbackFailed?: (info: FallbackFailedInfo) => void;
   // Ceiling on the history tokens handed to the model (agent.settings.limits.maxHistoryTokens).
   // null/undefined sends the whole thread.
   maxHistoryTokens?: number | null;
@@ -952,12 +948,22 @@ export function buildAgentGraph({
                   fallbackHasTheTurn = true;
                   onModelFallback?.({ ...second.labels, reason, failure });
                 },
-                onFallbackFailed: ({ reason, failure }) => {
+                onFallbackFailed: ({
+                  reason,
+                  failure,
+                  primaryReason,
+                  primaryFailure,
+                }) => {
                   if (jobSignal?.aborted) return;
                   onModelFallbackFailed?.({
                     ...second.labels,
                     reason,
                     failure,
+                    primary: {
+                      ...primary,
+                      reason: primaryReason,
+                      failure: primaryFailure,
+                    },
                   });
                 },
               }

@@ -286,6 +286,10 @@ export async function deliverReply(
           );
           if (verdict.known && verdict.id !== null) return landed;
           if (!isResendable(verdict)) {
+            // NOTE: a /reset that landed while the send was pending is a stand-down, not a failure.
+            if (await calledOff()) {
+              return { delivered: 0, failed: false, unproven: false };
+            }
             return { delivered: 0, failed: true, unproven: !verdict.known };
           }
           // The same one retry the split path gives its remainder: a turn's throw never sends again
@@ -378,7 +382,7 @@ export async function deliverReply(
               verdict.id === null &&
               !isResendable(verdict)
             ) {
-              failed = true;
+              if (!(await calledOff())) failed = true;
               break;
             }
             // Whatever made the send fail may still be in the way (a lock, a busy database), and the
@@ -424,9 +428,13 @@ export async function deliverReply(
                     literal,
                   )[0] ?? literal(owedRaw))
                 : literal(owedRaw);
-            // Same 15s deadline, so it can be rejected after being accepted like any other send. When it
-            // carries the balloon proven absent it keeps that balloon's id: the id names what was owed.
-            const retrySendId = from === i ? sendId : replySendId(replyKey);
+            // Same 15s deadline, so it can be rejected after being accepted like any other send. It keeps
+            // the failed balloon's id only when it is that balloon alone: a consolidated message is another
+            // message, and an original that commits late would otherwise answer for the whole remainder.
+            const retrySendId =
+              from === i && from === rawChunks.length - 1
+                ? sendId
+                : replySendId(replyKey);
             try {
               noteDelivered(
                 createdMessageId(

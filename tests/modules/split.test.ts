@@ -2128,6 +2128,61 @@ describe("deliverReply: a send refused for a passing cause is sent again (issue 
     },
   );
 
+  test("split enabled: a balloon that commits late cannot answer for the consolidated retry", async () => {
+    const two = "Primeiro.\n\nSegundo.";
+    const { client, posts, stored } = stub(() => busy());
+    const out = await deliverReply(
+      client,
+      1,
+      two,
+      { ...SPLIT_DEFAULTS, enabled: true },
+      async () => {
+        // The first POST's INSERT commits while the agent waits to send again.
+        const first = posts[0];
+        if (
+          posts.length === 1 &&
+          first &&
+          !stored.some((m) => m.sendId === first.sendId)
+        ) {
+          stored.push({
+            id: 900,
+            content: first.content,
+            sendId: first.sendId,
+          });
+        }
+      },
+      undefined,
+      async () => false,
+      100,
+    );
+    // "Segundo." never landed: the late first balloon must not stand in for the whole retry.
+    expect(posts).toHaveLength(2);
+    expect(posts[1]?.sendId).not.toBe(posts[0]?.sendId);
+    expect(out.failed).toBe(true);
+  });
+
+  test.each(modes)(
+    "%s: a refusal that comes back after a /reset is a stand-down, not a failure",
+    async (_label, enabled) => {
+      const { client, posts } = stub(
+        () => new ChatwootApiError(422, "POST /conversations/1/messages"),
+      );
+      const out = await deliverReply(
+        client,
+        1,
+        one,
+        { ...SPLIT_DEFAULTS, enabled },
+        async () => {},
+        undefined,
+        // Cleared while the POST was in flight.
+        async () => posts.length > 0,
+        100,
+      );
+      expect(out).toEqual({ delivered: 0, failed: false, unproven: false });
+      expect(posts).toHaveLength(1);
+    },
+  );
+
   test.each(modes)(
     "%s: a run called off during the pause sends nothing more and is not a failure",
     async (_label, enabled) => {

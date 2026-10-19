@@ -26,6 +26,7 @@ import {
   disconnectChatwootDeployment,
   listInboxCustomAttributes,
   listInboxLabels,
+  reconnectChatwootInstance,
   removeChatwootInstance,
   softDisconnectChatwootInstance,
 } from "@/modules/chatwoot/management";
@@ -945,6 +946,61 @@ describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
       }
     });
   }
+
+  // Reconnected while the removal switches its calls off: the removal stops at its next batch and the
+  // account stays, so the calls it switched off are written again as the binding stands, never left
+  // off on an inbox that still has a voice agent.
+  test("a removal stopped by a reconnect writes the account's calls back on", async () => {
+    const t = (
+      await suDb.tenant.create({
+        data: {
+          name: "Remoção desfeita",
+          slug: `voice-rm-back-${process.pid}`,
+        },
+      })
+    ).id;
+    const inst = await seedChatwootInstance(suDb, {
+      tenantId: t,
+      baseUrl: "https://chat.removal-back.test",
+      accountId: 8,
+      adminToken: encryptJson("admintok"),
+    });
+    const answering = await suDb.agent.create({
+      data: {
+        tenantId: t,
+        name: "Voz",
+        kind: "voice",
+        systemPrompt: "x",
+        mode: "production",
+      },
+    });
+    await suDb.inbox.create({
+      data: {
+        tenantId: t,
+        chatwootInstanceId: BigInt(inst.id),
+        chatwootInboxId: 801,
+        name: "Inbox 801",
+        channelType: "Channel::Whatsapp",
+        voiceAgentId: answering.id,
+        voiceRouteToken: encryptJson("rota-801"),
+      },
+    });
+    const cw = fakeChatwoot({
+      duringAiVoice: async () => {
+        await reconnectChatwootInstance(ctx(t), BigInt(inst.id), appDb);
+      },
+    });
+    try {
+      await expect(
+        removeChatwootInstance(ctx(t), BigInt(inst.id), appDb, cw),
+      ).rejects.toMatchObject({
+        translationKey: "errors.chatwootRemovalReconnected",
+      });
+      expect(cw.writes.at(-1)).toMatchObject({ inbox_id: 801, enabled: true });
+    } finally {
+      await suDb.tenant.delete({ where: { id: t } });
+    }
+  });
 
   test("unbinding the inbox's text agent leaves its calls agent bound", async () => {
     await bindInboxVoiceAgent(

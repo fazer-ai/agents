@@ -1143,6 +1143,7 @@ export async function removeChatwootInstance(
   // erasing an account that is taking traffic again. The disconnect it checks is the one this call
   // opened with, to the microsecond, so reconnecting and disconnecting again between two batches
   // still stops it. No row means a concurrent removal finished it.
+  let reconnected = false;
   const stillRemoving = async (db: ScopedDb): Promise<boolean> => {
     const [row] = await db.$queryRaw<{ same: boolean }[]>`
       SELECT (EXTRACT(EPOCH FROM disconnected_at) * 1000000)::bigint IS NOT DISTINCT FROM ${generation}
@@ -1150,6 +1151,7 @@ export async function removeChatwootInstance(
         FROM chatwoot_instances WHERE id = ${id} FOR NO KEY UPDATE`;
     if (!row) return false;
     if (!row.same) {
+      reconnected = true;
       throw new ConflictError(
         "this Chatwoot account was reconnected while it was being removed; remove it again to finish",
         "errors.chatwootRemovalReconnected",
@@ -1157,55 +1159,77 @@ export async function removeChatwootInstance(
     }
     return true;
   };
-  for (const table of REMOVAL_BATCHES) {
-    const name = Prisma.raw(table);
-    // SKIP LOCKED: a row an admitted delivery is writing right now is left for the next batch (or
-    // the final cascade) instead of holding this one up to its lock timeout.
-    // NO KEY UPDATE, the module's mode (see the lock fence in tests/modules/audit-channel-family).
-    // MATERIALIZED: as a plain `IN (subquery)` the planner may rerun the locking subquery per outer
-    // row, and on a table with stale statistics it does, one scan per row. Picked once, the batch is
-    // a thousand primary-key deletes.
-    for (;;) {
-      const deleted = await runScopedOn(base, ctx, async (db) =>
-        (await stillRemoving(db))
-          ? db.$executeRaw`
-              WITH batch AS MATERIALIZED (
-                SELECT id FROM ${name}
-                 WHERE tenant_id = ${tenantId} AND chatwoot_instance_id = ${id}
-                 LIMIT ${REMOVAL_BATCH_ROWS}
-                   FOR NO KEY UPDATE SKIP LOCKED)
-              DELETE FROM ${name} WHERE id IN (SELECT id FROM batch)`
-          : null,
-      );
-      if (deleted === null) {
-        invalidateRouteTokenCache();
-        return;
+  try {
+    for (const table of REMOVAL_BATCHES) {
+      const name = Prisma.raw(table);
+      // SKIP LOCKED: a row an admitted delivery is writing right now is left for the next batch (or
+      // the final cascade) instead of holding this one up to its lock timeout.
+      // NO KEY UPDATE, the module's mode (see the lock fence in tests/modules/audit-channel-family).
+      // MATERIALIZED: as a plain `IN (subquery)` the planner may rerun the locking subquery per outer
+      // row, and on a table with stale statistics it does, one scan per row. Picked once, the batch is
+      // a thousand primary-key deletes.
+      for (;;) {
+        const deleted = await runScopedOn(base, ctx, async (db) =>
+          (await stillRemoving(db))
+            ? db.$executeRaw`
+                WITH batch AS MATERIALIZED (
+                  SELECT id FROM ${name}
+                   WHERE tenant_id = ${tenantId} AND chatwoot_instance_id = ${id}
+                   LIMIT ${REMOVAL_BATCH_ROWS}
+                     FOR NO KEY UPDATE SKIP LOCKED)
+                DELETE FROM ${name} WHERE id IN (SELECT id FROM batch)`
+            : null,
+        );
+        if (deleted === null) {
+          invalidateRouteTokenCache();
+          return;
+        }
+        if (deleted === 0) break;
       }
-      if (deleted === 0) break;
     }
+    await runScopedOn(base, ctx, async (db) => {
+      if (!(await stillRemoving(db))) return;
+      // Counted under the account lock, in the transaction that deletes: the cascade takes the
+      // inboxes and agent bots with it, so afterwards there is nothing left to describe, and a removal
+      // that stopped or was refused before this point never claims to have removed anything. No MCP
+      // twin either, so this name is the only record the action has ever had.
+      const inst = await db.chatwootInstance.findUniqueOrThrow({
+        where: { id },
+        select: { id: true, accountId: true, accountName: true },
+      });
+      await auditMutation(db, ctx, {
+        action: "instance.remove",
+        target: `chatwoot_instance:${id}`,
+        before: {
+          id: String(inst.id),
+          accountId: inst.accountId,
+          accountName: inst.accountName,
+          inboxes: await db.inbox.count({ where: { chatwootInstanceId: id } }),
+        },
+      });
+      await db.chatwootInstance.delete({ where: { id } });
+    });
+  } catch (err) {
+    // The switch-off above wrote the calls off before the account came back, and a binding saved in
+    // between may have been written on before it: the account is staying, so its calls are written
+    // again as they stand now.
+    if (reconnected) {
+      const voiced = await runScopedOn(base, ctx, (db) =>
+        db.inbox.findMany({
+          where: {
+            chatwootInstanceId: id,
+            OR: [
+              { voiceAgentId: { not: null } },
+              { voiceRouteToken: { not: null } },
+            ],
+          },
+          select: { id: true },
+        }),
+      );
+      await syncVoiceInboxes(ctx, voiced, base, deps);
+    }
+    throw err;
   }
-  await runScopedOn(base, ctx, async (db) => {
-    if (!(await stillRemoving(db))) return;
-    // Counted under the account lock, in the transaction that deletes: the cascade takes the
-    // inboxes and agent bots with it, so afterwards there is nothing left to describe, and a removal
-    // that stopped or was refused before this point never claims to have removed anything. No MCP
-    // twin either, so this name is the only record the action has ever had.
-    const inst = await db.chatwootInstance.findUniqueOrThrow({
-      where: { id },
-      select: { id: true, accountId: true, accountName: true },
-    });
-    await auditMutation(db, ctx, {
-      action: "instance.remove",
-      target: `chatwoot_instance:${id}`,
-      before: {
-        id: String(inst.id),
-        accountId: inst.accountId,
-        accountName: inst.accountName,
-        inboxes: await db.inbox.count({ where: { chatwootInstanceId: id } }),
-      },
-    });
-    await db.chatwootInstance.delete({ where: { id } });
-  });
   // NOTE: The delete cascades this instance's ChatwootAgentBot rows (schema.prisma: `onDelete: Cascade`),
   // so every route token it owned now resolves to nothing. Without this the receiver keeps
   // authenticating a retired token from memory, and the detached processing behind it fails on rows

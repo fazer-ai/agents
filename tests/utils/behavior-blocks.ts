@@ -1,5 +1,5 @@
 import { expect } from "bun:test";
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { type EditorStub, stubEditorApi } from "./agent-editor";
 
 // The Behavior tab with a value off the default in every block, and an edit to every block through
@@ -257,13 +257,13 @@ export const FIELD_EDITS: Array<{
     },
   },
   {
+    // Scoped to its section: the fallback voice's provider pick also offers "No fallback ...".
     name: "model fallback",
     run: () => {
-      const fallback = screen
-        .getAllByLabelText("Provider")
-        .find((el) =>
-          el.textContent?.includes("No fallback"),
-        ) as HTMLSelectElement;
+      const section = document.getElementById("modelFallback") as HTMLElement;
+      const fallback = within(section).getByLabelText(
+        "Provider",
+      ) as HTMLSelectElement;
       changeTo(fallback, "");
     },
   },

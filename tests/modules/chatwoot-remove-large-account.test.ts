@@ -4,6 +4,7 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { ConflictError, NotFoundError } from "@/lib/errors";
 import type { TenantContext } from "@/lib/tenancy";
+import type { ChatwootClient } from "@/modules/chatwoot/client";
 import {
   reconnectChatwootInstance,
   removeChatwootInstance,
@@ -112,6 +113,26 @@ async function auditOf(instanceId: bigint) {
   const rows = await suDb.$queryRaw<{ action: string }[]>`
     SELECT action FROM audit_logs WHERE target = ${`chatwoot_instance:${instanceId}`} ORDER BY id`;
   return rows.map((r) => r.action);
+}
+
+// A Chatwoot that records which bots the removal takes off which inboxes, answering everything else.
+function detachingChatwoot() {
+  const calls: string[] = [];
+  const client = {
+    setInboxAgentBot: async (inbox: number, bot: number | null) => {
+      calls.push(`agent_bot ${inbox} ${bot}`);
+      return {};
+    },
+    removeInboxObserver: async (inbox: number, bot: number) => {
+      calls.push(`observer ${inbox} ${bot}`);
+      return {};
+    },
+  };
+  return {
+    calls,
+    makeClient: (async () =>
+      client) as unknown as () => Promise<ChatwootClient>,
+  };
 }
 
 // The app client with a hook in front of the N-th scoped transaction it opens: the removal is a
@@ -313,7 +334,7 @@ describe.skipIf(!dbUp)("removing a large Chatwoot account", () => {
     });
     const inboxes = await suDb.inbox.findMany({
       where: { chatwootInstanceId: big.id },
-      select: { id: true },
+      select: { id: true, chatwootInboxId: true },
       orderBy: { id: "asc" },
     });
     await suDb.inbox.update({
@@ -323,8 +344,22 @@ describe.skipIf(!dbUp)("removing a large Chatwoot account", () => {
     await suDb.inboxObserver.create({
       data: { tenantId, inboxId: inboxes[1]?.id as bigint, agentId: agent.id },
     });
-    // The first scoped transaction disconnects; the fourth is a batch in the middle of the log.
-    const dying = beforeTransaction(4, async () => {
+    await suDb.chatwootAgentBot.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: big.id,
+        agentId: agent.id,
+        chatwootAgentBotId: 931,
+        name: "Bound to a removed account",
+        accessToken: "enc",
+        webhookSecret: "enc",
+        webhookRouteTokenHash: `large-removal-bot-${process.pid}`,
+      },
+    });
+    const chatwoot = detachingChatwoot();
+    // In order: the disconnect, the read of the inboxes whose calls go off, the client's load, the
+    // two checks before each detach, and then the batches; the seventh is the second batch of the log.
+    const dying = beforeTransaction(7, async () => {
       throw new Error("connection lost");
     });
     // A route token the receiver cached before the removal: through the batches it would keep
@@ -336,9 +371,15 @@ describe.skipIf(!dbUp)("removing a large Chatwoot account", () => {
       webhookSecret: "enc",
     });
     await expect(
-      removeChatwootInstance(ctx(tenantId), big.id, dying),
+      removeChatwootInstance(ctx(tenantId), big.id, dying, chatwoot),
     ).rejects.toThrow("connection lost");
     expect(readRouteTokenCache("large-removal-hash")).toBeUndefined();
+    // Taken off in Chatwoot too, before the batches: reconnected from here, the account would
+    // otherwise keep delivering through bots that no binding here holds.
+    expect(chatwoot.calls).toEqual([
+      `agent_bot ${inboxes[0]?.chatwootInboxId} null`,
+      `observer ${inboxes[1]?.chatwootInboxId} 931`,
+    ]);
     const halfway = await suDb.chatwootInstance.findUnique({
       where: { id: big.id },
       select: { disconnectedAt: true },
@@ -356,7 +397,7 @@ describe.skipIf(!dbUp)("removing a large Chatwoot account", () => {
     // Disconnected, not removed: the trail says exactly that until the delete happens.
     expect(await auditOf(big.id)).toEqual(["instance.disconnect"]);
 
-    await removeChatwootInstance(ctx(tenantId), big.id, appDb);
+    await removeChatwootInstance(ctx(tenantId), big.id, appDb, chatwoot);
     // The retry finds nothing left to disconnect, so the trail gains the removal and nothing else.
     expect(await auditOf(big.id)).toEqual([
       "instance.disconnect",

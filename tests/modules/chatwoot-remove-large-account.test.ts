@@ -3,7 +3,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { ConflictError, NotFoundError } from "@/lib/errors";
-import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import type { TenantContext } from "@/lib/tenancy";
 import {
   reconnectChatwootInstance,
   removeChatwootInstance,
@@ -184,47 +184,7 @@ describe.skipIf(!dbUp)("removing a large Chatwoot account", () => {
       deliveries: 100,
     });
 
-    try {
-      await removeChatwootInstance(ctx(tenantId), big.id, appDb);
-    } catch (e) {
-      const j = (v: unknown) => JSON.stringify(v, (_k, x) => (typeof x === "bigint" ? String(x) : x));
-      console.error("DIAG sessions", j(await suDb.$queryRawUnsafe(`
-        SELECT pid, state, backend_type, wait_event_type, wait_event, xact_start, query_start,
-               left(regexp_replace(query, '\\s+', ' ', 'g'), 300) AS q
-          FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid()
-           AND (state <> 'idle' OR xact_start IS NOT NULL)`)));
-      console.error("DIAG locks", j(await suDb.$queryRawUnsafe(`
-        SELECT l.pid, l.locktype, l.relation::regclass::text AS rel, l.mode, l.granted
-          FROM pg_locks l WHERE l.pid <> pg_backend_pid() AND l.database = (SELECT oid FROM pg_database WHERE datname = current_database())
-           AND l.locktype IN ('relation', 'advisory', 'transactionid', 'tuple') ORDER BY l.pid`)));
-      await runScopedOn(appDb, ctx(tenantId), async (tx) => {
-          await tx.$executeRawUnsafe("SET LOCAL statement_timeout = 0");
-          const plan = await tx.$queryRawUnsafe<{ "QUERY PLAN": string }[]>(`
-            EXPLAIN (ANALYZE, BUFFERS) WITH batch AS MATERIALIZED (
-              SELECT id FROM conversations WHERE tenant_id = ${tenantId} AND chatwoot_instance_id = ${big.id}
-               LIMIT 100 FOR NO KEY UPDATE SKIP LOCKED)
-            DELETE FROM conversations WHERE id IN (SELECT id FROM batch)`);
-          console.error("DIAG appplan\n" + plan.map((r) => r["QUERY PLAN"]).join("\n"));
-          throw new Error("rollback");
-        })
-        .catch((x) => console.error("DIAG appplan error", String(x)));
-      await suDb
-        .$transaction(async (tx) => {
-          await tx.$executeRawUnsafe("SET LOCAL statement_timeout = 0");
-          const plan = await tx.$queryRawUnsafe<{ "QUERY PLAN": string }[]>(`
-            EXPLAIN (ANALYZE, BUFFERS) WITH batch AS MATERIALIZED (
-              SELECT id FROM conversations WHERE tenant_id = ${tenantId} AND chatwoot_instance_id = ${big.id}
-               LIMIT 100 FOR NO KEY UPDATE SKIP LOCKED)
-            DELETE FROM conversations WHERE id IN (SELECT id FROM batch)`);
-          console.error("DIAG plan\n" + plan.map((r) => r["QUERY PLAN"]).join("\n"));
-          console.error("DIAG sizes", j(await tx.$queryRawUnsafe(`
-            SELECT relname, n_live_tup, n_dead_tup FROM pg_stat_user_tables
-             WHERE relname IN ('approval_queue_items','dashboard_dirty','conversations','message_reply_claims','reply_dispensals','agent_turn_deliveries','decision_rule_states','decision_rule_claims')`)));
-          throw new Error("rollback");
-        })
-        .catch(() => {});
-      throw e;
-    }
+    await removeChatwootInstance(ctx(tenantId), big.id, appDb);
 
     expect(await rowsOf(big.id)).toEqual({
       instances: 0,

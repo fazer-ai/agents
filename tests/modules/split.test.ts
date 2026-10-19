@@ -1766,8 +1766,9 @@ describe("deliverReply: a send that proves itself by name (issue #499)", () => {
       undefined,
       HISTORY_TOP,
     );
-    // One send, no retry on this path, and a proven absence so the turn may run again.
-    expect(attempted).toEqual([ONE]);
+    // The walk reached the anchor, so the absence is proven: the send and its one retry, and the
+    // turn may run again.
+    expect(attempted).toEqual([ONE, ONE]);
     expect(out).toEqual({ delivered: 0, failed: true, unproven: false });
   });
 
@@ -1971,4 +1972,182 @@ describe("deliverReply: a send that proves itself by name (issue #499)", () => {
     // that is what puts the partial badge on the conversation.
     expect(out).toEqual({ delivered: 2, failed: true, unproven: true });
   });
+});
+
+// A REFUSAL FOR A PASSING CAUSE IS OWED A SECOND SEND. A statement timeout on the far side rolls the
+// INSERT back and answers 503; the read-back proves the message is not there, so sending it again
+// cannot duplicate it. Without that second send the reply is simply gone: the turn's throw does not
+// retry, because the watermark already moved (docs/split.md, "It does not throw").
+describe("deliverReply: a send refused for a passing cause is sent again (issue #1538)", () => {
+  function stub(failFor: (post: number) => Error | null) {
+    const posts: Array<{ content: string; sendId: string | null }> = [];
+    let nextId = 101;
+    // What Chatwoot holds: the customer message this reply answers, then whatever it accepted.
+    const stored: Array<{
+      id: number;
+      content: string;
+      sendId: string | null;
+    }> = [{ id: 100, content: "Onde compro?", sendId: null }];
+    const client = {
+      sendMessage: async (
+        _c: number,
+        content: string,
+        o?: { sendId?: string },
+      ) => {
+        const sendId = o?.sendId ?? null;
+        posts.push({ content, sendId });
+        const err = failFor(posts.length);
+        if (err) throw err;
+        const id = nextId++;
+        stored.push({ id, content, sendId });
+        return { id };
+      },
+      getMessages: async () => ({
+        payload: stored.map((m) => ({
+          id: m.id,
+          content: m.content,
+          message_type: 1,
+          private: false,
+          content_attributes:
+            m.sendId === null ? {} : { fazer_ai_send_id: m.sendId },
+        })),
+      }),
+      toggleTyping: async () => ({}),
+    } as unknown as ChatwootClient;
+    return { client, posts, stored };
+  }
+  const busy = () =>
+    new ChatwootApiError(503, "POST /conversations/1/messages");
+  const one = "Você pode comprar pelo site.";
+  const modes = [
+    ["split disabled", false],
+    ["split enabled", true],
+  ] as const;
+
+  test.each(modes)(
+    "%s: a 503 read back as absent is sent once more, under the same id, after a pause",
+    async (_label, enabled) => {
+      const { client, posts, stored } = stub((n) => (n === 1 ? busy() : null));
+      // Which sends had gone out when each pause began: the backoff is the one taken after the
+      // first send and before the second.
+      const pauses: Array<{ ms: number; afterPosts: number }> = [];
+      const out = await deliverReply(
+        client,
+        1,
+        one,
+        { ...SPLIT_DEFAULTS, enabled },
+        async (ms) => {
+          pauses.push({ ms, afterPosts: posts.length });
+        },
+        undefined,
+        async () => false,
+        100,
+      );
+      expect(out).toEqual({ delivered: 1, failed: false, unproven: false });
+      expect(posts).toHaveLength(2);
+      expect(posts[1]?.sendId).toBe(posts[0]?.sendId ?? "");
+      expect(stored.filter((m) => m.content === one)).toHaveLength(1);
+      const backoff = pauses.filter((p) => p.afterPosts === 1);
+      expect(backoff).toHaveLength(1);
+      expect(backoff[0]?.ms).toBeGreaterThanOrEqual(2000);
+      expect(backoff[0]?.ms).toBeLessThanOrEqual(3000);
+    },
+  );
+
+  test.each(modes)(
+    "%s: a refusal Chatwoot answers before writing (422, 401) is not sent again",
+    async (_label, enabled) => {
+      for (const status of [422, 401]) {
+        const { client, posts } = stub(
+          () => new ChatwootApiError(status, "POST /conversations/1/messages"),
+        );
+        const out = await deliverReply(
+          client,
+          1,
+          one,
+          { ...SPLIT_DEFAULTS, enabled },
+          async () => {},
+          undefined,
+          async () => false,
+          100,
+        );
+        expect(out).toEqual({ delivered: 0, failed: true, unproven: false });
+        expect(posts).toHaveLength(1);
+      }
+    },
+  );
+
+  test.each(modes)(
+    "%s: a second 503 ends it, with nothing landed and that proven",
+    async (_label, enabled) => {
+      const { client, posts } = stub(() => busy());
+      const out = await deliverReply(
+        client,
+        1,
+        one,
+        { ...SPLIT_DEFAULTS, enabled },
+        async () => {},
+        undefined,
+        async () => false,
+        100,
+      );
+      expect(out).toEqual({ delivered: 0, failed: true, unproven: false });
+      expect(posts).toHaveLength(2);
+    },
+  );
+
+  test.each(modes)(
+    "%s: a retry rejected after Chatwoot wrote it counts as delivered, not failed",
+    async (_label, enabled) => {
+      const { client, posts, stored } = stub((n) => {
+        if (n === 1) return busy();
+        return null;
+      });
+      // The second send lands and its response is lost: stored, but reported as a failure.
+      const send = client.sendMessage.bind(client);
+      (client as unknown as { sendMessage: typeof send }).sendMessage = async (
+        ...args: Parameters<typeof send>
+      ) => {
+        const res = await send(...args);
+        if (posts.length === 2) throw busy();
+        return res;
+      };
+      const out = await deliverReply(
+        client,
+        1,
+        one,
+        { ...SPLIT_DEFAULTS, enabled },
+        async () => {},
+        undefined,
+        async () => false,
+        100,
+      );
+      expect(out).toEqual({ delivered: 1, failed: false, unproven: false });
+      expect(posts).toHaveLength(2);
+      expect(stored.filter((m) => m.content === one)).toHaveLength(1);
+    },
+  );
+
+  test.each(modes)(
+    "%s: a run called off during the pause sends nothing more and is not a failure",
+    async (_label, enabled) => {
+      const { client, posts } = stub(() => busy());
+      let pausedAfterFailure = false;
+      const out = await deliverReply(
+        client,
+        1,
+        one,
+        { ...SPLIT_DEFAULTS, enabled },
+        async () => {
+          if (posts.length === 1) pausedAfterFailure = true;
+        },
+        undefined,
+        // The /reset lands while the agent waits to send again.
+        async () => pausedAfterFailure,
+        100,
+      );
+      expect(out).toEqual({ delivered: 0, failed: false, unproven: false });
+      expect(posts).toHaveLength(1);
+    },
+  );
 });

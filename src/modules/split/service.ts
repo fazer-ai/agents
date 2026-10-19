@@ -270,25 +270,52 @@ export async function deliverReply(
               literal,
             )
           : [literal(reply)];
+        const landed = { delivered: 1, failed: false, unproven: false };
         try {
           await client.sendMessage(conversationId, single, { sendId });
-          return { delivered: 1, failed: false, unproven: false };
+          return landed;
         } catch (e) {
-          // Nothing is resent on this path, but the verdict still decides whether the turn may run
-          // again, which does not depend on how many balloons the reply had.
+          // Nothing has been sent on this path yet, so the caller's anchor is the only boundary.
           const verdict = await accountForRejectedSend(
             client,
             conversationId,
             sendId,
-            // NOTE: nothing has been sent on this path yet, so the caller's anchor is the only boundary.
             anchor,
             e,
             flow,
           );
-          if (verdict.known && verdict.id !== null) {
-            return { delivered: 1, failed: false, unproven: false };
+          if (verdict.known && verdict.id !== null) return landed;
+          if (!isResendable(verdict)) {
+            return { delivered: 0, failed: true, unproven: !verdict.known };
           }
-          return { delivered: 0, failed: true, unproven: !verdict.known };
+          // The same one retry the split path gives its remainder: a turn's throw never sends again
+          // (docs/split.md), so this is the only second chance the reply gets.
+          await sleep(RESEND_BACKOFF_MS);
+          if (await calledOff()) {
+            return { delivered: 0, failed: false, unproven: false };
+          }
+          try {
+            await client.sendMessage(conversationId, single, { sendId });
+            return landed;
+          } catch (retryErr) {
+            const retryVerdict = await accountForRejectedSend(
+              client,
+              conversationId,
+              sendId,
+              anchor,
+              retryErr,
+              flow,
+            );
+            if (retryVerdict.known && retryVerdict.id !== null) return landed;
+            if (await calledOff()) {
+              return { delivered: 0, failed: false, unproven: false };
+            }
+            return {
+              delivered: 0,
+              failed: true,
+              unproven: !retryVerdict.known,
+            };
+          }
         }
       }
       const { chunks: rawChunks, seps } = splitReplyParts(reply, cfg);
@@ -344,8 +371,21 @@ export async function deliverReply(
               flow,
             );
             if (verdict.known && verdict.id !== null) noteDelivered(verdict.id);
-            // NOTE: asked again after the reconciliation: the failed request and the read are I/O, so the
-            // earlier answer is stale (one ask per stretch of I/O before a write, as in ../../graph/nudge.ts).
+            // NOTE: refused before it was written (credential, payload): the remainder would be refused the
+            // same way, so nothing more goes out and the reply is reported short.
+            if (
+              verdict.known &&
+              verdict.id === null &&
+              !isResendable(verdict)
+            ) {
+              failed = true;
+              break;
+            }
+            // Whatever made the send fail may still be in the way (a lock, a busy database), and the
+            // retry below is the only one: it waits before trying.
+            await sleep(RESEND_BACKOFF_MS);
+            // NOTE: asked again after the reconciliation and the pause: both are waits, so the earlier
+            // answer is stale (one ask per stretch of I/O before a write, as in ../../graph/nudge.ts).
             // A /reset here is a stand-down, not a failure.
             if (await calledOff()) break;
             // NOTE: landed: counted, not resent. Absent: resent, since nothing can duplicate. Unknown: left out
@@ -384,8 +424,9 @@ export async function deliverReply(
                     literal,
                   )[0] ?? literal(owedRaw))
                 : literal(owedRaw);
-            // Same 15s deadline, so it can be rejected after being accepted like any other send.
-            const retrySendId = replySendId(replyKey);
+            // Same 15s deadline, so it can be rejected after being accepted like any other send. When it
+            // carries the balloon proven absent it keeps that balloon's id: the id names what was owed.
+            const retrySendId = from === i ? sendId : replySendId(replyKey);
             try {
               noteDelivered(
                 createdMessageId(
@@ -437,6 +478,9 @@ export async function deliverReply(
 // The whole read-back costs what one `getMessages` does: each request's deadline is what is left of
 // this budget. Beyond it the answer is unknown.
 const READBACK_BUDGET_MS = 10_000;
+// The pause before the one retry a failed send gets. The failure it waits out was measured as a 14s
+// lock wait that Chatwoot's statement timeout cut short: retried at once, the send meets the same lock.
+const RESEND_BACKOFF_MS = 2_500;
 // A ceiling on the pathological case: filling one page in the instant after a rejected POST takes
 // ~20 inbound messages, so five pages is a hundred.
 const READBACK_MAX_PAGES = 5;
@@ -452,7 +496,9 @@ type LandedVerdict =
   | { known: true; id: number }
   // Chatwoot was read, far enough back to be sure, and does not hold it. Nothing landed, so
   // resending it is safe and is what the customer is owed.
-  | { known: true; id: null }
+  // `refused` when the proof is the status itself (auth, route, payload): Chatwoot turned the request
+  // down before writing, and the same request would be turned down again.
+  | { known: true; id: null; refused?: true }
   // The conversation could not be read, or not read far enough. The message may or may not be
   // there, and this is the ONE case where the send is neither confirmed nor safe to repeat.
   | { known: false };
@@ -479,10 +525,16 @@ async function accountForRejectedSend(
   // NOTE: a rejection that could not have created a message is a proven absence. Reading it as
   // unknown would stop resending: an expired credential would silently stop answering customers.
   if (err instanceof ChatwootMissingTokenError)
-    return { known: true, id: null };
+    return { known: true, id: null, refused: true };
   if (err instanceof ChatwootApiError && isPreCreateStatus(err.status))
-    return { known: true, id: null };
+    return { known: true, id: null, refused: true };
   return findLandedMessage(client, conversationId, sendId, after);
+}
+
+// A send owed a second try: read back and not there, for a cause that may pass (a timeout, a 5xx, a
+// dropped connection). Not one Chatwoot refused for what it was, and not one nobody could check.
+function isResendable(verdict: LandedVerdict): boolean {
+  return verdict.known && verdict.id === null && verdict.refused !== true;
 }
 
 async function findLandedMessage(

@@ -808,7 +808,7 @@ describe.skipIf(!dbUp)("the kept days of the dashboard", () => {
     expect(first.has(conv.day)).toBe(true);
     // Every past day from the tenant's first record on (a day before it is empty without a row).
     const past = daysBetween(
-      [...first.keys()].sort()[0] ?? localDay(f.since, "UTC"),
+      [...first.keys()].sort()[0] ?? addDays(localDay(Date.now(), "UTC"), -44),
       addDays(localDay(Date.now(), "UTC"), -2),
     );
     expect(past.filter((d) => !first.has(d))).toEqual([]);
@@ -875,7 +875,7 @@ describe.skipIf(!dbUp)("the kept days of the dashboard", () => {
       const range = args[4];
       if (
         raced ||
-        range.first < localDay(f.since, "UTC") ||
+        range.first < addDays(localDay(Date.now(), "UTC"), -44) ||
         range.last >= addDays(localDay(Date.now(), "UTC"), -1)
       )
         return;

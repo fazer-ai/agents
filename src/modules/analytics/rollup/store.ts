@@ -164,7 +164,7 @@ export async function settleDirty(
 // (`began`, by the clock the batch stamps with). A change settled before the part began was committed
 // before it, so the part's snapshot already counts it, and the part keeps the days it reaches: on a
 // tenant whose old conversations change every few minutes, a margin before the part's start would
-// leave those days to be computed again on every request (issue #1545).
+// leave those days to be computed again on every request.
 export async function changedSince(
   db: ScopedDb,
   began: Date,

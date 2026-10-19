@@ -3,6 +3,7 @@ import { Check, ChevronDown, Loader2, Search, X } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/client/lib/utils";
+import { Tooltip } from "./Tooltip";
 
 // One selectable option. `label` is the human name (falls back to `id`); `hint` is a subtler trailing
 // note (e.g. the raw id when it differs from the label; an explicit "" suppresses it everywhere,
@@ -18,7 +19,8 @@ export interface ComboItem {
 // its own, so the arrow keys reach it and Enter presses it, and pressing it never selects the option.
 export interface ComboItemAction {
   label: string;
-  title?: string;
+  // A hover/focus hint for an icon-only control.
+  hint?: string;
   pressed: boolean;
   icon: ReactNode;
   onPress: () => void;
@@ -391,18 +393,19 @@ export function ComboBox(props: ComboBoxProps) {
                 return (
                   <div key={m.id} className="flex items-center gap-1">
                     {item}
-                    <DropdownMenuPrimitive.CheckboxItem
-                      checked={action.pressed}
-                      aria-label={action.label}
-                      title={action.title}
-                      onSelect={(e) => {
-                        e.preventDefault();
-                        action.onPress();
-                      }}
-                      className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-text-muted outline-none transition-colors data-[highlighted]:bg-bg-hover data-[highlighted]:text-text-primary data-[state=checked]:text-accent"
-                    >
-                      {action.icon}
-                    </DropdownMenuPrimitive.CheckboxItem>
+                    <Tooltip content={action.hint ?? action.label}>
+                      <DropdownMenuPrimitive.CheckboxItem
+                        checked={action.pressed}
+                        aria-label={action.label}
+                        onSelect={(e) => {
+                          e.preventDefault();
+                          action.onPress();
+                        }}
+                        className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-text-muted outline-none transition-colors data-[highlighted]:bg-bg-hover data-[highlighted]:text-text-primary data-[state=checked]:text-accent"
+                      >
+                        {action.icon}
+                      </DropdownMenuPrimitive.CheckboxItem>
+                    </Tooltip>
                   </div>
                 );
               })}

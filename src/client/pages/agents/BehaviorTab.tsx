@@ -763,7 +763,7 @@ export function TtsOptionPicker({
             const on = player.playing === sample.url;
             return {
               label: sampleLabel(sample.name, on),
-              title: sampleTitle(on),
+              hint: sampleTitle(on),
               pressed: on,
               icon: sampleIcon(on),
               onPress: () => play(sample.url),
@@ -777,7 +777,6 @@ export function TtsOptionPicker({
           type="button"
           aria-pressed={chosenOn}
           aria-label={sampleLabel(chosenSample.name, chosenOn)}
-          title={sampleTitle(chosenOn)}
           onClick={() => play(chosenSample.url)}
           className={cn(
             "inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-md border border-border-hover px-2.5 text-sm text-text-muted transition-colors hover:bg-bg-hover hover:text-text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-soft",

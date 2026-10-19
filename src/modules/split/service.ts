@@ -285,7 +285,7 @@ export async function deliverReply(
             flow,
           );
           if (verdict.known && verdict.id !== null) return landed;
-          if (!isResendable(verdict)) {
+          if (!isResendable(verdict) || !requestEnded(e)) {
             // NOTE: a /reset that landed while the send was pending is a stand-down, not a failure.
             if (await calledOff()) {
               return { delivered: 0, failed: false, unproven: false };
@@ -560,6 +560,17 @@ async function accountForRejectedSend(
   if (err instanceof ChatwootApiError && isPreCreateStatus(err.status))
     return { known: true, id: null, refused: true };
   return findLandedMessage(client, conversationId, sendId, after);
+}
+
+// Chatwoot itself answered, so the request is over: a 500 or a 503 (the fork's answer to a query
+// timeout, after the rollback). A timeout on our side, a dropped connection, or a proxy's 502/504 can
+// leave the original still running, and it can commit after any number of read-backs; the send id is
+// a label the fork stores, not an idempotency key, so a resend there can write the reply twice.
+function requestEnded(err: unknown): boolean {
+  return (
+    err instanceof ChatwootApiError &&
+    (err.status === 500 || err.status === 503)
+  );
 }
 
 // A send owed a second try: read back and not there, for a cause that may pass (a timeout, a 5xx, a

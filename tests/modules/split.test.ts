@@ -1769,9 +1769,9 @@ describe("deliverReply: a send that proves itself by name (issue #499)", () => {
       undefined,
       HISTORY_TOP,
     );
-    // The walk reached the anchor, so the absence is proven: the send and its one retry, and the
-    // turn may run again.
-    expect(attempted).toEqual([ONE, ONE]);
+    // The walk reached the anchor, so the absence is proven and the turn may run again. A timeout on
+    // our side does not say the request ended, so nothing is resent on this path.
+    expect(attempted).toEqual([ONE]);
     expect(out).toEqual({ delivered: 0, failed: true, unproven: false });
   });
 
@@ -2133,27 +2133,24 @@ describe("deliverReply: a send refused for a passing cause is sent again (issue 
 
   test("split enabled: a balloon that commits late cannot answer for the consolidated retry", async () => {
     const two = "Primeiro.\n\nSegundo.";
-    const { client, posts, stored } = stub(() => busy());
+    // The first POST's INSERT commits only once the consolidated retry is on the wire: after the
+    // re-read that cleared the retry, and before the retry's own read-back.
+    const late: { commit?: () => void } = {};
+    const { client, posts, stored } = stub((n) => {
+      if (n === 2) late.commit?.();
+      return busy();
+    });
+    late.commit = () => {
+      const first = posts[0];
+      if (first)
+        stored.push({ id: 900, content: first.content, sendId: first.sendId });
+    };
     const out = await deliverReply(
       client,
       1,
       two,
       { ...SPLIT_DEFAULTS, enabled: true },
-      async () => {
-        // The first POST's INSERT commits while the agent waits to send again.
-        const first = posts[0];
-        if (
-          posts.length === 1 &&
-          first &&
-          !stored.some((m) => m.sendId === first.sendId)
-        ) {
-          stored.push({
-            id: 900,
-            content: first.content,
-            sendId: first.sendId,
-          });
-        }
-      },
+      async () => {},
       undefined,
       async () => false,
       100,
@@ -2213,6 +2210,57 @@ describe("deliverReply: a send refused for a passing cause is sent again (issue 
       expect(posts).toHaveLength(1);
       expect(stored.filter((m) => m.content === one)).toHaveLength(1);
       expect(out).toEqual({ delivered: 1, failed: false, unproven: false });
+    },
+  );
+
+  test("split disabled: a 500 from Chatwoot ended the request, and is sent once more", async () => {
+    const { client, posts } = stub((n) =>
+      n === 1
+        ? new ChatwootApiError(500, "POST /conversations/1/messages")
+        : null,
+    );
+    const out = await deliverReply(
+      client,
+      1,
+      one,
+      { ...SPLIT_DEFAULTS, enabled: false },
+      async () => {},
+      undefined,
+      async () => false,
+      100,
+    );
+    expect(posts).toHaveLength(2);
+    expect(out).toEqual({ delivered: 1, failed: false, unproven: false });
+  });
+
+  // The original can still be running when nobody on Chatwoot's side answered, and it can commit
+  // after any read-back: resending there is how a reply is written twice.
+  test.each([
+    ["a timeout on our side", () => new Error("The operation timed out.")],
+    [
+      "a proxy's 502",
+      () => new ChatwootApiError(502, "POST /conversations/1/messages"),
+    ],
+    [
+      "a proxy's 504",
+      () => new ChatwootApiError(504, "POST /conversations/1/messages"),
+    ],
+  ])(
+    "split disabled: %s does not say the request ended, and is not sent again",
+    async (_label, error) => {
+      const { client, posts } = stub(() => error());
+      const out = await deliverReply(
+        client,
+        1,
+        one,
+        { ...SPLIT_DEFAULTS, enabled: false },
+        async () => {},
+        undefined,
+        async () => false,
+        100,
+      );
+      expect(posts).toHaveLength(1);
+      expect(out).toEqual({ delivered: 0, failed: true, unproven: false });
     },
   );
 

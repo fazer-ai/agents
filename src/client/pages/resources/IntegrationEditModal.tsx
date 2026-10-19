@@ -302,9 +302,13 @@ function rowsToHours(rows: ReminderRow[]): number[] {
 // Calendar inherits it), NOT on the agent.
 export function ReminderConfigEditor({
   cfg,
+  loadedCfg,
   setCfg,
 }: {
   cfg: Record<string, unknown>;
+  // The config as the modal loaded it. The editor unmounts with its sub-tab, so its own first render
+  // would capture the draft on the way back.
+  loadedCfg: Record<string, unknown>;
   setCfg: (patch: Record<string, unknown>) => void;
 }) {
   const { t } = useTranslation();
@@ -320,7 +324,7 @@ export function ReminderConfigEditor({
   );
   // The offsets as loaded. With reminders on, an offset out of range is on screen and holds Save; off,
   // the rows are not drawn, so a draft out of range goes back as loaded rather than being refused.
-  const [loadedOffsets] = useState(initial.offsetsHours);
+  const loadedOffsets = readReminderCfg(loadedCfg).offsetsHours;
 
   function persist(next: {
     enabled?: boolean;
@@ -751,6 +755,7 @@ export function IntegrationEditModal({
   // Active sub-tab for the Google Calendar config (calendars allowlist vs appointment reminders).
   const [calTab, setCalTab] = useState<"calendars" | "reminders">("calendars");
   const formBaseline = useRef("");
+  const loadedConfig = useRef<Record<string, unknown>>({});
 
   // Fetches the calendars a google_oauth credential can access, so the operator picks from real
   // agendas instead of typing opaque ids. Takes the ref explicitly to avoid stale form state.
@@ -871,6 +876,7 @@ export function IntegrationEditModal({
           };
           setForm(next);
           formBaseline.current = JSON.stringify(next);
+          loadedConfig.current = next.config;
           syncSlotModes(next.config);
           return;
         }
@@ -895,6 +901,7 @@ export function IntegrationEditModal({
         setRouteToken(inst.routeToken);
         setRouteTokenStatus(inst.routeTokenStatus);
         formBaseline.current = JSON.stringify(next);
+        loadedConfig.current = next.config;
         syncSlotModes(next.config);
         // Pre-load the credential's calendars/folders so the picker reflects the saved selection.
         if (next.catalogType === "GOOGLE_CALENDAR" && next.credentialRef) {
@@ -916,6 +923,7 @@ export function IntegrationEditModal({
       form.name.trim() === "" ||
       form.name ===
         catalogLabel(catalog.find((x) => x.catalogType === form.catalogType));
+    loadedConfig.current = defaultConfig(c.catalogType);
     setForm({
       ...form,
       catalogType: c.catalogType,
@@ -1746,7 +1754,11 @@ export function IntegrationEditModal({
                   </div>
                 )}
                 {calTab === "reminders" && (
-                  <ReminderConfigEditor cfg={cfg} setCfg={setCfg} />
+                  <ReminderConfigEditor
+                    cfg={cfg}
+                    loadedCfg={loadedConfig.current}
+                    setCfg={setCfg}
+                  />
                 )}
               </>
             )}

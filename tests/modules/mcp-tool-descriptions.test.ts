@@ -216,10 +216,10 @@ describe("MCP tool descriptions", () => {
     // Measured at 34_168 with the 15 dashboard tools (Pro only), conversation_decisions_test,
     // inbox_bind_voice, the voice kind on agent_create and agent_call_floor; 33_086 on the Free tree.
     expect(desc).toBeLessThanOrEqual(34_240);
-    // Measured at 77_586 with `limits.maxProactivePerDay` and the `snoozedFollowUp` and `otherInboxes`
+    // Measured at 77_763 with `limits.maxProactivePerDay` and the `snoozedFollowUp` and `otherInboxes`
     // blocks on agent_settings_set, the approval switch and validity on the document template writes,
     // the next number on them, the search and cursor on issued_document_list, the three
-    // proactive_breaker tools, the voice binding and kind, the tts block's timeout and fallback voice,
+    // proactive_breaker tools, the voice binding and kind, both fallbacks' timeouts, the fallback voice,
     // agent_call_floor's draft input, `guardrails.onFailure`, the guardrail endpoint check and the 15
     // dashboard tools (Pro only), the last being dashboard_query_schema, whose input is empty and whose
     // contract is served on demand. 73_659 on the Free tree; 622 more with the `calls` numbers ranged.

@@ -8981,6 +8981,16 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       const channel = await threadChannel(checkpointer, 93155);
       // NOTE: positive control: the call and its result stayed, so the rollback ran on this turn.
       expect(channel.map(([type]) => type)).toEqual(["human", "ai", "tool"]);
+      const conv = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: 93155 },
+      });
+      const generated = await flowLogRows(suDb, {
+        where: { tenantId, conversationId: conv.id, stage: "generate" },
+        select: { detail: true },
+      });
+      expect(JSON.stringify(generated)).not.toContain(
+        "superseded_after_action",
+      );
     });
 
     test("taken-over: a human owning the conversation leaves no reply behind either", async () => {
@@ -9385,6 +9395,16 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       expect(outcome).toBe("taken-over");
       const channel = await threadChannel(checkpointer, 93156);
       expect(channel.map(([type]) => type)).toEqual(["human", "ai", "tool"]);
+      const conv = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: 93156 },
+      });
+      const generated = await flowLogRows(suDb, {
+        where: { tenantId, conversationId: conv.id, stage: "generate" },
+        select: { detail: true },
+      });
+      expect(JSON.stringify(generated)).not.toContain(
+        "superseded_after_action",
+      );
     });
 
     // The control the three above cannot give: a turn that was NOT refused keeps its reply, so the

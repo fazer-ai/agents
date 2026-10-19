@@ -409,14 +409,14 @@ export function VoiceCard({
     "glm-52": t("editor.voiceLlmGlm", "the most accurate, costs more"),
     "gemini-3.1-flash-lite": t(
       "editor.voiceLlmGeminiLite",
-      "accurate and cheap, a little slower",
+      "accurate and cheap, slower",
     ),
     "claude-haiku-5-5": t("editor.voiceLlmHaiku", "accurate, slower"),
     "gpt-5.4-mini": t("editor.voiceLlmGpt54Mini", "accurate, slower"),
     "gpt-4.1-mini": t("editor.voiceLlmGpt41Mini", "accurate, slower"),
     "qwen36-35b-a3b": t(
       "editor.voiceLlmQwen",
-      "fast, may announce an action it does not take",
+      "fast, sometimes promises and does not act",
     ),
   };
   // Product names, the same in every language.
@@ -585,6 +585,7 @@ export function VoiceCard({
                 "Search or type a model id",
               )}
               aria-label={t("editor.voiceModel", "Conversation model")}
+              menuMinWidth="30rem"
             />
           </FormField>
           <FormField

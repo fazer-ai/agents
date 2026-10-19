@@ -36,6 +36,8 @@ type CommonProps = {
   searchPlaceholder?: string;
   disabled?: boolean;
   needsCredential?: boolean;
+  // A floor for the open menu's width, for a narrow field whose options carry a line of description.
+  menuMinWidth?: string;
   "aria-label"?: string;
 };
 
@@ -78,6 +80,7 @@ export function ComboBox(props: ComboBoxProps) {
     searchPlaceholder,
     disabled,
     needsCredential,
+    menuMinWidth,
     "aria-label": ariaLabel,
   } = props;
   const multiple = props.multiple === true;
@@ -258,7 +261,10 @@ export function ComboBox(props: ComboBoxProps) {
             sideOffset={6}
             style={{
               zIndex: "calc(var(--z-modal) + 5)",
-              minWidth: "var(--radix-dropdown-menu-trigger-width)",
+              // The floor never pushes the menu past the room the viewport has (a phone).
+              minWidth: menuMinWidth
+                ? `min(max(var(--radix-dropdown-menu-trigger-width), ${menuMinWidth}), var(--radix-dropdown-menu-content-available-width))`
+                : "var(--radix-dropdown-menu-trigger-width)",
             }}
             className="data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 rounded-lg border border-border bg-bg-secondary shadow-lg data-[state=closed]:animate-out data-[state=open]:animate-in"
           >

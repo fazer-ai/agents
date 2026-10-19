@@ -295,8 +295,18 @@ export async function deliverReply(
           // The same one retry the split path gives its remainder: a turn's throw never sends again
           // (docs/split.md), so this is the only second chance the reply gets.
           await sleep(RESEND_BACKOFF_MS);
+          const settled = await findLandedMessage(
+            client,
+            conversationId,
+            sendId,
+            anchor,
+          );
+          if (settled.known && settled.id !== null) return landed;
           if (await calledOff()) {
             return { delivered: 0, failed: false, unproven: false };
+          }
+          if (!settled.known) {
+            return { delivered: 0, failed: true, unproven: true };
           }
           try {
             await client.sendMessage(conversationId, single, { sendId });
@@ -388,6 +398,17 @@ export async function deliverReply(
             // Whatever made the send fail may still be in the way (a lock, a busy database), and the
             // retry below is the only one: it waits before trying.
             await sleep(RESEND_BACKOFF_MS);
+            const settled = isResendable(verdict)
+              ? await findLandedMessage(
+                  client,
+                  conversationId,
+                  sendId,
+                  boundary,
+                )
+              : verdict;
+            if (settled !== verdict && settled.known && settled.id !== null) {
+              noteDelivered(settled.id);
+            }
             // NOTE: asked again after the reconciliation and the pause: both are waits, so the earlier
             // answer is stale (one ask per stretch of I/O before a write, as in ../../graph/nudge.ts).
             // A /reset here is a stand-down, not a failure.
@@ -396,11 +417,11 @@ export async function deliverReply(
             // and reported `failed`, because the Chatwoot that loses the POST's response also fails the read,
             // and an invisible duplicate is worse than a visible gap. What is owed goes as ONE message: a
             // re-walk would give the same transient failure the same N windows.
-            if (!verdict.known) {
+            if (!settled.known) {
               failed = true;
               unproven = true;
             }
-            const from = verdict.known && verdict.id === null ? i : i + 1;
+            const from = settled.known && settled.id === null ? i : i + 1;
             // Built from the raw balloons and signed once; with `frequency: "all"` joining the signed
             // chunks would put the badge several times inside one message.
             const owedRaw = rawChunks
@@ -486,7 +507,9 @@ export async function deliverReply(
 // The whole read-back costs what one `getMessages` does: each request's deadline is what is left of
 // this budget. Beyond it the answer is unknown.
 const READBACK_BUDGET_MS = 10_000;
-// The pause before the one retry a failed send gets. The failure it waits out was measured as a 14s
+// The pause before the one retry a failed send gets. The absence is read again after it: a POST that
+// timed out on our side can still commit during the pause, and the send id is a label the fork stores,
+// not an idempotency key, so a resend on the earlier reading would write the reply twice. The failure it waits out was measured as a 14s
 // lock wait that Chatwoot's statement timeout cut short: retried at once, the send meets the same lock.
 const RESEND_BACKOFF_MS = 2_500;
 // A ceiling on the pathological case: filling one page in the instant after a rejected POST takes

@@ -588,7 +588,8 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
       { ...SPLIT_DEFAULTS, enabled: true },
       noSleep,
     );
-    expect(calls.getMessages).toBe(1);
+    // The read after the rejection, and the one after the pause that confirms it is still absent.
+    expect(calls.getMessages).toBe(2);
     expect(rec.sent).toEqual(["Olá!", "Como vai?\n\nPosso ajudar?"]);
     expect(out).toEqual({ delivered: 2, failed: false, unproven: false });
   });
@@ -1652,6 +1653,8 @@ describe("deliverReply: a send that proves itself by name (issue #499)", () => {
         return { id: 1 };
       },
       getMessages: async (_c: number, q?: { before?: number }) => {
+        // Each read-back walks from the newest page again.
+        if (q?.before === undefined) page = 0;
         page += 1;
         if (page > 1) return { payload: [] };
         const top = q?.before ?? 9000;
@@ -2180,6 +2183,36 @@ describe("deliverReply: a send refused for a passing cause is sent again (issue 
       );
       expect(out).toEqual({ delivered: 0, failed: false, unproven: false });
       expect(posts).toHaveLength(1);
+    },
+  );
+
+  test.each(modes)(
+    "%s: a first send that commits during the pause is not sent a second time",
+    async (_label, enabled) => {
+      const { client, posts, stored } = stub(() => busy());
+      const out = await deliverReply(
+        client,
+        1,
+        one,
+        { ...SPLIT_DEFAULTS, enabled },
+        async () => {
+          // Rejected to us, read back as absent, and then its INSERT commits while the agent waits.
+          const first = posts[0];
+          if (posts.length === 1 && first) {
+            stored.push({
+              id: 900,
+              content: first.content,
+              sendId: first.sendId,
+            });
+          }
+        },
+        undefined,
+        async () => false,
+        100,
+      );
+      expect(posts).toHaveLength(1);
+      expect(stored.filter((m) => m.content === one)).toHaveLength(1);
+      expect(out).toEqual({ delivered: 1, failed: false, unproven: false });
     },
   );
 

@@ -236,6 +236,42 @@ describe("the voice sample", () => {
     ).toBe("false");
   });
 
+  test("choosing another voice stops the old voice's sample, and keeps the new one's", async () => {
+    await open();
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Play a sample of Raquel" }),
+    );
+    const before = pauses;
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Voice" }), {
+      button: 0,
+      ctrlKey: false,
+    });
+    let menu = await screen.findByRole("menu");
+    fireEvent.click(within(menu).getByRole("menuitem", { name: /Bruno/ }));
+    await act(async () => {});
+    expect(pauses).toBe(before + 1);
+    // Heard on its row, then chosen: it plays on, and the field's control stops it.
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Voice" }), {
+      button: 0,
+      ctrlKey: false,
+    });
+    menu = await screen.findByRole("menu");
+    fireEvent.click(
+      within(menu).getByRole("menuitemcheckbox", {
+        name: "Play a sample of Raquel",
+      }),
+    );
+    const playing = pauses;
+    fireEvent.click(within(menu).getByRole("menuitem", { name: /Raquel/ }));
+    await act(async () => {});
+    expect(pauses).toBe(playing);
+    expect(
+      screen
+        .getByRole("button", { name: "Stop the sample of Raquel" })
+        .getAttribute("aria-pressed"),
+    ).toBe("true");
+  });
+
   test("leaving the page stops the sample it started", async () => {
     await open();
     fireEvent.click(

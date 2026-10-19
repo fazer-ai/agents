@@ -728,6 +728,14 @@ export function TtsOptionPicker({
     },
     [loaderKey, i18n.language],
   );
+  // Choosing another voice stops a sample of the old one, whose control is gone from the field; a
+  // sample of the voice just chosen (heard on its row, then picked) plays on under the field's Stop.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the chosen voice is the trigger.
+  useEffect(() => {
+    const url = started.current;
+    if (url !== null && currentSample() === url && url !== chosenSample?.url)
+      stopSample();
+  }, [value]);
   const sampleLabel = (name: string, on: boolean) =>
     on
       ? t("editor.voiceSampleStop", "Stop the sample of {{name}}", { name })

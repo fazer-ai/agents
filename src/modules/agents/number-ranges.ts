@@ -56,11 +56,12 @@ export const TTS_SPEAKABLE_RANGES = {
 } as const;
 
 // One synthesis, in ms. Below a second no provider answers, and past two minutes the customer is gone
-// before the text fallback. The console asks for it in whole seconds.
+// before the text fallback. The console asks for it in seconds, fractional because REST and MCP store
+// any whole number of ms (1500 reads as 1.5).
 const TTS_TIMEOUT_MS = intRange(1000, 120_000);
 export const TTS_TIMEOUT_RANGES = {
   timeoutMs: TTS_TIMEOUT_MS,
-  timeoutSeconds: intRange(
+  timeoutSeconds: numberRange(
     TTS_TIMEOUT_MS.min / 1000,
     TTS_TIMEOUT_MS.max / 1000,
   ),

@@ -1,6 +1,6 @@
 import * as DropdownMenuPrimitive from "@radix-ui/react-dropdown-menu";
 import { Check, ChevronDown, Loader2, Search, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/client/lib/utils";
 
@@ -38,6 +38,9 @@ type CommonProps = {
   needsCredential?: boolean;
   // A floor for the open menu's width, for a narrow field whose options carry a line of description.
   menuMinWidth?: string;
+  // A control drawn at the end of an option's row (the voice picker's "play sample"). It sits beside
+  // the menu item, not inside it, so pressing it never selects the option.
+  itemAction?: (item: ComboItem) => ReactNode;
   "aria-label"?: string;
 };
 
@@ -81,6 +84,7 @@ export function ComboBox(props: ComboBoxProps) {
     disabled,
     needsCredential,
     menuMinWidth,
+    itemAction,
     "aria-label": ariaLabel,
   } = props;
   const multiple = props.multiple === true;
@@ -346,10 +350,11 @@ export function ComboBox(props: ComboBoxProps) {
 
               {filtered.map((m) => {
                 const checked = selectedSet.has(m.id);
-                return (
+                const action = itemAction?.(m);
+                const item = (
                   <DropdownMenuPrimitive.Item
                     key={m.id}
-                    className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-text-secondary outline-none transition-colors data-[highlighted]:bg-bg-hover data-[highlighted]:text-text-primary"
+                    className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-sm text-text-secondary outline-none transition-colors data-[highlighted]:bg-bg-hover data-[highlighted]:text-text-primary"
                     onSelect={(e) => {
                       if (multiple) e.preventDefault();
                       pick(m.id);
@@ -373,6 +378,13 @@ export function ComboBox(props: ComboBoxProps) {
                       </span>
                     )}
                   </DropdownMenuPrimitive.Item>
+                );
+                if (!action) return item;
+                return (
+                  <div key={m.id} className="flex items-center gap-1">
+                    {item}
+                    {action}
+                  </div>
                 );
               })}
             </div>

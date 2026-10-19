@@ -140,14 +140,12 @@ function keepUnseenNumbersAsStored(
   }
   const v = block[head];
   if (typeof v !== "number" || inRange(v, rangeOf(block))) return;
-  if (!storedBag || !(head in storedBag)) {
-    delete block[head];
-    return;
-  }
-  block[head] = storedBag[head];
+  if (storedBag && head in storedBag) block[head] = storedBag[head];
+  else delete block[head];
+  // The unit goes back with the value, or a default delay left out would read in the draft's unit.
   const unit = rangeOf.pairedWith;
   if (unit === undefined) return;
-  if (unit in storedBag) block[unit] = storedBag[unit];
+  if (storedBag && unit in storedBag) block[unit] = storedBag[unit];
   else delete block[unit];
 }
 

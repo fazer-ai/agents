@@ -80,6 +80,17 @@ describe("a delay's range follows its unit", () => {
     expect(settingsWrite(structuredClone(legacy), legacy)).toBeNull();
   });
 
+  // A fraction is refused by the value's own schema, which knows nothing of the unit, so without the
+  // pair on that issue too a stored 1.5 minutes turned into 1.5 days would pass as legacy.
+  test("changing only the unit of a stored fraction is refused", () => {
+    const stored = step(1.5, "minutes");
+    expect(settingsWrite(step(1.5, "days"), stored)).toEqual({
+      field: "followUp.steps.0.delayValue",
+      status: 422,
+    });
+    expect(settingsWrite(structuredClone(stored), stored)).toBeNull();
+  });
+
   // zod skips a block's refinement once another field of it fails, so the pairs are asked on their own:
   // a legacy fraction in the same block does not let a changed delay through.
   test("a changed delay is refused even when another stored field of the block is invalid", () => {

@@ -97,6 +97,17 @@ test("a hidden step's unit goes back with its value", () => {
   expect(out.steps).toEqual([{ delayValue: 60, delayUnit: "minutes" }]);
 });
 
+// A step stored with no delay reads as the default 60 minutes. Its unit typed to days and then hidden,
+// the value is left out for that default, and the unit has to go with it or the step reads 60 days.
+test("a hidden step with no stored delay drops the typed unit with the value", () => {
+  const out = edited(
+    "followUp",
+    { enabled: false, steps: [{ delayValue: 60, delayUnit: "days" }] },
+    { steps: [{ instructions: "" }] },
+  );
+  expect(out.steps).toEqual([{}]);
+});
+
 describe("a channel redirect saved with a follow-up off", () => {
   test("its out-of-range delay goes back as stored, the in-range ones as typed", () => {
     const out = fromChannelRedirectForm(form({}), {

@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { MODEL_PROVIDERS } from "@/graph/model-config";
 import { NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
-import type { NumberRange } from "@/lib/number-range";
+import { inRange, type NumberRange } from "@/lib/number-range";
 import {
   CARRY_ATTACHMENTS_RANGES,
   CHANNEL_REDIRECT_RANGES,
@@ -143,6 +143,8 @@ export const ranged = (r: NumberRange) =>
 
 // A delay's value, whose ceiling follows its unit (30 days in any unit). Refused at the value's own
 // path, and `pairedWith` names the unit, so the boundary asks it when the write changed either half.
+// Every way out of the range carries it, not just the unit's ceiling: a stored 1.5 with only its
+// unit changed is a new delay, and the value's own fraction issue alone would keep it as legacy.
 function refineDelay(
   bag: Record<string, unknown>,
   ctx: z.RefinementCtx,
@@ -152,16 +154,32 @@ function refineDelay(
   const v = bag[value];
   if (typeof v !== "number") return;
   const r = delayRange(bag[unit]);
+  if (inRange(v, r)) return;
+  const at = { input: v, path: [value], params: { pairedWith: unit } };
   if (v > r.max) {
     ctx.addIssue({
+      ...at,
       code: "too_big",
       origin: "number",
       maximum: r.max,
       inclusive: true,
-      input: v,
-      path: [value],
       message: `at most ${r.max} ${String(bag[unit] ?? "minutes")}`,
-      params: { pairedWith: unit },
+    });
+  } else if (v < r.min) {
+    ctx.addIssue({
+      ...at,
+      code: "too_small",
+      origin: "number",
+      minimum: r.min,
+      inclusive: true,
+      message: `at least ${r.min}`,
+    });
+  } else {
+    ctx.addIssue({
+      ...at,
+      code: "invalid_type",
+      expected: "int",
+      message: "a whole number",
     });
   }
 }

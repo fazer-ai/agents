@@ -1023,6 +1023,7 @@ const REMOVAL_BATCHES = [
   "contacts",
   "agent_threads",
   "attendance_summaries",
+  "other_inbox_summaries",
 ] as const;
 const REMOVAL_BATCH_ROWS = 1_000;
 

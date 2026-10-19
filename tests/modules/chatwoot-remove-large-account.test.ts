@@ -234,7 +234,18 @@ describe.skipIf(!dbUp)("removing a large Chatwoot account", () => {
       conversations: 12_000,
       deliveries: 12_000,
     });
-    const tables = ["chatwoot_webhook_deliveries", "conversations", "contacts"];
+    await suDb.$executeRaw`
+      INSERT INTO other_inbox_summaries
+        (tenant_id, chatwoot_instance_id, chatwoot_conversation_id, summary, covered_message_id,
+         covered_fingerprint, generated_at, updated_at)
+      SELECT ${tenantId}, ${big.id}, g, 'summary', g, 'f', now(), now()
+        FROM generate_series(1, 12000) g`;
+    const tables = [
+      "chatwoot_webhook_deliveries",
+      "conversations",
+      "contacts",
+      "other_inbox_summaries",
+    ];
     await suDb.$executeRawUnsafe(`
       CREATE FUNCTION test_1531_statement_cap() RETURNS trigger LANGUAGE plpgsql AS $$
       DECLARE n bigint;
@@ -272,6 +283,9 @@ describe.skipIf(!dbUp)("removing a large Chatwoot account", () => {
       conversations: 0,
       deliveries: 0,
     });
+    const [left] = await suDb.$queryRaw<[{ n: bigint }]>`
+      SELECT count(*) AS n FROM other_inbox_summaries WHERE chatwoot_instance_id = ${big.id}`;
+    expect(Number(left.n)).toBe(0);
   }, 120_000);
 
   // The removal is many transactions, so it can stop between them: the process dies, the database

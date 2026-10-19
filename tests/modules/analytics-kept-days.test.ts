@@ -31,6 +31,7 @@ import {
   addDays,
   dayCount,
   dayStart,
+  daysBetween,
   localDay,
 } from "@/modules/analytics/rollup/days";
 import {
@@ -780,8 +781,8 @@ describe.skipIf(!dbUp)("the kept days of the dashboard", () => {
     }
   });
 
-  test("a day changed in the minutes before its part ran is computed, and not kept", async () => {
-    await clearKept();
+  test("a change settled before its part began is kept with the part, and a reload computes only the day it reached", async () => {
+    await fromHistory();
     const f = windowOf("UTC", 44, 0);
     const [conv] = await suDb.$queryRaw<{ id: bigint; day: string }[]>`
       SELECT id, to_char(created_at::date, 'YYYY-MM-DD') AS day FROM conversations
@@ -789,19 +790,109 @@ describe.skipIf(!dbUp)("the kept days of the dashboard", () => {
          AND created_at BETWEEN now() - interval '30 days' AND now() - interval '3 days'
        ORDER BY created_at DESC LIMIT 1`;
     if (!conv) throw new Error("no conversation");
-    // A writer whose change the part's snapshot may not have seen: the change is queued (and settled
-    // by the request) before the part reads, inside the margin a snapshot is not trusted for.
+    const stamps = async () =>
+      new Map(
+        (
+          await suDb.$queryRaw<{ day: string; at: string }[]>`
+            SELECT to_char(day, 'YYYY-MM-DD') AS day, computed_at::text AS at FROM dashboard_days
+             WHERE tenant_id = ${tenantId} AND section = 'conv.labels' AND tz = 'UTC'`
+        ).map((r) => [r.day, r.at]),
+      );
+    // A tenant whose old conversations change every few minutes: the change is queued just before
+    // the load, which settles it before any part reads, so every part's snapshot already sees it.
     await suDb.$executeRaw`UPDATE conversations SET labels = ARRAY['tardia'] WHERE id = ${conv.id}`;
     expect(canon(await kept("labels", f))).toEqual(
       canon(await live("labels", f)),
     );
+    const first = await stamps();
+    expect(first.has(conv.day)).toBe(true);
+    // Every past day from the tenant's first record on (a day before it is empty without a row).
+    const past = daysBetween(
+      [...first.keys()].sort()[0] ?? localDay(f.since, "UTC"),
+      addDays(localDay(Date.now(), "UTC"), -2),
+    );
+    expect(past.filter((d) => !first.has(d))).toEqual([]);
+    // The next change, minutes later, reaches the same day: the reload computes that day alone.
+    await suDb.$executeRaw`UPDATE conversations SET labels = ARRAY['tardia', 'outra'] WHERE id = ${conv.id}`;
+    expect(canon(await kept("labels", f))).toEqual(
+      canon(await live("labels", f)),
+    );
+    const second = await stamps();
+    const recomputed = past.filter((d) => second.get(d) !== first.get(d));
+    expect(recomputed).toEqual([conv.day]);
+    // And a reload with no change in between computes no past day at all.
+    await kept("labels", f);
+    expect(await stamps()).toEqual(second);
+  });
+
+  test("a change still queued when the part checks is not kept, however long its writer ran", async () => {
+    await fromHistory();
+    const f = windowOf("UTC", 44, 0);
+    const [conv] = await suDb.$queryRaw<{ id: bigint; day: string }[]>`
+      SELECT id, to_char(created_at::date, 'YYYY-MM-DD') AS day FROM conversations
+       WHERE tenant_id = ${tenantId}
+         AND created_at BETWEEN now() - interval '30 days' AND now() - interval '3 days'
+       ORDER BY created_at DESC LIMIT 1 OFFSET 1`;
+    if (!conv) throw new Error("no conversation");
+    const compute = COMPUTE.conv;
+    let raced = false;
+    COMPUTE.conv = async (...args) => {
+      await compute(...args);
+      const range = args[4];
+      if (raced || range.first > conv.day || range.last < conv.day) return;
+      raced = true;
+      // After the part read: a transaction that began ten minutes ago commits its change, which
+      // nobody settles before the part keeps its days.
+      await suDb.$executeRaw`UPDATE conversations SET labels = ARRAY['fila'] WHERE id = ${conv.id}`;
+      await suDb.$executeRaw`UPDATE dashboard_dirty SET created_at = created_at - interval '10 minutes' WHERE tenant_id = ${tenantId} AND processed_at IS NULL`;
+    };
+    try {
+      await kept("labels", f);
+    } finally {
+      COMPUTE.conv = compute;
+    }
+    expect(raced).toBe(true);
     const stored = await suDb.$queryRaw<{ day: string }[]>`
       SELECT to_char(day, 'YYYY-MM-DD') AS day FROM dashboard_days
-       WHERE tenant_id = ${tenantId} AND section = 'conv.labels'`;
+       WHERE tenant_id = ${tenantId} AND section = 'conv.labels' AND tz = 'UTC'`;
     const days = stored.map((r) => r.day);
     expect(days).not.toContain(conv.day);
-    // The other days are kept (less any an earlier test of this file changed in the same minutes).
     expect(days.length).toBeGreaterThan(30);
+    expect(canon(await kept("labels", f))).toEqual(
+      canon(await live("labels", f)),
+    );
+  });
+
+  test("an inbox bound to another agent while the part runs keeps no conversation day of it", async () => {
+    await fromHistory();
+    const f = windowOf("UTC", 44, 0);
+    const compute = COMPUTE.conv;
+    let raced = false;
+    COMPUTE.conv = async (...args) => {
+      await compute(...args);
+      // A part of the window's past days, the kind that is kept (not today and yesterday, nor the
+      // fixed range the version hash records).
+      const range = args[4];
+      if (
+        raced ||
+        range.first < localDay(f.since, "UTC") ||
+        range.last >= addDays(localDay(Date.now(), "UTC"), -1)
+      )
+        return;
+      raced = true;
+      // What the binding trigger queues: every conversation day moves, and nobody settles it yet.
+      await suDb.$executeRaw`INSERT INTO dashboard_dirty (tenant_id, section) VALUES (${tenantId}, 'conv-all')`;
+    };
+    try {
+      await kept("labels", f);
+    } finally {
+      COMPUTE.conv = compute;
+    }
+    expect(raced).toBe(true);
+    const [stored] = await suDb.$queryRaw<{ n: number }[]>`
+      SELECT COUNT(*)::int AS n FROM dashboard_days
+       WHERE tenant_id = ${tenantId} AND section LIKE 'conv.%'`;
+    expect(stored?.n).toBe(0);
   });
 
   test("a change from a writer that began long before the part, settled while the part ran, is not kept stale", async () => {

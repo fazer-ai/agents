@@ -63,8 +63,6 @@ export const PART_DAYS: Record<Family, number> = {
 // Days whose figures still move: never kept, always computed.
 const LIVE_DAYS = 2;
 const DAY_MS = 86_400_000;
-// How far before a part's start a change is assumed to have been invisible to its snapshot.
-const SNAPSHOT_MARGIN_MS = 5 * 60_000;
 
 export type Block =
   | "kpis"
@@ -764,10 +762,9 @@ export class WindowLoad implements DayStore {
     await publishing(db, this.settleKey());
     const changed = await changedSince(
       db,
-      new Date(startedAt - SNAPSHOT_MARGIN_MS),
+      began?.t ?? new Date(startedAt),
       this.tz,
       part.family,
-      began?.t ?? new Date(startedAt),
     );
     const keepable = rows.filter(
       (r) =>

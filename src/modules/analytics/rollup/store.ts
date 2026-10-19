@@ -159,27 +159,28 @@ export async function settleDirty(
   return picked.length;
 }
 
-// The (family, local day) pairs that changed since `since`, processed or not, or that a batch settled
-// since `settledSince` (the part's start): a part computed from a snapshot that may predate them keeps
-// none of these days. The margin covers a writer whose transaction began before the part's and
-// committed after it; a row carries its transaction's start, so a writer that began earlier still is
-// caught by when its row was settled, which the batch stamps by the clock, after the writer committed.
+// The (family, local day) pairs a part's snapshot may not have seen: changes still in the queue when
+// the part checks, whatever their writer's start, and changes a batch settled since the part began
+// (`began`, by the clock the batch stamps with). A change settled before the part began was committed
+// before it, so the part's snapshot already counts it, and the part keeps the days it reaches: on a
+// tenant whose old conversations change every few minutes, a margin before the part's start would
+// leave those days to be computed again on every request (issue #1545).
 export async function changedSince(
   db: ScopedDb,
-  since: Date,
+  began: Date,
   tz: string,
   fam: Family,
-  settledSince: Date = since,
 ): Promise<Set<string>> {
+  const unseen = Prisma.sql`(processed_at IS NULL OR processed_at >= ${began})`;
   const rows = await db.$queryRaw<
     { fam: Family | "conv-all"; day: string | null }[]
   >(Prisma.sql`
-    WITH inst AS (${instantsSql(Prisma.sql`(created_at >= ${since} OR processed_at >= ${settledSince})`, [fam])})
+    WITH inst AS (${instantsSql(unseen, [fam])})
     SELECT fam, to_char(((at AT TIME ZONE 'UTC') AT TIME ZONE ${tz}::text)::date, 'YYYY-MM-DD') AS day
       FROM inst
     UNION ALL
     SELECT 'conv-all', NULL FROM dashboard_dirty
-     WHERE (created_at >= ${since} OR processed_at >= ${settledSince}) AND section = 'conv-all'`);
+     WHERE ${unseen} AND section = 'conv-all'`);
   return new Set(
     rows.map((r) => (r.fam === "conv-all" ? "conv-all" : `${r.fam}|${r.day}`)),
   );

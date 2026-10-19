@@ -12,13 +12,21 @@ export type CallProvider = (typeof CALL_PROVIDERS)[number];
 export const CALL_TURN_EAGERNESS = ["patient", "normal", "eager"] as const;
 export type CallTurnEagerness = (typeof CALL_TURN_EAGERNESS)[number];
 
-// The models offered on the console. Any other id the ElevenLabs model list carries is accepted on the
-// API. No latency is shown next to them: one measurement on a test line is not a property of the model.
+// The models offered on the console, the default first. Any other id the ElevenLabs agents API accepts
+// can be typed in the editor and is sent as is. The default and the order come from a measurement on
+// 2026-10-19: 24 simulated turns each of a Portuguese shop prompt with three tools.
+// DeepSeek Flash 4.1 was the only model both quick to start speaking (about 0.3 s) and right about the
+// tool in both rounds; Qwen 3.6, as quick, says "one moment, I'll transfer you" and calls nothing until
+// the caller speaks again. Gemini 3.5 Flash-Lite did the same, and GPT-6 Luna took 2 to 4 s: both left
+// the list, and an agent saved with either keeps it.
 export const CALL_LLMS = [
-  { id: "qwen36-35b-a3b", label: "Qwen 3.6 35B" },
+  { id: "deepseek-v41-flash", label: "DeepSeek Flash 4.1" },
+  { id: "glm-52", label: "GLM 5.2" },
+  { id: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash-Lite" },
+  { id: "claude-haiku-5-5", label: "Claude Haiku 5.5" },
+  { id: "gpt-5.4-mini", label: "GPT-5.4 mini" },
   { id: "gpt-4.1-mini", label: "GPT-4.1 mini" },
-  { id: "gemini-3.5-flash-lite", label: "Gemini 3.5 Flash Lite" },
-  { id: "gpt-6-luna", label: "GPT-6 Luna" },
+  { id: "qwen36-35b-a3b", label: "Qwen 3.6 35B" },
 ] as const;
 
 // ElevenLabs' built-in ambience, mixed under the agent's speech for the whole call (the agent does not
@@ -113,7 +121,9 @@ export const CALLS_DEFAULTS: CallsConfig = {
   credentialRef: null,
   voice: DEFAULT_CALL_VOICE,
   llm: CALL_LLMS[0].id,
-  ttsModel: CALL_TTS_MODELS[0],
+  // ElevenLabs' own default for agents since 2026-10-05: the most expressive real-time voice, about
+  // 25 ms slower than Flash.
+  ttsModel: "eleven_v4_turbo",
   asrModel: CALL_ASR_MODELS[0],
   speed: 1,
   openingDelayMs: 1600,

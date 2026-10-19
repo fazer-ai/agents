@@ -3,13 +3,15 @@
 // an empty stored model) must agree, or the operator is told one thing and the runtime does another.
 // openai-compatible maps to "" on purpose: single-model servers ignore the requested name, so empty
 // is a real choice there. Import-free: the client bundle reads this table and must not pull server
-// code in. Ids age with provider releases; revisit alongside DEFAULT_MODEL_CONFIG.
+// code in. Ids age with provider releases; revisit alongside DEFAULT_MODEL_CONFIG. Last revised
+// 2026-10-19: each vendor's current generation at the same tier. `deepseek-chat` is an
+// alias DeepSeek moves to its newest chat model, so it does not age.
 export const PROVIDER_DEFAULT_MODEL: Record<string, string> = {
-  openai: "gpt-5.6-luna",
-  anthropic: "claude-sonnet-4-6",
-  google: "gemini-3.5-flash",
+  openai: "gpt-6-luna",
+  anthropic: "claude-sonnet-5-5",
+  google: "gemini-3.8-flash",
   deepseek: "deepseek-chat",
-  openrouter: "openai/gpt-5.6-luna",
+  openrouter: "openai/gpt-6-luna",
   "openai-compatible": "",
 };
 

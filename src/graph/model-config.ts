@@ -7,7 +7,7 @@ import {
   type TranslatedParam,
 } from "@/lib/errors";
 import { numberRange } from "@/lib/number-range";
-import { modelOptionalFor } from "./model-defaults";
+import { modelOptionalFor, PROVIDER_DEFAULT_MODEL } from "./model-defaults";
 import { REASONING_EFFORTS } from "./openai-reasoning";
 import {
   PROMPT_CACHE_MODES,
@@ -219,7 +219,7 @@ export type ModelConfig = z.infer<typeof modelConfigSchema>;
 // (the operator still needs to pick a credential before the agent can run).
 export const DEFAULT_MODEL_CONFIG: ModelConfig = {
   provider: "openai",
-  model: "gpt-5.6-luna",
+  model: PROVIDER_DEFAULT_MODEL.openai as string,
   temperature: 0.7,
 };
 

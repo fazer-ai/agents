@@ -33,7 +33,7 @@ describe("ModelPicker placeholder", () => {
   afterEach(() => cleanup());
 
   test("names the provider's own default, not OpenAI's", () => {
-    expect(shownFor("anthropic")).toContain("claude-sonnet-4-6");
+    expect(shownFor("anthropic")).toContain("claude-sonnet-5-5");
   });
 
   // Empty is a real choice here (single-model servers ignore the requested name), so naming a model

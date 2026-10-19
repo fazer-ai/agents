@@ -67,24 +67,33 @@ describe("calls settings", () => {
     expect(c.keywords).toEqual(["Unimed"]);
   });
 
-  test("the provider and its voice and transcription models are read from a list, the first by default", () => {
+  test("the provider and its voice and transcription models are read from a list, with a default when absent or unknown", () => {
+    // A new agent speaks with v4 Turbo and thinks with DeepSeek Flash 4.1.
     expect(readCallsConfig({})).toMatchObject({
       provider: "elevenlabs",
-      ttsModel: "eleven_flash_v2_5",
+      ttsModel: "eleven_v4_turbo",
       asrModel: "scribe_realtime",
+      llm: "deepseek-v41-flash",
     });
+    // An agent saved before keeps what it saved, the old defaults included.
     expect(
       readCallsConfig({
         calls: {
           provider: "elevenlabs",
-          ttsModel: "eleven_v4_turbo",
+          ttsModel: "eleven_flash_v2_5",
           asrModel: "scribe_v2_turbo",
+          llm: "qwen36-35b-a3b",
         },
       }),
     ).toMatchObject({
-      ttsModel: "eleven_v4_turbo",
+      ttsModel: "eleven_flash_v2_5",
       asrModel: "scribe_v2_turbo",
+      llm: "qwen36-35b-a3b",
     });
+    // An empty model saved by an older editor falls back to the default, never reaches ElevenLabs empty.
+    expect(readCallsConfig({ calls: { llm: "  " } }).llm).toBe(
+      "deepseek-v41-flash",
+    );
     // An English-only voice model, a provider this build does not have: the defaults, not the value.
     expect(
       readCallsConfig({
@@ -96,9 +105,24 @@ describe("calls settings", () => {
       }),
     ).toMatchObject({
       provider: "elevenlabs",
-      ttsModel: "eleven_flash_v2_5",
+      ttsModel: "eleven_v4_turbo",
       asrModel: "scribe_realtime",
     });
+  });
+
+  test("a new agent is created on ElevenLabs with the new defaults, and a typed model id goes as is", () => {
+    const sent = (calls: unknown) =>
+      elevenLabsAgentConfig({
+        name: "Maria",
+        prompt: "p",
+        voice: "v1",
+        calls: readCallsConfig({ calls }),
+      }).conversation_config;
+    expect([
+      sent({}).tts.model_id,
+      sent({}).agent.prompt.llm,
+      sent({ llm: "gpt-oss-120b" }).agent.prompt.llm,
+    ]).toEqual(["eleven_v4_turbo", "deepseek-v41-flash", "gpt-oss-120b"]);
   });
 
   test("the agent on ElevenLabs speaks with the chosen voice model and hears with the chosen transcription", () => {

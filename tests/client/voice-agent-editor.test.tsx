@@ -7,8 +7,13 @@ import {
   fireEvent,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
-import { renderEditor, stubEditorApi } from "../utils/agent-editor";
+import {
+  lastSavedSettings,
+  renderEditor,
+  stubEditorApi,
+} from "../utils/agent-editor";
 
 // A voice agent's editor: its own tabs, and the Voice card on General, whose edits the bar's Discard
 // takes back like any other field.
@@ -19,11 +24,15 @@ afterEach(() => {
   globalThis.fetch = realFetch;
 });
 
-async function open(tab = "general", kind: "voice" | "text" = "voice") {
+async function open(
+  tab = "general",
+  kind: "voice" | "text" = "voice",
+  llm = "gpt-4.1-mini",
+) {
   const stub = stubEditorApi(
     {
       kind,
-      settings: { calls: { credentialRef: "vault:9", llm: "gpt-4.1-mini" } },
+      settings: { calls: { credentialRef: "vault:9", llm } },
     },
     {
       catalog: {
@@ -44,14 +53,24 @@ async function open(tab = "general", kind: "voice" | "text" = "voice") {
 
 const tabNames = () =>
   screen.getAllByRole("tab").map((t) => t.textContent ?? "");
-const modelSelect = () =>
-  screen
-    .getAllByRole("combobox")
-    .find((el) =>
-      [...(el as HTMLSelectElement).options].some(
-        (o) => o.value === "qwen36-35b-a3b",
-      ),
-    ) as HTMLSelectElement;
+// The conversation model's field: its trigger shows the chosen model's name.
+const modelField = () =>
+  screen.getByRole("button", { name: "Conversation model", hidden: true });
+async function chooseModel(name: RegExp | string) {
+  fireEvent.pointerDown(modelField(), { button: 0, ctrlKey: false });
+  const menu = await screen.findByRole("menu");
+  fireEvent.click(within(menu).getByRole("menuitem", { name }));
+  await act(async () => {});
+}
+async function typeModel(id: string) {
+  fireEvent.pointerDown(modelField(), { button: 0, ctrlKey: false });
+  const menu = await screen.findByRole("menu");
+  fireEvent.change(within(menu).getByRole("textbox"), {
+    target: { value: id },
+  });
+  fireEvent.click(within(menu).getByRole("menuitem", { name: `Use "${id}"` }));
+  await act(async () => {});
+}
 
 describe("the editor of a voice agent", () => {
   test("draws the tabs of an agent that takes calls", async () => {
@@ -71,7 +90,7 @@ describe("the editor of a voice agent", () => {
     expect(screen.getByRole("combobox", { name: "Provider" })).not.toBeNull();
     // The models are folded, with what is chosen readable without opening them.
     expect(
-      screen.getByText("GPT-4.1 mini · Flash v2.5 · Scribe Realtime"),
+      screen.getByText("GPT-4.1 mini · v4 Turbo · Scribe Realtime"),
     ).not.toBeNull();
     fireEvent.click(screen.getByRole("tab", { name: "Call settings" }));
     await act(async () => {});
@@ -411,14 +430,53 @@ describe("the editor of a voice agent", () => {
 
   test("Discard takes back a change to the Voice card, after asking", async () => {
     await open();
-    expect(modelSelect().value).toBe("gpt-4.1-mini");
-    fireEvent.change(modelSelect(), { target: { value: "qwen36-35b-a3b" } });
-    await act(async () => {});
-    expect(modelSelect().value).toBe("qwen36-35b-a3b");
+    expect(modelField().textContent).toContain("GPT-4.1 mini");
+    await chooseModel(/Qwen 3\.6 35B/);
+    expect(modelField().textContent).toContain("Qwen 3.6 35B");
     fireEvent.click(screen.getByRole("button", { name: "Discard" }));
     fireEvent.click(await screen.findByRole("button", { name: "Discard all" }));
     await act(async () => {});
-    expect(modelSelect().value).toBe("gpt-4.1-mini");
+    expect(modelField().textContent).toContain("GPT-4.1 mini");
+  });
+
+  test("the conversation model offers at least five models, each saying what it is good for", async () => {
+    await open();
+    fireEvent.pointerDown(modelField(), { button: 0, ctrlKey: false });
+    const rows = within(await screen.findByRole("menu")).getAllByRole(
+      "menuitem",
+    );
+    expect(rows.length).toBeGreaterThanOrEqual(5);
+    // Each row: the model's name, then a line about it that is neither empty nor the raw id.
+    for (const row of rows) {
+      const [name = "", hint = ""] = [...row.querySelectorAll("span")].map(
+        (el) => el.textContent ?? "",
+      );
+      expect([name.length > 0, hint.length > 0, hint.includes("-")]).toEqual([
+        true,
+        true,
+        false,
+      ]);
+    }
+  });
+
+  test("a model id the list does not carry can be typed, and it is the one saved", async () => {
+    const stub = await open();
+    await typeModel("gpt-oss-120b");
+    expect(modelField().textContent).toContain("gpt-oss-120b");
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(
+        (lastSavedSettings(stub)?.calls as { llm?: string } | undefined)?.llm,
+      ).toBe("gpt-oss-120b"),
+    );
+  });
+
+  test("an agent saved with a model that left the list still shows that model", async () => {
+    await open("general", "voice", "gemini-3.5-flash-lite");
+    expect(modelField().textContent).toContain("gemini-3.5-flash-lite");
+    expect(
+      screen.getByText("gemini-3.5-flash-lite · v4 Turbo · Scribe Realtime"),
+    ).not.toBeNull();
   });
 
   test("one save of the name and a call setting leaves nothing unsaved on either tab", async () => {

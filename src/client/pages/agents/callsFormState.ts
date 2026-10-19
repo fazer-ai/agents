@@ -4,6 +4,8 @@
 // (`callsFormErrors`) rather than left to the reader's clamp. `providerAgentId` is not part of the
 // form: the server writes it and keeps it across saves.
 
+import { inRange } from "@/lib/number-range";
+import { CALL_RANGES } from "@/modules/agents/number-ranges";
 import {
   CALL_LIMITS,
   type CallAsrModel,
@@ -73,10 +75,21 @@ const num = (v: string): number | undefined => {
   return v.trim() && Number.isFinite(n) ? n : undefined;
 };
 
+// A number whose field is not drawn (the hello's wait, the volume with no background sound) cannot hold
+// the save, so one out of range is left out for the reader's default: sent, the server refuses it and
+// nobody can see the field to fix it.
+const inRangeOrDefault = (
+  v: number | undefined,
+  range: (typeof CALL_RANGES)[keyof typeof CALL_RANGES],
+): number | undefined => (v !== undefined && inRange(v, range) ? v : undefined);
+
 export function callsSettingsFrom(f: CallsFormState): Record<string, unknown> {
   const maxMin = num(f.maxDurationMin);
   const delaySecs = num(f.openingDelaySecs);
-  const volume = num(f.backgroundVolume);
+  const percent = num(f.backgroundVolume);
+  const volume = percent === undefined ? undefined : percent / 100;
+  const delayMs =
+    delaySecs === undefined ? undefined : Math.round(delaySecs * 1000);
   return {
     provider: f.provider,
     credentialRef: f.credentialRef || null,
@@ -85,8 +98,7 @@ export function callsSettingsFrom(f: CallsFormState): Record<string, unknown> {
     ttsModel: f.ttsModel,
     asrModel: f.asrModel,
     speed: num(f.speed),
-    openingDelayMs:
-      delaySecs === undefined ? undefined : Math.round(delaySecs * 1000),
+    openingDelayMs: inRangeOrDefault(delayMs, CALL_RANGES.openingDelayMs),
     turnEagerness: f.turnEagerness,
     silenceEndCallSecs: f.endOnSilence ? num(f.silenceEndCallSecs) : null,
     maxDurationSecs: maxMin === undefined ? undefined : Math.round(maxMin * 60),
@@ -95,7 +107,9 @@ export function callsSettingsFrom(f: CallsFormState): Record<string, unknown> {
       .map((k) => k.trim())
       .filter(Boolean),
     backgroundSound: f.backgroundSound || null,
-    backgroundVolume: volume === undefined ? undefined : volume / 100,
+    backgroundVolume: f.backgroundSound
+      ? volume
+      : inRangeOrDefault(volume, CALL_RANGES.backgroundVolume),
     toolSound: f.toolSound || null,
   };
 }
@@ -145,7 +159,11 @@ export function callsFormErrors(f: CallsFormState): CallsRangeField[] {
   return judged.filter((field) => {
     const n = num(f[field]);
     const [min, max] = CALLS_FORM_RANGES[field];
-    return n === undefined || n < min || n > max;
+    // The silence is stored in the seconds it is typed in, which the server takes whole.
+    const whole =
+      field !== "silenceEndCallSecs" ||
+      (n !== undefined && Number.isInteger(n));
+    return n === undefined || n < min || n > max || !whole;
   });
 }
 

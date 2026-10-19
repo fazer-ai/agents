@@ -67,6 +67,16 @@ export const TTS_TIMEOUT_RANGES = {
   ),
 } as const;
 
+// A voice agent's call (`settings.calls`). Speed is the band ElevenLabs Agents accepts; the volume is
+// relative to the speech. The seconds and the wait are whole units.
+export const CALL_RANGES = {
+  speed: numberRange(0.7, 1.2),
+  openingDelayMs: intRange(0, 5000),
+  silenceEndCallSecs: intRange(10, 600),
+  maxDurationSecs: intRange(60, 3600),
+  backgroundVolume: numberRange(0.01, 1),
+} as const;
+
 export const CONTACT_AUTH_RANGES = {
   timeoutMs: intRange(1000, 10_000),
   // 0 sends the notice on every refusal.

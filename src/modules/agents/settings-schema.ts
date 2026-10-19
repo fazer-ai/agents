@@ -3,6 +3,7 @@ import { MODEL_PROVIDERS } from "@/graph/model-config";
 import { NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
 import { inRange, type NumberRange } from "@/lib/number-range";
 import {
+  CALL_RANGES,
   CARRY_ATTACHMENTS_RANGES,
   CHANNEL_REDIRECT_RANGES,
   CONTACT_AUTH_RANGES,
@@ -85,7 +86,6 @@ import { VISION_PROVIDER_NAMES } from "@/modules/vision/providers";
 import {
   CALL_ASR_MODELS,
   CALL_BACKGROUND_SOUNDS,
-  CALL_LIMITS,
   CALL_PROVIDERS,
   CALL_TOOL_SOUNDS,
   CALL_TTS_MODELS,
@@ -219,35 +219,27 @@ const calls = z.looseObject({
   llm: z.string().optional().describe("model the provider runs"),
   ttsModel: oneOf(CALL_TTS_MODELS).optional(),
   asrModel: oneOf(CALL_ASR_MODELS).optional(),
-  speed: z
-    .number()
+  speed: ranged(CALL_RANGES.speed).optional(),
+  openingDelayMs: ranged(CALL_RANGES.openingDelayMs)
     .optional()
-    .describe(`${CALL_LIMITS.speed[0]}-${CALL_LIMITS.speed[1]}, clamped`),
-  openingDelayMs: z
-    .number()
-    .optional()
-    .describe("placed call's wait for hello, 0-5000 ms"),
+    .describe("placed call's wait for hello, ms"),
   turnEagerness: oneOf(CALL_TURN_EAGERNESS).optional(),
   backgroundSound: oneOf(CALL_BACKGROUND_SOUNDS)
     .nullable()
     .optional()
     .describe("ambience under the speech; null = none"),
-  backgroundVolume: z
-    .number()
+  backgroundVolume: ranged(CALL_RANGES.backgroundVolume)
     .optional()
-    .describe(
-      `relative to the speech, ${CALL_LIMITS.backgroundVolume[0]}-${CALL_LIMITS.backgroundVolume[1]}`,
-    ),
+    .describe("relative to the speech"),
   toolSound: oneOf(CALL_TOOL_SOUNDS)
     .nullable()
     .optional()
     .describe("plays while a tool runs; null = silence"),
-  silenceEndCallSecs: z
-    .number()
+  silenceEndCallSecs: ranged(CALL_RANGES.silenceEndCallSecs)
     .nullable()
     .optional()
-    .describe("silence that ends the call, 10-600 s; null = never"),
-  maxDurationSecs: z.number().optional().describe("60-3600, clamped"),
+    .describe("silence that ends the call, s; null = never"),
+  maxDurationSecs: ranged(CALL_RANGES.maxDurationSecs).optional(),
   keywords: z
     .array(z.string())
     .optional()

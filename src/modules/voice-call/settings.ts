@@ -3,6 +3,9 @@
 // (a `vault:<id>` ref); the server creates the agent there and writes its id back
 // (`providerAgentId`), which the console never edits. ElevenLabs Agents is the only provider today.
 
+import type { NumberRange } from "@/lib/number-range";
+import { CALL_RANGES } from "@/modules/agents/number-ranges";
+
 export const CALL_PROVIDERS = ["elevenlabs"] as const;
 export type CallProvider = (typeof CALL_PROVIDERS)[number];
 
@@ -124,14 +127,17 @@ export const CALLS_DEFAULTS: CallsConfig = {
   providerAgentId: null,
 };
 
+const pair = (r: NumberRange) => [r.min, r.max] as const;
+
+// The reader's clamp, for a value stored before the schema refused it.
 export const CALL_LIMITS = {
-  speed: [0.7, 1.2],
-  openingDelayMs: [0, 5000],
-  silenceEndCallSecs: [10, 600],
-  maxDurationSecs: [60, 3600],
+  speed: pair(CALL_RANGES.speed),
+  openingDelayMs: pair(CALL_RANGES.openingDelayMs),
+  silenceEndCallSecs: pair(CALL_RANGES.silenceEndCallSecs),
+  maxDurationSecs: pair(CALL_RANGES.maxDurationSecs),
   keywords: 50,
   keywordChars: 50,
-  backgroundVolume: [0.01, 1],
+  backgroundVolume: pair(CALL_RANGES.backgroundVolume),
 } as const;
 
 function oneOf<T extends string>(

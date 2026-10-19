@@ -41,6 +41,22 @@ describe("settings: only what the write introduces or changes", () => {
   });
 });
 
+// The voice agent's call numbers landed with only the reader's clamp: 9999 seconds stored, a call cut at
+// an hour, and the editor showing 9999.
+describe("a voice agent's call numbers", () => {
+  test("out of range is refused, and a legacy row re-sent intact saves", () => {
+    expect(settingsWrite({ calls: { maxDurationSecs: 9999 } })).toEqual({
+      field: "calls.maxDurationSecs",
+      status: 422,
+    });
+    expect(settingsWrite({ calls: { silenceEndCallSecs: 12.5 } })?.field).toBe(
+      "calls.silenceEndCallSecs",
+    );
+    const legacy = { calls: { speed: 3 } };
+    expect(settingsWrite(structuredClone(legacy), legacy)).toBeNull();
+  });
+});
+
 describe("a delay's range follows its unit", () => {
   const step = (delayValue: number, delayUnit: string) => ({
     followUp: { steps: [{ delayValue, delayUnit }] },

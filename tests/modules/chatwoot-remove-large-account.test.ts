@@ -184,7 +184,21 @@ describe.skipIf(!dbUp)("removing a large Chatwoot account", () => {
       deliveries: 100,
     });
 
-    await removeChatwootInstance(ctx(tenantId), big.id, appDb);
+    try {
+      await removeChatwootInstance(ctx(tenantId), big.id, appDb);
+    } catch (e) {
+      const j = (v: unknown) => JSON.stringify(v, (_k, x) => (typeof x === "bigint" ? String(x) : x));
+      console.error("DIAG sessions", j(await suDb.$queryRawUnsafe(`
+        SELECT pid, state, backend_type, wait_event_type, wait_event, xact_start, query_start,
+               left(regexp_replace(query, '\\s+', ' ', 'g'), 300) AS q
+          FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid()
+           AND (state <> 'idle' OR xact_start IS NOT NULL)`)));
+      console.error("DIAG locks", j(await suDb.$queryRawUnsafe(`
+        SELECT l.pid, l.locktype, l.relation::regclass::text AS rel, l.mode, l.granted
+          FROM pg_locks l WHERE l.pid <> pg_backend_pid() AND l.database = (SELECT oid FROM pg_database WHERE datname = current_database())
+           AND l.locktype IN ('relation', 'advisory', 'transactionid', 'tuple') ORDER BY l.pid`)));
+      throw e;
+    }
 
     expect(await rowsOf(big.id)).toEqual({
       instances: 0,

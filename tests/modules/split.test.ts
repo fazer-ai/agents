@@ -2019,8 +2019,11 @@ describe("deliverReply: a send refused for a passing cause is sent again (issue 
     } as unknown as ChatwootClient;
     return { client, posts, stored };
   }
+  // The fork's answer to a statement timeout: 503 with `Retry-After`, after the rollback.
   const busy = () =>
-    new ChatwootApiError(503, "POST /conversations/1/messages");
+    new ChatwootApiError(503, "POST /conversations/1/messages", undefined, {
+      retryAfter: true,
+    });
   const one = "Você pode comprar pelo site.";
   const modes = [
     ["split disabled", false],
@@ -2213,26 +2216,6 @@ describe("deliverReply: a send refused for a passing cause is sent again (issue 
     },
   );
 
-  test("split disabled: a 500 from Chatwoot ended the request, and is sent once more", async () => {
-    const { client, posts } = stub((n) =>
-      n === 1
-        ? new ChatwootApiError(500, "POST /conversations/1/messages")
-        : null,
-    );
-    const out = await deliverReply(
-      client,
-      1,
-      one,
-      { ...SPLIT_DEFAULTS, enabled: false },
-      async () => {},
-      undefined,
-      async () => false,
-      100,
-    );
-    expect(posts).toHaveLength(2);
-    expect(out).toEqual({ delivered: 1, failed: false, unproven: false });
-  });
-
   // The original can still be running when nobody on Chatwoot's side answered, and it can commit
   // after any read-back: resending there is how a reply is written twice.
   test.each([
@@ -2244,6 +2227,14 @@ describe("deliverReply: a send refused for a passing cause is sent again (issue 
     [
       "a proxy's 504",
       () => new ChatwootApiError(504, "POST /conversations/1/messages"),
+    ],
+    [
+      "a 503 without Retry-After",
+      () => new ChatwootApiError(503, "POST /conversations/1/messages"),
+    ],
+    [
+      "a 500",
+      () => new ChatwootApiError(500, "POST /conversations/1/messages"),
     ],
   ])(
     "split disabled: %s does not say the request ended, and is not sent again",

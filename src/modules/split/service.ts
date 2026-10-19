@@ -562,14 +562,13 @@ async function accountForRejectedSend(
   return findLandedMessage(client, conversationId, sendId, after);
 }
 
-// Chatwoot itself answered, so the request is over: a 500 or a 503 (the fork's answer to a query
-// timeout, after the rollback). A timeout on our side, a dropped connection, or a proxy's 502/504 can
-// leave the original still running, and it can commit after any number of read-backs; the send id is
-// a label the fork stores, not an idempotency key, so a resend there can write the reply twice.
+// Chatwoot asked for the request again after it was over: a 503 with `Retry-After`, which the fork
+// answers a statement timeout with. A timeout on our side, a dropped connection, or a 5xx a proxy made
+// up can leave the original still running, and it can commit after any number of read-backs; the
+// send id is a label the fork stores, not an idempotency key, so a resend there can write it twice.
 function requestEnded(err: unknown): boolean {
   return (
-    err instanceof ChatwootApiError &&
-    (err.status === 500 || err.status === 503)
+    err instanceof ChatwootApiError && err.status === 503 && err.retryAfter
   );
 }
 

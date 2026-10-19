@@ -54,7 +54,16 @@ export class ChatwootApiError extends Error {
   // got: "this endpoint is not open to bots" and "this token is no good" are both 401 and mean
   // opposite things.
   readonly reason?: string;
-  constructor(status: number, endpoint: string, detail?: string) {
+  // Whether the response carried `Retry-After`: the origin asking for the request again. The fork
+  // sends it on the 503 it answers a statement timeout with, after the request is over; a proxy's
+  // own 503 normally does not. A flag and not the value, since nothing here waits on it.
+  readonly retryAfter: boolean;
+  constructor(
+    status: number,
+    endpoint: string,
+    detail?: string,
+    opts: { retryAfter?: boolean } = {},
+  ) {
     // NOTE: `detail` is ONLY ever an auth failure's reason (see authFailureDetail) — the response body
     // of any other status carries customer PII / message content and must never reach this message.
     super(
@@ -66,6 +75,7 @@ export class ChatwootApiError extends Error {
     this.status = status;
     this.endpoint = endpoint;
     this.reason = detail;
+    this.retryAfter = opts.retryAfter === true;
   }
 }
 
@@ -601,6 +611,7 @@ export class ChatwootClient {
         res.status,
         `${method} ${path}`,
         await authFailureDetail(res),
+        { retryAfter: res.headers?.has("retry-after") === true },
       );
     }
     const text = await res.text();

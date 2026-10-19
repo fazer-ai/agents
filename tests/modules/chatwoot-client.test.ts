@@ -1200,3 +1200,27 @@ describe("parseLiveConversation states the assignee only when the payload does",
     expect(omittedMeta?.assigneeStated).toBe(false);
   });
 });
+
+// The flag the split path reads to resend a reply: whether the origin asked for the request again.
+describe("ChatwootApiError carries whether the response asked for a retry", () => {
+  test.each([
+    ["with Retry-After", { "retry-after": "5" }, true],
+    ["without it", {}, false],
+  ])("a 503 %s", async (_label, headers, expected) => {
+    const fetchImpl = (async () =>
+      ({
+        ok: false,
+        status: 503,
+        headers: new Headers(headers),
+        text: async () => "{}",
+      }) as unknown as Response) as unknown as typeof fetch;
+    const client = await createChatwootClient(baseConfig, {
+      fetchImpl,
+      assertSafe: passthroughSafe,
+    });
+    const err = await client.sendMessage(1, "oi").catch((e) => e);
+    expect(err).toBeInstanceOf(ChatwootApiError);
+    expect((err as ChatwootApiError).status).toBe(503);
+    expect((err as ChatwootApiError).retryAfter).toBe(expected);
+  });
+});

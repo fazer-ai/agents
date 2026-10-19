@@ -76,6 +76,12 @@ async function seedVolume(
       (tenant_id, chatwoot_instance_id, delivery_id, event, status, processed_at)
     SELECT ${tenantId}, ${instanceId}, ${tag} || '-' || g, 'message_created', 'PROCESSED', now()
       FROM generate_series(1, ${n.deliveries}::int) g`;
+  // Analyzed, as a table that has held an account for a while is: straight after a bulk load the
+  // statistics still read the tenant as empty, and every plan that filters by it, row-level security
+  // included, then walks the whole account for each batch.
+  await suDb.$executeRawUnsafe(
+    "ANALYZE inboxes, contacts, conversations, chatwoot_webhook_deliveries",
+  );
 }
 
 async function rowsOf(instanceId: bigint) {

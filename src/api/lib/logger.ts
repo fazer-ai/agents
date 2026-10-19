@@ -99,10 +99,33 @@ let logger = pino(
       },
 );
 
-if (config.env === "development") {
-  logger = require("pino-caller")(logger, {
+// pino-caller reads the caller at a fixed depth of the stack, and a callback that native code calls
+// straight into the logger (`.catch((e) => logger.warn(...))`, `setTimeout(() => logger.warn(...))`)
+// has no frame there, because JSC's tail call drops the arrow's. Its lookup then throws a TypeError
+// out of the log call, which takes the process down, so such a line is written without `caller`.
+// `stackAdjustment: 1` skips this wrapper's own frame.
+function withCaller(base: pino.Logger): pino.Logger {
+  const { asJsonSym } = pino.symbols;
+  const traced = require("pino-caller")(base, {
     relativeTo: join(__dirname, ".."),
+    stackAdjustment: 1,
   });
+  const tracedAsJson = traced[asJsonSym];
+  const plainAsJson: typeof tracedAsJson = Reflect.get(base, asJsonSym);
+  function asJson(this: unknown, ...args: unknown[]) {
+    try {
+      return tracedAsJson.apply(this, args);
+    } catch {
+      return plainAsJson.apply(this, args);
+    }
+  }
+  return new Proxy(traced, {
+    get: (target, name) => (name === asJsonSym ? asJson : target[name]),
+  });
+}
+
+if (config.env === "development") {
+  logger = withCaller(logger);
 }
 
 export default logger;

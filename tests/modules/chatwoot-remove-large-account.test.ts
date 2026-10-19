@@ -115,7 +115,8 @@ async function auditOf(instanceId: bigint) {
 }
 
 // The app client with a hook in front of the N-th scoped transaction it opens: the removal is a
-// sequence of them (disconnect, then one per batch), so this is where "between two of them" is.
+// sequence of them (disconnect, the read of the inboxes whose calls go off, then one per batch), so
+// this is where "between two of them" is.
 function beforeTransaction(n: number, hook: () => Promise<void>) {
   let scoped = 0;
   return new Proxy(appDb, {
@@ -322,8 +323,8 @@ describe.skipIf(!dbUp)("removing a large Chatwoot account", () => {
     await suDb.inboxObserver.create({
       data: { tenantId, inboxId: inboxes[1]?.id as bigint, agentId: agent.id },
     });
-    // The first scoped transaction disconnects; the third is a batch in the middle of the log.
-    const dying = beforeTransaction(3, async () => {
+    // The first scoped transaction disconnects; the fourth is a batch in the middle of the log.
+    const dying = beforeTransaction(4, async () => {
       throw new Error("connection lost");
     });
     // A route token the receiver cached before the removal: through the batches it would keep
@@ -408,7 +409,7 @@ describe.skipIf(!dbUp)("removing a large Chatwoot account", () => {
       conversations: 3_000,
       deliveries: 3_000,
     });
-    const reconnecting = beforeTransaction(3, async () => {
+    const reconnecting = beforeTransaction(4, async () => {
       await reconnectChatwootInstance(ctx(tenantId), big.id, appDb);
     });
 
@@ -440,7 +441,7 @@ describe.skipIf(!dbUp)("removing a large Chatwoot account", () => {
       conversations: 3_000,
       deliveries: 3_000,
     });
-    const flipping = beforeTransaction(3, async () => {
+    const flipping = beforeTransaction(4, async () => {
       await reconnectChatwootInstance(ctx(tenantId), big.id, appDb);
       await suDb.chatwootInstance.update({
         where: { id: big.id },

@@ -67,9 +67,6 @@ describe("closed settings values on the create path", () => {
     ],
     ["monitoring.analysis", { monitoring: { analysis: "sempre" } }],
     ["vision.reasoningEffort", { vision: { reasoningEffort: "turbo" } }],
-    ["vision.maxOutputTokens", { vision: { maxOutputTokens: 0 } }],
-    ["vision.maxOutputTokens", { vision: { maxOutputTokens: -100 } }],
-    ["vision.maxOutputTokens", { vision: { maxOutputTokens: 1.5 } }],
     ["vision.maxOutputTokens", { vision: { maxOutputTokens: "4096" } }],
     ["memory.compaction.enabled", { memory: { compaction: { enabled: 1 } } }],
     // NOTE: keys the schema declares `never` under `input` are tolerated only with the type the
@@ -121,6 +118,34 @@ describe("closed settings values on the create path", () => {
 // THE CONSOLE IS THE CALLER THAT MUST NEVER BE REFUSED FOR ITS OWN OUTPUT. A boundary that trades the
 // silence for a 400 on the editor's own save is the failure this rule could introduce, so two bags the
 // console really produces are asked here.
+// A number of the right type outside its range is 422, not 400: the body parsed, and the value is what
+// the server will not store.
+describe("numbers outside their range on the create path", () => {
+  const cases: [string, Record<string, unknown>][] = [
+    ["debounce.windowSeconds", { debounce: { windowSeconds: -10 } }],
+    [
+      "debounce.maxMessagesPerBurst",
+      { debounce: { maxMessagesPerBurst: -509 } },
+    ],
+    ["vision.maxOutputTokens", { vision: { maxOutputTokens: 0 } }],
+    ["vision.maxOutputTokens", { vision: { maxOutputTokens: 1.5 } }],
+    ["vision.maxOutputTokens", { vision: { maxOutputTokens: 1_000_000 } }],
+  ];
+  for (const [path, settings] of cases) {
+    test(`${path} = ${JSON.stringify(Object.values(settings)[0])} is refused with 422`, () => {
+      const err = refusal(settings);
+      expect(err?.statusCode).toBe(422);
+      expect(err?.field).toBe(path);
+    });
+  }
+
+  test("the edges of a range pass", () => {
+    expect(
+      refusal({ debounce: { windowSeconds: 3, maxMessagesPerBurst: 50 } }),
+    ).toBeNull();
+  });
+});
+
 describe("what the console sends", () => {
   // Captured from the running console on 13/09/2026: the body of an ordinary Behavior-tab save. It
   // carries `vision.extractionPrompt: null`, which the reader honours as "use the default prompt".

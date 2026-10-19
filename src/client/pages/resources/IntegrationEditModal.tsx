@@ -9,7 +9,7 @@ import {
   Webhook,
   X,
 } from "lucide-react";
-import { useRef, useState } from "react";
+import { type ReactNode, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Button,
@@ -22,6 +22,7 @@ import {
   Modal,
   ModalCancelButton,
   type ModalController,
+  NumberInput,
   type ScheduleOption,
   SchedulePicker,
   Select,
@@ -44,6 +45,11 @@ import {
   toolpackToolMeta,
   withToolpackArgNotes,
 } from "@/client/lib/toolpackTools";
+import { inRange, intRange } from "@/lib/number-range";
+import {
+  CALENDAR_CONFIG_RANGES,
+  REMINDER_OFFSET_RANGE,
+} from "@/modules/integrations/calendar-config-ranges";
 
 type CatalogData = Awaited<
   ReturnType<typeof api.api.v1.integrations.catalog.get>
@@ -232,6 +238,16 @@ function defaultConfig(catalogType: string): Record<string, unknown> {
 }
 
 type ReminderUnit = "hours" | "days";
+
+// The server's offset range, in the unit the row is typed in.
+function reminderAmountRange(unit: ReminderUnit) {
+  return unit === "days"
+    ? intRange(
+        REMINDER_OFFSET_RANGE.min,
+        Math.floor(REMINDER_OFFSET_RANGE.max / 24),
+      )
+    : REMINDER_OFFSET_RANGE;
+}
 interface ReminderRow {
   value: string;
   unit: ReminderUnit;
@@ -280,15 +296,39 @@ function rowsToHours(rows: ReminderRow[]): number[] {
   return [...new Set(hrs)].sort((a, b) => b - a);
 }
 
+// Both Calendar sub-tabs stay mounted and the other one is hidden: a number field holds the modal's
+// Save only while mounted, so switching away from a value out of range would let the save through to a
+// refusal.
+export function CalendarSubTabPanels({
+  tab,
+  calendars,
+  reminders,
+}: {
+  tab: "calendars" | "reminders";
+  calendars: ReactNode;
+  reminders: ReactNode;
+}) {
+  return (
+    <>
+      <div hidden={tab !== "calendars"}>{calendars}</div>
+      <div hidden={tab !== "reminders"}>{reminders}</div>
+    </>
+  );
+}
+
 // Editor for the Calendar integration's appointment-reminder policy. The rows are held LOCALLY (so a
 // half-typed/empty row survives the keystroke) and the canonical hours[] is synced into the shared
 // integration config on every change. The policy lives on the integration (every agent that uses this
 // Calendar inherits it), NOT on the agent.
-function ReminderConfigEditor({
+export function ReminderConfigEditor({
   cfg,
+  loadedCfg,
   setCfg,
 }: {
   cfg: Record<string, unknown>;
+  // The config as the modal loaded it. The editor unmounts with its sub-tab, so its own first render
+  // would capture the draft on the way back.
+  loadedCfg: Record<string, unknown>;
   setCfg: (patch: Record<string, unknown>) => void;
 }) {
   const { t } = useTranslation();
@@ -302,16 +342,24 @@ function ReminderConfigEditor({
   const [askConfirmation, setAskConfirmation] = useState(
     initial.askConfirmationOnLast,
   );
+  // The offsets as loaded. With reminders on, an offset out of range is on screen and holds Save; off,
+  // the rows are not drawn, so a draft out of range goes back as loaded rather than being refused.
+  const loadedOffsets = readReminderCfg(loadedCfg).offsetsHours;
 
   function persist(next: {
     enabled?: boolean;
     rows?: ReminderRow[];
     askConfirmation?: boolean;
   }) {
+    const on = next.enabled ?? enabled;
+    const hours = rowsToHours(next.rows ?? rows);
     setCfg({
       appointmentReminders: {
-        enabled: next.enabled ?? enabled,
-        offsetsHours: rowsToHours(next.rows ?? rows),
+        enabled: on,
+        offsetsHours:
+          on || hours.every((h) => inRange(h, REMINDER_OFFSET_RANGE))
+            ? hours
+            : loadedOffsets,
         askConfirmationOnLast: next.askConfirmation ?? askConfirmation,
       },
     });
@@ -353,9 +401,8 @@ function ReminderConfigEditor({
                   className="flex items-center gap-2"
                 >
                   <div className="w-24 shrink-0">
-                    <Input
-                      type="number"
-                      min={1}
+                    <NumberInput
+                      range={reminderAmountRange(row.unit)}
                       value={row.value}
                       aria-label={t(
                         "integrations.config.remindersAmount",
@@ -728,6 +775,7 @@ export function IntegrationEditModal({
   // Active sub-tab for the Google Calendar config (calendars allowlist vs appointment reminders).
   const [calTab, setCalTab] = useState<"calendars" | "reminders">("calendars");
   const formBaseline = useRef("");
+  const loadedConfig = useRef<Record<string, unknown>>({});
 
   // Fetches the calendars a google_oauth credential can access, so the operator picks from real
   // agendas instead of typing opaque ids. Takes the ref explicitly to avoid stale form state.
@@ -848,6 +896,7 @@ export function IntegrationEditModal({
           };
           setForm(next);
           formBaseline.current = JSON.stringify(next);
+          loadedConfig.current = next.config;
           syncSlotModes(next.config);
           return;
         }
@@ -872,6 +921,7 @@ export function IntegrationEditModal({
         setRouteToken(inst.routeToken);
         setRouteTokenStatus(inst.routeTokenStatus);
         formBaseline.current = JSON.stringify(next);
+        loadedConfig.current = next.config;
         syncSlotModes(next.config);
         // Pre-load the credential's calendars/folders so the picker reflects the saved selection.
         if (next.catalogType === "GOOGLE_CALENDAR" && next.credentialRef) {
@@ -893,6 +943,7 @@ export function IntegrationEditModal({
       form.name.trim() === "" ||
       form.name ===
         catalogLabel(catalog.find((x) => x.catalogType === form.catalogType));
+    loadedConfig.current = defaultConfig(c.catalogType);
     setForm({
       ...form,
       catalogType: c.catalogType,
@@ -1126,6 +1177,7 @@ export function IntegrationEditModal({
                 !form.name.trim() ||
                 !form.catalogType
               }
+              holdOnRange
             >
               {t("common.save", "Save")}
             </Button>
@@ -1305,423 +1357,450 @@ export function IntegrationEditModal({
                     "Calendar settings",
                   )}
                 />
-                {calTab === "calendars" && (
-                  <div className="flex flex-col gap-4">
-                    <FormField
-                      label={t(
-                        "integrations.config.calendars",
-                        "Allowed calendars",
-                      )}
-                      group
-                    >
-                      <p className="mb-1.5 text-text-muted text-xs">
-                        {t(
-                          "integrations.config.calendarsHint",
-                          "The calendars the agent may read and write. The calendar tools stay disabled until at least one is picked.",
+                <CalendarSubTabPanels
+                  tab={calTab}
+                  calendars={
+                    <div className="flex flex-col gap-4">
+                      <FormField
+                        label={t(
+                          "integrations.config.calendars",
+                          "Allowed calendars",
                         )}
-                      </p>
-                      <a
-                        href="https://calendar.google.com/calendar/u/0/r/settings/createcalendar"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="mb-2 inline-flex items-center gap-1 text-accent text-xs hover:underline"
+                        group
                       >
-                        {t(
-                          "integrations.config.createCalendarLink",
-                          "Need a new calendar? Create one in Google Calendar",
-                        )}
-                        <ExternalLink className="h-3 w-3" aria-hidden="true" />
-                      </a>
-                      {!form.credentialRef ? (
-                        <p className="rounded-lg border border-border border-dashed px-3 py-2 text-text-muted text-xs">
+                        <p className="mb-1.5 text-text-muted text-xs">
                           {t(
-                            "integrations.config.calendarsPickCredential",
-                            "Choose a connected Google credential above to list its calendars.",
+                            "integrations.config.calendarsHint",
+                            "The calendars the agent may read and write. The calendar tools stay disabled until at least one is picked.",
                           )}
                         </p>
-                      ) : (
-                        <div className="flex flex-col gap-2">
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="text-text-muted text-xs">
-                              {t(
-                                "integrations.config.calendarsFromCredential",
-                                "Calendars from the connected account",
-                              )}
-                            </span>
-                            <Button
-                              variant="secondary"
-                              size="sm"
-                              loading={calLoading}
-                              onClick={() => loadCalendars(form.credentialRef)}
-                            >
-                              <RefreshCw
-                                className="h-4 w-4"
-                                aria-hidden="true"
-                              />
-                              {availableCals.length
-                                ? t("common.reload", "Reload")
-                                : t(
-                                    "integrations.config.loadCalendars",
-                                    "Load",
-                                  )}
-                            </Button>
-                          </div>
-                          {calLoading ? (
-                            <Skeleton className="h-20 w-full" />
-                          ) : (
-                            <>
-                              {calError && (
-                                <p className="text-error text-xs">
-                                  {t(
-                                    "integrations.config.calendarsError",
-                                    "Could not list calendars. Check the credential's Calendar scope and try again.",
-                                  )}
-                                </p>
-                              )}
-                              <CalendarMultiPicker
-                                cals={calError ? [] : availableCals}
-                                selectedIds={calendarIds}
-                                onToggle={toggleCalendar}
-                                manualIds={manualCalIds}
-                                onManualChange={setManualCalIds}
-                              />
-                            </>
-                          )}
-                        </div>
-                      )}
-                    </FormField>
-                    <FormField
-                      label={t(
-                        "integrations.config.blockingCalendars",
-                        "Blocking calendars",
-                      )}
-                      group
-                    >
-                      <p className="mb-1.5 text-text-muted text-xs">
-                        {t(
-                          "integrations.config.blockingCalendarsHint",
-                          "Calendars the agent respects but never books into: every event on them blocks availability (holidays, closures, days off). The agent never sees their event details.",
-                        )}
-                      </p>
-                      {!form.credentialRef ? (
-                        <p className="rounded-lg border border-border border-dashed px-3 py-2 text-text-muted text-xs">
+                        <a
+                          href="https://calendar.google.com/calendar/u/0/r/settings/createcalendar"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="mb-2 inline-flex items-center gap-1 text-accent text-xs hover:underline"
+                        >
                           {t(
-                            "integrations.config.calendarsPickCredential",
-                            "Choose a connected Google credential above to list its calendars.",
+                            "integrations.config.createCalendarLink",
+                            "Need a new calendar? Create one in Google Calendar",
                           )}
-                        </p>
-                      ) : calLoading ? (
-                        <Skeleton className="h-20 w-full" />
-                      ) : (
-                        <>
-                          {blockingIds.length > BLOCKING_CALENDARS_LIMIT && (
-                            <p className="text-warning text-xs">
-                              {t(
-                                "integrations.config.blockingCalendarsLimitWarning",
-                                "More than {{max}} blocking calendars are selected; availability checks will refuse until the list is reduced.",
-                                { max: BLOCKING_CALENDARS_LIMIT },
-                              )}
-                            </p>
-                          )}
-                          {calError && (
-                            <p className="text-error text-xs">
-                              {t(
-                                "integrations.config.calendarsError",
-                                "Could not list calendars. Check the credential's Calendar scope and try again.",
-                              )}
-                            </p>
-                          )}
-                          <CalendarMultiPicker
-                            cals={calError ? [] : availableCals}
-                            selectedIds={blockingIds}
-                            onToggle={toggleBlockingCalendar}
-                            manualIds={manualBlockingIds}
-                            onManualChange={setManualBlockingIds}
+                          <ExternalLink
+                            className="h-3 w-3"
+                            aria-hidden="true"
                           />
-                        </>
-                      )}
-                    </FormField>
-                    <FormField
-                      label={t("integrations.config.timeZone", "Time zone")}
-                      group
-                      required
-                    >
-                      <TimezonePicker
-                        value={(cfg.timeZone as string) || "America/Sao_Paulo"}
-                        onChange={(tz) => setCfg({ timeZone: tz })}
-                      />
-                    </FormField>
-                    <FormField
-                      label={t(
-                        "integrations.config.serviceHours",
-                        "Service hours",
-                      )}
-                      group
-                    >
-                      <p className="mb-1.5 text-text-muted text-xs">
-                        {t(
-                          "integrations.config.serviceHoursHint",
-                          "The weekly hours the agent may offer for appointments. Reuses your schedules; leave it as Always available for no time-of-day limit.",
+                        </a>
+                        {!form.credentialRef ? (
+                          <p className="rounded-lg border border-border border-dashed px-3 py-2 text-text-muted text-xs">
+                            {t(
+                              "integrations.config.calendarsPickCredential",
+                              "Choose a connected Google credential above to list its calendars.",
+                            )}
+                          </p>
+                        ) : (
+                          <div className="flex flex-col gap-2">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-text-muted text-xs">
+                                {t(
+                                  "integrations.config.calendarsFromCredential",
+                                  "Calendars from the connected account",
+                                )}
+                              </span>
+                              <Button
+                                variant="secondary"
+                                size="sm"
+                                loading={calLoading}
+                                onClick={() =>
+                                  loadCalendars(form.credentialRef)
+                                }
+                              >
+                                <RefreshCw
+                                  className="h-4 w-4"
+                                  aria-hidden="true"
+                                />
+                                {availableCals.length
+                                  ? t("common.reload", "Reload")
+                                  : t(
+                                      "integrations.config.loadCalendars",
+                                      "Load",
+                                    )}
+                              </Button>
+                            </div>
+                            {calLoading ? (
+                              <Skeleton className="h-20 w-full" />
+                            ) : (
+                              <>
+                                {calError && (
+                                  <p className="text-error text-xs">
+                                    {t(
+                                      "integrations.config.calendarsError",
+                                      "Could not list calendars. Check the credential's Calendar scope and try again.",
+                                    )}
+                                  </p>
+                                )}
+                                <CalendarMultiPicker
+                                  cals={calError ? [] : availableCals}
+                                  selectedIds={calendarIds}
+                                  onToggle={toggleCalendar}
+                                  manualIds={manualCalIds}
+                                  onManualChange={setManualCalIds}
+                                />
+                              </>
+                            )}
+                          </div>
                         )}
-                      </p>
-                      <SchedulePicker
-                        value={(cfg.businessHoursId as string) ?? ""}
-                        onChange={(id) => setCfg({ businessHoursId: id })}
-                        schedules={schedules}
-                        emptyLabel={t(
-                          "integrations.config.scheduleAlwaysOn",
-                          "Always available",
+                      </FormField>
+                      <FormField
+                        label={t(
+                          "integrations.config.blockingCalendars",
+                          "Blocking calendars",
                         )}
-                        onScheduleSaved={(savedId) => {
-                          void loadHours();
-                          setCfg({ businessHoursId: savedId });
-                        }}
-                        aria-label={t(
+                        group
+                      >
+                        <p className="mb-1.5 text-text-muted text-xs">
+                          {t(
+                            "integrations.config.blockingCalendarsHint",
+                            "Calendars the agent respects but never books into: every event on them blocks availability (holidays, closures, days off). The agent never sees their event details.",
+                          )}
+                        </p>
+                        {!form.credentialRef ? (
+                          <p className="rounded-lg border border-border border-dashed px-3 py-2 text-text-muted text-xs">
+                            {t(
+                              "integrations.config.calendarsPickCredential",
+                              "Choose a connected Google credential above to list its calendars.",
+                            )}
+                          </p>
+                        ) : calLoading ? (
+                          <Skeleton className="h-20 w-full" />
+                        ) : (
+                          <>
+                            {blockingIds.length > BLOCKING_CALENDARS_LIMIT && (
+                              <p className="text-warning text-xs">
+                                {t(
+                                  "integrations.config.blockingCalendarsLimitWarning",
+                                  "More than {{max}} blocking calendars are selected; availability checks will refuse until the list is reduced.",
+                                  { max: BLOCKING_CALENDARS_LIMIT },
+                                )}
+                              </p>
+                            )}
+                            {calError && (
+                              <p className="text-error text-xs">
+                                {t(
+                                  "integrations.config.calendarsError",
+                                  "Could not list calendars. Check the credential's Calendar scope and try again.",
+                                )}
+                              </p>
+                            )}
+                            <CalendarMultiPicker
+                              cals={calError ? [] : availableCals}
+                              selectedIds={blockingIds}
+                              onToggle={toggleBlockingCalendar}
+                              manualIds={manualBlockingIds}
+                              onManualChange={setManualBlockingIds}
+                            />
+                          </>
+                        )}
+                      </FormField>
+                      <FormField
+                        label={t("integrations.config.timeZone", "Time zone")}
+                        group
+                        required
+                      >
+                        <TimezonePicker
+                          value={
+                            (cfg.timeZone as string) || "America/Sao_Paulo"
+                          }
+                          onChange={(tz) => setCfg({ timeZone: tz })}
+                        />
+                      </FormField>
+                      <FormField
+                        label={t(
                           "integrations.config.serviceHours",
                           "Service hours",
                         )}
-                      />
-                    </FormField>
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      <FormField
-                        label={t(
-                          "integrations.config.appointmentLength",
-                          "Appointment length",
-                        )}
                         group
                       >
-                        <div className="flex items-center gap-2">
-                          <div className="min-w-0 flex-1">
-                            <Select
-                              aria-label={t(
-                                "integrations.config.appointmentLength",
-                                "Appointment length",
-                              )}
-                              value={
-                                durationCustom
-                                  ? "custom"
-                                  : cfg.slotDurationMinutes == null
-                                    ? "ai"
-                                    : String(cfg.slotDurationMinutes)
-                              }
-                              onChange={(e) => {
-                                const v = e.target.value;
-                                if (v === "ai") {
-                                  setDurationCustom(false);
-                                  setCfg({ slotDurationMinutes: null });
-                                } else if (v === "custom") {
-                                  setDurationCustom(true);
-                                  setCfg({
-                                    slotDurationMinutes:
-                                      typeof cfg.slotDurationMinutes ===
-                                      "number"
-                                        ? cfg.slotDurationMinutes
-                                        : 30,
-                                  });
-                                } else {
-                                  setDurationCustom(false);
-                                  setCfg({ slotDurationMinutes: Number(v) });
-                                }
-                              }}
-                            >
-                              <option value="ai">
-                                {t(
-                                  "integrations.config.slotAiChooses",
-                                  "Let the AI choose",
-                                )}
-                              </option>
-                              {SLOT_DURATIONS.map((m) => (
-                                <option key={m} value={m}>
-                                  {t(
-                                    "integrations.config.minutesOption",
-                                    "{{n}} min",
-                                    { n: m },
-                                  )}
-                                </option>
-                              ))}
-                              <option value="custom">
-                                {t("integrations.config.slotCustom", "Custom…")}
-                              </option>
-                            </Select>
-                          </div>
-                          {durationCustom && (
-                            <div className="w-24 shrink-0">
-                              <Input
-                                type="number"
-                                min={5}
-                                value={
-                                  typeof cfg.slotDurationMinutes === "number"
-                                    ? String(cfg.slotDurationMinutes)
-                                    : ""
-                                }
-                                placeholder={t(
-                                  "integrations.config.minutesPlaceholder",
-                                  "Minutes",
-                                )}
-                                onChange={(e) =>
-                                  setCfg({
-                                    slotDurationMinutes:
-                                      e.target.value === ""
-                                        ? null
-                                        : Number(e.target.value),
-                                  })
-                                }
-                              />
-                            </div>
+                        <p className="mb-1.5 text-text-muted text-xs">
+                          {t(
+                            "integrations.config.serviceHoursHint",
+                            "The weekly hours the agent may offer for appointments. Reuses your schedules; leave it as Always available for no time-of-day limit.",
                           )}
-                        </div>
+                        </p>
+                        <SchedulePicker
+                          value={(cfg.businessHoursId as string) ?? ""}
+                          onChange={(id) => setCfg({ businessHoursId: id })}
+                          schedules={schedules}
+                          emptyLabel={t(
+                            "integrations.config.scheduleAlwaysOn",
+                            "Always available",
+                          )}
+                          onScheduleSaved={(savedId) => {
+                            void loadHours();
+                            setCfg({ businessHoursId: savedId });
+                          }}
+                          aria-label={t(
+                            "integrations.config.serviceHours",
+                            "Service hours",
+                          )}
+                        />
                       </FormField>
-                      <FormField
-                        label={t(
-                          "integrations.config.slotSpacing",
-                          "Slot spacing",
-                        )}
-                        group
-                      >
-                        <div className="flex items-center gap-2">
-                          <div className="min-w-0 flex-1">
-                            <Select
-                              aria-label={t(
-                                "integrations.config.slotSpacing",
-                                "Slot spacing",
-                              )}
-                              value={
-                                granularityCustom
-                                  ? "custom"
-                                  : String(
-                                      typeof cfg.slotGranularityMinutes ===
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <FormField
+                          label={t(
+                            "integrations.config.appointmentLength",
+                            "Appointment length",
+                          )}
+                          group
+                        >
+                          <div className="flex items-center gap-2">
+                            <div className="min-w-0 flex-1">
+                              <Select
+                                aria-label={t(
+                                  "integrations.config.appointmentLength",
+                                  "Appointment length",
+                                )}
+                                value={
+                                  durationCustom
+                                    ? "custom"
+                                    : cfg.slotDurationMinutes == null
+                                      ? "ai"
+                                      : String(cfg.slotDurationMinutes)
+                                }
+                                onChange={(e) => {
+                                  const v = e.target.value;
+                                  if (v === "ai") {
+                                    setDurationCustom(false);
+                                    setCfg({ slotDurationMinutes: null });
+                                  } else if (v === "custom") {
+                                    setDurationCustom(true);
+                                    setCfg({
+                                      slotDurationMinutes:
+                                        typeof cfg.slotDurationMinutes ===
                                         "number"
-                                        ? cfg.slotGranularityMinutes
-                                        : 15,
-                                    )
-                              }
-                              onChange={(e) => {
-                                const v = e.target.value;
-                                if (v === "custom") {
-                                  setGranularityCustom(true);
-                                  setCfg({
-                                    slotGranularityMinutes:
-                                      typeof cfg.slotGranularityMinutes ===
-                                      "number"
-                                        ? cfg.slotGranularityMinutes
-                                        : 15,
-                                  });
-                                } else {
-                                  setGranularityCustom(false);
-                                  setCfg({ slotGranularityMinutes: Number(v) });
-                                }
-                              }}
-                            >
-                              {SLOT_GRANULARITIES.map((m) => (
-                                <option key={m} value={m}>
+                                          ? cfg.slotDurationMinutes
+                                          : 30,
+                                    });
+                                  } else {
+                                    setDurationCustom(false);
+                                    setCfg({ slotDurationMinutes: Number(v) });
+                                  }
+                                }}
+                              >
+                                <option value="ai">
                                   {t(
-                                    "integrations.config.minutesOption",
-                                    "{{n}} min",
-                                    { n: m },
+                                    "integrations.config.slotAiChooses",
+                                    "Let the AI choose",
                                   )}
                                 </option>
-                              ))}
-                              <option value="custom">
-                                {t("integrations.config.slotCustom", "Custom…")}
-                              </option>
-                            </Select>
-                          </div>
-                          {granularityCustom && (
-                            <div className="w-24 shrink-0">
-                              <Input
-                                type="number"
-                                min={5}
-                                value={
-                                  typeof cfg.slotGranularityMinutes === "number"
-                                    ? String(cfg.slotGranularityMinutes)
-                                    : ""
-                                }
-                                placeholder={t(
-                                  "integrations.config.minutesPlaceholder",
-                                  "Minutes",
-                                )}
-                                onChange={(e) =>
-                                  setCfg({
-                                    slotGranularityMinutes:
-                                      e.target.value === ""
-                                        ? null
-                                        : Number(e.target.value),
-                                  })
-                                }
-                              />
+                                {SLOT_DURATIONS.map((m) => (
+                                  <option key={m} value={m}>
+                                    {t(
+                                      "integrations.config.minutesOption",
+                                      "{{n}} min",
+                                      { n: m },
+                                    )}
+                                  </option>
+                                ))}
+                                <option value="custom">
+                                  {t(
+                                    "integrations.config.slotCustom",
+                                    "Custom…",
+                                  )}
+                                </option>
+                              </Select>
                             </div>
+                            {durationCustom && (
+                              <div className="w-24 shrink-0">
+                                <NumberInput
+                                  range={
+                                    CALENDAR_CONFIG_RANGES.slotDurationMinutes
+                                  }
+                                  value={
+                                    typeof cfg.slotDurationMinutes === "number"
+                                      ? String(cfg.slotDurationMinutes)
+                                      : ""
+                                  }
+                                  placeholder={t(
+                                    "integrations.config.minutesPlaceholder",
+                                    "Minutes",
+                                  )}
+                                  onChange={(e) =>
+                                    setCfg({
+                                      slotDurationMinutes:
+                                        e.target.value === ""
+                                          ? null
+                                          : Number(e.target.value),
+                                    })
+                                  }
+                                />
+                              </div>
+                            )}
+                          </div>
+                        </FormField>
+                        <FormField
+                          label={t(
+                            "integrations.config.slotSpacing",
+                            "Slot spacing",
                           )}
-                        </div>
-                      </FormField>
-                    </div>
-                    <p className="text-text-muted text-xs">
-                      {t(
-                        "integrations.config.slotSpacingHint",
-                        "Spacing is the gap between offered start times: 15 min means 09:00 and 09:15 can both be offered.",
-                      )}
-                    </p>
-                    <SwitchField
-                      checked={cfg.createMeetLink !== false}
-                      onCheckedChange={(v) => setCfg({ createMeetLink: v })}
-                      label={t(
-                        "integrations.config.createMeetLink",
-                        "Create a Google Meet room for each appointment",
-                      )}
-                    />
-                    <p className="text-text-muted text-xs">
-                      {t(
-                        "integrations.config.createMeetLinkHint",
-                        "The agent then shares the Meet link with the customer. Turn it off if this calendar is only used to block time slots.",
-                      )}
-                    </p>
-                    <FormField
-                      label={t(
-                        "integrations.config.inviteCustomer",
-                        "Send the customer a calendar invite",
-                      )}
-                    >
-                      <Select
-                        value={
-                          cfg.inviteCustomer === "contact" ||
-                          cfg.inviteCustomer === "agent"
-                            ? cfg.inviteCustomer
-                            : "off"
-                        }
-                        onChange={(e) =>
-                          setCfg({
-                            inviteCustomer:
-                              e.target.value === "off" ? null : e.target.value,
-                          })
-                        }
+                          group
+                        >
+                          <div className="flex items-center gap-2">
+                            <div className="min-w-0 flex-1">
+                              <Select
+                                aria-label={t(
+                                  "integrations.config.slotSpacing",
+                                  "Slot spacing",
+                                )}
+                                value={
+                                  granularityCustom
+                                    ? "custom"
+                                    : String(
+                                        typeof cfg.slotGranularityMinutes ===
+                                          "number"
+                                          ? cfg.slotGranularityMinutes
+                                          : 15,
+                                      )
+                                }
+                                onChange={(e) => {
+                                  const v = e.target.value;
+                                  if (v === "custom") {
+                                    setGranularityCustom(true);
+                                    setCfg({
+                                      slotGranularityMinutes:
+                                        typeof cfg.slotGranularityMinutes ===
+                                        "number"
+                                          ? cfg.slotGranularityMinutes
+                                          : 15,
+                                    });
+                                  } else {
+                                    setGranularityCustom(false);
+                                    setCfg({
+                                      slotGranularityMinutes: Number(v),
+                                    });
+                                  }
+                                }}
+                              >
+                                {SLOT_GRANULARITIES.map((m) => (
+                                  <option key={m} value={m}>
+                                    {t(
+                                      "integrations.config.minutesOption",
+                                      "{{n}} min",
+                                      { n: m },
+                                    )}
+                                  </option>
+                                ))}
+                                <option value="custom">
+                                  {t(
+                                    "integrations.config.slotCustom",
+                                    "Custom…",
+                                  )}
+                                </option>
+                              </Select>
+                            </div>
+                            {granularityCustom && (
+                              <div className="w-24 shrink-0">
+                                <NumberInput
+                                  range={
+                                    CALENDAR_CONFIG_RANGES.slotGranularityMinutes
+                                  }
+                                  value={
+                                    typeof cfg.slotGranularityMinutes ===
+                                    "number"
+                                      ? String(cfg.slotGranularityMinutes)
+                                      : ""
+                                  }
+                                  placeholder={t(
+                                    "integrations.config.minutesPlaceholder",
+                                    "Minutes",
+                                  )}
+                                  onChange={(e) =>
+                                    setCfg({
+                                      slotGranularityMinutes:
+                                        e.target.value === ""
+                                          ? null
+                                          : Number(e.target.value),
+                                    })
+                                  }
+                                />
+                              </div>
+                            )}
+                          </div>
+                        </FormField>
+                      </div>
+                      <p className="text-text-muted text-xs">
+                        {t(
+                          "integrations.config.slotSpacingHint",
+                          "Spacing is the gap between offered start times: 15 min means 09:00 and 09:15 can both be offered.",
+                        )}
+                      </p>
+                      <SwitchField
+                        checked={cfg.createMeetLink !== false}
+                        onCheckedChange={(v) => setCfg({ createMeetLink: v })}
+                        label={t(
+                          "integrations.config.createMeetLink",
+                          "Create a Google Meet room for each appointment",
+                        )}
+                      />
+                      <p className="text-text-muted text-xs">
+                        {t(
+                          "integrations.config.createMeetLinkHint",
+                          "The agent then shares the Meet link with the customer. Turn it off if this calendar is only used to block time slots.",
+                        )}
+                      </p>
+                      <FormField
+                        label={t(
+                          "integrations.config.inviteCustomer",
+                          "Send the customer a calendar invite",
+                        )}
                       >
-                        <option value="off">
-                          {t("integrations.config.inviteCustomerOff", "Off")}
-                        </option>
-                        <option value="contact">
-                          {t(
-                            "integrations.config.inviteCustomerContact",
-                            "At the email on the Chatwoot contact",
-                          )}
-                        </option>
-                        <option value="agent">
-                          {t(
-                            "integrations.config.inviteCustomerAgent",
-                            "At the email the customer gives the agent",
-                          )}
-                        </option>
-                      </Select>
-                    </FormField>
-                    <p className="text-text-muted text-xs">
-                      {t(
-                        "integrations.config.inviteCustomerHint",
-                        "Google emails the invite, and later changes and cancellations, to the customer. The customer sees the appointment's title and description, so keep internal notes out of them.",
-                      )}
-                    </p>
-                  </div>
-                )}
-                {calTab === "reminders" && (
-                  <ReminderConfigEditor cfg={cfg} setCfg={setCfg} />
-                )}
+                        <Select
+                          value={
+                            cfg.inviteCustomer === "contact" ||
+                            cfg.inviteCustomer === "agent"
+                              ? cfg.inviteCustomer
+                              : "off"
+                          }
+                          onChange={(e) =>
+                            setCfg({
+                              inviteCustomer:
+                                e.target.value === "off"
+                                  ? null
+                                  : e.target.value,
+                            })
+                          }
+                        >
+                          <option value="off">
+                            {t("integrations.config.inviteCustomerOff", "Off")}
+                          </option>
+                          <option value="contact">
+                            {t(
+                              "integrations.config.inviteCustomerContact",
+                              "At the email on the Chatwoot contact",
+                            )}
+                          </option>
+                          <option value="agent">
+                            {t(
+                              "integrations.config.inviteCustomerAgent",
+                              "At the email the customer gives the agent",
+                            )}
+                          </option>
+                        </Select>
+                      </FormField>
+                      <p className="text-text-muted text-xs">
+                        {t(
+                          "integrations.config.inviteCustomerHint",
+                          "Google emails the invite, and later changes and cancellations, to the customer. The customer sees the appointment's title and description, so keep internal notes out of them.",
+                        )}
+                      </p>
+                    </div>
+                  }
+                  reminders={
+                    <ReminderConfigEditor
+                      cfg={cfg}
+                      loadedCfg={loadedConfig.current}
+                      setCfg={setCfg}
+                    />
+                  }
+                />
               </>
             )}
 

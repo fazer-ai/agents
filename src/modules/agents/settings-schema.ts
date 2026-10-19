@@ -1,11 +1,29 @@
 import { z } from "zod";
 import { MODEL_PROVIDERS } from "@/graph/model-config";
 import { NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
-// NOTE: The caps are IMPORTED, never retyped. They go in `.describe()` and never into the schema
-// itself — the rule the file's header states is type and choice, never size, because these are
-// refused by assertSettingsTextSizes on the write rather than clamped by the reader. A caller has to
-// be able to build a valid call from tools/list without failing first (docs/mcp.md), and a number
-// copied here would be a second copy that drifts.
+import { inRange, type NumberRange } from "@/lib/number-range";
+import {
+  CALL_RANGES,
+  CARRY_ATTACHMENTS_RANGES,
+  CHANNEL_REDIRECT_RANGES,
+  CONTACT_AUTH_RANGES,
+  DEBOUNCE_RANGES,
+  DELAY_VALUE_RANGE,
+  delayRange,
+  GROUNDING_RANGES,
+  GUARDRAIL_RANGES,
+  LIMITS_RANGES,
+  MONITORING_RANGES,
+  SERVICE_WINDOW_RANGES,
+  SPLIT_RANGES,
+  TTS_SPEAKABLE_RANGES,
+  TTS_TIMEOUT_RANGES,
+  TTS_VOICE_RANGES,
+} from "@/modules/agents/number-ranges";
+// NOTE: The text caps are IMPORTED, never retyped. They go in `.describe()` and never into the schema
+// itself, because they are refused by assertSettingsTextSizes on the write. A caller has to be able
+// to build a valid call from tools/list without failing first (docs/mcp.md), and a number copied here
+// would be a second copy that drifts.
 import { RESOLVE_LABELS_MAX } from "@/modules/agents/resolve-labels";
 import {
   CUSTOM_POLICY_MAX,
@@ -24,7 +42,6 @@ import { REDIRECT_DELAY_UNITS } from "@/modules/channel-redirect/service";
 import { CONTACT_FIELDS } from "@/modules/chatwoot/contact-fields";
 import {
   CARRY_ATTACHMENTS_DEFAULTS,
-  CARRY_ATTACHMENTS_MAX_FILES,
   CARRY_FILE_TYPES,
   CARRY_MODES,
 } from "@/modules/cross-inbox-case/carry-attachments-settings";
@@ -59,29 +76,26 @@ import {
 import { STT_PROVIDER_NAMES } from "@/modules/stt/providers";
 import { LANG_RE } from "@/modules/stt/settings";
 import { TTS_PROVIDER_NAMES } from "@/modules/tts/providers";
-import {
-  TTS_CHECK_MODES,
-  TTS_MODES,
-  TTS_TIMEOUT_RANGE_MS,
-} from "@/modules/tts/settings-shared";
+import { TTS_CHECK_MODES, TTS_MODES } from "@/modules/tts/settings-shared";
 import {
   ANTHROPIC_VISION_DEFAULT_MAX_TOKENS,
+  VISION_MAX_OUTPUT_TOKENS_CAP,
   VISION_REASONING_EFFORTS,
 } from "@/modules/vision/output-limits";
 import { VISION_PROVIDER_NAMES } from "@/modules/vision/providers";
 import {
   CALL_ASR_MODELS,
   CALL_BACKGROUND_SOUNDS,
-  CALL_LIMITS,
   CALL_PROVIDERS,
   CALL_TOOL_SOUNDS,
   CALL_TTS_MODELS,
   CALL_TURN_EAGERNESS,
 } from "@/modules/voice-call/settings";
 
-// The argument shape of the behavior blocks. Two rules, both in docs/mcp.md: type and choice, never
-// size (declare what a reader throws away, never a bound it clamps), and what the schema enforces is
-// what it publishes in `tools/list`. Blocks are LOOSE so a key added to a reader still reaches it.
+// The argument shape of the behavior blocks. Two rules, both in docs/mcp.md: type, choice and range
+// (declare what a reader throws away, and every number's range from number-ranges.ts), and what the
+// schema enforces is what it publishes in `tools/list`. Blocks are LOOSE so a key added to a reader
+// still reaches it.
 
 // A registry list as a set of choices. `Object.keys` of a provider map is `string[]`, which is the
 // one shape `z.enum` cannot take; the registries are module-level literals and never empty.
@@ -120,17 +134,66 @@ const nonBlank = (message: string) => z.string().regex(/\S/, message);
 
 const toolNote = () => nonBlank("must not be blank; use null to clear it");
 
+// A configurable number, refused outside its range. The range is the reader's own
+// constant, so the schema, the reader and the console field cannot drift apart again; the JSON Schema
+// MCP clients read carries it as `minimum`/`maximum`. tests/modules/number-ranges.test.ts fails on a
+// settings number declared without one.
+export const ranged = (r: NumberRange) =>
+  (r.int ? z.number().int() : z.number()).min(r.min).max(r.max);
+
+// A delay's value, whose ceiling follows its unit (30 days in any unit). Refused at the value's own
+// path, and `pairedWith` names the unit, so the boundary asks it when the write changed either half.
+// Every way out of the range carries it, not just the unit's ceiling: a stored 1.5 with only its
+// unit changed is a new delay, and the value's own fraction issue alone would keep it as legacy.
+function refineDelay(
+  bag: Record<string, unknown>,
+  ctx: z.RefinementCtx,
+  value: string,
+  unit: string,
+): void {
+  const v = bag[value];
+  if (typeof v !== "number") return;
+  const r = delayRange(bag[unit]);
+  if (inRange(v, r)) return;
+  const at = { input: v, path: [value], params: { pairedWith: unit } };
+  if (v > r.max) {
+    ctx.addIssue({
+      ...at,
+      code: "too_big",
+      origin: "number",
+      maximum: r.max,
+      inclusive: true,
+      message: `at most ${r.max} ${String(bag[unit] ?? "minutes")}`,
+    });
+  } else if (v < r.min) {
+    ctx.addIssue({
+      ...at,
+      code: "too_small",
+      origin: "number",
+      minimum: r.min,
+      inclusive: true,
+      message: `at least ${r.min}`,
+    });
+  } else {
+    ctx.addIssue({
+      ...at,
+      code: "invalid_type",
+      expected: "int",
+      message: "a whole number",
+    });
+  }
+}
+const delayValue = () => ranged(DELAY_VALUE_RANGE).optional();
+
 const debounce = z.looseObject({
   enabled: z.boolean().optional(),
-  windowSeconds: z
-    .number()
+  windowSeconds: ranged(DEBOUNCE_RANGES.windowSeconds)
     .optional()
-    .describe("3-120, clamped, after the LAST inbound message"),
-  maxMessagesPerBurst: z.number().optional().describe("1-50, clamped"),
-  maxWindowSeconds: z
-    .number()
+    .describe("after the LAST inbound message"),
+  maxMessagesPerBurst: ranged(DEBOUNCE_RANGES.maxMessagesPerBurst).optional(),
+  maxWindowSeconds: ranged(DEBOUNCE_RANGES.maxWindowSeconds)
     .optional()
-    .describe("up to 600, clamped, from the START of the burst"),
+    .describe("from the START of the burst; read as at least the window"),
 });
 
 const stt = z.looseObject({
@@ -156,35 +219,27 @@ const calls = z.looseObject({
   llm: z.string().optional().describe("model the provider runs"),
   ttsModel: oneOf(CALL_TTS_MODELS).optional(),
   asrModel: oneOf(CALL_ASR_MODELS).optional(),
-  speed: z
-    .number()
+  speed: ranged(CALL_RANGES.speed).optional(),
+  openingDelayMs: ranged(CALL_RANGES.openingDelayMs)
     .optional()
-    .describe(`${CALL_LIMITS.speed[0]}-${CALL_LIMITS.speed[1]}, clamped`),
-  openingDelayMs: z
-    .number()
-    .optional()
-    .describe("placed call's wait for hello, 0-5000 ms"),
+    .describe("placed call's wait for hello, ms"),
   turnEagerness: oneOf(CALL_TURN_EAGERNESS).optional(),
   backgroundSound: oneOf(CALL_BACKGROUND_SOUNDS)
     .nullable()
     .optional()
     .describe("ambience under the speech; null = none"),
-  backgroundVolume: z
-    .number()
+  backgroundVolume: ranged(CALL_RANGES.backgroundVolume)
     .optional()
-    .describe(
-      `relative to the speech, ${CALL_LIMITS.backgroundVolume[0]}-${CALL_LIMITS.backgroundVolume[1]}`,
-    ),
+    .describe("relative to the speech"),
   toolSound: oneOf(CALL_TOOL_SOUNDS)
     .nullable()
     .optional()
     .describe("plays while a tool runs; null = silence"),
-  silenceEndCallSecs: z
-    .number()
+  silenceEndCallSecs: ranged(CALL_RANGES.silenceEndCallSecs)
     .nullable()
     .optional()
-    .describe("silence that ends the call, 10-600 s; null = never"),
-  maxDurationSecs: z.number().optional().describe("60-3600, clamped"),
+    .describe("silence that ends the call, s; null = never"),
+  maxDurationSecs: ranged(CALL_RANGES.maxDurationSecs).optional(),
   keywords: z
     .array(z.string())
     .optional()
@@ -222,12 +277,7 @@ const tts = z.looseObject({
   normalizeModel: z.string().nullable().optional(),
   normalizeCredentialRef: credentialRef(),
   normalizeBaseURL: baseURL(),
-  // Refused outside the band rather than clamped: REST stores the bag as sent, so a clamp would leave
-  // a 0 on the read while synthesis waits a second.
-  timeoutMs: z
-    .number()
-    .min(TTS_TIMEOUT_RANGE_MS[0])
-    .max(TTS_TIMEOUT_RANGE_MS[1])
+  timeoutMs: ranged(TTS_TIMEOUT_RANGES.timeoutMs)
     .nullable()
     .optional()
     .describe("per synthesis, ms; null = 60000"),
@@ -241,14 +291,15 @@ const tts = z.looseObject({
   fallbackVoice: z.string().optional(),
   fallbackCredentialRef: credentialRef(),
   fallbackBaseURL: baseURL(),
-  stability: z
-    .number()
+  stability: ranged(TTS_VOICE_RANGES.stability)
     .nullable()
     .optional()
-    .describe("0-1, clamped; null = the voice's own"),
-  similarityBoost: z.number().nullable().optional().describe("0-1, clamped"),
-  style: z.number().nullable().optional().describe("0-1, clamped"),
-  speed: z.number().nullable().optional().describe("0.25-4, clamped"),
+    .describe("null = the voice's own"),
+  similarityBoost: ranged(TTS_VOICE_RANGES.similarityBoost)
+    .nullable()
+    .optional(),
+  style: ranged(TTS_VOICE_RANGES.style).nullable().optional(),
+  speed: ranged(TTS_VOICE_RANGES.speed).nullable().optional(),
   speakerBoost: z.boolean().nullable().optional(),
   checkMode: oneOf(TTS_CHECK_MODES)
     .nullable()
@@ -261,22 +312,19 @@ const tts = z.looseObject({
     .boolean()
     .optional()
     .describe("send a reply past a textOver* limit as text; default false"),
-  textOverChars: z
-    .number()
+  textOverChars: ranged(TTS_SPEAKABLE_RANGES.textOverChars)
     .nullable()
     .optional()
-    .describe("text above this many chars (80-4000, default 450); null = off"),
-  textOverListItems: z
-    .number()
+    .describe("text above this many chars (default 450); null = off"),
+  textOverListItems: ranged(TTS_SPEAKABLE_RANGES.textOverListItems)
     .nullable()
     .optional()
-    .describe("text from this many list items (2-50, default 3); null = off"),
-  textOverNumbers: z
-    .number()
+    .describe("text from this many list items (default 3); null = off"),
+  textOverNumbers: ranged(TTS_SPEAKABLE_RANGES.textOverNumbers)
     .nullable()
     .optional()
     .describe(
-      "text from this many prices or 4+ digit numbers (2-50, default 3); null = off",
+      "text from this many prices or 4+ digit numbers (default 3); null = off",
     ),
   // What the model is told about a spoken reply. Both switches default to false.
   spokenNotice: z
@@ -310,12 +358,12 @@ const vision = z.looseObject({
     .nullable()
     .optional()
     .describe("what the vision model is asked to extract"),
-  // Declared positive integer: the reader throws away zero, negatives and fractions. The cap is a
-  // clamp, so it stays out of the schema (docs/mcp.md, type and choice, never size).
+  // Null is the provider's default; a number is refused outside 1..cap.
   maxOutputTokens: z
     .number()
     .int()
     .positive()
+    .max(VISION_MAX_OUTPUT_TOKENS_CAP)
     .nullable()
     .optional()
     .describe(`anthropic default ${ANTHROPIC_VISION_DEFAULT_MAX_TOKENS}`),
@@ -324,11 +372,11 @@ const vision = z.looseObject({
 
 const split = z.looseObject({
   enabled: z.boolean().optional(),
-  maxChars: z.number().optional().describe("balloon size, 80-4000, clamped"),
-  typingWpm: z.number().optional().describe("40-1000, clamped"),
-  minDelayMs: z.number().optional().describe("0-10000, clamped"),
-  maxDelayMs: z.number().optional().describe("0-30000, clamped"),
-  maxChunks: z.number().optional().describe("1-12, clamped"),
+  maxChars: ranged(SPLIT_RANGES.maxChars).optional().describe("balloon size"),
+  typingWpm: ranged(SPLIT_RANGES.typingWpm).optional(),
+  minDelayMs: ranged(SPLIT_RANGES.minDelayMs).optional(),
+  maxDelayMs: ranged(SPLIT_RANGES.maxDelayMs).optional(),
+  maxChunks: ranged(SPLIT_RANGES.maxChunks).optional(),
 });
 
 const signature = z.looseObject({
@@ -350,7 +398,7 @@ const signature = z.looseObject({
 
 const serviceWindow = z.looseObject({
   enabled: z.boolean().optional(),
-  windowHours: z.number().optional().describe("1-168, clamped"),
+  windowHours: ranged(SERVICE_WINDOW_RANGES.windowHours).optional(),
   templateName: z
     .string()
     .nullable()
@@ -373,13 +421,14 @@ const grounding = z.looseObject({
   maxDistance: z
     .number()
     .positive()
+    .max(GROUNDING_RANGES.maxDistance.max)
     .nullable()
     .optional()
     .describe("cosine ceiling for a knowledge hit; null = no filter"),
 });
 
-const followUpStep = z.looseObject({
-  delayValue: z.number().optional().describe("≥ 1, clamped"),
+const followUpStepShape = z.looseObject({
+  delayValue: delayValue().describe("30 days at most, in any unit"),
   delayUnit: oneOf(FOLLOW_UP_DELAY_UNITS).optional(),
   instructions: z
     .string()
@@ -397,34 +446,44 @@ const followUpStep = z.looseObject({
       "let THIS step fire while a booking stands; no-op unless followUp.pauseWhileAppointment is on",
     ),
 });
+const followUpStep = followUpStepShape.superRefine((v, ctx) =>
+  refineDelay(v, ctx, "delayValue", "delayUnit"),
+);
 
-const followUp = z.looseObject({
-  enabled: z.boolean().optional(),
-  pauseWhileAppointment: z
-    .boolean()
-    .optional()
-    .describe("hold while a reminder is scheduled; default true"),
-  steps: z
-    .array(followUpStep)
-    .optional()
-    .describe("replaced as a unit, not merged; first 10 kept"),
-});
+// Built from a step schema so the MCP arguments can take the steps unrefined (see
+// BEHAVIOR_PATCH_ARGS_SHAPE) while the write boundary asks the refined ones.
+const followUpOf = <S extends z.ZodType>(step: S) =>
+  z.looseObject({
+    enabled: z.boolean().optional(),
+    pauseWhileAppointment: z
+      .boolean()
+      .optional()
+      .describe("hold while a reminder is scheduled; default true"),
+    steps: z
+      .array(step)
+      .optional()
+      .describe("replaced as a unit, not merged; first 10 kept"),
+  });
 
-const snoozedFollowUpCadence = z.looseObject({
-  label: z.string().nullable().optional().describe("null = default cadence"),
-  steps: z.array(followUpStep).optional(),
-});
+const snoozedFollowUpOf = <S extends z.ZodType>(step: S) => {
+  const cadence = z.looseObject({
+    label: z.string().nullable().optional().describe("null = default cadence"),
+    steps: z.array(step).optional(),
+  });
 
-const snoozedFollowUp = z.looseObject({
-  enabled: z.boolean().optional(),
-  cadences: z
-    .array(snoozedFollowUpCadence)
-    .optional()
-    .describe(
-      `replaced whole; first label match wins; first ${SNOOZED_FOLLOW_UP_MAX_CADENCES} kept (default + ${SNOOZED_FOLLOW_UP_MAX_LABELED_CADENCES} labeled)`,
-    ),
-  signature: z.boolean().optional(),
-});
+  return z.looseObject({
+    enabled: z.boolean().optional(),
+    cadences: z
+      .array(cadence)
+      .optional()
+      .describe(
+        `replaced whole; first label match wins; first ${SNOOZED_FOLLOW_UP_MAX_CADENCES} kept (default + ${SNOOZED_FOLLOW_UP_MAX_LABELED_CADENCES} labeled)`,
+      ),
+    signature: z.boolean().optional(),
+  });
+};
+const followUp = followUpOf(followUpStep);
+const snoozedFollowUp = snoozedFollowUpOf(followUpStep);
 
 const handoff = z.looseObject({
   mode: oneOf(HANDOFF_MODES)
@@ -457,25 +516,22 @@ const takeover = z.looseObject({
 });
 
 const limits = z.looseObject({
-  maxToolCalls: z
-    .number()
+  maxToolCalls: ranged(LIMITS_RANGES.maxToolCalls)
     .optional()
-    .describe("tool executions in ONE turn; 1-50, clamped"),
+    .describe("tool executions in ONE turn"),
   maxHistoryTokens: z
-    .number()
+    .union([z.literal(0), ranged(LIMITS_RANGES.maxHistoryTokens)])
     .nullable()
     .optional()
-    .describe("2000-1000000, clamped; null/0/absent = OFF"),
+    .describe("null/0/absent = OFF"),
   retrySilence: z
     .boolean()
     .optional()
     .describe("retry a silent reply turn once; default TRUE"),
-  maxTurnsPerHour: z
-    .number()
+  maxTurnsPerHour: ranged(LIMITS_RANGES.maxTurnsPerHour)
     .optional()
     .describe("per conversation per hour; 0 = off"),
-  maxProactivePerDay: z
-    .number()
+  maxProactivePerDay: ranged(LIMITS_RANGES.maxProactivePerDay)
     .optional()
     .describe("per conversation per 24h; 0 = off"),
 });
@@ -551,9 +607,8 @@ const contactAuth = z.looseObject({
     .optional()
     .describe("fixed origin, no placeholders"),
   credentialRef: credentialRef(),
-  timeoutMs: z.number().optional().describe("1000-10000, clamped"),
-  noticeCooldownSeconds: z
-    .number()
+  timeoutMs: ranged(CONTACT_AUTH_RANGES.timeoutMs).optional(),
+  noticeCooldownSeconds: ranged(CONTACT_AUTH_RANGES.noticeCooldownSeconds)
     .optional()
     .describe("notices only; 0 = every refusal"),
   includeMessageText: z.boolean().optional(),
@@ -564,14 +619,14 @@ const contactAuth = z.looseObject({
     .enum(["perMessage", "once"])
     .optional()
     .describe("once = keep a contact's first allow"),
-  grantTtlSeconds: z.number().optional().describe("60-2592000, clamped"),
+  grantTtlSeconds: ranged(CONTACT_AUTH_RANGES.grantTtlSeconds).optional(),
   handoffTeamId: chatwootId(),
   handoffTeamInstanceId: chatwootId().describe(
     "our ChatwootInstance id the team is from",
   ),
 });
 
-const channelRedirect = z.looseObject({
+const channelRedirectShape = z.looseObject({
   enabled: z.boolean().optional(),
   entryInboxId: chatwootId().describe(
     "the WhatsApp chatwootInboxId leads arrive on",
@@ -580,29 +635,39 @@ const channelRedirect = z.looseObject({
     "the widget chatwootInboxId; set via the console",
   ),
   redirectMessage: z.string().optional().describe("must carry {link}"),
-  resendDelayValue: z.number().optional().describe("≥ 1, clamped"),
+  resendDelayValue: delayValue(),
   resendDelayUnit: oneOf(REDIRECT_DELAY_UNITS).optional(),
-  maxResends: z.number().optional().describe("0-10, clamped"),
+  maxResends: ranged(CHANNEL_REDIRECT_RANGES.maxResends).optional(),
   openWidget: z.boolean().optional(),
   cloneWaMessage: z
     .boolean()
     .optional()
     .describe("replay it as the first widget message"),
   chatFollowupEnabled: z.boolean().optional(),
-  chatFollowupDelayValue: z.number().optional().describe("≥ 1, clamped"),
+  chatFollowupDelayValue: delayValue(),
   chatFollowupDelayUnit: oneOf(REDIRECT_DELAY_UNITS).optional(),
   chatFollowupInstructions: z.string().optional(),
   waFollowupEnabled: z.boolean().optional(),
-  waFollowupDelayValue: z.number().optional().describe("≥ 1, clamped"),
+  waFollowupDelayValue: delayValue(),
   waFollowupDelayUnit: oneOf(REDIRECT_DELAY_UNITS).optional(),
   waFollowupMessage: z.string().optional().describe("must carry {link}"),
   closingEnabled: z.boolean().optional(),
-  closingDelayValue: z.number().optional().describe("≥ 1, clamped"),
+  closingDelayValue: delayValue(),
   closingDelayUnit: oneOf(REDIRECT_DELAY_UNITS).optional(),
   closingMessage: z
     .string()
     .optional()
     .describe("fixed, posted on BOTH channels"),
+});
+const REDIRECT_DELAY_PAIRS: [value: string, unit: string][] = [
+  ["resendDelayValue", "resendDelayUnit"],
+  ["chatFollowupDelayValue", "chatFollowupDelayUnit"],
+  ["waFollowupDelayValue", "waFollowupDelayUnit"],
+  ["closingDelayValue", "closingDelayUnit"],
+];
+const channelRedirect = channelRedirectShape.superRefine((v, ctx) => {
+  for (const [value, unit] of REDIRECT_DELAY_PAIRS)
+    refineDelay(v, ctx, value, unit);
 });
 
 // The Chatwoot attribute KEYS injected into the prompt, per scope. The keys themselves are the
@@ -703,12 +768,9 @@ const crossInboxCase = z.looseObject({
         .describe(
           `of ${CARRY_FILE_TYPES.join(", ")}; others dropped; default image, file`,
         ),
-      maxFiles: z
-        .number()
+      maxFiles: ranged(CARRY_ATTACHMENTS_RANGES.maxFiles)
         .optional()
-        .describe(
-          `newest win; 1-${CARRY_ATTACHMENTS_MAX_FILES}; default ${CARRY_ATTACHMENTS_DEFAULTS.maxFiles}`,
-        ),
+        .describe(`newest win; default ${CARRY_ATTACHMENTS_DEFAULTS.maxFiles}`),
     })
     .optional()
     .describe("the customer's files copied into the case as one private note"),
@@ -917,10 +979,7 @@ const guardrailOutput = z.looseObject({
 
 // A threshold is refused outside 0..1 rather than clamped: GET returns what was stored, and a stored
 // -0.5 would be read by the screening as 0 while the API kept showing -0.5.
-const guardrailThreshold = z
-  .number()
-  .min(0)
-  .max(1)
+const guardrailThreshold = ranged(GUARDRAIL_RANGES.threshold)
   .optional()
   .describe("probability at or above which the check trips; default 0.8");
 
@@ -1188,38 +1247,42 @@ const monitoringShape = (decisions: z.ZodType<Record<string, unknown>>) => ({
       "per burst + on resolve, or on resolve only; default incremental",
     ),
   window: z
-    .looseObject({ messages: z.number().optional() })
+    .looseObject({
+      messages: ranged(MONITORING_RANGES.windowMessages).optional(),
+    })
     .optional()
-    .describe(
-      "newest messages the model reads; 4-60, rounded and clamped, default 20",
-    ),
+    .describe("newest messages the model reads; default 20"),
   debounce: z
     .looseObject({
       // A negative window is refused, not read as 0: 0 is the one value that changes what the agent
       // costs (a model call per message), so it is never reached by a typo's clamp.
-      windowSeconds: z.number().min(0).optional(),
-      maxWindowSeconds: z.number().optional(),
+      windowSeconds: ranged(MONITORING_RANGES.windowSeconds).optional(),
+      maxWindowSeconds: ranged(MONITORING_RANGES.maxWindowSeconds).optional(),
     })
     .optional()
     .describe(
-      "burst window; 0-600s (0: every message, no coalescing), rounded and clamped, default 20s with a 60s ceiling from the START of the burst",
+      "burst window in seconds (0: every message, no coalescing); default 20s with a 60s ceiling from the START of the burst",
     ),
 });
+// The engine and its block are one choice: `decisions` without a block would skip every tick.
+// `wholeBlock`, so any edit of the monitoring block re-asks it (see decisionsSchema).
+function refineMonitoringEngine(
+  v: { engine?: unknown; decisions?: unknown },
+  ctx: z.RefinementCtx,
+) {
+  if (v.engine === "decisions" && (v.decisions ?? null) === null) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["engine"],
+      message: "the decisions engine needs a decisions block",
+      params: { wholeBlock: 1 },
+    });
+  }
+}
 // The write boundary asks the whole block; the MCP argument is a patch, merged before it is whole.
 const monitoring = z
   .looseObject(monitoringShape(decisionsSchema))
-  .superRefine((v, ctx) => {
-    // The engine and its block are one choice: `decisions` without a block would skip every tick.
-    // `wholeBlock`, so any edit of the monitoring block re-asks it (see decisionsSchema).
-    if (v.engine === "decisions" && (v.decisions ?? null) === null) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["engine"],
-        message: "the decisions engine needs a decisions block",
-        params: { wholeBlock: 1 },
-      });
-    }
-  });
+  .superRefine(refineMonitoringEngine);
 const monitoringPatch = z.looseObject(monitoringShape(decisionsPatchSchema));
 
 export const BEHAVIOR_PATCH_SHAPE = {
@@ -1258,10 +1321,34 @@ export const BEHAVIOR_PATCH_SHAPE = {
   monitoring: monitoring.optional(),
 } satisfies z.ZodRawShape;
 
-// What agent_settings_set takes: the patch shape with `monitoring.decisions` unrefined, since the
-// refinement needs the merged block (asked in the preview and again by the write boundary).
+// Each block's refinements alone (the delay pairs, the monitoring engine), for the write boundary to
+// ask on their own: zod skips an object's refinement once any of its fields fails, so a legacy
+// fraction elsewhere in the block would let a changed pair through unchecked. Each level is an empty
+// loose object, which any object parses.
+const delayPairs = (...pairs: [value: string, unit: string][]) =>
+  z.looseObject({}).superRefine((v, ctx) => {
+    for (const [value, unit] of pairs) refineDelay(v, ctx, value, unit);
+  });
+const stepDelays = z.array(delayPairs(["delayValue", "delayUnit"]));
+export const BLOCK_REFINEMENTS: Record<string, z.ZodType> = {
+  followUp: z.looseObject({ steps: stepDelays.optional() }),
+  snoozedFollowUp: z.looseObject({
+    cadences: z
+      .array(z.looseObject({ steps: stepDelays.optional() }))
+      .optional(),
+  }),
+  channelRedirect: delayPairs(...REDIRECT_DELAY_PAIRS),
+  monitoring: z.looseObject({}).superRefine(refineMonitoringEngine),
+};
+
+// What agent_settings_set takes: the patch shape with `monitoring.decisions` and the delays unrefined,
+// since each refinement needs the merged block (a delay's unit may be stored while the patch names only
+// its value) and JSON Schema cannot publish it. The handler asks the refined shape before the merge.
 export const BEHAVIOR_PATCH_ARGS_SHAPE = {
   ...BEHAVIOR_PATCH_SHAPE,
+  followUp: followUpOf(followUpStepShape).optional(),
+  snoozedFollowUp: snoozedFollowUpOf(followUpStepShape).optional(),
+  channelRedirect: channelRedirectShape.optional(),
   monitoring: monitoringPatch.optional(),
 } satisfies z.ZodRawShape;
 

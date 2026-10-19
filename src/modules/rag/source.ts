@@ -33,6 +33,7 @@ import {
   type SourceFence,
   updateDocument,
 } from "./documents";
+import { SYNC_INTERVAL_MINUTES } from "./ranges";
 
 // A knowledge base that mirrors a Chatwoot help center portal. The platform owns the link between an
 // article and its document: `KnowledgeDocument.externalId` is the article id, unique per base, so a
@@ -74,8 +75,8 @@ export interface SourceState {
 }
 
 const DEFAULT_INTERVAL_MINUTES = 10;
-const MIN_INTERVAL_MINUTES = 5;
-const MAX_INTERVAL_MINUTES = 24 * 60;
+const MIN_INTERVAL_MINUTES = SYNC_INTERVAL_MINUTES.min;
+const MAX_INTERVAL_MINUTES = SYNC_INTERVAL_MINUTES.max;
 
 // A portal with more articles than this is not a help center the agent should be reading whole, and
 // the listing arrives in one body, so its size is bounded too.

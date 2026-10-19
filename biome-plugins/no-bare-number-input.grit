@@ -1,0 +1,16 @@
+// Refuses `<Input type="number">` (and the raw `<input type="number">`) outside NumberInput.tsx
+// A number field's `min`/`max` attributes bound only the browser's spinner arrows:
+// nothing read them before Save, so -10 went out, the server stored it, the agent ran on the reader's
+// clamp and the editor kept showing -10. `<NumberInput range={…}>` takes the range the server refuses
+// outside of, says so under the box and holds the Save of the nearest <RangeHolds> (every <Modal>
+// is one; a `<Button holdOnRange>` reads it).
+language js;
+
+or {
+    `<$name $attrs />`,
+    `<$name $attrs>$_</$name>`
+} where {
+    $name <: r"[Ii]nput",
+    $attrs <: contains `type="number"`,
+    register_diagnostic(span = $name, message = "A number field takes the range the server enforces: use `<NumberInput range={…}>` from `@/client/components` (src/lib/number-range.ts), whose Save holds while the value is out of range. A bare number type only bounds the spinner arrows.")
+}

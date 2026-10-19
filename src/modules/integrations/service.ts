@@ -22,6 +22,7 @@ import {
   hashRouteToken,
 } from "@/modules/webhooks/inbound/route-token";
 import { ensureInboundSweep } from "@/modules/webhooks/inbound/sweep";
+import { calendarConfigRangeProblem } from "./calendar-config-ranges";
 import { CATALOG, getCatalogEntry } from "./catalog";
 import type { CatalogEntry } from "./types";
 
@@ -121,6 +122,26 @@ export function assertCatalogConfig(
   );
 }
 
+// A config number outside its range is refused with 422 naming it, instead of stored as typed and run
+// as the reader's clamp.
+function assertConfigRanges(
+  catalogType: string,
+  config: Record<string, unknown>,
+  stored?: Record<string, unknown>,
+): void {
+  if (catalogType !== "GOOGLE_CALENDAR") return;
+  const problem = calendarConfigRangeProblem(config, stored);
+  if (!problem) return;
+  const { path, range, got } = problem;
+  throw new AppError(
+    `${path} must be ${range.int ? "a whole number " : ""}between ${range.min} and ${range.max}, got ${JSON.stringify(got)}`,
+    422,
+    "errors.integrationConfigOutOfRange",
+    { field: path, min: range.min, max: range.max },
+    path,
+  );
+}
+
 // An inbound route that makes the agent message a customer cannot be left open (GENERIC). Checked
 // on create AND update, since a later PATCH to NONE opens the same door.
 function assertInboundAuthAllowed(
@@ -147,10 +168,14 @@ export function assertIntegrationWritable(
     config?: Record<string, unknown>;
     inboundAuthStrategy?: InboundAuthStrategy;
   },
+  // The row's config on update, so a number stored before the range check existed is not refused
+  // when the same value is sent back.
+  storedConfig?: Record<string, unknown>,
 ): void {
   if (params.config) {
     assertUsableHeaderNames(params.config);
     assertCatalogConfig(catalogType, params.config);
+    assertConfigRanges(catalogType, params.config, storedConfig);
   }
   assertInboundAuthAllowed(
     getCatalogEntry(catalogType),
@@ -426,7 +451,11 @@ export async function updateIntegrationInstance(
         "errors.integrationInstanceNotFound",
       );
     }
-    assertIntegrationWritable(current.catalogType, params);
+    assertIntegrationWritable(
+      current.catalogType,
+      params,
+      (current.config ?? {}) as Record<string, unknown>,
+    );
     const credentialRef = params.credentialRef
       ? await requireVaultRef(db, params.credentialRef, "credentialRef")
       : null;

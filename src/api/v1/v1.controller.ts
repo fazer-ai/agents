@@ -9,6 +9,7 @@ import {
   parseQueryInstant,
   parseQueryText,
 } from "@/api/lib/query-filters";
+import { tRanged } from "@/api/lib/ranged";
 import { confirmStepUp, STEP_UP_PASSWORD_DESCRIPTION } from "@/api/lib/step-up";
 import { tenancyPlugin } from "@/api/middlewares/tenancy";
 import {
@@ -20,6 +21,7 @@ import config from "@/config";
 import { requireDbId } from "@/lib/db-id";
 import { AppError, ForbiddenError } from "@/lib/errors";
 import { instanceIdentity } from "@/lib/instance";
+import { CHATWOOT_ID_RANGE } from "@/lib/number-range";
 import type { TenantContext } from "@/lib/tenancy";
 import { getDashboardCosts } from "@/modules/analytics/costs";
 import { DRILL_OUTCOMES } from "@/modules/analytics/drilldown";
@@ -613,7 +615,7 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
       }),
       body: t.Object({
         assigneeId: t.Optional(
-          t.Integer({
+          tRanged(CHATWOOT_ID_RANGE, {
             description:
               "Chatwoot agent id to assign; omit to hand off without assigning a specific human.",
           }),

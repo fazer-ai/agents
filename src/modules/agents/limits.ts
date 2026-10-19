@@ -7,6 +7,8 @@
 // - maxTurnsPerHour (src/modules/turn-limit) and maxProactivePerDay (src/modules/proactive-limit):
 //   per-conversation counts, ON by default; only an explicit 0 turns one off.
 
+import { LIMITS_RANGES } from "@/modules/agents/number-ranges";
+
 export interface LimitsConfig {
   maxToolCalls: number;
   // Token ceiling for the message history only. The system prompt and the tool definitions are NOT
@@ -20,22 +22,22 @@ export interface LimitsConfig {
 }
 
 export const DEFAULT_MAX_TOOL_CALLS = 10;
-const MIN_TOOL_CALLS = 1;
-const MAX_TOOL_CALLS = 50;
+const MIN_TOOL_CALLS = LIMITS_RANGES.maxToolCalls.min;
+const MAX_TOOL_CALLS = LIMITS_RANGES.maxToolCalls.max;
 
 // Floor chosen so a ceiling can never squeeze the window below the conversation being answered:
 // under ~2k tokens the model loses the turn it is replying to, which reads as amnesia rather than
 // as thrift. The window selector guarantees the same thing structurally; this only keeps the
 // operator from configuring a number that could never do anything useful.
-const MIN_HISTORY_TOKENS = 2_000;
-const MAX_HISTORY_TOKENS = 1_000_000;
+const MIN_HISTORY_TOKENS = LIMITS_RANGES.maxHistoryTokens.min;
+const MAX_HISTORY_TOKENS = LIMITS_RANGES.maxHistoryTokens.max;
 
 export const DEFAULT_MAX_TURNS_PER_HOUR = 60;
-export const MAX_TURNS_PER_HOUR = 1_000;
+export const MAX_TURNS_PER_HOUR = LIMITS_RANGES.maxTurnsPerHour.max;
 
 // A follow-up sequence has at most ten steps, so a valid sequence alone never reaches the default.
 export const DEFAULT_MAX_PROACTIVE_PER_DAY = 10;
-export const MAX_PROACTIVE_PER_DAY = 1_000;
+export const MAX_PROACTIVE_PER_DAY = LIMITS_RANGES.maxProactivePerDay.max;
 
 export function readLimitsConfig(settings: unknown): LimitsConfig {
   const def: LimitsConfig = {

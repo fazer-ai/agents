@@ -1,3 +1,4 @@
+import { CARRY_ATTACHMENTS_RANGES } from "@/modules/agents/number-ranges";
 // The operator's side of carrying the customer's files into the case: the config shape, its reader
 // and the case attribute that records what was carried. Kept apart from ./carry-attachments.ts, which
 // talks to Chatwoot, so the console editor can import it without pulling server code into the bundle.
@@ -16,7 +17,8 @@ export interface CarryAttachmentsConfig {
   maxFiles: number;
 }
 
-export const CARRY_ATTACHMENTS_MAX_FILES = 20;
+export const CARRY_ATTACHMENTS_MAX_FILES =
+  CARRY_ATTACHMENTS_RANGES.maxFiles.max;
 export const CARRY_ATTACHMENTS_DEFAULTS: CarryAttachmentsConfig = {
   mode: "off",
   fileTypes: ["image", "file"],

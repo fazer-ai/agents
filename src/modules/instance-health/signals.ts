@@ -1,9 +1,17 @@
+import { intRange, numberRange } from "@/lib/number-range";
 import {
   JOB_DELETE_ON_DONE,
   JOB_LANE,
   type SchedulerLane,
 } from "@/modules/scheduler/lanes";
 import type { SchedulerJobKind } from "@/modules/scheduler/service";
+
+// What an operator may set on a signal. The threshold is in the signal's own unit (ms, a count, a rate),
+// so it has a floor and no ceiling; the duration is the "for Y seconds" half.
+export const INSTANCE_THRESHOLD_RANGES = {
+  threshold: numberRange(0, Number.POSITIVE_INFINITY),
+  durationSeconds: intRange(0, 3600),
+} as const;
 
 // The instance's own load, as a closed list of signals (docs/logs.md, instance alerts). Each one is
 // a number sampled by ./sampler.ts and compared, "above X for Y seconds", against its threshold: the

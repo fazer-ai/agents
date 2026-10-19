@@ -11,6 +11,7 @@ import {
   Input,
   Modal,
   ModelPicker,
+  NumberInput,
   Select,
   SwitchField,
   useModalController,
@@ -19,7 +20,7 @@ import { useActiveTenantName } from "@/client/hooks/useActiveTenantName";
 import { credentialCompat } from "@/client/lib/credentialCompat";
 import { providerLabel } from "@/client/lib/providerLabels";
 import { isValidHttpUrl } from "@/client/lib/validation";
-import { MODEL_PROVIDERS } from "@/graph/model-config";
+import { MODEL_PROVIDERS, TEMPERATURE_RANGE } from "@/graph/model-config";
 import { PROVIDER_DEFAULT_MODEL } from "@/graph/model-defaults";
 import { REASONING_EFFORTS } from "@/graph/openai-reasoning";
 import {
@@ -341,11 +342,10 @@ export function GeneralTab({
               label={t("editor.temperature", "Temperature")}
               description={t("editor.temperatureHint", "0-2 (optional)")}
             >
-              <Input
-                type="number"
-                min={0}
-                max={2}
+              <NumberInput
+                range={TEMPERATURE_RANGE}
                 step={0.1}
+                optional
                 value={model.temperature}
                 onChange={(e) =>
                   setModel({ ...model, temperature: e.target.value })

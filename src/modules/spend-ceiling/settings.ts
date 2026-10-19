@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { intRange, numberRange } from "@/lib/number-range";
 import { clipText } from "@/lib/text";
 import { TEMPLATE_MESSAGE_MAX } from "@/modules/agents/text-caps";
 
@@ -60,6 +61,12 @@ export const SPEND_CEILING_DEFAULTS: SpendCeilingConfig = {
 // now, for the reason `readCount` gives.
 export const SPEND_CEILING_USD_MAX = 1_000_000;
 export const SPEND_CEILING_NOTICE_COOLDOWN_MAX_SECONDS = 3600;
+// What the REST body declares and the console's fields hold Save on.
+export const SPEND_CEILING_RANGES = {
+  monthlyUsd: numberRange(0, SPEND_CEILING_USD_MAX),
+  noticeCooldownSeconds: intRange(0, SPEND_CEILING_NOTICE_COOLDOWN_MAX_SECONDS),
+  warnAtPercent: intRange(0, 100),
+} as const;
 // The largest token ceiling the old writer accepted; only the legacy marker reads it now.
 const LEGACY_TOKENS_MAX = 1_000_000_000_000;
 

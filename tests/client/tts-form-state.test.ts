@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { numberProblem } from "@/client/components/NumberInput";
 import {
   type AgentModelSource,
   readTtsFormState,
@@ -13,6 +14,7 @@ import {
   ttsNormalizerProviderChanged,
   ttsSettingsFrom,
 } from "@/client/pages/agents/ttsFormState";
+import { TTS_TIMEOUT_RANGES } from "@/modules/agents/number-ranges";
 import { readTtsConfig } from "@/modules/tts/settings";
 
 // The Behavior save REPLACES the whole `tts` block with what the form holds, so any field the form
@@ -654,6 +656,21 @@ describe("agent editor TTS timeout and fallback voice", () => {
     expect(ttsSettingsFrom({ ...form, timeoutSeconds: "" }).timeoutMs).toBe(
       null,
     );
+  });
+
+  // REST and MCP store any whole ms, so a timeout of 1500 shows as 1.5 and must not hold the Save of
+  // an unrelated edit in the same section.
+  test("a timeout stored in ms that is not whole seconds is in range on screen", () => {
+    const form = readTtsFormState({ mode: "mirror", timeoutMs: 1500 });
+    expect(form.timeoutSeconds).toBe("1.5");
+    expect(
+      numberProblem(
+        form.timeoutSeconds,
+        TTS_TIMEOUT_RANGES.timeoutSeconds,
+        true,
+      ),
+    ).toBe(null);
+    expect(ttsSettingsFrom(form).timeoutMs).toBe(1500);
   });
 
   test("switching the fallback's provider clears what belonged to the previous one", () => {

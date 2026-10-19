@@ -1,5 +1,6 @@
 import type { ButtonHTMLAttributes, ReactNode } from "react";
 import { cn } from "@/client/lib/utils";
+import { useRangeHeld } from "./NumberInput";
 
 type ButtonVariant = "primary" | "secondary" | "ghost" | "danger";
 type ButtonSize = "sm" | "md" | "lg";
@@ -9,6 +10,8 @@ interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: ButtonVariant;
   size?: ButtonSize;
   loading?: boolean;
+  // A Save: also disabled while a number under the nearest <RangeHolds> is out of range.
+  holdOnRange?: boolean;
 }
 
 const variantStyles: Record<ButtonVariant, string> = {
@@ -37,12 +40,14 @@ export function Button({
   loading = false,
   disabled,
   className,
+  holdOnRange = false,
   ...props
 }: ButtonProps) {
+  const rangeHeld = useRangeHeld();
   return (
     <button
       type="button"
-      disabled={disabled || loading}
+      disabled={disabled || loading || (holdOnRange && rangeHeld)}
       className={cn(
         "inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-md font-medium transition-colors disabled:cursor-default disabled:opacity-50 [&_svg]:size-4 [&_svg]:shrink-0",
         variantStyles[variant],

@@ -22,6 +22,7 @@ import { cn } from "@/client/lib/utils";
 import { Button } from "./Button";
 import { DiscardDialog } from "./DiscardDialog";
 import { handOverEscape } from "./escapeClaim";
+import { RangeHolds } from "./NumberInput";
 
 // Stacked modals resolve their z-index at runtime as `calc(var(--z-modal) + level * step)`, with
 // `level` the modal's position in the open-stack, so the base stays defined once (public/index.css).
@@ -548,20 +549,23 @@ export function Modal({
                     {description}
                   </DialogPrimitive.Description>
                 )}
-                <div
-                  className={cn("flex-1 overflow-y-auto", {
-                    "px-6 py-4": !!title,
-                  })}
-                >
-                  <ModalDirtyContext.Provider value={dirtyCtx}>
-                    {children}
-                  </ModalDirtyContext.Provider>
-                </div>
-                {footer && (
-                  <div className="shrink-0 border-border border-t px-6 py-4">
-                    {footer}
+                {/* A number out of range in the body holds the footer's Save (<RangeHeld>). */}
+                <RangeHolds>
+                  <div
+                    className={cn("flex-1 overflow-y-auto", {
+                      "px-6 py-4": !!title,
+                    })}
+                  >
+                    <ModalDirtyContext.Provider value={dirtyCtx}>
+                      {children}
+                    </ModalDirtyContext.Provider>
                   </div>
-                )}
+                  {footer && (
+                    <div className="shrink-0 border-border border-t px-6 py-4">
+                      {footer}
+                    </div>
+                  )}
+                </RangeHolds>
               </div>
             </DialogPrimitive.Content>
           </DialogPrimitive.Portal>

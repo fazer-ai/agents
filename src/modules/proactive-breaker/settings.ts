@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { intRange } from "@/lib/number-range";
 
 // THE ACCOUNT-WIDE PROACTIVE BREAKER's configuration, the `proactiveBreaker` block of
 // `tenant.settings`. Its state (tripped or not, and the automatic limit's inputs) is the
@@ -14,6 +15,7 @@ export const AUTO_FLOOR = 1000;
 export const AUTO_LOOKBACK_DAYS = 30;
 // What an admin may pin: a typo with extra zeros is refused rather than stored as no guard at all.
 export const FIXED_LIMIT_MAX = 10_000_000;
+export const FIXED_LIMIT_RANGE = intRange(1, FIXED_LIMIT_MAX);
 
 export interface ProactiveBreakerConfig {
   mode: ProactiveBreakerMode;

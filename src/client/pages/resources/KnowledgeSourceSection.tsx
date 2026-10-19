@@ -7,6 +7,7 @@ import {
   type ConfirmPayload,
   FormField,
   Input,
+  NumberInput,
   Skeleton,
   useModalController,
   useToast,
@@ -15,6 +16,7 @@ import {
 import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
 import { cn } from "@/client/lib/utils";
+import { SYNC_INTERVAL_MINUTES } from "@/modules/rag/ranges";
 
 // A knowledge base's help center source, in the console: whether a base mirrors a portal, when it
 // last ran and whether that run failed, and setting one up, over the same three routes REST and MCP
@@ -443,8 +445,8 @@ export function KnowledgeSourceSection({
       <FormField
         label={t("knowledge.source.interval", "Sync interval (minutes)")}
       >
-        <Input
-          type="number"
+        <NumberInput
+          range={SYNC_INTERVAL_MINUTES}
           value={draft.intervalMinutes}
           onChange={(e) =>
             setDraft({ ...draft, intervalMinutes: e.target.value })
@@ -482,6 +484,7 @@ export function KnowledgeSourceSection({
             draft.slug.trim() === "" ||
             draft.locale.trim() === ""
           }
+          holdOnRange
         >
           {t("knowledge.source.save", "Save source")}
         </Button>

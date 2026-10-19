@@ -507,6 +507,38 @@ describe("the call settings form", () => {
       }),
     ).toEqual([]);
   });
+
+  // The server takes the silence in whole seconds, so 12,5 has to hold the save rather than come back
+  // as a refusal from a save the form let through.
+  test("a fraction of a second of silence holds the save", () => {
+    expect(
+      callsFormErrors({
+        ...valid,
+        endOnSilence: true,
+        silenceEndCallSecs: "12,5",
+      }),
+    ).toEqual(["silenceEndCallSecs"]);
+  });
+
+  // With no background sound the volume is not drawn, so a value out of range is left out for the
+  // default instead of being sent to a refusal nobody can see the field for.
+  test("an undrawn volume or hello wait out of range is left out of the save", () => {
+    const saved = callsSettingsFrom({
+      ...valid,
+      backgroundSound: "",
+      backgroundVolume: "0",
+      openingDelaySecs: "6",
+    });
+    expect(saved.backgroundVolume).toBeUndefined();
+    expect(saved.openingDelayMs).toBeUndefined();
+    expect(
+      callsSettingsFrom({
+        ...valid,
+        backgroundSound: "",
+        backgroundVolume: "20",
+      }).backgroundVolume,
+    ).toBe(0.2);
+  });
 });
 
 describe("an agent deleted on ElevenLabs after this process wrote it", () => {

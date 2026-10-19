@@ -1,7 +1,8 @@
 import { Eye } from "lucide-react";
 import type React from "react";
 import { useTranslation } from "react-i18next";
-import { FormField, Input, Select } from "@/client/components";
+import { FormField, NumberInput, Select } from "@/client/components";
+import { MONITORING_RANGES } from "@/modules/agents/number-ranges";
 import {
   OBSERVATION_LIMITS,
   type ObservationState,
@@ -94,10 +95,8 @@ export function ObservationSection({
                 )
           }
         >
-          <Input
-            type="number"
-            min={lim.windowMessagesMin}
-            max={lim.windowMessagesMax}
+          <NumberInput
+            range={MONITORING_RANGES.windowMessages}
             value={observation.windowMessages}
             onChange={(e) => patch({ windowMessages: e.target.value })}
           />
@@ -118,10 +117,8 @@ export function ObservationSection({
                 )
           }
         >
-          <Input
-            type="number"
-            min={lim.secondsMin}
-            max={lim.secondsMax}
+          <NumberInput
+            range={MONITORING_RANGES.windowSeconds}
             value={observation.windowSeconds}
             onChange={(e) => patch({ windowSeconds: e.target.value })}
           />
@@ -133,10 +130,8 @@ export function ObservationSection({
             "A customer who keeps writing is judged at the latest this long after the first message.",
           )}
         >
-          <Input
-            type="number"
-            min={lim.secondsMin}
-            max={lim.secondsMax}
+          <NumberInput
+            range={MONITORING_RANGES.maxWindowSeconds}
             value={observation.maxWindowSeconds}
             onChange={(e) => patch({ maxWindowSeconds: e.target.value })}
           />

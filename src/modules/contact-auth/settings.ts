@@ -1,4 +1,5 @@
 import { clipText } from "@/lib/text";
+import { CONTACT_AUTH_RANGES } from "@/modules/agents/number-ranges";
 import { TEMPLATE_MESSAGE_MAX } from "@/modules/agents/text-caps";
 import {
   parseToolPrecondition,
@@ -273,15 +274,18 @@ export function contactAuthHasEndpointStage(cfg: ContactAuthConfig): boolean {
   return cfg.rule === null || cfg.askEndpointAfterRule;
 }
 
-export const CONTACT_AUTH_TIMEOUT_MIN_MS = 1000;
-export const CONTACT_AUTH_TIMEOUT_MAX_MS = 10_000;
-export const CONTACT_AUTH_NOTICE_COOLDOWN_MAX_SECONDS = 3600;
+export const CONTACT_AUTH_TIMEOUT_MIN_MS = CONTACT_AUTH_RANGES.timeoutMs.min;
+export const CONTACT_AUTH_TIMEOUT_MAX_MS = CONTACT_AUTH_RANGES.timeoutMs.max;
+export const CONTACT_AUTH_NOTICE_COOLDOWN_MAX_SECONDS =
+  CONTACT_AUTH_RANGES.noticeCooldownSeconds.max;
 // A grant shorter than a minute is a grant that expires inside the burst it exists to collapse, and
 // one longer than a month outlives most of the facts an endpoint decides on. "Never reuse" is the
 // MODE, not a TTL of zero: two ways to say the same thing, and the second one says it in the more
 // confusing place.
-export const CONTACT_AUTH_GRANT_TTL_MIN_SECONDS = 60;
-export const CONTACT_AUTH_GRANT_TTL_MAX_SECONDS = 30 * 24 * 3600;
+export const CONTACT_AUTH_GRANT_TTL_MIN_SECONDS =
+  CONTACT_AUTH_RANGES.grantTtlSeconds.min;
+export const CONTACT_AUTH_GRANT_TTL_MAX_SECONDS =
+  CONTACT_AUTH_RANGES.grantTtlSeconds.max;
 
 function str(v: unknown): string | null {
   return typeof v === "string" && v.trim() ? v.trim() : null;

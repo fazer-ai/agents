@@ -1,7 +1,7 @@
 import { MessageSquare, Phone, TriangleAlert } from "lucide-react";
 import { createContext, useContext, useEffect } from "react";
 import { useTranslation } from "react-i18next";
-import { Button } from "@/client/components";
+import { Button, useRangeHeld } from "@/client/components";
 import { useStaleNotice } from "./StaleNotice";
 
 // Save/Discard bar shared by the editor tabs, styled as a card. `mt-auto` rests it at the bottom of a
@@ -24,8 +24,9 @@ export interface EditorBar {
   onDiscard: () => void;
   // Whether the section this tab edits is the dirty one: its own hold matters only then.
   sectionDirty: boolean;
-  // Stable per section; called whenever the tab's own hold changes.
-  reportBlocked: (blocked: boolean) => void;
+  // Stable per section; called whenever the tab's own hold changes. `rangeHeld` is the part of it a
+  // number out of range makes, which no other tab's edit can lift.
+  reportBlocked: (blocked: boolean, rangeHeld: boolean) => void;
 }
 export const EditorBarContext = createContext<EditorBar | null>(null);
 
@@ -50,11 +51,13 @@ export function TabActionBar({
   const stale = useStaleNotice();
   const isCall = useContext(PlaygroundIsCallContext);
   const bar = useContext(EditorBarContext);
-  const held = !!saveDisabled;
+  // A number out of its range anywhere on the tab holds Save like the tab's own rule.
+  const rangeHeld = useRangeHeld();
+  const held = !!saveDisabled || rangeHeld;
   const report = bar?.reportBlocked;
   useEffect(() => {
-    report?.(held);
-  }, [report, held]);
+    report?.(held, rangeHeld);
+  }, [report, held, rangeHeld]);
   const isDirty = bar ? bar.dirty : dirty;
   const isSaving = bar ? bar.saving : saving;
   const save = bar ? bar.onSave : onSave;

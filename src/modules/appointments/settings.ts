@@ -1,3 +1,5 @@
+import { REMINDER_OFFSET_RANGE } from "@/modules/integrations/calendar-config-ranges";
+
 // Per-agent appointment-reminder configuration from agent.settings.appointmentReminders.
 // Same reader/default/clamp pattern as debounce/serviceWindow/followUp.
 //
@@ -17,8 +19,8 @@ export interface AppointmentReminderConfig {
 }
 
 export const APPOINTMENT_REMINDER_MAX_OFFSETS = 5;
-const OFFSET_MIN_HOURS = 1;
-const OFFSET_MAX_HOURS = 8760; // 1 year
+const OFFSET_MIN_HOURS = REMINDER_OFFSET_RANGE.min;
+const OFFSET_MAX_HOURS = REMINDER_OFFSET_RANGE.max;
 
 export const APPOINTMENT_REMINDER_DEFAULTS: AppointmentReminderConfig = {
   enabled: false,

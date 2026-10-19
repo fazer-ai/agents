@@ -332,13 +332,15 @@ describe.skipIf(!dbUp)("contactAuth on the write surfaces", () => {
             url: "https://api.example.com/check?tenant=t1",
             method: "post",
             credentialRef: `vault:${credId}`,
-            timeoutMs: 99_999,
+            // The edges: past them the write is refused, so the clamp is the reader's
+            // concern only for a bag stored before that.
+            timeoutMs: 10_000,
             noticeCooldownSeconds: 0,
             includeMessageText: true,
             denyMessage: "  Atendemos apenas clientes.  ",
             handoffEnabled: false,
             mode: "once",
-            grantTtlSeconds: 99_999_999,
+            grantTtlSeconds: 2_592_000,
             handoffTeamId: 12,
             handoffTeamInstanceId: 3,
           },

@@ -238,22 +238,6 @@ describe("the decisions block at the write boundary", () => {
       "monitoring.decisions.rules.0.action.tool",
     ],
     [
-      "a threshold outside 0..1",
-      {
-        ...valid,
-        decisions: {
-          ...valid.decisions,
-          rules: [
-            {
-              when: [{ question: "pede_reembolso", minProbability: 1.5 }],
-              action: { tool: "set_labels", args: {} },
-            },
-          ],
-        },
-      },
-      "monitoring.decisions.rules.0.when.0.minProbability",
-    ],
-    [
       "a block without questions, named at the block",
       {
         ...valid,
@@ -336,6 +320,24 @@ describe("the decisions block at the write boundary", () => {
     const r = refusal(monitoring);
     expect(r?.statusCode).toBe(400);
     expect(r?.field).toBe(field);
+  });
+
+  // A number of the right type outside its range is 422, not the 400 of a malformed block.
+  test("a threshold outside 0..1 is refused with 422, naming it", () => {
+    const r = refusal({
+      ...valid,
+      decisions: {
+        ...valid.decisions,
+        rules: [
+          {
+            when: [{ question: "pede_reembolso", minProbability: 1.5 }],
+            action: { tool: "set_labels", args: {} },
+          },
+        ],
+      },
+    });
+    expect(r?.statusCode).toBe(422);
+    expect(r?.field).toBe("monitoring.decisions.rules.0.when.0.minProbability");
   });
 
   test("an edit that breaks an unchanged rule is refused, naming the rule; a stored block re-sent untouched is not", () => {

@@ -1,9 +1,11 @@
 import { Elysia, t } from "elysia";
 import { doc, errors } from "@/api/lib/openapi";
+import { tRanged } from "@/api/lib/ranged";
 import { tenancyPlugin } from "@/api/middlewares/tenancy";
 import { requireDbId } from "@/lib/db-id";
 import { ForbiddenError, TenantTargetRequiredError } from "@/lib/errors";
 import { instanceIdentity } from "@/lib/instance";
+import { WEEKDAY_RANGE } from "@/lib/number-range";
 import type { TenantContext } from "@/lib/tenancy";
 import {
   type BusinessHoursCreate,
@@ -33,9 +35,7 @@ function ctxOrThrow(ctx: TenantContext | null): TenantContext {
 }
 
 const windowSchema = t.Object({
-  day: t.Integer({
-    minimum: 0,
-    maximum: 6,
+  day: tRanged(WEEKDAY_RANGE, {
     description: "Day of week, 0 (Sunday) through 6 (Saturday).",
   }),
   start: t.String({

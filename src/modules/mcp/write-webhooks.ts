@@ -724,7 +724,7 @@ export async function integrationUpdate(
       afterProj[k] = patch[k];
     }
     const target = `integration:${id}`;
-    assertIntegrationWritable(current.catalogType, patch);
+    assertIntegrationWritable(current.catalogType, patch, current.config);
     if (args.dry_run !== false) {
       return ok({
         dryRun: true,

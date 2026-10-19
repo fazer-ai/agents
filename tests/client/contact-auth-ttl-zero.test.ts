@@ -7,10 +7,10 @@ import {
   stubEditorApi,
 } from "../utils/agent-editor";
 
-// A typed zero must not serialize as the default where the reader's floor is something else.
-// `contactAuth.grantTtlSeconds` IS how long an authorization counts: a typed 0 stored as 86400 would
-// reuse an approval for a day, while passed through it is clamped by the reader to its 60-second
-// floor. A cleared field is not a request for the shortest reuse, it is a request for the default.
+// A typed zero must not serialize as the default: `contactAuth.grantTtlSeconds` IS how long an
+// authorization counts, and a 0 stored as 86400 would reuse an approval for a day. The field holds Save
+// below its 60-second floor instead, so the zero never leaves. A cleared field is not a
+// request for the shortest reuse, it is a request for the default.
 
 const realFetch = globalThis.fetch;
 afterEach(() => {
@@ -18,7 +18,7 @@ afterEach(() => {
   globalThis.fetch = realFetch;
 });
 
-async function savedTtl(typed: string): Promise<unknown> {
+async function typeTtl(typed: string) {
   const stub = stubEditorApi({
     settings: {
       contactAuth: {
@@ -36,21 +36,23 @@ async function savedTtl(typed: string): Promise<unknown> {
       target: { value: typed },
     },
   );
-  fireEvent.click(screen.getByRole("button", { name: "Save" }));
-  await waitFor(() => expect(lastSavedSettings(stub)).toBeDefined());
-  const block = lastSavedSettings(stub)?.contactAuth as
-    | Record<string, unknown>
-    | undefined;
-  return block?.grantTtlSeconds;
+  return stub;
 }
 
 describe("the grant TTL a save writes", () => {
-  test("zero is passed through, not replaced by the default", async () => {
-    expect(await savedTtl("0")).toBe(0);
+  test("zero holds Save instead of being saved as a day", async () => {
+    await typeTtl("0");
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
   });
 
   test("an emptied field saves the default", async () => {
-    expect(await savedTtl("")).toBe(86_400);
+    const stub = await typeTtl("");
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(lastSavedSettings(stub)).toBeDefined());
+    const block = lastSavedSettings(stub)?.contactAuth as
+      | Record<string, unknown>
+      | undefined;
+    expect(block?.grantTtlSeconds).toBe(86_400);
   });
 
   test("and the reader is what decides what zero means", () => {

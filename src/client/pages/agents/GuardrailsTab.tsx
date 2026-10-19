@@ -12,6 +12,7 @@ import {
   FormField,
   Input,
   ModelPicker,
+  NumberInput,
   Select,
   SwitchField,
   Textarea,
@@ -20,6 +21,7 @@ import { credentialCompat } from "@/client/lib/credentialCompat";
 import { providerLabel } from "@/client/lib/providerLabels";
 import { MODEL_PROVIDERS } from "@/graph/model-config";
 import { PROVIDER_DEFAULT_MODEL } from "@/graph/model-defaults";
+import { GUARDRAIL_RANGES } from "@/modules/agents/number-ranges";
 import {
   CUSTOM_POLICY_MAX,
   GENERATION_PROMPT_MAX,
@@ -91,11 +93,10 @@ function ThresholdInput({
   testId: string;
 }) {
   return (
-    <Input
-      type="number"
-      min={0}
-      max={1}
+    <NumberInput
+      range={GUARDRAIL_RANGES.threshold}
       step={0.05}
+      optional
       value={text}
       onChange={(e) => onType(e.target.value)}
       onBlur={onLeave}
@@ -297,39 +298,37 @@ export function GuardrailsTab({
           label={t("editor.guardrails.directionEnabled", "Enable")}
         />
         {d.enabled && (
-          <>
-            <FormField
-              label={t("editor.guardrails.checks", "Checks")}
-              description={
-                byClassifier
-                  ? t(
-                      "editor.guardrails.thresholdsHint",
-                      "The number beside each check is its threshold, from 0 to 1: the check trips when the API's probability reaches it. Lower blocks more; higher lets more through.",
-                    )
-                  : undefined
-              }
-              group
-            >
-              <div className="flex flex-col gap-2">
-                {checkRow(dir, "toxicity")}
-                {checkRow(dir, "unsafeContent")}
-                {checkRow(dir, "competitorMentions")}
-                {dir === "output" && (
-                  <>
-                    {checkRow(dir, "promptAdherence")}
-                    {checkRow(
-                      dir,
-                      "answerRelevance",
-                      t(
-                        "editor.guardrails.checkRelevanceHelp",
-                        "This check determines whether the agent's reply addresses the customer's message.\n\nIf it fails, the configured action always uses the prepared message. The model does not write a replacement reply.\n\nIt is off by default because short messages such as “yes” can cause false failures. When another check is active, each reply makes two separately billed model requests.",
-                      ),
-                    )}
-                  </>
-                )}
-              </div>
-            </FormField>
-          </>
+          <FormField
+            label={t("editor.guardrails.checks", "Checks")}
+            description={
+              byClassifier
+                ? t(
+                    "editor.guardrails.thresholdsHint",
+                    "The number beside each check is its threshold, from 0 to 1: the check trips when the API's probability reaches it. Lower blocks more; higher lets more through.",
+                  )
+                : undefined
+            }
+            group
+          >
+            <div className="flex flex-col gap-2">
+              {checkRow(dir, "toxicity")}
+              {checkRow(dir, "unsafeContent")}
+              {checkRow(dir, "competitorMentions")}
+              {dir === "output" && (
+                <>
+                  {checkRow(dir, "promptAdherence")}
+                  {checkRow(
+                    dir,
+                    "answerRelevance",
+                    t(
+                      "editor.guardrails.checkRelevanceHelp",
+                      "This check determines whether the agent's reply addresses the customer's message.\n\nIf it fails, the configured action always uses the prepared message. The model does not write a replacement reply.\n\nIt is off by default because short messages such as “yes” can cause false failures. When another check is active, each reply makes two separately billed model requests.",
+                    ),
+                  )}
+                </>
+              )}
+            </div>
+          </FormField>
         )}
         {/* The action and its messages are also what the external check's block and a held failure
             use, so they stay editable while it is configured, built-in screening on or off. */}

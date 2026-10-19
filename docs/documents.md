@@ -127,8 +127,8 @@ switch, numbering, approval) is accepted: it never writes the content columns, s
 survives it byte for byte. The console's save always sends the style and the block texts, so on such a
 template the console refuses every save, and a rename goes through REST or MCP.
 
-Sizes stay clamped rather than refused (`baseFontSize`), because a clamp changes a value and never a
-key: "type and choice, never size" (`docs/mcp.md`).
+`baseFontSize` is refused outside 8-14 on every surface (`BASE_FONT_SIZE_RANGE`, agents#1524); the
+reader still clamps a template stored before the refusal existed.
 
 `footerText` goes through the **same token resolver** the block texts do, and it prints on every
 page, so its tokens are validated with them: a template is refused as a whole, style included. That

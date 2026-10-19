@@ -1,5 +1,6 @@
 import { Elysia, t } from "elysia";
 import { doc, errors } from "@/api/lib/openapi";
+import { tRanged } from "@/api/lib/ranged";
 import { tenancyPlugin } from "@/api/middlewares/tenancy";
 import {
   ForbiddenError,
@@ -28,12 +29,9 @@ import {
   getProactiveBreakerStatus,
   resumeProactiveBreaker,
 } from "@/modules/proactive-breaker/service";
-import { FIXED_LIMIT_MAX } from "@/modules/proactive-breaker/settings";
+import { FIXED_LIMIT_RANGE } from "@/modules/proactive-breaker/settings";
 import { spendCeilingUsage } from "@/modules/spend-ceiling/service";
-import {
-  SPEND_CEILING_NOTICE_COOLDOWN_MAX_SECONDS,
-  SPEND_CEILING_USD_MAX,
-} from "@/modules/spend-ceiling/settings";
+import { SPEND_CEILING_RANGES } from "@/modules/spend-ceiling/settings";
 import {
   getTenantSettings,
   updateApprovalLink,
@@ -235,17 +233,13 @@ export const tenantSettingsController = new Elysia({
           t.Boolean({ description: "Whether the spend ceiling is enforced." }),
         ),
         monthlyInboxUsd: t.Optional(
-          t.Number({
-            minimum: 0,
-            maximum: SPEND_CEILING_USD_MAX,
+          tRanged(SPEND_CEILING_RANGES.monthlyUsd, {
             description:
               "Dollars (USD, as the usage ledger prices the month's calls) allowed per calendar month for customer traffic, rounded to the cent. 0 = no ceiling on this half.",
           }),
         ),
         monthlyPlaygroundUsd: t.Optional(
-          t.Number({
-            minimum: 0,
-            maximum: SPEND_CEILING_USD_MAX,
+          tRanged(SPEND_CEILING_RANGES.monthlyUsd, {
             description:
               "The same, for playground traffic. Kept apart so testing cannot silence the agent for customers.",
           }),
@@ -263,17 +257,13 @@ export const tenantSettingsController = new Elysia({
           }),
         ),
         noticeCooldownSeconds: t.Optional(
-          t.Integer({
-            minimum: 0,
-            maximum: SPEND_CEILING_NOTICE_COOLDOWN_MAX_SECONDS,
+          tRanged(SPEND_CEILING_RANGES.noticeCooldownSeconds, {
             description:
               "Cooldown on the customer copy and the operator note. Never on the verdict, which is evaluated every message.",
           }),
         ),
         warnAtPercent: t.Optional(
-          t.Integer({
-            minimum: 0,
-            maximum: 100,
+          tRanged(SPEND_CEILING_RANGES.warnAtPercent, {
             description:
               "Warn through the alert channels once usage crosses this percentage of a ceiling. 0 = no warning.",
           }),
@@ -323,9 +313,7 @@ export const tenantSettingsController = new Elysia({
         ),
         limit: t.Optional(
           t.Union([
-            t.Integer({
-              minimum: 1,
-              maximum: FIXED_LIMIT_MAX,
+            tRanged(FIXED_LIMIT_RANGE, {
               description:
                 "Proactive messages per 24 hours for the whole account, used when `mode` is `fixed` and kept otherwise.",
             }),

@@ -2404,6 +2404,7 @@
     "reasoningEffort": "Reasoning effort",
     "reasoningEffortDefault": "Provider default",
     "reasoningEffortHint": "How much the model thinks before answering. Reasoning models only (o-series, gpt-5, gpt-6); more effort means slower, costlier answers.",
+    "recheckBeforeExport": "The agent's mode changed since you left the {{tab}} tab. Check it, then save again.",
     "refusalNoControl": "This value has no field in the console, so it can only be changed through the API.",
     "reload": "Reload",
     "resolveLabels": "Labels on close",
@@ -2422,6 +2423,7 @@
     "saveAndExport": "Save and export",
     "saved": "Agent saved.",
     "saveError": "Could not save the agent.",
+    "saveHeldByRange": "A number on this tab is outside its range. Fix it, then save.",
     "saveHeldField": "a field there cannot be saved as it is.",
     "saveHeldIn": "Fix the {{tab}} tab before saving: {{reason}}",
     "saveKnowledge": "Save knowledge",
@@ -3587,6 +3589,10 @@
     "userMenu": "User menu",
     "webhooks": "Webhooks",
     "website": "fazer.ai"
+  },
+  "numberInput": {
+    "range": "Between {{min}} and {{max}}.",
+    "whole": "Use a whole number."
   },
   "oauth": {
     "consent": {

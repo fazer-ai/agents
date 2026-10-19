@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { intRange } from "@/lib/number-range";
 
 // The vocabulary a document is written in, and the ONE place that says which shapes exist: blocks,
 // the `fields` the agent fills at issue time, and a `style`. The set is deliberately closed, with a
@@ -160,15 +161,19 @@ export type DocumentField = z.infer<typeof documentFieldSchema>;
 export const DOCUMENT_FONTS = ["sans", "serif", "mono"] as const;
 export type DocumentFont = (typeof DOCUMENT_FONTS)[number];
 
-export const BASE_FONT_SIZE_MIN = 8;
-export const BASE_FONT_SIZE_MAX = 14;
+export const BASE_FONT_SIZE_RANGE = intRange(8, 14);
+export const BASE_FONT_SIZE_MIN = BASE_FONT_SIZE_RANGE.min;
+export const BASE_FONT_SIZE_MAX = BASE_FONT_SIZE_RANGE.max;
 
 export const documentStyleSchema = z.object({
   font: z.enum(DOCUMENT_FONTS),
-  // NOTE: no .min/.max, and the reader CLAMPS instead. "Type and choice, never size" (docs/mcp.md):
-  // a bound copied into the schema turns a clamp into a refusal, so the same write would be accepted
-  // in the console and rejected over MCP. The range lives in the description.
-  baseFontSize: z.number().int(),
+  // Refused outside the range on every surface; parseDocumentStyle reads it unbounded
+  // and clamps, so a template stored before the refusal keeps its nearest size instead of the default.
+  baseFontSize: z
+    .number()
+    .int()
+    .min(BASE_FONT_SIZE_RANGE.min)
+    .max(BASE_FONT_SIZE_RANGE.max),
   // Written out rather than /^#[0-9a-f]{6}$/i: the `i` flag does not survive publication as JSON
   // Schema, and a client would then refuse what this server accepts.
   accentColor: z.string().regex(/^#[0-9a-fA-F]{6}$/),
@@ -236,7 +241,9 @@ export function parseDocumentStyle(value: unknown): DocumentStyle {
   if (raw && typeof raw === "object" && !Array.isArray(raw)) {
     for (const [key, schema] of Object.entries(documentStyleSchema.shape)) {
       if (!(key in raw)) continue;
-      const parsed = (schema as z.ZodType).safeParse(raw[key]);
+      const parsed = (
+        key === "baseFontSize" ? z.number() : (schema as z.ZodType)
+      ).safeParse(raw[key]);
       if (parsed.success) merged[key] = parsed.data;
     }
   }

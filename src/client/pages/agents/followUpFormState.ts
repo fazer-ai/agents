@@ -1,3 +1,4 @@
+import { delayRange } from "@/modules/agents/number-ranges";
 import { FOLLOW_UP_DEFAULT_DELAY_VALUE } from "@/modules/agents/text-caps";
 import { FOLLOW_UP_MAX_STEPS } from "@/modules/followups/settings";
 import type { FollowUpState, FollowUpStepState } from "./BehaviorTab";
@@ -49,9 +50,15 @@ export function stepsToForm(
         string,
         unknown
       >;
+      const delayUnit = str(st.delayUnit) || "minutes";
       return {
-        delayValue: num(st.delayValue) || defaultDelayValue,
-        delayUnit: str(st.delayUnit) || "minutes",
+        // The default is a number of minutes, held to the unit's ceiling as the reader holds it.
+        delayValue:
+          num(st.delayValue) ||
+          String(
+            Math.min(Number(defaultDelayValue), delayRange(delayUnit).max),
+          ),
+        delayUnit,
         instructions: str(st.instructions),
         assignLabels: stepLabels(st),
         resolve: st.resolve === true,

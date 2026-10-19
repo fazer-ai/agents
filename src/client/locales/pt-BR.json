@@ -2487,6 +2487,7 @@
     "reasoningEffort": "Esforço de raciocínio",
     "reasoningEffortDefault": "Padrão do provedor",
     "reasoningEffortHint": "Quanto o modelo pensa antes de responder. Só em modelos de raciocínio (série o, gpt-5, gpt-6); mais esforço significa resposta mais lenta e mais cara.",
+    "recheckBeforeExport": "O modo do agente mudou depois que você saiu da aba {{tab}}. Confira a aba e salve de novo.",
     "refusalNoControl": "Este valor não tem campo no console, então só dá para alterá-lo pela API.",
     "reload": "Recarregar",
     "resolveLabels": "Etiquetas ao encerrar",
@@ -2505,6 +2506,7 @@
     "saveAndExport": "Salvar e exportar",
     "saved": "Agente salvo.",
     "saveError": "Não foi possível salvar o agente.",
+    "saveHeldByRange": "Um número desta aba está fora da faixa. Corrija e salve.",
     "saveHeldField": "um campo ali não pode ser salvo como está.",
     "saveHeldIn": "Corrija a aba {{tab}} antes de salvar: {{reason}}",
     "saveKnowledge": "Salvar conhecimento",
@@ -3691,6 +3693,10 @@
     "userMenu": "Menu do usuário",
     "webhooks": "Webhooks",
     "website": "fazer.ai"
+  },
+  "numberInput": {
+    "range": "Entre {{min}} e {{max}}.",
+    "whole": "Use um número inteiro."
   },
   "oauth": {
     "consent": {

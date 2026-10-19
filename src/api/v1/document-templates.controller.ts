@@ -1,12 +1,16 @@
 import { Elysia, t } from "elysia";
 import { doc, errors } from "@/api/lib/openapi";
+import { tRanged } from "@/api/lib/ranged";
 import { tenancyPlugin } from "@/api/middlewares/tenancy";
 import { requireDbId } from "@/lib/db-id";
 import { ForbiddenError, TenantTargetRequiredError } from "@/lib/errors";
 import { instanceIdentity } from "@/lib/instance";
+import { intRange } from "@/lib/number-range";
 import type { TenantContext } from "@/lib/tenancy";
+import { NEXT_NUMBER_RANGE } from "@/modules/documents/numbering";
 import { documentStarters } from "@/modules/documents/starters";
 import {
+  APPROVAL_TTL_HOURS,
   // translate('errors.invalidId', 'Not a valid {{label}}')
   createDocumentTemplate,
   deleteDocumentTemplate,
@@ -79,7 +83,7 @@ export const writeBody = t.Object({
     }),
   ),
   nextNumber: t.Optional(
-    t.Number({
+    tRanged(NEXT_NUMBER_RANGE, {
       description:
         "The number the next document issued from this template prints (without the prefix), to continue a sequence started elsewhere. Refused (409) at or below a number this workspace already issued under the template's prefix, by any template; a new prefix starts a new sequence. The template's `nextNumber` reads where numbering continues now.",
     }),
@@ -94,9 +98,9 @@ export const writeBody = t.Object({
     }),
   ),
   approvalTtlHours: t.Optional(
-    t.Number({
+    tRanged(intRange(APPROVAL_TTL_HOURS.min, APPROVAL_TTL_HOURS.max), {
       description:
-        "How long an approval request waits, in whole hours from 1 to 168. Defaults to 24.",
+        "How long an approval request waits, in whole hours. Defaults to 24.",
     }),
   ),
 });

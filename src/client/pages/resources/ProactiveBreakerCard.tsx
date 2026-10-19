@@ -5,7 +5,8 @@ import {
   Card,
   FilterPills,
   FormField,
-  Input,
+  NumberInput,
+  RangeHolds,
   Skeleton,
   useToast,
 } from "@/client/components";
@@ -15,6 +16,7 @@ import {
 } from "@/client/contexts/ProactiveBreakerContext";
 import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
+import { FIXED_LIMIT_RANGE } from "@/modules/proactive-breaker/settings";
 
 type Mode = ProactiveBreakerStatus["mode"];
 
@@ -176,130 +178,131 @@ export function ProactiveBreakerCard() {
     : null;
 
   return (
-    <Card className="flex flex-col gap-4">
-      <div>
-        <h2 className="font-medium text-text-primary">
-          {t("proactiveBreaker.title", "Proactive message breaker")}
-        </h2>
-        <p className="mt-0.5 text-sm text-text-muted">
-          {t(
-            "proactiveBreaker.desc",
-            "Stops every agent's proactive messages (follow-ups, reminders, integration events, templates) when the whole account sends more than this in 24 hours, until an admin resumes them. Replies to customers are never counted or stopped.",
-          )}
-        </p>
-      </div>
-
-      {status.tripped && (
-        <div
-          role="status"
-          className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-error bg-error-soft px-3 py-2"
-        >
-          <span className="text-sm text-text-primary">
+    <RangeHolds>
+      <Card className="flex flex-col gap-4">
+        <div>
+          <h2 className="font-medium text-text-primary">
+            {t("proactiveBreaker.title", "Proactive message breaker")}
+          </h2>
+          <p className="mt-0.5 text-sm text-text-muted">
             {t(
-              "proactiveBreaker.trippedSince",
-              "Paused since {{since}}: {{sent}} sent in 24 hours, limit {{limit}}. Changing the limit does not resume them.",
-              {
-                since: when(status.tripped.at),
-                sent: nf.format(status.tripped.count),
-                limit: nf.format(status.tripped.limit),
-              },
+              "proactiveBreaker.desc",
+              "Stops every agent's proactive messages (follow-ups, reminders, integration events, templates) when the whole account sends more than this in 24 hours, until an admin resumes them. Replies to customers are never counted or stopped.",
             )}
-          </span>
-          <Button size="sm" onClick={resume} loading={resuming}>
-            {t("proactiveBreaker.resume", "Resume")}
-          </Button>
+          </p>
         </div>
-      )}
 
-      <FormField label={t("proactiveBreaker.mode", "Limit")} group>
-        <FilterPills
-          aria-label={t("proactiveBreaker.mode", "Limit")}
-          value={mode}
-          onChange={(k) => setMode(k as Mode)}
-          items={[
-            {
-              key: "auto",
-              label: t("proactiveBreaker.modeAuto", "Automatic"),
-            },
-            {
-              key: "fixed",
-              label: t("proactiveBreaker.modeFixed", "Fixed number"),
-            },
-            { key: "off", label: t("proactiveBreaker.modeOff", "Off") },
-          ]}
-        />
-      </FormField>
+        {status.tripped && (
+          <div
+            role="status"
+            className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-error bg-error-soft px-3 py-2"
+          >
+            <span className="text-sm text-text-primary">
+              {t(
+                "proactiveBreaker.trippedSince",
+                "Paused since {{since}}: {{sent}} sent in 24 hours, limit {{limit}}. Changing the limit does not resume them.",
+                {
+                  since: when(status.tripped.at),
+                  sent: nf.format(status.tripped.count),
+                  limit: nf.format(status.tripped.limit),
+                },
+              )}
+            </span>
+            <Button size="sm" onClick={resume} loading={resuming}>
+              {t("proactiveBreaker.resume", "Resume")}
+            </Button>
+          </div>
+        )}
 
-      {mode === "auto" && (
-        <p className="text-sm text-text-secondary">
-          {autoSource}
-          {autoMeasured && ` ${autoMeasured}`}
-        </p>
-      )}
-      {mode === "fixed" && (
-        <FormField
-          label={t(
-            "proactiveBreaker.fixedLimit",
-            "Proactive messages per 24 hours, whole account",
-          )}
-          description={t(
-            "proactiveBreaker.fixedHint",
-            "A whole number of at least 1.",
-          )}
-          error={
-            limitInvalid
-              ? t(
-                  "proactiveBreaker.fixedInvalid",
-                  "Enter a whole number of at least 1.",
-                )
-              : null
-          }
-        >
-          <Input
-            type="number"
-            min={1}
-            step={1}
-            value={limitText}
-            onChange={(e) => setLimitText(e.target.value)}
+        <FormField label={t("proactiveBreaker.mode", "Limit")} group>
+          <FilterPills
+            aria-label={t("proactiveBreaker.mode", "Limit")}
+            value={mode}
+            onChange={(k) => setMode(k as Mode)}
+            items={[
+              {
+                key: "auto",
+                label: t("proactiveBreaker.modeAuto", "Automatic"),
+              },
+              {
+                key: "fixed",
+                label: t("proactiveBreaker.modeFixed", "Fixed number"),
+              },
+              { key: "off", label: t("proactiveBreaker.modeOff", "Off") },
+            ]}
           />
         </FormField>
-      )}
-      {mode === "off" && (
-        <p className="text-sm text-text-secondary">
-          {t(
-            "proactiveBreaker.offHint",
-            "No account-wide limit: proactive messages are bounded only by each agent's own per-conversation limit.",
-          )}
-        </p>
-      )}
 
-      <p className="text-text-muted text-xs">
-        {status.limit === null
-          ? t(
-              "proactiveBreaker.countOff",
-              "{{sent}} proactive messages in the last 24 hours.",
-              { sent: nf.format(status.count) },
-            )
-          : t(
-              "proactiveBreaker.count",
-              "{{sent}} of {{limit}} proactive messages counted since {{since}}.",
-              {
-                sent: nf.format(status.count),
-                limit: nf.format(status.limit),
-                since: when(status.windowStart),
-              },
+        {mode === "auto" && (
+          <p className="text-sm text-text-secondary">
+            {autoSource}
+            {autoMeasured && ` ${autoMeasured}`}
+          </p>
+        )}
+        {mode === "fixed" && (
+          <FormField
+            label={t(
+              "proactiveBreaker.fixedLimit",
+              "Proactive messages per 24 hours, whole account",
             )}
-      </p>
+            description={t(
+              "proactiveBreaker.fixedHint",
+              "A whole number of at least 1.",
+            )}
+            error={
+              limitInvalid
+                ? t(
+                    "proactiveBreaker.fixedInvalid",
+                    "Enter a whole number of at least 1.",
+                  )
+                : null
+            }
+          >
+            <NumberInput
+              range={FIXED_LIMIT_RANGE}
+              value={limitText}
+              onChange={(e) => setLimitText(e.target.value)}
+            />
+          </FormField>
+        )}
+        {mode === "off" && (
+          <p className="text-sm text-text-secondary">
+            {t(
+              "proactiveBreaker.offHint",
+              "No account-wide limit: proactive messages are bounded only by each agent's own per-conversation limit.",
+            )}
+          </p>
+        )}
 
-      <div className="flex justify-end">
-        <Button
-          onClick={save}
-          loading={saving}
-          disabled={limitInvalid || !dirty}
-        >
-          {t("common.save", "Save")}
-        </Button>
-      </div>
-    </Card>
+        <p className="text-text-muted text-xs">
+          {status.limit === null
+            ? t(
+                "proactiveBreaker.countOff",
+                "{{sent}} proactive messages in the last 24 hours.",
+                { sent: nf.format(status.count) },
+              )
+            : t(
+                "proactiveBreaker.count",
+                "{{sent}} of {{limit}} proactive messages counted since {{since}}.",
+                {
+                  sent: nf.format(status.count),
+                  limit: nf.format(status.limit),
+                  since: when(status.windowStart),
+                },
+              )}
+        </p>
+
+        <div className="flex justify-end">
+          <Button
+            onClick={save}
+            loading={saving}
+            disabled={limitInvalid || !dirty}
+            holdOnRange
+          >
+            {t("common.save", "Save")}
+          </Button>
+        </div>
+      </Card>
+    </RangeHolds>
   );
 }

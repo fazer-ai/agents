@@ -1,4 +1,5 @@
 import { clipText } from "@/lib/text";
+import { DELAY_MAX_MINUTES, delayRange } from "@/modules/agents/number-ranges";
 // Per-agent follow-up configuration from agent.settings.followUp.
 // Same reader/default/clamp pattern as debounce/stt/tts/split/serviceWindow.
 //
@@ -117,7 +118,7 @@ export function stepDelayMinutes(step: FollowUpStep): number {
     default:
       minutes = step.delayValue;
   }
-  return Math.min(Math.max(Math.round(minutes), 1), 43200);
+  return Math.min(Math.max(Math.round(minutes), 1), DELAY_MAX_MINUTES);
 }
 
 function clampInt(
@@ -146,15 +147,18 @@ const VALID_UNITS = new Set<string>(FOLLOW_UP_DELAY_UNITS);
 export function parseFollowUpStep(raw: unknown): FollowUpStep | null {
   if (!raw || typeof raw !== "object") return null;
   const bag = raw as Record<string, unknown>;
-  const delayValue = clampInt(
-    bag.delayValue,
-    1,
-    100_000,
-    FOLLOW_UP_DEFAULT_DELAY_VALUE,
-  );
   const delayUnit: FollowUpDelayUnit = VALID_UNITS.has(bag.delayUnit as string)
     ? (bag.delayUnit as FollowUpDelayUnit)
     : "minutes";
+  // The value's ceiling follows its unit: 30 days in any of them. The default is a number of minutes,
+  // so it is held to the unit's ceiling too, or a step naming only `days` would read as 60 days.
+  const range = delayRange(delayUnit);
+  const delayValue = clampInt(
+    bag.delayValue,
+    range.min,
+    range.max,
+    Math.min(FOLLOW_UP_DEFAULT_DELAY_VALUE, range.max),
+  );
   const instructions = clipText(
     typeof bag.instructions === "string" ? bag.instructions.trim() : "",
     FOLLOW_UP_INSTRUCTIONS_MAX,

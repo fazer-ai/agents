@@ -166,12 +166,12 @@ describe("parseAuthoredTemplate (writes) vs parseTemplateContent (stored rows)",
     expect(r.ok === false && r.reason).toContain("fontt");
   });
 
-  // baseFontSize is CLAMPED, not refused (docs/mcp.md: "type and choice, never size"), and the clamp
-  // changes a value rather than dropping a key — so it must survive the strict pass.
-  test("still clamps the base font size instead of refusing it", () => {
+  // Refused outside 8-14 on a write; a stored row from before still renders at the
+  // nearest edge instead of falling back to the default size.
+  test("refuses a base font size outside its range, and still clamps a stored one", () => {
     const r = parseAuthoredTemplate(blocks(), FIELDS, { baseFontSize: 400 });
-    expect(r.ok).toBe(true);
-    expect(r.ok && r.content.style.baseFontSize).toBe(14);
+    expect(r.ok === false && r.reason).toContain("baseFontSize");
+    expect(parseDocumentStyle({ baseFontSize: 400 }).baseFontSize).toBe(14);
   });
 
   test("accepts a well-formed template and returns the parsed style", () => {

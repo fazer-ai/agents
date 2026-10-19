@@ -1,5 +1,6 @@
 import { readModelFallbackConfig } from "@/graph/fallback-settings";
 import { readLimitsConfig } from "@/modules/agents/limits";
+import { GROUNDING_RANGES } from "@/modules/agents/number-ranges";
 import { readResolveConversationConfig } from "@/modules/agents/resolve-labels";
 import {
   readAllowedLabels,
@@ -56,7 +57,9 @@ function readGrounding(settings: unknown): { maxDistance: number | null } {
   const v = (g as Record<string, unknown>).maxDistance;
   return {
     maxDistance:
-      typeof v === "number" && Number.isFinite(v) && v > 0 ? v : null,
+      typeof v === "number" && Number.isFinite(v) && v > 0
+        ? Math.min(v, GROUNDING_RANGES.maxDistance.max)
+        : null,
   };
 }
 

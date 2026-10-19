@@ -33,6 +33,7 @@ import {
   HelpPopover,
   Input,
   ModelPicker,
+  NumberInput,
   type ScheduleOption,
   SchedulePicker,
   Select,
@@ -68,6 +69,17 @@ import {
 } from "@/graph/prompt";
 import { clipText } from "@/lib/text";
 import type { AgentMode } from "@/modules/agents/mode";
+import {
+  CONTACT_AUTH_RANGES,
+  DEBOUNCE_RANGES,
+  delayRange,
+  LIMITS_RANGES,
+  SERVICE_WINDOW_RANGES,
+  SPLIT_RANGES,
+  TTS_SPEAKABLE_RANGES,
+  TTS_TIMEOUT_RANGES,
+  TTS_VOICE_RANGES,
+} from "@/modules/agents/number-ranges";
 import {
   EXTRACTION_PROMPT_MAX,
   FOLLOW_UP_INSTRUCTIONS_MAX,
@@ -1157,9 +1169,8 @@ function StepsEditor({
               group
             >
               <div className="flex items-stretch gap-2">
-                <Input
-                  type="number"
-                  min={1}
+                <NumberInput
+                  range={delayRange(step.delayUnit)}
                   value={step.delayValue}
                   onChange={(e) =>
                     updateStep(index, { delayValue: e.target.value })
@@ -2230,10 +2241,8 @@ export function BehaviorTab({
                     "Idle time after the last message before replying (3-120).",
                   )}
                 >
-                  <Input
-                    type="number"
-                    min={3}
-                    max={120}
+                  <NumberInput
+                    range={DEBOUNCE_RANGES.windowSeconds}
                     value={debounce.windowSeconds}
                     onChange={(e) =>
                       setDebounce({
@@ -2253,10 +2262,8 @@ export function BehaviorTab({
                     "Cap on messages grouped into one turn (1-50).",
                   )}
                 >
-                  <Input
-                    type="number"
-                    min={1}
-                    max={50}
+                  <NumberInput
+                    range={DEBOUNCE_RANGES.maxMessagesPerBurst}
                     value={debounce.maxMessagesPerBurst}
                     onChange={(e) =>
                       setDebounce({
@@ -2273,10 +2280,8 @@ export function BehaviorTab({
                     "Reply at most this long after the first message, even if more keep arriving.",
                   )}
                 >
-                  <Input
-                    type="number"
-                    min={3}
-                    max={600}
+                  <NumberInput
+                    range={DEBOUNCE_RANGES.maxWindowSeconds}
                     value={debounce.maxWindowSeconds}
                     onChange={(e) =>
                       setDebounce({
@@ -2717,11 +2722,9 @@ export function BehaviorTab({
                       "Empty = 60 s (1-120). Past it, the fallback voice is tried, or the reply goes as text.",
                     )}
                   >
-                    <Input
-                      type="number"
-                      min={1}
-                      max={120}
-                      step={1}
+                    <NumberInput
+                      range={TTS_TIMEOUT_RANGES.timeoutSeconds}
+                      optional
                       placeholder="60"
                       value={tts.timeoutSeconds}
                       onChange={(e) =>
@@ -3019,11 +3022,9 @@ export function BehaviorTab({
                           "0 = expressive, 1 = monotone (0-1).",
                         )}
                       >
-                        <Input
-                          type="number"
-                          min={0}
-                          max={1}
-                          step={0.05}
+                        <NumberInput
+                          range={TTS_VOICE_RANGES.stability}
+                          optional
                           value={tts.stability}
                           onChange={(e) =>
                             setTts({ ...tts, stability: e.target.value })
@@ -3037,11 +3038,9 @@ export function BehaviorTab({
                           "How closely to match the original voice (0-1).",
                         )}
                       >
-                        <Input
-                          type="number"
-                          min={0}
-                          max={1}
-                          step={0.05}
+                        <NumberInput
+                          range={TTS_VOICE_RANGES.similarityBoost}
+                          optional
                           value={tts.similarityBoost}
                           onChange={(e) =>
                             setTts({ ...tts, similarityBoost: e.target.value })
@@ -3055,11 +3054,9 @@ export function BehaviorTab({
                           "Extra emphasis. Costs latency and can destabilize (0-1).",
                         )}
                       >
-                        <Input
-                          type="number"
-                          min={0}
-                          max={1}
-                          step={0.05}
+                        <NumberInput
+                          range={TTS_VOICE_RANGES.style}
+                          optional
                           value={tts.style}
                           onChange={(e) =>
                             setTts({ ...tts, style: e.target.value })
@@ -3073,11 +3070,9 @@ export function BehaviorTab({
                           "Speaking rate, 1 being natural speed (0.25-4).",
                         )}
                       >
-                        <Input
-                          type="number"
-                          min={0.25}
-                          max={4}
-                          step={0.05}
+                        <NumberInput
+                          range={TTS_VOICE_RANGES.speed}
+                          optional
                           value={tts.speed}
                           onChange={(e) =>
                             setTts({ ...tts, speed: e.target.value })
@@ -3203,11 +3198,9 @@ export function BehaviorTab({
                           "Links do not count (80-4000).",
                         )}
                       >
-                        <Input
-                          type="number"
-                          min={80}
-                          max={4000}
-                          step={10}
+                        <NumberInput
+                          range={TTS_SPEAKABLE_RANGES.textOverChars}
+                          optional
                           value={tts.textOverChars}
                           onChange={(e) =>
                             setTts({ ...tts, textOverChars: e.target.value })
@@ -3224,11 +3217,9 @@ export function BehaviorTab({
                           "Bullets, numbered steps or table rows (2-50).",
                         )}
                       >
-                        <Input
-                          type="number"
-                          min={2}
-                          max={50}
-                          step={1}
+                        <NumberInput
+                          range={TTS_SPEAKABLE_RANGES.textOverListItems}
+                          optional
                           value={tts.textOverListItems}
                           onChange={(e) =>
                             setTts({
@@ -3248,11 +3239,9 @@ export function BehaviorTab({
                           "Money values, or numbers of 4+ digits (2-50).",
                         )}
                       >
-                        <Input
-                          type="number"
-                          min={2}
-                          max={50}
-                          step={1}
+                        <NumberInput
+                          range={TTS_SPEAKABLE_RANGES.textOverNumbers}
+                          optional
                           value={tts.textOverNumbers}
                           onChange={(e) =>
                             setTts({ ...tts, textOverNumbers: e.target.value })
@@ -3359,10 +3348,8 @@ export function BehaviorTab({
                     "Longer paragraphs are split further.",
                   )}
                 >
-                  <Input
-                    type="number"
-                    min={80}
-                    max={4000}
+                  <NumberInput
+                    range={SPLIT_RANGES.maxChars}
                     value={split.maxChars}
                     onChange={(e) =>
                       setSplit({ ...split, maxChars: e.target.value })
@@ -3376,10 +3363,8 @@ export function BehaviorTab({
                     "Higher = shorter pauses.",
                   )}
                 >
-                  <Input
-                    type="number"
-                    min={40}
-                    max={1000}
+                  <NumberInput
+                    range={SPLIT_RANGES.typingWpm}
                     value={split.typingWpm}
                     onChange={(e) =>
                       setSplit({ ...split, typingWpm: e.target.value })
@@ -3393,11 +3378,8 @@ export function BehaviorTab({
                     "Cap on the typing pause per message.",
                   )}
                 >
-                  <Input
-                    type="number"
-                    min={0}
-                    max={30000}
-                    step={500}
+                  <NumberInput
+                    range={SPLIT_RANGES.maxDelayMs}
                     value={split.maxDelayMs}
                     onChange={(e) =>
                       setSplit({ ...split, maxDelayMs: e.target.value })
@@ -3872,10 +3854,8 @@ export function BehaviorTab({
                             )
                       }
                     >
-                      <Input
-                        type="number"
-                        min={1000}
-                        max={10000}
+                      <NumberInput
+                        range={CONTACT_AUTH_RANGES.timeoutMs}
                         value={contactAuth.timeoutMs}
                         onChange={(e) =>
                           setContactAuth({
@@ -3948,10 +3928,9 @@ export function BehaviorTab({
                           "Sets how long an approval may be reused, from 60 to 2,592,000 seconds, or 30 days.\n\nDenials are never stored. An approval stops applying when the contact's phone number, email, or identifier changes.\n\nChanging the period, address, or credential does not delete stored approvals. To stop reusing them, choose to check every message.",
                         )}
                       >
-                        <Input
-                          type="number"
-                          min={60}
-                          max={2592000}
+                        <NumberInput
+                          range={CONTACT_AUTH_RANGES.grantTtlSeconds}
+                          optional
                           value={contactAuth.grantTtlSeconds}
                           onChange={(e) =>
                             setContactAuth({
@@ -3976,10 +3955,9 @@ export function BehaviorTab({
                         "This only spaces the deny message and the private note for the same conversation; it never spaces the check itself. 0-3,600; 0 notifies on every refused message.",
                       )}
                     >
-                      <Input
-                        type="number"
-                        min={0}
-                        max={3600}
+                      <NumberInput
+                        range={CONTACT_AUTH_RANGES.noticeCooldownSeconds}
+                        optional
                         value={contactAuth.noticeCooldownSeconds}
                         onChange={(e) =>
                           setContactAuth({
@@ -4110,10 +4088,8 @@ export function BehaviorTab({
                   "After this many tool uses the agent is forced to reply with what it has (no error). 1-50.",
                 )}
               >
-                <Input
-                  type="number"
-                  min={1}
-                  max={50}
+                <NumberInput
+                  range={LIMITS_RANGES.maxToolCalls}
                   value={limits.maxToolCalls}
                   onChange={(e) =>
                     setLimits({ ...limits, maxToolCalls: e.target.value })
@@ -4146,10 +4122,9 @@ export function BehaviorTab({
                         )
                   }
                 >
-                  <Input
-                    type="number"
-                    min={2000}
-                    max={1000000}
+                  <NumberInput
+                    range={LIMITS_RANGES.maxHistoryTokens}
+                    optional
                     placeholder={t("editor.limitsNoCeiling", "No ceiling")}
                     value={limits.maxHistoryTokens}
                     onChange={(e) =>
@@ -4174,10 +4149,9 @@ export function BehaviorTab({
                     "Counts the agent's replies in one conversation over the last hour, follow-ups included. A reply split into several messages counts once, and private notes do not count.\n\nWhen the other side is another bot or an automatic e-mail reply, the two answer each other without end, and every message is billed. A person rarely gets past a few dozen replies in an hour.\n\nPast the limit the agent stops, opens the conversation for your team and leaves a note saying why. Giving it back to the agent starts the count from zero.",
                   )}
                 >
-                  <Input
-                    type="number"
-                    min={1}
-                    max={1000}
+                  <NumberInput
+                    range={LIMITS_RANGES.maxTurnsPerHour}
+                    optional
                     placeholder={t("editor.limitsNoLimit", "No limit")}
                     value={limits.maxTurnsPerHour}
                     onChange={(e) =>
@@ -4201,10 +4175,9 @@ export function BehaviorTab({
                     "Counts the messages the agent starts on its own in one conversation over the last 24 hours: follow-up steps, appointment reminders, integration events and templates. Replies to the customer and private notes do not count.\n\nAn integration that keeps firing events can otherwise message the same customer every few minutes, and each message is billed.\n\nPast the limit the message is not sent and the Logs say why. The conversation stays with the agent, which still answers when the customer writes.",
                   )}
                 >
-                  <Input
-                    type="number"
-                    min={1}
-                    max={1000}
+                  <NumberInput
+                    range={LIMITS_RANGES.maxProactivePerDay}
+                    optional
                     placeholder={t("editor.limitsNoLimit", "No limit")}
                     value={limits.maxProactivePerDay}
                     onChange={(e) =>
@@ -4790,10 +4763,8 @@ export function BehaviorTab({
                     <FormField
                       label={t("editor.svcWindowHours", "Window (hours)")}
                     >
-                      <Input
-                        type="number"
-                        min={1}
-                        max={168}
+                      <NumberInput
+                        range={SERVICE_WINDOW_RANGES.windowHours}
                         value={serviceWindow.windowHours}
                         onChange={(e) =>
                           setServiceWindow({

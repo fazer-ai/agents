@@ -1,4 +1,5 @@
 import { buildPromptVars, interpolatePromptVars } from "@/graph/prompt";
+import { SERVICE_WINDOW_RANGES } from "@/modules/agents/number-ranges";
 
 // WhatsApp 24h service window. Free-form business messages are only allowed within 24h of the
 // customer's last inbound message; outside it, an APPROVED template (HSM) is required. This gates the
@@ -38,7 +39,8 @@ function clampHours(v: unknown): number {
   if (typeof v !== "number" || !Number.isFinite(v)) {
     return SERVICE_WINDOW_DEFAULTS.windowHours;
   }
-  return Math.min(Math.max(Math.round(v), 1), 168); // 1h..7d
+  const { min, max } = SERVICE_WINDOW_RANGES.windowHours;
+  return Math.min(Math.max(Math.round(v), min), max);
 }
 
 export function readServiceWindowConfig(

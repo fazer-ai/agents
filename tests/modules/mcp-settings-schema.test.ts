@@ -366,14 +366,10 @@ describe("agent_settings_set argument schema", () => {
   });
 
   // A value the readers HONOR has to parse. Each row is a real reader behavior, not a hypothetical:
-  // the number is clamped, the text is capped only when the write changes it, the list is truncated,
-  // the undeclared key is merged and then normalized away.
+  // the text is capped only when the write changes it, the list is truncated, the undeclared key is
+  // merged and then normalized away. A number is not among them: it is refused outside its range
+  // below.
   const honored: [string, Record<string, unknown>][] = [
-    [
-      "a number past its ceiling (clamped to 120)",
-      { debounce: { windowSeconds: 9999 } },
-    ],
-    ["a number under its floor (clamped to 80)", { split: { maxChars: 1 } }],
     // Zero is a value only where the consumer treats it as one. Here it is the documented way to say
     // OFF, which is why this row and "a zero Chatwoot id" below sit on opposite sides of the line.
     [
@@ -381,7 +377,6 @@ describe("agent_settings_set argument schema", () => {
       { limits: { maxHistoryTokens: 0 } },
     ],
     ["null, which also means OFF", { limits: { maxHistoryTokens: null } }],
-    ["a voice knob past its band (clamped to 4)", { tts: { speed: 9 } }],
     [
       "operator text over its cap (refused only when the write CHANGES it)",
       { handoff: { instructions: "x".repeat(2_000) } },
@@ -423,6 +418,18 @@ describe("agent_settings_set argument schema", () => {
   test.each(honored)("honored: %s", (_label, value) => {
     const parsed = patch.safeParse(value);
     expect(parsed.success).toBe(true);
+  });
+
+  // The readers used to clamp these silently, so the row kept what was sent while the agent ran on the
+  // edge. They are refused now, with the range in the schema a client reads.
+  const outOfRange: [string, Record<string, unknown>][] = [
+    ["a number past its ceiling", { debounce: { windowSeconds: 9999 } }],
+    ["a number under its floor", { split: { maxChars: 1 } }],
+    ["a voice knob past its band", { tts: { speed: 9 } }],
+  ];
+
+  test.each(outOfRange)("refused: %s", (_label, value) => {
+    expect(patch.safeParse(value).success).toBe(false);
   });
 
   // What the readers DISCARD may be refused, and refusing it is the point: otherwise the call succeeds
@@ -611,9 +618,8 @@ describe("agent_settings_set over MCP", () => {
     expect(r.text).toContain("toolPreconditions.set_labels.key");
   });
 
-  test("a clamped value is NOT refused, it goes through to the readers", async () => {
-    // The handler is stubbed, so what it receives is what the SDK's parse let through. A bound copied
-    // into the schema would have stopped the call one layer earlier.
+  test("a value outside its range is refused before the handler, naming the field", async () => {
+    // The handler is stubbed: a call that reached it would have been let through by the SDK's parse.
     let received: Record<string, unknown> | undefined;
     const handler = spyOn(mcpWrite, "agentSettingsSet").mockImplementation(
       async (_eff, args) => {
@@ -626,8 +632,9 @@ describe("agent_settings_set over MCP", () => {
         agent_id: "1",
         debounce: { windowSeconds: 9999 },
       });
-      expect(r.isError).toBe(false);
-      expect(received?.debounce).toEqual({ windowSeconds: 9999 });
+      expect(r.isError).toBe(true);
+      expect(r.text).toContain("windowSeconds");
+      expect(received).toBeUndefined();
     } finally {
       handler.mockRestore();
     }

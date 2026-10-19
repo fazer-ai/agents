@@ -11,6 +11,7 @@ import {
   redirectDelayMinutes,
   shouldSendRedirect,
 } from "@/modules/channel-redirect/service";
+import { parseFollowUpStep } from "@/modules/followups/settings";
 
 const NOW = new Date("2026-07-05T12:00:00Z");
 const hoursAgo = (h: number) => new Date(NOW.getTime() - h * 3_600_000);
@@ -44,11 +45,21 @@ describe("readChannelRedirectConfig", () => {
     expect(c.enabled).toBe(true);
     expect(c.entryInboxId).toBe(12);
     expect(c.widgetInboxId).toBe(34);
-    expect(c.resendDelayValue).toBe(100_000); // clamp 1..100000
+    // A delay is clamped in its own unit, 30 days at most: 720 hours, 43200 minutes.
+    expect(c.resendDelayValue).toBe(720);
     expect(c.resendDelayUnit).toBe("hours");
     expect(c.maxResends).toBe(0); // clamp 0..10
-    expect(c.chatFollowupDelayValue).toBe(1); // clamp 1..100000
-    expect(c.waFollowupDelayValue).toBe(100_000);
+    expect(c.chatFollowupDelayValue).toBe(1);
+    expect(c.waFollowupDelayValue).toBe(43_200);
+  });
+
+  // The default is a number of minutes, so a stored unit with no value reads at most that unit's ceiling.
+  test("a unit stored without its value reads the default within the unit's range", () => {
+    const c = readChannelRedirectConfig({
+      channelRedirect: { resendDelayUnit: "days", closingDelayUnit: "days" },
+    });
+    expect(c.resendDelayValue).toBeLessThanOrEqual(30);
+    expect(c.closingDelayValue).toBeLessThanOrEqual(30);
   });
 
   test("falls back to the default unit for an invalid delay unit", () => {
@@ -221,4 +232,9 @@ describe("classifyWidgetHealth", () => {
       status: "invalid",
     });
   });
+});
+
+// Same for a follow-up step: the default is minutes, so a step naming only `days` reads within 30 days.
+test("a follow-up step with a unit and no value reads within the unit's range", () => {
+  expect(parseFollowUpStep({ delayUnit: "days" })?.delayValue).toBe(30);
 });

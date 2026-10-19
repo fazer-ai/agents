@@ -3,11 +3,13 @@ import { useTranslation } from "react-i18next";
 import {
   FormField,
   Input,
+  NumberInput,
   Select,
   SwitchField,
   Textarea,
 } from "@/client/components";
 import { api } from "@/client/lib/api";
+import { CARRY_ATTACHMENTS_RANGES } from "@/modules/agents/number-ranges";
 import {
   CARRY_ATTACHMENTS_MAX_FILES,
   CARRY_FILE_TYPES,
@@ -402,10 +404,8 @@ export function CrossInboxCaseFields({
               { max: CARRY_ATTACHMENTS_MAX_FILES },
             )}
           >
-            <Input
-              type="number"
-              min={1}
-              max={CARRY_ATTACHMENTS_MAX_FILES}
+            <NumberInput
+              range={CARRY_ATTACHMENTS_RANGES.maxFiles}
               value={String(value.carryMaxFiles)}
               onChange={(e) =>
                 onChange({

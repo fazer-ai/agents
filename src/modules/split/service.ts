@@ -1,4 +1,6 @@
 import logger from "@/api/lib/logger";
+import { clampToRange } from "@/lib/number-range";
+import { SPLIT_RANGES } from "@/modules/agents/number-ranges";
 import {
   ChatwootApiError,
   type ChatwootClient,
@@ -52,16 +54,6 @@ export const SPLIT_DEFAULTS: SplitConfig = {
   maxChunks: 6,
 };
 
-function clampInt(
-  v: unknown,
-  min: number,
-  max: number,
-  fallback: number,
-): number {
-  if (typeof v !== "number" || !Number.isFinite(v)) return fallback;
-  return Math.min(Math.max(Math.round(v), min), max);
-}
-
 export function readSplitConfig(settings: unknown): SplitConfig {
   const s =
     settings && typeof settings === "object"
@@ -69,15 +61,36 @@ export function readSplitConfig(settings: unknown): SplitConfig {
       : undefined;
   if (!s || typeof s !== "object") return { ...SPLIT_DEFAULTS };
   const bag = s as Record<string, unknown>;
-  const maxChars = clampInt(bag.maxChars, 80, 4000, SPLIT_DEFAULTS.maxChars);
+  const R = SPLIT_RANGES;
+  const maxChars = clampToRange(
+    bag.maxChars,
+    R.maxChars,
+    SPLIT_DEFAULTS.maxChars,
+  );
   return {
     enabled:
       typeof bag.enabled === "boolean" ? bag.enabled : SPLIT_DEFAULTS.enabled,
     maxChars,
-    typingWpm: clampInt(bag.typingWpm, 40, 1000, SPLIT_DEFAULTS.typingWpm),
-    minDelayMs: clampInt(bag.minDelayMs, 0, 10_000, SPLIT_DEFAULTS.minDelayMs),
-    maxDelayMs: clampInt(bag.maxDelayMs, 0, 30_000, SPLIT_DEFAULTS.maxDelayMs),
-    maxChunks: clampInt(bag.maxChunks, 1, 12, SPLIT_DEFAULTS.maxChunks),
+    typingWpm: clampToRange(
+      bag.typingWpm,
+      R.typingWpm,
+      SPLIT_DEFAULTS.typingWpm,
+    ),
+    minDelayMs: clampToRange(
+      bag.minDelayMs,
+      R.minDelayMs,
+      SPLIT_DEFAULTS.minDelayMs,
+    ),
+    maxDelayMs: clampToRange(
+      bag.maxDelayMs,
+      R.maxDelayMs,
+      SPLIT_DEFAULTS.maxDelayMs,
+    ),
+    maxChunks: clampToRange(
+      bag.maxChunks,
+      R.maxChunks,
+      SPLIT_DEFAULTS.maxChunks,
+    ),
   };
 }
 

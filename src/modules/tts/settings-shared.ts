@@ -2,7 +2,15 @@
 // `TTS_PROVIDER_NAMES` is `Object.keys(PROVIDERS)`, so client code touching `settings.ts` would pull
 // the synthesis registry (the ElevenLabs HTTP client, the WAV writer) into the bundle.
 
+import type { NumberRange } from "@/lib/number-range";
 import { clipText } from "@/lib/text";
+import {
+  TTS_SPEAKABLE_RANGES,
+  TTS_TIMEOUT_RANGES,
+  TTS_VOICE_RANGES,
+} from "@/modules/agents/number-ranges";
+
+const pair = (r: NumberRange) => [r.min, r.max] as const;
 
 export type TtsMode = "never" | "mirror" | "preference";
 
@@ -96,9 +104,8 @@ export interface TtsConfig extends TtsVoiceSettings {
 // set one waits exactly as long as it did.
 export const TTS_TIMEOUT_DEFAULT_MS = 60_000;
 
-// Clamped rather than rejected, like every knob in this block. Below a second no provider answers,
-// and past two minutes the customer is gone before the text fallback.
-export const TTS_TIMEOUT_RANGE_MS = [1000, 120_000] as const;
+// The reader's clamp, for a value stored before the schema refused it.
+export const TTS_TIMEOUT_RANGE_MS = pair(TTS_TIMEOUT_RANGES.timeoutMs);
 
 export function clampTtsTimeout(value: unknown): number | null {
   if (typeof value !== "number" || !Number.isFinite(value)) return null;
@@ -147,9 +154,9 @@ export const SPEAKABLE_DEFAULTS = {
 // Clamped rather than rejected, like the voice knobs: a limit below these floors would send nearly
 // every reply as text, which is `mode: "never"` with extra steps.
 export const SPEAKABLE_RANGES = {
-  textOverChars: [80, 4000],
-  textOverListItems: [2, 50],
-  textOverNumbers: [2, 50],
+  textOverChars: pair(TTS_SPEAKABLE_RANGES.textOverChars),
+  textOverListItems: pair(TTS_SPEAKABLE_RANGES.textOverListItems),
+  textOverNumbers: pair(TTS_SPEAKABLE_RANGES.textOverNumbers),
 } as const;
 
 export function clampSpeakableLimit(
@@ -208,15 +215,12 @@ export const TTS_DEFAULTS: TtsConfig = {
 
 // Accepted ranges, clamped rather than rejected: a value typed slightly outside the band is an
 // operator overshooting a slider, not a reason to fail the whole settings write.
-// NOTE: `speed` is 0.25-4.0, the band the ElevenLabs REST endpoint accepts. The narrower 0.7-1.2 that
-// their docs also quote belongs to the Agents Platform, not to this endpoint, and clamping to it here
-// would silently turn a deliberate 1.5 into 1.2 with no error and no trace.
-// Source: https://github.com/elevenlabs/skills/blob/main/text-to-speech/references/voice-settings.md
+// The ranges live in modules/agents/number-ranges (where `speed`'s band is sourced).
 const VOICE_SETTING_RANGES = {
-  stability: [0, 1],
-  similarityBoost: [0, 1],
-  style: [0, 1],
-  speed: [0.25, 4],
+  stability: pair(TTS_VOICE_RANGES.stability),
+  similarityBoost: pair(TTS_VOICE_RANGES.similarityBoost),
+  style: pair(TTS_VOICE_RANGES.style),
+  speed: pair(TTS_VOICE_RANGES.speed),
 } as const;
 
 function clamped(v: unknown, [min, max]: readonly [number, number]) {

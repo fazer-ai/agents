@@ -112,9 +112,9 @@ const SETTINGS_DESC_CEILING = 2_000;
 // learn by trying, re-measure instead of summing) is in docs/mcp.md, "Full admin surface".
 // Includes `monitoring.engine` and the `decisions` block (questions, rules): they are configured only
 // through REST and MCP until the console has a screen for them, so their shape has to be in
-// tools/list, and `snoozedFollowUp` too (the step shape it shares with `followUp`). Measured at 34_995,
-// with the tts block's timeout and fallback voice and the voice agent's `calls` block.
-const SETTINGS_SCHEMA_CEILING = 35_080;
+// tools/list, and `snoozedFollowUp` too (the step shape it shares with `followUp`). Measured at 35_546,
+// with the tts block's timeout and fallback voice and the voice agent's ranged `calls` block.
+const SETTINGS_SCHEMA_CEILING = 35_630;
 
 describe("MCP tool descriptions", () => {
   test("agent_settings_set stays under its ceiling", async () => {
@@ -213,23 +213,24 @@ describe("MCP tool descriptions", () => {
       desc += t.description.length;
       schema += t.schema.length;
     }
-    // Measured at 33_086 on the Free tree, with conversation_decisions_test, inbox_bind_voice, the voice
-    // kind on agent_create and agent_call_floor; 33_854 with the 15 dashboard tools (Pro only).
-    expect(desc).toBeLessThanOrEqual(33_160);
-    // Measured at 73_659 on the Free tree, with `limits.maxProactivePerDay` and the `snoozedFollowUp` and
-    // `otherInboxes` blocks on agent_settings_set, the approval switch and validity on the document
-    // template writes, the next number on them, the search and cursor on issued_document_list, the
-    // three proactive_breaker tools, the voice binding and kind, the tts block's timeout and fallback
-    // voice and agent_call_floor's draft input. 75_690 with `guardrails.onFailure`, the guardrail
-    // endpoint check and the 15 dashboard tools (Pro only), the last being dashboard_query_schema, whose
-    // input is empty and whose contract is served on demand.
-    expect(schema).toBeLessThanOrEqual(73_740);
+    // Measured at 34_168 with the 15 dashboard tools (Pro only), conversation_decisions_test,
+    // inbox_bind_voice, the voice kind on agent_create and agent_call_floor; 33_086 on the Free tree.
+    expect(desc).toBeLessThanOrEqual(34_240);
+    // Measured at 77_586 with `limits.maxProactivePerDay` and the `snoozedFollowUp` and `otherInboxes`
+    // blocks on agent_settings_set, the approval switch and validity on the document template writes,
+    // the next number on them, the search and cursor on issued_document_list, the three
+    // proactive_breaker tools, the voice binding and kind, the tts block's timeout and fallback voice,
+    // agent_call_floor's draft input, `guardrails.onFailure`, the guardrail endpoint check and the 15
+    // dashboard tools (Pro only), the last being dashboard_query_schema, whose input is empty and whose
+    // contract is served on demand. 73_659 on the Free tree; 622 more with the `calls` numbers ranged.
+    expect(schema).toBeLessThanOrEqual(78_290);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in
   // document_template_schema instead: a six-variant discriminated union publishes as JSON Schema by
   // inlining every variant, about 3.2k characters PER TOOL, on both the create and the update. That
-  // trade is part of why the totals above are where they are, so it is asserted here.
+  // trade is part of why the totals above are where they are, so it is asserted here. Measured at
+  // 1_040 once next_number and approval_ttl_hours declared their ranges.
   test("the document write tools keep their schemas compact", async () => {
     const all = await listed();
     for (const name of [
@@ -239,7 +240,7 @@ describe("MCP tool descriptions", () => {
       const t = all.get(name);
       expect(t).toBeDefined();
       expect((t as { schema: string }).schema.length).toBeLessThanOrEqual(
-        1_000,
+        1_100,
       );
     }
   });

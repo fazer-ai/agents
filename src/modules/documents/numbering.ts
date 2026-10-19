@@ -1,4 +1,5 @@
 import { AppError, phrase, type TranslatedParam } from "@/lib/errors";
+import { intRange } from "@/lib/number-range";
 import { formatDocumentNumber } from "./format";
 
 // A printed number (prefix and counter as `formatDocumentNumber` prints them, in a tenant) names one
@@ -90,6 +91,7 @@ function firstFree(from: number, taken: Set<number>): number {
 
 // The counter is an Int column and stores the number before the next one.
 export const NEXT_NUMBER_MAX = 2_147_483_647;
+export const NEXT_NUMBER_RANGE = intRange(1, NEXT_NUMBER_MAX);
 
 export function nextNumberProblem(value: unknown): string | null {
   return nextNumberPhrase(value)?.message ?? null;

@@ -16,10 +16,10 @@ import {
   DataBoundary,
   EmptyState,
   HelpPopover,
-  Input,
   Modal,
   ModalCancelButton,
   type ModalController,
+  NumberInput,
   SegmentedControl,
   Skeleton,
   Switch,
@@ -31,7 +31,10 @@ import { useAuth } from "@/client/contexts/AuthContext";
 import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
 import { lazyWithReload } from "@/client/lib/staleBuild";
-import { throughputOfSignal } from "@/modules/instance-health/signals";
+import {
+  INSTANCE_THRESHOLD_RANGES,
+  throughputOfSignal,
+} from "@/modules/instance-health/signals";
 import { JOB_LANE } from "@/modules/scheduler/lanes";
 import type { SchedulerJobKind } from "@/modules/scheduler/service";
 import { InstanceAlertChannels } from "./InstanceAlertChannels";
@@ -207,13 +210,11 @@ function ThresholdModal({
               unit: unitHint,
             })}
           </label>
-          <Input
+          <NumberInput
+            range={INSTANCE_THRESHOLD_RANGES.threshold}
             id={thresholdId}
-            type="number"
-            min={0}
             // REST and MCP accept a fractional threshold; the default step of 1 would make the form
             // refuse to save one, even to only mute the signal.
-            step="any"
             value={threshold}
             onChange={(e) => setThreshold(e.target.value)}
             disabled={loading}
@@ -236,12 +237,9 @@ function ThresholdModal({
           >
             {t("instanceHealth.durationLabel", "For at least (seconds)")}
           </label>
-          <Input
+          <NumberInput
+            range={INSTANCE_THRESHOLD_RANGES.durationSeconds}
             id={durationId}
-            type="number"
-            min={0}
-            max={3600}
-            step={1}
             value={duration}
             onChange={(e) => setDuration(e.target.value)}
             disabled={loading}
@@ -292,6 +290,7 @@ function ThresholdModal({
               type="submit"
               loading={loading}
               disabled={loading || !valid}
+              holdOnRange
             >
               {t("common.save", "Save")}
             </Button>

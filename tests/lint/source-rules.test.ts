@@ -18,6 +18,7 @@ const ENV_WAIVED = [
   `${SRC}/client/lib/env.ts`,
 ];
 const JOSE_WAIVED = "tests/api/features/auth/google.service.test.ts";
+const NUMBER_INPUT = `${SRC}/client/components/NumberInput.tsx`;
 
 const P = (name: string) => `${PROBE}/${name}`;
 const CLIENT_STUBBED = [
@@ -60,6 +61,15 @@ const PROBES: Record<string, string> = {
     "declare const M: (p: { onCloseRequest?: () => void }) => null;\ndeclare const dirty: boolean;\ndeclare function ask(): void;\nexport const a = <M onCloseRequest={dirty ? () => { ask(); } : undefined} />;\n",
   [P("close-busy.tsx")]:
     "declare const M: (p: { busy?: boolean; onClose?: () => void }) => null;\ndeclare const saving: boolean;\nexport const a = <M busy={saving} onClose={() => {}} />;\n",
+
+  // no-bare-number-input
+  [P("number-input-self-closing.tsx")]:
+    'declare const Input: (p: object) => null;\nexport const a = <Input type="number" min={0} />;\n',
+  [P("number-input-raw.tsx")]: 'export const a = <input type="number" />;\n',
+  [P("number-input-with-children.tsx")]:
+    'declare const Input: (p: object) => null;\nexport const a = (\n  <Input\n    value="1"\n    type="number"\n  >\n    x\n  </Input>\n);\n',
+  [P("number-input-other.tsx")]:
+    'declare const Input: (p: object) => null;\ndeclare const XAxis: (p: object) => null;\nexport const a = <Input type="text" />;\nexport const b = <XAxis type="number" />;\n',
 
   // require-pool-connect-bound
   [P("pool-unbounded.ts")]:
@@ -235,6 +245,7 @@ const RULES = {
   unused: "Suppression comment has no effect",
   glob: "A test that globs src/ reads each file",
   violation: "A violation code read by hand misses the other shape",
+  number: "A number field takes the range the server enforces",
 } as const;
 type Rule = keyof typeof RULES;
 
@@ -255,6 +266,7 @@ beforeAll(() => {
       ...Object.keys(PROBES),
       ...ENV_WAIVED,
       JOSE_WAIVED,
+      NUMBER_INPUT,
     ],
     cwd: ROOT,
   });
@@ -316,6 +328,25 @@ describe("no-noop-close-request", () => {
   test("an onCloseRequest that does something, and busy, pass", () => {
     expect(of(P("close-confirm.tsx"), "close")).toBe(0);
     expect(of(P("close-busy.tsx"), "close")).toBe(0);
+  });
+});
+
+describe("no-bare-number-input", () => {
+  test.each([
+    ["number-input-self-closing.tsx"],
+    ["number-input-raw.tsx"],
+    ["number-input-with-children.tsx"],
+  ])("a bare number field is refused (%s)", (name) => {
+    expect(of(P(name), "number")).toBe(1);
+  });
+
+  // Another type on Input, or type="number" on a component that is not a field (a chart axis).
+  test("other inputs and other elements pass", () => {
+    expect(of(P("number-input-other.tsx"), "number")).toBe(0);
+  });
+
+  test("NumberInput itself, which draws the one bare field, is exempt", () => {
+    expect(of(NUMBER_INPUT, "number")).toBe(0);
   });
 });
 

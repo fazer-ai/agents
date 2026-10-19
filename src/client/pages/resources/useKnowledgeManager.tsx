@@ -23,6 +23,7 @@ import {
   Input,
   Modal,
   ModalCancelButton,
+  NumberInput,
   Skeleton,
   SwitchField,
   type TabItem,
@@ -39,6 +40,7 @@ import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
 import { docErrorEntry, mergeDocumentEvent } from "@/client/lib/knowledgeDocs";
 import { cn } from "@/client/lib/utils";
+import { CHUNK_SIZE_RANGE, chunkOverlapRange } from "@/modules/rag/ranges";
 import {
   KnowledgeSourceSection,
   SyncedDocNote,
@@ -1131,7 +1133,12 @@ export function useKnowledgeManager(opts: {
         footer={
           <div className="flex justify-end gap-2">
             <ModalCancelButton disabled={busy} />
-            <Button onClick={create} loading={busy} disabled={!name.trim()}>
+            <Button
+              onClick={create}
+              loading={busy}
+              disabled={!name.trim()}
+              holdOnRange
+            >
               {t("common.create", "Create")}
             </Button>
           </div>
@@ -1167,10 +1174,8 @@ export function useKnowledgeManager(opts: {
             )}
             error={chunkSizeError || baseRefusal.at("chunkSize", chunkSize)}
           >
-            <Input
-              type="number"
-              min={100}
-              max={8000}
+            <NumberInput
+              range={CHUNK_SIZE_RANGE}
               value={chunkSize}
               onChange={(e) => setChunkSize(Number(e.target.value))}
             />
@@ -1185,10 +1190,8 @@ export function useKnowledgeManager(opts: {
               chunkOverlapError || baseRefusal.at("chunkOverlap", chunkOverlap)
             }
           >
-            <Input
-              type="number"
-              min={0}
-              max={Math.floor(chunkSize / 2)}
+            <NumberInput
+              range={chunkOverlapRange(chunkSize)}
               value={chunkOverlap}
               onChange={(e) => setChunkOverlap(Number(e.target.value))}
             />
@@ -1205,7 +1208,12 @@ export function useKnowledgeManager(opts: {
         footer={
           <div className="flex justify-end gap-2">
             <ModalCancelButton disabled={busy} />
-            <Button onClick={saveEdit} loading={busy} disabled={!name.trim()}>
+            <Button
+              onClick={saveEdit}
+              loading={busy}
+              disabled={!name.trim()}
+              holdOnRange
+            >
               {t("common.save", "Save")}
             </Button>
           </div>
@@ -1237,10 +1245,8 @@ export function useKnowledgeManager(opts: {
             )}
             error={chunkSizeError || baseRefusal.at("chunkSize", chunkSize)}
           >
-            <Input
-              type="number"
-              min={100}
-              max={8000}
+            <NumberInput
+              range={CHUNK_SIZE_RANGE}
               value={chunkSize}
               onChange={(e) => setChunkSize(Number(e.target.value))}
             />
@@ -1255,10 +1261,8 @@ export function useKnowledgeManager(opts: {
               chunkOverlapError || baseRefusal.at("chunkOverlap", chunkOverlap)
             }
           >
-            <Input
-              type="number"
-              min={0}
-              max={Math.floor(chunkSize / 2)}
+            <NumberInput
+              range={chunkOverlapRange(chunkSize)}
               value={chunkOverlap}
               onChange={(e) => setChunkOverlap(Number(e.target.value))}
             />

@@ -299,6 +299,7 @@ import type {
 import { usePlaygroundChat } from "./usePlaygroundChat";
 import {
   CallSettings,
+  useVoiceCallWarning,
   VoiceCard,
   type VoiceStatus,
 } from "./VoiceAgentSettings";
@@ -999,6 +1000,9 @@ function AgentEditor() {
   const [voiceStatus, setVoiceStatus] = useState<VoiceStatus>({
     state: "checking",
   });
+  // The provider's verdict on the saved voice agent, up in the configuration warnings: a text agent's
+  // status never leaves "checking", so it adds nothing there.
+  const voiceCallWarning = useVoiceCallWarning(voiceStatus, calls.provider);
   const syncedGrantsRef = useRef<ToolSelectionView["grants"]>([]);
   const [observationDraft, setObservation] = useState<ObservationState>(() =>
     observationToForm({}),
@@ -5034,7 +5038,7 @@ function AgentEditor() {
 
             {/* Live config health: features enabled without a credential to run them. Persists
                 (not dismissible) since it reflects the CURRENT config; "Go to" deep-links to the field. */}
-            {configIssues.length > 0 && (
+            {(configIssues.length > 0 || voiceCallWarning) && (
               <div className="flex flex-col gap-2 rounded-lg border border-warning bg-warning-soft px-4 py-3">
                 <div className="flex items-start gap-2">
                   <TriangleAlert
@@ -5046,6 +5050,25 @@ function AgentEditor() {
                   </p>
                 </div>
                 <ul className="flex flex-col gap-1">
+                  {voiceCallWarning && (
+                    <li className="flex items-baseline justify-between gap-3 pl-6">
+                      <span className="min-w-0 text-text-secondary text-xs">
+                        {voiceCallWarning.message}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          goToEditorTarget({
+                            tab: "general",
+                            sectionId: "general-voice",
+                          })
+                        }
+                        className="shrink-0 rounded font-medium text-accent text-xs hover:underline focus-visible:underline"
+                      >
+                        {voiceCallWarning.action}
+                      </button>
+                    </li>
+                  )}
                   {configIssues.map((issue) => (
                     <li
                       key={issue.field ?? issue.knowledgeBaseId ?? issue.key}

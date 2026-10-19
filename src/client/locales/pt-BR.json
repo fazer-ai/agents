@@ -2872,7 +2872,13 @@
     "voiceTtsMultilingual": "o mais natural, mais lento",
     "voiceTtsV4Turbo": "o mais expressivo",
     "voiceVoice": "Voz",
-    "voiceVoiceNoKey": "Depois de adicionar a chave, você escolhe uma das vozes da sua conta."
+    "voiceVoiceNoKey": "Depois de adicionar a chave, você escolhe uma das vozes da sua conta.",
+    "voiceWarningCredential": "O agente não consegue atender ligações porque a chave não pôde ser lida do cofre.",
+    "voiceWarningInvalidKey": "O agente não consegue atender ligações porque a chave foi recusada.",
+    "voiceWarningPermission": "O agente não consegue atender ligações porque a chave não tem permissão para rodar agentes no {{provider}}.",
+    "voiceWarningReviewKey": "Revisar a chave",
+    "voiceWarningReviewVoice": "Revisar a voz",
+    "voiceWarningSync": "O agente não consegue atender ligações porque o {{provider}} recusou a configuração dele."
   },
   "experiments": {
     "comingSoonDesc": "Rode variantes de prompt lado a lado e compare os resultados. Esta funcionalidade está em construção.",

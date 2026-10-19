@@ -150,6 +150,58 @@ function useProblemText() {
   };
 }
 
+// What the provider said about the saved agent, as a line for the editor's configuration warnings: a
+// problem there means the agent cannot take a call, and the card that says so in detail is on General,
+// out of sight from any other tab. Only the provider's verdicts on the key or the settings go up; a
+// check that could not run says nothing about the key, so it stays on the card's line.
+export function useVoiceCallWarning(
+  status: VoiceStatus,
+  provider: CallProvider,
+): { message: string; action: string } | null {
+  const { t } = useTranslation();
+  if (status.state !== "problem") return null;
+  const name = providerLabel(provider, t);
+  const reviewKey = t("editor.voiceWarningReviewKey", "Review the key");
+  switch (status.problem) {
+    case "invalid_key":
+      return {
+        message: t(
+          "editor.voiceWarningInvalidKey",
+          "The agent cannot take calls because the key was refused.",
+        ),
+        action: reviewKey,
+      };
+    case "missing_permission":
+      return {
+        message: t(
+          "editor.voiceWarningPermission",
+          "The agent cannot take calls because the key is not allowed to run agents on {{provider}}.",
+          { provider: name },
+        ),
+        action: reviewKey,
+      };
+    case "credential_unusable":
+      return {
+        message: t(
+          "editor.voiceWarningCredential",
+          "The agent cannot take calls because its key could not be read from the vault.",
+        ),
+        action: reviewKey,
+      };
+    case "sync_failed":
+      return {
+        message: t(
+          "editor.voiceWarningSync",
+          "The agent cannot take calls because {{provider}} refused its settings.",
+          { provider: name },
+        ),
+        action: t("editor.voiceWarningReviewVoice", "Review the voice"),
+      };
+    default:
+      return null;
+  }
+}
+
 export function VoiceStatusLine({
   status,
   dirty,

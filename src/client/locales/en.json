@@ -2785,7 +2785,13 @@
     "voiceTtsMultilingual": "the most natural, slower",
     "voiceTtsV4Turbo": "the most expressive",
     "voiceVoice": "Voice",
-    "voiceVoiceNoKey": "Once the key is added, you can choose one of your account's voices."
+    "voiceVoiceNoKey": "Once the key is added, you can choose one of your account's voices.",
+    "voiceWarningCredential": "The agent cannot take calls because its key could not be read from the vault.",
+    "voiceWarningInvalidKey": "The agent cannot take calls because the key was refused.",
+    "voiceWarningPermission": "The agent cannot take calls because the key is not allowed to run agents on {{provider}}.",
+    "voiceWarningReviewKey": "Review the key",
+    "voiceWarningReviewVoice": "Review the voice",
+    "voiceWarningSync": "The agent cannot take calls because {{provider}} refused its settings."
   },
   "experiments": {
     "comingSoonDesc": "Run prompt variants side by side and compare outcomes. This feature is under construction.",

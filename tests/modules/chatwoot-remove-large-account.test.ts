@@ -69,9 +69,12 @@ async function seedVolume(
     SELECT ${tenantId}, ${instanceId}, i.a[1 + g % 3], c.a[1 + g % array_length(c.a, 1)], g, 'open',
            ${tag} || '-' || g, now()
       FROM generate_series(1, ${n.conversations}::int) g, c, i`;
+  // Already processed: a pending row is work, and a delivery worker still running from another file
+  // in the same process claims it and locks its conversation while the removal waits on it.
   await suDb.$executeRaw`
-    INSERT INTO chatwoot_webhook_deliveries (tenant_id, chatwoot_instance_id, delivery_id, event)
-    SELECT ${tenantId}, ${instanceId}, ${tag} || '-' || g, 'message_created'
+    INSERT INTO chatwoot_webhook_deliveries
+      (tenant_id, chatwoot_instance_id, delivery_id, event, status, processed_at)
+    SELECT ${tenantId}, ${instanceId}, ${tag} || '-' || g, 'message_created', 'PROCESSED', now()
       FROM generate_series(1, ${n.deliveries}::int) g`;
 }
 

@@ -27,6 +27,9 @@ const {
   SCHEDULER_WORKER_INTERVAL_MS,
   SCHEDULER_TRAFFIC_CONCURRENCY,
   SCHEDULER_TRAFFIC_PER_MINUTE,
+  CHECKPOINT_RECONCILE_INTERVAL_MS,
+  CHECKPOINT_RECONCILE_FIRST_DELAY_MS,
+  CHECKPOINT_RECONCILE_GRACE_MS,
   OBSERVE_WORKER_INTERVAL_MS,
   DEBOUNCE_WORKER_ENABLED,
   COMPACTION_WORKER_ENABLED,
@@ -690,6 +693,32 @@ const config = {
       120,
       "It is how many recovery, ingestion and similar scheduler jobs may start in any minute.",
       100_000,
+    ),
+  },
+  // NOTE: The pass that deletes the checkpoint threads whose owner is gone
+  // (src/graph/checkpoint-reconcile.ts). It rides with the scheduler worker, so it runs where the
+  // scheduler runs. Operational knobs, not settings anyone tunes per tenant.
+  checkpointReconcile: {
+    intervalMs: parseIntSetting(
+      CHECKPOINT_RECONCILE_INTERVAL_MS,
+      "CHECKPOINT_RECONCILE_INTERVAL_MS",
+      6 * 60 * 60 * 1000,
+      "It is how often the checkpoints of threads whose owner is gone are deleted.",
+      MAX_DURATION_MS,
+    ),
+    firstDelayMs: parseIntSetting(
+      CHECKPOINT_RECONCILE_FIRST_DELAY_MS,
+      "CHECKPOINT_RECONCILE_FIRST_DELAY_MS",
+      10 * 60 * 1000,
+      "It is how long after the boot the first pass over orphaned checkpoints runs.",
+      MAX_DURATION_MS,
+    ),
+    graceMs: parseIntSetting(
+      CHECKPOINT_RECONCILE_GRACE_MS,
+      "CHECKPOINT_RECONCILE_GRACE_MS",
+      60 * 60 * 1000,
+      "It is how old a thread's newest checkpoint must be before the thread can be deleted for having no owner.",
+      MAX_DURATION_MS,
     ),
   },
   // NOTE: The scheduler's FAST drain for OBSERVE jobs only (a monitoring agent's turn on a

@@ -86,6 +86,11 @@ services:
       # The background share and aging bound of the model permits (docs/deploy.md).
       - AGENT_MODEL_BACKGROUND_SHARE_PERCENT=${AGENT_MODEL_BACKGROUND_SHARE_PERCENT:-}
       - AGENT_MODEL_BACKGROUND_MAX_WAIT_MS=${AGENT_MODEL_BACKGROUND_MAX_WAIT_MS:-}
+      # The pass that deletes the checkpoints of threads whose owner is gone (docs/graph.md). Empty
+      # takes the app default.
+      - CHECKPOINT_RECONCILE_FIRST_DELAY_MS=${CHECKPOINT_RECONCILE_FIRST_DELAY_MS:-}
+      - CHECKPOINT_RECONCILE_INTERVAL_MS=${CHECKPOINT_RECONCILE_INTERVAL_MS:-}
+      - CHECKPOINT_RECONCILE_GRACE_MS=${CHECKPOINT_RECONCILE_GRACE_MS:-}
       # First-run: disable the /setup token in this trusted, TLS-fronted onboarding window (the
       # advisory lock still caps /setup at one admin). Set to `true` to require it.
       - SETUP_TOKEN_REQUIRED=${SETUP_TOKEN_REQUIRED:-false}

@@ -53,6 +53,14 @@ export function poolShares(): PoolShare[] {
       url: config.databaseUrl ?? "",
       note: "instance health sampler",
     },
+    // The checkpoint reconciler's lock connection (src/graph/checkpoint-reconcile.ts), on the
+    // checkpointer's server, on the replica whose scheduler runs it.
+    {
+      env: "SCHEDULER_WORKER_ENABLED",
+      size: config.schedulerWorker.enabled ? 1 : 0,
+      url: config.langgraphDatabaseUrl ?? "",
+      note: "checkpoint reconciler lock",
+    },
   ];
 }
 

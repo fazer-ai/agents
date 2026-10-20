@@ -4,6 +4,10 @@ import logger, { configForBootLog } from "@/api/lib/logger";
 import ackPrisma from "@/api/lib/prisma-ack";
 import app from "@/app";
 import config from "@/config";
+import {
+  startCheckpointReconciler,
+  stopCheckpointReconciler,
+} from "@/graph/checkpoint-reconcile";
 import { assertConnectionBudget } from "@/lib/db-budget";
 import { checkRuntimeRoleAtBoot } from "@/lib/db-guard";
 import { releaseProcessLease, startProcessLease } from "@/lib/process-lease";
@@ -239,6 +243,10 @@ if (config.schedulerWorker.enabled) {
   void ensureAllSpendPolls().catch((error) =>
     logger.warn({ error }, "Failed to arm spend ceiling polls"),
   );
+  // NOTE: The pass that deletes the checkpoints of threads whose owner is gone: a
+  // teardown sweeps only what exists while it runs, and a turn that writes after it leaves rows
+  // nothing points at.
+  startCheckpointReconciler();
 }
 
 // NOTE: External alert delivery worker (execution-flow warnings/errors → Discord / webhook).
@@ -300,6 +308,7 @@ installShutdownHandlers({
     stopCompactionWorker();
     stopAlertWorker();
     stopDeadClaimSweep();
+    stopCheckpointReconciler();
     stopInstanceHealthSampler();
   },
   boundMs: config.shutdown.drainMs,

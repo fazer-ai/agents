@@ -72,6 +72,7 @@ import {
   PROMPT_PREVIEW_CONTACT,
   type PromptRenderOpts,
 } from "@/graph/prompt";
+import { REPLY_AS_TEXT_TOOL } from "@/graph/tools/catalog";
 import type { NumberRange } from "@/lib/number-range";
 import { clipText } from "@/lib/text";
 import type { AgentMode } from "@/modules/agents/mode";
@@ -119,7 +120,13 @@ import {
 import { visionAcceptsDocuments } from "@/modules/vision/document-support";
 import type { VisionReasoningEffort } from "@/modules/vision/output-limits";
 import { DEFAULT_EXTRACTION_PROMPT } from "@/modules/vision/prompt-default";
-import { type CallFloor, CallFloorLine } from "./CallFloor";
+import {
+  type CallFloor,
+  CallFloorContext,
+  CallFloorLine,
+  FieldSize,
+  ToolTokens,
+} from "./CallFloor";
 import { ContactAuthConditionList } from "./ContactAuthConditionFields";
 import {
   type ContactAuthRuleForm,
@@ -1312,6 +1319,11 @@ function StepsEditor({
                   "editor.followUpInstructionsPlaceholder",
                   "E.g.: Greet the customer warmly, remind them of the open question, and offer to help.",
                 )}
+              />
+              <FieldSize
+                max={FOLLOW_UP_INSTRUCTIONS_MAX}
+                text={step.instructions}
+                sentWith="followUp"
               />
             </FormField>
             <FormField
@@ -2717,11 +2729,20 @@ export function BehaviorTab({
                   <Textarea
                     value={vision.extractionPrompt}
                     onChange={(e) =>
-                      setVision({ ...vision, extractionPrompt: e.target.value })
+                      setVision({
+                        ...vision,
+                        extractionPrompt: e.target.value,
+                      })
                     }
                     rows={3}
                     maxLength={EXTRACTION_PROMPT_MAX}
                     placeholder={DEFAULT_EXTRACTION_PROMPT}
+                  />
+                  <FieldSize
+                    max={EXTRACTION_PROMPT_MAX}
+                    text={vision.extractionPrompt}
+                    fallback={DEFAULT_EXTRACTION_PROMPT}
+                    sentWith="vision"
                   />
                 </FormField>
               </>
@@ -3399,6 +3420,12 @@ export function BehaviorTab({
                           setTts({ ...tts, spokenNoticeText: e.target.value })
                         }
                       />
+                      <FieldSize
+                        max={VOICE_CHOICE_TEXT_MAX}
+                        text={tts.spokenNoticeText}
+                        fallback={SPOKEN_NOTICE_DEFAULT}
+                        sentWith="spokenNotice"
+                      />
                     </FormField>
                   )}
                   <SwitchField
@@ -3413,6 +3440,11 @@ export function BehaviorTab({
                       "Offers the agent a tool to send one reply as a text message instead of a voice note, when the customer needs to read it: prices, steps, a code to copy.",
                     )}
                   />
+                  {tts.textChoice && (
+                    <CallFloorContext.Provider value={callFloor}>
+                      <ToolTokens tool={{ system: REPLY_AS_TEXT_TOOL }} />
+                    </CallFloorContext.Provider>
+                  )}
                   {tts.textChoice && (
                     <FormField
                       label={t("editor.ttsTextChoiceNote", "When to use it")}
@@ -3429,6 +3461,11 @@ export function BehaviorTab({
                         onChange={(e) =>
                           setTts({ ...tts, textChoiceNote: e.target.value })
                         }
+                      />
+                      <FieldSize
+                        max={VOICE_CHOICE_TEXT_MAX}
+                        text={tts.textChoiceNote}
+                        sentWith="toolDescription"
                       />
                     </FormField>
                   )}

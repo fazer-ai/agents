@@ -274,7 +274,8 @@ function readDirection(
   };
 }
 
-function readCompetitors(v: unknown): string[] {
+// The competitor list as the check receives it, which is also what the editor counts.
+export function readCompetitors(v: unknown): string[] {
   if (!Array.isArray(v)) return [];
   const out: string[] = [];
   for (const item of v) {

@@ -11,6 +11,7 @@ import {
   type CallFloor,
   CallFloorContext,
   CallFloorLine,
+  FieldSize,
   InstructionsTokens,
   KnowledgeTokens,
   SourceTokens,
@@ -386,5 +387,130 @@ describe("breakdown shares", () => {
       "4%",
       "3%",
     ]);
+  });
+});
+
+describe("FieldSize", () => {
+  const POLICY = "Nunca prometa prazo de entrega sem consultar o pedido. "
+    .repeat(8)
+    .trim();
+
+  test("says the size as typed and which call it goes to, and moves with the draft", async () => {
+    const { rerenderIn } = await inLanguage(
+      "en",
+      <FieldSize text={POLICY} sentWith="guardrail" />,
+    );
+    const first = `~${estimateTokens(POLICY).toLocaleString("en")} tokens · ${POLICY.length.toLocaleString("en")} characters, sent on each guardrail check`;
+    expect(screen.getByText(first)).toBeTruthy();
+    const longer = `${POLICY}Cite o número do pedido.`;
+    rerenderIn(<FieldSize text={longer} sentWith="guardrail" />);
+    expect(
+      screen.getByText(
+        `~${estimateTokens(longer).toLocaleString("en")} tokens · ${longer.length.toLocaleString("en")} characters, sent on each guardrail check`,
+      ),
+    ).toBeTruthy();
+  });
+
+  test("each destination names its call, and a tool note says it is already in the tool's number", async () => {
+    const lines: Record<string, string> = {
+      toolDescription:
+        "part of this tool's description (counted in its tokens per call)",
+      followUp: "sent on each call of this follow-up step",
+      redirectFollowUp: "sent on the chat follow-up's call",
+      guardrail: "sent on each guardrail check",
+      vision: "sent on each image or PDF read",
+      spokenNotice: "sent on each turn answered by audio",
+    };
+    for (const [sentWith, where] of Object.entries(lines)) {
+      await inLanguage(
+        "en",
+        <FieldSize
+          text="abc"
+          sentWith={sentWith as Parameters<typeof FieldSize>[0]["sentWith"]}
+        />,
+      );
+      expect(
+        screen.getByText(
+          new RegExp(`characters, ${where.replace(/[()]/g, "\\$&")}$`),
+        ),
+      ).toBeTruthy();
+      cleanup();
+    }
+  });
+
+  test("in Portuguese, with the operator's number format", async () => {
+    await inLanguage("pt-BR", <FieldSize text={POLICY} sentWith="vision" />);
+    expect(
+      screen.getByText(
+        `~${estimateTokens(POLICY).toLocaleString("pt-BR")} tokens · ${POLICY.length.toLocaleString("pt-BR")} caracteres, enviados a cada leitura de imagem ou PDF`,
+      ),
+    ).toBeTruthy();
+  });
+
+  test("past its cap, it counts what the reader keeps", async () => {
+    const long = "a".repeat(120);
+    await inLanguage(
+      "en",
+      <FieldSize text={long} sentWith="followUp" max={100} />,
+    );
+    expect(
+      screen.getByText(
+        `~${estimateTokens("a".repeat(100)).toLocaleString("en")} tokens · 100 characters, sent on each call of this follow-up step`,
+      ),
+    ).toBeTruthy();
+  });
+
+  test("it counts the text trimmed, and a blank field as the default it sends", async () => {
+    const { rerenderIn } = await inLanguage(
+      "en",
+      <FieldSize text="  abc  " sentWith="vision" fallback="Describe it." />,
+    );
+    expect(screen.getByText(/· 3 characters, /)).toBeTruthy();
+    rerenderIn(
+      <FieldSize text="   " sentWith="vision" fallback="Describe it." />,
+    );
+    expect(screen.getByText(/· 12 characters, /)).toBeTruthy();
+  });
+
+  test("an empty field still shows its line, at zero", async () => {
+    await inLanguage("en", <FieldSize text="  " sentWith="followUp" />);
+    expect(
+      screen.getByText(
+        "~0 tokens · 0 characters, sent on each call of this follow-up step",
+      ),
+    ).toBeTruthy();
+  });
+});
+
+describe("reply_as_text", () => {
+  const withReply: CallFloor = {
+    ...FLOOR,
+    tools: [
+      ...FLOOR.tools,
+      { name: "reply_as_text", category: "external", estimatedTokens: 95 },
+    ],
+  };
+
+  test("its number shows by its own name, and the breakdown names it after what it does", async () => {
+    await inLanguage(
+      "en",
+      <CallFloorContext.Provider value={withReply}>
+        <ToolTokens tool={{ system: "reply_as_text" }} />
+        <CallFloorLine floor={withReply} draftPrompt="" />
+      </CallFloorContext.Provider>,
+    );
+    expect(screen.getByText("~95 tokens per call")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Every call/ }));
+    expect(screen.getByText("Reply in text (voice replies)")).toBeTruthy();
+  });
+
+  test("off (not in the floor), no number", async () => {
+    await inLanguage(
+      "en",
+      <CallFloorContext.Provider value={FLOOR}>
+        <ToolTokens tool={{ system: "reply_as_text" }} />
+      </CallFloorContext.Provider>,
+    );
+    expect(screen.queryByText(/tokens per call/)).toBeNull();
   });
 });

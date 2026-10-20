@@ -15,6 +15,7 @@ import {
   delayRange,
 } from "@/modules/agents/number-ranges";
 import type { RedirectDelayUnit } from "@/modules/channel-redirect/service";
+import { FieldSize } from "./CallFloor";
 import { Section, SectionNav } from "./SectionNav";
 import { TabActionBar } from "./TabActionBar";
 
@@ -657,6 +658,10 @@ export function ChannelRedirectTab({
                         "editor.channelRedirect.chatFollowupPlaceholder",
                         "E.g.: ask if the customer is still interested and offer to help them continue.",
                       )}
+                    />
+                    <FieldSize
+                      text={cr.chatFollowupInstructions}
+                      sentWith="redirectFollowUp"
                     />
                   </FormField>
                 </div>

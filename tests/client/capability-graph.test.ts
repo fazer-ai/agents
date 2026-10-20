@@ -13,8 +13,12 @@ import type { GrantState, ToolCatalog } from "@/client/pages/agents/types";
 // the number of groups, not the number of tools. Large groups collapse to a "+N…" overflow node.
 describe("toMermaid — agent graph (LangGraph)", () => {
   const groups: MapGroup[] = [
-    { key: "native", label: "Built-in", items: ["Transfer", "Tag"] },
-    { key: "http", label: "Custom HTTP", items: ["Look up order"] },
+    {
+      key: "native",
+      label: "Built-in",
+      items: [{ label: "Transfer" }, { label: "Tag" }],
+    },
+    { key: "http", label: "Custom HTTP", items: [{ label: "Look up order" }] },
   ];
 
   test("emits a vertical (TB) flowchart with the LangGraph spine", () => {
@@ -50,7 +54,9 @@ describe("toMermaid — agent graph (LangGraph)", () => {
   });
 
   test("caps a large group with a '+N…' overflow node", () => {
-    const many = Array.from({ length: 20 }, (_, i) => `Tool ${i + 1}`);
+    const many = Array.from({ length: 20 }, (_, i) => ({
+      label: `Tool ${i + 1}`,
+    }));
     const m = toMermaid([{ key: "native", label: "Built-in", items: many }]);
     // 20 items, cap 12 → 8 hidden behind the overflow marker.
     expect(m).toContain('"+8…"');
@@ -135,7 +141,7 @@ describe("buildGroups — every grant source is drawn", () => {
       const groups = buildGroups(catalog, [grant], t);
       drawn[source] = groups
         .filter((g) => (source === "NATIVE") === (g.key === "native"))
-        .map((g) => [g.key, g.items]);
+        .map((g) => [g.key, g.items.map((i) => i.label)]);
     }
     // NOTE: each source draws its OWN group, keyed and filled from its catalog entry.
     expect(drawn).toEqual({
@@ -152,13 +158,13 @@ describe("buildGroups — every grant source is drawn", () => {
   test("a document grant is named by the tool the agent will call", () => {
     const groups = buildGroups(catalog, [grantFor.DOCUMENT as GrantState], t);
     const documents = groups.find((g) => g.key === "document");
-    expect(documents?.items).toEqual(["send_orcamento"]);
+    expect(documents?.items.map((i) => i.label)).toEqual(["send_orcamento"]);
   });
 
   test("a code grant is drawn by its display label", () => {
     const groups = buildGroups(catalog, [grantFor.CODE as GrantState], t);
     const code = groups.find((g) => g.key === "code");
-    expect(code?.items).toEqual(["Look up CPF"]);
+    expect(code?.items.map((i) => i.label)).toEqual(["Look up CPF"]);
   });
 
   test("a code grant whose tool the operator disabled draws nothing", () => {

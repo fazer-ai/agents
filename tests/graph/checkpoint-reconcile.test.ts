@@ -6,6 +6,7 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import config from "@/config";
 import {
+  type LockConnection,
   NEWEST_CHECKPOINT_SQL,
   reconcileCheckpointBatch,
   reconcileCheckpoints,
@@ -437,6 +438,50 @@ describe.skipIf(!dbUp)("the checkpoint reconciler", () => {
       for (const s of sockets) s.destroy();
       await new Promise<void>((r) => silent.close(() => r()));
     }
+  }, 60_000);
+
+  // A thread the grace kept in `checkpoints` may be past it by the time the walk reaches the other
+  // tables: its writes and blobs stay while it still has a checkpoint.
+  test("a thread's writes and blobs stay while it still has a checkpoint", async () => {
+    const kept = `${goneTenant}:44:1`;
+    await seed([kept]);
+
+    for (const table of ["checkpoint_writes", "checkpoint_blobs"] as const) {
+      await reconcileCheckpointBatch(
+        cp,
+        { table, after: "" },
+        { scope: (id) => id === kept, base: appDb, graceMs: 0 },
+      );
+    }
+
+    expect(await left([kept])).toEqual(all(1));
+  }, 60_000);
+
+  // The lock lives as long as its connection; a pass whose connection is gone stops before the next
+  // batch instead of deleting beside whoever holds the lock now.
+  test("a pass whose lock connection is gone stops before its next batch", async () => {
+    const goneIds = range(20, (i) => `${goneTenant}:33:${i}`);
+    await seed(goneIds);
+    let calls = 0;
+    const lockConnection = async () => ({
+      query: async () => {
+        calls += 1;
+        if (calls === 1) return { rows: [{ ok: true }] };
+        throw new Error("Connection terminated unexpectedly");
+      },
+      end: async () => {},
+    });
+
+    await expect(
+      reconcileCheckpoints(cp, {
+        pauseMs: 0,
+        scope: mine,
+        base: appDb,
+        lockConnection:
+          lockConnection as unknown as () => Promise<LockConnection>,
+      }),
+    ).rejects.toThrow("Connection terminated");
+    expect(await left(goneIds)).toEqual(all(20));
   }, 60_000);
 
   test("what a sweep stopped between tables left behind goes too", async () => {

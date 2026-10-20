@@ -257,16 +257,22 @@ export async function reconcileCheckpointBatch(
   if (candidates.length === 0)
     return { deleted: 0, probed: walked.length, next: after };
   return checkpointTransaction(pool, guard, async (query) => {
-    const recent = new Set(
-      (
-        (await query(NEWEST_CHECKPOINT_SQL, [candidates])) as {
-          rows: { thread_id: string; ts: string | null }[];
-        }
-      ).rows
-        .filter((r) => withinGrace(r.ts, graceMs))
-        .map((r) => r.thread_id),
+    const newest = (
+      (await query(NEWEST_CHECKPOINT_SQL, [candidates])) as {
+        rows: { thread_id: string; ts: string | null }[];
+      }
+    ).rows;
+    // In `checkpoints`, a thread goes once its newest checkpoint is past the grace. In the writes and
+    // blobs, only once it has no checkpoint left: a thread kept by the grace in the first table may
+    // age past it before the walk reaches the others, and taking its rows then would leave a
+    // checkpoint the saver reads with part of its state gone.
+    const kept = new Set(
+      (cursor.table === "checkpoints"
+        ? newest.filter((r) => withinGrace(r.ts, graceMs))
+        : newest
+      ).map((r) => r.thread_id),
     );
-    const doomed = candidates.filter((id) => !recent.has(id));
+    const doomed = candidates.filter((id) => !kept.has(id));
     if (doomed.length === 0)
       return { deleted: 0, probed: walked.length, next: after };
     // Threads with rows left are walked again by the next batch, from the same cursor.
@@ -327,7 +333,15 @@ export function reconcileCheckpoints(
         [PASS_LOCK],
       );
       if (!got.rows[0]?.ok) return null;
-      return await reconcileAll(pool, opts);
+      // The lock lives as long as its connection: one the server closed (an idle session timeout, a
+      // restart) has released it, and another pass may already hold it. Each batch asks first, and
+      // a connection that does not answer ends the pass before it deletes anything more.
+      return await reconcileAll(pool, {
+        ...opts,
+        beforeBatch: async () => {
+          await lock.query("SELECT 1");
+        },
+      });
     } finally {
       // Closing the connection releases the lock.
       await lock.end().catch(() => {});
@@ -340,6 +354,7 @@ async function reconcileAll(
   opts: ReconcileOptions & {
     pauseMs?: number;
     shouldStop?: () => boolean;
+    beforeBatch?: () => Promise<void>;
   },
 ): Promise<ReconcileTotals> {
   const totals: ReconcileTotals = {
@@ -351,6 +366,7 @@ async function reconcileAll(
   let cursor: SweepCursor | null = SWEEP_START;
   while (cursor !== null) {
     if (opts.shouldStop?.()) break;
+    await opts.beforeBatch?.();
     const from: SweepCursor = cursor;
     const res = await reconcileCheckpointBatch(pool, from, opts);
     totals[from.table] += res.deleted;

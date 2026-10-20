@@ -126,15 +126,17 @@ describe("foreignBotMessageOf", () => {
   });
 });
 
-test("the alert cause is the route's bot, so one agent's run is one alert", () => {
-  const ev = (routeBot: unknown) => ({
+// Keyed by the agent: the same bot id on two Chatwoot servers is two agents, and two alerts.
+test("the alert cause is the agent, so one agent's run is one alert", () => {
+  const ev = (agent: unknown) => ({
     stage: "foreign_send" as const,
     level: "warn" as const,
-    detail: { routeBot, messageId: 1 },
+    detail: { agent, routeBot: BOT_ID, messageId: 1 },
   });
-  expect(causeKeyOf(ev(BOT_ID))).toBe(`foreign_send:${BOT_ID}`);
-  expect(causeKeyOf(ev(BOT_ID + 1))).not.toBe(causeKeyOf(ev(BOT_ID)));
+  expect(causeKeyOf(ev("42"))).toBe("foreign_send:42");
+  expect(causeKeyOf(ev("43"))).not.toBe(causeKeyOf(ev("42")));
   expect(causeKeyOf(ev("17; drop"))).toBe("foreign_send");
+  expect(causeKeyOf(ev(42))).toBe("foreign_send");
 });
 
 let tenantId: bigint;
@@ -270,7 +272,11 @@ describe.skipIf(!dbUp)("a message posted on the agent's bot token", () => {
     expect(row?.level).toBe("warn");
     expect(row?.agentId).toBe(agentId);
     expect(row?.conversationId).not.toBeNull();
-    expect(row?.detail).toEqual({ routeBot: BOT_ID, messageId: 7004 });
+    expect(row?.detail).toEqual({
+      agent: String(agentId),
+      routeBot: BOT_ID,
+      messageId: 7004,
+    });
     expect(row?.errorMessage).toBe(FOREIGN_SEND_MESSAGE);
     expect(
       JSON.stringify(row, (_k, v) => (typeof v === "bigint" ? String(v) : v)),
@@ -286,7 +292,7 @@ describe.skipIf(!dbUp)("a message posted on the agent's bot token", () => {
       select: { causeKey: true, count: true, level: true },
     });
     expect(alerts).toEqual([
-      { causeKey: `foreign_send:${BOT_ID}`, count: 3, level: "warn" },
+      { causeKey: `foreign_send:${agentId}`, count: 3, level: "warn" },
     ]);
   });
 });

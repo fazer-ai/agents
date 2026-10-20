@@ -170,12 +170,12 @@ export function causeKeyOf(ev: FlowEvent): string | null {
   if (ev.stage === "channel_error") {
     return `channel_error:${vocabulary("code", detail.code) ?? "unknown"}`;
   }
-  // A setup to fix, keyed by the route's bot (one per agent), so an automation posting on every
-  // conversation is one alert per agent per window and not one per message.
+  // A setup to fix, keyed by the agent (a bot id repeats across Chatwoot servers, the agent's does
+  // not), so an automation posting on every conversation is one alert per agent per window.
   if (ev.stage === "foreign_send") {
-    const bot = detail.routeBot;
-    return typeof bot === "number" && Number.isSafeInteger(bot)
-      ? `foreign_send:${bot}`
+    const agent = detail.agent;
+    return typeof agent === "string" && /^[1-9][0-9]{0,18}$/.test(agent)
+      ? `foreign_send:${agent}`
       : "foreign_send";
   }
   // An answer to a stranded message that came late enough that the customer waited for it: a cause,

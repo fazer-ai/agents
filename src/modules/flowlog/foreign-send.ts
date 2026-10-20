@@ -31,6 +31,7 @@ export function emitForeignSend(args: {
       status: "skipped",
       errorMessage: FOREIGN_SEND_MESSAGE,
       detail: {
+        agent: String(args.agentId),
         routeBot: args.routeBot,
         ...(args.messageId !== null ? { messageId: args.messageId } : {}),
       },

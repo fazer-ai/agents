@@ -11,7 +11,11 @@ const REDACTED = "‹redacted›";
 // High-confidence secret VALUE shapes (global flags: scrub every occurrence, not just the first).
 const SECRET_VALUE_PATTERNS: RegExp[] = [
   /(?:bearer|basic)\s+[A-Za-z0-9\-._~+/]{8,}=*/gi, // Authorization header material
-  /\bsk-[A-Za-z0-9]{16,}\b/g, // OpenAI-style keys
+  /\bsk-[A-Za-z0-9]{16,}\b/g, // OpenAI-style keys (legacy)
+  // Prefixed provider keys (OpenAI project/service-account/admin, Anthropic, OpenRouter): the body
+  // is base64url, so it carries `-` and `_`. Only behind a known prefix, so hyphenated prose
+  // after `sk-` is left alone.
+  /\bsk-(?:proj|svcacct|admin|None|or-v1|ant-[a-z]+\d*)-[A-Za-z0-9_-]{16,}/g,
   /\b(?:ghp|gho|ghs|github_pat)_[A-Za-z0-9_]{16,}\b/g, // GitHub tokens
   /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g, // Slack tokens
   /\bAKIA[0-9A-Z]{16}\b/g, // AWS access key id

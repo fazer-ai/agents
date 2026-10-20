@@ -66,6 +66,17 @@ describe("assertNoSecrets (value scan)", () => {
     ).toThrow(SecretLeakError);
   });
 
+  test.each([
+    "sk-proj-FAKE_aaaa-BBBB_cccc-DDDD_1234",
+    "sk-svcacct-FAKE_aaaa-BBBB_cccc-DDDD",
+    "sk-admin-FAKE_aaaa-BBBB_cccc-DDDD_1234",
+    "sk-ant-api03-FAKE_aaaa-BBBB_cccc-DDDD-AA",
+  ])("catches the provider key %s", (key) => {
+    expect(() => assertNoSecrets({ note: `key ${key}` })).toThrow(
+      SecretLeakError,
+    );
+  });
+
   test("scans recursively through arrays and nested objects", () => {
     expect(() =>
       assertNoSecrets({ a: [{ b: { c: "ghp_ABCDEFGHIJKLMNOPQRST" } }] }),

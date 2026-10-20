@@ -95,6 +95,8 @@ describe("sanitizeErrorMessage repairs before it decides", () => {
 describe("the scrub reads past the cut", () => {
   const SECRETS: Array<[string, string]> = [
     ["OpenAI", `sk-${"A".repeat(16)}`],
+    ["OpenAI project", `sk-proj-${"A".repeat(16)}`],
+    ["Anthropic", `sk-ant-api03-${"A".repeat(16)}`],
     ["GitHub", `github_pat_${"B".repeat(16)}`],
     ["Slack", `xoxb-${"1234567890"}`],
     ["AWS", `AKIA${"C".repeat(16)}`],
@@ -291,5 +293,52 @@ describe("a deleted character does not come out of the margin", () => {
     expect(out.v).toBe(
       `${"\uFFFD".repeat(64)}${"h".repeat(1_917)} ‹redacted›…[truncated]`,
     );
+  });
+});
+
+// Fake keys in every shape the providers issue today. The bodies carry `-` and `_` on purpose: the
+// newer shapes are base64url, and a pattern that stops at the first hyphen matches none of them.
+const PROVIDER_KEYS: Array<[string, string]> = [
+  ["OpenAI legacy", "sk-FAKEaaaaBBBBccccDDDD1234"],
+  ["OpenAI project", "sk-proj-FAKE_aaaa-BBBB_cccc-DDDD_1234"],
+  ["OpenAI service account", "sk-svcacct-FAKE_aaaa-BBBB_cccc-DDDD"],
+  ["OpenAI admin", "sk-admin-FAKE_aaaa-BBBB_cccc-DDDD_1234"],
+  ["OpenAI user (None)", "sk-None-FAKE_aaaa-BBBB_cccc-DDDD_1234"],
+  ["Anthropic API", "sk-ant-api03-FAKE_aaaa-BBBB_cccc-DDDD-AA"],
+  ["Anthropic admin", "sk-ant-admin01-FAKE_aaaa-BBBB_cccc-DDDD"],
+  ["OpenRouter", "sk-or-v1-0123456789abcdef0123456789abcdef"],
+];
+
+describe("every provider key shape is redacted", () => {
+  test.each(PROVIDER_KEYS)("a %s key in an error message", (_label, key) => {
+    const out = sanitizeErrorMessage(
+      new Error(`provider rejected "${key}", status 401`),
+    );
+    expect(out).toBe('provider rejected "‹redacted›", status 401');
+  });
+
+  test.each(PROVIDER_KEYS)("a %s key nested in a value", (_label, key) => {
+    const out = redactSecretsDeep({
+      result: { lines: [`auth with ${key}.`] },
+    }) as { result: { lines: string[] } };
+    expect(out.result.lines[0]).toBe("auth with ‹redacted›.");
+  });
+
+  test("several keys in one string are all redacted", () => {
+    const a = "sk-proj-FAKE_aaaa-BBBB_cccc-DDDD_1234";
+    const b = "sk-ant-api03-FAKE_aaaa-BBBB_cccc-DDDD-AA";
+    const out = sanitizeErrorMessage(`keys: ${a}, '${b}' (both)`);
+    expect(out).toBe("keys: ‹redacted›, '‹redacted›' (both)");
+  });
+
+  test("redacting twice changes nothing", () => {
+    const once = sanitizeErrorMessage("k=sk-svcacct-FAKE_aaaa-BBBB_cccc-DDDD");
+    expect(sanitizeErrorMessage(once)).toBe(once);
+  });
+
+  test("hyphenated words after sk- are not keys", () => {
+    const text =
+      "use sk-learn-and-numpy-together, open risk-admin-dashboard_settings_v2";
+    expect(sanitizeErrorMessage(text)).toBe(text);
   });
 });

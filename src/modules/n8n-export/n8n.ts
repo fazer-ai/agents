@@ -19,7 +19,11 @@ export class SecretLeakError extends AppError {
 // (that is a reference, not a secret) — only concrete token material.
 const SECRET_VALUE_PATTERNS: RegExp[] = [
   /\b(?:bearer|basic)\s+[A-Za-z0-9\-._~+/]{8,}=*/i, // Authorization header material
-  /\bsk-[A-Za-z0-9]{16,}\b/, // OpenAI-style keys
+  /\bsk-[A-Za-z0-9]{16,}\b/, // OpenAI-style keys (legacy)
+  // Prefixed provider keys (OpenAI project/service-account/admin, Anthropic, OpenRouter): the body
+  // is base64url, so it carries `-` and `_`. Only behind a known prefix, so hyphenated prose
+  // after `sk-` is left alone.
+  /\bsk-(?:proj|svcacct|admin|None|or-v1|ant-[a-z]+\d*)-[A-Za-z0-9_-]{16,}/,
   /\b(?:ghp|gho|ghs|github_pat)_[A-Za-z0-9_]{16,}\b/, // GitHub tokens
   /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/, // Slack tokens
   /\bAKIA[0-9A-Z]{16}\b/, // AWS access key id

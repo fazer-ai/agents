@@ -244,7 +244,13 @@ describe("the playground call's socket and the operator's session", () => {
       return row(OLD_HASH);
     });
     const { ws, closed } = connect(ticketFor(mockUser.id), cookie, false);
-    await inRecheck;
+    // The server's open hook starts the re-check, and it can run before the client dispatches its own
+    // open: sending then throws on a socket still CONNECTING. The server stays held in the re-check, so
+    // waiting for both keeps the start inside it.
+    const open = new Promise<void>((go) =>
+      ws.addEventListener("open", () => go(), { once: true }),
+    );
+    await Promise.all([inRecheck, open]);
     ws.send(JSON.stringify({ event: "start", direction: "inbound" }));
     await new Promise<void>((done) => {
       ws.addEventListener("pong", () => done());

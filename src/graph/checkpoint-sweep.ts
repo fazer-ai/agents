@@ -83,9 +83,9 @@ async function withinDeadline(
   await client.query(`SET LOCAL statement_timeout = ${Math.ceil(left)}`);
 }
 
-type Bounded = (sql: string, params: unknown[]) => Promise<unknown>;
+export type Bounded = (sql: string, params: unknown[]) => Promise<unknown>;
 
-async function inTransaction<T>(
+export async function checkpointTransaction<T>(
   pool: Pick<Pool, "connect">,
   guard: BatchGuard | undefined,
   fn: (query: Bounded) => Promise<T>,
@@ -112,7 +112,7 @@ async function inTransaction<T>(
   }
 }
 
-async function deleteRows(
+export async function deleteCheckpointRows(
   query: Bounded,
   table: CheckpointTable,
   threadIds: string[],
@@ -132,8 +132,8 @@ export async function deleteCheckpointThreads(
   if (threadIds.length === 0) return;
   for (const table of CHECKPOINT_TABLES) {
     while (
-      (await inTransaction(pool, undefined, (query) =>
-        deleteRows(query, table, threadIds, SWEEP_ROWS),
+      (await checkpointTransaction(pool, undefined, (query) =>
+        deleteCheckpointRows(query, table, threadIds, SWEEP_ROWS),
       )) >= SWEEP_ROWS
     ) {}
   }
@@ -149,7 +149,7 @@ export const SWEEP_START: SweepCursor = {
   after: "",
 };
 
-function nextTable(table: CheckpointTable): SweepCursor | null {
+export function nextSweepTable(table: CheckpointTable): SweepCursor | null {
   const next = CHECKPOINT_TABLES[CHECKPOINT_TABLES.indexOf(table) + 1];
   return next ? { table: next, after: "" } : null;
 }
@@ -177,7 +177,7 @@ export async function sweepCheckpointBatch(
   const probes = opts.probes ?? SWEEP_PROBES;
   const threads = opts.threads ?? SWEEP_THREADS;
   const rows = opts.rows ?? SWEEP_ROWS;
-  return inTransaction(pool, opts.guard, async (query) => {
+  return checkpointTransaction(pool, opts.guard, async (query) => {
     const walked = (
       (await query(walkSql(cursor.table), [
         cursor.after,
@@ -190,7 +190,7 @@ export async function sweepCheckpointBatch(
     // Threads with rows left are walked again by the next batch, from the same cursor.
     if (
       kept.length > 0 &&
-      (await deleteRows(query, cursor.table, kept, rows)) >= rows
+      (await deleteCheckpointRows(query, cursor.table, kept, rows)) >= rows
     ) {
       return { deleted: 0, probed: walked.length, next: cursor };
     }
@@ -201,7 +201,7 @@ export async function sweepCheckpointBatch(
       probed: walked.length,
       next:
         ended || last === undefined
-          ? nextTable(cursor.table)
+          ? nextSweepTable(cursor.table)
           : { table: cursor.table, after: last },
     };
   });

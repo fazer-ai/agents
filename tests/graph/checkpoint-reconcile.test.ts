@@ -1,0 +1,435 @@
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { PrismaPg } from "@prisma/adapter-pg";
+import type { Pool } from "pg";
+import { PrismaClient } from "@/../generated/prisma/client";
+import { encryptJson } from "@/api/lib/crypto";
+import {
+  RECENT_THREADS_SQL,
+  reconcileCheckpointBatch,
+  reconcileCheckpoints,
+  reconcileWalkSql,
+  threadOwner,
+} from "@/graph/checkpoint-reconcile";
+import {
+  CHECKPOINT_TABLES,
+  deleteCheckpointThreads,
+  SWEEP_START,
+  type SweepCursor,
+} from "@/graph/checkpoint-sweep";
+import { getCheckpointPool } from "@/graph/checkpointer";
+import { dbProbeFailed } from "@/tests/db-gate";
+import { seedChatwootInstance } from "../utils/chatwoot";
+
+// THE CHECKPOINTS OF A THREAD WHOSE OWNER IS GONE ARE DELETED BY A PERIODIC PASS (issue #1559). The
+// rows are seeded straight in SQL under thread ids of the shapes the runtime writes, with the age the
+// pass reads (the newest checkpoint's `ts`), beside live threads that share every character but the
+// owner. Every pass here is scoped to this file's tenants: the walk covers the whole key, and other
+// files' threads have owners this file did not seed.
+const appUrl = process.env.TEST_APP_DATABASE_URL;
+const suUrl = process.env.MIGRATION_DATABASE_URL;
+let dbUp = false;
+let su: PrismaClient | undefined;
+let app: PrismaClient | undefined;
+let pool: Pool | undefined;
+if (appUrl && suUrl) {
+  try {
+    su = new PrismaClient({
+      adapter: new PrismaPg({ connectionString: suUrl }),
+    });
+    await su.$queryRaw`SELECT 1`;
+    app = new PrismaClient({
+      adapter: new PrismaPg({ connectionString: appUrl }),
+    });
+    await app.$queryRaw`SELECT 1`;
+    pool = await getCheckpointPool();
+    await pool.query("SELECT 1");
+    dbUp = true;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
+  }
+}
+const suDb = su as PrismaClient;
+// The runtime role: the owners are read through it, as the fleet, the way the app reads them.
+const appDb = app as PrismaClient;
+const cp = pool as Pool;
+
+const HOUR = 60 * 60 * 1000;
+
+// Threads as the checkpointer writes them, a checkpoint, two blobs and a write each, the checkpoint
+// stamped `ago` milliseconds back.
+async function seedThreads(ids: string[], ago = 2 * HOUR) {
+  const ts = new Date(Date.now() - ago).toISOString();
+  await cp.query(
+    `INSERT INTO langgraph.checkpoints (thread_id, checkpoint_ns, checkpoint_id, checkpoint, metadata)
+     SELECT t, '', 'c1', jsonb_build_object('ts', $2::text), '{}'::jsonb FROM unnest($1::text[]) t`,
+    [ids, ts],
+  );
+  await cp.query(
+    `INSERT INTO langgraph.checkpoint_blobs (thread_id, checkpoint_ns, channel, version, type, blob)
+     SELECT t, '', ch, '1', 'json', convert_to(repeat('x', 200), 'UTF8')
+       FROM unnest($1::text[]) t, unnest(ARRAY['messages', 'summary']) ch`,
+    [ids],
+  );
+  await cp.query(
+    `INSERT INTO langgraph.checkpoint_writes (thread_id, checkpoint_ns, checkpoint_id, task_id, idx, channel, type, blob)
+     SELECT t, '', 'c1', 'task', 0, 'messages', 'json', convert_to('{}', 'UTF8') FROM unnest($1::text[]) t`,
+    [ids],
+  );
+}
+
+// How many of these threads still have rows, in each of the three tables.
+async function left(ids: string[]) {
+  const res = await cp.query<{ c: string; b: string; w: string }>(
+    `SELECT (SELECT count(DISTINCT thread_id) FROM langgraph.checkpoints WHERE thread_id = ANY($1::text[])) AS c,
+            (SELECT count(DISTINCT thread_id) FROM langgraph.checkpoint_blobs WHERE thread_id = ANY($1::text[])) AS b,
+            (SELECT count(DISTINCT thread_id) FROM langgraph.checkpoint_writes WHERE thread_id = ANY($1::text[])) AS w`,
+    [ids],
+  );
+  const r = res.rows[0];
+  return {
+    checkpoints: Number(r?.c),
+    blobs: Number(r?.b),
+    writes: Number(r?.w),
+  };
+}
+
+const none = { checkpoints: 0, blobs: 0, writes: 0 };
+const all = (n: number) => ({ checkpoints: n, blobs: n, writes: n });
+
+function range(n: number, f: (i: number) => string): string[] {
+  return Array.from({ length: n }, (_, i) => f(i));
+}
+
+describe("whose thread it is, read from its id", () => {
+  test("an account thread names its instance exactly, in both of its shapes", () => {
+    expect(threadOwner("1:1:ci:5")).toEqual({
+      kind: "account",
+      tenantId: 1n,
+      instanceId: 1n,
+    });
+    expect(threadOwner("1:10:5")).toEqual({
+      kind: "account",
+      tenantId: 1n,
+      instanceId: 10n,
+    });
+  });
+
+  test("detached threads name their agent or are their own row", () => {
+    expect(threadOwner("3:playground:8:abc")).toEqual({
+      kind: "playground",
+      tenantId: 3n,
+      agentId: 8n,
+    });
+    expect(threadOwner("3:client:8:abc")).toEqual({
+      kind: "client",
+      tenantId: 3n,
+      threadId: "3:client:8:abc",
+    });
+  });
+
+  test("a shape it does not know goes only with its tenant, and an id with no tenant never goes", () => {
+    expect(threadOwner("4:something:else")).toEqual({
+      kind: "other",
+      tenantId: 4n,
+    });
+    expect(threadOwner("4:1:ci")).toEqual({ kind: "other", tenantId: 4n });
+    expect(threadOwner("x:1:2")).toBeNull();
+    expect(threadOwner("")).toBeNull();
+  });
+});
+
+describe.skipIf(!dbUp)("the checkpoint reconciler", () => {
+  let tenantId = 0n;
+  let otherTenantId = 0n;
+  // A tenant id no row has, above every one this database has handed out.
+  let goneTenant = 0n;
+  const seeded: string[] = [];
+  async function seed(ids: string[], ago?: number) {
+    seeded.push(...ids);
+    await seedThreads(ids, ago);
+  }
+  const mine = (id: string) =>
+    [tenantId, otherTenantId, goneTenant].some((t) => id.startsWith(`${t}:`));
+  const pass = (opts: Parameters<typeof reconcileCheckpoints>[1] = {}) =>
+    reconcileCheckpoints(cp, { pauseMs: 0, scope: mine, base: appDb, ...opts });
+
+  beforeAll(async () => {
+    tenantId = (
+      await suDb.tenant.create({
+        data: { name: "Reconcile", slug: `cp-reconcile-${process.pid}` },
+      })
+    ).id;
+    otherTenantId = (
+      await suDb.tenant.create({
+        data: {
+          name: "Reconcile other",
+          slug: `cp-reconcile-o-${process.pid}`,
+        },
+      })
+    ).id;
+    goneTenant = otherTenantId + 1_000_000n + BigInt(process.pid);
+  });
+
+  afterAll(async () => {
+    await deleteCheckpointThreads(cp, seeded);
+    await suDb.$executeRaw`DELETE FROM tenants WHERE id IN (${tenantId}, ${otherTenantId})`;
+    await suDb.$disconnect();
+    await appDb.$disconnect();
+  });
+
+  async function account(accountId: number, tenant = tenantId) {
+    return seedChatwootInstance(suDb, {
+      tenantId: tenant,
+      accountId,
+      accountName: `Account ${accountId}`,
+      baseUrl:
+        tenant === tenantId
+          ? "https://chat.cp-reconcile.example.com"
+          : "https://chat.cp-reconcile-o.example.com",
+      adminToken: encryptJson("ADMIN"),
+    });
+  }
+
+  async function agent(name: string) {
+    return suDb.agent.create({
+      data: {
+        tenantId,
+        name,
+        systemPrompt: "Be helpful.",
+        modelConfig: { provider: "openai", model: "gpt-4o-mini" },
+      },
+    });
+  }
+
+  test("a removed account's threads go, and a live account's stay", async () => {
+    const gone = await account(15591);
+    const live = await account(15592);
+    await suDb.chatwootInstance.delete({ where: { id: gone.id } });
+    const goneIds = [
+      `${tenantId}:${gone.id}:42`,
+      `${tenantId}:${gone.id}:ci:7`,
+    ];
+    const liveIds = [
+      `${tenantId}:${live.id}:42`,
+      `${tenantId}:${live.id}:ci:7`,
+    ];
+    await seed([...goneIds, ...liveIds]);
+
+    expect(await pass()).not.toBeNull();
+
+    expect(await left(goneIds)).toEqual(none);
+    expect(await left(liveIds)).toEqual(all(2));
+  }, 60_000);
+
+  test("an account of the same id in another tenant does not keep the thread", async () => {
+    const theirs = await account(15593, otherTenantId);
+    const stray = `${tenantId}:${theirs.id}:ci:1`;
+    const owned = `${otherTenantId}:${theirs.id}:ci:1`;
+    await seed([stray, owned]);
+
+    await pass();
+
+    expect(await left([stray])).toEqual(none);
+    expect(await left([owned])).toEqual(all(1));
+  }, 60_000);
+
+  test("every thread of a tenant that no longer exists goes, whatever its shape", async () => {
+    const live = await account(15594);
+    const keeper = await agent("Keeper");
+    const goneIds = [
+      `${goneTenant}:9:ci:1`,
+      `${goneTenant}:9:5`,
+      `${goneTenant}:playground:9:abc`,
+      `${goneTenant}:client:9:abc`,
+      `${goneTenant}:something:else`,
+    ];
+    const liveIds = [
+      `${tenantId}:${live.id}:ci:1`,
+      `${tenantId}:playground:${keeper.id}:abc`,
+      `${tenantId}:something:else`,
+    ];
+    await seed([...goneIds, ...liveIds]);
+
+    await pass();
+
+    expect(await left(goneIds)).toEqual(none);
+    expect(await left(liveIds)).toEqual(all(3));
+  }, 60_000);
+
+  test("a deleted agent's playground threads go, and a live agent's stay", async () => {
+    const keeper = await agent("Kept");
+    const doomed = await agent("Deleted");
+    await suDb.agent.delete({ where: { id: doomed.id } });
+    const goneIds = [`${tenantId}:playground:${doomed.id}:a`];
+    const liveIds = [`${tenantId}:playground:${keeper.id}:b`];
+    await seed([...goneIds, ...liveIds]);
+
+    await pass();
+
+    expect(await left(goneIds)).toEqual(none);
+    expect(await left(liveIds)).toEqual(all(1));
+  }, 60_000);
+
+  test("a client thread goes with its detached_threads row, and stays while the row does", async () => {
+    const owner = await agent("Client owner");
+    const kept = `${tenantId}:client:${owner.id}:with-row`;
+    const stray = `${tenantId}:client:${owner.id}:no-row`;
+    await suDb.detachedThread.create({
+      data: { threadId: kept, tenantId, agentId: owner.id, kind: "client" },
+    });
+    await seed([kept, stray]);
+
+    await pass();
+
+    expect(await left([stray])).toEqual(none);
+    expect(await left([kept])).toEqual(all(1));
+    expect(await suDb.detachedThread.count({ where: { threadId: kept } })).toBe(
+      1,
+    );
+  }, 60_000);
+
+  test("a thread whose newest checkpoint is younger than the grace is kept until it is older", async () => {
+    const fresh = [`${goneTenant}:9:ci:3`];
+    await seed(fresh, 0);
+
+    await pass({ graceMs: HOUR });
+    expect(await left(fresh)).toEqual(all(1));
+
+    // The same thread, aged past the grace.
+    await pass({ graceMs: 0 });
+    expect(await left(fresh)).toEqual(none);
+  }, 60_000);
+
+  test("a thread with an unreadable or missing age is never taken for being old", async () => {
+    const odd = `${goneTenant}:9:ci:4`;
+    seeded.push(odd);
+    await cp.query(
+      `INSERT INTO langgraph.checkpoints (thread_id, checkpoint_ns, checkpoint_id, checkpoint, metadata)
+       VALUES ($1, '', 'c1', '{"ts": "not a date"}'::jsonb, '{}'::jsonb)`,
+      [odd],
+    );
+
+    await pass({ graceMs: 0 });
+
+    expect((await left([odd])).checkpoints).toBe(1);
+  }, 60_000);
+
+  test("what a sweep stopped between tables left behind goes too", async () => {
+    const rest = `${goneTenant}:9:ci:8`;
+    await seed([rest]);
+    await cp.query("DELETE FROM langgraph.checkpoints WHERE thread_id = $1", [
+      rest,
+    ]);
+
+    await pass();
+
+    expect(await left([rest])).toEqual(none);
+  }, 60_000);
+
+  test("an id whose tenant does not read is never taken", async () => {
+    // Under this file's scope by its text, but with no tenant of its own.
+    const weird = `x${goneTenant}:9:ci:1`;
+    await seed([weird]);
+
+    await reconcileCheckpoints(cp, {
+      pauseMs: 0,
+      scope: (id) => id === weird,
+      base: appDb,
+    });
+
+    expect(await left([weird])).toEqual(all(1));
+  }, 60_000);
+
+  test("a second pass while one runs returns at once, and the first finishes the work", async () => {
+    const goneIds = range(40, (i) => `${goneTenant}:77:${i}`);
+    await seed(goneIds);
+
+    const [a, b] = await Promise.all([pass(), pass()]);
+
+    expect([a, b].filter((r) => r === null)).toHaveLength(1);
+    expect(await left(goneIds)).toEqual(none);
+    // And a pass with nothing left to do changes nothing.
+    const again = await pass();
+    expect(again).toEqual({
+      checkpoints: 0,
+      checkpoint_writes: 0,
+      checkpoint_blobs: 0,
+    });
+  }, 60_000);
+
+  test("a batch takes a bounded set of threads and the next one starts after them", async () => {
+    const goneIds = range(30, (i) => `${goneTenant}:88:${i}`);
+    await seed(goneIds);
+    let cursor: SweepCursor | null = SWEEP_START;
+    let batches = 0;
+    const deletedPerBatch: number[] = [];
+    while (cursor !== null) {
+      const res = await reconcileCheckpointBatch(cp, cursor, {
+        scope: mine,
+        base: appDb,
+        threads: 7,
+        probes: 100,
+      });
+      if (cursor.table === "checkpoints" && res.deleted > 0)
+        deletedPerBatch.push(res.deleted);
+      cursor = res.next;
+      batches += 1;
+      if (batches > 5_000) throw new Error("the walk never ended");
+    }
+
+    expect(Math.max(...deletedPerBatch)).toBeLessThanOrEqual(7);
+    expect(deletedPerBatch.reduce((a, b) => a + b, 0)).toBe(30);
+    expect(await left(goneIds)).toEqual(none);
+  }, 120_000);
+
+  test("a batch that runs out of rows comes back to the same threads", async () => {
+    const long = `${goneTenant}:99:1`;
+    seeded.push(long);
+    await cp.query(
+      `INSERT INTO langgraph.checkpoints (thread_id, checkpoint_ns, checkpoint_id, checkpoint, metadata)
+       SELECT $1, '', lpad(i::text, 6, '0'), jsonb_build_object('ts', $2::text), '{}'::jsonb
+         FROM generate_series(1, 25) i`,
+      [long, new Date(Date.now() - 2 * HOUR).toISOString()],
+    );
+    const res = await reconcileCheckpointBatch(cp, SWEEP_START, {
+      scope: (id) => id === long,
+      base: appDb,
+      rows: 10,
+    });
+
+    expect(res.next).toEqual(SWEEP_START);
+    expect(await pass({ rows: 10 })).not.toBeNull();
+    expect(await left([long])).toEqual(none);
+  }, 60_000);
+
+  // The walk and the age read go through the primary key at any size: a pass is one probe per
+  // thread, and the newest checkpoint of a long thread is one backward step of the index.
+  test("a pass reads through the primary key, never a table scan", async () => {
+    const base = `${goneTenant}`;
+    await seed(range(3_000, (i) => `${base}:${i % 5}:${i}`));
+    await cp.query(
+      "ANALYZE langgraph.checkpoints, langgraph.checkpoint_blobs, langgraph.checkpoint_writes",
+    );
+    const plans = [
+      ...(await Promise.all(
+        CHECKPOINT_TABLES.map(
+          async (t) =>
+            (
+              await cp.query(`EXPLAIN ${reconcileWalkSql(t)}`, ["", 500])
+            ).rows,
+        ),
+      )),
+      (
+        await cp.query(`EXPLAIN ${RECENT_THREADS_SQL}`, [
+          [`${base}:1:1`, `${base}:1:6`],
+          HOUR,
+        ])
+      ).rows,
+    ].map((rows) => rows.map((r) => r["QUERY PLAN"]).join("\n"));
+
+    for (const plan of plans) {
+      expect(plan).not.toContain("Seq Scan");
+      expect(plan).toMatch(/Index/);
+    }
+  }, 120_000);
+});

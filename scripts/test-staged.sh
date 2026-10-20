@@ -91,12 +91,14 @@ done
 
 # A sweep reads whole trees (src/, tests/, scripts/, workers/) without naming the file it trips on:
 # a Glob or readdir, or a read by a computed path (an import-graph walk). Any staged change other than
-# prose runs every test that does either, itself or through a helper under tests/.
+# prose runs every test that does either, itself or through a helper under tests/. The database gate is
+# not one: it reads only prisma/migrations, which already runs the whole suite, and nearly every
+# database-backed test imports it.
 if printf '%s\n' "$staged" | grep -qvE '\.md$'; then
   walks='Glob\(|readdirSync|readdir\(|Bun\.file\([a-z]|readFileSync\([a-z]|readFile\([a-z]'
   # shellcheck disable=SC2046
   add $(grep_tests -E "$walks")
-  for helper in $(grep -rlE --exclude='*.test.ts' --exclude='*.test.tsx' "$walks" tests 2>/dev/null || true); do
+  for helper in $(grep -rlE --exclude='*.test.ts' --exclude='*.test.tsx' --exclude='db-gate.ts' "$walks" tests 2>/dev/null || true); do
     case "$helper" in *.ts | *.tsx) ;; *) continue ;; esac
     # shellcheck disable=SC2046
     add $(importers "$helper")

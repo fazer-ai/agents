@@ -41,10 +41,13 @@ mock.module("node:dns/promises", () => ({
   default: { ...dns, lookup },
 }));
 
-afterEach(() => {
+/** Fails the test that asked the real resolver, and starts the next one clean. */
+export function failOnRefusedLookups(): void {
   if (refused.length === 0) return;
   const hosts = [...new Set(refused.splice(0))].join(", ");
   throw new Error(
     `tests: this test asked the real resolver for ${hosts}. Use a reserved name (.example, .invalid, .test) for a server that must not exist, outboundUrl() from tests/utils/outbound.ts for one that must be reached, or pass a lookup to assertSafeOutboundUrl.`,
   );
-});
+}
+
+afterEach(failOnRefusedLookups);

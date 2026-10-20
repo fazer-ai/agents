@@ -42,6 +42,11 @@ export async function savePlaygroundTurnNote(
 ): Promise<void> {
   try {
     await runScopedOn(base, params.ctx, async (db) => {
+      // None for an agent deleted while its turn ran: the delete already took its notes, and
+      // this one would annotate a session that no longer exists.
+      const [agent] = await db.$queryRaw<{ id: bigint }[]>`
+        SELECT id FROM agents WHERE id = ${params.agentId} FOR KEY SHARE`;
+      if (!agent) return;
       await db.playgroundTurnNote.create({
         data: {
           tenantId: params.ctx.tenantId as bigint,

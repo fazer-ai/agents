@@ -6,7 +6,8 @@ import { broadcastAgentConfigEvent } from "@/api/features/realtime/realtime.serv
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
-import { getCheckpointer } from "@/graph/checkpointer";
+import { sweepCheckpoints } from "@/graph/checkpoint-sweep";
+import { getCheckpointer, getCheckpointPool } from "@/graph/checkpointer";
 import {
   DEFAULT_MODEL_CONFIG,
   modelConfigReason,
@@ -2523,7 +2524,7 @@ export async function deleteAgent(
     checkpointer?: Pick<BaseCheckpointSaver, "deleteThread">;
   } = {},
 ): Promise<void> {
-  const clientThreads = await runScopedOn(base, ctx, async (db) => {
+  const threadsToDelete = await runScopedOn(base, ctx, async (db) => {
     // Read inside the transaction that deletes AND under its lock: the row is what the record is
     // OF, and after the statement there is nothing left to name it with. Unlocked, a rename that
     // commits between this read and the delete leaves an `agent.update` saying A→B followed by an
@@ -2582,6 +2583,10 @@ export async function deleteAgent(
     if (res.count === 0) {
       throw new NotFoundError("agent not found", "errors.agentNotFound");
     }
+    // The playground's sessions name the agent by a plain column, so nothing cascades them: they go
+    // here with their notes, and every playground thread of the agent below, by its prefix.
+    await db.playgroundTurnNote.deleteMany({ where: { agentId: id } });
+    await db.playgroundSession.deleteMany({ where: { agentId: id } });
     await auditMutation(db, ctx, {
       action: "agent.delete",
       target: `agent:${id}`,
@@ -2596,22 +2601,36 @@ export async function deleteAgent(
   invalidateRouteTokenCache();
   // After the commit, so a refused delete erases nothing, and never failing the request: the agent
   // is already gone. A process that dies before these lines, or a checkpoint store that refuses,
-  // leaves the transcripts behind, with nothing left that points at them.
-  if (clientThreads.length > 0) {
+  // leaves the transcripts behind, with nothing left that points at them but the tenant's prefix,
+  // which the tenant's delete sweeps.
+  // The playground's threads by prefix, not by the sessions just deleted: a thread whose turn never
+  // recorded a session has nothing else pointing at it.
+  try {
+    await sweepCheckpoints(
+      await getCheckpointPool(),
+      `${ctx.tenantId}:playground:${id}:`,
+    );
+  } catch (e) {
+    logger.error(
+      { err: e, agentId: String(id) },
+      "deleted agent: its playground checkpoints were not deleted",
+    );
+  }
+  if (threadsToDelete.length > 0) {
     try {
       const checkpointer = deps.checkpointer ?? (await getCheckpointer());
-      for (const threadId of clientThreads) {
+      for (const threadId of threadsToDelete) {
         await checkpointer.deleteThread(threadId).catch((e: unknown) => {
           logger.error(
             { err: e, threadId, agentId: String(id) },
-            "deleted agent: a client thread's checkpoint was not deleted",
+            "deleted agent: a thread's checkpoint was not deleted",
           );
         });
       }
     } catch (e) {
       logger.error(
-        { err: e, agentId: String(id), threads: clientThreads.length },
-        "deleted agent: the checkpoint store was unreachable, its client checkpoints were not deleted",
+        { err: e, agentId: String(id), threads: threadsToDelete.length },
+        "deleted agent: the checkpoint store was unreachable, its checkpoints were not deleted",
       );
     }
   }

@@ -3,6 +3,9 @@ import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import { decryptJson, encryptJson } from "@/api/lib/crypto";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
+import config from "@/config";
+import { sweepCheckpoints } from "@/graph/checkpoint-sweep";
+import { getCheckpointPool } from "@/graph/checkpointer";
 import { AppError, ConflictError, NotFoundError } from "@/lib/errors";
 import { parseInput } from "@/lib/parse-input";
 import {
@@ -1115,6 +1118,9 @@ const REMOVAL_BATCHES = [
   "other_inbox_summaries",
 ] as const;
 const REMOVAL_BATCH_ROWS = 1_000;
+// How long before its transaction's budget runs out a checkpoint batch stops committing: past it, the
+// lock that batch relies on may already be gone.
+const SWEEP_COMMIT_MARGIN_MS = 1_000;
 
 // The bots a removal took off its account's inboxes, taken off in Chatwoot too: should the removal
 // stop and the account be reconnected, a bot still attached there would deliver as a binding nothing
@@ -1273,7 +1279,12 @@ async function emptyAndDeleteAccount(
 ): Promise<boolean> {
   const tenantId = ctx.tenantId as bigint;
   let reconnected = false;
-  const stillRemoving = async (db: ScopedDb): Promise<boolean> => {
+  // `turns` also refuses while a turn of the account is running (below), which reads every thread
+  // of the account: once before the table batches, then only where `agent_threads` is already empty.
+  const stillRemoving = async (
+    db: ScopedDb,
+    turns = false,
+  ): Promise<boolean> => {
     const [row] = await db.$queryRaw<{ same: boolean }[]>`
       SELECT (EXTRACT(EPOCH FROM disconnected_at) * 1000000)::bigint IS NOT DISTINCT FROM ${generation}
              AS same
@@ -1286,8 +1297,26 @@ async function emptyAndDeleteAccount(
         "errors.chatwootRemovalReconnected",
       );
     }
+    if (!turns) return true;
+    // A turn admitted before the claim keeps writing its conversation's checkpoints until it ends,
+    // behind the sweep below. Its thread claim says it is running, and the removal waits for it the
+    // way it waits for a reconnect to be undone: refused, and finished by the same call once it is.
+    const [busy] = await db.$queryRaw<{ n: bigint }[]>`
+      SELECT count(*) AS n FROM agent_threads
+       WHERE tenant_id = ${tenantId} AND chatwoot_instance_id = ${id}
+         AND (turn_held_until > now() OR ingest_write_until > now())`;
+    if (Number(busy?.n ?? 0) > 0) {
+      throw new ConflictError(
+        "a conversation of this Chatwoot account is being answered right now; remove it again in a moment to finish",
+        "errors.chatwootRemovalTurnRunning",
+      );
+    }
     return true;
   };
+  // Before the first batch: a checkpoint store that cannot be reached stops the removal before it
+  // has deleted anything.
+  const pool = await getCheckpointPool();
+  let turnsChecked = false;
   try {
     for (const table of REMOVAL_BATCHES) {
       // SKIP LOCKED: a row an admitted delivery is writing right now is left for the next batch (or
@@ -1295,7 +1324,7 @@ async function emptyAndDeleteAccount(
       // NO KEY UPDATE, the module's mode (see the lock fence in tests/modules/audit-channel-family).
       for (;;) {
         const deleted = await runScopedOn(base, ctx, async (db) =>
-          (await stillRemoving(db))
+          (await stillRemoving(db, !turnsChecked))
             ? deleteBatch(
                 db,
                 table,
@@ -1303,6 +1332,7 @@ async function emptyAndDeleteAccount(
               )
             : null,
         );
+        turnsChecked = true;
         if (deleted === null) {
           invalidateRouteTokenCache();
           return false;
@@ -1310,8 +1340,37 @@ async function emptyAndDeleteAccount(
         if (deleted === 0) break;
       }
     }
+    // The account's conversation memory, which no cascade reaches (src/graph/checkpoint-sweep.ts):
+    // after the tables, so a turn admitted before the claim has long finished writing, and before
+    // the row, so a removal stopped here is finished by the same call. A reconnected account keeps
+    // its memory, so each batch runs under the account's lock and check, and commits only while the
+    // transaction holding them is still open: its budget can end it while the batch, on the
+    // checkpointer's own pool, is still running.
+    // A fifth of a short budget, so a configured budget of a second or less still leaves the batch
+    // most of it.
+    const commitMargin = Math.min(
+      SWEEP_COMMIT_MARGIN_MS,
+      Math.floor(config.dbTx.timeoutMs / 5),
+    );
+    const swept = await sweepCheckpoints(pool, `${tenantId}:${id}:`, (run) => {
+      const opened = Date.now();
+      return runScopedOn(base, ctx, async (db) =>
+        (await stillRemoving(db, true))
+          ? run({
+              deadline: opened + config.dbTx.timeoutMs - commitMargin,
+              beforeCommit: async () => {
+                await stillRemoving(db, true);
+              },
+            })
+          : null,
+      );
+    });
+    if (!swept) {
+      invalidateRouteTokenCache();
+      return false;
+    }
     const done = await runScopedOn(base, ctx, async (db) => {
-      if (!(await stillRemoving(db))) return false;
+      if (!(await stillRemoving(db, true))) return false;
       await onDelete?.(db);
       await db.chatwootInstance.delete({ where: { id } });
       return true;

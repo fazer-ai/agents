@@ -503,6 +503,20 @@ async function usageByTurn(
   return out;
 }
 
+// A playground thread whose agent was deleted while it ran: its notes and its checkpoint, written
+// after the delete swept the agent's sessions.
+async function forgetDeletedAgentThread(
+  base: PrismaClient,
+  ctx: TenantContext,
+  agentId: bigint,
+  threadId: string,
+): Promise<void> {
+  await runScopedOn(base, ctx, (db) =>
+    db.playgroundTurnNote.deleteMany({ where: { agentId, threadId } }),
+  );
+  await (await getCheckpointer()).deleteThread(threadId);
+}
+
 // Upsert the session metadata after a turn. Best-effort: a history-write hiccup must never break the
 // reply. The title is set once (on create, from the first turn) and only bumped afterwards.
 export async function upsertPlaygroundSession(
@@ -516,13 +530,22 @@ export async function upsertPlaygroundSession(
   if (!isValidPlaygroundThread(threadId, tenantId, agentId)) return;
   const title = clipText(titleHint.replace(/\s+/g, " ").trim(), TITLE_MAX);
   try {
-    await runScopedOn(base, ctx, (db) =>
-      db.playgroundSession.upsert({
+    const agentGone = await runScopedOn(base, ctx, async (db) => {
+      // The agent row, shared against `deleteAgent`'s lock: a turn that ran while its agent was
+      // deleted finds it gone here and recreates no session, and one that got here first has its
+      // session taken by the delete.
+      const [agent] = await db.$queryRaw<{ id: bigint }[]>`
+        SELECT id FROM agents WHERE id = ${agentId} FOR KEY SHARE`;
+      if (!agent) return true;
+      await db.playgroundSession.upsert({
         where: { tenantId_threadId: { tenantId, threadId } },
         create: { tenantId, agentId, threadId, title },
         update: { updatedAt: new Date() },
-      }),
-    );
+      });
+      return false;
+    });
+    // NOTE: what that turn wrote after the delete took its sessions has no session left to reach it.
+    if (agentGone) await forgetDeletedAgentThread(base, ctx, agentId, threadId);
   } catch (e) {
     logger.warn(
       "playground: session upsert failed: %s",

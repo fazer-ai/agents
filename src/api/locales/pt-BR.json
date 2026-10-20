@@ -35,6 +35,7 @@
     "chatwootProfileFailed": "Não foi possível acessar o Chatwoot com a URL e o token informados.",
     "chatwootRebindFailed": "Não foi possível reconectar o bot ao Chatwoot.",
     "chatwootRemovalReconnected": "Esta conta do Chatwoot foi reconectada durante a remoção; remova de novo para concluir.",
+    "chatwootRemovalTurnRunning": "Uma conversa desta conta do Chatwoot está sendo respondida agora; remova de novo em instantes para concluir.",
     "chatwootTooManyAccounts": "Contas demais em uma única requisição ({{count}}); no máximo {{max}} contas podem ser definidas de uma vez.",
     "clientAppAnonymousDisabled": "Esta aplicação não permite visitantes anônimos",
     "clientAppNotFound": "Aplicação não encontrada",

@@ -15,6 +15,9 @@ const KEY = Symbol.for("fazerai.langgraph.checkpointer");
 
 interface Holder {
   promise?: Promise<PostgresSaver>;
+  // The saver's own pool, which it keeps private: the teardowns delete whole sets of threads
+  // (checkpoint-sweep.ts), which `deleteThread` would do one round trip per table and thread.
+  pools?: WeakMap<PostgresSaver, Pool>;
 }
 
 function holder(): Holder {
@@ -46,7 +49,22 @@ async function init(): Promise<PostgresSaver> {
     await pool.end().catch(() => {});
     throw error;
   }
+  const h = holder();
+  h.pools ??= new WeakMap();
+  h.pools.set(saver, pool);
   return saver;
+}
+
+// The pool behind `getCheckpointer()`, for statements over many threads at once. A saver set up
+// before the registry existed (a `bun --hot` reload keeps the holder) is read for the pool it keeps.
+export async function getCheckpointPool(): Promise<Pool> {
+  const saver = await getCheckpointer();
+  const pool =
+    holder().pools?.get(saver) ?? (saver as unknown as { pool?: Pool }).pool;
+  if (!pool || typeof pool.connect !== "function") {
+    throw new Error("the checkpointer has no pool of its own");
+  }
+  return pool;
 }
 
 export function getCheckpointer(): Promise<PostgresSaver> {

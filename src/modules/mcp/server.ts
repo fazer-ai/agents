@@ -4,6 +4,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { getGlobalBranding } from "@/api/features/branding/branding.service";
 import config from "@/config";
+import { CLIENT_AUDIENCES, type ClientAudience } from "@/graph/usage-sources";
 import { AUDIT_SCOPES, isAuditScope } from "@/lib/audit/scope";
 import { AppError } from "@/lib/errors";
 import {
@@ -25,6 +26,7 @@ import {
   ranged,
 } from "@/modules/agents/settings-schema";
 import { exportAgent } from "@/modules/agents/transfer";
+import { CLIENT_APP_RANGES } from "@/modules/client-apps/ranges";
 import { listConversations } from "@/modules/conversations/service";
 import { NEXT_NUMBER_RANGE } from "@/modules/documents/numbering";
 import { APPROVAL_TTL_HOURS } from "@/modules/documents/templates";
@@ -201,6 +203,12 @@ import {
   PRICE_OVERRIDES_MAX,
 } from "@/modules/pricing/overrides";
 import { FIXED_LIMIT_RANGE } from "@/modules/proactive-breaker/settings";
+import {
+  clientAppDelete,
+  clientAppKeyRevoke,
+  clientAppList,
+  clientAppUpdate,
+} from "./write-client-apps";
 import {
   knowledgeApprove,
   knowledgeCreate,
@@ -1229,6 +1237,19 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
     registerTenantTool(
       server,
       principal,
+      "client_app_list",
+      {
+        description:
+          "List an agent's embedding apps (client channel SDK): publicId (the JWT aud), origins, anonymous flag, valid key ids. Never a key.",
+        inputSchema: { agent_id: z.string() },
+      },
+      async (args: { agent_id: string }, eff) =>
+        writeContent(await clientAppList(eff, args)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
       "audit_list",
       {
         description:
@@ -1279,7 +1300,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "logs_query",
       {
         description:
-          "Query the execution-flow logs (per-stage runtime telemetry, PII-free). Filters: since/until (ISO), level, stage, agent_id, conversation_id, turn_id, source (inbox|all|playground), search (substring on errorMessage). Keyset paginated via cursor; limit max 200.",
+          "Query the execution-flow logs (per-stage runtime telemetry, PII-free). Filters: since/until (ISO), level, stage, agent_id, conversation_id, turn_id, source, search (substring on errorMessage). Keyset paginated via cursor; limit max 200.",
         inputSchema: {
           since: z.string().optional(),
           until: z.string().optional(),
@@ -1292,9 +1313,10 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           conversation_id: z.string().optional(),
           turn_id: z.string().optional(),
           source: z
-            .enum(["inbox", "all", "playground"])
+            .enum(["inbox", "all", "playground", "client"])
             .optional()
             .describe("Defaults to inbox (real traffic) when omitted."),
+          audience: z.enum(CLIENT_AUDIENCES).optional(),
           search: z.string().optional(),
           limit: z.number().int().optional(),
           cursor: z.string().optional(),
@@ -1310,6 +1332,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           conversation_id?: string;
           turn_id?: string;
           source?: string;
+          audience?: ClientAudience;
           search?: string;
           limit?: number;
           cursor?: string;
@@ -1324,7 +1347,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "logs_export",
       {
         description:
-          "Export the (filtered) execution-flow logs as a downloadable CSV or JSON file, newest first. Same filters as logs_query (since/until ISO, level, stage, agent_id, conversation_id, turn_id, source inbox|all|playground, search). Returns { format, filename, count, truncated, content } — `content` is the serialized file. Bounded by max_rows (default 1000, hard cap 10000); `truncated` is true when more rows matched than were returned.",
+          "Export the (filtered) execution-flow logs as a downloadable CSV or JSON file, newest first. Same filters as logs_query (since/until ISO, level, stage, agent_id, conversation_id, turn_id, source, audience, search). Returns { format, filename, count, truncated, content } — `content` is the serialized file. Bounded by max_rows (default 1000, hard cap 10000); `truncated` is true when more rows matched than were returned.",
         inputSchema: {
           since: z.string().optional(),
           until: z.string().optional(),
@@ -1337,9 +1360,10 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           conversation_id: z.string().optional(),
           turn_id: z.string().optional(),
           source: z
-            .enum(["inbox", "all", "playground"])
+            .enum(["inbox", "all", "playground", "client"])
             .optional()
             .describe("Defaults to inbox (real traffic) when omitted."),
+          audience: z.enum(CLIENT_AUDIENCES).optional(),
           search: z.string().optional(),
           format: z
             .enum(["csv", "json"])
@@ -1362,6 +1386,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           conversation_id?: string;
           turn_id?: string;
           source?: string;
+          audience?: ClientAudience;
           search?: string;
           format?: string;
           max_rows?: number;
@@ -1376,14 +1401,18 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "metrics_get",
       {
         description:
-          "Get the dashboard KPIs (conversation involvement/resolution/automation rates) plus consolidated LLM usage (tokens/calls by agent/inbox/model/source) and conversation counts by status. Optional since (ISO) and source (inbox|playground). A long cold period may be refused as too slow; calling again resumes.",
+          "Get the dashboard KPIs (conversation involvement/resolution/automation rates) plus consolidated LLM usage (tokens/calls by agent/inbox/model/source) and conversation counts by status. Optional since (ISO), source and audience. A long cold period may be refused as too slow; calling again resumes.",
         inputSchema: {
           since: z.string().optional(),
-          source: z.enum(["inbox", "playground"]).optional(),
+          source: z.enum(["inbox", "playground", "client"]).optional(),
+          audience: z.enum(CLIENT_AUDIENCES).optional(),
         },
       },
-      async (args: { since?: string; source?: string }, eff, signal) =>
-        writeContent(await metricsGet(eff, args, { signal })),
+      async (
+        args: { since?: string; source?: string; audience?: ClientAudience },
+        eff,
+        signal,
+      ) => writeContent(await metricsGet(eff, args, { signal })),
     );
 
     registerTenantTool(
@@ -1392,14 +1421,17 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "metrics_timeseries",
       {
         description:
-          "Get the LLM usage timeseries (per-bucket calls and token counts). Optional since (ISO) and source (inbox|playground).",
+          "Get the LLM usage timeseries (per-bucket calls and token counts). Optional since (ISO), source and audience.",
         inputSchema: {
           since: z.string().optional(),
-          source: z.enum(["inbox", "playground"]).optional(),
+          source: z.enum(["inbox", "playground", "client"]).optional(),
+          audience: z.enum(CLIENT_AUDIENCES).optional(),
         },
       },
-      async (args: { since?: string; source?: string }, eff) =>
-        writeContent(await metricsTimeseries(eff, args)),
+      async (
+        args: { since?: string; source?: string; audience?: ClientAudience },
+        eff,
+      ) => writeContent(await metricsTimeseries(eff, args)),
     );
 
     registerTenantTool(
@@ -3392,6 +3424,88 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       },
       async (args: { api_key_id: string; dry_run?: boolean }, eff) =>
         writeContent(await apiKeyRevoke(eff, args)),
+    );
+
+    // ── client apps (creating one and rotating its key mint a secret, so both stay in the console) ──
+
+    registerTenantTool(
+      server,
+      principal,
+      "client_app_update",
+      {
+        description:
+          "Rename a client app, replace its origins (exact https; http only on localhost), set anonymous sessions, their limits and expiry (days idle), the Turnstile check and its site key, or the monthly spend ceiling (USD, null for none). Acts ONLY when dry_run is false.",
+        inputSchema: {
+          client_app_id: z.string(),
+          name: z.string().optional(),
+          allowed_origins: z.array(z.string()).optional(),
+          anonymous_enabled: z.boolean().optional(),
+          anon_sessions_per_hour: ranged(
+            CLIENT_APP_RANGES.anonSessionsPerHour,
+          ).optional(),
+          anon_messages_per_min: ranged(
+            CLIENT_APP_RANGES.anonMessagesPerMin,
+          ).optional(),
+          anon_expiry_days: ranged(CLIENT_APP_RANGES.anonExpiryDays).optional(),
+          monthly_ceiling_usd: ranged(CLIENT_APP_RANGES.monthlyCeilingUsd)
+            .nullable()
+            .optional(),
+          turnstile_enabled: z.boolean().optional(),
+          turnstile_site_key: z.string().nullable().optional(),
+          dry_run: z.boolean().optional(),
+        },
+      },
+      async (
+        args: {
+          client_app_id: string;
+          name?: string;
+          allowed_origins?: string[];
+          anonymous_enabled?: boolean;
+          anon_sessions_per_hour?: number;
+          anon_messages_per_min?: number;
+          anon_expiry_days?: number;
+          monthly_ceiling_usd?: number | null;
+          turnstile_enabled?: boolean;
+          turnstile_site_key?: string | null;
+          dry_run?: boolean;
+        },
+        eff,
+      ) => writeContent(await clientAppUpdate(eff, args)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
+      "client_app_delete",
+      {
+        description:
+          "Delete a client app and its keys; its tokens stop verifying. Acts ONLY when dry_run is false.",
+        inputSchema: {
+          client_app_id: z.string(),
+          dry_run: z.boolean().optional(),
+        },
+      },
+      async (args: { client_app_id: string; dry_run?: boolean }, eff) =>
+        writeContent(await clientAppDelete(eff, args)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
+      "client_app_key_revoke",
+      {
+        description:
+          "Revoke a client app key (kid) now. Minting keys stays in the console. Acts ONLY when dry_run is false.",
+        inputSchema: {
+          client_app_id: z.string(),
+          kid: z.string(),
+          dry_run: z.boolean().optional(),
+        },
+      },
+      async (
+        args: { client_app_id: string; kid: string; dry_run?: boolean },
+        eff,
+      ) => writeContent(await clientAppKeyRevoke(eff, args)),
     );
 
     // ── conversation control (mcp:write; EXTERNAL effect — sends real messages / changes state) ──

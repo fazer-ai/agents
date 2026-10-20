@@ -61,6 +61,8 @@ interface AuthContextType {
   setupTokenRequired: boolean;
   signupEnabled: boolean;
   mcpStdioEnabled: boolean;
+  // Whether this install runs the client channel; off, no screen shows a client source.
+  clientChannelEnabled: boolean;
   // The deployment's audio detector, as far as the editor needs it.
   ttsCheck: { configured: boolean; mode: TtsCheckMode };
   login: (user: User) => void;
@@ -82,6 +84,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [setupTokenRequired, setSetupTokenRequired] = useState(false);
   const [signupEnabled, setSignupEnabled] = useState(false);
   const [mcpStdioEnabled, setMcpStdioEnabled] = useState(false);
+  const [clientChannelEnabled, setClientChannelEnabled] = useState(false);
   const [ttsCheck, setTtsCheck] = useState<{
     configured: boolean;
     mode: TtsCheckMode;
@@ -157,6 +160,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setSignupEnabled(data.signupEnabled);
         if (typeof data.mcpStdioEnabled === "boolean")
           setMcpStdioEnabled(data.mcpStdioEnabled);
+        if (typeof data.clientChannelEnabled === "boolean")
+          setClientChannelEnabled(data.clientChannelEnabled);
         if (data.ttsCheck) setTtsCheck(data.ttsCheck);
         return true;
       }
@@ -262,6 +267,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setupTokenRequired,
         signupEnabled,
         mcpStdioEnabled,
+        clientChannelEnabled,
         ttsCheck,
         login,
         logout,
@@ -288,4 +294,10 @@ export function useAuth() {
     throw new Error("useAuth must be used within an AuthProvider");
   }
   return context;
+}
+
+// The client channel switch alone, false outside an AuthProvider: the screens that hide the client
+// source are also rendered on their own (tests, embeds), where no session exists to ask.
+export function useClientChannelEnabled(): boolean {
+  return useContext(AuthContext)?.clientChannelEnabled ?? false;
 }

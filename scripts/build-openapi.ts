@@ -11,6 +11,9 @@
 // dynamically below (a static import would be hoisted above this line and read the ambient NODE_ENV).
 process.env.NODE_ENV = "development";
 process.env.LOG_LEVEL ??= "warn";
+// The published spec is the default install's: a route behind a switch that is off by default
+// (CLIENT_CHANNEL_ENABLED) stays out of it whatever the developer's own environment says.
+process.env.CLIENT_CHANNEL_ENABLED = "false";
 
 const OUTPUT_PATH = "openapi.json";
 const DOCS_JSON_PATH = "/api/docs/json";

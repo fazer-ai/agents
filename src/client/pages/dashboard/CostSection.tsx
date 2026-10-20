@@ -17,6 +17,7 @@ import {
   SpendBar,
   SpendHealthLines,
 } from "@/client/components";
+import { useClientChannelEnabled } from "@/client/contexts/AuthContext";
 import { api } from "@/client/lib/api";
 import { lazyWithReload } from "@/client/lib/staleBuild";
 import { Block, type BlockTable, Delta, SectionHeading } from "./Block";
@@ -25,6 +26,7 @@ import {
   apiQuery,
   type DashboardFilters,
   daysOf,
+  type Source,
   type Window,
 } from "./filters";
 import { CoverageBar, isProvisional, ProvisionalFigure } from "./Provisional";
@@ -86,6 +88,7 @@ export function CostSection({
   prev: Window | null;
 }) {
   const { t, i18n } = useTranslation();
+  const clientChannelEnabled = useClientChannelEnabled();
   const navigate = useNavigate();
   const nodeLabel = useNodeLabel();
   const [split, setSplit] = useState<"model" | "node">("model");
@@ -253,8 +256,14 @@ export function CostSection({
   };
 
   const ceilingData = ceiling.data;
-  const ceilingSources: ("inbox" | "playground")[] =
-    filters.source === "all" ? ["inbox", "playground"] : [filters.source];
+  const ceilingSources: Exclude<Source, "all">[] =
+    filters.source === "all"
+      ? [
+          "inbox",
+          "playground",
+          ...(clientChannelEnabled ? ["client" as const] : []),
+        ]
+      : [filters.source];
   const ceilingMonth = ceilingData
     ? new Intl.DateTimeFormat(i18n.language, {
         month: "long",
@@ -624,7 +633,9 @@ export function CostSection({
                     label={
                       src === "playground"
                         ? t("dashboard.source.playground", "Playground")
-                        : t("dashboard.source.inbox", "Real")
+                        : src === "client"
+                          ? t("dashboard.source.client", "Client channel")
+                          : t("dashboard.source.inbox", "Real")
                     }
                     entry={entry}
                     money={cfShort}

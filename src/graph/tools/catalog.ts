@@ -92,17 +92,6 @@ export const CONVERSATION_NATIVE_TOOL_NAMES = NATIVE_TOOL_NAMES.filter(
   (n) => NATIVE_TOOL_CATEGORY[n] === "conversation",
 );
 
-// Native tools whose whole point is to put something in front of the customer. A muted (observer)
-// turn is not offered them: each would cost a model round and fail in a way an operator reads as a
-// broken integration. Listed in the catalog so the runtime that strips them (buildNativeTools) and
-// the editor that must not offer them read one list instead of two that can drift.
-export const CUSTOMER_DELIVERY_NATIVE_TOOL_NAMES: readonly NativeToolName[] = [
-  "react_to_message",
-  "send_image",
-  // NOTE: its opening message reaches the customer in the destination inbox.
-  "open_case_in_inbox",
-];
-
 // The tool that opens the customer's case in another inbox.
 export const OPEN_CASE_TOOL_NAME = "open_case_in_inbox";
 // The sentence that tool's result carries when it handed the conversation to people instead (its

@@ -18,8 +18,8 @@ export type SpendGateSite =
 
 export const SPEND_GATE_FOR_NODE: Readonly<Record<string, SpendGateSite>> =
   Object.freeze({
-    // The reactive turn. Gated in the Chatwoot webhook (inbox) and in `runPlaygroundTurn`
-    // (playground), both before the graph is built.
+    // The reactive turn. Gated in the Chatwoot webhook (inbox), in `runPlaygroundTurn`
+    // (playground) and in `runClientTurn` (client), all before the graph is built.
     agent: "gated",
     // The proactive follow-up. Gated in `runAgentNudge` and in `runPlaygroundFollowup`.
     nudge: "gated",

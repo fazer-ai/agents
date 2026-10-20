@@ -106,16 +106,25 @@ Money is compared in **cents** (`decideSpend`): `0.1 + 0.2` is not `0.3` to a do
 of thirty cents met exactly by three dimes has to read as reached. The writer rounds a third decimal
 to the cent rather than refusing it; the reader drops it. Both convert through `centsOf`, which takes out the float error a decimal amount picks up on the way in before applying the rule: `262144.04 * 100` is `26214403.999999996`, and a fixed nudge of `1e-9` fell below that error past a few hundred thousand dollars, so a legally saved amount read back a cent lower and the gate refused a cent early (review round 17). An amount within the float's own precision of a whole number of cents, or of a half cent, is treated as exactly that, and the tolerance scales with the amount because the error does.
 
-## Two ceilings, not one
+## One ceiling per source, not one for all
 
-`LlmUsage.source` already separates `inbox` (real customer traffic) from `playground` (an operator
-testing), and the two fail differently. Customer traffic is driven by how many people write in, the
+`LlmUsage.source` separates `inbox` (real customer traffic), `playground` (an operator testing) and
+`client` (the users of a host application, through the client channel), and they fail differently. Customer traffic is driven by how many people write in, the
 variable the operator does not control; the playground is one person testing a prompt in a loop,
 which is the cheapest way to discover there was no ceiling at all. A single number would let the
-second silence the agent for the first, so each source answers to its own. `0` on either half means
-**no ceiling on that half**, never "refuse everything" — and it is answered from `cfg` before the
+second silence the agent for the first, so each source answers to its own. The client channel gets its
+own for the same reason: the host application's traffic grows with its user base, which neither the
+Chatwoot inbox nor the playground predicts. `0` on any source means **no ceiling for that source**, never "refuse everything" — and it is answered from `cfg` before the
 ledger is touched, so a tenant that bounds only its playground does not pay a monthly aggregate on
 every customer message to learn a fact the settings already carry.
+
+## An embedding app's own ceiling
+
+Inside the client source, each embedding app of the SDK can carry a monthly ceiling of its own (`client_apps.monthly_ceiling_cents`, null for none; REST, MCP `client_app_update` and the app's modal in the agent editor). It exists so one public agent cannot spend the client ceiling of the whole account. The tenant's client ceiling still applies inside the turn; the app's is asked first, at the SDK turn's door (`assertAppSpendCeiling`, `src/modules/client-apps/limits.ts`), and answers `429 errors.clientAppSpendCeilingReached`.
+
+- **The same poll feeds it.** `pollTenantSpend` also sums each app's share of the month's `client` cost into `spend_cost_snapshots` under the source `app:<app id>`, for the apps with a ceiling. A call belongs to an app when its thread's owner is one of the app's users (`app:<id>:…`) or its anonymous visitors (`anon:<id>:…`); a thread an anonymous visitor took along when signing in keeps its app. The proxy route's users belong to no app.
+- **Armed by either.** The tenant's poll runs while its ceiling is on or one of its apps has one (`wantsSpendPoll`, `hasAppCeiling`); saving an app's ceiling, or creating an app with one, re-arms it.
+- **Same bounds as the tenant's.** The figure is one poll period behind, a month nobody has polled is nothing spent, a figure that cannot be read allows the turn, and money is compared in cents. A failed poll records its failure on the tenant's source rows only, so the app's last good figure keeps deciding with no staleness line of its own.
 
 ## What the ceiling does not promise
 
@@ -177,10 +186,10 @@ accounts as it has instances, so one stored team would be meaningless in every a
 Below the ceiling but past `warnAtPercent`, the turn runs and a `spend_ceiling` warn is emitted, so
 the operator hears about it **before** the agent goes quiet.
 
-**Only the inbox half pages.** `writeFlowEvent` dispatches to alert channels for `source === "inbox"`
-only, which is the rule the whole flow log follows so playground telemetry never wakes anyone. The
-playground warning is therefore written to the Logs page and to the console's own bars, and nowhere
-else — which is the right reach for it, since the person spending that half is the one at the screen,
+**The playground never pages.** `writeFlowEvent` dispatches to alert channels only for a source
+`pagesAlerts` admits (inbox and client: real users on the other end), which is the rule the whole flow
+log follows so playground telemetry never wakes anyone. The playground warning is therefore written to the Logs page and to the console's own bars, and nowhere
+else — which is the right reach for it, since the person spending that source is the one at the screen,
 and the refusal, when it comes, is a `429` that names the number.
 
 **How often each line is said** is decided in one place, `spendCeilingAnnouncement`. An `over` line
@@ -203,7 +212,7 @@ red test.
 
 | node | gate |
 | --- | --- |
-| `agent` | the Chatwoot webhook (inbox), the **debounce flush**, the **re-engage** button, and `runPlaygroundTurn` (playground), which resolves its target first |
+| `agent` | the Chatwoot webhook (inbox), the **debounce flush**, the **re-engage** button, `runPlaygroundTurn` (playground), which resolves its target first, and `runClientTurn` (client) |
 | `nudge` | `runAgentNudge` and `runPlaygroundFollowup` |
 | `vision` | `extractInboundFile` / `extractPlaygroundFile`, asked **after** the file is known to be readable and immediately before the provider call |
 | `guardrail`, `tts_normalize` | covered by the unit above them |
@@ -465,6 +474,9 @@ The two directions are not a style choice.
   OpenAPI and Eden clients are told about it: a normal outcome of the feature that only the running
   server knew about is not documented. The catalog's description names both producers, because the
   rate limiter answers 429 from its own handler on any route while these five list it for this.
+- **The client channel throws** `429 errors.clientSpendCeilingReached` (`assertClientSpendCeiling`),
+  for the same reason as the playground: the host application's server is waiting on the call, and
+  a turn that produced nothing would read as a broken agent. The host decides what its user sees.
 - **The re-engage button establishes there is something to answer first.** Every gate here is about
   a TURN, and a click on a conversation whose last message is ours was always going to be a no-op:
   reporting a spent budget for it tells the operator to raise a number that would change nothing,
@@ -499,6 +511,7 @@ the ceiling screen shows the zero.
 | `enabled` | `false` | whether the ceiling is enforced at all |
 | `monthlyInboxUsd` | `0` | ceiling for customer traffic, USD to the cent; `0` = none |
 | `monthlyPlaygroundUsd` | `0` | ceiling for the playground; `0` = none |
+| `monthlyClientUsd` | `0` | ceiling for the client channel; `0` = none |
 | `overCeilingMessage` | a pt-BR sentence | what the customer is told; `null` says nothing |
 | `handoffEnabled` | `true` | open a refused conversation for humans |
 | `noticeCooldownSeconds` | `300` | cooldown on the copy and the note, never on the verdict |

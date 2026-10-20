@@ -462,6 +462,8 @@ const BARE_SLICES: Record<
   // NOTE: the first few offending account ids for the refusal message. A slice over an array of
   // NUMBERS cannot land inside a surrogate pair; the join that renders it happens after the cut.
   "src/modules/chatwoot/management.ts": [1, "array"],
+  // The audit trail's fingerprint of the stored Turnstile secret is a hex digest.
+  "src/modules/client-apps/service.ts": [1, "ascii"],
   // The transcript window and the page walk, moved here from the monitoring job: both slice ARRAYS of
   // message rows.
   "src/modules/chatwoot/transcript.ts": [2, "array"],
@@ -546,6 +548,13 @@ const BARE_SLICES: Record<
   // The page's own overshoot row, dropped: the list takes `limit + 1` to learn whether a next page
   // exists. Same shape as flowlog/read.ts, and it cuts an array of rows, never a string.
   "src/modules/webhooks/outbound/deliveries.ts": [1, "array"],
+  // The widget keeps the last question of the user being asked for, and the last messages it shows
+  // again after a reload (entries, never characters).
+  "src/sdk/agent.ts": [2, "array"],
+  // The text before an inline markdown match, cut at the match's index.
+  "src/sdk/markdown.ts": [1, "index"],
+  // An SSE frame cut at its blank-line delimiter, and a field name cut at its colon.
+  "src/sdk/sse.ts": [2, "index"],
   "src/modules/webhooks/outbound/events.ts": [2, "index"],
 };
 

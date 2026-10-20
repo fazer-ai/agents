@@ -18,6 +18,7 @@ import { buildCallbacks, loadAgentConfig } from "@/graph/prepare";
 import { parseDbId } from "@/lib/db-id";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
+import { isAnonUserId } from "@/modules/client-apps/anonymous";
 import type { ClaimedJob } from "@/modules/scheduler/service";
 import {
   type JobResult,
@@ -431,7 +432,25 @@ export async function runSuggestionReview(
   if (item.agentId === null) return release("no agent");
 
   const origin = parseThreadOrigin(item.threadId);
-  const source = origin?.kind === "playground" ? "playground" : "inbox";
+  const source =
+    origin?.kind === "playground" || origin?.kind === "client"
+      ? origin.kind
+      : "inbox";
+  // A suggestion carries no audience of its own, so its review is billed as its thread's owner is
+  // now: an anonymous visitor's thread marks the call anonymous until the visitor signs in.
+  const anonymous =
+    origin?.kind === "client" && item.threadId !== null
+      ? isAnonUserId(
+          (
+            await runScopedOn(base, sysCtx(tenantId), (db) =>
+              db.detachedThread.findUnique({
+                where: { threadId: item.threadId as string },
+                select: { externalUser: { select: { externalId: true } } },
+              }),
+            )
+          )?.externalUser?.externalId ?? "",
+        )
+      : false;
   const cfg = await runScopedOn(base, sysCtx(tenantId), (db) =>
     loadAgentConfig(
       db,
@@ -540,6 +559,7 @@ export async function runSuggestionReview(
         conversationId: null,
         billedModel: mc,
         source,
+        anonymous,
         base,
       }),
     });

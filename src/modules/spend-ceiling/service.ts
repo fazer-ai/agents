@@ -2,7 +2,7 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
-import type { UsageSource } from "@/graph/usage";
+import { USAGE_SOURCES, type UsageSource } from "@/graph/usage";
 import { AppError, TenantTargetRequiredError } from "@/lib/errors";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { claimContactAuthNotice } from "@/modules/contact-auth/state";
@@ -48,7 +48,7 @@ export interface SpendSnapshot {
 // would be refused on the strength of it. Rare by the clock and certain over a fleet.
 export async function readSpendSnapshot(
   tenantId: bigint,
-  source: UsageSource,
+  source: UsageSource | `app:${string}`,
   at: Date,
   base: PrismaClient = basePrisma,
 ): Promise<SpendSnapshot | null> {
@@ -361,33 +361,64 @@ export function spendCeilingFlowEvent(
   };
 }
 
-// THE PLAYGROUND'S REFUSAL, in one place because it is one sentence said in three (a text turn, a
-// simulated follow-up, a file the operator uploads). A duplicated `throw` is how the third one ends
-// up with a different status code, and the operator then sees the same wall described two ways.
-//
-// It throws instead of going quiet, unlike every customer-facing path: the operator is looking at
-// the screen and a turn that produced nothing would read as a broken provider, not as a budget.
-export async function assertPlaygroundSpendCeiling(params: {
+// THE REFUSAL OF A CHANNEL WITH SOMEBODY LOOKING AT THE SCREEN, in one place because it is one
+// sentence said in several (the playground's text turn, simulated follow-up and uploaded file; the
+// client channel's turn). A duplicated `throw` is how one of them ends up with a different status
+// code. It throws instead of going quiet, unlike the inbox: a turn that produced nothing would read
+// as a broken provider, not as a budget.
+async function assertScreenSpendCeiling(
+  source: "playground" | "client",
+  refusal: AppError,
+  params: {
+    tenantId: bigint;
+    base?: PrismaClient;
+    flow?: FlowContext;
+    now?: Date;
+  },
+): Promise<SpendCeilingResult> {
+  const result = await spendCeilingVerdict({
+    tenantId: params.tenantId,
+    source,
+    base: params.base,
+    now: params.now,
+  });
+  announceSpendCeiling(params.flow, result, source, params.tenantId);
+  if (result.state === "over") throw refusal;
+  return result;
+}
+
+export function assertPlaygroundSpendCeiling(params: {
   tenantId: bigint;
   base?: PrismaClient;
   flow?: FlowContext;
   now?: Date;
 }): Promise<SpendCeilingResult> {
-  const result = await spendCeilingVerdict({
-    tenantId: params.tenantId,
-    source: "playground",
-    base: params.base,
-    now: params.now,
-  });
-  announceSpendCeiling(params.flow, result, "playground", params.tenantId);
-  if (result.state === "over") {
-    throw new AppError(
+  return assertScreenSpendCeiling(
+    "playground",
+    new AppError(
       "the playground spend ceiling for this month has been reached",
       429,
       "errors.spendCeilingReached",
-    );
-  }
-  return result;
+    ),
+    params,
+  );
+}
+
+export function assertClientSpendCeiling(params: {
+  tenantId: bigint;
+  base?: PrismaClient;
+  flow?: FlowContext;
+  now?: Date;
+}): Promise<SpendCeilingResult> {
+  return assertScreenSpendCeiling(
+    "client",
+    new AppError(
+      "the client channel spend ceiling for this month has been reached",
+      429,
+      "errors.clientSpendCeilingReached",
+    ),
+    params,
+  );
 }
 
 export interface SpendCeilingUsageEntry {
@@ -426,7 +457,7 @@ export interface SpendCeilingUsageDto {
   entries: SpendCeilingUsageEntry[];
 }
 
-// WHAT THE CONSOLE SHOWS: both halves, always, with figures even when the block is off, so an
+// WHAT THE CONSOLE SHOWS: every source, always, with figures even when the block is off, so an
 // operator picking a ceiling sees the month's shape. With the ceiling on the figure is the snapshot,
 // because the bar shows what the gate decides on; off, it is the ledger summed now, since no poll
 // runs. Takes the REQUEST's context, never an id lifted out of it, so a stale tenant selection is
@@ -448,7 +479,7 @@ export async function spendCeilingUsage(params: {
   const at = params.now ?? new Date();
   const since = monthStart(at);
   const until = monthEnd(at);
-  const sources: UsageSource[] = ["inbox", "playground"];
+  const sources = USAGE_SOURCES;
   const pollIntervalMs = spendPollIntervalMs();
   const entries = await runScopedOn(base, params.ctx, (db) =>
     Promise.all(

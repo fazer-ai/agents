@@ -492,6 +492,63 @@
     "option": "Conversation {{id}} in {{tenant}}",
     "toList": "Go to conversations"
   },
+  "clientApps": {
+    "anonExpiry": "Delete idle anonymous conversations after (days)",
+    "anonExpiryHint": "A conversation with no message for this long is deleted. One handed over to a signed-in user is kept, and one with spend this month stays until the month ends.",
+    "anonMessages": "Messages per session, per minute",
+    "anonSessions": "New sessions per address, per hour",
+    "anonymous": "Anonymous visitors",
+    "anonymousBadge": "Anonymous allowed",
+    "anonymousHint": "Lets a page with no signed-in user talk to the agent. Leave it off for an assistant inside a logged-in app.",
+    "ceiling": "Monthly spend ceiling (USD)",
+    "ceilingHint": "The application's turns stop for the rest of the month past it. Empty for none; the account's client ceiling still applies.",
+    "ceilingInvalid": "An amount in dollars, such as 50 or 12.50",
+    "ceilingNone": "No ceiling",
+    "ceilingNotRead": "Monthly ceiling {{ceiling}}, this month not read yet",
+    "ceilingSpent": "{{spent}} of {{ceiling}} this month",
+    "create": "Create application",
+    "createTitle": "New embedding application",
+    "deleteFailed": "Could not delete the application",
+    "deleteMessage": "Its keys go with it: every user signed in through this application loses access at once.",
+    "deleteTitle": "Delete {{name}}?",
+    "editTitle": "Edit application",
+    "emptyDescription": "Register the application that will embed this agent to get its key.",
+    "emptyTitle": "No application yet",
+    "keyCurrent": "current",
+    "keyExpiring": "works until {{date}}",
+    "keys": "Keys",
+    "kid": "Key id (kid)",
+    "name": "Name",
+    "namePlaceholder": "My app",
+    "new": "New application",
+    "noKey": "No valid key: the application signs nobody in until you mint one.",
+    "origins": "Allowed origins",
+    "originsHint": "One per line, exactly as the browser shows it: https://app.example.com. http only for localhost; no path and no wildcard.",
+    "password": "Your password",
+    "passwordHint": "This mints a key that signs users in. Confirm with your password.",
+    "publicId": "Application id",
+    "revoke": "Revoke",
+    "revokeCurrentMessage": "This is the current key: until you mint a new one, the application signs nobody in. Do it when you believe the key leaked.",
+    "revokeFailed": "Could not revoke the key",
+    "revokeMessage": "Tokens signed with it stop working at once, instead of at the end of the 24 hours.",
+    "revokeTitle": "Revoke this key?",
+    "rotate": "Mint new key",
+    "rotateHint": "The new key becomes the current one. The previous key keeps working for 24 hours, so users already signed in stay signed in while you deploy the new one.",
+    "rotateTitle": "New key",
+    "saveFailed": "Could not save the application",
+    "secret": "Key",
+    "secretWarning": "Copy the key now. It is shown only once and cannot be retrieved again; keep it on your application's server, never in the browser.",
+    "signHint": "Your server signs each user as a JWT (HS256) with this key: kid in the header, aud = application id, sub = user id, exp within an hour; name, email and scope optional.",
+    "subtitle": "Web applications that put this agent on their own pages. Each one signs its users in with a key of its own.",
+    "title": "Embedding applications",
+    "turnstile": "Human check (Turnstile)",
+    "turnstileHint": "Before a new anonymous session, the visitor passes a Cloudflare Turnstile challenge. Create the widget in your Cloudflare account for your site's domains and paste its keys here.",
+    "turnstileSecret": "Secret key",
+    "turnstileSecretHint": "Stays on the server and is never shown again.",
+    "turnstileSecretStored": "A secret is stored. Leave empty to keep it.",
+    "turnstileSiteKey": "Site key",
+    "turnstileSiteKeyHint": "Public. The page shows the challenge with it."
+  },
   "codeTools": {
     "addTitle": "New code tool",
     "code": "Code",
@@ -922,6 +979,12 @@
   "dashboard": {
     "absolute": "#",
     "agent": "Agent #{{id}}",
+    "audience": {
+      "all": "All users",
+      "anonymous": "Anonymous",
+      "identified": "Signed in",
+      "label": "Audience"
+    },
     "automation": {
       "title": "What the agent does on its own"
     },
@@ -929,6 +992,7 @@
       "dimension": "Group by",
       "help": "The period's model calls grouped by the dimension you pick. Conversations are the ones those calls belonged to, and the resolution rate is the share of them the agent closed itself. Click an agent or an inbox to filter the whole page by it.",
       "noInbox": "No inbox (playground)",
+      "noInboxOrClient": "No inbox (playground or client channel)",
       "title": "Where the usage goes"
     },
     "cache": {
@@ -1142,6 +1206,7 @@
     },
     "source": {
       "all": "All",
+      "client": "Client channel",
       "inbox": "Real",
       "label": "Usage segment",
       "playground": "Playground"
@@ -3278,6 +3343,12 @@
   "logs": {
     "allLevels": "All levels",
     "allStages": "All stages",
+    "anonymousSession": "Anonymous visitor",
+    "audience": {
+      "all": "All users",
+      "anonymous": "Anonymous visitors",
+      "identified": "Signed-in users"
+    },
     "clearScope": "Clear filter",
     "conversation": "Conversation #{{id}}",
     "emptyDescription": "Execution-flow entries appear here as agents handle conversations.",
@@ -3304,6 +3375,7 @@
     "exportTruncated_one": "Exported the newest entry (more matched the filters).",
     "exportTruncated_other": "Exported the newest {{count}} entries (more matched the filters).",
     "exportUntil": "To",
+    "filterAudience": "Audience",
     "filterConversation": "Filter logs from this conversation",
     "filterLevel": "Level",
     "filterSource": "Source",
@@ -3348,6 +3420,7 @@
     "searchPlaceholder": "Search error messages…",
     "source": {
       "all": "All",
+      "client": "Client channel",
       "inbox": "Real",
       "playground": "Playground"
     },
@@ -3954,9 +4027,10 @@
     "tokenLabel": "Setup token"
   },
   "spendCeiling": {
+    "clientUsd": "Monthly ceiling: client channel (USD)",
     "cooldown": "Notice cooldown (seconds)",
     "cooldownHint": "How long before the same conversation is told again. The ceiling itself is checked on every message regardless.",
-    "desc": "Stop spending once a calendar month reaches a dollar budget, as this app's usage records price the month's calls. Customer traffic and the playground are counted apart, so testing can never silence the agent for customers.",
+    "desc": "Stop spending once a calendar month reaches a dollar budget, as this app's usage records price the month's calls. Each source is counted apart, so testing can never silence the agent for customers.",
     "enabled": "Enforce the ceiling",
     "handoff": "Hand refused conversations to a human",
     "inboxUsd": "Monthly ceiling: customers (USD)",
@@ -3967,6 +4041,7 @@
     "saved": "Spend ceiling saved.",
     "saveError": "Could not save the spend ceiling.",
     "source": {
+      "client": "Client channel (your app's users)",
       "inbox": "Customer conversations",
       "playground": "Playground (your own tests)"
     },
@@ -3985,7 +4060,7 @@
       "unpricedBrief_other": "{{n}} calls this month have no price and are not in this figure.",
       "updated": "Refreshed {{when}}"
     },
-    "usdHint": "US dollars per calendar month, as this app's usage records price the calls. 0 means no ceiling on this half.",
+    "usdHint": "US dollars per calendar month, as this app's usage records price the calls. 0 means no ceiling for this source.",
     "usdInvalid": "Enter zero or a positive amount in dollars.",
     "warnAt": "Warn at (%)",
     "warnAtHint": "Percentage of a ceiling that triggers a warning on your alert channels, so you hear about it before the agent goes quiet. 0 disables the warning."

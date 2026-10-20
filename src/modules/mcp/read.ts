@@ -8,6 +8,7 @@ import {
   SANDBOX_STACK_BYTES,
   SANDBOX_TIMEOUT_MS,
 } from "@/graph/tools/code-sandbox-limits";
+import type { ClientAudience } from "@/graph/usage-sources";
 import { AUDIT_SCOPES, isAuditScope } from "@/lib/audit/scope";
 import { checkCodeToolSyntax } from "@/lib/code-tool-syntax";
 import {
@@ -1100,6 +1101,7 @@ export interface LogsQueryArgs {
   conversation_id?: string;
   turn_id?: string;
   source?: string;
+  audience?: ClientAudience;
   search?: string;
   limit?: number;
   cursor?: string;
@@ -1120,6 +1122,7 @@ export async function logsQuery(
   if (args.stage) opts.stage = args.stage;
   if (args.turn_id) opts.turnId = args.turn_id;
   if (args.source) opts.source = args.source;
+  if (args.audience) opts.audience = args.audience;
   if (args.search) opts.search = args.search;
   if (args.limit !== undefined) opts.limit = args.limit;
   if (args.agent_id) {
@@ -1154,6 +1157,7 @@ export interface LogsExportArgs {
   conversation_id?: string;
   turn_id?: string;
   source?: string;
+  audience?: ClientAudience;
   search?: string;
   format?: string;
   max_rows?: number;
@@ -1182,6 +1186,7 @@ export async function logsExport(
   if (args.stage) opts.stage = args.stage;
   if (args.turn_id) opts.turnId = args.turn_id;
   if (args.source) opts.source = args.source;
+  if (args.audience) opts.audience = args.audience;
   if (args.search) opts.search = args.search;
   if (args.agent_id) {
     const v = parseMcpId(args.agent_id, "agent_id");
@@ -1212,16 +1217,18 @@ export async function logsExport(
 function metricsFilter(args: {
   since?: string;
   source?: string;
+  audience?: ClientAudience;
 }): MetricsFilter {
   const filter: MetricsFilter = {};
   if (args.since) filter.since = new Date(args.since);
   if (args.source) filter.source = args.source as MetricsFilter["source"];
+  if (args.audience) filter.audience = args.audience;
   return filter;
 }
 
 export async function metricsGet(
   principal: VerifiedToken,
-  args: { since?: string; source?: string },
+  args: { since?: string; source?: string; audience?: ClientAudience },
   deps: WriteDeps & { signal?: AbortSignal } = {},
 ): Promise<WriteResult> {
   const base = deps.base ?? metricsPrisma;
@@ -1249,7 +1256,7 @@ export async function metricsGet(
 
 export async function metricsTimeseries(
   principal: VerifiedToken,
-  args: { since?: string; source?: string },
+  args: { since?: string; source?: string; audience?: ClientAudience },
   deps: WriteDeps = {},
 ): Promise<WriteResult> {
   const base = deps.base ?? metricsPrisma;

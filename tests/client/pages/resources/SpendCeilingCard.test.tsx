@@ -9,6 +9,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { ToastProvider } from "@/client/components/Toast";
+import { AuthContext } from "@/client/contexts/AuthContext";
 import { SpendCeilingCard } from "@/client/pages/resources/SpendCeilingCard";
 
 // The spend ceiling's card shows DOLLARS as the usage ledger priced them, and beside the bar the
@@ -81,6 +82,7 @@ const settings = {
   enabled: true,
   monthlyInboxUsd: 20,
   monthlyPlaygroundUsd: 0,
+  monthlyClientUsd: 0,
   overCeilingMessage: "x",
   handoffEnabled: true,
   noticeCooldownSeconds: 300,
@@ -304,6 +306,7 @@ describe("the spend ceiling card", () => {
     expect(put?.body).toMatchObject({
       monthlyInboxUsd: 45.5,
       monthlyPlaygroundUsd: 0,
+      monthlyClientUsd: 0,
     });
     expect(put?.body).not.toHaveProperty("monthlyInboxTokens");
   });
@@ -333,5 +336,45 @@ describe("the spend ceiling card", () => {
     expect(requests.find((r) => r.method === "PUT")?.body).toMatchObject({
       monthlyInboxUsd: 5.25,
     });
+  });
+});
+
+// The client channel is off unless the install switches it on (CLIENT_CHANNEL_ENABLED): off, the card
+// shows no client bar and no client field; on, both.
+describe("the client source follows the install's switch", () => {
+  const withSwitch = (on: boolean) =>
+    render(
+      <AuthContext.Provider
+        value={
+          { clientChannelEnabled: on } as unknown as NonNullable<
+            React.ContextType<typeof AuthContext>
+          >
+        }
+      >
+        <ToastProvider>
+          <SpendCeilingCard value={settings} onSaved={() => {}} />
+        </ToastProvider>
+      </AuthContext.Provider>,
+    );
+
+  test("off: no client bar and no client field", async () => {
+    installFetchStub({
+      ...baseUsage(),
+      entries: [...baseUsage().entries, entry({ source: "client" })],
+    });
+    withSwitch(false);
+    await waitFor(() => expect(has("Customer conversations")).toBe(true));
+    expect(has("Client channel")).toBe(false);
+    expect(has("client channel (USD)")).toBe(false);
+  });
+
+  test("on: the client bar and its field", async () => {
+    installFetchStub({
+      ...baseUsage(),
+      entries: [...baseUsage().entries, entry({ source: "client" })],
+    });
+    withSwitch(true);
+    await waitFor(() => expect(has("Client channel (your app")).toBe(true));
+    expect(has("client channel (USD)")).toBe(true);
   });
 });

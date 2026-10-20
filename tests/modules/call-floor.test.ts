@@ -4,7 +4,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { z } from "zod";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { GROUNDING_DIRECTIVE } from "@/graph/prompt";
-import { CUSTOMER_DELIVERY_NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
+import { CUSTOMER_DELIVERY_NATIVE_TOOL_NAMES } from "@/graph/tools/channel-natives";
 import type { TenantContext } from "@/lib/tenancy";
 import { estimateTokens } from "@/lib/token-estimate";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";

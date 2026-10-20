@@ -8,6 +8,10 @@ import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
 import { getCheckpointer } from "@/graph/checkpointer";
+import {
+  buildDetachedToolset,
+  loadDetachedConfig,
+} from "@/graph/detached-turn";
 import { lastAssistantText, recursionLimitFor } from "@/graph/graph";
 import { sentAtStamp } from "@/graph/markers";
 import type { FallbackFailedInfo, ModelRetryInfo } from "@/graph/model-limit";
@@ -19,7 +23,6 @@ import {
   buildCallbacks,
   buildModelAndGraph,
   buildSpeechNormalizer,
-  buildToolset,
   loadAgentConfig,
 } from "@/graph/prepare";
 import { GROUNDING_DIRECTIVE } from "@/graph/prompt";
@@ -36,14 +39,18 @@ import { ToolFlowLogger } from "@/graph/tool-flowlog";
 import { selectionsFromGrants } from "@/graph/tools/assemble";
 import {
   CONVERSATION_NATIVE_TOOL_NAMES,
+  type NativeToolName,
   UTILITY_NATIVE_TOOL_NAMES,
 } from "@/graph/tools/catalog";
+import {
+  nativesWhere,
+  PLAYGROUND_NATIVES,
+} from "@/graph/tools/channel-natives";
 import {
   buildMcpContextSection,
   type McpLoadDeps,
   type McpServerMeta,
 } from "@/graph/tools/mcp";
-import { buildSimulatedNativeTools } from "@/graph/tools/native";
 import { logSchemaRefusals } from "@/graph/tools/refusal-log";
 import type { ReplyChoice } from "@/graph/tools/reply-as-text";
 import { normalizeToolName } from "@/graph/tools/toolName";
@@ -64,7 +71,6 @@ import { clipText } from "@/lib/text";
 import { estimateTokens } from "@/lib/token-estimate";
 import { type AgentMode, isMonitoring } from "@/modules/agents/mode";
 import { normalizeGrants, type ToolGrantInput } from "@/modules/agents/service";
-import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { renderInboundMessage } from "@/modules/chatwoot/render";
 import { documentToolName } from "@/modules/documents/templates";
 import {
@@ -97,6 +103,7 @@ import { readMonitoringConfig } from "@/modules/observe/settings";
 import { attachSignature, signatureFor } from "@/modules/signature/service";
 import { assertPlaygroundSpendCeiling } from "@/modules/spend-ceiling/service";
 import { transcribePlaygroundAudio } from "@/modules/stt/service";
+import { normalizeAudioUpload } from "@/modules/stt/upload";
 import { plannedReplyIsAudio, spokenNoticeFor } from "@/modules/tts/modality";
 import { synthesizeReply } from "@/modules/tts/service";
 import { shouldReplyWithAudio } from "@/modules/tts/settings";
@@ -357,119 +364,30 @@ export function applyToolMocks(
   );
 }
 
-// Loads the agent config for the playground (ignoring the `enabled` toggle — you test before going
-// live). instance/conversation ids are absent here (dummy 0n/0 → no mirror row), so contact/prompt
-// vars come from `overrides.promptVars` when the operator simulates them. Throws the same
-// not-runnable errors as the turn path (agent missing vs no model credential).
-async function loadPlaygroundConfig(params: {
-  ctx: TenantContext;
-  agentId: bigint;
-  threadId: string;
-  base: PrismaClient;
-  overrides?: AgentConfigOverrides;
-  // A call talks through the voice engine: the agent's chat model is never built for it.
-  chatModelUnused?: boolean;
-}): Promise<AgentConfig> {
-  const { ctx, agentId, threadId, base } = params;
-  const tenantId = ctx.tenantId as bigint;
-  const loaded = await runScopedOn(base, ctx, (db) =>
-    loadAgentConfig(
-      db,
-      {
-        tenantId,
-        instanceId: 0n,
-        conversationId: 0,
-        agentId,
-        threadId,
-        // NOTE: the operator just typed it, so the age is "now"; omitted, the variable renders
-        // EMPTY. The literal rather than a `Date` so the time simulation moves it too (`prepare.ts`).
-        lastIncomingAt: "now" as const,
-      },
-      {
-        ignoreDisabled: true,
-        overrides: params.overrides,
-        chatModelUnused: params.chatModelUnused,
-      },
-    ),
-  );
-  if (!loaded) {
-    // Agent missing OR no model credential configured — distinguish the two for the operator.
-    const exists = await runScopedOn(base, ctx, (db) =>
-      db.agent.findUnique({ where: { id: agentId }, select: { id: true } }),
-    );
-    if (!exists)
-      throw new NotFoundError("agent not found", "errors.agentNotFound");
-    throw new AppError(
-      "agent has no runnable model configured",
-      400,
-      "errors.agentNotRunnable",
-    );
-  }
-  return loaded;
+// The playground's agent config: a detached turn's, which can also leave the chat model unbuilt (a
+// call talks through the voice engine).
+function loadPlaygroundConfig(
+  params: Parameters<typeof loadDetachedConfig>[0],
+): Promise<AgentConfig> {
+  return loadDetachedConfig(params);
 }
 
-// Builds the playground toolset: the CONVERSATION native tools SIMULATED (no real effect; a dummy
-// client satisfies the type and is never called) alongside the real utility/HTTP/MCP/KB tools.
-// Shared by the turn path (then mocks are applied over it) and the tool-listing endpoint.
+// The playground's toolset: a detached turn's, with the natives as the playground map says and the
+// document tools simulated, so the operator sees the agent choose one.
 function buildPlaygroundToolset(
   loaded: AgentConfig,
-  params: {
-    ctx: TenantContext;
-    threadId: string;
-    base: PrismaClient;
-    deps?: PlaygroundDeps;
-    // The turn's telemetry context, so a tool-stage line the toolset produces lands in the Logs page
-    // under source=playground. Without it a precondition refusal is invisible exactly where an
-    // operator goes to find out what their agent does — a refused call never reaches the inner tool,
-    // so ToolFlowLogger sees no run either and there is nothing else to read.
-    flow: FlowContext | undefined;
-    // Where `reply_as_text` records its choice. The turn passes the one its delivery
-    // reads; the listing passes a throwaway, so the panel shows the tool the model is offered. Absent
-    // on the simulated follow-up, which, like production's nudge, is never offered the tool.
-    replyChoice: ReplyChoice | undefined;
-    // The simulated follow-up, built like production's nudge (ToolCtx.proactive).
-    proactive?: boolean;
-    // A call's HTTP deadline, below what the voice engine waits (CALL_HTTP_TOOL_TIMEOUT_MS).
-    httpToolTimeoutMs?: number;
-    // A call's outbound fetch, which holds each request to its tool invocation's deadline.
-    outboundFetch?: typeof fetch;
-    // Built as an observation is: on a muted client, which drops what delivers to the customer
-    // (those natives, documents, a pack's delivering tools) and gives the handoff its muted schema.
-    muted?: boolean;
-    // The account the build stands in, where 0n (no conversation) changes what a tool offers.
-    instanceId?: bigint;
-  },
+  params: Omit<
+    Parameters<typeof buildDetachedToolset>[1],
+    "natives" | "documents" | "mcp"
+  > & { deps?: PlaygroundDeps },
 ): Promise<StructuredToolInterface[]> {
-  return buildToolset(
-    loaded,
-    {
-      tenantId: params.ctx.tenantId as bigint,
-      instanceId: params.instanceId ?? 0n,
-      base: params.base,
-      client: (params.muted ? { muted: true } : {}) as ChatwootClient,
-      conversationId: 0,
-      threadId: params.threadId,
-      replyChoice: params.replyChoice,
-      ...(params.proactive ? { proactive: true } : {}),
-      ...(params.httpToolTimeoutMs !== undefined
-        ? { httpToolTimeoutMs: params.httpToolTimeoutMs }
-        : {}),
-      ...(params.outboundFetch ? { outboundFetch: params.outboundFetch } : {}),
-    },
-    {
-      // Conversation tools (handoff/resolve/…) are SIMULATED (no real effect); utility tools
-      // (calculator, get_current_time) run for real. `allowed` is the agent's own native set.
-      buildNativeTools: (ctx, allowed) =>
-        buildSimulatedNativeTools(ctx, allowed),
-      // A document tool is conversation-scoped for the same reason handoff/resolve are: it needs a
-      // turn to attach the file to. Run for real here it would refuse every call with the message
-      // meant for proactive nudges, so the playground would show behaviour production never
-      // produces. Simulated, the operator sees the agent choose it — which is what they came to see.
-      simulateDocuments: true,
-      mcp: params.deps?.mcp,
-      flow: params.flow,
-    },
-  );
+  const { deps, ...rest } = params;
+  return buildDetachedToolset(loaded, {
+    ...rest,
+    mcp: deps?.mcp,
+    natives: PLAYGROUND_NATIVES,
+    documents: "simulated",
+  });
 }
 
 // Shared load→build tail for both playground entry points. Loads the agent config + the simulated
@@ -529,20 +447,23 @@ async function buildPlaygroundGraph(params: {
   const tenantId = ctx.tenantId as bigint;
   const loaded =
     params.loaded ??
-    (await loadPlaygroundConfig({
+    (await loadDetachedConfig({
       ctx,
       agentId,
       threadId,
       base,
       overrides: params.overrides,
     }));
-  const rawTools = await buildPlaygroundToolset(loaded, {
+  const rawTools = await buildDetachedToolset(loaded, {
     ctx,
     threadId,
     base,
-    deps: params.deps,
+    mcp: params.deps?.mcp,
     flow: params.flow,
     replyChoice: params.replyChoice,
+    natives: PLAYGROUND_NATIVES,
+    // NOTE: simulated, so the operator sees the agent choose a document, which is what they came to see.
+    documents: "simulated",
     proactive: params.silenceProtocol,
   });
   const toolMocks = params.overrides?.toolMocks;
@@ -574,7 +495,7 @@ async function buildPlaygroundGraph(params: {
   const toolNames = new Set(tools.map((tl) => tl.name));
   const simulatedNames = new Set(
     [
-      ...CONVERSATION_NATIVE_TOOL_NAMES,
+      ...nativesWhere(PLAYGROUND_NATIVES, (s) => s === "simulated"),
       // The document tools the agent was granted, by the name each template produces: they are
       // simulated here too, and a trace that did not say so would read as a document really issued.
       ...loaded.documentSelections.map((d) => documentToolName(d.slug)),
@@ -639,22 +560,24 @@ export async function listPlaygroundTools(params: {
     params.ctx.tenantId as bigint,
     params.agentId,
   );
-  const loaded = await loadPlaygroundConfig({
+  const loaded = await loadDetachedConfig({
     ctx: params.ctx,
     agentId: params.agentId,
     threadId,
     base,
   });
-  const tools = await buildPlaygroundToolset(loaded, {
+  const tools = await buildDetachedToolset(loaded, {
     ctx: params.ctx,
     threadId,
     base,
-    deps: params.deps,
+    mcp: params.deps?.mcp,
     // NOTE: A LISTING, not a turn: nothing here executes a tool, so there is no tool-stage line to
     // write and no FlowContext to write it to. Spelled out rather than omitted because the field is
     // required — the next caller has to answer the same question instead of inheriting a default.
     flow: undefined,
     replyChoice: { textChosen: false },
+    natives: PLAYGROUND_NATIVES,
+    documents: "simulated",
   });
 
   const classify = toolClassifier(loaded);
@@ -700,7 +623,11 @@ function toolClassifier(
   );
 
   return (name) => {
-    if (conversation.has(name)) return { category: "native", simulated: true };
+    if (conversation.has(name))
+      return {
+        category: "native",
+        simulated: PLAYGROUND_NATIVES[name as NativeToolName] === "simulated",
+      };
     if (document.has(name)) return { category: "external", simulated: true };
     if (utility.has(name)) return { category: "utility", simulated: false };
     if (knowledge.has(name)) return { category: "knowledge", simulated: false };
@@ -992,7 +919,7 @@ async function runPlaygroundTurnOnce(
   };
   // The agent is resolved before the spend ceiling is asked: a missing agent or unrunnable
   // model is a 404/400, never a 429 for a call that could not happen. The read is reused below.
-  const loadedConfig = await loadPlaygroundConfig({
+  const loadedConfig = await loadDetachedConfig({
     ctx,
     agentId,
     threadId,
@@ -1507,7 +1434,7 @@ async function runPlaygroundFollowupOnce(
   // The SAME widening production applies: the directive asks for `skip_reply`, which is
   // operator-revocable, and without it the simulation replies where production stays silent.
   const loadedConfig = withFollowupSilenceChannel(
-    await loadPlaygroundConfig({
+    await loadDetachedConfig({
       ctx,
       agentId,
       threadId,
@@ -1757,35 +1684,6 @@ async function runPlaygroundFollowupOnce(
     suppressed,
     closesOnly: false,
   };
-}
-
-const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
-
-// Size + type validation and mime normalization for an uploaded voice note, shared by the
-// transcribe-only step and the full audio turn.
-async function normalizeAudioUpload(
-  file: File,
-): Promise<{ bytes: ArrayBuffer; mimeType: string | null }> {
-  if (file.size > MAX_AUDIO_BYTES) {
-    throw new AppError("audio too large", 413, "errors.audioTooLarge");
-  }
-  // Bun derives a multipart File's content-type from the filename extension, not the
-  // browser-set `type`. MediaRecorder voice notes are `.webm`, which maps to `video/webm` (webm
-  // is a video-container MIME even when it carries only an audio track), so an audio-only
-  // recording legitimately arrives as `video/webm`. Accept it alongside `audio/*`, then normalize
-  // it so the downstream STT request advertises an audio mime.
-  const rawType = file.type || null;
-  const isAudioLike =
-    !rawType || rawType.startsWith("audio/") || rawType === "video/webm";
-  if (!isAudioLike) {
-    throw new AppError(
-      "unsupported audio type",
-      415,
-      "errors.unsupportedAudioType",
-    );
-  }
-  const mimeType = rawType === "video/webm" ? "audio/webm" : rawType;
-  return { bytes: await file.arrayBuffer(), mimeType };
 }
 
 export interface PlaygroundTranscribeOnlyParams {

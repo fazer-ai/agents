@@ -32,6 +32,7 @@ import {
   staticRateLimitMiddleware,
   webhookAuthFailureLimitMiddleware,
 } from "@/api/middlewares/rateLimit";
+import { sdkCors } from "@/api/v1/sdk.controller";
 import config from "@/config";
 import { AppError } from "@/lib/errors";
 import {
@@ -129,12 +130,16 @@ export async function buildApp({
     )
     .use(localeMiddleware)
     .onRequest(({ set }) => stampServedBuild(build, set.headers))
-    .onAfterResponse(({ request, route, set }) => {
+    // NOTE: the status a returned Response carries wins over `set.status`: a limiter's refusal is a
+    // cloned Response that leaves `set.status` at its default.
+    .onAfterResponse(({ request, route, set, responseValue }) => {
+      const status =
+        responseValue instanceof Response ? responseValue.status : set.status;
       logger.info(
         "%s %s [%s]",
         request.method,
         loggedUrl(request.url, route),
-        set.status,
+        status,
       );
     })
     .onAfterHandle(applyStaticCacheControl)
@@ -270,6 +275,8 @@ export async function buildApp({
         : { origin: parseOrigins(config.corsOrigin) },
     ),
   );
+  // The SDK turn's own CORS, after the instance-wide plugin so it replaces what that wrote (see sdkCors).
+  app.onRequest(sdkCors);
 
   return app;
 }

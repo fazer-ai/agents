@@ -1,5 +1,6 @@
 import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
+import type { ClientAudience } from "@/graph/usage-sources";
 import { assertUsableCount } from "@/lib/query-param";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 
@@ -22,6 +23,8 @@ export interface ExecutionLogItem {
   model: string | null;
   durationMs: number | null;
   source: string;
+  // A line of a client-channel turn served to an anonymous visitor's session.
+  anonymous: boolean;
   detail: unknown;
   errorMessage: string | null;
   createdAt: string;
@@ -43,6 +46,8 @@ export interface ListLogsOpts {
   noTool?: boolean;
   // undefined → "inbox" (real traffic); "all" → no source filter; else exact match.
   source?: string;
+  // Client-channel lines of one audience only (and so no line of another source).
+  audience?: ClientAudience;
   // Case-insensitive substring match on errorMessage.
   search?: string;
   limit?: number;
@@ -72,6 +77,7 @@ export const LOG_SELECT = {
   model: true,
   durationMs: true,
   source: true,
+  anonymous: true,
   detail: true,
   errorMessage: true,
   createdAt: true,
@@ -115,6 +121,13 @@ export function buildLogWhere(
     ...(opts.turnId ? { turnId: opts.turnId } : {}),
     // source: default to real traffic; "all" lifts the filter entirely.
     ...(opts.source === "all" ? {} : { source: opts.source ?? "inbox" }),
+    // An audience is client traffic of that kind, whatever the source says: ANDed, so a source
+    // other than "client" with an audience matches nothing rather than being replaced.
+    ...(opts.audience
+      ? {
+          AND: [{ source: "client", anonymous: opts.audience === "anonymous" }],
+        }
+      : {}),
     ...(opts.search
       ? { errorMessage: { contains: opts.search, mode: "insensitive" } }
       : {}),
@@ -137,6 +150,7 @@ export function mapExecutionLogRow(r: ExecutionLogRow): ExecutionLogItem {
     model: r.model,
     durationMs: r.durationMs,
     source: r.source,
+    anonymous: r.anonymous,
     detail: r.detail,
     errorMessage: r.errorMessage,
     createdAt: r.createdAt.toISOString(),
@@ -158,6 +172,7 @@ export async function inboxLogLineIds(
   const since = opts.since ?? null;
   const until = opts.until ?? null;
   const source = opts.source === "all" ? null : (opts.source ?? "inbox");
+  const audience = opts.audience ?? null;
   const tool = opts.tool ?? null;
   const noTool = Boolean(opts.noTool && !opts.tool);
   const rows = await db.$queryRaw<{ id: bigint }[]>(Prisma.sql`
@@ -176,6 +191,8 @@ export async function inboxLogLineIds(
        AND (${opts.conversationId ?? null}::bigint IS NULL OR l.conversation_id = ${opts.conversationId ?? null})
        AND (${opts.turnId ?? null}::text IS NULL OR l.turn_id = ${opts.turnId ?? null})
        AND (${source}::text IS NULL OR l.source = ${source})
+       AND (${audience}::text IS NULL
+            OR (l.source = 'client' AND l.anonymous = (${audience}::text = 'anonymous')))
        AND (${opts.search ?? null}::text IS NULL
             OR strpos(lower(l.error_message), lower(${opts.search ?? null})) > 0)
        AND (${opts.cursor ?? null}::bigint IS NULL OR l.id < ${opts.cursor ?? null})

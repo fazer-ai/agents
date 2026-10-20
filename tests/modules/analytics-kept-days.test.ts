@@ -380,6 +380,66 @@ async function seed() {
       durationMs: 300 + k * 17,
       createdAt: new Date(START.getTime() + Math.floor(r() * 46 * DAY)),
     });
+  // Client channel traffic, half from anonymous visitors: ledger rows and flow lines carry the
+  // audience themselves, a suggestion through its thread's owner. A generator of its own, so the
+  // rows above stay what they were.
+  const rc = rng(2222);
+  const people = [
+    { externalId: "anon:kept-visitor", anonymous: true },
+    { externalId: "kept-user", anonymous: false },
+  ];
+  for (const p of people) {
+    const eu = await suDb.externalUser.create({
+      data: { tenantId, channel: "client", externalId: p.externalId },
+    });
+    for (let k = 0; k < 4; k++) {
+      const thread = `${tenantId}:client:${a1}:${p.anonymous ? "a" : "i"}${k}`;
+      await suDb.detachedThread.create({
+        data: {
+          threadId: thread,
+          tenantId,
+          agentId: a1,
+          kind: "client",
+          externalUserId: eu.id,
+        },
+      });
+      const at = new Date(START.getTime() + Math.floor(rc() * 46 * DAY));
+      suggestions.push({
+        thread,
+        at,
+        status: rc() < 0.5 ? "PENDING" : "APPROVED",
+        agent: a1,
+      });
+      for (let j = 0; j < 5; j++) {
+        const when = new Date(at.getTime() + j * 60_000);
+        ledger.push({
+          tenantId,
+          agentId: a1,
+          source: "client",
+          anonymous: p.anonymous,
+          model: "gpt-6-luna",
+          promptTokens: 400,
+          completionTokens: 40,
+          costUsd: "0.0050000000",
+          durationMs: 500 + j,
+          turnId: `c${p.anonymous ? "a" : "i"}${k}-${j}`,
+          createdAt: when,
+        });
+        logs.push({
+          tenantId,
+          turnId: `c${p.anonymous ? "a" : "i"}${k}-${j}`,
+          agentId: a1,
+          stage: j === 4 ? "tool" : "generate",
+          level: j === 4 ? "warn" : "info",
+          status: j === 4 ? "error" : "ok",
+          source: "client",
+          anonymous: p.anonymous,
+          detail: j === 4 ? { tool: "search_knowledge" } : {},
+          createdAt: when,
+        });
+      }
+    }
+  }
   await suDb.llmUsage.createMany({ data: ledger });
   await suDb.executionLog.createMany({ data: logs });
   if (suggestions.length > 0) {
@@ -556,6 +616,23 @@ describe.skipIf(!dbUp)("the kept days of the dashboard", () => {
     [
       "40 days, the unbound inbox",
       () => windowOf("UTC", 39, 0, { inboxId: i3 }),
+    ],
+    [
+      "45 days, client channel",
+      () => windowOf("UTC", 44, 0, { source: "client" }),
+    ],
+    [
+      "45 days, anonymous visitors",
+      () =>
+        windowOf("America/Sao_Paulo", 44, 0, {
+          source: "client",
+          audience: "anonymous",
+        }),
+    ],
+    [
+      "45 days, identified users",
+      () =>
+        windowOf("UTC", 44, 0, { source: "client", audience: "identified" }),
     ],
     [
       "the whole history",
@@ -1325,6 +1402,70 @@ describe.skipIf(!dbUp)("the kept days of the dashboard", () => {
       expect(canon(await kept("knowledge", f))).toEqual(after);
     } finally {
       await suDb.$executeRaw`UPDATE conversations SET thread_id = ${conv.thread} WHERE id = ${conv.id}`;
+    }
+  });
+
+  // The anonymous visitor's thread with a suggestion older than a few days, and the identified user.
+  async function anonymousThread() {
+    const [row] = await suDb.$queryRaw<
+      { thread: string; owner: bigint; agent: bigint }[]
+    >`
+      SELECT dt.thread_id AS thread, dt.external_user_id AS owner, dt.agent_id AS agent
+        FROM detached_threads dt JOIN external_users eu ON eu.id = dt.external_user_id
+       WHERE dt.tenant_id = ${tenantId} AND eu.external_id LIKE 'anon:%'
+         AND EXISTS (SELECT 1 FROM approval_queue_items q
+                      WHERE q.thread_id = dt.thread_id AND q.created_at < now() - interval '3 days')
+       ORDER BY dt.thread_id LIMIT 1`;
+    const [user] = await suDb.$queryRaw<{ id: bigint }[]>`
+      SELECT id FROM external_users
+       WHERE tenant_id = ${tenantId} AND external_id NOT LIKE 'anon:%' LIMIT 1`;
+    if (!row || !user) throw new Error("no anonymous thread with suggestions");
+    return { ...row, user: user.id };
+  }
+
+  test("an anonymous thread handed over at sign-in drops the knowledge days of its suggestions", async () => {
+    await fromHistory();
+    const t = await anonymousThread();
+    const f = windowOf("UTC", 44, 0, {
+      source: "client",
+      audience: "anonymous",
+    });
+    const before = canon(await kept("knowledge", f));
+    try {
+      await suDb.$executeRaw`UPDATE detached_threads SET external_user_id = ${t.user} WHERE thread_id = ${t.thread}`;
+      await suDb.$executeRaw`UPDATE dashboard_dirty SET created_at = created_at - interval '1 hour' WHERE tenant_id = ${tenantId} AND processed_at IS NULL`;
+      const after = canon(await live("knowledge", f));
+      expect(after).not.toEqual(before);
+      expect(canon(await kept("knowledge", f))).toEqual(after);
+    } finally {
+      await suDb.$executeRaw`UPDATE detached_threads SET external_user_id = ${t.owner} WHERE thread_id = ${t.thread}`;
+    }
+  });
+
+  test("an anonymous thread that expired drops the knowledge days of its suggestions", async () => {
+    await fromHistory();
+    const t = await anonymousThread();
+    const f = windowOf("UTC", 44, 0, {
+      source: "client",
+      audience: "anonymous",
+    });
+    const before = canon(await kept("knowledge", f));
+    try {
+      await suDb.$executeRaw`DELETE FROM detached_threads WHERE thread_id = ${t.thread}`;
+      await suDb.$executeRaw`UPDATE dashboard_dirty SET created_at = created_at - interval '1 hour' WHERE tenant_id = ${tenantId} AND processed_at IS NULL`;
+      const after = canon(await live("knowledge", f));
+      expect(after).not.toEqual(before);
+      expect(canon(await kept("knowledge", f))).toEqual(after);
+    } finally {
+      await suDb.detachedThread.create({
+        data: {
+          threadId: t.thread,
+          tenantId,
+          agentId: t.agent,
+          kind: "client",
+          externalUserId: t.owner,
+        },
+      });
     }
   });
 

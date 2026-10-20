@@ -92,7 +92,7 @@ function failureCause(value: unknown, logValues: boolean): string {
 
 // A ToolMessage with status "error" is a tool-marked integration failure (failableTool/toolFailure),
 // logged as a failure although the model got a friendly string. Thrown errors take handleToolError.
-function isErrorToolOutput(output: unknown): boolean {
+export function isErrorToolOutput(output: unknown): boolean {
   return (
     !!output &&
     typeof output === "object" &&

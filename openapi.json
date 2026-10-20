@@ -6969,7 +6969,20 @@
               "type": "string",
               "enum": [
                 "inbox",
-                "playground"
+                "playground",
+                "client"
+              ]
+            }
+          },
+          {
+            "name": "audience",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "identified",
+                "anonymous"
               ]
             }
           },
@@ -7155,7 +7168,20 @@
               "type": "string",
               "enum": [
                 "inbox",
-                "playground"
+                "playground",
+                "client"
+              ]
+            }
+          },
+          {
+            "name": "audience",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "identified",
+                "anonymous"
               ]
             }
           },
@@ -7341,7 +7367,20 @@
               "type": "string",
               "enum": [
                 "inbox",
-                "playground"
+                "playground",
+                "client"
+              ]
+            }
+          },
+          {
+            "name": "audience",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "identified",
+                "anonymous"
               ]
             }
           },
@@ -7527,7 +7566,20 @@
               "type": "string",
               "enum": [
                 "inbox",
-                "playground"
+                "playground",
+                "client"
+              ]
+            }
+          },
+          {
+            "name": "audience",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "identified",
+                "anonymous"
               ]
             }
           },
@@ -26938,6 +26990,12 @@
                     "description": "The same, for playground traffic. Kept apart so testing cannot silence the agent for customers.",
                     "type": "number"
                   },
+                  "monthlyClientUsd": {
+                    "minimum": 0,
+                    "maximum": 1000000,
+                    "description": "The same, for client channel traffic (the users of host applications that embed the agent). Kept apart so a host cannot silence the agent for the inbox, or the other way round.",
+                    "type": "number"
+                  },
                   "overCeilingMessage": {
                     "description": "What the customer is told when a turn is refused. null says nothing.",
                     "maxLength": 2000,
@@ -27009,6 +27067,12 @@
                     "description": "The same, for playground traffic. Kept apart so testing cannot silence the agent for customers.",
                     "type": "number"
                   },
+                  "monthlyClientUsd": {
+                    "minimum": 0,
+                    "maximum": 1000000,
+                    "description": "The same, for client channel traffic (the users of host applications that embed the agent). Kept apart so a host cannot silence the agent for the inbox, or the other way round.",
+                    "type": "number"
+                  },
                   "overCeilingMessage": {
                     "description": "What the customer is told when a turn is refused. null says nothing.",
                     "maxLength": 2000,
@@ -27078,6 +27142,12 @@
                     "minimum": 0,
                     "maximum": 1000000,
                     "description": "The same, for playground traffic. Kept apart so testing cannot silence the agent for customers.",
+                    "type": "number"
+                  },
+                  "monthlyClientUsd": {
+                    "minimum": 0,
+                    "maximum": 1000000,
+                    "description": "The same, for client channel traffic (the users of host applications that embed the agent). Kept apart so a host cannot silence the agent for the inbox, or the other way round.",
                     "type": "number"
                   },
                   "overCeilingMessage": {
@@ -32156,7 +32226,20 @@
               "type": "string",
               "enum": [
                 "inbox",
-                "playground"
+                "playground",
+                "client"
+              ]
+            }
+          },
+          {
+            "name": "audience",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "identified",
+                "anonymous"
               ]
             }
           },
@@ -32377,7 +32460,20 @@
               "type": "string",
               "enum": [
                 "inbox",
-                "playground"
+                "playground",
+                "client"
+              ]
+            }
+          },
+          {
+            "name": "audience",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "identified",
+                "anonymous"
               ]
             }
           },
@@ -32598,7 +32694,20 @@
               "type": "string",
               "enum": [
                 "inbox",
-                "playground"
+                "playground",
+                "client"
+              ]
+            }
+          },
+          {
+            "name": "audience",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "identified",
+                "anonymous"
               ]
             }
           },
@@ -32810,7 +32919,20 @@
               "type": "string",
               "enum": [
                 "inbox",
-                "playground"
+                "playground",
+                "client"
+              ]
+            }
+          },
+          {
+            "name": "audience",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "identified",
+                "anonymous"
               ]
             }
           },
@@ -33022,7 +33144,20 @@
               "type": "string",
               "enum": [
                 "inbox",
-                "playground"
+                "playground",
+                "client"
+              ]
+            }
+          },
+          {
+            "name": "audience",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "identified",
+                "anonymous"
               ]
             }
           },
@@ -33234,7 +33369,20 @@
               "type": "string",
               "enum": [
                 "inbox",
-                "playground"
+                "playground",
+                "client"
+              ]
+            }
+          },
+          {
+            "name": "audience",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "identified",
+                "anonymous"
               ]
             }
           },
@@ -33446,7 +33594,20 @@
               "type": "string",
               "enum": [
                 "inbox",
-                "playground"
+                "playground",
+                "client"
+              ]
+            }
+          },
+          {
+            "name": "audience",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "identified",
+                "anonymous"
               ]
             }
           },
@@ -33667,7 +33828,20 @@
               "type": "string",
               "enum": [
                 "inbox",
-                "playground"
+                "playground",
+                "client"
+              ]
+            }
+          },
+          {
+            "name": "audience",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "identified",
+                "anonymous"
               ]
             }
           },
@@ -33948,8 +34122,20 @@
             "in": "query",
             "required": false,
             "schema": {
-              "description": "Traffic segment: \"inbox\" (default), \"all\", or \"playground\".",
+              "description": "Traffic segment: \"inbox\" (default), \"all\", \"playground\" or \"client\".",
               "type": "string"
+            }
+          },
+          {
+            "name": "audience",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "identified",
+                "anonymous"
+              ]
             }
           },
           {
@@ -34095,6 +34281,32 @@
                 }
               }
             }
+          },
+          "422": {
+            "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
           }
         },
         "operationId": "getV1Logs"
@@ -34203,8 +34415,20 @@
             "in": "query",
             "required": false,
             "schema": {
-              "description": "Traffic segment: \"inbox\" (default), \"all\", or \"playground\".",
+              "description": "Traffic segment: \"inbox\" (default), \"all\", \"playground\" or \"client\".",
               "type": "string"
+            }
+          },
+          {
+            "name": "audience",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "identified",
+                "anonymous"
+              ]
             }
           },
           {
@@ -34331,6 +34555,32 @@
               "application/json": {
                 "schema": {
                   "description": "Not found.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
                   "type": "object",
                   "required": [
                     "error"

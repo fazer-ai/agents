@@ -11,7 +11,7 @@ import { useStreamBlock } from "./useStream";
 // and errors by stage and tool (each row opens the Logs page on exactly those lines), then the
 // follow-ups the agent sent and the knowledge it proposed.
 
-// The Logs page on one row of the problems table: the same window, agent, inbox and source.
+// The Logs page on one row of the problems table: the same window, agent, inbox, source and audience.
 export function logsHref(
   f: DashboardFilters,
   w: Window,
@@ -24,6 +24,8 @@ export function logsHref(
   // A tool line that names no tool is its own group; without this the link would open every tool's.
   else if (row.stage === "tool") p.set("noTool", "true");
   p.set("source", f.source);
+  if (f.source === "client" && f.audience !== "all")
+    p.set("audience", f.audience);
   if (w.since) p.set("since", w.since.toISOString());
   // The Logs page reads `until` inclusive; the window is half-open.
   p.set("until", new Date(w.until.getTime() - 1).toISOString());

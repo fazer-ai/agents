@@ -11,6 +11,7 @@ import {
 } from "@testing-library/react";
 import { useState } from "react";
 import { MemoryRouter } from "react-router";
+import { CUSTOMER_DELIVERY_NATIVE_TOOL_NAMES } from "@/graph/tools/channel-natives";
 
 // A WATCHER'S TOOLS TAB OFFERS ONLY WHAT ITS TURN CAN RUN. The monitoring turn builds its Chatwoot
 // client MUTED, and the assembly drops every tool whose point is to put something in front of the
@@ -25,11 +26,9 @@ const { ToolsTab } = await import("@/client/pages/agents/ToolsTab");
 const { ToastProvider } = await import("@/client/components/Toast");
 const { AuthProvider } = await import("@/client/contexts/AuthContext");
 const { ThemeProvider } = await import("@/client/contexts/ThemeContext");
-const {
-  NATIVE_TOOL_NAMES,
-  RAG_TOOL_NAMES,
-  CUSTOMER_DELIVERY_NATIVE_TOOL_NAMES,
-} = await import("@/graph/tools/catalog");
+const { NATIVE_TOOL_NAMES, RAG_TOOL_NAMES } = await import(
+  "@/graph/tools/catalog"
+);
 
 const realFetch = globalThis.fetch;
 const json = (body: unknown) =>

@@ -61,11 +61,35 @@ export type CaseClient = Pick<
 // for a person and did not get one, so nothing may open as if the text had merely been dropped.
 export type CustomerTextVerdict = "send" | "drop" | "handed" | "failed";
 
+// An origin that is not a Chatwoot conversation: a thread of the client channel. Nothing is read from
+// or written to it in Chatwoot; it says which case it already opened and records the one it opens.
+export interface DetachedCaseOrigin {
+  // Serializes the calls of one origin, like the conversation url does for a Chatwoot origin.
+  key: string;
+  // Where the team reads what led to the case, linked from its note.
+  url: string;
+  // The case this origin opened before, in the destination's account. Null ⇒ none. Read inside the
+  // origin's queue, so a second call of the same turn sees what the first recorded.
+  knownCaseId: () => Promise<number | null>;
+  // Records the case this origin opened or continued, so the next call finds it.
+  recordCase: (caseId: number) => Promise<void>;
+}
+
 export interface OpenCaseInput {
   config: CrossInboxCaseConfig;
-  // The origin conversation's display_id and its contact's Chatwoot id.
+  // The origin conversation's display_id and its contact's Chatwoot id. With `detachedOrigin`, the
+  // id is not read and the contact is the one the case is opened for.
   originConversationId: number;
   originContactId: number | null;
+  // Set when the origin is not a Chatwoot conversation (see DetachedCaseOrigin).
+  detachedOrigin?: DetachedCaseOrigin;
+  // The contact's address was just changed to reach the user: no case the contact already has is
+  // added to, since Chatwoot addresses a thread's next email reply from its earlier messages, which
+  // still name the old address. A new case opens instead.
+  freshCase?: boolean;
+  // The address the host states for the user, set with `detachedOrigin`: the opening goes there,
+  // whatever the contact holds when it is sent (another writer can change it in between).
+  recipientEmail?: string;
   reason: string;
   customerMessage: string | null;
   email: string | null;
@@ -309,6 +333,10 @@ async function carryInto(
 export const CONTACT_CONVERSATIONS_PAGE = 25;
 
 // Pure: the private notes. PT-BR, like the webhook's other system notes.
+export function addressUpdatedNote(email: string): string {
+  return `⚠️ O e-mail do cliente agora é ${literalForChatwoot(email)}. As respostas desta conversa podem estar endereçadas ao e-mail anterior: confira o destinatário antes de responder.`;
+}
+
 export function originLinkNote(caseUrl: string, inboxName: string): string {
   return `➡️ Caso aberto na caixa ${inboxName}: ${caseUrl}`;
 }
@@ -389,7 +417,7 @@ export function openCaseInInbox(
   // calls twice would otherwise read "no case yet" twice and open two. Serialized per origin
   // conversation, the second call reads the case number the first one wrote.
   return withKeyedQueue(
-    `cross-inbox-case:${client.conversationUrl(input.originConversationId)}`,
+    `cross-inbox-case:${input.detachedOrigin?.key ?? client.conversationUrl(input.originConversationId)}`,
     () => run(client, input),
   );
 }
@@ -402,6 +430,8 @@ async function run(
   const target = config.targetInboxId;
   if (target === null) return { kind: "not_configured" };
   const origin = input.originConversationId;
+  const detached = input.detachedOrigin ?? null;
+  const originUrl = detached?.url ?? client.conversationUrl(origin);
   const interpolate = input.interpolate ?? ((t: string) => t);
 
   let step = "read_target_inbox";
@@ -417,19 +447,29 @@ async function run(
         : `#${target}`;
     const needs = destinationIdentity(channelType);
     if (needs === null) return { kind: "unsupported_channel", channelType };
+    // NOTE: a detached origin escalates to an email inbox only. The team's email replies go to the
+    // contact's address, which follows what the host states; a phone channel replies to the number
+    // its conversation was opened with, which a later change of the contact does not move.
+    if (detached && needs !== "email")
+      return { kind: "unsupported_channel", channelType };
 
     // 1. A case this conversation already opened, still open, IS the answer. It covers the model
     // calling twice, a redelivered turn, and the customer asking again while the case is running.
+    let known: number | null;
     step = "read_origin";
-    const originConv = await client.getConversation(origin);
-    // An agent can serve the destination inbox too. Opening the "case" there would hand back the
-    // origin itself on an inbox that continues open conversations, flip it open under the turn, and
-    // under `resolveOrigin` close the very conversation the customer was told holds the case.
-    if (Number(field(originConv, "inbox_id")) === target) {
-      return { kind: "same_inbox" };
+    if (detached) {
+      known = await detached.knownCaseId();
+    } else {
+      const originConv = await client.getConversation(origin);
+      // An agent can serve the destination inbox too. Opening the "case" there would hand back the
+      // origin itself on an inbox that continues open conversations, flip it open under the turn, and
+      // under `resolveOrigin` close the very conversation the customer was told holds the case.
+      if (Number(field(originConv, "inbox_id")) === target) {
+        return { kind: "same_inbox" };
+      }
+      known = numberAttr(originConv, config.caseAttributeKey);
     }
-    const known = numberAttr(originConv, config.caseAttributeKey);
-    if (known !== null) {
+    if (known !== null && !input.freshCase) {
       step = "read_known_case";
       const existing = await client.getConversation(known).catch((err) => {
         if (err instanceof ChatwootApiError && err.status === 404) return null;
@@ -438,7 +478,12 @@ async function run(
       if (
         existing &&
         Number(field(existing, "inbox_id")) === target &&
-        field(existing, "status") !== "resolved"
+        field(existing, "status") !== "resolved" &&
+        // NOTE: a detached origin's contact is resolved again on each call, from what the host
+        // states; a case of another contact is not this one's, and the listing below finds theirs.
+        (!detached ||
+          Number(field(field(field(existing, "meta"), "sender"), "id")) ===
+            input.originContactId)
       ) {
         // Pending or snoozed is out of the team's open queue, and "already with the team" would not
         // be true: reopened like a continued case below, and just as mandatory.
@@ -463,7 +508,7 @@ async function run(
           try {
             await client.sendMessageAsAdmin(
               known,
-              renderCaseAddition(input.reason, client.conversationUrl(origin)),
+              renderCaseAddition(input.reason, originUrl),
               { private: true },
             );
             additionDelivered = true;
@@ -473,9 +518,11 @@ async function run(
         } else {
           partial.push("called_off");
         }
-        const attachments = partial.includes("called_off")
-          ? null
-          : await carryInto(client, input, known);
+        // A detached origin has no conversation to carry files from.
+        const attachments =
+          detached || partial.includes("called_off")
+            ? null
+            : await carryInto(client, input, known);
         return {
           kind: "already_open",
           caseId: known,
@@ -507,7 +554,9 @@ async function run(
       if (contact?.email) {
         identity = "held";
       } else {
-        if (!input.email) return { kind: "needs_email" };
+        // NOTE: a detached origin has no messages to check a typed address against: its contact
+        // carries what the host stated, or the case needs an address it does not have.
+        if (!input.email || detached) return { kind: "needs_email" };
         const email = normalizeEmail(input.email);
         if (!email) return { kind: "rejected_email", why: "invalid" };
         step = "read_messages";
@@ -623,10 +672,17 @@ async function run(
             (best, c) => (best === null || c.id > best.id ? c : best),
             null,
           );
-      let openCase = caseAmong(listed);
+      // A detached origin adds only to the case it recorded itself (above): no other case of the
+      // contact is known to answer the address the user states now.
+      let openCase = input.freshCase || detached ? null : caseAmong(listed);
       // NOTE: a full listing can hide an older case, so the filter, which has no such cap, is asked. A
       // failed lookup falls back to opening a case, which is what the tool does without one.
-      if (openCase === null && listed.length >= CONTACT_CONVERSATIONS_PAGE) {
+      if (
+        openCase === null &&
+        !input.freshCase &&
+        !detached &&
+        listed.length >= CONTACT_CONVERSATIONS_PAGE
+      ) {
         step = "find_open_case";
         try {
           openCase = caseAmong(
@@ -654,7 +710,12 @@ async function run(
           // Open, not pending: the case lands in the team's queue, and an agent bound to the destination
           // inbox does not pick it up and triage it again (shouldBotHandle needs `pending`).
           status: "open",
-          customAttributes: { [CROSS_INBOX_CASE_ORIGIN_ATTRIBUTE]: origin },
+          // NOTE: a detached origin has no conversation number; its link marks the case as this tool's.
+          customAttributes: {
+            [CROSS_INBOX_CASE_ORIGIN_ATTRIBUTE]: detached
+              ? detached.url
+              : origin,
+          },
           ...(subject
             ? { additionalAttributes: { mail_subject: subject } }
             : {}),
@@ -665,7 +726,6 @@ async function run(
       // is older than every listed conversation, so its number is below `newestBefore`.
       const continued = before.has(caseId) || caseId <= newestBefore;
       const caseUrl = client.conversationUrl(caseId);
-      const originUrl = client.conversationUrl(origin);
 
       // 4. Everything below is best-effort: the case exists, and a missing note does not undo it.
       // The case number goes first, because it is what makes the next call answer "already open".
@@ -708,11 +768,13 @@ async function run(
         await client.toggleStatus(caseId, "open", { asAdmin: true });
       }
       await attempt("origin_attribute", () =>
-        client.setConversationCustomAttributes(
-          origin,
-          { [config.caseAttributeKey]: caseId },
-          { stillWanted: input.stillWanted },
-        ),
+        detached
+          ? detached.recordCase(caseId)
+          : client.setConversationCustomAttributes(
+              origin,
+              { [config.caseAttributeKey]: caseId },
+              { stillWanted: input.stillWanted },
+            ),
       );
       const caseOwnerUnread = await settleCaseOwner(
         client,
@@ -764,8 +826,17 @@ async function run(
           const signed = ownOpening
             ? (input.signCustomerMessage?.(text) ?? literalForChatwoot(text))
             : text;
+          // From a detached origin the recipient is the host's address: delivery runs later, and
+          // the contact may carry another one by then.
+          const toEmails =
+            detached && input.recipientEmail
+              ? [input.recipientEmail]
+              : undefined;
           await attempt("customer_message", () =>
-            client.sendMessageAsAdmin(caseId, signed, { private: false }),
+            client.sendMessageAsAdmin(caseId, signed, {
+              private: false,
+              ...(toEmails ? { toEmails } : {}),
+            }),
           );
         }
       }
@@ -785,13 +856,31 @@ async function run(
         );
         noteDelivered = true;
       });
-      // Right after the case's own note, so the team reads the reason and then the files.
-      const attachments = (await withdrawn())
-        ? null
-        : await carryInto(client, input, caseId);
-      await attempt("origin_link_note", () =>
-        client.sendPrivateNote(origin, originLinkNote(caseUrl, inboxName)),
-      );
+      const currentEmail = input.recipientEmail ?? contact?.email ?? null;
+      // NOTE: the inbox handed back an open conversation of the contact (it continues or locks to one
+      // conversation per contact). For a detached origin that conversation was not opened under an
+      // address this side knows, and its next reply can be addressed from earlier messages, so the
+      // team is told which address is current.
+      if ((input.freshCase || detached) && continued && currentEmail) {
+        const email = currentEmail;
+        await attempt("address_note", () =>
+          client.sendMessageAsAdmin(caseId, addressUpdatedNote(email), {
+            private: true,
+          }),
+        );
+      }
+      // Right after the case's own note, so the team reads the reason and then the files. A detached
+      // origin has no conversation to carry files from.
+      const attachments =
+        detached || (await withdrawn())
+          ? null
+          : await carryInto(client, input, caseId);
+      // NOTE: a detached origin has no conversation to carry the link; its caller records the case.
+      if (!detached) {
+        await attempt("origin_link_note", () =>
+          client.sendPrivateNote(origin, originLinkNote(caseUrl, inboxName)),
+        );
+      }
       // Labels are a read-modify-write of the whole set, so both writes go through the shared
       // label queue and READ inside it (a new case included: an automation can label it after create).
       // The operator's labels are checked against the account, the model's are not: an unknown label
@@ -831,7 +920,7 @@ async function run(
           }),
         );
       }
-      const originLabel = config.originLabel;
+      const originLabel = detached ? null : config.originLabel;
       if (originLabel) {
         await attempt("origin_label", () =>
           withConversationLabels(input.tenantId, origin, async () => {

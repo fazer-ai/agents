@@ -93,6 +93,12 @@ services:
       # to THIS instance's MCP. Also the app default — pinned here so the stack works on an older
       # image too, since without it both clients abort before any login screen (docs/mcp.md).
       - MCP_DCR_ENABLED=${MCP_DCR_ENABLED:-true}
+      # The client channel (docs/client-channel.md), off unless set.
+      - CLIENT_CHANNEL_ENABLED=${CLIENT_CHANNEL_ENABLED:-false}
+      # Its limits and the suspended turn's deadline; empty keeps the app default.
+      - CLIENT_CHANNEL_SDK_USER_PER_MIN=${CLIENT_CHANNEL_SDK_USER_PER_MIN:-}
+      - CLIENT_CHANNEL_SDK_APP_PER_MIN=${CLIENT_CHANNEL_SDK_APP_PER_MIN:-}
+      - CLIENT_TURN_SUSPEND_TIMEOUT_MS=${CLIENT_TURN_SUSPEND_TIMEOUT_MS:-}
       # NOTE: corrupted-audio check for audio replies (docs/tts.md "Checking the audio"). Empty URL = off;
       # a URL alone = shadow (records a verdict, never changes a send). enforce regenerates up to twice
       # and then replies with text.

@@ -1347,9 +1347,10 @@ export interface ToolBuildDeps {
     allowed?: Iterable<string>,
   ) => StructuredToolInterface[];
   mcp?: McpLoadDeps;
-  // The playground simulates conversation tools rather than running them; a document tool belongs to
-  // that set, because it needs a turn to attach to. See DocumentToolDeps.simulate.
-  simulateDocuments?: boolean;
+  // What a channel with no conversation does with document tools, which need a turn to attach the
+  // file to: the playground simulates them (see DocumentToolDeps.simulate), the client channel does
+  // not offer them. Absent means they run.
+  documents?: "simulated" | "omitted";
   // Flow telemetry context for THIS turn. When present, an MCP discovery failure is surfaced as a
   // flowlog warn (visible in the Logs page; paged on inbox traffic) instead of only a stdout log.
   flow?: FlowContext;
@@ -1838,7 +1839,7 @@ export async function buildToolset(
       // without a turnState to queue into it refuses every call anyway, and with one it would
       // deliver through the very send this client exists to refuse. Same reading
       // `buildNativeTools` and the toolpacks make.
-      ...(ctx.client.muted
+      ...(ctx.client.muted || deps.documents === "omitted"
         ? []
         : buildDocumentTools(cfg.documentSelections, {
             tenantId: ctx.tenantId,
@@ -1854,7 +1855,7 @@ export async function buildToolset(
             // NOTE: The same zone the agent tells the time in, so a document's date and a message saying "hoje"
             // cannot disagree by a day.
             timezone: cfg.timezone,
-            simulate: deps.simulateDocuments,
+            simulate: deps.documents === "simulated",
           })),
       ...buildHttpTools(cfg.httpToolDefs, {
         resolveCredential,
@@ -1993,6 +1994,8 @@ export interface CallbacksArgs {
   updateRoot?: boolean;
   // Usage segmentation: "inbox" (real traffic, default) | "playground" (operator test turns).
   source?: UsageSource;
+  // A client-channel turn for an anonymous visitor's session, marked on its usage rows.
+  anonymous?: boolean;
   // Per-turn id → the Langfuse trace id (correlates a trace with the ExecutionLog turn). Omitted
   // lets Langfuse generate its own id.
   turnId?: string;
@@ -2028,6 +2031,7 @@ export function buildCallbacks(
     model: (args.billedModel ?? cfg.mc).model,
     node: args.node ?? "agent",
     source: args.source,
+    anonymous: args.anonymous,
     persist: args.persistUsage,
     base: args.base,
   });
@@ -2209,6 +2213,8 @@ export interface GraphBuildDeps {
     dropped: number;
     tokens: number;
   }) => void;
+  // See BuildAgentGraphParams.clientToolNames.
+  clientToolNames?: ReadonlySet<string>;
   // Fired when a round took tool calls no result ever answered out of the thread. See
   // BuildAgentGraphParams.onDanglingToolCalls.
   onDanglingToolCalls?: (info: { calls: number }) => void;
@@ -2370,6 +2376,7 @@ export async function buildModelAndGraph(
     stillWanted: deps.stillWanted,
     retrySilence: deps.retrySilence,
     onSilenceRetry: deps.onSilenceRetry,
+    clientToolNames: deps.clientToolNames,
     primaryDeadlineMs: fallback
       ? fallbackDeadlineMs(cfg.modelFallback)
       : config.agent.modelCallTimeoutMs,

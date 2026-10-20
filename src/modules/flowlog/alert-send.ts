@@ -198,10 +198,11 @@ export const INSTANCE_HEALTH_PATH = "/admin/instance-health";
 
 // Where the operator goes from the alert. The ids name the FIRST event of the window, and a burst's
 // members can be unrelated conversations, so a burst links to the stage+level list and a single
-// event links to its own turn (plus its conversation when the mirror knew one). No `source`: only
-// inbox traffic alerts, which is the page's default. `consoleUrl` names the tenant so an operator
-// of several tenants lands on the right one. Each link carries the label the body prints for it, so
-// the burst's says how many lines the list holds.
+// event links to its own turn (plus its conversation when the mirror knew one). Both carry
+// `source=all`: inbox and client traffic both page, a burst can mix them, and the page's default
+// (`inbox`) would hide a client line. `consoleUrl` names the tenant so an operator of several
+// tenants lands on the right one. Each link carries the label the body prints for it, so the
+// burst's says how many lines the list holds.
 export function alertLinks(
   a: AlertBodyInput,
 ): { label: string; url: string }[] {
@@ -235,6 +236,7 @@ export function alertLinks(
     const q = new URLSearchParams();
     if (a.stage) q.set("stage", a.stage);
     if (a.causeKey === null) q.set("level", a.level);
+    q.set("source", "all");
     // A rate's count is how many times it fired, not how many failures it counted (the summary
     // says that), so its link names the list instead of a number.
     // The recovery rate counts deliveries that ended well, so its list is not one of failures.
@@ -247,7 +249,7 @@ export function alertLinks(
     return [{ label, url: consoleUrl(`/logs?${q}`, opts) }];
   }
   if (!a.turnId) return [];
-  const q = new URLSearchParams({ turnId: a.turnId });
+  const q = new URLSearchParams({ turnId: a.turnId, source: "all" });
   const links = [{ label: "View log", url: consoleUrl(`/logs?${q}`, opts) }];
   if (a.conversationId != null) {
     links.push({

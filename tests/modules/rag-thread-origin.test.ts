@@ -25,8 +25,26 @@ describe("parseThreadOrigin", () => {
     });
   });
 
+  // What it decides is the source a suggestion's review is billed to: a client thread read as a
+  // conversation, or as nothing, would spend the inbox's ceiling.
+  test("a client channel key carries the agent id", () => {
+    expect(parseThreadOrigin("1:client:7:abc-uuid")).toEqual({
+      kind: "client",
+      agentId: 7n,
+    });
+    expect(parseThreadOrigin(`1:client:${MAX_DB_ID + 1n}:u`)).toBeNull();
+  });
+
   test("no key, and a key of the wrong shape, have no origin", () => {
-    for (const raw of [null, "", "1", "1:2", "1:2:3:4:5", "1:playground:7"]) {
+    for (const raw of [
+      null,
+      "",
+      "1",
+      "1:2",
+      "1:2:3:4:5",
+      "1:playground:7",
+      "1:client:7",
+    ]) {
       expect(parseThreadOrigin(raw)).toBeNull();
     }
   });

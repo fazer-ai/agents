@@ -1082,10 +1082,23 @@ describe.skipIf(!dbUp)("the view's boundaries", () => {
         createdAt: D1,
       },
     });
-    const bySource = async (source: "inbox" | "playground") =>
+    // And one proposed through the client channel: neither real traffic nor the playground's.
+    await suDb.approvalQueueItem.create({
+      data: {
+        tenantId: ex.tenantId,
+        knowledgeBaseId: kb.id,
+        agentId: ex.a1,
+        threadId: `${ex.tenantId}:client:${ex.a1}:c1`,
+        proposedContent: "y",
+        normalizedHash: `e${h++}`,
+        createdAt: D1,
+      },
+    });
+    const bySource = async (source: "inbox" | "playground" | "client") =>
       (await getKnowledgeActivity(ctx(ex.tenantId), { ...DAY, source }, appDb))
         .proposed;
     expect(await bySource("playground")).toBe(1);
+    expect(await bySource("client")).toBe(1);
     expect(await bySource("inbox")).toBe(4);
   });
 

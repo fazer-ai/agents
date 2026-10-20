@@ -5,7 +5,8 @@ import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { cancelPendingJob, enqueueJob } from "@/modules/scheduler/service";
 import { readSpendCeilingConfig } from "./settings";
 
-// Arms the per-tenant `SPEND_CEILING_POLL` job while the ceiling is ON: on every save of the
+// Arms the per-tenant `SPEND_CEILING_POLL` job while the ceiling is ON, or one of the tenant's
+// embedding apps has a ceiling of its own: on every save of the
 // ceiling, and at boot, so a lost row does not leave a figure that stops refreshing. With the ceiling
 // off nothing is enforced and the console sums the ledger itself, so there is nothing to poll. Kept
 // apart from ./poll.ts so the settings service does not pull the poll in.
@@ -14,6 +15,20 @@ export const SPEND_POLL_DEDUPE_KEY = "spend-ceiling";
 
 function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
+}
+
+// Whether one of the tenant's embedding apps has a ceiling of its own, which the poll feeds too.
+export async function hasAppCeiling(
+  tenantId: bigint,
+  base: PrismaClient,
+): Promise<boolean> {
+  const app = await runScopedOn(base, sysCtx(tenantId), (db) =>
+    db.clientApp.findFirst({
+      where: { monthlyCeilingCents: { not: null } },
+      select: { id: true },
+    }),
+  );
+  return app !== null;
 }
 
 export async function wantsSpendPoll(
@@ -26,7 +41,10 @@ export async function wantsSpendPoll(
       select: { settings: true },
     }),
   );
-  return readSpendCeilingConfig(row?.settings ?? {}).enabled;
+  return (
+    readSpendCeilingConfig(row?.settings ?? {}).enabled ||
+    (await hasAppCeiling(tenantId, base))
+  );
 }
 
 // Idempotent: `enqueueJob` upserts on (tenant, kind, dedupeKey), so the second save keeps exactly

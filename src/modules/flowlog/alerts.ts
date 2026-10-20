@@ -1,10 +1,16 @@
 import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import config from "@/config";
+import { USAGE_SOURCES } from "@/graph/usage-sources";
 import { isTransientProviderStatus } from "@/lib/provider-failure";
 import { sanitizeErrorMessage } from "@/lib/redact";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import type { FlowContext, FlowEvent } from "./service";
-import { ALERT_DELIVERY_UNIT, type FlowLevel, type FlowStage } from "./stages";
+import {
+  ALERT_DELIVERY_UNIT,
+  type FlowLevel,
+  type FlowStage,
+  pagesAlerts,
+} from "./stages";
 
 // Alert fan-out for a warn/error execution-flow event. Called fire-and-forget from emitFlowEvent
 // (real traffic only). Matches enabled channels by minLevel + stage allowlist, then COALESCES: a
@@ -437,7 +443,8 @@ export async function dispatchRateAlert(
     db.executionLog.count({
       where: {
         stage: subject.stage,
-        source: "inbox",
+        // Every source that pages, so client traffic degrades a provider as inbox traffic does.
+        source: { in: USAGE_SOURCES.filter(pagesAlerts) },
         createdAt: { gte: since },
         AND: [
           {

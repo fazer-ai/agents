@@ -70,6 +70,26 @@ describe("rate-limit keying (client address, not the socket peer)", () => {
   });
 
   // The other half: the limit still has to BITE. Same client, same bucket, budget spent.
+  test("every refusal is the error shape, the second as much as the first", async () => {
+    const { url } = serve(1, true);
+    const answers: Array<[number, unknown]> = [];
+    for (let i = 0; i < 3; i++) {
+      const res = await Bun.fetch(url, {
+        headers: { "x-forwarded-for": "203.0.113.90" },
+      });
+      answers.push([
+        res.status,
+        res.status === 429 ? await res.json() : await res.text(),
+      ]);
+    }
+    const refused = { error: "Rate limit exceeded. Please try again later." };
+    expect(answers).toEqual([
+      [200, "x"],
+      [429, refused],
+      [429, refused],
+    ]);
+  });
+
   test("one forwarded client still exhausts its own budget", async () => {
     const { url } = serve(2, true);
     const statuses: number[] = [];

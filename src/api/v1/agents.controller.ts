@@ -1,10 +1,12 @@
 import { Elysia, t } from "elysia";
+import { clientTurnFields } from "@/api/lib/client-turn-body";
 import { currentLocale } from "@/api/lib/i18n";
 import { doc, errors } from "@/api/lib/openapi";
 import { parseQueryText } from "@/api/lib/query-filters";
 import { confirmStepUp, STEP_UP_PASSWORD_DESCRIPTION } from "@/api/lib/step-up";
 import { tenancyPlugin } from "@/api/middlewares/tenancy";
 import config from "@/config";
+import type { ClientToolAnswer, ClientToolSpec } from "@/graph/client-tools";
 import { requireDbId } from "@/lib/db-id";
 import {
   AppError,
@@ -33,6 +35,8 @@ import {
 } from "@/modules/agents/service";
 import { exportAgent, importAgent } from "@/modules/agents/transfer";
 import { listOutOfOfficeInboxes } from "@/modules/chatwoot/management";
+import { runClientTurn } from "@/modules/client-channel/service";
+import { streamClientTurn } from "@/modules/client-channel/stream";
 import {
   GUARDRAIL_HEALTH_WINDOW_HOURS,
   guardrailHealthWindowStart,
@@ -132,6 +136,16 @@ import { setUpAgentCalls } from "@/modules/voice-call/setup";
 // translate('errors.visionFailed', 'Image/document extraction failed')
 // translate('errors.visionNotConfigured', 'Image/document reading is not configured')
 // translate('errors.spendCeilingReached', 'The playground token ceiling for this month has been reached. Raise it in Settings or wait for the next month.')
+// translate('errors.clientSpendCeilingReached', 'The client channel spend ceiling for this month has been reached. Raise it in Settings or wait for the next month.')
+// translate('errors.threadNotFound', 'Thread not found.')
+// translate('errors.agentClientTurnRunning', 'A conversation of this agent in an embedded app is running right now. Try again in a moment.')
+// translate('errors.clientContextTooLarge', 'The page context is too large: {{max}} characters at most.')
+// translate('errors.clientTurnInProgress', 'Another request is still running on this conversation. Try again in a moment.')
+// translate('errors.clientTurnClaimLost', 'This request lost the conversation to another one and was stopped. Send it again.')
+// translate('errors.clientTurnAwaitingAnswers', 'This conversation is waiting for the answers to its tool calls. Send them first.')
+// translate('errors.clientTurnNothingWaiting', 'No tool call is waiting for an answer in this conversation.')
+// translate('errors.clientTurnUnknownCall', 'No pending tool call has the id {{id}}.')
+// translate('errors.clientTurnUndeclaredTool', 'The pending call to {{tool}} is to a tool this request does not declare.')
 
 // Agent config REST surface (one of the three transports; MCP prompt_get/set + UI project over
 // the same service). Config management is TENANT_ADMIN; the scoped service is the hard boundary.
@@ -1083,6 +1097,76 @@ export const agentsController = new Elysia({
         }),
       }),
       body: playgroundTurnBodySchema,
+    },
+  )
+  // SPIKE: the client channel (modules/client-channel). Called by the host application's SERVER
+  // with a tenant API key; its browser runs the returned calls and the server resumes the turn.
+  .post(
+    "/:id/client/turn",
+    async ({ tenantContext, params, body, request, server }) => {
+      const ctx = ctxOrThrow(tenantContext);
+      // NOTE: a turn has no overall deadline and stays silent until it answers, so Bun's idle timeout
+      // (30 seconds under Elysia, and not reset by what the stream writes) would cut a long one. The
+      // turn itself bounds the request: each model call and tool has its own deadline.
+      server?.timeout(request, 0);
+      const turn = {
+        ctx,
+        agentId: requireDbId(params.id),
+        threadId: body.threadId,
+        user: body.user,
+        message: body.message,
+        answers: body.answers as Record<string, ClientToolAnswer> | undefined,
+        context: body.context,
+        clientTools: body.clientTools as ClientToolSpec[],
+      };
+      if (!request.headers.get("accept")?.includes("text/event-stream"))
+        return await runClientTurn(turn);
+      return await streamClientTurn(
+        (onEvent) => runClientTurn({ ...turn, onEvent }),
+        {
+          acceptLanguage: request.headers.get("accept-language"),
+        },
+      );
+    },
+    {
+      detail: {
+        ...doc(
+          "Run client channel turn",
+          "Runs a turn whose tools the host application declares and runs in its browser. Answers either with the reply or with the client tool calls to run, which are answered on the same route. The thread is bound to the user (and scope) the host states: a thread minted for another user or scope answers 404. With `Accept: text/event-stream` the same answer comes as Server-Sent Events: a `tool` event (`{type, phase, name, ok?}`) as each server-side tool starts and ends, a `ping` every 15 seconds, then one `pending` or `done` event carrying the JSON answer. A refusal after the first event arrives as an `error` event (`{status, error}`).",
+        ),
+        // Off (CLIENT_CHANNEL_ENABLED), the reference leaves the route out; it answers 404 then
+        // (src/api/lib/client-channel-gate.ts).
+        hide: !config.clientChannel.enabled,
+      },
+      response: errors(400, 401, 403, 404, 409, 422, 429, 500, 502),
+      requireRole: "TENANT_ADMIN",
+      params: t.Object({
+        id: t.String({
+          description: "Agent id, a BigInt encoded as a decimal string.",
+        }),
+      }),
+      body: t.Object({
+        threadId: t.Optional(t.String()),
+        user: t.Object(
+          {
+            id: t.String({
+              minLength: 1,
+              maxLength: 255,
+              pattern: "^(?!app:|anon:)",
+              description:
+                "The host's stable id for the user. `app:` and `anon:` lead the ids of an embedding app's users and are refused here.",
+            }),
+            name: t.Optional(t.String({ maxLength: 255 })),
+            scope: t.Optional(t.String({ minLength: 1, maxLength: 255 })),
+            email: t.Optional(t.String({ format: "email", maxLength: 255 })),
+          },
+          {
+            description:
+              "The host's signed-in user, as its server states it: a stable id, an optional display name, an optional scope such as an organization, and the email the team replies to when the agent opens a case in the team's inbox.",
+          },
+        ),
+        ...clientTurnFields,
+      }),
     },
   )
   // Lists the agent's tools (name/description/category + which are auto-simulated) so the

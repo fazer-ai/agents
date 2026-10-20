@@ -10,6 +10,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
+import { CUSTOMER_DELIVERY_NATIVE_TOOL_NAMES } from "@/graph/tools/channel-natives";
 import {
   type EditorStub,
   lastSavedSettings,
@@ -31,11 +32,9 @@ const { readSendImageState, serializeSendImage, sendImageHasNoHost } =
 const { ToastProvider } = await import("@/client/components/Toast");
 const { AuthProvider } = await import("@/client/contexts/AuthContext");
 const { ThemeProvider } = await import("@/client/contexts/ThemeContext");
-const {
-  NATIVE_TOOL_NAMES,
-  RAG_TOOL_NAMES,
-  CUSTOMER_DELIVERY_NATIVE_TOOL_NAMES,
-} = await import("@/graph/tools/catalog");
+const { NATIVE_TOOL_NAMES, RAG_TOOL_NAMES } = await import(
+  "@/graph/tools/catalog"
+);
 const { readSendImageConfig } = await import("@/modules/images/settings");
 
 const WARNING =

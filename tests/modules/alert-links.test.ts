@@ -41,7 +41,7 @@ describe("alert links", () => {
   test("a single event links to its turn and its conversation, on its own tenant", () => {
     const c = content();
     expect(c).toContain(
-      `[View log](<${host}/logs?turnId=71b89fbe-turn&switchTenant=7>)`,
+      `[View log](<${host}/logs?turnId=71b89fbe-turn&source=all&switchTenant=7>)`,
     );
     expect(c).toContain(
       `[View conversation](<${host}/conversations/7697?switchTenant=7>)`,
@@ -60,7 +60,7 @@ describe("alert links", () => {
   test("a single event with no conversation still links to its turn", () => {
     const c = content({ conversationId: null });
     expect(c).toContain(
-      `[View log](<${host}/logs?turnId=71b89fbe-turn&switchTenant=7>)`,
+      `[View log](<${host}/logs?turnId=71b89fbe-turn&source=all&switchTenant=7>)`,
     );
     expect(c).not.toContain("/conversations/");
   });
@@ -69,7 +69,7 @@ describe("alert links", () => {
   test("a burst links to the stage and level, never to the first event's turn or conversation", () => {
     const c = content({ stage: "delivery", count: 4 });
     expect(c).toContain(
-      `[View all 4](<${host}/logs?stage=delivery&level=error&switchTenant=7>)`,
+      `[View all 4](<${host}/logs?stage=delivery&level=error&source=all&switchTenant=7>)`,
     );
     expect(c).not.toContain("turnId=");
     expect(c).not.toContain("/conversations/");
@@ -89,7 +89,7 @@ describe("alert links", () => {
       ),
     ).toBe(true);
     expect(c).toContain(
-      `[View log](<${host}/logs?turnId=71b89fbe-turn&switchTenant=7>)`,
+      `[View log](<${host}/logs?turnId=71b89fbe-turn&source=all&switchTenant=7>)`,
     );
   });
 
@@ -102,7 +102,7 @@ describe("alert links", () => {
     expect(env.links).toEqual([
       {
         label: "View log",
-        url: `${host}/logs?turnId=71b89fbe-turn&switchTenant=7`,
+        url: `${host}/logs?turnId=71b89fbe-turn&source=all&switchTenant=7`,
       },
       {
         label: "View conversation",
@@ -362,7 +362,7 @@ describe.skipIf(!dbUp)("alert links through the ledger", () => {
     );
     const [c] = await deliver(id);
     expect(c).toContain(
-      `[View log](<${host}/logs?turnId=turn-665-a&switchTenant=${tenantId}>)`,
+      `[View log](<${host}/logs?turnId=turn-665-a&source=all&switchTenant=${tenantId}>)`,
     );
     expect(c).toContain(
       `[View conversation](<${host}/conversations/4242?switchTenant=${tenantId}>)`,
@@ -391,7 +391,7 @@ describe.skipIf(!dbUp)("alert links through the ledger", () => {
     expect(row.conversationId).toBe(1n);
     const [c] = await deliver(id);
     expect(c).toContain(
-      `[View all 2](<${host}/logs?stage=tts&level=error&switchTenant=${tenantId}>)`,
+      `[View all 2](<${host}/logs?stage=tts&level=error&source=all&switchTenant=${tenantId}>)`,
     );
     expect(c).not.toContain("turn-665-");
   });

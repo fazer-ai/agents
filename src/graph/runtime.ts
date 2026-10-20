@@ -9,6 +9,7 @@ import {
   postedOutcomeFor,
   silenceIsUnexplained,
 } from "@/graph/close-intent";
+import { modelTelemetry } from "@/graph/model-telemetry";
 import { withKeyedQueue } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { agentStillSpeaks } from "@/modules/agents/speaks";
@@ -57,11 +58,6 @@ import {
   selectOpenMessages,
 } from "@/modules/debounce/watermark";
 import { approvalNoticesForTurn } from "@/modules/documents/approval";
-import { emitCapacityWait } from "@/modules/flowlog/capacity";
-import {
-  emitFallbackAnswered,
-  emitFallbackFailed,
-} from "@/modules/flowlog/fallback-lines";
 import {
   emitFlowEvent,
   type FlowContext,
@@ -1193,82 +1189,16 @@ async function runTurnBody(
     // world, and an unreadable mark is not a withdrawal. See docs/graph.md, "The tool boundary,
     // when the turn was called off".
     stillWanted: stillWantedFence,
-    // NOTE: Hard tool-call limit reached: a warn so the operator sees the agent was forced to answer.
-    onToolLimit: ({ maxToolCalls, toolCalls }) =>
-      emitFlowEvent(flow, {
-        stage: "generate",
-        level: "warn",
-        status: "ok",
-        detail: { toolLimitHit: maxToolCalls, toolCalls },
-      }),
-    // NOTE: A wait past the capacity threshold for a model permit: the instance, not the model, is
-    // what the customer is waiting on.
-    onModelPermitWait: (wait) =>
-      emitCapacityWait(flow, "model_semaphore", wait),
+    ...modelTelemetry(flow, loaded.mc.provider),
     // NOTE: To the graph's model call and tool boundary, never to `graph.invoke` (see
     // BuildAgentGraphParams.signal).
     signal: params.signal,
-    // NOTE: A turn recovered from an empty provider response must not read like a clean one in the
-    // Logs, or the fault's rate is invisible.
-    onModelRetry: ({ attempt, provider, model }) =>
-      emitFlowEvent(flow, {
-        stage: "generate",
-        level: "info",
-        status: "ok",
-        // NOTE: The retry can happen on either model; the labels ride on the event, so there is no
-        // default here to get wrong.
-        provider,
-        model,
-        // NOTE: Written before the retry runs, so it is `info` with `willRetry`: a retry that also
-        // comes back empty fails the turn, and that failure is the line that alerts.
-        detail: { retriedEmptyResponse: attempt, willRetry: true },
-      }),
-    // NOTE: A fallback that answers is a successful turn, so this warn is the operator's one signal
-    // that the primary provider is not taking their traffic.
+    // NOTE: the shared telemetry, plus the turn's own record of which model answered.
     onModelFallback: (info) => {
       fallbackAnswered = true;
       answeredBy = { provider: info.provider, model: info.model };
-      emitFallbackAnswered(flow, "generate", loaded.mc.provider, info);
+      modelTelemetry(flow, loaded.mc.provider).onModelFallback?.(info);
     },
-    // NOTE: The fallback failed too. Attribution, not a second alarm: the wrapping `generate` stage
-    // already emits the error (labelled with the primary), and alert coalescing keys on (channel,
-    // stage, level), so a second error would page twice. `info` names which model died; `status`
-    // stays "error".
-    onModelFallbackFailed: (info) => emitFallbackFailed(flow, "generate", info),
-    // NOTE: A configured fallback that cannot be built, reported once per turn build rather than on
-    // a failure, when it would be too late to warn.
-    onModelFallbackUnavailable: ({ provider, model, reason }) =>
-      emitFlowEvent(flow, {
-        stage: "generate",
-        level: "warn",
-        status: "ok",
-        provider,
-        model,
-        detail: { fallbackUnavailable: reason },
-      }),
-    // NOTE: Info, not warn: the turn that left the calls unanswered already failed where it was
-    // killed, and this one answers. The line is what ties a "No tool output found" in the provider's
-    // logs to the turn that cleared it.
-    onDanglingToolCalls: ({ calls }) =>
-      emitFlowEvent(flow, {
-        stage: "memory",
-        level: "info",
-        status: "ok",
-        detail: { reason: "repaired_dangling_tool_call", calls },
-      }),
-    // NOTE: Info, not warn: a working history ceiling trims on nearly every turn of a long thread and
-    // warn pages. Counts only, never a fragment of what was dropped.
-    onHistoryTrim: ({ kept, dropped, tokens }) =>
-      emitFlowEvent(flow, {
-        stage: "generate",
-        level: "info",
-        status: "ok",
-        detail: {
-          historyKept: kept,
-          historyDropped: dropped,
-          historyTokens: tokens,
-        },
-      }),
   });
   const callbacks = buildCallbacks(loaded, {
     tenantId,

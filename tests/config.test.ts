@@ -374,6 +374,28 @@ describe("database pools and budgets", () => {
   });
 });
 
+describe("client channel settings in the deploy composes", () => {
+  test("every deploy compose forwards the switch, the limits and the suspended turn's deadline", () => {
+    for (const file of [
+      "docker-compose.prod.yml",
+      "docker-compose.coolify.yml",
+      "docker-compose.portainer.yml",
+    ]) {
+      const compose = readFileSync(file, "utf8");
+      expect(compose).toContain(
+        `CLIENT_CHANNEL_ENABLED=\${CLIENT_CHANNEL_ENABLED:-false}`,
+      );
+      for (const v of [
+        "CLIENT_CHANNEL_SDK_USER_PER_MIN",
+        "CLIENT_CHANNEL_SDK_APP_PER_MIN",
+        "CLIENT_TURN_SUSPEND_TIMEOUT_MS",
+      ]) {
+        expect(compose).toContain(`${v}=\${${v}:-}`);
+      }
+    }
+  });
+});
+
 // Without these the image runs with no mail provider whatever the stack's variables say, and a
 // dashboard's viewers never receive a sign-in code.
 describe("mail settings in the deploy composes", () => {

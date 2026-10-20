@@ -106,6 +106,7 @@ const EXPECTED_LANE: Record<SchedulerJobKind, SchedulerLane> = {
   INBOUND_REDISPATCH: "shared",
   NOTHING_TO_ANSWER: "shared",
   SUGGESTION_REVIEW: "shared",
+  CLIENT_ANON_SWEEP: "shared",
   DOCUMENT_APPROVAL_EXPIRY: "shared",
   DOCUMENT_APPROVAL_OUTCOME: "shared",
 };
@@ -153,6 +154,7 @@ const EXPECTED_SPENDS_PROVIDER: Record<SchedulerJobKind, boolean> = {
   // Chatwoot reads and one status write: no model.
   NOTHING_TO_ANSWER: false,
   SUGGESTION_REVIEW: true,
+  CLIENT_ANON_SWEEP: false,
   DOCUMENT_APPROVAL_EXPIRY: false,
   DOCUMENT_APPROVAL_OUTCOME: true,
 };
@@ -201,6 +203,7 @@ const EXPECTED_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
   // One per conversation that received a blank message.
   NOTHING_TO_ANSWER: true,
   SUGGESTION_REVIEW: true,
+  CLIENT_ANON_SWEEP: false,
   DOCUMENT_APPROVAL_EXPIRY: true,
   // One per decided or expired request, and an expiry arms a whole backlog at once.
   DOCUMENT_APPROVAL_OUTCOME: true,
@@ -242,6 +245,7 @@ const EXPECTED_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
   // again.
   NOTHING_TO_ANSWER: true,
   SUGGESTION_REVIEW: false,
+  CLIENT_ANON_SWEEP: false,
   DOCUMENT_APPROVAL_EXPIRY: true,
   DOCUMENT_APPROVAL_OUTCOME: true,
 };
@@ -289,6 +293,7 @@ const EXPECTED_DEATH_LEVEL: Record<
   // alert.
   NOTHING_TO_ANSWER: "warn",
   SUGGESTION_REVIEW: "warn",
+  CLIENT_ANON_SWEEP: "error",
   DOCUMENT_APPROVAL_EXPIRY: "warn",
   DOCUMENT_APPROVAL_OUTCOME: "error",
 };

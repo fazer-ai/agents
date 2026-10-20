@@ -122,7 +122,10 @@ export async function rollupVersion(): Promise<string> {
 }
 
 export function filterKey(f: DashboardFilter): string {
-  return `${f.source ?? ""}|${f.agentId ?? ""}|${f.inboxId ?? ""}`;
+  // The audience only after the rest, and only when set, so the days kept before it existed keep
+  // their keys.
+  const key = `${f.source ?? ""}|${f.agentId ?? ""}|${f.inboxId ?? ""}`;
+  return f.audience ? `${key}|${f.audience}` : key;
 }
 
 // The local days a filter's window covers, when it starts and ends on local midnights of its zone.

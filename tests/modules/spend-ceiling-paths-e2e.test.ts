@@ -14,6 +14,7 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { AppError } from "@/lib/errors";
 import type { TenantContext } from "@/lib/tenancy";
+import { runClientTurn } from "@/modules/client-channel/service";
 import { clearContactAuthState } from "@/modules/contact-auth/state";
 import { settleFlowEvents } from "@/modules/flowlog/scheduled";
 import {
@@ -315,6 +316,96 @@ describe.skipIf(!dbUp)("the spend ceiling on the playground and vision", () => {
       base: appDb,
     });
     expect(verdict.state).toBe("allowed");
+  });
+
+  // The client channel is a third ledger. The host application's server is waiting on the call, so
+  // the refusal is a 429 with its own key, never a reply that silently says nothing.
+  test("a client channel turn over its ceiling never reaches the model", async () => {
+    await setCeiling({ enabled: true, monthlyClientUsd: 1000 });
+    await spend("client", 1200);
+    expect(
+      await refusal(() =>
+        runClientTurn({
+          ctx,
+          agentId,
+          user: { id: "u-1" },
+          message: "oi",
+          clientTools: [],
+          base: appDb,
+          deps: { makeModel: refusingModel(), checkpointer: new MemorySaver() },
+        }),
+      ),
+    ).toEqual({ statusCode: 429, key: "errors.clientSpendCeilingReached" });
+  });
+
+  // Each of the other two blown: the client channel still answers, and its lines are filed under
+  // its own source, which is what puts them on the client bar and in the `<env>-client` environment.
+  test("blown INBOX and PLAYGROUND ceilings do not close the client channel", async () => {
+    await setCeiling({
+      enabled: true,
+      monthlyInboxUsd: 100,
+      monthlyPlaygroundUsd: 100,
+      monthlyClientUsd: 1_000_000,
+    });
+    await spend("inbox", 999_999);
+    await spend("playground", 999_999);
+    const res = await runClientTurn({
+      ctx,
+      agentId,
+      user: { id: "u-1" },
+      message: "oi",
+      clientTools: [],
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new FakeListChatModel({ responses: ["Claro, posso ajudar."] }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(res).toMatchObject({
+      status: "done",
+      reply: "Claro, posso ajudar.",
+    });
+    await settleFlowEvents();
+    const rows = await flowLogRows(suDb, {
+      where: { tenantId, threadId: res.threadId },
+      select: { source: true },
+    });
+    expect(rows.length).toBeGreaterThan(0);
+    expect(new Set(rows.map((r) => r.source))).toEqual(new Set(["client"]));
+  });
+
+  // Vision asks BEFORE IT SPENDS, which is what this proves: the provider seam throws, so an
+  // extraction that got as far as the billed call fails the test.
+  test("vision over the ceiling never calls the provider", async () => {
+    await setCeiling({ enabled: true, monthlyInboxUsd: 1000 });
+    await spend("inbox", 1200);
+    const s = visionStub();
+    const result = await extractInboundFile({
+      tenantId,
+      instanceId,
+      conversationId: 77,
+      messageId: 78,
+      attachmentId: 79,
+      dataUrl: "https://203.0.113.31:9/a.png",
+      cfg: {
+        enabled: true,
+        provider: "openai",
+        model: "gpt-4o-mini",
+        // A credential that RESOLVES, so the only thing that can stop this before the download is
+        // the ceiling. A dangling ref would make the test pass on `credential_not_found` and go on
+        // passing with the gate deleted, which is exactly what it did until the mutation said so.
+        credentialRef: visionRef,
+        baseURL: null,
+        extractionPrompt: "descreva",
+        maxOutputTokens: null,
+        reasoningEffort: null,
+      },
+      base: appDb,
+      deps: s.deps,
+    });
+    expect(result).toBeNull();
+    expect(s.providerCalls).toEqual([]);
   });
 
   // AND THE FILE THAT WAS NEVER GOING TO BE READ IS NOT REFUSED. `application/zip` resolves to no

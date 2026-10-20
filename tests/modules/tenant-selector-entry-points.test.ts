@@ -436,6 +436,20 @@ const CANNOT_REFUSE_THE_SELECTOR = new Set([
   "post /v1/tenants",
 ]);
 
+// Routes the published spec leaves out while their switch is off, which is how `openapi.json` is
+// generated: the client channel (CLIENT_CHANNEL_ENABLED), its turn and its client apps. Their own 404
+// is pinned in tests/api/v1/client-turn-stream.test.ts and tests/api/v1/client-apps.test.ts.
+const UNPUBLISHED_WHILE_OFF = new Set([
+  "post /v1/agents/{id}/client/turn",
+  "get /v1/client-apps",
+  "get /v1/client-apps/{id}",
+  "post /v1/client-apps",
+  "patch /v1/client-apps/{id}",
+  "delete /v1/client-apps/{id}",
+  "post /v1/client-apps/{id}/secrets",
+  "delete /v1/client-apps/{id}/secrets/{kid}",
+]);
+
 async function sweepRoutes(): Promise<
   Array<{ file: string; verb: string; path: string; declared: string }>
 > {
@@ -530,7 +544,9 @@ describe("a route that can refuse the selector declares that refusal", () => {
         Record<string, { responses?: Record<string, unknown> }>
       >;
     };
-    const routes = await sweepRoutes();
+    const routes = (await sweepRoutes()).filter(
+      (r) => !UNPUBLISHED_WHILE_OFF.has(`${r.verb} ${r.path}`),
+    );
     const missing = routes
       .filter((r) => !CANNOT_REFUSE_THE_SELECTOR.has(`${r.verb} ${r.path}`))
       .filter((r) => !spec.paths?.[r.path]?.[r.verb]?.responses?.["404"])

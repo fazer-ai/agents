@@ -18,6 +18,7 @@ import {
   Select,
   Skeleton,
 } from "@/client/components";
+import { useClientChannelEnabled } from "@/client/contexts/AuthContext";
 import { api } from "@/client/lib/api";
 import { cn } from "@/client/lib/utils";
 import { SectionNav } from "./agents/SectionNav";
@@ -25,6 +26,7 @@ import { metricsErrorMessage } from "./dashboard/Block";
 import { BreakdownSection } from "./dashboard/BreakdownSection";
 import { CostSection } from "./dashboard/CostSection";
 import {
+  type Audience,
   apiQuery,
   type DashboardFilters,
   localDayKey,
@@ -67,6 +69,7 @@ function FilterBar({
   inboxes: { id: string; name: string }[];
 }) {
   const { t } = useTranslation();
+  const clientChannelEnabled = useClientChannelEnabled();
   const today = localDayKey(new Date());
   const ranges: { value: Range; label: string }[] = [
     { value: "7d", label: t("dashboard.range.7d", "7d") },
@@ -82,7 +85,26 @@ function FilterBar({
       value: "playground",
       label: t("dashboard.source.playground", "Playground"),
     },
+    ...(clientChannelEnabled
+      ? [
+          {
+            value: "client" as const,
+            label: t("dashboard.source.client", "Client channel"),
+          },
+        ]
+      : []),
     { value: "all", label: t("dashboard.source.all", "All") },
+  ];
+  const audiences: { value: Audience; label: string }[] = [
+    { value: "all", label: t("dashboard.audience.all", "All users") },
+    {
+      value: "identified",
+      label: t("dashboard.audience.identified", "Signed in"),
+    },
+    {
+      value: "anonymous",
+      label: t("dashboard.audience.anonymous", "Anonymous"),
+    },
   ];
   return (
     <div className="flex flex-wrap items-end gap-3">
@@ -161,6 +183,14 @@ function FilterBar({
         onChange={(source) => onChange({ source })}
         options={sources}
       />
+      {filters.source === "client" && (
+        <SegmentedControl
+          aria-label={t("dashboard.audience.label", "Audience")}
+          value={filters.audience}
+          onChange={(audience) => onChange({ audience })}
+          options={audiences}
+        />
+      )}
     </div>
   );
 }
@@ -241,7 +271,15 @@ function DashboardBlocks({
 export function DashboardPage() {
   const { t } = useTranslation();
   const [params, setParams] = useSearchParams();
-  const filters = useMemo(() => readFilters(params), [params]);
+  const clientChannelEnabled = useClientChannelEnabled();
+  // A saved `source=client` link on an install with the channel off reads as the default segment, so
+  // the control shown and the figures asked for stay the same thing.
+  const filters = useMemo(() => {
+    const f = readFilters(params);
+    return f.source === "client" && !clientChannelEnabled
+      ? { ...f, source: "inbox" as const }
+      : f;
+  }, [params, clientChannelEnabled]);
   const [agents, setAgents] = useState<{ id: string; name: string }[] | null>(
     null,
   );

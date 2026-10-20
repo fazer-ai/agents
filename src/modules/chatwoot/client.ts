@@ -360,6 +360,9 @@ export interface ChatwootContact {
   name: string | null;
   email: string | null;
   phoneNumber: string | null;
+  // The integration's own key on the contact (`fazer-ai-client:…`), when one is set.
+  identifier?: string | null;
+  customAttributes?: Record<string, unknown>;
 }
 
 // `id` is the conversation's display_id: the API serializes `display_id` under that name.
@@ -422,6 +425,11 @@ function parseContact(raw: unknown): ChatwootContact | null {
     name: s(o.name),
     email: s(o.email),
     phoneNumber: s(o.phone_number),
+    identifier: s(o.identifier),
+    customAttributes:
+      o.custom_attributes && typeof o.custom_attributes === "object"
+        ? (o.custom_attributes as Record<string, unknown>)
+        : undefined,
   };
 }
 
@@ -1859,6 +1867,59 @@ export class ChatwootClient {
     return null;
   }
 
+  // The contact whose `identifier` is exactly this one, or null. The contacts filter compares the
+  // whole value (`equal_to`), where `/contacts/search` matches substrings and pages: `x:1` would
+  // also find `x:10` and could push the exact row past the pages read. The identifier is unique per
+  // account, so one row is the answer.
+  async findContactIdByIdentifier(identifier: string): Promise<number | null> {
+    const res = (await this.request(
+      this.config.adminToken,
+      "POST",
+      "/contacts/filter",
+      {
+        payload: [
+          {
+            attribute_key: "identifier",
+            filter_operator: "equal_to",
+            values: [identifier],
+            query_operator: null,
+          },
+        ],
+      },
+    )) as { payload?: unknown } | null;
+    const rows = Array.isArray(res?.payload) ? res.payload : [];
+    for (const row of rows) {
+      const c = parseContact(row);
+      if (c) return c.id;
+    }
+    return null;
+  }
+
+  // Creates a contact (admin token) and returns its id. Chatwoot answers 422 when the email, the
+  // phone or the identifier is already held by another contact of the account; the caller looks
+  // that one up instead.
+  async createContact(fields: {
+    name?: string | null;
+    email?: string | null;
+    phone_number?: string | null;
+    identifier?: string | null;
+  }): Promise<number> {
+    const body = Object.fromEntries(
+      Object.entries(fields).filter(([, v]) => v != null && v !== ""),
+    );
+    const res = (await this.request(
+      this.config.adminToken,
+      "POST",
+      "/contacts",
+      body,
+    )) as { payload?: unknown } | null;
+    // The fork answers `{ payload: { contact, contact_inbox } }`; a bare contact is read too.
+    const payload = res?.payload as { contact?: unknown } | undefined;
+    const c = parseContact(payload?.contact ?? payload);
+    if (!c) throw new ChatwootApiError(502, "POST /contacts: missing id");
+    return c.id;
+  }
+
   // One page of an inbox's conversations in one status, newest activity first (the fork's
   // `last_activity_at_desc`). Pages hold 25; an empty page is the end. Conversations the token's user
   // pinned come first on page one, so a caller bounding by time reads every row of a page rather than
@@ -2073,10 +2134,12 @@ export class ChatwootClient {
     return ref;
   }
 
+  // `toEmails` fixes an email inbox's recipients on the message itself; without it the fork's
+  // delivery job, which runs later, reads the contact's address at that moment.
   sendMessageAsAdmin(
     conversationId: number,
     content: string,
-    opts: { private: boolean },
+    opts: { private: boolean; toEmails?: string[] },
   ): Promise<unknown> {
     return this.request(
       this.config.adminToken,
@@ -2086,6 +2149,9 @@ export class ChatwootClient {
         content,
         private: opts.private,
         message_type: "outgoing",
+        ...(opts.toEmails?.length
+          ? { to_emails: opts.toEmails.join(",") }
+          : {}),
         content_attributes: { [CHATWOOT_PLATFORM_SENT_KEY]: true },
       },
     );

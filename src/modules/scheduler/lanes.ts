@@ -87,6 +87,7 @@ export const JOB_LANE: Record<SchedulerJobKind, SchedulerLane> = {
   // reads the queue in minutes, not seconds. Budget: one model call per proposal, under the shared
   // lane's provider concurrency like any other recovery-shaped call.
   SUGGESTION_REVIEW: "shared",
+  CLIENT_ANON_SWEEP: "shared",
   // One UPDATE over the tenant's overdue requests, at a cadence of hours by design.
   DOCUMENT_APPROVAL_EXPIRY: "shared",
   DOCUMENT_APPROVAL_OUTCOME: "shared",
@@ -150,6 +151,8 @@ export const JOB_POOL: Record<SchedulerJobKind, PoolClass> = {
   NOTHING_TO_ANSWER: "background",
   SUGGESTION_REVIEW: "background",
   DOCUMENT_APPROVAL_EXPIRY: "background",
+  // Background: it deletes anonymous conversations nobody touched for days; no reply is sent.
+  CLIENT_ANON_SWEEP: "background",
 };
 
 // Whether ONE job of this kind spends capacity at an external provider the rest of the product also
@@ -205,6 +208,7 @@ export const JOB_SPENDS_PROVIDER: Record<SchedulerJobKind, boolean> = {
   INBOUND_REDISPATCH: true,
   NOTHING_TO_ANSWER: false,
   SUGGESTION_REVIEW: true,
+  CLIENT_ANON_SWEEP: false,
   DOCUMENT_APPROVAL_EXPIRY: false,
   DOCUMENT_APPROVAL_OUTCOME: true,
   // The snoozed ladder is the same kind of work as FOLLOWUP: one nudge per row.
@@ -295,6 +299,7 @@ export const JOB_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
   // revoke's generic death line is reserved for kinds without one. One row per proposal the agent
   // made, which is far below traffic.
   SUGGESTION_REVIEW: false,
+  CLIENT_ANON_SWEEP: false,
   // One row per request, and a finished expiry is never read again: the request row is the record.
   DOCUMENT_APPROVAL_EXPIRY: true,
   DOCUMENT_APPROVAL_OUTCOME: true,
@@ -365,6 +370,7 @@ export const JOB_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
   NOTHING_TO_ANSWER: true,
   // One per proposal, and proposals follow the conversations the agent and the observer read.
   SUGGESTION_REVIEW: true,
+  CLIENT_ANON_SWEEP: false,
   // One per request, and requests follow the conversations the agent answers.
   DOCUMENT_APPROVAL_EXPIRY: true,
   // One per decided or expired request, and an expiry arms a whole overdue backlog at once.
@@ -411,6 +417,7 @@ export const JOB_TRAFFIC_RANK: Record<SchedulerJobKind, number> = {
   OBSERVE: 1,
   KNOWLEDGE_SOURCE_SYNC: 1,
   INBOUND_SWEEP: 1,
+  CLIENT_ANON_SWEEP: 1,
 };
 
 // What one kind's death means to the operator, read by the generic dead-letter announcement in
@@ -498,6 +505,7 @@ export const JOB_DEATH_LEVEL: Record<SchedulerJobKind, FlowLevel> = {
   // `warn`: the dead-letter hook releases the item to the pending list unreviewed, so nothing is
   // lost; what died is the dedup a person now does by eye.
   SUGGESTION_REVIEW: "warn",
+  CLIENT_ANON_SWEEP: "error",
   // `warn`: approval refuses an overdue request by its expiresAt whatever its status says, so what
   // died is the status label, not the rule.
   DOCUMENT_APPROVAL_EXPIRY: "warn",
@@ -544,6 +552,7 @@ export const JOB_RETRY_BASE_MS: Record<SchedulerJobKind, number> = {
   // The judgement is already half an hour late by design; a minute between retries changes nothing.
   NOTHING_TO_ANSWER: 60_000,
   SUGGESTION_REVIEW: 2_000,
+  CLIENT_ANON_SWEEP: 2_000,
   DOCUMENT_APPROVAL_EXPIRY: 2_000,
   DOCUMENT_APPROVAL_OUTCOME: 2_000,
   // The snoozed ladder is the same kind of work as FOLLOWUP: one nudge per row.

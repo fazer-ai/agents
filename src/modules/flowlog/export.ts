@@ -52,6 +52,7 @@ const CSV_COLUMNS: (keyof ExecutionLogItem)[] = [
   "id",
   "createdAt",
   "source",
+  "anonymous",
   "turnId",
   "stage",
   "level",

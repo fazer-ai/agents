@@ -12,11 +12,13 @@ import {
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { loadChatwootClient } from "@/modules/chatwoot/instance";
 import { cleanTranscription } from "@/modules/chatwoot/render";
+import { readDebugModes } from "@/modules/flowlog/debug-mode";
 import {
   emitFlowEvent,
   type FlowContext,
   withFlowStage,
 } from "@/modules/flowlog/service";
+import { assertClientSpendCeiling } from "@/modules/spend-ceiling/service";
 import { tryResolveApiKeyEntry } from "@/modules/vault/service";
 import { getSttProvider, type SttResult } from "./providers";
 import { readSttConfig, type SttConfig } from "./settings";
@@ -320,9 +322,13 @@ export interface PlaygroundTranscribeParams {
   // The playground's flow context: the stt line is what tells the operator a withheld transcription
   // from silence.
   flow?: FlowContext;
+  // Asked once the configuration is known to run, immediately before the provider call: the place
+  // a spend ceiling's gate belongs, so an agent whose speech-to-text never runs is told that instead.
+  beforeCall?: () => Promise<unknown>;
 }
 
-// Transcribe an uploaded audio file with the agent's configured STT provider, for the playground.
+// Transcribe an uploaded audio file with the agent's configured STT provider, for the playground and
+// for the SDK widget's microphone (the page has to tell the visitor why the recording went nowhere).
 // Unlike the inbound path (best-effort, silent on misconfig so a real conversation is never stranded),
 // this THROWS a clear AppError when STT is not runnable — the operator is explicitly testing the
 // configuration and needs to know what is wrong. No Chatwoot, no write-back: the transcription is
@@ -380,6 +386,7 @@ export async function transcribePlaygroundAudio(
     );
   }
 
+  await params.beforeCall?.();
   let result: SttResult;
   try {
     result = await withFlowStage(
@@ -411,4 +418,63 @@ export async function transcribePlaygroundAudio(
     );
   }
   return cleanTranscription(result.text);
+}
+
+export interface ClientTranscribeParams {
+  // The app's context (`appCtx`): its tenant, no principal.
+  ctx: TenantContext;
+  agentId: bigint;
+  audio: ArrayBuffer;
+  mimeType: string | null;
+  // The client channel's turn says this on its lines; the transcription that precedes it does too.
+  anonymous: boolean;
+  // The stt line's turn id; one of its own when absent, since no thread exists yet.
+  turnId?: string;
+  // The caller's own gate (the app's ceiling), asked right before the channel's.
+  beforeCall?: () => Promise<unknown>;
+  base?: PrismaClient;
+  deps?: { fetchImpl?: typeof fetch };
+}
+
+// The SDK widget's voice message: the app agent's speech-to-text, refusing as the playground's does
+// (the page tells the visitor why), behind the client channel's own ceiling, asked once the
+// configuration is known to run. The agent is read once,
+// for its STT config and its debug mode, and its `stt` line is the client channel's, under a turn id
+// of its own since no thread exists yet.
+export async function transcribeClientAudio(
+  params: ClientTranscribeParams,
+): Promise<string> {
+  const base = params.base ?? basePrisma;
+  const agent = await runScopedOn(base, params.ctx, (db) =>
+    db.agent.findUnique({
+      where: { id: params.agentId },
+      select: { settings: true },
+    }),
+  );
+  if (!agent)
+    throw new NotFoundError("agent not found", "errors.agentNotFound");
+  const tenantId = params.ctx.tenantId as bigint;
+  const flow: FlowContext = {
+    tenantId,
+    turnId: params.turnId ?? crypto.randomUUID(),
+    source: "client",
+    anonymous: params.anonymous,
+    agentId: params.agentId,
+    base,
+    fullDetail: readDebugModes(agent.settings, null).fullDetail,
+  };
+  return transcribePlaygroundAudio({
+    ctx: params.ctx,
+    agentId: params.agentId,
+    audio: params.audio,
+    mimeType: params.mimeType,
+    settings: agent.settings,
+    base,
+    deps: params.deps,
+    flow,
+    beforeCall: async () => {
+      await params.beforeCall?.();
+      await assertClientSpendCeiling({ tenantId, base, flow });
+    },
+  });
 }

@@ -9,6 +9,7 @@ import { healthController } from "@/api/features/health/health.controller";
 import { i18nController } from "@/api/features/i18n/i18n.controller";
 import { realtimeController } from "@/api/features/realtime/realtime.controller";
 import { updatesController } from "@/api/features/updates/updates.controller";
+import { clientChannelGate } from "@/api/lib/client-channel-gate";
 import { agentsController } from "@/api/v1/agents.controller";
 import { alertChannelsController } from "@/api/v1/alert-channels.controller";
 import { apiKeysController } from "@/api/v1/api-keys.controller";
@@ -16,6 +17,7 @@ import { auditController } from "@/api/v1/audit.controller";
 import { businessHoursController } from "@/api/v1/business-hours.controller";
 import { chatwootController } from "@/api/v1/chatwoot.controller";
 import { chatwootAdminController } from "@/api/v1/chatwoot-admin.controller";
+import { clientAppsController } from "@/api/v1/client-apps.controller";
 import { codeToolsController } from "@/api/v1/code-tools.controller";
 import { dashboardController } from "@/api/v1/dashboard.controller";
 import { documentApprovalsController } from "@/api/v1/document-approvals.controller";
@@ -41,6 +43,7 @@ import {
   oauthMcpCallbackController,
   oauthMcpVaultController,
 } from "@/api/v1/oauth-mcp.controller";
+import { sdkController, sdkPreflight } from "@/api/v1/sdk.controller";
 import { tenantSettingsController } from "@/api/v1/tenant-settings.controller";
 import { toolsController } from "@/api/v1/tools.controller";
 import { v1Controller } from "@/api/v1/v1.controller";
@@ -114,6 +117,10 @@ function injectTenantHeaderParam(spec: unknown): void {
 }
 
 const api = new Elysia()
+  // Off, the client channel answers like a missing route, ahead of auth and the body (see the gate).
+  .onRequest(clientChannelGate)
+  // The SDK turn's preflight, ahead of the instance-wide CORS plugin (see sdkPreflight).
+  .onRequest(sdkPreflight)
   // DEV-only: post-process the OpenAPI document served at /docs/json to prefill x-tenant-id (see
   // injectTenantHeaderParam). Registered before the openapi plugin so this global hook also wraps the
   // plugin's own spec route; a no-op outside dev or off the spec path.
@@ -255,6 +262,8 @@ const api = new Elysia()
   .use(tenantSettingsController)
   .use(webhooksController)
   .use(apiKeysController)
+  .use(clientAppsController)
+  .use(sdkController)
   .use(auditController)
   .use(dashboardController)
   .use(logsController)

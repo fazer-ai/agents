@@ -15,6 +15,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { MemoryRouter, useLocation } from "react-router";
+import { AuthContext } from "@/client/contexts/AuthContext";
 import { ThemeProvider } from "@/client/contexts/ThemeContext";
 import {
   getActiveTenantId,
@@ -444,16 +445,31 @@ function Where() {
   return null;
 }
 
-async function renderDash(path = "/", settled = true) {
+async function renderDash(path = "/", settled = true, clientChannel?: boolean) {
   asked.length = 0;
+  const page = (
+    <ThemeProvider>
+      <MemoryRouter initialEntries={[path]}>
+        <DashboardPage />
+        <Where />
+      </MemoryRouter>
+    </ThemeProvider>
+  );
   render(
     withI18n(
-      <ThemeProvider>
-        <MemoryRouter initialEntries={[path]}>
-          <DashboardPage />
-          <Where />
-        </MemoryRouter>
-      </ThemeProvider>,
+      clientChannel === undefined ? (
+        page
+      ) : (
+        <AuthContext.Provider
+          value={
+            { clientChannelEnabled: clientChannel } as unknown as NonNullable<
+              React.ContextType<typeof AuthContext>
+            >
+          }
+        >
+          {page}
+        </AuthContext.Provider>
+      ),
     ),
   );
   if (!settled) return;
@@ -500,6 +516,46 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("one filter, in the URL, for every block", () => {
+  // The client segment exists only where the install runs the client channel: elsewhere a saved
+  // `source=client` link reads as the default segment, so the figures match the control shown.
+  test("a client link reads as the real segment with the channel off, and as itself with it on", async () => {
+    await renderDash("/?range=7d&source=client");
+    await waitFor(() =>
+      expect(asks("/metrics/stream").length).toBeGreaterThan(0),
+    );
+    expect(asks("/metrics/stream")[0]?.searchParams.get("source")).toBe(
+      "inbox",
+    );
+    cleanup();
+    await renderDash("/?range=7d&source=client", true, true);
+    await waitFor(() =>
+      expect(asks("/metrics/stream").length).toBeGreaterThan(0),
+    );
+    expect(asks("/metrics/stream")[0]?.searchParams.get("source")).toBe(
+      "client",
+    );
+  });
+
+  test("an audience refines the client segment, and only that segment", async () => {
+    await renderDash("/?range=7d&source=client&audience=anonymous", true, true);
+    await waitFor(() => {
+      expect(asks("/metrics/stream").length).toBeGreaterThan(0);
+    });
+    const audienceOf = (path: string) =>
+      asks(path)[0]?.searchParams.get("audience") ?? null;
+    expect(audienceOf("/metrics/stream")).toBe("anonymous");
+    cleanup();
+    await renderDash(
+      "/?range=7d&source=playground&audience=anonymous",
+      true,
+      true,
+    );
+    await waitFor(() =>
+      expect(asks("/metrics/stream").length).toBeGreaterThan(0),
+    );
+    expect(audienceOf("/metrics/stream")).toBeNull();
+  });
+
   test("every block asks with the agent, inbox and segment the link names", async () => {
     await renderDash("/?range=7d&agent=7&inbox=3&source=playground");
     await waitFor(() => {

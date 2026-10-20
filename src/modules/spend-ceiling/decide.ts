@@ -18,15 +18,18 @@ export interface SpendDecisionInput {
   usedUsd: number;
 }
 
-// WHICH CEILING A SOURCE ANSWERS TO. Two numbers rather than one, because the ledger already tells
-// the two kinds of traffic apart and an operator burning the month in the playground must not be
-// able to silence the agent for customers.
+// WHICH CEILING A SOURCE ANSWERS TO. One number per source, because the ledger already tells the
+// kinds of traffic apart and an operator burning the month in the playground, or a host
+// application's users, must not be able to silence the agent for the others.
 export function ceilingFor(
   cfg: SpendCeilingConfig,
   source: UsageSource,
 ): number | null {
-  const configured =
-    source === "playground" ? cfg.monthlyPlaygroundUsd : cfg.monthlyInboxUsd;
+  const configured = {
+    inbox: cfg.monthlyInboxUsd,
+    playground: cfg.monthlyPlaygroundUsd,
+    client: cfg.monthlyClientUsd,
+  }[source];
   // 0 IS "NO CEILING ON THIS HALF", not "refuse everything". An operator who wants to bound only
   // the playground leaves the other at zero, and reading that as a ceiling of zero dollars would
   // switch the agent off for every customer the moment the block is enabled.

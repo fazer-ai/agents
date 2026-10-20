@@ -360,7 +360,7 @@ export async function createSuggestion(
 // Where a suggestion came from, resolved from its thread id so the reviewer can jump straight to the
 // conversation that produced it. Real conversations carry tenantId:instanceId:displayId and link to
 // the conversation detail; playground threads carry tenantId:playground:agentId:uuid and link to the
-// agent's playground tab. A deleted conversation/agent ⇒ null (the target is gone; show no link).
+// agent's playground tab; client channel threads (tenantId:client:agentId:uuid) link nowhere. A deleted conversation/agent ⇒ null (the target is gone; show no link).
 export type ApprovalSource =
   | { kind: "conversation"; conversationId: string; label: string }
   | { kind: "playground"; agentId: string; agentName: string | null }
@@ -374,6 +374,7 @@ export function parseThreadOrigin(
 ):
   | { kind: "conversation"; instanceId: bigint; displayId: number }
   | { kind: "playground"; agentId: bigint }
+  | { kind: "client"; agentId: bigint }
   | null {
   if (!threadId) return null;
   const parts = threadId.split(":");
@@ -383,6 +384,12 @@ export function parseThreadOrigin(
   if (parts.length === 4 && parts[1] === "playground") {
     const agentId = parseDbId(parts[2]);
     return agentId === null ? null : { kind: "playground", agentId };
+  }
+  // A client channel thread (src/graph/detached-thread.ts): what it decides is the SOURCE its
+  // suggestions' review is billed to, so client traffic spends its own ceiling, not the inbox's.
+  if (parts.length === 4 && parts[1] === "client") {
+    const agentId = parseDbId(parts[2]);
+    return agentId === null ? null : { kind: "client", agentId };
   }
   if (parts.length === 3 && parts[1] !== "playground") {
     const displayId = Number(parts[2]);
@@ -605,7 +612,9 @@ export async function listApprovals(
     const resolveSource = (
       origin: (typeof origins)[number],
     ): ApprovalSource => {
-      if (!origin) return null;
+      // A client thread lives in the application that embeds the agent: the console has no page
+      // of it to link to.
+      if (!origin || origin.kind === "client") return null;
       if (origin.kind === "playground") {
         return {
           kind: "playground",

@@ -1,6 +1,6 @@
 # Knowledge suggestions: the approval queue and its reviewer
 
-An agent with the `suggest_kb_entry` tool (in a conversation, an observer tick or the playground) proposes entries for a knowledge base. Nothing enters a base without a person approving it in the approval queue (`approval_queue_items`). This doc covers what happens between the proposal and the person: the duplicate floor, the suggestion reviewer, and what approving, rejecting and requeueing do.
+An agent with the `suggest_kb_entry` tool (in a conversation, an observer tick, the playground or the client channel) proposes entries for a knowledge base. Nothing enters a base without a person approving it in the approval queue (`approval_queue_items`). This doc covers what happens between the proposal and the person: the duplicate floor, the suggestion reviewer, and what approving, rejecting and requeueing do.
 
 Code: `src/modules/rag/service.ts` (create, list, approve, reject, requeue), `src/modules/rag/suggestion-review.ts` (the reviewer job), `src/modules/rag/review-settings.ts` (the per-agent override). Transports: REST `src/api/v1/knowledge.controller.ts`, MCP `knowledge_approvals_list` / `knowledge_approve` / `knowledge_reject` / `knowledge_requeue`, UI `src/client/pages/resources/KnowledgeApprovals.tsx`.
 
@@ -43,7 +43,7 @@ Items written before the reviewer existed have no embedding and are never candid
 
 The agent's own model by default. The agent editor's Knowledge tab ("Suggestion reviewer") sets an override with the same shape as the memory compaction override: provider, model, credential, base URL, stored at `settings.knowledge.suggestionReview`. A broken override is a config-health issue (`suggestionReviewModel`), and the review releases instead of running on it.
 
-The call is the billed ledger node `suggestion_review`, gated by the spend ceiling (`inbox` source, or `playground` for a playground thread) and not counted as an agent turn.
+The call is the billed ledger node `suggestion_review`, gated by the spend ceiling (`inbox` source, `playground` for a playground thread, `client` for a client channel thread) and not counted as an agent turn.
 
 ## REST proposals skip the reviewer
 

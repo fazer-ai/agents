@@ -213,18 +213,19 @@ describe("MCP tool descriptions", () => {
       desc += t.description.length;
       schema += t.schema.length;
     }
-    // Measured at 34_168 with the 15 dashboard tools (Pro only), conversation_decisions_test,
-    // inbox_bind_voice, the voice kind on agent_create and agent_call_floor; 33_086 on the Free tree.
-    // 34_653 with the six dashboard_source tools (HTTP sources, Pro only).
-    expect(desc).toBeLessThanOrEqual(34_720);
-    // Measured at 80_562 with `limits.maxProactivePerDay` and the `snoozedFollowUp` and `otherInboxes`
-    // blocks on agent_settings_set, the document template writes' approval, validity and next number,
-    // issued_document_list's search and cursor, the three proactive_breaker tools, the voice binding
-    // and kind, the tts block's timeout and fallback voice, agent_call_floor's draft input, the
-    // guardrails' onFailure and endpoint check, the `calls` numbers ranged, the 15 dashboard tools and
-    // the six dashboard_source tools (Pro only; dashboard_query_schema's contract is served on demand),
-    // and tv_rotation and tv_seconds (ranged) on dashboard_update.
-    expect(schema).toBeLessThanOrEqual(80_640);
+    // Measured at 35_244 with the 15 dashboard tools and the six dashboard_source tools (Pro only),
+    // conversation_decisions_test, inbox_bind_voice, the voice kind on agent_create and
+    // agent_call_floor, plus the client channel SDK's four client app tools and the audience filter
+    // on the log and metrics tools; 33_086 on the Free tree before the SDK.
+    expect(desc).toBeLessThanOrEqual(35_320);
+    // Measured at 82_062 with `limits.maxProactivePerDay`, `snoozedFollowUp` and `otherInboxes` on
+    // agent_settings_set, the document template writes, issued_document_list's search and cursor, the
+    // proactive_breaker tools, the voice binding and kind, the tts timeout and fallback voice,
+    // agent_call_floor's draft, the guardrails' onFailure and endpoint check, the `calls` numbers
+    // ranged, the dashboard and dashboard_source tools (Pro only), tv_rotation and tv_seconds
+    // (ranged) on dashboard_update, and the client channel SDK's app tools and audience filter.
+    // 74_540 on the Free tree before the SDK.
+    expect(schema).toBeLessThanOrEqual(82_140);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

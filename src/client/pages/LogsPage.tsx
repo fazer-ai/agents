@@ -23,6 +23,7 @@ import {
   useModalController,
 } from "@/client/components";
 import { Tooltip } from "@/client/components/Tooltip";
+import { useClientChannelEnabled } from "@/client/contexts/AuthContext";
 import { api } from "@/client/lib/api";
 import {
   flowLevelLabel,
@@ -34,6 +35,7 @@ import {
 } from "@/client/lib/flowLabels";
 import { type LogGroupTitle, logGroupTitle } from "@/client/lib/logGroupTitle";
 import { cn, formatDateTime } from "@/client/lib/utils";
+import { CLIENT_AUDIENCES } from "@/graph/usage-sources";
 import { FLOW_LEVELS, FLOW_STAGES } from "@/modules/flowlog/stages";
 import { LogsExportModal } from "./LogsExportModal";
 
@@ -80,6 +82,8 @@ interface TurnGroup {
   newestAt: string;
   conversationId: string | null;
   threadId: string | null;
+  // A client-channel turn served to an anonymous visitor's session.
+  anonymous: boolean;
 }
 
 function groupByTurn(items: LogItem[]): TurnGroup[] {
@@ -108,6 +112,7 @@ function groupByTurn(items: LogItem[]): TurnGroup[] {
       conversationId:
         rows.find((r) => r.conversationId)?.conversationId ?? null,
       threadId: rows.find((r) => r.threadId)?.threadId ?? null,
+      anonymous: rows.some((r) => r.anonymous),
     };
   });
 }
@@ -313,6 +318,11 @@ function TurnGroupCard({
           <span className="truncate text-sm text-text-secondary">
             {groupTitleText(logGroupTitle(group), t)}
           </span>
+          {group.anonymous && (
+            <span className="inline-flex items-center rounded bg-bg-tertiary px-1.5 py-0.5 font-medium text-text-muted text-xs">
+              {t("logs.anonymousSession", "Anonymous visitor")}
+            </span>
+          )}
           <span className="text-text-muted text-xs">
             {t("logs.steps", "{{count}} steps", { count: group.rows.length })}
           </span>
@@ -367,12 +377,25 @@ function TurnGroupCard({
 }
 
 export function LogsPage() {
+  const clientChannelEnabled = useClientChannelEnabled();
   const { t } = useTranslation();
   const [searchParams, setSearchParams] = useSearchParams();
 
   const stage = searchParams.get("stage") ?? "";
   const level = searchParams.get("level") ?? "";
-  const source = searchParams.get("source") ?? "inbox";
+  // A saved `source=client` link on an install with the channel off reads as the default, so the
+  // filter shown and the rows asked for stay the same thing.
+  const askedSource = searchParams.get("source") ?? "inbox";
+  const source =
+    askedSource === "client" && !clientChannelEnabled ? "inbox" : askedSource;
+  // Who the client channel served, only under that source: an `audience` left in a link that no longer
+  // filters the client channel is not sent.
+  const askedAudience = searchParams.get("audience") ?? "";
+  const audience =
+    source === "client" &&
+    (CLIENT_AUDIENCES as readonly string[]).includes(askedAudience)
+      ? askedAudience
+      : "";
   const q = searchParams.get("q") ?? "";
   // Deep-link filters (set by "view this conversation's logs"): scope to one conversation or turn.
   const conversationId = searchParams.get("conversationId") ?? "";
@@ -424,6 +447,7 @@ export function LogsPage() {
     stage,
     level,
     source,
+    audience,
     q,
     conversationId,
     turnId,
@@ -454,6 +478,7 @@ export function LogsPage() {
     setError(false);
     try {
       const query: Record<string, string> = { source };
+      if (audience) query.audience = audience;
       if (stage) query.stage = stage;
       if (level) query.level = level;
       if (q) query.search = q;
@@ -482,6 +507,7 @@ export function LogsPage() {
     stage,
     level,
     source,
+    audience,
     q,
     conversationId,
     turnId,
@@ -512,6 +538,7 @@ export function LogsPage() {
   // The active filters, keyed to the export endpoint's query params (the server bounds + serializes).
   const exportFilters = useMemo(() => {
     const f: Record<string, string> = { source };
+    if (audience) f.audience = audience;
     if (stage) f.stage = stage;
     if (level) f.level = level;
     if (q) f.search = q;
@@ -524,6 +551,7 @@ export function LogsPage() {
     return f;
   }, [
     source,
+    audience,
     stage,
     level,
     q,
@@ -614,8 +642,29 @@ export function LogsPage() {
           <option value="playground">
             {t("logs.source.playground", "Playground")}
           </option>
+          {clientChannelEnabled && (
+            <option value="client">
+              {t("logs.source.client", "Client channel")}
+            </option>
+          )}
           <option value="all">{t("logs.source.all", "All")}</option>
         </select>
+        {source === "client" && (
+          <select
+            className={selectCls}
+            value={audience}
+            onChange={(e) => setFilter("audience", e.target.value)}
+            aria-label={t("logs.filterAudience", "Audience")}
+          >
+            <option value="">{t("logs.audience.all", "All users")}</option>
+            <option value="identified">
+              {t("logs.audience.identified", "Signed-in users")}
+            </option>
+            <option value="anonymous">
+              {t("logs.audience.anonymous", "Anonymous visitors")}
+            </option>
+          </select>
+        )}
       </div>
 
       {fromDashboard && (

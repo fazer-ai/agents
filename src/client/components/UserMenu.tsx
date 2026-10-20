@@ -10,7 +10,7 @@ import {
   Settings,
   Sun,
 } from "lucide-react";
-import { useId } from "react";
+import { type ReactNode, type RefObject, useId, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router";
 import { Avatar } from "@/client/components/Avatar";
@@ -19,6 +19,7 @@ import { useToast } from "@/client/components/Toast";
 import { useAuth } from "@/client/contexts/AuthContext";
 import { useConfirmLeave } from "@/client/contexts/NavGuardContext";
 import { useTheme } from "@/client/contexts/ThemeContext";
+import { useMediaQuery } from "@/client/hooks/useMediaQuery";
 import { LANGUAGES } from "@/client/lib/languages";
 import { afterLogout } from "@/client/lib/logout";
 import { isAdminRole } from "@/client/lib/roles";
@@ -45,6 +46,66 @@ const menuContentCls =
   "data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 z-(--z-dropdown) overflow-hidden rounded-lg border border-border-hover bg-bg-secondary p-1 shadow-lg data-[state=closed]:animate-out data-[state=open]:animate-in";
 
 const separatorCls = "-mx-1 my-1 h-px bg-border";
+
+// The phone submenu overlaps the menu, in spacing steps so it follows the density setting and the
+// browser's font size: `w-44` wide, with its right edge 3 steps inside the trigger's. It drops by
+// the trigger's own height, so the row that opened it stays uncovered.
+const OVERLAP_SUBMENU_WIDTH_STEPS = 44;
+const OVERLAP_SUBMENU_INSET_STEPS = 3;
+
+// One `--spacing` step in px, read when the submenu opens. Radix takes the offsets as numbers, so
+// the rem-based token has to be resolved here; 4px is the compact default.
+function spacingStepPx(): number {
+  const root = getComputedStyle(document.documentElement);
+  const raw = root.getPropertyValue("--spacing").trim();
+  const value = Number.parseFloat(raw);
+  if (!Number.isFinite(value) || value <= 0) return 4;
+  if (raw.endsWith("rem")) return value * Number.parseFloat(root.fontSize);
+  return raw.endsWith("px") ? value : 4;
+}
+
+function LanguageSubContent({
+  wide,
+  trigger,
+  children,
+}: {
+  wide: boolean;
+  trigger: RefObject<HTMLDivElement | null>;
+  children: ReactNode;
+}) {
+  if (wide) {
+    return (
+      <DropdownMenuPrimitive.SubContent
+        sideOffset={6}
+        alignOffset={-5}
+        className={cn(menuContentCls, "min-w-44")}
+      >
+        {children}
+      </DropdownMenuPrimitive.SubContent>
+    );
+  }
+  const step = spacingStepPx();
+  return (
+    <DropdownMenuPrimitive.SubContent
+      sideOffset={
+        -(OVERLAP_SUBMENU_WIDTH_STEPS + OVERLAP_SUBMENU_INSET_STEPS) * step
+      }
+      alignOffset={trigger.current?.getBoundingClientRect().height ?? 0}
+      avoidCollisions={false}
+      // NOTE: Radix still treats this as a right-side submenu, so a mouse moving down or left into
+      // it leaves the trigger outside the pointer-grace area and focus goes back to the parent
+      // menu, which would close it. Focus landing on another item still closes it.
+      onFocusOutside={(event) => {
+        const target = event.detail.originalEvent.target;
+        if (target instanceof Element && target.getAttribute("role") === "menu")
+          event.preventDefault();
+      }}
+      className={cn(menuContentCls, "w-44 shadow-xl")}
+    >
+      {children}
+    </DropdownMenuPrimitive.SubContent>
+  );
+}
 
 export function UserMenu() {
   const { t, i18n } = useTranslation();
@@ -79,6 +140,8 @@ export function UserMenu() {
   const currentTheme =
     THEME_OPTIONS.find((option) => option.value === theme) ?? AUTO_THEME;
   const currentLanguage = LANGUAGES.find((l) => l.code === i18n.language);
+  const wideViewport = useMediaQuery("(min-width: 768px)");
+  const languageTriggerRef = useRef<HTMLDivElement>(null);
 
   return (
     <DropdownMenuPrimitive.Root>
@@ -171,7 +234,10 @@ export function UserMenu() {
           </div>
 
           <DropdownMenuPrimitive.Sub>
-            <DropdownMenuPrimitive.SubTrigger className={menuItemCls}>
+            <DropdownMenuPrimitive.SubTrigger
+              ref={languageTriggerRef}
+              className={menuItemCls}
+            >
               <Languages className="h-4 w-4 shrink-0" aria-hidden="true" />
               <span className="flex-1">{t("language.label", "Language")}</span>
               <span className="text-text-muted text-xs">
@@ -183,10 +249,12 @@ export function UserMenu() {
               />
             </DropdownMenuPrimitive.SubTrigger>
             <DropdownMenuPrimitive.Portal>
-              <DropdownMenuPrimitive.SubContent
-                sideOffset={6}
-                alignOffset={-5}
-                className={cn(menuContentCls, "min-w-44")}
+              {/* Beside the menu there is no room on a phone, so Radix flips the submenu
+                  left and never shifts it back on screen (left -56px at 393px wide). Below md it
+                  opens on top of the menu instead, just under its trigger, at a fixed width. */}
+              <LanguageSubContent
+                wide={wideViewport}
+                trigger={languageTriggerRef}
               >
                 <DropdownMenuPrimitive.RadioGroup
                   value={i18n.language}
@@ -208,7 +276,7 @@ export function UserMenu() {
                     </DropdownMenuPrimitive.RadioItem>
                   ))}
                 </DropdownMenuPrimitive.RadioGroup>
-              </DropdownMenuPrimitive.SubContent>
+              </LanguageSubContent>
             </DropdownMenuPrimitive.Portal>
           </DropdownMenuPrimitive.Sub>
 

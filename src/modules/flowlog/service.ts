@@ -18,7 +18,13 @@ import {
   recoverySubjectOf,
 } from "./alerts";
 import { trackFlowWrite } from "./scheduled";
-import type { FlowLevel, FlowSource, FlowStage, FlowStatus } from "./stages";
+import {
+  type FlowLevel,
+  type FlowSource,
+  type FlowStage,
+  type FlowStatus,
+  pagesAlerts,
+} from "./stages";
 
 // Execution-flow log emit core. Verbose, per-stage operational telemetry (one row per stage per
 // turn) written FIRE-AND-FORGET: unlike UsageCapture (which awaits its single billing row), the
@@ -50,6 +56,8 @@ export interface FlowContext {
   // Correlates every stage of one turn (crypto.randomUUID() once per turn).
   turnId: string;
   source: FlowSource;
+  // A client-channel turn served to an anonymous visitor's session: its lines and its usage say so.
+  anonymous?: boolean;
   conversationId?: bigint | null;
   agentId?: bigint | null;
   inboxId?: bigint | null;
@@ -123,6 +131,7 @@ export async function writeFlowEvent(
           model: ev.model ?? undefined,
           durationMs: ev.durationMs ?? undefined,
           source: ctx.source,
+          anonymous: ctx.anonymous ?? false,
           detail: ev.detail
             ? (redactSecretsDeep(
                 ev.detail,
@@ -153,16 +162,16 @@ export async function writeFlowEvent(
     delivered = false;
     logger.warn({ err, turnId: ctx.turnId }, "flowlog emit failed");
   }
-  // Alerting: only warn/error, plus a cause alert at any level (a run the job retries against a dead
-  // key is an `info`, and the key still needs a person), and only real (inbox) traffic — a playground
-  // error must not page.
+  // Alerting is warn/error, plus a cause alert at any level (a run the job retries against a
+  // dead key is an `info`, and the key still needs a person), and only for a source with real users
+  // on the other end: a playground error must not page.
   //
   // A stranded delivery that ended well pages nobody alone: it counts toward the recovery rate
   // instead, one alert per window (`dispatchRecoveryRateAlert`).
   const recovered = recoverySubjectOf(ev);
   if (
     (level === "warn" || level === "error" || causeKeyOf(ev) !== null) &&
-    ctx.source === "inbox" &&
+    pagesAlerts(ctx.source) &&
     !recovered
   ) {
     try {
@@ -180,7 +189,7 @@ export async function writeFlowEvent(
   }
   // A transient provider failure also counts toward that provider's rate, at any level: the attempt
   // a retry recovers is `info` and pages nobody alone, and many of them are a degraded provider.
-  if (ctx.source === "inbox" && rateSubjectOf(ev) !== null) {
+  if (pagesAlerts(ctx.source) && rateSubjectOf(ev) !== null) {
     try {
       await dispatchRateAlert(ctx, ev, base);
     } catch (err) {

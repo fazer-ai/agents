@@ -107,6 +107,13 @@ export async function getInstanceMetrics(
   const usageWhere = {
     ...sinceWhere,
     ...(filter.source ? { source: filter.source } : {}),
+    ...(filter.audience
+      ? {
+          AND: [
+            { source: "client", anonymous: filter.audience === "anonymous" },
+          ],
+        }
+      : {}),
   };
 
   return runMetricsScoped(base, ctx, async (db) => {

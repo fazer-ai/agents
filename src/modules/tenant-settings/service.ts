@@ -703,6 +703,7 @@ export async function updateSpendCeiling(
           enabled: b.enabled,
           monthlyInboxUsd: b.monthlyInboxUsd,
           monthlyPlaygroundUsd: b.monthlyPlaygroundUsd,
+          monthlyClientUsd: b.monthlyClientUsd,
           warnAtPercent: b.warnAtPercent,
           handoffEnabled: b.handoffEnabled,
           noticeCooldownSeconds: b.noticeCooldownSeconds,
@@ -727,11 +728,13 @@ export async function updateSpendCeiling(
       // the warning that the old ceiling is no longer enforced.
       const touchesUsd =
         patch.monthlyInboxUsd !== undefined ||
-        patch.monthlyPlaygroundUsd !== undefined;
+        patch.monthlyPlaygroundUsd !== undefined ||
+        patch.monthlyClientUsd !== undefined;
       if (current.legacyTokens && !touchesUsd) {
         const {
           monthlyInboxUsd: _inbox,
           monthlyPlaygroundUsd: _playground,
+          monthlyClientUsd: _client,
           ...rest
         } = stored;
         return {

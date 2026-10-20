@@ -47,6 +47,9 @@ const {
   HEARTBEAT_INTERVAL_MS,
   SPEND_CEILING_POLL_INTERVAL_MS,
   MCP_STDIO_ENABLED,
+  CLIENT_CHANNEL_ENABLED,
+  CLIENT_CHANNEL_SDK_USER_PER_MIN,
+  CLIENT_CHANNEL_SDK_APP_PER_MIN,
   ALLOW_SUPERUSER_RUNTIME,
   DOCUMENTS_STORAGE_DIR,
   QUOTES_STORAGE_DIR,
@@ -68,6 +71,7 @@ const {
   AGENT_MODEL_CONCURRENCY,
   AGENT_MODEL_CALL_TIMEOUT_MS,
   AGENT_CAPACITY_WAIT_ALERT_MS,
+  CLIENT_TURN_SUSPEND_TIMEOUT_MS,
   AGENT_MODEL_BACKGROUND_SHARE_PERCENT,
   AGENT_MODEL_BACKGROUND_MAX_WAIT_MS,
   AGENT_PROMPT_MAX_CHARS,
@@ -595,6 +599,17 @@ const config = {
       "It is how long a reply may wait for a debounce slot or a model permit before a capacity warning is logged.",
       MAX_DURATION_MS,
     ),
+    // How long a client-channel turn may stay suspended waiting for the browser's tool answers. Past
+    // it, the user's next message closes the old turn with every pending call answered as an error
+    // instead of being refused (docs/client-channel.md). Short: a browser answers in seconds, and a
+    // turn left waiting means the tab is gone.
+    clientTurnSuspendTimeoutMs: parseIntSetting(
+      CLIENT_TURN_SUSPEND_TIMEOUT_MS,
+      "CLIENT_TURN_SUSPEND_TIMEOUT_MS",
+      120_000,
+      "It is how long a client-channel turn may wait for the browser's tool answers before a new message closes it.",
+      MAX_DURATION_MS,
+    ),
     // Under contention the model semaphore serves replies before background calls (observation,
     // memory compaction), except that the background is served first while it holds fewer than this
     // percentage of the permits (rounded down, so a small semaphore may have no share), and once one
@@ -868,6 +883,31 @@ const config = {
   // single-tenant/self-hosted box you control. Network transports (http/sse) are always allowed
   // and pass the SSRF guard.
   mcpStdioEnabled: MCP_STDIO_ENABLED === "true",
+  // The client channel (docs/client-channel.md): an agent embedded in a host application, through
+  // `POST /v1/agents/:id/client/turn`. Off by default while it is tried with its first host: off, the
+  // route answers 404, it is left out of the API reference, and the console shows no client source.
+  // `sdk` bounds the browser-facing turn (`POST /v1/sdk/:app/turn`), where no host server stands in
+  // front: requests per minute per signed-in user of an app, and per app. A guard against abuse,
+  // kept in memory like the other limiters (single replica).
+  clientChannel: {
+    enabled: CLIENT_CHANNEL_ENABLED === "true",
+    sdk: {
+      userPerMin: parseIntSetting(
+        CLIENT_CHANNEL_SDK_USER_PER_MIN,
+        "CLIENT_CHANNEL_SDK_USER_PER_MIN",
+        30,
+        "It bounds the requests one signed-in user of an embedding app makes per minute.",
+        10_000,
+      ),
+      appPerMin: parseIntSetting(
+        CLIENT_CHANNEL_SDK_APP_PER_MIN,
+        "CLIENT_CHANNEL_SDK_APP_PER_MIN",
+        600,
+        "It bounds the requests all users of one embedding app make per minute.",
+        100_000,
+      ),
+    },
+  },
   // Corrupted-audio check for synthesized replies (docs/tts.md "Checking the audio"). The
   // detector is deployment-level: infrastructure the operator runs next to this service, like the
   // database, so its address and token stay here. Empty URL = off. `mode` is the DEFAULT for an agent

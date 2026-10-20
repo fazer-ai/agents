@@ -232,6 +232,7 @@ describe.skipIf(!dbUp)("the spend ceiling poll", () => {
       await usage(tenantId, 1.25);
       await usage(tenantId, 0.75, { at: at(-60 * 24 * 10) });
       await usage(tenantId, 2, { source: "playground" });
+      await usage(tenantId, 3, { source: "client" });
       // No price: in no figure, never as zero.
       await usage(tenantId, null, { model: "unpriced" });
       // Last month and next month are other rows.
@@ -248,6 +249,7 @@ describe.skipIf(!dbUp)("the spend ceiling poll", () => {
       expect(inbox?.polledAt?.toISOString()).toBe(NOW.toISOString());
       expect(inbox?.pollError).toBeNull();
       expect(Number((await snapshot(tenantId, "playground"))?.costUsd)).toBe(2);
+      expect(Number((await snapshot(tenantId, "client"))?.costUsd)).toBe(3);
     }
   });
 

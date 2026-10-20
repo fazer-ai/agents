@@ -31,6 +31,7 @@ import type { ClaimedJob } from "@/modules/scheduler/service";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { blockedByChain } from "@/tests/utils/pg-waits";
 import { until } from "@/tests/utils/poll";
+import { UsageReportingModel } from "../utils/scripted-models";
 
 // The suggestion reviewer and the floor in front of it: a proposal from the agent waits in SCREENING
 // until a model has compared it with what the base, the queue and earlier rejections hold; every way
@@ -1282,6 +1283,105 @@ describe.skipIf(!dbUp)("the suggestion reviewer", () => {
       });
       await suDb.spendCostSnapshot.deleteMany({ where: { tenantId } });
     }
+  });
+
+  // A client channel thread's review is billed to the client half: the user of an embedding
+  // application cannot spend the inbox's month, and the client's own ceiling still stops it. Both
+  // halves are configured each time and only one is over, so a review attributed to the wrong half
+  // fails one of the two rows.
+  test("a client thread's review answers to the client ceiling, not the inbox one", async () => {
+    const monthStart = new Date(
+      Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1),
+    );
+    await suDb.tenant.update({
+      where: { id: tenantId },
+      data: {
+        settings: {
+          spendCeiling: {
+            enabled: true,
+            monthlyInboxUsd: 10,
+            monthlyClientUsd: 10,
+          },
+        },
+      },
+    });
+    try {
+      for (const [over, reviewed] of [
+        ["client", false],
+        ["inbox", true],
+      ] as const) {
+        await suDb.spendCostSnapshot.deleteMany({ where: { tenantId } });
+        await suDb.spendCostSnapshot.create({
+          data: {
+            tenantId,
+            source: over,
+            monthStart,
+            costUsd: 1000,
+            polledAt: new Date(),
+          },
+        });
+        const kb = await newKb();
+        await seedDocument(kb, "Cobramos taxa de entrega de 10 reais.", 12);
+        const a = await propose(kb, "A taxa de entrega é 10 reais.", {
+          thread: `${tenantId}:client:${agentId}:${crypto.randomUUID()}`,
+        });
+        const { model, seen } = scripted(
+          JSON.stringify({
+            verdict: "duplicate",
+            comment: "c",
+            matched_document: "doc:1",
+          }),
+        );
+        await review(a.id, model, axis(12));
+        expect({ over, reviewed: seen.length > 0 }).toEqual({ over, reviewed });
+      }
+    } finally {
+      await suDb.tenant.update({
+        where: { id: tenantId },
+        data: { settings: {} },
+      });
+      await suDb.spendCostSnapshot.deleteMany({ where: { tenantId } });
+    }
+  });
+
+  test("a client thread's review is billed as its owner: anonymous for a visitor's session", async () => {
+    const billed: Record<string, boolean[]> = {};
+    for (const externalId of ["anon:5:sessao-r", "ana-r"]) {
+      const user = await suDb.externalUser.create({
+        data: { tenantId, channel: "client", externalId },
+      });
+      const thread = `${tenantId}:client:${agentId}:${crypto.randomUUID()}`;
+      await suDb.detachedThread.create({
+        data: {
+          threadId: thread,
+          tenantId,
+          agentId,
+          kind: "client",
+          externalUserId: user.id,
+        },
+      });
+      const kb = await newKb();
+      await seedDocument(kb, "Cobramos taxa de entrega de 10 reais.", 12);
+      const a = await propose(kb, "A taxa de entrega é 10 reais.", { thread });
+      await review(
+        a.id,
+        new UsageReportingModel([
+          JSON.stringify({
+            verdict: "duplicate",
+            comment: "c",
+            matched_document: "doc:1",
+          }),
+        ]) as unknown as BaseChatModel,
+        axis(12),
+      );
+      billed[externalId] = (
+        await suDb.llmUsage.findMany({
+          where: { tenantId, threadId: thread, node: "suggestion_review" },
+          select: { source: true, anonymous: true },
+        })
+      ).map((r) => r.source === "client" && r.anonymous);
+    }
+    expect(billed).toEqual({ "anon:5:sessao-r": [true], "ana-r": [false] });
   });
 
   test("a proposal another review already moved is left alone", async () => {

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test";
+import { USAGE_SOURCES, type UsageSource } from "@/graph/usage-sources";
 import { clearContactAuthState } from "@/modules/contact-auth/state";
 import {
   ceilingFor,
@@ -33,7 +34,7 @@ describe("the spend ceiling decision", () => {
   const table: Array<{
     name: string;
     cfg: Partial<SpendCeilingConfig>;
-    source: "inbox" | "playground";
+    source: UsageSource;
     used: number;
     expect: "allowed" | "warning" | "over";
   }> = [
@@ -127,6 +128,50 @@ describe("the spend ceiling decision", () => {
       used: 10_000_000,
       expect: "allowed",
     },
+    // The client channel answers to its own number, and spending it closes nothing else.
+    {
+      name: "the client channel is over its own ceiling",
+      cfg: {
+        enabled: true,
+        monthlyInboxUsd: 1_000_000,
+        monthlyPlaygroundUsd: 1_000_000,
+        monthlyClientUsd: 100,
+      },
+      source: "client",
+      used: 500,
+      expect: "over",
+    },
+    {
+      name: "and the same usage leaves customer traffic and the playground answering",
+      cfg: {
+        enabled: true,
+        monthlyInboxUsd: 1_000_000,
+        monthlyPlaygroundUsd: 1_000_000,
+        monthlyClientUsd: 100,
+      },
+      source: "playground",
+      used: 500,
+      expect: "allowed",
+    },
+    {
+      name: "the inbox and playground ceilings do not bound the client channel",
+      cfg: {
+        enabled: true,
+        monthlyInboxUsd: 100,
+        monthlyPlaygroundUsd: 100,
+        monthlyClientUsd: 0,
+      },
+      source: "client",
+      used: 10_000_000,
+      expect: "allowed",
+    },
+    {
+      name: "the client channel warns on its own number",
+      cfg: { enabled: true, monthlyClientUsd: 1000, warnAtPercent: 80 },
+      source: "client",
+      used: 800,
+      expect: "warning",
+    },
   ];
 
   test.each(table.map((r) => [r.name, r] as const))("%s", (_name, row) => {
@@ -149,10 +194,21 @@ describe("the spend ceiling decision", () => {
     expect(v).toEqual({ state: "over", usedUsd: 1200, ceilingUsd: 1000 });
   });
 
-  test("zero is no ceiling, on either half", () => {
+  test("zero is no ceiling, on every source", () => {
     const c = cfg({ enabled: true });
-    expect(ceilingFor(c, "inbox")).toBeNull();
-    expect(ceilingFor(c, "playground")).toBeNull();
+    for (const source of USAGE_SOURCES) {
+      expect(ceilingFor(c, source)).toBeNull();
+    }
+  });
+
+  test("each source reads its own number", () => {
+    const c = cfg({
+      enabled: true,
+      monthlyInboxUsd: 1,
+      monthlyPlaygroundUsd: 2,
+      monthlyClientUsd: 3,
+    });
+    expect(USAGE_SOURCES.map((s) => ceilingFor(c, s))).toEqual([1, 2, 3]);
   });
 
   // Money is compared in CENTS. `0.1 + 0.7` is `0.7999999999999999` to a double, and a ceiling of
@@ -178,6 +234,22 @@ describe("reading the ceiling out of the settings bag", () => {
   test("an absent block is the defaults, and switched off", () => {
     expect(readSpendCeilingConfig({})).toEqual(SPEND_CEILING_DEFAULTS);
     expect(readSpendCeilingConfig(null).enabled).toBe(false);
+  });
+
+  test("the client channel's ceiling is read, and a block written before it has none", () => {
+    expect(
+      readSpendCeilingConfig({ spendCeiling: { monthlyClientUsd: 12.5 } })
+        .monthlyClientUsd,
+    ).toBe(12.5);
+    expect(
+      readSpendCeilingConfig({
+        spendCeiling: { enabled: true, monthlyInboxUsd: 10 },
+      }).monthlyClientUsd,
+    ).toBe(0);
+    expect(
+      readSpendCeilingConfig({ spendCeiling: { monthlyClientUsd: -1 } })
+        .monthlyClientUsd,
+    ).toBe(SPEND_CEILING_DEFAULTS.monthlyClientUsd);
   });
 
   // Malformed input CLAMPS to the default rather than throwing, and never to "no ceiling": a bad

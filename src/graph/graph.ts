@@ -35,6 +35,11 @@ import {
 import { markReportedElsewhere, providerFailure } from "@/lib/provider-failure";
 import type { PermitClass } from "@/lib/semaphore";
 import {
+  clientToolsNode,
+  pendingClientCalls,
+  withServerCallsOnly,
+} from "./client-tools";
+import {
   calledOffToolResult,
   droppedCallCount,
   droppedCallsStamp,
@@ -160,6 +165,9 @@ export interface BuildAgentGraphParams {
   retrySilence?: () => boolean;
   // Fired once when that retry ran, with what the second answer did, for the turn's trail.
   onSilenceRetry?: (info: SilenceRetryInfo) => void;
+  // Tools the host application runs in the browser (see ./client-tools.ts). A call to one suspends
+  // the turn instead of running. Absent on every path but the client channel.
+  clientToolNames?: ReadonlySet<string>;
 }
 
 // What the retry of an unexplained silence got back: text for the customer, the declared silence,
@@ -659,6 +667,7 @@ export function buildAgentGraph({
   signal: jobSignal,
   retrySilence,
   onSilenceRetry,
+  clientToolNames,
 }: BuildAgentGraphParams) {
   const hasTools = !!tools && tools.length > 0;
   const llm = hasTools ? (model.bindTools?.(tools) ?? model) : model;
@@ -1034,6 +1043,7 @@ export function buildAgentGraph({
   // refused this turn's calls, which is what routes the graph to END instead of back to the model.
   let calledOffAtTools = false;
   const toolNode = hasTools ? new ToolNode(tools) : null;
+  const clientNames: ReadonlySet<string> = clientToolNames ?? new Set();
 
   // The refusal is a tool result, and the turn ends on it. Routing away from the tool node would
   // leave `tool_calls` no `ToolMessage` answers, which `@langchain/openai` replays so the vendor
@@ -1090,15 +1100,43 @@ export function buildAgentGraph({
       // one the next tool added would simply not have.
       .addNode("tools", async (state: typeof MessagesAnnotation.State) => {
         const refused = await refuseCalledOffCalls(state);
+        if (refused) return refused;
+        const serverView = withServerCallsOnly(state, clientNames);
+        if (!serverView) return { messages: [] };
         // biome-ignore lint/style/noNonNullAssertion: hasTools is what built it.
-        return refused ?? (await toolNode!.invoke(state));
+        return await toolNode!.invoke(serverView);
       })
+      // NOTE: built on every graph so the edges type-check, and unreachable without client tools:
+      // with an empty set no call is ever pending for it.
+      .addNode("client_tools", clientToolsNode(clientNames))
+      .addEdge("client_tools", "agent")
       // toolsCondition routes to "tools" when the last AIMessage has tool calls, else to END.
       .addConditionalEdges("agent", toolsCondition)
-      .addConditionalEdges("tools", () => (calledOffAtTools ? END : "agent"), [
-        END,
+      .addConditionalEdges(
+        "tools",
+        (state: typeof MessagesAnnotation.State) =>
+          calledOffAtTools
+            ? END
+            : pendingClientCalls(state.messages, clientNames).length > 0
+              ? "client_tools"
+              : "agent",
+        [END, "agent", "client_tools"],
+      );
+  } else if (clientToolNames) {
+    // NOTE: a client-channel graph keeps the node a suspended turn sits on even when this round
+    // brings no tools at all. Without it the checkpointer's pending interrupt has no node to belong
+    // to, `getState` drops it, and a turn still waiting for the browser reads as abandoned.
+    builder
+      .addNode("client_tools", clientToolsNode(clientNames))
+      .addEdge("client_tools", "agent")
+      .addConditionalEdges(
         "agent",
-      ]);
+        (state: typeof MessagesAnnotation.State) =>
+          pendingClientCalls(state.messages, clientNames).length > 0
+            ? "client_tools"
+            : END,
+        [END, "client_tools"],
+      );
   } else {
     builder.addEdge("agent", END);
   }

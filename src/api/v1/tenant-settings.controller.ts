@@ -244,6 +244,12 @@ export const tenantSettingsController = new Elysia({
               "The same, for playground traffic. Kept apart so testing cannot silence the agent for customers.",
           }),
         ),
+        monthlyClientUsd: t.Optional(
+          tRanged(SPEND_CEILING_RANGES.monthlyUsd, {
+            description:
+              "The same, for client channel traffic (the users of host applications that embed the agent). Kept apart so a host cannot silence the agent for the inbox, or the other way round.",
+          }),
+        ),
         overCeilingMessage: t.Optional(
           t.Union([t.String({ maxLength: TEMPLATE_MESSAGE_MAX }), t.Null()], {
             description:

@@ -1,3 +1,5 @@
+import { CLIENT_AUDIENCES } from "@/graph/usage-sources";
+
 // THE PAGE'S ONE FILTER, IN THE URL. Period, agent, inbox and source live in the query string, so a
 // view can be shared as a link and Back returns to the previous view. Every block reads the window
 // computed here, in the operator's own days (docs/ui.md, "A day is defined by the viewer's browser
@@ -5,8 +7,11 @@
 
 export const RANGES = ["7d", "30d", "90d", "12m", "all", "custom"] as const;
 export type Range = (typeof RANGES)[number];
-export const SOURCES = ["inbox", "playground", "all"] as const;
+export const SOURCES = ["inbox", "playground", "client", "all"] as const;
 export type Source = (typeof SOURCES)[number];
+// Who the client channel served, a refinement of the client segment only.
+export const AUDIENCES = ["all", ...CLIENT_AUDIENCES] as const;
+export type Audience = (typeof AUDIENCES)[number];
 
 const RANGE_DAYS: Record<Exclude<Range, "custom" | "all">, number> = {
   "7d": 7,
@@ -23,6 +28,8 @@ export interface DashboardFilters {
   agentId: string | null;
   inboxId: string | null;
   source: Source;
+  // Read and sent only under the client segment; anywhere else it is "all".
+  audience: Audience;
 }
 
 export const DEFAULT_FILTERS: DashboardFilters = {
@@ -32,6 +39,7 @@ export const DEFAULT_FILTERS: DashboardFilters = {
   agentId: null,
   inboxId: null,
   source: "inbox",
+  audience: "all",
 };
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
@@ -52,8 +60,12 @@ export function readFilters(params: URLSearchParams): DashboardFilters {
   const to = params.get("to");
   const agent = params.get("agent");
   const inbox = params.get("inbox");
+  const audience = params.get("audience");
   const custom =
     range === "custom" && validDay(from) && validDay(to) && from <= to;
+  const segment = (SOURCES as readonly string[]).includes(source ?? "")
+    ? (source as Source)
+    : DEFAULT_FILTERS.source;
   return {
     range: custom
       ? "custom"
@@ -65,9 +77,12 @@ export function readFilters(params: URLSearchParams): DashboardFilters {
     to: custom ? to : null,
     agentId: agent && ID.test(agent) ? agent : null,
     inboxId: inbox && ID.test(inbox) ? inbox : null,
-    source: (SOURCES as readonly string[]).includes(source ?? "")
-      ? (source as Source)
-      : DEFAULT_FILTERS.source,
+    source: segment,
+    audience:
+      segment === "client" &&
+      (AUDIENCES as readonly string[]).includes(audience ?? "")
+        ? (audience as Audience)
+        : DEFAULT_FILTERS.audience,
   };
 }
 
@@ -83,6 +98,8 @@ export function writeFilters(f: DashboardFilters): URLSearchParams {
   if (f.agentId) p.set("agent", f.agentId);
   if (f.inboxId) p.set("inbox", f.inboxId);
   if (f.source !== DEFAULT_FILTERS.source) p.set("source", f.source);
+  if (f.source === "client" && f.audience !== DEFAULT_FILTERS.audience)
+    p.set("audience", f.audience);
   return p;
 }
 
@@ -181,7 +198,8 @@ export function apiQuery(
   since?: string;
   until: string;
   tz: string;
-  source?: "inbox" | "playground";
+  source?: Exclude<Source, "all">;
+  audience?: Exclude<Audience, "all">;
   agentId?: string;
   inboxId?: string;
 } {
@@ -190,6 +208,9 @@ export function apiQuery(
     until: w.until.toISOString(),
     tz: OPERATOR_TZ,
     ...(f.source === "all" ? {} : { source: f.source }),
+    ...(f.source === "client" && f.audience !== "all"
+      ? { audience: f.audience }
+      : {}),
     ...(f.agentId ? { agentId: f.agentId } : {}),
     ...(f.inboxId ? { inboxId: f.inboxId } : {}),
   };

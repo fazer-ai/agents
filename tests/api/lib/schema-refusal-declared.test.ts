@@ -1,8 +1,9 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, mock, test } from "bun:test";
 import type { TSchema } from "@sinclair/typebox";
 import { Value } from "@sinclair/typebox/value";
 import { Elysia } from "elysia";
 import { authPlugin } from "@/api/lib/auth";
+import config from "@/config";
 import {
   type MockUserEntity,
   mockFindUnique,
@@ -21,7 +22,17 @@ const BunRequest = (globalThis as unknown as { BunRequest: typeof Request })
   .BunRequest;
 
 setupPrismaMock();
+// The SDK turn's CORS hook looks its app up before the body is validated; an unknown app leaves the
+// probe to reach the boundary like any other route's, with nothing read.
+const clientApps = { ...(await import("@/modules/client-apps/service")) };
+mock.module("@/modules/client-apps/service", () => ({
+  ...clientApps,
+  resolveClientApp: async () => null,
+}));
 const app = (await import("@/app")).default;
+afterAll(() => {
+  mock.module("@/modules/client-apps/service", () => clientApps);
+});
 
 // The probes carry a session: without one, a gated route answers the gate's 401 before anything
 // about its input (src/app.ts). The lowest role, so a probe the boundary let through would stop at
@@ -150,12 +161,14 @@ export function violation(
   if (Array.isArray(s.enum)) return { path, bad: "zzz-not-in-enum" };
   switch (s.type) {
     case "string": {
-      if (s.pattern) return { path, bad: "zzz not matching" };
+      // A length bound is a certain violation and a pattern only a guess (a negative lookahead such
+      // as `^(?!app:)` matches the guess), so the bounds are tried first.
       const min = (s.minLength as number) ?? 0;
       if (min > (inPath ? 1 : 0)) return { path, bad: inPath ? "z" : "" };
       if (s.maxLength) {
         return { path, bad: "z".repeat((s.maxLength as number) + 1) };
       }
+      if (s.pattern) return { path, bad: "zzz not matching" };
       if (s.format) return { path, bad: "zzz" };
       return null;
     }
@@ -392,6 +405,18 @@ withServer.server = {
   requestIP: () => ({ address: `probe-${probeNumber++}` }),
 };
 
+// A route behind a switch is measured switched on: off, it answers what a missing route answers, and
+// its declared statuses are about the route that exists.
+const clientChannelWas = config.clientChannel.enabled;
+const behindClientChannelSwitch = (id: string) =>
+  id === "POST /api/v1/agents/:id/client/turn" ||
+  id === "POST /api/v1/sdk/:app/turn" ||
+  id === "POST /api/v1/sdk/:app/transcribe" ||
+  id === "POST /api/v1/sdk/:app/session" ||
+  id === "POST /api/v1/sdk/:app/session/claim" ||
+  / \/api\/v1\/client-apps(\/|$)/.test(id);
+config.clientChannel.enabled = true;
+
 const measured: Array<{
   id: string;
   refusableByShape: boolean;
@@ -418,6 +443,7 @@ try {
   }
 } finally {
   withServer.server = realServer;
+  config.clientChannel.enabled = clientChannelWas;
 }
 
 describe("a route that can answer 422 declares it", () => {
@@ -550,6 +576,13 @@ describe("a route that can answer 422 declares it", () => {
         throw new Error(`unreadable route id: ${route.id}`);
       }
       const operation = spec.paths[specPathOf(path)]?.[method.toLowerCase()];
+      // A route left out of the reference while its switch is off (the spec is built at boot, off).
+      if (
+        !operation &&
+        behindClientChannelSwitch(route.id) &&
+        !clientChannelWas
+      )
+        continue;
       if (!operation) {
         missing.push(`${route.id} (absent from the spec)`);
         continue;

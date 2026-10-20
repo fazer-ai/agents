@@ -305,6 +305,20 @@ describe.skipIf(!dbUp)("rate alerts", () => {
     expect(await rateRows(ch)).toEqual([]);
   });
 
+  // The client channel is customers too: its failures count, alone and beside the inbox's.
+  test("failures on the client channel add to the rate", async () => {
+    const tenantId = await freshTenant();
+    const ch = await channel(tenantId);
+    for (let i = 0; i < 4; i++) {
+      await writeFlowEvent(flow(tenantId, { source: "client" }), failure());
+    }
+    expect(await rateRows(ch)).toEqual([]);
+    await fail(tenantId, 1);
+    expect((await rateRows(ch)).map((r) => r.causeKey)).toEqual([
+      "rate:vision:openai",
+    ]);
+  });
+
   test("tenants do not add up", async () => {
     const a = await freshTenant();
     const b = await freshTenant();

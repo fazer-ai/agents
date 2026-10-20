@@ -78,6 +78,7 @@ enum SchedulerJobKind {
   INBOUND_REDISPATCH
   NOTHING_TO_ANSWER
   SUGGESTION_REVIEW
+  CLIENT_ANON_SWEEP
   DOCUMENT_APPROVAL_EXPIRY
   DOCUMENT_APPROVAL_OUTCOME
   SNOOZED_FOLLOWUP
@@ -186,6 +187,10 @@ model Tenant {
   mcpOAuthRefreshTokens         McpOAuthRefreshToken[]
   mcpOAuthPendingAuthorizations McpOAuthPendingAuthorization[]
   appointments                  Appointment[]
+  externalUsers                 ExternalUser[]
+  detachedThreads               DetachedThread[]
+  clientApps                    ClientApp[]
+  clientAppSecrets              ClientAppSecret[]
   dashboardDays                 DashboardDay[]
   dashboards                    Dashboard[]
   dashboardPanels               DashboardPanel[]
@@ -825,6 +830,7 @@ model Contact {
   instance      ChatwootInstance   @relation(fields: [chatwootInstanceId], references: [id], onDelete: Cascade)
   conversations Conversation[]
   authGrants    ContactAuthGrant[]
+  externalUsers ExternalUser[]
 
   @@unique([tenantId, chatwootInstanceId, chatwootContactId])
   @@map("contacts")
@@ -1539,6 +1545,8 @@ model Agent {
   chatwootBots      ChatwootAgentBot[]
   contactAuthGrants ContactAuthGrant[]
   observedInboxes   InboxObserver[]
+  detachedThreads   DetachedThread[]
+  clientApps        ClientApp[]
   ruleStates        DecisionRuleState[]
   ruleClaims        DecisionRuleClaim[]
 
@@ -2672,7 +2680,8 @@ model ProactiveBreaker {
 model SpendCostSnapshot {
   id               BigInt    @id @default(autoincrement())
   tenantId         BigInt    @map("tenant_id")
-  // "inbox" | "playground": the same split `LlmUsage.source` carries.
+  // A `LlmUsage.source` ("inbox", "playground", "client"), or `app:<client app id>` for one embedding
+  // app's share of the client source.
   source           String
   // The calendar month, UTC, as `monthStart` derives it.
   monthStart       DateTime  @map("month_start")
@@ -2720,9 +2729,11 @@ model LlmUsage {
   threadId              String?  @map("thread_id")
   model                 String
   node                  String?
-  // "inbox" (real customer traffic) | "playground" (operator test turns). Lets the dashboard
-  // keep test usage from polluting the real figures.
+  // "inbox" (real customer traffic) | "playground" (operator test turns) | "client" (the client
+  // channel). Lets the dashboard keep test usage from polluting the real figures.
   source                String   @default("inbox")
+  // A client-channel call made for an anonymous visitor's session, as the turn knew it then.
+  anonymous             Boolean  @default(false)
   promptTokens          Int      @default(0) @map("prompt_tokens")
   completionTokens      Int      @default(0) @map("completion_tokens")
   // Cached-input accounting (a discounted SUBSET of promptTokens, never additive):
@@ -2785,8 +2796,10 @@ model ExecutionLog {
   provider       String?
   model          String?
   durationMs     Int?     @map("duration_ms")
-  // inbox|playground.
+  // inbox|playground|client.
   source         String   @default("inbox")
+  // A line of a client-channel turn served to an anonymous visitor's session.
+  anonymous      Boolean  @default(false)
   // Allowlisted ids/counts/enums only (redactSecretsDeep at write) — never message text/PII.
   detail         Json?
   errorMessage   String?  @map("error_message")
@@ -3135,6 +3148,143 @@ model McpOAuthClientApproval {
 
   @@unique([userId, clientId])
   @@map("mcp_oauth_client_approvals")
+}
+
+// A person who reaches an agent through a channel that is not Chatwoot, as the host system names
+// them. Today the only such channel is the client channel, where the host application's SERVER
+// authenticates with the tenant's API key and states who its signed-in user is; the agents trusts
+// that statement because the key already trusts the server (docs/client-channel.md). Keyed by
+// channel so a later channel without Chatwoot writes here without a schema change.
+//
+// `contactId` is the bridge to the Chatwoot mirror, set when a handoff opens a conversation there.
+// The mirror stays the mirror: nothing here is written into `contacts`.
+model ExternalUser {
+  id         BigInt   @id @default(autoincrement())
+  tenantId   BigInt   @map("tenant_id")
+  // Closed set in code (`EXTERNAL_CHANNELS`), a string here so adding a channel is not an enum
+  // migration.
+  channel    String
+  // The host's own stable id for its user. Opaque to us.
+  externalId String   @map("external_id")
+  name       String?
+  // The address the team replies to outside the host, as the host states it on each turn. Read when
+  // the agent opens a case in the team's inbox (`open_case_in_inbox`); never shown to the model.
+  email      String?
+  contactId  BigInt?  @map("contact_id")
+  lastSeenAt DateTime @default(now()) @map("last_seen_at")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  tenant  Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  contact Contact?         @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  threads DetachedThread[]
+
+  @@unique([tenantId, channel, externalId])
+  @@index([contactId])
+  @@map("external_users")
+}
+
+// Who a thread outside Chatwoot belongs to (graph/detached-thread.ts). The thread id is minted by
+// us, and a row here is what lets a later turn name it: a well-formed id with no row, or with a row
+// that belongs to another external user or scope, is answered as not found.
+model DetachedThread {
+  threadId           String    @id @map("thread_id")
+  tenantId           BigInt    @map("tenant_id")
+  agentId            BigInt    @map("agent_id")
+  // `DetachedThreadKind`: client | playground.
+  kind               String
+  externalUserId     BigInt?   @map("external_user_id")
+  // What the host scopes the conversation to (an organization, a workspace). Part of the thread,
+  // not of the person: one user in two organizations is one person with two threads.
+  scope              String?
+  createdAt          DateTime  @default(now()) @map("created_at")
+  lastTurnAt         DateTime  @default(now()) @map("last_turn_at")
+  // The round-trip running on this thread now, and until when that claim holds. One at a time: the
+  // browser's late answers and the user's next message must not both act on the same suspended turn.
+  // The expiry is what frees a thread whose process died mid-turn.
+  activeTurnId       String?   @map("active_turn_id")
+  activeUntil        DateTime? @map("active_until")
+  // The case this thread opened in the team's inbox (`open_case_in_inbox`): a conversation number
+  // inside one Chatwoot account, so the instance goes with it. A second call while the case is still
+  // open adds to it instead of opening another.
+  caseInstanceId     BigInt?   @map("case_instance_id")
+  caseConversationId Int?      @map("case_conversation_id")
+  // The address the case was opened under: the team's email replies on it are addressed from its
+  // earlier messages, so it is added to only while the user's email is still this one.
+  caseEmail          String?   @map("case_email")
+
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  agent        Agent         @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  externalUser ExternalUser? @relation(fields: [externalUserId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([agentId])
+  @@index([externalUserId])
+  @@map("detached_threads")
+}
+
+// A web application that embeds an agent through the client channel's SDK (docs/client-channel.md,
+// "Embedding with the SDK"). Its users reach the agent from the browser with a JWT the application's
+// server signs with one of this app's secrets, so the app is what the token names (`aud`) and what
+// the browser's origin is checked against.
+model ClientApp {
+  id                  BigInt   @id @default(autoincrement())
+  tenantId            BigInt   @map("tenant_id")
+  agentId             BigInt   @map("agent_id")
+  name                String
+  // What the page names in the tag and the JWT carries in `aud`. Random and not sequential, so it
+  // says nothing about how many apps the instance has; looked up before any tenant context.
+  publicId            String   @unique @map("public_id")
+  // Exact origins (`https://app.example.com`), no wildcard: the browser may call from these only.
+  allowedOrigins      String[] @map("allowed_origins")
+  // Whether a page with no signed user may open a session of its own. Off unless the operator says.
+  anonymousEnabled    Boolean  @default(false) @map("anonymous_enabled")
+  // What an anonymous visitor may cost: new sessions one address opens per hour, and messages one
+  // session sends per minute. The app's own per-minute budget still applies above both.
+  anonSessionsPerHour Int      @default(20) @map("anon_sessions_per_hour")
+  anonMessagesPerMin  Int      @default(10) @map("anon_messages_per_min")
+  // The app's own monthly spend ceiling, in US cents; null for none. Its turns are refused past it,
+  // under the tenant's client ceiling, which still applies (docs/spend-ceiling.md).
+  monthlyCeilingCents Int?     @map("monthly_ceiling_cents")
+  // A Cloudflare Turnstile challenge before a new anonymous session. The site key is public (the page
+  // renders the challenge with it); the secret is encrypted (`encryptJson`) and never returned.
+  turnstileEnabled    Boolean  @default(false) @map("turnstile_enabled")
+  turnstileSiteKey    String?  @map("turnstile_site_key")
+  turnstileSecret     String?  @map("turnstile_secret")
+  // Days an anonymous conversation may sit with no message before the sweep deletes it.
+  anonExpiryDays      Int      @default(30) @map("anon_expiry_days")
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+
+  tenant  Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  agent   Agent             @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  secrets ClientAppSecret[]
+
+  @@index([tenantId])
+  @@index([agentId])
+  @@map("client_apps")
+}
+
+// A key the app's server signs its users' JWTs with (HS256). Kept encrypted rather than hashed,
+// because checking an HMAC needs the key itself. Two may be valid at once: rotating gives the old
+// one a grace window, so users already signed in do not fall out mid-session.
+model ClientAppSecret {
+  id        BigInt    @id @default(autoincrement())
+  tenantId  BigInt    @map("tenant_id")
+  appId     BigInt    @map("app_id")
+  // The JWT header's `kid`: which of the app's keys signed this token. Random, unique.
+  kid       String    @unique
+  secret    String
+  createdAt DateTime  @default(now()) @map("created_at")
+  // NULL while it is the current key; set when it was rotated out (the grace end) or revoked (now).
+  expiresAt DateTime? @map("expires_at")
+
+  tenant Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  app    ClientApp @relation(fields: [appId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([appId])
+  @@map("client_app_secrets")
 }
 
 // THE DASHBOARD'S KEPT DAYS (docs/dashboard.md, "Kept days"). One row per tenant, filter, timezone,

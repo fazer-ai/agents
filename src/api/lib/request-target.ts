@@ -6,8 +6,10 @@
 const PRINTED_PARAMS = new Set([
   "id",
   "agentId",
+  "app",
   "clientId",
   "jti",
+  "kid",
   "kind",
   "mediaId",
   "threadId",

@@ -15,7 +15,9 @@ import {
   useModalController,
   useToast,
 } from "@/client/components";
+import { ClientAppsSection } from "@/client/components/client-apps/ClientAppsSection";
 import { ServiceLogo } from "@/client/components/icons/ServiceLogo";
+import { useClientChannelEnabled } from "@/client/contexts/AuthContext";
 import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
 import type { AgentMode } from "@/modules/agents/mode";
@@ -59,6 +61,7 @@ export function ChannelsTab({
   const navigate = useNavigate();
   const confirm = useModalController<ConfirmPayload>();
   const watcher = mode === "monitoring";
+  const clientChannelEnabled = useClientChannelEnabled();
 
   const [instances, setInstances] = useState<Instance[]>([]);
   const [baseUrl, setBaseUrl] = useState("");
@@ -537,6 +540,8 @@ export function ChannelsTab({
           })
         )}
       </DataBoundary>
+
+      {clientChannelEnabled && <ClientAppsSection agentId={agentId} />}
 
       <ConfirmDialog modal={confirm} />
     </div>

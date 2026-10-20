@@ -34,6 +34,8 @@ const PICKER = "options for a console picker, read live to fill a form field";
 const PLAYGROUND =
   "playground session plumbing for the console chat; agent_playground is the MCP turn";
 const TRANSPORT = "the MCP transport itself";
+const CLIENT_CHANNEL =
+  "a turn whose tools run in the host application's browser; an MCP client has no page to run them";
 const CALL_AUDIO =
   "a call's audio over a WebSocket, in real time; the MCP transport carries JSON turns";
 
@@ -59,6 +61,12 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   "POST /v1/agents/import": { tool: "agent_import" },
   "GET /v1/agents/:id/tool-selections": { tool: "agent_tools_get" },
   "POST /v1/agents/:id/playground": { tool: "agent_playground" },
+  "POST /v1/agents/:id/client/turn": { none: CLIENT_CHANNEL },
+  "POST /v1/sdk/:app/turn": { none: CLIENT_CHANNEL },
+  "POST /v1/sdk/:app/transcribe": { none: CLIENT_CHANNEL },
+  "POST /v1/sdk/:app/session": { none: CLIENT_CHANNEL },
+  "POST /v1/sdk/:app/session/claim": { none: CLIENT_CHANNEL },
+  "GET /v1/sdk/agent.js": { none: CLIENT_CHANNEL },
   "POST /v1/agents/:id/playground/call": { none: CALL_AUDIO },
   "POST /v1/agents/:id/calls/check": {
     gap: "whether a voice agent's calls are set up on ElevenLabs, and why not",
@@ -88,6 +96,13 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   "PATCH /v1/alert-channels/:id": { tool: "alert_channel_update" },
   "DELETE /v1/alert-channels/:id": { tool: "alert_channel_delete" },
   "POST /v1/alert-channels/:id/test": { tool: "alert_channel_test" },
+  "GET /v1/client-apps/": { tool: "client_app_list" },
+  "GET /v1/client-apps/:id": { tool: "client_app_list" },
+  "POST /v1/client-apps/": { none: SECRET },
+  "PATCH /v1/client-apps/:id": { tool: "client_app_update" },
+  "DELETE /v1/client-apps/:id": { tool: "client_app_delete" },
+  "POST /v1/client-apps/:id/secrets": { none: SECRET },
+  "DELETE /v1/client-apps/:id/secrets/:kid": { tool: "client_app_key_revoke" },
   "GET /v1/api-keys/": { tool: "api_key_list" },
   "POST /v1/api-keys/": { none: SECRET },
   "DELETE /v1/api-keys/:id": { tool: "api_key_revoke" },

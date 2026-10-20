@@ -8,6 +8,8 @@ import {
 } from "@/api/lib/query-filters";
 import { refusalBody, refusalHeaders } from "@/api/lib/refusal";
 import { tenancyPlugin } from "@/api/middlewares/tenancy";
+import type { UsageSource } from "@/graph/usage";
+import type { ClientAudience } from "@/graph/usage-sources";
 import { REJECTED_TENANT_SELECTOR_HEADER } from "@/lib/console-params";
 import {
   AppError,
@@ -63,9 +65,18 @@ export const dashboardFilterQuery = {
     t.String({ description: `End of the window, exclusive. ${INSTANT}` }),
   ),
   source: t.Optional(
-    t.Union([t.Literal("inbox"), t.Literal("playground")], {
+    t.Union(
+      [t.Literal("inbox"), t.Literal("playground"), t.Literal("client")],
+      {
+        description:
+          "Usage segment for ledger figures: inbox (real traffic), playground, or client (a host application's users, through the client channel); omit for all. Conversation figures are real traffic regardless.",
+      },
+    ),
+  ),
+  audience: t.Optional(
+    t.Union([t.Literal("identified"), t.Literal("anonymous")], {
       description:
-        "Usage segment for ledger figures: inbox (real traffic) or playground; omit for both. Conversation figures are real traffic regardless.",
+        "Client-channel traffic of one audience only: identified (a host's signed-in users) or anonymous (anonymous visitors' sessions). Implies the client source; omit for both.",
     }),
   ),
   agentId: t.Optional(
@@ -88,7 +99,8 @@ export const dashboardFilterQuery = {
 export function parseDashboardFilter(query: {
   since?: string;
   until?: string;
-  source?: "inbox" | "playground";
+  source?: UsageSource;
+  audience?: ClientAudience;
   agentId?: string;
   inboxId?: string;
   tz?: string;
@@ -97,6 +109,7 @@ export function parseDashboardFilter(query: {
     since: parseQueryInstant(query.since, "since"),
     until: parseQueryInstant(query.until, "until"),
     source: query.source,
+    audience: query.audience,
     agentId: parseQueryId(query.agentId, "agentId"),
     inboxId: parseQueryId(query.inboxId, "inboxId"),
     tz: query.tz,

@@ -1172,6 +1172,93 @@ describe("ChatwootClient", () => {
       expect(calls).toHaveLength(1);
     });
   });
+
+  test("findContactIdByIdentifier filters on the whole identifier, not a substring search", async () => {
+    const { fetchImpl, calls } = stub(200, { payload: [{ id: 42 }] });
+    const client = await createChatwootClient(baseConfig, {
+      fetchImpl,
+      assertSafe: passthroughSafe,
+    });
+    expect(await client.findContactIdByIdentifier("fazer-ai-client:1")).toBe(
+      42,
+    );
+    expect(calls[0]?.method).toBe("POST");
+    expect(calls[0]?.url).toBe(
+      "https://chat.example.com/api/v1/accounts/5/contacts/filter",
+    );
+    expect(calls[0]?.headers[CHATWOOT_AUTH_HEADER]).toBe("ADMIN_TOK");
+    expect(calls[0]?.body).toEqual({
+      payload: [
+        {
+          attribute_key: "identifier",
+          filter_operator: "equal_to",
+          values: ["fazer-ai-client:1"],
+          query_operator: null,
+        },
+      ],
+    });
+  });
+
+  test("findContactIdByIdentifier answers null when no contact has it", async () => {
+    const { fetchImpl } = stub(200, { payload: [] });
+    const client = await createChatwootClient(baseConfig, {
+      fetchImpl,
+      assertSafe: passthroughSafe,
+    });
+    expect(await client.findContactIdByIdentifier("x")).toBeNull();
+  });
+
+  test("createContact sends only the fields it has and reads the fork's nested contact", async () => {
+    const { fetchImpl, calls } = stub(200, {
+      payload: { contact: { id: 77 }, contact_inbox: {} },
+    });
+    const client = await createChatwootClient(baseConfig, {
+      fetchImpl,
+      assertSafe: passthroughSafe,
+    });
+    expect(
+      await client.createContact({
+        name: "Ana",
+        email: "ana@exemplo.com",
+        phone_number: null,
+        identifier: "fazer-ai-client:1",
+      }),
+    ).toBe(77);
+    expect(calls[0]?.body).toEqual({
+      name: "Ana",
+      email: "ana@exemplo.com",
+      identifier: "fazer-ai-client:1",
+    });
+    expect(calls[0]?.headers[CHATWOOT_AUTH_HEADER]).toBe("ADMIN_TOK");
+  });
+
+  test("sendMessageAsAdmin carries fixed email recipients only when asked", async () => {
+    const { fetchImpl, calls } = stub(200, {});
+    const client = await createChatwootClient(baseConfig, {
+      fetchImpl,
+      assertSafe: passthroughSafe,
+    });
+    await client.sendMessageAsAdmin(9, "oi", {
+      private: false,
+      toEmails: ["a@b.co", "c@d.co"],
+    });
+    await client.sendMessageAsAdmin(9, "nota", { private: true });
+    expect(calls.map((c) => c.body)).toEqual([
+      {
+        content: "oi",
+        private: false,
+        message_type: "outgoing",
+        to_emails: "a@b.co,c@d.co",
+        content_attributes: { fazer_ai_platform_sent: true },
+      },
+      {
+        content: "nota",
+        private: true,
+        message_type: "outgoing",
+        content_attributes: { fazer_ai_platform_sent: true },
+      },
+    ]);
+  });
 });
 
 describe("parseLiveConversation states the assignee only when the payload does", () => {

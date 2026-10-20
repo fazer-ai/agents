@@ -25,6 +25,10 @@ import { registerDeliveryRecoveryHandler } from "@/modules/chatwoot/recover-deli
 import { registerHumanReplyRecoveryHandler } from "@/modules/chatwoot/recover-human-reply";
 import { registerTakeoverRecoveryHandler } from "@/modules/chatwoot/recover-takeover";
 import { enableRouteTokenRewarm } from "@/modules/chatwoot/webhook";
+import {
+  ensureAllClientAnonSweeps,
+  registerClientAnonSweepHandler,
+} from "@/modules/client-apps/expiry";
 import { registerDebounceHandler } from "@/modules/debounce/handler";
 import {
   startDebounceWorker,
@@ -179,6 +183,7 @@ if (config.schedulerWorker.enabled) {
   registerRagIngestHandler();
   registerHeartbeatHandler();
   registerFlowlogRetentionHandler();
+  registerClientAnonSweepHandler();
   registerAppointmentReminderHandler();
   registerRedirectFollowUpHandlers();
   registerMemoryHandlers();
@@ -200,6 +205,10 @@ if (config.schedulerWorker.enabled) {
   // boot-time DB outage just means the sweep arms on the next restart).
   void ensureAllFlowlogSweeps().catch((error) =>
     logger.warn({ error }, "Failed to arm flowlog retention sweeps"),
+  );
+  // Arm the expiry of idle anonymous conversations for every tenant with an embedding app.
+  void ensureAllClientAnonSweeps().catch((error) =>
+    logger.warn({ error }, "Failed to arm client anonymous sweeps"),
   );
   // Arm the per-tenant follow-up sweep for every existing tenant so follow-ups self-heal after the
   // sweep's row is lost (DB reset, external truncate). Same best-effort discipline as above.

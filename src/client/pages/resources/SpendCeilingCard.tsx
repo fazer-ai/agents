@@ -13,6 +13,7 @@ import {
   Textarea,
   useToast,
 } from "@/client/components";
+import { useClientChannelEnabled } from "@/client/contexts/AuthContext";
 import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
 import { SPEND_CEILING_RANGES } from "@/modules/spend-ceiling/settings";
@@ -72,6 +73,7 @@ export function SpendCeilingCard({
 }) {
   const { t, i18n } = useTranslation();
   const { showToast } = useToast();
+  const clientChannelEnabled = useClientChannelEnabled();
   const money = useMemo(
     () =>
       new Intl.NumberFormat(i18n.language, {
@@ -103,6 +105,7 @@ export function SpendCeilingCard({
   const [usdText, setUsdText] = useState({
     inbox: String(value.monthlyInboxUsd),
     playground: String(value.monthlyPlaygroundUsd),
+    client: String(value.monthlyClientUsd),
   });
   const [saving, setSaving] = useState(false);
 
@@ -111,6 +114,7 @@ export function SpendCeilingCard({
     setUsdText({
       inbox: String(value.monthlyInboxUsd),
       playground: String(value.monthlyPlaygroundUsd),
+      client: String(value.monthlyClientUsd),
     });
   }, [value]);
 
@@ -148,7 +152,7 @@ export function SpendCeilingCard({
 
   const set = <K extends keyof SpendCeiling>(k: K, v: SpendCeiling[K]) =>
     setForm((f) => ({ ...f, [k]: v }));
-  // Empty is zero (no ceiling on that half); anything else has to be a finite amount at or
+  // Empty is zero (no ceiling for that source); anything else has to be a finite amount at or
   // above zero. A negative one is REFUSED rather than stored as zero: zero means no ceiling, so
   // rounding "-1" to it would switch the protection off in silence.
   const parseUsd = (text: string): number | null => {
@@ -159,17 +163,21 @@ export function SpendCeilingCard({
   const usdInvalid = {
     inbox: parseUsd(usdText.inbox) === null,
     playground: parseUsd(usdText.playground) === null,
+    client: parseUsd(usdText.client) === null,
   };
   const usdError = t(
     "spendCeiling.usdInvalid",
     "Enter zero or a positive amount in dollars.",
   );
-  const setUsd = (k: "inbox" | "playground", text: string) => {
+  const usdKey = {
+    inbox: "monthlyInboxUsd",
+    playground: "monthlyPlaygroundUsd",
+    client: "monthlyClientUsd",
+  } as const;
+  const setUsd = (k: keyof typeof usdKey, text: string) => {
     setUsdText((t) => ({ ...t, [k]: text }));
     const n = parseUsd(text);
-    if (n !== null) {
-      set(k === "inbox" ? "monthlyInboxUsd" : "monthlyPlaygroundUsd", n);
-    }
+    if (n !== null) set(usdKey[k], n);
   };
 
   async function save() {
@@ -181,6 +189,7 @@ export function SpendCeilingCard({
         enabled: form.enabled,
         monthlyInboxUsd: form.monthlyInboxUsd,
         monthlyPlaygroundUsd: form.monthlyPlaygroundUsd,
+        monthlyClientUsd: form.monthlyClientUsd,
         overCeilingMessage: form.overCeilingMessage,
         handoffEnabled: form.handoffEnabled,
         noticeCooldownSeconds: form.noticeCooldownSeconds,
@@ -231,7 +240,7 @@ export function SpendCeilingCard({
           <p className="mt-0.5 text-sm text-text-muted">
             {t(
               "spendCeiling.desc",
-              "Stop spending once a calendar month reaches a dollar budget, as this app's usage records price the month's calls. Customer traffic and the playground are counted apart, so testing can never silence the agent for customers.",
+              "Stop spending once a calendar month reaches a dollar budget, as this app's usage records price the month's calls. Each source is counted apart, so testing can never silence the agent for customers.",
             )}
           </p>
         </div>
@@ -293,6 +302,18 @@ export function SpendCeilingCard({
                 when={when}
                 enabled={usage.enabled}
               />
+              {clientChannelEnabled && (
+                <BarRow
+                  label={t(
+                    "spendCeiling.source.client",
+                    "Client channel (your app's users)",
+                  )}
+                  entry={entry("client")}
+                  money={money}
+                  when={when}
+                  enabled={usage.enabled}
+                />
+              )}
             </>
           )}
         </div>
@@ -303,7 +324,7 @@ export function SpendCeilingCard({
           label={t("spendCeiling.enabled", "Enforce the ceiling")}
         />
 
-        <div className="grid gap-3 sm:grid-cols-3">
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <FormField
             label={t(
               "spendCeiling.inboxUsd",
@@ -311,7 +332,7 @@ export function SpendCeilingCard({
             )}
             description={t(
               "spendCeiling.usdHint",
-              "US dollars per calendar month, as this app's usage records price the calls. 0 means no ceiling on this half.",
+              "US dollars per calendar month, as this app's usage records price the calls. 0 means no ceiling for this source.",
             )}
             error={usdInvalid.inbox ? usdError : null}
           >
@@ -329,7 +350,7 @@ export function SpendCeilingCard({
             )}
             description={t(
               "spendCeiling.usdHint",
-              "US dollars per calendar month, as this app's usage records price the calls. 0 means no ceiling on this half.",
+              "US dollars per calendar month, as this app's usage records price the calls. 0 means no ceiling for this source.",
             )}
             error={usdInvalid.playground ? usdError : null}
           >
@@ -340,6 +361,26 @@ export function SpendCeilingCard({
               onChange={(e) => setUsd("playground", e.target.value)}
             />
           </FormField>
+          {clientChannelEnabled && (
+            <FormField
+              label={t(
+                "spendCeiling.clientUsd",
+                "Monthly ceiling: client channel (USD)",
+              )}
+              description={t(
+                "spendCeiling.usdHint",
+                "US dollars per calendar month, as this app's usage records price the calls. 0 means no ceiling for this source.",
+              )}
+              error={usdInvalid.client ? usdError : null}
+            >
+              <NumberInput
+                range={SPEND_CEILING_RANGES.monthlyUsd}
+                step={0.01}
+                value={usdText.client}
+                onChange={(e) => setUsd("client", e.target.value)}
+              />
+            </FormField>
+          )}
           <FormField
             label={t("spendCeiling.warnAt", "Warn at (%)")}
             description={t(
@@ -406,7 +447,9 @@ export function SpendCeilingCard({
           <Button
             onClick={save}
             loading={saving}
-            disabled={usdInvalid.inbox || usdInvalid.playground}
+            disabled={
+              usdInvalid.inbox || usdInvalid.playground || usdInvalid.client
+            }
             holdOnRange
           >
             {t("common.save", "Save")}

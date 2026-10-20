@@ -19,7 +19,8 @@ export interface StrongConfirmPayload {
   // Danger button label.
   actionLabel: string;
   // Awaited with the typed step-up password; the dialog shows a busy state until it settles, then
-  // closes. Throw to keep it open on failure (the caller surfaces its own error toast).
+  // closes. Throw to keep it open on failure (the caller surfaces its own error toast); the dialog
+  // swallows the throw, since the click handler is the only awaiter.
   onConfirm: (password: string) => void | Promise<void>;
 }
 
@@ -54,6 +55,8 @@ export function StrongConfirmModal({
     try {
       await payload.onConfirm(password);
       modal.close();
+    } catch {
+      // NOTE: the caller already showed why; staying open is the whole response.
     } finally {
       setBusy(false);
     }

@@ -10,6 +10,7 @@ import type { ChatwootClient } from "@/modules/chatwoot/client";
 import type { ChatwootMessageRow } from "@/modules/chatwoot/messages";
 import {
   resolveSttConfig,
+  transcribeClientAudio,
   transcribeInboundAudio,
   transcribePlaygroundAudio,
 } from "@/modules/stt/service";
@@ -484,5 +485,153 @@ describe.skipIf(!dbUp)("stt", () => {
       // Nothing heard: no confidence to report, and the line still says why the note is empty.
       { empty: true },
     ]);
+  });
+  // The SDK widget's voice message: its stt line is the client channel's, naming the agent and the
+  // audience as the turn's lines do, and the channel's own ceiling refuses it before the provider.
+  test("a client transcription logs a client stt line naming the agent and the audience", async () => {
+    const appCtx = {
+      tenantId,
+      userId: null,
+      role: "TENANT_ADMIN" as const,
+      actorType: "system" as const,
+    };
+    const turnId = crypto.randomUUID();
+    const text = await transcribeClientAudio({
+      ctx: appCtx,
+      turnId,
+      agentId,
+      audio: new ArrayBuffer(16),
+      mimeType: "audio/webm",
+      anonymous: true,
+      base: appDb,
+      deps: {
+        fetchImpl: (async () =>
+          new Response(JSON.stringify({ text: "Quero ver minhas notas." }), {
+            status: 200,
+          })) as unknown as typeof fetch,
+      },
+    });
+    const rows = await until("the client stt line", async () => {
+      const found = (await flowLogRows(suDb, {
+        where: { tenantId, turnId, stage: "stt", source: "client" },
+        select: { agentId: true, anonymous: true, status: true },
+      })) as Array<{
+        agentId: bigint | null;
+        anonymous: boolean;
+        status: string;
+      }>;
+      return found.length > 0 ? found : null;
+    });
+    expect({ text, rows }).toEqual({
+      text: "Quero ver minhas notas.",
+      rows: [{ agentId, anonymous: true, status: "ok" }],
+    });
+  });
+
+  // A ceiling gate sits immediately before the call it guards: an agent whose speech-to-text could
+  // never run is told so, over the ceiling or not, and no refusal is logged for a call that was not
+  // going to happen.
+  test("over the client ceiling, an agent with speech-to-text off is refused for that, not the ceiling", async () => {
+    const monthStart = new Date(
+      Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1),
+    );
+    const mute = await suDb.agent.create({
+      data: {
+        tenantId,
+        name: "Sem voz",
+        systemPrompt: "x",
+        settings: { stt: { enabled: false, provider: "openai" } },
+      },
+    });
+    await suDb.tenant.update({
+      where: { id: tenantId },
+      data: {
+        settings: { spendCeiling: { enabled: true, monthlyClientUsd: 10 } },
+      },
+    });
+    await suDb.spendCostSnapshot.create({
+      data: {
+        tenantId,
+        source: "client",
+        monthStart,
+        costUsd: 1000,
+        polledAt: new Date(),
+      },
+    });
+    try {
+      const refusal = (await transcribeClientAudio({
+        ctx: { tenantId, userId: null, role: "TENANT_ADMIN" },
+        agentId: mute.id,
+        audio: new ArrayBuffer(16),
+        mimeType: "audio/webm",
+        anonymous: false,
+        base: appDb,
+      }).catch((e: unknown) => e)) as { statusCode?: number; message?: string };
+      expect({ status: refusal.statusCode, message: refusal.message }).toEqual({
+        status: 400,
+        message: "speech-to-text is not configured",
+      });
+    } finally {
+      await suDb.tenant.update({
+        where: { id: tenantId },
+        data: { settings: {} },
+      });
+      await suDb.spendCostSnapshot.deleteMany({ where: { tenantId } });
+      await suDb.agent.delete({ where: { id: mute.id } });
+    }
+  });
+
+  test("a client transcription is refused at the client channel's ceiling, before the provider", async () => {
+    const monthStart = new Date(
+      Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1),
+    );
+    await suDb.tenant.update({
+      where: { id: tenantId },
+      data: {
+        settings: { spendCeiling: { enabled: true, monthlyClientUsd: 10 } },
+      },
+    });
+    await suDb.spendCostSnapshot.create({
+      data: {
+        tenantId,
+        source: "client",
+        monthStart,
+        costUsd: 1000,
+        polledAt: new Date(),
+      },
+    });
+    let asked = 0;
+    try {
+      const refusal = await transcribeClientAudio({
+        ctx: { tenantId, userId: null, role: "TENANT_ADMIN" },
+        agentId,
+        audio: new ArrayBuffer(16),
+        mimeType: "audio/webm",
+        anonymous: false,
+        base: appDb,
+        deps: {
+          fetchImpl: (async () => {
+            asked++;
+            return new Response(JSON.stringify({ text: "x" }));
+          }) as unknown as typeof fetch,
+        },
+      }).catch((e: unknown) => e);
+      expect({
+        status: (refusal as { statusCode?: number }).statusCode,
+        message: (refusal as Error).message,
+        asked,
+      }).toEqual({
+        status: 429,
+        message:
+          "the client channel spend ceiling for this month has been reached",
+        asked: 0,
+      });
+    } finally {
+      await suDb.tenant.update({
+        where: { id: tenantId },
+        data: { settings: {} },
+      });
+      await suDb.spendCostSnapshot.deleteMany({ where: { tenantId } });
+    }
   });
 });

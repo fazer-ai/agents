@@ -214,6 +214,10 @@ describe("environmentForSource", () => {
       environmentForSource("inbox"),
     );
   });
+
+  test("the client channel gets its own <tier>-client environment", () => {
+    expect(environmentForSource("client")).toBe(`${config.env}-client`);
+  });
 });
 
 // Helpers for resolveLangfuseConfig unit tests (no real DB needed).

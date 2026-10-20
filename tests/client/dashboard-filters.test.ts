@@ -7,6 +7,7 @@ import { ThemeProvider } from "@/client/contexts/ThemeContext";
 import { LineTrend } from "@/client/pages/dashboard/charts";
 import { toCsv } from "@/client/pages/dashboard/csv";
 import {
+  apiQuery,
   DEFAULT_FILTERS,
   daysOf,
   drillDownHref,
@@ -17,6 +18,7 @@ import {
   windowOf,
   writeFilters,
 } from "@/client/pages/dashboard/filters";
+import { logsHref } from "@/client/pages/dashboard/HealthSection";
 
 // THE DASHBOARD'S FILTER LIVES IN THE URL. A link reproduces the view, a hand-edited link opens on a
 // valid view rather than an error, and the window and the period before it are the operator's own
@@ -34,7 +36,49 @@ describe("reading the filter from a link", () => {
       agentId: "12",
       inboxId: "3",
       source: "playground",
+      audience: "all",
     });
+  });
+
+  test("an audience refines the client segment and is dropped under any other", () => {
+    expect(
+      readFilters(new URLSearchParams("source=client&audience=anonymous"))
+        .audience,
+    ).toBe("anonymous");
+    for (const q of [
+      "source=playground&audience=anonymous",
+      "audience=identified",
+      "source=client&audience=bots",
+    ])
+      expect(readFilters(new URLSearchParams(q)).audience).toBe("all");
+    const anon = {
+      ...DEFAULT_FILTERS,
+      source: "client" as const,
+      audience: "anonymous" as const,
+    };
+    expect(readFilters(writeFilters(anon))).toEqual(anon);
+    const w = windowOf(anon, new Date(2026, 9, 6));
+    expect({
+      client: apiQuery(anon, w).audience,
+      all: apiQuery({ ...anon, audience: "all" }, w).audience,
+      elsewhere: apiQuery({ ...anon, source: "inbox" }, w).audience,
+    }).toEqual({ client: "anonymous", all: undefined, elsewhere: undefined });
+  });
+
+  test("the health block opens the Logs page on the same audience", () => {
+    const anon = {
+      ...DEFAULT_FILTERS,
+      source: "client" as const,
+      audience: "anonymous" as const,
+    };
+    const w = windowOf(anon, new Date(2026, 9, 6));
+    const row = { stage: "generate", tool: null, level: "error" };
+    const audienceOf = (href: string) =>
+      new URL(href, "http://x").searchParams.get("audience");
+    expect({
+      client: audienceOf(logsHref(anon, w, row)),
+      elsewhere: audienceOf(logsHref({ ...anon, source: "all" }, w, row)),
+    }).toEqual({ client: "anonymous", elsewhere: null });
   });
 
   test("what does not parse falls back to the default, parameter by parameter", () => {

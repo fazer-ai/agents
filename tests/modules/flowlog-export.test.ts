@@ -28,6 +28,7 @@ function item(over: Partial<ExecutionLogItem> = {}): ExecutionLogItem {
     model: null,
     durationMs: null,
     source: "inbox",
+    anonymous: false,
     detail: null,
     errorMessage: null,
     createdAt: "2026-07-01T00:00:00.000Z",
@@ -49,7 +50,7 @@ describe("serializeLogItems", () => {
     const csv = serializeLogItems([item(), item({ id: "2" })], "csv");
     const [header] = csv.split("\r\n");
     expect(header).toBe(
-      "id,createdAt,source,turnId,stage,level,status,provider,model,durationMs,conversationId,agentId,inboxId,threadId,errorMessage,detail",
+      "id,createdAt,source,anonymous,turnId,stage,level,status,provider,model,durationMs,conversationId,agentId,inboxId,threadId,errorMessage,detail",
     );
     // header + 2 rows (rows never contain a bare newline here).
     expect(csv.split("\r\n")).toHaveLength(3);
@@ -57,7 +58,7 @@ describe("serializeLogItems", () => {
 
   test("csv of an empty export is header-only", () => {
     expect(serializeLogItems([], "csv")).toBe(
-      "id,createdAt,source,turnId,stage,level,status,provider,model,durationMs,conversationId,agentId,inboxId,threadId,errorMessage,detail",
+      "id,createdAt,source,anonymous,turnId,stage,level,status,provider,model,durationMs,conversationId,agentId,inboxId,threadId,errorMessage,detail",
     );
   });
 

@@ -1,5 +1,6 @@
 import { Prisma } from "@/../generated/prisma/client";
 import { NON_AGENT_TURN_NODES, type UsageSource } from "@/graph/usage";
+import type { ClientAudience } from "@/graph/usage-sources";
 
 // THE DASHBOARD'S ONE FILTER. Every block of the page reads the same window, agent, inbox and source,
 // so a number in one block can be checked against another, and the drill-down to the conversation
@@ -14,6 +15,8 @@ export interface DashboardFilter {
   // Usage segment for ledger figures. Conversation figures are real traffic by construction (a
   // playground turn has no conversation), so they ignore it.
   source?: UsageSource;
+  // Client-channel rows of one audience only: client traffic of that kind, ANDed with the source.
+  audience?: ClientAudience;
   agentId?: bigint;
   inboxId?: bigint;
   // IANA zone the daily buckets are cut in; validated by the caller (normalizeTimeZone).
@@ -27,6 +30,16 @@ const NON_TURN = Prisma.join(NON_AGENT_TURN_NODES.map((n) => Prisma.sql`${n}`));
 export function agentTurnSql(alias: string): Prisma.Sql {
   const a = Prisma.raw(alias);
   return Prisma.sql`(${a}.node IS NULL OR ${a}.node NOT IN (${NON_TURN}))`;
+}
+
+// The audience filter on a ledger row or a log line: client traffic of that kind. Written by the
+// turn (`anonymous`), so a conversation an anonymous visitor passed to a signed-in user keeps what
+// each of its turns was.
+export function audienceSql(alias: string, f: DashboardFilter): Prisma.Sql {
+  const a = Prisma.raw(alias);
+  const audience = f.audience ?? null;
+  return Prisma.sql`(${audience}::text IS NULL
+    OR (${a}.source = 'client' AND ${a}.anonymous = (${audience}::text = 'anonymous')))`;
 }
 
 function windowSql(column: Prisma.Sql, f: DashboardFilter): Prisma.Sql {
@@ -80,6 +93,7 @@ export function usageWhereSql(alias: string, f: DashboardFilter): Prisma.Sql {
   const inbox = f.inboxId ?? null;
   return Prisma.sql`${windowSql(Prisma.sql`${u}.created_at`, f)}
     AND (${source}::text IS NULL OR ${u}.source = ${source})
+    AND ${audienceSql(alias, f)}
     AND (${agent}::bigint IS NULL OR ${u}.agent_id = ${agent})
     AND (${inbox}::bigint IS NULL OR ${u}.inbox_id = ${inbox})`;
 }
@@ -95,6 +109,7 @@ export function logWhereSql(alias: string, f: DashboardFilter): Prisma.Sql {
   const inbox = f.inboxId ?? null;
   return Prisma.sql`${windowSql(Prisma.sql`${l}.created_at`, f)}
     AND (${source}::text IS NULL OR ${l}.source = ${source})
+    AND ${audienceSql(alias, f)}
     AND (${agent}::bigint IS NULL OR ${l}.agent_id = ${agent})
     AND (${inbox}::bigint IS NULL OR ${l}.inbox_id = ${inbox}
          OR (${l}.inbox_id IS NULL AND EXISTS (

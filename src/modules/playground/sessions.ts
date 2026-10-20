@@ -9,7 +9,7 @@ import basePrisma from "@/api/lib/prisma";
 import { getCheckpointer } from "@/graph/checkpointer";
 import { DATA_FENCE } from "@/graph/nudge";
 import { customerFacingReply, proactiveReply } from "@/graph/silence";
-import { CONVERSATION_NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
+import { PLAYGROUND_SIMULATED_NATIVE_TOOL_NAMES } from "@/graph/tools/channel-natives";
 import {
   buildPlaygroundTrace,
   collectTraceSources,
@@ -37,7 +37,9 @@ import { type LoadedTurnNote, listThreadTurnNotes } from "./turn-notes";
 
 // Conversation native tools are always simulated in the playground, so label their results as such
 // on reopen too (the mock config isn't persisted, so mocked results show unlabeled on replay).
-const SIMULATED_TOOL_NAMES = new Set<string>(CONVERSATION_NATIVE_TOOL_NAMES);
+const SIMULATED_TOOL_NAMES = new Set<string>(
+  PLAYGROUND_SIMULATED_NATIVE_TOOL_NAMES,
+);
 
 const TITLE_MAX = 80;
 const LIST_LIMIT = 30;

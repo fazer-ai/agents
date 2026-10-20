@@ -60,6 +60,10 @@ afterEach(() => {
 ] = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
 process.env.NODE_ENV = "test";
+// The suite runs as the default install: a switch that is off by default (CLIENT_CHANNEL_ENABLED)
+// is off here whatever the developer's `.env` says, since routes read it once, when imported. A test
+// that needs it on sets `config.clientChannel.enabled` itself.
+process.env.CLIENT_CHANNEL_ENABLED = "false";
 process.env.DATABASE_URL = "postgresql://test:test@localhost:5432/test";
 // The in-memory outbox, whatever a dev `.env` picks: an explicit MAIL_PROVIDER wins over NODE_ENV in
 // src/config.ts, so a `.env` set to smtp, resend or none would make the mail tests send for real or

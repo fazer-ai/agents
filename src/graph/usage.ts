@@ -27,7 +27,9 @@ import { emitOutbound } from "@/modules/webhooks/outbound/service";
 // the ALS at runtime) and the write goes through a scoped tx so RLS pins the row. Capture
 // is best-effort: it never throws into the reply path.
 
-export type UsageSource = "inbox" | "playground";
+import type { UsageSource } from "./usage-sources";
+
+export { USAGE_SOURCES, type UsageSource } from "./usage-sources";
 
 // HOW A CALL NAMES THE MODEL THAT ANSWERED IT, when a fallback took the call instead of the configured
 // model the capture holds. Nothing LangChain hands the handler settles it: `invocation_params.model`
@@ -53,8 +55,10 @@ export interface UsageRow {
   turnId: string | null;
   model: string;
   node: string | null;
-  // "inbox" (real customer traffic) | "playground" (operator test turns).
+  // Which traffic the call served: see USAGE_SOURCES.
   source: UsageSource;
+  // A client-channel call for an anonymous visitor's session. Absent is false.
+  anonymous?: boolean;
   promptTokens: number;
   completionTokens: number;
   // Cached-input accounting: a discounted SUBSET of promptTokens, never additive.
@@ -383,6 +387,7 @@ export function defaultUsagePersist(
           model: row.model,
           node: row.node ?? undefined,
           source: row.source,
+          anonymous: row.anonymous ?? false,
           promptTokens: row.promptTokens,
           completionTokens: row.completionTokens,
           cachedReadTokens: row.cachedReadTokens,
@@ -602,6 +607,7 @@ export function usageAttribution(flow: FlowContext): {
   threadId: string | null;
   turnId: string | null;
   source: UsageSource;
+  anonymous: boolean;
   base?: PrismaClient;
 } {
   return {
@@ -611,9 +617,10 @@ export function usageAttribution(flow: FlowContext): {
     inboxId: flow.inboxId ?? null,
     threadId: flow.threadId ?? null,
     turnId: flow.turnId ?? null,
-    // NOTE: FlowSource and UsageSource are the same two values ("inbox" | "playground") for the same
-    // reason: a row and a log line about one call must not disagree about which traffic it was.
+    // NOTE: FlowSource IS UsageSource: a row and a log line about one call must not disagree about
+    // which traffic it was.
     source: flow.source,
+    anonymous: flow.anonymous ?? false,
     base: flow.base,
   };
 }
@@ -715,6 +722,7 @@ export interface UsageCaptureParams {
   model: string;
   node?: UsageNode | null;
   source?: UsageSource;
+  anonymous?: boolean;
   persist?: UsagePersist;
   base?: PrismaClient;
 }
@@ -734,6 +742,7 @@ export class UsageCapture extends BaseCallbackHandler {
   private readonly model: string;
   private readonly node: UsageNode | null;
   private readonly source: UsageSource;
+  private readonly anonymous: boolean;
   private readonly persist: UsagePersist;
   private readonly base: PrismaClient | undefined;
 
@@ -749,6 +758,7 @@ export class UsageCapture extends BaseCallbackHandler {
     this.model = params.model;
     this.node = params.node ?? null;
     this.source = params.source ?? "inbox";
+    this.anonymous = params.anonymous ?? false;
     this.persist = params.persist ?? defaultUsagePersist(params.base);
     this.base = params.base;
   }
@@ -819,6 +829,7 @@ export class UsageCapture extends BaseCallbackHandler {
       model,
       node: this.node,
       source: this.source,
+      anonymous: this.anonymous,
       promptTokens,
       completionTokens,
       cachedReadTokens,

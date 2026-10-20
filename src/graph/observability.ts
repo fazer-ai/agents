@@ -211,12 +211,14 @@ function getClient(
   return client;
 }
 
-// The Langfuse environment for a turn: real traffic tracks the deployment tier (config.env); operator
-// playground turns go to a sibling `<tier>-playground` environment so the UI's environment selector
-// (which filters Traces, Sessions AND Dashboards) cleanly separates test traffic from real, instead
-// of relying on the fragile `:playground` sessionId prefix.
+// The Langfuse environment for a turn: inbox traffic tracks the deployment tier (config.env); the
+// playground and the client channel go to sibling `<tier>-playground` and `<tier>-client`
+// environments, so the UI's environment selector (which filters Traces, Sessions AND Dashboards)
+// separates them instead of relying on a sessionId prefix.
 export function environmentForSource(source: UsageSource | undefined): string {
-  return source === "playground" ? `${config.env}-playground` : config.env;
+  return source === undefined || source === "inbox"
+    ? config.env
+    : `${config.env}-${source}`;
 }
 
 export interface TraceContext {

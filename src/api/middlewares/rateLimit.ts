@@ -39,22 +39,37 @@ export const clientKeyFor =
       hops,
     });
 
-const clientKey = clientKeyFor(config.trustProxy, config.trustedProxyHops);
+export const clientKey = clientKeyFor(
+  config.trustProxy,
+  config.trustedProxyHops,
+);
+
+const RATE_LIMIT_MESSAGE = translate(
+  "errors.rateLimitExceeded",
+  "Rate limit exceeded. Please try again later.",
+);
 
 // Everything the five limiters must agree on, so no setting drifts between them.
 // `countFailedRequest: true` is not the plugin default, and the default counts negative: the plugin
 // calls `decrement` for a request reaching `onError` outside the codes it charges, even one its
 // counting hook never saw, so interleaved failing requests would refill the budget without bound.
-const sharedLimiterOptions = {
-  duration: 60000, // 1 minute
-  scoping: "scoped",
-  generator: clientKey,
-  countFailedRequest: true,
-  errorResponse: translate(
-    "errors.rateLimitExceeded",
-    "Rate limit exceeded. Please try again later.",
-  ),
-} as const;
+const sharedLimiterOptions = () =>
+  ({
+    duration: 60000, // 1 minute
+    scoping: "scoped",
+    generator: clientKey,
+    countFailedRequest: true,
+    // A Response rather than the bare sentence: the plugin hands this back from `beforeHandle`, where
+    // a route that declares 429 validates a returned value against its error schema, and a string
+    // fails that check and becomes a 500. The plugin clones a Response for each refusal, on every path
+    // it refuses from (its own `onError` included), and a Response skips the check. Built per limiter,
+    // when the limiter is, because the plugin recognizes it with `instanceof Response`, which is only
+    // true against the `Response` that is global at that moment.
+    errorResponse: new Response(JSON.stringify({ error: RATE_LIMIT_MESSAGE }), {
+      status: 429,
+      headers: { "content-type": "application/json" },
+    }),
+  }) as const;
 
 export const isMcpTransport = (request: Request): boolean => {
   const path = new URL(request.url).pathname;
@@ -69,7 +84,7 @@ export const rateLimitMiddleware = (
   generator = clientKey,
 ) =>
   rateLimit({
-    ...sharedLimiterOptions,
+    ...sharedLimiterOptions(),
     generator,
     max, // default 600 requests per minute per client
     skip: (request) =>
@@ -84,7 +99,7 @@ export const rateLimitMiddleware = (
 // covered and keeps the global limit, so /token brute force stays bounded.
 export const mcpTransportRateLimitMiddleware = () =>
   rateLimit({
-    ...sharedLimiterOptions,
+    ...sharedLimiterOptions(),
     max: config.rateLimit.mcpPerMin, // default 1200 requests per minute per IP
     skip: (request) => !isMcpTransport(request),
   });
@@ -126,7 +141,7 @@ export const isCredentialRequest = (request: Request): boolean => {
 // config.ts rejects a budget that collides with another limiter's or is not tighter than the global.
 export const credentialRateLimitMiddleware = () =>
   rateLimit({
-    ...sharedLimiterOptions,
+    ...sharedLimiterOptions(),
     duration: config.rateLimit.credentialWindowMinutes * 60_000,
     max: config.rateLimit.credentialMax,
     skip: (request) => !isCredentialRequest(request),
@@ -134,7 +149,7 @@ export const credentialRateLimitMiddleware = () =>
 
 export const staticRateLimitMiddleware = () =>
   rateLimit({
-    ...sharedLimiterOptions,
+    ...sharedLimiterOptions(),
     max: 1000, // 1000 requests per minute
     skip: (request) => !isStaticRequest(request),
   });
@@ -162,7 +177,7 @@ export const isRegisterRequest = (request: Request): boolean =>
 // ONLY to POST /api/v1/mcp/oauth/register (skips every other path, which keeps its own bucket).
 export const registerRateLimitMiddleware = () =>
   rateLimit({
-    ...sharedLimiterOptions,
+    ...sharedLimiterOptions(),
     max: 10, // 10 registrations per minute per IP
     skip: (request) => !isRegisterRequest(request),
   });
@@ -282,7 +297,7 @@ export const webhookAuthFailureLimitMiddleware = (
     set.headers["retry-after"] = String(
       Math.max(1, Math.ceil((resetAt - at) / 1000)),
     );
-    return sharedLimiterOptions.errorResponse;
+    return RATE_LIMIT_MESSAGE;
   };
   return new Elysia()
     .onBeforeHandle({ as: "scoped" }, async ({ request, server, set }) => {

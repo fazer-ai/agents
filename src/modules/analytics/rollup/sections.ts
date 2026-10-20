@@ -849,6 +849,10 @@ export async function computeKnow(
   const agent = f.agentId ?? null;
   const inbox = f.inboxId ?? null;
   const source = f.source ?? null;
+  const audience = f.audience ?? null;
+  // A suggestion's segment is its thread's: a playground thread is `<tenant>:playground:<agent>:…`, a
+  // client channel thread `<tenant>:client:<agent>:…` (src/graph/detached-thread.ts); anything else
+  // is real traffic.
   const rows = await db.$queryRaw<
     { day: string; status: string; n: number }[]
   >(Prisma.sql`
@@ -858,8 +862,20 @@ export async function computeKnow(
        AND q.created_at < ${r.until}
        AND (${agent}::bigint IS NULL OR q.agent_id = ${agent})
        AND (${source}::text IS NULL
-            OR (split_part(COALESCE(q.thread_id, ''), ':', 2) = 'playground')
-               = (${source}::text = 'playground'))
+            OR CASE split_part(COALESCE(q.thread_id, ''), ':', 2)
+                 WHEN 'playground' THEN 'playground'
+                 WHEN 'client' THEN 'client'
+                 ELSE 'inbox'
+               END = ${source}::text)
+       -- A suggestion carries no audience of its own, so it is its thread's owner when the day is
+       -- computed: one proposed before an anonymous visitor signed in counts as identified, and one
+       -- whose anonymous thread expired counts as neither.
+       AND (${audience}::text IS NULL OR EXISTS (
+             SELECT 1 FROM detached_threads dt
+               JOIN external_users eu ON eu.id = dt.external_user_id
+              WHERE dt.thread_id = q.thread_id
+                AND split_part(q.thread_id, ':', 2) = 'client'
+                AND (eu.external_id LIKE 'anon:%') = (${audience}::text = 'anonymous')))
        AND (${inbox}::bigint IS NULL OR EXISTS (
              SELECT 1 FROM conversations c
               WHERE c.thread_id = q.thread_id AND c.inbox_id = ${inbox}))

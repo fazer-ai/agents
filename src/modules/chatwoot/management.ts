@@ -1186,20 +1186,22 @@ type RemovedObserver = {
 // and returns how many. Picked and deleted in two statements, the second by the ids themselves: in one
 // statement the planner joins the picked ids back to the table, and with statistics taken before the
 // rows arrived it does so as a nested loop over every row the scope can see, per batch (measured: 6.6 s
-// for 1,000 of 70,000 rows; 8 ms in this shape).
+// for 1,000 of 70,000 rows; 8 ms in this shape). `key` is the table's primary key column.
 export async function deleteBatch(
   db: ScopedDb,
   table: string,
   where: Prisma.Sql,
+  key = "id",
 ): Promise<number> {
   const name = Prisma.raw(table);
+  const col = Prisma.raw(key);
   const ids = (
-    await db.$queryRaw<{ id: bigint }[]>`
-      SELECT id FROM ${name} WHERE ${where}
+    await db.$queryRaw<{ id: bigint | string }[]>`
+      SELECT ${col} AS id FROM ${name} WHERE ${where}
        LIMIT ${REMOVAL_BATCH_ROWS} FOR NO KEY UPDATE SKIP LOCKED`
   ).map((r) => r.id);
   if (ids.length === 0) return 0;
-  return db.$executeRaw`DELETE FROM ${name} WHERE id = ANY(${ids})`;
+  return db.$executeRaw`DELETE FROM ${name} WHERE ${col} = ANY(${ids})`;
 }
 
 // The first step of removing accounts, inside the caller's transaction: their inboxes unbound, their

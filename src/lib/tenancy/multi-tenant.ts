@@ -74,6 +74,10 @@ const TENANT_SCOPED_MODELS = new Set<string>([
   "AttendanceSummary",
   "OtherInboxSummary",
   "PlaygroundTurnNote",
+  "ExternalUser",
+  "DetachedThread",
+  "ClientApp",
+  "ClientAppSecret",
   "DashboardDay",
   "DashboardDirty",
 ]);

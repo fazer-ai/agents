@@ -116,6 +116,8 @@ describe("the routes that refuse an API-key principal declare the 403", () => {
       "PATCH /api/auth/me",
       "PATCH /api/auth/password",
       "POST /api/admin/super-admins",
+      "POST /api/v1/client-apps/",
+      "POST /api/v1/client-apps/:id/secrets",
     ];
     const missing = wanted.filter((key) => {
       const [method, path] = key.split(" ");

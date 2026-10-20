@@ -1,17 +1,15 @@
-import { randomUUID } from "node:crypto";
+import {
+  isValidDetachedThread,
+  newDetachedThreadId,
+} from "@/graph/detached-thread";
 
-// Playground thread key: tenantId:playground:agentId:uuid. The tenantId prefix is the checkpointer's
-// tenant fence; the "playground" + agentId segments isolate it from real conversations AND from other
-// agents. A client-supplied threadId is honored ONLY if it matches this exact shape (so a caller can
-// never pass a real conversation's thread to read its history through the playground).
-
-const PLAYGROUND = "playground";
+// Playground thread key: tenantId:playground:agentId:uuid (see graph/detached-thread.ts).
 
 export function newPlaygroundThreadId(
   tenantId: bigint,
   agentId: bigint,
 ): string {
-  return `${tenantId}:${PLAYGROUND}:${agentId}:${randomUUID()}`;
+  return newDetachedThreadId("playground", tenantId, agentId);
 }
 
 export function isValidPlaygroundThread(
@@ -19,11 +17,5 @@ export function isValidPlaygroundThread(
   tenantId: bigint,
   agentId: bigint,
 ): boolean {
-  const parts = threadId.split(":");
-  return (
-    parts.length === 4 &&
-    parts[0] === String(tenantId) &&
-    parts[1] === PLAYGROUND &&
-    parts[2] === String(agentId)
-  );
+  return isValidDetachedThread("playground", threadId, tenantId, agentId);
 }

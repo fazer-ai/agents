@@ -1,9 +1,12 @@
 import { isDeepStrictEqual } from "node:util";
+import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 import { z } from "zod";
 import type { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import { broadcastAgentConfigEvent } from "@/api/features/realtime/realtime.service";
+import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
+import { getCheckpointer } from "@/graph/checkpointer";
 import {
   DEFAULT_MODEL_CONFIG,
   modelConfigReason,
@@ -11,11 +14,11 @@ import {
 } from "@/graph/model-config";
 import { modelOptionalFor } from "@/graph/model-defaults";
 import {
-  CUSTOMER_DELIVERY_NATIVE_TOOL_NAMES,
   GRANTABLE_NATIVE_TOOL_NAMES,
   NATIVE_TOOL_NAMES,
   RAG_TOOL_NAMES,
 } from "@/graph/tools/catalog";
+import { CUSTOMER_DELIVERY_NATIVE_TOOL_NAMES } from "@/graph/tools/channel-natives";
 import { parseToolInputSchema } from "@/graph/tools/http";
 import { mcpServerSlug } from "@/graph/tools/mcp";
 import { normalizeToolName } from "@/graph/tools/toolName";
@@ -57,6 +60,7 @@ import { auditMutation } from "@/modules/audit/service";
 import { isOutOfHoursNow, parseSchedule } from "@/modules/business-hours/hours";
 import { renameAgentBots } from "@/modules/chatwoot/provisioning";
 import { invalidateRouteTokenCache } from "@/modules/chatwoot/route-token-cache";
+import { EXPIRY_CLAIM } from "@/modules/client-channel/identity";
 import { invalidContactAuthRule } from "@/modules/contact-auth/settings";
 import { sampleArgsUnfit } from "@/modules/decisions/arguments";
 import { isNativeDecisionTool } from "@/modules/decisions/config";
@@ -2515,8 +2519,11 @@ export async function deleteAgent(
   ctx: TenantContext,
   id: bigint,
   base: PrismaClient = basePrisma,
+  deps: {
+    checkpointer?: Pick<BaseCheckpointSaver, "deleteThread">;
+  } = {},
 ): Promise<void> {
-  await runScopedOn(base, ctx, async (db) => {
+  const clientThreads = await runScopedOn(base, ctx, async (db) => {
     // Read inside the transaction that deletes AND under its lock: the row is what the record is
     // OF, and after the statement there is nothing left to name it with. Unlocked, a rename that
     // commits between this read and the delete leaves an `agent.update` saying A→B followed by an
@@ -2542,6 +2549,25 @@ export async function deleteAgent(
       where: { voiceAgentId: id },
     });
     if (answeringCalls > 0) throw answersCallsRefusal();
+    // The agent's client-channel threads cascade away with it, and their checkpoints live in another
+    // store, where the anonymous expiry finds them only through these rows: deleted after the commit,
+    // below. Locked, so no round-trip takes one before then, and refused while one is running now,
+    // since its next checkpoint write would land after the delete. A thread the expiry claimed is
+    // already on its way out.
+    const threads = await db.$queryRaw<
+      Array<{ thread_id: string; running: boolean }>
+    >`
+      SELECT thread_id,
+             (active_turn_id IS NOT NULL AND active_turn_id <> ${EXPIRY_CLAIM}
+              AND active_until >= ${new Date()}) AS running
+        FROM detached_threads WHERE agent_id = ${id} FOR UPDATE`;
+    if (threads.some((t) => t.running)) {
+      throw new AppError(
+        "a client-channel conversation of this agent is running; try again in a moment",
+        409,
+        "errors.agentClientTurnRunning",
+      );
+    }
     // Inbox.agentId and Experiment.agentId are plain references (no FK cascade) — null them so a
     // deleted agent leaves no dangling binding. AgentToolSelection cascades via its FK.
     await db.inbox.updateMany({
@@ -2562,11 +2588,33 @@ export async function deleteAgent(
       before: auditSafe({ id: String(id), name: doomed?.name }),
       after: null,
     });
+    return threads.map((t) => t.thread_id);
   });
   // NOTE: ChatwootAgentBot cascades off the agent (schema.prisma: `onDelete: Cascade`), so deleting a
   // persona retires its route token without this module ever naming one. The receiver caches
   // resolutions by token hash and would keep authenticating the retired one from memory.
   invalidateRouteTokenCache();
+  // After the commit, so a refused delete erases nothing, and never failing the request: the agent
+  // is already gone. A process that dies before these lines, or a checkpoint store that refuses,
+  // leaves the transcripts behind, with nothing left that points at them.
+  if (clientThreads.length > 0) {
+    try {
+      const checkpointer = deps.checkpointer ?? (await getCheckpointer());
+      for (const threadId of clientThreads) {
+        await checkpointer.deleteThread(threadId).catch((e: unknown) => {
+          logger.error(
+            { err: e, threadId, agentId: String(id) },
+            "deleted agent: a client thread's checkpoint was not deleted",
+          );
+        });
+      }
+    } catch (e) {
+      logger.error(
+        { err: e, agentId: String(id), threads: clientThreads.length },
+        "deleted agent: the checkpoint store was unreachable, its client checkpoints were not deleted",
+      );
+    }
+  }
 }
 
 export async function cloneAgent(

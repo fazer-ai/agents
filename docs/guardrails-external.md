@@ -18,7 +18,7 @@ The check runs when `guardrails.enabled` is on and `url` is set. It does not nee
 
 ## When it runs
 
-On a reply that answers an inbound message, in the inbox and in the playground, written by the primary or the fallback model. The closing line the model writes when it hands the conversation over is a reply too and is asked about the same way; since the transfer already happened, a block there replaces or silences the line and hands nothing over again. Once per reply: after the built-in output screening, on the text that would go out, before it is split, turned into audio or signed. When the built-in screening already put the operator's own text in its place (a template or a hand-over line), there is nothing of the model's left to judge and the endpoint is not asked. Proactive sends (follow-ups, nudges) and the input direction are not covered.
+On a reply that answers an inbound message, in the inbox, in the playground and on the client channel ([`client-channel.md`](client-channel.md), where a `block` or a held failure returns the output template, since there is no team to hand over to), written by the primary or the fallback model. The closing line the model writes when it hands the conversation over is a reply too and is asked about the same way; since the transfer already happened, a block there replaces or silences the line and hands nothing over again. Once per reply: after the built-in output screening, on the text that would go out, before it is split, turned into audio or signed. When the built-in screening already put the operator's own text in its place (a template or a hand-over line), there is nothing of the model's left to judge and the endpoint is not asked. Proactive sends (follow-ups, nudges) and the input direction are not covered.
 
 A person who takes the conversation over while the endpoint is answering wins: the turn re-reads ownership after the answer and delivers nothing.
 
@@ -48,7 +48,7 @@ A person who takes the conversation over while the endpoint is answering wins: t
 }
 ```
 
-`conversationId` and `chatwootConversationId` are null in the playground. Tool calls are this turn's, in the order the model made them, at most 50, each value cut to 8000 characters (`argsSize` and `resultSize` are the sizes before the cut); secrets are redacted the way the playground trace redacts them. `candidate.attachments` are the files the reply sends with it, with the caption and the model-written text inside a document; a reply that is only files is asked about too, with an empty `text`, and a `replace` or a `block` drops them. The full prompt (system prompt, memory, history) is not sent.
+`conversationId` and `chatwootConversationId` are null in the playground and on the client channel. Tool calls are this turn's, in the order the model made them, at most 50, each value cut to 8000 characters (`argsSize` and `resultSize` are the sizes before the cut); secrets are redacted the way the playground trace redacts them. `candidate.attachments` are the files the reply sends with it, with the caption and the model-written text inside a document; a reply that is only files is asked about too, with an empty `text`, and a `replace` or a `block` drops them. The full prompt (system prompt, memory, history) is not sent.
 
 ## Response
 

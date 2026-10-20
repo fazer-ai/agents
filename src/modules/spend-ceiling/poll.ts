@@ -3,7 +3,7 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
-import type { UsageSource } from "@/graph/usage";
+import { USAGE_SOURCES, type UsageSource } from "@/graph/usage";
 import { withEntityLock } from "@/lib/locks";
 import { sanitizeErrorMessage } from "@/lib/redact";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
@@ -11,6 +11,7 @@ import { claimContactAuthNotice } from "@/modules/contact-auth/state";
 import { emitFlowEvent } from "@/modules/flowlog/service";
 import type { ClaimedJob } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
+import { hasAppCeiling } from "./arm";
 import { monthEnd, monthStart } from "./decide";
 import {
   readTenantSpendCeiling,
@@ -35,13 +36,13 @@ export type PollOutcome =
   | { status: "polled" }
   | { status: "failed"; error: string };
 
-const SOURCES: UsageSource[] = ["inbox", "playground"];
+const SOURCES = USAGE_SOURCES;
 
 function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
 }
 
-function snapshotLockKey(tenantId: bigint, source: UsageSource, month: Date) {
+function snapshotLockKey(tenantId: bigint, source: string, month: Date) {
   return `spend-snapshot:${tenantId}:${source}:${month.toISOString()}`;
 }
 
@@ -64,13 +65,40 @@ async function sumMonthCost(
   return Number(agg._sum.costUsd ?? 0);
 }
 
+// Each embedding app with a ceiling of its own, and its share of the month's client cost: the calls
+// of threads whose owner is one of its users (`app:<id>:…`) or anonymous visitors (`anon:<id>:…`).
+// A thread keeps its app when an anonymous visitor signs in, so the share follows it.
+async function sumAppMonthCosts(
+  db: ScopedDb,
+  tenantId: bigint,
+  month: Date,
+): Promise<{ source: string; cost: number }[]> {
+  const rows = await db.$queryRaw<{ id: bigint; cost: unknown }[]>`
+    SELECT ca.id, COALESCE(SUM(u.cost_usd), 0) AS cost
+    FROM client_apps ca
+    LEFT JOIN external_users eu
+      ON eu.tenant_id = ca.tenant_id
+     AND eu.channel = 'client'
+     AND (eu.external_id LIKE 'app:' || ca.id || ':%'
+       OR eu.external_id LIKE 'anon:' || ca.id || ':%')
+    LEFT JOIN detached_threads dt ON dt.external_user_id = eu.id
+    LEFT JOIN llm_usage u
+      ON u.thread_id = dt.thread_id
+     AND u.source = 'client'
+     AND u.created_at >= ${month}
+     AND u.created_at < ${monthEnd(month)}
+    WHERE ca.tenant_id = ${tenantId} AND ca.monthly_ceiling_cents IS NOT NULL
+    GROUP BY ca.id`;
+  return rows.map((r) => ({ source: `app:${r.id}`, cost: Number(r.cost) }));
+}
+
 // UNDER THE ROW'S ADVISORY LOCK, because a save re-arms the job and two polls of one tenant can
 // overlap. The newer reading wins: a poll that began before the row's last success writes nothing,
 // and an older success landing after a newer failure keeps that failure on the row.
 async function writeSuccess(
   db: ScopedDb,
   tenantId: bigint,
-  source: UsageSource,
+  source: string,
   month: Date,
   costUsd: number,
   at: Date,
@@ -119,7 +147,7 @@ async function writeSuccess(
 async function writeFailure(
   db: ScopedDb,
   tenantId: bigint,
-  source: UsageSource,
+  source: string,
   month: Date,
   error: string,
   at: Date,
@@ -202,6 +230,12 @@ export async function pollTenantSpend(
         const cost = await sumMonthCost(db, tenantId, source, month);
         await writeSuccess(db, tenantId, source, month, cost, now);
       }
+      for (const { source, cost } of await sumAppMonthCosts(
+        db,
+        tenantId,
+        month,
+      ))
+        await writeSuccess(db, tenantId, source, month, cost, now);
     });
     return { status: "polled" };
   } catch (err) {
@@ -259,7 +293,11 @@ export async function spendPollHandler(
     );
     return rearm();
   }
-  if (!cfg.enabled) return { outcome: "done" };
+  if (
+    !cfg.enabled &&
+    !(await hasAppCeiling(job.tenantId, base).catch(() => true))
+  )
+    return { outcome: "done" };
   await pollTenantSpend(job.tenantId, { base, ...deps });
   return rearm(spendPollIntervalMs());
 }

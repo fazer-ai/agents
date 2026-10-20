@@ -506,6 +506,63 @@
     "option": "Conversa {{id}} em {{tenant}}",
     "toList": "Ir para as conversas"
   },
+  "clientApps": {
+    "anonExpiry": "Apagar conversas anônimas paradas depois de (dias)",
+    "anonExpiryHint": "Uma conversa sem mensagem por esse tempo é apagada. A que passou para um usuário que entrou fica, e a que teve gasto neste mês fica até o mês acabar.",
+    "anonMessages": "Mensagens por sessão, por minuto",
+    "anonSessions": "Sessões novas por endereço, por hora",
+    "anonymous": "Visitantes anônimos",
+    "anonymousBadge": "Anônimo permitido",
+    "anonymousHint": "Deixa uma página sem usuário logado conversar com o agente. Deixe desligado para um assistente dentro de um app com login.",
+    "ceiling": "Teto de gasto mensal (USD)",
+    "ceilingHint": "Passando dele, a aplicação para de responder até o fim do mês. Vazio para nenhum; o teto do canal de cliente da conta continua valendo.",
+    "ceilingInvalid": "Um valor em dólares, como 50 ou 12.50",
+    "ceilingNone": "Sem teto",
+    "ceilingNotRead": "Teto mensal de {{ceiling}}, gasto do mês ainda não lido",
+    "ceilingSpent": "{{spent}} de {{ceiling}} neste mês",
+    "create": "Criar aplicação",
+    "createTitle": "Nova aplicação embutida",
+    "deleteFailed": "Não foi possível apagar a aplicação",
+    "deleteMessage": "As chaves vão junto: todo usuário que entrou por esta aplicação perde o acesso na hora.",
+    "deleteTitle": "Apagar {{name}}?",
+    "editTitle": "Editar aplicação",
+    "emptyDescription": "Cadastre a aplicação que vai embutir este agente para receber a chave dela.",
+    "emptyTitle": "Nenhuma aplicação ainda",
+    "keyCurrent": "atual",
+    "keyExpiring": "vale até {{date}}",
+    "keys": "Chaves",
+    "kid": "Id da chave (kid)",
+    "name": "Nome",
+    "namePlaceholder": "Meu app",
+    "new": "Nova aplicação",
+    "noKey": "Nenhuma chave válida: a aplicação não autentica ninguém até você gerar uma.",
+    "origins": "Origens permitidas",
+    "originsHint": "Uma por linha, exatamente como o navegador mostra: https://app.exemplo.com. http só para localhost; sem caminho e sem curinga.",
+    "password": "Sua senha",
+    "passwordHint": "Isto gera uma chave que autentica usuários. Confirme com a sua senha.",
+    "publicId": "Id da aplicação",
+    "revoke": "Revogar",
+    "revokeCurrentMessage": "Esta é a chave atual: até você gerar outra, a aplicação não autentica ninguém. Faça isso quando achar que a chave vazou.",
+    "revokeFailed": "Não foi possível revogar a chave",
+    "revokeMessage": "Os tokens assinados com ela param de funcionar na hora, em vez de no fim das 24 horas.",
+    "revokeTitle": "Revogar esta chave?",
+    "rotate": "Gerar nova chave",
+    "rotateHint": "A chave nova passa a ser a atual. A anterior continua valendo por 24 horas, para quem já entrou não cair enquanto você publica a nova.",
+    "rotateTitle": "Nova chave",
+    "saveFailed": "Não foi possível salvar a aplicação",
+    "secret": "Chave",
+    "secretWarning": "Copie a chave agora. Ela aparece uma única vez e não dá para recuperar depois; guarde no servidor da sua aplicação, nunca no navegador.",
+    "signHint": "Seu servidor assina cada usuário como um JWT (HS256) com esta chave: kid no cabeçalho, aud = id da aplicação, sub = id do usuário, exp em até uma hora; name, email e scope opcionais.",
+    "subtitle": "Aplicações web que colocam este agente nas próprias páginas. Cada uma autentica os usuários com uma chave própria.",
+    "title": "Aplicações embutidas",
+    "turnstile": "Verificação humana (Turnstile)",
+    "turnstileHint": "Antes de uma nova sessão anônima, o visitante passa por um desafio do Cloudflare Turnstile. Crie o widget na sua conta do Cloudflare para os domínios do seu site e cole as chaves aqui.",
+    "turnstileSecret": "Chave secreta",
+    "turnstileSecretHint": "Fica no servidor e não aparece de novo.",
+    "turnstileSecretStored": "Já existe uma chave guardada. Deixe vazio para mantê-la.",
+    "turnstileSiteKey": "Chave do site",
+    "turnstileSiteKeyHint": "Pública. A página mostra o desafio com ela."
+  },
   "codeTools": {
     "addTitle": "Nova ferramenta de código",
     "code": "Código",
@@ -957,6 +1014,12 @@
   "dashboard": {
     "absolute": "#",
     "agent": "Agente #{{id}}",
+    "audience": {
+      "all": "Todos",
+      "anonymous": "Anônimos",
+      "identified": "Logados",
+      "label": "Público"
+    },
     "automation": {
       "title": "O que o agente faz por conta própria"
     },
@@ -964,6 +1027,7 @@
       "dimension": "Agrupar por",
       "help": "As chamadas de modelo do período, agrupadas pela dimensão escolhida. Conversas são aquelas a que essas chamadas pertencem, e a taxa de resolução é a parte delas que o próprio agente encerrou. Clique num agente ou numa caixa de entrada para filtrar a página inteira por ele.",
       "noInbox": "Sem caixa de entrada (playground)",
+      "noInboxOrClient": "Sem caixa de entrada (playground ou canal cliente)",
       "title": "Para onde vai o uso"
     },
     "cache": {
@@ -1191,6 +1255,7 @@
     },
     "source": {
       "all": "Todos",
+      "client": "Canal cliente",
       "inbox": "Real",
       "label": "Segmento de uso",
       "playground": "Playground"
@@ -3376,6 +3441,12 @@
   "logs": {
     "allLevels": "Todos os níveis",
     "allStages": "Todas as etapas",
+    "anonymousSession": "Visitante anônimo",
+    "audience": {
+      "all": "Todos os usuários",
+      "anonymous": "Visitantes anônimos",
+      "identified": "Usuários logados"
+    },
     "clearScope": "Limpar filtro",
     "conversation": "Conversa #{{id}}",
     "emptyDescription": "As entradas de fluxo de execução aparecem aqui conforme os agentes atendem as conversas.",
@@ -3406,6 +3477,7 @@
     "exportTruncated_many": "Exportados os {{count}} registros mais recentes (havia mais correspondendo aos filtros).",
     "exportTruncated_other": "Exportados os {{count}} registros mais recentes (havia mais correspondendo aos filtros).",
     "exportUntil": "Até",
+    "filterAudience": "Público",
     "filterConversation": "Filtrar logs desta conversa",
     "filterLevel": "Nível",
     "filterSource": "Origem",
@@ -3450,6 +3522,7 @@
     "searchPlaceholder": "Buscar nas mensagens de erro…",
     "source": {
       "all": "Todos",
+      "client": "Canal cliente",
       "inbox": "Real",
       "playground": "Playground"
     },
@@ -4062,9 +4135,10 @@
     "tokenLabel": "Token de configuração"
   },
   "spendCeiling": {
+    "clientUsd": "Teto mensal: canal cliente (USD)",
     "cooldown": "Intervalo entre avisos (segundos)",
     "cooldownHint": "Quanto tempo até a mesma conversa ser avisada de novo. O teto em si é conferido em toda mensagem, independentemente disso.",
-    "desc": "Para de gastar quando o mês corrente atinge um orçamento em dólares, como os registros de uso deste app precificam as chamadas do mês. As conversas com clientes e o playground são contados separadamente, então testar nunca silencia o agente para os clientes.",
+    "desc": "Para de gastar quando o mês corrente atinge um orçamento em dólares, como os registros de uso deste app precificam as chamadas do mês. Cada origem é contada separadamente, então testar nunca silencia o agente para os clientes.",
     "enabled": "Aplicar o teto",
     "handoff": "Passar as conversas recusadas para um humano",
     "inboxUsd": "Teto mensal: clientes (USD)",
@@ -4075,6 +4149,7 @@
     "saved": "Teto de gasto salvo.",
     "saveError": "Não foi possível salvar o teto de gasto.",
     "source": {
+      "client": "Canal cliente (usuários do seu app)",
       "inbox": "Conversas com clientes",
       "playground": "Playground (seus testes)"
     },
@@ -4097,7 +4172,7 @@
       "unpricedBrief_other": "{{n}} chamadas deste mês não têm preço e ficam fora deste valor.",
       "updated": "Atualizado {{when}}"
     },
-    "usdHint": "Dólares (USD) por mês corrente, como os registros de uso deste app precificam as chamadas. 0 significa sem teto nesta metade.",
+    "usdHint": "Dólares (USD) por mês corrente, como os registros de uso deste app precificam as chamadas. 0 significa sem teto para esta origem.",
     "usdInvalid": "Informe zero ou um valor positivo em dólares.",
     "warnAt": "Avisar em (%)",
     "warnAtHint": "Percentual de um teto que dispara um aviso nos seus canais de alerta, para você saber antes de o agente ficar em silêncio. 0 desliga o aviso."

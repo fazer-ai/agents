@@ -351,8 +351,10 @@ export async function getKnowledgeActivity(
     const agent = filter.agentId ?? null;
     const inbox = filter.inboxId ?? null;
     const source = filter.source ?? null;
+    const audience = filter.audience ?? null;
     // A suggestion's segment is its thread's: a playground thread is `<tenant>:playground:<agent>:…`
-    // (`parseThreadOrigin`, src/modules/rag/service.ts); anything else is real traffic.
+    // (`parseThreadOrigin`, src/modules/rag/service.ts), a client channel thread
+    // `<tenant>:client:<agent>:…` (src/graph/detached-thread.ts); anything else is real traffic.
     // A suggestion's inbox is its conversation's, reached through the thread it was proposed in.
     // Under an inbox filter, one with no conversation (proposed outside any inbox) is not that
     // inbox's.
@@ -363,8 +365,20 @@ export async function getKnowledgeActivity(
          AND (${until}::timestamptz IS NULL OR q.created_at < ${until})
          AND (${agent}::bigint IS NULL OR q.agent_id = ${agent})
          AND (${source}::text IS NULL
-              OR (split_part(COALESCE(q.thread_id, ''), ':', 2) = 'playground')
-                 = (${source}::text = 'playground'))
+              OR CASE split_part(COALESCE(q.thread_id, ''), ':', 2)
+                   WHEN 'playground' THEN 'playground'
+                   WHEN 'client' THEN 'client'
+                   ELSE 'inbox'
+                 END = ${source}::text)
+         -- A suggestion carries no audience of its own, so it is its thread's owner NOW: one proposed
+         -- before an anonymous visitor signed in counts as identified, and one whose anonymous thread
+         -- expired counts as neither.
+         AND (${audience}::text IS NULL OR EXISTS (
+               SELECT 1 FROM detached_threads dt
+                 JOIN external_users eu ON eu.id = dt.external_user_id
+                WHERE dt.thread_id = q.thread_id
+                  AND split_part(q.thread_id, ':', 2) = 'client'
+                  AND (eu.external_id LIKE 'anon:%') = (${audience}::text = 'anonymous')))
          AND (${inbox}::bigint IS NULL OR EXISTS (
                SELECT 1 FROM conversations c
                 WHERE c.thread_id = q.thread_id AND c.inbox_id = ${inbox}))

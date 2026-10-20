@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { Elysia } from "elysia";
 import { authPlugin } from "@/api/lib/auth";
+import config from "@/config";
 import {
   type MockUserEntity,
   mockFindUnique,
@@ -95,19 +96,27 @@ describe("a request without a session", () => {
 
   test("answers 401 on every gated route, with no input and with a malformed one", async () => {
     const wrong: string[] = [];
-    for (const route of gated) {
-      for (const [kind, request] of [
-        ["bare", bare(route)],
-        ["malformed", malformed(route)],
-      ] as const) {
-        const res = await app.handle(request);
-        const body = await res.text();
-        if (res.status !== 401 || body !== UNAUTHORIZED) {
-          wrong.push(
-            `${kind} ${route.method} ${route.path}: ${res.status} ${body}`,
-          );
+    // The client channel's routes do not exist while the channel is off (`clientChannelGate`), so
+    // the sweep runs with it on, where they answer like every other gated route.
+    const channelWas = config.clientChannel.enabled;
+    config.clientChannel.enabled = true;
+    try {
+      for (const route of gated) {
+        for (const [kind, request] of [
+          ["bare", bare(route)],
+          ["malformed", malformed(route)],
+        ] as const) {
+          const res = await app.handle(request);
+          const body = await res.text();
+          if (res.status !== 401 || body !== UNAUTHORIZED) {
+            wrong.push(
+              `${kind} ${route.method} ${route.path}: ${res.status} ${body}`,
+            );
+          }
         }
       }
+    } finally {
+      config.clientChannel.enabled = channelWas;
     }
     expect(wrong).toEqual([]);
   });

@@ -1,3 +1,4 @@
+import type { UsageSource } from "@/graph/usage";
 // Closed vocabulary for the execution-flow log, kept dependency-free so the schema layer and the
 // read/controller layers can validate without importing the emit machinery.
 
@@ -105,7 +106,11 @@ export function isFlowLevel(s: string): s is FlowLevel {
 
 export type FlowStatus = "ok" | "error" | "skipped";
 
-// The two worlds an alert has to tell apart, and the split is real-vs-test, never turn-vs-not:
-// inbox = production, including the system work that serves it (a `webhook` line has no turn and
-// still pages); playground = operator test turns, which never alert.
-export type FlowSource = "inbox" | "playground";
+// Which traffic a line is about. An alert splits it real-vs-test, never turn-vs-not: inbox and
+// client are production (a `webhook` line has no turn and still pages); playground is operator test
+// turns, which never alert. See `pagesAlerts`.
+export type FlowSource = UsageSource;
+
+export function pagesAlerts(source: FlowSource): boolean {
+  return source !== "playground";
+}

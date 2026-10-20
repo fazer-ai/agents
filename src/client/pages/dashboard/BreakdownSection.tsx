@@ -2,6 +2,7 @@ import { ArrowDown, ArrowUp, Table2 } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { SegmentedControl, Skeleton } from "@/client/components";
+import { useClientChannelEnabled } from "@/client/contexts/AuthContext";
 import type { api } from "@/client/lib/api";
 import { cn } from "@/client/lib/utils";
 import { Block, type BlockTable } from "./Block";
@@ -32,6 +33,7 @@ export function BreakdownSection({
   onFilter: (patch: Partial<DashboardFilters>) => void;
 }) {
   const { t, i18n } = useTranslation();
+  const clientChannelEnabled = useClientChannelEnabled();
   const nodeLabel = useNodeLabel();
   const [dimension, setDimension] = useState<Dimension>("agent");
   const [sort, setSort] = useState<{ key: SortKey; desc: boolean }>({
@@ -53,9 +55,14 @@ export function BreakdownSection({
 
   const nameOf = (r: Row): string => {
     if (r.key === null)
-      return dimension === "inbox"
-        ? t("dashboard.breakdown.noInbox", "No inbox (playground)")
-        : t("dashboard.noAgent", "Unattributed");
+      return dimension !== "inbox"
+        ? t("dashboard.noAgent", "Unattributed")
+        : clientChannelEnabled
+          ? t(
+              "dashboard.breakdown.noInboxOrClient",
+              "No inbox (playground or client channel)",
+            )
+          : t("dashboard.breakdown.noInbox", "No inbox (playground)");
     if (dimension === "node") return nodeLabel(r.key);
     if (dimension === "agent")
       return r.label ?? t("dashboard.agent", "Agent #{{id}}", { id: r.key });

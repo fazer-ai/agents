@@ -5,8 +5,9 @@ import { TEMPLATE_MESSAGE_MAX } from "@/modules/agents/text-caps";
 
 // PER-TENANT SPEND CEILING, read from the free-form `tenant.settings.spendCeiling` bag. Counted in
 // DOLLARS, because the invoice is: tokens cannot track a bill. The figure is the usage ledger's
-// priced cost, summed into a periodic snapshot (./poll.ts, ./service.ts). TWO CEILINGS, inbox and playground, so an operator testing in a loop cannot lock
-// customers out. See docs/spend-ceiling.md.
+// priced cost, summed into a periodic snapshot (./poll.ts, ./service.ts). ONE CEILING PER SOURCE
+// (inbox, playground, client), so an operator testing in a loop, or a host application's users,
+// cannot lock the others out. See docs/spend-ceiling.md.
 
 export interface SpendCeilingConfig {
   enabled: boolean;
@@ -16,6 +17,8 @@ export interface SpendCeilingConfig {
   // The same, for `playground` traffic. Separate on purpose: an operator testing must not be able
   // to silence the agent for customers.
   monthlyPlaygroundUsd: number;
+  // The same, for `client` traffic: the users of host applications that embed the agent.
+  monthlyClientUsd: number;
   // What the customer receives when a turn is refused for being over the ceiling. null = say
   // nothing, which leaves the person waiting with no signal, so the default is a sentence.
   overCeilingMessage: string | null;
@@ -47,6 +50,7 @@ export const SPEND_CEILING_DEFAULTS: SpendCeilingConfig = {
   enabled: false,
   monthlyInboxUsd: 0,
   monthlyPlaygroundUsd: 0,
+  monthlyClientUsd: 0,
   overCeilingMessage:
     "Não consigo responder agora. Encaminhei sua mensagem para a equipe.",
   handoffEnabled: true,
@@ -129,7 +133,8 @@ export function readSpendCeilingConfig(settings: unknown): SpendCeilingConfig {
   const legacyTokens =
     (legacyInbox > 0 || legacyPlayground > 0) &&
     s.monthlyInboxUsd === undefined &&
-    s.monthlyPlaygroundUsd === undefined
+    s.monthlyPlaygroundUsd === undefined &&
+    s.monthlyClientUsd === undefined
       ? { inbox: legacyInbox, playground: legacyPlayground }
       : null;
   return {
@@ -142,6 +147,11 @@ export function readSpendCeilingConfig(settings: unknown): SpendCeilingConfig {
     monthlyPlaygroundUsd: readUsd(
       s.monthlyPlaygroundUsd,
       SPEND_CEILING_DEFAULTS.monthlyPlaygroundUsd,
+      SPEND_CEILING_USD_MAX,
+    ),
+    monthlyClientUsd: readUsd(
+      s.monthlyClientUsd,
+      SPEND_CEILING_DEFAULTS.monthlyClientUsd,
       SPEND_CEILING_USD_MAX,
     ),
     overCeilingMessage: message === "" ? null : message,
@@ -182,6 +192,7 @@ export const spendCeilingSettingsSchema = z.object({
   enabled: z.boolean(),
   monthlyInboxUsd: usd,
   monthlyPlaygroundUsd: usd,
+  monthlyClientUsd: usd,
   overCeilingMessage: z.string().max(TEMPLATE_MESSAGE_MAX).nullable(),
   handoffEnabled: z.boolean(),
   noticeCooldownSeconds: z
@@ -201,5 +212,5 @@ export type SpendCeilingStored = z.infer<typeof spendCeilingSettingsSchema>;
 // the token keys into `legacyTokens`.
 export type SpendCeilingLegacyStored = Omit<
   SpendCeilingStored,
-  "monthlyInboxUsd" | "monthlyPlaygroundUsd"
+  "monthlyInboxUsd" | "monthlyPlaygroundUsd" | "monthlyClientUsd"
 > & { monthlyInboxTokens: number; monthlyPlaygroundTokens: number };

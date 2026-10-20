@@ -56,8 +56,11 @@ import {
   recordResolutionOrigin,
 } from "@/modules/conversations/record-resolution";
 import {
+  type CaseClient,
   type CaseInbox,
   type CustomerTextVerdict,
+  type DetachedCaseOrigin,
+  normalizeEmail,
   type OpenCaseResult,
   openCaseInInbox,
 } from "@/modules/cross-inbox-case/service";
@@ -93,11 +96,15 @@ import {
   partsInTimezone,
 } from "../time";
 import { CalculatorError, evaluateExpression } from "./calculator";
+import type { NativeToolName } from "./catalog";
 import {
-  CUSTOMER_DELIVERY_NATIVE_TOOL_NAMES,
-  NATIVE_TOOL_CATEGORY,
-  type NativeToolName,
-} from "./catalog";
+  INBOX_NATIVES,
+  isUnsupported,
+  type NativeHandlers,
+  type NativeSupport,
+  OBSERVER_NATIVES,
+  PLAYGROUND_NATIVES,
+} from "./channel-natives";
 import { modelVisibleLabels, SHOWN_LABELS_MAX } from "./label-view";
 
 // Native Chatwoot tools the agent can call mid-turn, all over the bot token. Each is bound to a
@@ -472,6 +479,34 @@ export interface ToolCtx {
     sign?: (text: string) => string;
     // The prompt's context variables, for the operator's opening and note templates.
     interpolate?: (template: string) => string;
+    // Set on a channel with no Chatwoot conversation behind it (the client channel): the client of
+    // the destination's account, the contact the case is opened for (found or created on the call)
+    // and the thread it is opened from. The tool then takes the shape that channel can carry out.
+    detached?: {
+      client: CaseClient;
+      // The team pinned for handoffs in the destination's account, which the case is given to.
+      caseTeamId: number | null;
+      // The calls that run one at a time, from the contact to the recorded case: every call that can
+      // reconcile the same contact, since another one could change its address in between.
+      serialKey: string;
+      // An anonymous visitor: no host states an address, so the case goes to the one the visitor
+      // typed in this chat, passed by the model in `email` and checked with `userTyped`.
+      anonymous?: boolean;
+      userTyped?: (email: string) => Promise<boolean>;
+      // The contact the case is opened for; null when there is no address (the host gave none, or
+      // an anonymous visitor's call passed none), "held" when an anonymous visitor's address is
+      // another contact's.
+      contact: (typedEmail?: string) => Promise<
+        | {
+            id: number;
+            addressUpdated: boolean;
+            email: string;
+          }
+        | null
+        | "held"
+      >;
+      origin: DetachedCaseOrigin;
+    };
     // Where the origin's current attendance starts, for `carryAttachments.mode = attendance`.
     attendanceStartedAt?: () => Promise<Date | null>;
   };
@@ -3059,15 +3094,306 @@ function openCaseInInboxTool(ctx: ToolCtx) {
   );
 }
 
-// THE TOOLS A MUTED TURN CANNOT COMPLETE, hidden from it: an observer runs the ordinary toolset, and
-// these are customer-facing in their entirety (a reaction the muted transport refuses, an image or a
-// case opening that needs delivery gates an observation does not have). Offered anyway they cost a
-// model round each and answer with a failure an operator reads as a broken integration. Read off the
-// client's own `muted`, the same field `armReminders` asks. A private note is NOT here: it is the one
-// thing an observer legitimately writes where a person will read it.
-const MUTED_CANNOT_COMPLETE = new Set<string>(
-  CUSTOMER_DELIVERY_NATIVE_TOOL_NAMES,
-);
+// What the model reads after `open_case_in_inbox` on a channel with nobody to hand the conversation
+// to and no messages of the user's to read an address from: the outcomes that would send it to
+// `handoff_to_human` or ask for an email say what this channel can do instead.
+// Where the team answers a case opened from a host application: this channel escalates to an email
+// inbox only, and the model never sees the address, so it can say "by email" and nothing more.
+const DETACHED_REPLY_CHANNEL =
+  "The team replies by email, to the address this user has in the application: tell the user that, in those words, without guessing the address.";
+const ANONYMOUS_REPLY_CHANNEL =
+  "The team replies by email, to the address the user gave here: tell the user that.";
+
+// The note on a case opened for an anonymous visitor: the team replies to an address nobody proved.
+export function unverifiedAddressNote(email: string): string {
+  return `The reply address ${literalForChatwoot(email)} was typed by a visitor who was not signed in to the application, and is not verified: do not take it as proof of who they are.`;
+}
+
+function detachedOpenCaseOutcomeText(
+  r: OpenCaseResult,
+  anonymous = false,
+): string {
+  switch (r.kind) {
+    case "opened":
+    case "continued":
+    case "already_open":
+    case "appended":
+      return additionLost(r)
+        ? `The user already has an open case with the team: conversation #${r.caseId}. Nothing new was opened, and what you passed in \`reason\` could NOT be added to it, so the team does not have it. Do not tell the user it reached the team; tell them you could not pass it on right now.`
+        : `${openCaseOutcomeText(r)} ${anonymous ? ANONYMOUS_REPLY_CHANNEL : DETACHED_REPLY_CHANNEL}`;
+    case "needs_email":
+      return anonymous
+        ? "Nothing was opened: the team replies by email and you passed no address. Ask the user for the email address where the team should reply, then call this again with it in `email`."
+        : "Nothing was opened: the team's inbox answers by email and the host application did not provide this user's email. Tell the user the team cannot be reached from here. Do not ask for their email: this chat cannot pass it on.";
+    // NOTE: this channel escalates to an email inbox only, so a phone destination is one it cannot use.
+    case "needs_phone":
+    case "unsupported_channel":
+    case "same_inbox":
+    case "not_configured":
+      return "Nothing was opened: the team's inbox cannot receive cases. Tell the user you could not pass the request on.";
+    case "handed_by_policy":
+      return "Did not open the case: the output check refused the opening message. Tell the user you could not pass the request on.";
+    // NOTE: only an anonymous visitor's call passes an address, and it is checked before the case.
+    case "rejected_email":
+    case "called_off":
+    case "failed":
+      return openCaseOutcomeText(r);
+  }
+}
+
+// `open_case_in_inbox` where the agent talks to its user inside a host application. Nobody answers in
+// this chat: the case goes to the team's inbox and the team replies through that inbox's own channel.
+// The contact comes from what the host stated about its user, never from the model.
+function detachedOpenCaseTool(
+  ctx: ToolCtx,
+  detached: NonNullable<NonNullable<ToolCtx["crossInboxCase"]>["detached"]>,
+) {
+  const cic = ctx.crossInboxCase;
+  const openingTemplate = cic?.config.openingTemplate ?? null;
+  const asksMessage = openingAsksMessage(openingTemplate);
+  const opening =
+    openingTemplate === null
+      ? "`customer_message` is the first message the user receives THERE (for an email inbox, the opening email), so write it as that message."
+      : asksMessage
+        ? "`customer_message` is your part of the first message the user receives THERE: it goes inside the team's own opening text, so write only what is specific to this request."
+        : "The user receives the team's fixed opening message THERE; you do not write it.";
+  const anonymous = detached.anonymous === true;
+  const address = anonymous
+    ? " This user is not signed in, so the team replies to an address the user gives you: ask for it before calling, and pass in `email` exactly what they typed, never one you guessed or completed."
+    : "";
+  const description = `Open the user's request as a case in the team's inbox (configured by the operator: you choose WHETHER to open it, never where). Use it when the request needs a person from the team. Nobody from the team answers in this chat: they reply through that inbox's own channel (for an email inbox, by email to the user). \`reason\` becomes an internal note on the case, so write what the team needs to act on it without asking again. ${opening}${address} Tell the user here that their case was opened and where the team will reply. When the user adds something after the case was opened, call it again with the addition in \`reason\`: it goes to the open case as a note, and no second case is opened.`;
+  // One call at a time per `serialKey`, from the contact to the case: a second call compares the
+  // address with the case the first one recorded, and no call changes the contact's address between
+  // another's reconciliation and its opening.
+  const outcome = (r: OpenCaseResult) =>
+    detachedOpenCaseOutcomeText(r, anonymous);
+  const open = async ({
+    reason,
+    customer_message,
+    labels,
+    summary,
+    email,
+  }: {
+    reason: string;
+    customer_message?: string;
+    labels?: string[];
+    summary?: string;
+    email?: string;
+  }) => {
+    if (!cic) return outcome({ kind: "not_configured" });
+    // NOTE: the destination is checked before the contact is touched: a refused escalation must not
+    // create a contact or change its address.
+    if (cic.config.targetInboxId != null) {
+      try {
+        const inbox = await detached.client.getInbox(cic.config.targetInboxId);
+        const channelType = (inbox as { channel_type?: unknown } | null)
+          ?.channel_type;
+        if (channelType !== "Channel::Email")
+          return outcome({
+            kind: "unsupported_channel",
+            channelType: typeof channelType === "string" ? channelType : null,
+          });
+      } catch {
+        return toolFailure(
+          "Could not open the case (failed at: read_target_inbox). Tell the user you could not pass the request on to the team right now.",
+        );
+      }
+    }
+    // An anonymous visitor's address comes through the model: only a well-formed one the visitor
+    // typed on this thread is used, checked before any contact is touched.
+    let typed: string | undefined;
+    if (anonymous && email?.trim()) {
+      const normalized = normalizeEmail(email);
+      if (!normalized)
+        return "Nothing was opened: that is not a valid email address. Ask the user to type it again.";
+      try {
+        if (!(await detached.userTyped?.(normalized)))
+          return "Nothing was opened: the user did not write that address in this chat. Ask them to type the address where the team should reply, and pass exactly what they wrote.";
+      } catch {
+        return toolFailure(
+          "Could not open the case (failed at: read_messages). Tell the user you could not pass the request on to the team right now.",
+        );
+      }
+      typed = normalized;
+    }
+    let contact:
+      | { id: number; addressUpdated: boolean; email: string }
+      | null
+      | "held";
+    try {
+      contact = await detached.contact(typed);
+    } catch (err) {
+      logger.warn(
+        "open_case_in_inbox: the user's contact could not be resolved (%s): %s",
+        detached.origin.key,
+        err instanceof Error ? err.message : String(err),
+      );
+      return toolFailure(
+        "Could not open the case (failed at: resolve_contact). Tell the user you could not pass the request on to the team right now.",
+      );
+    }
+    if (contact === null) return outcome({ kind: "needs_email" });
+    if (contact === "held")
+      return "Nothing was opened: that address belongs to someone the team already knows, so a case cannot be opened for it from a chat where nobody signed in. Tell the user to sign in to the application to reach the team.";
+    const result = await openCaseInInbox(detached.client, {
+      config: cic.config,
+      originConversationId: 0,
+      originContactId: contact.id,
+      freshCase: contact.addressUpdated,
+      recipientEmail: contact.email,
+      detachedOrigin: detached.origin,
+      reason: reason.trim(),
+      customerMessage: (asksMessage && customer_message?.trim()) || null,
+      email: null,
+      labels: (labels ?? [])
+        .map((l) => l.trim().toLowerCase())
+        .filter((l) => l.length > 0),
+      subject: cic.renderSubject?.(summary?.trim() || null) ?? null,
+      stillWanted: ctx.stillWanted,
+      tenantId: ctx.tenantId,
+      screenCustomerMessage: ctx.screenCustomerText,
+      signCustomerMessage: cic.sign,
+      interpolate: cic.interpolate,
+      caseTeamId: detached.caseTeamId,
+    });
+    if (result.kind === "called_off") ctx.onNoEffect?.(OPEN_CASE_TOOL_NAME);
+    if (result.kind === "failed") {
+      logger.warn(
+        "open_case_in_inbox failed (%s, step=%s): %s",
+        detached.origin.key,
+        result.step,
+        result.error instanceof Error
+          ? result.error.message
+          : String(result.error),
+      );
+      return toolFailure(
+        `Could not open the case (failed at: ${result.step}). Tell the user you could not pass the request on to the team right now.`,
+      );
+    }
+    if (
+      (result.kind === "opened" ||
+        result.kind === "continued" ||
+        result.kind === "already_open" ||
+        result.kind === "appended") &&
+      (result.partial.length > 0 || result.unknownCaseLabels?.length)
+    ) {
+      ctx.onSideEffectError?.({
+        tool: OPEN_CASE_TOOL_NAME,
+        phase: "follow_up_writes",
+        detail: {
+          caseId: result.caseId,
+          failed: result.partial,
+          unknownLabels: result.unknownCaseLabels ?? [],
+        },
+        err: new Error(
+          `writes did not land: ${[...result.partial, ...(result.unknownCaseLabels ?? []).map((l) => `label ${l}`)].join(", ")}`,
+        ),
+      });
+    }
+    if (
+      (result.kind === "opened" ||
+        result.kind === "continued" ||
+        result.kind === "already_open" ||
+        result.kind === "appended") &&
+      result.caseOwnerUnread
+    ) {
+      ctx.onSideEffectError?.({
+        tool: OPEN_CASE_TOOL_NAME,
+        phase: "case_owner_unread",
+        detail: { caseId: result.caseId, at: result.caseOwnerUnread },
+        err: new Error(
+          result.caseOwnerUnread === "before_clear"
+            ? "the case could not be read to settle its owner; nothing was written, so an agent bot on it stays and no team was set"
+            : "the case could not be read again before its team write; the bot was cleared and no team was written",
+        ),
+      });
+    }
+    // NOTE: a case opened for an anonymous visitor tells the team its address is unverified; an
+    // addition goes to a case that already says so.
+    if (anonymous && (result.kind === "opened" || result.kind === "continued"))
+      await detached.client
+        .sendMessageAsAdmin(
+          result.caseId,
+          unverifiedAddressNote(contact.email),
+          {
+            private: true,
+          },
+        )
+        .catch((err) =>
+          ctx.onSideEffectError?.({
+            tool: OPEN_CASE_TOOL_NAME,
+            phase: "unverified_email_note",
+            detail: { caseId: result.caseId },
+            err: err instanceof Error ? err : new Error(String(err)),
+          }),
+        );
+    return outcome(result);
+  };
+  return failableTool(
+    (args: Parameters<typeof open>[0]) =>
+      withKeyedQueue(detached.serialKey, () => open(args)),
+    {
+      name: OPEN_CASE_TOOL_NAME,
+      description: withOperatorNote(description, ctx, OPEN_CASE_TOOL_NAME),
+      schema: z.object({
+        reason: z
+          .string()
+          .min(1)
+          .describe(
+            "Why the case is being opened, for the team (internal note on the case).",
+          ),
+        ...(asksMessage
+          ? {
+              customer_message: z
+                .string()
+                .optional()
+                .describe(
+                  openingTemplate === null
+                    ? "The first message the user receives in the team's inbox. Omit to open the case without one."
+                    : "Your part of the team's opening message in the team's inbox. Omit to open the case without an opening.",
+                ),
+            }
+          : {}),
+        labels: z
+          .array(z.string())
+          .optional()
+          .describe("Labels that categorize the case in the destination."),
+        ...(anonymous
+          ? {
+              email: z
+                .string()
+                .optional()
+                .describe(
+                  "The email address the user typed in this chat for the team's reply, exactly as they wrote it.",
+                ),
+            }
+          : {}),
+        ...(subjectAsksSummary(cic?.config.subjectTemplate ?? null)
+          ? {
+              summary: z
+                .string()
+                .optional()
+                .describe(
+                  "One line saying what the request is about. It becomes part of the subject of the case's emails, which is what the user and the team read first.",
+                ),
+            }
+          : {}),
+      }),
+    },
+  );
+}
+
+// The shape of `open_case_in_inbox` this channel runs: from the conversation, or from the detached
+// origin the channel handed in, and none without a destination inbox or that origin.
+function openCaseTools(
+  ctx: ToolCtx,
+  support: NativeSupport,
+): StructuredToolInterface[] {
+  const cic = ctx.crossInboxCase;
+  if (cic?.config.targetInboxId == null) return [];
+  if (support !== "detached") return [openCaseInInboxTool(ctx)];
+  return cic.detached ? [detachedOpenCaseTool(ctx, cic.detached)] : [];
+}
 
 // allowed = undefined → all native tools; otherwise only the named subset (fail-closed).
 // No native tool takes CODE from the model: computation the model must not redo (check digits,
@@ -3076,6 +3402,21 @@ const MUTED_CANNOT_COMPLETE = new Set<string>(
 export function buildNativeTools(
   ctx: ToolCtx,
   allowed?: Iterable<string>,
+): StructuredToolInterface[] {
+  // NOTE: a muted client IS the observer: it is how an observation reaches the toolset.
+  return buildChannelNativeTools(
+    ctx,
+    allowed,
+    ctx.client?.muted ? OBSERVER_NATIVES : INBOX_NATIVES,
+  );
+}
+
+// The natives the agent was granted, as `natives` says this channel runs them: unsupported ones are
+// left out, simulated ones keep their name, description and schema and do nothing.
+export function buildChannelNativeTools(
+  ctx: ToolCtx,
+  allowed: Iterable<string> | undefined,
+  natives: NativeHandlers,
 ): StructuredToolInterface[] {
   const all: StructuredToolInterface[] = [
     handoffTool(ctx),
@@ -3088,9 +3429,7 @@ export function buildNativeTools(
     setVoicePreferenceTool(ctx),
     reactToMessageTool(ctx),
     sendImageTool(ctx),
-    ...(ctx.crossInboxCase?.config.targetInboxId != null
-      ? [openCaseInInboxTool(ctx)]
-      : []),
+    ...openCaseTools(ctx, natives[OPEN_CASE_TOOL_NAME]),
     skipReplyTool(ctx),
     calculatorTool(ctx),
     getCurrentTimeTool(ctx),
@@ -3105,8 +3444,16 @@ export function buildNativeTools(
   // writable, so an empty `writable` is the fail-closed state and there is no second switch.
   const writable = ctx.contactFields?.writable ?? [];
   if (writable.length > 0) granted.push(updateContactTool(ctx, writable));
-  if (!ctx.client?.muted) return granted;
-  return granted.filter((t) => !MUTED_CANNOT_COMPLETE.has(t.name));
+  // A muted client is an observer whatever the channel (the playground estimates an observer's floor
+  // on its own map): what only delivers to the customer is not offered to it.
+  const muted = ctx.client?.muted === true;
+  return granted.flatMap((t) => {
+    const support = natives[t.name as NativeToolName];
+    if (isUnsupported(support)) return [];
+    if (muted && isUnsupported(OBSERVER_NATIVES[t.name as NativeToolName]))
+      return [];
+    return support === "simulated" ? [simulatedTool(t)] : [t];
+  });
 }
 
 // Replaces a tool's execution with a no-op that returns a synthetic success — keeps the model-facing
@@ -3119,23 +3466,10 @@ function simulatedTool(orig: StructuredToolInterface): StructuredToolInterface {
   );
 }
 
-// Playground variant of buildNativeTools: the CONVERSATION tools (handoff/resolve/note/…) are
-// SIMULATED (no Chatwoot call, no fleet event — kanban_move would otherwise emit a real outbound
-// event), so the agent's DECISION to call them is testable. UTILITY tools (calculator/clock) keep
-// their real, side-effect-free behavior. `allowed` is the agent's own native allowlist.
+// The playground's natives: see PLAYGROUND_NATIVES for which run and which are simulated.
 export function buildSimulatedNativeTools(
   ctx: ToolCtx,
   allowed?: Iterable<string>,
 ): StructuredToolInterface[] {
-  return buildNativeTools(ctx, allowed).map((tl) =>
-    // NOTE: `skip_reply` is simulated-by-nature: it performs nothing, and its RETURN is the whole tool —
-    // "Produce no message now" is an instruction the model reads and acts on, since LangGraph calls
-    // the model again after a tool result. Replacing it with the generic `[simulated]` line makes
-    // the playground write a follow-up that production stays silent on, which is the simulation
-    // lying about the one decision it exists to show.
-    NATIVE_TOOL_CATEGORY[tl.name as NativeToolName] === "utility" ||
-    tl.name === SKIP_REPLY_TOOL
-      ? tl
-      : simulatedTool(tl),
-  );
+  return buildChannelNativeTools(ctx, allowed, PLAYGROUND_NATIVES);
 }

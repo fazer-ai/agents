@@ -294,6 +294,29 @@ export type ReconcileTotals = Record<CheckpointTable, number>;
 // shared with the turns instead of held by the pass. A process that dies drops the connection, and
 // the lock with it.
 const PASS_LOCK = "fazerai:checkpoint-reconcile";
+// How long one query on the lock's connection may take: they are a try-lock and `SELECT 1`.
+const LOCK_QUERY_MS = 10_000;
+
+export class LockConnectionTimeout extends Error {
+  constructor() {
+    super("the checkpoint reconciler's lock connection did not answer in time");
+    this.name = "LockConnectionTimeout";
+  }
+}
+
+async function bounded<T>(work: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new LockConnectionTimeout()), ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 export type LockConnection = Pick<Client, "query" | "end">;
 
@@ -323,15 +346,23 @@ export function reconcileCheckpoints(
     pauseMs?: number;
     shouldStop?: () => boolean;
     lockConnection?: () => Promise<LockConnection>;
+    lockQueryMs?: number;
   } = {},
 ): Promise<ReconcileTotals | null> {
   return runInPoolClass("background", async () => {
     const lock = await (opts.lockConnection ?? connectLock)();
-    try {
-      const got = await lock.query<{ ok: boolean }>(
-        "SELECT pg_try_advisory_lock(hashtext($1)) AS ok",
-        [PASS_LOCK],
+    // A connection that stops answering after it opened would hold the pass, and every pass after
+    // it, forever: each query on it has a deadline, past which the pass fails and the connection is
+    // dropped.
+    const ask = (sql: string, params?: unknown[]) =>
+      bounded(
+        lock.query<{ ok: boolean }>(sql, params),
+        opts.lockQueryMs ?? LOCK_QUERY_MS,
       );
+    try {
+      const got = await ask("SELECT pg_try_advisory_lock(hashtext($1)) AS ok", [
+        PASS_LOCK,
+      ]);
       if (!got.rows[0]?.ok) return null;
       // The lock lives as long as its connection: one the server closed (an idle session timeout, a
       // restart) has released it, and another pass may already hold it. Each batch asks first, and
@@ -339,12 +370,15 @@ export function reconcileCheckpoints(
       return await reconcileAll(pool, {
         ...opts,
         beforeBatch: async () => {
-          await lock.query("SELECT 1");
+          await ask("SELECT 1");
         },
       });
     } finally {
-      // Closing the connection releases the lock.
-      await lock.end().catch(() => {});
+      // Closing the connection releases the lock. A connection that no longer answers may not
+      // close either, so the wait for it is bounded too.
+      await bounded(lock.end(), opts.lockQueryMs ?? LOCK_QUERY_MS).catch(
+        () => {},
+      );
     }
   });
 }

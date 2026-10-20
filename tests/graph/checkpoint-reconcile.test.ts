@@ -7,6 +7,7 @@ import { encryptJson } from "@/api/lib/crypto";
 import config from "@/config";
 import {
   type LockConnection,
+  LockConnectionTimeout,
   NEWEST_CHECKPOINT_SQL,
   reconcileCheckpointBatch,
   reconcileCheckpoints,
@@ -482,6 +483,34 @@ describe.skipIf(!dbUp)("the checkpoint reconciler", () => {
       }),
     ).rejects.toThrow("Connection terminated");
     expect(await left(goneIds)).toEqual(all(20));
+  }, 60_000);
+
+  // A connection that opened and then stops answering: the pass fails on its deadline instead of
+  // waiting forever with every later pass behind it.
+  test("a lock connection that stops answering fails the pass on its deadline", async () => {
+    const goneIds = range(5, (i) => `${goneTenant}:22:${i}`);
+    await seed(goneIds);
+    let calls = 0;
+    const lockConnection = async () => ({
+      query: (() => {
+        calls += 1;
+        return calls === 1
+          ? Promise.resolve({ rows: [{ ok: true }] })
+          : new Promise(() => {});
+      }) as unknown as LockConnection["query"],
+      end: () => new Promise<void>(() => {}),
+    });
+
+    await expect(
+      reconcileCheckpoints(cp, {
+        pauseMs: 0,
+        scope: mine,
+        base: appDb,
+        lockQueryMs: 50,
+        lockConnection,
+      }),
+    ).rejects.toBeInstanceOf(LockConnectionTimeout);
+    expect(await left(goneIds)).toEqual(all(5));
   }, 60_000);
 
   test("what a sweep stopped between tables left behind goes too", async () => {

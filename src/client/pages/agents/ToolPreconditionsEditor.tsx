@@ -199,13 +199,16 @@ export function ToolPreconditionsEditor({
                     </Select>
                   </div>
                   <Button
-                    variant="secondary"
+                    variant="ghost"
                     size="sm"
                     className="ml-auto"
-                    aria-label={t("common.remove", "Remove")}
                     onClick={() => onChange(rows.filter((_, idx) => idx !== i))}
                   >
                     <Trash2 className="h-4 w-4" aria-hidden />
+                    {t(
+                      "editor.toolPreconditions.removeRule",
+                      "Remove precondition",
+                    )}
                   </Button>
                 </div>
                 {row.conditions.map((cond, c) => {
@@ -220,13 +223,18 @@ export function ToolPreconditionsEditor({
                       <div className="flex flex-wrap items-start gap-2">
                         <div className="flex min-w-0 flex-1 flex-col gap-2">
                           <div className="flex flex-wrap items-center gap-2">
-                            <span>
-                              {t(
-                                "editor.toolPreconditions.untilAttribute",
-                                "until the attribute",
-                              )}
+                            <span className="sm:w-32 sm:shrink-0">
+                              {c === 0
+                                ? t(
+                                    "editor.toolPreconditions.untilAttribute",
+                                    "until the attribute",
+                                  )
+                                : t(
+                                    "editor.toolPreconditions.andUntilAttribute",
+                                    "and until the attribute",
+                                  )}
                             </span>
-                            <div className="w-full sm:w-44">
+                            <div className="w-full sm:w-40">
                               <Input
                                 aria-label={t(
                                   "editor.toolPreconditions.key",
@@ -254,7 +262,7 @@ export function ToolPreconditionsEditor({
                                   ))}
                               </datalist>
                             </div>
-                            <div className="w-full sm:w-36">
+                            <div className="w-full sm:w-32">
                               <Select
                                 aria-label={t(
                                   "editor.toolPreconditions.scope",
@@ -365,11 +373,6 @@ export function ToolPreconditionsEditor({
                           </Button>
                         )}
                       </div>
-                      {c < row.conditions.length - 1 && (
-                        <span className="text-text-muted text-xs uppercase">
-                          {t("editor.toolPreconditions.and", "and")}
-                        </span>
-                      )}
                     </div>
                   );
                 })}

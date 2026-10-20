@@ -2737,7 +2737,7 @@
     "toolPreconditions": {
       "add": "Adicionar precondição",
       "addCondition": "Adicionar condição",
-      "and": "e",
+      "andUntilAttribute": "e até que o atributo",
       "block": "Bloquear",
       "description": "Bloqueia uma ferramenta até que todos os atributos da conversa ou do contato que você listar tenham valor. O agente é informado do motivo e segue a conversa; nada é dito ao cliente.",
       "descriptionDecisions": "Bloqueia uma ferramenta até que todos os atributos da conversa ou do contato que você listar tenham valor. A ação da regra não roda e a recusa fica registrada nos logs; nada é dito ao cliente.",
@@ -2761,6 +2761,7 @@
       "ofConversation": "da conversa",
       "pickTool": "Escolha uma ferramenta…",
       "removeCondition": "Remover condição",
+      "removeRule": "Remover precondição",
       "scope": "Escopo",
       "title": "Precondições de ferramenta",
       "tool": "Ferramenta",

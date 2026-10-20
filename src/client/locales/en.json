@@ -2654,7 +2654,7 @@
     "toolPreconditions": {
       "add": "Add a precondition",
       "addCondition": "Add a condition",
-      "and": "and",
+      "andUntilAttribute": "and until the attribute",
       "block": "Block",
       "description": "Block a tool until every conversation or contact attribute you list holds a value. The agent is told why and continues the conversation; nothing is said to the customer.",
       "descriptionDecisions": "Block a tool until every conversation or contact attribute you list holds a value. The rule's action does not run and the refusal is recorded in the logs; nothing is said to the customer.",
@@ -2678,6 +2678,7 @@
       "ofConversation": "on the conversation",
       "pickTool": "Pick a tool…",
       "removeCondition": "Remove condition",
+      "removeRule": "Remove precondition",
       "scope": "Scope",
       "title": "Tool preconditions",
       "tool": "Tool",

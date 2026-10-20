@@ -658,6 +658,39 @@ describe("the Tools tab offers every granted tool, and flags a rule on one that 
     });
   });
 
+  // The card's own button says what it removes, so it is not mistaken for a condition's, and the
+  // conditions after the first read as one sentence ("and until the attribute").
+  test("the card's button removes the whole rule, and each later condition reads as an and", async () => {
+    const cond = (key: string) => ({
+      kind: "attribute",
+      scope: "conversation",
+      key,
+    });
+    const stub = stubEditorApi(
+      {
+        settings: {
+          toolPreconditions: {
+            calendar_check_availability: [cond("a"), cond("b")],
+            busca_por_cpf: cond("cpf"),
+          },
+        },
+      },
+      { catalog, grants },
+    );
+    await renderEditor(stub, "tools");
+    expect(await screen.findAllByText("and until the attribute")).toHaveLength(
+      1,
+    );
+    const rules = await screen.findAllByRole("button", {
+      name: "Remove precondition",
+    });
+    expect(rules).toHaveLength(2);
+    fireEvent.click(rules[0] as HTMLElement);
+    expect(await savedPreconditions(stub)).toEqual({
+      busca_por_cpf: cond("cpf"),
+    });
+  });
+
   test("a tool at the bound of ten conditions offers no eleventh", async () => {
     const stub = stubEditorApi(
       {

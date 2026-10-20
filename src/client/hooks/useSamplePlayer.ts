@@ -1,7 +1,8 @@
 import { useSyncExternalStore } from "react";
 
 // One <audio> element for the whole console, so a second sample stops the first wherever it was
-// started (two voice pickers on the same page included). The state is the URL now playing, or null.
+// started (two voice pickers on the same page included). The state is the URL now playing, or null,
+// and the picker that started it.
 
 let audio: HTMLAudioElement | null = null;
 let playing: string | null = null;
@@ -12,9 +13,10 @@ let owner: symbol | null = null;
 let attempt = 0;
 const listeners = new Set<() => void>();
 
-function setPlaying(url: string | null) {
-  if (playing === url) return;
+function setPlaying(url: string | null, by: symbol | null = owner) {
+  if (playing === url && owner === by) return;
   playing = url;
+  owner = by;
   for (const notify of listeners) notify();
 }
 
@@ -32,26 +34,25 @@ function element(): HTMLAudioElement {
 
 function stopSample() {
   attempt++;
-  owner = null;
   if (audio) {
     audio.pause();
     audio.removeAttribute("src");
     audio.load();
   }
-  setPlaying(null);
+  setPlaying(null, null);
 }
 
-// Plays `url` for `by`, or stops it when it is the one already playing.
+// Plays `url` for `by`, or stops it when `by` is the one already playing it. The same URL started by
+// another picker plays again under `by`, so the control pressed is the one that shows Stop.
 function toggle(url: string, by: symbol) {
-  if (playing === url) {
+  if (playing === url && owner === by) {
     stopSample();
     return;
   }
-  owner = by;
   const el = element();
   el.pause();
   el.src = url;
-  setPlaying(url);
+  setPlaying(url, by);
   const mine = ++attempt;
   el.play().catch(() => {
     if (mine === attempt) setPlaying(null);
@@ -71,11 +72,13 @@ function subscribe(notify: () => void) {
   };
 }
 
-export function useSamplePlayer() {
+// What `by` hears: the URL it started and is still playing, or null when nothing or another picker's
+// sample is playing.
+export function useSamplePlayer(by: symbol) {
   const current = useSyncExternalStore(
     subscribe,
-    () => playing,
+    () => (owner === by ? playing : null),
     () => null,
   );
-  return { playing: current, toggle };
+  return { playing: current, toggle: (url: string) => toggle(url, by) };
 }

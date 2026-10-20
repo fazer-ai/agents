@@ -10,10 +10,13 @@ import {
   Loader2,
   PhoneIncoming,
   PhoneOff,
+  Play,
   Speech,
+  Square,
   TriangleAlert,
   Volume2,
 } from "lucide-react";
+import { useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Card,
@@ -25,8 +28,10 @@ import {
   Switch,
   Textarea,
 } from "@/client/components";
+import { stopSampleOf, useSamplePlayer } from "@/client/hooks/useSamplePlayer";
 import { credentialCompat } from "@/client/lib/credentialCompat";
 import { providerLabel } from "@/client/lib/providerLabels";
+import { cn } from "@/client/lib/utils";
 import {
   CALL_ASR_MODELS,
   CALL_BACKGROUND_SOUNDS,
@@ -44,6 +49,7 @@ import {
   type CallTurnEagerness,
   callProviderAgentUrl,
   callProviderKeysUrl,
+  callSoundSampleUrl,
 } from "@/modules/voice-call/settings";
 import {
   CALLS_FORM_RANGES,
@@ -641,6 +647,96 @@ export function VoiceCard({
   );
 }
 
+// A sound preset field whose options can be heard before one is chosen: a play control on each
+// preset's row and, beside the field, one for the preset chosen. The "none" option has nothing to play.
+// It shares the console's one player with the voice samples, so starting one stops the other.
+function SoundPicker<T extends CallBackgroundSound | CallToolSound>({
+  value,
+  onChange,
+  presets,
+  noneLabel,
+  label,
+  presetLabel,
+}: {
+  value: T | "";
+  onChange: (v: T | "") => void;
+  presets: readonly T[];
+  noneLabel: string;
+  label: string;
+  presetLabel: (v: T) => string;
+}) {
+  const { t } = useTranslation();
+  const me = useRef(Symbol("sound picker")).current;
+  const player = useSamplePlayer(me);
+  // Leaving the tab stops a sample this field started.
+  useEffect(() => () => stopSampleOf(me), [me]);
+  const playLabel = (name: string, on: boolean) =>
+    on
+      ? t("editor.voiceSampleStop", "Stop the sample of {{name}}", { name })
+      : t("editor.voiceSamplePlay", "Play a sample of {{name}}", { name });
+  const icon = (on: boolean) =>
+    on ? (
+      <Square className="h-3.5 w-3.5" aria-hidden="true" />
+    ) : (
+      <Play className="h-3.5 w-3.5" aria-hidden="true" />
+    );
+  const chosenUrl = value ? callSoundSampleUrl(value) : null;
+  const chosenOn = chosenUrl !== null && player.playing === chosenUrl;
+  // A new choice stops a sample of the preset it replaced; one heard on its row, then picked, plays on.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the chosen preset is the trigger.
+  useEffect(() => stopSampleOf(me, chosenUrl ?? undefined), [value]);
+  return (
+    <div className="flex w-full items-center gap-1.5">
+      <div className="min-w-0 flex-1">
+        <ComboBox
+          value={value}
+          onChange={(v) => onChange(v as T | "")}
+          items={[
+            { id: "", label: noneLabel, hint: "" },
+            ...presets.map((p) => ({ id: p, label: presetLabel(p), hint: "" })),
+          ]}
+          allowCustom={false}
+          searchPlaceholder={t("common.search", "Search")}
+          aria-label={label}
+          itemAction={(item) => {
+            if (!item.id) return null;
+            const url = callSoundSampleUrl(item.id as T);
+            const on = player.playing === url;
+            return {
+              label: playLabel(item.label ?? item.id, on),
+              hint: on
+                ? t("editor.voiceSampleStopShort", "Stop sample")
+                : t("editor.voiceSamplePlayShort", "Play sample"),
+              pressed: on,
+              icon: icon(on),
+              onPress: () => player.toggle(url),
+            };
+          }}
+        />
+      </div>
+      {value && chosenUrl && (
+        <button
+          type="button"
+          aria-pressed={chosenOn}
+          aria-label={playLabel(presetLabel(value), chosenOn)}
+          onClick={() => player.toggle(chosenUrl)}
+          className={cn(
+            "inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-md border border-border-hover px-2.5 text-sm text-text-muted transition-colors hover:bg-bg-hover hover:text-text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-soft",
+            { "text-accent": chosenOn },
+          )}
+        >
+          {icon(chosenOn)}
+          <span>
+            {chosenOn
+              ? t("editor.voiceSampleStopText", "Stop")
+              : t("editor.voiceSamplePlayText", "Listen")}
+          </span>
+        </button>
+      )}
+    </div>
+  );
+}
+
 /** The Call tab: how the line behaves, from the hello to the hang-up, and what it sounds like. */
 export function CallSettings({
   calls,
@@ -806,22 +902,15 @@ export function CallSettings({
           )}
         />
         <div className="grid gap-4 sm:grid-cols-3">
-          <FormField label={t("editor.callsBackground", "Background")}>
-            <Select
+          <FormField label={t("editor.callsBackground", "Background")} group>
+            <SoundPicker
               value={calls.backgroundSound}
-              onChange={(e) =>
-                set({
-                  backgroundSound: e.target.value as CallBackgroundSound | "",
-                })
-              }
-            >
-              <option value="">{t("editor.callsSoundNone", "None")}</option>
-              {CALL_BACKGROUND_SOUNDS.map((v) => (
-                <option key={v} value={v}>
-                  {soundLabel(v)}
-                </option>
-              ))}
-            </Select>
+              onChange={(v) => set({ backgroundSound: v })}
+              presets={CALL_BACKGROUND_SOUNDS}
+              noneLabel={t("editor.callsSoundNone", "None")}
+              label={t("editor.callsBackground", "Background")}
+              presetLabel={soundLabel}
+            />
           </FormField>
           <FormField
             error={rangeError("backgroundVolume")}
@@ -853,27 +942,21 @@ export function CallSettings({
             </div>
           </FormField>
           <FormField
+            group
             label={t("editor.callsToolSound", "Sound during lookups")}
             description={t(
               "editor.callsToolSoundHint",
               "Plays while the agent checks something, when it says nothing first, so the line does not sound dropped.",
             )}
           >
-            <Select
+            <SoundPicker
               value={calls.toolSound}
-              onChange={(e) =>
-                set({ toolSound: e.target.value as CallToolSound | "" })
-              }
-            >
-              <option value="">
-                {t("editor.callsToolSoundNone", "Silence")}
-              </option>
-              {CALL_TOOL_SOUNDS.map((v) => (
-                <option key={v} value={v}>
-                  {soundLabel(v)}
-                </option>
-              ))}
-            </Select>
+              onChange={(v) => set({ toolSound: v })}
+              presets={CALL_TOOL_SOUNDS}
+              noneLabel={t("editor.callsToolSoundNone", "Silence")}
+              label={t("editor.callsToolSound", "Sound during lookups")}
+              presetLabel={soundLabel}
+            />
           </FormField>
         </div>
       </Card>

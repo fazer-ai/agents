@@ -303,11 +303,12 @@ describe("the voice sample", () => {
     });
     // The fallback plays and stops it; then the primary plays the same voice.
     fireEvent.click(fallback as HTMLElement);
-    fireEvent.click(
-      screen.getAllByRole("button", {
-        name: "Stop the sample of Raquel",
-      })[1] as HTMLElement,
-    );
+    // Only the picker that started it shows Stop, though both have the same voice chosen.
+    const stops = screen.getAllByRole("button", {
+      name: "Stop the sample of Raquel",
+    });
+    expect(stops).toEqual([fallback as HTMLElement]);
+    fireEvent.click(fallback as HTMLElement);
     fireEvent.click(primary as HTMLElement);
     const before = pauses;
     // The fallback goes away (disabled): the primary's sample plays on.

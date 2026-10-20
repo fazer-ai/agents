@@ -241,7 +241,10 @@ export function ComboBox(props: ComboBoxProps) {
             <span
               className={cn(
                 "flex min-w-0 flex-1 items-baseline gap-1.5 text-left",
-                { "text-text-muted": multiple || !single?.value },
+                {
+                  "text-text-muted":
+                    multiple || (!single?.value && !singleSelected),
+                },
               )}
             >
               {multiple ? (

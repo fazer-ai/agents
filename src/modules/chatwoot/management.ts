@@ -2302,6 +2302,124 @@ export function unbindNeedsNothingRemote(err: unknown): boolean {
   return err instanceof ChatwootApiError && err.status === 404;
 }
 
+// The bot that answers an inbox on Chatwoot, read before a bind replaces it. `set_agent_bot` swaps
+// whatever is attached, so a bot from another vendor (a menu bot, a previous integration) would be
+// dropped without a word, and unbinding later sends `agent_bot: null`, which does not bring it back.
+// "ours" is any bot this tenant provisioned on the instance, for any agent: a switch between two of
+// our agents has its own warning on screen. A failed or unrecognized read is "unreadable", never
+// "none": the caller cannot tell an empty inbox from one it failed to look at.
+export type InboxBotReading =
+  | { kind: "none" }
+  | { kind: "ours" }
+  | { kind: "foreign"; botId: number; botName: string | null }
+  | { kind: "unreadable" };
+
+async function inboxIsGone(
+  client: Pick<ChatwootClient, "getInbox">,
+  chatwootInboxId: number,
+): Promise<boolean> {
+  try {
+    await client.getInbox(chatwootInboxId);
+    return false;
+  } catch (err) {
+    return err instanceof ChatwootApiError && err.status === 404;
+  }
+}
+
+export async function readInboxBot(
+  ctx: TenantContext,
+  chatwootInstanceId: bigint,
+  chatwootInboxId: number,
+  client: Pick<
+    ChatwootClient,
+    "inboxAgentBotId" | "listAgentBots" | "getInbox"
+  >,
+  base: PrismaClient = basePrisma,
+): Promise<InboxBotReading> {
+  let attached: number | null | undefined;
+  try {
+    attached = await client.inboxAgentBotId(chatwootInboxId);
+  } catch (err) {
+    // A 404 is an inbox gone in Chatwoot only if the inbox itself answers 404: then there is no bot
+    // left to lose, and the bind fails on its own attach as it always did. A proxy or a Chatwoot
+    // without this route answers 404 too, and that inbox may well carry a bot.
+    if (
+      err instanceof ChatwootApiError &&
+      err.status === 404 &&
+      (await inboxIsGone(client, chatwootInboxId))
+    )
+      return { kind: "none" };
+    logger.warn({ err }, "chatwoot: could not read the inbox's agent bot");
+    return { kind: "unreadable" };
+  }
+  if (attached === undefined) return { kind: "unreadable" };
+  if (attached === null) return { kind: "none" };
+  const ours = await runScopedOn(base, ctx, (db) =>
+    db.chatwootAgentBot.findFirst({
+      where: { chatwootInstanceId, chatwootAgentBotId: attached },
+      select: { id: true },
+    }),
+  );
+  if (ours) return { kind: "ours" };
+  const botName = await client
+    .listAgentBots()
+    .then((bots) => bots.find((b) => b.id === attached)?.name ?? null)
+    .catch(() => null);
+  return { kind: "foreign", botId: attached, botName };
+}
+
+// The same reading for a preview, loading the client itself (the MCP dry run asks it before any write).
+// A client that cannot be built is one more way of not being able to look.
+export async function readInboxBotForBind(
+  ctx: TenantContext,
+  inbox: { chatwootInstanceId: bigint; chatwootInboxId: number },
+  deps: LoadChatwootClientDeps = {},
+  base: PrismaClient = basePrisma,
+): Promise<InboxBotReading> {
+  if (ctx.tenantId === null) throw new AppError("tenant required", 400);
+  let client: ChatwootClient;
+  try {
+    client = await loadChatwootClient(ctx.tenantId, inbox.chatwootInstanceId, {
+      base,
+      makeClient: deps.makeClient,
+    });
+  } catch (err) {
+    logger.warn({ err }, "chatwoot: no client to read the inbox's agent bot");
+    return { kind: "unreadable" };
+  }
+  return readInboxBot(
+    ctx,
+    inbox.chatwootInstanceId,
+    inbox.chatwootInboxId,
+    client,
+    base,
+  );
+}
+
+// Refuses a bind that would replace a bot this instance does not own, unless the caller confirmed.
+// `field` names the confirmation flag, so the console keys its dialog on it and shows the sentence.
+export function assertReplaceableInboxBot(reading: InboxBotReading): void {
+  if (reading.kind === "foreign") {
+    const bot = reading.botName ?? `#${reading.botId}`;
+    throw new AppError(
+      `this inbox is answered by the Agent Bot "${bot}", which is not from this instance; binding replaces it and unbinding later does not bring it back`,
+      409,
+      "errors.inboxHasForeignAgentBot",
+      { bot },
+      "replaceForeignBot",
+    );
+  }
+  if (reading.kind === "unreadable") {
+    throw new AppError(
+      "could not read which Agent Bot answers this inbox; if another one is attached, binding replaces it and unbinding later does not bring it back",
+      409,
+      "errors.inboxAgentBotUnreadable",
+      undefined,
+      "replaceForeignBot",
+    );
+  }
+}
+
 // Everything `bindInbox` decides before it touches Chatwoot: the inbox exists, its account is still
 // connected, and the agent being bound exists. Split out so the MCP preview refuses what the apply
 // refuses (a bind onto a disconnected account included).
@@ -2391,6 +2509,7 @@ export async function bindInbox(
   agentId: bigint | null,
   deps: LoadChatwootClientDeps = {},
   base: PrismaClient = basePrisma,
+  options: { replaceForeignBot?: boolean } = {},
 ): Promise<InboxDto> {
   if (ctx.tenantId === null) throw new AppError("tenant required", 400);
   const tenantId = ctx.tenantId;
@@ -2415,6 +2534,17 @@ export async function bindInbox(
         inbox.chatwootInstanceId,
         { base, makeClient: deps.makeClient },
       );
+      if (!options.replaceForeignBot) {
+        assertReplaceableInboxBot(
+          await readInboxBot(
+            ctx,
+            inbox.chatwootInstanceId,
+            inbox.chatwootInboxId,
+            client,
+            base,
+          ),
+        );
+      }
       const bot = await ensureAgentBotAndReattach(
         ctx,
         inbox.chatwootInstanceId,

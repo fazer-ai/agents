@@ -47,9 +47,11 @@ function ctx(t: bigint): TenantContext {
   return { tenantId: t, userId: null, role: "TENANT_ADMIN" };
 }
 
-// Personifies the fork's Api::V1::Accounts::InboxesController (4.16.0). `set_agent_bot` runs behind a
-// before_action doing `Current.account.inboxes.find(params[:id])`, so a gone inbox answers 404 with
-// Rails' own body BEFORE any bot logic, and a live one answers `head :ok` (200, empty body).
+// Personifies the fork's Api::V1::Accounts::InboxesController (4.16.0). `set_agent_bot` and the
+// `agent_bot` read run behind a before_action doing `Current.account.inboxes.find(params[:id])`, so a
+// gone inbox answers 404 with Rails' own body BEFORE any bot logic; a live one answers `head :ok`
+// (200, empty body) to the attach and `{ agent_bot: {} }` to the read. The inbox itself answers 404
+// when gone, which is how the read tells a gone inbox from a missing route.
 function fakeChatwoot(live: number[]) {
   const calls: Array<{ path: string; body: unknown }> = [];
   const fetchImpl = (async (url: string, init?: RequestInit) => {
@@ -58,13 +60,20 @@ function fakeChatwoot(live: number[]) {
       path,
       body: init?.body ? JSON.parse(init.body as string) : undefined,
     });
-    const m = path.match(/\/inboxes\/(\d+)\/set_agent_bot$/);
+    const m = path.match(/\/inboxes\/(\d+)(?:\/(set_agent_bot|agent_bot))?$/);
     if (m && !live.includes(Number(m[1]))) {
       return {
         ok: false,
         status: 404,
         text: async () =>
           JSON.stringify({ error: "Resource could not be found" }),
+      } as unknown as Response;
+    }
+    if (m?.[2] === "agent_bot") {
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ agent_bot: {} }),
       } as unknown as Response;
     }
     if (path.endsWith("/agent_bots") && init?.method === "POST") {

@@ -50,6 +50,8 @@ import { bindInboxVoiceAgent } from "@/modules/voice-call/inboxes";
 // pair would not tell the operator which of the two fields they got wrong.
 // translate('errors.chatwootBindFailed', 'The bot could not be synced with Chatwoot.')
 // translate('errors.inboxGoneRemote', 'This inbox no longer exists in Chatwoot. Remove its mirror.')
+// translate('errors.inboxHasForeignAgentBot', 'This inbox is answered by the Agent Bot "{{bot}}", which is not from this instance. Binding replaces it, and unbinding later does not bring it back.')
+// translate('errors.inboxAgentBotUnreadable', 'Could not read which Agent Bot answers this inbox on Chatwoot. If another one is attached, binding replaces it, and unbinding later does not bring it back.')
 // translate('errors.agentAlreadyObserves', 'This agent already observes this inbox. Remove it as an observer before making it the answering agent.')
 // translate('errors.observerNotMonitoring', 'Only an agent in monitoring mode can observe an inbox.')
 // translate('errors.observeTakenBack', 'This observe was undone while the attachment was still in flight. Try again.')
@@ -538,7 +540,10 @@ export const chatwootAdminController = new Elysia({
   .patch(
     "/inboxes/:id",
     async ({ tenantContext, params, body }) => {
-      const b = body as { agentId?: string | null };
+      const b = body as {
+        agentId?: string | null;
+        replaceForeignBot?: boolean;
+      };
       const agentId = optionalDbId(b.agentId, "agentId") ?? null;
       return {
         instance: instanceIdentity,
@@ -546,6 +551,9 @@ export const chatwootAdminController = new Elysia({
           ctxOrThrow(tenantContext),
           requireDbId(params.id),
           agentId,
+          {},
+          undefined,
+          { replaceForeignBot: b.replaceForeignBot === true },
         ),
       };
     },
@@ -553,7 +561,7 @@ export const chatwootAdminController = new Elysia({
       requireRole: "TENANT_ADMIN",
       detail: doc(
         "Bind inbox to agent",
-        "Set or clear which agent answers an inbox. Binding lazily provisions the instance's Agent Bot and connects it to the inbox on Chatwoot; unbinding disconnects it. Unbinding an inbox that was deleted in Chatwoot still succeeds: there is no bot left to disconnect. 502 means Chatwoot was unreachable.",
+        "Set or clear which agent answers an inbox. Binding lazily provisions the instance's Agent Bot and connects it to the inbox on Chatwoot; unbinding disconnects it. Unbinding an inbox that was deleted in Chatwoot still succeeds: there is no bot left to disconnect. 409 with field replaceForeignBot means the inbox is answered by an Agent Bot this instance does not own, or the attached bot could not be read: binding replaces it and unbinding later does not bring it back, so send replaceForeignBot: true to confirm. 502 means Chatwoot was unreachable.",
       ),
       params: t.Object({
         id: t.String({ description: "Inbox id (BigInt string)." }),
@@ -563,8 +571,14 @@ export const chatwootAdminController = new Elysia({
           description:
             "Agent id (BigInt string) to bind, or null to unbind the inbox.",
         }),
+        replaceForeignBot: t.Optional(
+          t.Boolean({
+            description:
+              "Confirms replacing an Agent Bot this instance does not own (or one that could not be read). Without it, such a bind answers 409.",
+          }),
+        ),
       }),
-      response: errors(400, 401, 403, 404, 422, 502),
+      response: errors(400, 401, 403, 404, 409, 422, 502),
     },
   )
   // The VOICE binding: the voice agent that answers the inbox's calls, beside the

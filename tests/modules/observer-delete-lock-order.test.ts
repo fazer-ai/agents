@@ -94,6 +94,7 @@ function stubClient(opts: {
     }),
     updateAgentBot: async () => ({}),
     getInbox: async (id: number) => ({ id }),
+    inboxAgentBotId: async () => null,
     setInboxAgentBot: async () => {
       await opts.hook?.();
       return {};

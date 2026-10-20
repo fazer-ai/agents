@@ -168,6 +168,8 @@ function fakeChatwoot(
             : {}),
         };
       }
+    } else if (/\/inboxes\/\d+\/agent_bot$/.test(path)) {
+      answer = { agent_bot: {} };
     } else if (path.endsWith("/agent_bots")) {
       if (opts.failAgentBots) status = 503;
       answer =

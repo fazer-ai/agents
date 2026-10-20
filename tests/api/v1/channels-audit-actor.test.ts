@@ -73,6 +73,7 @@ const makeClient = async () =>
       throw new ChatwootApiError(404, "GET /inboxes/94");
     },
     listInboxes: async () => remoteInboxes,
+    inboxAgentBotId: async () => null,
     setInboxAgentBot: async () => ({}),
     listAgentBots: async () => [],
     createAgentBot: async () => ({

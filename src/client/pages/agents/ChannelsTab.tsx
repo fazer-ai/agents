@@ -20,6 +20,10 @@ import { ServiceLogo } from "@/client/components/icons/ServiceLogo";
 import { useClientChannelEnabled } from "@/client/contexts/AuthContext";
 import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
+import {
+  foreignAgentBotRefusal,
+  replaceForeignBotConfirm,
+} from "@/client/lib/foreignAgentBot";
 import type { AgentMode } from "@/modules/agents/mode";
 
 type DeploymentData = Awaited<
@@ -60,6 +64,7 @@ export function ChannelsTab({
   const { showToast } = useToast();
   const navigate = useNavigate();
   const confirm = useModalController<ConfirmPayload>();
+  const replaceBotConfirm = useModalController<ConfirmPayload>();
   const watcher = mode === "monitoring";
   const clientChannelEnabled = useClientChannelEnabled();
 
@@ -123,12 +128,19 @@ export function ChannelsTab({
 
   // Persist a binding (agentId = this agent to bind, null to unbind). Non-optimistic: local state
   // changes only on success; on failure the switch reverts because it reads from `inboxes`.
-  async function setBinding(inboxId: string, nextAgentId: string | null) {
+  async function setBinding(
+    inboxId: string,
+    nextAgentId: string | null,
+    replaceForeignBot = false,
+  ) {
     setPending(inboxId);
     try {
       const { error: err } = await api.api.v1.chatwoot
         .inboxes({ id: inboxId })
-        .patch({ agentId: nextAgentId });
+        .patch({
+          agentId: nextAgentId,
+          ...(replaceForeignBot && { replaceForeignBot }),
+        });
       if (err) throw err;
       setInboxes((prev) =>
         prev.map((i) =>
@@ -144,11 +156,22 @@ export function ChannelsTab({
       showToast(t("channels.bound", "Inbox updated."), "success");
       onBindingChanged?.();
     } catch (e) {
+      const foreignBot = replaceForeignBot ? null : foreignAgentBotRefusal(e);
+      if (foreignBot) {
+        replaceBotConfirm.open(
+          replaceForeignBotConfirm(t, foreignBot, () =>
+            setBinding(inboxId, nextAgentId, true),
+          ),
+        );
+        return;
+      }
       showToast(
         apiErrorMessage(e) ||
           t("channels.bindError", "Could not update the inbox."),
         "error",
       );
+      // The confirmed retry runs inside the dialog's onConfirm: throwing keeps it open to retry.
+      if (replaceForeignBot) throw e;
     } finally {
       setPending(null);
     }
@@ -544,6 +567,7 @@ export function ChannelsTab({
       {clientChannelEnabled && <ClientAppsSection agentId={agentId} />}
 
       <ConfirmDialog modal={confirm} />
+      <ConfirmDialog modal={replaceBotConfirm} />
     </div>
   );
 }

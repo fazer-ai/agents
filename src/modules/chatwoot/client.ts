@@ -1646,12 +1646,12 @@ export class ChatwootClient {
   }
 
   // The bot actually attached to an inbox, as Chatwoot has it. Our `ChatwootAgentBot` row says a bot
-  // was attached once, not that the attachment stands (a UI detach or a failed reattach leaves the
-  // row), and `reconcileInboxBots` asks whether the bot exists, not whether it is attached. The view
-  // always renders the `agent_bot` key, `{}` when none is attached, so its emptiness (never `res.id`)
-  // carries the answer. A body without the key (a Chatwoot without this route, or an unknown shape)
-  // is `undefined`, so "I could not tell" never reads as "there is none". A failed request throws: an
-  // unreadable read must never become a refusal built on a network blip.
+  // was attached once, not that the attachment stands, and `reconcileInboxBots` asks whether the bot
+  // exists, not whether it is attached. The fork's view drops the `agent_bot` key when no bot is
+  // attached (Jbuilder omits an empty block), so exactly `{}` is a definite none; the id is read off
+  // the nested object, never `res.id`. Any other shape (a wrapped payload, an error body, a bot with no
+  // numeric id) is `undefined`, so "I could not tell" never reads as "there is none"; a Chatwoot
+  // without this route answers 404 and throws, like any failed request.
   async inboxAgentBotId(inboxId: number): Promise<number | null | undefined> {
     const res = await this.request(
       this.config.adminToken,
@@ -1659,11 +1659,15 @@ export class ChatwootClient {
       `/inboxes/${inboxId}/agent_bot`,
     );
     const bag = res as { agent_bot?: unknown } | null;
-    if (!bag || typeof bag !== "object" || !("agent_bot" in bag))
-      return undefined;
-    const bot = bag.agent_bot as { id?: unknown } | null;
-    const id = bot && typeof bot === "object" ? bot.id : undefined;
-    return typeof id === "number" && Number.isFinite(id) ? id : null;
+    if (!bag || typeof bag !== "object" || Array.isArray(bag)) return undefined;
+    if (!("agent_bot" in bag))
+      return Object.keys(bag).length === 0 ? null : undefined;
+    const bot = bag.agent_bot;
+    if (bot === null) return null;
+    if (!bot || typeof bot !== "object" || Array.isArray(bot)) return undefined;
+    if (Object.keys(bot).length === 0) return null;
+    const id = (bot as { id?: unknown }).id;
+    return typeof id === "number" && Number.isFinite(id) ? id : undefined;
   }
 
   // The fork's second binding: an OBSERVER receives the inbox's events on its own route and owns

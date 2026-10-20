@@ -74,6 +74,7 @@ function stubClient(onAttach?: () => Promise<void>) {
       calls.push("updateAgentBot");
       return {};
     },
+    inboxAgentBotId: async () => null,
     setInboxAgentBot: async () => {
       calls.push("setInboxAgentBot");
       await onAttach?.();

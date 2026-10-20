@@ -164,6 +164,13 @@ const stubFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
         : {}),
     });
   }
+  // The inbox's attached bot, which the hand-back checks before giving the conversation back: ours,
+  // as on the inbox these conversations come from. An inbox with no bot would answer `{}`.
+  if (
+    /\/inboxes\/\d+\/agent_bot$/.test(url) &&
+    (init?.method ?? "GET") === "GET"
+  )
+    return Response.json({ agent_bot: { id: OUR_BOT, name: "Atendente" } });
   return new Response(JSON.stringify({}), {
     status: 200,
     headers: { "content-type": "application/json" },

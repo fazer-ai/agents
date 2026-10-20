@@ -92,33 +92,45 @@ export function InboxRow({
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-2">
-        {status === "missing" && onReconnect && (
-          <Button
-            variant="secondary"
-            size="sm"
-            loading={reconnecting}
-            onClick={onReconnect}
-          >
-            <RefreshCw className="h-4 w-4" aria-hidden="true" />
-            {t("channels.reconnect", "Reconnect")}
-          </Button>
-        )}
-        {onRemove && (
-          <Tooltip content={t("channels.removeInbox", "Remove inbox mirror")}>
-            {/* `Button` does not forwardRef, so Radix `asChild` needs a real DOM node (CLAUDE.md). */}
-            <span className="inline-flex">
+        {/* Pinned to the top band, one picker tall: the trailing control can wrap a second line
+            (the Channels page's observers under its picker), and centering on the whole column
+            left these buttons between the two lines. */}
+        {((status === "missing" && onReconnect) || onRemove) && (
+          <div className="flex h-8 items-center gap-2 self-start">
+            {status === "missing" && onReconnect && (
               <Button
                 variant="secondary"
                 size="sm"
-                loading={removing}
-                onClick={onRemove}
-                aria-label={t("channels.removeInbox", "Remove inbox mirror")}
-                className="text-text-muted hover:text-error"
+                loading={reconnecting}
+                onClick={onReconnect}
               >
-                <Trash2 className="h-4 w-4" aria-hidden="true" />
+                <RefreshCw className="h-4 w-4" aria-hidden="true" />
+                {t("channels.reconnect", "Reconnect")}
               </Button>
-            </span>
-          </Tooltip>
+            )}
+            {onRemove && (
+              <Tooltip
+                content={t("channels.removeInbox", "Remove inbox mirror")}
+              >
+                {/* `Button` does not forwardRef, so Radix `asChild` needs a real DOM node (CLAUDE.md). */}
+                <span className="inline-flex">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    loading={removing}
+                    onClick={onRemove}
+                    aria-label={t(
+                      "channels.removeInbox",
+                      "Remove inbox mirror",
+                    )}
+                    className="text-text-muted hover:text-error"
+                  >
+                    <Trash2 className="h-4 w-4" aria-hidden="true" />
+                  </Button>
+                </span>
+              </Tooltip>
+            )}
+          </div>
         )}
         {children}
       </div>

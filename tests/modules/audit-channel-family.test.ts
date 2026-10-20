@@ -104,6 +104,7 @@ function stubClient(over: Record<string, unknown> = {}) {
       calls.push("listInboxes");
       return [];
     },
+    inboxAgentBotId: async () => null,
     setInboxAgentBot: async () => {
       calls.push("setInboxAgentBot");
       return {};

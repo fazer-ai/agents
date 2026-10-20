@@ -11,11 +11,13 @@ import {
   bindInbox,
   connectChatwootDeployment,
   getChatwootInstance,
+  type InboxBotReading,
   listChatwootAccounts,
   listDeploymentAccounts,
   listInboxes,
   observeInbox,
   previewInboxRemoval,
+  readInboxBotForBind,
   readObserveTarget,
   reconcileInboxBots,
   reconnectInbox,
@@ -294,7 +296,12 @@ export async function instanceSyncInboxes(
 
 export async function inboxBind(
   principal: VerifiedToken,
-  args: { inbox_id: string; agent_id?: string | null; dry_run?: boolean },
+  args: {
+    inbox_id: string;
+    agent_id?: string | null;
+    replace_foreign_bot?: boolean;
+    dry_run?: boolean;
+  },
   deps: WriteDeps = {},
 ): Promise<WriteResult> {
   const base = deps.base ?? basePrisma;
@@ -314,27 +321,67 @@ export async function inboxBind(
     if (!current) return err("inbox not found");
     const target = `inbox:${inboxId}`;
     if (args.dry_run !== false) {
-      // NOTE: the core's own two questions past existence: the account is still connected, and the
+      // The core's own two questions past existence: the account is still connected, and the
       // agent being bound exists. `listInboxes` above answers neither.
-      await assertInboxBindable(ctx, inboxId, agentId, base);
+      const { inbox } = await assertInboxBindable(ctx, inboxId, agentId, base);
       // NOTE: the apply refuses an agent that already OBSERVES this inbox, so the preview asks too.
       if (agentId !== null) {
         await assertBindTargetNotObserving(ctx, inboxId, agentId, base);
       }
+      // The apply replaces whatever bot answers the inbox, so the preview names it: a bot this
+      // instance does not own is dropped, and unbinding later does not bring it back.
+      const replaces =
+        agentId !== null && String(agentId) !== current.agentId
+          ? await readInboxBotForBind(
+              ctx,
+              inbox,
+              { makeClient: deps.makeClient },
+              base,
+            )
+          : null;
       return ok({
         dryRun: true,
         action: "bind",
         target,
         currentAgentId: current.agentId,
         newAgentId: agentId === null ? null : String(agentId),
+        ...(replaces ? { currentAgentBot: replaces } : {}),
+        ...replacementWarning(replaces),
         note: "Binding provisions/connects the agent's bot on the inbox (calls Chatwoot).",
       });
     }
-    const updated = await bindInbox(ctx, inboxId, agentId, {}, base);
+    const updated = await bindInbox(
+      ctx,
+      inboxId,
+      agentId,
+      { makeClient: deps.makeClient },
+      base,
+      { replaceForeignBot: args.replace_foreign_bot === true },
+    );
     return ok({ dryRun: false, applied: true, target, inbox: updated });
   } catch (e) {
     return failOf(e);
   }
+}
+
+// What the preview adds when the apply would drop a bot this instance does not own, or one it could
+// not read: the apply refuses without `replace_foreign_bot`, so the preview says so up front.
+function replacementWarning(reading: InboxBotReading | null) {
+  if (reading?.kind === "foreign") {
+    const bot = reading.botName ?? `#${reading.botId}`;
+    return {
+      requiresReplaceForeignBot: true,
+      warning: `This inbox is answered by the Agent Bot "${bot}", which is not from this instance. Applying replaces it, and unbinding later does not bring it back; apply with replace_foreign_bot true to confirm.`,
+    };
+  }
+  if (reading?.kind === "unreadable") {
+    return {
+      requiresReplaceForeignBot: true,
+      warning:
+        "Could not read which Agent Bot answers this inbox. If another one is attached, applying replaces it, and unbinding later does not bring it back; apply with replace_foreign_bot true to confirm.",
+    };
+  }
+  return {};
 }
 
 // The CALLS binding: which voice agent answers an inbox's WhatsApp calls, beside its text agent. The

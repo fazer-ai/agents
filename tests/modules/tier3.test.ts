@@ -305,6 +305,7 @@ function makeBindStub() {
       calls.createAgentBot += 1;
       return { id: 77, access_token: "tok-77", secret: "sec-77" };
     },
+    inboxAgentBotId: async () => null,
     setInboxAgentBot: async (inboxId: number, botId: number | null) => {
       calls.setInbox.push([inboxId, botId]);
       return {};

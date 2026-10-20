@@ -465,6 +465,8 @@
     "removeInboxTitle": "Remove inbox mirror",
     "removeInboxWarning": "This removes an inbox from fazer.ai after it has been deleted in Chatwoot. Past conversations remain but no longer show the inbox; usage data and Logs also remain. It only works after deletion in Chatwoot and cannot be undone.",
     "removeObserver": "Remove observer {{name}}",
+    "replaceForeignBotConfirm": "Replace bot",
+    "replaceForeignBotTitle": "Replace the inbox's bot?",
     "resync": "Resync",
     "statusActive": "Active",
     "subtitle": "Connect Chatwoot accounts and decide which agent answers each inbox.",

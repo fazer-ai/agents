@@ -892,9 +892,10 @@ describe("ChatwootClient", () => {
   });
 
   // THE SHAPE THIS ENDPOINT ACTUALLY ANSWERS. The fork's view is `json.agent_bot do ... if
-  // @agent_bot.present?`, so the key is always there and its EMPTINESS is the answer. A parser that
-  // read `res.id` would report "no bot" for every attached bot, and a stub handing back a bare number
-  // cannot catch that, so the three shapes are driven through the real client here.
+  // @agent_bot.present?`, and Jbuilder drops a key whose block wrote nothing, so an inbox with no bot
+  // answers `{}` (measured on the fork, 4.18). A parser that read `res.id` would report "no bot" for
+  // every attached bot, and a stub handing back a bare number cannot catch that, so the shapes are
+  // driven through the real client here.
   describe("the inbox's attached agent bot", () => {
     const read = async (payload: unknown) => {
       const { fetchImpl, calls } = stub(200, payload);
@@ -918,11 +919,19 @@ describe("ChatwootClient", () => {
       expect((await read({ agent_bot: {} })).got).toBeNull();
       expect((await read({ agent_bot: null })).got).toBeNull();
     });
-    // Not `null`: a body without the key is a Chatwoot that does not serve this route, or a shape we
-    // do not recognise, and a caller must not read that as "there is no bot".
-    test("a body without the key is unknown, not none", async () => {
-      expect((await read({})).got).toBeUndefined();
+    test("an object without the key is the real answer for an inbox with no bot", async () => {
+      expect((await read({})).got).toBeNull();
+    });
+    // Not `null`: any other shape without the key is one we do not recognise, and a caller must not
+    // read that as "there is no bot".
+    test("any other shape without the key is unknown, not none", async () => {
       expect((await read({ something_else: 1 })).got).toBeUndefined();
+      expect((await read({ error: "nope" })).got).toBeUndefined();
+      expect((await read({ agent_bot: { id: "555" } })).got).toBeUndefined();
+      expect((await read({ agent_bot: { name: "Menu" } })).got).toBeUndefined();
+      expect((await read({ agent_bot: 7 })).got).toBeUndefined();
+      expect((await read("<html>")).got).toBeUndefined();
+      expect((await read([])).got).toBeUndefined();
     });
   });
 

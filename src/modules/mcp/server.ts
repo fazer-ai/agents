@@ -2316,10 +2316,11 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "inbox_bind",
       {
         description:
-          "Bind an inbox to an agent (agent_id) or unbind it (agent_id null). Binding provisions/connects the agent's bot on Chatwoot. Previews current vs new and applies NOTHING unless dry_run is false.",
+          "Bind an inbox to an agent (agent_id) or unbind it (agent_id null). Binding provisions/connects the agent's bot on Chatwoot. Previews current vs new; replacing a bot we do not own needs replace_foreign_bot. Applies NOTHING unless dry_run is false.",
         inputSchema: {
           inbox_id: z.string(),
           agent_id: z.string().nullable().optional(),
+          replace_foreign_bot: z.boolean().optional(),
           dry_run: z.boolean().optional(),
         },
       },
@@ -2327,6 +2328,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
         args: {
           inbox_id: string;
           agent_id?: string | null;
+          replace_foreign_bot?: boolean;
           dry_run?: boolean;
         },
         eff,

@@ -115,6 +115,13 @@ function fakeChatwoot(opts: {
         return json(404, { error: "Resource could not be found" });
       return json(200, { id: Number(one[1]) });
     }
+    const read = path.match(/\/inboxes\/(\d+)\/agent_bot$/);
+    if (read && method === "GET") {
+      if (opts.gone?.has(Number(read[1])))
+        return json(404, { error: "Resource could not be found" });
+      const id = opts.answering?.get(Number(read[1]));
+      return json(200, { agent_bot: id ? { id } : {} });
+    }
     const add = path.match(/\/inboxes\/(\d+)\/agent_bot_observers$/);
     if (add && method === "POST") {
       if (!opts.observerRoute || opts.gone?.has(Number(add[1])))

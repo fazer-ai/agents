@@ -45,6 +45,10 @@ import { useFieldRefusal } from "@/client/hooks/useFieldRefusal";
 import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
 import { chatwootInboxNewUrl } from "@/client/lib/chatwootLinks";
+import {
+  foreignAgentBotRefusal,
+  replaceForeignBotConfirm,
+} from "@/client/lib/foreignAgentBot";
 import { cn } from "@/client/lib/utils";
 import { isValidHttpUrl } from "@/client/lib/validation";
 import { takesCalls } from "@/modules/voice-call/channel";
@@ -463,6 +467,7 @@ export function ChannelsPage() {
   // SUPER_ADMIN-only actions: tearing down the whole instance, and removing one account (to move it).
   const strongConfirm = useModalController<StrongConfirmPayload>();
   const confirm = useModalController<ConfirmPayload>();
+  const replaceBotConfirm = useModalController<ConfirmPayload>();
 
   // Connect form (base URL + admin token, entered once).
   const [baseUrl, setBaseUrl] = useState("");
@@ -1007,11 +1012,24 @@ export function ChannelsPage() {
   // Binding an inbox to an agent lazily provisions + connects the Chatwoot bot; unbinding (null)
   // disconnects it. Non-optimistic: update local state only on success, rethrow on failure so the
   // row's picker stops its spinner without changing the displayed value.
-  async function bindInbox(inboxId: string, agentId: string | null) {
+  async function bindInbox(
+    inboxId: string,
+    agentId: string | null,
+    replaceForeignBot = false,
+  ) {
     const { error: err } = await api.api.v1.chatwoot
       .inboxes({ id: inboxId })
-      .patch({ agentId });
+      .patch({ agentId, ...(replaceForeignBot && { replaceForeignBot }) });
     if (err) {
+      const foreignBot = replaceForeignBot ? null : foreignAgentBotRefusal(err);
+      if (foreignBot) {
+        replaceBotConfirm.open(
+          replaceForeignBotConfirm(t, foreignBot, () =>
+            bindInbox(inboxId, agentId, true),
+          ),
+        );
+        return;
+      }
       showToast(
         apiErrorMessage(err) ||
           t("channels.bindError", "Could not update the inbox."),
@@ -1889,6 +1907,7 @@ export function ChannelsPage() {
 
       <StrongConfirmModal modal={strongConfirm} />
       <ConfirmDialog modal={confirm} />
+      <ConfirmDialog modal={replaceBotConfirm} />
     </PageContainer>
   );
 }

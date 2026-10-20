@@ -479,6 +479,8 @@
     "removeInboxTitle": "Remover espelho da caixa de entrada",
     "removeInboxWarning": "Esta ação remove do fazer.ai uma caixa de entrada já excluída no Chatwoot. As conversas antigas permanecem, mas deixam de mostrar a caixa de entrada; os dados de uso e os Logs também permanecem. Só funciona após a exclusão no Chatwoot e não pode ser desfeita.",
     "removeObserver": "Remover observador {{name}}",
+    "replaceForeignBotConfirm": "Substituir bot",
+    "replaceForeignBotTitle": "Substituir o bot da caixa?",
     "resync": "Resincronizar",
     "statusActive": "Ativa",
     "subtitle": "Conecte contas do Chatwoot e decida qual agente responde cada caixa de entrada.",

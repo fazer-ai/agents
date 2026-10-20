@@ -53745,7 +53745,7 @@
           "Channels"
         ],
         "summary": "Bind inbox to agent",
-        "description": "Set or clear which agent answers an inbox. Binding lazily provisions the instance's Agent Bot and connects it to the inbox on Chatwoot; unbinding disconnects it. Unbinding an inbox that was deleted in Chatwoot still succeeds: there is no bot left to disconnect. 502 means Chatwoot was unreachable.",
+        "description": "Set or clear which agent answers an inbox. Binding lazily provisions the instance's Agent Bot and connects it to the inbox on Chatwoot; unbinding disconnects it. Unbinding an inbox that was deleted in Chatwoot still succeeds: there is no bot left to disconnect. 409 with field replaceForeignBot means the inbox is answered by an Agent Bot this instance does not own, or the attached bot could not be read: binding replaces it and unbinding later does not bring it back, so send replaceForeignBot: true to confirm. 502 means Chatwoot was unreachable.",
         "parameters": [
           {
             "name": "id",
@@ -53784,6 +53784,10 @@
                       "string",
                       "null"
                     ]
+                  },
+                  "replaceForeignBot": {
+                    "description": "Confirms replacing an Agent Bot this instance does not own (or one that could not be read). Without it, such a bind answers 409.",
+                    "type": "boolean"
                   }
                 }
               }
@@ -53801,6 +53805,10 @@
                       "string",
                       "null"
                     ]
+                  },
+                  "replaceForeignBot": {
+                    "description": "Confirms replacing an Agent Bot this instance does not own (or one that could not be read). Without it, such a bind answers 409.",
+                    "type": "boolean"
                   }
                 }
               }
@@ -53818,6 +53826,10 @@
                       "string",
                       "null"
                     ]
+                  },
+                  "replaceForeignBot": {
+                    "description": "Confirms replacing an Agent Bot this instance does not own (or one that could not be read). Without it, such a bind answers 409.",
+                    "type": "boolean"
                   }
                 }
               }
@@ -53909,6 +53921,32 @@
               "application/json": {
                 "schema": {
                   "description": "Not found.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict — a duplicate or a state conflict.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Conflict — a duplicate or a state conflict.",
                   "type": "object",
                   "required": [
                     "error"

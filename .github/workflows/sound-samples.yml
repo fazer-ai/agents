@@ -1,0 +1,51 @@
+name: Check sound sample files
+
+# The Call settings tab plays each sound preset from a path on the ElevenLabs CDN that ElevenLabs
+# does not document (`callSoundSampleUrl`). A file that stops answering only turns its control back
+# to idle, so this asks for every file once a week and turns a failure into an issue. Free repo
+# only: issues live there, and the master and pro mirrors would open duplicates.
+on:
+  schedule:
+    - cron: '0 9 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    if: github.repository == 'fazer-ai/agents'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TITLE: ElevenLabs sound sample files stopped answering
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+
+      # The script exits 3 when a file failed and writes the report; any other failure is the
+      # script's own and fails the job without opening an issue.
+      - name: Ask for every sample file
+        run: |
+          set +e
+          bun scripts/check-sound-samples.ts > "$RUNNER_TEMP/report.md"
+          code=$?
+          set -e
+          cat "$RUNNER_TEMP/report.md"
+          [ "$code" -eq 0 ] && exit 0
+          [ "$code" -ne 3 ] && exit "$code"
+          # One issue for a failure that lasts weeks: a comment on the open one, else a new one.
+          open=$(gh api --paginate "repos/$GH_REPO/issues?state=open&per_page=100" \
+            --jq '.[] | select(.pull_request | not) | select(.title == env.TITLE) | .number')
+          open=${open%%$'\n'*}
+          if [ -n "$open" ]; then
+            gh issue comment "$open" --repo "$GH_REPO" --body-file "$RUNNER_TEMP/report.md"
+          else
+            gh api -X POST "repos/$GH_REPO/issues" -f title="$TITLE" -F body=@"$RUNNER_TEMP/report.md" -f type=Bug
+          fi
+          exit 1

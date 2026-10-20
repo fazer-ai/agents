@@ -1496,6 +1496,29 @@ describe("a view refused while it fills", () => {
   });
 });
 
+describe("switching to the preset a custom range matches", () => {
+  test("restarts the current period's stream too, so both reach the new opening", async () => {
+    const d = (n: number) => {
+      const x = new Date();
+      x.setDate(x.getDate() + n);
+      return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`;
+    };
+    await renderDash(`/?range=custom&from=${d(-29)}&to=${d(0)}`);
+    const current = () =>
+      asks("/metrics/stream").filter(
+        (u) => u.searchParams.get("blocks") !== "kpis,outcomes,costs",
+      );
+    await waitFor(() => expect(current().length).toBe(1));
+    const [first] = current();
+    fireEvent.click(screen.getByRole("radio", { name: "30d" }));
+    await waitFor(() => expect(current().length).toBe(2));
+    const [, second] = current();
+    expect(second?.searchParams.get("since")).toBe(
+      first?.searchParams.get("since") ?? null,
+    );
+  });
+});
+
 describe("the instant a view is opened at", () => {
   afterEach(() => setSystemTime());
 

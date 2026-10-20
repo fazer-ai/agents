@@ -413,6 +413,7 @@ export function DashboardPage() {
       <DashboardStreamProvider
         query={query}
         prevQuery={prevQuery}
+        openedAt={openedAt}
         onReload={reopen}
       >
         <StreamProgress />

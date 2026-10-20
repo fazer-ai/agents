@@ -69,13 +69,16 @@ export const CURRENT_BLOCKS: Block[] = [
 ];
 export const PREVIOUS_BLOCKS: Block[] = ["kpis", "outcomes", "costs"];
 
+// `opening` restarts the stream when the view is opened again with the same query, so the current
+// period always reaches the instant the previous one is cut at.
 function useWindowStream(
   query: Query | null,
   blocks: Block[],
+  opening: number,
 ): [StreamState, () => void] {
   const [state, setState] = useState<StreamState>(EMPTY);
   const [nonce, setNonce] = useState(0);
-  const key = JSON.stringify([query, blocks, nonce]);
+  const key = JSON.stringify([query, blocks, nonce, opening]);
   // biome-ignore lint/correctness/useExhaustiveDependencies: `key` serializes everything the stream depends on.
   useEffect(() => {
     if (!query) {
@@ -177,20 +180,30 @@ const DashboardStreams = createContext<Streams | null>(null);
 export function DashboardStreamProvider({
   query,
   prevQuery,
+  openedAt,
   onReload,
   children,
 }: {
   query: Query;
   prevQuery: Query | null;
+  // The instant the view was opened at: a new one restarts both streams, even when the current
+  // period's query is the same (a custom range switched to the preset it matches).
+  openedAt?: Date;
   // Called on a retry before the streams start again: the page moves its opening instant, so the
   // previous period ends at the time of day the retried view now reaches.
   onReload?: () => void;
   children: ReactNode;
 }) {
-  const [current, reloadCurrent] = useWindowStream(query, CURRENT_BLOCKS);
+  const opening = openedAt?.getTime() ?? 0;
+  const [current, reloadCurrent] = useWindowStream(
+    query,
+    CURRENT_BLOCKS,
+    opening,
+  );
   const [previous, reloadPrevious] = useWindowStream(
     prevQuery,
     PREVIOUS_BLOCKS,
+    opening,
   );
   const value = useMemo(
     () => ({

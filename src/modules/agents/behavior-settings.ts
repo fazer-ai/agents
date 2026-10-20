@@ -8,7 +8,7 @@ import {
   readProtectedLabels,
   readToolGuidance,
 } from "@/modules/agents/tool-guidance";
-import { readToolPreconditions } from "@/modules/agents/tool-preconditions";
+import { readToolPreconditionsForDisplay } from "@/modules/agents/tool-preconditions";
 import { readAvailabilityConfig } from "@/modules/availability/away";
 import { readChannelRedirectConfig } from "@/modules/channel-redirect/service";
 import { readAttributeContextConfig } from "@/modules/chatwoot/attributes";
@@ -112,7 +112,7 @@ export interface BehaviorSettings {
     allowed: ReturnType<typeof readAllowedLabels>;
     outsideAllowed: ReturnType<typeof readOutsideAllowedLabels>;
   };
-  toolPreconditions: ReturnType<typeof readToolPreconditions>;
+  toolPreconditions: ReturnType<typeof readToolPreconditionsForDisplay>;
   monitoring: ReturnType<typeof readMonitoringConfig>;
 }
 
@@ -198,7 +198,7 @@ export function readBehaviorSettings(
       allowed: readAllowedLabels(settings),
       outsideAllowed: readOutsideAllowedLabels(settings),
     },
-    toolPreconditions: readToolPreconditions(settings),
+    toolPreconditions: readToolPreconditionsForDisplay(settings),
     monitoring: readMonitoringConfig(settings),
   };
 }

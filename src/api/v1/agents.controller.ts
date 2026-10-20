@@ -108,7 +108,7 @@ import { setUpAgentCalls } from "@/modules/voice-call/setup";
 // translate('errors.settingsExpectedValid', 'a valid value')
 // translate('errors.unknownSettingsField', 'Unknown field `{{field}}`: it no longer exists, so it is not stored. Remove it from the request.')
 // translate('errors.debugWindowTooLong', 'The log debug mode can be armed for at most {{hours}}h at a time.')
-// translate('errors.invalidToolPrecondition', '`{{tool}}` has an invalid precondition: it must name an attribute scope and key.')
+// translate('errors.invalidToolPrecondition', '`{{tool}}` has an invalid precondition: every condition must name an attribute scope and key, and a list holds 1 to 10 conditions.')
 // translate('errors.decisionArgRequired', 'Rule {{rule}}: `{{tool}}` requires the argument `{{arg}}`. Give it a fixed value or a field to fill it from.')
 // translate('errors.decisionArgUnknown', 'Rule {{rule}}: `{{tool}}` has no argument `{{arg}}`.')
 // translate('errors.decisionArgType', 'Rule {{rule}}: the value of `{{arg}}` is not of the type `{{tool}}` takes for it.')

@@ -136,7 +136,7 @@ describe.skipIf(!dbUp)(
       const { tool: inner, calls } = spyHandoff();
       const guarded = guardedTool(
         inner,
-        cond,
+        [cond],
         preconditionStateLoader({
           base: appDb,
           tenantId,
@@ -179,7 +179,7 @@ describe.skipIf(!dbUp)(
       const { tool: inner, calls } = spyHandoff();
       const guarded = guardedTool(
         inner,
-        cond,
+        [cond],
         preconditionStateLoader({
           base: appDb,
           tenantId,
@@ -219,7 +219,7 @@ describe.skipIf(!dbUp)(
         ragConfig: undefined,
         timezone: "America/Sao_Paulo",
         toolGuidance: {},
-        toolPreconditions: { private_note: cond },
+        toolPreconditions: { private_note: [cond] },
         transferWithSummary: true,
       } as unknown as AgentConfig;
       const posted: unknown[] = [];
@@ -261,7 +261,7 @@ describe.skipIf(!dbUp)(
         // has to answer, and a loader that forgot to scope would let this through.
         const guarded = guardedTool(
           inner,
-          cond,
+          [cond],
           preconditionStateLoader({
             base: appDb,
             tenantId: other.id,

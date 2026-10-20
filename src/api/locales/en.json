@@ -221,7 +221,7 @@
     "invalidSiteUrl": "Invalid website URL",
     "invalidSupportEmail": "Invalid support e-mail",
     "invalidTimezone": "Unknown timezone: {{timezone}}.",
-    "invalidToolPrecondition": "`{{tool}}` has an invalid precondition: it must name an attribute scope and key.",
+    "invalidToolPrecondition": "`{{tool}}` has an invalid precondition: every condition must name an attribute scope and key, and a list holds 1 to 10 conditions.",
     "invalidVaultBaseUrl": "Base URL must be a valid http(s) URL",
     "invalidVaultName": "Name must be 1 to 128 characters",
     "invalidVaultParamName": "Param name contains invalid characters",

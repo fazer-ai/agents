@@ -1745,7 +1745,7 @@ describe("native tools", () => {
     const guarded = applyToolPreconditions(
       tools,
       {
-        set_labels: { kind: "attribute", scope: "conversation", key: "ok" },
+        set_labels: [{ kind: "attribute", scope: "conversation", key: "ok" }],
       },
       async () => {
         reads++;
@@ -3736,12 +3736,14 @@ describe("the fence rule, over every native tool", () => {
       const tools = applyToolPreconditions(
         buildNativeTools({ ...ctx, ...(c.ctx ?? {}) } as never),
         {
-          [c.tool]: {
-            kind: "attribute" as const,
-            scope: "conversation" as const,
-            key: "vip",
-            equals: "sim",
-          },
+          [c.tool]: [
+            {
+              kind: "attribute" as const,
+              scope: "conversation" as const,
+              key: "vip",
+              equals: "sim",
+            },
+          ],
         },
         async () => {
           // The read itself is the wait: the operator acts inside it. The condition is MET, so what

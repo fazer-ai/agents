@@ -38,7 +38,10 @@ import {
   ALLOWED_LABELS_MAX,
   PROTECTED_LABELS_MAX,
 } from "@/modules/agents/tool-guidance";
-import { GUARDABLE_TOOL_NAME } from "@/modules/agents/tool-preconditions";
+import {
+  GUARDABLE_TOOL_NAME,
+  TOOL_PRECONDITION_CONDITIONS_MAX,
+} from "@/modules/agents/tool-preconditions";
 import { REDIRECT_DELAY_UNITS } from "@/modules/channel-redirect/service";
 import { CONTACT_FIELDS } from "@/modules/chatwoot/contact-fields";
 import {
@@ -1208,30 +1211,35 @@ const toolGuidance = nativeToolKeys(toolNote().nullable()).describe(
 
 // The field descriptions live on the BLOCK: the value is serialized once per key, so a per-field
 // `.describe()` would be published once per native tool.
+const preconditionCondition = z.looseObject({
+  kind: z.literal("attribute"),
+  scope: z.enum(["conversation", "contact"]),
+  // NOTE: Blank is refused by the write boundary (`parseToolPrecondition` trims to null), so the
+  // schema publishes it as a pattern, which JSON Schema carries faithfully.
+  key: nonBlank("must not be blank"),
+  // NOTE: blank is refused rather than treated as absent, and the reader says why: dropping it
+  // would turn "the attribute must equal X" into "the attribute must exist", a weaker rule than
+  // the operator wrote, and weaker in silence.
+  equals: nonBlank(
+    "must not be blank; omit it to require only that the attribute is set",
+  ).optional(),
+});
+
 const toolPreconditions = guardableToolKeys(
-  z
-    .looseObject({
-      kind: z.literal("attribute"),
-      scope: z.enum(["conversation", "contact"]),
-      // NOTE: Blank is refused by the write boundary (`parseToolPrecondition` trims to null), so the
-      // schema publishes it as a pattern, which JSON Schema carries faithfully.
-      key: nonBlank("must not be blank"),
-      // NOTE: blank is refused rather than treated as absent, and the reader says why: dropping it
-      // would turn "the attribute must equal X" into "the attribute must exist", a weaker rule than
-      // the operator wrote, and weaker in silence.
-      equals: nonBlank(
-        "must not be blank; omit it to require only that the attribute is set",
-      ).optional(),
-    })
-    // NOTE: NULLABLE, and it is the only way to REMOVE a rule over this surface. The merge treats each
+  z.union([
+    preconditionCondition,
+    z.array(preconditionCondition).min(1).max(TOOL_PRECONDITION_CONDITIONS_MAX),
+    // NOTE: NULL, and it is the only way to REMOVE a rule over this surface. The merge treats each
     // tool's value as a replacement and an absent key as "leave it alone", so without a tombstone
     // there is no deletion at all — an empty object just replaces the rule with an unparseable one.
     // `toolGuidance` accepted one from the start because its value was already nullable, which is
     // exactly why the gap here survived a round: the test written for the tombstone covered the half
-    // that already worked.
-    .nullable(),
+    // that already worked. A branch of the union rather than `.nullable()`, which publishes a nested
+    // `anyOf` a client has to unwrap twice.
+    z.null(),
+  ]),
 ).describe(
-  "per-tool precondition, keyed by the name the model calls (native, toolpack, HTTP, code, `mcp__<server>__<tool>`); `null` removes one. `key` is the attribute that must be set on `scope`, `equals` the required value (omit for any). Unmet, the call does not run and the model is told why.",
+  `per-tool precondition, keyed by the name the model calls (native, toolpack, HTTP, code, \`mcp__<server>__<tool>\`); \`null\` removes one. One condition, or a list of up to ${TOOL_PRECONDITION_CONDITIONS_MAX} that must ALL hold. \`key\` is the attribute that must be set on \`scope\`, \`equals\` the required value (omit for any). Unmet, the call does not run and the model is told what is missing.`,
 );
 
 // What a monitoring agent does with what it reads. Descriptions kept short: the MCP schema ceiling

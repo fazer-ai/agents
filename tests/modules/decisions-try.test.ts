@@ -512,6 +512,43 @@ describe.skipIf(!dbUp)("testing a decisions agent on a conversation", () => {
     ]);
   });
 
+  test("a precondition with two conditions refuses until the earlier rules write both", async () => {
+    const when = [{ question: "pede_reembolso", minProbability: 0.7 }];
+    const write = (key: string) => ({
+      when,
+      action: {
+        tool: "set_custom_attribute",
+        args: { key, value: "4471" },
+      },
+    });
+    const note = {
+      when,
+      action: { tool: "private_note", args: { content: "Reembolso" } },
+    };
+    const guarded = (rules: unknown[]) => ({
+      ...monitoring(rules),
+      toolPreconditions: {
+        private_note: [
+          { kind: "attribute", scope: "conversation", key: "pedido" },
+          { kind: "attribute", scope: "conversation", key: "loja" },
+        ],
+      },
+    });
+    await setSettings(guarded([write("pedido"), note]));
+    let { tick } = await runTest(classifier(yes).fetchImpl);
+    expect(tick.actions[1]).toMatchObject({
+      tool: "private_note",
+      outcome: "refused",
+      fence: "precondition",
+    });
+    await setSettings(guarded([write("pedido"), write("loja"), note]));
+    ({ tick } = await runTest(classifier(yes).fetchImpl));
+    expect(tick.actions[2]).toMatchObject({
+      tool: "private_note",
+      outcome: "decided",
+    });
+  });
+
   // The bug: the label fences are asked inside `set_labels`, which a dry run never invokes, so a rule
   // adding a protected label, or one outside the allowed list, read as "would run". A call refused
   // only in part stays an action, marked partial.

@@ -55,7 +55,7 @@ import {
 } from "@/modules/agents/tool-guidance";
 import {
   invalidToolPreconditions,
-  parseToolPrecondition,
+  parseToolPreconditionList,
 } from "@/modules/agents/tool-preconditions";
 import { auditMutation } from "@/modules/audit/service";
 import { isOutOfHoursNow, parseSchedule } from "@/modules/business-hours/hours";
@@ -1033,6 +1033,21 @@ function numericBranchOf(issue: z.core.$ZodIssue): z.core.$ZodIssue {
   return issue;
 }
 
+// A value refused by a union whose KIND exactly one branch accepts (an object for a one-or-many tool
+// precondition) is refused for that branch's fields, named at their own paths, so a padded field of
+// a precondition is told and trimmed like any other closed value. With several such branches (the
+// contact gate's tagged rules) none of them is the value's, and the union is told whole.
+function unionBranchIssues(issue: z.core.$ZodIssue): z.core.$ZodIssue[] {
+  const numeric = numericBranchOf(issue);
+  if (numeric !== issue || issue.code !== "invalid_union") return [numeric];
+  const matching = issue.errors.filter(
+    (b) => b.length > 0 && b.every((i) => i.path.length > 0),
+  );
+  const branch = matching.length === 1 ? matching[0] : undefined;
+  if (!branch) return [issue];
+  return branch.map((i) => ({ ...i, path: [...issue.path, ...i.path] }));
+}
+
 function closedValueIssues(bag: Record<string, unknown>): ClosedValueIssue[] {
   const out: ClosedValueIssue[] = [];
   for (const [block, schema] of Object.entries(BEHAVIOR_PATCH_SHAPE)) {
@@ -1064,7 +1079,7 @@ function closedValueIssues(bag: Record<string, unknown>): ClosedValueIssue[] {
       if (ownRefinement(issue as never) && !named.has(issue.path.join(".")))
         issues.push(issue);
     }
-    for (const issue of issues.map(numericBranchOf)) {
+    for (const issue of issues.flatMap(unionBranchIssues)) {
       const next = valueAt(value, issue.path);
       // `never` marks a key the runtime does not read here (reply-only checks under `input`).
       // REST cannot refuse it outright, since the console's Guardrails save materialises it, so the
@@ -1426,7 +1441,7 @@ export function dropUnusableImportedSettingsInPlace(
   // which would strip one field (`equals`) and leave a weaker guard nobody wrote. `null` rules stay.
   const guards = plainObject(bag.toolPreconditions);
   for (const [name, raw] of Object.entries(guards ?? {})) {
-    if (raw === null || parseToolPrecondition(raw) !== null) continue;
+    if (raw === null || parseToolPreconditionList(raw) !== null) continue;
     delete (guards as Record<string, unknown>)[name];
     takePath(dropped, `toolPreconditions.${name}`);
   }
@@ -1720,14 +1735,11 @@ function storedPreconditionValues(settings: unknown): Map<string, string> {
 // normalized shape; an unparseable entry falls back to its raw serialization.
 function canonicalPrecondition(raw: unknown): string {
   if (raw === null) return "null";
-  const parsed = parseToolPrecondition(raw);
+  const parsed = parseToolPreconditionList(raw);
   if (parsed) {
-    return JSON.stringify([
-      parsed.kind,
-      parsed.scope,
-      parsed.key,
-      parsed.equals ?? null,
-    ]);
+    return JSON.stringify(
+      parsed.map((c) => [c.kind, c.scope, c.key, c.equals ?? null]),
+    );
   }
   return `raw:${JSON.stringify(raw) ?? "undefined"}`;
 }

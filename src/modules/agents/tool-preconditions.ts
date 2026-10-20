@@ -64,19 +64,46 @@ export function parseToolPrecondition(raw: unknown): ToolPrecondition | null {
   return null;
 }
 
-// NULL-PROTOTYPE, because a tool name is operator text: `__proto__` on a plain object would mutate the
-// prototype instead of storing a rule, and `constructor` or `toString` would find an inherited value.
-function emptyMap(): Record<string, ToolPrecondition> {
-  return Object.create(null) as Record<string, ToolPrecondition>;
+// A tool's rule is one condition or a list of them, all required. The bound keeps the refusal a
+// sentence the model can act on in one message.
+export const TOOL_PRECONDITION_CONDITIONS_MAX = 10;
+
+// One condition stored as an object reads as a list of one, so every bag written before lists existed
+// keeps its meaning. A list is all or nothing: a list with one bad condition would otherwise guard on
+// the conditions that parsed, a weaker rule than the operator wrote.
+export function parseToolPreconditionList(
+  raw: unknown,
+): ToolPrecondition[] | null {
+  if (!Array.isArray(raw)) {
+    const one = parseToolPrecondition(raw);
+    return one ? [one] : null;
+  }
+  if (raw.length === 0 || raw.length > TOOL_PRECONDITION_CONDITIONS_MAX) {
+    return null;
+  }
+  const out: ToolPrecondition[] = [];
+  for (const item of raw) {
+    const cond = parseToolPrecondition(item);
+    if (!cond) return null;
+    out.push(cond);
+  }
+  return out;
 }
 
-// `settings.toolPreconditions = { [toolName]: ToolPrecondition }`, keyed by name because a name is the
-// one identifier all six tool sources share (dropDuplicateToolNames). A malformed condition is DROPPED:
-// one that half-parses reads as a guard while the runtime treats the tool as open. Names are filtered
-// only at write (isGuardableToolName): an imported rule still guards a tool whose name matches.
+// NULL-PROTOTYPE, because a tool name is operator text: `__proto__` on a plain object would mutate the
+// prototype instead of storing a rule, and `constructor` or `toString` would find an inherited value.
+function emptyMap(): Record<string, ToolPrecondition[]> {
+  return Object.create(null) as Record<string, ToolPrecondition[]>;
+}
+
+// `settings.toolPreconditions = { [toolName]: ToolPrecondition | ToolPrecondition[] }`, keyed by name
+// because a name is the one identifier all six tool sources share (dropDuplicateToolNames). A
+// malformed rule is DROPPED: one that half-parses reads as a guard while the runtime treats the tool
+// as open. Names are filtered only at write (isGuardableToolName): an imported rule still guards a
+// tool whose name matches.
 export function readToolPreconditions(
   settings: unknown,
-): Record<string, ToolPrecondition> {
+): Record<string, ToolPrecondition[]> {
   const bag =
     settings && typeof settings === "object" && !Array.isArray(settings)
       ? (settings as Record<string, unknown>).toolPreconditions
@@ -84,10 +111,33 @@ export function readToolPreconditions(
   if (!bag || typeof bag !== "object" || Array.isArray(bag)) return emptyMap();
   const out = emptyMap();
   for (const [name, raw] of Object.entries(bag as Record<string, unknown>)) {
-    const cond = parseToolPrecondition(raw);
-    if (cond) out[name] = cond;
+    const conds = parseToolPreconditionList(raw);
+    if (conds) out[name] = conds;
   }
   return out;
+}
+
+// The rules as the API and the audit show them: one condition as an object and two or more as a list,
+// the same shape the console writes, so a bag stored before lists reads back exactly as it was.
+export function readToolPreconditionsForDisplay(
+  settings: unknown,
+): Record<string, ToolPrecondition | ToolPrecondition[]> {
+  const out = Object.create(null) as Record<
+    string,
+    ToolPrecondition | ToolPrecondition[]
+  >;
+  for (const [name, conds] of Object.entries(readToolPreconditions(settings))) {
+    out[name] = conds.length === 1 ? (conds[0] as ToolPrecondition) : conds;
+  }
+  return out;
+}
+
+// The conditions of one rule that the state does not meet, in the order the operator wrote them.
+export function unmetPreconditions(
+  conds: readonly ToolPrecondition[],
+  state: PreconditionState,
+): ToolPrecondition[] {
+  return conds.filter((c) => !evaluatePrecondition(c, state));
 }
 
 export function evaluatePrecondition(
@@ -120,15 +170,21 @@ export function evaluatePrecondition(
 // status code of a refusal cannot do: tell the model what to DO next, so the turn continues instead
 // of ending. In the reported case the right next move is to ask the customer for the URL, and the
 // model only knows that if the refusal says which URL is missing.
+// Every unmet condition is named, so the model can ask for all of them in one message instead of one
+// per turn.
 export function unmetPreconditionMessage(
   toolName: string,
-  cond: ToolPrecondition,
+  unmet: readonly ToolPrecondition[],
 ): string {
-  const what =
+  const what = unmet.map((cond) =>
     cond.equals === undefined
       ? `the ${cond.scope} attribute \`${cond.key}\` to be set`
-      : `the ${cond.scope} attribute \`${cond.key}\` to be \`${cond.equals}\``;
-  return `\`${toolName}\` was not run: it requires ${what}, and it is not. Continue the conversation and obtain it first — do not tell the customer about this restriction.`;
+      : `the ${cond.scope} attribute \`${cond.key}\` to be \`${cond.equals}\``,
+  );
+  if (what.length === 1) {
+    return `\`${toolName}\` was not run: it requires ${what[0]}, and it is not. Continue the conversation and obtain it first — do not tell the customer about this restriction.`;
+  }
+  return `\`${toolName}\` was not run: it requires ${what.join("; ")}, and none of these holds yet. Continue the conversation and obtain all of them first — do not tell the customer about this restriction.`;
 }
 
 // Which names may carry a rule: any name a tool of any source can be called by (native, toolpack,
@@ -163,7 +219,7 @@ export function invalidToolPreconditions(settings: unknown): string[] {
       // checked, so removing a rule from a tool that could never be guarded is refused.
       ([name, raw]) =>
         !isGuardableToolName(name) ||
-        (raw !== null && parseToolPrecondition(raw) === null),
+        (raw !== null && parseToolPreconditionList(raw) === null),
     )
     .map(([name]) => name);
 }

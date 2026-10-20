@@ -11,6 +11,7 @@ import {
 } from "@testing-library/react";
 import { useState } from "react";
 import { MemoryRouter } from "react-router";
+import type { ToolPreconditionRow } from "@/client/pages/agents/types";
 import { CUSTOMER_DELIVERY_NATIVE_TOOL_NAMES } from "@/graph/tools/channel-natives";
 
 // A WATCHER'S TOOLS TAB OFFERS ONLY WHAT ITS TURN CAN RUN. The monitoring turn builds its Chatwoot
@@ -305,10 +306,7 @@ test("...and an agent that answers is offered all of them", async () => {
 
 // THE OTHER HALF OF THE SAME SCREEN. Besides the grant cards, the preconditions block beside them
 // and the section index on the left leave out what a muted turn strips.
-function renderToolsTab(
-  observing: boolean,
-  rows: { tool: string; scope: string; key: string; equals: string }[] = [],
-) {
+function renderToolsTab(observing: boolean, rows: ToolPreconditionRow[] = []) {
   const noop = () => undefined;
   return render(
     <MemoryRouter>
@@ -395,7 +393,10 @@ function renderToolsTab(
 }
 
 // The empty row is what an operator adding a guard sees, and its select is the list of choices.
-const EMPTY_ROW = { tool: "", scope: "conversation", key: "", equals: "" };
+const EMPTY_ROW = {
+  tool: "",
+  conditions: [{ scope: "conversation" as const, key: "", equals: "" }],
+};
 
 test("a watcher is not offered a precondition on a tool its turn would strip", async () => {
   stubAuth();

@@ -52,17 +52,23 @@ export interface HandoffUiState {
   instructions: string;
 }
 
-// One row of the tool-precondition editor. The stored shape is a map keyed by tool name; the editor
-// holds a list so a row survives the operator clearing the tool name to pick another one.
-export interface ToolPreconditionRow {
-  tool: string;
+// One condition of a tool's rule, as the editor holds it.
+export interface ToolPreconditionCondition {
   scope: "conversation" | "contact";
   key: string;
   equals: string;
-  // Whether the rule asks for any value or for `equals`. Absent, it follows `equals`: a typed value
-  // means "equals". Kept apart so "equals" with the value still blank stays chosen while it is typed,
-  // and a value hidden by "any" is kept on screen state but never saved.
+  // Whether the condition asks for any value or for `equals`. Absent, it follows `equals`: a typed
+  // value means "equals". Kept apart so "equals" with the value still blank stays chosen while it is
+  // typed, and a value hidden by "any" is kept on screen state but never saved.
   match?: "any" | "equals";
+}
+
+// One tool of the tool-precondition editor, with every condition its rule requires. The stored shape
+// is a map keyed by tool name; the editor holds a list so a row survives the operator clearing the
+// tool name to pick another one.
+export interface ToolPreconditionRow {
+  tool: string;
+  conditions: ToolPreconditionCondition[];
 }
 
 // The refusal marks the editor hands its tabs, one object per tab. The readings stay in

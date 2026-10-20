@@ -33,30 +33,29 @@ describe("serializeToolPreconditions", () => {
     const stored = serializeToolPreconditions([
       {
         tool: "handoff_to_human",
-        scope: "conversation",
-        key: "url",
-        equals: "",
+        conditions: [{ scope: "conversation", key: "url", equals: "" }],
       },
-      { tool: "create_invoice", scope: "contact", key: "plan", equals: "gold" },
+      {
+        tool: "create_invoice",
+        conditions: [{ scope: "contact", key: "plan", equals: "gold" }],
+      },
     ]);
     expect(readToolPreconditions({ toolPreconditions: stored })).toEqual({
-      handoff_to_human: {
-        kind: "attribute",
-        scope: "conversation",
-        key: "url",
-      },
-      create_invoice: {
-        kind: "attribute",
-        scope: "contact",
-        key: "plan",
-        equals: "gold",
-      },
+      handoff_to_human: [
+        { kind: "attribute", scope: "conversation", key: "url" },
+      ],
+      create_invoice: [
+        { kind: "attribute", scope: "contact", key: "plan", equals: "gold" },
+      ],
     });
   });
 
   test("an empty `equals` means ANY value, and is not written as an empty string", () => {
     const stored = serializeToolPreconditions([
-      { tool: "t", scope: "conversation", key: "k", equals: "" },
+      {
+        tool: "t",
+        conditions: [{ scope: "conversation", key: "k", equals: "" }],
+      },
     ]) as Record<string, Record<string, unknown>>;
     expect("equals" in (stored.t ?? {})).toBe(false);
   });
@@ -64,15 +63,24 @@ describe("serializeToolPreconditions", () => {
   test.each([
     [
       "no tool picked yet",
-      { tool: "", scope: "conversation", key: "k", equals: "" },
+      {
+        tool: "",
+        conditions: [{ scope: "conversation", key: "k", equals: "" }],
+      },
     ],
     [
       "no attribute key",
-      { tool: "t", scope: "conversation", key: "", equals: "" },
+      {
+        tool: "t",
+        conditions: [{ scope: "conversation", key: "", equals: "" }],
+      },
     ],
     [
       "a whitespace key",
-      { tool: "t", scope: "conversation", key: "  ", equals: "" },
+      {
+        tool: "t",
+        conditions: [{ scope: "conversation", key: "  ", equals: "" }],
+      },
     ],
   ])("drops a row with %s instead of saving it half-written", (_l, row) => {
     expect(
@@ -84,15 +92,21 @@ describe("serializeToolPreconditions", () => {
 
   test("a half-written row does not block its finished siblings", () => {
     const stored = serializeToolPreconditions([
-      { tool: "", scope: "conversation", key: "", equals: "" },
-      { tool: "t", scope: "contact", key: "k", equals: "" },
+      {
+        tool: "",
+        conditions: [{ scope: "conversation", key: "", equals: "" }],
+      },
+      { tool: "t", conditions: [{ scope: "contact", key: "k", equals: "" }] },
     ]);
     expect(Object.keys(stored)).toEqual(["t"]);
   });
 
   test("trims what the operator typed, because a trailing space is invisible", () => {
     const stored = serializeToolPreconditions([
-      { tool: " t ", scope: "contact", key: " k ", equals: " v " },
+      {
+        tool: " t ",
+        conditions: [{ scope: "contact", key: " k ", equals: " v " }],
+      },
     ]) as Record<string, Record<string, unknown>>;
     expect(Object.keys(stored)).toEqual(["t"]);
     expect(stored.t).toEqual({
@@ -111,15 +125,11 @@ describe("parseToolPreconditionRows", () => {
     const rows = [
       {
         tool: "handoff_to_human",
-        scope: "conversation" as const,
-        key: "k",
-        equals: "",
+        conditions: [{ scope: "conversation" as const, key: "k", equals: "" }],
       },
       {
         tool: "resolve_conversation",
-        scope: "contact" as const,
-        key: "j",
-        equals: "v",
+        conditions: [{ scope: "contact" as const, key: "j", equals: "v" }],
       },
     ];
     expect(parseToolPreconditionRows(serializeToolPreconditions(rows))).toEqual(
@@ -144,7 +154,12 @@ describe("parseToolPreconditionRows", () => {
         handoff_to_human: { kind: "somethingElse", host: "x.com" },
         set_labels: { kind: "attribute", scope: "contact", key: "k" },
       }),
-    ).toEqual([{ tool: "set_labels", scope: "contact", key: "k", equals: "" }]);
+    ).toEqual([
+      {
+        tool: "set_labels",
+        conditions: [{ scope: "contact", key: "k", equals: "" }],
+      },
+    ]);
   });
 });
 
@@ -169,7 +184,7 @@ describe("round 1: the editor renders exactly, or not at all", () => {
     // REST, from a console that never showed it to them.
     const stored = { legacy: { kind: "linkOnHost", host: "x.com" } };
     const out = serializeToolPreconditions(
-      [{ tool: "t", scope: "contact", key: "k", equals: "" }],
+      [{ tool: "t", conditions: [{ scope: "contact", key: "k", equals: "" }] }],
       stored,
     );
     expect(out.legacy).toEqual({ kind: "linkOnHost", host: "x.com" });
@@ -183,7 +198,12 @@ describe("round 1: the editor renders exactly, or not at all", () => {
       set_labels: { kind: "attribute", scope: "contact", key: "j" },
     };
     const out = serializeToolPreconditions(
-      [{ tool: "set_labels", scope: "contact", key: "j", equals: "" }],
+      [
+        {
+          tool: "set_labels",
+          conditions: [{ scope: "contact", key: "j", equals: "" }],
+        },
+      ],
       stored,
     );
     expect(Object.keys(out)).toEqual(["set_labels"]);
@@ -203,6 +223,13 @@ describe("round 2: parse → serialize is a fixed point for the runtime", () => 
     [
       "a rule with equals",
       { kind: "attribute", scope: "contact", key: "plan", equals: "gold" },
+    ],
+    [
+      "a list of conditions",
+      [
+        { kind: "attribute", scope: "conversation", key: "url" },
+        { kind: "attribute", scope: "contact", key: "plan", equals: "gold" },
+      ],
     ],
   ] as const;
 
@@ -226,6 +253,13 @@ describe("round 2: parse → serialize is a fixed point for the runtime", () => 
     ["a null entry", null],
     ["a string entry", "cpf"],
     ["an array entry", []],
+    [
+      "a list with one condition it cannot read",
+      [
+        { kind: "attribute", scope: "conversation", key: "url" },
+        { kind: "somethingElse" },
+      ],
+    ],
   ] as const;
 
   // A save that changes nothing: the rows come straight back out of the stored bag.
@@ -277,7 +311,10 @@ describe("round 2: parse → serialize is a fixed point for the runtime", () => 
 
   test("a tool named `__proto__` survives serialization as an entry", () => {
     const rows = [
-      { tool: "__proto__", scope: "contact" as const, key: "k", equals: "" },
+      {
+        tool: "__proto__",
+        conditions: [{ scope: "contact" as const, key: "k", equals: "" }],
+      },
     ];
     const out = serializeToolPreconditions(rows);
     // On an ordinary object this assignment changes the prototype and the key vanishes from JSON.
@@ -288,11 +325,12 @@ describe("round 2: parse → serialize is a fixed point for the runtime", () => 
     const out = serializeToolPreconditions([
       {
         tool: "handoff_to_human",
-        scope: "conversation",
-        key: "first",
-        equals: "",
+        conditions: [{ scope: "conversation", key: "first", equals: "" }],
       },
-      { tool: "handoff_to_human", scope: "contact", key: "second", equals: "" },
+      {
+        tool: "handoff_to_human",
+        conditions: [{ scope: "contact", key: "second", equals: "" }],
+      },
     ]) as Record<string, Record<string, unknown>>;
     expect(out.handoff_to_human?.key).toBe("first");
   });
@@ -300,7 +338,12 @@ describe("round 2: parse → serialize is a fixed point for the runtime", () => 
   test("a row the operator ADDED overwrites an unrenderable entry of the same name", () => {
     const stored = { handoff_to_human: { kind: "somethingElse" } };
     const out = serializeToolPreconditions(
-      [{ tool: "handoff_to_human", scope: "contact", key: "k", equals: "" }],
+      [
+        {
+          tool: "handoff_to_human",
+          conditions: [{ scope: "contact", key: "k", equals: "" }],
+        },
+      ],
       stored,
     ) as Record<string, Record<string, unknown>>;
     expect(out.handoff_to_human?.kind).toBe("attribute");
@@ -366,9 +409,9 @@ describe("the console offers exactly what the API accepts", () => {
   test("every native name round-trips through the editor and the write boundary", () => {
     const rows = NATIVE_TOOL_NAMES.map((tool) => ({
       tool,
-      scope: "conversation" as const,
-      key: "article_url",
-      equals: "",
+      conditions: [
+        { scope: "conversation" as const, key: "article_url", equals: "" },
+      ],
     }));
     const stored = serializeToolPreconditions(rows);
     expect(Object.keys(stored).sort()).toEqual([...NATIVE_TOOL_NAMES].sort());
@@ -540,6 +583,78 @@ describe("the Tools tab offers every granted tool, and flags a rule on one that 
       kind: "attribute",
       scope: "conversation",
       key: "dia_turno",
+    });
+  });
+
+  const savedPreconditions = async (stub: EditorStub) => {
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(
+        stub.writes.some((w) => w.method === "PATCH" && w.body.settings),
+      ).toBe(true),
+    );
+    const settings = stub.writes.find(
+      (w) => w.method === "PATCH" && w.body.settings,
+    )?.body.settings as Record<string, unknown> | undefined;
+    return settings?.toolPreconditions as Record<string, unknown>;
+  };
+
+  test("a second condition added under a stored one is saved as a list of both", async () => {
+    const stub = stubEditorApi(
+      {
+        settings: {
+          toolPreconditions: {
+            calendar_check_availability: {
+              kind: "attribute",
+              scope: "conversation",
+              key: "dia",
+            },
+          },
+        },
+      },
+      { catalog, grants },
+    );
+    await renderEditor(stub, "tools");
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Add a condition" }),
+    );
+    const keys = screen.getAllByRole("combobox", { name: "Attribute" });
+    expect(keys).toHaveLength(2);
+    fireEvent.change(keys[1] as HTMLElement, { target: { value: "turno" } });
+    expect(await savedPreconditions(stub)).toEqual({
+      calendar_check_availability: [
+        { kind: "attribute", scope: "conversation", key: "dia" },
+        { kind: "attribute", scope: "conversation", key: "turno" },
+      ],
+    });
+  });
+
+  test("removing one of three conditions saves the other two and leaves the other tool alone", async () => {
+    const cond = (key: string) => ({
+      kind: "attribute",
+      scope: "conversation",
+      key,
+    });
+    const stub = stubEditorApi(
+      {
+        settings: {
+          toolPreconditions: {
+            calendar_check_availability: [cond("a"), cond("b"), cond("c")],
+            busca_por_cpf: cond("cpf"),
+          },
+        },
+      },
+      { catalog, grants },
+    );
+    await renderEditor(stub, "tools");
+    const removes = await screen.findAllByRole("button", {
+      name: "Remove condition",
+    });
+    expect(removes).toHaveLength(3);
+    fireEvent.click(removes[1] as HTMLElement);
+    expect(await savedPreconditions(stub)).toEqual({
+      calendar_check_availability: [cond("a"), cond("c")],
+      busca_por_cpf: cond("cpf"),
     });
   });
 

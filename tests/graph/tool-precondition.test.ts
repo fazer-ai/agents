@@ -53,7 +53,7 @@ describe("guardedTool", () => {
   test("a call withdrawn while its precondition was read reports no effect", async () => {
     const { tool: inner, calls } = spyTool();
     const reports: CallReport[] = [];
-    await guardedTool(inner, COND, met, undefined, async () => false).invoke(
+    await guardedTool(inner, [COND], met, undefined, async () => false).invoke(
       {},
       withFenceReporter({}, (r) => reports.push(r)),
     );
@@ -63,7 +63,7 @@ describe("guardedTool", () => {
 
   test("does NOT run the tool when the precondition is unmet", async () => {
     const { tool: inner, calls } = spyTool();
-    const out = await guardedTool(inner, COND, unmet).invoke({ reason: "2" });
+    const out = await guardedTool(inner, [COND], unmet).invoke({ reason: "2" });
     expect(calls).toHaveLength(0);
     expect(String(out)).toContain("was not run");
     expect(String(out)).toContain("article_url");
@@ -72,9 +72,14 @@ describe("guardedTool", () => {
   test("reports the refusal once, with the tool, the condition and WHY", async () => {
     const seen: unknown[] = [];
     const { tool: inner } = spyTool();
-    await guardedTool(inner, COND, unmet, (i) => seen.push(i)).invoke({});
+    await guardedTool(inner, [COND], unmet, (i) => seen.push(i)).invoke({});
     expect(seen).toEqual([
-      { tool: "handoff_to_human", cond: COND, reason: "unmet", err: undefined },
+      {
+        tool: "handoff_to_human",
+        unmet: [COND],
+        reason: "unmet",
+        err: undefined,
+      },
     ]);
   });
 
@@ -86,7 +91,7 @@ describe("guardedTool", () => {
     const boom = async () => {
       throw new Error("connection terminated");
     };
-    const out = await guardedTool(inner, COND, boom, (i) =>
+    const out = await guardedTool(inner, [COND], boom, (i) =>
       seen.push(i),
     ).invoke({});
     expect(calls).toHaveLength(0);
@@ -97,20 +102,20 @@ describe("guardedTool", () => {
     // Identical to what an unmet condition returns: the operator sees the difference, the customer
     // does not.
     expect(String(out)).toBe(
-      String(await guardedTool(inner, COND, unmet).invoke({})),
+      String(await guardedTool(inner, [COND], unmet).invoke({})),
     );
   });
 
   test("reports nothing when the tool actually ran", async () => {
     const seen: unknown[] = [];
     const { tool: inner } = spyTool();
-    await guardedTool(inner, COND, met, (i) => seen.push(i)).invoke({});
+    await guardedTool(inner, [COND], met, (i) => seen.push(i)).invoke({});
     expect(seen).toEqual([]);
   });
 
   test("keeps the tool's identity, so the model sees no difference", () => {
     const { tool: inner } = spyTool();
-    const guarded = guardedTool(inner, COND, unmet);
+    const guarded = guardedTool(inner, [COND], unmet);
     expect(guarded.name).toBe(inner.name);
     expect(guarded.description).toBe(inner.description);
     expect(guarded.schema).toBe(inner.schema);
@@ -121,7 +126,7 @@ describe("guardedTool", () => {
     // The value arrives mid-turn (set_custom_attribute writes it) and
     // the guarded call comes after. A state captured at wrap time would refuse this.
     let attributes: Record<string, unknown> = {};
-    const guarded = guardedTool(inner, COND, async () => ({
+    const guarded = guardedTool(inner, [COND], async () => ({
       conversationAttributes: attributes,
       contactAttributes: {},
     }));
@@ -133,10 +138,100 @@ describe("guardedTool", () => {
   });
 });
 
+describe("guardedTool with several conditions", () => {
+  const NAME: ToolPrecondition = {
+    kind: "attribute",
+    scope: "conversation",
+    key: "guardian_name",
+  };
+  const CHILD: ToolPrecondition = {
+    kind: "attribute",
+    scope: "conversation",
+    key: "child_name",
+  };
+  const PLAN: ToolPrecondition = {
+    kind: "attribute",
+    scope: "contact",
+    key: "plan",
+    equals: "gold",
+  };
+  const state =
+    (
+      conversationAttributes: Record<string, unknown>,
+      contactAttributes: Record<string, unknown> = {},
+    ) =>
+    async () => ({ conversationAttributes, contactAttributes });
+
+  test("runs only when EVERY condition holds", async () => {
+    const { tool: inner, calls } = spyTool();
+    await guardedTool(
+      inner,
+      [NAME, CHILD, PLAN],
+      state({ guardian_name: "Ana", child_name: "Bia" }, { plan: "gold" }),
+    ).invoke({});
+    expect(calls).toHaveLength(1);
+  });
+
+  test("one unmet condition among three refuses, and the refusal names only that one", async () => {
+    const seen: Array<{ unmet: ToolPrecondition[] }> = [];
+    const { tool: inner, calls } = spyTool();
+    const out = await guardedTool(
+      inner,
+      [NAME, CHILD, PLAN],
+      state({ guardian_name: "Ana", child_name: "Bia" }, { plan: "silver" }),
+      (i) => seen.push(i),
+    ).invoke({});
+    expect(calls).toHaveLength(0);
+    expect(seen[0]?.unmet).toEqual([PLAN]);
+    expect(String(out)).toContain("`plan`");
+    expect(String(out)).not.toContain("guardian_name");
+    expect(String(out)).not.toContain("child_name");
+  });
+
+  test("the refusal names EVERY unmet condition in one message", async () => {
+    const { tool: inner } = spyTool();
+    const out = String(
+      await guardedTool(inner, [NAME, CHILD, PLAN], state({})).invoke({}),
+    );
+    for (const key of ["guardian_name", "child_name", "plan"]) {
+      expect(out).toContain(`\`${key}\``);
+    }
+    expect(out).toContain("`gold`");
+  });
+
+  test("an unreadable state reports every condition of the rule", async () => {
+    const seen: Array<{ unmet: ToolPrecondition[]; reason: string }> = [];
+    const { tool: inner } = spyTool();
+    await guardedTool(
+      inner,
+      [NAME, CHILD],
+      async () => {
+        throw new Error("pool timeout");
+      },
+      (i) => seen.push(i),
+    ).invoke({});
+    expect(seen[0]?.reason).toBe("unreadable");
+    expect(seen[0]?.unmet).toEqual([NAME, CHILD]);
+  });
+
+  test("the flow-log line carries every unmet KEY and no value", () => {
+    const ev = preconditionFlowEvent({
+      tool: "handoff_to_human",
+      unmet: [CHILD, PLAN],
+      reason: "unmet",
+    });
+    expect(ev.detail?.preconditions).toEqual([
+      { scope: "conversation", key: "child_name" },
+      { scope: "contact", key: "plan" },
+    ]);
+    expect(JSON.stringify(ev.detail)).not.toContain("gold");
+  });
+});
+
 describe("guardedTool under ToolNode", () => {
   test("the refusal reaches the model as this call's ToolMessage", async () => {
     const { tool: inner, calls } = spyTool();
-    const node = new ToolNode([guardedTool(inner, COND, unmet)]);
+    const node = new ToolNode([guardedTool(inner, [COND], unmet)]);
     const out = (await node.invoke({
       messages: [
         new AIMessage({
@@ -161,7 +256,7 @@ describe("guardedTool under ToolNode", () => {
 
   test("a refusal is not an error: the turn continues", async () => {
     const { tool: inner } = spyTool();
-    const node = new ToolNode([guardedTool(inner, COND, unmet)]);
+    const node = new ToolNode([guardedTool(inner, [COND], unmet)]);
     const out = (await node.invoke({
       messages: [
         new AIMessage({
@@ -194,7 +289,7 @@ describe("applyToolPreconditions", () => {
     const { tool: openInner, calls: openCalls } = spyTool("open");
     const out = applyToolPreconditions(
       [guardedInner, openInner],
-      { guarded: COND },
+      { guarded: [COND] },
       unmet,
     );
     expect(out[1]).toBe(openInner);
@@ -213,7 +308,7 @@ describe("applyToolPreconditions", () => {
       const seen: string[][] = [];
       applyToolPreconditions(
         [a],
-        { a: COND, gone: COND, also_gone: COND },
+        { a: [COND], gone: [COND], also_gone: [COND] },
         unmet,
         undefined,
         (n) => seen.push(n),
@@ -224,7 +319,7 @@ describe("applyToolPreconditions", () => {
     test("says nothing when every rule matched", () => {
       const { tool: a } = spyTool("a");
       const seen: string[][] = [];
-      applyToolPreconditions([a], { a: COND }, unmet, undefined, (n) =>
+      applyToolPreconditions([a], { a: [COND] }, unmet, undefined, (n) =>
         seen.push(n),
       );
       expect(seen).toEqual([]);
@@ -269,7 +364,7 @@ describe("round 1: one model-issued call is ONE tool run", () => {
   test("a permitted call starts exactly one run, under the inner tool's name", async () => {
     const { tool: inner } = spyTool();
     const { started, handlers } = runCounter();
-    await guardedTool(inner, COND, met).invoke({ reason: "2" }, {
+    await guardedTool(inner, [COND], met).invoke({ reason: "2" }, {
       callbacks: handlers,
     } as never);
     expect(started).toEqual(["handoff_to_human"]);
@@ -278,7 +373,7 @@ describe("round 1: one model-issued call is ONE tool run", () => {
   test("a refused call starts no run at all", async () => {
     const { tool: inner } = spyTool();
     const { started, handlers } = runCounter();
-    await guardedTool(inner, COND, unmet).invoke({ reason: "2" }, {
+    await guardedTool(inner, [COND], unmet).invoke({ reason: "2" }, {
       callbacks: handlers,
     } as never);
     expect(started).toEqual([]);
@@ -290,7 +385,7 @@ describe("round 1: one model-issued call is ONE tool run", () => {
     // `toString` to find; the runtime reader's map is null-prototype, which would hide that.
     const out = applyToolPreconditions(
       [inner],
-      { handoff_to_human: COND },
+      { handoff_to_human: [COND] },
       unmet,
     );
     expect(out[0]).toBe(inner);
@@ -306,7 +401,7 @@ describe("preconditionFlowEvent", () => {
   test("an unmet condition is info/ok — the rule working is not an incident", () => {
     const ev = preconditionFlowEvent({
       tool: "handoff_to_human",
-      cond: COND,
+      unmet: [COND],
       reason: "unmet",
     });
     expect(ev.level).toBe("info");
@@ -317,7 +412,7 @@ describe("preconditionFlowEvent", () => {
   test("an unreadable state is warn/error — the database being down IS one", () => {
     const ev = preconditionFlowEvent({
       tool: "handoff_to_human",
-      cond: COND,
+      unmet: [COND],
       reason: "unreadable",
       err: new TypeError("connection terminated"),
     });
@@ -331,7 +426,7 @@ describe("preconditionFlowEvent", () => {
     // and this detail is rendered in the console.
     const ev = preconditionFlowEvent({
       tool: "handoff_to_human",
-      cond: COND,
+      unmet: [COND],
       reason: "unreadable",
       err: new TypeError("connect ECONNREFUSED postgres://u:hunter2@db:5432"),
     });
@@ -342,7 +437,7 @@ describe("preconditionFlowEvent", () => {
   test("a non-Error rejection still reports, as unknown", () => {
     const ev = preconditionFlowEvent({
       tool: "handoff_to_human",
-      cond: COND,
+      unmet: [COND],
       reason: "unreadable",
       err: "nope",
     });
@@ -354,7 +449,7 @@ describe("preconditionFlowEvent", () => {
     for (const reason of ["unmet", "unreadable"] as const) {
       const ev = preconditionFlowEvent({
         tool: "handoff_to_human",
-        cond: withValue,
+        unmet: [withValue],
         reason,
       });
       expect(ev.detail?.preconditionKey).toBe("article_url");
@@ -389,7 +484,7 @@ describe("the effect-free mark and the guard", () => {
       }),
     );
     expect(isEffectFreeTool(inner)).toBe(true);
-    const guarded = guardedTool(inner, COND, async () => ({
+    const guarded = guardedTool(inner, [COND], async () => ({
       conversationAttributes: { article_url: "https://x" },
       contactAttributes: {},
     }));

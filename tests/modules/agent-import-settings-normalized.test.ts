@@ -444,6 +444,24 @@ describe.skipIf(!dbUp)("an imported settings bag create would refuse", () => {
     });
   });
 
+  test("a padded value inside a list of conditions is trimmed, and the list keeps every condition", async () => {
+    const { stored, dropped } = await importWith({
+      toolPreconditions: {
+        handoff_to_human: [
+          { kind: "attribute", scope: "conversation", key: "nome" },
+          { kind: "attribute", scope: " contact ", key: "cpf" },
+        ],
+      },
+    });
+    expect(dropped).toEqual([]);
+    expect(stored?.toolPreconditions).toEqual({
+      handoff_to_human: [
+        { kind: "attribute", scope: "conversation", key: "nome" },
+        { kind: "attribute", scope: "contact", key: "cpf" },
+      ],
+    });
+  });
+
   // The follow-up reader cuts the list to its window BEFORE it drops bad steps, so taking out a bad
   // step inside the window alone would pull the step past it in, and that step can resolve the
   // conversation. The step that would slide in goes too, and both are named.

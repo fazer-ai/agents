@@ -369,7 +369,7 @@ export interface AgentConfig {
   outsideAllowedLabels: "refuse" | "accept";
   // Operator-declared preconditions, keyed by TOOL NAME. Native or custom: the seam
   // that applies them is the one place every source's tools meet, so one map covers all six.
-  toolPreconditions: Record<string, ToolPrecondition>;
+  toolPreconditions: Record<string, ToolPrecondition[]>;
   // Conversation/contact context exposed to custom HTTP tools as {{placeholders}} (contact_name,
   // contact_email, …). conversation_id is merged in at buildToolset time (it lives on ctx). Never
   // holds a secret.

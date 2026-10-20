@@ -10,8 +10,8 @@ import type {
   ToolPrecondition,
 } from "@/modules/agents/tool-preconditions";
 import {
-  evaluatePrecondition,
   unmetPreconditionMessage,
+  unmetPreconditions,
 } from "@/modules/agents/tool-preconditions";
 import type { FlowEvent } from "@/modules/flowlog/service";
 import type { NoEffectReporter } from "./effect-free";
@@ -30,16 +30,20 @@ function sysCtx(tenantId: bigint): TenantContext {
 // otherwise show only as `info`/`ok`.
 export type RefusalReason = "unmet" | "unreadable";
 
+// What a refusal reports: the conditions that were not met, or every condition of the rule when the
+// state could not be read.
+export interface PreconditionRefusal {
+  tool: string;
+  unmet: ToolPrecondition[];
+  reason: RefusalReason;
+  err?: unknown;
+}
+
 export function guardedTool(
   inner: StructuredToolInterface,
-  cond: ToolPrecondition,
+  conds: ToolPrecondition[],
   loadState: () => Promise<PreconditionState>,
-  onRefused?: (info: {
-    tool: string;
-    cond: ToolPrecondition;
-    reason: RefusalReason;
-    err?: unknown;
-  }) => void,
+  onRefused?: (info: PreconditionRefusal) => void,
   // THE CALLER'S FENCE, asked between the state read and the call it authorises. The graph asks it
   // at DISPATCH, which covers a handler's first outward effect — and this wrapper puts a database
   // read in between, so a tool whose first act is a WRITE (a private note, a status toggle) loses
@@ -51,7 +55,6 @@ export function guardedTool(
   // Called when this wrapper refuses: the inner tool never ran, so nothing was committed.
   onNoEffect?: NoEffectReporter,
 ): StructuredToolInterface {
-  const refusal = unmetPreconditionMessage(inner.name, cond);
   // DELEGATION, not a second tool(). Wrapping the inner tool in another `tool()` and calling
   // `inner.invoke` from inside it starts a CHILD tool run under the outer one's callbacks:
   // ToolFlowLogger and Langfuse then record two runs for one model-issued call, and an integration
@@ -78,11 +81,11 @@ export function guardedTool(
         ? new ToolMessage({ content: text, tool_call_id: id, name: inner.name })
         : text;
     };
-    let met: boolean;
+    let unmet: ToolPrecondition[];
     let err: unknown;
     let reason: RefusalReason = "unmet";
     try {
-      met = evaluatePrecondition(cond, await loadState());
+      unmet = unmetPreconditions(conds, await loadState());
     } catch (e) {
       // NOTE: FAIL CLOSED, the same way the contact-authorization gate does. A precondition exists because
       // running the tool wrongly costs something the operator cannot undo (a conversation handed to
@@ -92,11 +95,11 @@ export function guardedTool(
       // NOTE: The exception is carried OUT, not swallowed. Failing closed is the right answer to the
       // model and the wrong answer to the operator: the two cases are indistinguishable downstream
       // unless the reason travels with the refusal.
-      met = false;
+      unmet = conds;
       err = e;
       reason = "unreadable";
     }
-    if (met) {
+    if (unmet.length === 0) {
       if (stillWanted && !(await stillWanted().catch(() => true))) {
         fenceReporterOf(config)?.({ noEffect: true });
         return answer(
@@ -105,13 +108,13 @@ export function guardedTool(
       }
       return inner.invoke(input as never, config);
     }
-    onRefused?.({ tool: inner.name, cond, reason, err });
+    onRefused?.({ tool: inner.name, unmet, reason, err });
     // To a caller that asked (fence-report.ts): the call reached the tool and its condition said no.
     fenceReporterOf(config)?.({ fence: "precondition", partial: false });
     // NOTE: ToolNode hands the whole tool call in as the input, so the id is on it; a direct invocation
     // with plain args (a unit test) has none, and the plain string is the honest degradation there —
     // the same shape failableTool settled on.
-    return answer(refusal);
+    return answer(unmetPreconditionMessage(inner.name, unmet));
   }) as StructuredToolInterface["invoke"];
   return guarded;
 }
@@ -121,14 +124,9 @@ export function guardedTool(
 // what the provider is sent.
 export function applyToolPreconditions(
   tools: StructuredToolInterface[],
-  preconditions: Record<string, ToolPrecondition>,
+  preconditions: Record<string, ToolPrecondition[]>,
   loadState: () => Promise<PreconditionState>,
-  onRefused?: (info: {
-    tool: string;
-    cond: ToolPrecondition;
-    reason: RefusalReason;
-    err?: unknown;
-  }) => void,
+  onRefused?: (info: PreconditionRefusal) => void,
   // NOTE: Names that matched NO assembled tool. Configuring a rule and having it match nothing is the
   // one outcome that looks exactly like protection and is not: the console shows the rule, the tool
   // keeps running, and nothing anywhere says the two are unrelated. It happens for reasons the
@@ -153,24 +151,20 @@ export function applyToolPreconditions(
     // Own-property only: the map is null-prototype at its source, but this lookup is what a plain
     // object would break — a tool named `toString` would find an inherited function here, and every
     // call to it would be refused by a rule the operator never wrote.
-    const cond = Object.hasOwn(preconditions, t.name)
+    const conds = Object.hasOwn(preconditions, t.name)
       ? preconditions[t.name]
       : undefined;
-    return cond
-      ? guardedTool(t, cond, loadState, onRefused, stillWanted, onNoEffect)
+    return conds && conds.length > 0
+      ? guardedTool(t, conds, loadState, onRefused, stillWanted, onNoEffect)
       : t;
   });
 }
 
 // The flow-log line for one refusal. The LEVEL is why this is its own function: it separates "the
 // operator's rule fired" from "the database is down".
-export function preconditionFlowEvent(info: {
-  tool: string;
-  cond: ToolPrecondition;
-  reason: RefusalReason;
-  err?: unknown;
-}): FlowEvent {
+export function preconditionFlowEvent(info: PreconditionRefusal): FlowEvent {
   const unreadable = info.reason === "unreadable";
+  const [first] = info.unmet;
   return {
     stage: "tool",
     // NOTE: INFO for an unmet condition: warn/error reaches the alert channels, and a rule firing on
@@ -182,11 +176,13 @@ export function preconditionFlowEvent(info: {
     detail: {
       tool: info.tool,
       phase: unreadable ? "precondition_unreadable" : "precondition",
-      preconditionKind: info.cond.kind,
-      // NOTE: The KEY, never the value: an attribute bag holds whatever the operator put in it, and a
-      // flow-log detail is PII-free by contract (modules/flowlog).
-      preconditionKey: info.cond.key,
-      preconditionScope: info.cond.scope,
+      preconditionKind: first?.kind,
+      // NOTE: KEYS, never values: an attribute bag holds whatever the operator put in it, and a
+      // flow-log detail is PII-free by contract (modules/flowlog). The single fields name the first
+      // unmet condition; `preconditions` names every one.
+      preconditionKey: first?.key,
+      preconditionScope: first?.scope,
+      preconditions: info.unmet.map((c) => ({ scope: c.scope, key: c.key })),
       // NOTE: The error's CLASS, never its message: a driver error can carry the failing query and
       // even the connection string, and this detail is rendered in the console.
       ...(unreadable

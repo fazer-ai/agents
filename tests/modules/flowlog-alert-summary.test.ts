@@ -156,12 +156,14 @@ describe("alertSummary", () => {
   test("an unreadable precondition names the phase, never the error class or the key", () => {
     const ev = preconditionFlowEvent({
       tool: "transferir",
-      cond: {
-        kind: "attribute",
-        scope: "contact",
-        key: "cpf_validado",
-        equals: "sim",
-      },
+      unmet: [
+        {
+          kind: "attribute",
+          scope: "contact",
+          key: "cpf_validado",
+          equals: "sim",
+        },
+      ],
       reason: "unreadable",
       err: new TypeError("connection to postgres://user:pw@db/app failed"),
     });

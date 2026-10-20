@@ -23,9 +23,9 @@ import { isMonitoring } from "@/modules/agents/mode";
 import { getAgent } from "@/modules/agents/service";
 import { readProtectedLabels } from "@/modules/agents/tool-guidance";
 import {
-  evaluatePrecondition,
   type PreconditionState,
   type ToolPrecondition,
+  unmetPreconditions,
 } from "@/modules/agents/tool-preconditions";
 import {
   type LoadChatwootClientDeps,
@@ -374,7 +374,7 @@ async function withFences(
   actions: ActionReport[],
   rules: readonly DecisionRule[],
   fences: {
-    preconditions: Record<string, ToolPrecondition>;
+    preconditions: Record<string, ToolPrecondition[]>;
     loadAttributes: () => Promise<PreconditionState>;
     labels: string[] | null;
     protectedLabels: string[];
@@ -414,10 +414,10 @@ async function withFences(
     Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
   return actions.map((a): ActionReport => {
     if (a.outcome !== "decided") return a;
-    const cond = Object.hasOwn(fences.preconditions, a.tool)
+    const conds = Object.hasOwn(fences.preconditions, a.tool)
       ? fences.preconditions[a.tool]
       : undefined;
-    if (cond && !evaluatePrecondition(cond, state)) {
+    if (conds && unmetPreconditions(conds, state).length > 0) {
       return { ...a, outcome: "refused", fence: "precondition" };
     }
     const args = rules[a.rule]?.action.args ?? {};

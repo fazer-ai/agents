@@ -303,6 +303,19 @@ describe("agent_settings_set argument schema", () => {
     ).toThrow(/tool name/);
   });
 
+  test("a precondition is one condition or a list of 1 to 10, and the parse says so", () => {
+    const rule = { kind: "attribute", scope: "conversation", key: "dia" };
+    const parse = (value: unknown) =>
+      z
+        .object(BEHAVIOR_PATCH_SHAPE)
+        .safeParse({ toolPreconditions: { calendar_create_event: value } })
+        .success;
+    expect(parse([rule, { ...rule, key: "turno" }])).toBe(true);
+    expect(parse([])).toBe(false);
+    expect(parse(Array.from({ length: 11 }, () => rule))).toBe(false);
+    expect(parse([rule, { ...rule, key: " " }])).toBe(false);
+  });
+
   test("a blank precondition key is refused by the schema, not by the write boundary", () => {
     const patch = {
       toolPreconditions: {

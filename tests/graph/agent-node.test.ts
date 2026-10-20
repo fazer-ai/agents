@@ -259,11 +259,13 @@ describe("agentNode tool-call limit (soft+hard)", () => {
   // silent, and at `maxToolCalls: 1` the turn then ends with NO text: a customer left waiting by
   // the guard that was supposed to make the agent more careful.
   test("a refused skip_reply is not silence: the hard limit still forces an answer", async () => {
-    const refusal = unmetPreconditionMessage(SKIP_REPLY_TOOL, {
-      kind: "attribute",
-      scope: "conversation",
-      key: "cpf",
-    });
+    const refusal = unmetPreconditionMessage(SKIP_REPLY_TOOL, [
+      {
+        kind: "attribute",
+        scope: "conversation",
+        key: "cpf",
+      },
+    ]);
     const guardedSkip = tool(async () => refusal, {
       name: SKIP_REPLY_TOOL,
       description: "skip",
@@ -941,11 +943,13 @@ describe("agentNode tool-call limit (soft+hard)", () => {
   // the older one leaves every other test green while ending this turn a round early, with the
   // operator's `resolve_conversation` never run.
   test("a refused skip_reply is not the decision a reaffirmation would end on", async () => {
-    const refusal = unmetPreconditionMessage(SKIP_REPLY_TOOL, {
-      kind: "attribute",
-      scope: "conversation",
-      key: "cpf",
-    });
+    const refusal = unmetPreconditionMessage(SKIP_REPLY_TOOL, [
+      {
+        kind: "attribute",
+        scope: "conversation",
+        key: "cpf",
+      },
+    ]);
     let calls = 0;
     // Refused on the FIRST call and honoured on the second, which is what a precondition does when
     // the attribute arrives mid-turn — and the only shape where two lone batches disagree. The

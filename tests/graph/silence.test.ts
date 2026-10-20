@@ -361,11 +361,13 @@ describe("skipReplyRan — the MARK is the identity, not the name and not the te
   // name telling the model to carry on. Read by name that is silence, and the customer is left
   // waiting. Unmarked, so it is not the tool either.
   test("a precondition refusal wearing the same name is NOT silence", () => {
-    const refusal = unmetPreconditionMessage(SKIP_REPLY_TOOL, {
-      kind: "attribute",
-      scope: "conversation",
-      key: "cpf",
-    });
+    const refusal = unmetPreconditionMessage(SKIP_REPLY_TOOL, [
+      {
+        kind: "attribute",
+        scope: "conversation",
+        key: "cpf",
+      },
+    ]);
     expect(refusal).toContain(SKIP_REPLY_TOOL);
     expect(skipReplyRan(msg(SKIP_REPLY_TOOL, refusal))).toBe(false);
   });
@@ -622,11 +624,13 @@ describe("silenceWasChosen — the decision belongs to THIS turn", () => {
   // a conversation nobody answered.
   test("a refusal wearing the tool's name is not a decision", () => {
     const refusal = new ToolMessage({
-      content: unmetPreconditionMessage(SKIP_REPLY_TOOL, {
-        kind: "attribute",
-        scope: "conversation",
-        key: "cpf",
-      }),
+      content: unmetPreconditionMessage(SKIP_REPLY_TOOL, [
+        {
+          kind: "attribute",
+          scope: "conversation",
+          key: "cpf",
+        },
+      ]),
       tool_call_id: "c1",
       name: SKIP_REPLY_TOOL,
     });

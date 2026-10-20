@@ -100,7 +100,7 @@ describe.skipIf(!dbUp)("a precondition refusal does not page anyone", () => {
     const ctx = flow();
     const { delivered } = await writeFlowEvent(
       ctx,
-      preconditionFlowEvent({ tool, cond, reason: "unmet" }),
+      preconditionFlowEvent({ tool, unmet: [cond], reason: "unmet" }),
     );
     expect(delivered).toBe(true);
 
@@ -123,7 +123,7 @@ describe.skipIf(!dbUp)("a precondition refusal does not page anyone", () => {
       flow(),
       preconditionFlowEvent({
         tool,
-        cond,
+        unmet: [cond],
         reason: "unreadable",
         err: new Error("connection terminated"),
       }),

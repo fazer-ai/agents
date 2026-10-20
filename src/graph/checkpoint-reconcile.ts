@@ -1,4 +1,4 @@
-import { Client, type Pool } from "pg";
+import type { Client, Pool } from "pg";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import { runtimePoolOptions } from "@/api/lib/pool-options";
@@ -17,6 +17,7 @@ import {
 } from "@/graph/checkpoint-sweep";
 import { getCheckpointPool } from "@/graph/checkpointer";
 import { parseDbId } from "@/lib/db-id";
+import { runInPoolClass } from "@/lib/pool-class";
 import { asSuperAdminOn } from "@/lib/tenancy";
 
 // The periodic pass over the checkpoint threads whose owner is gone. A teardown deletes its threads
@@ -188,10 +189,10 @@ export function withinGrace(
   graceMs: number,
   now: number = Date.now(),
 ): boolean {
-  const m = ts === null ? null : ISO_TS.exec(ts);
-  if (ts === null || m === null) return true;
+  const day = ts === null ? undefined : ISO_TS.exec(ts)?.[1];
+  if (ts === null || day === undefined) return true;
   const at = Date.parse(ts);
-  if (Number.isNaN(at) || new Date(at).toISOString().slice(0, 10) !== m[1])
+  if (Number.isNaN(at) || !new Date(at).toISOString().startsWith(day))
     return true;
   return at > now - graceMs;
 }
@@ -245,7 +246,7 @@ export async function reconcileCheckpointBatch(
   // starts right after the last thread this one took.
   let decidedUpTo = walked.at(-1);
   if (candidates.length > threads) {
-    candidates = candidates.slice(0, threads);
+    candidates = candidates.filter((_, i) => i < threads);
     decidedUpTo = candidates.at(-1);
   }
   const atEnd = ended && decidedUpTo === walked.at(-1);
@@ -291,9 +292,13 @@ const PASS_LOCK = "fazerai:checkpoint-reconcile";
 export type LockConnection = Pick<Client, "query" | "end">;
 
 async function connectLock(): Promise<LockConnection> {
-  const client = new Client(
-    runtimePoolOptions(config.langgraphDatabaseUrl ?? "", 1),
+  // The pool's bounded client, so a server that accepts the socket and never answers fails the
+  // connect after its bound instead of holding the pass forever.
+  const { Client: Bounded, ...options } = runtimePoolOptions(
+    config.langgraphDatabaseUrl ?? "",
+    1,
   );
+  const client = new Bounded(options);
   // A connection that drops mid-pass only loses the lock; it must not crash the process.
   client.on("error", (err) => {
     logger.warn({ err }, "checkpoint reconciler: the lock connection dropped");
@@ -304,8 +309,9 @@ async function connectLock(): Promise<LockConnection> {
 
 // A whole pass: every table's key walked once, batch after batch, pausing after each batch that
 // deleted something. Stops early, keeping what it did, when `shouldStop` answers true. Null when
-// another pass holds the lock.
-export async function reconcileCheckpoints(
+// another pass holds the lock. Background work, on the background pool: the owner reads must not
+// take the connections a customer turn needs.
+export function reconcileCheckpoints(
   pool: Pick<Pool, "connect">,
   opts: ReconcileOptions & {
     pauseMs?: number;
@@ -313,18 +319,20 @@ export async function reconcileCheckpoints(
     lockConnection?: () => Promise<LockConnection>;
   } = {},
 ): Promise<ReconcileTotals | null> {
-  const lock = await (opts.lockConnection ?? connectLock)();
-  try {
-    const got = await lock.query<{ ok: boolean }>(
-      "SELECT pg_try_advisory_lock(hashtext($1)) AS ok",
-      [PASS_LOCK],
-    );
-    if (!got.rows[0]?.ok) return null;
-    return await reconcileAll(pool, opts);
-  } finally {
-    // Closing the connection releases the lock.
-    await lock.end().catch(() => {});
-  }
+  return runInPoolClass("background", async () => {
+    const lock = await (opts.lockConnection ?? connectLock)();
+    try {
+      const got = await lock.query<{ ok: boolean }>(
+        "SELECT pg_try_advisory_lock(hashtext($1)) AS ok",
+        [PASS_LOCK],
+      );
+      if (!got.rows[0]?.ok) return null;
+      return await reconcileAll(pool, opts);
+    } finally {
+      // Closing the connection releases the lock.
+      await lock.end().catch(() => {});
+    }
+  });
 }
 
 async function reconcileAll(

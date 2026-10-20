@@ -46,6 +46,24 @@ describe("connection budget", () => {
     }
   });
 
+  test("the checkpoint reconciler's lock connection counts on the checkpointer's server, where the scheduler runs", () => {
+    const saved = config.schedulerWorker.enabled;
+    try {
+      config.schedulerWorker.enabled = true;
+      const share = poolShares().find(
+        (p) => p.env === "SCHEDULER_WORKER_ENABLED",
+      );
+      expect(share?.size).toBe(1);
+      expect(share?.url).toBe(config.langgraphDatabaseUrl ?? "");
+      config.schedulerWorker.enabled = false;
+      expect(
+        poolShares().find((p) => p.env === "SCHEDULER_WORKER_ENABLED")?.size,
+      ).toBe(0);
+    } finally {
+      config.schedulerWorker.enabled = saved;
+    }
+  });
+
   test("a sum equal to what the server accepts fits, one more is refused naming every pool", async () => {
     // 45 + 45 + 4 + 3 = 97 = 100 - 3 reserved
     const fit = await assertConnectionBudget(

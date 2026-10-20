@@ -1,8 +1,10 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { createServer, type Server, type Socket } from "node:net";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { Pool } from "pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import config from "@/config";
 import {
   NEWEST_CHECKPOINT_SQL,
   reconcileCheckpointBatch,
@@ -18,6 +20,7 @@ import {
   type SweepCursor,
 } from "@/graph/checkpoint-sweep";
 import { getCheckpointPool } from "@/graph/checkpointer";
+import { currentPoolClass } from "@/lib/pool-class";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
@@ -399,6 +402,42 @@ describe.skipIf(!dbUp)("the checkpoint reconciler", () => {
       await one.end();
     }
   }, 120_000);
+
+  test("a pass runs on the background pool", async () => {
+    const seen = new Set<string>();
+    await reconcileCheckpoints(cp, {
+      pauseMs: 0,
+      base: appDb,
+      scope: (id) => {
+        seen.add(currentPoolClass());
+        return mine(id);
+      },
+    });
+    expect([...seen]).toEqual(["background"]);
+  }, 60_000);
+
+  // A server that accepts the socket and never answers: the lock's connect gives up after its
+  // bound, and the pass fails, instead of waiting forever with every later pass behind it.
+  test("the lock's connection is bounded like the pools'", async () => {
+    const sockets: Socket[] = [];
+    const silent: Server = createServer((s) => {
+      sockets.push(s);
+    });
+    await new Promise<void>((r) => silent.listen(0, "127.0.0.1", r));
+    const address = silent.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+    const saved = config.langgraphDatabaseUrl;
+    config.langgraphDatabaseUrl = `postgres://nobody:nothing@127.0.0.1:${port}/none`;
+    try {
+      await expect(
+        reconcileCheckpoints(cp, { pauseMs: 0, scope: mine, base: appDb }),
+      ).rejects.toMatchObject({ code: "ETIMEDOUT" });
+    } finally {
+      config.langgraphDatabaseUrl = saved;
+      for (const s of sockets) s.destroy();
+      await new Promise<void>((r) => silent.close(() => r()));
+    }
+  }, 60_000);
 
   test("what a sweep stopped between tables left behind goes too", async () => {
     const rest = `${goneTenant}:9:ci:8`;

@@ -151,8 +151,16 @@ jobs:
       - name: Provision Test Database
         run: bun run db:test:setup
 
+      # The deadline goes on the command line: under `--shard` bun applies the preload's
+      # `jest.setTimeout` to the first file of the process only, and every later file ran with bun's
+      # 5 s default. A `timeout` under `[test]` in bunfig.toml is ignored there too. The number is the
+      # one `tests/setup.ts` sets, read from the same constant and printed, so the log says which
+      # deadline the shard ran under.
       - name: Run Tests
-        run: bun test --shard=${{ matrix.shard }}/4
+        run: |
+          timeout_ms=$(bun -e 'console.log((await import("./tests/utils/timeouts.ts")).TEST_TIMEOUT_MS)')
+          echo "per-test timeout: ${timeout_ms} ms"
+          bun test --shard=${{ matrix.shard }}/4 --timeout "$timeout_ms"
 
   # THE REQUIRED CONTEXT IS THIS JOB, NOT THE SHARDS, and that is measurement rather than taste.
   # On agents-pro, where the condition above already skips this matrix on push, a skipped MATRIX job

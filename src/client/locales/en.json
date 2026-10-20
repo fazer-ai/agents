@@ -1506,6 +1506,7 @@
       "knowledgeSearch": "Knowledge search",
       "knowledgeSuggest": "Knowledge entry suggestions",
       "line": "Every call already sends {{n}} tokens before the history",
+      "replyAsText": "Reply in text (voice replies)",
       "searchTokens": "{{n}} tokens per call, the search and the rules it adds to the instructions",
       "sourceTotal": "{{n}} tokens per call in total",
       "tokens": "{{n}} tokens per call"
@@ -2085,6 +2086,14 @@
     "exportUnsavedNote": "You have unsaved changes. Save first to export the current version, or export the last saved one.",
     "fallbackTimeout": "Timeout per attempt (seconds)",
     "fallbackTimeoutHint": "Empty = {{seconds}} s ({{min}}-{{max}}). Past it, the request goes to the fallback; the fallback gets the same time.",
+    "fieldSize": {
+      "followUp": "{{n}} tokens · {{chars}} characters, sent on each call of this follow-up step",
+      "guardrail": "{{n}} tokens · {{chars}} characters, sent on each guardrail check",
+      "redirectFollowUp": "{{n}} tokens · {{chars}} characters, sent on the chat follow-up's call",
+      "spokenNotice": "{{n}} tokens · {{chars}} characters, sent on each turn answered by audio",
+      "toolDescription": "{{n}} tokens · {{chars}} characters, part of this tool's description (counted in its tokens per call)",
+      "vision": "{{n}} tokens · {{chars}} characters, sent on each image or PDF read"
+    },
     "fillCredential": "Fill",
     "followUp": "Follow-up policy",
     "followUpAddStep": "Add step",

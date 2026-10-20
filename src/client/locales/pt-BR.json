@@ -1565,6 +1565,7 @@
       "knowledgeSearch": "Busca no conhecimento",
       "knowledgeSuggest": "Sugestão de entradas no conhecimento",
       "line": "Cada chamada já envia {{n}} tokens antes do histórico",
+      "replyAsText": "Responder em texto (respostas em voz)",
       "searchTokens": "{{n}} tokens por chamada, entre a busca e as regras que ela acrescenta às instruções",
       "sourceTotal": "{{n}} tokens por chamada no total",
       "tokens": "{{n}} tokens por chamada"
@@ -2152,6 +2153,14 @@
     "exportUnsavedNote": "Você tem alterações não salvas. Salve primeiro para exportar a versão atual, ou exporte a última versão salva.",
     "fallbackTimeout": "Tempo limite por tentativa (segundos)",
     "fallbackTimeoutHint": "Em branco = {{seconds}} s ({{min}}-{{max}}). Passado esse tempo, o pedido vai para a reserva, que tem o mesmo tempo.",
+    "fieldSize": {
+      "followUp": "{{n}} tokens · {{chars}} caracteres, enviados a cada chamada desta etapa do follow-up",
+      "guardrail": "{{n}} tokens · {{chars}} caracteres, enviados a cada checagem do guardrail",
+      "redirectFollowUp": "{{n}} tokens · {{chars}} caracteres, enviados na chamada do follow-up do chat",
+      "spokenNotice": "{{n}} tokens · {{chars}} caracteres, enviados a cada turno respondido em áudio",
+      "toolDescription": "{{n}} tokens · {{chars}} caracteres, parte da descrição desta ferramenta (já contados nos tokens por chamada dela)",
+      "vision": "{{n}} tokens · {{chars}} caracteres, enviados a cada leitura de imagem ou PDF"
+    },
     "fillCredential": "Preencher",
     "followUp": "Política de follow-up",
     "followUpAddStep": "Adicionar etapa",

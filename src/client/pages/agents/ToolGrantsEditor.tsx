@@ -59,7 +59,7 @@ import { McpEditModal } from "@/client/pages/resources/McpEditModal";
 import { ToolEditModal } from "@/client/pages/resources/ToolEditModal";
 import { TOOL_INSTRUCTIONS_MAX } from "@/modules/agents/text-caps";
 import { DECISION_ACTION_TOOLS } from "@/modules/decisions/config";
-import { SourceTokens, ToolTokens } from "./CallFloor";
+import { FieldSize, SourceTokens, ToolTokens } from "./CallFloor";
 import {
   CrossInboxCaseFields,
   type CrossInboxCaseState,
@@ -1945,6 +1945,11 @@ export function ToolGrantsEditor({
                     "e.g. Only escalate after two failed attempts. Send billing issues to the Finance team.",
                   )}
                 />
+                <FieldSize
+                  max={TOOL_INSTRUCTIONS_MAX}
+                  text={handoff.instructions}
+                  sentWith="toolDescription"
+                />
               </FormField>
             )}
           </ConfigurableToolCard>
@@ -1979,6 +1984,11 @@ export function ToolGrantsEditor({
                     "editor.kanbanInstructionsPlaceholder",
                     'e.g. Move to "Proposal sent" only after pricing was shared. Never skip steps.',
                   )}
+                />
+                <FieldSize
+                  max={TOOL_INSTRUCTIONS_MAX}
+                  text={kanbanInstructions}
+                  sentWith="toolDescription"
                 />
               </FormField>
             )}
@@ -2018,6 +2028,11 @@ export function ToolGrantsEditor({
                     "editor.updateKanbanInstructionsPlaceholder",
                     "e.g. When the customer confirms a meeting, set the due date; keep the title as the customer's full name.",
                   )}
+                />
+                <FieldSize
+                  max={TOOL_INSTRUCTIONS_MAX}
+                  text={updateKanbanTaskInstructions}
+                  sentWith="toolDescription"
                 />
               </FormField>
             )}
@@ -2130,6 +2145,11 @@ export function ToolGrantsEditor({
                     'e.g. Save the qualified budget on the contact as "orcamento"; set "lead_stage" on the card.',
                   )}
                 />
+                <FieldSize
+                  max={TOOL_INSTRUCTIONS_MAX}
+                  text={customAttributeInstructions}
+                  sentWith="toolDescription"
+                />
               </FormField>
             )}
           </ConfigurableToolCard>
@@ -2168,6 +2188,11 @@ export function ToolGrantsEditor({
                     "editor.labelInstructionsPlaceholder",
                     'e.g. The conversation carries exactly one of "cancelamento", "compra-de-ingresso" or "outros": to swap it, name the old one in remove and the new one in add, in the same call. Do not name a label you are not changing.',
                   )}
+                />
+                <FieldSize
+                  max={TOOL_INSTRUCTIONS_MAX}
+                  text={labelInstructions}
+                  sentWith="toolDescription"
                 />
               </FormField>
             )}

@@ -40,6 +40,8 @@ import type {
   GuardrailsConfig,
   GuardrailThresholdKey,
 } from "@/modules/guardrails/settings";
+import { readCompetitors } from "@/modules/guardrails/settings";
+import { FieldSize } from "./CallFloor";
 import { ExternalCheckContract } from "./ExternalCheckContract";
 import { Section, SectionNav } from "./SectionNav";
 import { TabActionBar } from "./TabActionBar";
@@ -465,6 +467,11 @@ export function GuardrailsTab({
                     "e.g. Politely decline, keep a warm tone, and offer to connect them with a human agent.",
                   )}
                 />
+                <FieldSize
+                  max={GENERATION_PROMPT_MAX}
+                  text={d.generationPrompt}
+                  sentWith="guardrail"
+                />
               </FormField>
             )}
           </>
@@ -742,6 +749,10 @@ export function GuardrailsTab({
                     }
                     rows={3}
                   />
+                  <FieldSize
+                    text={readCompetitors(g.competitors).join(", ")}
+                    sentWith="guardrail"
+                  />
                 </FormField>
                 <FormField
                   label={t("editor.guardrails.customPolicy", "Custom policy")}
@@ -773,6 +784,11 @@ export function GuardrailsTab({
                     }
                     rows={3}
                     maxLength={CUSTOM_POLICY_MAX}
+                  />
+                  <FieldSize
+                    max={CUSTOM_POLICY_MAX}
+                    text={g.customPolicy}
+                    sentWith="guardrail"
                   />
                 </FormField>
                 {byClassifier && g.customPolicy.trim() && (

@@ -16,7 +16,9 @@ import { HelpPopover } from "@/client/components/HelpPopover";
 import { nativeToolMeta } from "@/client/lib/nativeTools";
 import { toolpackToolMeta } from "@/client/lib/toolpackTools";
 import { cn } from "@/client/lib/utils";
+import { REPLY_AS_TEXT_TOOL } from "@/graph/tools/catalog";
 import { normalizeToolName } from "@/graph/tools/toolName";
+import { clipText } from "@/lib/text";
 import { estimateTokens } from "@/lib/token-estimate";
 import type { CallFloor, CallFloorTool } from "@/modules/playground/service";
 
@@ -31,7 +33,7 @@ export type { CallFloor, CallFloorTool };
 export const CallFloorContext = createContext<CallFloor | null>(null);
 
 // "~" on every number: none of them is a count, and the hint says by how much they can miss.
-const fmt = (n: number, lang: string) => `~${n.toLocaleString(lang)}`;
+export const fmt = (n: number, lang: string) => `~${n.toLocaleString(lang)}`;
 
 // Which tool of the floor a row of the Tools tab is. By the model's name for every kind whose row knows
 // it; an MCP or document row knows its grant instead, since that name is derived on the server.
@@ -41,7 +43,9 @@ export type ToolRef =
   | { name: string; kind: "native" | "http" | "code" }
   | { mcp: { connectionId: string; tool: string } }
   | { templateId: string }
-  | { integration: { instanceId: string; tool: string } };
+  | { integration: { instanceId: string; tool: string } }
+  // A tool the system adds from a setting, with no grant row of its own (`reply_as_text`).
+  | { system: string };
 
 const KIND_CATEGORIES: Record<
   "native" | "http" | "code",
@@ -52,12 +56,13 @@ const KIND_CATEGORIES: Record<
   code: ["code"],
 };
 
-function findTool(
+export function findTool(
   floor: CallFloor | null,
   ref: ToolRef,
 ): CallFloorTool | undefined {
   if (floor?.engine !== "llm") return undefined;
   return floor.tools.find((tl) => {
+    if ("system" in ref) return tl.name === ref.system;
     if ("name" in ref)
       return (
         // By the exposed name: an operator's row may carry a legacy spelling the build normalizes.
@@ -81,17 +86,10 @@ function findTool(
 // (not turned on, or not reachable, like an MCP server that does not answer): an absent number never
 // reads as zero.
 export function ToolTokens({ tool }: { tool: ToolRef }) {
-  const { t, i18n } = useTranslation();
   const floor = useContext(CallFloorContext);
   const found = findTool(floor, tool);
   if (!found) return null;
-  return (
-    <span className="shrink-0 whitespace-nowrap font-mono text-text-muted text-xs">
-      {t("editor.callFloor.tokens", "{{n}} tokens per call", {
-        n: fmt(found.estimatedTokens, i18n.language),
-      })}
-    </span>
-  );
+  return <TokensLabel n={found.estimatedTokens} />;
 }
 
 // On an MCP server's or an integration's own row: what all of its turned-on tools add to every call,
@@ -129,6 +127,8 @@ function toolLabel(tl: CallFloorTool, t: TFunction): string {
   if (tl.category === "native" || tl.category === "utility")
     return nativeToolMeta(tl.name, t).label;
   if (tl.category === "integration") return toolpackToolMeta(tl.name, t).label;
+  if (tl.name === REPLY_AS_TEXT_TOOL)
+    return t("editor.callFloor.replyAsText", "Reply in text (voice replies)");
   // The Knowledge tab grants these by switch, with no row of their own; named after what they do.
   if (tl.name === "search_knowledge")
     return t("editor.callFloor.knowledgeSearch", "Knowledge search");
@@ -191,6 +191,105 @@ export function KnowledgeTokens({ part }: { part: "search" | "suggest" }) {
           })}
     </span>
   );
+}
+
+// What a set of tools adds to every call together, for a group of the capability map. The knowledge
+// search also brings the grounding rules the runtime appends to the instructions. Nothing while none
+// of them is in the floor, as for a single tool.
+export function groupTokens(
+  floor: CallFloor | null,
+  refs: readonly ToolRef[],
+): number | null {
+  const found = refs
+    .map((ref) => findTool(floor, ref))
+    .filter((tl): tl is CallFloorTool => !!tl);
+  if (floor?.engine !== "llm" || found.length === 0) return null;
+  const grounding = found.some((tl) => tl.name === "search_knowledge")
+    ? floor.instructionsAddedBy.grounding
+    : 0;
+  return found.reduce((sum, tl) => sum + tl.estimatedTokens, grounding);
+}
+
+export function TokensLabel({ n }: { n: number }) {
+  const { t, i18n } = useTranslation();
+  return (
+    <span className="shrink-0 whitespace-nowrap font-mono text-text-muted text-xs">
+      {t("editor.callFloor.tokens", "{{n}} tokens per call", {
+        n: fmt(n, i18n.language),
+      })}
+    </span>
+  );
+}
+
+// Where the text of a field reaches a model, which decides what its size costs: a note in a tool's
+// description is already inside that tool's tokens per call; every other field goes to a call of its
+// own, paid each time that call is made.
+export type FieldSentWith =
+  | "toolDescription"
+  | "followUp"
+  | "redirectFollowUp"
+  | "guardrail"
+  | "vision"
+  | "spokenNotice";
+
+// Under a field whose text reaches a model: its size as typed, always visible (the textarea's own
+// counter only appears near the cap). Counted from the draft, so it moves before the save, and
+// shown at zero too, so an empty field reads as costing nothing rather than as unmeasured.
+export function FieldSize({
+  text,
+  sentWith,
+  max,
+  fallback,
+}: {
+  text: string;
+  sentWith: FieldSentWith;
+  // The field's cap: past it the reader clips, so the line counts what is sent.
+  max?: number;
+  // What is sent when the field is left blank.
+  fallback?: string;
+}) {
+  const { t, i18n } = useTranslation();
+  // Trimmed, then clipped, then the fallback when nothing is left: the order the readers use.
+  const trimmed = text.trim();
+  const sent =
+    (max === undefined ? trimmed : clipText(trimmed, max)) || fallback || "";
+  const vars = {
+    n: fmt(estimateTokens(sent), i18n.language),
+    chars: sent.length.toLocaleString(i18n.language),
+  };
+  const line = {
+    toolDescription: t(
+      "editor.fieldSize.toolDescription",
+      "{{n}} tokens · {{chars}} characters, part of this tool's description (counted in its tokens per call)",
+      vars,
+    ),
+    followUp: t(
+      "editor.fieldSize.followUp",
+      "{{n}} tokens · {{chars}} characters, sent on each call of this follow-up step",
+      vars,
+    ),
+    redirectFollowUp: t(
+      "editor.fieldSize.redirectFollowUp",
+      "{{n}} tokens · {{chars}} characters, sent on the chat follow-up's call",
+      vars,
+    ),
+    guardrail: t(
+      "editor.fieldSize.guardrail",
+      "{{n}} tokens · {{chars}} characters, sent on each guardrail check",
+      vars,
+    ),
+    vision: t(
+      "editor.fieldSize.vision",
+      "{{n}} tokens · {{chars}} characters, sent on each image or PDF read",
+      vars,
+    ),
+    spokenNotice: t(
+      "editor.fieldSize.spokenNotice",
+      "{{n}} tokens · {{chars}} characters, sent on each turn answered by audio",
+      vars,
+    ),
+  }[sentWith];
+  return <p className="mt-1 text-text-muted text-xs">{line}</p>;
 }
 
 // The icon the tool's row carries on the Tools tab (or the Knowledge tab, for the two it grants), so a

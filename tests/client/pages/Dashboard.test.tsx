@@ -154,6 +154,12 @@ let ledgerRefused = false;
 // silences and no problems, because there is no data, not because there were none.
 let logExpired = false;
 let optionsFail = false;
+const ONE_INBOX = [{ id: "3", name: "WhatsApp" }];
+let inboxOptions: {
+  id: string;
+  name: string;
+  account?: { id: number; name: string | null };
+}[] = ONE_INBOX;
 
 // What the per-block routes would answer, as the page's stream carries it: one snapshot with every
 // requested block, `done`, or a refusal after the blocks that did arrive.
@@ -433,7 +439,7 @@ const stubFetch = (async (input: unknown) => {
         { id: "7", name: "Ana" },
         { id: "8", name: "Beto" },
       ],
-      inboxes: [{ id: "3", name: "WhatsApp" }],
+      inboxes: inboxOptions,
     });
   return json({ error: "nope" }, 500);
 }) as unknown as typeof globalThis.fetch;
@@ -499,6 +505,7 @@ beforeEach(() => {
   healthFailStatus = 500;
   healthFailField = undefined;
   optionsFail = false;
+  inboxOptions = ONE_INBOX;
   costsHang = false;
   partialFlag = false;
   refuseFlag = false;
@@ -632,6 +639,51 @@ describe("one filter, in the URL, for every block", () => {
       expect(location).toBe("/?agent=8");
       expect(screen.queryAllByRole("button", { name: "Beto" }).length).toBe(0);
     });
+  });
+
+  test("two inboxes of one name are told apart by their account, and the one picked filters the page", async () => {
+    inboxOptions = [
+      { id: "3", name: "E-mail" },
+      { id: "4", name: "SAC WhatsApp", account: { id: 1, name: "Main brand" } },
+      { id: "5", name: "SAC WhatsApp", account: { id: 7, name: null } },
+    ];
+    await renderDash("/");
+    const select = screen.getByRole("combobox", {
+      name: "Inbox",
+    }) as HTMLSelectElement;
+    await waitFor(() => {
+      expect(select.options.length).toBe(4);
+    });
+    expect([...select.options].map((o) => o.textContent)).toEqual([
+      "All inboxes",
+      "E-mail",
+      "SAC WhatsApp · Main brand",
+      "SAC WhatsApp · Account 7",
+    ]);
+    fireEvent.change(select, { target: { value: "5" } });
+    await waitFor(() => {
+      expect(location).toBe("/?inbox=5");
+    });
+    expect(select.selectedOptions[0]?.textContent).toBe(
+      "SAC WhatsApp · Account 7",
+    );
+  });
+
+  test("a link to one of two same-named inboxes opens with its account in the select", async () => {
+    inboxOptions = [
+      { id: "4", name: "SAC WhatsApp", account: { id: 1, name: "Main brand" } },
+      { id: "5", name: "SAC WhatsApp", account: { id: 7, name: null } },
+    ];
+    await renderDash("/?inbox=4");
+    const select = screen.getByRole("combobox", {
+      name: "Inbox",
+    }) as HTMLSelectElement;
+    await waitFor(() => {
+      expect(select.selectedOptions[0]?.textContent).toBe(
+        "SAC WhatsApp · Main brand",
+      );
+    });
+    expect(location).toBe("/?inbox=4");
   });
 
   test("choosing an agent puts it in the URL, and every agent takes it out", async () => {

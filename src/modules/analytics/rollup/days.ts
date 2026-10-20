@@ -93,6 +93,29 @@ export function dayStart(day: string, tz: string): Date {
   return new Date(lo * 60_000);
 }
 
+// The instant `n` local days after `instant` at the same wall-clock time in `tz` (`n` negative goes
+// back): 10:00 of a day is 10:00 of the other, 23 or 25 hours away across a daylight-saving change. A
+// time the target day does not have (the hour a change skips) lands on the instant the clock jumps to.
+export function shiftLocalDays(instant: Date, n: number, tz: string): Date {
+  const w = wallClock(instant.getTime(), tz);
+  const wall =
+    Date.UTC(w.year, w.month - 1, w.day + n, w.hour, w.minute, w.second) +
+    (instant.getTime() % 1000);
+  let t = wall - offsetAt(wall, tz);
+  t = wall - offsetAt(t, tz);
+  if (t + offsetAt(t, tz) === wall) return new Date(t);
+  // No instant has that wall-clock time: the first one after it, the instant the clock jumped to.
+  let lo = Math.floor((wall - 16 * 3_600_000) / 60_000);
+  let hi = Math.ceil((wall + 16 * 3_600_000) / 60_000);
+  while (lo < hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    const at = mid * 60_000;
+    if (at + offsetAt(at, tz) >= wall) hi = mid;
+    else lo = mid + 1;
+  }
+  return new Date(lo * 60_000);
+}
+
 // How many days from `first` to `last`, both inclusive, without listing them.
 export function dayCount(first: string, last: string): number {
   if (first > last) return 0;

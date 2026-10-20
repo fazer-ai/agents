@@ -20,6 +20,7 @@ import {
 } from "@/client/components";
 import { useClientChannelEnabled } from "@/client/contexts/AuthContext";
 import { api } from "@/client/lib/api";
+import { type InboxOption, inboxOptionLabel } from "@/client/lib/inboxOption";
 import { cn } from "@/client/lib/utils";
 import { SectionNav } from "./agents/SectionNav";
 import { metricsErrorMessage } from "./dashboard/Block";
@@ -66,7 +67,7 @@ function FilterBar({
   filters: DashboardFilters;
   onChange: (patch: Partial<DashboardFilters>) => void;
   agents: { id: string; name: string }[];
-  inboxes: { id: string; name: string }[];
+  inboxes: InboxOption[];
 }) {
   const { t } = useTranslation();
   const clientChannelEnabled = useClientChannelEnabled();
@@ -166,14 +167,16 @@ function FilterBar({
         aria-label={t("dashboard.filter.inbox", "Inbox")}
         value={filters.inboxId ?? ""}
         onChange={(e) => onChange({ inboxId: e.target.value || null })}
-        wrapperClassName="max-w-44"
+        // Wider than the agent select: a repeated name carries its account, which is the part
+        // that tells the two apart and must not be the part cut off.
+        wrapperClassName="max-w-64"
       >
         <option value="">
           {t("dashboard.filter.allInboxes", "All inboxes")}
         </option>
         {inboxes.map((i) => (
           <option key={i.id} value={i.id}>
-            {i.name}
+            {inboxOptionLabel(i, t)}
           </option>
         ))}
       </Select>
@@ -283,9 +286,7 @@ export function DashboardPage() {
   const [agents, setAgents] = useState<{ id: string; name: string }[] | null>(
     null,
   );
-  const [inboxes, setInboxes] = useState<{ id: string; name: string }[] | null>(
-    null,
-  );
+  const [inboxes, setInboxes] = useState<InboxOption[] | null>(null);
   const [perfView, setPerfView] = useState<PerformanceView>(
     DEFAULT_PERFORMANCE_VIEW,
   );

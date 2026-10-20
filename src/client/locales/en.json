@@ -1237,6 +1237,7 @@
     "unpricedCta": "Open model prices"
   },
   "dashboards": {
+    "accountNumber": "Account {{id}}",
     "proTitle": "Dashboards are a Pro feature",
     "subtitle": "Panels you arrange yourself over your conversations and AI usage, each at its own address.",
     "title": "Dashboards"

@@ -1290,6 +1290,7 @@
     "unpricedCta": "Abrir preços dos modelos"
   },
   "dashboards": {
+    "accountNumber": "Conta {{id}}",
     "proTitle": "Dashboards são um recurso do Pro",
     "subtitle": "Painéis que você mesmo monta sobre as suas conversas e o uso de IA, cada um no seu próprio endereço.",
     "title": "Dashboards"

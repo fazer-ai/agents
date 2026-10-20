@@ -1,7 +1,10 @@
 import { modelConfigSchema } from "@/graph/model-config";
 import { withAuditMarker } from "@/lib/audit/markers";
 import { readBehaviorSettings } from "@/modules/agents/behavior-settings";
-import { withStoredContactAuthRule } from "@/modules/agents/settings-storage";
+import {
+  withStoredContactAuthRule,
+  withStoredToolPreconditions,
+} from "@/modules/agents/settings-storage";
 import { readVaultRefId, VAULT_REF_PREFIX } from "@/modules/vault/service";
 
 // Which of the three agent actions (`agent_update`, `prompt_set`, `agent_settings_set`) a write to
@@ -364,7 +367,9 @@ export function agentUpdateAudit(
     // that normalization (a phone with its `+`) does not read as unread configuration moving when
     // the next save rewrites it as the digits it already meant.
     const stored = (v: unknown) =>
-      field === "settings" ? withStoredContactAuthRule(v) : v;
+      field === "settings"
+        ? withStoredToolPreconditions(withStoredContactAuthRule(v))
+        : v;
     const rawB = jsonish(stored(before[field]));
     const rawA = jsonish(stored(after[field]));
     const canonB = canonical(field, before[field], now);

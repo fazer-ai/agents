@@ -1,3 +1,4 @@
+import { parseToolPrecondition } from "@/modules/agents/tool-preconditions";
 import { parseContactAuthRule } from "@/modules/contact-auth/settings";
 import { normalizeSettingsForStorage } from "@/modules/images/settings";
 
@@ -35,6 +36,31 @@ export function withStoredContactAuthRule(settings: unknown): unknown {
   return { ...settings, contactAuth: { ...settings.contactAuth, rule } };
 }
 
+// A tool's rule of one condition stored as that condition, the shape the console writes and the API
+// reads back, so a list of one written by REST or MCP and the same rule saved by the console are one
+// stored value. The condition itself is kept as written (a key the reader does not know stays); a list
+// whose single entry does not parse is left for the write boundary to refuse.
+export function withStoredToolPreconditions(settings: unknown): unknown {
+  if (!plain(settings) || !plain(settings.toolPreconditions)) return settings;
+  const bag = settings.toolPreconditions;
+  let changed = false;
+  const out = Object.create(null) as Record<string, unknown>;
+  for (const [name, raw] of Object.entries(bag)) {
+    const one =
+      Array.isArray(raw) && raw.length === 1 && parseToolPrecondition(raw[0])
+        ? raw[0]
+        : raw;
+    if (one !== raw) changed = true;
+    Object.defineProperty(out, name, {
+      value: one,
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+  }
+  return changed ? { ...settings, toolPreconditions: out } : settings;
+}
+
 // What a write of `agent.settings` stores, on every path that writes one (update, create, import):
 // `sendImage` keeps hosts only, so a pasted signed URL never reaches the row, and the contact gate's
 // rule is stored as the reader reads it.
@@ -44,7 +70,9 @@ export function settingsForStorage(
   if (!settings || typeof settings !== "object" || Array.isArray(settings)) {
     return undefined;
   }
-  return withStoredContactAuthRule(
-    normalizeSettingsForStorage(settings) ?? settings,
+  return withStoredToolPreconditions(
+    withStoredContactAuthRule(
+      normalizeSettingsForStorage(settings) ?? settings,
+    ),
   ) as Record<string, unknown>;
 }

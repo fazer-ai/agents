@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
 import { AppError } from "@/lib/errors";
+import { agentUpdateAudit } from "@/modules/agents/audit-projection";
 import { assertSettingsToolPreconditions } from "@/modules/agents/service";
+import { settingsForStorage } from "@/modules/agents/settings-storage";
 import {
   evaluatePrecondition,
   invalidToolPreconditions,
@@ -549,5 +551,45 @@ describe("a rule with several conditions", () => {
     expect(msg).toContain("`plan`");
     expect(msg).toContain("`gold`");
     expect(msg).toContain("all of them");
+  });
+});
+
+// A list of one written by REST or MCP and the same rule saved back by the console are one stored
+// value, so a save that changed nothing records nothing.
+describe("a rule of one condition", () => {
+  const cond = { kind: "attribute", scope: "conversation", key: "cpf" };
+
+  test("is stored as that condition, keeping a field the reader does not know", () => {
+    const stored = settingsForStorage({
+      toolPreconditions: {
+        busca_por_cpf: [{ ...cond, note: "x" }],
+        agendar: [cond, { ...cond, key: "dia" }],
+        quebrada: [{ kind: "attribute" }],
+      },
+    });
+    expect(stored?.toolPreconditions).toEqual({
+      busca_por_cpf: { ...cond, note: "x" },
+      agendar: [cond, { ...cond, key: "dia" }],
+      quebrada: [{ kind: "attribute" }],
+    });
+  });
+
+  test("a list of one saved back as an object is no change in the audit", () => {
+    expect(
+      agentUpdateAudit(
+        { settings: { toolPreconditions: { busca_por_cpf: [cond] } } },
+        { settings: { toolPreconditions: { busca_por_cpf: cond } } },
+      ),
+    ).toBeNull();
+    expect(
+      agentUpdateAudit(
+        {
+          settings: {
+            toolPreconditions: { busca_por_cpf: [{ ...cond, note: "x" }] },
+          },
+        },
+        { settings: { toolPreconditions: { busca_por_cpf: cond } } },
+      ),
+    ).not.toBeNull();
   });
 });

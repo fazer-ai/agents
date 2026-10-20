@@ -5,12 +5,14 @@ import {
   beforeEach,
   describe,
   expect,
+  setSystemTime,
   test,
 } from "bun:test";
 import {
   cleanup,
   fireEvent,
   render,
+  renderHook,
   screen,
   waitFor,
 } from "@testing-library/react";
@@ -21,7 +23,7 @@ import {
   getActiveTenantId,
   setActiveTenantId,
 } from "@/client/lib/activeTenant";
-import { DashboardPage } from "@/client/pages/DashboardPage";
+import { DashboardPage, useOpenedAt } from "@/client/pages/DashboardPage";
 import { streamGrace } from "@/client/pages/dashboard/useStream";
 import { withI18n } from "@/tests/utils/i18n";
 
@@ -1484,5 +1486,29 @@ describe("a view refused while it fills", () => {
     expect(
       screen.queryAllByRole("button", { name: "Try again" }).length,
     ).toBeGreaterThan(1);
+  });
+});
+
+describe("the instant a view is opened at", () => {
+  afterEach(() => setSystemTime());
+
+  test("holds while the view is the same, and moves with a new view or a new local day", () => {
+    setSystemTime(new Date(2026, 9, 6, 23, 59, 0));
+    const hook = renderHook(({ view }) => useOpenedAt(view), {
+      initialProps: { view: "range=7d" },
+    });
+    const opened = hook.result.current;
+    setSystemTime(new Date(2026, 9, 6, 23, 59, 30));
+    hook.rerender({ view: "range=7d" });
+    expect(hook.result.current).toBe(opened);
+    hook.rerender({ view: "range=30d" });
+    expect(hook.result.current.getTime()).toBe(
+      new Date(2026, 9, 6, 23, 59, 30).getTime(),
+    );
+    setSystemTime(new Date(2026, 9, 7, 0, 0, 5));
+    hook.rerender({ view: "range=30d" });
+    expect(hook.result.current.getTime()).toBe(
+      new Date(2026, 9, 7, 0, 0, 5).getTime(),
+    );
   });
 });

@@ -271,6 +271,16 @@ function DashboardBlocks({
   );
 }
 
+// The instant a view was opened, which its window and the previous period's are computed at. Held
+// while the view stays the same: a fresh instant on every render would restart the previous
+// period's stream, which ends at that time of day. A new local day opens it again, so a page left
+// open past midnight moves on to the new day.
+export function useOpenedAt(viewKey: string): Date {
+  const today = localDayKey(new Date());
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a new view, or a new day, is a new opening.
+  return useMemo(() => new Date(), [viewKey, today]);
+}
+
 export function DashboardPage() {
   const { t } = useTranslation();
   const [params, setParams] = useSearchParams();
@@ -331,12 +341,7 @@ export function DashboardPage() {
       setParams(writeFilters({ ...filters, ...patch }), { replace: true });
   }, [agents, inboxes, filters, setParams]);
 
-  // The window is recomputed per render from the filters; its day keys are stable within a day. The
-  // previous period ends at the time of day the view was opened, held until the filters change: a
-  // fresh instant on every render would restart its stream.
-  const viewKey = writeFilters(filters).toString();
-  // biome-ignore lint/correctness/useExhaustiveDependencies: a new view is a new opening.
-  const openedAt = useMemo(() => new Date(), [viewKey]);
+  const openedAt = useOpenedAt(writeFilters(filters).toString());
   const win = windowOf(filters, openedAt);
   const prev = previousWindow(win, openedAt);
   const query = apiQuery(filters, win);

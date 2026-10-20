@@ -1732,6 +1732,23 @@ describe.skipIf(!dbUp)("the kept days of the dashboard", () => {
     expect(load.get("log.followups", old)).toEqual({ s: 7, p: {} });
   });
 
+  test("a day cut short past the flow log's retention is no data for it, not a measured zero", async () => {
+    await clearKept();
+    config.flowlog.retentionDays = 20;
+    try {
+      const f = cutAt("UTC", 30, 25, 13);
+      const w = alignedDays(f);
+      if (!w) throw new Error("not aligned");
+      const load = new WindowLoad(ctx(), f, BLOCK_SECTIONS.followUps, w, appDb);
+      await load.complete();
+      const day = addDays(localDay(Date.now(), "UTC"), -25);
+      expect(load.get("log.followups", day)).toBeUndefined();
+      expect(load.progress().families.log.noData).toBe(6);
+    } finally {
+      config.flowlog.retentionDays = 3650;
+    }
+  });
+
   test("flow-log days before the first record and past retention are no data, not empty", async () => {
     await clearKept();
     config.flowlog.retentionDays = 20;

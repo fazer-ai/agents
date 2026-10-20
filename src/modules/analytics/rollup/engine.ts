@@ -463,13 +463,13 @@ export class WindowLoad implements DayStore {
     const live = this.days.filter((d) => d >= liveFrom);
     const [liveFirst, liveLast] = [live[0], live[live.length - 1]];
     if (liveFirst && liveLast)
-      for (const fam of this.families)
-        eager.push({
-          family: fam,
-          first: liveFirst,
-          last: liveLast,
-          live: true,
-        });
+      for (const fam of this.families) {
+        // A flow-log day the sweep already reached is no data, however short it is cut.
+        const first =
+          fam === "log" && liveFirst < this.logFrom ? this.logFrom : liveFirst;
+        if (first <= liveLast)
+          eager.push({ family: fam, first, last: liveLast, live: true });
+      }
     const cut = this.families.includes("log")
       ? this.days.filter(
           (d) => d >= this.logFrom && d < this.logKeepFrom && d < liveFrom,

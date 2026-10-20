@@ -658,6 +658,32 @@ describe("the Tools tab offers every granted tool, and flags a rule on one that 
     });
   });
 
+  test("a tool at the bound of ten conditions offers no eleventh", async () => {
+    const stub = stubEditorApi(
+      {
+        settings: {
+          toolPreconditions: {
+            calendar_check_availability: Array.from({ length: 10 }, (_, i) => ({
+              kind: "attribute",
+              scope: "conversation",
+              key: `k${i}`,
+            })),
+          },
+        },
+      },
+      { catalog, grants },
+    );
+    await renderEditor(stub, "tools");
+    const add = (await screen.findByRole("button", {
+      name: "Add a condition",
+    })) as HTMLButtonElement;
+    expect(add.disabled).toBe(true);
+    fireEvent.click(add);
+    expect(screen.getAllByRole("combobox", { name: "Attribute" })).toHaveLength(
+      10,
+    );
+  });
+
   test("a rule on a tool the agent no longer has is shown with a warning", async () => {
     const stub = stubEditorApi(
       {

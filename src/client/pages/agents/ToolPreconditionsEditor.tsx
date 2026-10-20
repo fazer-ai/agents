@@ -377,6 +377,9 @@ export function ToolPreconditionsEditor({
                   <Button
                     variant="secondary"
                     size="sm"
+                    disabled={
+                      row.conditions.length >= TOOL_PRECONDITION_CONDITIONS_MAX
+                    }
                     onClick={() =>
                       patch(i, {
                         conditions: [...row.conditions, blankCondition()],

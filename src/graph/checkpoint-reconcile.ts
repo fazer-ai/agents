@@ -1,4 +1,4 @@
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
@@ -167,19 +167,33 @@ export function reconcileWalkSql(table: CheckpointTable): string {
   SELECT thread_id FROM t ORDER BY n`;
 }
 
-// Of these threads, the ones whose newest checkpoint is younger than the grace ($2, milliseconds),
-// read from the newest row of each through the primary key. A thread with no checkpoint left (a
-// sweep took them, the blobs and writes are what is left) is old by definition; one whose age does
-// not read as a timestamp is young, so it is never taken for being old.
-export const RECENT_THREADS_SQL = `
-  SELECT x.thread_id FROM unnest($1::text[]) AS x(thread_id)
+// The age of each of these threads: the `ts` of its newest checkpoint, read from the newest row of
+// each through the primary key. A thread with no checkpoint left (a sweep took them, the blobs and
+// writes are what is left) has no row here.
+export const NEWEST_CHECKPOINT_SQL = `
+  SELECT x.thread_id, n.ts FROM unnest($1::text[]) AS x(thread_id)
    CROSS JOIN LATERAL (
      SELECT c.checkpoint->>'ts' AS ts FROM langgraph.checkpoints c
       WHERE c.thread_id = x.thread_id
-      ORDER BY c.checkpoint_ns DESC, c.checkpoint_id DESC LIMIT 1) n
-   WHERE CASE WHEN n.ts ~ '^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}'
-              THEN n.ts::timestamptz > now() - make_interval(secs => $2::double precision / 1000)
-              ELSE true END`;
+      ORDER BY c.checkpoint_ns DESC, c.checkpoint_id DESC LIMIT 1) n`;
+
+const ISO_TS = /^(\d{4}-\d{2}-\d{2})T\d{2}:\d{2}/;
+
+// Whether a thread whose newest checkpoint says `ts` is protected by the grace: younger than it, or
+// an age that does not read as a timestamp (decided here and not by a cast in SQL, which would fail
+// the whole batch on one bad row). A date that does not exist (`2026-02-31`) does not read either.
+export function withinGrace(
+  ts: string | null,
+  graceMs: number,
+  now: number = Date.now(),
+): boolean {
+  const m = ts === null ? null : ISO_TS.exec(ts);
+  if (ts === null || m === null) return true;
+  const at = Date.parse(ts);
+  if (Number.isNaN(at) || new Date(at).toISOString().slice(0, 10) !== m[1])
+    return true;
+  return at > now - graceMs;
+}
 
 export interface ReconcileOptions {
   base?: PrismaClient;
@@ -243,10 +257,12 @@ export async function reconcileCheckpointBatch(
   return checkpointTransaction(pool, guard, async (query) => {
     const recent = new Set(
       (
-        (await query(RECENT_THREADS_SQL, [candidates, graceMs])) as {
-          rows: { thread_id: string }[];
+        (await query(NEWEST_CHECKPOINT_SQL, [candidates])) as {
+          rows: { thread_id: string; ts: string | null }[];
         }
-      ).rows.map((r) => r.thread_id),
+      ).rows
+        .filter((r) => withinGrace(r.ts, graceMs))
+        .map((r) => r.thread_id),
     );
     const doomed = candidates.filter((id) => !recent.has(id));
     if (doomed.length === 0)
@@ -263,10 +279,10 @@ export async function reconcileCheckpointBatch(
 
 export type ReconcileTotals = Record<CheckpointTable, number>;
 
-// Held for a whole pass, on a connection of its own: a second pass, in this process or another
-// replica, finds it taken and returns at once, so two passes never delete the same rows at the same
-// time (deleting the same rows in two orders deadlocks one of them). A process that dies drops its
-// connection, and the lock with it.
+// Held for a whole pass, on the one connection the pass uses: a second pass, in this process or
+// another replica, finds it taken and returns at once, so two passes never delete the same rows at
+// the same time (deleting the same rows in two orders deadlocks one of them). A process that dies
+// drops its connection, and the lock with it.
 const PASS_LOCK = "fazerai:checkpoint-reconcile";
 
 // A whole pass: every table's key walked once, batch after batch, pausing after each batch that
@@ -286,8 +302,17 @@ export async function reconcileCheckpoints(
       [PASS_LOCK],
     );
     if (!got.rows[0]?.ok) return null;
+    // The batches run on the connection that holds the lock: asking the pool for a second one
+    // could wait forever on a pool of one, with every turn's checkpoints queued behind it.
+    const held: Pick<Pool, "connect"> = {
+      connect: async () =>
+        ({
+          query: lock.query.bind(lock),
+          release: () => {},
+        }) as unknown as PoolClient,
+    };
     try {
-      return await reconcileAll(pool, opts);
+      return await reconcileAll(held, opts);
     } finally {
       await lock
         .query("SELECT pg_advisory_unlock(hashtext($1))", [PASS_LOCK])

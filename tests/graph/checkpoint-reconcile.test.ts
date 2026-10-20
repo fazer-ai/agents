@@ -1,14 +1,15 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
-import type { Pool } from "pg";
+import { Pool } from "pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import {
-  RECENT_THREADS_SQL,
+  NEWEST_CHECKPOINT_SQL,
   reconcileCheckpointBatch,
   reconcileCheckpoints,
   reconcileWalkSql,
   threadOwner,
+  withinGrace,
 } from "@/graph/checkpoint-reconcile";
 import {
   CHECKPOINT_TABLES,
@@ -135,6 +136,21 @@ describe("whose thread it is, read from its id", () => {
     expect(threadOwner("4:1:ci")).toEqual({ kind: "other", tenantId: 4n });
     expect(threadOwner("x:1:2")).toBeNull();
     expect(threadOwner("")).toBeNull();
+  });
+});
+
+describe("the grace, read from a checkpoint's ts", () => {
+  const now = Date.parse("2026-10-20T12:00:00.000Z");
+  test("a timestamp older than the grace is not protected, a younger one is", () => {
+    expect(withinGrace("2026-10-20T10:00:00.000Z", HOUR, now)).toBe(false);
+    expect(withinGrace("2026-10-20T11:30:00.000Z", HOUR, now)).toBe(true);
+  });
+
+  test("an age that does not read as a timestamp is protected", () => {
+    expect(withinGrace(null, HOUR, now)).toBe(true);
+    expect(withinGrace("not a date", HOUR, now)).toBe(true);
+    expect(withinGrace("2026-99-01T00:00:00Z", HOUR, now)).toBe(true);
+    expect(withinGrace("2026-02-31T00:00:00Z", HOUR, now)).toBe(true);
   });
 });
 
@@ -314,6 +330,47 @@ describe.skipIf(!dbUp)("the checkpoint reconciler", () => {
     expect((await left([odd])).checkpoints).toBe(1);
   }, 60_000);
 
+  test("an ownerless thread with a timestamp-shaped but impossible age is kept, and the pass goes on", async () => {
+    const odd = `${goneTenant}:9:ci:5`;
+    const after = `${goneTenant}:9:ci:6`;
+    seeded.push(odd);
+    await cp.query(
+      `INSERT INTO langgraph.checkpoints (thread_id, checkpoint_ns, checkpoint_id, checkpoint, metadata)
+       VALUES ($1, '', 'c1', '{"ts": "2026-99-01T00:00:00Z"}'::jsonb, '{}'::jsonb)`,
+      [odd],
+    );
+    await seed([after]);
+
+    expect(await pass({ graceMs: 0 })).not.toBeNull();
+
+    expect((await left([odd])).checkpoints).toBe(1);
+    expect(await left([after])).toEqual(none);
+  }, 60_000);
+
+  // The pass holds its lock on a connection of the checkpointer's pool, which can be a pool of one.
+  test("a pass finishes on a pool of a single connection", async () => {
+    // A second checkout from this pool fails after the bound instead of waiting forever.
+    const one = new Pool({
+      connectionString: appUrl,
+      max: 1,
+      connectionTimeoutMillis: 5_000,
+    });
+    const goneIds = [`${goneTenant}:66:1`];
+    await seed(goneIds);
+    try {
+      expect(
+        await reconcileCheckpoints(one, {
+          pauseMs: 0,
+          scope: mine,
+          base: appDb,
+        }),
+      ).not.toBeNull();
+      expect(await left(goneIds)).toEqual(none);
+    } finally {
+      await one.end();
+    }
+  }, 60_000);
+
   test("what a sweep stopped between tables left behind goes too", async () => {
     const rest = `${goneTenant}:9:ci:8`;
     await seed([rest]);
@@ -420,9 +477,8 @@ describe.skipIf(!dbUp)("the checkpoint reconciler", () => {
         ),
       )),
       (
-        await cp.query(`EXPLAIN ${RECENT_THREADS_SQL}`, [
+        await cp.query(`EXPLAIN ${NEWEST_CHECKPOINT_SQL}`, [
           [`${base}:1:1`, `${base}:1:6`],
-          HOUR,
         ])
       ).rows,
     ].map((rows) => rows.map((r) => r["QUERY PLAN"]).join("\n"));

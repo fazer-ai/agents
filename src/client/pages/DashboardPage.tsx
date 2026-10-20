@@ -34,6 +34,7 @@ import {
   previousWindow,
   type Range,
   readFilters,
+  readUpTo,
   type Source,
   type Window,
   windowOf,
@@ -347,7 +348,7 @@ export function DashboardPage() {
   const [openedAt, reopen] = useOpenedAt(writeFilters(filters).toString());
   const win = windowOf(filters, openedAt);
   const prev = previousWindow(win, openedAt);
-  const query = apiQuery(filters, win);
+  const query = apiQuery(filters, readUpTo(win, openedAt));
   const prevQuery = prev ? apiQuery(filters, prev) : null;
 
   const sections = [

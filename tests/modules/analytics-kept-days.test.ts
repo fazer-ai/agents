@@ -661,6 +661,10 @@ describe.skipIf(!dbUp)("the kept days of the dashboard", () => {
       () => cutAt("Asia/Kathmandu", 7, 1, 5.5, { agentId: a1 }),
     ],
     [
+      "the whole history up to this instant, the way the console reads it",
+      () => ({ until: new Date(), tz: "UTC" }),
+    ],
+    [
       "the whole history",
       () => ({
         until: dayStart(addDays(localDay(Date.now(), "UTC"), 1), "UTC"),

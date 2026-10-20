@@ -192,6 +192,16 @@ export function previousWindow(
   };
 }
 
+// The window as the API reads it at `now`: one still running ends at `now`, the instant its previous
+// period is cut at, so both periods cover the same elapsed time however long the streams take to
+// start. Its days, and the drill-down links, keep the whole window.
+export function readUpTo(w: Window, now: Date): Window {
+  const running =
+    (!w.since || w.since.getTime() <= now.getTime()) &&
+    now.getTime() < w.until.getTime();
+  return running ? { ...w, until: now } : w;
+}
+
 // Every local day of a window, for charts that show the days with no data as zero. "All" starts at
 // the earliest day any series has.
 export function daysOf(w: Window, earliest?: string | null): string[] {

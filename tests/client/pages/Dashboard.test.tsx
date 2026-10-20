@@ -615,6 +615,10 @@ describe("one filter, in the URL, for every block", () => {
       cut.getMilliseconds(),
     );
     expect(Math.abs(Date.now() - weekLater.getTime())).toBeLessThan(60_000);
+    // The view's own period is read up to that same opening instant.
+    expect(new Date(String(current?.searchParams.get("until"))).getTime()).toBe(
+      weekLater.getTime(),
+    );
     expect(prev?.searchParams.get("blocks")).toBe("kpis,outcomes,costs");
   });
 

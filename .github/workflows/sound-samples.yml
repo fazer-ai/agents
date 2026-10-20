@@ -40,8 +40,9 @@ jobs:
           [ "$code" -eq 0 ] && exit 0
           [ "$code" -ne 3 ] && exit "$code"
           # One issue for a failure that lasts weeks: a comment on the open one, else a new one.
-          open=$(gh api "repos/$GH_REPO/issues?state=open&per_page=100" \
-            --jq "[.[] | select(.pull_request | not) | select(.title == env.TITLE)][0].number // empty")
+          open=$(gh api --paginate "repos/$GH_REPO/issues?state=open&per_page=100" \
+            --jq '.[] | select(.pull_request | not) | select(.title == env.TITLE) | .number')
+          open=${open%%$'\n'*}
           if [ -n "$open" ]; then
             gh issue comment "$open" --repo "$GH_REPO" --body-file "$RUNNER_TEMP/report.md"
           else

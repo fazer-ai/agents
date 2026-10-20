@@ -105,7 +105,7 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
     const inst = await seedChatwootInstance(suDb, {
       tenantId,
       accountId: 21,
-      baseUrl: "https://chat.example.com",
+      baseUrl: "https://chat.replay.example",
       adminToken: encryptJson("ADMIN"),
     });
     instanceId = inst.id;
@@ -915,7 +915,7 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
         {
           id: 900 + messageId,
           file_type: "audio",
-          data_url: "https://chat.example.com/audio.ogg",
+          data_url: "https://chat.replay.example/audio.ogg",
           transcribed_text: transcricao,
         },
       ],
@@ -1002,7 +1002,7 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
               {
                 id: 900 + messageId,
                 file_type: "audio",
-                data_url: "https://chat.example.com/audio.ogg",
+                data_url: "https://chat.replay.example/audio.ogg",
                 transcribed_text: transcricao,
               },
             ],

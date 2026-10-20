@@ -166,8 +166,8 @@ describe("the canonical form of a refused body sends what the original sent", ()
       {
         name: "t",
         method: "POST",
-        urlTemplate: "https://example.com/x",
-        allowedHosts: ["example.com"],
+        urlTemplate: "https://203.0.113.33/x",
+        allowedHosts: ["203.0.113.33"],
         headers: {},
         inputSchema: { valor: { type: "string", required: true } },
         body,
@@ -211,8 +211,8 @@ describe("a payload key that collides with Object.prototype", () => {
       {
         name: "t",
         method: "POST",
-        urlTemplate: "https://example.com/x",
-        allowedHosts: ["example.com"],
+        urlTemplate: "https://203.0.113.33/x",
+        allowedHosts: ["203.0.113.33"],
         headers: {},
         inputSchema: {},
         body,
@@ -284,8 +284,8 @@ describe("two kv rows on the same key are a fallback, not a collision", () => {
       {
         name: "t",
         method: "POST",
-        urlTemplate: "https://example.com/x",
-        allowedHosts: ["example.com"],
+        urlTemplate: "https://203.0.113.33/x",
+        allowedHosts: ["203.0.113.33"],
         headers: {},
         inputSchema: { opcional: { type: "string" } },
         body: BODY,

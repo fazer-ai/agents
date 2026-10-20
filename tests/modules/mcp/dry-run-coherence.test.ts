@@ -527,8 +527,8 @@ const TABLE: Record<string, Row> = {
     // the transport could never deliver.
     args: {
       name: "not a valid name!",
-      url_template: "https://example.com/x",
-      allowed_hosts: ["example.com"],
+      url_template: "https://203.0.113.36/x",
+      allowed_hosts: ["203.0.113.36"],
     },
     why: "name is not [A-Za-z0-9_-]{1,64}",
     also: [
@@ -536,7 +536,7 @@ const TABLE: Record<string, Row> = {
         args: {
           name: "ok_name",
           url_template: "not-a-url",
-          allowed_hosts: ["example.com"],
+          allowed_hosts: ["203.0.113.36"],
         },
         why: "a template `new URL` cannot parse once its placeholders are neutralized",
       },
@@ -929,7 +929,7 @@ describe.skipIf(!dbUp)("a preview vets the outbound URL its apply vets", () => {
     const hook = await suDb.webhookSubscription.create({
       data: {
         tenantId,
-        url: "https://example.com/hook",
+        url: "https://203.0.113.36/hook",
         events: ["heartbeat"],
       },
     });
@@ -939,7 +939,7 @@ describe.skipIf(!dbUp)("a preview vets the outbound URL its apply vets", () => {
         tenantId,
         name: "ssrf-fence",
         transport: "streamableHttp",
-        url: "https://example.com/mcp",
+        url: "https://203.0.113.36/mcp",
       },
     });
     connectionId = String(conn.id);
@@ -1217,8 +1217,8 @@ describe.skipIf(!dbUp)("a preview asks the questions that need a row", () => {
         tenantId,
         name: TAKEN,
         label: "taken",
-        urlTemplate: "https://example.com/x",
-        allowedHosts: ["example.com"],
+        urlTemplate: "https://203.0.113.36/x",
+        allowedHosts: ["203.0.113.36"],
       },
     });
     await suDb.mcpServerConnection.create({
@@ -1226,7 +1226,7 @@ describe.skipIf(!dbUp)("a preview asks the questions that need a row", () => {
         tenantId,
         name: TAKEN,
         transport: "streamableHttp",
-        url: "https://example.com/mcp",
+        url: "https://203.0.113.36/mcp",
       },
     });
     await suDb.vaultEntry.create({
@@ -1276,8 +1276,8 @@ describe.skipIf(!dbUp)("a preview asks the questions that need a row", () => {
       {
         name: TAKEN,
         label: "dup",
-        url_template: "https://example.com/x",
-        allowed_hosts: ["example.com"],
+        url_template: "https://203.0.113.36/x",
+        allowed_hosts: ["203.0.113.36"],
       },
     );
     expect(r.applied).toBe("refused");
@@ -1293,7 +1293,7 @@ describe.skipIf(!dbUp)("a preview asks the questions that need a row", () => {
       {
         name: TAKEN,
         transport: "streamableHttp",
-        url: "https://example.com/mcp",
+        url: "https://203.0.113.36/mcp",
       },
     );
     expect(r.applied).toBe("refused");
@@ -1349,7 +1349,7 @@ describe.skipIf(!dbUp)(
           tenantId,
           name: TAKEN,
           transport: "streamableHttp",
-          url: "https://example.com/a",
+          url: "https://203.0.113.36/a",
         },
       });
       const other = await suDb.mcpServerConnection.create({
@@ -1357,7 +1357,7 @@ describe.skipIf(!dbUp)(
           tenantId,
           name: `${TAKEN}-other`,
           transport: "streamableHttp",
-          url: "https://example.com/b",
+          url: "https://203.0.113.36/b",
         },
       });
       otherConnId = other.id;
@@ -1431,7 +1431,7 @@ describe.skipIf(!dbUp)(
           {
             connection_id: String(otherConnId),
             name: `${TAKEN}-other`,
-            url: "https://example.com/b2",
+            url: "https://203.0.113.36/b2",
           } as never,
           { base: appDb },
         ),
@@ -1444,7 +1444,7 @@ describe.skipIf(!dbUp)(
       const r = await both(
         (a) =>
           writeWebhooks.webhookCreate(principal(), a as never, { base: appDb }),
-        { url: "https://example.com/hook", events: [] },
+        { url: "https://203.0.113.36/hook", events: [] },
       );
       expect(r.applied).toBe("refused");
       expect(r.previewed).toBe("refused");
@@ -1454,7 +1454,7 @@ describe.skipIf(!dbUp)(
       const hook = await suDb.webhookSubscription.create({
         data: {
           tenantId,
-          url: "https://example.com/hook",
+          url: "https://203.0.113.36/hook",
           events: ["conversation.created"],
         },
       });
@@ -1685,7 +1685,7 @@ describe.skipIf(!dbUp)(
           tenantId,
           name: `ch-url-${process.pid}`,
           kind: "generic",
-          secret: encryptJson("https://example.com/alert"),
+          secret: encryptJson("https://203.0.113.36/alert"),
         },
       });
       const r = await both(
@@ -1730,7 +1730,7 @@ describe.skipIf(!dbUp)(
           tenantId,
           name: `upd-${process.pid}`,
           type: "webhook",
-          url: encryptJson("https://example.com/alert"),
+          url: encryptJson("https://203.0.113.36/alert"),
         },
       });
       const junk = await suDb.vaultEntry.create({
@@ -1768,7 +1768,7 @@ describe.skipIf(!dbUp)(
           tenantId,
           name: `ok-${process.pid}`,
           type: "webhook",
-          url: encryptJson("https://example.com/alert"),
+          url: encryptJson("https://203.0.113.36/alert"),
         },
       });
       const good = await suDb.vaultEntry.create({
@@ -1776,7 +1776,7 @@ describe.skipIf(!dbUp)(
           tenantId,
           name: `ok-url-${process.pid}`,
           kind: "generic",
-          secret: encryptJson("https://example.com/hook"),
+          secret: encryptJson("https://203.0.113.36/hook"),
         },
       });
       const previewed = await verdict(() =>
@@ -1900,8 +1900,8 @@ describe.skipIf(!dbUp)(
           tenantId,
           name: taken,
           label: "l",
-          urlTemplate: "https://example.com/x",
-          allowedHosts: ["example.com"],
+          urlTemplate: "https://203.0.113.36/x",
+          allowedHosts: ["203.0.113.36"],
         },
       });
       const mine = await suDb.toolDefinition.create({
@@ -1909,8 +1909,8 @@ describe.skipIf(!dbUp)(
           tenantId,
           name: `mine-${process.pid}`,
           label: "l",
-          urlTemplate: "https://example.com/y",
-          allowedHosts: ["example.com"],
+          urlTemplate: "https://203.0.113.36/y",
+          allowedHosts: ["203.0.113.36"],
         },
       });
       const r = await both(
@@ -1928,8 +1928,8 @@ describe.skipIf(!dbUp)(
           tenantId,
           name: own,
           label: "l",
-          urlTemplate: "https://example.com/z",
-          allowedHosts: ["example.com"],
+          urlTemplate: "https://203.0.113.36/z",
+          allowedHosts: ["203.0.113.36"],
         },
       });
       const previewed = await verdict(() =>
@@ -1952,8 +1952,8 @@ describe.skipIf(!dbUp)(
           tenantId,
           name: takenHttp,
           label: "l",
-          urlTemplate: "https://example.com/ct",
-          allowedHosts: ["example.com"],
+          urlTemplate: "https://203.0.113.36/ct",
+          allowedHosts: ["203.0.113.36"],
         },
       });
       const mine = await suDb.codeToolDefinition.create({
@@ -2184,8 +2184,8 @@ describe.skipIf(!dbUp)(
           tenantId,
           name: `grantable-${process.pid}`,
           label: "l",
-          urlTemplate: "https://example.com/g",
-          allowedHosts: ["example.com"],
+          urlTemplate: "https://203.0.113.36/g",
+          allowedHosts: ["203.0.113.36"],
         },
       });
       const previewed = await verdict(() =>

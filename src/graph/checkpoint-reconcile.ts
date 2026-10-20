@@ -1,6 +1,7 @@
-import type { Pool, PoolClient } from "pg";
+import { Client, type Pool } from "pg";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
+import { runtimePoolOptions } from "@/api/lib/pool-options";
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
 import {
@@ -18,9 +19,9 @@ import { getCheckpointPool } from "@/graph/checkpointer";
 import { parseDbId } from "@/lib/db-id";
 import { asSuperAdminOn } from "@/lib/tenancy";
 
-// The periodic pass over the checkpoint threads whose owner is gone (issue #1559). A teardown deletes
-// its threads by prefix (checkpoint-sweep.ts), but only the ones that exist while it runs: a turn that
-// writes after it, a teardown that dies before its last batch, and everything orphaned before the
+// The periodic pass over the checkpoint threads whose owner is gone. A teardown deletes its threads
+// by prefix (checkpoint-sweep.ts), but only the ones that exist while it runs: a turn that writes
+// after it, a teardown that dies before its last batch, and everything orphaned before the
 // teardowns swept at all are left behind, and nothing else points at them. This pass walks the
 // checkpoint key, reads who owns each thread from its id, and deletes the threads whose owner no
 // longer exists. docs/graph.md has the rest.
@@ -279,11 +280,27 @@ export async function reconcileCheckpointBatch(
 
 export type ReconcileTotals = Record<CheckpointTable, number>;
 
-// Held for a whole pass, on the one connection the pass uses: a second pass, in this process or
-// another replica, finds it taken and returns at once, so two passes never delete the same rows at
-// the same time (deleting the same rows in two orders deadlocks one of them). A process that dies
-// drops its connection, and the lock with it.
+// Held for a whole pass, on a connection of its own outside the checkpointer's pool: a second pass,
+// in this process or another replica, finds it taken and returns at once, so two passes never delete
+// the same rows at the same time (deleting the same rows in two orders deadlocks one of them). The
+// batches take a pool connection one at a time and give it back between them, so a pool of one is
+// shared with the turns instead of held by the pass. A process that dies drops the connection, and
+// the lock with it.
 const PASS_LOCK = "fazerai:checkpoint-reconcile";
+
+export type LockConnection = Pick<Client, "query" | "end">;
+
+async function connectLock(): Promise<LockConnection> {
+  const client = new Client(
+    runtimePoolOptions(config.langgraphDatabaseUrl ?? "", 1),
+  );
+  // A connection that drops mid-pass only loses the lock; it must not crash the process.
+  client.on("error", (err) => {
+    logger.warn({ err }, "checkpoint reconciler: the lock connection dropped");
+  });
+  await client.connect();
+  return client;
+}
 
 // A whole pass: every table's key walked once, batch after batch, pausing after each batch that
 // deleted something. Stops early, keeping what it did, when `shouldStop` answers true. Null when
@@ -293,33 +310,20 @@ export async function reconcileCheckpoints(
   opts: ReconcileOptions & {
     pauseMs?: number;
     shouldStop?: () => boolean;
+    lockConnection?: () => Promise<LockConnection>;
   } = {},
 ): Promise<ReconcileTotals | null> {
-  const lock = await pool.connect();
+  const lock = await (opts.lockConnection ?? connectLock)();
   try {
     const got = await lock.query<{ ok: boolean }>(
       "SELECT pg_try_advisory_lock(hashtext($1)) AS ok",
       [PASS_LOCK],
     );
     if (!got.rows[0]?.ok) return null;
-    // The batches run on the connection that holds the lock: asking the pool for a second one
-    // could wait forever on a pool of one, with every turn's checkpoints queued behind it.
-    const held: Pick<Pool, "connect"> = {
-      connect: async () =>
-        ({
-          query: lock.query.bind(lock),
-          release: () => {},
-        }) as unknown as PoolClient,
-    };
-    try {
-      return await reconcileAll(held, opts);
-    } finally {
-      await lock
-        .query("SELECT pg_advisory_unlock(hashtext($1))", [PASS_LOCK])
-        .catch(() => {});
-    }
+    return await reconcileAll(pool, opts);
   } finally {
-    lock.release();
+    // Closing the connection releases the lock.
+    await lock.end().catch(() => {});
   }
 }
 

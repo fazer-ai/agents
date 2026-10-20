@@ -695,9 +695,9 @@ const config = {
       100_000,
     ),
   },
-  // NOTE: The pass that deletes the checkpoint threads whose owner is gone (src/graph/checkpoint-reconcile.ts,
-  // issue #1559). It rides with the scheduler worker, so it runs where the scheduler runs. Operational
-  // knobs, not settings anyone tunes per tenant.
+  // NOTE: The pass that deletes the checkpoint threads whose owner is gone
+  // (src/graph/checkpoint-reconcile.ts). It rides with the scheduler worker, so it runs where the
+  // scheduler runs. Operational knobs, not settings anyone tunes per tenant.
   checkpointReconcile: {
     intervalMs: parseIntSetting(
       CHECKPOINT_RECONCILE_INTERVAL_MS,

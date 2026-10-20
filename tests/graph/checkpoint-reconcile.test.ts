@@ -21,7 +21,7 @@ import { getCheckpointPool } from "@/graph/checkpointer";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
-// THE CHECKPOINTS OF A THREAD WHOSE OWNER IS GONE ARE DELETED BY A PERIODIC PASS (issue #1559). The
+// THE CHECKPOINTS OF A THREAD WHOSE OWNER IS GONE ARE DELETED BY A PERIODIC PASS. The
 // rows are seeded straight in SQL under thread ids of the shapes the runtime writes, with the age the
 // pass reads (the newest checkpoint's `ts`), beside live threads that share every character but the
 // owner. Every pass here is scoped to this file's tenants: the walk covers the whole key, and other
@@ -370,6 +370,35 @@ describe.skipIf(!dbUp)("the checkpoint reconciler", () => {
       await one.end();
     }
   }, 60_000);
+
+  // A turn on the same pool gets its connection between two batches, not after the whole pass.
+  test("a pass gives the pool's only connection back between batches", async () => {
+    const one = new Pool({
+      connectionString: appUrl,
+      max: 1,
+      connectionTimeoutMillis: 5_000,
+    });
+    const goneIds = range(300, (i) => `${goneTenant}:55:${i}`);
+    await seed(goneIds);
+    let passDone = false;
+    try {
+      const running = reconcileCheckpoints(one, {
+        pauseMs: 100,
+        threads: 5,
+        scope: mine,
+        base: appDb,
+      }).finally(() => {
+        passDone = true;
+      });
+      const turn = await one.query<{ ok: number }>("SELECT 1 AS ok");
+      expect(turn.rows[0]?.ok).toBe(1);
+      expect(passDone).toBe(false);
+      expect(await running).not.toBeNull();
+      expect(await left(goneIds)).toEqual(none);
+    } finally {
+      await one.end();
+    }
+  }, 120_000);
 
   test("what a sweep stopped between tables left behind goes too", async () => {
     const rest = `${goneTenant}:9:ci:8`;

@@ -243,7 +243,7 @@ if (config.schedulerWorker.enabled) {
   void ensureAllSpendPolls().catch((error) =>
     logger.warn({ error }, "Failed to arm spend ceiling polls"),
   );
-  // NOTE: The pass that deletes the checkpoints of threads whose owner is gone (issue #1559): a
+  // NOTE: The pass that deletes the checkpoints of threads whose owner is gone: a
   // teardown sweeps only what exists while it runs, and a turn that writes after it leaves rows
   // nothing points at.
   startCheckpointReconciler();

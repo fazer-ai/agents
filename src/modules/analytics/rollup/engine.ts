@@ -128,24 +128,29 @@ export function filterKey(f: DashboardFilter): string {
   return f.audience ? `${key}|${f.audience}` : key;
 }
 
-// The local days a filter's window covers, when it starts and ends on local midnights of its zone.
-// Null when it does not: such a window is answered by the live readers, which take any instant.
-export function alignedDays(
-  f: DashboardFilter,
-): { tz: string; first: string | null; last: string | null } | null {
+// The local days a filter's window covers, when it starts on a local midnight of its zone. One that
+// ends inside a day (a previous period cut at the viewer's time of day) has that day as its last,
+// with `cut`: the day is computed up to that instant, never kept. Null when the start is not a
+// midnight: such a window is answered by the live readers, which take any instant.
+export interface DayWindow {
+  tz: string;
+  first: string | null;
+  last: string | null;
+  cut?: Date;
+}
+
+export function alignedDays(f: DashboardFilter): DayWindow | null {
   const tz = normalizeTimeZone(f.tz);
   let first: string | null = null;
-  let last: string | null = null;
   if (f.since) {
     first = localDay(f.since, tz);
     if (dayStart(first, tz).getTime() !== f.since.getTime()) return null;
   }
-  if (f.until) {
-    const end = localDay(f.until, tz);
-    if (dayStart(end, tz).getTime() !== f.until.getTime()) return null;
-    last = addDays(end, -1);
-  }
-  return { tz, first, last };
+  if (!f.until) return { tz, first, last: null };
+  const end = localDay(f.until, tz);
+  if (dayStart(end, tz).getTime() === f.until.getTime())
+    return { tz, first, last: addDays(end, -1) };
+  return { tz, first, last: end, cut: f.until };
 }
 
 // The section whose histogram a percentile's value cells belong to.
@@ -242,13 +247,13 @@ export class WindowLoad implements DayStore {
   // and shared by the merge after it (`figuresOf`); a stream has none, and each part its own budget.
   deadline = Number.POSITIVE_INFINITY;
   private base: PrismaClient;
-  private window: { tz: string; first: string | null; last: string | null };
+  private window: DayWindow;
 
   constructor(
     private ctx: TenantContext,
     private filter: DashboardFilter,
     sections: Section[],
-    window: { tz: string; first: string | null; last: string | null },
+    window: DayWindow,
     base: PrismaClient = metricsPrisma,
   ) {
     this.tz = window.tz;
@@ -425,7 +430,10 @@ export class WindowLoad implements DayStore {
     const ended = this.days.find(
       (d) => dayStart(addDays(d, 1), this.tz).getTime() > Date.now() - DAY_MS,
     );
-    const liveFrom = ended && ended < lastLive ? ended : lastLive;
+    const moving = ended && ended < lastLive ? ended : lastLive;
+    // A day cut short is computed with the live days, whatever its age: kept, it would be whole.
+    const short = this.window.cut ? this.window.last : null;
+    const liveFrom = short && short < moving ? short : moving;
     const cutoff = Date.now() - config.flowlog.retentionDays * 86_400_000;
     // The day the retention cutoff falls in still has its later lines: it is computed, as the live
     // reader would read it, and never kept, since the sweep is still emptying it.
@@ -733,7 +741,10 @@ export class WindowLoad implements DayStore {
       first: part.first,
       last: part.last,
       since: dayStart(part.first, this.tz),
-      until: dayStart(addDays(part.last, 1), this.tz),
+      until:
+        this.window.cut && part.last === this.window.last
+          ? this.window.cut
+          : dayStart(addDays(part.last, 1), this.tz),
     };
     const out: SectionRows = new Map();
     const wanted = new Set(this.sectionsOf(part.family));

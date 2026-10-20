@@ -160,16 +160,34 @@ export function windowOf(f: DashboardFilters, now: Date = new Date()): Window {
   };
 }
 
-// The period before: the same number of days, ending where this one starts. None for "all".
-export function previousWindow(w: Window): Window | null {
+// The period before: the same number of days, starting that many days earlier. A window still
+// running at `now` is compared up to the same local time of day, N days back: the last 7 days at
+// 10:00 against the 7 before them up to 10:00, never against whole days, which would read as a drop
+// every morning. The server computes that last day live and the whole ones from the days it keeps
+// (docs/dashboard.md, "Kept days"). None for "all".
+export function previousWindow(
+  w: Window,
+  now: Date = new Date(),
+): Window | null {
   if (!w.since || w.days === null) return null;
   const since = addDays(w.since, -w.days);
-  const lastDay = localDayKey(addDays(w.since, -1));
+  const until =
+    w.until.getTime() > now.getTime()
+      ? new Date(
+          now.getFullYear(),
+          now.getMonth(),
+          now.getDate() - w.days,
+          now.getHours(),
+          now.getMinutes(),
+          now.getSeconds(),
+          now.getMilliseconds(),
+        )
+      : w.since;
   return {
     since,
-    until: w.since,
+    until,
     firstDay: localDayKey(since),
-    lastDay,
+    lastDay: localDayKey(addDays(w.since, -1)),
     days: w.days,
   };
 }

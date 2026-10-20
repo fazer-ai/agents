@@ -562,6 +562,24 @@ function windowOf(
   };
 }
 
+// A window whose last day is cut at `hours` past its local midnight, the way a previous period ends
+// at the viewer's time of day.
+function cutAt(
+  tz: string,
+  fromDaysAgo: number,
+  toDaysAgo: number,
+  hours: number,
+  extra: Partial<DashboardFilter> = {},
+): DashboardFilter {
+  const t = localDay(Date.now(), tz);
+  return {
+    ...windowOf(tz, fromDaysAgo, toDaysAgo, extra),
+    until: new Date(
+      dayStart(addDays(t, -toDaysAgo), tz).getTime() + hours * 3_600_000,
+    ),
+  };
+}
+
 async function clearKept() {
   await suDb.$executeRaw`DELETE FROM dashboard_days WHERE tenant_id = ${tenantId}`;
 }
@@ -633,6 +651,14 @@ describe.skipIf(!dbUp)("the kept days of the dashboard", () => {
       "45 days, identified users",
       () =>
         windowOf("UTC", 44, 0, { source: "client", audience: "identified" }),
+    ],
+    [
+      "40 days ending at 13:00 a week back, São Paulo",
+      () => cutAt("America/Sao_Paulo", 46, 7, 13),
+    ],
+    [
+      "a week ending at 05:30 yesterday, Kathmandu, one agent",
+      () => cutAt("Asia/Kathmandu", 7, 1, 5.5, { agentId: a1 }),
     ],
     [
       "the whole history",
@@ -821,6 +847,33 @@ describe.skipIf(!dbUp)("the kept days of the dashboard", () => {
     expect(canon(last.figures.handoffs)).toEqual(
       canon(await live("handoffs", f)),
     );
+  });
+
+  test("a day cut short is computed up to its instant, never kept, and never read from a whole day kept before", async () => {
+    await clearKept();
+    const tz = "America/Sao_Paulo";
+    const f = cutAt(tz, 13, 7, 13);
+    const day = addDays(localDay(Date.now(), tz), -7);
+    // The whole day kept first, the way any view that holds it would keep it.
+    const whole = windowOf(tz, 7, 7);
+    await kept("kpis", whole);
+    const before = await suDb.$queryRaw<{ section: string; at: Date }[]>`
+      SELECT section, computed_at AS at FROM dashboard_days
+       WHERE tenant_id = ${tenantId} AND day = ${day}::date AND tz = ${tz} ORDER BY section`;
+    expect(before.length).toBeGreaterThan(0);
+    const expected = canon(await getKpis(ctx(), f, appDb));
+    // Not vacuous: the seed has conversations on both sides of 13:00.
+    expect(expected).not.toEqual(canon(await getKpis(ctx(), whole, appDb)));
+    expect(canon(await kept("kpis", f))).toEqual(expected);
+    const after = await suDb.$queryRaw<{ section: string; at: Date }[]>`
+      SELECT section, computed_at AS at FROM dashboard_days
+       WHERE tenant_id = ${tenantId} AND day = ${day}::date AND tz = ${tz} ORDER BY section`;
+    expect(after).toEqual(before);
+    // The days before it are read as kept, and the cut day is not added to them.
+    const [row] = await suDb.$queryRaw<{ n: number }[]>`
+      SELECT COUNT(DISTINCT day)::int AS n FROM dashboard_days
+       WHERE tenant_id = ${tenantId} AND section = 'conv.funnel' AND tz = ${tz}`;
+    expect(row?.n).toBe(7);
   });
 
   test("a window that is not whole days streams the live figures at once", async () => {

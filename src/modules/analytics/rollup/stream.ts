@@ -148,7 +148,7 @@ function settled(days: number): Progress {
 }
 
 // The same figures from the live readers, for a window the kept days cannot answer (one that does not
-// start and end on local midnights).
+// start on a local midnight).
 async function liveFigures(
   ctx: TenantContext,
   f: DashboardFilter,

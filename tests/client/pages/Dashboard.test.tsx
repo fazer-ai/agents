@@ -574,8 +574,8 @@ describe("one filter, in the URL, for every block", () => {
       expect(u.searchParams.get("source")).toBe("playground");
       expect(Boolean(u.searchParams.get("until"))).toBe(true);
     }
-    // One stream carries every block of the view; the previous period's, as long as this one and
-    // ending where it starts, carries what the comparisons need.
+    // One stream carries every block of the view; the previous period's, the same days a week
+    // earlier and cut at the time of day the view was opened, carries what the comparisons need.
     const [current, prev] = [...asks("/metrics/stream")].sort((a, b) =>
       String(b.searchParams.get("until")).localeCompare(
         String(a.searchParams.get("until")),
@@ -592,9 +592,26 @@ describe("one filter, in the URL, for every block", () => {
       "labels",
       "outcomes",
     ]);
-    expect(prev?.searchParams.get("until")).toBe(
-      current?.searchParams.get("since"),
+    const since = new Date(String(current?.searchParams.get("since")));
+    const prevSince = new Date(String(prev?.searchParams.get("since")));
+    const cut = new Date(String(prev?.searchParams.get("until")));
+    expect(prevSince.getTime()).toBe(
+      new Date(
+        since.getFullYear(),
+        since.getMonth(),
+        since.getDate() - 7,
+      ).getTime(),
     );
+    const weekLater = new Date(
+      cut.getFullYear(),
+      cut.getMonth(),
+      cut.getDate() + 7,
+      cut.getHours(),
+      cut.getMinutes(),
+      cut.getSeconds(),
+      cut.getMilliseconds(),
+    );
+    expect(Math.abs(Date.now() - weekLater.getTime())).toBeLessThan(60_000);
     expect(prev?.searchParams.get("blocks")).toBe("kpis,outcomes,costs");
   });
 

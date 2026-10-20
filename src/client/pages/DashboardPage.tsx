@@ -331,9 +331,14 @@ export function DashboardPage() {
       setParams(writeFilters({ ...filters, ...patch }), { replace: true });
   }, [agents, inboxes, filters, setParams]);
 
-  // The window is recomputed per render from the filters; its day keys are stable within a day.
-  const win = windowOf(filters);
-  const prev = previousWindow(win);
+  // The window is recomputed per render from the filters; its day keys are stable within a day. The
+  // previous period ends at the time of day the view was opened, held until the filters change: a
+  // fresh instant on every render would restart its stream.
+  const viewKey = writeFilters(filters).toString();
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a new view is a new opening.
+  const openedAt = useMemo(() => new Date(), [viewKey]);
+  const win = windowOf(filters, openedAt);
+  const prev = previousWindow(win, openedAt);
   const query = apiQuery(filters, win);
   const prevQuery = prev ? apiQuery(filters, prev) : null;
 

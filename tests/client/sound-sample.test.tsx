@@ -191,6 +191,28 @@ describe("sound samples", () => {
     expect(pauses).toBe(before + 1);
   });
 
+  test("the same preset in both fields: only the control pressed shows Stop, and the other takes it over", async () => {
+    await open({ toolSound: "typing" });
+    const lookup = screen.getByRole("button", {
+      name: "Play a sample of Typing",
+    });
+    const menu = await openList("Background");
+    fireEvent.click(
+      within(menu).getByRole("menuitemcheckbox", {
+        name: "Play a sample of Typing",
+      }),
+    );
+    expect(lookup.getAttribute("aria-pressed")).toBe("false");
+    fireEvent.click(lookup);
+    expect(played).toEqual([`${CDN}/typing.mp3`, `${CDN}/typing.mp3`]);
+    expect(lookup.getAttribute("aria-pressed")).toBe("true");
+    expect(
+      within(menu)
+        .getByRole("menuitemcheckbox", { name: "Play a sample of Typing" })
+        .getAttribute("aria-checked"),
+    ).toBe("false");
+  });
+
   test("leaving the tab stops the sample it started", async () => {
     await open({ toolSound: "typing" });
     fireEvent.click(

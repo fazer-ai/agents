@@ -700,7 +700,6 @@ export function TtsOptionPicker({
       hint: i.label && i.label !== i.id ? i.id : undefined,
     }));
   }, [provider, kind, credentialRef, baseURL]);
-  const player = useSamplePlayer();
   // The sample to play for a voice, in the console's language when the voice has one.
   const sampleOf = (id: string) => {
     const voice = samples.get(id);
@@ -712,7 +711,8 @@ export function TtsOptionPicker({
   // language) and leaving the page stop its sample, so it never plays on with no control left to stop
   // it; a sample another picker started is left alone, even when it is the same voice.
   const me = useRef(Symbol("voice picker")).current;
-  const play = (url: string) => player.toggle(url, me);
+  const player = useSamplePlayer(me);
+  const play = (url: string) => player.toggle(url);
   // biome-ignore lint/correctness/useExhaustiveDependencies: each listing or language change is the trigger.
   useEffect(() => () => stopSampleOf(me), [loaderKey, i18n.language]);
   // Choosing another voice stops this picker's sample of the old one, whose control is gone from the

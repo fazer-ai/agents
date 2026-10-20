@@ -666,8 +666,8 @@ function SoundPicker<T extends CallBackgroundSound | CallToolSound>({
   presetLabel: (v: T) => string;
 }) {
   const { t } = useTranslation();
-  const player = useSamplePlayer();
   const me = useRef(Symbol("sound picker")).current;
+  const player = useSamplePlayer(me);
   // Leaving the tab stops a sample this field started.
   useEffect(() => () => stopSampleOf(me), [me]);
   const playLabel = (name: string, on: boolean) =>
@@ -709,7 +709,7 @@ function SoundPicker<T extends CallBackgroundSound | CallToolSound>({
                 : t("editor.voiceSamplePlayShort", "Play sample"),
               pressed: on,
               icon: icon(on),
-              onPress: () => player.toggle(url, me),
+              onPress: () => player.toggle(url),
             };
           }}
         />
@@ -719,7 +719,7 @@ function SoundPicker<T extends CallBackgroundSound | CallToolSound>({
           type="button"
           aria-pressed={chosenOn}
           aria-label={playLabel(presetLabel(value), chosenOn)}
-          onClick={() => player.toggle(chosenUrl, me)}
+          onClick={() => player.toggle(chosenUrl)}
           className={cn(
             "inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-md border border-border-hover px-2.5 text-sm text-text-muted transition-colors hover:bg-bg-hover hover:text-text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-soft",
             { "text-accent": chosenOn },

@@ -54,6 +54,15 @@ export const CALL_TOOL_SOUNDS = [
 ] as const;
 export type CallToolSound = (typeof CALL_TOOL_SOUNDS)[number];
 
+// Where ElevenLabs serves each sound preset's audio, so the console can play it before it is chosen.
+// The path is not documented: the agents API names it only for elevator1 (`default_hold_audio_url`),
+// and every other preset answers on the same pattern. A preset that stops answering frees its control.
+export function callSoundSampleUrl(
+  preset: CallBackgroundSound | CallToolSound,
+): string {
+  return `https://eleven-public-cdn-common.elevenlabs.io/convai/ambient-audio-assets/${preset}.mp3`;
+}
+
 // The voice models that speak Portuguese, as ElevenLabs describes them: Flash the fastest, v4 Turbo
 // the most expressive for agents, Multilingual v2 the most natural and the slowest. `eleven_flash_v2`
 // and `eleven_turbo_v2` are English only, and `eleven_turbo_v2_5` is deprecated in favour of Flash.

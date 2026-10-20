@@ -147,6 +147,21 @@ describe("the window and the period before it", () => {
     expect(p?.until.getTime()).toBe(new Date(2026, 8, 29, 15, 30).getTime());
   });
 
+  test("a period that has not started is compared with whole days, ending where it starts", () => {
+    const w = windowOf(
+      {
+        ...DEFAULT_FILTERS,
+        range: "custom",
+        from: "2026-10-25",
+        to: "2026-10-30",
+      },
+      now,
+    );
+    const p = previousWindow(w, now);
+    expect(p?.firstDay).toBe("2026-10-19");
+    expect(p?.until.getTime()).toBe(w.since?.getTime());
+  });
+
   test("a period already over is compared with whole days, ending where it starts", () => {
     const w = windowOf(
       {

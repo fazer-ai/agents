@@ -172,7 +172,7 @@ export function previousWindow(
   if (!w.since || w.days === null) return null;
   const since = addDays(w.since, -w.days);
   const until =
-    w.until.getTime() > now.getTime()
+    w.since.getTime() <= now.getTime() && now.getTime() < w.until.getTime()
       ? new Date(
           now.getFullYear(),
           now.getMonth(),

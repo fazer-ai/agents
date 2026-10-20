@@ -3547,6 +3547,7 @@
       "debounce": "Agrupamento de mensagens",
       "delivery": "Entrega interrompida",
       "embed": "Embedding",
+      "foreign_send": "Mensagem que o agente não enviou",
       "generate": "Geração",
       "guardrail": "Verificação de guardrails",
       "handoff": "Transferência",

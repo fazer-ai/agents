@@ -252,14 +252,61 @@ describe("ChatwootClient", () => {
 
   // And OMITTED otherwise, rather than sent empty: the fork stores the bag verbatim, so an
   // always-present key would be written on every message whether or not anything reads it.
-  test("sendMessage sends no content_attributes when no id was asked for", async () => {
+  // Every create carries a send name, so a message from the managed bot without one is known not to
+  // be the engine's (foreignBotMessageOf).
+  test("sendMessage names the send even when no id was asked for", async () => {
     const { fetchImpl, calls } = stub(200, { id: 1 });
     const client = await createChatwootClient(baseConfig, {
       fetchImpl,
       assertSafe: passthroughSafe,
     });
     await client.sendMessage(42, "olá");
-    expect(calls[0]?.body).not.toHaveProperty("content_attributes");
+    await client.sendPrivateNote(42, "nota");
+    for (const c of calls) {
+      const ca = (c.body as { content_attributes?: Record<string, unknown> })
+        .content_attributes;
+      expect(Object.keys(ca ?? {})).toEqual(["fazer_ai_send_id"]);
+      expect(String(ca?.fazer_ai_send_id)).toMatch(/^engine:[0-9a-f-]{36}$/);
+    }
+  });
+
+  test("sendTemplate and sendFileAttachment name the send", async () => {
+    const bodies: unknown[] = [];
+    const fetchImpl = (async (_u: string, init?: RequestInit) => {
+      bodies.push(
+        init?.body instanceof FormData
+          ? JSON.parse(String(init.body.get("content_attributes")))
+          : JSON.parse(String(init?.body)).content_attributes,
+      );
+      return {
+        ok: true,
+        status: 200,
+        text: async () => "{}",
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const client = await createChatwootClient(baseConfig, {
+      fetchImpl,
+      assertSafe: passthroughSafe,
+    });
+    await client.sendTemplate(42, {
+      content: "Oi",
+      name: "lembrete",
+      category: "UTILITY",
+      language: "pt_BR",
+      processedParams: {},
+    });
+    await client.sendFileAttachment(
+      42,
+      new ArrayBuffer(4),
+      "a.pdf",
+      "application/pdf",
+    );
+    for (const ca of bodies) {
+      expect(String((ca as Record<string, unknown>)?.fazer_ai_send_id)).toMatch(
+        /^engine:[0-9a-f-]{36}$/,
+      );
+    }
+    expect(bodies).toHaveLength(2);
   });
 
   test("sendPrivateNote sets private:true", async () => {
@@ -851,10 +898,11 @@ describe("ChatwootClient", () => {
       { transcribedText: "Confirmei para quinta", sendId: "reply:k:1" },
     );
     const forms = bodies as FormData[];
-    expect(forms[0]?.get("content_attributes")).toBe(
-      JSON.stringify({ fazer_ai_reply_text: whole }),
-    );
-    expect(forms[1]?.has("content_attributes")).toBe(false);
+    const bag = (i: number) =>
+      JSON.parse(String(forms[i]?.get("content_attributes")));
+    expect(bag(0).fazer_ai_reply_text).toBe(whole);
+    expect(bag(1)).not.toHaveProperty("fazer_ai_reply_text");
+    expect(bag(1).fazer_ai_send_id).toMatch(/^engine:/);
     // The voice note's name, so its refusal can tell the text after it is the same reply.
     expect(forms[2]?.get("content_attributes")).toBe(
       JSON.stringify({ fazer_ai_send_id: "reply:k:1" }),
@@ -886,9 +934,11 @@ describe("ChatwootClient", () => {
         byOperator: true,
       },
     );
-    expect((bodies[0] as FormData).get("content_attributes")).toBe(
-      JSON.stringify({ fazer_ai_reply_by_operator: true }),
+    const bag = JSON.parse(
+      String((bodies[0] as FormData).get("content_attributes")),
     );
+    expect(bag.fazer_ai_reply_by_operator).toBe(true);
+    expect(bag).not.toHaveProperty("fazer_ai_reply_text");
   });
 
   // THE SHAPE THIS ENDPOINT ACTUALLY ANSWERS. The fork's view is `json.agent_bot do ... if

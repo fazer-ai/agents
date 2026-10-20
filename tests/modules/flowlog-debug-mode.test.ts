@@ -663,6 +663,8 @@ async function flowFiles(): Promise<string[]> {
 const NO_LONG_STRING: Record<string, string> = {
   // `{ command: "teste" | "reset", reason: one of three literals, personaBot/routeBot: number }`.
   "modules/flowlog/command.ts": "closed vocabulary",
+  // `{ agent, routeBot, messageId }`, ids only; the sentence is a constant and not `detail`.
+  "modules/flowlog/foreign-send.ts": "closed vocabulary",
   // `contactAuthFlowEvent`: outcome, a boolean, an HTTP status number and a slug from a closed map.
   // The customer's text travels to the endpoint and nowhere else, which that file argues at length.
   "modules/conversations/reengage.ts": "closed vocabulary",

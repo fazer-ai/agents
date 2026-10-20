@@ -612,6 +612,26 @@ export function isNewHumanAgentMessage(e: NormalizedChatwootEvent): boolean {
   return e.event === "message_created" && isHumanAgentMessage(e);
 }
 
+// A message the customer can read that was posted with the managed Agent Bot's token by something
+// other than the engine: every engine create carries a send id (`engineSendId`), so a message from
+// this route's own bot without one was not ours. The agent never sees it (bot outgoing stays out of
+// the memory thread, and the debounce boundary counts it as ours), which is why it is reported.
+// Private notes do not reach the customer, and `message_created` only: an update is not a new thing said.
+export function foreignBotMessageOf(
+  e: NormalizedChatwootEvent,
+  routeAgentBotId: number | null,
+): { conversationId: number; messageId: number | null } | null {
+  const m = e.message;
+  if (e.event !== "message_created" || !m) return null;
+  if (routeAgentBotId === null || e.conversationId === null) return null;
+  if (m.messageType !== "outgoing" || m.private === true) return null;
+  if (m.sender?.type !== "agent_bot" || m.sender.id !== routeAgentBotId) {
+    return null;
+  }
+  if (m.sendId !== null && m.sendId !== undefined) return null;
+  return { conversationId: e.conversationId, messageId: m.id };
+}
+
 // The literal the fork writes for an outgoing message that came back FROM the WhatsApp session.
 // Named once because two predicates and a doc page compare against it, and a second spelling of a
 // magic string is how a comparison goes quietly false.

@@ -14,6 +14,7 @@ import {
   CHATWOOT_REPLY_BY_OPERATOR_KEY,
   CHATWOOT_REPLY_TEXT_KEY,
   CHATWOOT_SEND_ID_KEY,
+  engineSendId,
 } from "./constants";
 
 // Chatwoot Application API client with the dual-identity profiles: the bot token runs the gate loop
@@ -635,8 +636,7 @@ export class ChatwootClient {
       private?: boolean;
       messageType?: ChatwootMessageType;
       // A name for this send, echoed back by Chatwoot so a delivery can be proved without comparing
-      // text. Passed only by callers with a resend to decide: elsewhere there is nothing to
-      // reconcile, and a key written for nobody to read is debt.
+      // text. Passed by callers with a resend to decide; every other create gets `engineSendId()`.
       sendId?: string;
     } = {},
   ): Promise<unknown> {
@@ -648,13 +648,12 @@ export class ChatwootClient {
         content,
         private: opts.private ?? false,
         message_type: opts.messageType ?? "outgoing",
-        // NOTE: Omitted rather than sent empty, so a send with no name leaves the bag untouched (the
-        // fork stores `content_attributes` verbatim). Only an opaque send name goes here: this bag
-        // reaches the CONTACT on a website inbox (the widget's messages jbuilder renders it, and
-        // `Message#push_event_data` ships it), so nothing about the account's own state belongs in it.
-        ...(opts.sendId === undefined
-          ? {}
-          : { content_attributes: { [CHATWOOT_SEND_ID_KEY]: opts.sendId } }),
+        // NOTE: Only an opaque send name goes here: this bag reaches the CONTACT on a website inbox
+        // (the widget's messages jbuilder renders it, and `Message#push_event_data` ships it), so
+        // nothing about the account's own state belongs in it.
+        content_attributes: {
+          [CHATWOOT_SEND_ID_KEY]: opts.sendId ?? engineSendId(),
+        },
       },
     );
   }
@@ -707,20 +706,16 @@ export class ChatwootClient {
     // NOTE: The whole reply, only when the speech is not it: the text that replaces a refused voice
     // note reads it from here. A JSON string, which is how the builder takes the bag on a multipart
     // create.
-    if (opts.replyText || opts.byOperator || opts.sendId) {
-      form.append(
-        "content_attributes",
-        JSON.stringify({
-          ...(opts.replyText
-            ? { [CHATWOOT_REPLY_TEXT_KEY]: opts.replyText }
-            : {}),
-          ...(opts.byOperator
-            ? { [CHATWOOT_REPLY_BY_OPERATOR_KEY]: true }
-            : {}),
-          ...(opts.sendId ? { [CHATWOOT_SEND_ID_KEY]: opts.sendId } : {}),
-        }),
-      );
-    }
+    form.append(
+      "content_attributes",
+      JSON.stringify({
+        ...(opts.replyText
+          ? { [CHATWOOT_REPLY_TEXT_KEY]: opts.replyText }
+          : {}),
+        ...(opts.byOperator ? { [CHATWOOT_REPLY_BY_OPERATOR_KEY]: true } : {}),
+        [CHATWOOT_SEND_ID_KEY]: opts.sendId || engineSendId(),
+      }),
+    );
     const res = await this.fetchImpl(
       `${this.accountBase}/conversations/${conversationId}/messages`,
       {
@@ -760,6 +755,10 @@ export class ChatwootClient {
     form.append("attachments[]", new File([bytes], fileName, { type: mime }));
     form.append("message_type", "outgoing");
     if (opts.caption) form.append("content", opts.caption);
+    form.append(
+      "content_attributes",
+      JSON.stringify({ [CHATWOOT_SEND_ID_KEY]: engineSendId() }),
+    );
     const res = await this.fetchImpl(
       `${this.accountBase}/conversations/${conversationId}/messages`,
       {
@@ -844,6 +843,7 @@ export class ChatwootClient {
       {
         content: p.content,
         message_type: "outgoing",
+        content_attributes: { [CHATWOOT_SEND_ID_KEY]: engineSendId() },
         template_params: {
           name: p.name,
           category: p.category,

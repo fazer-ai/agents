@@ -140,6 +140,8 @@ const FLOWLOG_READERS: Record<string, number> = {
   "tests/modules/alert-rate.test.ts": 1,
   // NOTE: The capacity lines one conversation produced, read by its conversation.
   "tests/modules/capacity-wait-db.test.ts": 1,
+  // NOTE: The lines a message on the bot token wrote, read by its conversation.
+  "tests/modules/foreign-send.test.ts": 1,
   // NOTE: The clip line a code tool's call wrote, read by the turn that made it.
   "tests/graph/code-tool-clip.test.ts": 1,
   "tests/graph/duplicate-tool-name-visible.test.ts": 1,

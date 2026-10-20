@@ -72,6 +72,22 @@ describe("the weekly sound sample check", () => {
     ]);
   });
 
+  test("an error status is a failure even when it says audio", async () => {
+    const locked = callSoundSampleUrl("office1");
+    const { fetchImpl } = cdn((url) =>
+      url === locked
+        ? new Response(null, {
+            status: 403,
+            headers: { "content-type": "audio/mpeg" },
+          })
+        : audio(),
+    );
+    const { problems } = await soundSampleProblems(fetchImpl);
+    expect(problems.map((p) => [p.preset, p.answer])).toEqual([
+      ["office1", "403 audio/mpeg"],
+    ]);
+  });
+
   test("a request that fails is reported, and the others are still checked", async () => {
     const down = callSoundSampleUrl("city");
     const { asked, fetchImpl } = cdn((url) =>

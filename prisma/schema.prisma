@@ -200,6 +200,7 @@ model Tenant {
   dashboardViewerSessions       DashboardViewerSession[]
   dashboardViewerVisits         DashboardViewerVisit[]
   dashboardViewerCodes          DashboardViewerCode[]
+  dashboardEmbedLinks           DashboardEmbedLink[]
 
   @@map("tenants")
 }
@@ -1599,9 +1600,10 @@ model Dashboard {
   createdAt      DateTime @default(now()) @map("created_at")
   updatedAt      DateTime @updatedAt @map("updated_at")
 
-  tenant Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  panels DashboardPanel[]
-  visits DashboardViewerVisit[]
+  tenant     Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  panels     DashboardPanel[]
+  visits     DashboardViewerVisit[]
+  embedLinks DashboardEmbedLink[]
 
   @@unique([tenantId, slug])
   @@map("dashboards")
@@ -1708,6 +1710,30 @@ model DashboardViewerVisit {
   @@unique([dashboardId, viewerId])
   @@index([tenantId, dashboardId])
   @@map("dashboard_viewer_visits")
+}
+
+// A link that opens one dashboard inside another app's iframe, signed in by the link itself
+// (docs/dashboards.md, "Embed links"): a Chatwoot Dashboard App is a URL in a frame, so the only
+// credential it can carry is the URL. The token travels in the fragment and is stored as its sha256;
+// it reads that dashboard only. `origins` are the https origins allowed to frame it. Rotating replaces
+// the hash on the same row; revoking stamps `revokedAt`, and the next request is refused.
+model DashboardEmbedLink {
+  id          BigInt    @id @default(autoincrement())
+  tenantId    BigInt    @map("tenant_id")
+  dashboardId BigInt    @map("dashboard_id")
+  label       String
+  origins     String[]  @default([])
+  tokenHash   String    @unique @map("token_hash")
+  lastUsedAt  DateTime? @map("last_used_at")
+  revokedAt   DateTime? @map("revoked_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  tenant    Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  dashboard Dashboard @relation(fields: [dashboardId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, dashboardId])
+  @@map("dashboard_embed_links")
 }
 
 // A one-time sign-in code sent by e-mail. Only an HMAC of it is stored; a wrong attempt is charged to

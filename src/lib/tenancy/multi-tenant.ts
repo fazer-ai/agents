@@ -65,6 +65,7 @@ const TENANT_SCOPED_MODELS = new Set<string>([
   "DashboardViewerSession",
   "DashboardViewerVisit",
   "DashboardViewerCode",
+  "DashboardEmbedLink",
   "PromptVariantAssignment",
   "LlmUsage",
   "ExecutionLog",

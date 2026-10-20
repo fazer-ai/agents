@@ -170,6 +170,27 @@ describe("sound samples", () => {
     expect(button.getAttribute("aria-pressed")).toBe("false");
   });
 
+  test("choosing another option stops the sample of the one it replaced, and picking the one playing keeps it", async () => {
+    await open({});
+    let menu = await openList("Background");
+    fireEvent.click(
+      within(menu).getByRole("menuitemcheckbox", {
+        name: "Play a sample of Restaurant",
+      }),
+    );
+    fireEvent.click(within(menu).getByRole("menuitem", { name: /Restaurant/ }));
+    await act(async () => {});
+    const playing = screen.getByRole("button", {
+      name: "Stop the sample of Restaurant",
+    });
+    expect(playing.getAttribute("aria-pressed")).toBe("true");
+    const before = pauses;
+    menu = await openList("Background");
+    fireEvent.click(within(menu).getByRole("menuitem", { name: /None/ }));
+    await act(async () => {});
+    expect(pauses).toBe(before + 1);
+  });
+
   test("leaving the tab stops the sample it started", async () => {
     await open({ toolSound: "typing" });
     fireEvent.click(

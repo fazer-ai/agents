@@ -682,6 +682,9 @@ function SoundPicker<T extends CallBackgroundSound | CallToolSound>({
     );
   const chosenUrl = value ? callSoundSampleUrl(value) : null;
   const chosenOn = chosenUrl !== null && player.playing === chosenUrl;
+  // A new choice stops a sample of the preset it replaced; one heard on its row, then picked, plays on.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the chosen preset is the trigger.
+  useEffect(() => stopSampleOf(me, chosenUrl ?? undefined), [value]);
   return (
     <div className="flex w-full items-center gap-1.5">
       <div className="min-w-0 flex-1">

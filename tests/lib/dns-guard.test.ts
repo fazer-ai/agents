@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { fileURLToPath } from "node:url";
 import { failOnRefusedLookups } from "@/../tests/dns-guard";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 
@@ -44,10 +45,11 @@ describe("the suite's DNS guard", () => {
   // The check above, as the runner applies it: only a real `bun test` sees whether the preload
   // registered it, and a test that swallowed the refusal would otherwise pass.
   test("a run whose test swallowed the refusal fails, naming the host", async () => {
-    const file = new URL("../utils/dns-guard-swallowed.ts", import.meta.url)
-      .pathname;
+    const file = fileURLToPath(
+      new URL("../utils/dns-guard-swallowed.ts", import.meta.url),
+    );
     const proc = Bun.spawn(["bun", "test", file], {
-      cwd: new URL("../..", import.meta.url).pathname,
+      cwd: fileURLToPath(new URL("../..", import.meta.url)),
       env: { ...process.env, ALLOW_NO_DB: "1" },
       stdout: "pipe",
       stderr: "pipe",

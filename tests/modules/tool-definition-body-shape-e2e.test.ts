@@ -46,8 +46,8 @@ describe("the body that motivated the refusal", () => {
       {
         name: "lookup",
         method: "POST",
-        urlTemplate: "https://example.com/lookup",
-        allowedHosts: ["example.com"],
+        urlTemplate: "https://203.0.113.34/lookup",
+        allowedHosts: ["203.0.113.34"],
         headers: {},
         // NOTE: A field the body never mentions, which is what makes this conclusive: if the body were
         // a template with a substitution gap, this key could not appear at all.
@@ -108,8 +108,8 @@ function toolInput(name: string, body?: unknown) {
     name,
     label: name,
     method: "POST" as const,
-    urlTemplate: "https://example.com/lookup",
-    allowedHosts: ["example.com"],
+    urlTemplate: "https://203.0.113.34/lookup",
+    allowedHosts: ["203.0.113.34"],
     inputSchema: INPUT_SCHEMA,
     ...(body !== undefined ? { body } : {}),
   };
@@ -212,8 +212,8 @@ describe.skipIf(!dbUp)(
         principal(),
         {
           name: "mcp_plain_body",
-          url_template: "https://example.com/lookup",
-          allowed_hosts: ["example.com"],
+          url_template: "https://203.0.113.34/lookup",
+          allowed_hosts: ["203.0.113.34"],
           input_schema: INPUT_SCHEMA,
           body: NESTED_BODY,
         } as never,
@@ -231,8 +231,8 @@ describe.skipIf(!dbUp)(
         principal(),
         {
           name: "Lookup_CPF",
-          url_template: "https://example.com/lookup",
-          allowed_hosts: ["example.com"],
+          url_template: "https://203.0.113.34/lookup",
+          allowed_hosts: ["203.0.113.34"],
         } as never,
         { base: appDb },
       );

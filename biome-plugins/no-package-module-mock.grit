@@ -6,14 +6,22 @@
 // covers a second package that file adds: tests/api/features/auth/google.service.test.ts stubs
 // `jose` with a `jwtVerify` that DELEGATES to the real one unless a test overrides it for its own
 // call, so the leaked function still verifies real tokens downstream (asserted there by a round
-// trip after `beforeEach`).
+// trip after `beforeEach`). The second pair is tests/dns-guard.ts with `node:dns/promises`: a
+// preload, so the process-wide reach is the point, and its `lookup` is a plain function, not a mock
+// to reset. It answers reserved names as not found, delegates `localhost`, and refuses the rest.
 language js;
 
 `mock.module($spec, $_)` as $call where {
     $spec <: or { r"\"[^./@\"][^\"]*\"", r"\"@[^/\"][^\"]*\"", r"\"@\"" },
-    not and {
-        $filename <: r"(?:[\s\S]*/)?tests/api/features/auth/google\.service\.test\.ts",
-        $spec <: r"\"jose\""
+    not or {
+        and {
+            $filename <: r"(?:[\s\S]*/)?tests/api/features/auth/google\.service\.test\.ts",
+            $spec <: r"\"jose\""
+        },
+        and {
+            $filename <: r"(?:[\s\S]*/)?tests/dns-guard\.ts",
+            $spec <: r"\"node:dns/promises\""
+        }
     },
     register_diagnostic(span = $call, message = "This replaces a third-party package for the whole process, permanently, and a `mockReset()` on it leaves the function returning `undefined`. Do not stub the package; if you must, make the stub delegate to the real implementation and argue for the pair in biome-plugins/no-package-module-mock.grit.")
 }

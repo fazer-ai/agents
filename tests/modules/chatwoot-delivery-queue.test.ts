@@ -354,7 +354,7 @@ describe.skipIf(!dbUp)("draining the rows the ack stored", () => {
     const inst = await seedChatwootInstance(suDb, {
       tenantId,
       accountId: 1,
-      baseUrl: "https://delivery-queue.example.com",
+      baseUrl: "https://delivery-queue.example",
       adminToken: encryptJson("ADMIN"),
     });
     instanceId = inst.id;

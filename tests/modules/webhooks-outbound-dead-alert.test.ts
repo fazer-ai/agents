@@ -121,7 +121,7 @@ describe.skipIf(!dbUp)("a dead outbound delivery reaches the operator", () => {
       await suDb.webhookSubscription.create({
         data: {
           tenantId,
-          url: "https://example.com/receiver",
+          url: "https://203.0.113.35/receiver",
           events: ["conversion"],
           enabled: true,
         },
@@ -132,7 +132,7 @@ describe.skipIf(!dbUp)("a dead outbound delivery reaches the operator", () => {
         data: {
           tenantId,
           // Refused by the real SSRF guard (plain http), so it dies without a single attempt.
-          url: "http://example.com/insecure",
+          url: "http://203.0.113.35/insecure",
           events: ["conversion"],
           enabled: true,
         },
@@ -296,7 +296,7 @@ describe.skipIf(!dbUp)("a dead outbound delivery reaches the operator", () => {
       {
         name: `subscribable-${process.pid}`,
         type: "webhook",
-        url: "https://example.com/alerts",
+        url: "https://203.0.113.35/alerts",
         minLevel: "error",
         stages: ["webhook"],
       },

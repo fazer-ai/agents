@@ -17,6 +17,19 @@ export interface AgentTool {
   run: (args: Json) => unknown | Promise<unknown>;
 }
 
+// A destination the agent can take the user to by clicking through the page as they would: the
+// `data-fazer-ai-action` names to press in order, and on a phone, where the menu is laid out
+// differently, the names to press there.
+export interface AgentPath {
+  name: string;
+  // What the destination is, for the agent choosing where to go.
+  description: string;
+  steps: string[];
+  phone?: string[];
+  // How long each step's element may take to appear after the previous click, in milliseconds.
+  stepTimeout?: number;
+}
+
 interface ClientToolSpec {
   name: string;
   description: string;
@@ -67,6 +80,21 @@ export interface AgentTexts {
   voiceEmpty: string;
   voiceUnavailable: string;
   voiceFailed: string;
+  pageAction: string;
+  pagePoint: string;
+  pageNavigate: string;
+  backToChat: string;
+  history: string;
+  back: string;
+  historyLoading: string;
+  historyEmpty: string;
+  historyFailed: string;
+  historyMore: string;
+  untitled: string;
+  transcriptLoading: string;
+  transcriptFailed: string;
+  transcriptMore: string;
+  notKept: string;
 }
 
 const TEXTS: Record<"en" | "pt", AgentTexts> = {
@@ -98,6 +126,22 @@ const TEXTS: Record<"en" | "pt", AgentTexts> = {
     voiceEmpty: "Nothing could be heard in the recording.",
     voiceUnavailable: "This assistant does not take voice messages.",
     voiceFailed: "The voice message could not be transcribed.",
+    pageAction: "Using the page",
+    pagePoint: "Showing you on the page",
+    pageNavigate: "Taking you there",
+    backToChat: "Back to the conversation",
+    history: "Conversations",
+    back: "Back to the conversation",
+    historyLoading: "Loading the conversations…",
+    historyEmpty: "No earlier conversations yet.",
+    historyFailed: "Could not load the conversations.",
+    historyMore: "Show older",
+    untitled: "Conversation",
+    transcriptLoading: "Loading the conversation…",
+    transcriptFailed: "Could not load this conversation's messages.",
+    transcriptMore: "Show earlier messages",
+    notKept:
+      "The earlier messages of this conversation were not kept. You can go on from here.",
   },
   pt: {
     open: "Abrir o assistente",
@@ -127,16 +171,52 @@ const TEXTS: Record<"en" | "pt", AgentTexts> = {
     voiceEmpty: "Não deu para ouvir nada na gravação.",
     voiceUnavailable: "Este assistente não recebe mensagens de voz.",
     voiceFailed: "Não foi possível transcrever a mensagem de voz.",
+    pageAction: "Usando a página",
+    pagePoint: "Mostrando na página",
+    pageNavigate: "Levando você até lá",
+    backToChat: "Voltar à conversa",
+    history: "Conversas",
+    back: "Voltar para a conversa",
+    historyLoading: "Carregando as conversas…",
+    historyEmpty: "Nenhuma conversa anterior ainda.",
+    historyFailed: "Não foi possível carregar as conversas.",
+    historyMore: "Mostrar mais antigas",
+    untitled: "Conversa",
+    transcriptLoading: "Carregando a conversa…",
+    transcriptFailed: "Não foi possível carregar as mensagens desta conversa.",
+    transcriptMore: "Mostrar mensagens anteriores",
+    notKept:
+      "As mensagens anteriores desta conversa não foram guardadas. Dá para continuar daqui.",
   },
 };
 
 // A turn can ask for tools several times before it answers; this bounds an agent that keeps asking.
 const MAX_ROUNDS = 8;
-// How much of the conversation is kept in the browser to show again after a reload.
-const LOG_MAX = 40;
 const HIGHLIGHT_TOOL = "highlight_element";
 const HIGHLIGHT_MS = 6000;
 const TARGET_ATTR = "data-fazer-ai-target";
+// What the agent may click is a list of its own, apart from what it may only point at: a page marks
+// an element with this attribute to let the agent press it for the user.
+const ACTION_TOOL = "click_element";
+const ACTION_ATTR = "data-fazer-ai-action";
+// A path is played in one call: each step's element may take this long to appear after the previous
+// click (a route change, a menu that opens), by default and at most.
+const NAVIGATE_TOOL = "navigate_to";
+const STEP_TIMEOUT_MS = 5000;
+const STEP_TIMEOUT_MAX_MS = 30_000;
+const STEP_POLL_MS = 50;
+// When the host turns them on, how long the element shows outlined before the click, how long the
+// drawn pointer takes to reach it, and how long the pointer stays after the click.
+const ACTION_HIGHLIGHT_MS = 900;
+const CURSOR_MS = 600;
+const CURSOR_LINGER_MS = 1500;
+// On a phone the open panel covers the page, so while the agent acts on it the panel shrinks to a
+// strip, in this long a transition, below this width.
+const MORPH_MS = 220;
+// How long the strip holds after the agent points at the page and after it clicks. Read at the call,
+// so a test can shorten the deadline it asserts instead of waiting it out; the widget never changes it.
+export const STRIP_HOLD_MS = { point: HIGHLIGHT_MS, click: CURSOR_LINGER_MS };
+const PHONE_QUERY = "(max-width: 640px)";
 // A voice message: stopped and sent by itself at the ceiling, with a warning shown before it, and one
 // shorter than the floor is a tap, not a message.
 const RECORDING_MAX_MS = 120_000;
@@ -271,6 +351,25 @@ const STYLE = `
   :host(:not([mode="inline"])) .panel { inset: 0; width: auto; height: auto; border-radius: 0; }
 }
 .panel[hidden], .fab[hidden] { display: none; }
+.strip {
+  display: none; align-items: center; gap: 10px; width: 100%; padding: 10px 12px; border: 0; cursor: pointer;
+  background: none; color: inherit; font: inherit; text-align: left;
+}
+.strip .lines { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.strip .strip-step { font-size: 12px; color: var(--fazer-ai-muted); }
+.strip .strip-line { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.strip .strip-line:empty { display: none; }
+.strip svg { flex: none; color: var(--fazer-ai-muted); }
+@media (max-width: 640px) {
+  :host(:not([mode="inline"])) .panel.reduced > :not(.strip) { display: none; }
+  :host(:not([mode="inline"])) .panel.reduced .strip { display: flex; }
+  :host(:not([mode="inline"])) .panel.reduced {
+    inset: auto 8px calc(8px + env(safe-area-inset-bottom)) 8px; border-radius: var(--fazer-ai-radius);
+  }
+  :host(:not([mode="inline"])) .panel.reduced[data-at="top"] {
+    inset: calc(8px + env(safe-area-inset-top)) 8px auto 8px;
+  }
+}
 @media (max-width: 640px) {
   :host(:not([mode="inline"])) .fab[aria-expanded="true"] { display: none; }
 }
@@ -280,6 +379,20 @@ header h2 { margin: 0; font-size: 14px; font-weight: 600; flex: 1; }
 .ghost:hover { color: var(--fazer-ai-text); background: var(--fazer-ai-surface); }
 .ghost:disabled { opacity: .5; cursor: default; }
 .challenge { display: flex; justify-content: center; }
+.log[hidden], .threads[hidden], form[hidden], .challenge[hidden], header button[hidden] { display: none; }
+.threads { flex: 1; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 2px; font-size: 14px; }
+.threads ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.thread { width: 100%; display: flex; flex-direction: column; gap: 2px; text-align: left; background: none; border: 0; border-radius: 8px; padding: 10px 12px; color: inherit; font: inherit; cursor: pointer; }
+.thread:hover, .thread:focus-visible { background: var(--fazer-ai-surface); }
+.thread[aria-current="true"] { background: var(--fazer-ai-surface); }
+.thread[aria-current="true"] .thread-title { font-weight: 600; }
+.thread-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.thread-time { color: var(--fazer-ai-muted); font-size: 12px; }
+.threads .status, .threads .empty { padding: 10px 12px; }
+.threads .failed, .log .failed { color: var(--fazer-ai-error); }
+.threads .more { align-self: center; margin-top: 6px; }
+.log .more { align-self: center; }
+.icon.small { width: 28px; height: 28px; border-radius: 6px; }
 .log { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 10px; font-size: 14px; line-height: 1.45; }
 .empty { color: var(--fazer-ai-muted); margin: 0; }
 .msg { padding: 8px 12px; border-radius: calc(var(--fazer-ai-radius) - 4px); max-width: 88%; overflow-wrap: anywhere; }
@@ -326,6 +439,12 @@ const ICON_MIC_MARK =
   '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v5"/></svg>';
 const ICON_SEND =
   '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4z"/></svg>';
+const ICON_GROW =
+  '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>';
+const ICON_HISTORY =
+  '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5M12 7v5l3 2"/></svg>';
+const ICON_BACK =
+  '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>';
 const ICON_CLOSE =
   '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>';
 
@@ -336,6 +455,38 @@ interface Suspended {
 }
 
 type VoiceState = "idle" | "asking" | "recording" | "transcribing";
+
+// One of the user's earlier conversations, as the instance lists them.
+interface ListedThread {
+  threadId: string;
+  title: string | null;
+  lastTurnAt: string;
+}
+
+// The list of earlier conversations on screen: what has loaded, where the next page starts, and
+// whether that page is on its way.
+interface ThreadList {
+  state: "idle" | "loading" | "ready" | "failed";
+  items: ListedThread[];
+  next: string | null;
+  more: boolean;
+}
+
+const NO_THREADS: ThreadList = {
+  state: "idle",
+  items: [],
+  next: null,
+  more: false,
+};
+
+// A reopened conversation's messages as the instance kept them: whether they have loaded, whether
+// they are all there (`recorded`), where the earlier page starts, and whether it is on its way.
+interface Transcript {
+  state: "loading" | "ready" | "failed";
+  recorded: boolean;
+  before: string | null;
+  older: boolean;
+}
 
 // The recording under way: the microphone's stream, whose tracks are stopped whatever ends it.
 interface Recording {
@@ -353,7 +504,7 @@ interface Recording {
 }
 
 export class FazerAiAgent extends HTMLElement {
-  static observedAttributes = ["lang", "token-url", "mode"];
+  static observedAttributes = ["lang", "token-url", "mode", "history"];
 
   // An app that already holds the JWT in the browser hands it over here instead of a token-url.
   // Replacing it is a change of identity, as `identityChanged()` describes.
@@ -378,7 +529,25 @@ export class FazerAiAgent extends HTMLElement {
   }
 
   #tools = new Map<string, AgentTool>();
+  #paths = new Map<string, AgentPath>();
   #context: Json | (() => Json) | null = null;
+  // The drawn pointer of `action-cursor`, where it last stopped, and the timer that hides it.
+  #cursor: HTMLElement | null = null;
+  #cursorAt: { x: number; y: number } | null = null;
+  #cursorTimer: ReturnType<typeof setTimeout> | undefined;
+  // Bumped when the identity changes or the widget leaves the page: a click still waiting on its
+  // outline or pointer would otherwise land with the next user's session, or with nobody watching.
+  #actions = 0;
+  // While the agent acts on the page from a phone: the timer that grows the panel back, and the
+  // transition running between the two sizes.
+  #growTimer: ReturnType<typeof setTimeout> | undefined;
+  #growBy = 0;
+  #morphing: Animation | null = null;
+  #following = 0;
+  #phoneQuery: MediaQueryList | null = null;
+  #onPhoneChange = (e: MediaQueryListEvent) => {
+    if (!e.matches) this.#settle();
+  };
   #tokenProvider?: () => string | Promise<string>;
   #texts: Partial<AgentTexts> = {};
   // The anonymous session's credential, held here as well as in storage, so a browser that denies
@@ -408,9 +577,20 @@ export class FazerAiAgent extends HTMLElement {
   // token request it started never shows one, wherever that request was.
   #challengeEpoch = 0;
   #messages: Message[] = [];
-  // Where the open thread's messages start on screen: what came before belongs to a thread that was
-  // dropped, and is not kept for it.
-  #logFrom = 0;
+  // The open conversation's messages as the instance kept them, read when it is reopened (after a
+  // reload, from the list, at a hand-over): loading, how far back they go, and whether they are all
+  // there. Null for a conversation begun on screen.
+  #transcript: Transcript | null = null;
+  // Bumped on every load and whenever the open conversation changes, so a late page is dropped.
+  #transcriptRun = 0;
+  // The load in flight, which a message waits for before it is sent: the instance would record it
+  // first, and the page read after would show it twice.
+  #transcriptPending: Promise<void> | null = null;
+  // What the panel shows: the conversation, or the list of the user's earlier ones.
+  #view: "chat" | "threads" = "chat";
+  #threads: ThreadList = NO_THREADS;
+  // Bumped on every load of the list and on leaving it, so an answer for an earlier load is dropped.
+  #threadsRun = 0;
   #busy = false;
   #open = false;
   #voice: VoiceState = "idle";
@@ -423,6 +603,11 @@ export class FazerAiAgent extends HTMLElement {
     fab: HTMLButtonElement;
     panel: HTMLElement;
     title: HTMLElement;
+    back: HTMLButtonElement;
+    history: HTMLButtonElement;
+    threads: HTMLElement;
+    challenge: HTMLElement;
+    form: HTMLFormElement;
     reset: HTMLButtonElement;
     close: HTMLButtonElement;
     log: HTMLElement;
@@ -435,6 +620,10 @@ export class FazerAiAgent extends HTMLElement {
     recTime: HTMLElement;
     recLabel: HTMLElement;
     voiceStatus: HTMLElement;
+    strip: HTMLElement;
+    stripStep: HTMLElement;
+    stripLine: HTMLElement;
+    stripBack: HTMLElement;
   };
 
   constructor() {
@@ -442,9 +631,11 @@ export class FazerAiAgent extends HTMLElement {
     this.#root = this.attachShadow({ mode: "open" });
     this.#root.innerHTML = `<style>${STYLE}</style>
 <button class="fab" type="button" aria-controls="panel" aria-expanded="false">${ICON_CHAT}</button>
-<section class="panel" id="panel" hidden role="dialog">
-  <header><h2></h2><button class="ghost reset" type="button"></button><button class="ghost close" type="button">${ICON_CLOSE}</button></header>
+<section class="panel" id="panel" hidden role="dialog" tabindex="-1">
+  <button class="strip" type="button"><span class="lines" aria-live="polite"><span class="strip-step"></span><span class="strip-line"></span></span><span class="sr strip-back"></span>${ICON_GROW}</button>
+  <header><button class="icon small back" type="button" hidden>${ICON_BACK}</button><h2></h2><button class="icon small history" type="button">${ICON_HISTORY}</button><button class="ghost reset" type="button"></button><button class="ghost close" type="button">${ICON_CLOSE}</button></header>
   <div class="log" aria-live="polite"></div>
+  <div class="threads" hidden></div>
   <div class="challenge"><slot name="challenge"></slot></div>
   <form>
     <div class="rec" hidden><button class="icon rec-cancel" type="button">${ICON_CLOSE}</button><span class="dot" aria-hidden="true"></span><span class="time" role="timer">00:00</span><span class="label"></span><button class="icon rec-send" type="button">${ICON_SEND}</button></div>
@@ -458,6 +649,11 @@ export class FazerAiAgent extends HTMLElement {
       fab: q(".fab"),
       panel: q(".panel"),
       title: q("h2"),
+      back: q(".back"),
+      history: q(".history"),
+      threads: q(".threads"),
+      challenge: q(".challenge"),
+      form: q("form"),
       reset: q(".reset"),
       close: q(".close"),
       log: q(".log"),
@@ -470,6 +666,10 @@ export class FazerAiAgent extends HTMLElement {
       recTime: q(".rec .time"),
       recLabel: q(".rec .label"),
       voiceStatus: q(".voice-status"),
+      strip: q(".strip"),
+      stripStep: q(".strip-step"),
+      stripLine: q(".strip-line"),
+      stripBack: q(".strip-back"),
     };
     this.#els.fab.addEventListener("click", () =>
       this.#open ? this.close() : this.open(),
@@ -478,12 +678,27 @@ export class FazerAiAgent extends HTMLElement {
     this.#els.recCancel.addEventListener("click", () => this.#cancelVoice());
     this.#els.recSend.addEventListener("click", () => void this.#finishVoice());
     this.#els.panel.addEventListener("keydown", (e) => {
-      if (e.key !== "Escape" || this.#voice === "idle") return;
+      if (e.key !== "Escape") return;
+      if (this.#view === "threads") {
+        e.preventDefault();
+        e.stopPropagation();
+        this.#showChat();
+        return;
+      }
+      if (this.#voice === "idle") return;
       e.preventDefault();
       e.stopPropagation();
       this.#cancelVoice();
     });
+    this.#els.history.addEventListener("click", () => this.#showThreads());
+    this.#els.back.addEventListener("click", () => this.#showChat());
     this.#els.close.addEventListener("click", () => this.close());
+    // A tap or a key on the strip moves focus into the conversation it brings back, without opening
+    // the phone's keyboard as the textarea would.
+    this.#els.strip.addEventListener("click", () => {
+      this.#grow();
+      this.#els.panel.focus();
+    });
     this.#els.reset.addEventListener("click", () => this.reset());
     this.#els.input.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
@@ -509,6 +724,11 @@ export class FazerAiAgent extends HTMLElement {
 
   disconnectedCallback() {
     this.#cancelVoice();
+    this.#actions++;
+    this.#cursor?.remove();
+    this.#settle();
+    this.#phoneQuery?.removeEventListener("change", this.#onPhoneChange);
+    this.#phoneQuery = null;
   }
 
   attributeChangedCallback(
@@ -519,19 +739,62 @@ export class FazerAiAgent extends HTMLElement {
     // NOTE: absent is a way of signing in too (an anonymous session), so adding the URL changes who
     // the widget speaks for as much as replacing it does.
     if (name === "token-url" && old !== value) this.identityChanged();
-    if (name === "mode") this.#open = value === "inline";
+    if (name === "mode") {
+      this.#open = value === "inline";
+      this.#settle();
+    }
     this.#paint();
     if (this.isConnected) this.#restore();
   }
 
+  // Before the agent clicks a marked element, outline it for a moment (`action-highlight`) and move a
+  // drawn pointer onto it (`action-cursor`). Both are off unless the host sets them.
+  get actionHighlight(): boolean {
+    return this.hasAttribute("action-highlight");
+  }
+
+  set actionHighlight(on: boolean) {
+    this.toggleAttribute("action-highlight", on);
+  }
+
+  get actionCursor(): boolean {
+    return this.hasAttribute("action-cursor");
+  }
+
+  set actionCursor(on: boolean) {
+    this.toggleAttribute("action-cursor", on);
+  }
+
   tool(def: AgentTool): void {
-    if (def.name === HIGHLIGHT_TOOL)
-      throw new Error(`${HIGHLIGHT_TOOL} is built in`);
+    if (BUILT_IN_TOOLS.includes(def.name))
+      throw new Error(`${def.name} is built in`);
     this.#tools.set(def.name, def);
   }
 
   untool(name: string): void {
     this.#tools.delete(name);
+  }
+
+  path(def: AgentPath): void {
+    const names = (list: unknown) =>
+      Array.isArray(list) &&
+      list.length > 0 &&
+      list.every((step) => typeof step === "string" && step !== "");
+    if (typeof def?.name !== "string" || !def.name)
+      throw new Error("a path needs a name");
+    if (!names(def.steps))
+      throw new Error(`path ${def.name} needs at least one step`);
+    if (def.phone !== undefined && !names(def.phone))
+      throw new Error(`path ${def.name} has an empty phone variant`);
+    this.#paths.set(def.name, {
+      ...def,
+      steps: [...def.steps],
+      phone: def.phone && [...def.phone],
+    });
+  }
+
+  unpath(name: string): void {
+    this.#paths.delete(name);
   }
 
   context(value: Json | (() => Json) | null): void {
@@ -540,6 +803,7 @@ export class FazerAiAgent extends HTMLElement {
 
   open(): void {
     this.#open = true;
+    this.#settle();
     this.#paint();
     this.#els.input.focus();
     this.#restore();
@@ -556,6 +820,7 @@ export class FazerAiAgent extends HTMLElement {
   // resumes whatever that user has stored.
   identityChanged(): void {
     this.#identity++;
+    this.#actions++;
     this.#cancelVoice();
     this.#cancelChallenge?.();
     this.#adoptHandOver = true;
@@ -564,13 +829,16 @@ export class FazerAiAgent extends HTMLElement {
     this.#threadId = undefined;
     this.#resetPending = false;
     this.#messages = [];
-    this.#logFrom = 0;
+    this.#forgetTranscript();
+    this.#view = "chat";
+    this.#threads = NO_THREADS;
+    this.#threadsRun++;
     this.#busy = false;
     if (this.#els) {
+      this.#settle();
       this.#els.input.value = "";
       this.#fitInput();
-      this.#syncSend();
-      this.#renderLog();
+      this.#paint();
     }
     if (this.isConnected) this.#restore();
   }
@@ -592,33 +860,38 @@ export class FazerAiAgent extends HTMLElement {
       });
   }
 
+  // "New conversation": the next message starts a thread. The one set aside stays in the list of
+  // earlier conversations, where it reopens with its messages.
   reset(): void {
     if (this.#busy) return;
     this.#adoptHandOver = false;
     this.#threadId = undefined;
     const key = this.#threadKey();
-    if (key) {
-      safeStorage(() => localStorage.removeItem(key));
-      safeStorage(() => localStorage.removeItem(`${key}#log`));
-    } else this.#resetPending = true;
+    if (key) safeStorage(() => localStorage.removeItem(key));
+    else this.#resetPending = true;
     this.#messages = [];
-    this.#logFrom = 0;
-    this.#renderLog();
+    this.#forgetTranscript();
+    this.#view = "chat";
+    this.#threadsRun++;
+    this.#paint();
+  }
+
+  #lang(): string {
+    return this.getAttribute("lang") || navigator.language || "en";
   }
 
   #t(): AgentTexts {
-    const lang = (
-      this.getAttribute("lang") ||
-      navigator.language ||
-      "en"
-    ).toLowerCase();
+    const lang = this.#lang().toLowerCase();
     return { ...TEXTS[lang.startsWith("pt") ? "pt" : "en"], ...this.#texts };
   }
 
   #paint(): void {
     // NOTE: a microphone left recording behind a hidden panel is one the person cannot see, however
     // the panel came to be hidden (`close()`, leaving inline mode).
-    if (!this.#open) this.#cancelVoice();
+    if (!this.#open) {
+      this.#cancelVoice();
+      this.#settle();
+    }
     const t = this.#t();
     const fab = this.#els.fab;
     fab.setAttribute("aria-label", this.#open ? t.close : t.open);
@@ -629,9 +902,26 @@ export class FazerAiAgent extends HTMLElement {
     }
     this.#els.panel.hidden = !this.#open;
     this.#els.panel.setAttribute("aria-label", t.title);
-    this.#els.title.textContent = t.title;
+    const historyOn = this.getAttribute("history") !== "off";
+    if (!historyOn && this.#view === "threads") {
+      this.#view = "chat";
+      this.#threadsRun++;
+    }
+    const listing = this.#view === "threads";
+    this.#els.title.textContent = listing ? t.history : t.title;
+    this.#els.history.hidden = !historyOn || listing;
+    this.#els.history.setAttribute("aria-label", t.history);
+    this.#els.back.hidden = !listing;
+    this.#els.back.setAttribute("aria-label", t.back);
+    this.#els.log.hidden = listing;
+    this.#els.challenge.hidden = listing;
+    this.#els.form.hidden = listing;
+    this.#els.threads.hidden = !listing;
+    this.#els.threads.setAttribute("aria-label", t.history);
+    if (listing) this.#renderThreads();
     this.#els.reset.textContent = t.reset;
     this.#els.close.setAttribute("aria-label", t.close);
+    this.#els.stripBack.textContent = t.backToChat;
     this.#els.input.placeholder = t.placeholder;
     this.#els.input.setAttribute("aria-label", t.placeholder);
     this.#els.send.textContent = t.send;
@@ -647,6 +937,7 @@ export class FazerAiAgent extends HTMLElement {
     this.#els.send.disabled = this.#busy || !this.#els.input.value.trim();
     this.#els.mic.disabled = this.#busy;
     this.#els.reset.disabled = this.#busy || this.#voice !== "idle";
+    this.#els.history.disabled = this.#busy || this.#voice !== "idle";
   }
 
   // The textarea as tall as what is typed, up to `INPUT_MAX_PX`; past it, it scrolls. The borders
@@ -920,16 +1211,35 @@ export class FazerAiAgent extends HTMLElement {
     return { error: t.voiceFailed };
   }
 
-  #renderLog(): void {
+  // Kept at the newest message, or, with `fromBottom`, that far above the end, so a page put ahead
+  // of what was on screen leaves it where it was.
+  #renderLog(fromBottom?: number): void {
     const t = this.#t();
     const log = this.#els.log;
     log.replaceChildren();
-    if (!this.#messages.length) {
+    const line = (className: string, text: string) => {
       const p = document.createElement("p");
-      p.className = "empty";
-      p.textContent = t.empty;
+      p.className = className;
+      p.textContent = text;
       log.appendChild(p);
-    }
+      return p;
+    };
+    const kept = this.#transcript;
+    if (kept?.state === "loading")
+      line("status", t.transcriptLoading).setAttribute("role", "status");
+    else if (kept?.state === "failed")
+      line("status failed", t.transcriptFailed);
+    else if (kept?.before) {
+      const more = document.createElement("button");
+      more.type = "button";
+      more.className = "ghost more";
+      more.textContent = t.transcriptMore;
+      more.disabled = kept.older || this.#busy;
+      more.addEventListener("click", () => void this.#loadOlder());
+      log.appendChild(more);
+    } else if (kept?.state === "ready" && !kept.recorded)
+      line(this.#messages.length ? "status" : "empty", t.notKept);
+    if (!this.#messages.length && !kept) line("empty", t.empty);
     for (const m of this.#messages) {
       if (m.kind === "step") {
         const p = document.createElement("p");
@@ -958,7 +1268,8 @@ export class FazerAiAgent extends HTMLElement {
       p.textContent = t.thinking;
       log.appendChild(p);
     }
-    log.scrollTop = log.scrollHeight;
+    log.scrollTop = log.scrollHeight - (fromBottom ?? 0);
+    this.#els.stripLine.textContent = latestLine(this.#messages);
   }
 
   #push(...m: Message[]): void {
@@ -1077,16 +1388,17 @@ export class FazerAiAgent extends HTMLElement {
       this.#anonSession = undefined;
       safeStorage(() => localStorage.removeItem(key));
       const newest = threadIds[0];
-      if (
+      const adopt =
         newest !== undefined &&
         this.#threadId === undefined &&
-        this.#adoptHandOver
-      ) {
+        this.#adoptHandOver;
+      if (adopt) {
         this.#threadId = newest;
         const threadKey = this.#threadKey();
         if (threadKey)
           safeStorage(() => localStorage.setItem(threadKey, newest));
-        this.#adoptLog(newest);
+        // NOTE: awaited, as obtaining the token is, so a message waiting to be sent goes after it.
+        await this.#loadTranscript(newest, token);
       }
     } catch {
       // NOTE: the hand-over is a convenience; the signed-in turn goes on without it.
@@ -1220,12 +1532,16 @@ export class FazerAiAgent extends HTMLElement {
         ? this.#messages.filter((m) => m.kind === "user").slice(-1)
         : [];
       this.#messages = asking;
-      this.#logFrom = 0;
+      this.#forgetTranscript();
       // NOTE: a reset was the previous owner's; one pressed before any token said whose stays.
       this.#adoptHandOver = true;
+      this.#settle();
+      // NOTE: the list on screen was the previous user's.
+      this.#view = "chat";
+      this.#threads = NO_THREADS;
+      this.#threadsRun++;
       this.#els.input.value = "";
-      this.#syncSend();
-      this.#renderLog();
+      this.#paint();
     }
     this.#owner = sub;
     this.#threadId = undefined;
@@ -1234,58 +1550,283 @@ export class FazerAiAgent extends HTMLElement {
     if (this.#resetPending) {
       this.#resetPending = false;
       safeStorage(() => localStorage.removeItem(key));
-      safeStorage(() => localStorage.removeItem(`${key}#log`));
       return;
     }
     this.#threadId = safeStorage(() => localStorage.getItem(key)) ?? undefined;
-    const earlier = this.#threadId ? readLog(key, this.#threadId) : [];
-    if (earlier.length) {
-      this.#messages = [...earlier, ...this.#messages];
-      this.#logFrom = 0;
-      this.#renderLog();
-    }
+    // NOTE: with the token just obtained, which a load started from inside obtaining it must use.
+    if (this.#threadId && this.#token)
+      void this.#loadTranscript(this.#threadId, this.#token);
   }
 
-  // The log of a thread the instance just handed over to this user, kept under the anonymous owner
-  // it had: shown ahead of what is on screen and moved under this owner. Found by the thread, whose
-  // id only its owner's browser holds and which the instance has just made this user's.
-  #adoptLog(thread: string): void {
-    const key = this.#threadKey();
-    const prefix = `fazer-ai-agent:${this.getAttribute("app") ?? ""}:`;
-    if (!key) return;
-    const keys =
-      safeStorage(() =>
-        Array.from({ length: localStorage.length }, (_, i) =>
-          localStorage.key(i),
-        ),
-      ) ?? [];
-    for (const k of keys) {
-      if (!k?.startsWith(prefix) || !k.endsWith("#log")) continue;
-      const owner = k.replace(/#log$/, "");
-      if (owner === key) continue;
-      const earlier = readLog(owner, thread);
-      if (!earlier.length) continue;
-      safeStorage(() => localStorage.removeItem(k));
-      this.#messages = [...earlier, ...this.#messages];
-      this.#logFrom = 0;
-      this.#saveLog();
-      this.#renderLog();
+  #forgetTranscript(): void {
+    this.#transcript = null;
+    this.#transcriptPending = null;
+    this.#transcriptRun++;
+  }
+
+  // Reads the open conversation's latest messages from the instance and shows them ahead of what is
+  // on screen, which is only what was said since (a message waits for this load before it is sent).
+  // With `token`, the one being obtained, used as is; without, asked for quietly and renewed once.
+  #loadTranscript(thread: string, token?: string): Promise<void> {
+    const run = ++this.#transcriptRun;
+    const identity = this.#identity;
+    const live = () =>
+      run === this.#transcriptRun &&
+      identity === this.#identity &&
+      this.#threadId === thread;
+    this.#transcript = {
+      state: "loading",
+      recorded: true,
+      before: null,
+      older: false,
+    };
+    this.#renderLog();
+    const pending = this.#fetchTranscript(thread, null, live, token).then(
+      (page) => {
+        if (!live()) return;
+        if (page === "failed") {
+          this.#transcript = {
+            state: "failed",
+            recorded: true,
+            before: null,
+            older: false,
+          };
+        } else {
+          this.#messages = [...page.messages, ...this.#messages];
+          this.#transcript = {
+            state: "ready",
+            recorded: page.recorded,
+            before: page.before,
+            older: false,
+          };
+        }
+        if (this.#transcriptPending === pending) this.#transcriptPending = null;
+        this.#renderLog();
+      },
+    );
+    this.#transcriptPending = pending;
+    return pending;
+  }
+
+  // The page before the earliest message shown, put ahead of it. Not while a turn runs: a renewal
+  // from here could rebind the owner under it.
+  async #loadOlder(): Promise<void> {
+    const kept = this.#transcript;
+    const thread = this.#threadId;
+    if (!kept?.before || kept.older || !thread || this.#busy) return;
+    const run = this.#transcriptRun;
+    const identity = this.#identity;
+    const live = () =>
+      run === this.#transcriptRun &&
+      identity === this.#identity &&
+      this.#threadId === thread;
+    kept.older = true;
+    const log = this.#els.log;
+    this.#renderLog(log.scrollHeight - log.scrollTop);
+    const page = await this.#fetchTranscript(thread, kept.before, live);
+    if (!live()) return;
+    kept.older = false;
+    const fromBottom = log.scrollHeight - log.scrollTop;
+    if (page !== "failed") {
+      this.#messages = [...page.messages, ...this.#messages];
+      kept.before = page.before;
+    }
+    this.#renderLog(fromBottom);
+  }
+
+  async #fetchTranscript(
+    thread: string,
+    before: string | null,
+    live: () => boolean,
+    given?: string,
+    renewed = false,
+  ): Promise<
+    { messages: Message[]; recorded: boolean; before: string | null } | "failed"
+  > {
+    let token: string;
+    try {
+      token = given ?? (await this.#getToken(renewed, true));
+    } catch {
+      return "failed";
+    }
+    if (!live()) return "failed";
+    const query = before ? `?before=${encodeURIComponent(before)}` : "";
+    let res: Response;
+    try {
+      res = await fetch(
+        `${this.#instance()}/api/v1/sdk/${encodeURIComponent(this.getAttribute("app") ?? "")}/threads/${encodeURIComponent(thread)}/messages${query}`,
+        {
+          headers: {
+            authorization: `Bearer ${token}`,
+            "accept-language": this.#lang(),
+          },
+        },
+      );
+    } catch {
+      return "failed";
+    }
+    // NOTE: a token being obtained is not renewed from inside obtaining it, and none is renewed under
+    // a running turn, whose owner a renewal naming another user would change.
+    if (
+      res.status === 401 &&
+      !renewed &&
+      given === undefined &&
+      !this.#busy &&
+      live()
+    )
+      return this.#fetchTranscript(thread, before, live, undefined, true);
+    if (!res.ok) return "failed";
+    return transcriptPage(await res.json().catch(() => null)) ?? "failed";
+  }
+
+  // The list of the user's earlier conversations, in place of the open one. Asked quietly, as the
+  // panel's restore is: an anonymous visitor this browser never opened a session for has none, and
+  // is not given one to find that out.
+  #showThreads(): void {
+    if (this.#busy || this.#voice !== "idle") return;
+    this.#view = "threads";
+    this.#paint();
+    this.#els.back.focus();
+    void this.#loadThreads(false);
+  }
+
+  #showChat(): void {
+    if (this.#view === "chat") return;
+    this.#view = "chat";
+    this.#threadsRun++;
+    this.#paint();
+    if (this.#open) this.#els.input.focus();
+  }
+
+  async #loadThreads(more: boolean): Promise<void> {
+    const run = ++this.#threadsRun;
+    const identity = this.#identity;
+    const cursor = more ? this.#threads.next : null;
+    this.#threads = more
+      ? { ...this.#threads, more: true }
+      : { state: "loading", items: [], next: null, more: false };
+    this.#renderThreads();
+    const live = () => run === this.#threadsRun && identity === this.#identity;
+    const page = await this.#fetchThreads(cursor, live);
+    if (!live()) return;
+    const kept = more ? this.#threads.items : [];
+    this.#threads =
+      page === "failed"
+        ? { state: "failed", items: kept, next: null, more: false }
+        : page === "none"
+          ? { state: "ready", items: kept, next: null, more: false }
+          : {
+              state: "ready",
+              items: [...kept, ...page.threads],
+              next: page.nextCursor,
+              more: false,
+            };
+    this.#renderThreads();
+  }
+
+  // One page of the list. A 401 renews the token once, as the turn does, while the list is still
+  // the one asked for: a renewal for a list left behind could rebind the owner under a running turn.
+  // A visitor with no session to resume has no conversations to list.
+  async #fetchThreads(
+    cursor: string | null,
+    live: () => boolean,
+    renewed = false,
+  ): Promise<
+    { threads: ListedThread[]; nextCursor: string | null } | "none" | "failed"
+  > {
+    let token: string;
+    try {
+      token = await this.#getToken(renewed, true);
+    } catch (e) {
+      return e instanceof QuietStop ? "none" : "failed";
+    }
+    if (!live()) return "failed";
+    const query = cursor ? `?cursor=${encodeURIComponent(cursor)}` : "";
+    let res: Response;
+    try {
+      res = await fetch(
+        `${this.#instance()}/api/v1/sdk/${encodeURIComponent(this.getAttribute("app") ?? "")}/threads${query}`,
+        {
+          headers: {
+            authorization: `Bearer ${token}`,
+            "accept-language": this.#lang(),
+          },
+        },
+      );
+    } catch {
+      return "failed";
+    }
+    if (res.status === 401 && !renewed && live())
+      return this.#fetchThreads(cursor, live, true);
+    if (!res.ok) return "failed";
+    return threadPage(await res.json().catch(() => null)) ?? "failed";
+  }
+
+  #renderThreads(): void {
+    const t = this.#t();
+    const box = this.#els.threads;
+    const list = this.#threads;
+    box.replaceChildren();
+    const line = (className: string, text: string) => {
+      const p = document.createElement("p");
+      p.className = className;
+      p.textContent = text;
+      box.appendChild(p);
+      return p;
+    };
+    if (list.state === "loading") {
+      line("status", t.historyLoading).setAttribute("role", "status");
       return;
     }
+    if (list.items.length) {
+      const ul = document.createElement("ul");
+      const now = Date.now();
+      for (const item of list.items) {
+        const li = document.createElement("li");
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "thread";
+        if (item.threadId === this.#threadId)
+          button.setAttribute("aria-current", "true");
+        const title = document.createElement("span");
+        title.className = "thread-title";
+        title.textContent = item.title ?? t.untitled;
+        const time = document.createElement("span");
+        time.className = "thread-time";
+        time.textContent = whenLabel(item.lastTurnAt, this.#lang(), now);
+        button.append(title, time);
+        button.addEventListener("click", () => this.#openThread(item.threadId));
+        li.appendChild(button);
+        ul.appendChild(li);
+      }
+      box.appendChild(ul);
+    } else if (list.state === "ready") line("empty", t.historyEmpty);
+    if (list.state === "failed") line("status failed", t.historyFailed);
+    if (list.next && list.state === "ready") {
+      const more = document.createElement("button");
+      more.type = "button";
+      more.className = "ghost more";
+      more.textContent = t.historyMore;
+      more.disabled = list.more;
+      more.addEventListener("click", () => void this.#loadThreads(true));
+      box.appendChild(more);
+    }
   }
 
-  // What is shown again after a reload: the user's messages and the replies, for the thread on screen.
-  #saveLog(): void {
+  // Opens one of the earlier conversations: the next message continues it, and its messages are
+  // read from the instance, on any device.
+  #openThread(thread: string): void {
+    if (this.#busy || this.#voice !== "idle") return;
     const key = this.#threadKey();
-    const thread = this.#threadId;
-    if (!key || !thread) return;
-    const messages = this.#messages
-      .slice(Math.max(this.#logFrom, 0))
-      .filter((m) => m.kind === "user" || m.kind === "agent")
-      .slice(-LOG_MAX);
-    safeStorage(() =>
-      localStorage.setItem(`${key}#log`, JSON.stringify({ thread, messages })),
-    );
+    if (key && thread !== this.#threadId) {
+      this.#threadId = thread;
+      safeStorage(() => localStorage.setItem(key, thread));
+      this.#messages = [];
+      // NOTE: the person chose this conversation; a hand-over arriving later does not replace it.
+      this.#adoptHandOver = false;
+      void this.#loadTranscript(thread);
+    }
+    this.#showChat();
   }
 
   #threadKey(): string | null {
@@ -1312,14 +1853,358 @@ export class FazerAiAgent extends HTMLElement {
           additionalProperties: false,
         },
       });
+    if (this.#paths.size) {
+      const paths = [...this.#paths.values()];
+      tools.push({
+        name: NAVIGATE_TOOL,
+        // The destinations are listed in the parameter's own description, not the tool's: the turn
+        // route caps a tool's description, and a page may declare many paths.
+        description:
+          "Take the user to a place in the app by clicking through it for them, step by step, as they would; they see each click and learn the way. Prefer it over the page's own navigation tools or a link whenever the destination is listed; fall back to those only when no destination fits or this stops, and say where it stopped.",
+        parameters: {
+          type: "object",
+          properties: {
+            destination: {
+              type: "string",
+              enum: paths.map((p) => p.name),
+              description: `Where to take the user:\n${paths.map((p) => `- ${p.name}: ${p.description}`).join("\n")}`,
+            },
+          },
+          required: ["destination"],
+          additionalProperties: false,
+        },
+      });
+    }
+    const actions = actionTargets();
+    if (actions.length)
+      tools.push({
+        name: ACTION_TOOL,
+        description:
+          "Click an element of the page the user is looking at, for them and as they would: a button, a tab, a menu entry. Only the elements listed can be clicked, and the page's own confirmations still apply. For an action the user must take themselves, point at it with highlight_element instead.",
+        parameters: {
+          type: "object",
+          properties: { target: { type: "string", enum: actions } },
+          required: ["target"],
+          additionalProperties: false,
+        },
+      });
     return tools;
   }
 
-  // A floating panel covers the whole page on a phone, so while the highlight shows it steps aside
-  // and comes back when the outline is gone.
+  // Clicks the marked element through its own handlers, so the page's guards answer as they would a
+  // person. The element is checked again after the outline and the pointer, which take time.
+  async #act(
+    target: string,
+    // Why not to click after all, asked right before the click, once the outline and the pointer are
+    // done: a path's guard, since the page may have opened its confirmation meanwhile.
+    holdBack: (el: HTMLElement) => string | null = () => null,
+  ): Promise<{ clicked: string } | { clicked: null; reason: string }> {
+    // NOTE: the call's arguments are not checked against the enum before they reach here, so a name
+    // the page does not offer (an empty one would match an unnamed mark) is refused first.
+    if (!target || !actionTargets().includes(target))
+      return { clicked: null, reason: "not on this page" };
+    const el = document.querySelector(
+      `[${ACTION_ATTR}="${CSS.escape(target)}"]`,
+    );
+    if (!(el instanceof HTMLElement))
+      return { clicked: null, reason: "not on this page" };
+    const refused = whyNotClickable(el);
+    if (refused) return { clicked: null, reason: refused };
+    const actions = this.#actions;
+    const motion = !reducedMotion();
+    // NOTE: "instant", not "auto": auto follows the host's `scroll-behavior`, which may be smooth.
+    el.scrollIntoView({
+      block: "center",
+      behavior: motion ? "smooth" : "instant",
+    });
+    const box = this.actionHighlight ? outline(el, target, document) : null;
+    const cancelled = () => this.#actions !== actions || !this.isConnected;
+    try {
+      if (box) await sleep(ACTION_HIGHLIGHT_MS);
+      // NOTE: checked before the pointer too, which would otherwise draw on a page the widget left.
+      if (cancelled()) return { clicked: null, reason: "cancelled" };
+      if (this.actionCursor) await this.#pointAt(el, motion);
+      if (cancelled()) return { clicked: null, reason: "cancelled" };
+      // The host may have withdrawn the mark, or reused the node for another control, meanwhile.
+      if (el.getAttribute(ACTION_ATTR) !== target)
+        return { clicked: null, reason: "no longer offered" };
+      const late = whyNotClickable(el) ?? holdBack(el);
+      if (late) return { clicked: null, reason: late };
+      el.click();
+      return { clicked: target };
+    } finally {
+      box?.remove();
+      if (this.#cursor) {
+        const cursor = this.#cursor;
+        clearTimeout(this.#cursorTimer);
+        this.#cursorTimer = setTimeout(() => cursor.remove(), CURSOR_LINGER_MS);
+      }
+    }
+  }
+
+  // Plays a declared path: each step clicked through `#act`, as `click_element` would, after waiting
+  // for its element to appear and be clickable. It stops at the first step that cannot be taken and
+  // says which and why, and never goes another way on its own; a dialog the page opens between steps
+  // (its own confirmation) stops it, since the user answers that.
+  async #navigate(
+    destination: string,
+    t: AgentTexts,
+  ): Promise<
+    | { arrived: string }
+    | {
+        arrived: null;
+        stoppedAt?: number;
+        step?: string;
+        reason: string;
+      }
+  > {
+    const path = destination ? this.#paths.get(destination) : undefined;
+    if (!path) return { arrived: null, reason: "no path to this destination" };
+    const steps =
+      path.phone && window.matchMedia?.(PHONE_QUERY).matches
+        ? path.phone
+        : path.steps;
+    const timeout = Math.min(
+      Math.max(Number(path.stepTimeout) || STEP_TIMEOUT_MS, STEP_POLL_MS),
+      STEP_TIMEOUT_MAX_MS,
+    );
+    const actions = this.#actions;
+    const cancelled = () => this.#actions !== actions || !this.isConnected;
+    // The dialogs already showing when the path began are the page's own business; any other is a
+    // guard for every step it does not hold, for as long as it shows, also one a step of the path
+    // opened and pressed into.
+    const before = openDialogs();
+    const guarded = (el: Element | null) =>
+      openDialogs().some(
+        (dialog) => !before.includes(dialog) && !(el && dialog.contains(el)),
+      )
+        ? GUARD
+        : null;
+    // The strip grows back once, after the last click: between steps it only follows the next
+    // element, so a slow step does not make it grow and shrink again.
+    let shrunk = false;
+    try {
+      for (const [i, step] of steps.entries()) {
+        const stop = (reason: string) => ({
+          arrived: null,
+          stoppedAt: i + 1,
+          step,
+          reason,
+        });
+        const deadline = performance.now() + timeout;
+        for (;;) {
+          if (cancelled()) return stop("cancelled");
+          const el = markOf(ACTION_ATTR, step);
+          // Checked before the step is taken as ready, and again right before its click: a click does
+          // not go through hit testing, so a step still visible behind the page's confirmation would
+          // otherwise be pressed past it. A dialog that holds the step is the path going on inside
+          // it, not a guard.
+          const guard = guarded(el);
+          if (guard) return stop(guard);
+          if (el instanceof HTMLElement && !whyNotClickable(el)) break;
+          if (performance.now() >= deadline)
+            return stop(
+              el instanceof HTMLElement
+                ? (whyNotClickable(el) ?? "did not appear")
+                : "did not appear",
+            );
+          await sleep(STEP_POLL_MS);
+        }
+        shrunk =
+          this.#shrink(markOf(ACTION_ATTR, step), t.pageNavigate) || shrunk;
+        const clicked = await this.#act(step, guarded);
+        if (clicked.clicked === null) return stop(clicked.reason);
+        // The page renders what the click started (a route, a confirmation it schedules) in tasks of
+        // its own, which a click with no outline and no pointer would otherwise not wait for.
+        await sleep(STEP_POLL_MS);
+      }
+      return { arrived: path.name };
+    } finally {
+      if (shrunk) this.#growLater(CURSOR_LINGER_MS);
+    }
+  }
+
+  // Moves the drawn pointer from where it last stopped (the widget's corner the first time) to the
+  // element's centre, re-measured every frame while the scroll moves the element.
+  async #pointAt(el: HTMLElement, motion: boolean): Promise<void> {
+    clearTimeout(this.#cursorTimer);
+    const cursor = this.#cursor ?? pointer(document);
+    this.#cursor = cursor;
+    if (!cursor.isConnected) document.body.appendChild(cursor);
+    const centre = () => {
+      const rect = el.getBoundingClientRect();
+      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    };
+    const fab = this.#els.fab.getBoundingClientRect();
+    const from = this.#cursorAt ?? {
+      x: fab.width ? fab.left + fab.width / 2 : window.innerWidth - 48,
+      y: fab.height ? fab.top + fab.height / 2 : window.innerHeight - 48,
+    };
+    if (motion) {
+      const start = performance.now();
+      await new Promise<void>((done) => {
+        const step = () => {
+          const k = Math.min(1, (performance.now() - start) / CURSOR_MS);
+          const eased = 1 - (1 - k) ** 3;
+          const to = centre();
+          place(cursor, {
+            x: from.x + (to.x - from.x) * eased,
+            y: from.y + (to.y - from.y) * eased,
+          });
+          if (k < 1) requestAnimationFrame(step);
+          else done();
+        };
+        requestAnimationFrame(step);
+      });
+    }
+    this.#cursorAt = centre();
+    place(cursor, this.#cursorAt);
+  }
+
+  // The open panel covers the whole page on a phone, so while the agent acts on the page it shrinks
+  // to a strip on the half of the screen away from the element, with the step and the latest line,
+  // and grows back when the action is over or the person taps it. False where that does not apply:
+  // a desktop, inline mode, a closed panel, or a host that set `reduce-on-action="off"`.
+  #shrink(el: Element | null, step: string): boolean {
+    if (!this.#onPhone() || this.getAttribute("reduce-on-action") === "off")
+      return false;
+    this.#watchPhone();
+    // NOTE: only the timer stops; its deadline stays, so a shorter action does not end the strip
+    // while an earlier highlight still shows.
+    clearTimeout(this.#growTimer);
+    const panel = this.#els.panel;
+    this.#els.stripStep.textContent = step;
+    this.#els.stripLine.textContent = latestLine(this.#messages);
+    const at = el ? predictedSide(el) : "bottom";
+    if (panel.classList.contains("reduced")) panel.dataset.at = at;
+    else
+      this.#morph(() => {
+        panel.classList.add("reduced");
+        panel.dataset.at = at;
+      });
+    if (el) this.#follow(el);
+    else this.#following++;
+    return true;
+  }
+
+  // The prediction cannot see every scroll container, so once the element stops moving the strip
+  // takes the half away from where it actually is.
+  #follow(el: Element): void {
+    const panel = this.#els.panel;
+    // A newer action owns the strip, so an older element still settling no longer moves it.
+    const mine = ++this.#following;
+    let last = Number.NaN;
+    let still = 0;
+    const step = () => {
+      if (mine !== this.#following) return;
+      if (!panel.classList.contains("reduced") && !this.#morphing) return;
+      const rect = el.getBoundingClientRect();
+      still = rect.top === last ? still + 1 : 0;
+      last = rect.top;
+      if (still < 3) {
+        requestAnimationFrame(step);
+        return;
+      }
+      panel.dataset.at =
+        rect.top + rect.height / 2 > window.innerHeight / 2 ? "top" : "bottom";
+    };
+    requestAnimationFrame(step);
+  }
+
+  // Leaving the phone's width (a rotation, a resized window) leaves the strip with nothing to cover.
+  #watchPhone(): void {
+    if (this.#phoneQuery) return;
+    const query = window.matchMedia?.(PHONE_QUERY);
+    if (!query?.addEventListener) return;
+    this.#phoneQuery = query;
+    query.addEventListener("change", this.#onPhoneChange);
+  }
+
+  // Grows the panel back when the latest outstanding action is over: a click that ends while an
+  // earlier highlight still shows waits for the highlight.
+  #growLater(ms: number): void {
+    clearTimeout(this.#growTimer);
+    const now = performance.now();
+    this.#growBy = Math.max(this.#growBy, now + ms);
+    this.#growTimer = setTimeout(() => this.#grow(), this.#growBy - now);
+  }
+
+  #grow(): void {
+    // A shrink still running (its end delayed in a background tab) would make the strip after this.
+    if (this.#morphing) {
+      this.#settle();
+      return;
+    }
+    clearTimeout(this.#growTimer);
+    this.#growBy = 0;
+    const panel = this.#els.panel;
+    if (!panel.classList.contains("reduced")) return;
+    this.#morph(() => panel.classList.remove("reduced"));
+    // NOTE: the log was not rendered while hidden, so it could not scroll to what arrived meanwhile.
+    this.#els.log.scrollTop = this.#els.log.scrollHeight;
+  }
+
+  // Back to full size with no transition: the panel opened, closed, or changed hands.
+  #settle(): void {
+    clearTimeout(this.#growTimer);
+    this.#growBy = 0;
+    this.#following++;
+    this.#morphing?.cancel();
+    this.#morphing = null;
+    this.#els.panel.classList.remove("reduced");
+    this.#els.log.scrollTop = this.#els.log.scrollHeight;
+  }
+
+  // Changes the panel's size and animates the edge between the two as a clip on the larger box, so
+  // the content is revealed or covered rather than squeezed. No animation for reduced motion.
+  #morph(change: () => void): void {
+    const panel = this.#els.panel;
+    this.#morphing?.cancel();
+    this.#morphing = null;
+    const from = panel.getBoundingClientRect();
+    change();
+    const to = panel.getBoundingClientRect();
+    if (reducedMotion() || typeof panel.animate !== "function") return;
+    const big = from.height >= to.height ? from : to;
+    const small = big === from ? to : from;
+    if (!big.width || !big.height) return;
+    const shrinking = big === from;
+    // A keyframe cannot read the custom property, so the strip's rounding is read off it.
+    const radius =
+      Number.parseFloat(
+        getComputedStyle(this).getPropertyValue("--fazer-ai-radius"),
+      ) || 0;
+    const clip = (r: DOMRect) =>
+      `inset(${r.top - big.top}px ${big.right - r.right}px ${big.bottom - r.bottom}px ${r.left - big.left}px round ${radius}px)`;
+    const frames = [{ clipPath: clip(big) }, { clipPath: clip(small) }];
+    // NOTE: a shrink keeps the full panel during the transition and becomes the strip at its end.
+    if (shrinking) panel.classList.remove("reduced");
+    const run = panel.animate(shrinking ? frames : frames.reverse(), {
+      duration: MORPH_MS,
+      easing: "cubic-bezier(.2,.8,.2,1)",
+    });
+    this.#morphing = run;
+    run.onfinish = () => {
+      if (this.#morphing !== run) return;
+      this.#morphing = null;
+      if (shrinking) panel.classList.add("reduced");
+    };
+  }
+
+  #onPhone(): boolean {
+    return (
+      this.isConnected &&
+      this.getAttribute("mode") !== "inline" &&
+      this.#open &&
+      !!window.matchMedia?.(PHONE_QUERY).matches
+    );
+  }
+
+  // Without the strip (`reduce-on-action="off"`), the panel steps aside while the agent acts on the
+  // page and comes back when the outline is gone.
   #stepAside(): void {
     if (this.getAttribute("mode") === "inline" || !this.#open) return;
-    if (!window.matchMedia?.("(max-width: 640px)").matches) return;
+    if (!window.matchMedia?.(PHONE_QUERY).matches) return;
     this.close();
     setTimeout(() => {
       if (!this.#open) this.open();
@@ -1328,9 +2213,45 @@ export class FazerAiAgent extends HTMLElement {
 
   async #runCall(call: ToolCall): Promise<ToolAnswer> {
     try {
+      const t = this.#t();
       if (call.name === HIGHLIGHT_TOOL) {
-        this.#stepAside();
-        return { ok: true, result: highlight(String(call.args.target ?? "")) };
+        const target = String(call.args.target ?? "");
+        if (this.#shrink(markOf(TARGET_ATTR, target), t.pagePoint))
+          this.#growLater(STRIP_HOLD_MS.point);
+        else this.#stepAside();
+        return { ok: true, result: highlight(target) };
+      }
+      if (call.name === NAVIGATE_TOOL) {
+        // Without the strip, the panel steps aside for the whole path and comes back after it.
+        const aside =
+          this.getAttribute("reduce-on-action") === "off" && this.#onPhone();
+        if (aside) this.close();
+        try {
+          return {
+            ok: true,
+            result: await this.#navigate(
+              String(call.args.destination ?? ""),
+              t,
+            ),
+          };
+        } finally {
+          if (aside)
+            setTimeout(() => {
+              if (!this.#open && this.isConnected) this.open();
+            }, CURSOR_LINGER_MS);
+        }
+      }
+      if (call.name === ACTION_TOOL) {
+        const target = String(call.args.target ?? "");
+        const shrunk = this.#shrink(markOf(ACTION_ATTR, target), t.pageAction);
+        if (!shrunk) this.#stepAside();
+        try {
+          return { ok: true, result: await this.#act(target) };
+        } finally {
+          // NOTE: the strip stays a moment after the click, so the person sees what it did to the
+          // page, and comes back also when the host's handler threw.
+          if (shrunk) this.#growLater(STRIP_HOLD_MS.click);
+        }
       }
       const tool = this.#tools.get(call.name);
       if (!tool) return { ok: false, error: `unknown tool ${call.name}` };
@@ -1360,6 +2281,7 @@ export class FazerAiAgent extends HTMLElement {
       if (stale()) return;
       let body: Json = {
         message: text,
+        ...(voice ? { voice: true } : {}),
         context:
           typeof this.#context === "function"
             ? this.#context()
@@ -1395,10 +2317,8 @@ export class FazerAiAgent extends HTMLElement {
         if (stale()) return;
         if (result.retryWithoutThread) {
           this.#threadId = undefined;
-          // The question is asked again on the new thread; what came before it was the old one's.
-          this.#logFrom = this.#messages.findLastIndex(
-            (m) => m.kind === "user",
-          );
+          // NOTE: what was read of the dropped thread (how far back, whether kept) is not the new one's.
+          this.#forgetTranscript();
           round--;
           continue;
         }
@@ -1415,7 +2335,6 @@ export class FazerAiAgent extends HTMLElement {
           turn.status === "done" ? undefined : { thread: turn.threadId, key };
         if (turn.status === "done") {
           this.#push({ kind: "agent", text: turn.reply });
-          this.#saveLog();
           return;
         }
         // NOTE: no round left to send answers in, so nothing runs: a tool whose result cannot reach
@@ -1434,7 +2353,12 @@ export class FazerAiAgent extends HTMLElement {
               ? undefined
               : {
                   kind: "step",
-                  name: this.#tools.get(call.name)?.label || call.name,
+                  name:
+                    call.name === ACTION_TOOL
+                      ? t.pageAction
+                      : call.name === NAVIGATE_TOOL
+                        ? t.pageNavigate
+                        : this.#tools.get(call.name)?.label || call.name,
                 };
           if (step) this.#push(step);
           const answer = await this.#runCall(call);
@@ -1467,12 +2391,10 @@ export class FazerAiAgent extends HTMLElement {
     const { thread, key } = suspended;
     if (this.#threadId === thread) {
       this.#threadId = undefined;
-      this.#logFrom = this.#messages.length;
+      this.#forgetTranscript();
     }
     if (key && safeStorage(() => localStorage.getItem(key)) === thread)
       safeStorage(() => localStorage.removeItem(key));
-    if (key && readLog(key, thread).length)
-      safeStorage(() => localStorage.removeItem(`${key}#log`));
   }
 
   // One request of a turn. A 401 renews the token once and rebuilds the body, since the renewed token
@@ -1490,6 +2412,8 @@ export class FazerAiAgent extends HTMLElement {
     const authorization = `Bearer ${await this.#getToken()}`;
     // NOTE: even a cached token is awaited, and the identity can change in that gap; posting now
     // would send the previous user's message, and its tools would run, before any later check.
+    if (identity !== this.#identity) return { error: "" };
+    if (this.#transcriptPending) await this.#transcriptPending;
     if (identity !== this.#identity) return { error: "" };
     const body = build();
     // NOTE: a token renewed on the way here (near its expiry) may name another user, and answers
@@ -1637,20 +2561,75 @@ class QuietStop extends Error {}
 // on that request asks for its own.
 class ChallengeCancelled extends Error {}
 
-// The stored conversation of an owner, when it is of this thread; anything else reads as none.
-function readLog(key: string, thread: string): Message[] {
-  const raw = safeStorage(() => localStorage.getItem(`${key}#log`));
-  if (!raw) return [];
+// A page of a conversation's messages as the instance answers it; anything else is a failed load.
+function transcriptPage(
+  body: unknown,
+): { messages: Message[]; recorded: boolean; before: string | null } | null {
+  if (!body || typeof body !== "object") return null;
+  const { messages, recorded, before } = body as {
+    messages?: unknown;
+    recorded?: unknown;
+    before?: unknown;
+  };
+  if (!Array.isArray(messages)) return null;
+  return {
+    messages: messages.flatMap((m): Message[] =>
+      (m?.role === "user" || m?.role === "agent") && typeof m.text === "string"
+        ? [
+            m.role === "user" && m.voice === true
+              ? { kind: "user", text: m.text, voice: true }
+              : { kind: m.role, text: m.text },
+          ]
+        : [],
+    ),
+    recorded: recorded !== false,
+    before: typeof before === "string" ? before : null,
+  };
+}
+
+// A page of the list as the instance answers it; anything else is a failed load.
+function threadPage(
+  body: unknown,
+): { threads: ListedThread[]; nextCursor: string | null } | null {
+  if (!body || typeof body !== "object") return null;
+  const { threads, nextCursor } = body as {
+    threads?: unknown;
+    nextCursor?: unknown;
+  };
+  if (!Array.isArray(threads)) return null;
+  return {
+    threads: threads.filter(
+      (t): t is ListedThread =>
+        typeof t?.threadId === "string" &&
+        typeof t.lastTurnAt === "string" &&
+        (t.title === null || typeof t.title === "string"),
+    ),
+    nextCursor: typeof nextCursor === "string" ? nextCursor : null,
+  };
+}
+
+// When a conversation was last active, as a list line says it: relative within the week, then the
+// date.
+export function whenLabel(iso: string, lang: string, now: number): string {
+  const at = Date.parse(iso);
+  if (Number.isNaN(at)) return "";
   try {
-    const log = JSON.parse(raw) as { thread?: unknown; messages?: unknown };
-    if (log.thread !== thread || !Array.isArray(log.messages)) return [];
-    return log.messages.filter(
-      (m): m is Message =>
-        (m?.kind === "user" || m?.kind === "agent") &&
-        typeof m.text === "string",
-    );
+    const relative = new Intl.RelativeTimeFormat(lang, { numeric: "auto" });
+    const minutes = Math.round((at - now) / 60_000);
+    if (minutes === 0) return relative.format(0, "second");
+    if (Math.abs(minutes) < 60) return relative.format(minutes, "minute");
+    const hours = Math.round(minutes / 60);
+    if (Math.abs(hours) < 24) return relative.format(hours, "hour");
+    const days = Math.round(hours / 24);
+    if (Math.abs(days) < 7) return relative.format(days, "day");
+    const sameYear = new Date(at).getFullYear() === new Date(now).getFullYear();
+    return new Intl.DateTimeFormat(lang, {
+      day: "numeric",
+      month: "short",
+      ...(sameYear ? {} : { year: "numeric" }),
+    }).format(at);
   } catch {
-    return [];
+    return new Date(at).toLocaleDateString();
   }
 }
 
@@ -1660,6 +2639,70 @@ function safeStorage<T>(run: () => T): T | null {
   } catch {
     return null;
   }
+}
+
+const BUILT_IN_TOOLS = [HIGHLIGHT_TOOL, ACTION_TOOL, NAVIGATE_TOOL];
+const GUARD = "the page opened a dialog; the user answers it";
+
+// The page's modal dialogs showing right now: a confirmation that takes over between two steps of a
+// path. One mounted but hidden is not showing yet, so it neither stops a path nor hides its own
+// opening later.
+function openDialogs(): Element[] {
+  return [
+    ...document.querySelectorAll(
+      'dialog[open], [role="dialog"][aria-modal="true"], [role="alertdialog"]',
+    ),
+  ].filter(
+    (dialog) =>
+      dialog instanceof HTMLElement && whyNotClickable(dialog) !== "hidden",
+  );
+}
+
+// The marked element a call names, or null.
+function markOf(attr: string, name: string): Element | null {
+  if (!name) return null;
+  return document.querySelector(`[${attr}="${CSS.escape(name)}"]`);
+}
+
+// Which half of the screen the strip takes while the agent acts on an element: away from where the
+// element ends up once scrolled to the centre, as far as the page can scroll (an element near the
+// end of the page stays in the lower half).
+export function stripSide(
+  rect: { top: number; height: number },
+  view: { height: number; scrollY: number; scrollHeight: number },
+): "top" | "bottom" {
+  const centre = rect.top + rect.height / 2;
+  const wanted = centre - view.height / 2;
+  const room = Math.max(0, view.scrollHeight - view.height - view.scrollY);
+  const moved = Math.min(Math.max(wanted, -view.scrollY), room);
+  return centre - moved > view.height / 2 ? "top" : "bottom";
+}
+
+// Which half the strip takes for this element: where scrolling it to the centre leaves it, unless it
+// is fixed or sticky, which the document's scroll does not move.
+export function predictedSide(el: Element): "top" | "bottom" {
+  const rect = el.getBoundingClientRect();
+  for (let node: Element | null = el; node; node = node.parentElement) {
+    const position = getComputedStyle(node).position;
+    if (position === "fixed" || position === "sticky")
+      return rect.top + rect.height / 2 > window.innerHeight / 2
+        ? "top"
+        : "bottom";
+  }
+  return stripSide(rect, {
+    height: window.innerHeight,
+    scrollY: window.scrollY,
+    scrollHeight: document.documentElement.scrollHeight,
+  });
+}
+
+// The latest message of the conversation, as one line for the strip.
+function latestLine(messages: Message[]): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m && m.kind !== "step") return m.text.replace(/\s+/g, " ").trim();
+  }
+  return "";
 }
 
 export function highlightTargets(root: ParentNode = document): string[] {
@@ -1681,6 +2724,14 @@ export function highlight(
   if (!(el instanceof HTMLElement))
     return { shown: null, reason: "not on this page" };
   el.scrollIntoView({ block: "center", behavior: "smooth" });
+  const box = outline(el, target, root);
+  setTimeout(() => box.remove(), HIGHLIGHT_MS);
+  return { shown: target };
+}
+
+// The outline both the highlight and a click before it draw: a fixed box over the element, followed
+// every frame until it is removed.
+function outline(el: HTMLElement, target: string, root: Document): HTMLElement {
   const box = root.createElement("div");
   box.setAttribute("data-fazer-ai-highlight", target);
   // Re-measured every frame while it shows: the smooth scroll above is still moving the element.
@@ -1710,8 +2761,84 @@ export function highlight(
     requestAnimationFrame(follow);
   };
   requestAnimationFrame(follow);
-  setTimeout(() => box.remove(), HIGHLIGHT_MS);
-  return { shown: target };
+  return box;
+}
+
+export function actionTargets(root: ParentNode = document): string[] {
+  const names = new Set<string>();
+  for (const el of root.querySelectorAll(`[${ACTION_ATTR}]`)) {
+    const name = el.getAttribute(ACTION_ATTR);
+    if (name) names.add(name);
+  }
+  return [...names];
+}
+
+// Why a person could not click this element right now, or null when they could: gone from the page,
+// hidden (by an attribute or a style on it or an ancestor, or inside a closed <details>, or by what the
+// browser reports it renders), or disabled (it or an ancestor).
+export function whyNotClickable(el: HTMLElement): string | null {
+  if (!el.isConnected) return "no longer on this page";
+  if (el.closest("[hidden],[inert]")) return "hidden";
+  // A closed <details> renders only its own summary, and its content keeps a normal computed style.
+  for (
+    let details = el.closest("details:not([open])");
+    details;
+    details = details.parentElement?.closest("details:not([open])") ?? null
+  ) {
+    if (!details.querySelector(":scope > summary")?.contains(el))
+      return "hidden";
+  }
+  if (el.checkVisibility && !el.checkVisibility({ visibilityProperty: true }))
+    return "hidden";
+  for (let at: Element | null = el; at; at = at.parentElement) {
+    const style = getComputedStyle(at);
+    if (style.display === "none") return "hidden";
+    if (at === el && style.visibility === "hidden") return "hidden";
+  }
+  // NOTE: on it or an ancestor: a click on a mark inside a disabled button bubbles to that button.
+  if (
+    (el as { disabled?: unknown }).disabled === true ||
+    el.closest(DISABLED) !== null
+  )
+    return "disabled";
+  return null;
+}
+
+const DISABLED =
+  'button[disabled], input[disabled], select[disabled], textarea[disabled], fieldset[disabled], [aria-disabled="true"]';
+
+function reducedMotion(): boolean {
+  return (
+    window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false
+  );
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((done) => setTimeout(done, ms));
+}
+
+// The pointer `action-cursor` draws: an arrow in the host's page, above it and never in the way of a
+// click (pointer events off), placed by its tip.
+function pointer(root: Document): HTMLElement {
+  const el = root.createElement("div");
+  el.setAttribute("data-fazer-ai-cursor", "");
+  el.innerHTML =
+    '<svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 2l16 9-7 2-3 7z" fill="#111827" stroke="#fff" stroke-width="1.5" stroke-linejoin="round"/></svg>';
+  Object.assign(el.style, {
+    position: "fixed",
+    left: "0",
+    top: "0",
+    width: "22px",
+    height: "22px",
+    pointerEvents: "none",
+    zIndex: "2147483000",
+    filter: "drop-shadow(0 1px 2px rgba(0,0,0,.35))",
+  });
+  return el;
+}
+
+function place(el: HTMLElement, at: { x: number; y: number }): void {
+  el.style.transform = `translate(${at.x - 4}px, ${at.y - 2}px)`;
 }
 
 if (!customElements.get("fazer-ai-agent"))

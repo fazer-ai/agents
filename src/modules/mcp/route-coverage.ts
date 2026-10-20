@@ -64,6 +64,8 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   "POST /v1/agents/:id/client/turn": { none: CLIENT_CHANNEL },
   "POST /v1/sdk/:app/turn": { none: CLIENT_CHANNEL },
   "POST /v1/sdk/:app/transcribe": { none: CLIENT_CHANNEL },
+  "GET /v1/sdk/:app/threads": { none: CLIENT_CHANNEL },
+  "GET /v1/sdk/:app/threads/:threadId/messages": { none: CLIENT_CHANNEL },
   "POST /v1/sdk/:app/session": { none: CLIENT_CHANNEL },
   "POST /v1/sdk/:app/session/claim": { none: CLIENT_CHANNEL },
   "GET /v1/sdk/agent.js": { none: CLIENT_CHANNEL },

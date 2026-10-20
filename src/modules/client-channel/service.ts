@@ -79,6 +79,7 @@ import {
   claimClientThread,
   type ExternalIdentity,
   leaseClientThread,
+  recordClientMessage,
   releaseClientThread,
   renewClientThread,
 } from "./identity";
@@ -113,6 +114,8 @@ export interface ClientTurnParams {
   user: ExternalIdentity;
   // Exactly one of the two: a new message from the user, or the answers to the pending calls.
   message?: string;
+  // The message was spoken: the widget sent its transcription. Kept with it in the transcript.
+  voice?: boolean;
   answers?: Record<string, ClientToolAnswer>;
   // What the page says about itself right now (screen, ids, last error). Sent with each message.
   context?: Record<string, unknown>;
@@ -194,6 +197,7 @@ export async function runClientTurn(
     threadId: params.threadId,
     user: params.user,
     base,
+    message: params.message,
   });
   const turnId = crypto.randomUUID();
   const lease = params.deps?.lease ?? TURN_LEASE;
@@ -261,6 +265,18 @@ export async function runClientTurn(
     // NOTE: a run that ended after the claim was lost is the lost claim, not a reply. The fenced
     // checkpointer already makes such a run throw on its next write; this holds for one that wrote
     // nothing.
+    if (fence.signal.aborted) throw fence.signal.reason;
+    // NOTE: the reply exactly as it goes to the page, after both screenings; silence records nothing.
+    if (result.status === "done" && result.reply)
+      await recordClientMessage({
+        ctx,
+        base,
+        threadId,
+        role: "agent",
+        text: result.reply,
+      });
+    // NOTE: the claim can be lost while the reply is written; the turn is then the lost claim, as
+    // above. The reply stays in the transcript, as it stays in the checkpoint it was written beside.
     if (fence.signal.aborted) throw fence.signal.reason;
     return result;
   } catch (err) {
@@ -476,6 +492,18 @@ async function runLeasedTurn(
   });
   screenOpening = (opening) => screen("output", opening);
   if (text) {
+    // The user's message as they sent it, into what they are shown on reopening; recorded once every
+    // refusal of the request itself is behind, and before the screening, whose refusal answers it.
+    // Not by a request that lost its claim on the way here: another may own the thread by now.
+    turn.signal.throwIfAborted();
+    await recordClientMessage({
+      ctx,
+      base,
+      threadId,
+      role: "user",
+      text,
+      voice: params.voice,
+    });
     const inGuard = await screen("input", text);
     // NOTE: a violation skips the graph, so the message never enters the thread and the model is
     // not billed for a reply that would be thrown away.

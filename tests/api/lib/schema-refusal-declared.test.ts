@@ -414,6 +414,8 @@ const behindClientChannelSwitch = (id: string) =>
   id === "POST /api/v1/sdk/:app/transcribe" ||
   id === "POST /api/v1/sdk/:app/session" ||
   id === "POST /api/v1/sdk/:app/session/claim" ||
+  id === "GET /api/v1/sdk/:app/threads" ||
+  id === "GET /api/v1/sdk/:app/threads/:threadId/messages" ||
   / \/api\/v1\/client-apps(\/|$)/.test(id);
 config.clientChannel.enabled = true;
 

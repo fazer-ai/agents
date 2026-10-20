@@ -216,6 +216,25 @@ describe.skipIf(!dbUp)("idle anonymous conversations expire", () => {
     });
   });
 
+  test("an expired conversation's transcript goes with it, a kept one's stays", async () => {
+    const appId = 9002n;
+    const a: ExpiringApp = { id: appId, anonExpiryDays: 30 };
+    const expired = await conversation(`anon:${appId}:velho`, daysAgo(31));
+    const fresh = await conversation(`anon:${appId}:novo`, daysAgo(1));
+    for (const threadId of [expired, fresh])
+      await suDb.clientThreadMessage.create({
+        data: { tenantId, threadId, role: "user", text: "oi" },
+      });
+    const { checkpointer } = recorder();
+    await expireIds({ ctx, app: a, base: appDb, checkpointer, now: NOW });
+    const messages = (threadId: string) =>
+      suDb.clientThreadMessage.count({ where: { threadId } });
+    expect({
+      expired: await messages(expired),
+      fresh: await messages(fresh),
+    }).toEqual({ expired: 0, fresh: 1 });
+  });
+
   test("a checkpoint that fails to delete keeps its row for the next pass", async () => {
     const appId = 9002n;
     const thread = await conversation(`anon:${appId}:falha`, daysAgo(40));

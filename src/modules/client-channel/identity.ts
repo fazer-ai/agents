@@ -12,6 +12,7 @@ import {
 } from "@/graph/detached-thread";
 import { AppError, NotFoundError } from "@/lib/errors";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { clipText, makeStorable } from "@/lib/text";
 
 // What a thread being expired is claimed with, for good (`leaseClientThread` only takes a claim that
 // ran out): such a thread is on its way out, so nothing else waits on it.
@@ -84,6 +85,8 @@ export async function claimClientThread(params: {
   threadId: string | undefined;
   user: ExternalIdentity;
   base: PrismaClient;
+  // The message that opens a new thread, which names it in the user's list of conversations.
+  message?: string;
   now?: Date;
 }): Promise<ClaimedThread> {
   const { ctx, agentId, threadId, user } = params;
@@ -115,6 +118,8 @@ export async function claimClientThread(params: {
           externalUserId: person.id,
           scope,
           lastTurnAt: now,
+          title: threadTitle(params.message),
+          recorded: true,
         },
       });
       return { threadId: fresh, externalUserId: person.id };
@@ -128,6 +133,204 @@ export async function claimClientThread(params: {
     });
     if (bound.count !== 1) throw threadNotFound();
     return { threadId, externalUserId: person.id };
+  });
+}
+
+// How much of the opening message names a thread: a list line, not the message.
+export const THREAD_TITLE_MAX = 120;
+
+// The opening message flattened and cut short, made storable first: a column refuses a NUL or half a
+// character, which the user's text can carry.
+export function threadTitle(message: string | undefined): string | null {
+  const flat = message ? makeStorable(message).replace(/\s+/g, " ").trim() : "";
+  if (!flat) return null;
+  return flat.length > THREAD_TITLE_MAX
+    ? `${clipText(flat, THREAD_TITLE_MAX - 1).trimEnd()}…`
+    : flat;
+}
+
+export interface ListedThread {
+  threadId: string;
+  title: string | null;
+  lastTurnAt: Date;
+}
+
+// Where a page of the list ends: the last thread's activity and id, the order the list is read in.
+export interface ThreadCursor {
+  before: Date;
+  beforeId: string;
+}
+
+// The user's own conversations with this agent in this scope, newest first: exactly the threads a
+// turn would let them resume (claimClientThread's owner rule), so another user's, another scope's
+// or another agent's never appear. Read only: a user the instance has not seen has none, and no row
+// is written for them. A thread being expired is on its way out and is left off.
+export async function listClientThreads(params: {
+  ctx: TenantContext;
+  agentId: bigint;
+  user: ExternalIdentity;
+  base: PrismaClient;
+  limit: number;
+  cursor?: ThreadCursor;
+}): Promise<{ threads: ListedThread[]; next: ThreadCursor | null }> {
+  const { ctx, agentId, user, limit, cursor } = params;
+  const tenantId = ctx.tenantId as bigint;
+  const rows = await runScopedOn(params.base, ctx, async (db) => {
+    const owned = await ownedThreads(db, tenantId, agentId, user);
+    if (!owned) return [];
+    return db.detachedThread.findMany({
+      where: {
+        ...owned,
+        ...(cursor
+          ? {
+              AND: [
+                {
+                  OR: [
+                    { lastTurnAt: { lt: cursor.before } },
+                    {
+                      lastTurnAt: cursor.before,
+                      threadId: { lt: cursor.beforeId },
+                    },
+                  ],
+                },
+              ],
+            }
+          : {}),
+      },
+      orderBy: [{ lastTurnAt: "desc" }, { threadId: "desc" }],
+      take: limit + 1,
+      select: { threadId: true, title: true, lastTurnAt: true },
+    });
+  });
+  const threads = rows.slice(0, limit);
+  const last = threads.at(-1);
+  return {
+    threads,
+    next:
+      rows.length > limit && last
+        ? { before: last.lastTurnAt, beforeId: last.threadId }
+        : null,
+  };
+}
+
+// The filter for the threads `user` may resume with this agent (claimClientThread's owner rule),
+// or null for a user the instance has not seen, who has none. A thread being expired is left off.
+async function ownedThreads(
+  db: ScopedDb,
+  tenantId: bigint,
+  agentId: bigint,
+  user: ExternalIdentity,
+) {
+  const person = await db.externalUser.findUnique({
+    where: {
+      tenantId_channel_externalId: {
+        tenantId,
+        channel: "client",
+        externalId: user.id,
+      },
+    },
+    select: { id: true },
+  });
+  if (!person) return null;
+  return {
+    externalUserId: person.id,
+    scope: user.scope ?? null,
+    agentId,
+    kind: "client",
+    OR: [{ activeTurnId: null }, { activeTurnId: { not: EXPIRY_CLAIM } }],
+  };
+}
+
+export type TranscriptRole = "user" | "agent";
+
+// Records one message a client thread's owner was shown: their message as sent, or the reply as
+// delivered. A record that fails is logged and the turn goes on: a reply missing from the transcript
+// is less harm than a turn that answered and reports a failure.
+export async function recordClientMessage(params: {
+  ctx: TenantContext;
+  base: PrismaClient;
+  threadId: string;
+  role: TranscriptRole;
+  text: string;
+  voice?: boolean;
+}): Promise<void> {
+  const { ctx, threadId, role, text } = params;
+  try {
+    await runScopedOn(params.base, ctx, (db) =>
+      db.clientThreadMessage.create({
+        data: {
+          tenantId: ctx.tenantId as bigint,
+          threadId,
+          role,
+          text: makeStorable(text),
+          voice: params.voice === true,
+        },
+      }),
+    );
+  } catch (err) {
+    logger.warn({ err, threadId, role }, "client transcript record failed");
+  }
+}
+
+export interface TranscriptMessage {
+  id: bigint;
+  role: TranscriptRole;
+  text: string;
+  voice: boolean;
+  createdAt: Date;
+}
+
+// A page of what a thread's owner was shown, the newest `limit` messages before `before` (a message
+// id), in reading order; `next` asks for the page before it. Not found when the thread is not one
+// `user` may resume, as a turn on it would be. `recorded` is false for a thread from before
+// the transcript, whose earlier messages were never kept.
+export async function readClientTranscript(params: {
+  ctx: TenantContext;
+  agentId: bigint;
+  user: ExternalIdentity;
+  base: PrismaClient;
+  threadId: string;
+  limit: number;
+  before?: bigint;
+}): Promise<{
+  recorded: boolean;
+  messages: TranscriptMessage[];
+  next: bigint | null;
+}> {
+  const { ctx, agentId, user, threadId, limit, before } = params;
+  return runScopedOn(params.base, ctx, async (db) => {
+    const owned = await ownedThreads(db, ctx.tenantId as bigint, agentId, user);
+    const thread = owned
+      ? await db.detachedThread.findFirst({
+          where: { ...owned, threadId },
+          select: { recorded: true },
+        })
+      : null;
+    if (!thread) throw threadNotFound();
+    // The owner rule again, in the same statement as the read: a hand-over committing after the
+    // check above would otherwise let the previous owner read what the new one says next.
+    const rows = await db.clientThreadMessage.findMany({
+      where: {
+        threadId,
+        thread: { ...owned, threadId },
+        ...(before !== undefined ? { id: { lt: before } } : {}),
+      },
+      orderBy: { id: "desc" },
+      take: limit + 1,
+      select: {
+        id: true,
+        role: true,
+        text: true,
+        voice: true,
+        createdAt: true,
+      },
+    });
+    const page = rows.slice(0, limit).reverse() as TranscriptMessage[];
+    return {
+      recorded: thread.recorded,
+      messages: page,
+      next: rows.length > limit ? (page[0]?.id ?? null) : null,
+    };
   });
 }
 

@@ -189,6 +189,7 @@ model Tenant {
   appointments                  Appointment[]
   externalUsers                 ExternalUser[]
   detachedThreads               DetachedThread[]
+  clientThreadMessages          ClientThreadMessage[]
   clientApps                    ClientApp[]
   clientAppSecrets              ClientAppSecret[]
   dashboardDays                 DashboardDay[]
@@ -3199,6 +3200,12 @@ model DetachedThread {
   scope              String?
   createdAt          DateTime  @default(now()) @map("created_at")
   lastTurnAt         DateTime  @default(now()) @map("last_turn_at")
+  // The user's first message, cut short: what the widget's list of earlier conversations names the
+  // thread by. Shown only to the thread's owner, who wrote it.
+  title              String?
+  // Whether all its messages are in `client_thread_messages`, set when the client channel mints it.
+  // False for threads from before that table, which reopen saying their earlier messages were not kept.
+  recorded           Boolean   @default(false)
   // The round-trip running on this thread now, and until when that claim holds. One at a time: the
   // browser's late answers and the user's next message must not both act on the same suspended turn.
   // The expiry is what frees a thread whose process died mid-turn.
@@ -3213,14 +3220,37 @@ model DetachedThread {
   // earlier messages, so it is added to only while the user's email is still this one.
   caseEmail          String?   @map("case_email")
 
-  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  agent        Agent         @relation(fields: [agentId], references: [id], onDelete: Cascade)
-  externalUser ExternalUser? @relation(fields: [externalUserId], references: [id], onDelete: Cascade)
+  tenant       Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  agent        Agent                 @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  externalUser ExternalUser?         @relation(fields: [externalUserId], references: [id], onDelete: Cascade)
+  messages     ClientThreadMessage[]
 
   @@index([tenantId])
   @@index([agentId])
   @@index([externalUserId])
   @@map("detached_threads")
+}
+
+// What a client thread's owner was shown, in order: their message as sent and the reply as delivered,
+// after the output screening and the external check. The widget reopens a conversation from it, on
+// any device; the model's own history stays in the checkpoint. Gone with its thread.
+model ClientThreadMessage {
+  id        BigInt   @id @default(autoincrement())
+  tenantId  BigInt   @map("tenant_id")
+  threadId  String   @map("thread_id")
+  // user | agent (a CHECK in the migration).
+  role      String
+  text      String
+  // A user's message that was spoken, shown with its mark beside the transcription.
+  voice     Boolean  @default(false)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  tenant Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  thread DetachedThread @relation(fields: [threadId], references: [threadId], onDelete: Cascade)
+
+  @@index([threadId, id])
+  @@index([tenantId])
+  @@map("client_thread_messages")
 }
 
 // A web application that embeds an agent through the client channel's SDK (docs/client-channel.md,

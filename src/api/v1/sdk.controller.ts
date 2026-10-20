@@ -7,6 +7,7 @@ import { clientKey } from "@/api/middlewares/rateLimit";
 import config from "@/config";
 import { getCheckpointer } from "@/graph/checkpointer";
 import type { ClientToolAnswer, ClientToolSpec } from "@/graph/client-tools";
+import { parseDbId } from "@/lib/db-id";
 import { AppError, ForbiddenError } from "@/lib/errors";
 import type { TenantContext } from "@/lib/tenancy";
 import {
@@ -31,7 +32,12 @@ import {
   verifyClientAppToken,
 } from "@/modules/client-apps/token";
 import { verifyTurnstile } from "@/modules/client-apps/turnstile";
-import { handOverAnonymousThreads } from "@/modules/client-channel/identity";
+import {
+  handOverAnonymousThreads,
+  listClientThreads,
+  readClientTranscript,
+  type ThreadCursor,
+} from "@/modules/client-channel/identity";
 import { runClientTurn } from "@/modules/client-channel/service";
 import { streamClientTurn } from "@/modules/client-channel/stream";
 import { transcribeClientAudio } from "@/modules/stt/service";
@@ -46,6 +52,7 @@ import { normalizeAudioUpload } from "@/modules/stt/upload";
 // translate('errors.clientAppAnonymousDisabled', 'This application does not allow anonymous visitors')
 // translate('errors.clientAppSpendCeilingReached', 'This application has reached its monthly spend ceiling')
 // translate('errors.clientAppSessionUnknown', 'This anonymous session is not known; open a new one')
+// translate('errors.threadCursorInvalid', 'This page cursor is not valid; ask for the list again')
 // translate('errors.clientAppTurnstileFailed', 'This application needs a human check before a new anonymous session: complete the challenge and try again')
 
 // A voice message from the widget: two minutes at the bitrate it records at fit in well under this.
@@ -65,7 +72,7 @@ function originAllowed(
 function corsHeaders(origin: string): Record<string, string> {
   return {
     "access-control-allow-origin": origin,
-    "access-control-allow-methods": "POST, OPTIONS",
+    "access-control-allow-methods": "GET, POST, OPTIONS",
     "access-control-allow-headers": ALLOWED_HEADERS,
     "access-control-max-age": "600",
     "access-control-expose-headers": "Retry-After",
@@ -86,7 +93,26 @@ function appCtx(app: ResolvedClientApp): TenantContext {
 
 // The routes a page calls from its own origin, and so the ones with the app's CORS.
 const SDK_TURN_PATH =
-  /^\/api\/v1\/sdk\/([^/]+)\/(turn|transcribe|session|session\/claim)\/?$/;
+  /^\/api\/v1\/sdk\/([^/]+)\/(turn|transcribe|threads|threads\/[^/]+\/messages|session|session\/claim)\/?$/;
+
+// A page of the widget's list of conversations, and where the next one starts: the last thread's
+// activity (epoch ms) and its id, which the list is ordered by. Opaque to the page.
+const THREADS_PAGE = 20;
+const THREAD_CURSOR = /^(\d{1,15})_(\d+:client:\d+:[0-9a-f-]{36})$/;
+
+// A page of a reopened conversation's messages, from the newest back; `before` is a message id.
+const TRANSCRIPT_PAGE = 50;
+
+function encodeThreadCursor(cursor: ThreadCursor): string {
+  return `${cursor.before.getTime()}_${cursor.beforeId}`;
+}
+
+function decodeThreadCursor(raw: string): ThreadCursor {
+  const match = THREAD_CURSOR.exec(raw);
+  if (!match)
+    throw new AppError("invalid cursor", 400, "errors.threadCursorInvalid");
+  return { before: new Date(Number(match[1])), beforeId: match[2] as string };
+}
 
 // The public id as the path spells it, or null for a segment no app's id can be: ids are base64url
 // (`app_…`), so a percent-encoded or otherwise foreign segment names no app and is never decoded.
@@ -316,6 +342,7 @@ export const sdkController = new Elysia({
         threadId: body.threadId,
         user,
         message: body.message,
+        voice: body.voice,
         answers: body.answers as Record<string, ClientToolAnswer> | undefined,
         context: body.context,
         clientTools: body.clientTools as ClientToolSpec[],
@@ -340,6 +367,137 @@ export const sdkController = new Elysia({
       body: t.Object({
         threadId: t.Optional(t.String()),
         ...clientTurnFields,
+        voice: t.Optional(
+          t.Boolean({
+            description:
+              "The message is the transcription of a voice message, shown with its mark when the conversation is reopened.",
+          }),
+        ),
+      }),
+    },
+  )
+  .get(
+    "/:app/threads",
+    async ({ params, query, request, set }) => {
+      const cursor =
+        query.cursor === undefined
+          ? undefined
+          : decodeThreadCursor(query.cursor);
+      const { resolved, user } = await admit(params.app, request, set);
+      const page = await listClientThreads({
+        ctx: appCtx(resolved),
+        agentId: resolved.agentId,
+        user,
+        base: basePrisma,
+        limit: THREADS_PAGE,
+        cursor,
+      });
+      return {
+        threads: page.threads.map((thread) => ({
+          threadId: thread.threadId,
+          title: thread.title,
+          lastTurnAt: thread.lastTurnAt.toISOString(),
+        })),
+        nextCursor: page.next ? encodeThreadCursor(page.next) : null,
+      };
+    },
+    {
+      detail: {
+        ...doc(
+          "List the user's client channel conversations",
+          "The widget's list of earlier conversations: the token's user's own threads with the app's agent, in the token's scope, newest first, 20 per page (pass `nextCursor` back as `cursor` for the next). Each is named by the user's first message, cut short (`title`, null for a thread that has none), with its last activity. Exactly the threads a turn lets this user resume, so no other user's, scope's or agent's thread is listed. Authenticated and limited as the turn is, and counts against the same request budget.",
+        ),
+        hide: !config.clientChannel.enabled,
+      },
+      response: {
+        200: t.Object({
+          threads: t.Array(
+            t.Object({
+              threadId: t.String(),
+              title: t.Nullable(t.String()),
+              lastTurnAt: t.String({ format: "date-time" }),
+            }),
+          ),
+          nextCursor: t.Nullable(t.String()),
+        }),
+        ...errors(400, 401, 403, 404, 422, 429),
+      },
+      params: appParam,
+      query: t.Object({
+        cursor: t.Optional(
+          t.String({
+            maxLength: 128,
+            description: "`nextCursor` from the previous page.",
+          }),
+        ),
+      }),
+    },
+  )
+  .get(
+    "/:app/threads/:threadId/messages",
+    async ({ params, query, request, set }) => {
+      const before =
+        query.before === undefined ? undefined : parseDbId(query.before);
+      if (before === null)
+        throw new AppError("invalid cursor", 400, "errors.threadCursorInvalid");
+      const { resolved, user } = await admit(params.app, request, set);
+      const page = await readClientTranscript({
+        ctx: appCtx(resolved),
+        agentId: resolved.agentId,
+        user,
+        base: basePrisma,
+        threadId: params.threadId,
+        limit: TRANSCRIPT_PAGE,
+        before,
+      });
+      return {
+        recorded: page.recorded,
+        messages: page.messages.map((m) => ({
+          role: m.role,
+          text: m.text,
+          ...(m.voice ? { voice: true } : {}),
+          at: m.createdAt.toISOString(),
+        })),
+        before: page.next === null ? null : String(page.next),
+      };
+    },
+    {
+      detail: {
+        ...doc(
+          "Read a client channel conversation",
+          "What the token's user was shown on one of their threads, to reopen it: their messages as sent and the replies as delivered (after the guardrails), in order, the newest 50 (pass `before` back for the 50 before them). `recorded` is false for a thread from before transcripts were kept, whose earlier messages are not available. A thread the user could not resume (another user's, scope's or agent's) is not found. Authenticated and limited as the turn is.",
+        ),
+        hide: !config.clientChannel.enabled,
+      },
+      response: {
+        200: t.Object({
+          recorded: t.Boolean(),
+          messages: t.Array(
+            t.Object({
+              role: t.Union([t.Literal("user"), t.Literal("agent")]),
+              text: t.String(),
+              voice: t.Optional(t.Boolean()),
+              at: t.String({ format: "date-time" }),
+            }),
+          ),
+          before: t.Nullable(t.String()),
+        }),
+        ...errors(400, 401, 403, 404, 422, 429),
+      },
+      params: t.Object({
+        ...appParam.properties,
+        threadId: t.String({
+          maxLength: 128,
+          description: "The thread's id.",
+        }),
+      }),
+      query: t.Object({
+        before: t.Optional(
+          t.String({
+            maxLength: 32,
+            description: "`before` from the previous page.",
+          }),
+        ),
       }),
     },
   )

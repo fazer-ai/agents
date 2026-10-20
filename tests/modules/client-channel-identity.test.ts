@@ -282,6 +282,9 @@ describe.skipIf(!dbUp)("client channel: who a thread belongs to", () => {
     const whileRunning = {
       refused,
       agent: await suDb.agent.count({ where: { id: doomed } }),
+      transcript: await suDb.clientThreadMessage.count({
+        where: { threadId: talked.threadId },
+      }),
       checkpoint: await saved(),
     };
     // A thread the expiry claimed is on its way out, and does not hold the delete back.
@@ -297,15 +300,20 @@ describe.skipIf(!dbUp)("client channel: who a thread belongs to", () => {
       whileRunning,
       agent: await suDb.agent.count({ where: { id: doomed } }),
       rows: await suDb.detachedThread.count({ where: { agentId: doomed } }),
+      transcript: await suDb.clientThreadMessage.count({
+        where: { threadId: talked.threadId },
+      }),
       checkpoint: await saved(),
     }).toEqual({
       whileRunning: {
         refused: "409 errors.agentClientTurnRunning",
         agent: 1,
+        transcript: 2,
         checkpoint: true,
       },
       agent: 0,
       rows: 0,
+      transcript: 0,
       checkpoint: false,
     });
   });

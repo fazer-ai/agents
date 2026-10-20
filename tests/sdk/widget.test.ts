@@ -35,8 +35,25 @@ interface Sent {
   form?: FormData;
 }
 let sent: Sent[] = [];
-let turnAnswers: Array<() => Response> = [];
+let turnAnswers: Array<() => Response | Promise<Response>> = [];
 let tokens: string[] = [];
+// The instance's transcripts, by thread: what reopening a conversation reads. Answered apart from the
+// turn's queue, so a test that does not care about them sees every conversation with nothing kept.
+type Kept = { role: "user" | "agent"; text: string; voice?: boolean };
+let transcripts = new Map<
+  string,
+  { recorded?: boolean; messages: Kept[]; pages?: Record<string, Kept[]> }
+>();
+let transcriptAnswer:
+  | ((thread: string, before: string | null) => Response)
+  | null = null;
+// The transcript reads, kept apart from `sent`, which holds the turn's requests.
+let transcriptAsked: Array<{
+  thread: string;
+  before: string | null;
+  auth: string | null;
+}> = [];
+const TRANSCRIPT_PATH = /\/threads\/([^/?]+)\/messages(?:\?before=([^&]+))?$/;
 
 function sse(...events: Array<[string, unknown]>): Response {
   const text = events
@@ -51,6 +68,31 @@ beforeAll(async () => {
   globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
     const url = String(input);
     const headers = new Headers(init?.headers);
+    const kept = TRANSCRIPT_PATH.exec(url);
+    if (kept) {
+      const thread = decodeURIComponent(kept[1] as string);
+      const before = kept[2] ? decodeURIComponent(kept[2]) : null;
+      transcriptAsked.push({
+        thread,
+        before,
+        auth: headers.get("authorization"),
+      });
+      if (transcriptAnswer) return transcriptAnswer(thread, before);
+      const t = transcripts.get(thread);
+      const older = before ? (t?.pages?.[before] ?? []) : (t?.messages ?? []);
+      const next = before ? null : t?.pages ? Object.keys(t.pages)[0] : null;
+      return new BunResponse(
+        JSON.stringify({
+          recorded: t?.recorded ?? true,
+          messages: older.map((m) => ({
+            ...m,
+            at: "2026-10-20T12:00:00.000Z",
+          })),
+          before: next ?? null,
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+    }
     sent.push({
       url,
       auth: headers.get("authorization"),
@@ -73,6 +115,9 @@ afterEach(() => {
   sent = [];
   turnAnswers = [];
   tokens = [];
+  transcripts = new Map();
+  transcriptAnswer = null;
+  transcriptAsked = [];
 });
 
 function mount(): FazerAiAgent {
@@ -308,6 +353,879 @@ describe("<fazer-ai-agent>", () => {
       answer: { ok: true, result: { shown: "emitir" } },
       outlined: true,
     });
+  });
+
+  // A turn whose one call clicks the named element, then answers.
+  function clickTurn(target: string) {
+    return [
+      () =>
+        sse([
+          "pending",
+          {
+            threadId: "tc",
+            status: "pending",
+            calls: [
+              {
+                toolCallId: "k1",
+                name: "click_element",
+                args: { target },
+              },
+            ],
+          },
+        ]),
+      () => sse(["done", { threadId: "tc", status: "done", reply: "Feito." }]),
+    ];
+  }
+
+  test("a click is offered only for elements the page marks as actions, and goes through the page's own handler", async () => {
+    tokens = [jwt({ sub: "42", exp: now() + 600 })];
+    const pointOnly = document.createElement("button");
+    pointOnly.setAttribute("data-fazer-ai-target", "emitir");
+    const tab = document.createElement("button");
+    tab.setAttribute("data-fazer-ai-action", "aba-notas");
+    let clicks = 0;
+    tab.addEventListener("click", () => clicks++);
+    document.body.append(pointOnly, tab);
+    const el = mount();
+    turnAnswers = clickTurn("aba-notas");
+    await ask(el, "abre as notas");
+    await until(() => logText(el).includes("Feito."));
+    const offered = (
+      (sent[1]?.body?.clientTools ?? []) as Array<{
+        name: string;
+        parameters: { properties: { target: { enum: string[] } } };
+      }>
+    ).map((t) => [t.name, t.parameters.properties.target.enum]);
+    expect({
+      offered,
+      clicks,
+      answer: ((sent[2]?.body?.answers ?? {}) as Record<string, unknown>).k1,
+      step: logText(el).includes("Usando a página"),
+    }).toEqual({
+      offered: [
+        ["highlight_element", ["emitir"]],
+        ["click_element", ["aba-notas"]],
+      ],
+      clicks: 1,
+      answer: { ok: true, result: { clicked: "aba-notas" } },
+      step: true,
+    });
+  });
+
+  test("a disabled or hidden action is not clicked, and the agent is told why", async () => {
+    // Each case returns the marked element, already in the page; `clicks` counts any handler reached,
+    // the marked element's or a disabled ancestor's.
+    let clicks = 0;
+    const count = (node: HTMLElement) => {
+      node.addEventListener("click", () => clicks++);
+      return node;
+    };
+    const marked = (tag: string) => {
+      const node = count(document.createElement(tag));
+      node.setAttribute("data-fazer-ai-action", "salvar");
+      return node;
+    };
+    const inside = (tag: string, attr: string, value: string) => {
+      const parent = count(document.createElement(tag));
+      parent.setAttribute(attr, value);
+      const node = marked("span");
+      parent.appendChild(node);
+      document.body.appendChild(parent);
+      return node;
+    };
+    const alone = (mark: (b: HTMLElement) => void) => {
+      const node = marked("button");
+      mark(node);
+      document.body.appendChild(node);
+      return node;
+    };
+    const cases: Array<[string, () => HTMLElement]> = [
+      ["disabled", () => alone((b) => b.setAttribute("disabled", ""))],
+      ["disabled", () => alone((b) => b.setAttribute("aria-disabled", "true"))],
+      ["hidden", () => alone((b) => b.setAttribute("hidden", ""))],
+      ["hidden", () => alone((b) => (b.style.display = "none"))],
+      ["disabled", () => inside("button", "disabled", "")],
+      ["disabled", () => inside("div", "aria-disabled", "true")],
+      [
+        "hidden",
+        () => {
+          const details = document.createElement("details");
+          const summary = document.createElement("summary");
+          summary.textContent = "Mais";
+          const node = marked("button");
+          details.append(summary, node);
+          document.body.appendChild(details);
+          return node;
+        },
+      ],
+    ];
+    const seen: unknown[] = [];
+    for (const [, build] of cases) {
+      tokens = [jwt({ sub: "42", exp: now() + 600 })];
+      sent = [];
+      clicks = 0;
+      build();
+      const el = mount();
+      turnAnswers = clickTurn("salvar");
+      await ask(el, "salva");
+      await until(() => logText(el).includes("Feito."));
+      seen.push({
+        clicks,
+        answer: ((sent[2]?.body?.answers ?? {}) as Record<string, unknown>).k1,
+      });
+      document.body.replaceChildren();
+      localStorage.clear();
+    }
+    expect(seen).toEqual(
+      cases.map(([reason]) => ({
+        clicks: 0,
+        answer: { ok: true, result: { clicked: null, reason } },
+      })),
+    );
+  });
+
+  test("with the options on, the element is outlined and the pointer stops on it before the click, and neither stays", async () => {
+    tokens = [jwt({ sub: "42", exp: now() + 600 })];
+    const button = document.createElement("button");
+    button.setAttribute("data-fazer-ai-action", "proxima");
+    button.getBoundingClientRect = () =>
+      ({ left: 100, top: 200, width: 40, height: 20 }) as DOMRect;
+    let atClick: unknown = null;
+    button.addEventListener("click", () => {
+      const cursor = document.querySelector(
+        "[data-fazer-ai-cursor]",
+      ) as HTMLElement | null;
+      atClick = {
+        outlined:
+          document.querySelector('[data-fazer-ai-highlight="proxima"]') !==
+          null,
+        cursor: cursor?.style.transform ?? null,
+      };
+    });
+    document.body.appendChild(button);
+    const el = mount();
+    el.actionHighlight = true;
+    el.actionCursor = true;
+    turnAnswers = clickTurn("proxima");
+    await ask(el, "avança");
+    await until(() => logText(el).includes("Feito."), 600);
+    expect({
+      attributes: [
+        el.hasAttribute("action-highlight"),
+        el.hasAttribute("action-cursor"),
+      ],
+      atClick,
+      outlineAfter:
+        document.querySelector('[data-fazer-ai-highlight="proxima"]') !== null,
+    }).toEqual({
+      attributes: [true, true],
+      // The pointer's tip on the element's centre (120, 210).
+      atClick: { outlined: true, cursor: "translate(116px, 208px)" },
+      outlineAfter: false,
+    });
+  });
+
+  test("with the options off, the click happens with no outline and no pointer", async () => {
+    tokens = [jwt({ sub: "42", exp: now() + 600 })];
+    const button = document.createElement("button");
+    button.setAttribute("data-fazer-ai-action", "proxima");
+    let atClick: unknown = null;
+    button.addEventListener("click", () => {
+      atClick = {
+        outlined: document.querySelector("[data-fazer-ai-highlight]") !== null,
+        cursor: document.querySelector("[data-fazer-ai-cursor]") !== null,
+      };
+    });
+    document.body.appendChild(button);
+    const el = mount();
+    turnAnswers = clickTurn("proxima");
+    await ask(el, "avança");
+    await until(() => logText(el).includes("Feito."));
+    expect(atClick).toEqual({ outlined: false, cursor: false });
+  });
+
+  test("a person who asks for less motion gets the pointer placed on the element, with no travel", async () => {
+    tokens = [jwt({ sub: "42", exp: now() + 600 })];
+    const realMatch = window.matchMedia;
+    window.matchMedia = ((q: string) => ({
+      matches: q.includes("reduced-motion"),
+      media: q,
+    })) as typeof window.matchMedia;
+    try {
+      const button = document.createElement("button");
+      button.setAttribute("data-fazer-ai-action", "proxima");
+      button.getBoundingClientRect = () =>
+        ({ left: 10, top: 20, width: 20, height: 10 }) as DOMRect;
+      const scrolls: unknown[] = [];
+      button.scrollIntoView = ((o: unknown) => {
+        scrolls.push(o);
+      }) as typeof button.scrollIntoView;
+      const frames: string[] = [];
+      const seen = new MutationObserver(() => {
+        const cursor = document.querySelector(
+          "[data-fazer-ai-cursor]",
+        ) as HTMLElement | null;
+        if (cursor?.style.transform) frames.push(cursor.style.transform);
+      });
+      seen.observe(document.body, {
+        subtree: true,
+        childList: true,
+        attributes: true,
+      });
+      document.body.appendChild(button);
+      const el = mount();
+      el.actionCursor = true;
+      turnAnswers = clickTurn("proxima");
+      await ask(el, "avança");
+      await until(() => logText(el).includes("Feito."));
+      seen.disconnect();
+      expect({ scrolls, frames: [...new Set(frames)] }).toEqual({
+        scrolls: [{ block: "center", behavior: "instant" }],
+        frames: ["translate(16px, 23px)"],
+      });
+    } finally {
+      window.matchMedia = realMatch;
+    }
+  });
+
+  test("a click still waiting on its outline does not land after the identity changed, the widget left, or the mark was withdrawn", async () => {
+    const outcomes: unknown[] = [];
+    const interrupts: Array<(el: FazerAiAgent, b: HTMLElement) => void> = [
+      (el) => el.identityChanged(),
+      (el) => el.remove(),
+      (_el, b) => b.removeAttribute("data-fazer-ai-action"),
+      (_el, b) => b.setAttribute("data-fazer-ai-action", "outra"),
+    ];
+    for (const interrupt of interrupts) {
+      tokens = [jwt({ sub: "42", exp: now() + 600 })];
+      sent = [];
+      const button = document.createElement("button");
+      button.setAttribute("data-fazer-ai-action", "proxima");
+      let clicks = 0;
+      button.addEventListener("click", () => clicks++);
+      document.body.appendChild(button);
+      const el = mount();
+      el.actionHighlight = true;
+      turnAnswers = clickTurn("proxima");
+      await ask(el, "avança");
+      await until(
+        () =>
+          document.querySelector('[data-fazer-ai-highlight="proxima"]') !==
+          null,
+      );
+      interrupt(el, button);
+      // The outline goes in the same step that decides the click, so its removal is the decision.
+      await until(
+        () =>
+          document.querySelector('[data-fazer-ai-highlight="proxima"]') ===
+          null,
+        400,
+      );
+      outcomes.push({
+        clicks,
+        outlineLeft:
+          document.querySelector('[data-fazer-ai-highlight="proxima"]') !==
+          null,
+      });
+      document.body.replaceChildren();
+      localStorage.clear();
+    }
+    expect(outcomes).toEqual(
+      interrupts.map(() => ({ clicks: 0, outlineLeft: false })),
+    );
+  });
+
+  test("a call without a name, or with one the page does not offer, clicks nothing, not even an unnamed mark", async () => {
+    const outcomes: unknown[] = [];
+    for (const args of [{}, { target: "" }, { target: "outra" }]) {
+      tokens = [jwt({ sub: "42", exp: now() + 600 })];
+      sent = [];
+      let clicks = 0;
+      const unnamed = document.createElement("button");
+      unnamed.setAttribute("data-fazer-ai-action", "");
+      unnamed.addEventListener("click", () => clicks++);
+      const named = document.createElement("button");
+      named.setAttribute("data-fazer-ai-action", "salvar");
+      named.addEventListener("click", () => clicks++);
+      document.body.append(unnamed, named);
+      const el = mount();
+      turnAnswers = [
+        () =>
+          sse([
+            "pending",
+            {
+              threadId: "tc",
+              status: "pending",
+              calls: [{ toolCallId: "k1", name: "click_element", args }],
+            },
+          ]),
+        () =>
+          sse(["done", { threadId: "tc", status: "done", reply: "Feito." }]),
+      ];
+      await ask(el, "clica");
+      await until(() => logText(el).includes("Feito."));
+      outcomes.push({
+        clicks,
+        answer: ((sent[2]?.body?.answers ?? {}) as Record<string, unknown>).k1,
+      });
+      document.body.replaceChildren();
+      localStorage.clear();
+    }
+    expect(outcomes).toEqual(
+      [0, 1, 2].map(() => ({
+        clicks: 0,
+        answer: {
+          ok: true,
+          result: { clicked: null, reason: "not on this page" },
+        },
+      })),
+    );
+  });
+
+  test("the summary of a closed details can be clicked, and the widget that left during the outline draws no pointer", async () => {
+    tokens = [jwt({ sub: "42", exp: now() + 600 })];
+    const details = document.createElement("details");
+    const summary = document.createElement("summary");
+    summary.setAttribute("data-fazer-ai-action", "mais");
+    let clicks = 0;
+    summary.addEventListener("click", () => clicks++);
+    details.appendChild(summary);
+    document.body.appendChild(details);
+    const el = mount();
+    turnAnswers = clickTurn("mais");
+    await ask(el, "abre");
+    await until(() => logText(el).includes("Feito."));
+    const opened = clicks;
+    document.body.replaceChildren();
+    localStorage.clear();
+
+    tokens = [jwt({ sub: "42", exp: now() + 600 })];
+    sent = [];
+    const button = document.createElement("button");
+    button.setAttribute("data-fazer-ai-action", "proxima");
+    document.body.appendChild(button);
+    const left = mount();
+    left.actionHighlight = true;
+    left.actionCursor = true;
+    turnAnswers = clickTurn("proxima");
+    await ask(left, "avança");
+    await until(
+      () =>
+        document.querySelector('[data-fazer-ai-highlight="proxima"]') !== null,
+    );
+    left.remove();
+    await until(
+      () =>
+        document.querySelector('[data-fazer-ai-highlight="proxima"]') === null,
+      400,
+    );
+    expect({
+      opened,
+      pointer: document.querySelector("[data-fazer-ai-cursor]") !== null,
+    }).toEqual({ opened: 1, pointer: false });
+  });
+
+  test("the built-in click name cannot be taken by a page tool", () => {
+    const el = mount();
+    expect(() =>
+      el.tool({ name: "click_element", description: "x", run: () => null }),
+    ).toThrow();
+  });
+
+  // A turn whose one call plays the named path, then answers.
+  function navigateTurn(destination: string) {
+    return [
+      () =>
+        sse([
+          "pending",
+          {
+            threadId: "tn",
+            status: "pending",
+            calls: [
+              {
+                toolCallId: "n1",
+                name: "navigate_to",
+                args: { destination },
+              },
+            ],
+          },
+        ]),
+      () =>
+        sse(["done", { threadId: "tn", status: "done", reply: "Chegamos." }]),
+    ];
+  }
+
+  // A marked button that records its name in `clicks` and runs `then` when pressed.
+  function actionButton(
+    name: string,
+    clicks: string[],
+    then: () => void = () => {},
+  ) {
+    const button = document.createElement("button");
+    button.setAttribute("data-fazer-ai-action", name);
+    button.addEventListener("click", () => {
+      clicks.push(name);
+      then();
+    });
+    return button;
+  }
+
+  const navigateAnswer = () =>
+    ((sent[2]?.body?.answers ?? {}) as Record<string, unknown>).n1;
+
+  test("a declared path is offered as one tool and played click by click, waiting for a step that appears late", async () => {
+    tokens = [jwt({ sub: "42", exp: now() + 600 })];
+    const clicks: string[] = [];
+    const filter = actionButton("filtro-rejeitadas", clicks);
+    document.body.appendChild(actionButton("menu-notas", clicks));
+    const el = mount();
+    el.path({
+      name: "notas-rejeitadas",
+      description: "the list of invoices the tax office rejected",
+      steps: ["menu-notas", "filtro-rejeitadas"],
+    });
+    el.path({
+      name: "emitentes",
+      description: "the issuers' settings",
+      steps: ["menu-emitentes"],
+    });
+    turnAnswers = navigateTurn("notas-rejeitadas");
+    await ask(el, "me leva nas rejeitadas");
+    // The filter only exists once the menu's screen has rendered, after the first click: the path
+    // is already waiting for it.
+    await until(() => clicks.includes("menu-notas"));
+    const waiting = logText(el).includes("Chegamos.");
+    document.body.appendChild(filter);
+    await until(() => logText(el).includes("Chegamos."));
+    const offered = (
+      (sent[1]?.body?.clientTools ?? []) as Array<{
+        name: string;
+        description: string;
+        parameters: {
+          properties: { destination?: { enum: string[]; description: string } };
+        };
+      }>
+    ).find((t) => t.name === "navigate_to");
+    const listed = offered?.parameters.properties.destination?.description;
+    expect({
+      enum: offered?.parameters.properties.destination?.enum,
+      describes:
+        listed?.includes(
+          "- notas-rejeitadas: the list of invoices the tax office rejected",
+        ) && listed.includes("- emitentes: the issuers' settings"),
+      prefers: offered?.description.includes("Prefer it over"),
+      waiting,
+      clicks,
+      answer: navigateAnswer(),
+      requests: sent.length,
+      step: logText(el).includes("Levando você até lá"),
+    }).toEqual({
+      waiting: false,
+      enum: ["notas-rejeitadas", "emitentes"],
+      describes: true,
+      prefers: true,
+      clicks: ["menu-notas", "filtro-rejeitadas"],
+      answer: { ok: true, result: { arrived: "notas-rejeitadas" } },
+      requests: 3,
+      step: true,
+    });
+  });
+
+  test("a path stops at the step it cannot take and says which and why, without going on", async () => {
+    const outcomes: unknown[] = [];
+    for (const blocked of ["missing", "disabled"] as const) {
+      tokens = [jwt({ sub: "42", exp: now() + 600 })];
+      sent = [];
+      const clicks: string[] = [];
+      document.body.appendChild(actionButton("menu-notas", clicks));
+      if (blocked === "disabled") {
+        const filter = actionButton("filtro-rejeitadas", clicks);
+        filter.setAttribute("disabled", "");
+        document.body.appendChild(filter);
+      }
+      document.body.appendChild(actionButton("exportar", clicks));
+      const el = mount();
+      el.path({
+        name: "exportar-rejeitadas",
+        description: "export the rejected invoices",
+        steps: ["menu-notas", "filtro-rejeitadas", "exportar"],
+        stepTimeout: 100,
+      });
+      turnAnswers = navigateTurn("exportar-rejeitadas");
+      await ask(el, "exporta as rejeitadas");
+      await until(() => logText(el).includes("Chegamos."));
+      outcomes.push({ clicks, answer: navigateAnswer() });
+      document.body.replaceChildren();
+      localStorage.clear();
+    }
+    const stopped = (reason: string) => ({
+      clicks: ["menu-notas"],
+      answer: {
+        ok: true,
+        result: {
+          arrived: null,
+          stoppedAt: 2,
+          step: "filtro-rejeitadas",
+          reason,
+        },
+      },
+    });
+    expect(outcomes).toEqual([stopped("did not appear"), stopped("disabled")]);
+  });
+
+  test("a dialog the page opens between two steps stops the path at once, and one that holds the next step does not", async () => {
+    const outcomes: unknown[] = [];
+    for (const holdsNext of [false, true]) {
+      tokens = [jwt({ sub: "42", exp: now() + 600 })];
+      sent = [];
+      const clicks: string[] = [];
+      const dialog = document.createElement("div");
+      dialog.setAttribute("role", "dialog");
+      dialog.setAttribute("aria-modal", "true");
+      if (holdsNext) dialog.appendChild(actionButton("confirmar", clicks));
+      document.body.appendChild(
+        actionButton("sair", clicks, () => document.body.appendChild(dialog)),
+      );
+      const el = mount();
+      el.path({
+        name: "outra-tela",
+        description: "another screen",
+        steps: ["sair", "confirmar"],
+      });
+      turnAnswers = navigateTurn("outra-tela");
+      const started = performance.now();
+      await ask(el, "vai para a outra tela");
+      await until(() => logText(el).includes("Chegamos."));
+      outcomes.push({
+        clicks,
+        answer: navigateAnswer(),
+        // NOTE: well under the default five seconds a missing step would wait.
+        fast: performance.now() - started < 2000,
+      });
+      document.body.replaceChildren();
+      localStorage.clear();
+    }
+    expect(outcomes).toEqual([
+      {
+        clicks: ["sair"],
+        answer: {
+          ok: true,
+          result: {
+            arrived: null,
+            stoppedAt: 2,
+            step: "confirmar",
+            reason: "the page opened a dialog; the user answers it",
+          },
+        },
+        fast: true,
+      },
+      {
+        clicks: ["sair", "confirmar"],
+        answer: { ok: true, result: { arrived: "outra-tela" } },
+        fast: true,
+      },
+    ]);
+  });
+
+  test("a dialog the page opens stops the path even with the next step still visible behind it", async () => {
+    tokens = [jwt({ sub: "42", exp: now() + 600 })];
+    const clicks: string[] = [];
+    const dialog = document.createElement("div");
+    dialog.setAttribute("role", "dialog");
+    dialog.setAttribute("aria-modal", "true");
+    document.body.append(
+      actionButton("sair", clicks, () => document.body.appendChild(dialog)),
+      actionButton("confirmar", clicks),
+    );
+    const el = mount();
+    el.path({
+      name: "outra-tela",
+      description: "another screen",
+      steps: ["sair", "confirmar"],
+    });
+    turnAnswers = navigateTurn("outra-tela");
+    await ask(el, "vai");
+    await until(() => logText(el).includes("Chegamos."));
+    expect({ clicks, answer: navigateAnswer() }).toEqual({
+      clicks: ["sair"],
+      answer: {
+        ok: true,
+        result: {
+          arrived: null,
+          stoppedAt: 2,
+          step: "confirmar",
+          reason: "the page opened a dialog; the user answers it",
+        },
+      },
+    });
+  });
+
+  test("a dialog that shows while the next step is being outlined stops it before the click", async () => {
+    tokens = [jwt({ sub: "42", exp: now() + 600 })];
+    const clicks: string[] = [];
+    const dialog = document.createElement("dialog");
+    dialog.setAttribute("open", "");
+    document.body.append(
+      // The page opens its confirmation a moment after the click, once the next step is already
+      // accepted as ready and being outlined.
+      actionButton("sair", clicks, () => {
+        setTimeout(() => document.body.appendChild(dialog), 20);
+      }),
+      actionButton("confirmar", clicks),
+    );
+    const el = mount();
+    el.actionHighlight = true;
+    el.path({
+      name: "outra-tela",
+      description: "another screen",
+      steps: ["sair", "confirmar"],
+    });
+    turnAnswers = navigateTurn("outra-tela");
+    await ask(el, "vai");
+    await until(() => logText(el).includes("Chegamos."), 800);
+    expect({ clicks, answer: navigateAnswer() }).toEqual({
+      clicks: ["sair"],
+      answer: {
+        ok: true,
+        result: {
+          arrived: null,
+          stoppedAt: 2,
+          step: "confirmar",
+          reason: "the page opened a dialog; the user answers it",
+        },
+      },
+    });
+  });
+
+  test("with no outline and no pointer, a confirmation the page schedules right after the click still stops the path", async () => {
+    tokens = [jwt({ sub: "42", exp: now() + 600 })];
+    const clicks: string[] = [];
+    const dialog = document.createElement("dialog");
+    dialog.setAttribute("open", "");
+    document.body.append(
+      actionButton("sair", clicks, () => {
+        setTimeout(() => document.body.appendChild(dialog), 0);
+      }),
+      actionButton("confirmar", clicks),
+    );
+    const el = mount();
+    el.path({
+      name: "outra-tela",
+      description: "another screen",
+      steps: ["sair", "confirmar"],
+    });
+    turnAnswers = navigateTurn("outra-tela");
+    await ask(el, "vai");
+    await until(() => logText(el).includes("Chegamos."));
+    expect({ clicks, answer: navigateAnswer() }).toEqual({
+      clicks: ["sair"],
+      answer: {
+        ok: true,
+        result: {
+          arrived: null,
+          stoppedAt: 2,
+          step: "confirmar",
+          reason: "the page opened a dialog; the user answers it",
+        },
+      },
+    });
+  });
+
+  test("a dialog the path opened and pressed into still guards a step outside it", async () => {
+    tokens = [jwt({ sub: "42", exp: now() + 600 })];
+    const clicks: string[] = [];
+    const dialog = document.createElement("div");
+    dialog.setAttribute("role", "dialog");
+    dialog.setAttribute("aria-modal", "true");
+    dialog.appendChild(actionButton("dentro", clicks));
+    document.body.append(
+      actionButton("abrir", clicks, () => document.body.appendChild(dialog)),
+      actionButton("fora", clicks),
+    );
+    const el = mount();
+    el.path({
+      name: "fora",
+      description: "a step outside the dialog",
+      steps: ["abrir", "dentro", "fora"],
+    });
+    turnAnswers = navigateTurn("fora");
+    await ask(el, "vai");
+    await until(() => logText(el).includes("Chegamos."));
+    expect({ clicks, answer: navigateAnswer() }).toEqual({
+      clicks: ["abrir", "dentro"],
+      answer: {
+        ok: true,
+        result: {
+          arrived: null,
+          stoppedAt: 3,
+          step: "fora",
+          reason: "the page opened a dialog; the user answers it",
+        },
+      },
+    });
+  });
+
+  test("a dialog mounted hidden counts only once it shows: shown by a click it stops the path, kept hidden it does not", async () => {
+    const outcomes: unknown[] = [];
+    for (const shows of [true, false]) {
+      tokens = [jwt({ sub: "42", exp: now() + 600 })];
+      sent = [];
+      const clicks: string[] = [];
+      const dialog = document.createElement("div");
+      dialog.setAttribute("role", "alertdialog");
+      dialog.hidden = true;
+      document.body.appendChild(dialog);
+      const next = actionButton("confirmar", clicks);
+      document.body.appendChild(
+        actionButton("sair", clicks, () => {
+          if (shows) dialog.hidden = false;
+          // A hidden confirmation mounted meanwhile is not showing either.
+          else document.body.appendChild(dialog.cloneNode() as HTMLElement);
+          document.body.appendChild(next);
+        }),
+      );
+      const el = mount();
+      el.path({
+        name: "outra-tela",
+        description: "another screen",
+        steps: ["sair", "confirmar"],
+      });
+      turnAnswers = navigateTurn("outra-tela");
+      await ask(el, "vai");
+      await until(() => logText(el).includes("Chegamos."));
+      outcomes.push({ clicks, answer: navigateAnswer() });
+      document.body.replaceChildren();
+      localStorage.clear();
+    }
+    expect(outcomes).toEqual([
+      {
+        clicks: ["sair"],
+        answer: {
+          ok: true,
+          result: {
+            arrived: null,
+            stoppedAt: 2,
+            step: "confirmar",
+            reason: "the page opened a dialog; the user answers it",
+          },
+        },
+      },
+      {
+        clicks: ["sair", "confirmar"],
+        answer: { ok: true, result: { arrived: "outra-tela" } },
+      },
+    ]);
+  });
+
+  test("many paths keep the tool's description within what the turn route takes, and list them in the parameter", async () => {
+    tokens = [jwt({ sub: "42", exp: now() + 600 })];
+    const el = mount();
+    for (let i = 0; i < 30; i++)
+      el.path({
+        name: `destino-${i}`,
+        description: `a screen of the app with a fairly ordinary description, number ${i}`,
+        steps: [`menu-${i}`],
+      });
+    turnAnswers = [
+      () => sse(["done", { threadId: "t", status: "done", reply: "pronto" }]),
+    ];
+    await ask(el, "olá");
+    await until(() => logText(el).includes("pronto"));
+    const offered = (
+      (sent[1]?.body?.clientTools ?? []) as Array<{
+        name: string;
+        description: string;
+        parameters: { properties: { destination: { description: string } } };
+      }>
+    ).find((t) => t.name === "navigate_to");
+    expect({
+      fits: (offered?.description.length ?? Number.POSITIVE_INFINITY) <= 1024,
+      listed:
+        offered?.parameters.properties.destination.description.includes(
+          "- destino-29: a screen of the app",
+        ) ?? false,
+    }).toEqual({ fits: true, listed: true });
+  });
+
+  test("on a phone a path plays its phone steps, under the strip", async () => {
+    tokens = [jwt({ sub: "42", exp: now() + 600 })];
+    await onPhone(async () => {
+      const clicks: string[] = [];
+      const strip: Array<{ reduced: boolean; step: string | null }> = [];
+      const el = mount();
+      const watch = () =>
+        strip.push({
+          reduced: panelState(el).reduced,
+          step: panelState(el).step,
+        });
+      document.body.append(
+        actionButton("menu-hamburguer", clicks, watch),
+        actionButton("menu-notas", clicks, watch),
+        actionButton("filtro-rejeitadas", clicks, watch),
+      );
+      el.path({
+        name: "notas-rejeitadas",
+        description: "the rejected invoices",
+        steps: ["menu-notas", "filtro-rejeitadas"],
+        phone: ["menu-hamburguer", "menu-notas", "filtro-rejeitadas"],
+      });
+      turnAnswers = navigateTurn("notas-rejeitadas");
+      await ask(el, "rejeitadas");
+      await until(() => logText(el).includes("Chegamos."));
+      expect({
+        clicks,
+        strip,
+        answer: navigateAnswer(),
+      }).toEqual({
+        clicks: ["menu-hamburguer", "menu-notas", "filtro-rejeitadas"],
+        strip: [0, 1, 2].map(() => ({
+          reduced: true,
+          step: "Levando você até lá",
+        })),
+        answer: { ok: true, result: { arrived: "notas-rejeitadas" } },
+      });
+    });
+  });
+
+  test("a destination with no path, or none at all, clicks nothing", async () => {
+    tokens = [jwt({ sub: "42", exp: now() + 600 })];
+    const clicks: string[] = [];
+    document.body.appendChild(actionButton("menu-notas", clicks));
+    const el = mount();
+    el.path({
+      name: "notas",
+      description: "the invoices",
+      steps: ["menu-notas"],
+    });
+    turnAnswers = navigateTurn("outra");
+    await ask(el, "vai");
+    await until(() => logText(el).includes("Chegamos."));
+    expect({ clicks, answer: navigateAnswer() }).toEqual({
+      clicks: [],
+      answer: {
+        ok: true,
+        result: { arrived: null, reason: "no path to this destination" },
+      },
+    });
+  });
+
+  test("the built-in navigation name cannot be taken by a page tool, and a path needs a name and steps", () => {
+    const el = mount();
+    const refused = [
+      () => el.tool({ name: "navigate_to", description: "x", run: () => null }),
+      () => el.path({ name: "", description: "x", steps: ["a"] }),
+      () => el.path({ name: "a", description: "x", steps: [] }),
+      () => el.path({ name: "a", description: "x", steps: [""] }),
+      () => el.path({ name: "a", description: "x", steps: ["b"], phone: [] }),
+    ].map((add) => {
+      try {
+        add();
+        return false;
+      } catch {
+        return true;
+      }
+    });
+    expect(refused).toEqual([true, true, true, true, true]);
   });
 
   test("the built-in highlight name cannot be taken by a page tool", () => {
@@ -712,17 +1630,177 @@ describe("<fazer-ai-agent>", () => {
     }).toEqual({ threads: ["velha", null], stored: "nova" });
   });
 
-  test("on a phone the panel steps aside while it highlights the page", async () => {
-    tokens = [jwt({ sub: "42", exp: now() + 600 })];
+  // A phone screen: every max-width query matches, reduced motion does not.
+  async function onPhone(run: () => Promise<void>) {
     const realMatch = window.matchMedia;
     window.matchMedia = ((q: string) => ({
       matches: q.includes("max-width"),
       media: q,
     })) as typeof window.matchMedia;
     try {
+      await run();
+    } finally {
+      window.matchMedia = realMatch;
+    }
+  }
+
+  // A turn whose one call points at the named element, then answers.
+  function pointTurn(target: string) {
+    return [
+      () =>
+        sse([
+          "pending",
+          {
+            threadId: "t",
+            status: "pending",
+            calls: [
+              {
+                toolCallId: "h",
+                name: "highlight_element",
+                args: { target },
+              },
+            ],
+          },
+        ]),
+      () => sse(["done", { threadId: "t", status: "done", reply: "ali" }]),
+    ];
+  }
+
+  function panelState(el: FazerAiAgent) {
+    const root = el.shadowRoot as ShadowRoot;
+    const panel = root.querySelector(".panel") as HTMLElement;
+    return {
+      hidden: panel.hidden,
+      reduced: panel.classList.contains("reduced"),
+      at: panel.dataset.at ?? null,
+      step: (root.querySelector(".strip-step") as HTMLElement).textContent,
+      line: (root.querySelector(".strip-line") as HTMLElement).textContent,
+    };
+  }
+
+  test("on a phone the panel shrinks to a strip while it points at the page, and grows back when tapped", async () => {
+    tokens = [jwt({ sub: "42", exp: now() + 600 })];
+    await onPhone(async () => {
       const button = document.createElement("button");
       button.setAttribute("data-fazer-ai-target", "emitir");
       document.body.appendChild(button);
+      const el = mount();
+      turnAnswers = pointTurn("emitir");
+      await ask(el, "onde emito?");
+      await until(() => logText(el).includes("ali"));
+      const during = panelState(el);
+      (
+        (el.shadowRoot as ShadowRoot).querySelector(".strip") as HTMLElement
+      ).click();
+      expect({ during, after: panelState(el).reduced }).toEqual({
+        during: {
+          hidden: false,
+          reduced: true,
+          at: "bottom",
+          step: "Mostrando na página",
+          line: "ali",
+        },
+        after: false,
+      });
+    });
+  });
+
+  test("on a phone a click keeps the strip while it runs and grows the panel back after it", async () => {
+    tokens = [jwt({ sub: "42", exp: now() + 600 })];
+    await onPhone(async () => {
+      const tab = document.createElement("button");
+      tab.setAttribute("data-fazer-ai-action", "aba-notas");
+      let seen: ReturnType<typeof panelState> | null = null;
+      const el = mount();
+      tab.addEventListener("click", () => {
+        seen = panelState(el);
+      });
+      document.body.appendChild(tab);
+      turnAnswers = clickTurn("aba-notas");
+      await ask(el, "abre as notas");
+      await until(() => logText(el).includes("Feito."));
+      const answered = panelState(el).reduced;
+      await until(() => !panelState(el).reduced, 400);
+      expect({
+        seen: seen as ReturnType<typeof panelState> | null,
+        answered,
+        grown: panelState(el).reduced,
+      }).toEqual({
+        seen: {
+          hidden: false,
+          reduced: true,
+          at: "bottom",
+          step: "Usando a página",
+          line: "abre as notas",
+        },
+        answered: true,
+        grown: false,
+      });
+    });
+  });
+
+  test("with reduce-on-action off, on a phone the panel steps aside instead", async () => {
+    tokens = [jwt({ sub: "42", exp: now() + 600 })];
+    await onPhone(async () => {
+      const button = document.createElement("button");
+      button.setAttribute("data-fazer-ai-target", "emitir");
+      document.body.appendChild(button);
+      const el = mount();
+      el.setAttribute("reduce-on-action", "off");
+      turnAnswers = pointTurn("emitir");
+      await ask(el, "onde?");
+      await until(() => logText(el).includes("ali"));
+      const root = el.shadowRoot as ShadowRoot;
+      const { hidden, reduced } = panelState(el);
+      expect({
+        hidden,
+        reduced,
+        fabHidden: (root.querySelector(".fab") as HTMLElement).hidden,
+      }).toEqual({ hidden: true, reduced: false, fabHidden: false });
+    });
+  });
+
+  test("on a desktop the panel keeps its size while the agent points at the page", async () => {
+    tokens = [jwt({ sub: "42", exp: now() + 600 })];
+    const button = document.createElement("button");
+    button.setAttribute("data-fazer-ai-target", "emitir");
+    document.body.appendChild(button);
+    const el = mount();
+    turnAnswers = pointTurn("emitir");
+    await ask(el, "onde?");
+    await until(() => logText(el).includes("ali"));
+    const { hidden, reduced } = panelState(el);
+    expect({ hidden, reduced }).toEqual({ hidden: false, reduced: false });
+  });
+
+  test("closing the panel while it is a strip opens it again at full size", async () => {
+    tokens = [jwt({ sub: "42", exp: now() + 600 })];
+    await onPhone(async () => {
+      const button = document.createElement("button");
+      button.setAttribute("data-fazer-ai-target", "emitir");
+      document.body.appendChild(button);
+      const el = mount();
+      turnAnswers = pointTurn("emitir");
+      await ask(el, "onde?");
+      await until(() => logText(el).includes("ali"));
+      const during = panelState(el).reduced;
+      el.close();
+      el.open();
+      expect({ during, reopened: panelState(el).reduced }).toEqual({
+        during: true,
+        reopened: false,
+      });
+    });
+  });
+
+  test("a click right after a highlight keeps the strip until the highlight is over", async () => {
+    tokens = [jwt({ sub: "42", exp: now() + 600 })];
+    await onPhone(async () => {
+      const button = document.createElement("button");
+      button.setAttribute("data-fazer-ai-target", "emitir");
+      const tab = document.createElement("button");
+      tab.setAttribute("data-fazer-ai-action", "aba-notas");
+      document.body.append(button, tab);
       const el = mount();
       turnAnswers = [
         () =>
@@ -737,21 +1815,418 @@ describe("<fazer-ai-agent>", () => {
                   name: "highlight_element",
                   args: { target: "emitir" },
                 },
+                {
+                  toolCallId: "k",
+                  name: "click_element",
+                  args: { target: "aba-notas" },
+                },
               ],
             },
           ]),
-        () => sse(["done", { threadId: "t", status: "done", reply: "ali" }]),
+        () => sse(["done", { threadId: "t", status: "done", reply: "ok" }]),
       ];
+      // The click's hold over at once, the highlight's still running: the strip waits for the
+      // later deadline, then grows back.
+      const { STRIP_HOLD_MS } = await import("@/sdk/agent");
+      const held = { ...STRIP_HOLD_MS };
+      STRIP_HOLD_MS.click = 0;
+      STRIP_HOLD_MS.point = 400;
+      try {
+        await ask(el, "mostra e abre");
+        await until(() => logText(el).includes("ok"));
+        // The network here answers in microtasks, so the click's hold (a zero timer, queued first)
+        // has not run yet; a zero timer queued now runs after it.
+        await new Promise((r) => setTimeout(r, 0));
+        const afterClick = panelState(el).reduced;
+        await until(() => !panelState(el).reduced);
+        expect(afterClick).toBe(true);
+      } finally {
+        Object.assign(STRIP_HOLD_MS, held);
+      }
+    });
+  });
+
+  test("growing back scrolls the conversation to what arrived while it was a strip", async () => {
+    tokens = [jwt({ sub: "42", exp: now() + 600 })];
+    await onPhone(async () => {
+      const button = document.createElement("button");
+      button.setAttribute("data-fazer-ai-target", "emitir");
+      document.body.appendChild(button);
+      const el = mount();
+      turnAnswers = pointTurn("emitir");
       await ask(el, "onde?");
       await until(() => logText(el).includes("ali"));
       const root = el.shadowRoot as ShadowRoot;
+      const log = root.querySelector(".log") as HTMLElement;
+      let top = 0;
+      Object.defineProperty(log, "scrollHeight", { get: () => 900 });
+      Object.defineProperty(log, "scrollTop", {
+        get: () => top,
+        set: (v: number) => {
+          top = v;
+        },
+      });
+      (root.querySelector(".strip") as HTMLElement).click();
+      expect(top).toBe(900);
+    });
+  });
+
+  test("switching to inline mode while it is a strip shows the whole conversation", async () => {
+    tokens = [jwt({ sub: "42", exp: now() + 600 })];
+    await onPhone(async () => {
+      const button = document.createElement("button");
+      button.setAttribute("data-fazer-ai-target", "emitir");
+      document.body.appendChild(button);
+      const el = mount();
+      turnAnswers = pointTurn("emitir");
+      await ask(el, "onde?");
+      await until(() => logText(el).includes("ali"));
+      const during = panelState(el).reduced;
+      el.setAttribute("mode", "inline");
+      const css = (el.shadowRoot as ShadowRoot).querySelector("style")
+        ?.textContent as string;
+      const media = css.slice(css.indexOf(".strip {"));
       expect({
-        panelHidden: (root.querySelector(".panel") as HTMLElement).hidden,
-        fabHidden: (root.querySelector(".fab") as HTMLElement).hidden,
-      }).toEqual({ panelHidden: true, fabHidden: false });
+        during,
+        after: panelState(el).reduced,
+        // The rule that hides the conversation only applies to the floating panel on a phone.
+        scoped:
+          !/^\.panel\.reduced > :not\(\.strip\)/m.test(css) &&
+          media.includes(
+            ':host(:not([mode="inline"])) .panel.reduced > :not(.strip)',
+          ),
+      }).toEqual({ during: true, after: false, scoped: true });
+    });
+  });
+
+  test("a fixed element keeps its half, and the strip settles on where the element actually stops", async () => {
+    const { predictedSide } = await import("@/sdk/agent");
+    const doc = document.documentElement;
+    const realHeight = Object.getOwnPropertyDescriptor(doc, "scrollHeight");
+    Object.defineProperty(doc, "scrollHeight", {
+      configurable: true,
+      get: () => 5000,
+    });
+    try {
+      const low = window.innerHeight - 30;
+      const fixed = document.createElement("button");
+      fixed.style.position = "fixed";
+      fixed.getBoundingClientRect = () => ({ top: low, height: 20 }) as DOMRect;
+      const scrolled = document.createElement("button");
+      scrolled.getBoundingClientRect = () =>
+        ({ top: low, height: 20 }) as DOMRect;
+      document.body.append(fixed, scrolled);
+      expect({
+        fixed: predictedSide(fixed),
+        scrolled: predictedSide(scrolled),
+      }).toEqual({ fixed: "top", scrolled: "bottom" });
+    } finally {
+      if (realHeight) Object.defineProperty(doc, "scrollHeight", realHeight);
+      else delete (doc as unknown as { scrollHeight?: number }).scrollHeight;
+    }
+  });
+
+  test("on a phone the strip moves away from an element that did not scroll where it was expected", async () => {
+    tokens = [jwt({ sub: "42", exp: now() + 600 })];
+    const doc = document.documentElement;
+    Object.defineProperty(doc, "scrollHeight", {
+      configurable: true,
+      get: () => 5000,
+    });
+    try {
+      await onPhone(async () => {
+        const button = document.createElement("button");
+        button.setAttribute("data-fazer-ai-target", "emitir");
+        // Inside a container the document's scroll does not move: it stays low on the screen.
+        button.getBoundingClientRect = () =>
+          ({ top: window.innerHeight - 30, height: 20 }) as DOMRect;
+        document.body.appendChild(button);
+        const el = mount();
+        turnAnswers = pointTurn("emitir");
+        await ask(el, "onde?");
+        await until(() => logText(el).includes("ali"));
+        await until(() => panelState(el).at === "top");
+        expect(panelState(el).at).toBe("top");
+      });
+    } finally {
+      delete (doc as unknown as { scrollHeight?: number }).scrollHeight;
+    }
+  });
+
+  test("an element still settling from an earlier action does not move the strip a newer one placed", async () => {
+    tokens = [jwt({ sub: "42", exp: now() + 600 })];
+    await onPhone(async () => {
+      const low = window.innerHeight - 30;
+      const scrolling = document.createElement("button");
+      scrolling.setAttribute("data-fazer-ai-target", "emitir");
+      // Still moving for a while, then at rest in the upper half.
+      let reads = 0;
+      scrolling.getBoundingClientRect = () =>
+        ({ top: ++reads < 40 ? reads * 7 : 10, height: 20 }) as DOMRect;
+      const fixedTab = document.createElement("button");
+      fixedTab.setAttribute("data-fazer-ai-action", "aba-notas");
+      fixedTab.style.position = "fixed";
+      fixedTab.getBoundingClientRect = () =>
+        ({ top: low, height: 20 }) as DOMRect;
+      document.body.append(scrolling, fixedTab);
+      const el = mount();
+      turnAnswers = [
+        () =>
+          sse([
+            "pending",
+            {
+              threadId: "t",
+              status: "pending",
+              calls: [
+                {
+                  toolCallId: "h",
+                  name: "highlight_element",
+                  args: { target: "emitir" },
+                },
+                {
+                  toolCallId: "k",
+                  name: "click_element",
+                  args: { target: "aba-notas" },
+                },
+              ],
+            },
+          ]),
+        () => sse(["done", { threadId: "t", status: "done", reply: "ok" }]),
+      ];
+      await ask(el, "mostra e abre");
+      await until(() => logText(el).includes("ok"));
+      // Frames well past the moment the earlier element came to rest: the highlight measures it on
+      // every frame, so the count moves with the frames, and a stale follower has had its chance.
+      await until(() => reads > 60);
+      expect(panelState(el).at).toBe("top");
+    });
+  });
+
+  test("a widget taken off the page stops listening for the phone's width", async () => {
+    tokens = [jwt({ sub: "42", exp: now() + 600 })];
+    const realMatch = window.matchMedia;
+    const listening = new Set<unknown>();
+    window.matchMedia = ((q: string) => ({
+      matches: q.includes("max-width"),
+      media: q,
+      addEventListener: (_: string, fn: unknown) => listening.add(fn),
+      removeEventListener: (_: string, fn: unknown) => listening.delete(fn),
+    })) as unknown as typeof window.matchMedia;
+    try {
+      const button = document.createElement("button");
+      button.setAttribute("data-fazer-ai-target", "emitir");
+      document.body.appendChild(button);
+      const el = mount();
+      turnAnswers = pointTurn("emitir");
+      await ask(el, "onde?");
+      await until(() => logText(el).includes("ali"));
+      const watched = listening.size;
+      el.remove();
+      expect({ watched, after: listening.size }).toEqual({
+        watched: 1,
+        after: 0,
+      });
     } finally {
       window.matchMedia = realMatch;
     }
+  });
+
+  test("a call that arrives after the widget left the page sets nothing up for the phone", async () => {
+    tokens = [jwt({ sub: "42", exp: now() + 600 })];
+    const realMatch = window.matchMedia;
+    const listening = new Set<unknown>();
+    window.matchMedia = ((q: string) => ({
+      matches: q.includes("max-width"),
+      media: q,
+      addEventListener: (_: string, fn: unknown) => listening.add(fn),
+      removeEventListener: (_: string, fn: unknown) => listening.delete(fn),
+    })) as unknown as typeof window.matchMedia;
+    try {
+      const button = document.createElement("button");
+      button.setAttribute("data-fazer-ai-target", "emitir");
+      document.body.appendChild(button);
+      const el = mount();
+      let release: () => void = () => {};
+      const held = new Promise<void>((r) => {
+        release = r;
+      });
+      const [pending, done] = pointTurn("emitir");
+      // The turn runs on after the widget leaves: its answer to the highlight is what resumes it, so
+      // the resume arriving says the call was handled.
+      let resumed = false;
+      turnAnswers = [
+        async () => {
+          await held;
+          return (pending as () => Response)();
+        },
+        () => {
+          resumed = true;
+          return (done as () => Response)();
+        },
+      ];
+      await ask(el, "onde?");
+      el.remove();
+      release();
+      await until(() => resumed);
+      expect(listening.size).toBe(0);
+    } finally {
+      window.matchMedia = realMatch;
+    }
+  });
+
+  test("on a phone the panel grows back after a click the page's handler throws on", async () => {
+    tokens = [jwt({ sub: "42", exp: now() + 600 })];
+    await onPhone(async () => {
+      const tab = document.createElement("button");
+      tab.setAttribute("data-fazer-ai-action", "aba-notas");
+      tab.click = () => {
+        throw new Error("quebrou");
+      };
+      document.body.appendChild(tab);
+      const el = mount();
+      turnAnswers = clickTurn("aba-notas");
+      await ask(el, "abre as notas");
+      await until(() => logText(el).includes("Feito."));
+      await until(() => !panelState(el).reduced, 400);
+      expect({
+        answer: ((sent[2]?.body?.answers ?? {}) as Record<string, unknown>).k1,
+        reduced: panelState(el).reduced,
+      }).toEqual({ answer: { ok: false, error: "quebrou" }, reduced: false });
+    });
+  });
+
+  test("another user signing in while it is a strip gets the whole panel, and the strip announces what it shows", async () => {
+    tokens = [jwt({ sub: "42", exp: now() + 600 })];
+    await onPhone(async () => {
+      const button = document.createElement("button");
+      button.setAttribute("data-fazer-ai-target", "emitir");
+      document.body.appendChild(button);
+      const el = mount();
+      turnAnswers = pointTurn("emitir");
+      await ask(el, "onde?");
+      await until(() => logText(el).includes("ali"));
+      const root = el.shadowRoot as ShadowRoot;
+      const strip = root.querySelector(".strip") as HTMLElement;
+      const during = panelState(el).reduced;
+      const announced = {
+        live: strip.querySelector("[aria-live]")?.getAttribute("aria-live"),
+        live_holds_line:
+          strip.querySelector("[aria-live] .strip-line") !== null,
+        named_by_label: strip.hasAttribute("aria-label"),
+        back: strip.querySelector(".strip-back")?.textContent,
+      };
+      el.identityChanged();
+      expect({ during, after: panelState(el).reduced, announced }).toEqual({
+        during: true,
+        after: false,
+        announced: {
+          live: "polite",
+          live_holds_line: true,
+          named_by_label: false,
+          back: "Voltar à conversa",
+        },
+      });
+    });
+  });
+
+  test("a shrink whose transition has not ended by the deadline still leaves the panel at full size", async () => {
+    tokens = [jwt({ sub: "42", exp: now() + 600 })];
+    await onPhone(async () => {
+      const tab = document.createElement("button");
+      tab.setAttribute("data-fazer-ai-action", "aba-notas");
+      document.body.appendChild(tab);
+      const el = mount();
+      const panel = (el.shadowRoot as ShadowRoot).querySelector(
+        ".panel",
+      ) as HTMLElement;
+      // Real sizes: the full screen, and a strip at the bottom.
+      panel.getBoundingClientRect = () =>
+        (panel.classList.contains("reduced")
+          ? {
+              top: 780,
+              left: 8,
+              right: 382,
+              bottom: 836,
+              width: 374,
+              height: 56,
+            }
+          : {
+              top: 0,
+              left: 0,
+              right: 390,
+              bottom: 844,
+              width: 390,
+              height: 844,
+            }) as DOMRect;
+      // A transition whose end never comes on its own, as in a background tab.
+      const runs: Array<{ onfinish: (() => void) | null; cancelled: boolean }> =
+        [];
+      panel.animate = (() => {
+        const run = {
+          onfinish: null,
+          cancelled: false,
+          cancel() {
+            run.cancelled = true;
+          },
+        };
+        runs.push(run);
+        return run;
+      }) as unknown as typeof panel.animate;
+      turnAnswers = clickTurn("aba-notas");
+      const { STRIP_HOLD_MS } = await import("@/sdk/agent");
+      const held = STRIP_HOLD_MS.click;
+      STRIP_HOLD_MS.click = 10;
+      try {
+        await ask(el, "abre as notas");
+        await until(() => logText(el).includes("Feito."));
+        // The deadline came with the shrink's transition still unfinished, and dropped it.
+        await until(() => runs.some((run) => run.cancelled));
+      } finally {
+        STRIP_HOLD_MS.click = held;
+      }
+      for (const run of runs) run.onfinish?.();
+      expect({
+        started: runs.length > 0,
+        reduced: panelState(el).reduced,
+      }).toEqual({
+        started: true,
+        reduced: false,
+      });
+    });
+  });
+
+  test("tapping the strip moves focus into the conversation", async () => {
+    tokens = [jwt({ sub: "42", exp: now() + 600 })];
+    await onPhone(async () => {
+      const button = document.createElement("button");
+      button.setAttribute("data-fazer-ai-target", "emitir");
+      document.body.appendChild(button);
+      const el = mount();
+      turnAnswers = pointTurn("emitir");
+      await ask(el, "onde?");
+      await until(() => logText(el).includes("ali"));
+      const root = el.shadowRoot as ShadowRoot;
+      (root.querySelector(".strip") as HTMLElement).click();
+      expect(root.activeElement?.className ?? null).toBe("panel");
+    });
+  });
+
+  test("the strip takes the half of the screen away from where the element ends up", async () => {
+    const { stripSide } = await import("@/sdk/agent");
+    const view = { height: 800, scrollY: 0, scrollHeight: 4000 };
+    expect({
+      // Scrolled to the centre, the element sits in the middle and the strip goes below it.
+      middle: stripSide({ top: 2000, height: 40 }, view),
+      // Near the top of the page the page cannot scroll up to centre it: it stays above.
+      top: stripSide({ top: 100, height: 40 }, view),
+      // Near the end of the page it cannot scroll far enough: it stays below, so the strip goes up.
+      end: stripSide({ top: 3900, height: 40 }, view),
+      // A page that does not scroll leaves it where it is.
+      still: stripSide(
+        { top: 600, height: 40 },
+        { height: 800, scrollY: 0, scrollHeight: 800 },
+      ),
+    }).toEqual({ middle: "bottom", top: "bottom", end: "top", still: "top" });
   });
 
   test("answers that never reached the instance abandon the suspended thread", async () => {
@@ -1568,8 +3043,15 @@ describe("<fazer-ai-agent>", () => {
   });
 
   describe("the conversation shown again after a reload", () => {
-    // A page that reloaded: the element is gone and a new one mounts, with only storage left.
+    // A page that reloaded: the element is gone and a new one mounts, with only storage left, and the
+    // instance holds what was said.
     async function talkThenReload(sub: string): Promise<FazerAiAgent> {
+      transcripts.set("t1", {
+        messages: [
+          { role: "user", text: "a pergunta" },
+          { role: "agent", text: "a resposta" },
+        ],
+      });
       tokens = [jwt({ sub, exp: now() + 600 })];
       const before = mount();
       turnAnswers = [
@@ -1588,7 +3070,8 @@ describe("<fazer-ai-agent>", () => {
 
     test("opening the panel shows the earlier messages before anything is sent", async () => {
       await talkThenReload("42");
-      tokens = [jwt({ sub: "42", exp: now() + 600 })];
+      const token = jwt({ sub: "42", exp: now() + 600 });
+      tokens = [token];
       const el = mount();
       el.open();
       await until(() => logText(el).includes("a resposta"));
@@ -1601,7 +3084,12 @@ describe("<fazer-ai-agent>", () => {
       expect({
         msgs,
         turns: sent.filter((x) => x.url.endsWith("/turn")).length,
-      }).toEqual({ msgs: ["user:a pergunta", "agent:a resposta"], turns: 0 });
+        read: transcriptAsked.map((x) => [x.thread, x.auth]),
+      }).toEqual({
+        msgs: ["user:a pergunta", "agent:a resposta"],
+        turns: 0,
+        read: [["t1", `Bearer ${token}`]],
+      });
     });
 
     test("another user signed in on the same browser sees none of it", async () => {
@@ -1666,15 +3154,23 @@ describe("<fazer-ai-agent>", () => {
       await ask(el, "de novo");
       await until(() => logText(el).includes("nova"));
       el.remove();
+      transcripts.set("t2", {
+        messages: [
+          { role: "user", text: "de novo" },
+          { role: "agent", text: "nova" },
+        ],
+      });
+      transcriptAsked = [];
       tokens = [jwt({ sub: "42", exp: now() + 600 })];
       const reloaded = mount();
       reloaded.open();
       await until(() => logText(reloaded).includes("nova"));
-      expect(
-        [...(reloaded.shadowRoot as ShadowRoot).querySelectorAll(".msg")].map(
-          (m) => m.textContent,
-        ),
-      ).toEqual(["de novo", "nova"]);
+      expect({
+        read: transcriptAsked.map((x) => x.thread),
+        msgs: [
+          ...(reloaded.shadowRoot as ShadowRoot).querySelectorAll(".msg"),
+        ].map((m) => m.textContent),
+      }).toEqual({ read: ["t2"], msgs: ["de novo", "nova"] });
     });
 
     test("signing in takes the anonymous conversation along, and a message sent during the hand-over continues it", async () => {
@@ -1690,6 +3186,13 @@ describe("<fazer-ai-agent>", () => {
       await ask(anonymous, "oi");
       await until(() => logText(anonymous).includes("visitante"));
       anonymous.remove();
+      transcripts.set("ta", {
+        messages: [
+          { role: "user", text: "oi" },
+          { role: "agent", text: "visitante" },
+        ],
+      });
+      transcriptAsked = [];
       let handOver = () => {};
       const handedOver = new Promise<Response>((r) => {
         handOver = () =>
@@ -1713,13 +3216,11 @@ describe("<fazer-ai-agent>", () => {
           (m) => m.textContent,
         ),
         continued: sent.find((x) => x.url.endsWith("/turn"))?.body?.threadId,
-        moved: JSON.parse(
-          localStorage.getItem("fazer-ai-agent:app_teste:42#log") ?? "{}",
-        ).messages?.length,
+        read: transcriptAsked.map((x) => x.thread),
       }).toEqual({
         msgs: ["oi", "visitante", "entrei", "logado"],
         continued: "ta",
-        moved: 4,
+        read: ["ta"],
       });
     });
 
@@ -2688,7 +4189,7 @@ describe("the voice message", () => {
     expect(shown).toEqual({ mic: "Falar", label: "Liberando…" });
   });
 
-  test("a spoken message keeps its mark after a reload", async () => {
+  test("a spoken message is sent as one, and keeps its mark after a reload", async () => {
     tokens = [jwt({ sub: "42", exp: now() + 600 })];
     const el = mount();
     await record(el);
@@ -2700,16 +4201,24 @@ describe("the voice message", () => {
     ];
     q<HTMLButtonElement>(el, ".rec-send").click();
     await until(() => logText(el).includes("Pronto."));
+    const spoken = sent.find((x) => x.url.endsWith("/turn"))?.body?.voice;
     document.body.replaceChildren();
+    transcripts.set("t-voz", {
+      messages: [
+        { role: "user", text: "minhas notas", voice: true },
+        { role: "agent", text: "Pronto." },
+      ],
+    });
     tokens = [jwt({ sub: "42", exp: now() + 600 })];
     const again = mount();
     again.open();
     await until(() => logText(again).includes("Pronto."));
-    expect(
-      q<HTMLElement>(again, ".msg.user .voice-mark")?.getAttribute(
+    expect({
+      spoken,
+      mark: q<HTMLElement>(again, ".msg.user .voice-mark")?.getAttribute(
         "aria-label",
       ),
-    ).toBe("Mensagem de voz");
+    }).toEqual({ spoken: true, mark: "Mensagem de voz" });
   });
 });
 
@@ -2811,6 +4320,535 @@ describe("the floating button and the textarea", () => {
       sentBack: { height: "40px", scrolls: false },
       hiddenByDefault: true,
       placeholderOneLine: true,
+    });
+  });
+});
+
+describe("the list of earlier conversations", () => {
+  const json =
+    (body: unknown, status = 200) =>
+    () =>
+      new BunResponse(JSON.stringify(body), {
+        status,
+        headers: { "content-type": "application/json" },
+      });
+  const shadow = (el: FazerAiAgent) => el.shadowRoot as ShadowRoot;
+  const historyButton = (el: FazerAiAgent) =>
+    shadow(el).querySelector(".history") as HTMLButtonElement;
+  const threadsText = (el: FazerAiAgent) =>
+    shadow(el).querySelector(".threads")?.textContent ?? "";
+  const items = (el: FazerAiAgent) =>
+    [...shadow(el).querySelectorAll(".thread")].map((b) => ({
+      title: b.querySelector(".thread-title")?.textContent,
+      current: b.getAttribute("aria-current") === "true",
+    }));
+  const listed = (threadId: string, title: string | null, minutesAgo = 5) => ({
+    threadId,
+    title,
+    lastTurnAt: new Date(Date.now() - minutesAgo * 60_000).toISOString(),
+  });
+
+  // A conversation on thread `t1`, then the panel ready to list.
+  async function talked(sub = "42"): Promise<FazerAiAgent> {
+    tokens = [jwt({ sub, exp: now() + 600 })];
+    const el = mount();
+    turnAnswers = [
+      () =>
+        sse(["done", { threadId: "t1", status: "done", reply: "a resposta" }]),
+    ];
+    await ask(el, "a pergunta");
+    await until(() => logText(el).includes("a resposta"));
+    sent = [];
+    return el;
+  }
+
+  test("the list names each conversation, marks the open one, and comes back to it", async () => {
+    const el = await talked();
+    turnAnswers = [
+      json({
+        threads: [listed("t1", "a pergunta"), listed("t0", null, 60 * 30)],
+        nextCursor: null,
+      }),
+    ];
+    historyButton(el).click();
+    await until(() => items(el).length === 2);
+    const request = sent.find((x) => x.url.includes("/threads"));
+    const listing = {
+      url: request?.url,
+      auth: request?.auth,
+      items: items(el),
+      title: shadow(el).querySelector("h2")?.textContent,
+      logHidden: (shadow(el).querySelector(".log") as HTMLElement).hidden,
+      formHidden: (shadow(el).querySelector("form") as HTMLElement).hidden,
+    };
+    (shadow(el).querySelector(".back") as HTMLButtonElement).click();
+    expect({
+      listing,
+      back: {
+        threadsHidden: (shadow(el).querySelector(".threads") as HTMLElement)
+          .hidden,
+        log: logText(el),
+      },
+    }).toEqual({
+      listing: {
+        url: `${INSTANCE}/api/v1/sdk/app_teste/threads`,
+        auth: expect.stringMatching(/^Bearer /),
+        items: [
+          { title: "a pergunta", current: true },
+          { title: "Conversa", current: false },
+        ],
+        title: "Conversas",
+        logHidden: true,
+        formHidden: true,
+      },
+      back: { threadsHidden: true, log: "a perguntaa resposta" },
+    });
+  });
+
+  test("picking an earlier conversation shows its messages as the instance kept them, and the next message continues it", async () => {
+    const el = await talked();
+    el.reset();
+    turnAnswers = [
+      () => sse(["done", { threadId: "t2", status: "done", reply: "outra" }]),
+    ];
+    await ask(el, "assunto novo");
+    await until(() => logText(el).includes("outra"));
+    transcripts.set("t1", {
+      messages: [
+        { role: "user", text: "a pergunta" },
+        { role: "agent", text: "a resposta" },
+      ],
+    });
+    turnAnswers = [
+      json({
+        threads: [listed("t2", "assunto novo", 1), listed("t1", "a pergunta")],
+        nextCursor: null,
+      }),
+    ];
+    historyButton(el).click();
+    await until(() => items(el).length === 2);
+    (shadow(el).querySelectorAll(".thread")[1] as HTMLButtonElement).click();
+    await until(() => logText(el).includes("a resposta"));
+    const shown = logText(el);
+    turnAnswers = [
+      () => sse(["done", { threadId: "t1", status: "done", reply: "segue" }]),
+    ];
+    sent = [];
+    await ask(el, "e mais");
+    await until(() => logText(el).includes("segue"));
+    expect({
+      shown,
+      continued: sent.find((x) => x.url.endsWith("/turn"))?.body?.threadId,
+      stored: localStorage.getItem("fazer-ai-agent:app_teste:42"),
+    }).toEqual({
+      shown: "a perguntaa resposta",
+      continued: "t1",
+      stored: "t1",
+    });
+  });
+
+  test("a conversation from another device opens with its whole transcript", async () => {
+    tokens = [jwt({ sub: "42", exp: now() + 600 })];
+    const el = mount();
+    el.open();
+    transcripts.set("t9", {
+      messages: [
+        { role: "user", text: "no celular" },
+        { role: "agent", text: "resposta de lá" },
+      ],
+    });
+    turnAnswers = [
+      json({
+        threads: [listed("t9", "no celular")],
+        nextCursor: null,
+      }),
+    ];
+    historyButton(el).click();
+    await until(() => items(el).length === 1);
+    (shadow(el).querySelector(".thread") as HTMLButtonElement).click();
+    await until(() => logText(el).includes("resposta de lá"));
+    expect(logText(el)).toBe("no celularresposta de lá");
+  });
+
+  test("a conversation from before the transcript says so, and still continues", async () => {
+    const el = await talked();
+    transcripts.set("t0", { recorded: false, messages: [] });
+    turnAnswers = [
+      json({
+        threads: [listed("t1", "a pergunta"), listed("t0", null, 60 * 24)],
+        nextCursor: null,
+      }),
+    ];
+    historyButton(el).click();
+    await until(() => items(el).length === 2);
+    (shadow(el).querySelectorAll(".thread")[1] as HTMLButtonElement).click();
+    await until(() => logText(el).includes("não foram guardadas"));
+    const shown = logText(el);
+    turnAnswers = [
+      () => sse(["done", { threadId: "t0", status: "done", reply: "segue" }]),
+    ];
+    sent = [];
+    await ask(el, "voltei");
+    await until(() => logText(el).includes("segue"));
+    expect({
+      shown,
+      continued: sent.find((x) => x.url.endsWith("/turn"))?.body?.threadId,
+      after: logText(el),
+    }).toEqual({
+      shown:
+        "As mensagens anteriores desta conversa não foram guardadas. Dá para continuar daqui.",
+      continued: "t0",
+      after:
+        "As mensagens anteriores desta conversa não foram guardadas. Dá para continuar daqui.volteisegue",
+    });
+  });
+
+  test("a long conversation shows its latest messages, and the earlier ones when asked", async () => {
+    tokens = [jwt({ sub: "42", exp: now() + 600 })];
+    localStorage.setItem("fazer-ai-agent:app_teste:42", "longa");
+    transcripts.set("longa", {
+      messages: [
+        { role: "user", text: "terceira" },
+        { role: "agent", text: "quarta" },
+      ],
+      pages: {
+        "41": [
+          { role: "user", text: "primeira" },
+          { role: "agent", text: "segunda" },
+        ],
+      },
+    });
+    const el = mount();
+    el.open();
+    await until(() => logText(el).includes("quarta"));
+    const first = logText(el);
+    const more = shadow(el).querySelector(".log .more") as HTMLButtonElement;
+    more.click();
+    await until(() => logText(el).includes("primeira"));
+    expect({
+      first,
+      asked: transcriptAsked.map((x) => x.before),
+      all: [...shadow(el).querySelectorAll(".msg")].map((m) => m.textContent),
+      moreLeft: shadow(el).querySelector(".log .more") !== null,
+    }).toEqual({
+      first: "Mostrar mensagens anterioresterceiraquarta",
+      asked: [null, "41"],
+      all: ["primeira", "segunda", "terceira", "quarta"],
+      moreLeft: false,
+    });
+  });
+
+  test("earlier messages come in above what is on screen, which stays where it was", async () => {
+    tokens = [jwt({ sub: "42", exp: now() + 600 })];
+    localStorage.setItem("fazer-ai-agent:app_teste:42", "longa");
+    transcripts.set("longa", {
+      messages: [
+        { role: "user", text: "terceira" },
+        { role: "agent", text: "quarta" },
+      ],
+      pages: {
+        "41": [
+          { role: "user", text: "primeira" },
+          { role: "agent", text: "segunda" },
+        ],
+      },
+    });
+    const el = mount();
+    el.open();
+    await until(() => logText(el).includes("quarta"));
+    // No layout here, so each line of the log is given a height of 100.
+    const log = shadow(el).querySelector(".log") as HTMLElement;
+    Object.defineProperty(log, "scrollHeight", {
+      configurable: true,
+      get: () => log.children.length * 100,
+    });
+    let top = 0;
+    Object.defineProperty(log, "scrollTop", {
+      configurable: true,
+      get: () => top,
+      set: (v: number) => {
+        top = v;
+      },
+    });
+    top = 0;
+    (shadow(el).querySelector(".log .more") as HTMLButtonElement).click();
+    await until(() => logText(el).includes("primeira"));
+    expect({ top, height: log.scrollHeight }).toEqual({
+      top: 100,
+      height: 400,
+    });
+  });
+
+  test("a renewal for an earlier page is not made under a running turn", async () => {
+    tokens = [jwt({ sub: "42", exp: now() + 600 })];
+    localStorage.setItem("fazer-ai-agent:app_teste:42", "longa");
+    transcripts.set("longa", {
+      messages: [{ role: "user", text: "recente" }],
+      pages: { "41": [{ role: "user", text: "antiga" }] },
+    });
+    const el = mount();
+    el.open();
+    await until(() => logText(el).includes("recente"));
+    let refuse = () => {};
+    const refused = new Promise<void>((r) => {
+      refuse = r;
+    });
+    transcriptAnswer = () =>
+      refused.then(
+        () => new BunResponse("{}", { status: 401 }),
+      ) as unknown as Response;
+    (shadow(el).querySelector(".log .more") as HTMLButtonElement).click();
+    await until(() => transcriptAsked.length === 2);
+    let reply = () => {};
+    const replied = new Promise<Response>((r) => {
+      reply = () =>
+        r(sse(["done", { threadId: "longa", status: "done", reply: "feito" }]));
+    });
+    turnAnswers = [() => replied as unknown as Response];
+    tokens = [jwt({ sub: "99", exp: now() + 600 })];
+    const asking = ask(el, "agora");
+    await until(() => sent.some((x) => x.url.endsWith("/turn")));
+    refuse();
+    await new Promise((r) => setTimeout(r, 20));
+    reply();
+    await asking;
+    await until(() => logText(el).includes("feito"));
+    expect({
+      renewals: 1 - tokens.length,
+      stored: localStorage.getItem("fazer-ai-agent:app_teste:42"),
+      other: localStorage.getItem("fazer-ai-agent:app_teste:99"),
+    }).toEqual({ renewals: 0, stored: "longa", other: null });
+  });
+
+  test("a reopened conversation the instance no longer has does not lend its earlier page to the new one", async () => {
+    tokens = [jwt({ sub: "42", exp: now() + 600 })];
+    localStorage.setItem("fazer-ai-agent:app_teste:42", "longa");
+    transcripts.set("longa", {
+      messages: [{ role: "user", text: "recente" }],
+      pages: { "41": [{ role: "user", text: "antiga" }] },
+    });
+    const el = mount();
+    el.open();
+    await until(() => logText(el).includes("recente"));
+    const offered = shadow(el).querySelector(".log .more") !== null;
+    turnAnswers = [
+      () =>
+        new BunResponse(JSON.stringify({ error: "thread not found" }), {
+          status: 404,
+          headers: { "content-type": "application/json" },
+        }),
+      () => sse(["done", { threadId: "t2", status: "done", reply: "nova" }]),
+    ];
+    await ask(el, "de novo");
+    await until(() => logText(el).includes("nova"));
+    expect({
+      offered,
+      after: shadow(el).querySelector(".log .more") !== null,
+      thread: localStorage.getItem("fazer-ai-agent:app_teste:42"),
+    }).toEqual({ offered: true, after: false, thread: "t2" });
+  });
+
+  test("a message typed while the conversation loads waits for it, and goes after it", async () => {
+    tokens = [jwt({ sub: "42", exp: now() + 600 })];
+    localStorage.setItem("fazer-ai-agent:app_teste:42", "t1");
+    let release = () => {};
+    const loaded = new Promise<void>((r) => {
+      release = r;
+    });
+    transcriptAnswer = () =>
+      loaded.then(
+        () =>
+          new BunResponse(
+            JSON.stringify({
+              recorded: true,
+              messages: [
+                { role: "user", text: "antes", at: "2026-10-20T12:00:00.000Z" },
+              ],
+              before: null,
+            }),
+          ),
+      ) as unknown as Response;
+    const el = mount();
+    turnAnswers = [
+      () => sse(["done", { threadId: "t1", status: "done", reply: "depois" }]),
+    ];
+    const asking = ask(el, "agora");
+    await until(() => transcriptAsked.length === 1);
+    await new Promise((r) => setTimeout(r, 20));
+    const turnsWhileLoading = sent.filter((x) =>
+      x.url.endsWith("/turn"),
+    ).length;
+    release();
+    await asking;
+    await until(() => logText(el).includes("depois"));
+    expect({
+      turnsWhileLoading,
+      msgs: [...shadow(el).querySelectorAll(".msg")].map((m) => m.textContent),
+    }).toEqual({ turnsWhileLoading: 0, msgs: ["antes", "agora", "depois"] });
+  });
+
+  test("a conversation whose messages could not be loaded says so, and still continues", async () => {
+    tokens = [jwt({ sub: "42", exp: now() + 600 })];
+    localStorage.setItem("fazer-ai-agent:app_teste:42", "t1");
+    transcriptAnswer = () => new BunResponse("{}", { status: 500 });
+    const el = mount();
+    el.open();
+    await until(() => logText(el).includes("Não foi possível carregar"));
+    turnAnswers = [
+      () => sse(["done", { threadId: "t1", status: "done", reply: "segue" }]),
+    ];
+    await ask(el, "oi");
+    await until(() => logText(el).includes("segue"));
+    expect(sent.find((x) => x.url.endsWith("/turn"))?.body?.threadId).toBe(
+      "t1",
+    );
+  });
+
+  test("older conversations come in pages, following the cursor", async () => {
+    const el = await talked();
+    turnAnswers = [
+      json({ threads: [listed("t1", "a pergunta")], nextCursor: "c_1" }),
+      json({ threads: [listed("t0", "mais antiga", 600)], nextCursor: null }),
+    ];
+    historyButton(el).click();
+    await until(() => items(el).length === 1);
+    (shadow(el).querySelector(".more") as HTMLButtonElement).click();
+    await until(() => items(el).length === 2);
+    expect({
+      urls: sent
+        .filter((x) => x.url.includes("/threads"))
+        .map((x) => x.url.replace(INSTANCE, "")),
+      titles: items(el).map((i) => i.title),
+      more: shadow(el).querySelector(".more"),
+    }).toEqual({
+      urls: [
+        "/api/v1/sdk/app_teste/threads",
+        "/api/v1/sdk/app_teste/threads?cursor=c_1",
+      ],
+      titles: ["a pergunta", "mais antiga"],
+      more: null,
+    });
+  });
+
+  test("a list that fails to load says so", async () => {
+    const el = await talked();
+    turnAnswers = [json({ error: "boom" }, 500)];
+    historyButton(el).click();
+    await until(() => threadsText(el).includes("Não foi possível"));
+    expect(threadsText(el)).toBe("Não foi possível carregar as conversas.");
+  });
+
+  test("an anonymous visitor with no session has no conversations, and none is opened to find out", async () => {
+    const el = mount();
+    el.removeAttribute("token-url");
+    el.open();
+    historyButton(el).click();
+    await until(() => threadsText(el).includes("Nenhuma"));
+    expect({ text: threadsText(el), requests: sent.length }).toEqual({
+      text: "Nenhuma conversa anterior ainda.",
+      requests: 0,
+    });
+  });
+
+  test("Escape in the list goes back to the conversation", async () => {
+    const el = await talked();
+    turnAnswers = [json({ threads: [], nextCursor: null })];
+    historyButton(el).click();
+    await until(() => threadsText(el).includes("Nenhuma"));
+    shadow(el)
+      .querySelector(".panel")
+      ?.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+      );
+    expect((shadow(el).querySelector(".threads") as HTMLElement).hidden).toBe(
+      true,
+    );
+  });
+
+  test('history="off" leaves the list out', async () => {
+    const el = mount();
+    el.setAttribute("history", "off");
+    el.open();
+    expect(historyButton(el).hidden).toBe(true);
+  });
+
+  test("the browser keeps only which conversation is open, not its messages", async () => {
+    const el = await talked();
+    el.reset();
+    turnAnswers = [
+      () => sse(["done", { threadId: "t2", status: "done", reply: "nova" }]),
+    ];
+    await ask(el, "assunto novo");
+    await until(() => logText(el).includes("nova"));
+    expect(
+      Object.fromEntries(
+        Object.keys(localStorage)
+          .filter((k) => k.startsWith("fazer-ai-agent:app_teste:"))
+          .map((k) => [k, localStorage.getItem(k)]),
+      ),
+    ).toEqual({ "fazer-ai-agent:app_teste:42": "t2" });
+  });
+
+  test("a list left for the conversation does not renew the token when its answer is a 401", async () => {
+    const el = await talked();
+    let answer = () => {};
+    const pending = new Promise<Response>((r) => {
+      answer = () => r(new BunResponse("{}", { status: 401 }));
+    });
+    turnAnswers = [() => pending as unknown as Response];
+    tokens = [jwt({ sub: "99", exp: now() + 600 })];
+    historyButton(el).click();
+    await until(() => sent.some((x) => x.url.includes("/threads")));
+    (shadow(el).querySelector(".back") as HTMLButtonElement).click();
+    answer();
+    await new Promise((r) => setTimeout(r, 30));
+    expect({ renewals: 1 - tokens.length, owner: logText(el) }).toEqual({
+      renewals: 0,
+      owner: "a perguntaa resposta",
+    });
+  });
+
+  test("turning the history off with a list pending does not renew the token when its answer is a 401", async () => {
+    const el = await talked();
+    let answer = () => {};
+    const pending = new Promise<Response>((r) => {
+      answer = () => r(new BunResponse("{}", { status: 401 }));
+    });
+    turnAnswers = [() => pending as unknown as Response];
+    tokens = [jwt({ sub: "99", exp: now() + 600 })];
+    historyButton(el).click();
+    await until(() => sent.some((x) => x.url.includes("/threads")));
+    el.setAttribute("history", "off");
+    answer();
+    await new Promise((r) => setTimeout(r, 30));
+    expect({ renewals: 1 - tokens.length, owner: logText(el) }).toEqual({
+      renewals: 0,
+      owner: "a perguntaa resposta",
+    });
+  });
+});
+
+describe("when a conversation was last active", () => {
+  const NOW = Date.parse("2026-10-20T12:00:00.000Z");
+  test("relative within the week, then the date", async () => {
+    const { whenLabel } = await import("@/sdk/agent");
+    const ago = (ms: number) => new Date(NOW - ms).toISOString();
+    expect({
+      now: whenLabel(ago(10_000), "pt-BR", NOW),
+      minutes: whenLabel(ago(5 * 60_000), "pt-BR", NOW),
+      hours: whenLabel(ago(3 * 3_600_000), "pt-BR", NOW),
+      yesterday: whenLabel(ago(26 * 3_600_000), "pt-BR", NOW),
+      older: whenLabel("2026-09-01T12:00:00.000Z", "pt-BR", NOW),
+      lastYear: whenLabel("2025-09-01T12:00:00.000Z", "en", NOW),
+      broken: whenLabel("not a date", "pt-BR", NOW),
+    }).toEqual({
+      now: "agora",
+      minutes: "há 5 minutos",
+      hours: "há 3 horas",
+      yesterday: "ontem",
+      older: "1 de set.",
+      lastYear: "Sep 1, 2025",
+      broken: "",
     });
   });
 });

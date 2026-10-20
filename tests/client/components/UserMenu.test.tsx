@@ -200,11 +200,12 @@ describe("UserMenu", () => {
 
     // NOTE: on a phone the menu spans most of the width, so beside it the submenu opened off
     // screen (left -56px at 393px wide). Below md it opens on top of the menu: 176px wide, its
-    // right edge 12px inside the trigger's, and as far down as the trigger is tall, so the
-    // "Language" row stays uncovered (30.6px rounds to 31).
+    // right edge 12px inside the trigger's, and one pixel short of the trigger's height, so only
+    // the "Language" row's bottom padding is covered and no pixel row is left between the two
+    // (29.6px rounds to 30).
     test("opens on top of the menu, under its trigger, on a narrow viewport", async () => {
       setViewport(false);
-      expect(await openLanguageSubmenu()).toBe("translate(-188px, 31px)");
+      expect(await openLanguageSubmenu()).toBe("translate(-188px, 30px)");
       fireEvent.click(
         screen.getByRole("menuitemradio", { name: /português/i }),
       );
@@ -219,7 +220,7 @@ describe("UserMenu", () => {
       document.documentElement.style.setProperty("--spacing", "0.3rem");
       document.documentElement.style.fontSize = "20px";
       try {
-        expect(await openLanguageSubmenu(40)).toBe("translate(-282px, 40px)");
+        expect(await openLanguageSubmenu(40)).toBe("translate(-282px, 39px)");
       } finally {
         document.documentElement.style.removeProperty("--spacing");
         document.documentElement.style.fontSize = "";
@@ -251,6 +252,41 @@ describe("UserMenu", () => {
         screen.queryByRole("menuitemradio", { name: /português/i }),
       ).not.toBeInTheDocument();
     });
+
+    // Focus reaches the parent container from places other than the trigger, the theme row's
+    // label among them. The submenu ignores that focus only while the pointer is over it, so each
+    // side of its box is a place the pointer can be outside it. The trigger (0 to 30.6 here) and the
+    // strip down to the submenu's top count as the submenu, over its width only.
+    const SUBMENU_BOX = { x: 100, y: 40, width: 176, height: 100 };
+    const POINTERS: [string, number, number, boolean][] = [
+      ["inside", 150, 80, true],
+      ["between its trigger and", 150, 35, true],
+      ["on its trigger's bottom edge above", 150, 30, true],
+      ["left of", 90, 80, false],
+      ["left of the strip above", 90, 35, false],
+      ["right of", 290, 80, false],
+      ["above", 150, -5, false],
+      ["below", 150, 150, false],
+    ];
+    for (const [where, clientX, clientY, staysOpen] of POINTERS) {
+      test(`${staysOpen ? "stays open" : "closes"} when focus returns to the parent menu with the pointer ${where} it`, async () => {
+        setViewport(false);
+        await openLanguageSubmenu();
+        const submenu = screen
+          .getByRole("menuitemradio", { name: /português/i })
+          .closest('[role="menu"]') as HTMLElement;
+        submenu.getBoundingClientRect = () => DOMRect.fromRect(SUBMENU_BOX);
+        const [parentMenu] = screen.getAllByRole("menu");
+        fireEvent.pointerMove(document, { clientX, clientY });
+        act(() => parentMenu?.focus());
+        await act(async () => {
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        });
+        const open =
+          screen.queryByRole("menuitemradio", { name: /português/i }) !== null;
+        expect(open).toBe(staysOpen);
+      });
+    }
 
     // NOTE: the -5px align offset reads 0 here because collision shifting pins it to the
     // zero-sized viewport; what matters is the 6px gap to the right of the trigger.

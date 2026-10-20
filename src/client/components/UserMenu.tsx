@@ -10,7 +10,13 @@ import {
   Settings,
   Sun,
 } from "lucide-react";
-import { type ReactNode, type RefObject, useId, useRef } from "react";
+import {
+  type ReactNode,
+  type RefObject,
+  useEffect,
+  useId,
+  useRef,
+} from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router";
 import { Avatar } from "@/client/components/Avatar";
@@ -73,6 +79,23 @@ function LanguageSubContent({
   trigger: RefObject<HTMLDivElement | null>;
   children: ReactNode;
 }) {
+  const contentRef = useRef<HTMLDivElement>(null);
+  const pointer = useRef<{ x: number; y: number } | null>(null);
+  // NOTE: where the pointer last was, read in the capture phase so it is already known when the
+  // trigger's own leave handler moves the focus. `pointerout` fires before `pointerleave` with the
+  // point the pointer left at, which `pointermove` alone would not have recorded yet.
+  useEffect(() => {
+    if (wide) return;
+    const track = (event: PointerEvent) => {
+      pointer.current = { x: event.clientX, y: event.clientY };
+    };
+    document.addEventListener("pointermove", track, true);
+    document.addEventListener("pointerout", track, true);
+    return () => {
+      document.removeEventListener("pointermove", track, true);
+      document.removeEventListener("pointerout", track, true);
+    };
+  }, [wide]);
   if (wide) {
     return (
       <DropdownMenuPrimitive.SubContent
@@ -87,17 +110,45 @@ function LanguageSubContent({
   const step = spacingStepPx();
   return (
     <DropdownMenuPrimitive.SubContent
+      ref={contentRef}
       sideOffset={
         -(OVERLAP_SUBMENU_WIDTH_STEPS + OVERLAP_SUBMENU_INSET_STEPS) * step
       }
-      alignOffset={trigger.current?.getBoundingClientRect().height ?? 0}
+      // One pixel short of the trigger's height: the drop lands on a fractional edge that rounds
+      // below the row, and a pointer on the whole pixel left between them is on the next item, whose
+      // hover closes the submenu. Overlapping that pixel hides only the row's bottom padding.
+      alignOffset={Math.max(
+        (trigger.current?.getBoundingClientRect().height ?? 0) - 1,
+        0,
+      )}
       avoidCollisions={false}
       // NOTE: Radix still treats this as a right-side submenu, so a mouse moving down or left into
       // it leaves the trigger outside the pointer-grace area and focus goes back to the parent
-      // menu, which would close it. Focus landing on another item still closes it.
+      // menu, which would close it. That focus is ignored only while the pointer is over the
+      // submenu; focus reaching the parent from anywhere else (an item, the theme row's label)
+      // still closes it, as beside a desktop menu.
       onFocusOutside={(event) => {
         const target = event.detail.originalEvent.target;
-        if (target instanceof Element && target.getAttribute("role") === "menu")
+        if (
+          !(target instanceof Element) ||
+          target.getAttribute("role") !== "menu"
+        )
+          return;
+        const box = contentRef.current?.getBoundingClientRect();
+        const at = pointer.current;
+        if (!box || !at) return;
+        // The submenu sits one trigger height down, a fraction of a pixel off the trigger's bottom
+        // edge, and the browser hands a pointer at a whole pixel to the next item before that edge.
+        // So the trigger and the submenu, over the submenu's width, are one column: a pointer
+        // moving down it is on its way in, not outside.
+        const triggerTop = trigger.current?.getBoundingClientRect().top;
+        const top = Math.min(box.top, triggerTop ?? box.top);
+        if (
+          at.x >= box.left &&
+          at.x <= box.right &&
+          at.y >= top &&
+          at.y <= box.bottom
+        )
           event.preventDefault();
       }}
       className={cn(menuContentCls, "w-44 shadow-xl")}

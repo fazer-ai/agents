@@ -76,6 +76,7 @@ const TENANT_SCOPED_MODELS = new Set<string>([
   "PlaygroundTurnNote",
   "ExternalUser",
   "DetachedThread",
+  "ClientThreadMessage",
   "ClientApp",
   "ClientAppSecret",
   "DashboardDay",

@@ -417,6 +417,69 @@ describe.skipIf(!dbUp)("client channel guardrails", () => {
     });
   });
 
+  // What reopening the conversation shows is what the user was shown: the reply as the screenings
+  // left it, never the draft they replaced.
+  const transcript = async (threadId: string) =>
+    (
+      await suDb.clientThreadMessage.findMany({
+        where: { threadId },
+        orderBy: { id: "asc" },
+        select: { role: true, text: true },
+      })
+    ).map((m) => [m.role, m.text]);
+
+  test("the transcript keeps a reply the output policy replaced as the template", async () => {
+    const r = await turn(
+      agentOutput,
+      models({ violated: true }),
+      new MemorySaver(),
+      {
+        message: "oi",
+      },
+    );
+    expect(await transcript(r.threadId)).toEqual([
+      ["user", "oi"],
+      ["agent", TEMPLATE],
+    ]);
+  });
+
+  test("the transcript keeps a message the input policy refused, and the refusal it got", async () => {
+    const r = await turn(
+      agentInput,
+      models({ violated: true }),
+      new MemorySaver(),
+      {
+        message: "o Concorrente é melhor?",
+      },
+    );
+    expect(await transcript(r.threadId)).toEqual([
+      ["user", "o Concorrente é melhor?"],
+      ["agent", TEMPLATE],
+    ]);
+  });
+
+  test("the transcript keeps the external check's replacement, once, after the browser's answers", async () => {
+    const m = models({ violated: false, readsTheScreen: true });
+    const hook = endpoint({ decision: "replace", text: "Texto do operador." });
+    const saver = new MemorySaver();
+    const first = await turn(agentExternal, m, saver, { message: "oi" }, hook);
+    if (first.status !== "pending") throw new Error("expected pending");
+    await turn(
+      agentExternal,
+      m,
+      saver,
+      {
+        threadId: first.threadId,
+        answers: { c1: { ok: true, result: { tela: "nota" } } },
+      },
+      hook,
+    );
+    expect(await transcript(first.threadId)).toEqual([
+      ["user", "oi"],
+      ["agent", "Texto do operador."],
+    ]);
+  });
+
   test("an external block under a handoff action says the refusal, not a transfer", async () => {
     const m = models({ violated: false });
     const r = await turn(

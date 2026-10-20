@@ -364,6 +364,7 @@
     "tenantNotFound": "Tenant não encontrado",
     "tenantSlugInUse": "Este slug já está em uso",
     "tenantTargetRequired": "É necessário informar um tenant de destino",
+    "threadCursorInvalid": "Este cursor de página não é válido; peça a lista de novo",
     "threadNotFound": "Conversa não encontrada.",
     "toolConversationRefFieldReserved": "O nome de campo conversation_ref é reservado para a referência da conversa que o agente cria. Dê outro nome ao campo.",
     "toolConversationRefIntegrationInvalid": "A referência da conversa precisa ser para uma integração de webhook genérico deste workspace.",

@@ -467,6 +467,9 @@ const BARE_SLICES: Record<
   // The transcript window and the page walk, moved here from the monitoring job: both slice ARRAYS of
   // message rows.
   "src/modules/chatwoot/transcript.ts": [2, "array"],
+  // A page of threads and a page of transcript messages, each one row past the page fetched to
+  // know whether another follows. Arrays of rows.
+  "src/modules/client-channel/identity.ts": [2, "array"],
   "src/modules/conversations/service.ts": [1, "array"],
   // The newest turns' lines kept off an ARRAY of turns, never a string.
   "src/modules/conversations/usage.ts": [1, "array"],
@@ -550,7 +553,7 @@ const BARE_SLICES: Record<
   "src/modules/webhooks/outbound/deliveries.ts": [1, "array"],
   // The widget keeps the last question of the user being asked for, and the last messages it shows
   // again after a reload (entries, never characters).
-  "src/sdk/agent.ts": [2, "array"],
+  "src/sdk/agent.ts": [1, "array"],
   // The text before an inline markdown match, cut at the match's index.
   "src/sdk/markdown.ts": [1, "index"],
   // An SSE frame cut at its blank-line delimiter, and a field name cut at its colon.

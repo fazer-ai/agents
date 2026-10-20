@@ -364,6 +364,7 @@
     "tenantNotFound": "Tenant not found",
     "tenantSlugInUse": "This slug is already in use",
     "tenantTargetRequired": "A target tenant is required",
+    "threadCursorInvalid": "This page cursor is not valid; ask for the list again",
     "threadNotFound": "Thread not found.",
     "toolConversationRefFieldReserved": "The field name conversation_ref is reserved for the conversation reference the agent creates. Give the field another name.",
     "toolConversationRefIntegrationInvalid": "The conversation reference has to be for a generic webhook integration of this workspace.",

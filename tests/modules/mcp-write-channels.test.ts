@@ -66,7 +66,7 @@ describe("MCP channels gate (no DB)", () => {
     const r = await deploymentConnect(
       principal({ scopes: ["mcp:read", "mcp:write"] }),
       {
-        base_url: "https://chat.example.com",
+        base_url: "https://chat.channels.example",
         admin_token: "x",
       },
     );
@@ -76,7 +76,7 @@ describe("MCP channels gate (no DB)", () => {
 
   test("deployment_connect with empty admin_token → error", async () => {
     const r = await deploymentConnect(principal({}), {
-      base_url: "https://chat.example.com",
+      base_url: "https://chat.channels.example",
       admin_token: "",
     });
     expect(r.ok).toBe(false);
@@ -161,7 +161,7 @@ describe.skipIf(!dbUp)("MCP channel tools (DB)", () => {
     });
     const inst = await seedChatwootInstance(suDb, {
       tenantId: tenantA,
-      baseUrl: "https://chat.example.com",
+      baseUrl: "https://chat.channels.example",
       accountId: 3,
       adminToken: encryptJson("cw-token"),
     });
@@ -300,7 +300,7 @@ describe.skipIf(!dbUp)("MCP channel tools (DB)", () => {
   });
 
   test("deployment_connect dry-run with a raw token previews, creates nothing", async () => {
-    // tenantB, not tenantA. `tenantA` is seeded with a deployment at chat.example.com, so
+    // tenantB, not tenantA. `tenantA` is seeded with a deployment at chat.channels.example, so
     // previewing a connect to a DIFFERENT server is a switch, which the preview refuses like the apply.
     // This test is about the token and the absent row, so it needs the tenant that has nothing connected.
     const r = await deploymentConnect(
@@ -556,7 +556,7 @@ describe.skipIf(!dbUp)("MCP channel tools (DB)", () => {
   test("binding an inbox of a disconnected account is refused", async () => {
     const acct = await seedChatwootInstance(suDb, {
       tenantId: tenantA,
-      baseUrl: "https://chat.example.com",
+      baseUrl: "https://chat.channels.example",
       accountId: 55,
       adminToken: encryptJson("v"),
     });
@@ -590,7 +590,7 @@ describe.skipIf(!dbUp)("MCP channel tools (DB)", () => {
   test("instance_disconnect dry-run keeps it; apply soft-disconnects it + audits", async () => {
     const victim = await seedChatwootInstance(suDb, {
       tenantId: tenantA,
-      baseUrl: "https://chat.example.com",
+      baseUrl: "https://chat.channels.example",
       accountId: 99,
       adminToken: encryptJson("v"),
     });
@@ -641,7 +641,7 @@ describe.skipIf(!dbUp)("MCP channel tools (DB)", () => {
     };
     const victim = await seedChatwootInstance(suDb, {
       tenantId: tenantA,
-      baseUrl: "https://chat.example.com",
+      baseUrl: "https://chat.channels.example",
       accountId: 77,
       adminToken: encryptJson("v"),
     });
@@ -670,7 +670,7 @@ describe.skipIf(!dbUp)("MCP channel tools (DB)", () => {
     const ctx = { tenantId: tnt, userId: null, role: "TENANT_ADMIN" as const };
     const acct = await seedChatwootInstance(suDb, {
       tenantId: tnt,
-      baseUrl: "https://chat.example.com",
+      baseUrl: "https://chat.channels.example",
       accountId: 1,
       adminToken: encryptJson("t"),
     });

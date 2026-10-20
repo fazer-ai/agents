@@ -140,7 +140,7 @@ export const dashboardController = new Elysia({
       requireAuth: true,
       detail: doc(
         "Dashboard filter options",
-        "Every agent and inbox of the tenant, id and name only, for the dashboard's agent and inbox filters. Whole, not paged.",
+        "Every agent and inbox of the tenant, by id and name, for the dashboard's agent and inbox filters; an inbox whose name another inbox also has carries its Chatwoot account (`account: {id, name}`). Whole, not paged.",
       ),
       response: errors(401, 403, 404),
     },

@@ -177,10 +177,14 @@ const DashboardStreams = createContext<Streams | null>(null);
 export function DashboardStreamProvider({
   query,
   prevQuery,
+  onReload,
   children,
 }: {
   query: Query;
   prevQuery: Query | null;
+  // Called on a retry before the streams start again: the page moves its opening instant, so the
+  // previous period ends at the time of day the retried view now reaches.
+  onReload?: () => void;
   children: ReactNode;
 }) {
   const [current, reloadCurrent] = useWindowStream(query, CURRENT_BLOCKS);
@@ -193,11 +197,12 @@ export function DashboardStreamProvider({
       current,
       previous,
       reload: () => {
+        onReload?.();
         reloadCurrent();
         reloadPrevious();
       },
     }),
-    [current, previous, reloadCurrent, reloadPrevious],
+    [current, previous, reloadCurrent, reloadPrevious, onReload],
   );
   return createElement(DashboardStreams.Provider, { value }, children);
 }

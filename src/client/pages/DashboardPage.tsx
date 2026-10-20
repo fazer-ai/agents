@@ -271,14 +271,17 @@ function DashboardBlocks({
   );
 }
 
-// The instant a view was opened, which its window and the previous period's are computed at. Held
-// while the view stays the same: a fresh instant on every render would restart the previous
-// period's stream, which ends at that time of day. A new local day opens it again, so a page left
-// open past midnight moves on to the new day.
-export function useOpenedAt(viewKey: string): Date {
+// The instant a view was opened, which its window and the previous period's are computed at, and
+// what opens it again. Held while the view stays the same: a fresh instant on every render would
+// restart the previous period's stream, which ends at that time of day. A new view, a new local day
+// (a page left open past midnight) or a retry opens it again, so both periods end at the same time.
+export function useOpenedAt(viewKey: string): [Date, () => void] {
   const today = localDayKey(new Date());
-  // biome-ignore lint/correctness/useExhaustiveDependencies: a new view, or a new day, is a new opening.
-  return useMemo(() => new Date(), [viewKey, today]);
+  const [retries, setRetries] = useState(0);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a new view, a new day or a retry is a new opening.
+  const at = useMemo(() => new Date(), [viewKey, today, retries]);
+  const reopen = useCallback(() => setRetries((n) => n + 1), []);
+  return [at, reopen];
 }
 
 export function DashboardPage() {
@@ -341,7 +344,7 @@ export function DashboardPage() {
       setParams(writeFilters({ ...filters, ...patch }), { replace: true });
   }, [agents, inboxes, filters, setParams]);
 
-  const openedAt = useOpenedAt(writeFilters(filters).toString());
+  const [openedAt, reopen] = useOpenedAt(writeFilters(filters).toString());
   const win = windowOf(filters, openedAt);
   const prev = previousWindow(win, openedAt);
   const query = apiQuery(filters, win);
@@ -407,7 +410,11 @@ export function DashboardPage() {
         <SectionNav sections={sections} layout="bar" />
       </div>
 
-      <DashboardStreamProvider query={query} prevQuery={prevQuery}>
+      <DashboardStreamProvider
+        query={query}
+        prevQuery={prevQuery}
+        onReload={reopen}
+      >
         <StreamProgress />
         <DashboardBlocks
           filters={filters}

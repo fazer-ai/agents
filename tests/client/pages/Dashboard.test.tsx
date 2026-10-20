@@ -9,6 +9,7 @@ import {
   test,
 } from "bun:test";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -875,6 +876,12 @@ describe("a block whose request fails", () => {
       expect(asks("/metrics/stream").length).toBeGreaterThan(before);
       expect(has("No warnings or errors in this period.")).toBe(true);
     });
+    // The retry reaches a later instant than the opening, and so does the previous period's end.
+    const cuts = asks("/metrics/stream")
+      .filter((u) => u.searchParams.get("blocks") === "kpis,outcomes,costs")
+      .map((u) => Date.parse(String(u.searchParams.get("until"))));
+    expect(cuts.length).toBeGreaterThan(1);
+    expect(cuts[cuts.length - 1]).toBeGreaterThan(cuts[0] as number);
   });
 });
 
@@ -1492,9 +1499,9 @@ describe("a view refused while it fills", () => {
 describe("the instant a view is opened at", () => {
   afterEach(() => setSystemTime());
 
-  test("holds while the view is the same, and moves with a new view or a new local day", () => {
+  test("holds while the view is the same, and moves with a new view, a new local day or a retry", () => {
     setSystemTime(new Date(2026, 9, 6, 23, 59, 0));
-    const hook = renderHook(({ view }) => useOpenedAt(view), {
+    const hook = renderHook(({ view }) => useOpenedAt(view)[0], {
       initialProps: { view: "range=7d" },
     });
     const opened = hook.result.current;
@@ -1509,6 +1516,18 @@ describe("the instant a view is opened at", () => {
     hook.rerender({ view: "range=30d" });
     expect(hook.result.current.getTime()).toBe(
       new Date(2026, 9, 7, 0, 0, 5).getTime(),
+    );
+  });
+
+  test("a retry opens the view again, at the retry's instant", () => {
+    setSystemTime(new Date(2026, 9, 6, 9, 0, 0));
+    const hook = renderHook(() => useOpenedAt("range=7d"));
+    setSystemTime(new Date(2026, 9, 6, 11, 0, 0));
+    hook.rerender();
+    expect(hook.result.current[0].getHours()).toBe(9);
+    act(() => hook.result.current[1]());
+    expect(hook.result.current[0].getTime()).toBe(
+      new Date(2026, 9, 6, 11, 0, 0).getTime(),
     );
   });
 });

@@ -170,6 +170,14 @@ export function causeKeyOf(ev: FlowEvent): string | null {
   if (ev.stage === "channel_error") {
     return `channel_error:${vocabulary("code", detail.code) ?? "unknown"}`;
   }
+  // A setup to fix, keyed by the route's bot (one per agent), so an automation posting on every
+  // conversation is one alert per agent per window and not one per message.
+  if (ev.stage === "foreign_send") {
+    const bot = detail.routeBot;
+    return typeof bot === "number" && Number.isSafeInteger(bot)
+      ? `foreign_send:${bot}`
+      : "foreign_send";
+  }
   // An answer to a stranded message that came late enough that the customer waited for it: a cause,
   // so it reaches a channel whatever its minimum level, and a run of them is one alert.
   if (ev.stage === "delivery") {

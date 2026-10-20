@@ -3445,6 +3445,7 @@
       "debounce": "Message grouping",
       "delivery": "Interrupted delivery",
       "embed": "Embedding",
+      "foreign_send": "Message the agent did not send",
       "generate": "Generation",
       "guardrail": "Guardrail check",
       "handoff": "Handoff",

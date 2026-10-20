@@ -330,6 +330,8 @@ const ERROR_COLUMN_LINES: Record<string, [number, ErrorSite | string]> = {
   "src/modules/followups/handlers.ts": [2, "read + flow-event"],
   "src/modules/flowlog/dead-letter.ts": [1, "flow-event"],
   "src/modules/flowlog/fallback-lines.ts": [2, "flow-event"],
+  // The fixed sentence of a message posted on the bot token, never the message.
+  "src/modules/flowlog/foreign-send.ts": [1, "flow-event"],
   "src/modules/flowlog/read.ts": [4, "read"],
   "src/modules/flowlog/service.ts": [2, "guarded"],
   "src/modules/flowlog/webhook.ts": [1, "flow-event"],

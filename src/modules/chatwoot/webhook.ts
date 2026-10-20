@@ -153,6 +153,7 @@ import {
   readAnsweredFloor,
 } from "@/modules/debounce/watermark";
 import { emitCommandDropped } from "@/modules/flowlog/command";
+import { emitForeignSend } from "@/modules/flowlog/foreign-send";
 import { emitFlowEvent, writeFlowEvent } from "@/modules/flowlog/service";
 import { emitUnroutedMessage } from "@/modules/flowlog/unrouted";
 import { snoozedDedupeKey } from "@/modules/followups/snoozed-settings";
@@ -220,6 +221,7 @@ import {
   controlCommand,
   effectiveAssignee,
   firstAudioAttachment,
+  foreignBotMessageOf,
   type HumanReplyRoute,
   heldByAnotherParty,
   inboundTranscriptionOnUpdate,
@@ -4707,6 +4709,41 @@ export async function processChatwootDelivery(
         "chatwoot: could not act on a channel failure (conv=%s msg=%s): %s",
         String(channelFailure.conversationId),
         String(channelFailure.messageId),
+        errMsg(e),
+      );
+    }
+  }
+
+  // A message posted on this route's own bot token that the engine did not create. Reported only: the
+  // agent's handling of it does not change. Best-effort, like the channel failure above.
+  const foreign = foreignBotMessageOf(n, params.agentBotId);
+  if (foreign && params.agentBotId !== null) {
+    try {
+      const bot = await runScopedOn(base, sysCtx(params.tenantId), (db) =>
+        db.chatwootAgentBot.findFirst({
+          where: {
+            chatwootInstanceId: params.instanceId,
+            chatwootAgentBotId: params.agentBotId as number,
+          },
+          select: { agentId: true },
+        }),
+      );
+      if (bot) {
+        emitForeignSend({
+          tenantId: params.tenantId,
+          conversationRowId: mirror.conversationRowId,
+          agentId: bot.agentId,
+          inboxRowId: mirror.inboxRowId,
+          messageId: foreign.messageId,
+          routeBot: params.agentBotId,
+          base,
+        });
+      }
+    } catch (e) {
+      logger.warn(
+        "chatwoot: could not report a message posted on the bot token (conv=%s msg=%s): %s",
+        String(foreign.conversationId),
+        String(foreign.messageId),
         errMsg(e),
       );
     }

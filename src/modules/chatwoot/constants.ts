@@ -15,6 +15,13 @@ export const CHATWOOT_AUTH_HEADER = "api-access-token";
 // Chatwoot's own keys (`in_reply_to`, `is_reaction`) and with the operator's own automations.
 export const CHATWOOT_SEND_ID_KEY = "fazer_ai_send_id";
 
+// The name a create carries when its caller did not give one. Every message the engine creates on
+// the bot token carries SOME name, so a message from the managed bot without one is a message the
+// engine did not send (`foreignBotMessageOf`).
+export function engineSendId(): string {
+  return `engine:${crypto.randomUUID()}`;
+}
+
 // The send ids of one reply's messages (its balloons, a voice note and the text that follows it)
 // share a key, so a later reader can tell the rest of the same reply from a newer one: a refused
 // balloon is not superseded by the balloon sent right after it.

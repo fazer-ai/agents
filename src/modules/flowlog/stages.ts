@@ -48,6 +48,10 @@ export const FLOW_STAGES = [
   // `message_updated` carrying `external_error`. One line per report, naming the code and what was
   // done about it (resent as text, or nothing), never the channel's sentence or the reply.
   "channel_error",
+  // A message the customer read that was posted with the agent's own Agent Bot token by something
+  // other than the agent (an external automation). The agent did not see it, so its next reply can
+  // answer as if it was never said. One line per message; the alert is one per agent per window.
+  "foreign_send",
   "handoff", // an ownership gate closed: a takeover, or the conversation left the bot
   "memory", // a closed attendance folded into the contact's memory (compaction)
   // A watching agent's verdict on a conversation it does not answer, written as labels by the

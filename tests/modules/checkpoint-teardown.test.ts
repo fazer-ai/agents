@@ -177,7 +177,7 @@ describe.skipIf(!dbUp)("teardowns take their checkpoints", () => {
   test("a large account's checkpoints go in batches", async () => {
     const big = await account(15516);
     const ids = accountThreads(tenantId, big.id, 1_500);
-    const crowd = range(20_000, (i) => `${otherTenantId}:${i % 7}:${i}`);
+    const crowd = range(20_000, (i) => `${otherTenantId}:${i % 7}:crowd-${i}`);
     await seed([...ids, ...crowd]);
     let statements = 0;
     const counter = `CREATE FUNCTION test_1551_count() RETURNS trigger LANGUAGE plpgsql AS $$

@@ -482,31 +482,46 @@ async function withFences(
       if (scope === "contact" && contactLabels !== null) {
         contactLabels = o.next;
       }
-      const fence =
-        o.refusedAdd.length > 0 || o.refusedRemove.length > 0
-          ? ("protected_label" as const)
-          : (o.refusedOutside ?? []).length > 0 ||
-              (o.refusedForeign ?? []).length > 0
-            ? ("allowed_labels" as const)
-            : null;
-      if (fence) {
-        const refused = new Set([
-          ...o.refusedAdd,
-          ...o.refusedRemove,
-          ...(o.refusedOutside ?? []),
-          ...(o.refusedForeign ?? []),
-        ]);
-        const writes =
-          known !== null
-            ? o.added.length > 0 || o.removed.length > 0
-            : [...strings(args.add), ...strings(args.remove)].some(
-                (l) => !refused.has(l.trim()),
-              );
-        return writes
-          ? { ...a, fence, partial: true }
-          : { ...a, outcome: "refused", fence };
-      }
+      const verdict = labelFenceVerdict(
+        o,
+        strings(args.add),
+        strings(args.remove),
+        known !== null,
+      );
+      if (verdict)
+        return verdict.partial
+          ? { ...a, fence: verdict.fence, partial: true }
+          : { ...a, outcome: "refused", fence: verdict.fence };
     }
     return a;
   });
+}
+
+// Which label fence held a dry-run write, and whether it still writes something. Where the scope's
+// labels are known the write is read off what moved; where they are not (a card), each direction is
+// checked against its own refusals, since one title may be refused for removal and still be added.
+export function labelFenceVerdict(
+  o: ReturnType<typeof applyLabelDelta>,
+  add: string[],
+  remove: string[],
+  known: boolean,
+): { fence: "protected_label" | "allowed_labels"; partial: boolean } | null {
+  const fence =
+    o.refusedAdd.length > 0 || o.refusedRemove.length > 0
+      ? ("protected_label" as const)
+      : (o.refusedOutside ?? []).length > 0 ||
+          (o.refusedForeign ?? []).length > 0
+        ? ("allowed_labels" as const)
+        : null;
+  if (!fence) return null;
+  const refusedAdds = new Set([...o.refusedAdd, ...(o.refusedOutside ?? [])]);
+  const refusedRemoves = new Set([
+    ...o.refusedRemove,
+    ...(o.refusedForeign ?? []),
+  ]);
+  const writes = known
+    ? o.added.length > 0 || o.removed.length > 0
+    : add.some((l) => !refusedAdds.has(l.trim())) ||
+      remove.some((l) => !refusedRemoves.has(l.trim()));
+  return { fence, partial: writes };
 }

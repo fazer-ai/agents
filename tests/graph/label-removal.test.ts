@@ -4,6 +4,7 @@ import type { LabelWrite } from "@/graph/tools/label-writes";
 import { applyLabelDelta, buildNativeTools } from "@/graph/tools/native";
 import { readLabelRemoval } from "@/modules/agents/tool-guidance";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
+import { labelFenceVerdict } from "@/modules/decisions/try";
 
 // Removal limited to the agent's own labels (`settings.setLabels.removal: "allowed"`): a label
 // another system owns stays on the conversation without being listed in `protected`, the refusal is
@@ -182,5 +183,29 @@ describe("set_labels with removal limited", () => {
       "Removing any label is still allowed.",
     );
     expect(describe({})).not.toContain("remove only");
+  });
+});
+
+describe("a dry run where the scope's labels are unknown", () => {
+  // A card's labels are not read in a dry run: the action is judged by what it names. A title
+  // refused for removal can still be added, so it runs in part rather than reading as refused.
+  test("an addition the fences let through keeps the action running", () => {
+    const o = applyLabelDelta(["vip"], ["vip"], [], [], {
+      labels: ["reembolso"],
+      mode: "accept",
+      removal: "allowed",
+    });
+    expect(labelFenceVerdict(o, ["vip"], ["vip"], false)).toEqual({
+      fence: "allowed_labels",
+      partial: true,
+    });
+  });
+
+  test("a call refused in both directions is refused", () => {
+    const o = applyLabelDelta([], ["vip"], [], [], limited);
+    expect(labelFenceVerdict(o, [], ["vip"], false)).toEqual({
+      fence: "allowed_labels",
+      partial: false,
+    });
   });
 });

@@ -80,13 +80,22 @@ function Page() {
   );
 }
 
+let setShown: (shown: boolean) => void = () => {};
+
+// The page as the router mounts it, which something else may take down (a sign-out).
+function Mounted() {
+  const [shown, set] = useState(true);
+  setShown = set;
+  return shown ? <Page /> : <p>signed out</p>;
+}
+
 function mount() {
   ran = 0;
   return render(
     <MemoryRouter initialEntries={["/agents/7"]}>
       <NavGuardProvider>
         <Routes>
-          <Route path="/agents/7" element={<Page />} />
+          <Route path="/agents/7" element={<Mounted />} />
           <Route path="/agents" element={<p>agent list</p>} />
         </Routes>
       </NavGuardProvider>
@@ -132,6 +141,14 @@ describe("a leave asked while the page is dirty", () => {
     expect(ran).toBe(0);
     act(() => setDirty(false));
     expect(ran).toBe(1);
+    expect(asking()).toBe(false);
+  });
+
+  test("is dropped, not carried out, when the page goes away still dirty", () => {
+    mount();
+    fireEvent.click(screen.getByText("Switch"));
+    act(() => setShown(false));
+    expect(ran).toBe(0);
     expect(asking()).toBe(false);
   });
 

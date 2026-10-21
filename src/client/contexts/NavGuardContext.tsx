@@ -33,6 +33,7 @@ type Pending =
 
 type NavGuardValue = {
   register: (id: string, dirty: boolean) => void;
+  unregister: (id: string) => void;
   confirmLeave: (run: () => void) => void;
 };
 
@@ -77,6 +78,18 @@ export function NavGuardProvider({ children }: { children: ReactNode }) {
       setActive(ids.size > 0);
     },
     [leave],
+  );
+
+  // A page that goes away is not a page that turned clean: nothing was saved or discarded, so a
+  // leave still asked about it is dropped, not carried out.
+  const unregister = useCallback(
+    (id: string) => {
+      const ids = dirtyIds.current;
+      if (!ids.delete(id)) return;
+      if (ids.size === 0) setPending(null);
+      setActive(ids.size > 0);
+    },
+    [setPending],
   );
 
   const confirmLeave = useCallback(
@@ -138,8 +151,8 @@ export function NavGuardProvider({ children }: { children: ReactNode }) {
   };
 
   const value = useMemo(
-    () => ({ register, confirmLeave }),
-    [register, confirmLeave],
+    () => ({ register, unregister, confirmLeave }),
+    [register, unregister, confirmLeave],
   );
 
   return (
@@ -168,7 +181,7 @@ export function useNavGuard(dirty: boolean) {
     ctx?.register(id, dirty);
   }, [ctx, id, dirty]);
   // Clear this page's bit when it unmounts.
-  useEffect(() => () => ctx?.register(id, false), [ctx, id]);
+  useEffect(() => () => ctx?.unregister(id), [ctx, id]);
 }
 
 // Wrap a programmatic, state-losing action (e.g. switching tenant, which does a

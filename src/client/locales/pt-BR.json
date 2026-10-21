@@ -2545,6 +2545,7 @@
     "saveHeldField": "um campo ali não pode ser salvo como está.",
     "saveHeldIn": "Corrija a aba {{tab}} antes de salvar: {{reason}}",
     "saveKnowledge": "Salvar conhecimento",
+    "savePartial": "Salvo: {{saved}}. Não salvo: {{pending}}.",
     "saveTools": "Salvar ferramentas",
     "sectionsNav": "Seções",
     "selectProvider": "Selecione…",

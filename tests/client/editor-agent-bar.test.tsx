@@ -393,7 +393,7 @@ describe("the editor's bar covers the whole agent", () => {
     await waitFor(() => expect(patchSent).toBe(true));
     fireEvent.change(nameField(), { target: { value: "Outro nome" } });
     release();
-    await screen.findByText("Tools updated.");
+    await screen.findByText("Agent saved.");
     const names = stub.writes
       .filter((w) => w.method === "PATCH" && "name" in w.body)
       .map((w) => w.body.name);

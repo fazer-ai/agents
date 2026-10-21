@@ -379,6 +379,16 @@ const SAVE_SECTIONS = [
   "knowledge",
 ] as const satisfies readonly TabKey[];
 
+// The writes of a save of the whole agent, in order: General's carries the decision setup.
+const WRITE_ORDER = [
+  "general",
+  "behavior",
+  "channelRedirect",
+  "guardrails",
+  "tools",
+  "knowledge",
+] as const satisfies readonly (typeof SAVE_SECTIONS)[number][];
+
 const TAB_KEYS: TabKey[] = [
   "general",
   "channels",
@@ -3447,6 +3457,13 @@ function AgentEditor() {
     bumpSync();
   }
 
+  // A section's own success message, unless it is one write of a bar save that writes several: that
+  // save says once, at its end, what it saved.
+  function sectionSaved(text: string) {
+    if (barSaveRef.current?.quiet) return;
+    showToast(text, "success");
+  }
+
   // Optimistic-concurrency precondition the save sends (the version we loaded), unless `force` (the
   // operator chose "overwrite anyway" from the conflict banner).
   const expectedFor = (force: boolean) =>
@@ -3545,7 +3562,7 @@ function AgentEditor() {
       // the General tab without anything having answered it, so the operator comes back to a form
       // that looks fine and is still refused.
       settleRefusalFor(section);
-      showToast(t("editor.saved", "Agent saved."), "success");
+      sectionSaved(t("editor.saved", "Agent saved."));
       return true;
     } catch (e) {
       answerRefusal(
@@ -3636,7 +3653,7 @@ function AgentEditor() {
       }
       bumpSync();
       settleRefusalFor("knowledge");
-      showToast(t("editor.grantsSaved", "Tools updated."), "success");
+      sectionSaved(t("editor.grantsSaved", "Tools updated."));
       return true;
     } catch (e) {
       answerRefusal(
@@ -4061,7 +4078,7 @@ function AgentEditor() {
       markSynced(String(agentRes.data.agent.updatedAt));
       bumpSync();
       settleRefusalFor("tools");
-      showToast(t("editor.grantsSaved", "Tools updated."), "success");
+      sectionSaved(t("editor.grantsSaved", "Tools updated."));
       return true;
     } catch (e) {
       answerRefusal(
@@ -4115,7 +4132,7 @@ function AgentEditor() {
       else syncedAgentRef.current = data.agent;
       markSynced(String(data.agent.updatedAt));
       bumpSync();
-      showToast(t("editor.saved", "Agent saved."), "success");
+      sectionSaved(t("editor.saved", "Agent saved."));
       settleRefusalFor("channelRedirect");
       return true;
     } catch (e) {
@@ -4199,7 +4216,7 @@ function AgentEditor() {
         const now = refusalRef.current[owner];
         if (now.field && DECISIONS_REFUSAL_FIELD.test(now.field)) now.clear();
       }
-      showToast(t("editor.saved", "Agent saved."), "success");
+      sectionSaved(t("editor.saved", "Agent saved."));
       return true;
     } catch (e) {
       setDecisionsRefused(decisionsRefusalFrom(readRefusal(e), block));
@@ -4419,7 +4436,7 @@ function AgentEditor() {
       markSynced(String(data.agent.updatedAt));
       bumpSync();
       settleRefusalFor("guardrails");
-      showToast(t("editor.saved", "Agent saved."), "success");
+      sectionSaved(t("editor.saved", "Agent saved."));
       return true;
     } catch (e) {
       answerRefusal(
@@ -4684,6 +4701,10 @@ function AgentEditor() {
     returnTo: TabKey | null;
     // The last tab the save opened to judge it again.
     wentTo: TabKey | null;
+    // The writes the plan makes, in order, and whether there are several: then the sections say
+    // nothing and the save says once what it saved.
+    units: (typeof SAVE_SECTIONS)[number][];
+    quiet: boolean;
   };
   const barSaveRef = useRef<BarSave | null>(null);
   // Where the save goes on: after the tab it opened is drawn, or after General's write has landed.
@@ -4705,17 +4726,28 @@ function AgentEditor() {
   });
 
   function saveFromBar() {
-    barSaveRef.current = {
-      sections: new Set(
-        SAVE_SECTIONS.filter(
-          (key) => dirty[key] || (key === "general" && decisionsHeadDirty),
-        ),
+    const sections = new Set(
+      SAVE_SECTIONS.filter(
+        (key) => dirty[key] || (key === "general" && decisionsHeadDirty),
       ),
+    );
+    // General's write carries the decision setup, and a voice agent's call settings.
+    const units = WRITE_ORDER.filter((key) =>
+      key === "general"
+        ? sections.has("general") ||
+          sections.has("decisions") ||
+          (voiceAgent && sections.has("behavior"))
+        : sections.has(key) && !(voiceAgent && key === "behavior"),
+    );
+    barSaveRef.current = {
+      sections,
       judged: false,
       written: new Set(),
       rechecked: new Map(),
       wentTo: null,
       returnTo: null,
+      units,
+      quiet: units.length > 1,
     };
     barModelRef.current = barSaveRef.current.sections.has("general")
       ? "draft"
@@ -4750,9 +4782,22 @@ function AgentEditor() {
   async function continueBarSave(): Promise<void> {
     const plan = barSaveRef.current;
     if (!plan) return;
-    const end = () => {
+    // A save that stops after writing part of its plan says which sections were saved and which are
+    // still pending; one that wrote nothing leaves it to the hold or the refusal that stopped it.
+    const end = (ranToEnd = false) => {
       barSaveRef.current = null;
       barModelRef.current = null;
+      if (ranToEnd || !plan.quiet) return;
+      const saved = plan.units.filter((unit) => plan.written.has(unit));
+      const pending = plan.units.filter((unit) => !plan.written.has(unit));
+      if (saved.length === 0 || pending.length === 0) return;
+      showToast(
+        t("editor.savePartial", "Saved: {{saved}}. Not saved: {{pending}}.", {
+          saved: saved.map(tabName).join(", "),
+          pending: pending.map(tabName).join(", "),
+        }),
+        "warning",
+      );
     };
     const planned = (key: (typeof SAVE_SECTIONS)[number]) =>
       plan.sections.has(key);
@@ -4796,16 +4841,7 @@ function AgentEditor() {
     // General carries the decision setup its engine cards edit. A section whose tab this engine does
     // not draw is not written: its edits are the other engine's, and the Tools save already writes
     // the grants this engine hides as stored.
-    const order = (
-      [
-        "general",
-        "behavior",
-        "channelRedirect",
-        "guardrails",
-        "tools",
-        "knowledge",
-      ] as const
-    ).filter((key) =>
+    const order = WRITE_ORDER.filter((key) =>
       key === "general"
         ? planned("general") ||
           planned("decisions") ||
@@ -4862,7 +4898,8 @@ function AgentEditor() {
       if (key === "behavior" && behaviorPageHold() === false) return end();
       plan.written.add(key);
       if (key === "general") {
-        if (!(await saveGeneral()))
+        if (!(await saveGeneral())) {
+          plan.written.delete(key);
           return stop(
             voiceAgent
               ? voiceStopTab()
@@ -4870,12 +4907,16 @@ function AgentEditor() {
                 ? "general"
                 : "decisions",
           );
+        }
         barModelRef.current = "stored";
-      } else if (!(await writeSection(key))) return stop(key);
+      } else if (!(await writeSection(key))) {
+        plan.written.delete(key);
+        return stop(key);
+      }
       continueRef.current = { onTab: null };
       return;
     }
-    end();
+    end(true);
     if (sayHiddenDrafts()) return;
     // A planned section of a tab this mode does not draw (Guardrails, Redirect on a watcher) was not
     // written either, and nothing above names it. The decision setup is not among them: it goes out
@@ -4898,6 +4939,7 @@ function AgentEditor() {
       );
       return;
     }
+    if (plan.quiet) showToast(t("editor.saved", "Agent saved."), "success");
     // Back to the tab the operator was on when the save took them elsewhere, and only from a tab the
     // save itself opened: one the operator moved to keeps them there.
     if (plan.wentTo === tab && plan.returnTo !== null && plan.returnTo !== tab)

@@ -235,7 +235,9 @@ test("a close label removed on the language model is not saved by a Tools save o
   await saveToolsEdited();
 
   // The engine switch goes out first, with General; the Tools PATCH is the last one.
-  await waitFor(() => expect(text().includes("Tools updated.")).toBe(true));
+  await waitFor(() =>
+    expect(text().includes("questions and rules do not use")).toBe(true),
+  );
   const patch = asked.filter((a) => a.method === "PATCH").at(-1);
   if (!patch) throw new Error("no PATCH");
   const settingsSent = (patch.body as { settings: Record<string, unknown> })
@@ -244,7 +246,9 @@ test("a close label removed on the language model is not saved by a Tools save o
     JSON.stringify({ assignLabels: ["vip"] }),
   );
   // The draft is the language model's, so it is pending on the editor and not on this Tools tab.
-  await waitFor(() => expect(text().includes("Tools updated.")).toBe(true));
+  await waitFor(() =>
+    expect(text().includes("questions and rules do not use")).toBe(true),
+  );
   const toolsTab = [...document.querySelectorAll('[role="tab"]')].find((t) =>
     t.textContent?.includes("Tools"),
   );
@@ -468,7 +472,9 @@ test("a Knowledge draft made on the language model stays unsaved through a Tools
   await waitFor(() =>
     expect(asked.some((a) => a.method === "PATCH")).toBe(true),
   );
-  await waitFor(() => expect(text().includes("Tools updated.")).toBe(true));
+  await waitFor(() =>
+    expect(text().includes("questions and rules do not use")).toBe(true),
+  );
   // Every grant write of the save, not just the first: the Knowledge save, which this engine does not
   // draw, must not follow the Tools one with the hidden draft.
   const sentRag = asked
@@ -727,7 +733,7 @@ test("a switch back to the language model while Save tools is out keeps its draf
   await waitFor(() =>
     expect(asked.some((a) => a.method === "PATCH")).toBe(true),
   );
-  await waitFor(() => expect(text().includes("Tools updated.")).toBe(true));
+  await waitFor(() => expect(text().includes("Agent saved.")).toBe(true));
   // The engine switch went out first, with General; the Tools PATCH is the last one.
   const patch = asked.filter((a) => a.method === "PATCH").at(-1) as {
     body: unknown;

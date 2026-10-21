@@ -2462,6 +2462,7 @@
     "saveHeldField": "a field there cannot be saved as it is.",
     "saveHeldIn": "Fix the {{tab}} tab before saving: {{reason}}",
     "saveKnowledge": "Save knowledge",
+    "savePartial": "Saved: {{saved}}. Not saved: {{pending}}.",
     "saveTools": "Save tools",
     "sectionsNav": "Sections",
     "selectProvider": "Select…",

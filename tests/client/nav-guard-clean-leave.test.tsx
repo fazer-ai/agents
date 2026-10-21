@@ -31,7 +31,8 @@ const setUrl = () =>
 setUrl();
 
 // A browser's history.back() always ends in a popstate; landing it at once keeps the trap's cleanup
-// of one test from swallowing the next test's Back.
+// of one test from swallowing the next test's Back. A cleanup an earlier file left on the way is
+// landed before each test for the same reason.
 let back: ReturnType<typeof spyOn>;
 const backCalls = () => back.mock.calls.length;
 beforeEach(() => {
@@ -39,6 +40,7 @@ beforeEach(() => {
   back = spyOn(window.history, "back").mockImplementation(() => {
     window.dispatchEvent(new PopStateEvent("popstate"));
   });
+  window.dispatchEvent(new PopStateEvent("popstate"));
 });
 afterEach(() => {
   cleanup();

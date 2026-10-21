@@ -4,6 +4,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import type { TenantContext } from "@/lib/tenancy";
+import { exportAgent, importAgent } from "@/modules/agents/transfer";
 import { ensureConversationRef } from "@/modules/integrations/conversation-ref";
 import {
   type FetchBackConfig,
@@ -24,6 +25,7 @@ import {
   processInboundDelivery,
   receiveInbound,
 } from "@/modules/webhooks/inbound/service";
+import { signatureCoversId } from "@/modules/webhooks/inbound/signed-message";
 import { dbProbeFailed } from "@/tests/db-gate";
 
 // A gateway that notifies with an id only, as Mercado Pago does: `POST <url>?data.id=123&type=payment`
@@ -108,10 +110,71 @@ describe("which tools can serve a consult-back", () => {
       }),
       /no field "payment_id"/,
     ],
+    [
+      "an id field that takes a number, while the lookup hands it text",
+      tool({
+        inputSchema: { payment_id: { type: "integer", required: true } },
+      }),
+      /not text/,
+    ],
+    [
+      "another field the call cannot run without",
+      tool({
+        inputSchema: {
+          payment_id: { type: "string", required: true },
+          store: { type: "string", required: true },
+        },
+      }),
+      /also requires "store"/,
+    ],
+    [
+      "another field that is optional, or fixed",
+      tool({
+        inputSchema: {
+          payment_id: { type: "string", required: true },
+          note: { type: "string" },
+          store: { type: "string", source: "fixed", value: "1" },
+        },
+      }),
+      null,
+    ],
   ])("%s", (_, t, problem) => {
     const got = fetchBackToolProblem(t as never, "payment_id");
     if (problem === null) expect(got).toBeNull();
     else expect(got).toMatch(problem as RegExp);
+  });
+});
+
+describe("an id the signature covers with fixed boundaries", () => {
+  const sig = (message: string) => ({ format: "hex", message });
+  test.each([
+    ["Mercado Pago's manifest", MP_SIGNATURE, true],
+    ["the id between literal text", sig("id:{{query.id}};{{body}}"), true],
+    ["the id at the end, after text", sig("{{header.x-t}}.{{query.id}}"), true],
+    [
+      "the id right before another value",
+      sig("{{query.id}}{{header.x-request-id}}"),
+      false,
+    ],
+    [
+      "the id right after another value",
+      sig("{{header.x-a}}{{query.id}};"),
+      false,
+    ],
+    [
+      "two values run together before the id",
+      sig("{{header.x-a}}{{header.x-b}};{{query.id}};"),
+      false,
+    ],
+    ["the id not in the message", sig("{{body}}"), false],
+  ])("%s", (_, signature, covered) => {
+    expect(
+      signatureCoversId(
+        signature,
+        "query",
+        MP_SIGNATURE === signature ? "data.id" : "id",
+      ),
+    ).toBe(covered);
   });
 });
 
@@ -287,6 +350,7 @@ const suDb = su as PrismaClient;
 describe.skipIf(!dbUp)("a thin notification answered by a consult-back", () => {
   let tenantId = 0n;
   let otherTenantId = 0n;
+  const extraTenants: bigint[] = [];
   let instanceId = 0n;
   let routeToken = "";
   let toolId = 0n;
@@ -428,9 +492,11 @@ describe.skipIf(!dbUp)("a thin notification answered by a consult-back", () => {
   });
 
   afterAll(async () => {
-    for (const id of [tenantId, otherTenantId]) {
+    for (const id of [tenantId, otherTenantId, ...extraTenants]) {
       if (!id) continue;
       for (const table of [
+        "agent_tool_selections",
+        "agents",
         "inbound_deliveries",
         "conversion_events",
         "integration_external_refs",
@@ -613,6 +679,122 @@ describe.skipIf(!dbUp)("a thin notification answered by a consult-back", () => {
     expect(seen.length).toBe(before);
   });
 
+  test("the same bytes for a later state of the payment are looked up again, once per window", async () => {
+    const ref = await mint(106);
+    payments.set("1006", {
+      code: 200,
+      body: { status: "pending", external_reference: ref },
+    });
+    const first = await notify("1006", "payment.updated");
+    await process_(first.deliveryId as bigint);
+    // Within the window the same bytes are a duplicate, and nothing is looked up.
+    const before = seen.length;
+    const soon = await notify("1006", "payment.updated");
+    expect(soon.outcome).toBe("duplicate");
+    expect(seen.length).toBe(before);
+    // The payment is approved and Mercado Pago sends the very same body again.
+    payments.set("1006", {
+      code: 200,
+      body: {
+        status: "approved",
+        external_reference: ref,
+        transaction_amount: 30,
+        currency_id: "BRL",
+      },
+    });
+    await suDb.inboundDelivery.update({
+      where: { id: first.deliveryId as bigint },
+      data: { processedAt: new Date(Date.now() - 2 * 60_000) },
+    });
+    const later = await notify("1006", "payment.updated");
+    expect(later.outcome).toBe("queued");
+    expect(later.deliveryId).toBe(first.deliveryId);
+    await process_(later.deliveryId as bigint);
+    expect(
+      await suDb.conversionEvent.count({
+        where: { tenantId, threadId: `${tenantId}:1:106` },
+      }),
+    ).toBe(1);
+  });
+
+  test("an agent bundle carries the lookup tool by name, and the import points the lookup at its copy", async () => {
+    const dst = await suDb.tenant.create({
+      data: { name: "FETCHBACK-DST", slug: `fetchback-d-${process.pid}` },
+    });
+    extraTenants.push(dst.id);
+    const charge = await createToolDefinition(
+      ctx(),
+      {
+        name: "criar_cobranca",
+        label: "Criar cobrança",
+        method: "POST",
+        urlTemplate: "https://8.8.8.8/v1/payments",
+        allowedHosts: ["8.8.8.8"],
+        body: {
+          mode: "kv",
+          rows: [{ key: "external_reference", value: "{{conversation_ref}}" }],
+        },
+        conversationRefIntegrationId: String(instanceId),
+      } as never,
+      appDb,
+    );
+    const agent = await suDb.agent.create({
+      data: {
+        tenantId,
+        name: "Cobrança",
+        systemPrompt: "x",
+        modelConfig: { provider: "openai", model: "gpt-4o-mini" },
+        settings: {},
+      },
+    });
+    await suDb.agentToolSelection.create({
+      data: {
+        tenantId,
+        agentId: agent.id,
+        source: "HTTP",
+        toolDefinitionId: BigInt(charge.id),
+        enabledTools: [],
+        knowledgeBaseIds: [],
+      },
+    });
+    const exp = await exportAgent(ctx(), agent.id, appDb, {
+      includeComponents: true,
+    });
+    const inst = exp.components?.integrations.find(
+      (i) => i.catalogType === "GENERIC" && i.name === "Mercado Pago",
+    );
+    expect(
+      ((inst?.config.fetchBack ?? {}) as Record<string, unknown>).toolName,
+    ).toBe("consultar_pagamento");
+    expect(
+      ((inst?.config.fetchBack ?? {}) as Record<string, unknown>).toolId,
+    ).toBeUndefined();
+    expect(exp.components?.httpTools.map((h) => h.name).sort()).toEqual([
+      "consultar_pagamento",
+      "criar_cobranca",
+    ]);
+
+    const { warnings } = await importAgent(ctx(dst.id), exp, appDb);
+    const copy = await suDb.toolDefinition.findFirstOrThrow({
+      where: { tenantId: dst.id, name: "consultar_pagamento" },
+    });
+    const dstInst = await suDb.integrationInstance.findFirstOrThrow({
+      where: { tenantId: dst.id, catalogType: "GENERIC", name: "Mercado Pago" },
+    });
+    expect(
+      (dstInst.config as { fetchBack: Record<string, unknown> }).fetchBack,
+    ).toMatchObject({ toolId: String(copy.id), idArg: "payment_id" });
+    expect(
+      warnings.some((w) => w.code === "integrationLookupToolNotFound"),
+    ).toBe(false);
+    // The lookup tool is not granted to the imported agent: it only answers notifications.
+    const grants = await suDb.agentToolSelection.findMany({
+      where: { tenantId: dst.id, source: "HTTP" },
+      select: { toolDefinitionId: true },
+    });
+    expect(grants.map((g) => g.toolDefinitionId)).not.toContain(copy.id);
+  });
+
   describe("the save refuses a consult-back that cannot work or would leak", () => {
     const create = (config: Record<string, unknown>, catalogType = "GENERIC") =>
       createIntegrationInstance(
@@ -680,6 +862,13 @@ describe.skipIf(!dbUp)("a thin notification answered by a consult-back", () => {
       ).rejects.toMatchObject({ field: "config.fetchBack.idFrom" });
       await expect(
         create(mpConfig(fetchBackOf(toolId, { idFrom: "header.x-id" }))),
+      ).rejects.toMatchObject({ field: "config.fetchBack.idFrom" });
+      await expect(
+        create({
+          signatureHeader: "x-signature",
+          signature: { message: "{{query.id}}{{header.x-request-id}}" },
+          fetchBack: fetchBackOf(toolId, { idFrom: "query.id" }),
+        }),
       ).rejects.toMatchObject({ field: "config.fetchBack.idFrom" });
     });
 

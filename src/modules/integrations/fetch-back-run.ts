@@ -85,6 +85,23 @@ export function fetchBackToolProblem(
   ) {
     return `names a tool with no field "${idArg}" for the id`;
   }
+  // The lookup hands the tool one text argument and nothing else, so the id field has to take text
+  // and no other field may be one the call cannot run without.
+  const type = (field as Record<string, unknown>).type;
+  if (type !== undefined && type !== "string") {
+    return `names a tool whose field "${idArg}" is not text`;
+  }
+  const others = Object.entries(schema as Record<string, unknown>).filter(
+    ([k, v]) =>
+      k !== idArg &&
+      v !== null &&
+      typeof v === "object" &&
+      (v as Record<string, unknown>).source !== "fixed" &&
+      (v as Record<string, unknown>).required === true,
+  );
+  if (others.length) {
+    return `names a tool that also requires ${others.map(([k]) => `"${k}"`).join(", ")}, which a lookup cannot fill`;
+  }
   return null;
 }
 

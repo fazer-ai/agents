@@ -2264,6 +2264,7 @@
       "httpToolReused": "Tool \"{{name}}\" already existed and was reused; check it is right.",
       "httpToolUrlTemplateUnusable": "Tool \"{{name}}\" has a request URL this platform cannot call, so the tool was not imported. The rest of the agent was.",
       "integrationGrantNotFound": "Integration \"{{name}}\" was not found, so its grant was skipped.",
+      "integrationLookupToolNotFound": "The generic webhook \"{{integration}}\" looks notifications up with the tool \"{{tool}}\", which was not found here, so its notifications are refused until a tool is chosen.",
       "integrationReused": "Integration \"{{name}}\" already existed and was reused; check it is right.",
       "integrationUnknownType": "Integration \"{{name}}\" has an unknown type and was skipped.",
       "kbGrantNotFound": "Knowledge base \"{{name}}\" was not found, so its grant was skipped.",

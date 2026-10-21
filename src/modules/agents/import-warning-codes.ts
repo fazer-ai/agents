@@ -36,6 +36,7 @@ export const IMPORT_WARNING_CODES = [
   "httpToolReused",
   "httpToolUrlTemplateUnusable",
   "integrationGrantNotFound",
+  "integrationLookupToolNotFound",
   "integrationReused",
   "integrationUnknownType",
   "kbGrantNotFound",

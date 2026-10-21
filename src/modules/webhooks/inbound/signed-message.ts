@@ -263,7 +263,21 @@ export function signatureCoversId(
 ): boolean {
   const parsed = parseSignatureConfig(raw);
   if (parsed === undefined || isSignatureConfigProblem(parsed)) return false;
-  return covers(parsed.groups, source, name, false);
+  if (!covers(parsed.groups, source, name, false)) return false;
+  // Fixed boundaries, as for the body: literal text (or the end of the message) after the id and
+  // after every value before it, which the gate refuses a value to contain.
+  // Without that, `{{query.id}}{{header.x}}` signs `123`+`abc` and `1`+`23abc` alike.
+  const pieces = parsed.groups.flatMap((g) => g.pieces);
+  const at = pieces.findIndex(
+    (p) => p.kind === "value" && p.source === source && p.name === name,
+  );
+  const isText = (p: Piece | undefined) => p === undefined || p.kind === "text";
+  return (
+    isText(pieces[at + 1]) &&
+    pieces.every(
+      (p, i) => i >= at || p.kind === "text" || pieces[i + 1]?.kind === "text",
+    )
+  );
 }
 
 export function isSignatureConfigProblem(

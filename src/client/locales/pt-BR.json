@@ -2337,6 +2337,7 @@
       "httpToolReused": "A ferramenta \"{{name}}\" já existia e foi reaproveitada; confira se está certa.",
       "httpToolUrlTemplateUnusable": "A ferramenta \"{{name}}\" tem uma URL de requisição que a plataforma não consegue chamar, então ela não foi importada. O resto do agente foi.",
       "integrationGrantNotFound": "A integração \"{{name}}\" não foi encontrada, então a concessão foi ignorada.",
+      "integrationLookupToolNotFound": "O webhook genérico \"{{integration}}\" consulta as notificações com a ferramenta \"{{tool}}\", que não foi encontrada aqui, então as notificações dele são recusadas até uma ferramenta ser escolhida.",
       "integrationReused": "A integração \"{{name}}\" já existia e foi reaproveitada; confira se está certa.",
       "integrationUnknownType": "A integração \"{{name}}\" tem um tipo desconhecido e foi ignorada.",
       "kbGrantNotFound": "A base de conhecimento \"{{name}}\" não foi encontrada, então a concessão foi ignorada.",

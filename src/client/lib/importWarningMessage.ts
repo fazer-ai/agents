@@ -168,6 +168,12 @@ export function importWarningMessage(
         'Tool "{{tool}}" credential "{{credential}}" was not found here, so it was left unset.',
         p,
       );
+    case "integrationLookupToolNotFound":
+      return t(
+        "editor.importWarning.integrationLookupToolNotFound",
+        'The generic webhook "{{integration}}" looks notifications up with the tool "{{tool}}", which was not found here, so its notifications are refused until a tool is chosen.',
+        p,
+      );
     case "httpToolConversationRefNotFound":
       return t(
         "editor.importWarning.httpToolConversationRefNotFound",

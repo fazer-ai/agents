@@ -257,11 +257,12 @@ export async function receiveInbound(
       dedupeKey: `notice:${resourceId}:${createHash("sha256").update(params.rawBody).digest("hex")}`,
       payload: { kind: FETCH_BACK_KIND, resourceId },
     });
+    const rearmed = duplicate && (await rearmNotice(base, route, id));
     return {
       ack: true,
       deliveryId: id,
       tenantId: route.tenantId,
-      outcome: duplicate ? "duplicate" : "queued",
+      outcome: duplicate && !rearmed ? "duplicate" : "queued",
     };
   }
 
@@ -518,6 +519,36 @@ async function persistRow(
     if (!existing) throw err;
     return { id: existing.id, duplicate: true };
   }
+}
+
+// A gateway can send the same bytes for two states of one resource (a bare "payment updated" with the
+// id), so a notice already looked up is looked up again when the same bytes come back: the event's
+// own dedupe key (`<id>:<status>`) is what keeps a repeat from acting twice. Not sooner than this
+// after the last lookup, so a replayed notice costs at most one provider call per window.
+export const NOTICE_REARM_AFTER_MS = 60_000;
+
+async function rearmNotice(
+  base: PrismaClient,
+  route: Pick<ResolvedInboundRoute, "id" | "tenantId">,
+  id: bigint,
+): Promise<boolean> {
+  const { count } = await runScopedOn(base, sysCtx(route.tenantId), (db) =>
+    db.inboundDelivery.updateMany({
+      where: {
+        id,
+        integrationInstanceId: route.id,
+        status: { in: ["PROCESSED", "FAILED"] },
+        processedAt: { lt: new Date(Date.now() - NOTICE_REARM_AFTER_MS) },
+      },
+      data: {
+        status: "PENDING",
+        attempts: 0,
+        claimedAt: null,
+        processedAt: null,
+      },
+    }),
+  );
+  return count > 0;
 }
 
 export interface ProcessDeps {

@@ -1046,10 +1046,10 @@ function setCustomAttributeTool(ctx: ToolCtx) {
     ? z.enum(["conversation", "contact", "task"])
     : z.enum(["conversation", "contact"]);
   // CALLS ENTER THE CLIENT'S WRITE QUEUE IN THE ORDER THEY WERE MADE. The checks before a write wait
-  // (a pattern thread, a definitions read, the contact lookup), and two calls on one key (a decisions
-  // rule that sets it and the next that clears it) would otherwise queue in whichever order their
-  // checks finished. Each call waits for the one before it to have queued its write, or to have
-  // returned without one.
+  // (a pattern thread, a definitions read), and two calls on one key (a decisions rule that sets it and
+  // the next that clears it) would otherwise queue in whichever order their checks finished. The checks
+  // run side by side; only the write waits for the call before it to have queued its own, or to have
+  // returned without one, so parallel writes still reach the queue together and share a request.
   let turnstile: Promise<void> = Promise.resolve();
   const listed = !!ctx.vocab || writable.length > 0;
   const description = listed
@@ -1075,10 +1075,11 @@ function setCustomAttributeTool(ctx: ToolCtx) {
     ) => {
       const before = turnstile;
       let admit = () => {};
-      turnstile = new Promise<void>((r) => {
+      const mine = new Promise<void>((r) => {
         admit = r;
       });
-      await before;
+      // The next call is let through only once this one AND every call before it are through.
+      turnstile = Promise.all([before, mine]).then(() => {});
       const admitted = <T>(write: Promise<T>): Promise<T> => {
         admit();
         return write;
@@ -1124,6 +1125,7 @@ function setCustomAttributeTool(ctx: ToolCtx) {
           if (!checked.ok) return refuse(checked.rule);
           value = checked.value;
         }
+        await before;
         if (scope === "task") {
           if (!ctx.kanban) {
             noEffect();

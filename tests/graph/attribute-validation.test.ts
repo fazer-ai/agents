@@ -48,17 +48,27 @@ function byName(tools: StructuredToolInterface[], name: string) {
   return t;
 }
 
-// `liveDefs` answers the definitions endpoint (the store does not), for a tool that reads them itself.
-async function setup(extra: Partial<ToolCtx> = {}, liveDefs?: unknown[]) {
+// `liveDefs` answers the definitions endpoint (the store does not), for a tool that reads them itself;
+// `hold`, when given, keeps each of those reads open until it settles, counting the ones in flight.
+async function setup(
+  extra: Partial<ToolCtx> = {},
+  liveDefs?: unknown[],
+  hold?: { open: number; until: Promise<void> },
+) {
   const cw = fakeChatwootAttributeStore(5, {
     conversations: { 7: { nome: "Maria" } },
   });
-  const fetchImpl = (async (url: string, init?: RequestInit) =>
-    liveDefs && String(url).endsWith("/custom_attribute_definitions")
-      ? new Response(JSON.stringify(liveDefs), {
-          headers: { "Content-Type": "application/json" },
-        })
-      : cw.fetchImpl(url, init)) as typeof fetch;
+  const fetchImpl = (async (url: string, init?: RequestInit) => {
+    if (!liveDefs || !String(url).endsWith("/custom_attribute_definitions"))
+      return cw.fetchImpl(url, init);
+    if (hold) {
+      hold.open += 1;
+      await hold.until;
+    }
+    return new Response(JSON.stringify(liveDefs), {
+      headers: { "Content-Type": "application/json" },
+    });
+  }) as typeof fetch;
   const client = await createChatwootClient(
     {
       baseUrl: "https://chat.example.com",
@@ -322,5 +332,32 @@ describe("calls made together", () => {
       tool.invoke({ key: "nome", value: "", clear: true }),
     ]);
     expect(cw.conversations.get(7)).toEqual({ nome: "" });
+  });
+
+  // Only the write waits its turn: the checks run side by side, so a slow one (a definitions read, a
+  // pattern thread) does not hold the next call's check back, and the writes reach the client's queue
+  // close enough together to share a request.
+  test("are checked side by side, and only their writes take turns", async () => {
+    let release = () => {};
+    const hold = {
+      open: 0,
+      until: new Promise<void>((r) => {
+        release = r;
+      }),
+    };
+    const { cw, tool } = await setup(
+      { vocabUnavailable: true },
+      [{ attribute_key: "nome", attribute_model: "conversation_attribute" }],
+      hold,
+    );
+    const calls = ["Ana Lima", "Bia Lima", "Cid Lima"].map((value) =>
+      tool.invoke({ key: "nome", value }),
+    );
+    for (let i = 0; i < 50 && hold.open < 3; i++)
+      await new Promise((r) => setTimeout(r, 1));
+    expect(hold.open).toBe(3);
+    release();
+    await Promise.all(calls);
+    expect(cw.conversations.get(7)).toEqual({ nome: "Cid Lima" });
   });
 });

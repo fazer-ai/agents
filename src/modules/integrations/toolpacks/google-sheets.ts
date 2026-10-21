@@ -120,9 +120,12 @@ function columnLetter(index: number): string {
   return out;
 }
 
+function rawCell(v: unknown): string {
+  return v === null || v === undefined ? "" : String(v);
+}
+
 function cellText(v: unknown): string {
-  if (v === null || v === undefined) return "";
-  const s = String(v);
+  const s = rawCell(v);
   return s.length > MAX_CELL_CHARS ? `${clipText(s, MAX_CELL_CHARS)}…` : s;
 }
 
@@ -142,7 +145,7 @@ export function readHeader(row: unknown[] | undefined): Header {
   const index = new Map<string, number>();
   const duplicated = new Set<string>();
   (row ?? []).forEach((cell, i) => {
-    const name = cellText(cell).trim();
+    const name = rawCell(cell).trim();
     if (!name) return;
     const key = headerKey(name);
     if (index.has(key)) duplicated.add(key);
@@ -332,7 +335,7 @@ function rowMatches(
   value: string,
   match: "equals" | "contains",
 ): boolean {
-  const cell = norm(cellText(row[col]));
+  const cell = norm(rawCell(row[col]));
   const want = norm(value);
   return match === "contains" ? cell.includes(want) : cell === want;
 }
@@ -453,7 +456,7 @@ function buildFindTool(
         const matches: Array<{ row: number; values: Record<string, string> }> =
           [];
         scanned.forEach((r, i) => {
-          if (r.every((c) => cellText(c).trim() === "")) return;
+          if (r.every((c) => rawCell(c).trim() === "")) return;
           if (
             filtering &&
             !rowMatches(r, col, input.value as string, input.match ?? "equals")
@@ -467,24 +470,29 @@ function buildFindTool(
         );
         const offset = input.offset ?? 0;
         const page = matches.slice(offset, offset + limit);
-        while (
-          page.length > 1 &&
-          JSON.stringify(page).length > MAX_FIND_OUTPUT_CHARS
-        )
+        const reply = () => {
+          const next = offset + page.length;
+          return JSON.stringify({
+            columns: header.names,
+            matched: matches.length,
+            rows: page,
+            ...(next < matches.length ? { nextOffset: next } : {}),
+            ...(incomplete
+              ? {
+                  incomplete: true,
+                  note: `Only the first ${MAX_SCAN_ROWS} rows of the tab were searched.`,
+                }
+              : {}),
+          });
+        };
+        let out = reply();
+        while (page.length > 1 && out.length > MAX_FIND_OUTPUT_CHARS) {
           page.pop();
-        const next = offset + page.length;
-        return JSON.stringify({
-          columns: header.names,
-          matched: matches.length,
-          rows: page,
-          ...(next < matches.length ? { nextOffset: next } : {}),
-          ...(incomplete
-            ? {
-                incomplete: true,
-                note: `Only the first ${MAX_SCAN_ROWS} rows of the tab were searched.`,
-              }
-            : {}),
-        });
+          out = reply();
+        }
+        if (out.length > MAX_FIND_OUTPUT_CHARS)
+          return "The matching row is too wide to return in full. Filter by a more specific value, or ask the operator to move long text out of this tab.";
+        return out;
       } catch (err) {
         return unreachable(err, "find");
       }
@@ -520,13 +528,18 @@ function buildUpdateTool(
         if (typeof key === "string") return key;
         const placed = placeValues(header, input.values);
         if (typeof placed === "string") return placed;
+        const incomplete = read.rows.length - 1 > MAX_SCAN_ROWS;
         const data = read.rows.slice(1, MAX_SCAN_ROWS + 1);
         const hits: number[] = [];
         data.forEach((r, i) => {
           if (rowMatches(r, key, input.value, "equals")) hits.push(i + 2);
         });
         if (hits.length === 0)
-          return `No row has "${input.value}" in the column "${input.column}". Nothing was changed.`;
+          return incomplete
+            ? `No row among the first ${MAX_SCAN_ROWS} of the tab has "${input.value}" in the column "${input.column}", and the rows after them are not searched. Nothing was changed.`
+            : `No row has "${input.value}" in the column "${input.column}". Nothing was changed.`;
+        if (incomplete && input.row === undefined)
+          return `The tab has more than ${MAX_SCAN_ROWS} rows and only the first ${MAX_SCAN_ROWS} are searched, so a match there may not be the only one. Rows found: ${hits.join(", ")}. Call again with the row number of the one to change. Nothing was changed.`;
         let target: number;
         if (input.row !== undefined) {
           if (!hits.includes(input.row))

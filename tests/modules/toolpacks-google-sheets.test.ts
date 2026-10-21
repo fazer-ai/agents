@@ -516,6 +516,55 @@ describe("google sheets: update", () => {
   });
 });
 
+describe("google sheets: long cells and long tabs", () => {
+  test("a match is decided on the whole cell, not on the clipped text the model is shown", async () => {
+    const t = leads();
+    t.rows.push(["Longo", "", `${"x".repeat(1100)}agulha`, ""]);
+    const { tool } = setup(["sheets_find_rows"], { tabs: [t] });
+    const out = parse(
+      await tool("sheets_find_rows")({
+        column: "Status",
+        value: "agulha",
+        match: "contains",
+      }),
+    );
+    expect((out.rows as Array<{ row: number }>).map((r) => r.row)).toEqual([5]);
+  });
+
+  test("one row wider than the output budget is refused instead of returned whole", async () => {
+    const wide: string[][] = [
+      Array.from({ length: 40 }, (_, i) => `c${i}`),
+      Array.from({ length: 40 }, () => "y".repeat(1000)),
+    ];
+    const { tool } = setup(["sheets_find_rows"], {
+      tabs: [{ sheetId: 0, title: "Leads", rows: wide }],
+    });
+    const out = await tool("sheets_find_rows")({});
+    expect(out.length).toBeLessThanOrEqual(30_000);
+    expect(out.toLowerCase()).toContain("too wide");
+  });
+
+  test("on a tab longer than the scan, an update needs the row number, and gets it", async () => {
+    const big = leads();
+    for (let i = 0; i < 2100; i++) big.rows.push([`n${i}`, "", "novo", ""]);
+    const { fake, tool } = setup(["sheets_update_row"], { tabs: [big] });
+    const refused = await tool("sheets_update_row")({
+      column: "Nome",
+      value: "Bruno",
+      values: [{ column: "Status", value: "x" }],
+    });
+    expect(refused).toContain("row number");
+    expect(fake.writes).toBe(0);
+    await tool("sheets_update_row")({
+      column: "Nome",
+      value: "Bruno",
+      row: 3,
+      values: [{ column: "Status", value: "x" }],
+    });
+    expect(fake.tab(0).rows[2]?.[2]).toBe("x");
+  });
+});
+
 describe("google sheets: what reaches Google", () => {
   test("every request goes to the fixed origin, past the SSRF check, with the bearer only in the header", async () => {
     const { fake, tool, asserted } = setup([

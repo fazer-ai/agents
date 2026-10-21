@@ -1097,8 +1097,10 @@ export function IntegrationEditModal({
   const compat = credentialCompat.catalog(form.catalogType);
   const needsGoogle = compat[0] === "google_oauth";
   const cfg = form.config;
+  // Functional: the Sheets editor applies a fetched spreadsheet title after an await, and a merge
+  // into the render's `form` would put back whatever the operator typed meanwhile.
   const setCfg = (patch: Record<string, unknown>) =>
-    setForm({ ...form, config: { ...form.config, ...patch } });
+    setForm((f) => ({ ...f, config: { ...f.config, ...patch } }));
   const calendarIds = Array.isArray(cfg.calendarIds)
     ? (cfg.calendarIds as string[])
     : [];

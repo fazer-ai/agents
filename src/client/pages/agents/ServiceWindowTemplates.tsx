@@ -479,6 +479,11 @@ function TemplateChoiceEditor({
             ...value,
             params: shown(value.params),
             headerParams: shown(value.headerParams),
+            buttonParams: (def?.buttons ?? []).map((b, i) =>
+              b.type === "URL" && b.url?.includes("{{")
+                ? shown([value.buttonParams[i] ?? ""])[0]
+                : "",
+            ),
           },
         },
       },
@@ -502,8 +507,17 @@ function TemplateChoiceEditor({
       },
       usable,
     );
-    return payload?.content ?? null;
-  }, [value, kind, usable, t]);
+    if (!payload) return null;
+    // The customer also sees where a button leads, so its suffix is filled like the rest.
+    const buttons = payload.processedParams.buttons ?? [];
+    return {
+      content: payload.content,
+      buttonUrls: (def?.buttons ?? []).map((b, i) => {
+        const suffix = buttons[i]?.parameter;
+        return b.url && suffix ? `${b.url.split("{{")[0]}${suffix}` : null;
+      }),
+    };
+  }, [value, kind, usable, def, t]);
   // A stored name the inbox no longer has (or one that cannot be sent) keeps an option of its own,
   // so choosing the empty one clears it instead of re-selecting what is already selected.
   const MISSING = "\u0000missing";
@@ -590,7 +604,7 @@ function TemplateChoiceEditor({
               data-testid="service-window-message"
             >
               {showPreview && preview ? (
-                whatsappBold(preview)
+                whatsappBold(preview.content)
               ) : (
                 <>
                   {def.header?.format === "TEXT" && def.header.text && (
@@ -633,6 +647,11 @@ function TemplateChoiceEditor({
                       className="text-center"
                     >
                       <div className="font-medium text-accent">{b.text}</div>
+                      {showPreview && preview?.buttonUrls[i] && (
+                        <div className="break-all text-text-muted text-xs">
+                          {preview.buttonUrls[i]}
+                        </div>
+                      )}
                       {!showPreview &&
                         b.type === "URL" &&
                         b.url?.includes("{{") && (

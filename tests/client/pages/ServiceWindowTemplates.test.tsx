@@ -186,6 +186,8 @@ describe("ServiceWindowTemplates", () => {
     expect(text).toContain("Olá, Maria! Dia ");
     expect(text).toContain("às 14:30.");
     expect(text).not.toContain("{{");
+    // The button shows where it leads, its suffix filled.
+    expect(text).toContain("https://x.test/abc");
   });
 
   test("a fallback is stored with its variable and only offered for a variable", async () => {

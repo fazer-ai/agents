@@ -16,7 +16,8 @@ import { waitUntilBlocked } from "@/tests/utils/pg-waits";
 
 // A RAG grant names its bases in an array, which no foreign key covers. Deleting a base takes it out of
 // every grant that names it, as the cascade does for every other grant target, so the agent's set can
-// still be written back as it is stored.
+// still be written back as it is stored; a grant left with no base is removed, since an empty list
+// searches every base of the tenant.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -104,7 +105,8 @@ describe.skipIf(!dbUp)("deleting a knowledge base an agent uses", () => {
     const other = await agentWith("Not X", [y]);
     await deleteKnowledgeBase({ ctx: ctx(), id: x, base: appDb });
     expect(await ragOf(first)).toEqual([String(z), String(y)]);
-    expect(await ragOf(second)).toEqual([]);
+    // NOTE: An empty list searches every base, so the grant whose only base this was goes instead.
+    expect(await ragOf(second)).toBeUndefined();
     expect(await ragOf(other)).toEqual([String(y)]);
   });
 

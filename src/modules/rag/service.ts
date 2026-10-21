@@ -1200,7 +1200,12 @@ export async function deleteKnowledgeBase(params: {
       : 0;
     // NOTE: A RAG grant names its bases in an array no foreign key covers, so the cascade every other
     // grant target gets is done here: an id left behind makes the agent's set refused on its next write.
-    // An empty list searches no base, so taking out the last one widens nothing.
+    // An empty list searches EVERY base of the tenant, so a grant that named only this base goes, as a
+    // cascaded grant row does, and the agent stops searching instead of searching everything.
+    await db.$executeRaw`
+      DELETE FROM agent_tool_selections
+       WHERE source = 'RAG' AND ${params.id} = ANY(knowledge_base_ids)
+         AND cardinality(array_remove(knowledge_base_ids, ${params.id})) = 0`;
     await db.$executeRaw`
       UPDATE agent_tool_selections
          SET knowledge_base_ids = array_remove(knowledge_base_ids, ${params.id})

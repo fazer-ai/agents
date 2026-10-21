@@ -11,8 +11,9 @@ import { createKnowledgeBase } from "@/modules/rag/service";
 import { dbProbeFailed } from "@/tests/db-gate";
 
 // Runs the actual migration file over grants holding ids no base answers to: a deleted base's, and
-// another tenant's. Those leave, the rest keep their order, and a grant naming only live bases is not
-// rewritten.
+// another tenant's. Those leave, the rest keep their order, a grant naming only live bases is not
+// rewritten, and a grant whose every id dangles is removed rather than emptied (an empty list searches
+// every base of the tenant). A grant already empty is left alone.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -78,12 +79,12 @@ async function ragAgent(tenantId: bigint, kbs: bigint[]): Promise<bigint> {
   return id;
 }
 
-async function ragIds(agentId: bigint): Promise<string[]> {
+async function ragIds(agentId: bigint): Promise<string[] | undefined> {
   const r = await suDb.query(
     "SELECT knowledge_base_ids::text[] AS ids FROM agent_tool_selections WHERE agent_id = $1 AND source = 'RAG'",
     [String(agentId)],
   );
-  return r.rows[0].ids;
+  return r.rows[0]?.ids;
 }
 
 const ctid = async (agentId: bigint) =>
@@ -99,6 +100,8 @@ describe.skipIf(!dbUp)("migration: sweep deleted bases from the grants", () => {
   let theirs = 0n;
   let dangling = 0n;
   let clean = 0n;
+  let onlyGone = 0n;
+  let empty = 0n;
 
   beforeAll(async () => {
     const a = await tenant("sweep-a");
@@ -110,6 +113,8 @@ describe.skipIf(!dbUp)("migration: sweep deleted bases from the grants", () => {
     const [a1, a2, gone] = mine as [bigint, bigint, bigint];
     dangling = await ragAgent(a, [a2, gone, a1]);
     clean = await ragAgent(a, [a1, a2]);
+    onlyGone = await ragAgent(a, [gone]);
+    empty = await ragAgent(a, []);
     // NOTE: The state the migration repairs, which no write path can produce any more: a deleted
     // base's id, and another tenant's, stored in the array.
     await suDb.query("DELETE FROM knowledge_bases WHERE id = $1", [
@@ -144,10 +149,13 @@ describe.skipIf(!dbUp)("migration: sweep deleted bases from the grants", () => {
       String(a1),
       String(theirs),
     ]);
+    expect(await ragIds(onlyGone)).toEqual([String(gone)]);
     const untouched = await ctid(clean);
     await suDb.query(sql);
     expect(await ragIds(dangling)).toEqual([String(a2), String(a1)]);
     expect(await ragIds(clean)).toEqual([String(a1), String(a2)]);
+    expect(await ragIds(onlyGone)).toBeUndefined();
+    expect(await ragIds(empty)).toEqual([]);
     // NOTE: A grant with nothing to take out is not rewritten: same tuple.
     expect(await ctid(clean)).toBe(untouched);
   });

@@ -25,8 +25,8 @@ afterEach(() => {
   globalThis.fetch = realFetch;
 });
 
-// "Save and export" runs outside the bar, so it reads the holds on its own: a number drawn out of
-// range stops it, instead of the save sending the stored value back and exporting without the edit.
+// "Save and export" runs the bar's save, so it holds to the bar's checks: a number drawn out of range
+// stops it, instead of the save sending the stored value back and exporting without the edit.
 test("a drawn number out of range stops Save and export, and nothing is written", async () => {
   const stub = stubEditorApi({
     settings: { debounce: { enabled: true, windowSeconds: 15 } },
@@ -41,7 +41,9 @@ test("a drawn number out of range stops Save and export, and nothing is written"
     within(dialog).getByRole("button", { name: "Save and export" }),
   );
   await waitFor(() =>
-    expect(screen.getAllByText(/outside its range/).length).toBeGreaterThan(0),
+    expect(
+      screen.getAllByText(/cannot be saved as it is/).length,
+    ).toBeGreaterThan(0),
   );
   expect(stub.writes.filter((w) => w.method !== "GET").length).toBe(0);
 });
@@ -211,9 +213,10 @@ test("a hold General's draft resolves on another tab does not stop Save and expo
 });
 
 // The number was out of range under the mode it was drawn in; switched to Monitoring, its section is
-// not drawn. The cached verdict is not trusted under another mode: the tab is opened to judge again,
-// and the next Save and export goes through with the hidden number kept as stored.
-test("a range hold judged under another mode sends Save and export back to its tab", async () => {
+// not drawn. The cached verdict is not trusted under another mode: the save opens the tab to judge it
+// again, finds nothing holding it there, and writes General's mode and Behavior with the hidden
+// number kept as stored.
+test("a range hold judged under another mode is judged again on its tab before Save and export", async () => {
   const stub = stubEditorApi({
     settings: { debounce: { enabled: true, windowSeconds: 15 } },
   });
@@ -223,18 +226,11 @@ test("a range hold judged under another mode sends Save and export back to its t
   });
   await goTo("General");
   fireEvent.click(screen.getByRole("radio", { name: /^Monitoring/ }));
-  const exportOnce = async () => {
-    fireEvent.click(screen.getByRole("button", { name: "Export" }));
-    const dialog = await screen.findByRole("dialog");
-    fireEvent.click(
-      within(dialog).getByRole("button", { name: "Save and export" }),
-    );
-  };
-  await exportOnce();
-  await screen.findByText(/mode changed since you left the Behavior tab/);
-  await screen.findByRole("tab", { name: "Behavior", selected: true });
-  expect(stub.writes.filter((w) => w.method !== "GET").length).toBe(0);
-  await exportOnce();
+  fireEvent.click(screen.getByRole("button", { name: "Export" }));
+  const dialog = await screen.findByRole("dialog");
+  fireEvent.click(
+    within(dialog).getByRole("button", { name: "Save and export" }),
+  );
   await waitFor(
     () =>
       // General's mode, then Behavior with the hidden number as stored.
@@ -264,7 +260,11 @@ test("a clear verdict judged under another mode is judged again too", async () =
   fireEvent.click(
     within(dialog).getByRole("button", { name: "Save and export" }),
   );
-  await screen.findByText(/mode changed since you left the Behavior tab/);
   await screen.findByRole("tab", { name: "Behavior", selected: true });
+  await waitFor(() =>
+    expect(
+      screen.getAllByText(/cannot be saved as it is/).length,
+    ).toBeGreaterThan(0),
+  );
   expect(stub.writes.filter((w) => w.method !== "GET").length).toBe(0);
 }, 15_000);

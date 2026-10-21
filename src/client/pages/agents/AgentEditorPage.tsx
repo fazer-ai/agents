@@ -2579,7 +2579,7 @@ function AgentEditor() {
   const editorBar: EditorBar = {
     dirty: anyDirty,
     saving: anySaving,
-    onSave: saveFromBar,
+    onSave: () => void saveFromBar(),
     onDiscard: askDiscardAll,
     sectionDirty:
       sectionDirty(tab) || (tab === "general" && decisionsHeadDirty),
@@ -4586,88 +4586,6 @@ function AgentEditor() {
     rangeHeldRef.current = held;
   }, []);
 
-  async function saveAllDirty(): Promise<boolean> {
-    // Only a section this save writes is held: an untouched one keeps its stored number, in range or not.
-    if (
-      rangeHeldRef.current &&
-      (sectionDirty(tab) || (tab === "general" && decisionsHeadDirty))
-    ) {
-      showToast(
-        t(
-          "editor.saveHeldByRange",
-          "A number on this tab is outside its range. Fix it, then save.",
-        ),
-        "error",
-      );
-      return false;
-    }
-    // A tab not on screen holds nothing live; the numbers it reported out of range when last drawn
-    // still stand while the mode and engine it was drawn under have not changed (its other rules may
-    // have been judged against a draft another tab has changed since). Under another mode a section may
-    // be hidden or shown now, held or clear, so the tab is opened to judge again instead.
-    for (const key of SAVE_SECTIONS) {
-      const report = rangeHeldByTabRef.current[key];
-      // A tab this mode does not draw cannot be judged again; its draft is the hidden-drafts notice's.
-      const drawn = visibleTabs.some((item) => item.key === key);
-      if (key === tab || !drawn || !sectionDirty(key) || !report) continue;
-      if (report.under === visibilityKeyRef.current) {
-        if (!report.held) continue;
-        return heldIn(
-          key,
-          t("editor.saveHeldField", "a field there cannot be saved as it is."),
-        );
-      }
-      openTab(key);
-      showToast(
-        t(
-          "editor.recheckBeforeExport",
-          "The agent's mode changed since you left the {{tab}} tab. Check it, then save again.",
-          { tab: tabName(key) },
-        ),
-        "error",
-      );
-      return false;
-    }
-    if (sayHiddenDrafts()) return false;
-    if (!voiceAgent && dirty.behavior && behaviorPageHold() === false)
-      return false;
-    const stopped = (key: TabKey) => {
-      openTab(key);
-      return false;
-    };
-    if (voiceAgent) {
-      // One write carries General and the call settings.
-      if ((dirty.general || dirty.behavior) && !(await saveVoice()))
-        return stopped(voiceStopTab());
-    } else if (dirty.general || dirty.decisions) {
-      if (decisionsSetupHold()) return false;
-      if (!decides && dirty.general && !guardModelBeforeSave())
-        return stopped("general");
-      if (!(await saveGeneral()))
-        return stopped(dirty.general ? "general" : "decisions");
-    }
-    if (
-      !voiceAgent &&
-      dirty.behavior &&
-      !(await saveAgent(
-        {
-          businessHoursId: businessHoursId || null,
-          followUpHoursId: followUpHoursId || null,
-          settings: buildSettings(),
-        },
-        "behavior",
-      ))
-    )
-      return stopped("behavior");
-    if (dirty.channelRedirect && !(await saveChannelRedirect()))
-      return stopped("channelRedirect");
-    if (dirty.guardrails && !(await saveGuardrails()))
-      return stopped("guardrails");
-    if (dirty.tools && !(await saveTools())) return stopped("tools");
-    if (dirty.knowledge && !(await saveGrants())) return stopped("knowledge");
-    return true;
-  }
-
   // THE BAR'S SAVE (agents#1520), on every tab: a plan of the sections edited when Save is pressed,
   // run in two phases because other tabs judge their fields against the agent's SAVED model. First
   // General (with the decision setup), then, on later renders, the rest, one write per render, each
@@ -4684,6 +4602,8 @@ function AgentEditor() {
     returnTo: TabKey | null;
     // The last tab the save opened to judge it again.
     wentTo: TabKey | null;
+    // Answers the caller once the save ends: true when it ran to its end, false when it stopped.
+    settle: (written: boolean) => void;
   };
   const barSaveRef = useRef<BarSave | null>(null);
   // Where the save goes on: after the tab it opened is drawn, or after General's write has landed.
@@ -4704,23 +4624,56 @@ function AgentEditor() {
     void continueBarSave();
   });
 
-  function saveFromBar() {
-    barSaveRef.current = {
-      sections: new Set(
-        SAVE_SECTIONS.filter(
-          (key) => dirty[key] || (key === "general" && decisionsHeadDirty),
+  // "Save and export" runs this same plan, so it holds to the same checks and order; it also
+  // refuses up front a draft the save would leave pending, since the file would leave it out.
+  function saveFromBar(forExport = false): Promise<boolean> {
+    // NOTE: One save at a time, the bar's and the export's alike: a second would send the token the
+    // first has not brought back yet, and read its own write as a change made elsewhere.
+    if (barSaveRef.current || savingRef.current > 0)
+      return Promise.resolve(false);
+    if (forExport && exportLeavesDraftsBehind()) return Promise.resolve(false);
+    return new Promise((settle) => {
+      barSaveRef.current = {
+        sections: new Set(
+          SAVE_SECTIONS.filter(
+            (key) => dirty[key] || (key === "general" && decisionsHeadDirty),
+          ),
         ),
+        judged: false,
+        written: new Set(),
+        rechecked: new Map(),
+        wentTo: null,
+        returnTo: null,
+        settle,
+      };
+      barModelRef.current = barSaveRef.current.sections.has("general")
+        ? "draft"
+        : "stored";
+      void continueBarSave();
+    });
+  }
+
+  // A draft no save writes as the agent is set up now: the bar leaves it pending and says so, while an
+  // export refuses, since the file would be exported without it.
+  function exportLeavesDraftsBehind(): boolean {
+    if (sayHiddenDrafts()) return true;
+    const hidden = SAVE_SECTIONS.filter(
+      (key) =>
+        key !== "decisions" &&
+        !(voiceAgent && key === "behavior") &&
+        !visibleTabs.some((item) => item.key === key) &&
+        dirty[key],
+    );
+    if (hidden.length === 0) return false;
+    showToast(
+      t(
+        "editor.hiddenTabsBlockExport",
+        "Changes on {{tabs}} would not be in the file: this agent does not use those tabs as it is set up now. Switch it back to save them, or discard them, then export.",
+        { tabs: hidden.map(tabName).join(", ") },
       ),
-      judged: false,
-      written: new Set(),
-      rechecked: new Map(),
-      wentTo: null,
-      returnTo: null,
-    };
-    barModelRef.current = barSaveRef.current.sections.has("general")
-      ? "draft"
-      : "stored";
-    void continueBarSave();
+      "error",
+    );
+    return true;
   }
 
   function writeSection(
@@ -4750,9 +4703,10 @@ function AgentEditor() {
   async function continueBarSave(): Promise<void> {
     const plan = barSaveRef.current;
     if (!plan) return;
-    const end = () => {
+    const end = (written = false) => {
       barSaveRef.current = null;
       barModelRef.current = null;
+      plan.settle(written);
     };
     const planned = (key: (typeof SAVE_SECTIONS)[number]) =>
       plan.sections.has(key);
@@ -4875,7 +4829,7 @@ function AgentEditor() {
       continueRef.current = { onTab: null };
       return;
     }
-    end();
+    end(true);
     if (sayHiddenDrafts()) return;
     // A planned section of a tab this mode does not draw (Guardrails, Redirect on a watcher) was not
     // written either, and nothing above names it. The decision setup is not among them: it goes out
@@ -6032,12 +5986,13 @@ function AgentEditor() {
       <ExportAgentModal
         modal={exportModal}
         anyDirty={anyDirty}
+        saving={anySaving}
         onExport={async ({
           includeComponents,
           includeDocuments,
           saveFirst,
         }) => {
-          if (saveFirst && !(await saveAllDirty())) return;
+          if (saveFirst && !(await saveFromBar(true))) return;
           await doExport(includeComponents, includeDocuments);
         }}
       />

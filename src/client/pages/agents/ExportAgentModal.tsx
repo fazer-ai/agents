@@ -15,10 +15,13 @@ import {
 export function ExportAgentModal({
   modal,
   anyDirty,
+  saving,
   onExport,
 }: {
   modal: ModalController;
   anyDirty: boolean;
+  // A save of the editor's is running: exporting now would read, or write, beside it.
+  saving: boolean;
   onExport: (opts: {
     includeComponents: boolean;
     includeDocuments: boolean;
@@ -59,6 +62,7 @@ export function ExportAgentModal({
       modal={modal}
       size="md"
       title={t("editor.exportModalTitle", "Export agent")}
+      busy={busy}
       footer={
         <div className="flex flex-wrap items-center justify-end gap-2">
           <Button
@@ -74,15 +78,20 @@ export function ExportAgentModal({
                 variant="secondary"
                 onClick={() => run(false)}
                 loading={busy}
+                disabled={saving}
               >
                 {t("editor.exportSaved", "Export saved version")}
               </Button>
-              <Button onClick={() => run(true)} loading={busy}>
+              <Button
+                onClick={() => run(true)}
+                loading={busy}
+                disabled={saving}
+              >
                 {t("editor.saveAndExport", "Save and export")}
               </Button>
             </>
           ) : (
-            <Button onClick={() => run(false)} loading={busy}>
+            <Button onClick={() => run(false)} loading={busy} disabled={saving}>
               {t("editor.export", "Export")}
             </Button>
           )}

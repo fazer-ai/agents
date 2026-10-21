@@ -293,6 +293,23 @@ export function signatureCoversId(
   return true;
 }
 
+// Whether the signature vouches for this value only lowercased (`|lower`): two spellings that differ
+// in case then carry the same signature, so whatever counts them as distinct must not.
+export function signedLowered(
+  raw: unknown,
+  source: "header" | "query",
+  name: string,
+): boolean {
+  const parsed = parseSignatureConfig(raw);
+  if (parsed === undefined || isSignatureConfigProblem(parsed)) return false;
+  return parsed.groups.some((g) =>
+    g.pieces.some(
+      (p) =>
+        p.kind === "value" && p.source === source && p.name === name && p.lower,
+    ),
+  );
+}
+
 export function isSignatureConfigProblem(
   v: SignatureConfig | SignatureConfigProblem,
 ): v is SignatureConfigProblem {

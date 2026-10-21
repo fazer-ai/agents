@@ -37,7 +37,11 @@ import {
   resolveInboundAuthConfig,
   verifyInboundAuth,
 } from "./auth";
-import { signatureCoversBody, signatureCoversId } from "./signed-message";
+import {
+  signatureCoversBody,
+  signatureCoversId,
+  signedLowered,
+} from "./signed-message";
 import { redispatchKey } from "./sweep";
 
 // Generic inbound receptor. Resolve tenant by route token → verify the per-instance auth
@@ -273,7 +277,23 @@ export async function receiveInbound(
         outcome: "invalid",
       };
     }
-    const notice = await persistNotice(base, route, resourceId);
+    // The throttle counts what the signature vouches for: under `|lower`, `ABC` and `abc` are one
+    // signed id and one lookup a window, whichever spelling arrived first.
+    const lowered =
+      !isFetchBackProblem(fetchBack) &&
+      route.inboundAuthStrategy === "HMAC_SHA256" &&
+      fetchBack.idFrom.source !== "body" &&
+      signedLowered(
+        route.config.signature,
+        fetchBack.idFrom.source,
+        fetchBack.idFrom.name,
+      );
+    const notice = await persistNotice(
+      base,
+      route,
+      resourceId,
+      lowered ? resourceId.toLowerCase() : resourceId,
+    );
     return {
       ack: true,
       deliveryId: notice.id,
@@ -550,13 +570,14 @@ async function persistNotice(
   base: PrismaClient,
   route: Pick<ResolvedInboundRoute, "id" | "tenantId">,
   resourceId: string,
+  keyId: string,
   now = Date.now(),
 ): Promise<{ id: bigint; duplicate: boolean; deferred: boolean }> {
   const win = Math.floor(now / NOTICE_WINDOW_MS);
   const row = (w: number, payload: Record<string, unknown> = {}) =>
     persistRow(base, route, {
       externalId: null,
-      dedupeKey: `notice:${resourceId}:${w}`,
+      dedupeKey: `notice:${keyId}:${w}`,
       payload: { kind: FETCH_BACK_KIND, resourceId, ...payload },
     });
   const current = await row(win);

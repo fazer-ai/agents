@@ -741,6 +741,15 @@ describe.skipIf(!dbUp)("a thin notification answered by a consult-back", () => {
     expect(seen.length).toBe(before);
   });
 
+  test("two spellings of an id the signature lowercases are one lookup a window", async () => {
+    const first = await notify("ORDX1");
+    expect(first.outcome).toBe("queued");
+    // The same signed manifest (`id:ordx1;`) carries either spelling.
+    const variant = await notify("ordX1");
+    expect(variant.outcome).toBe("duplicate");
+    expect(variant.deliveryId).toBe(first.deliveryId);
+  });
+
   test("an id that is not a plain id is refused before anything is looked up", async () => {
     const before = seen.length;
     const r = await notify("..%2F1");

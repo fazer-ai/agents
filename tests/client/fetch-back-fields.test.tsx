@@ -188,3 +188,18 @@ test("a refusal about one status row lands under that row", () => {
     field: "statuses.1.text",
   });
 });
+
+test("a lookup imported with malformed status rows still opens, so it can be repaired", () => {
+  for (const statuses of [{}, [null], "x"]) {
+    const cfg = { fetchBack: { toolId: "7", statuses } };
+    expect(() => fetchBackFields(cfg)).not.toThrow();
+    expect(() => fetchBackFieldValues(cfg)).not.toThrow();
+    render(<Harness initial={cfg} out={{}} />);
+    expect(
+      screen.getByRole("switch", {
+        name: "Look up each notification with a tool",
+      }),
+    ).toBeTruthy();
+    cleanup();
+  }
+});

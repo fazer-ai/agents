@@ -44,11 +44,20 @@ const PATH_KEYS = [
   "currencyPath",
 ] as const;
 
+// A stored config can come from an import, past the writer, so the rows are read defensively: the
+// screen has to open to let the operator repair it.
 function readFetchBack(cfg: Record<string, unknown>): FetchBack | null {
   const f = cfg.fetchBack;
-  return f && typeof f === "object" && !Array.isArray(f)
-    ? (f as FetchBack)
-    : null;
+  if (!f || typeof f !== "object" || Array.isArray(f)) return null;
+  const raw = (f as { statuses?: unknown }).statuses;
+  const statuses = Array.isArray(raw)
+    ? raw.map((s) =>
+        s && typeof s === "object" && !Array.isArray(s)
+          ? (s as Status)
+          : { status: "" },
+      )
+    : [];
+  return { ...(f as FetchBack), statuses };
 }
 
 // Every name a refusal can land on, the per-row ones included, for the form's `useFieldRefusal`.

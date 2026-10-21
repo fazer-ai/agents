@@ -3208,6 +3208,21 @@
       "tabsError": "Could not read the spreadsheet's tabs. Check that the credential has the Google Sheets scope and can open this spreadsheet.",
       "use": "Use"
     },
+    "signature": {
+      "format": "Signature format",
+      "formatHex": "The whole header (hex, optional sha256= prefix)",
+      "formatParts": "Key=value parts (e.g. ts=…,v1=…)",
+      "header": "Signature header",
+      "headerHint": "The request header that carries the signature.",
+      "maxAge": "Refuse notifications older than (seconds)",
+      "maxAgeHint": "Optional. Leave empty when the provider retries with the original timestamp.",
+      "message": "Signed message",
+      "messageHelp": "What the sender signs, written with placeholders: {{body}} is the raw body, {{header}} a request header, {{query}} a parameter of the webhook URL and {{sig}} a part of the signature header.\n\nAdd {{lower}} to lowercase a value. Wrap a piece in {{group}} to leave it out whole when a value inside is missing.\n\nThe provider's own documentation says what it signs.",
+      "messageHint": "Empty means {{body}}, the raw body.",
+      "signaturePart": "Part with the signature",
+      "timestampPart": "Part with the timestamp",
+      "timestampPartHint": "Optional. Needed to refuse old notifications."
+    },
     "subtitle": "Activate ready-made integrations your agents can use.",
     "tokenHint": "Copy this URL into the provider's webhook settings. You can read it again later by editing this integration.",
     "tokenTitle": "Inbound webhook URL",

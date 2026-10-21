@@ -21,6 +21,10 @@ import {
   generateRouteToken,
   hashRouteToken,
 } from "@/modules/webhooks/inbound/route-token";
+import {
+  isSignatureConfigProblem,
+  parseSignatureConfig,
+} from "@/modules/webhooks/inbound/signed-message";
 import { ensureInboundSweep } from "@/modules/webhooks/inbound/sweep";
 import { calendarConfigRangeProblem } from "./calendar-config-ranges";
 import { CATALOG, getCatalogEntry } from "./catalog";
@@ -91,6 +95,23 @@ export function assertUsableHeaderNames(config: Record<string, unknown>): void {
       `config.${key}`,
     );
   }
+}
+
+// What an HMAC instance signs when it is not the body. Refused whole, naming the field, by the same
+// parser the gate reads it with, so a stored config the gate would fail closed on cannot be written.
+export function assertSignatureConfig(config: Record<string, unknown>): void {
+  const parsed = parseSignatureConfig(config.signature);
+  if (parsed === undefined || !isSignatureConfigProblem(parsed)) return;
+  const field = parsed.field
+    ? `config.signature.${parsed.field}`
+    : "config.signature";
+  throw new AppError(
+    `${field} ${parsed.problem}`,
+    400,
+    "errors.integrationSignatureUnusable",
+    { field, problem: parsed.problem },
+    field,
+  );
 }
 
 // The operator's guidance for a GENERIC instance's events: trusted text that reaches the model
@@ -224,6 +245,7 @@ export function assertIntegrationWritable(
 ): void {
   if (params.config) {
     assertUsableHeaderNames(params.config);
+    assertSignatureConfig(params.config);
     assertCatalogConfig(catalogType, params.config);
     assertConfigRanges(catalogType, params.config, storedConfig);
     assertSheetsConfig(catalogType, params.config);

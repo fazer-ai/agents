@@ -151,6 +151,9 @@ export interface ReceiveParams {
   routeToken: string;
   rawBody: string;
   getHeader: (name: string) => string | null;
+  // The webhook URL's query string, which a signed message may cover (Mercado Pago signs the
+  // `data.id` it carries).
+  getQuery?: (name: string) => string | null;
   base?: PrismaClient;
   // Injectable for tests; defaults to the app logger. The refusal reason is the observable effect
   // of a 401 here (the response is uniform by design), so a test that cannot read it is testing a
@@ -186,6 +189,7 @@ export async function receiveInbound(
     secret,
     rawBody: params.rawBody,
     getHeader: params.getHeader,
+    getQuery: params.getQuery,
     config: resolveInboundAuthConfig(route.catalogType, route.config),
   });
   if (!auth.ok) {

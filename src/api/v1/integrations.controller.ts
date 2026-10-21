@@ -21,10 +21,14 @@ export const integrationsController = new Elysia({
     // Read the RAW body (HMAC strategies sign the exact bytes; re-serializing the parsed
     // JSON would not match). We never declare/access `body`, so Elysia does not pre-parse it.
     const rawBody = await request.text();
+    // Read from the URL, not Elysia's parsed `query`, so a dotted name like `data.id` arrives as the
+    // sender wrote it.
+    const search = new URL(request.url).searchParams;
     const result = await receiveInbound({
       routeToken: params.routeToken,
       rawBody,
       getHeader: (name) => request.headers.get(name),
+      getQuery: (name) => search.get(name),
     });
 
     // Ack fast (<5s, e.g. Chatwoot auto-escalates pending→open on a slow/non-2xx ack); the
@@ -54,7 +58,7 @@ export const integrationsController = new Elysia({
     detail: {
       ...doc(
         "Generic inbound webhook",
-        "Public inbound receptor for integrations (n8n-style webhook node); authenticated by the opaque per-instance route token plus the per-instance auth strategy (e.g. HMAC or static header, verified in-handler after tenant resolution), not by a session cookie or bearer. Acks fast (<5s) and dispatches asynchronously; an unknown token and failed auth collapse into the same 401, so a probe cannot tell which routes are live. A GENERIC integration takes `{event_id, conversation_ref, text (at most 4000 characters, line breaks kept), status?}`: `conversation_ref` is the value an HTTP tool of the agent sent as `{{conversation_ref}}`, `event_id` is the idempotency key, and the agent passes `text` on to the customer of that conversation (or leaves a private note when a person holds it). HMAC_SHA256 signs the raw body as hex in `x-webhook-signature` (optionally `sha256=`-prefixed).",
+        "Public inbound receptor for integrations (n8n-style webhook node); authenticated by the opaque per-instance route token plus the per-instance auth strategy (e.g. HMAC or static header, verified in-handler after tenant resolution), not by a session cookie or bearer. Acks fast (<5s) and dispatches asynchronously; an unknown token and failed auth collapse into the same 401, so a probe cannot tell which routes are live. A GENERIC integration takes `{event_id, conversation_ref, text (at most 4000 characters, line breaks kept), status?}`: `conversation_ref` is the value an HTTP tool of the agent sent as `{{conversation_ref}}`, `event_id` is the idempotency key, and the agent passes `text` on to the customer of that conversation (or leaves a private note when a person holds it). HMAC_SHA256 signs the raw body as hex in `x-webhook-signature` (optionally `sha256=`-prefixed) unless the instance names another signed message: a template over the body, request headers, query-string parameters of this URL and the parts of a `key=value` signature header (the shape Mercado Pago and Stripe sign).",
       ),
       security: [],
       responses: {

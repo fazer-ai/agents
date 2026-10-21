@@ -550,6 +550,8 @@ const BARE_SLICES: Record<
   "src/modules/voice-call/service.ts": [1, "array"],
   // The page's own overshoot row, dropped: the list takes `limit + 1` to learn whether a next page
   // exists. Same shape as flowlog/read.ts, and it cuts an array of rows, never a string.
+  // The key of a `key=value` part of a signature header, cut at the index of the ASCII `=`.
+  "src/modules/webhooks/inbound/signed-message.ts": [1, "index"],
   "src/modules/webhooks/outbound/deliveries.ts": [1, "array"],
   "src/modules/webhooks/outbound/events.ts": [2, "index"],
 };

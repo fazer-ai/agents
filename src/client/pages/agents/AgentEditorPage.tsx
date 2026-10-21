@@ -3459,6 +3459,9 @@ function AgentEditor() {
 
   // A section's own success message, unless it is one write of a bar save that writes several: that
   // save says once, at its end, what it saved.
+  // Set by a save of two requests once its first one went through: if the second then fails, the
+  // section is saved in part (the grants, not the settings), and the bar's summary says so.
+  const partlyWrittenRef = useRef(false);
   function sectionSaved(text: string) {
     if (barSaveRef.current?.quiet) return;
     showToast(text, "success");
@@ -3635,6 +3638,7 @@ function AgentEditor() {
         : null;
       markSynced(afterGrants);
       if (reviewChanged) {
+        partlyWrittenRef.current = true;
         const agentRes = await api.api.v1.agents({ id }).patch({
           settings: knowledgeSettings,
           ...(!force && afterGrants ? { expectedUpdatedAt: afterGrants } : {}),
@@ -4050,6 +4054,7 @@ function AgentEditor() {
       if (afterGrants) loadedUpdatedAtRef.current = afterGrants;
       syncedGrantsRef.current = grantsRes.data.grants;
       written = grantsRes.data.grants;
+      partlyWrittenRef.current = true;
       setCatalog(grantsRes.data.catalog);
       const patchExpected = force ? undefined : afterGrants;
       const agentRes = await api.api.v1.agents({ id }).patch({
@@ -4705,6 +4710,8 @@ function AgentEditor() {
     // nothing and the save says once what it saved.
     units: (typeof SAVE_SECTIONS)[number][];
     quiet: boolean;
+    // The writes that failed after their first request went through.
+    partly: Set<(typeof SAVE_SECTIONS)[number]>;
   };
   const barSaveRef = useRef<BarSave | null>(null);
   // Where the save goes on: after the tab it opened is drawn, or after General's write has landed.
@@ -4748,6 +4755,7 @@ function AgentEditor() {
       returnTo: null,
       units,
       quiet: units.length > 1,
+      partly: new Set(),
     };
     barModelRef.current = barSaveRef.current.sections.has("general")
       ? "draft"
@@ -4789,13 +4797,30 @@ function AgentEditor() {
       barModelRef.current = null;
       if (ranToEnd || !plan.quiet) return;
       const saved = plan.units.filter((unit) => plan.written.has(unit));
-      const pending = plan.units.filter((unit) => !plan.written.has(unit));
-      if (saved.length === 0 || pending.length === 0) return;
+      const partly = plan.units.filter((unit) => plan.partly.has(unit));
+      const pending = plan.units.filter(
+        (unit) => !plan.written.has(unit) && !plan.partly.has(unit),
+      );
+      if (saved.length + partly.length === 0) return;
+      if (pending.length + partly.length === 0) return;
+      const names = (units: typeof saved) => units.map(tabName).join(", ");
       showToast(
-        t("editor.savePartial", "Saved: {{saved}}. Not saved: {{pending}}.", {
-          saved: saved.map(tabName).join(", "),
-          pending: pending.map(tabName).join(", "),
-        }),
+        [
+          saved.length > 0 &&
+            t("editor.saveSummarySaved", "Saved: {{tabs}}.", {
+              tabs: names(saved),
+            }),
+          partly.length > 0 &&
+            t("editor.saveSummaryPartly", "Saved in part: {{tabs}}.", {
+              tabs: names(partly),
+            }),
+          pending.length > 0 &&
+            t("editor.saveSummaryPending", "Not saved: {{tabs}}.", {
+              tabs: names(pending),
+            }),
+        ]
+          .filter(Boolean)
+          .join(" "),
         "warning",
       );
     };
@@ -4897,6 +4922,7 @@ function AgentEditor() {
       if (planned(key) && judge(key) !== "ok") return;
       if (key === "behavior" && behaviorPageHold() === false) return end();
       plan.written.add(key);
+      partlyWrittenRef.current = false;
       if (key === "general") {
         if (!(await saveGeneral())) {
           plan.written.delete(key);
@@ -4911,6 +4937,7 @@ function AgentEditor() {
         barModelRef.current = "stored";
       } else if (!(await writeSection(key))) {
         plan.written.delete(key);
+        if (partlyWrittenRef.current) plan.partly.add(key);
         return stop(key);
       }
       continueRef.current = { onTab: null };

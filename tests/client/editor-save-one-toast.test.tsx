@@ -101,6 +101,72 @@ describe("one Save, one message", () => {
     expect(shown("Agent saved.")).toBe(0);
   });
 
+  test("Tools' grants written and its settings refused: Tools is saved in part, not pending", async () => {
+    const stub = stubEditorApi(
+      { name: "Atendente" },
+      { catalog: NATIVE_CATALOG },
+    );
+    let n = 0;
+    stub.override = (method, path) => {
+      if (method !== "PATCH" || path !== "/api/v1/agents/41") return;
+      n += 1;
+      if (n === 2) return json({ error: "Refused by the server." }, 422);
+    };
+    await renderEditor(stub, "general");
+    editTab("general");
+    await goTo(/^Tools/);
+    editTab("tools");
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByText("Saved: General. Saved in part: Tools.");
+    expect(stub.writes.map((w) => w.method)).toEqual(["PATCH", "PUT", "PATCH"]);
+    await settle();
+    expect(shown("Not saved:")).toBe(0);
+    expect(shown("Agent saved.")).toBe(0);
+  });
+
+  test("Knowledge's grants written and its reviewer refused: Knowledge is saved in part", async () => {
+    const stub = stubEditorApi(
+      { name: "Atendente" },
+      { catalog: { native: [{ name: "open_case_in_inbox" }] } },
+    );
+    let n = 0;
+    stub.override = (method, path) => {
+      if (method !== "PATCH" || path !== "/api/v1/agents/41") return;
+      n += 1;
+      if (n === 2) return json({ error: "Refused by the server." }, 422);
+    };
+    await renderEditor(stub, "general");
+    editTab("general");
+    await goTo(/^Knowledge/);
+    const reviewer = document
+      .getElementById("kb-review")
+      ?.querySelector("select");
+    if (!reviewer) throw new Error("the reviewer's provider is not drawn");
+    fireEvent.change(reviewer, { target: { value: "anthropic" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByText("Saved: General. Saved in part: Knowledge.");
+    expect(stub.writes.map((w) => w.method)).toEqual(["PATCH", "PUT", "PATCH"]);
+  });
+
+  test("Tools written whole and Knowledge refused: Knowledge is not saved, not saved in part", async () => {
+    const stub = stubEditorApi({}, { catalog: NATIVE_CATALOG });
+    let puts = 0;
+    stub.override = (method, path) => {
+      if (method !== "PUT" || path !== "/api/v1/agents/41/tool-selections")
+        return;
+      puts += 1;
+      if (puts === 2) return json({ error: "Refused by the server." }, 422);
+    };
+    await renderEditor(stub, "tools");
+    editTab("tools");
+    await goTo(/^Knowledge/);
+    editTab("knowledge");
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByText("Saved: Tools. Not saved: Knowledge.");
+    await settle();
+    expect(shown("Saved in part:")).toBe(0);
+  });
+
   test("the first section refused: nothing was saved, and no message says so", async () => {
     const stub = stubEditorApi({ name: "Atendente" });
     stub.override = (method, path) => {
@@ -112,6 +178,7 @@ describe("one Save, one message", () => {
     await settle();
     expect(shown("Agent saved.")).toBe(0);
     expect(shown("Saved:")).toBe(0);
+    expect(shown("Not saved:")).toBe(0);
   });
 
   test("a single section keeps its own message", async () => {

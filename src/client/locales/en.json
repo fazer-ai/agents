@@ -3466,6 +3466,7 @@
       "proactive_breaker": "Proactive breaker",
       "proactive_limit": "Proactive limit",
       "route": "Routing",
+      "service_window": "Proactive message became a note",
       "spend_ceiling": "Spend ceiling",
       "split": "Delivery",
       "stt": "Transcription",

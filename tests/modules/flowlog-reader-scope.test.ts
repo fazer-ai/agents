@@ -142,6 +142,10 @@ const FLOWLOG_READERS: Record<string, number> = {
   "tests/modules/capacity-wait-db.test.ts": 1,
   // NOTE: The lines a message on the bot token wrote, read by its conversation.
   "tests/modules/foreign-send.test.ts": 1,
+  // NOTE: The window-note line the redirect follow-up wrote, which hangs on no conversation of ours.
+  "tests/modules/channel-redirect-followup.test.ts": 1,
+  // NOTE: How many window-note lines a run of notes wrote, on the file's own tenant.
+  "tests/modules/window-note-alert.test.ts": 1,
   // NOTE: The clip line a code tool's call wrote, read by the turn that made it.
   "tests/graph/code-tool-clip.test.ts": 1,
   "tests/graph/duplicate-tool-name-visible.test.ts": 1,
@@ -150,7 +154,7 @@ const FLOWLOG_READERS: Record<string, number> = {
   "tests/graph/ingest.test.ts": 2,
   "tests/graph/label-allowed-wiring.test.ts": 2,
   // NOTE: A turn a gate stopped writes no closing line, which only a read can show.
-  "tests/graph/nudge.test.ts": 7,
+  "tests/graph/nudge.test.ts": 8,
   "tests/graph/nudge-waits-for-turn.test.ts": 2,
   // NOTE: A withdrawn turn closes on no line.
   "tests/graph/proactive-breaker.test.ts": 1,

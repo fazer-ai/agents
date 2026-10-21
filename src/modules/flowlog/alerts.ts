@@ -178,6 +178,13 @@ export function causeKeyOf(ev: FlowEvent): string | null {
       ? `foreign_send:${agent}`
       : "foreign_send";
   }
+  // A setup to fix, one per agent: every window note of the day is the same missing template.
+  if (ev.stage === "service_window") {
+    const agent = detail.agent;
+    return typeof agent === "string" && /^[1-9][0-9]{0,18}$/.test(agent)
+      ? `service_window:${agent}`
+      : "service_window";
+  }
   // An answer to a stranded message that came late enough that the customer waited for it: a cause,
   // so it reaches a channel whatever its minimum level, and a run of them is one alert.
   if (ev.stage === "delivery") {
@@ -273,9 +280,19 @@ export async function dispatchAlertsForEvent(
     rank: LEVEL_RANK[ev.level] ?? 0,
     summary: alertSummary(ev),
     cause:
-      causeKey === null ? null : { key: causeKey, windowMs: causeWindowMs },
+      causeKey === null
+        ? null
+        : {
+            key: causeKey,
+            windowMs: causeKey.startsWith("service_window")
+              ? SERVICE_WINDOW_ALERT_WINDOW_MS
+              : causeWindowMs,
+          },
   });
 }
+
+// A backlog of window notes is one alert per agent per day, not one per cause window.
+export const SERVICE_WINDOW_ALERT_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 interface AlertToDeliver {
   stage: FlowStage;

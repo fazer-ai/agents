@@ -3568,6 +3568,7 @@
       "proactive_breaker": "Disjuntor de proativas",
       "proactive_limit": "Limite de proativas",
       "route": "Roteamento",
+      "service_window": "Mensagem proativa virou nota",
       "spend_ceiling": "Teto de gasto",
       "split": "Entrega",
       "stt": "Transcrição",

@@ -185,6 +185,16 @@ describe("an id the signature covers with fixed boundaries", () => {
       sig("{{header.x}}[[;{{query.optional}};]]{{query.id}};"),
       false,
     ],
+    [
+      "an optional group before the id, whose layouts swap which value is the id",
+      sig("[[{{header.x}};]]{{query.id}};[[{{header.y}};]]"),
+      false,
+    ],
+    [
+      "optional groups only after the id",
+      sig("{{query.id}};[[{{header.y}};]]"),
+      true,
+    ],
   ])("%s", (_, signature, covered) => {
     expect(
       signatureCoversId(

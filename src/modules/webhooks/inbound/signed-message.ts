@@ -266,6 +266,16 @@ export function signatureCoversId(
   const parsed = parseSignatureConfig(raw);
   if (parsed === undefined || isSignatureConfigProblem(parsed)) return false;
   if (!covers(parsed.groups, source, name, false)) return false;
+  // No [[group]] before the id: framing each layout on its own is not enough, since two layouts can
+  // render the same bytes with the id in different places (`[[{{header.x}};]]{{query.id}};[[{{header.y}};]]`
+  // signs `ABC;DEF;` for id DEF after x ABC, and for id ABC before y DEF). With only required
+  // pieces before it, the id starts at one fixed point of every message.
+  const home = parsed.groups.findIndex((g) =>
+    g.pieces.some(
+      (p) => p.kind === "value" && p.source === source && p.name === name,
+    ),
+  );
+  if (parsed.groups.slice(0, home).some((g) => g.optional)) return false;
   // Fixed boundaries, as for the body: literal text (or the end of the message) after the id and
   // after every value before it, which the gate refuses a value to contain. Asked of every message
   // the template can render, since a dropped [[group]] takes its separators with it.

@@ -2168,8 +2168,6 @@ export async function updateAgentAndGrants(
     if (grants) await lockToolNames(db);
     await assertSchedulesExistOn(db, bhId, fuhId);
     const updateData: Record<string, unknown> = { ...rest };
-    // NOTE: A save that writes only the grants still advances the version token.
-    if (grants) updateData.updatedAt = new Date();
     if (hasBh) updateData.businessHoursId = bhId;
     if (hasFuh) updateData.followUpHoursId = fuhId;
     // The row lock (held to commit) serializes the follow-up fence's read-compute-write, so a
@@ -2300,6 +2298,10 @@ export async function updateAgentAndGrants(
       opts.expectedUpdatedAt != null
         ? { id, updatedAt: opts.expectedUpdatedAt }
         : { id };
+    // NOTE: A save that writes only the grants still advances the version token, stamped here, under
+    // the row lock: stamped before it, a write that waited behind another could commit an older token
+    // than the one it waited for.
+    if (grants) updateData.updatedAt = new Date();
     const res = await db.agent.updateMany({ where, data: updateData });
     if (res.count === 0) {
       if (opts.expectedUpdatedAt != null) {

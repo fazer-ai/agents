@@ -858,6 +858,10 @@ function AgentEditor() {
   const tab: TabKey = TAB_KEYS.includes(tabParam as TabKey)
     ? (tabParam as TabKey)
     : "general";
+  // The tab on screen now, for code that resumes after an await: the render that started it may be
+  // gone, and the operator may have moved.
+  const tabRef = useRef(tab);
+  tabRef.current = tab;
 
   // Origin breadcrumb: when the operator reached this editor from a conversation
   // ("Configure agent"), `?from=/conversations/:id` lets us offer a one-click way back. Validated to
@@ -4503,8 +4507,9 @@ function AgentEditor() {
       return;
     }
     // Back to the tab the operator was on when the save took them elsewhere, and only from a tab the
-    // save itself opened: one the operator moved to keeps them there.
-    if (plan.wentTo === tab && plan.returnTo !== null && plan.returnTo !== tab)
+    // save itself opened: one the operator moved to while the request was out keeps them there.
+    const now = tabRef.current;
+    if (plan.wentTo === now && plan.returnTo !== null && plan.returnTo !== now)
       openTab(plan.returnTo);
   }
 

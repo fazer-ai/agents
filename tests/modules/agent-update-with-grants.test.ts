@@ -11,6 +11,7 @@ import {
 } from "@/modules/agents/service";
 import { TOOL_INSTRUCTIONS_MAX } from "@/modules/agents/text-caps";
 import { dbProbeFailed } from "@/tests/db-gate";
+import { waitUntilBlocked } from "@/tests/utils/pg-waits";
 
 // The editor's Save writes the agent's fields and its whole grant set in one request, so the two
 // halves are one transaction under one version token: either both land or neither does.
@@ -205,6 +206,41 @@ describe.skipIf(!dbUp)("an agent update that also writes the grants", () => {
     expect(toolSelection).toBeNull();
     expect(await enabledTools(id)).toEqual(["private_note"]);
     expect(await audit(id, "agent.tools_set")).toBe(1);
+  });
+
+  // The token is stamped under the agent row's lock: a write that waited behind another commits a
+  // token newer than the one that writer left, so an editor comparing tokens sees it.
+  test("a write that waited behind another commits a newer token", async () => {
+    const { id } = await seed("Waits");
+    let release: () => void = () => {};
+    const held = new Promise<void>((r) => {
+      release = r;
+    });
+    let locked: (pid: number) => void = () => {};
+    const gotLock = new Promise<number>((r) => {
+      locked = r;
+    });
+    let other = new Date(0);
+    const blocker = suDb.$transaction(
+      async (tx) => {
+        const [me] = await tx.$queryRaw<Array<{ pid: number }>>`
+          SELECT pg_backend_pid()::int AS pid FROM agents WHERE id = ${id} FOR UPDATE`;
+        locked(me?.pid as number);
+        await held;
+        const [row] = await tx.$queryRaw<Array<{ updated_at: Date }>>`
+          UPDATE agents SET updated_at = clock_timestamp() WHERE id = ${id}
+          RETURNING updated_at`;
+        other = row?.updated_at as Date;
+      },
+      { timeout: 10_000 },
+    );
+    const holder = await gotLock;
+    const writing = updateAgentAndGrants(ctx(), id, {}, NOTE_AND_LABELS, appDb);
+    expect(await waitUntilBlocked(suDb, holder, 1)).toBeGreaterThanOrEqual(0);
+    release();
+    await blocker;
+    const { agent } = await writing;
+    expect(agent.updatedAt.getTime()).toBeGreaterThan(other.getTime());
   });
 
   test("an empty set is a set: it clears the grants", async () => {

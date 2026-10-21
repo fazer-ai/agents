@@ -361,6 +361,57 @@ describe("the editor's bar covers the whole agent", () => {
     await screen.findByRole("tab", { name: "General", selected: true });
   });
 
+  // The save went to Behavior to judge it again, then sent its write; the operator who moves to Tools
+  // while it is out stays there, though the save would have taken them back from Behavior.
+  test("a tab chosen while the write is out is kept after a recheck trip", async () => {
+    const stub = stubEditorApi({
+      name: "Atendente",
+      modelConfig: { provider: "openai", model: "gpt-4o-mini" },
+      settings: {
+        modelFallback: {
+          provider: "openai-compatible",
+          model: "m",
+          baseURL: null,
+        },
+      },
+    });
+    await renderEditor(stub, "behavior");
+    editTab("behavior");
+    await waitFor(() => expect(save().disabled).toBe(true));
+    await goTo("General");
+    fireEvent.change(screen.getByLabelText("Provider"), {
+      target: { value: "openai-compatible" },
+    });
+    fireEvent.change(await screen.findByLabelText("Base URL"), {
+      target: { value: "https://llm.example.com/v1" },
+    });
+    const served = globalThis.fetch;
+    let release: () => void = () => {};
+    const held = new Promise<void>((r) => {
+      release = r;
+    });
+    let patchSent = false;
+    globalThis.fetch = (async (
+      input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      if ((init?.method ?? "GET") === "PATCH" && !patchSent) {
+        patchSent = true;
+        await held;
+      }
+      return served(input, init);
+    }) as typeof fetch;
+    fireEvent.click(save());
+    await waitFor(() => expect(patchSent).toBe(true), { timeout: 5_000 });
+    await goTo("Tools");
+    release();
+    await screen.findByText("Agent saved.");
+    for (let i = 0; i < 5; i++) await act(async () => {});
+    expect(
+      screen.getByRole("tab", { name: "Tools" }).getAttribute("aria-selected"),
+    ).toBe("true");
+  });
+
   // The save writes what was edited when Save was pressed. A General edit made while it is out stays
   // pending, on screen, and the answer does not overwrite it.
   test("a General edit made while the save is out stays pending", async () => {

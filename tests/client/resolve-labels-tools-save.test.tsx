@@ -170,12 +170,8 @@ describe("the editor refuses the clash before the grants are written", () => {
     expect(writes(asked)).toBe("");
   });
 
-  test("a label the close does not assign saves the grants and then the settings", async () => {
+  test("a label the close does not assign saves the grants and the settings in one write", async () => {
     const asked = await saveWithProtectedLabels("outra");
-    await waitFor(() =>
-      expect(writes(asked)).toBe(
-        "PUT /api/v1/agents/1/tool-selections, PATCH /api/v1/agents/1",
-      ),
-    );
+    await waitFor(() => expect(writes(asked)).toBe("PATCH /api/v1/agents/1"));
   });
 });

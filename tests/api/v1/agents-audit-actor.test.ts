@@ -41,21 +41,22 @@ setupPrismaMock();
 
 const service = await import("@/modules/agents/service");
 // A COPY taken before the mock is installed: Bun updates the imported namespace in place, so a
-// wrapper that called `service.updateAgent` by name would call itself.
+// wrapper that called `service.updateAgentAndGrants` by name would call itself.
 const real = { ...service };
 const seen: TenantContext[] = [];
 mock.module("@/modules/agents/service", () => ({
   ...real,
-  updateAgent: mock(
+  updateAgentAndGrants: mock(
     async (
       ctx: TenantContext,
       id: bigint,
-      patch: Parameters<typeof service.updateAgent>[2],
+      patch: Parameters<typeof service.updateAgentAndGrants>[2],
+      grants: Parameters<typeof service.updateAgentAndGrants>[3],
       _base: unknown,
-      opts: Parameters<typeof service.updateAgent>[4],
+      opts: Parameters<typeof service.updateAgentAndGrants>[5],
     ) => {
       seen.push(ctx);
-      return real.updateAgent(ctx, id, patch, app, opts);
+      return real.updateAgentAndGrants(ctx, id, patch, grants, app, opts);
     },
   ),
 }));

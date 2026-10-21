@@ -99,8 +99,26 @@ export function stubEditorApi(
     },
   };
   let version = 0;
-  // The grants as stored: a PUT replaces them and answers with them, as the server does.
+  // The grants as stored: a PUT, or a PATCH that carries them, replaces them and answers with them,
+  // as the server does.
   let storedGrants: unknown[] = opts.grants ?? [];
+  const replaceGrants = (grants: unknown) => {
+    storedGrants = (grants as Record<string, unknown>[]).map((g) => ({
+      toolDefinitionId: null,
+      mcpServerConnectionId: null,
+      integrationInstanceId: null,
+      documentTemplateId: null,
+      codeToolDefinitionId: null,
+      knowledgeBaseIds: [],
+      enabledTools: [],
+      ...g,
+    }));
+  };
+  const selection = () => ({
+    grants: storedGrants,
+    catalog: { ...EMPTY_CATALOG, ...(opts.catalog ?? {}) },
+    agentUpdatedAt: stub.agent.updatedAt,
+  });
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(
       input instanceof Request ? input.url : String(input),
@@ -123,32 +141,27 @@ export function stubEditorApi(
     if (answered) return await answered;
     if (path === "/api/auth/me") return json({ user: null });
     if (path === `/api/v1/agents/${id}/tool-selections`) {
-      if (method === "PUT")
-        storedGrants = (body.grants as Record<string, unknown>[]).map((g) => ({
-          toolDefinitionId: null,
-          mcpServerConnectionId: null,
-          integrationInstanceId: null,
-          documentTemplateId: null,
-          codeToolDefinitionId: null,
-          knowledgeBaseIds: [],
-          enabledTools: [],
-          ...g,
-        }));
-      return json({
-        grants: storedGrants,
-        catalog: { ...EMPTY_CATALOG, ...(opts.catalog ?? {}) },
-        agentUpdatedAt: stub.agent.updatedAt,
-      });
+      if (method === "PUT") replaceGrants(body.grants);
+      return json(selection());
     }
     if (path === `/api/v1/agents/${id}`) {
       if (method === "PATCH") {
         version += 1;
-        const { expectedUpdatedAt: _, ...patch } = body;
+        const {
+          expectedUpdatedAt: _,
+          settingsMode: __,
+          grants,
+          ...patch
+        } = body;
         stub.agent = {
           ...stub.agent,
           ...patch,
           updatedAt: new Date(Date.UTC(2026, 0, 1, 0, version)).toISOString(),
         };
+        if (grants !== undefined) {
+          replaceGrants(grants);
+          return json({ agent: stub.agent, toolSelection: selection() });
+        }
       }
       return json({ agent: stub.agent });
     }

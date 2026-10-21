@@ -2,7 +2,10 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
-import { replaceAgentToolSelections } from "@/modules/agents/service";
+import {
+  replaceAgentToolSelections,
+  updateAgentAndGrants,
+} from "@/modules/agents/service";
 import {
   createCodeTool,
   deleteCodeTool,
@@ -199,6 +202,23 @@ describe.skipIf(!dbUp)(
         replaceAgentToolSelections(
           ctx(),
           agent.id,
+          [{ source: "NATIVE", enabledTools: ["handoff_to_human"] }],
+          appDb,
+        ),
+      );
+    });
+
+    // The editor's Save writes the agent and the set in one transaction, so it takes the same order.
+    test("an agent update that carries the grant set", async () => {
+      const agent = await suDb.agent.create({
+        data: { tenantId, name: "Ordem inteira", systemPrompt: "x" },
+        select: { id: true },
+      });
+      await parksOnTheNamespaceFirst("agents", agent.id, () =>
+        updateAgentAndGrants(
+          ctx(),
+          agent.id,
+          { name: "Ordem inteira 2" },
           [{ source: "NATIVE", enabledTools: ["handoff_to_human"] }],
           appDb,
         ),

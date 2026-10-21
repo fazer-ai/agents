@@ -171,20 +171,24 @@ describe("which save owns the block", () => {
     expect(savedKey(stub)).toBe("protocolo_novo");
   });
 
-  // The bar saves the agent, Behavior before Tools (agents#1520). With the Tools write failing, the
-  // Behavior PATCH that went out carries the stored key, and its re-read leaves the draft on the field.
-  test("an unsaved Tools edit is neither written by a Behavior save nor wiped by it", async () => {
+  // The bar saves Behavior and Tools in one write. Refused, it stores neither, and the field keeps
+  // the draft.
+  test("a refused save stores neither the key nor Behavior, and keeps the draft", async () => {
     const stub = await openTools();
     await typeKey("rascunho");
-    stub.override = (method, path) =>
-      method === "PUT" && path.endsWith("/tool-selections")
+    stub.override = (method) =>
+      method === "PATCH"
         ? Response.json({ error: "boom" }, { status: 500 })
         : undefined;
 
     await saveBehaviorEdit(stub);
-    expect(savedKey(stub)).toBe("protocolo");
+    expect(
+      (stub.agent.settings as { crossInboxCase?: typeof STORED })
+        .crossInboxCase,
+    ).toEqual(STORED);
     await goTo("Tools");
     expect((await keyField()).value).toBe("rascunho");
+    expect(dirty("Tools")).toBe(true);
   });
 
   test("the stored block loads into the card, and an edit lights the Tools tab's unsaved dot only", async () => {
@@ -196,8 +200,7 @@ describe("which save owns the block", () => {
     expect(dirty("Behavior")).toBe(false);
   });
 
-  // A PATCH refusing the key would come after the grants PUT, leaving new grants beside the old
-  // settings, so the save stops before either request.
+  // The key is checked before the write, where the field can say so.
   test("a key the reader would replace is flagged on the field and stops the Tools save", async () => {
     const stub = await openTools();
     await typeKey("Ticket-ID");

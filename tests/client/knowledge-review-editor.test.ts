@@ -89,10 +89,8 @@ describe("the reviewer model in the agent editor", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(dirty(/Tools/)).toBe(false));
     await waitFor(() => expect(dirty(/Knowledge/)).toBe(false));
-    // The Tools PATCH goes first and does not carry it; the Knowledge one after it does.
-    const sent = savedReviewer(stub);
-    expect(sent[0]).not.toBe("anthropic");
-    expect(sent.at(-1)).toBe("anthropic");
+    // One write carries both tabs' parts.
+    expect(savedReviewer(stub)).toEqual(["anthropic"]);
   });
 
   test("save all writes the Knowledge section through its own save", async () => {
@@ -110,40 +108,27 @@ describe("the reviewer model in the agent editor", () => {
   });
 
   test("the reviewer fields are locked while the Knowledge save runs", async () => {
-    const stub = await openKnowledge();
+    await openKnowledge();
     let release: () => void = () => {};
     const held = new Promise<void>((r) => {
       release = r;
     });
-    stub.override = (method, path) =>
-      method === "PUT" && path.endsWith("/tool-selections")
-        ? held.then(
-            () =>
-              new Response(
-                JSON.stringify({
-                  grants: [],
-                  catalog: {
-                    native: [{ name: "open_case_in_inbox" }],
-                    rag: [],
-                    toolDefinitions: [],
-                    mcpConnections: [],
-                    integrationInstances: [],
-                    codeTools: [],
-                    documentTemplates: [],
-                    knowledgeBases: [],
-                  },
-                  agentUpdatedAt: stub.agent.updatedAt,
-                }),
-                { headers: { "Content-Type": "application/json" } },
-              ),
-          )
-        : undefined;
+    const served = globalThis.fetch;
+    let patchSent = false;
+    globalThis.fetch = (async (
+      input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      if ((init?.method ?? "GET") === "PATCH") {
+        patchSent = true;
+        await held;
+      }
+      return served(input, init);
+    }) as typeof fetch;
     pickAnthropic();
     expect(locked(reviewerProvider())).toBe(false);
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    await waitFor(() =>
-      expect(stub.requests).toContain("PUT /api/v1/agents/41/tool-selections"),
-    );
+    await waitFor(() => expect(patchSent).toBe(true));
     expect(locked(reviewerProvider())).toBe(true);
     release();
     await waitFor(() => expect(locked(reviewerProvider())).toBe(false));

@@ -263,7 +263,6 @@ import {
 } from "./StaleNotice";
 import {
   focusableIn,
-  generalSaveRequests,
   revealFirstProblem,
   setupSaveBlocked,
 } from "./saveAttempt";
@@ -379,6 +378,17 @@ const SAVE_SECTIONS = [
   "tools",
   "knowledge",
 ] as const satisfies readonly TabKey[];
+
+// The parts one Save writes, General's carrying the decision setup and a voice agent's call settings.
+const WRITE_UNITS = [
+  "general",
+  "behavior",
+  "channelRedirect",
+  "guardrails",
+  "tools",
+  "knowledge",
+] as const;
+type WriteUnit = (typeof WRITE_UNITS)[number];
 
 const TAB_KEYS: TabKey[] = [
   "general",
@@ -868,7 +878,8 @@ function AgentEditor() {
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
-  const [savingAgent, setSavingAgent] = useState(false);
+  // A save, or a "Allow" grant, is out.
+  const [saving, setSaving] = useState(false);
   // WHAT the last failed save was, never its sentence: the sentence lives in the holder (see
   // `message` there), and a copy here would be a second source of truth for one fact. Keyed by the
   // section whose write produced it, so a success elsewhere cannot take it down. `named` is the value
@@ -885,9 +896,6 @@ function AgentEditor() {
   // section that draws it rather than by one owned name per input (./decisionsFormState).
   const [decisionsRefused, setDecisionsRefused] =
     useState<DecisionsRefusalHeld | null>(null);
-  const [savingGrants, setSavingGrants] = useState(false);
-  const [savingChannelRedirect, setSavingChannelRedirect] = useState(false);
-  const [savingDecisions, setSavingDecisions] = useState(false);
   // Whether the operator tried to save the questions and rules while something was missing: the
   // tab says what is missing in a neutral tone until then, and as an error after.
   const [decisionsAttempted, setDecisionsAttempted] = useState(false);
@@ -897,7 +905,6 @@ function AgentEditor() {
     tab: "general" | "decisions";
     n: number;
   } | null>(null);
-  const [savingGuardrails, setSavingGuardrails] = useState(false);
 
   // Agent fields
   const [name, setName] = useState("");
@@ -1954,20 +1961,25 @@ function AgentEditor() {
   // its own Save (saveChannelRedirect merges it onto the synced settings), so reading the live
   // channelRedirect form in a Behavior save would clobber that tab's unsaved edits.
   function buildSettings(): Record<string, unknown> {
+    const stored = (syncedAgentRef.current?.settings ?? {}) as Record<
+      string,
+      unknown
+    >;
+    return { ...stored, ...behaviorEdits() };
+  }
+  // Only the Behavior blocks the operator edited, for a save that puts them over the stored bag.
+  function behaviorEdits(): Record<string, unknown> {
     const synced = syncedAgentRef.current;
     const stored = (synced?.settings ?? {}) as Record<string, unknown>;
     const fromForm = behaviorBlocksOf(formNow, stored);
-    if (!synced) return { ...stored, ...fromForm };
+    if (!synced) return fromForm;
     const now = serverNowDate();
-    return {
-      ...stored,
-      ...editedBlocks(
-        fromForm,
-        behaviorStateOf(formNow, now),
-        behaviorStateOf(formOfSynced(synced, syncedGrantsRef.current), now),
-        stored,
-      ),
-    };
+    return editedBlocks(
+      fromForm,
+      behaviorStateOf(formNow, now),
+      behaviorStateOf(formOfSynced(synced, syncedGrantsRef.current), now),
+      stored,
+    );
   }
 
   // Each declared block's FORM state (./behaviorSave): what decides whether the block was edited,
@@ -2568,12 +2580,7 @@ function AgentEditor() {
       ) as Record<TabKey, (blocked: boolean, rangeHeld: boolean) => void>,
     [],
   );
-  const anySaving =
-    savingAgent ||
-    savingGrants ||
-    savingDecisions ||
-    savingGuardrails ||
-    savingChannelRedirect;
+  const anySaving = saving;
   const sectionDirty = (key: TabKey) =>
     key in dirty ? dirty[key as keyof typeof dirty] : false;
   // The bar every tab draws: the agent's, not the tab's.
@@ -3487,164 +3494,16 @@ function AgentEditor() {
     setServerSyncTick((n) => n + 1);
   }
 
-  // `retry` replaces what "save anyway" re-runs after a conflict, for a save that is one step of a
-  // longer one (General's identity, then its decision setup).
-  async function saveAgent(
-    patch: Record<string, unknown>,
-    section: "general" | "behavior",
-    force = false,
-    retry?: () => void,
-    // A voice agent's one save carries both sections (General's identity and its call settings,
-    // which General's Voice card and the Call tab split), so both are snapshotted before the request
-    // and both re-synced from the answer, whichever one was dirty: an edit to the other while the
-    // request runs is kept rather than overwritten by the answer.
-    bothSections = false,
-  ): Promise<boolean> {
-    savingRef.current += 1;
-    setSavingAgent(true);
-    // Snapshotted BEFORE the request, never after: the staleness check compares what went out
-    // with what the boxes hold when the answer lands, and `currentRef` is live.
-    const sent = sentFor(patch);
-    const sentSnap = bothSections
-      ? { general: sectionSnap.general, behavior: sectionSnap.behavior }
-      : { [section]: sectionSnap[section] };
-    try {
-      const expected = expectedFor(force);
-      const { data, error: err } = await api.api.v1.agents({ id }).patch({
-        ...patch,
-        ...(expected ? { expectedUpdatedAt: expected } : {}),
-        ...replaceFor(force),
-      });
-      if (
-        handleConflict(
-          err,
-          retry ?? (() => void saveAgent(patch, section, true)),
-        )
-      ) {
-        return false;
-      }
-      if (err || !data) throw err ?? new Error("no data");
-      // NOTE: Re-sync ONLY the saved section so the other tabs' unsaved edits are never clobbered, and
-      // only when it was not edited while the request ran (`untouchedSince`).
-      if (!untouchedSince(sentSnap)) syncedAgentRef.current = data.agent;
-      else if (bothSections) {
-        applyGeneral(data.agent, "systemPrompt" in patch);
-        applyBehavior(data.agent, !decides);
-      } else if (section === "general")
-        applyGeneral(data.agent, "systemPrompt" in patch);
-      else applyBehavior(data.agent, !decides);
-      markSynced(String(data.agent.updatedAt));
-      bumpSync();
-      // NOTE: Only for the section this holder DRAWS. One function writes both, and a Behavior save
-      // carries neither `name` nor `systemPrompt` — clearing there takes the standing refusal off
-      // the General tab without anything having answered it, so the operator comes back to a form
-      // that looks fine and is still refused.
-      settleRefusalFor(section);
-      showToast(t("editor.saved", "Agent saved."), "success");
-      return true;
-    } catch (e) {
-      answerRefusal(
-        e,
-        t("editor.saveError", "Could not save the agent."),
-        section,
-        sent,
-      );
-      return false;
-    } finally {
-      savingRef.current -= 1;
-      setSavingAgent(false);
-    }
-  }
-
   // The grant set is one list two tabs edit: Knowledge owns the RAG grants, Tools the rest. A save
-  // sends its own half from the form and the other as stored, and takes back only its own half, so
-  // an edit the other tab made while the request was out is neither written nor overwritten.
+  // sends the half of each tab it writes from the form and the other as stored, and each tab takes
+  // back only its own half, so an edit made while the request was out is neither written nor lost.
   const ragHalf = (g: GrantState) => g.source === "RAG";
-  function withStoredHalf(form: GrantState[], knowledge: boolean) {
-    const own = (g: GrantState) => ragHalf(g) === knowledge;
-    return [
-      ...mapGrants(syncedGrantsRef.current).filter((g) => !own(g)),
-      ...form.filter(own),
-    ];
-  }
   function adoptHalf(written: GrantState[], knowledge: boolean) {
     const own = (g: GrantState) => ragHalf(g) === knowledge;
     setGrants((prev) => [
       ...prev.filter((g) => !own(g)),
       ...written.filter(own),
     ]);
-  }
-
-  async function saveGrants(force = false): Promise<boolean> {
-    savingRef.current += 1;
-    setSavingGrants(true);
-    let sent: Record<string, unknown> = {};
-    try {
-      // The reviewer model rides in the settings bag, merged onto the LAST-SYNCED one like the Tools
-      // save does, and only when it changed: a grants-only save keeps writing the grants alone.
-      const syncedSettings = (syncedAgentRef.current?.settings ?? {}) as Record<
-        string,
-        unknown
-      >;
-      const reviewChanged =
-        JSON.stringify(review) !==
-        JSON.stringify(suggestionReviewToForm(syncedSettings));
-      const knowledgeJson = {
-        ...((syncedSettings.knowledge ?? {}) as Record<string, unknown>),
-        ...suggestionReviewToStored(review),
-      };
-      const knowledgeSettings = { ...syncedSettings, knowledge: knowledgeJson };
-      if (reviewChanged) sent = sentFor({ settings: knowledgeSettings });
-      const sentSnap = { knowledge: sectionSnap.knowledge };
-      const expected = expectedFor(force);
-      const { data, error: err } = await api.api.v1
-        .agents({ id })
-        ["tool-selections"].put({
-          grants: withStoredHalf(grants, true),
-          ...(expected ? { expectedUpdatedAt: expected } : {}),
-        });
-      if (handleConflict(err, () => void saveGrants(true))) return false;
-      if (err || !data) throw err ?? new Error("no data");
-      syncedGrantsRef.current = data.grants;
-      if (untouchedSince(sentSnap)) adoptHalf(mapGrants(data.grants), true);
-      setCatalog(data.catalog);
-      const afterGrants = data.agentUpdatedAt
-        ? String(data.agentUpdatedAt)
-        : null;
-      markSynced(afterGrants);
-      if (reviewChanged) {
-        const agentRes = await api.api.v1.agents({ id }).patch({
-          settings: knowledgeSettings,
-          ...(!force && afterGrants ? { expectedUpdatedAt: afterGrants } : {}),
-          ...replaceFor(force),
-        });
-        if (handleConflict(agentRes.error, () => void saveGrants(true)))
-          return false;
-        if (agentRes.error || !agentRes.data) {
-          throw agentRes.error ?? new Error("no data");
-        }
-        syncedAgentRef.current = agentRes.data.agent;
-        if (untouchedSince(sentSnap)) {
-          setReview(suggestionReviewToForm(agentRes.data.agent.settings));
-        }
-        markSynced(String(agentRes.data.agent.updatedAt));
-      }
-      bumpSync();
-      settleRefusalFor("knowledge");
-      showToast(t("editor.grantsSaved", "Tools updated."), "success");
-      return true;
-    } catch (e) {
-      answerRefusal(
-        e,
-        t("editor.grantsError", "Could not update tools."),
-        "knowledge",
-        sent,
-      );
-      return false;
-    } finally {
-      savingRef.current -= 1;
-      setSavingGrants(false);
-    }
   }
 
   // The settings a Tools save writes: the handoff, kanban and per-tool blocks from the form, over
@@ -3907,6 +3766,7 @@ function AgentEditor() {
     if (!synced) {
       return {
         toolsSettings: { ...syncedSettings, ...now.blocks },
+        edited: now.blocks as Record<string, unknown>,
         protectedList,
         allowedList,
       };
@@ -3929,6 +3789,7 @@ function AgentEditor() {
     );
     return {
       toolsSettings: { ...syncedSettings, ...edited },
+      edited,
       protectedList,
       allowedList,
     };
@@ -3959,260 +3820,6 @@ function AgentEditor() {
     );
   }
 
-  async function saveTools(force = false): Promise<boolean> {
-    savingRef.current += 1;
-    setSavingGrants(true);
-    let sent: Record<string, unknown> = {};
-    const sentTools = { tools: sectionSnap.tools };
-    // The grants the PUT wrote, once it went through: from then on they are in effect whatever the
-    // PATCH answers, so a PATCH that fails leaves them as the editor's copy and the settings unsaved.
-    let written: ToolSelectionView["grants"] | null = null;
-    const keepWrittenGrants = () => {
-      if (!written) return;
-      if (!decides && untouchedSince(sentTools))
-        adoptHalf(mapGrants(written), false);
-      showToast(
-        t(
-          "editor.toolsSettingsNotSaved",
-          "The tool selection was saved, but the tool settings were not.",
-        ),
-        "warning",
-      );
-    };
-    try {
-      const syncedSettings = (syncedAgentRef.current?.settings ?? {}) as Record<
-        string,
-        unknown
-      >;
-      const { toolsSettings, protectedList, allowedList } = toolsSave();
-      // NOTE: Before either request: the grants PUT goes out first and the PATCH after it, and both can
-      // answer a refusal about this bag.
-      sent = sentFor({ settings: toolsSettings });
-      // The WHOLE bag, not just this tab's fields: the PATCH resends every block, so text typed on
-      // another tab would refuse it just the same — after the grants had already been written.
-      //
-      // On a forced overwrite the last-synced bag is stale by definition (the 409 says someone else
-      // wrote), so it is re-read first: if the other writer shortened a stored over-cap note, our
-      // copy is now an EDIT of it, the server would refuse the PATCH, and the grants PUT would
-      // already have persisted. A failed re-read falls back to the synced bag rather than blocking
-      // the save on it.
-      const storedSettings = force
-        ? ((await api.api.v1.agents({ id }).get()).data?.agent.settings ??
-          syncedSettings)
-        : syncedSettings;
-      const toolsText = toolsLocalError(
-        { toolsSettings, protectedList, allowedList },
-        storedSettings,
-      );
-      if (toolsText) {
-        showToast(toolsText, "error");
-        return false;
-      }
-      const expected = expectedFor(force);
-      const grantsRes = await api.api.v1.agents({ id })["tool-selections"].put({
-        grants: withStoredHalf(savedGrants, false),
-        ...(expected ? { expectedUpdatedAt: expected } : {}),
-      });
-      if (handleConflict(grantsRes.error, () => void saveTools(true)))
-        return false;
-      if (grantsRes.error || !grantsRes.data) {
-        throw grantsRes.error ?? new Error("no data");
-      }
-      // Chain the PATCH precondition to the token the grant write just produced.
-      const afterGrants = grantsRes.data.agentUpdatedAt
-        ? String(grantsRes.data.agentUpdatedAt)
-        : undefined;
-      // NOTE: The grant write already advanced the server's token AND published an agent-config event.
-      // Record it NOW so the realtime echo of our OWN write — or a partial failure of the PATCH below —
-      // never trips the "changed elsewhere" banner against the now-stale loaded token.
-      if (afterGrants) loadedUpdatedAtRef.current = afterGrants;
-      syncedGrantsRef.current = grantsRes.data.grants;
-      written = grantsRes.data.grants;
-      setCatalog(grantsRes.data.catalog);
-      const patchExpected = force ? undefined : afterGrants;
-      const agentRes = await api.api.v1.agents({ id }).patch({
-        transferWithSummary: savedGuidance.transferWithSummary,
-        settings: toolsSettings,
-        ...(patchExpected ? { expectedUpdatedAt: patchExpected } : {}),
-        ...replaceFor(force),
-      });
-      if (handleConflict(agentRes.error, () => void saveTools(true))) {
-        keepWrittenGrants();
-        return false;
-      }
-      if (agentRes.error || !agentRes.data) {
-        throw agentRes.error ?? new Error("no data");
-      }
-      // On questions and rules the form keeps its hidden grant drafts and any toggle made while this
-      // request ran; the baseline takes the written grants, not the form.
-      const untouched = untouchedSince(sentTools);
-      if (!decides && untouched)
-        adoptHalf(mapGrants(grantsRes.data.grants), false);
-      // NOTE: Sync the saved agent and re-read the tool-coupled state — but NOT applyAgent, which
-      // would reset the Behavior sub-forms and drop their unsaved edits. Keep the local settings bag's
-      // handoff in step so a later Behavior save (which spreads it) doesn't rewrite a stale value.
-      syncedAgentRef.current = agentRes.data.agent;
-      if (untouched) syncToolConfig(agentRes.data.agent, decides);
-      markSynced(String(agentRes.data.agent.updatedAt));
-      bumpSync();
-      settleRefusalFor("tools");
-      showToast(t("editor.grantsSaved", "Tools updated."), "success");
-      return true;
-    } catch (e) {
-      answerRefusal(
-        e,
-        t("editor.grantsError", "Could not update tools."),
-        "tools",
-        sent,
-      );
-      keepWrittenGrants();
-      return false;
-    } finally {
-      savingRef.current -= 1;
-      setSavingGrants(false);
-    }
-  }
-
-  // Redirect-tab save: the channelRedirect block merged onto the LAST-SYNCED settings (NOT
-  // buildSettings(), which reads the live Behavior form) so it can never clobber unsaved Behavior edits
-  // — both write the same settings JSON column. Mirrors saveTools' merge-onto-synced approach, minus
-  // the grants write. widgetInboxId round-trips untouched (the provision route owns it).
-  async function saveChannelRedirect(force = false): Promise<boolean> {
-    savingRef.current += 1;
-    setSavingChannelRedirect(true);
-    // Declared out here so the catch can read it: the snapshot has to be taken before the request,
-    // and a `const` inside the try would not be in scope where the refusal is answered.
-    let sent: Record<string, unknown> = {};
-    try {
-      const expected = expectedFor(force);
-      const syncedSettings = (syncedAgentRef.current?.settings ?? {}) as Record<
-        string,
-        unknown
-      >;
-      const crJson = fromChannelRedirectForm(
-        channelRedirect,
-        syncedSettings.channelRedirect,
-      );
-      const patch = {
-        settings: { ...syncedSettings, channelRedirect: crJson },
-        ...(expected ? { expectedUpdatedAt: expected } : {}),
-        ...replaceFor(force),
-      };
-      // NOTE: Snapshot BEFORE the request, never read in the catch: `currentRef` is live, so comparing it
-      // with itself there can never fire the staleness check.
-      sent = sentFor(patch);
-      const sentSnap = { channelRedirect: sectionSnap.channelRedirect };
-      const { data, error: err } = await api.api.v1.agents({ id }).patch(patch);
-      if (handleConflict(err, () => void saveChannelRedirect(true)))
-        return false;
-      if (err || !data) throw err ?? new Error("no data");
-      if (untouchedSince(sentSnap)) applyChannelRedirect(data.agent);
-      else syncedAgentRef.current = data.agent;
-      markSynced(String(data.agent.updatedAt));
-      bumpSync();
-      showToast(t("editor.saved", "Agent saved."), "success");
-      settleRefusalFor("channelRedirect");
-      return true;
-    } catch (e) {
-      // NOTE: It writes the WHOLE settings bag, so it can be refused about any value in it, and the
-      // refusal is answered like every other form's: marked where the field has a control, with a way
-      // to go there.
-      answerRefusal(
-        e,
-        t("editor.saveError", "Could not save the agent."),
-        "channelRedirect",
-        sent,
-      );
-      return false;
-    } finally {
-      savingRef.current -= 1;
-      setSavingChannelRedirect(false);
-    }
-  }
-
-  // The decision setup's save (engine, classifier, questions, rules, rehearsal or live), from General
-  // or from Questions and rules: the `monitoring` block as stored with the setup the form holds,
-  // merged onto the LAST-SYNCED settings like saveChannelRedirect, so the Behavior tab's pending
-  // timing and every other tab's edits stay where they are (agents#1224).
-  // `identity`: General's name, enabled and mode, written in the same PATCH (generalSaveRequests).
-  async function saveDecisions(
-    force = false,
-    identity?: Record<string, unknown>,
-  ): Promise<boolean> {
-    savingRef.current += 1;
-    setSavingDecisions(true);
-    let sent: Record<string, unknown> = {};
-    let block: unknown;
-    try {
-      const expected = expectedFor(force);
-      const syncedSettings = (syncedAgentRef.current?.settings ?? {}) as Record<
-        string,
-        unknown
-      >;
-      const merged = monitoringPatch(
-        withDecisionsOf(observationToForm(syncedSettings), observation),
-        true,
-        customTools?.all ?? null,
-      );
-      block = merged.monitoring?.decisions;
-      const patch = {
-        ...(identity ?? {}),
-        settings: { ...syncedSettings, ...merged },
-      };
-      sent = sentFor(patch);
-      const sentSnap = { decisions: sectionSnap.decisions };
-      const sentGeneral = { general: sectionSnap.general };
-      const { data, error: err } = await api.api.v1.agents({ id }).patch({
-        ...patch,
-        ...(expected ? { expectedUpdatedAt: expected } : {}),
-        ...replaceFor(force),
-      });
-      if (
-        handleConflict(err, () =>
-          identity ? void saveGeneral(true) : void saveDecisions(true),
-        )
-      )
-        return false;
-      if (err || !data) throw err ?? new Error("no data");
-      syncedAgentRef.current = data.agent;
-      if (untouchedSince(sentSnap)) applyDecisions(data.agent);
-      if (identity) {
-        if (untouchedSince(sentGeneral)) {
-          applyGeneral(data.agent, "systemPrompt" in identity);
-        }
-        bumpSync();
-        settleRefusalFor("general");
-      }
-      setDecisionsAttempted(false);
-      setDecisionsRefused(null);
-      markSynced(String(data.agent.updatedAt));
-      bumpSync();
-      settleRefusalFor("decisions");
-      // NOTE: The classifier is drawn on General, so `settleRefusalFor` (by drawing tab) leaves its
-      // marks; this save wrote the whole block, which answers every refusal about it.
-      for (const owner of REFUSAL_SECTIONS) {
-        const now = refusalRef.current[owner];
-        if (now.field && DECISIONS_REFUSAL_FIELD.test(now.field)) now.clear();
-      }
-      showToast(t("editor.saved", "Agent saved."), "success");
-      return true;
-    } catch (e) {
-      setDecisionsRefused(decisionsRefusalFrom(readRefusal(e), block));
-      answerRefusal(
-        e,
-        t("editor.saveError", "Could not save the agent."),
-        "decisions",
-        sent,
-      );
-      return false;
-    } finally {
-      savingRef.current -= 1;
-      setSavingDecisions(false);
-    }
-  }
-
-  // General's save: identity, and the decision setup when it changed. Under questions and rules the
-  // instructions and the chat model are not drawn, so they are not written either.
   const voiceCheckSeq = useRef(0);
   // What the provider says about the SAVED voice agent: the save there runs on every call too, and this
   // is where a key without the permission to run agents shows before the first call does.
@@ -4281,70 +3888,13 @@ function AgentEditor() {
     return dirty.general ? "general" : "call";
   }
 
-  async function saveVoice(force = false): Promise<boolean> {
-    // A number out of range is marked on its field; the save waits for it to be fixed.
-    if (callsFormErrors(calls).length > 0) {
-      openTab(voiceStopTab());
-      showToast(
-        t(
-          "editor.callsFixRanges",
-          "Some call settings are out of range. Fix the marked fields to save.",
-        ),
-        "error",
-      );
-      return false;
-    }
-    const ok = await saveAgent(
-      {
-        name: name.trim(),
-        systemPrompt,
-        enabled,
-        mode: agentMode,
-        settings: buildSettings(),
-      },
-      dirty.general ? "general" : "behavior",
-      force,
-      () => void saveVoice(true),
-      true,
-    );
-    if (ok) void checkVoice();
-    return ok;
-  }
-
-  async function saveGeneral(force = false): Promise<boolean> {
-    if (voiceAgent) return saveVoice(force);
-    if (!decides && !guardModelBeforeSave()) return false;
-    const identity = decides
-      ? { name: name.trim(), enabled, mode: agentMode }
-      : {
-          name: name.trim(),
-          systemPrompt,
-          enabled,
-          mode: agentMode,
-          modelConfig: buildModelConfig(),
-        };
-    const [request] = generalSaveRequests(dirty.general, dirty.decisions);
-    if (request === "identity+setup") return saveDecisions(force, identity);
-    if (request === "identity") {
-      const ok = await saveAgent(
-        identity,
-        "general",
-        force,
-        // NOTE: "Save anyway" re-runs the whole of this save, identity and setup alike.
-        () => void saveGeneral(true),
-      );
-      if (!ok) return false;
-    }
-    return dirty.decisions ? saveDecisions(force) : true;
-  }
-
   // "Allow" on a rule whose tool the agent was not granted: the saved grant set with that one native
   // tool added, written at once. It only adds, so nothing the operator decided is lost; with grant
   // changes pending on the Tools tab the rule sends the operator there instead (see DecisionsFields).
   async function grantNativeTool(tool: string, force = false) {
     const pressed = canonicalGrants(grants.filter((g) => g.source !== "RAG"));
     savingRef.current += 1;
-    setSavingGrants(true);
+    setSaving(true);
     try {
       const expected = expectedFor(force);
       const { data, error: err } = await api.api.v1
@@ -4382,51 +3932,7 @@ function AgentEditor() {
       );
     } finally {
       savingRef.current -= 1;
-      setSavingGrants(false);
-    }
-  }
-
-  // Guardrails-tab save: the guardrails block merged onto the LAST-SYNCED settings (same pattern as
-  // saveChannelRedirect) so it never clobbers unsaved edits in another tab — both write the same
-  // settings JSON column.
-  async function saveGuardrails(force = false): Promise<boolean> {
-    savingRef.current += 1;
-    setSavingGuardrails(true);
-    let sent: Record<string, unknown> = {};
-    try {
-      const expected = expectedFor(force);
-      const syncedSettings = (syncedAgentRef.current?.settings ?? {}) as Record<
-        string,
-        unknown
-      >;
-      const patch = { settings: { ...syncedSettings, guardrails } };
-      sent = sentFor(patch);
-      const sentSnap = { guardrails: sectionSnap.guardrails };
-      const { data, error: err } = await api.api.v1.agents({ id }).patch({
-        ...patch,
-        ...(expected ? { expectedUpdatedAt: expected } : {}),
-        ...replaceFor(force),
-      });
-      if (handleConflict(err, () => void saveGuardrails(true))) return false;
-      if (err || !data) throw err ?? new Error("no data");
-      if (untouchedSince(sentSnap)) applyGuardrails(data.agent);
-      else syncedAgentRef.current = data.agent;
-      markSynced(String(data.agent.updatedAt));
-      bumpSync();
-      settleRefusalFor("guardrails");
-      showToast(t("editor.saved", "Agent saved."), "success");
-      return true;
-    } catch (e) {
-      answerRefusal(
-        e,
-        t("editor.saveError", "Could not save the agent."),
-        "guardrails",
-        sent,
-      );
-      return false;
-    } finally {
-      savingRef.current -= 1;
-      setSavingGuardrails(false);
+      setSaving(false);
     }
   }
 
@@ -4588,9 +4094,6 @@ function AgentEditor() {
   // `crossTabKey`, sends the save to that tab to report again. The whole contract is in docs/ui.md.
   type BarSave = {
     sections: Set<(typeof SAVE_SECTIONS)[number]>;
-    // Every hold was judged; the sections written so far.
-    judged: boolean;
-    written: Set<(typeof SAVE_SECTIONS)[number]>;
     // Each tab judged again during this save, with the `crossTabKey` it was judged under.
     rechecked: Map<TabKey, string>;
     // The tab the operator was on when the save first took them elsewhere.
@@ -4634,8 +4137,6 @@ function AgentEditor() {
             (key) => dirty[key] || (key === "general" && decisionsHeadDirty),
           ),
         ),
-        judged: false,
-        written: new Set(),
         rechecked: new Map(),
         wentTo: null,
         returnTo: null,
@@ -4671,27 +4172,205 @@ function AgentEditor() {
     return true;
   }
 
-  function writeSection(
-    key: "behavior" | "channelRedirect" | "guardrails" | "tools" | "knowledge",
+  // THE SAVE: every section the bar's plan writes, in ONE request (PATCH /agents/:id, carrying the
+  // whole grant set when Tools or Knowledge is among them), so the server applies all of it or none
+  // of it. Each section's part is built as its own tab would write it, over the last-synced bag, and
+  // each tab takes the answer back only when it was not edited while the request was out.
+  async function saveWhole(
+    units: readonly WriteUnit[],
+    force = false,
   ): Promise<boolean> {
-    switch (key) {
-      case "behavior":
-        return saveAgent(
-          {
-            businessHoursId: businessHoursId || null,
-            followUpHoursId: followUpHoursId || null,
-            settings: buildSettings(),
-          },
-          "behavior",
-        );
-      case "channelRedirect":
-        return saveChannelRedirect();
-      case "guardrails":
-        return saveGuardrails();
-      case "tools":
-        return saveTools();
-      case "knowledge":
-        return saveGrants();
+    const has = (unit: WriteUnit) => units.includes(unit);
+    const synced = syncedAgentRef.current;
+    const stored = (synced?.settings ?? {}) as Record<string, unknown>;
+    // The setup goes out with General whichever tab draws it; the identity only when General changed.
+    const identity = has("general") && dirty.general;
+    const setup =
+      has("general") && !voiceAgent && (dirty.decisions || decisionsHeadDirty);
+    const reviewChanged =
+      has("knowledge") &&
+      JSON.stringify(review) !== JSON.stringify(suggestionReviewToForm(stored));
+    const fields: Record<string, unknown> = {};
+    let settings: Record<string, unknown> | null = null;
+    const blocks = (edited: Record<string, unknown>) => {
+      settings = { ...(settings ?? stored), ...edited };
+    };
+    if (has("general") && voiceAgent) {
+      Object.assign(fields, {
+        name: name.trim(),
+        systemPrompt,
+        enabled,
+        mode: agentMode,
+      });
+      blocks(behaviorEdits());
+    } else if (identity) {
+      Object.assign(
+        fields,
+        decides
+          ? { name: name.trim(), enabled, mode: agentMode }
+          : {
+              name: name.trim(),
+              systemPrompt,
+              enabled,
+              mode: agentMode,
+              modelConfig: buildModelConfig(),
+            },
+      );
+    }
+    if (has("behavior")) {
+      fields.businessHoursId = businessHoursId || null;
+      fields.followUpHoursId = followUpHoursId || null;
+      blocks(behaviorEdits());
+    }
+    let setupBlock: unknown;
+    if (setup) {
+      // After Behavior's blocks: both write the `monitoring` block, Behavior its timing and the
+      // setup its questions and rules, so the setup goes over the timing this same write carries.
+      const merged = monitoringPatch(
+        withDecisionsOf(observationToForm(settings ?? stored), observation),
+        true,
+        customTools?.all ?? null,
+      );
+      setupBlock = merged.monitoring?.decisions;
+      blocks(merged);
+    }
+    if (has("channelRedirect"))
+      blocks({
+        channelRedirect: fromChannelRedirectForm(
+          channelRedirect,
+          stored.channelRedirect,
+        ),
+      });
+    if (has("guardrails")) blocks({ guardrails });
+    const tools = has("tools") ? toolsSave() : null;
+    if (tools) {
+      fields.transferWithSummary = savedGuidance.transferWithSummary;
+      blocks(tools.edited);
+    }
+    if (reviewChanged)
+      blocks({
+        knowledge: {
+          ...((stored.knowledge ?? {}) as Record<string, unknown>),
+          ...suggestionReviewToStored(review),
+        },
+      });
+    const storedGrants = mapGrants(syncedGrantsRef.current);
+    const writesGrants = has("tools") || has("knowledge");
+    const body: Record<string, unknown> = {
+      ...fields,
+      ...(settings ? { settings } : {}),
+      ...(writesGrants
+        ? {
+            grants: [
+              ...(has("tools") ? savedGrants : storedGrants).filter(
+                (g) => !ragHalf(g),
+              ),
+              ...(has("knowledge") ? grants : storedGrants).filter(ragHalf),
+            ],
+          }
+        : {}),
+    };
+    // Snapshotted BEFORE the request, never after: the staleness check compares what went out with
+    // what the boxes hold when the answer lands, and `currentRef` is live.
+    const sent = sentFor(body);
+    const snap = { ...sectionSnap };
+    const untouched = (...keys: (keyof typeof sectionSnap)[]) =>
+      untouchedSince(Object.fromEntries(keys.map((k) => [k, snap[k]])));
+    savingRef.current += 1;
+    setSaving(true);
+    try {
+      // On a forced overwrite the last-synced bag is stale by definition (the 409 says someone else
+      // wrote), so the Tools checks are asked again of the bag as it stands now. A failed re-read
+      // falls back to the synced bag rather than blocking the save on it.
+      if (tools && force) {
+        const now =
+          (await api.api.v1.agents({ id }).get()).data?.agent.settings ??
+          stored;
+        const toolsText = toolsLocalError(tools, now);
+        if (toolsText) {
+          showToast(toolsText, "error");
+          return false;
+        }
+      }
+      const expected = expectedFor(force);
+      const { data, error: err } = await api.api.v1.agents({ id }).patch({
+        ...body,
+        ...(expected ? { expectedUpdatedAt: expected } : {}),
+        ...replaceFor(force),
+      });
+      if (handleConflict(err, () => void saveWhole(units, true))) return false;
+      if (err || !data) throw err ?? new Error("no data");
+      const agent = data.agent;
+      const selection = "toolSelection" in data ? data.toolSelection : null;
+      syncedAgentRef.current = agent;
+      if (selection) {
+        syncedGrantsRef.current = selection.grants;
+        setCatalog(selection.catalog);
+      }
+      if (has("general") && voiceAgent) {
+        if (untouched("general", "behavior")) {
+          applyGeneral(agent);
+          applyBehavior(agent, !decides);
+        }
+      } else if (identity && untouched("general")) {
+        applyGeneral(agent, "systemPrompt" in fields);
+      }
+      if (has("behavior") && untouched("behavior"))
+        applyBehavior(agent, !decides);
+      if (setup && untouched("decisions")) applyDecisions(agent);
+      if (has("channelRedirect") && untouched("channelRedirect"))
+        applyChannelRedirect(agent);
+      if (has("guardrails") && untouched("guardrails")) applyGuardrails(agent);
+      if (selection && has("tools") && untouched("tools")) {
+        // On questions and rules the form keeps its hidden grant drafts; the baseline takes the
+        // written grants, not the form.
+        if (!decides) adoptHalf(mapGrants(selection.grants), false);
+        syncToolConfig(agent, decides);
+      }
+      if (selection && has("knowledge") && untouched("knowledge")) {
+        adoptHalf(mapGrants(selection.grants), true);
+        if (reviewChanged) setReview(suggestionReviewToForm(agent.settings));
+      }
+      markSynced(String(agent.updatedAt));
+      bumpSync();
+      if (has("general")) settleRefusalFor("general");
+      for (const unit of units) if (unit !== "general") settleRefusalFor(unit);
+      if (setup) {
+        setDecisionsAttempted(false);
+        setDecisionsRefused(null);
+        settleRefusalFor("decisions");
+        // NOTE: The classifier is drawn on General, so `settleRefusalFor` (by drawing tab) leaves its
+        // marks; this save wrote the whole setup, which answers every refusal about it.
+        for (const owner of REFUSAL_SECTIONS) {
+          const now = refusalRef.current[owner];
+          if (now.field && DECISIONS_REFUSAL_FIELD.test(now.field)) now.clear();
+        }
+      }
+      showToast(t("editor.saved", "Agent saved."), "success");
+      if (voiceAgent && has("general")) void checkVoice();
+      return true;
+    } catch (e) {
+      const refused = readRefusal(e);
+      if (setup) setDecisionsRefused(decisionsRefusalFrom(refused, setupBlock));
+      // One write, one holder: the first section it carried. Which holder does not decide where the
+      // mark goes or what settles it (the tab that draws the value does), and the operator stays
+      // where Save was pressed, with the banner row jumping to the value it names.
+      const section: RefusalSection =
+        units[0] === "general" || !units[0]
+          ? identity || !setup
+            ? "general"
+            : "decisions"
+          : units[0];
+      answerRefusal(
+        e,
+        t("editor.saveError", "Could not save the agent."),
+        section,
+        sent,
+      );
+      return false;
+    } finally {
+      savingRef.current -= 1;
+      setSaving(false);
     }
   }
 
@@ -4737,93 +4416,69 @@ function AgentEditor() {
       }
       return "ok";
     };
-    const stop = (key: TabKey) => {
-      openTab(key);
-      end();
-    };
 
     // General carries the decision setup its engine cards edit. A section whose tab this engine does
-    // not draw is not written: its edits are the other engine's, and the Tools save already writes
+    // not draw is not written: its edits are the other engine's, and the Tools part already writes
     // the grants this engine hides as stored.
-    const order = (
-      [
-        "general",
-        "behavior",
-        "channelRedirect",
-        "guardrails",
-        "tools",
-        "knowledge",
-      ] as const
-    ).filter((key) =>
+    const order = WRITE_UNITS.filter((key) =>
       key === "general"
         ? planned("general") ||
           planned("decisions") ||
-          // A voice agent's General write carries its call settings too (saveVoice).
+          // A voice agent's General part carries its call settings too.
           (voiceAgent && planned("behavior"))
         : planned(key) && drawn(key) && !(voiceAgent && key === "behavior"),
     );
     // A planned section undone since is not written, so nothing on its tab can hold the save.
-    const stillDirty = (key: (typeof order)[number]) =>
+    const stillDirty = (key: WriteUnit) =>
       key === "general"
         ? dirty.general ||
           dirty.decisions ||
           decisionsHeadDirty ||
           (voiceAgent && dirty.behavior)
         : dirty[key];
-    // Every hold is judged before anything is written, so a held section keeps the whole save back.
-    // The tabs judge against the model this save writes (General's draft), not the stored one.
-    if (!plan.judged) {
-      for (const key of order)
-        if (stillDirty(key) && planned(key) && judge(key) !== "ok") return;
-      if (stillDirty("general")) {
-        if (decisionsSetupHold()) return end();
-        // A voice agent has no chat model to check: its save neither uses nor writes one.
-        if (!decides && !voiceAgent && dirty.general && !guardModelBeforeSave())
-          return stop("general");
-      }
-      if (
-        !voiceAgent &&
-        planned("behavior") &&
-        dirty.behavior &&
-        behaviorPageHold() === false
-      )
-        return end();
-      const toolsText =
-        planned("tools") && dirty.tools && drawn("tools")
-          ? toolsLocalError(toolsSave(), syncedAgentRef.current?.settings ?? {})
-          : null;
-      if (toolsText) {
-        // On its own tab the reason is enough; from another one it names the tab to fix.
-        if (tab === "tools") showToast(toolsText, "error");
-        else heldIn("tools", toolsText);
+    // Every hold is judged before the write, so a held section keeps the whole save back. The tabs
+    // judge against the model this save writes (General's draft), not the stored one.
+    for (const key of order)
+      if (stillDirty(key) && planned(key) && judge(key) !== "ok") return;
+    if (stillDirty("general")) {
+      if (decisionsSetupHold()) return end();
+      if (voiceAgent && callsFormErrors(calls).length > 0) {
+        // A number out of range is marked on its field; the save waits for it to be fixed.
+        openTab(voiceStopTab());
+        showToast(
+          t(
+            "editor.callsFixRanges",
+            "Some call settings are out of range. Fix the marked fields to save.",
+          ),
+          "error",
+        );
         return end();
       }
-      plan.judged = true;
+      // A voice agent has no chat model to check: its save neither uses nor writes one.
+      if (!decides && !voiceAgent && dirty.general && !guardModelBeforeSave()) {
+        openTab("general");
+        return end();
+      }
     }
-    // One write per pass, each pass on a fresh render: a section discarded while an earlier write
-    // was out reads as clean here and is not sent, and one already written is not sent again.
-    const key = order.find(
-      (item) => !plan.written.has(item) && stillDirty(item),
-    );
-    if (key) {
-      // Judged again right before its write: it may have been edited into a hold meanwhile.
-      if (planned(key) && judge(key) !== "ok") return;
-      if (key === "behavior" && behaviorPageHold() === false) return end();
-      plan.written.add(key);
-      if (key === "general") {
-        if (!(await saveGeneral()))
-          return stop(
-            voiceAgent
-              ? voiceStopTab()
-              : dirty.general
-                ? "general"
-                : "decisions",
-          );
-        barModelRef.current = "stored";
-      } else if (!(await writeSection(key))) return stop(key);
-      continueRef.current = { onTab: null };
-      return;
+    if (
+      !voiceAgent &&
+      planned("behavior") &&
+      dirty.behavior &&
+      behaviorPageHold() === false
+    )
+      return end();
+    const toolsText =
+      planned("tools") && dirty.tools && drawn("tools")
+        ? toolsLocalError(toolsSave(), syncedAgentRef.current?.settings ?? {})
+        : null;
+    if (toolsText) {
+      // On its own tab the reason is enough; from another one it names the tab to fix.
+      if (tab === "tools") showToast(toolsText, "error");
+      else heldIn("tools", toolsText);
+      return end();
     }
+    const units = order.filter(stillDirty);
+    if (units.length > 0 && !(await saveWhole(units))) return end();
     end(true);
     if (sayHiddenDrafts()) return;
     // A planned section of a tab this mode does not draw (Guardrails, Redirect on a watcher) was not
@@ -5289,11 +4944,8 @@ function AgentEditor() {
                       ? dirty.general || dirty.behavior
                       : dirty.general || decisionsHeadDirty
                   }
-                  saving={savingAgent || savingDecisions}
-                  onSave={() => {
-                    if (decisionsBlocked("general", dirty.general)) return;
-                    void saveGeneral();
-                  }}
+                  saving={saving}
+                  onSave={() => void saveFromBar()}
                   onDiscard={
                     voiceAgent
                       ? () => {
@@ -5429,8 +5081,8 @@ function AgentEditor() {
                 <CallSettings calls={calls} setCalls={setCalls} />
                 <TabActionBar
                   dirty={dirty.general || dirty.behavior}
-                  saving={savingAgent}
-                  onSave={() => void saveVoice()}
+                  saving={saving}
+                  onSave={() => void saveFromBar()}
                   onDiscard={() => {
                     revertGeneral();
                     revertBehavior();
@@ -5516,8 +5168,8 @@ function AgentEditor() {
                     ),
                   }}
                   dirty={dirty.tools}
-                  saving={savingGrants}
-                  onSave={() => saveTools()}
+                  saving={saving}
+                  onSave={() => void saveFromBar()}
                   onDiscard={revertTools}
                   onOpenPlayground={watcher ? undefined : openPlayground}
                 />
@@ -5550,8 +5202,8 @@ function AgentEditor() {
                     ) ?? undefined
                   }
                   dirty={dirty.knowledge}
-                  saving={savingGrants}
-                  onSave={() => saveGrants()}
+                  saving={saving}
+                  onSave={() => void saveFromBar()}
                   onDiscard={revertKnowledge}
                   onOpenPlayground={watcher ? undefined : openPlayground}
                 />
@@ -5601,7 +5253,7 @@ function AgentEditor() {
                   }
                   customTools={customTools?.all ?? null}
                   grantsPending={toolGrantsPending}
-                  grantWriting={savingGrants}
+                  grantWriting={saving}
                   onGrantTool={(tool) => void grantNativeTool(tool)}
                   onOpenTools={(tool) => {
                     const custom = customTools?.all.get(tool);
@@ -5617,11 +5269,8 @@ function AgentEditor() {
                 />
                 <TabActionBar
                   dirty={dirty.decisions}
-                  saving={savingDecisions}
-                  onSave={() => {
-                    if (decisionsBlocked("decisions", false)) return;
-                    void saveDecisions();
-                  }}
+                  saving={saving}
+                  onSave={() => void saveFromBar()}
                   onDiscard={revertDecisions}
                 />
               </div>
@@ -5781,17 +5430,8 @@ function AgentEditor() {
                   ),
                 }}
                 dirty={dirty.behavior}
-                saving={savingAgent}
-                onSave={() =>
-                  saveAgent(
-                    {
-                      businessHoursId: businessHoursId || null,
-                      followUpHoursId: followUpHoursId || null,
-                      settings: buildSettings(),
-                    },
-                    "behavior",
-                  )
-                }
+                saving={saving}
+                onSave={() => void saveFromBar()}
                 onDiscard={revertBehavior}
                 onOpenPlayground={watcher ? undefined : openPlayground}
               />
@@ -5848,8 +5488,8 @@ function AgentEditor() {
                   ),
                 }}
                 dirty={dirty.guardrails}
-                saving={savingGuardrails}
-                onSave={() => saveGuardrails()}
+                saving={saving}
+                onSave={() => void saveFromBar()}
                 onDiscard={revertGuardrails}
               />
             )}
@@ -5860,8 +5500,8 @@ function AgentEditor() {
                 setChannelRedirect={setChannelRedirect}
                 agentId={id}
                 dirty={dirty.channelRedirect}
-                saving={savingChannelRedirect}
-                onSave={() => saveChannelRedirect()}
+                saving={saving}
+                onSave={() => void saveFromBar()}
                 onDiscard={revertChannelRedirect}
                 onOpenPlayground={openPlayground}
                 onGoToChannels={() => navigate(`/agents/${id}/channels`)}
@@ -5888,7 +5528,9 @@ function AgentEditor() {
                   agentMode,
                 )}
                 onSave={
-                  dirty.tools || dirty.knowledge ? undefined : () => saveVoice()
+                  dirty.tools || dirty.knowledge
+                    ? undefined
+                    : () => saveFromBar()
                 }
                 onOpenGeneral={() => openTab("general")}
               />

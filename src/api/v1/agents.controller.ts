@@ -29,7 +29,7 @@ import {
   listAgentsPaged,
   replaceAgentToolSelections,
   type ToolGrantInput,
-  updateAgent,
+  updateAgentAndGrants,
 } from "@/modules/agents/service";
 import { exportAgent, importAgent } from "@/modules/agents/transfer";
 import { listOutOfOfficeInboxes } from "@/modules/chatwoot/management";
@@ -800,25 +800,32 @@ export const agentsController = new Elysia({
   .patch(
     "/:id",
     async ({ tenantContext, params, body }) => {
-      const { patch, expectedUpdatedAt, settingsMode } = splitAgentUpdateBody(
-        body as AgentUpdate & {
-          expectedUpdatedAt?: string;
-          settingsMode?: "replace";
-        },
+      const { grants, ...rest } = body as AgentUpdate & {
+        expectedUpdatedAt?: string;
+        settingsMode?: "replace";
+        grants?: ToolGrantInput[];
+      };
+      const { patch, expectedUpdatedAt, settingsMode } =
+        splitAgentUpdateBody(rest);
+      const { agent, toolSelection } = await updateAgentAndGrants(
+        ctxOrThrow(tenantContext),
+        requireDbId(params.id),
+        patch,
+        grants ?? null,
+        undefined,
+        { expectedUpdatedAt, settingsMode },
       );
       return {
         instance: instanceIdentity,
-        agent: await updateAgent(
-          ctxOrThrow(tenantContext),
-          requireDbId(params.id),
-          patch,
-          undefined,
-          { expectedUpdatedAt, settingsMode },
-        ),
+        agent,
+        ...(toolSelection ? { toolSelection } : {}),
       };
     },
     {
-      detail: doc("Update agent", "Partially updates an existing agent."),
+      detail: doc(
+        "Update agent",
+        "Partially updates an existing agent. With `grants`, the agent's whole tool grant set is replaced in the same transaction: either every part of the write is applied or none is.",
+      ),
       response: errors(400, 401, 403, 404, 409, 422),
       requireRole: "TENANT_ADMIN",
       params: t.Object({
@@ -892,6 +899,12 @@ export const agentsController = new Elysia({
           t.String({
             description:
               "Optimistic-concurrency precondition: the agent's updatedAt the client loaded (ISO). When it no longer matches, the update is rejected with 409 instead of overwriting a change made elsewhere. Omit for last-write-wins.",
+          }),
+        ),
+        grants: t.Optional(
+          t.Array(ToolGrantBody, {
+            description:
+              "The agent's WHOLE tool grant set, in the shape PUT /v1/agents/{id}/tool-selections takes (replace-the-set semantics), written in the same transaction as the other fields. The answer then carries `toolSelection`, the set as written with its catalog.",
           }),
         ),
         settingsMode: t.Optional(

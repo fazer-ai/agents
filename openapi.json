@@ -8486,7 +8486,7 @@
           "Agents"
         ],
         "summary": "Update agent",
-        "description": "Partially updates an existing agent.",
+        "description": "Partially updates an existing agent. With `grants`, the agent's whole tool grant set is replaced in the same transaction: either every part of the write is applied or none is.",
         "parameters": [
           {
             "name": "id",
@@ -8574,6 +8574,79 @@
                     "description": "Optimistic-concurrency precondition: the agent's updatedAt the client loaded (ISO). When it no longer matches, the update is rejected with 409 instead of overwriting a change made elsewhere. Omit for last-write-wins.",
                     "type": "string"
                   },
+                  "grants": {
+                    "description": "The agent's WHOLE tool grant set, in the shape PUT /v1/agents/{id}/tool-selections takes (replace-the-set semantics), written in the same transaction as the other fields. The answer then carries `toolSelection`, the set as written with its catalog.",
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "source"
+                      ],
+                      "properties": {
+                        "source": {
+                          "type": "string",
+                          "enum": [
+                            "NATIVE",
+                            "RAG",
+                            "HTTP",
+                            "MCP",
+                            "INTEGRATION",
+                            "DOCUMENT",
+                            "CODE"
+                          ]
+                        },
+                        "toolDefinitionId": {
+                          "description": "Tool definition id (BigInt string) for NATIVE or HTTP grants, or null.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "mcpServerConnectionId": {
+                          "description": "MCP server connection id (BigInt string) for MCP grants, or null.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "integrationInstanceId": {
+                          "description": "Integration instance id (BigInt string) for INTEGRATION grants, or null.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "documentTemplateId": {
+                          "description": "Document template id (BigInt string) for DOCUMENT grants, or null.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "codeToolDefinitionId": {
+                          "description": "Code tool id (BigInt string) for CODE grants, or null.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "knowledgeBaseIds": {
+                          "description": "Knowledge-base ids (BigInt strings) for a RAG grant; the bases the agent may search.",
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "enabledTools": {
+                          "description": "Subset of tool names to enable within the source; omit to enable the source's full set.",
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  },
                   "settingsMode": {
                     "description": "A `settings` bag REPLACES the column, so every block it omits is deleted. Omit this field and a bag that would drop blocks the agent has configured is refused with 400, naming them; send `\"replace\"` to say the bag is complete and the omitted blocks are meant to go. A caller that meant to change one block sends the stored bag with that block changed (GET /v1/agents/{id} answers it).",
                     "const": "replace",
@@ -8644,6 +8717,79 @@
                     "description": "Optimistic-concurrency precondition: the agent's updatedAt the client loaded (ISO). When it no longer matches, the update is rejected with 409 instead of overwriting a change made elsewhere. Omit for last-write-wins.",
                     "type": "string"
                   },
+                  "grants": {
+                    "description": "The agent's WHOLE tool grant set, in the shape PUT /v1/agents/{id}/tool-selections takes (replace-the-set semantics), written in the same transaction as the other fields. The answer then carries `toolSelection`, the set as written with its catalog.",
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "source"
+                      ],
+                      "properties": {
+                        "source": {
+                          "type": "string",
+                          "enum": [
+                            "NATIVE",
+                            "RAG",
+                            "HTTP",
+                            "MCP",
+                            "INTEGRATION",
+                            "DOCUMENT",
+                            "CODE"
+                          ]
+                        },
+                        "toolDefinitionId": {
+                          "description": "Tool definition id (BigInt string) for NATIVE or HTTP grants, or null.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "mcpServerConnectionId": {
+                          "description": "MCP server connection id (BigInt string) for MCP grants, or null.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "integrationInstanceId": {
+                          "description": "Integration instance id (BigInt string) for INTEGRATION grants, or null.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "documentTemplateId": {
+                          "description": "Document template id (BigInt string) for DOCUMENT grants, or null.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "codeToolDefinitionId": {
+                          "description": "Code tool id (BigInt string) for CODE grants, or null.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "knowledgeBaseIds": {
+                          "description": "Knowledge-base ids (BigInt strings) for a RAG grant; the bases the agent may search.",
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "enabledTools": {
+                          "description": "Subset of tool names to enable within the source; omit to enable the source's full set.",
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  },
                   "settingsMode": {
                     "description": "A `settings` bag REPLACES the column, so every block it omits is deleted. Omit this field and a bag that would drop blocks the agent has configured is refused with 400, naming them; send `\"replace\"` to say the bag is complete and the omitted blocks are meant to go. A caller that meant to change one block sends the stored bag with that block changed (GET /v1/agents/{id} answers it).",
                     "const": "replace",
@@ -8713,6 +8859,79 @@
                   "expectedUpdatedAt": {
                     "description": "Optimistic-concurrency precondition: the agent's updatedAt the client loaded (ISO). When it no longer matches, the update is rejected with 409 instead of overwriting a change made elsewhere. Omit for last-write-wins.",
                     "type": "string"
+                  },
+                  "grants": {
+                    "description": "The agent's WHOLE tool grant set, in the shape PUT /v1/agents/{id}/tool-selections takes (replace-the-set semantics), written in the same transaction as the other fields. The answer then carries `toolSelection`, the set as written with its catalog.",
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "source"
+                      ],
+                      "properties": {
+                        "source": {
+                          "type": "string",
+                          "enum": [
+                            "NATIVE",
+                            "RAG",
+                            "HTTP",
+                            "MCP",
+                            "INTEGRATION",
+                            "DOCUMENT",
+                            "CODE"
+                          ]
+                        },
+                        "toolDefinitionId": {
+                          "description": "Tool definition id (BigInt string) for NATIVE or HTTP grants, or null.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "mcpServerConnectionId": {
+                          "description": "MCP server connection id (BigInt string) for MCP grants, or null.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "integrationInstanceId": {
+                          "description": "Integration instance id (BigInt string) for INTEGRATION grants, or null.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "documentTemplateId": {
+                          "description": "Document template id (BigInt string) for DOCUMENT grants, or null.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "codeToolDefinitionId": {
+                          "description": "Code tool id (BigInt string) for CODE grants, or null.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "knowledgeBaseIds": {
+                          "description": "Knowledge-base ids (BigInt strings) for a RAG grant; the bases the agent may search.",
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "enabledTools": {
+                          "description": "Subset of tool names to enable within the source; omit to enable the source's full set.",
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
                   },
                   "settingsMode": {
                     "description": "A `settings` bag REPLACES the column, so every block it omits is deleted. Omit this field and a bag that would drop blocks the agent has configured is refused with 400, naming them; send `\"replace\"` to say the bag is complete and the omitted blocks are meant to go. A caller that meant to change one block sends the stored bag with that block changed (GET /v1/agents/{id} answers it).",

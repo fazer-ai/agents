@@ -206,7 +206,7 @@ test("a hold General's draft resolves on another tab does not stop Save and expo
   );
   await waitFor(
     () =>
-      expect(stub.writes.filter((w) => w.method === "PATCH").length).toBe(2),
+      expect(stub.writes.filter((w) => w.method === "PATCH").length).toBe(1),
     { timeout: 5_000 },
   );
   expect(screen.queryByText(/cannot be saved as it is/)).toBeNull();
@@ -233,8 +233,8 @@ test("a range hold judged under another mode is judged again on its tab before S
   );
   await waitFor(
     () =>
-      // General's mode, then Behavior with the hidden number as stored.
-      expect(stub.writes.filter((w) => w.method === "PATCH").length).toBe(2),
+      // General's mode and Behavior with the hidden number as stored, in one write.
+      expect(stub.writes.filter((w) => w.method === "PATCH").length).toBe(1),
     { timeout: 5_000 },
   );
   expect(screen.queryByText(/cannot be saved as it is/)).toBeNull();

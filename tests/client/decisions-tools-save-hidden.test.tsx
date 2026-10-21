@@ -84,6 +84,19 @@ const AGENT = {
   updatedAt: "2026-01-01T00:00:00.000Z",
 };
 
+// The grants as the server stores them: every id the request left out, as null.
+const storedFrom = (grants: unknown[]) =>
+  grants.map((g) => ({
+    toolDefinitionId: null,
+    mcpServerConnectionId: null,
+    integrationInstanceId: null,
+    documentTemplateId: null,
+    codeToolDefinitionId: null,
+    knowledgeBaseIds: [],
+    enabledTools: [],
+    ...(g as object),
+  }));
+
 function stubApi(
   initial: Record<string, unknown> = AGENT,
   grants: unknown[] = GRANTS,
@@ -117,34 +130,39 @@ function stubApi(
         langfuse: { sendContent: false },
       },
     };
-    // The agent PATCH stores what it was sent, as the server does.
+    // The agent PATCH stores what it was sent, the grants with it, as the server does.
     if (method === "PATCH" && url.pathname === "/api/v1/agents/1") {
       const sent = JSON.parse(String(init?.body)) as Record<string, unknown>;
       delete sent.expectedUpdatedAt;
+      const grants = sent.grants as unknown[] | undefined;
+      delete sent.grants;
       agent = {
         ...agent,
         ...sent,
         updatedAt: `2026-01-0${(asked.length % 9) + 1}T00:00:00.000Z`,
       };
-      routes["PATCH /api/v1/agents/1"] = { agent };
+      if (grants) stored = storedFrom(grants);
+      routes["PATCH /api/v1/agents/1"] = {
+        agent,
+        ...(grants
+          ? {
+              toolSelection: {
+                grants: stored,
+                catalog: CATALOG,
+                agentUpdatedAt: agent.updatedAt,
+              },
+            }
+          : {}),
+      };
     }
-    // The grants PUT stores what it was sent, as the server does.
+    // The grants PUT (an Allow) stores what it was sent, as the server does.
     if (
       method === "PUT" &&
       url.pathname === "/api/v1/agents/1/tool-selections"
     ) {
-      stored = (
-        JSON.parse(String(init?.body)) as { grants: unknown[] }
-      ).grants.map((g) => ({
-        toolDefinitionId: null,
-        mcpServerConnectionId: null,
-        integrationInstanceId: null,
-        documentTemplateId: null,
-        codeToolDefinitionId: null,
-        knowledgeBaseIds: [],
-        enabledTools: [],
-        ...(g as object),
-      }));
+      stored = storedFrom(
+        (JSON.parse(String(init?.body)) as { grants: unknown[] }).grants,
+      );
       routes[`${method} ${url.pathname}`] = {
         grants: stored,
         catalog: CATALOG,
@@ -161,6 +179,13 @@ function stubApi(
 }
 
 const text = () => document.body.textContent ?? "";
+// A write of the grant set: the Save's PATCH that carries it, or an Allow's PUT.
+const writesGrants = (a: { method: string; body: unknown }) =>
+  a.method === "PUT" ||
+  (a.method === "PATCH" &&
+    typeof a.body === "object" &&
+    a.body !== null &&
+    "grants" in a.body);
 const button = (label: string) =>
   [...document.querySelectorAll("button")].find(
     (b) => b.textContent?.trim() === label,
@@ -235,7 +260,7 @@ test("a close label removed on the language model is not saved by a Tools save o
   await saveToolsEdited();
 
   // The engine switch goes out first, with General; the Tools PATCH is the last one.
-  await waitFor(() => expect(text().includes("Tools updated.")).toBe(true));
+  await waitFor(() => expect(text().includes("Agent saved.")).toBe(true));
   const patch = asked.filter((a) => a.method === "PATCH").at(-1);
   if (!patch) throw new Error("no PATCH");
   const settingsSent = (patch.body as { settings: Record<string, unknown> })
@@ -244,7 +269,7 @@ test("a close label removed on the language model is not saved by a Tools save o
     JSON.stringify({ assignLabels: ["vip"] }),
   );
   // The draft is the language model's, so it is pending on the editor and not on this Tools tab.
-  await waitFor(() => expect(text().includes("Tools updated.")).toBe(true));
+  await waitFor(() => expect(text().includes("Agent saved.")).toBe(true));
   const toolsTab = [...document.querySelectorAll('[role="tab"]')].find((t) =>
     t.textContent?.includes("Tools"),
   );
@@ -298,7 +323,7 @@ test("a hidden tool revoked on the language model stays granted through a Tools 
   );
   await saveToolsEdited();
   const put = await waitFor(() => {
-    const p = asked.find((a) => a.method === "PUT");
+    const p = asked.find((a) => writesGrants(a));
     if (!p) throw new Error("no PUT yet");
     return p;
   });
@@ -405,7 +430,7 @@ test("an Allow keeps a hidden revocation made on the language model", async () =
   await waitFor(() => expect(Boolean(button("Save"))).toBe(true));
   fireEvent.click(button("Save"));
   const put = await waitFor(() => {
-    const puts = asked.filter((a) => a.method === "PUT");
+    const puts = asked.filter((a) => writesGrants(a));
     if (puts.length < 2) throw new Error("no second PUT yet");
     return puts[1] as { body: unknown };
   });
@@ -461,18 +486,18 @@ test("a Knowledge draft made on the language model stays unsaved through a Tools
   await tab("Tools");
   await saveToolsEdited();
   const put = await waitFor(() => {
-    const p = asked.find((a) => a.method === "PUT");
+    const p = asked.find((a) => writesGrants(a));
     if (!p) throw new Error("no PUT yet");
     return p;
   });
   await waitFor(() =>
     expect(asked.some((a) => a.method === "PATCH")).toBe(true),
   );
-  await waitFor(() => expect(text().includes("Tools updated.")).toBe(true));
+  await waitFor(() => expect(text().includes("Agent saved.")).toBe(true));
   // Every grant write of the save, not just the first: the Knowledge save, which this engine does not
   // draw, must not follow the Tools one with the hidden draft.
   const sentRag = asked
-    .filter((a) => a.method === "PUT")
+    .filter((a) => writesGrants(a))
     .some((w) =>
       (w.body as { grants: { source: string }[] }).grants.some(
         (g) => g.source === "RAG",
@@ -611,7 +636,7 @@ test("a tool toggled while Save tools is in flight stays unsaved on questions an
   });
   let putSent = false;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    if ((init?.method ?? "GET") === "PUT") {
+    if ((init?.method ?? "GET") === "PATCH") {
       putSent = true;
       await held;
     }
@@ -637,8 +662,8 @@ test("a tool toggled while Save tools is in flight stays unsaved on questions an
   await waitFor(() =>
     expect(asked.some((a) => a.method === "PATCH")).toBe(true),
   );
-  await waitFor(() => expect(text().includes("Tools updated.")).toBe(true));
-  const put = asked.find((a) => a.method === "PUT") as { body: unknown };
+  await waitFor(() => expect(text().includes("Agent saved.")).toBe(true));
+  const put = asked.find((a) => writesGrants(a)) as { body: unknown };
   const sentHandoff = (
     put.body as { grants: { source: string; enabledTools?: string[] }[] }
   ).grants
@@ -697,7 +722,7 @@ test("a switch back to the language model while Save tools is out keeps its draf
   });
   let putSent = false;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    if ((init?.method ?? "GET") === "PUT") {
+    if ((init?.method ?? "GET") === "PATCH") {
       putSent = true;
       await held;
     }
@@ -727,7 +752,7 @@ test("a switch back to the language model while Save tools is out keeps its draf
   await waitFor(() =>
     expect(asked.some((a) => a.method === "PATCH")).toBe(true),
   );
-  await waitFor(() => expect(text().includes("Tools updated.")).toBe(true));
+  await waitFor(() => expect(text().includes("Agent saved.")).toBe(true));
   // The engine switch went out first, with General; the Tools PATCH is the last one.
   const patch = asked.filter((a) => a.method === "PATCH").at(-1) as {
     body: unknown;

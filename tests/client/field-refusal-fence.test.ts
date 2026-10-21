@@ -94,6 +94,15 @@ function writes(code: string): boolean {
     .some((line) => WRITES.test(line) && !NOT_A_WRITE.test(line));
 }
 
+// The carriers of a file: the names assigned a capture, and the functions it declares whose body
+// makes one (`function answerRefusal(…) { … refusals[section].capture(…) }`).
+function carriersIn(src: string): Set<string> {
+  const names = capturingNames(codeSkeleton(src));
+  for (const h of handlers(src))
+    if (/\.capture\(/.test(h.code)) names.add(h.name);
+  return names;
+}
+
 // The names that carry a capture, directly or through another name. A form with two failure branches
 // writes one helper and calls it twice — `const held = (e, sent) => refusal.capture(…)` — and the
 // helper lives at component scope, outside every handler body.
@@ -128,7 +137,7 @@ export function unheldWrites(src: string): string[] {
   const sends = new RegExp(
     `\\b(?:${declared.map((f) => f.split(".").pop()).join("|")})\\b`,
   );
-  const carriers = capturingNames(codeSkeleton(src));
+  const carriers = carriersIn(src);
   return handlers(src)
     .filter((h) => {
       if (!writes(h.code) || !sends.test(h.code)) return false;

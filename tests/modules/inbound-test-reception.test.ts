@@ -3,6 +3,7 @@ import { createHmac } from "node:crypto";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import { inFlightWork } from "@/lib/shutdown";
 import type { TenantContext } from "@/lib/tenancy";
 import { ensureConversationRef } from "@/modules/integrations/conversation-ref";
 import { runFetchBack } from "@/modules/integrations/fetch-back-run";
@@ -79,6 +80,8 @@ describe.skipIf(!dbUp)("test reception", () => {
   const run = (p: Parameters<typeof runFetchBack>[0]) =>
     runFetchBack({ ...p, deps: { fetchImpl } });
   const nudges: unknown[] = [];
+  // What a shutdown would have seen registered while the agent turn ran.
+  const tracked: number[] = [];
   let clock = 1_800_000_000_000;
   const deps = () => {
     // Each call its own minute, so only the rate-limit test meets the limit.
@@ -89,6 +92,7 @@ describe.skipIf(!dbUp)("test reception", () => {
       process: {
         runNudge: async (a: unknown) => {
           nudges.push(a);
+          tracked.push(inFlightWork().byKind.inbound_delivery ?? 0);
           return "messaged" as const;
         },
       } as never,
@@ -414,6 +418,43 @@ describe.skipIf(!dbUp)("test reception", () => {
       }),
     ).toBe(1);
     expect(nudges.length).toBe(n + 1);
+    // Registered with the shutdown drain, as the webhook route's dispatch is.
+    expect(tracked.at(-1)).toBe(1);
+  });
+
+  test("a real test whose processing fails, or whose lookup will be retried, does not answer queued", async () => {
+    const boom = await testReception(
+      ctx(),
+      mpId,
+      { ...mpNotice("1004"), dryRun: false },
+      appDb,
+      {
+        ...deps(),
+        runFetchBack: async () => {
+          throw new Error("lookup crashed");
+        },
+      },
+    );
+    expect(boom.stages.at(-1)).toMatchObject({
+      stage: "delivery",
+      ok: false,
+      reason: "lookup crashed",
+    });
+    expect(boom.outcome).toBe("failed");
+
+    payments.set("1005", { code: 503, body: {} });
+    const later = await testReception(
+      ctx(),
+      mpId,
+      { ...mpNotice("1005"), dryRun: false },
+      appDb,
+      deps(),
+    );
+    expect(later.stages.find((s) => s.stage === "fetch_back")).toMatchObject({
+      ok: false,
+      detail: { retried: true },
+    });
+    expect(later.outcome).toBe("retrying");
   });
 
   test("a real test reports what processing found: an Asaas payment whose reference names no conversation is not an all-green run", async () => {

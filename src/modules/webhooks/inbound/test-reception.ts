@@ -7,6 +7,7 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import { AppError, NotFoundError, UnauthorizedError } from "@/lib/errors";
+import { trackWork } from "@/lib/shutdown";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { correlateConversationRef } from "@/modules/integrations/conversation-ref";
 import type { runFetchBack } from "@/modules/integrations/fetch-back-run";
@@ -311,16 +312,21 @@ export async function testReception(
     return done(received.outcome);
   }
   try {
-    const result = await processInboundDelivery({
-      deliveryId: received.deliveryId,
-      tenantId: route.tenantId,
-      base,
-      stages: probe.stages,
-      deps: {
-        ...deps.process,
-        ...(deps.runFetchBack ? { runFetchBack: deps.runFetchBack } : {}),
-      },
-    });
+    const deliveryId = received.deliveryId;
+    // Tracked like the webhook route's dispatch, so a shutdown waits for the turn the event runs
+    // instead of cutting it after the conversion committed (src/lib/shutdown.ts).
+    const result = await trackWork("inbound_delivery", () =>
+      processInboundDelivery({
+        deliveryId,
+        tenantId: route.tenantId,
+        base,
+        stages: probe.stages,
+        deps: {
+          ...deps.process,
+          ...(deps.runFetchBack ? { runFetchBack: deps.runFetchBack } : {}),
+        },
+      }),
+    );
     const row = await runScopedOn(base, scoped, (db) =>
       db.inboundDelivery.findUnique({
         where: { id: received.deliveryId as bigint },
@@ -340,17 +346,23 @@ export async function testReception(
     });
   }
   // Processing can drop an event the receptor queued (a reference that names no conversation, a
-  // lookup the provider refused): the answer says so instead of the queued it started from.
+  // lookup the provider refused) or fail on its own: the answer says so instead of the queued it
+  // started from. A lookup that will be retried leaves the row for the sweep's re-dispatch.
   const stopped = probe.stages.find(
     (s) => !s.ok && s.stage !== "delivery" && s.stage !== "signature",
   );
+  const delivered = probe.stages.find((s) => s.stage === "delivery");
   return done(
-    stopped?.stage === "correlation"
-      ? "uncorrelated"
-      : stopped?.reason === "unhandled"
-        ? "ignored"
-        : stopped
-          ? "invalid"
-          : received.outcome,
+    stopped?.stage === "fetch_back" && stopped.detail?.retried === true
+      ? "retrying"
+      : stopped?.stage === "correlation"
+        ? "uncorrelated"
+        : stopped?.reason === "unhandled"
+          ? "ignored"
+          : stopped
+            ? "invalid"
+            : delivered && !delivered.ok
+              ? "failed"
+              : received.outcome,
   );
 }

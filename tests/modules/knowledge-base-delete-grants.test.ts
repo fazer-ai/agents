@@ -119,6 +119,43 @@ describe.skipIf(!dbUp)("deleting a knowledge base an agent uses", () => {
     expect(await ragOf(agent)).toEqual([String(y)]);
   });
 
+  // Two deletes of a grant's last two bases: the second decides on the row the first left, after its
+  // lock, so the grant ends removed rather than empty (an empty list searches every base).
+  test("deleting a grant's last two bases at once leaves no grant, not an empty one", async () => {
+    const [x, y] = [await base("Last X"), await base("Last Y")];
+    const agent = await agentWith("Both last", [x, y]);
+    let release: () => void = () => {};
+    const held = new Promise<void>((r) => {
+      release = r;
+    });
+    let locked: (pid: number) => void = () => {};
+    const gotLock = new Promise<number>((r) => {
+      locked = r;
+    });
+    // NOTE: The first delete, mid-transaction: its sweep has taken X out and holds the grant row.
+    const first = suDb.$transaction(
+      async (tx) => {
+        await tx.$executeRaw`
+          UPDATE agent_tool_selections
+             SET knowledge_base_ids = array_remove(knowledge_base_ids, ${x})
+           WHERE agent_id = ${agent} AND source = 'RAG'`;
+        await tx.$executeRaw`DELETE FROM knowledge_bases WHERE id = ${x}`;
+        const [me] = await tx.$queryRaw<Array<{ pid: number }>>`
+          SELECT pg_backend_pid()::int AS pid`;
+        locked(me?.pid as number);
+        await held;
+      },
+      { timeout: 10_000 },
+    );
+    const holder = await gotLock;
+    const second = deleteKnowledgeBase({ ctx: ctx(), id: y, base: appDb });
+    expect(await waitUntilBlocked(suDb, holder, 1)).toBeGreaterThanOrEqual(0);
+    release();
+    await first;
+    await second;
+    expect(await ragOf(agent)).toBeUndefined();
+  });
+
   // A grant write that names a base waits for a delete of that base in flight, as an FK's
   // referencing insert would, and then refuses it: committing it would store the id the delete just
   // swept from every other grant.

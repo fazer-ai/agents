@@ -38,7 +38,10 @@ if (appUrl && suUrl) {
   }
 }
 
-function config(nativeToolsAllow: string[] | undefined): AgentConfig {
+function config(
+  nativeToolsAllow: string[] | undefined,
+  writableAttributes: AgentConfig["writableAttributes"] = [],
+): AgentConfig {
   return {
     agentId: 1n,
     contactDbId: null,
@@ -65,6 +68,7 @@ function config(nativeToolsAllow: string[] | undefined): AgentConfig {
     protectedLabels: [],
     allowedLabels: [],
     outsideAllowedLabels: "accept",
+    writableAttributes,
   } as unknown as AgentConfig;
 }
 
@@ -84,7 +88,11 @@ describe.skipIf(!dbUp)("which granted tools resolve the card", () => {
     await app?.$disconnect();
   });
 
-  async function cardSeen(allow: string[] | undefined, taskDefs = true) {
+  async function cardSeen(
+    allow: string[] | undefined,
+    taskDefs = true,
+    writable: AgentConfig["writableAttributes"] = [],
+  ) {
     __resetChatwootVocabCache();
     let reads = 0;
     let seen: Record<string, unknown> | undefined;
@@ -131,7 +139,7 @@ describe.skipIf(!dbUp)("which granted tools resolve the card", () => {
       },
     ) as unknown as ChatwootClient;
     await buildToolset(
-      config(allow),
+      config(allow, writable),
       {
         tenantId,
         instanceId: 1n,
@@ -181,6 +189,21 @@ describe.skipIf(!dbUp)("which granted tools resolve the card", () => {
       expect(r.reads).toBe(0);
     });
   }
+
+  // The operator listing a task key is the account saying the card is used, definition or not.
+  test("set_custom_attribute with a task key on its list resolves the card on an account with no card attributes", async () => {
+    const r = await cardSeen(["set_custom_attribute"], false, [
+      { scope: "task", key: "faturamento_mensal" },
+    ]);
+    expect(r.taskId).toBe(41);
+  });
+
+  test("a list with no task key leaves that account unread", async () => {
+    const r = await cardSeen(["set_custom_attribute"], false, [
+      { scope: "conversation", key: "serie" },
+    ]);
+    expect(r.reads).toBe(0);
+  });
 
   test("every tool granted (no allowlist) resolves the card", async () => {
     expect((await cardSeen(undefined)).taskId).toBe(41);

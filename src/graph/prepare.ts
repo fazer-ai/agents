@@ -1621,19 +1621,19 @@ export async function buildToolset(
     }
   }
   // Resolve this conversation's kanban card (board + current step + steps) ONLY when a tool that reads
-  // it is granted. kanban_move_card (step by name) and update_kanban_task (`<current_card>`) exist for
-  // the card, so either one resolves it. set_custom_attribute and set_labels are everyday tools whose
-  // `task` scope is one use among several, so they resolve it only on an account that defines card
-  // attributes: without that gate every attribute or label agent, the decisions observer included,
-  // would pay the read on accounts with no funnel at all. The cost is one conversation GET per turn
-  // (the board's steps are cached); a conversation with no card answers from that GET alone.
-  // Best-effort.
+  // it is granted: kanban_move_card and update_kanban_task always. set_custom_attribute and set_labels
+  // use the `task` scope only sometimes, so they resolve it only when the account defines card
+  // attributes or the operator listed a task key for set_custom_attribute; otherwise every attribute
+  // or label agent, the decisions observer included, would pay the read on accounts with no funnel.
+  // The cost is one conversation GET per turn (the board's steps are cached). Best-effort.
   const allow = cfg.nativeToolsAllow;
   const grantsKanban =
     !allow ||
     allow.some((n) => KANBAN_CARD_TOOLS.includes(n)) ||
     (allow.some((n) => KANBAN_CARD_SCOPE_TOOLS.includes(n)) &&
-      attributesForModel(vocab, "task_attribute").length > 0);
+      attributesForModel(vocab, "task_attribute").length > 0) ||
+    (allow.includes("set_custom_attribute") &&
+      (cfg.writableAttributes ?? []).some((a) => a.scope === "task"));
   let kanban: KanbanContext | undefined;
   if (grantsKanban && ctx.conversationId > 0) {
     try {

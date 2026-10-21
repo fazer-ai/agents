@@ -67,6 +67,7 @@ function config(): AgentConfig {
     protectedLabels: ["agente-off"],
     allowedLabels: ["vip", "suporte"],
     outsideAllowedLabels: "accept",
+    labelRemoval: "allowed",
   } as unknown as AgentConfig;
 }
 
@@ -155,6 +156,7 @@ describe.skipIf(!dbUp)("the allowed list reaches set_labels", () => {
     });
     expect(seen?.allowedLabels).toEqual(["vip", "suporte"]);
     expect(seen?.outsideAllowedLabels).toBe("accept");
+    expect(seen?.labelRemoval).toBe("allowed");
     expect(seen?.protectedLabels).toEqual(["agente-off"]);
   });
 });

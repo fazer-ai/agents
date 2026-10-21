@@ -580,6 +580,10 @@ function readBehaviorState(a: Agent) {
       ?.outsideAllowed === "accept"
       ? "accept"
       : "refuse") as "refuse" | "accept",
+    labelRemoval: ((s.setLabels as Record<string, unknown> | undefined)
+      ?.removal === "allowed"
+      ? "allowed"
+      : "any") as "any" | "allowed",
     updateKanbanTaskInstructions: str(tg.update_kanban_task),
     toolPreconditions: parseToolPreconditionRows(s.toolPreconditions),
     businessHoursId: a.businessHoursId ?? "",
@@ -1196,6 +1200,7 @@ function AgentEditor() {
   const [outsideAllowedLabels, setOutsideAllowedLabels] = useState<
     "refuse" | "accept"
   >("refuse");
+  const [labelRemoval, setLabelRemoval] = useState<"any" | "allowed">("any");
   // Per-tool preconditions (Tools tab, same lifecycle as the guidance above). Held as a LIST
   // while editing and stored as a map keyed by tool name: see ToolPreconditionsEditor.
   const [toolPreconditions, setToolPreconditions] = useState<
@@ -1633,6 +1638,7 @@ function AgentEditor() {
     setProtectedLabels(b.protectedLabels);
     setAllowedLabels(b.allowedLabels);
     setOutsideAllowedLabels(b.outsideAllowedLabels);
+    setLabelRemoval(b.labelRemoval);
     setToolPreconditions(b.toolPreconditions);
     if (!keepGuidance) {
       setCrossInboxCase(b.crossInboxCase);
@@ -2241,6 +2247,7 @@ function AgentEditor() {
     protectedLabels: string;
     allowedLabels: string;
     outsideAllowedLabels: typeof outsideAllowedLabels;
+    labelRemoval: typeof labelRemoval;
     toolPreconditions: typeof toolPreconditions;
     grants: GrantState[];
     review: SuggestionReviewState;
@@ -2282,6 +2289,7 @@ function AgentEditor() {
     protectedLabels,
     allowedLabels,
     outsideAllowedLabels,
+    labelRemoval,
     toolPreconditions,
     grants,
     review,
@@ -2329,6 +2337,7 @@ function AgentEditor() {
       protectedLabels: b.protectedLabels,
       allowedLabels: b.allowedLabels,
       outsideAllowedLabels: b.outsideAllowedLabels,
+      labelRemoval: b.labelRemoval,
       toolPreconditions: b.toolPreconditions,
       grants: mapGrants(syncedGrants),
       review: suggestionReviewToForm(a.settings),
@@ -2411,6 +2420,7 @@ function AgentEditor() {
         protectedLabels: f.protectedLabels,
         allowedLabels: f.allowedLabels,
         outsideAllowedLabels: f.outsideAllowedLabels,
+        labelRemoval: f.labelRemoval,
         updateKanbanTaskInstructions: guidance.updateKanbanTaskInstructions,
         toolPreconditions: f.toolPreconditions,
         crossInboxCase: guidance.crossInboxCase,
@@ -3677,6 +3687,7 @@ function AgentEditor() {
         protected: protectedList,
         allowed: allowedList,
         outsideAllowed: outsideAllowedLabels,
+        removal: labelRemoval,
       },
       crossInboxCase: crossInboxCaseJson,
       sendImage: sendImageJson,
@@ -3780,6 +3791,7 @@ function AgentEditor() {
         protected: protectedList,
         allowed: allowedList,
         outsideAllowed: outsideAllowedLabels,
+        removal: labelRemoval,
       },
       crossInboxCase: crossInboxCaseJson,
       sendImage: sendImageJson,
@@ -5346,6 +5358,8 @@ function AgentEditor() {
                   setAllowedLabels={setAllowedLabels}
                   outsideAllowedLabels={outsideAllowedLabels}
                   setOutsideAllowedLabels={setOutsideAllowedLabels}
+                  labelRemoval={labelRemoval}
+                  setLabelRemoval={setLabelRemoval}
                   updateKanbanTaskInstructions={updateKanbanTaskInstructions}
                   toolPreconditions={toolPreconditions}
                   setToolPreconditions={setToolPreconditions}

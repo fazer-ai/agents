@@ -190,6 +190,10 @@ interface Props {
   setAllowedLabels: (v: string) => void;
   outsideAllowedLabels: "refuse" | "accept";
   setOutsideAllowedLabels: (v: "refuse" | "accept") => void;
+  // Which labels set_labels may REMOVE. Persisted in agent.settings.setLabels.removal; see
+  // readLabelRemoval.
+  labelRemoval: "any" | "allowed";
+  setLabelRemoval: (v: "any" | "allowed") => void;
   // Operator-authored guidance for update_kanban_task (when/how to edit the card's fields), appended to
   // its model-facing description. Persisted in agent.settings.toolGuidance.update_kanban_task.
   updateKanbanTaskInstructions: string;
@@ -577,6 +581,8 @@ export function ToolGrantsEditor({
   setAllowedLabels,
   outsideAllowedLabels,
   setOutsideAllowedLabels,
+  labelRemoval,
+  setLabelRemoval,
   updateKanbanTaskInstructions,
   setUpdateKanbanTaskInstructions,
   mcpTools,
@@ -712,7 +718,8 @@ export function ToolGrantsEditor({
     (labelEnabled &&
       (labelInstructions.trim() !== "" ||
         protectedLabels.trim() !== "" ||
-        allowedLabels.trim() !== "")) ||
+        allowedLabels.trim() !== "" ||
+        labelRemoval === "allowed")) ||
     (updateKanbanEnabled && updateKanbanTaskInstructions.trim() !== "") ||
     (openCaseEnabled && crossInboxCase.targetInboxId !== "") ||
     (sendImageEnabled && !sendImageNoHost) ||
@@ -2166,7 +2173,8 @@ export function ToolGrantsEditor({
             configured={
               (!decides && labelInstructions.trim() !== "") ||
               protectedLabels.trim() !== "" ||
-              allowedLabels.trim() !== ""
+              allowedLabels.trim() !== "" ||
+              labelRemoval === "allowed"
             }
           >
             {!decides && (
@@ -2218,7 +2226,7 @@ export function ToolGrantsEditor({
               label={t("editor.allowedLabels", "Labels it may add")}
               description={t(
                 "editor.allowedLabelsHint",
-                "Optional, comma-separated. The only labels this agent may add; removing any label is still allowed. Empty: any label, and one the account does not have is created.",
+                "Optional, comma-separated. The only labels this agent may add. Empty: any label, and one the account does not have is created.",
               )}
             >
               <Input
@@ -2262,6 +2270,35 @@ export function ToolGrantsEditor({
                 </Select>
               </FormField>
             )}
+            <FormField
+              label={t("editor.labelRemoval", "Labels it may remove")}
+              description={t(
+                "editor.labelRemovalHint",
+                "Only the labels it may add: removing any other is refused and counted in the logs, so another system's labels stay without being listed as off limits. With none listed, it removes none.",
+              )}
+            >
+              <Select
+                value={labelRemoval}
+                onChange={(e: React.ChangeEvent<HTMLSelectElement>) =>
+                  setLabelRemoval(
+                    e.target.value === "allowed" ? "allowed" : "any",
+                  )
+                }
+              >
+                <option value="any">
+                  {t(
+                    "editor.labelRemovalAny",
+                    "Any label, except the ones off limits",
+                  )}
+                </option>
+                <option value="allowed">
+                  {t(
+                    "editor.labelRemovalAllowed",
+                    "Only the labels it may add",
+                  )}
+                </option>
+              </Select>
+            </FormField>
           </ConfigurableToolCard>
         )}
         {!decides && (

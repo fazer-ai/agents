@@ -19,6 +19,9 @@ export interface LabelWrite {
   removedTitles?: string[];
   // How many labels went in from outside the list under `accept`. Absent when none did.
   outsideAllowed?: number;
+  // How many removals were refused because the label is not the agent's (`setLabels.removal:
+  // "allowed"`). Absent when none were; a call refused only that is still written as a line.
+  removalRefused?: number;
 }
 
 export type LabelWriteReporter = (write: LabelWrite) => void;
@@ -31,10 +34,12 @@ export function describeLabelWrite(
   list?: {
     allowed?: readonly string[];
     acceptedOutside?: readonly string[];
+    refusedForeign?: readonly string[];
   },
 ): LabelWrite {
   const allowed = new Set(list?.allowed ?? []);
   const outside = list?.acceptedOutside?.length ?? 0;
+  const foreign = list?.refusedForeign?.length ?? 0;
   return {
     scope,
     added: added.length,
@@ -47,5 +52,6 @@ export function describeLabelWrite(
         }
       : {}),
     ...(outside > 0 ? { outsideAllowed: outside } : {}),
+    ...(foreign > 0 ? { removalRefused: foreign } : {}),
   };
 }

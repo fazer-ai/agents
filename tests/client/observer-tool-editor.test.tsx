@@ -150,6 +150,8 @@ function Editor({
               setAllowedLabels={noop}
               outsideAllowedLabels="refuse"
               setOutsideAllowedLabels={noop}
+              labelRemoval="any"
+              setLabelRemoval={noop}
               setLabelInstructions={noop}
               updateKanbanTaskInstructions=""
               setUpdateKanbanTaskInstructions={noop}
@@ -368,6 +370,8 @@ function renderToolsTab(observing: boolean, rows: ToolPreconditionRow[] = []) {
               setAllowedLabels={noop}
               outsideAllowedLabels="refuse"
               setOutsideAllowedLabels={noop}
+              labelRemoval="any"
+              setLabelRemoval={noop}
               updateKanbanTaskInstructions=""
               setUpdateKanbanTaskInstructions={noop}
               toolPreconditions={rows as never}

@@ -213,6 +213,8 @@ function renderEditor(
               setAllowedLabels={noop}
               outsideAllowedLabels="refuse"
               setOutsideAllowedLabels={noop}
+              labelRemoval="any"
+              setLabelRemoval={noop}
               setLabelInstructions={noop}
               updateKanbanTaskInstructions=""
               setUpdateKanbanTaskInstructions={noop}

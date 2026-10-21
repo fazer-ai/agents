@@ -1191,13 +1191,19 @@ const setLabels = z
     allowed: z
       .array(z.string())
       .describe(
-        `the only titles set_labels may ADD; empty = any, and a new one is created. Removal is not limited. At most ${ALLOWED_LABELS_MAX}`,
+        `the only titles set_labels may ADD; empty = any, and a new one is created. Removal is not limited unless removal says so. At most ${ALLOWED_LABELS_MAX}`,
       )
       .optional(),
     outsideAllowed: z
       .enum(["refuse", "accept"])
       .describe(
         "a title outside `allowed`: refuse (default: not written) or accept (written, counted in the log)",
+      )
+      .optional(),
+    removal: z
+      .enum(["any", "allowed"])
+      .describe(
+        "what set_labels may REMOVE: any (default) or allowed (only titles in `allowed`; others stay, counted)",
       )
       .optional(),
   })

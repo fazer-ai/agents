@@ -55,6 +55,15 @@ export function readOutsideAllowedLabels(
   return block?.outsideAllowed === "accept" ? "accept" : "refuse";
 }
 
+// Which labels `set_labels` may REMOVE. `any` (the default) is every label but the protected ones;
+// `allowed` is only the titles in `allowed`, so a label another system owns stays without being
+// listed in `protected`, and an empty list removes nothing. Anything else reads as the default,
+// because turning the fence on is the operator's decision and an unknown value is not one.
+export type LabelRemoval = "any" | "allowed";
+export function readLabelRemoval(settings: unknown): LabelRemoval {
+  return setLabelsBlock(settings)?.removal === "allowed" ? "allowed" : "any";
+}
+
 function setLabelsBlock(settings: unknown): Record<string, unknown> | null {
   const block =
     settings && typeof settings === "object"

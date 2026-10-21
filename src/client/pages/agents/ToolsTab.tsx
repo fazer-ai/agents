@@ -64,6 +64,8 @@ interface ToolsTabProps {
   setAllowedLabels: (v: string) => void;
   outsideAllowedLabels: "refuse" | "accept";
   setOutsideAllowedLabels: (v: "refuse" | "accept") => void;
+  labelRemoval: "any" | "allowed";
+  setLabelRemoval: (v: "any" | "allowed") => void;
   updateKanbanTaskInstructions: string;
   setUpdateKanbanTaskInstructions: (v: string) => void;
   // Per-tool preconditions. Owned by AgentEditorPage like the guidance above, and saved
@@ -130,6 +132,8 @@ export function ToolsTab({
   setAllowedLabels,
   outsideAllowedLabels,
   setOutsideAllowedLabels,
+  labelRemoval,
+  setLabelRemoval,
   updateKanbanTaskInstructions,
   setUpdateKanbanTaskInstructions,
   toolPreconditions,
@@ -255,6 +259,8 @@ export function ToolsTab({
             setAllowedLabels={setAllowedLabels}
             outsideAllowedLabels={outsideAllowedLabels}
             setOutsideAllowedLabels={setOutsideAllowedLabels}
+            labelRemoval={labelRemoval}
+            setLabelRemoval={setLabelRemoval}
             updateKanbanTaskInstructions={updateKanbanTaskInstructions}
             setUpdateKanbanTaskInstructions={setUpdateKanbanTaskInstructions}
             mcpTools={mcpTools}

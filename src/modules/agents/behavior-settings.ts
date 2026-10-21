@@ -4,6 +4,7 @@ import { GROUNDING_RANGES } from "@/modules/agents/number-ranges";
 import { readResolveConversationConfig } from "@/modules/agents/resolve-labels";
 import {
   readAllowedLabels,
+  readLabelRemoval,
   readOutsideAllowedLabels,
   readProtectedLabels,
   readToolGuidance,
@@ -111,6 +112,7 @@ export interface BehaviorSettings {
     protected: ReturnType<typeof readProtectedLabels>;
     allowed: ReturnType<typeof readAllowedLabels>;
     outsideAllowed: ReturnType<typeof readOutsideAllowedLabels>;
+    removal: ReturnType<typeof readLabelRemoval>;
   };
   toolPreconditions: ReturnType<typeof readToolPreconditionsForDisplay>;
   monitoring: ReturnType<typeof readMonitoringConfig>;
@@ -197,6 +199,7 @@ export function readBehaviorSettings(
       protected: readProtectedLabels(settings),
       allowed: readAllowedLabels(settings),
       outsideAllowed: readOutsideAllowedLabels(settings),
+      removal: readLabelRemoval(settings),
     },
     toolPreconditions: readToolPreconditionsForDisplay(settings),
     monitoring: readMonitoringConfig(settings),

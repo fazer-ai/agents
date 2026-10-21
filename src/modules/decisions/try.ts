@@ -344,8 +344,12 @@ export async function tryDecisionsAgent(
       return client.getContactLabels(id).catch(() => null);
     },
     allowed:
-      cfg.allowedLabels.length > 0
-        ? { labels: cfg.allowedLabels, mode: cfg.outsideAllowedLabels }
+      cfg.allowedLabels.length > 0 || cfg.labelRemoval === "allowed"
+        ? {
+            labels: cfg.allowedLabels,
+            mode: cfg.outsideAllowedLabels,
+            removal: cfg.labelRemoval,
+          }
         : undefined,
   });
 
@@ -378,7 +382,13 @@ async function withFences(
     loadAttributes: () => Promise<PreconditionState>;
     labels: string[] | null;
     protectedLabels: string[];
-    allowed: { labels: string[]; mode: "refuse" | "accept" } | undefined;
+    allowed:
+      | {
+          labels: string[];
+          mode: "refuse" | "accept";
+          removal: "any" | "allowed";
+        }
+      | undefined;
     // Whether the conversation has a contact linked to Chatwoot: without one a contact write has no
     // effect on a tick, so it is reported `no_effect` and its attribute is not counted as written.
     hasContact: boolean;
@@ -475,7 +485,8 @@ async function withFences(
       const fence =
         o.refusedAdd.length > 0 || o.refusedRemove.length > 0
           ? ("protected_label" as const)
-          : (o.refusedOutside ?? []).length > 0
+          : (o.refusedOutside ?? []).length > 0 ||
+              (o.refusedForeign ?? []).length > 0
             ? ("allowed_labels" as const)
             : null;
       if (fence) {
@@ -483,6 +494,7 @@ async function withFences(
           ...o.refusedAdd,
           ...o.refusedRemove,
           ...(o.refusedOutside ?? []),
+          ...(o.refusedForeign ?? []),
         ]);
         const writes =
           known !== null

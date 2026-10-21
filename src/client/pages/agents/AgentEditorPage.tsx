@@ -101,6 +101,7 @@ import { collectOversizedTextChanges } from "@/modules/agents/text-caps";
 import {
   ALLOWED_LABELS_MAX,
   PROTECTED_LABELS_MAX,
+  WRITABLE_ATTRIBUTES_MAX,
 } from "@/modules/agents/tool-guidance";
 import type { Schedule } from "@/modules/business-hours/hours";
 import {
@@ -307,6 +308,12 @@ import { VoiceChannelsTab } from "./VoiceChannelsTab";
 import { VoicePlayground } from "./VoicePlayground";
 import { visionToForm, visionToStored } from "./visionFormState";
 import { voiceToolCatalog } from "./voiceToolCatalog";
+import {
+  EMPTY_WRITABLE_ATTRIBUTES,
+  readWritableAttributesState,
+  serializeWritableAttributes,
+  type WritableAttributesState,
+} from "./WritableAttributesFields";
 
 // The Schedule a saved businessHoursId points at, built field by field rather than passed through:
 // rows can come back without windows/exceptions (the sibling picker guards them the same way), and
@@ -584,6 +591,7 @@ function readBehaviorState(a: Agent) {
       ?.removal === "allowed"
       ? "allowed"
       : "any") as "any" | "allowed",
+    writableAttributes: readWritableAttributesState(s.setCustomAttribute),
     updateKanbanTaskInstructions: str(tg.update_kanban_task),
     toolPreconditions: parseToolPreconditionRows(s.toolPreconditions),
     businessHoursId: a.businessHoursId ?? "",
@@ -1201,6 +1209,8 @@ function AgentEditor() {
     "refuse" | "accept"
   >("refuse");
   const [labelRemoval, setLabelRemoval] = useState<"any" | "allowed">("any");
+  const [writableAttributes, setWritableAttributes] =
+    useState<WritableAttributesState>(EMPTY_WRITABLE_ATTRIBUTES);
   // Per-tool preconditions (Tools tab, same lifecycle as the guidance above). Held as a LIST
   // while editing and stored as a map keyed by tool name: see ToolPreconditionsEditor.
   const [toolPreconditions, setToolPreconditions] = useState<
@@ -1639,6 +1649,7 @@ function AgentEditor() {
     setAllowedLabels(b.allowedLabels);
     setOutsideAllowedLabels(b.outsideAllowedLabels);
     setLabelRemoval(b.labelRemoval);
+    setWritableAttributes(b.writableAttributes);
     setToolPreconditions(b.toolPreconditions);
     if (!keepGuidance) {
       setCrossInboxCase(b.crossInboxCase);
@@ -2248,6 +2259,7 @@ function AgentEditor() {
     allowedLabels: string;
     outsideAllowedLabels: typeof outsideAllowedLabels;
     labelRemoval: typeof labelRemoval;
+    writableAttributes: WritableAttributesState;
     toolPreconditions: typeof toolPreconditions;
     grants: GrantState[];
     review: SuggestionReviewState;
@@ -2290,6 +2302,7 @@ function AgentEditor() {
     allowedLabels,
     outsideAllowedLabels,
     labelRemoval,
+    writableAttributes,
     toolPreconditions,
     grants,
     review,
@@ -2338,6 +2351,7 @@ function AgentEditor() {
       allowedLabels: b.allowedLabels,
       outsideAllowedLabels: b.outsideAllowedLabels,
       labelRemoval: b.labelRemoval,
+      writableAttributes: b.writableAttributes,
       toolPreconditions: b.toolPreconditions,
       grants: mapGrants(syncedGrants),
       review: suggestionReviewToForm(a.settings),
@@ -2421,6 +2435,7 @@ function AgentEditor() {
         allowedLabels: f.allowedLabels,
         outsideAllowedLabels: f.outsideAllowedLabels,
         labelRemoval: f.labelRemoval,
+        writableAttributes: serializeWritableAttributes(f.writableAttributes),
         updateKanbanTaskInstructions: guidance.updateKanbanTaskInstructions,
         toolPreconditions: f.toolPreconditions,
         crossInboxCase: guidance.crossInboxCase,
@@ -3092,6 +3107,30 @@ function AgentEditor() {
     );
   }
 
+  // The attributes set_custom_attribute may write, refused before the save by the same rule as the
+  // label lists above: the PATCH would refuse it after the grants PUT had already enabled the tool.
+  function writableAttributesError(
+    toolsSettings: Record<string, unknown>,
+    stored: unknown,
+  ): string | null {
+    const next = (toolsSettings.setCustomAttribute as Record<string, unknown>)
+      ?.allowed;
+    if (!Array.isArray(next) || next.length <= WRITABLE_ATTRIBUTES_MAX)
+      return null;
+    const before = (stored as Record<string, Record<string, unknown>> | null)
+      ?.setCustomAttribute?.allowed;
+    if (
+      Array.isArray(before) &&
+      JSON.stringify(before) === JSON.stringify(next)
+    )
+      return null;
+    return t(
+      "editor.writableAttributes.tooMany",
+      "Attributes it may write takes at most {{max}} attributes across the three scopes.",
+      { max: WRITABLE_ATTRIBUTES_MAX },
+    );
+  }
+
   // Resolve a reused schedule by name (a business-hours warning carries no catalog id) and open its own
   // editor in place; fall back to the resources page if the list can't be matched.
   async function openBusinessHoursReview(name: string) {
@@ -3689,6 +3728,13 @@ function AgentEditor() {
         outsideAllowed: outsideAllowedLabels,
         removal: labelRemoval,
       },
+      setCustomAttribute: {
+        ...((syncedSettings.setCustomAttribute ?? {}) as Record<
+          string,
+          unknown
+        >),
+        allowed: serializeWritableAttributes(writableAttributes),
+      },
       crossInboxCase: crossInboxCaseJson,
       sendImage: sendImageJson,
       resolveConversation: resolveConversationJson,
@@ -3793,6 +3839,13 @@ function AgentEditor() {
         outsideAllowed: outsideAllowedLabels,
         removal: labelRemoval,
       },
+      setCustomAttribute: {
+        ...((syncedSettings.setCustomAttribute ?? {}) as Record<
+          string,
+          unknown
+        >),
+        allowed: serializeWritableAttributes(writableAttributes),
+      },
       crossInboxCase: crossInboxCaseJson,
       sendImage: sendImageJson,
       resolveConversation: resolveConversationJson,
@@ -3810,6 +3863,7 @@ function AgentEditor() {
       settingsTextError(toolsSettings, storedSettings) ??
       protectedLabelsError(protectedList, storedSettings) ??
       allowedLabelsError(allowedList, storedSettings) ??
+      writableAttributesError(toolsSettings, storedSettings) ??
       resolveLabelsClashError(protectedResolveLabels(toolsSettings)) ??
       // NOTE: the case attribute key is checked here, before the grants PUT.
       // Refused by the PATCH, which goes out after that PUT, so a bad key would otherwise leave new
@@ -5360,6 +5414,8 @@ function AgentEditor() {
                   setOutsideAllowedLabels={setOutsideAllowedLabels}
                   labelRemoval={labelRemoval}
                   setLabelRemoval={setLabelRemoval}
+                  writableAttributes={writableAttributes}
+                  setWritableAttributes={setWritableAttributes}
                   updateKanbanTaskInstructions={updateKanbanTaskInstructions}
                   toolPreconditions={toolPreconditions}
                   setToolPreconditions={setToolPreconditions}

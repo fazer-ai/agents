@@ -8,6 +8,7 @@ import {
   readOutsideAllowedLabels,
   readProtectedLabels,
   readToolGuidance,
+  readWritableAttributes,
 } from "@/modules/agents/tool-guidance";
 import { readToolPreconditionsForDisplay } from "@/modules/agents/tool-preconditions";
 import { readAvailabilityConfig } from "@/modules/availability/away";
@@ -114,6 +115,9 @@ export interface BehaviorSettings {
     outsideAllowed: ReturnType<typeof readOutsideAllowedLabels>;
     removal: ReturnType<typeof readLabelRemoval>;
   };
+  setCustomAttribute: {
+    allowed: ReturnType<typeof readWritableAttributes>;
+  };
   toolPreconditions: ReturnType<typeof readToolPreconditionsForDisplay>;
   monitoring: ReturnType<typeof readMonitoringConfig>;
 }
@@ -152,6 +156,7 @@ export const BEHAVIOR_SETTINGS_KEYS = [
   "kanban",
   "toolGuidance",
   "setLabels",
+  "setCustomAttribute",
   "toolPreconditions",
   "monitoring",
 ] as const;
@@ -201,6 +206,7 @@ export function readBehaviorSettings(
       outsideAllowed: readOutsideAllowedLabels(settings),
       removal: readLabelRemoval(settings),
     },
+    setCustomAttribute: { allowed: readWritableAttributes(settings) },
     toolPreconditions: readToolPreconditionsForDisplay(settings),
     monitoring: readMonitoringConfig(settings),
   };
@@ -240,6 +246,7 @@ export interface BehaviorSettingsPatch {
   kanban?: Record<string, unknown>;
   toolGuidance?: Record<string, unknown>;
   setLabels?: Record<string, unknown>;
+  setCustomAttribute?: Record<string, unknown>;
   toolPreconditions?: Record<string, unknown>;
   monitoring?: Record<string, unknown>;
 }

@@ -34,6 +34,23 @@ export function isNativeDecisionTool(tool: string): tool is DecisionActionTool {
   return (DECISION_ACTION_TOOLS as readonly string[]).includes(tool);
 }
 
+// The arguments a rule's native call is made with. A rule's value is the operator's, written as
+// configured, so an empty `set_custom_attribute` value is the clear it says, which the tool takes only
+// with `clear` (a model's empty value is refused there).
+export function decisionCallArgs(
+  tool: string,
+  args: Record<string, unknown>,
+): Record<string, unknown> {
+  if (
+    tool === "set_custom_attribute" &&
+    args.clear === undefined &&
+    (args.value === undefined ||
+      (typeof args.value === "string" && args.value.trim() === ""))
+  )
+    return { ...args, value: "", clear: true };
+  return args;
+}
+
 // A tool name as the model receives it (normalizeToolName, `mcp__<server>__<tool>`).
 export const TOOL_NAME = /^[a-zA-Z0-9_-]{1,64}$/;
 

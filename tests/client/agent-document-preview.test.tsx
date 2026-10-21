@@ -156,6 +156,8 @@ function renderEditor() {
               setOutsideAllowedLabels={noop}
               labelRemoval="any"
               setLabelRemoval={noop}
+              writableAttributes={{ conversation: [], contact: [], task: [] }}
+              setWritableAttributes={noop}
               setLabelInstructions={noop}
               updateKanbanTaskInstructions=""
               setUpdateKanbanTaskInstructions={noop}

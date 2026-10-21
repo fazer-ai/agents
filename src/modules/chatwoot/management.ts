@@ -2248,13 +2248,19 @@ export async function listInboxLabels(
   return { labels: [...byTitle.values()], accountCount };
 }
 
-// Custom-attribute DEFINITIONS available to an agent's inbox(es), for the attribute-context
-// picker. Same best-effort contract as listInboxLabels, deduped by (model, key).
+// Custom-attribute DEFINITIONS available to an agent's inbox(es), for the attribute pickers (context,
+// preconditions, the attributes set_custom_attribute may write, which also shows each one's rule).
+// Same best-effort contract as listInboxLabels, deduped by (model, key). `settingsUrl` is the
+// account's attribute settings page, where a pattern is edited; null unless exactly one account.
 export interface InboxCustomAttribute {
   key: string;
   displayName: string;
   // NOTE: Chatwoot `attribute_model`: conversation_attribute | contact_attribute | task_attribute …
   model: string;
+  displayType: string;
+  values: string[];
+  regexPattern: string | null;
+  regexCue: string | null;
 }
 
 export async function listInboxCustomAttributes(
@@ -2262,7 +2268,11 @@ export async function listInboxCustomAttributes(
   agentId: bigint,
   deps: LoadChatwootClientDeps = {},
   base: PrismaClient = basePrisma,
-): Promise<{ attributes: InboxCustomAttribute[]; accountCount: number }> {
+): Promise<{
+  attributes: InboxCustomAttribute[];
+  accountCount: number;
+  settingsUrl: string | null;
+}> {
   if (ctx.tenantId === null) throw new AppError("tenant required", 400);
   const tenantId = ctx.tenantId;
   const { instanceIds, accountCount } = await agentInboxScope(
@@ -2270,8 +2280,10 @@ export async function listInboxCustomAttributes(
     agentId,
     base,
   );
-  if (instanceIds.length === 0) return { attributes: [], accountCount: 0 };
+  if (instanceIds.length === 0)
+    return { attributes: [], accountCount: 0, settingsUrl: null };
   const byKey = new Map<string, InboxCustomAttribute>();
+  let settingsUrl: string | null = null;
   for (const instanceId of instanceIds) {
     try {
       const client = await loadChatwootClient(tenantId, instanceId, {
@@ -2285,13 +2297,18 @@ export async function listInboxCustomAttributes(
           key: def.key,
           displayName: def.displayName,
           model: def.model,
+          displayType: def.displayType,
+          values: def.values,
+          regexPattern: def.regexPattern,
+          regexCue: def.regexCue,
         });
       }
+      if (accountCount === 1) settingsUrl ??= client.attributesSettingsUrl();
     } catch {
       // NOTE: best-effort — an unreachable instance contributes no definitions
     }
   }
-  return { attributes: [...byKey.values()], accountCount };
+  return { attributes: [...byKey.values()], accountCount, settingsUrl };
 }
 
 // An unbind asks Chatwoot for one state: no agent bot on this inbox. A 404 from set_agent_bot means

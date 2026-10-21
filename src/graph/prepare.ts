@@ -32,6 +32,8 @@ import {
   readOutsideAllowedLabels,
   readProtectedLabels,
   readToolGuidance,
+  readWritableAttributes,
+  type WritableAttribute,
 } from "@/modules/agents/tool-guidance";
 import {
   readToolPreconditions,
@@ -44,6 +46,10 @@ import {
 import { appointmentSideEffects } from "@/modules/appointments/side-effect";
 import { parseSchedule, type Schedule } from "@/modules/business-hours/hours";
 import { readSchedule } from "@/modules/business-hours/service";
+import type {
+  AttributeRefusal,
+  AttributeRefusalReporter,
+} from "@/modules/chatwoot/attribute-rules";
 import {
   ATTRIBUTE_SCOPES,
   attributeBagsFrom,
@@ -370,6 +376,8 @@ export interface AgentConfig {
   outsideAllowedLabels: "refuse" | "accept";
   // Which labels set_labels may remove: `allowed` limits it to the list above. See readLabelRemoval.
   labelRemoval: "any" | "allowed";
+  // The attributes set_custom_attribute may write. Empty ⇒ any key. See readWritableAttributes.
+  writableAttributes: WritableAttribute[];
   // Operator-declared preconditions, keyed by TOOL NAME. Native or custom: the seam
   // that applies them is the one place every source's tools meet, so one map covers all six.
   toolPreconditions: Record<string, ToolPrecondition[]>;
@@ -1071,6 +1079,7 @@ export async function loadAgentConfig(
     allowedLabels: readAllowedLabels(effSettings),
     outsideAllowedLabels: readOutsideAllowedLabels(effSettings),
     labelRemoval: readLabelRemoval(effSettings),
+    writableAttributes: readWritableAttributes(effSettings),
     toolPreconditions: readToolPreconditions(effSettings),
     httpToolContext: {
       ...(conv?.contact?.chatwootContactId != null
@@ -1328,6 +1337,9 @@ export interface ToolBuildDeps {
       allowedLabels?: string[];
       outsideAllowedLabels?: "refuse" | "accept";
       labelRemoval?: "any" | "allowed";
+      writableAttributes?: WritableAttribute[];
+      onAttributeRefused?: AttributeRefusalReporter;
+      vocabUnavailable?: boolean;
       expiresOn?: AbortSignal;
       stillWanted?: () => Promise<boolean>;
       kanban?: KanbanContext;
@@ -1592,6 +1604,7 @@ export async function buildToolset(
     !cfg.nativeToolsAllow ||
     cfg.nativeToolsAllow.some((n) => vocabTools.includes(n));
   let vocab: ChatwootVocab | undefined;
+  let vocabUnavailable = false;
   if (needsVocab && ctx.conversationId > 0) {
     try {
       vocab = await loadChatwootVocab(
@@ -1599,6 +1612,7 @@ export async function buildToolset(
         `${ctx.tenantId}:${ctx.instanceId}`,
       );
     } catch (e) {
+      vocabUnavailable = true;
       logger.warn(
         "chatwoot vocab fetch failed (tenant=%s): %s",
         String(ctx.tenantId),
@@ -1607,19 +1621,19 @@ export async function buildToolset(
     }
   }
   // Resolve this conversation's kanban card (board + current step + steps) ONLY when a tool that reads
-  // it is granted. kanban_move_card (step by name) and update_kanban_task (`<current_card>`) exist for
-  // the card, so either one resolves it. set_custom_attribute and set_labels are everyday tools whose
-  // `task` scope is one use among several, so they resolve it only on an account that defines card
-  // attributes: without that gate every attribute or label agent, the decisions observer included,
-  // would pay the read on accounts with no funnel at all. The cost is one conversation GET per turn
-  // (the board's steps are cached); a conversation with no card answers from that GET alone.
-  // Best-effort.
+  // it is granted: kanban_move_card and update_kanban_task always. set_custom_attribute and set_labels
+  // use the `task` scope only sometimes, so they resolve it only when the account defines card
+  // attributes or the operator listed a task key for set_custom_attribute; otherwise every attribute
+  // or label agent, the decisions observer included, would pay the read on accounts with no funnel.
+  // The cost is one conversation GET per turn (the board's steps are cached). Best-effort.
   const allow = cfg.nativeToolsAllow;
   const grantsKanban =
     !allow ||
     allow.some((n) => KANBAN_CARD_TOOLS.includes(n)) ||
     (allow.some((n) => KANBAN_CARD_SCOPE_TOOLS.includes(n)) &&
-      attributesForModel(vocab, "task_attribute").length > 0);
+      attributesForModel(vocab, "task_attribute").length > 0) ||
+    (allow.includes("set_custom_attribute") &&
+      (cfg.writableAttributes ?? []).some((a) => a.scope === "task"));
   let kanban: KanbanContext | undefined;
   if (grantsKanban && ctx.conversationId > 0) {
     try {
@@ -1705,6 +1719,7 @@ export async function buildToolset(
       replyIsAudioWith: ctx.replyIsAudioWith,
       timezone: cfg.timezone,
       vocab,
+      ...(vocabUnavailable ? { vocabUnavailable } : {}),
       shownLabels,
       ...(ctx.conversationLabelsRead
         ? { conversationLabelsRead: ctx.conversationLabelsRead }
@@ -1720,6 +1735,26 @@ export async function buildToolset(
       allowedLabels: cfg.allowedLabels,
       outsideAllowedLabels: cfg.outsideAllowedLabels,
       labelRemoval: cfg.labelRemoval,
+      writableAttributes: cfg.writableAttributes,
+      // NOTE: A refused attribute write is its own `tool` line at info: the model is told and asks
+      // again, and the operator sees which rule held the value back. The rule, never the value.
+      ...(flow
+        ? {
+            onAttributeRefused: (r: AttributeRefusal) =>
+              emitFlowEvent(flow, {
+                stage: "tool",
+                level: "info",
+                status: "skipped",
+                detail: {
+                  tool: "set_custom_attribute",
+                  phase: "attribute_refused",
+                  scope: r.scope,
+                  rule: r.rule,
+                  ...(r.key ? { key: r.key } : {}),
+                },
+              }),
+          }
+        : {}),
       // NOTE: The same fence the ack above asks, handed on to set_labels: its write waits for a queue
       // that `/reset` also uses, and that wait is after the graph's ask at the tool boundary.
       stillWanted: ctx.stillWanted,

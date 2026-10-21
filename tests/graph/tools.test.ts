@@ -2527,6 +2527,8 @@ describe("native tools", () => {
           model: "conversation_attribute",
           displayType: "list",
           values: ["new", "qualified"],
+          regexPattern: null,
+          regexCue: null,
         },
         {
           key: "plano",
@@ -2534,6 +2536,8 @@ describe("native tools", () => {
           model: "contact_attribute",
           displayType: "text",
           values: [],
+          regexPattern: null,
+          regexCue: null,
         },
       ],
     };

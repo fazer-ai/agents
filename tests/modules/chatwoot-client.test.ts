@@ -539,6 +539,8 @@ describe("ChatwootClient", () => {
         model: "contact_attribute",
         displayType: "list",
         values: ["Free", "Pro"],
+        regexPattern: null,
+        regexCue: null,
       },
     ]);
   });

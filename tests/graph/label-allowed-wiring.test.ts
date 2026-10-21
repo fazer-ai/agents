@@ -68,6 +68,7 @@ function config(): AgentConfig {
     allowedLabels: ["vip", "suporte"],
     outsideAllowedLabels: "accept",
     labelRemoval: "allowed",
+    writableAttributes: [{ scope: "contact", key: "nome" }],
   } as unknown as AgentConfig;
 }
 
@@ -158,5 +159,64 @@ describe.skipIf(!dbUp)("the allowed list reaches set_labels", () => {
     expect(seen?.outsideAllowedLabels).toBe("accept");
     expect(seen?.labelRemoval).toBe("allowed");
     expect(seen?.protectedLabels).toEqual(["agente-off"]);
+  });
+
+  test("buildToolset hands the writable attributes on, and a refusal becomes an info tool line", async () => {
+    let seen: Record<string, unknown> | undefined;
+    const turnId = `attr-1564-${process.pid}`;
+    await buildToolset(
+      config(),
+      {
+        tenantId,
+        instanceId: 1n,
+        base: app as PrismaClient,
+        client: {} as unknown as ChatwootClient,
+        conversationId: 77,
+        threadId: `t-${process.pid}`,
+      },
+      {
+        flow: { tenantId, turnId, source: "inbox", base: app as PrismaClient },
+        buildNativeTools: (native) => {
+          seen = native as unknown as Record<string, unknown>;
+          return [];
+        },
+      },
+    );
+    expect(seen?.writableAttributes).toEqual([
+      { scope: "contact", key: "nome" },
+    ]);
+    // NOTE: this client cannot list anything, so the vocab read fails and the tool is told so.
+    expect(seen?.vocabUnavailable).toBe(true);
+    const report = seen?.onAttributeRefused as (r: unknown) => void;
+    report({ scope: "contact", rule: "pattern", key: "nome" });
+    report({ scope: "conversation", rule: "not_allowed" });
+    const rows = await flowLogRows(su as PrismaClient, {
+      where: { tenantId, turnId },
+    });
+    expect(
+      rows.map((r) => ({ level: r.level, status: r.status, detail: r.detail })),
+    ).toEqual([
+      {
+        level: "info",
+        status: "skipped",
+        detail: {
+          tool: "set_custom_attribute",
+          phase: "attribute_refused",
+          scope: "contact",
+          rule: "pattern",
+          key: "nome",
+        },
+      },
+      {
+        level: "info",
+        status: "skipped",
+        detail: {
+          tool: "set_custom_attribute",
+          phase: "attribute_refused",
+          scope: "conversation",
+          rule: "not_allowed",
+        },
+      },
+    ]);
   });
 });

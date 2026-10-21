@@ -22,6 +22,7 @@ import {
   type DecisionQuestion,
   type DecisionsConfig,
   type DecisionTrigger,
+  decisionCallArgs,
   isNativeDecisionTool,
   ruleStateKey,
   triggerOf,
@@ -430,7 +431,7 @@ export async function applyDecisions(
               // a code tool's sandbox error) comes back as an error result instead of plain text
               // (failure.ts), and is read as one below.
               isNativeDecisionTool(f.tool)
-                ? (callArgs.get(member.at) ?? f.args)
+                ? decisionCallArgs(f.tool, callArgs.get(member.at) ?? f.args)
                 : {
                     type: "tool_call" as const,
                     id: `decision-${f.rule}`,

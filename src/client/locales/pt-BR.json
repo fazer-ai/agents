@@ -1914,6 +1914,7 @@
     "decisionsAttributeKey": "Atributo",
     "decisionsAttributeKeyPlaceholder": "Escolha um atributo…",
     "decisionsAttributeValue": "Valor",
+    "decisionsAttributeValueHint": "Vazio limpa o atributo.",
     "decisionsClassifierProblem": "O classificador, na aba Geral, ainda não está completo.",
     "decisionsConditionQuestion": "Pergunta",
     "decisionsCredential": "Chave de API",
@@ -2925,7 +2926,22 @@
     "voiceWarningPermission": "O agente não consegue atender ligações porque a chave não tem permissão para rodar agentes no {{provider}}.",
     "voiceWarningReviewKey": "Revisar a chave",
     "voiceWarningReviewVoice": "Revisar a voz",
-    "voiceWarningSync": "O agente não consegue atender ligações porque o {{provider}} recusou a configuração dele."
+    "voiceWarningSync": "O agente não consegue atender ligações porque o {{provider}} recusou a configuração dele.",
+    "writableAttributes": {
+      "editInChatwoot": "Editar opções e padrões no Chatwoot",
+      "hint": "Opcional. Os únicos atributos que este agente pode gravar ou limpar. Vazio: qualquer atributo. Nos dois casos, um valor que não respeita a definição do atributo no Chatwoot (opções, tipo ou padrão) não é salvo, e o agente é orientado a perguntar de novo.",
+      "label": "Atributos que pode gravar",
+      "ruleCheckbox": "true ou false",
+      "ruleDate": "Uma data (AAAA-MM-DD)",
+      "ruleLink": "Um link começando com http:// ou https://",
+      "ruleList": "Uma das opções: {{values}}",
+      "ruleNumber": "Um número",
+      "rulePattern": "Precisa seguir o padrão",
+      "rules": "O que cada atributo aceita",
+      "ruleText": "Qualquer texto",
+      "ruleUndefined": "Sem definição no Chatwoot: qualquer texto não vazio",
+      "tooMany": "Atributos que pode gravar aceita no máximo {{max}} atributos somando os três escopos."
+    }
   },
   "experiments": {
     "comingSoonDesc": "Rode variantes de prompt lado a lado e compare os resultados. Esta funcionalidade está em construção.",

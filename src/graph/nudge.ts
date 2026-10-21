@@ -1,4 +1,4 @@
-import { AIMessage, type BaseMessage } from "@langchain/core/messages";
+import type { BaseMessage } from "@langchain/core/messages";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
@@ -2616,7 +2616,7 @@ async function runAgentNudgeBody(
       graphThreadId,
       produced: result.messages,
       kind: "reactive",
-      replacement: new AIMessage(sent),
+      replacementText: sent,
       owner: graphOwner,
       base,
     }).catch((err) => {

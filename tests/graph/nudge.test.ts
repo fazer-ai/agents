@@ -6834,6 +6834,15 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
           expect(left.some(([, text]) => text.includes("Lembrete!"))).toBe(
             false,
           );
+          // Stored WITH an id, so a later take-back or compaction can name it.
+          const stored = (
+            (
+              await buildThreadStateGraph(saver).getState({
+                configurable: { thread_id: threadId },
+              })
+            ).values as { messages: BaseMessage[] }
+          ).messages.at(-1);
+          expect(typeof stored?.id).toBe("string");
         },
         settings,
       );

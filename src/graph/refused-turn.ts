@@ -1,5 +1,8 @@
-import type { AIMessage, BaseMessage } from "@langchain/core/messages";
-import { RemoveMessage } from "@langchain/core/messages";
+import {
+  AIMessage,
+  type BaseMessage,
+  RemoveMessage,
+} from "@langchain/core/messages";
 import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
@@ -249,8 +252,9 @@ export async function undoRefusedTurn(params: {
   // reactive plan only: the proactive one removes nothing from a turn that acted.
   undeliveredNote?: BaseMessage;
   // What the customer read instead of the removed reply (a template sent in its place). Unlike the
-  // note it stands there whether or not the turn acted first, on the same first id.
-  replacement?: BaseMessage;
+  // note it stands there whether or not the turn acted first, built ON the first id so the
+  // checkpoint keeps the id a later removal names.
+  replacementText?: string;
   // The DURABLE half of the exclusion, for the one thread key that has a row to hang it on. Both or
   // neither: without them only the process-local check applies, which is all a thread with no
   // contact inbox can have.
@@ -290,13 +294,14 @@ export async function undoRefusedTurn(params: {
       )?.messages ?? []) as BaseMessage[];
       const decided = plan(produced, current, params.inertTools ?? new Set());
       if (decided.action === "remove") {
-        const note =
-          params.replacement ??
-          (params.undeliveredNote !== undefined &&
-          turnActedBeforeItsReply(produced, params.inertTools)
-            ? params.undeliveredNote
-            : null);
         const [first, ...rest] = decided.ids;
+        const note =
+          params.replacementText !== undefined
+            ? new AIMessage({ content: params.replacementText, id: first })
+            : params.undeliveredNote !== undefined &&
+                turnActedBeforeItsReply(produced, params.inertTools)
+              ? params.undeliveredNote
+              : null;
         if (note && first !== undefined) note.id = first;
         await graph.updateState(
           threadCfg,

@@ -12,8 +12,13 @@ import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import logger from "@/api/lib/logger";
 import { contactInboxThreadId } from "@/graph/checkpointer";
-import { isTurnInFlight } from "@/graph/inflight";
+import {
+  clearTurnInFlight,
+  isTurnInFlight,
+  markTurnInFlight,
+} from "@/graph/inflight";
 import { armIngest, ingestHandler } from "@/graph/ingest-job";
 import {
   conversationStamp,
@@ -6783,12 +6788,203 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
         [LEMBRETE].map((d) => parseTemplateDefinition(d));
       return { ...s, payloads };
     }
-    const nudgeDeps = (s: ReturnType<typeof templateStub>) => ({
+    const nudgeDeps = (
+      s: ReturnType<typeof templateStub>,
+      checkpointer = new MemorySaver(),
+    ) => ({
       makeModel: (() =>
         new FakeListChatModel({ responses: ["Lembrete!"] })) as never,
       makeClient: async () => s.client,
-      checkpointer: new MemorySaver(),
+      checkpointer,
       persistUsage: async () => {},
+    });
+    const reminder = {
+      source: "appointment_reminder",
+      kind: "reminder",
+      template: {
+        kind: "appointment_reminder",
+        offsetHours: 24,
+        appointment: {
+          startISO: "2026-10-23T01:30:00Z",
+          calendarLabel: "centro",
+        },
+      },
+    } as const;
+
+    test("memory keeps the template the customer read, not the draft it replaced", async () => {
+      await withGuardrails(
+        { enabled: false },
+        async () => {
+          await seedConv(7587, null, new Date(Date.now() - 48 * 3_600_000));
+          const s = templateStub();
+          const saver = new MemorySaver();
+          const threadId = `${tenantId}:${instanceId}:7587`;
+          const outcome = await runAgentNudge({
+            tenantId,
+            threadId,
+            nudge: reminder,
+            base: appDb,
+            deps: nudgeDeps(s, saver),
+          });
+          expect(outcome).toBe("templated");
+          const sent = (s.payloads[0] as { content: string }).content;
+          expect(sent).toContain("Dia 22/10/2026 às 22:30.");
+          const left = await turnLeftIn(saver, threadId);
+          expect(left.at(-1)).toEqual(["ai", sent]);
+          expect(left.some(([, text]) => text.includes("Lembrete!"))).toBe(
+            false,
+          );
+          // Stored WITH an id, so a later take-back or compaction can name it.
+          const stored = (
+            (
+              await buildThreadStateGraph(saver).getState({
+                configurable: { thread_id: threadId },
+              })
+            ).values as { messages: BaseMessage[] }
+          ).messages.at(-1);
+          expect(typeof stored?.id).toBe("string");
+        },
+        settings,
+      );
+    });
+
+    test("a turn that acted before its draft keeps the act and swaps only the draft for the template", async () => {
+      class LabelThenDraftModel extends BaseChatModel {
+        rounds = 0;
+        constructor() {
+          super({});
+        }
+        _llmType() {
+          return "fake-label-then-draft";
+        }
+        async _generate(): Promise<ChatResult> {
+          this.rounds += 1;
+          const message =
+            this.rounds === 1
+              ? new AIMessage({
+                  content: "",
+                  tool_calls: [
+                    {
+                      name: "set_labels",
+                      args: { add: ["lembrete"], scope: "conversation" },
+                      id: "call_7589_label",
+                    },
+                  ],
+                })
+              : new AIMessage("Lembrete!");
+          return { generations: [{ text: "", message }] };
+        }
+      }
+      await withGuardrails(
+        { enabled: false },
+        async () => {
+          await seedConv(7589, null, new Date(Date.now() - 48 * 3_600_000));
+          const s = templateStub();
+          const saver = new MemorySaver();
+          const threadId = `${tenantId}:${instanceId}:7589`;
+          const outcome = await runAgentNudge({
+            tenantId,
+            threadId,
+            nudge: reminder,
+            base: appDb,
+            deps: {
+              ...nudgeDeps(s, saver),
+              makeModel: (() => new LabelThenDraftModel()) as never,
+            },
+          });
+          expect(outcome).toBe("templated");
+          const sent = (s.payloads[0] as { content: string }).content;
+          const left = await turnLeftIn(saver, threadId);
+          expect(left.map(([type]) => type).slice(-3)).toEqual([
+            "ai",
+            "tool",
+            "ai",
+          ]);
+          expect(left.at(-1)).toEqual(["ai", sent]);
+          expect(left.some(([, text]) => text.includes("Lembrete!"))).toBe(
+            false,
+          );
+        },
+        settings,
+      );
+    });
+
+    test("a thread another turn holds keeps the draft, and the template still goes", async () => {
+      await withGuardrails(
+        { enabled: false },
+        async () => {
+          await seedConv(7590, null, new Date(Date.now() - 48 * 3_600_000));
+          const s = templateStub();
+          const saver = new MemorySaver();
+          const threadId = `${tenantId}:${instanceId}:7590`;
+          const client = s.client as unknown as Record<string, unknown>;
+          const send = client.sendTemplate as (
+            c: number,
+            p: Record<string, unknown>,
+          ) => Promise<unknown>;
+          client.sendTemplate = async (
+            c: number,
+            p: Record<string, unknown>,
+          ) => {
+            markTurnInFlight(threadId);
+            return send(c, p);
+          };
+          const warn = spyOn(logger, "warn");
+          try {
+            const outcome = await runAgentNudge({
+              tenantId,
+              threadId,
+              nudge: reminder,
+              base: appDb,
+              deps: nudgeDeps(s, saver),
+            });
+            expect(outcome).toBe("templated");
+            expect(s.payloads).toHaveLength(1);
+            expect((await turnLeftIn(saver, threadId)).at(-1)).toEqual([
+              "ai",
+              "Lembrete!",
+            ]);
+            expect(
+              warn.mock.calls.some(
+                (c) =>
+                  c[0] ===
+                    "agentNudge left the unsent draft in place of the template: conv=%s reason=%s" &&
+                  c[2] === "another-invoke-is-reading",
+              ),
+            ).toBe(true);
+          } finally {
+            warn.mockRestore();
+            clearTurnInFlight(threadId);
+          }
+        },
+        settings,
+      );
+    });
+
+    test("inside the window the reply the customer received stays in memory as sent", async () => {
+      await withGuardrails(
+        { enabled: false },
+        async () => {
+          await seedConv(7588, null, new Date(Date.now() - 3_600_000));
+          const s = templateStub();
+          const saver = new MemorySaver();
+          const threadId = `${tenantId}:${instanceId}:7588`;
+          const outcome = await runAgentNudge({
+            tenantId,
+            threadId,
+            nudge: reminder,
+            base: appDb,
+            deps: nudgeDeps(s, saver),
+          });
+          expect(outcome).toBe("messaged");
+          expect(s.payloads).toEqual([]);
+          expect((await turnLeftIn(saver, threadId)).at(-1)).toEqual([
+            "ai",
+            "Lembrete!",
+          ]);
+        },
+        settings,
+      );
     });
 
     test("a reminder outside the window sends the reminder's template, filled with its appointment", async () => {

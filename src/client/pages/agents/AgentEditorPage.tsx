@@ -3969,6 +3969,21 @@ function AgentEditor() {
     setSavingGrants(true);
     let sent: Record<string, unknown> = {};
     const sentTools = { tools: sectionSnap.tools };
+    // The grants the PUT wrote, once it went through: from then on they are in effect whatever the
+    // PATCH answers, so a PATCH that fails leaves them as the editor's copy and the settings unsaved.
+    let written: ToolSelectionView["grants"] | null = null;
+    const keepWrittenGrants = () => {
+      if (!written) return;
+      if (!decides && untouchedSince(sentTools))
+        adoptHalf(mapGrants(written), false);
+      showToast(
+        t(
+          "editor.toolsSettingsNotSaved",
+          "The tool selection was saved, but the tool settings were not.",
+        ),
+        "warning",
+      );
+    };
     try {
       const syncedSettings = (syncedAgentRef.current?.settings ?? {}) as Record<
         string,
@@ -4016,6 +4031,9 @@ function AgentEditor() {
       // Record it NOW so the realtime echo of our OWN write — or a partial failure of the PATCH below —
       // never trips the "changed elsewhere" banner against the now-stale loaded token.
       if (afterGrants) loadedUpdatedAtRef.current = afterGrants;
+      syncedGrantsRef.current = grantsRes.data.grants;
+      written = grantsRes.data.grants;
+      setCatalog(grantsRes.data.catalog);
       const patchExpected = force ? undefined : afterGrants;
       const agentRes = await api.api.v1.agents({ id }).patch({
         transferWithSummary: savedGuidance.transferWithSummary,
@@ -4023,21 +4041,21 @@ function AgentEditor() {
         ...(patchExpected ? { expectedUpdatedAt: patchExpected } : {}),
         ...replaceFor(force),
       });
-      if (handleConflict(agentRes.error, () => void saveTools(true)))
+      if (handleConflict(agentRes.error, () => void saveTools(true))) {
+        keepWrittenGrants();
         return false;
+      }
       if (agentRes.error || !agentRes.data) {
         throw agentRes.error ?? new Error("no data");
       }
-      // NOTE: Sync grants + the saved agent and re-read the tool-coupled state — but NOT applyAgent, which
-      // would reset the Behavior sub-forms and drop their unsaved edits. Keep the local settings bag's
-      // handoff in step so a later Behavior save (which spreads it) doesn't rewrite a stale value.
-      syncedGrantsRef.current = grantsRes.data.grants;
       // On questions and rules the form keeps its hidden grant drafts and any toggle made while this
       // request ran; the baseline takes the written grants, not the form.
       const untouched = untouchedSince(sentTools);
       if (!decides && untouched)
         adoptHalf(mapGrants(grantsRes.data.grants), false);
-      setCatalog(grantsRes.data.catalog);
+      // NOTE: Sync the saved agent and re-read the tool-coupled state — but NOT applyAgent, which
+      // would reset the Behavior sub-forms and drop their unsaved edits. Keep the local settings bag's
+      // handoff in step so a later Behavior save (which spreads it) doesn't rewrite a stale value.
       syncedAgentRef.current = agentRes.data.agent;
       if (untouched) syncToolConfig(agentRes.data.agent, decides);
       markSynced(String(agentRes.data.agent.updatedAt));
@@ -4052,6 +4070,7 @@ function AgentEditor() {
         "tools",
         sent,
       );
+      keepWrittenGrants();
       return false;
     } finally {
       savingRef.current -= 1;

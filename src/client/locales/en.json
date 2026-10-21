@@ -2719,6 +2719,7 @@
       "selectAll": "Select all",
       "showConfig": "Settings"
     },
+    "toolsSettingsNotSaved": "The tool selection was saved, but the tool settings were not.",
     "transferWithSummary": "Post a private summary before handing off to a human",
     "tts": "Audio replies (text-to-speech)",
     "ttsCheckEnforce": "Regenerate",

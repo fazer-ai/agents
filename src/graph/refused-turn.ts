@@ -248,6 +248,9 @@ export async function undoRefusedTurn(params: {
   // the reply stood, ahead of anything appended since. Absent, the reply just goes. Meaningful on the
   // reactive plan only: the proactive one removes nothing from a turn that acted.
   undeliveredNote?: BaseMessage;
+  // What the customer read instead of the removed reply (a template sent in its place). Unlike the
+  // note it stands there whether or not the turn acted first, on the same first id.
+  replacement?: BaseMessage;
   // The DURABLE half of the exclusion, for the one thread key that has a row to hang it on. Both or
   // neither: without them only the process-local check applies, which is all a thread with no
   // contact inbox can have.
@@ -288,10 +291,11 @@ export async function undoRefusedTurn(params: {
       const decided = plan(produced, current, params.inertTools ?? new Set());
       if (decided.action === "remove") {
         const note =
-          params.undeliveredNote !== undefined &&
+          params.replacement ??
+          (params.undeliveredNote !== undefined &&
           turnActedBeforeItsReply(produced, params.inertTools)
             ? params.undeliveredNote
-            : null;
+            : null);
         const [first, ...rest] = decided.ids;
         if (note && first !== undefined) note.id = first;
         await graph.updateState(

@@ -1,4 +1,4 @@
-import type { BaseMessage } from "@langchain/core/messages";
+import { AIMessage, type BaseMessage } from "@langchain/core/messages";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
@@ -2607,6 +2607,34 @@ async function runAgentNudgeBody(
     }
   };
 
+  // A TEMPLATE SENT IN THE DRAFT'S PLACE: the customer read the template, so the thread holds that
+  // text where the draft stood, and the next turn builds on what was said. Same reactive plan as the
+  // silence take-back: the turn's acts and their results stay, only the unsent sentence changes.
+  const rememberTemplateSent = async (sent: string): Promise<void> => {
+    const plan = await undoRefusedTurn({
+      checkpointer,
+      graphThreadId,
+      produced: result.messages,
+      kind: "reactive",
+      replacement: new AIMessage(sent),
+      owner: graphOwner,
+      base,
+    }).catch((err) => {
+      logger.warn(
+        { err, conversationId: String(conversationId) },
+        "agentNudge: could not put the sent template in the draft's place",
+      );
+      return null;
+    });
+    if (plan && plan.action !== "remove") {
+      logger.warn(
+        "agentNudge left the unsent draft in place of the template: conv=%s reason=%s",
+        String(conversationId),
+        plan.reason,
+      );
+    }
+  };
+
   // The post-generation stretch. Every end says whether the generated pair reached the customer:
   // `refused` is rolled back by the single caller below, after the claims above were released, and
   // `settled` does not compile on a word that can only be a refusal (`NudgeRefusalOnly`).
@@ -3026,6 +3054,7 @@ async function runAgentNudgeBody(
           delivered = true;
           keepSentId(await client.sendTemplate(conversationId, payload));
           await recordProactiveSpeech();
+          await rememberTemplateSent(payload.content);
           logger.info(
             "agentNudge templated (outside 24h window): conv=%s source=%s template=%s",
             String(conversationId),

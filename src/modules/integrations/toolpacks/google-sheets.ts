@@ -173,7 +173,14 @@ function locateColumn(header: Header, column: string): number | string {
   return i;
 }
 
-type Located = { token: string; base: string; range: string };
+// `gridRows` is the tab's row count as a grid, empty rows included. The values read stops at the last
+// row with data inside the window, so only the grid can say whether rows past the scan exist.
+type Located = {
+  token: string;
+  base: string;
+  range: string;
+  gridRows: number | null;
+};
 
 // Resolves token, config and the tab's CURRENT title. A string is the reply to give the model.
 async function locateTab(
@@ -189,7 +196,7 @@ async function locateTab(
   if (sheetId === null) return toolFailure(NO_TAB);
   const base = `${SHEETS_ORIGIN}/${encodeURIComponent(spreadsheetId)}`;
   const meta = await sheetsFetch(
-    `${base}?${new URLSearchParams({ fields: "sheets.properties(sheetId,title)" })}`,
+    `${base}?${new URLSearchParams({ fields: "sheets.properties(sheetId,title,gridProperties.rowCount)" })}`,
     { method: "GET", token },
     ctx,
   );
@@ -203,7 +210,14 @@ async function locateTab(
     return toolFailure(
       "The tab configured for this integration no longer exists in the spreadsheet. The operator has to pick the tab again in the integration's settings.",
     );
-  return { token, base, range: quoteTitle(tab.title) };
+  const grid = (tab.gridProperties as { rowCount?: unknown } | undefined)
+    ?.rowCount;
+  return {
+    token,
+    base,
+    range: quoteTitle(tab.title),
+    gridRows: typeof grid === "number" ? grid : null,
+  };
 }
 
 function httpMessage(status: number): string {
@@ -242,6 +256,16 @@ async function readRows(
       Array.isArray(r) ? r : [],
     ),
   };
+}
+
+// Whether rows past the scanned window may hold data: either the read returned more than the window,
+// or the grid is taller than it (an unknown grid size counts as taller).
+function pastTheScan(loc: Located, dataRowsRead: number): boolean {
+  return (
+    dataRowsRead > MAX_SCAN_ROWS ||
+    loc.gridRows === null ||
+    loc.gridRows > MAX_SCAN_ROWS + 1
+  );
 }
 
 const NO_HEADER =
@@ -465,7 +489,7 @@ function buildFindTool(
           col = at;
         }
         const data = read.rows.slice(1);
-        const incomplete = data.length > MAX_SCAN_ROWS;
+        const incomplete = pastTheScan(loc, data.length);
         const scanned = data.slice(0, MAX_SCAN_ROWS);
         const matches: Array<{ row: number; values: Record<string, string> }> =
           [];
@@ -542,7 +566,7 @@ function buildUpdateTool(
         if (typeof key === "string") return key;
         const placed = placeValues(header, input.values);
         if (typeof placed === "string") return placed;
-        const incomplete = read.rows.length - 1 > MAX_SCAN_ROWS;
+        const incomplete = pastTheScan(loc, read.rows.length - 1);
         const data = read.rows.slice(1, MAX_SCAN_ROWS + 1);
         const hits: number[] = [];
         data.forEach((r, i) => {

@@ -17,7 +17,12 @@ import type {
 // batch of single-cell writes. It answers 401 to any bearer but the one it was given, stores what it
 // is sent as-is under RAW and EVALUATES a leading `=` under USER_ENTERED, which is the difference the
 // pack's value mode exists for.
-type Tab = { sheetId: number; title: string; rows: string[][] };
+type Tab = {
+  sheetId: number;
+  title: string;
+  rows: string[][];
+  gridRows?: number;
+};
 
 const ORIGIN = "https://sheets.googleapis.com/v4/spreadsheets";
 
@@ -123,7 +128,13 @@ class FakeSheets {
       return this.json(200, {
         properties: { title: "Spreadsheet" },
         sheets: this.tabs.map((t) => ({
-          properties: { sheetId: t.sheetId, title: t.title },
+          properties: {
+            sheetId: t.sheetId,
+            title: t.title,
+            gridProperties: {
+              rowCount: t.gridRows ?? Math.max(t.rows.length, 1000),
+            },
+          },
         })),
       });
     }
@@ -579,6 +590,23 @@ describe("google sheets: long cells and long tabs", () => {
     const out = await tool("sheets_find_rows")({});
     expect(out.length).toBeLessThanOrEqual(30_000);
     expect(out.toLowerCase()).toContain("too wide");
+  });
+
+  test("blank rows ending the scan do not hide data further down the grid", async () => {
+    const t = leads();
+    t.gridRows = 2500;
+    const { fake, tool } = setup(["sheets_update_row", "sheets_find_rows"], {
+      tabs: [t],
+    });
+    const refused = await tool("sheets_update_row")({
+      column: "Nome",
+      value: "Bruno",
+      values: [{ column: "Status", value: "x" }],
+    });
+    expect(refused).toContain("row number");
+    expect(fake.writes).toBe(0);
+    const found = parse(await tool("sheets_find_rows")({}));
+    expect(found.incomplete).toBe(true);
   });
 
   test("on a tab longer than the scan, an update needs the row number, and gets it", async () => {

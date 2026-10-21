@@ -12,6 +12,7 @@ import {
 import { useNavigate } from "react-router";
 import { DiscardDialog } from "@/client/components/DiscardDialog";
 import {
+  afterTrapRelease,
   leaveViaBackTrap,
   sentinelOnTop,
   useBackGuard,
@@ -68,11 +69,16 @@ export function NavGuardProvider({ children }: { children: ReactNode }) {
   // so the leave goes ahead. It is decided once every registration of the same commit has landed (a
   // form turning dirty in that commit keeps the confirm), and before the guards let go: the Back
   // trap's own cleanup would otherwise traverse as well, and land one entry past the page.
+  // A held action (a tenant switch's reload, a menu's navigation) waits for the trap to let go instead.
   const settle = useCallback(() => {
     const asked = pendingRef.current;
-    if (dirtyIds.current.size === 0 && asked) leave(asked);
-    setActive(dirtyIds.current.size > 0);
-  }, [leave]);
+    const clean = dirtyIds.current.size === 0;
+    if (clean && asked?.kind === "fn") {
+      setPending(null);
+      afterTrapRelease(asked.run);
+    } else if (clean && asked) leave(asked);
+    setActive(!clean);
+  }, [leave, setPending]);
 
   const register = useCallback(
     (id: string, dirty: boolean) => {

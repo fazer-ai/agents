@@ -33,6 +33,7 @@ setUrl();
 // A browser's history.back() always ends in a popstate; landing it at once keeps the trap's cleanup
 // of one test from swallowing the next test's Back.
 let back: ReturnType<typeof spyOn>;
+const backCalls = () => back.mock.calls.length;
 beforeEach(() => {
   setUrl();
   back = spyOn(window.history, "back").mockImplementation(() => {
@@ -47,6 +48,8 @@ afterEach(() => {
 let setDirty: (dirty: boolean) => void = () => {};
 let setOtherDirty: (dirty: boolean) => void = () => {};
 let ran = 0;
+// How many history.back() calls had been made when the held action ran.
+let ranAt = -1;
 
 // A second form on the same page, with its own registration.
 function OtherForm() {
@@ -71,6 +74,7 @@ function Page() {
         onClick={() =>
           confirmLeave(() => {
             ran += 1;
+            ranAt = backCalls();
           })
         }
       >
@@ -156,6 +160,18 @@ describe("a leave asked while the page is dirty", () => {
     await act(async () => setDirty(false));
     expect(ran).toBe(1);
     expect(asking()).toBe(false);
+  });
+
+  // A held action may reload the whole document; the trap's cleanup pop, taken after it, could
+  // cancel that reload. The pop comes first.
+  test("an action held by the confirm runs after the trap lets go", async () => {
+    mount();
+    fireEvent.click(screen.getByText("Switch"));
+    const before = backCalls();
+    await act(async () => setDirty(false));
+    expect(ran).toBe(1);
+    expect(backCalls()).toBe(before + 1);
+    expect(ranAt).toBe(before + 1);
   });
 
   test("is dropped, not carried out, when the page goes away still dirty", async () => {

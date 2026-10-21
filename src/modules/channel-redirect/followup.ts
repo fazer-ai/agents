@@ -497,9 +497,10 @@ export async function sendWhatsAppFollowUp(
       });
       return outcomeOf(sent);
     }
-    // No template configured → fall through to a private note (never a rejected free-form send).
+    // A template whose values cannot be filled → fall through to the private note (never a rejected
+    // free-form send).
   }
-  if (mode === "note") {
+  if (mode !== "freeform") {
     await client.sendMessage(sibling.chatwootConversationId, text, {
       private: true,
     });

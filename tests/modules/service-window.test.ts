@@ -309,6 +309,15 @@ describe("buildTemplatePayload with header and buttons", () => {
     );
   });
 
+  test("a value that renders empty means no payload, so the caller leaves its note", () => {
+    const allDay = {
+      ...occasion,
+      appointment: { ...occasion.appointment, startISO: "2026-10-22" },
+    };
+    expect(buildTemplatePayload(cfg, "Maria", allDay)).toBeNull();
+    expect(buildTemplatePayload(cfg, null, occasion)).toBeNull();
+  });
+
   test("a NAMED template is keyed by its placeholder names", () => {
     const named = parseTemplateDefinition({
       name: "lembrete_agendamento",

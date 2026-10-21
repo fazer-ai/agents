@@ -623,6 +623,18 @@ export function buildTemplatePayload(
   const params = fill(choice.params);
   const headerParams = fill(choice.headerParams);
   const buttonParams = fill(choice.buttonParams);
+  // A value that renders empty (no time on an all-day booking, no calendar label, no contact name)
+  // is dropped by Chatwoot and WhatsApp refuses the count: no payload, so the caller leaves its note.
+  const blank = (v: string) => v.trim() === "";
+  if (
+    params.some(blank) ||
+    headerParams.some(blank) ||
+    buttonParams.some(
+      (v, i) => !blank(choice.buttonParams[i] ?? "") && blank(v),
+    )
+  ) {
+    return null;
+  }
   const def = findTemplateDefinition(definitions, choice.name, choice.language);
   const keyed = (values: string[], text: string | null) => {
     const names =

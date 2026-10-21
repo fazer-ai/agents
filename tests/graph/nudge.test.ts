@@ -6739,11 +6739,7 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
         templates: {
           appointment_reminder: {
             name: "lembrete_agendamento",
-            params: [
-              "{{primeiro_nome}}",
-              "{{data_agendamento}}",
-              "{{hora_agendamento}}",
-            ],
+            params: ["cliente", "{{data_agendamento}}", "{{hora_agendamento}}"],
             headerParams: ["{{dia_semana_agendamento}}"],
             buttonParams: ["{{agenda}}"],
           },
@@ -6808,7 +6804,7 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
           expect(p.name).toBe("lembrete_agendamento");
           // A start in UTC read in the agent's zone (the product default, São Paulo): the evening before.
           expect(p.processedParams).toEqual({
-            body: { "1": expect.any(String), "2": "22/10/2026", "3": "22:30" },
+            body: { "1": "cliente", "2": "22/10/2026", "3": "22:30" },
             header: { "1": "quinta-feira" },
             buttons: [{ type: "url", parameter: "centro" }],
           });
@@ -6877,6 +6873,98 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
           expect(outcome).toBe("noted-window");
           expect(s.payloads).toEqual([]);
           expect(s.notes).toHaveLength(1);
+        },
+        settings,
+      );
+    });
+
+    test("an all-day booking has no time to fill, so a template that asks for one stays the note", async () => {
+      await withGuardrails(
+        { enabled: false },
+        async () => {
+          await seedConv(7566, null, new Date(Date.now() - 48 * 3_600_000));
+          const s = templateStub();
+          const outcome = await runAgentNudge({
+            tenantId,
+            threadId: `${tenantId}:${instanceId}:7566`,
+            nudge: {
+              source: "appointment_reminder",
+              kind: "reminder",
+              template: {
+                kind: "appointment_reminder",
+                appointment: {
+                  startISO: "2026-10-23",
+                  calendarLabel: "centro",
+                },
+              },
+            },
+            base: appDb,
+            deps: nudgeDeps(s),
+          });
+          expect(outcome).toBe("noted-window");
+          expect(s.payloads).toEqual([]);
+        },
+        settings,
+      );
+    });
+
+    test("a window that closes after the definition is read still sends a NAMED template keyed by name", async () => {
+      const named = {
+        name: "lembrete_agendamento",
+        language: "pt_BR",
+        status: "APPROVED",
+        parameter_format: "NAMED",
+        components: [
+          { type: "HEADER", format: "TEXT", text: "Visita {{dia}}" },
+          { type: "BODY", text: "{{quem}}: dia {{data}} às {{hora}}." },
+          {
+            type: "BUTTONS",
+            buttons: [
+              { type: "URL", text: "Ver", url: "https://x.test/{{1}}" },
+            ],
+          },
+        ],
+      };
+      await withGuardrails(
+        { enabled: false },
+        async () => {
+          const t0 = new Date();
+          await seedConv(7567, null, new Date(t0.getTime() - 23 * 3_600_000));
+          const s = templateStub();
+          let read = false;
+          (
+            s.client as unknown as Record<string, unknown>
+          ).listTemplateDefinitions = async () => {
+            read = true;
+            return [parseTemplateDefinition(named)];
+          };
+          const outcome = await runAgentNudge({
+            tenantId,
+            threadId: `${tenantId}:${instanceId}:7567`,
+            nudge: {
+              source: "appointment_reminder",
+              kind: "reminder",
+              template: {
+                kind: "appointment_reminder",
+                appointment: {
+                  startISO: "2026-10-23T01:30:00Z",
+                  calendarLabel: "centro",
+                },
+              },
+            },
+            base: appDb,
+            deps: {
+              ...nudgeDeps(s),
+              now: () => (read ? new Date(t0.getTime() + 2 * 3_600_000) : t0),
+            },
+          });
+          expect(outcome).toBe("templated");
+          const p = s.payloads[0] as { processedParams: { body: unknown } };
+          expect(p.processedParams.body).toEqual({
+            quem: "cliente",
+            data: "22/10/2026",
+            hora: "22:30",
+          });
         },
         settings,
       );

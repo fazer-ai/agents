@@ -73,8 +73,10 @@ import {
 import {
   type AppointmentFacts,
   buildTemplatePayload,
+  channelHasServiceWindow,
   type ProactiveKind,
   proactiveSendMode,
+  resolveTemplateChoice,
   type TemplateDefinition,
   type TemplateOccasion,
 } from "@/modules/service-window/service";
@@ -2650,7 +2652,18 @@ async function runAgentNudgeBody(
     // send: with it the dashboard shows the text the customer reads and a NAMED template is keyed by
     // name, and without it the send still goes, positional. Best-effort.
     let templateDefinitions: TemplateDefinition[] = [];
-    if (sendModeNow() === "template" && cfg.chatwootInboxId !== null) {
+    // Whenever this occasion HAS a template on a channel with a window, not only when the window is
+    // already closed: it can close during the fences below, and a NAMED template sent without its
+    // definition would be keyed by number.
+    if (
+      cfg.chatwootInboxId !== null &&
+      cfg.serviceWindowConfig.enabled &&
+      channelHasServiceWindow({
+        channelType: loaded.channelType,
+        provider: loaded.provider,
+      }) &&
+      resolveTemplateChoice(cfg.serviceWindowConfig, templateOccasion) !== null
+    ) {
       try {
         templateDefinitions = await client.listTemplateDefinitions(
           cfg.chatwootInboxId,

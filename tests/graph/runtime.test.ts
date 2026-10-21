@@ -4300,6 +4300,69 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     });
   }
 
+  test("a lone handoff whose message is only a placeholder sends the customer nothing", async () => {
+    await seedConversation(9986, null);
+    const calls: Array<[string, number, string]> = [];
+    const client = {
+      sendMessage: async (c: number, t: string) => {
+        calls.push(["sendMessage", c, t]);
+        return {};
+      },
+      toggleStatus: async (c: number, status: string) => {
+        calls.push(["toggleStatus", c, status]);
+        return {};
+      },
+      sendPrivateNote: async (c: number, t: string) => {
+        calls.push(["sendPrivateNote", c, t]);
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    class PlaceholderModel {
+      async invoke() {
+        return new AIMessage("");
+      }
+      bindTools(_t: unknown) {
+        let n = 0;
+        return {
+          async invoke() {
+            n++;
+            if (n === 1)
+              return new AIMessage({
+                content: "",
+                tool_calls: [
+                  {
+                    name: "handoff_to_human",
+                    args: {
+                      customerMessage: "EMPTY",
+                      reason: "cliente pediu atendente",
+                    },
+                    id: "h1",
+                  },
+                ],
+              });
+            return new AIMessage("");
+          },
+        };
+      }
+    }
+    await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 9986 }),
+      base: appDb,
+      deps: {
+        makeModel: () => new PlaceholderModel() as unknown as BaseChatModel,
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(calls).toEqual([
+      ["sendPrivateNote", 9986, "cliente pediu atendente"],
+      ["toggleStatus", 9986, "open"],
+    ]);
+  });
+
   test("a repeated handoff-and-close batch still stops as a stall instead of spending the tool budget", async () => {
     await seedConversation(9985, null);
     const client = {

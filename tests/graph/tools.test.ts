@@ -123,6 +123,10 @@ describe("native tools", () => {
     // whether its own next line is wanted.
     expect(withLine).toContain("will be delivered to the customer");
     expect(declaredSilent).toContain("No message will be sent");
+    // A placeholder is no line: the model is told nothing goes out, not that its "EMPTY" will.
+    expect(
+      String(await speaking.invoke({ customerMessage: "EMPTY" })),
+    ).toContain("No message will be sent");
 
     // The muted branch has no argument at all, so its note is not about a decision the model made:
     // it states the topology. Same requirement, though, that it does not read as an instruction.

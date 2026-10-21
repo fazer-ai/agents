@@ -275,29 +275,36 @@ function TemplateChoiceEditor({
         />
       </FormField>
     ));
-  const pickedKey = def ? `${def.name}\u0000${def.language}` : "";
+  // A stored name the inbox no longer has keeps an option of its own, so choosing the empty one
+  // clears it (back to the note) instead of re-selecting what is already selected.
+  const MISSING = "\u0000missing";
+  const pickedKey = def
+    ? `${def.name}\u0000${def.language}`
+    : value.name
+      ? MISSING
+      : "";
   return (
     <div className="flex flex-col gap-3">
       {templates.length > 0 ? (
         <Select
           value={pickedKey}
-          onChange={(e) => pick(e.target.value)}
+          onChange={(e) => {
+            if (e.target.value !== MISSING) pick(e.target.value);
+          }}
           aria-label={t("editor.svcWindowTemplate", "Template name (HSM)")}
         >
           <option value="">
-            {value.name && !def
-              ? t(
-                  "editor.svcWindowTemplateMissing",
-                  "{{name}} (not found in the inbox)",
-                  {
-                    name: value.name,
-                  },
-                )
-              : t(
-                  "editor.svcWindowTemplatePick",
-                  "Choose an approved template…",
-                )}
+            {t("editor.svcWindowTemplatePick", "Choose an approved template…")}
           </option>
+          {pickedKey === MISSING && (
+            <option value={MISSING}>
+              {t(
+                "editor.svcWindowTemplateMissing",
+                "{{name}} (not found in the inbox)",
+                { name: value.name },
+              )}
+            </option>
+          )}
           {templates.map((tpl) => (
             <option
               key={`${tpl.name}\u0000${tpl.language}`}

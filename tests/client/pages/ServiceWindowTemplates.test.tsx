@@ -113,6 +113,40 @@ describe("ServiceWindowTemplates", () => {
   });
 });
 
+describe("a stored template the inbox no longer has", () => {
+  test("shows as its own option, and choosing the empty one clears it", async () => {
+    stubTemplates();
+    let latest: ServiceWindowForm = SERVICE_WINDOW_FORM_DEFAULTS;
+    function Retired() {
+      const [value, setValue] = useState<ServiceWindowForm>({
+        ...structuredClone(SERVICE_WINDOW_FORM_DEFAULTS),
+        def: {
+          ...SERVICE_WINDOW_FORM_DEFAULTS.def,
+          name: "retirado",
+          params: ["x"],
+        },
+      });
+      latest = value;
+      return (
+        <ServiceWindowTemplates agentId="1" value={value} onChange={setValue} />
+      );
+    }
+    render(<Retired />);
+    await waitFor(() =>
+      expect(
+        screen.queryAllByText("retirado (not found in the inbox)").length,
+      ).toBe(1),
+    );
+    const picker = screen.getAllByRole("combobox", {
+      name: "Template name (HSM)",
+    })[0] as HTMLSelectElement;
+    expect(picker.value).toBe("\u0000missing");
+    fireEvent.change(picker, { target: { value: "" } });
+    await waitFor(() => expect(latest.def.name).toBe(""));
+    expect(serviceWindowToStored(latest).templateName).toBeNull();
+  });
+});
+
 describe("serviceWindowToForm / serviceWindowToStored", () => {
   test("a stored block survives the round trip, kinds and offsets included", () => {
     const stored = {

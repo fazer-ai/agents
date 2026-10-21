@@ -352,8 +352,8 @@ describe("round 2: parse → serialize is a fixed point for the runtime", () => 
 
 // The Tools save must put every key it PATCHes back into the shared settings bag, or the next Behavior
 // save spreads the pre-save map over the rules just stored, with this tab still showing them saved.
-// Asked of the whole bag: an agent with nothing stored has every Tools block written for the first
-// time, so a block the save does not put back is missing from the Behavior save that follows.
+// Asked of the whole bag: whatever the Tools save sends, the Behavior save that follows has to send
+// it back unchanged.
 describe("round 2: the Tools save puts back everything it wrote", () => {
   const realFetch = globalThis.fetch;
   afterEach(() => {
@@ -380,9 +380,9 @@ describe("round 2: the Tools save puts back everything it wrote", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(patches(stub).length).toBe(1));
     const tools = patches(stub)[0] as Record<string, unknown>;
-    // NOTE: the bag has to hold the tab's blocks, or the comparison below passes over nothing.
-    expect(Object.keys(tools)).toContain("toolPreconditions");
-    expect(Object.keys(tools).length).toBeGreaterThanOrEqual(4);
+    // NOTE: the bag has to hold the edited block, or the comparison below passes over nothing. It holds
+    // only that one: the save sends the blocks the operator edited.
+    expect(Object.keys(tools)).toEqual(["crossInboxCase"]);
 
     fireEvent.click(screen.getByRole("tab", { name: /Behavior/ }));
     await act(async () => {});

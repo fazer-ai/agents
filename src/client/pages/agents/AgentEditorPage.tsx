@@ -2307,6 +2307,17 @@ function AgentEditor() {
     grants,
     review,
   };
+  // What the Tools save serializes, read off the form or off the server's copy.
+  type ToolsForm = Pick<
+    SnapForm,
+    | "handoff"
+    | "toolPreconditions"
+    | "protectedLabels"
+    | "allowedLabels"
+    | "outsideAllowedLabels"
+    | "labelRemoval"
+    | "writableAttributes"
+  > & { guidance: typeof savedGuidance };
   // The form a fresh load of `a` would draw, through the same readers.
   const formOfSynced = (
     a: Agent,
@@ -3742,18 +3753,11 @@ function AgentEditor() {
     return { toolsSettings, protectedList, allowedList };
   }
 
-  // Tools-tab save: the grant set PLUS the handoff_to_human + kanban config (which live on the tools,
-  // not in Behavior). The config bits are merged onto the LAST-SYNCED settings so this never clobbers
-  // unsaved edits pending in the Behavior tab (both write the same settings JSON column). Two writes
-  // (grants PUT, then agent PATCH); the PUT bumps the agent's token, so the PATCH precondition chains
-  // to the PUT's returned token (else the PATCH would 409 against our own grant write).
-  // Everything the Tools PATCH will send, built BEFORE the grants PUT so the whole bag can be checked
-  // against the write boundary's own rule first. None of it depends on the PUT's result.
-  function toolsSave() {
-    const syncedSettings = (syncedAgentRef.current?.settings ?? {}) as Record<
-      string,
-      unknown
-    >;
+  // The settings blocks the Tools tab owns, serialized from one form state.
+  function toolsBlocksOf(
+    src: ToolsForm,
+    syncedSettings: Record<string, unknown>,
+  ) {
     // On questions and rules the guidance is not drawn and goes back AS STORED, byte for byte: the
     // serializers below tidy what an operator typed (trim, drop empties), and tidying a value the form
     // still holds untidied would leave the editor reading a hidden draft nobody made.
@@ -3765,27 +3769,27 @@ function AgentEditor() {
     >;
     const handoffJson = {
       ...serializeHandoff({
-        ...handoff,
-        instructions: savedGuidance.handoffInstructions,
+        ...src.handoff,
+        instructions: src.guidance.handoffInstructions,
       }),
       ...(decides && "instructions" in storedHandoff
         ? { instructions: storedHandoff.instructions as string | null }
         : {}),
     };
     const kanbanJson = asStored("kanban", {
-      instructions: savedGuidance.kanbanInstructions.trim() || null,
+      instructions: src.guidance.kanbanInstructions.trim() || null,
     });
     const crossInboxCaseJson = asStored(
       "crossInboxCase",
-      serializeCrossInboxCase(savedGuidance.crossInboxCase),
+      serializeCrossInboxCase(src.guidance.crossInboxCase),
     );
     const sendImageJson = asStored(
       "sendImage",
-      serializeSendImage(savedGuidance.sendImage),
+      serializeSendImage(src.guidance.sendImage),
     );
     const resolveConversationJson = asStored(
       "resolveConversation",
-      serializeResolveConversation(savedGuidance.resolveConversation),
+      serializeResolveConversation(src.guidance.resolveConversation),
     );
     // Merge the per-tool guidance map: preserve any entries for other tools, set/clear ours.
     const existingGuidance = (syncedSettings.toolGuidance ?? {}) as Record<
@@ -3794,10 +3798,9 @@ function AgentEditor() {
     >;
     const toolGuidanceJson: Record<string, unknown> = { ...existingGuidance };
     if (!decides) {
-      const attrNote = savedGuidance.customAttributeInstructions.trim();
-      const labelNote = savedGuidance.labelInstructions.trim();
-      const updateKanbanNote =
-        savedGuidance.updateKanbanTaskInstructions.trim();
+      const attrNote = src.guidance.customAttributeInstructions.trim();
+      const labelNote = src.guidance.labelInstructions.trim();
+      const updateKanbanNote = src.guidance.updateKanbanTaskInstructions.trim();
       if (attrNote) toolGuidanceJson.set_custom_attribute = attrNote;
       else delete toolGuidanceJson.set_custom_attribute;
       if (labelNote) toolGuidanceJson.set_labels = labelNote;
@@ -3807,18 +3810,18 @@ function AgentEditor() {
       else delete toolGuidanceJson.update_kanban_task;
     }
     const toolPreconditionsJson = serializeToolPreconditions(
-      toolPreconditions,
+      src.toolPreconditions,
       syncedSettings.toolPreconditions,
     );
     // The guard is stored under the tool's own block rather than beside the retired `labels` key,
     // which the write boundary now refuses: what this list does is fence a tool, not describe a
     // taxonomy. An empty list is written as an empty array rather than dropped, so clearing the
     // field is a change the PATCH carries instead of a no-op the merge swallows.
-    const protectedList = protectedLabels
+    const protectedList = src.protectedLabels
       .split(",")
       .map((l) => l.trim())
       .filter(Boolean);
-    const allowedList = allowedLabels
+    const allowedList = src.allowedLabels
       .split(",")
       .map((l) => l.trim())
       .filter(Boolean);
@@ -3826,8 +3829,7 @@ function AgentEditor() {
       string,
       unknown
     >;
-    const toolsSettings = {
-      ...syncedSettings,
+    const blocks: Record<string, unknown> = {
       handoff: handoffJson,
       kanban: kanbanJson,
       toolGuidance: toolGuidanceJson,
@@ -3836,21 +3838,68 @@ function AgentEditor() {
         ...existingSetLabels,
         protected: protectedList,
         allowed: allowedList,
-        outsideAllowed: outsideAllowedLabels,
-        removal: labelRemoval,
+        outsideAllowed: src.outsideAllowedLabels,
+        removal: src.labelRemoval,
       },
       setCustomAttribute: {
         ...((syncedSettings.setCustomAttribute ?? {}) as Record<
           string,
           unknown
         >),
-        allowed: serializeWritableAttributes(writableAttributes),
+        allowed: serializeWritableAttributes(src.writableAttributes),
       },
       crossInboxCase: crossInboxCaseJson,
       sendImage: sendImageJson,
       resolveConversation: resolveConversationJson,
     };
-    return { toolsSettings, protectedList, allowedList };
+    return { blocks, protectedList, allowedList };
+  }
+
+  // Tools-tab save: the grant set PLUS the tool blocks of the settings, merged onto the LAST-SYNCED bag
+  // so pending Behavior edits are never clobbered. Two writes (grants PUT, then agent PATCH, whose
+  // precondition chains to the PUT's token); everything the PATCH sends is built BEFORE the PUT, so the
+  // whole bag is checked against the write boundary first. The blocks are serialized twice, from the
+  // form and from the server's copy (`formOfSynced`), and only the ones that differ go out: a block the
+  // operator did not touch stays exactly as stored, absent included (docs/ui.md).
+  function toolsSave() {
+    const synced = syncedAgentRef.current;
+    const syncedSettings = (synced?.settings ?? {}) as Record<string, unknown>;
+    const now = toolsBlocksOf(
+      {
+        handoff,
+        guidance: savedGuidance,
+        toolPreconditions,
+        protectedLabels,
+        allowedLabels,
+        outsideAllowedLabels,
+        labelRemoval,
+        writableAttributes,
+      },
+      syncedSettings,
+    );
+    const { protectedList, allowedList } = now;
+    if (!synced) {
+      return {
+        toolsSettings: { ...syncedSettings, ...now.blocks },
+        protectedList,
+        allowedList,
+      };
+    }
+    const f = formOfSynced(synced, syncedGrantsRef.current);
+    const was = toolsBlocksOf(
+      { ...f, guidance: guidanceToSave(f.guidance, storedGuidance) },
+      syncedSettings,
+    ).blocks;
+    const edited = Object.fromEntries(
+      Object.entries(now.blocks).filter(
+        ([key, block]) => JSON.stringify(block) !== JSON.stringify(was[key]),
+      ),
+    );
+    return {
+      toolsSettings: { ...syncedSettings, ...edited },
+      protectedList,
+      allowedList,
+    };
   }
   // The Tools save's own checks, which no field on its tab holds the button for: the bar runs them
   // before anything is written, and the save again against the bag it is about to send.

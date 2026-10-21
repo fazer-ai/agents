@@ -290,6 +290,27 @@ describe("the signature config is refused at the write, naming the field", () =>
       "maxAgeSeconds",
     ],
     [
+      "a maximum age over a timestamp the message does not sign",
+      {
+        format: "parts",
+        signaturePart: "v1",
+        timestampPart: "t",
+        maxAgeSeconds: 60,
+      },
+      "maxAgeSeconds",
+    ],
+    [
+      "a maximum age whose message signs another part, not the timestamp",
+      {
+        format: "parts",
+        signaturePart: "v1",
+        timestampPart: "t",
+        message: "{{sig.nonce}}.{{body}}",
+        maxAgeSeconds: 60,
+      },
+      "maxAgeSeconds",
+    ],
+    [
       "a maximum age that is not a positive whole number",
       {
         format: "parts",
@@ -388,7 +409,7 @@ describe.skipIf(!dbUp)("a manifest-signed notification end to end", () => {
     await appDb.$disconnect();
   });
 
-  test("the query string of the URL reaches the signature, and the event is queued", async () => {
+  test("the query string of the URL reaches the signature, and a body the manifest does not sign is not acted on", async () => {
     const minted = await ensureConversationRef({
       tenantId,
       integrationInstanceId: instanceId,
@@ -434,12 +455,54 @@ describe.skipIf(!dbUp)("a manifest-signed notification end to end", () => {
         for (const s of spies) s.mockRestore();
       });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ack: true, outcome: "queued" });
+    expect(await res.json()).toEqual({ ack: true, outcome: "invalid" });
     const rows = await suDb.inboundDelivery.findMany({
-      where: { integrationInstanceId: instanceId, dedupeKey: "pay-1:approved" },
-      select: { externalId: true, status: true },
+      where: { integrationInstanceId: instanceId },
+      select: { dedupeKey: true, status: true, payload: true },
     });
-    expect(rows.map((r) => r.externalId)).toEqual([minted.ref]);
+    expect(rows.filter((r) => r.dedupeKey === "pay-1:approved")).toEqual([]);
+    expect(rows.map((r) => [r.status, r.payload])).toContainEqual([
+      "FAILED",
+      { reason: "invalid", issues: "body not covered by the signed message" },
+    ]);
+  });
+
+  test("a message that covers the body and a query parameter queues the event", async () => {
+    const v = await suDb.vaultEntry.create({
+      data: { tenantId, name: "qb-secret", secret: encryptJson(SECRET) },
+      select: { id: true },
+    });
+    const g = await createIntegrationInstance(
+      ctx(),
+      {
+        catalogType: "GENERIC",
+        name: "Query and body",
+        inboundAuthStrategy: "HMAC_SHA256",
+        inboundSecretRef: `vault:${v.id}`,
+        config: { signature: { message: "{{query.order}}.{{body}}" } },
+      },
+      appDb,
+    );
+    const minted = await ensureConversationRef({
+      tenantId,
+      integrationInstanceId: g.id,
+      threadId: `${tenantId}:1:78`,
+      base: appDb,
+    });
+    if (!minted.ok) throw new Error("mint");
+    const body = JSON.stringify({
+      event_id: "order-7:paid",
+      conversation_ref: minted.ref,
+      text: "Pedido pago",
+    });
+    const r = await receiveInbound({
+      routeToken: g.routeToken as string,
+      rawBody: body,
+      getHeader: lookup({ "x-webhook-signature": hmac(SECRET, `7.${body}`) }),
+      getQuery: lookup({ order: "7" }),
+      base: appDb,
+    });
+    expect(r.outcome).toBe("queued");
   });
 
   test("the same notification with another data.id in the URL is the uniform 401", async () => {

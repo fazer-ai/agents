@@ -29,6 +29,7 @@ import {
   resolveInboundAuthConfig,
   verifyInboundAuth,
 } from "./auth";
+import { signatureCoversBody } from "./signed-message";
 
 // Generic inbound receptor. Resolve tenant by route token → verify the per-instance auth
 // strategy (tenant-scoped secret) → normalize via the integration's pure mapper → persist an
@@ -220,6 +221,29 @@ export async function receiveInbound(
       deliveryId: id,
       tenantId: route.tenantId,
       outcome: "no-mapper",
+    };
+  }
+
+  // NOTE: GENERIC acts on the body (the conversation and the text come from it), so a body the
+  // signature does not cover is not acted on, however well the rest of the request is signed.
+  if (
+    route.catalogType === "GENERIC" &&
+    route.inboundAuthStrategy === "HMAC_SHA256" &&
+    !signatureCoversBody(route.config.signature)
+  ) {
+    logger.warn(
+      "inbound: GENERIC body not covered by the signed message (instance %s)",
+      String(route.id),
+    );
+    const id = await persistFailed(base, route, params.rawBody, {
+      reason: "invalid",
+      issues: "body not covered by the signed message",
+    });
+    return {
+      ack: true,
+      deliveryId: id,
+      tenantId: route.tenantId,
+      outcome: "invalid",
     };
   }
 

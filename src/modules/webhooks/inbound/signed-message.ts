@@ -179,9 +179,33 @@ export function parseSignatureConfig(
         problem: "needs a timestamp part to measure the age from",
       };
     }
+    if (!covers(groups, "sig", timestampPart)) {
+      return {
+        field: "maxAgeSeconds",
+        problem: `needs {{sig.${timestampPart}}} in the message: a timestamp the signature does not cover can be replaced`,
+      };
+    }
     maxAgeSeconds = v;
   }
   return { format, signaturePart, timestampPart, maxAgeSeconds, groups };
+}
+
+function covers(groups: Group[], source: Source, name = ""): boolean {
+  return groups.some((g) =>
+    g.pieces.some(
+      (p) => p.kind === "value" && p.source === source && p.name === name,
+    ),
+  );
+}
+
+// Whether a request this config authenticates also authenticates its BODY. A manifest that signs
+// only an id leaves the body free to be replaced under a captured signature, so whatever acts on the
+// body must not act on it.
+export function signatureCoversBody(raw: unknown): boolean {
+  const parsed = parseSignatureConfig(raw);
+  if (parsed === undefined) return true;
+  if (isSignatureConfigProblem(parsed)) return false;
+  return covers(parsed.groups, "body");
 }
 
 export function isSignatureConfigProblem(

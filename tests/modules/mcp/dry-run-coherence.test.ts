@@ -2099,6 +2099,19 @@ describe.skipIf(!dbUp)(
                   ...rest,
                 );
             }
+            // NOTE: The base check reads the rows `FOR KEY SHARE` through a raw query, so that shape
+            // counts as one ask too.
+            if (prop === "$queryRaw") {
+              return (strings: TemplateStringsArray, ...v: unknown[]) => {
+                if (strings.join("").includes("FROM knowledge_bases"))
+                  counts += 1;
+                return (inner as (...x: unknown[]) => unknown).call(
+                  t,
+                  strings,
+                  ...v,
+                );
+              };
+            }
             if (prop !== "knowledgeBase") return inner;
             return new Proxy(inner as object, {
               get(d, k, r) {

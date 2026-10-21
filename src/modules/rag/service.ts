@@ -1198,7 +1198,7 @@ export async function deleteKnowledgeBase(params: {
           where: { knowledgeBaseId: params.id },
         })
       : 0;
-    // NOTE: A RAG grant names its bases in an array no foreign key covers, so the cascade every other
+    // A RAG grant names its bases in an array no foreign key covers, so the cascade every other
     // grant target gets is done here: an id left behind makes the agent's set refused on its next write.
     // An empty list searches EVERY base of the tenant, so a grant this leaves empty goes, as a cascaded
     // grant row does. Deciding that from the UPDATE's own result, on the row it now holds locked, is what

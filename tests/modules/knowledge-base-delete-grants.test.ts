@@ -132,7 +132,7 @@ describe.skipIf(!dbUp)("deleting a knowledge base an agent uses", () => {
     const gotLock = new Promise<number>((r) => {
       locked = r;
     });
-    // NOTE: The first delete, mid-transaction: its sweep has taken X out and holds the grant row.
+    // The first delete, mid-transaction: its sweep has taken X out and holds the grant row.
     const first = suDb.$transaction(
       async (tx) => {
         await tx.$executeRaw`

@@ -184,11 +184,19 @@ export function SheetsConfigEditor({
     setListError(null);
     setListLoading(false);
     setFilter("");
+    return () => {
+      listSeq.current++;
+    };
   }, [credentialRef]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: reloads only when the credential or the spreadsheet changes, not on every config keystroke
   useEffect(() => {
     void loadTabs(spreadsheetId);
+    // An answer that lands after the spreadsheet changed or the editor closed writes nothing: the
+    // modal keeps its form state across integrations, so a late title would land on the next one.
+    return () => {
+      tabsSeq.current++;
+    };
   }, [credentialRef, spreadsheetId]);
 
   function pickSpreadsheet(id: string, name: string) {

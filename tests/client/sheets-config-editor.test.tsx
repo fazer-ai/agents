@@ -226,6 +226,48 @@ describe("the Sheets settings", () => {
     expect(screen.queryByText("Old account sheet")).toBeNull();
   });
 
+  test("tabs that arrive after the editor closed write nothing into the form", async () => {
+    let release: (v: {
+      title: string;
+      tabs: Array<{ sheetId: number; title: string; columns: string[] }>;
+    }) => void = () => {};
+    const { l } = loaders({
+      tabs: () =>
+        new Promise((res) => {
+          release = res;
+        }),
+    });
+    const writes: Record<string, unknown>[] = [];
+    // The form outlives the editor, as the modal's does.
+    function Outer({ show }: { show: boolean }) {
+      const [cfg, setCfgState] = useState<Record<string, unknown>>({});
+      return show ? (
+        <SheetsConfigEditor
+          credentialRef="vault:3"
+          cfg={cfg}
+          setCfg={(patch) => {
+            writes.push(patch);
+            setCfgState((c) => ({ ...c, ...patch }));
+          }}
+          loaders={l}
+        />
+      ) : null;
+    }
+    const view = render(<Outer show />);
+    fireEvent.change(
+      screen.getByRole("textbox", { name: "Spreadsheet URL or id" }),
+      { target: { value: SID } },
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Use" }));
+    const before = writes.length;
+    view.rerender(<Outer show={false} />);
+    await act(async () => {
+      release({ title: "Late title", tabs: [] });
+      await new Promise((r) => setTimeout(r, 10));
+    });
+    expect(writes.length).toBe(before);
+  });
+
   test("a list already shown goes away when the credential changes", async () => {
     const { l } = loaders();
     const view = render(<Harness initial={{}} l={l} onCfg={() => {}} />);

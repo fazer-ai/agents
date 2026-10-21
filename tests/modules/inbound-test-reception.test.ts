@@ -416,6 +416,46 @@ describe.skipIf(!dbUp)("test reception", () => {
     expect(nudges.length).toBe(n + 1);
   });
 
+  test("a real test reports what processing found: an Asaas payment whose reference names no conversation is not an all-green run", async () => {
+    const r = await testReception(
+      ctx(),
+      asaasId,
+      {
+        body: JSON.stringify({
+          event: "PAYMENT_RECEIVED",
+          payment: {
+            id: "pay_2",
+            value: 10,
+            externalReference: "ref-que-nao-existe",
+          },
+        }),
+        headers: { "asaas-access-token": SECRET },
+        dryRun: false,
+      },
+      appDb,
+      deps(),
+    );
+    expect(r.outcome).toBe("uncorrelated");
+    expect(r.stages.find((s) => s.stage === "correlation")).toMatchObject({
+      ok: false,
+      reason: "uncorrelated",
+    });
+  });
+
+  test("the dry run refuses a provider answer that real processing would refuse (an id the row cannot carry)", async () => {
+    payments.set("1003", {
+      code: 200,
+      body: { status: "approved", external_reference: "ref\u0000x" },
+    });
+    const r = await testReception(ctx(), mpId, mpNotice("1003"), appDb, deps());
+    expect(r.outcome).toBe("invalid");
+    expect(r.stages.at(-1)).toMatchObject({
+      stage: "mapping",
+      ok: false,
+      reason: "unstorable-identity",
+    });
+  });
+
   test("a disabled instance can be tested dry, not delivered", async () => {
     await updateIntegrationInstance(
       ctx(),

@@ -17,6 +17,7 @@ import {
   eventView,
   type InboundProbe,
   type InboundStage,
+  identityProblem,
   lookUpNotice,
   type ProcessDeps,
   processInboundDelivery,
@@ -184,6 +185,18 @@ async function explainPlanned(
       return looked.result.reason === "unhandled" ? "ignored" : "invalid";
     }
     event = looked.result.event;
+    const bad =
+      identityProblem(event.dedupeKey, "dedupeKey") ??
+      identityProblem(event.externalId, "externalId");
+    if (bad) {
+      stages.push({
+        stage: "mapping",
+        ok: false,
+        reason: "unstorable-identity",
+        detail: { issues: bad },
+      });
+      return "invalid";
+    }
     stages.push({ stage: "mapping", ok: true, detail: eventView(event) });
   } else {
     event = planned.event;
@@ -302,6 +315,7 @@ export async function testReception(
       deliveryId: received.deliveryId,
       tenantId: route.tenantId,
       base,
+      stages: probe.stages,
       deps: {
         ...deps.process,
         ...(deps.runFetchBack ? { runFetchBack: deps.runFetchBack } : {}),
@@ -325,5 +339,18 @@ export async function testReception(
       reason: err instanceof Error ? err.message : String(err),
     });
   }
-  return done(received.outcome);
+  // Processing can drop an event the receptor queued (a reference that names no conversation, a
+  // lookup the provider refused): the answer says so instead of the queued it started from.
+  const stopped = probe.stages.find(
+    (s) => !s.ok && s.stage !== "delivery" && s.stage !== "signature",
+  );
+  return done(
+    stopped?.stage === "correlation"
+      ? "uncorrelated"
+      : stopped?.reason === "unhandled"
+        ? "ignored"
+        : stopped
+          ? "invalid"
+          : received.outcome,
+  );
 }

@@ -150,7 +150,7 @@ The integration editor's "Test reception" (`POST /v1/integrations/instances/:id/
 - `fetch_back`: whether the lookup tool answered, and why not.
 - `correlation`: the conversation the reference names, or `uncorrelated`.
 - `record`: what would be (or was) recorded, `PENDING` or `FAILED`.
-- `delivery` (only without the dry run): how processing ended.
+- `delivery` (only without the dry run): how processing ended. Without the dry run, processing records its own stages too (the lookup, the provider's answer, the correlation under its claim), and an event processing drops (a reference that names no conversation) turns the outcome into `uncorrelated` instead of the `queued` the receptor answered.
 
 `dryRun` defaults to true and writes nothing: no delivery row, no conversion, no message; the lookup still calls the provider (a read, through the same tool and guards) and the correlation is a read. Without the dry run the notification is delivered as a real one would be, processed inline, and the instance must be enabled (409 otherwise). At most 10 tests a minute per workspace (per process), since each one can call the provider with the operator's credential; past that, 429.
 

@@ -86,7 +86,7 @@ const MAX_IDENTITY_CHARS = 512;
 // The two things an identity field must be for the row to exist: storable, and short enough for the
 // index that enforces idempotency on it. Same verdict shape as `unstorableProblem`, whose message
 // this passes through, because the caller does the same thing with either answer.
-function identityProblem(value: string, what: string): string | null {
+export function identityProblem(value: string, what: string): string | null {
   if (value.length > MAX_IDENTITY_CHARS) {
     return `${what} is ${value.length} characters, over the ${MAX_IDENTITY_CHARS} an identity field may hold.`;
   }
@@ -768,6 +768,8 @@ export interface ProcessParams {
   // Handed to the nudge turn so a run past its deadline stops instead of finishing
   // beside the retry the sweep may arm once the claim goes stale. The route passes none.
   signal?: AbortSignal;
+  // A test reception's stages (./test-reception.ts): what processing found, recorded as it goes.
+  stages?: InboundStage[];
 }
 
 function buildNudge(
@@ -936,6 +938,18 @@ export async function processInboundDelivery(
           payload,
           delivery.integrationInstanceId,
         );
+        params.stages?.push(
+          corr
+            ? {
+                stage: "correlation",
+                ok: true,
+                detail: {
+                  conversation: corr.threadId,
+                  recorded: corr.recorded,
+                },
+              }
+            : { stage: "correlation", ok: false, reason: "uncorrelated" },
+        );
         // Notify the customer that the payment went through, when the integration opts in (default
         // ON) AND the conversion was FRESHLY recorded. The ConversionEvent is the durable
         // idempotency barrier; the nudge is best-effort (Phase B, with an assignee re-check). A
@@ -979,6 +993,15 @@ export async function processInboundDelivery(
                 ref: delivery.externalId,
               })
             : await toolpackRefThread(db, params.tenantId, delivery.externalId);
+        params.stages?.push(
+          threadId
+            ? {
+                stage: "correlation",
+                ok: true,
+                detail: { conversation: threadId },
+              }
+            : { stage: "correlation", ok: false, reason: "uncorrelated" },
+        );
         if (!threadId) {
           logger.info(
             "inbound agent_nudge uncorrelated (source=%s); dropping",
@@ -1137,6 +1160,19 @@ async function consultBack(
         .finally(() => deadline.removeEventListener("abort", stop));
     },
   );
+  const note = (stage: InboundStage) => params.stages?.push(stage);
+  if (looked.kind !== "mapped") {
+    note({
+      stage: "fetch_back",
+      ok: false,
+      reason: looked.reason,
+      ...(looked.kind === "fetch_failed"
+        ? { detail: { retried: looked.retry } }
+        : {}),
+    });
+  } else {
+    note({ stage: "fetch_back", ok: true });
+  }
   if (looked.kind === "unusable") return await fail(looked.reason);
   if (looked.kind === "fetch_failed") {
     if (looked.retry) {
@@ -1145,6 +1181,27 @@ async function consultBack(
     return await fail(looked.reason);
   }
   const mapped = looked.result;
+  const badIdentity = mapped.ok
+    ? (identityProblem(mapped.event.dedupeKey, "dedupeKey") ??
+      identityProblem(mapped.event.externalId, "externalId"))
+    : null;
+  note(
+    !mapped.ok
+      ? {
+          stage: "mapping",
+          ok: false,
+          reason: mapped.reason,
+          ...(mapped.detail ? { detail: { missing: mapped.detail } } : {}),
+        }
+      : badIdentity
+        ? {
+            stage: "mapping",
+            ok: false,
+            reason: "unstorable-identity",
+            detail: { issues: badIdentity },
+          }
+        : { stage: "mapping", ok: true, detail: eventView(mapped.event) },
+  );
   if (!mapped.ok) {
     if (mapped.reason === "unhandled") {
       await finish("PROCESSED");
@@ -1154,9 +1211,6 @@ async function consultBack(
       `the provider's answer has no ${mapped.detail ?? "usable fields"}`,
     );
   }
-  const badIdentity =
-    identityProblem(mapped.event.dedupeKey, "dedupeKey") ??
-    identityProblem(mapped.event.externalId, "externalId");
   if (badIdentity) return await fail(badIdentity);
   if (deadline.aborted) {
     throw new Error("inbound consult-back passed the delivery deadline");

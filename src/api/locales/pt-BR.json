@@ -178,6 +178,8 @@
     "integrationSheetsConfigInvalid": "\"{{field}}\" precisa ser o id da planilha ou o id numérico da aba, não uma URL nem o nome da aba. Escolha a planilha e a aba de novo nas configurações da integração.",
     "integrationSheetsConfigMissing": "\"{{field}}\" está faltando. Escolha a planilha e a aba nas configurações da integração.",
     "integrationSignatureUnusable": "A configuração de assinatura \"{{field}}\" não pode ser usada: {{problem}}.",
+    "integrationTestReceptionDisabled": "A integração está desativada, então uma entrega real seria recusada: ative a integração ou teste sem gravar.",
+    "integrationTestReceptionRateLimited": "No máximo {{limit}} testes de recebimento por minuto. Aguarde um pouco e tente de novo.",
     "internalError": "Algo deu errado",
     "invalidAgentExport": "Este arquivo não é uma exportação de agente válida.",
     "invalidApprovalLinkTemplate": "O link da aprovação precisa ser um endereço completo, começando com https:// ou http://, com {id} onde entra o número do pedido.",

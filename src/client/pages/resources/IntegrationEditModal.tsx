@@ -62,6 +62,7 @@ import {
   signatureFieldValues,
 } from "./InboundSignatureFields";
 import { SheetsConfigEditor } from "./SheetsConfigEditor";
+import { apiRunTest, TestReceptionPanel } from "./TestReceptionPanel";
 
 type CatalogData = Awaited<
   ReturnType<typeof api.api.v1.integrations.catalog.get>
@@ -2277,6 +2278,16 @@ export function IntegrationEditModal({
                     refusal={refusal}
                     tools={httpTools}
                   />
+                )}
+                {editId && (
+                  <details className="rounded-lg border border-border p-3">
+                    <summary className="cursor-pointer font-medium text-sm">
+                      {t("integrations.test.title", "Test reception")}
+                    </summary>
+                    <div className="mt-3">
+                      <TestReceptionPanel run={apiRunTest(String(editId))} />
+                    </div>
+                  </details>
                 )}
               </div>
             )}

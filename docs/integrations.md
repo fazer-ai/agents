@@ -141,6 +141,19 @@ Some gateways notify with an id and nothing else: Mercado Pago sends `{"action":
 
 `pending` and `in_process` are left out, so they are ignored until the payment moves. Not confirmed against Mercado Pago itself: whether a Checkout Pro preference's `external_reference` reaches the payment unchanged, and whether a notification sent to a per-payment `notification_url` carries `x-signature`. The integration screen sets all of this up under "Look up each notification with a tool".
 
+### Test reception (issue #1610)
+
+The integration editor's "Test reception" (`POST /v1/integrations/instances/:id/test-reception`, `TENANT_ADMIN`, `src/modules/webhooks/inbound/test-reception.ts`) takes a pasted notification (raw body, optional headers and query string) and runs it through the SAVED instance on the receptor's own code (`receiveOnRoute`, the path a delivery takes after its route token resolves), returning each stage in order with `ok`, the receptor's reason and a detail:
+
+- `signature`: the strategy, the header read and whether it was there, the parts found, the signed message as rendered, and the verdict in the receptor's vocabulary (`credential_mismatch`, `signed_value_missing`...). The secret is never in the answer: the message is what gets signed, not the key.
+- `mapping`: the mapped event (kind, reference, dedupe key, status, text, amount) or why it was refused; for a lookup instance, the id it would look up, and then a second `mapping` for the provider's answer.
+- `fetch_back`: whether the lookup tool answered, and why not.
+- `correlation`: the conversation the reference names, or `uncorrelated`.
+- `record`: what would be (or was) recorded, `PENDING` or `FAILED`.
+- `delivery` (only without the dry run): how processing ended.
+
+`dryRun` defaults to true and writes nothing: no delivery row, no conversion, no message; the lookup still calls the provider (a read, through the same tool and guards) and the correlation is a read. Without the dry run the notification is delivered as a real one would be, processed inline, and the instance must be enabled (409 otherwise). At most 10 tests a minute per workspace (per process), since each one can call the provider with the operator's credential; past that, 429.
+
 ## Google Calendar toolpack — per-customer isolation (`src/modules/integrations/toolpacks/google-calendar.ts`)
 
 One clinic calendar serves MANY WhatsApp contacts, so every event the agent creates is stamped with `extendedProperties.private.secv4Contact = "<tenantId>:<contactDbId>"` — **injected from the trusted context, never a model arg**. Reads/writes are isolated three ways, **fail-closed**:

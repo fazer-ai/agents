@@ -39457,6 +39457,332 @@
         "operationId": "postV1IntegrationsInstancesByIdRoute-token"
       }
     },
+    "/v1/integrations/instances/{id}/test-reception": {
+      "post": {
+        "tags": [
+          "Integrations"
+        ],
+        "summary": "Test inbound reception",
+        "description": "Runs a pasted sample notification (raw body, optional headers and query string) through this instance's inbound path and returns each stage: signature (header read, signed message, verdict in the receptor's reason vocabulary), mapping, the lookup tool when the instance has one, correlation, and what would be recorded. `dryRun` (default true) writes nothing; false delivers the event as a real notification would. Never returns the secret. At most 10 a minute per workspace.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "description": "Integration instance id (BigInt serialized as a string).",
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "body"
+                ],
+                "properties": {
+                  "body": {
+                    "maxLength": 65536,
+                    "description": "The notification's raw body, exactly as the provider sends it.",
+                    "type": "string"
+                  },
+                  "headers": {
+                    "maxProperties": 50,
+                    "description": "Request headers, by name.",
+                    "type": "object",
+                    "patternProperties": {
+                      "^(.*)$": {
+                        "maxLength": 8192,
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "query": {
+                    "maxLength": 8192,
+                    "description": "The webhook URL's query string, e.g. data.id=123&type=payment.",
+                    "type": "string"
+                  },
+                  "dryRun": {
+                    "description": "Default true: nothing is written.",
+                    "type": "boolean"
+                  }
+                }
+              }
+            },
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "body"
+                ],
+                "properties": {
+                  "body": {
+                    "maxLength": 65536,
+                    "description": "The notification's raw body, exactly as the provider sends it.",
+                    "type": "string"
+                  },
+                  "headers": {
+                    "maxProperties": 50,
+                    "description": "Request headers, by name.",
+                    "type": "object",
+                    "patternProperties": {
+                      "^(.*)$": {
+                        "maxLength": 8192,
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "query": {
+                    "maxLength": 8192,
+                    "description": "The webhook URL's query string, e.g. data.id=123&type=payment.",
+                    "type": "string"
+                  },
+                  "dryRun": {
+                    "description": "Default true: nothing is written.",
+                    "type": "boolean"
+                  }
+                }
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "body"
+                ],
+                "properties": {
+                  "body": {
+                    "maxLength": 65536,
+                    "description": "The notification's raw body, exactly as the provider sends it.",
+                    "type": "string"
+                  },
+                  "headers": {
+                    "maxProperties": 50,
+                    "description": "Request headers, by name.",
+                    "type": "object",
+                    "patternProperties": {
+                      "^(.*)$": {
+                        "maxLength": 8192,
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "query": {
+                    "maxLength": 8192,
+                    "description": "The webhook URL's query string, e.g. data.id=123&type=payment.",
+                    "type": "string"
+                  },
+                  "dryRun": {
+                    "description": "Default true: nothing is written.",
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "400": {
+            "description": "Bad request — validation failed or the input was malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Not found.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict — a duplicate or a state conflict.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Conflict — a duplicate or a state conflict.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests — rate limited, or a spend ceiling has been reached.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Too many requests — rate limited, or a spend ceiling has been reached.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postV1IntegrationsInstancesByIdTest-reception"
+      }
+    },
     "/v1/knowledge/bases": {
       "get": {
         "tags": [

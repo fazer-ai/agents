@@ -3753,6 +3753,32 @@ function AgentEditor() {
     return { toolsSettings, protectedList, allowedList };
   }
 
+  // Each block's FORM state, keyed like the blocks: what decides whether a block was edited, compared
+  // before its serialization, which trims and drops empties and so would hide an edit that only does that.
+  function toolsStateOf(src: ToolsForm): Record<string, unknown> {
+    const g = src.guidance;
+    return {
+      handoff: [src.handoff, g.handoffInstructions],
+      kanban: g.kanbanInstructions,
+      toolGuidance: [
+        g.customAttributeInstructions,
+        g.labelInstructions,
+        g.updateKanbanTaskInstructions,
+      ],
+      toolPreconditions: src.toolPreconditions,
+      setLabels: [
+        src.protectedLabels,
+        src.allowedLabels,
+        src.outsideAllowedLabels,
+        src.labelRemoval,
+      ],
+      setCustomAttribute: src.writableAttributes,
+      crossInboxCase: g.crossInboxCase,
+      sendImage: g.sendImage,
+      resolveConversation: g.resolveConversation,
+    };
+  }
+
   // The settings blocks the Tools tab owns, serialized from one form state.
   function toolsBlocksOf(
     src: ToolsForm,
@@ -3858,9 +3884,9 @@ function AgentEditor() {
   // Tools-tab save: the grant set PLUS the tool blocks of the settings, merged onto the LAST-SYNCED bag
   // so pending Behavior edits are never clobbered. Two writes (grants PUT, then agent PATCH, whose
   // precondition chains to the PUT's token); everything the PATCH sends is built BEFORE the PUT, so the
-  // whole bag is checked against the write boundary first. The blocks are serialized twice, from the
-  // form and from the server's copy (`formOfSynced`), and only the ones that differ go out: a block the
-  // operator did not touch stays exactly as stored, absent included (docs/ui.md).
+  // whole bag is checked against the write boundary first. Only the blocks whose form state differs
+  // from the server's copy (`formOfSynced`) go out, compared before serialization as Behavior does: a
+  // block the operator did not touch stays exactly as stored, absent included (docs/ui.md).
   function toolsSave() {
     const synced = syncedAgentRef.current;
     const syncedSettings = (synced?.settings ?? {}) as Record<string, unknown>;
@@ -3885,14 +3911,20 @@ function AgentEditor() {
         allowedList,
       };
     }
-    const f = formOfSynced(synced, syncedGrantsRef.current);
-    const was = toolsBlocksOf(
-      { ...f, guidance: guidanceToSave(f.guidance, storedGuidance) },
-      syncedSettings,
-    ).blocks;
+    const was = toolsStateOf(formOfSynced(synced, syncedGrantsRef.current));
+    const is = toolsStateOf({
+      handoff,
+      guidance: formGuidance,
+      toolPreconditions,
+      protectedLabels,
+      allowedLabels,
+      outsideAllowedLabels,
+      labelRemoval,
+      writableAttributes,
+    });
     const edited = Object.fromEntries(
       Object.entries(now.blocks).filter(
-        ([key, block]) => JSON.stringify(block) !== JSON.stringify(was[key]),
+        ([key]) => JSON.stringify(is[key]) !== JSON.stringify(was[key]),
       ),
     );
     return {

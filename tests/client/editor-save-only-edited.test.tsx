@@ -279,4 +279,22 @@ describe("Tools writes the blocks the operator edited", () => {
     const setLabels = after?.setLabels as { protected?: string[] } | undefined;
     expect(setLabels?.protected).toEqual(["vip", "financeiro"]);
   });
+
+  test("trimming a stored note is an edit, even though both trim to the same text", async () => {
+    const after = await saveTools(
+      { toolGuidance: { set_labels: "  use vip  " } },
+      () => {
+        fireEvent.click(
+          screen.getByRole("button", { name: "Settings", expanded: false }),
+        );
+        const field = Array.from(document.querySelectorAll("textarea")).find(
+          (el) => el.value === "  use vip  ",
+        );
+        if (!field) throw new Error("the set_labels note is not drawn");
+        change(field, "use vip");
+      },
+    );
+    const guidance = after?.toolGuidance as Record<string, string> | undefined;
+    expect(guidance?.set_labels).toBe("use vip");
+  });
 });

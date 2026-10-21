@@ -37,7 +37,7 @@ import {
   resolveInboundAuthConfig,
   verifyInboundAuth,
 } from "./auth";
-import { signatureCoversBody } from "./signed-message";
+import { signatureCoversBody, signatureCoversId } from "./signed-message";
 import { redispatchKey } from "./sweep";
 
 // Generic inbound receptor. Resolve tenant by route token → verify the per-instance auth
@@ -237,10 +237,26 @@ export async function receiveInbound(
           getHeader: params.getHeader,
           getQuery: params.getQuery ?? (() => null),
         });
-    if (resourceId === null) {
-      const issues = isFetchBackProblem(fetchBack)
-        ? `config.fetchBack.${fetchBack.field}`.replace(/\.$/, "")
-        : "fetch-back id";
+    // The writer refuses an id the signature does not vouch for, and this says it again: a row that
+    // reached the table some other way (an import, a strategy changed later) must not look up an id
+    // anyone can choose.
+    const idUnsigned =
+      resourceId !== null &&
+      !isFetchBackProblem(fetchBack) &&
+      route.inboundAuthStrategy === "HMAC_SHA256" &&
+      !(fetchBack.idFrom.source === "body"
+        ? signatureCoversBody(route.config.signature)
+        : signatureCoversId(
+            route.config.signature,
+            fetchBack.idFrom.source,
+            fetchBack.idFrom.name,
+          ));
+    if (resourceId === null || idUnsigned) {
+      const issues = idUnsigned
+        ? "fetch-back id not covered by the signed message"
+        : isFetchBackProblem(fetchBack)
+          ? `config.fetchBack.${fetchBack.field}`.replace(/\.$/, "")
+          : "fetch-back id";
       logger.warn(
         "inbound: GENERIC notice names no usable resource id (instance %s): %s",
         String(route.id),

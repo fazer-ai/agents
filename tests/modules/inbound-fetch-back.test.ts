@@ -179,6 +179,7 @@ describe("an id the signature covers with fixed boundaries", () => {
       false,
     ],
     ["the id not in the message", sig("{{body}}"), false],
+    ["the body before the id", sig("{{body}}0{{query.id}};"), false],
     [
       "a separator that drops with an optional group",
       sig("{{header.x}}[[;{{query.optional}};]]{{query.id}};"),
@@ -701,6 +702,43 @@ describe.skipIf(!dbUp)("a thin notification answered by a consult-back", () => {
     expect((await rows()).find((x) => x.id === gone.deliveryId)?.status).toBe(
       "FAILED",
     );
+  });
+
+  test("a stored lookup whose id the signature does not cover looks nothing up", async () => {
+    // Written straight to the row, past the writer: an import or a later strategy change can leave
+    // one like it, and the receptor has to answer for it.
+    const g = await createIntegrationInstance(
+      ctx(),
+      {
+        catalogType: "GENERIC",
+        name: "Importada",
+        inboundAuthStrategy: "HMAC_SHA256",
+        inboundSecretRef: (
+          await suDb.integrationInstance.findUniqueOrThrow({
+            where: { id: instanceId },
+            select: { inboundSecretRef: true },
+          })
+        ).inboundSecretRef as string,
+      },
+      appDb,
+    );
+    await suDb.integrationInstance.update({
+      where: { id: g.id },
+      data: {
+        config: { fetchBack: fetchBackOf(toolId, { idFrom: "query.id" }) },
+      },
+    });
+    const body = '{"any":"body"}';
+    const before = seen.length;
+    const r = await receiveInbound({
+      routeToken: g.routeToken as string,
+      rawBody: body,
+      getHeader: lookup({ "x-webhook-signature": hmac(SECRET, body) }),
+      getQuery: lookup({ id: "1001" }),
+      base: appDb,
+    });
+    expect(r.outcome).toBe("invalid");
+    expect(seen.length).toBe(before);
   });
 
   test("an id that is not a plain id is refused before anything is looked up", async () => {

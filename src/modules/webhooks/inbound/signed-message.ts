@@ -280,8 +280,13 @@ export function signatureCoversId(
       (p) => p.kind === "value" && p.source === source && p.name === name,
     );
     if (at < 0) continue;
+    // The body before the id is refused outright: the gate never boundary-checks the body (its
+    // bytes are the signed thing), so `{{body}}0{{query.id}}` signs `1`+`01` and `10`+`1` alike.
     const framed = pieces.every(
-      (p, i) => i > at || p.kind === "text" || pieces[i + 1]?.kind !== "value",
+      (p, i) =>
+        i > at ||
+        p.kind === "text" ||
+        (p.source !== "body" && pieces[i + 1]?.kind !== "value"),
     );
     if (!framed) return false;
   }

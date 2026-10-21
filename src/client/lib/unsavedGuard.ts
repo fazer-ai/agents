@@ -262,6 +262,12 @@ export function pushBackBlocker(onBack: BackBlocker): () => void {
   };
 }
 
+// Whether the trap's sentinel is the current history entry. A page that leaves by a link while it is
+// navigates in its place, so Back from the destination returns to the page once.
+export function sentinelOnTop(): boolean {
+  return isBrowser && hasSentinel();
+}
+
 // Honor a Back press that a PAGE guard confirmed (the user chose "discard").
 // When the trap fired, `onPopState` re-pushed the sentinel, so we are now
 // sitting on it, one entry above the guarded page. Unlike a modal (which just

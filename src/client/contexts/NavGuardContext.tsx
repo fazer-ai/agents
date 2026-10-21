@@ -13,6 +13,7 @@ import { useNavigate } from "react-router";
 import { DiscardDialog } from "@/client/components/DiscardDialog";
 import {
   leaveViaBackTrap,
+  sentinelOnTop,
   useBackGuard,
   useBeforeUnload,
 } from "@/client/lib/unsavedGuard";
@@ -54,7 +55,8 @@ export function NavGuardProvider({ children }: { children: ReactNode }) {
   const leave = useCallback(
     (p: Pending) => {
       setPending(null);
-      if (p.kind === "href") navigateRef.current(p.href);
+      if (p.kind === "href")
+        navigateRef.current(p.href, { replace: sentinelOnTop() });
       else if (p.kind === "back") leaveViaBackTrap();
       else p.run();
     },

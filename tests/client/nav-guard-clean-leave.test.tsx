@@ -9,7 +9,7 @@ import {
   screen,
 } from "@testing-library/react";
 import { useState } from "react";
-import { MemoryRouter, Route, Routes } from "react-router";
+import { BrowserRouter, MemoryRouter, Route, Routes } from "react-router";
 import {
   NavGuardProvider,
   useConfirmLeave,
@@ -154,5 +154,41 @@ describe("a leave asked while the page is dirty", () => {
     } finally {
       go.mockRestore();
     }
+  });
+});
+
+// The Back trap keeps a same-URL sentinel entry above the page while it is dirty. A link followed
+// from the confirm takes that entry's place, so Back from the destination returns to the page once.
+describe("a link followed from the confirm", () => {
+  function mountBrowser() {
+    ran = 0;
+    return render(
+      <BrowserRouter>
+        <NavGuardProvider>
+          <Routes>
+            <Route path="/agents/7" element={<Page />} />
+            <Route path="/agents" element={<p>agent list</p>} />
+          </Routes>
+        </NavGuardProvider>
+      </BrowserRouter>,
+    );
+  }
+
+  test("once the page turns clean, takes the sentinel's entry", () => {
+    mountBrowser();
+    const entries = window.history.length;
+    fireEvent.click(screen.getByText("Back to agents"));
+    act(() => setDirty(false));
+    expect(onList()).toBe(true);
+    expect(window.history.length).toBe(entries);
+  });
+
+  test("on Discard, takes the sentinel's entry", () => {
+    mountBrowser();
+    const entries = window.history.length;
+    fireEvent.click(screen.getByText("Back to agents"));
+    fireEvent.click(screen.getByRole("button", { name: /discard/i }));
+    expect(onList()).toBe(true);
+    expect(window.history.length).toBe(entries);
   });
 });

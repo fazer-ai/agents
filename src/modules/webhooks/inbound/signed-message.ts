@@ -25,6 +25,8 @@ export interface SignatureConfig {
 
 export const SIGNATURE_MESSAGE_MAX_CHARS = 1000;
 export const SIGNATURE_MAX_AGE_SECONDS_MAX = 7 * 24 * 3600;
+// The id check walks every subset of optional groups; past this many it refuses instead.
+const ID_FRAMING_GROUPS_MAX = 8;
 const PART_KEY = /^[A-Za-z0-9_-]{1,32}$/;
 const QUERY_NAME = /^[A-Za-z0-9._~\-[\]]{1,128}$/;
 const VALUE = /^(body|header|query|sig)(?:\.([^|]+))?(?:\|(lower))?$/;
@@ -265,19 +267,25 @@ export function signatureCoversId(
   if (parsed === undefined || isSignatureConfigProblem(parsed)) return false;
   if (!covers(parsed.groups, source, name, false)) return false;
   // Fixed boundaries, as for the body: literal text (or the end of the message) after the id and
-  // after every value before it, which the gate refuses a value to contain.
-  // Without that, `{{query.id}}{{header.x}}` signs `123`+`abc` and `1`+`23abc` alike.
-  const pieces = parsed.groups.flatMap((g) => g.pieces);
-  const at = pieces.findIndex(
-    (p) => p.kind === "value" && p.source === source && p.name === name,
-  );
-  const isText = (p: Piece | undefined) => p === undefined || p.kind === "text";
-  return (
-    isText(pieces[at + 1]) &&
-    pieces.every(
-      (p, i) => i >= at || p.kind === "text" || pieces[i + 1]?.kind === "text",
-    )
-  );
+  // after every value before it, which the gate refuses a value to contain. Asked of every message
+  // the template can render, since a dropped [[group]] takes its separators with it.
+  const optional = parsed.groups.filter((g) => g.optional).length;
+  if (optional > ID_FRAMING_GROUPS_MAX) return false;
+  for (let mask = 0; mask < 2 ** optional; mask++) {
+    let bit = 0;
+    const pieces = parsed.groups.flatMap((g) =>
+      !g.optional || mask & (1 << bit++) ? g.pieces : [],
+    );
+    const at = pieces.findIndex(
+      (p) => p.kind === "value" && p.source === source && p.name === name,
+    );
+    if (at < 0) continue;
+    const framed = pieces.every(
+      (p, i) => i > at || p.kind === "text" || pieces[i + 1]?.kind !== "value",
+    );
+    if (!framed) return false;
+  }
+  return true;
 }
 
 export function isSignatureConfigProblem(
@@ -336,30 +344,29 @@ export function renderSignedMessage(
     if (v === null) return null;
     return p.lower ? v.toLowerCase() : v;
   };
-  let out = "";
+  // The groups that render, first: a value's boundary is the text after it in the MESSAGE, which
+  // can sit in the next group once a group between them drops.
+  const shown: { piece: Piece; value: string }[] = [];
   for (const g of groups) {
-    // Every value of the group first: an absent one drops an optional group whole, so whether the
-    // group is rendered at all is settled before any of its boundaries is judged.
-    const values = g.pieces.map((p) => (p.kind === "value" ? read(p) : null));
-    if (g.pieces.some((p, i) => p.kind === "value" && values[i] === null)) {
+    const values = g.pieces.map((p) => (p.kind === "text" ? p.text : read(p)));
+    if (values.some((v) => v === null)) {
       if (g.optional) continue;
       return "missing";
     }
-    let rendered = "";
-    for (const [i, p] of g.pieces.entries()) {
-      if (p.kind === "text") {
-        rendered += p.text;
-        continue;
-      }
-      const v = values[i] as string;
-      if (p.source !== "body" && blursBoundary(v, g.pieces[i + 1])) {
-        return "ambiguous";
-      }
-      rendered += v;
+    for (const [i, piece] of g.pieces.entries()) {
+      shown.push({ piece, value: values[i] as string });
     }
-    out += rendered;
   }
-  return out;
+  for (const [i, { piece, value }] of shown.entries()) {
+    if (
+      piece.kind === "value" &&
+      piece.source !== "body" &&
+      blursBoundary(value, shown[i + 1]?.piece)
+    ) {
+      return "ambiguous";
+    }
+  }
+  return shown.map((x) => x.value).join("");
 }
 
 // A provider timestamp in seconds or milliseconds (Mercado Pago's own examples use both), as epoch

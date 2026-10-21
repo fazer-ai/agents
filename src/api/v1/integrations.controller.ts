@@ -37,6 +37,7 @@ export const integrationsController = new Elysia({
     if (
       result.deliveryId !== undefined &&
       result.tenantId !== undefined &&
+      !result.deferred &&
       (result.outcome === "queued" || result.outcome === "duplicate")
     ) {
       const { deliveryId, tenantId } = result;

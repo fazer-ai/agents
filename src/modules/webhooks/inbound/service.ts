@@ -29,6 +29,7 @@ import type {
   InboundEventKind,
   NormalizedInboundEvent,
 } from "@/modules/integrations/types";
+import { upsertJobRows } from "@/modules/scheduler/service";
 import { resolveVaultRefState } from "@/modules/vault/service";
 import {
   type InboundAuthFailure,
@@ -37,6 +38,7 @@ import {
   verifyInboundAuth,
 } from "./auth";
 import { signatureCoversBody } from "./signed-message";
+import { redispatchKey } from "./sweep";
 
 // Generic inbound receptor. Resolve tenant by route token → verify the per-instance auth
 // strategy (tenant-scoped secret) → normalize via the integration's pure mapper → persist an
@@ -157,6 +159,9 @@ export interface ReceiveResult {
     // to the sender NOW, because nothing will ever act on it and the sender is the only party that
     // can stop: a periodic job keeps firing at a dead handle otherwise. Nothing is persisted.
     | "uncorrelated";
+  // A lookup booked for the next window (persistNotice): the job at that window runs it, so the
+  // receptor does not dispatch it now.
+  deferred?: true;
 }
 
 export interface ReceiveParams {
@@ -252,17 +257,13 @@ export async function receiveInbound(
         outcome: "invalid",
       };
     }
-    const { id, duplicate } = await persistRow(base, route, {
-      externalId: null,
-      dedupeKey: `notice:${resourceId}:${createHash("sha256").update(params.rawBody).digest("hex")}`,
-      payload: { kind: FETCH_BACK_KIND, resourceId },
-    });
-    const rearmed = duplicate && (await rearmNotice(base, route, id));
+    const notice = await persistNotice(base, route, resourceId);
     return {
       ack: true,
-      deliveryId: id,
+      deliveryId: notice.id,
       tenantId: route.tenantId,
-      outcome: duplicate && !rearmed ? "duplicate" : "queued",
+      outcome: notice.duplicate ? "duplicate" : "queued",
+      ...(notice.deferred ? { deferred: true } : {}),
     };
   }
 
@@ -521,34 +522,56 @@ async function persistRow(
   }
 }
 
-// A gateway can send the same bytes for two states of one resource (a bare "payment updated" with the
-// id), so a notice already looked up is looked up again when the same bytes come back: the event's
-// own dedupe key (`<id>:<status>`) is what keeps a repeat from acting twice. Not sooner than this
-// after the last lookup, so a replayed notice costs at most one provider call per window.
-export const NOTICE_REARM_AFTER_MS = 60_000;
+// One lookup per resource per window, keyed by the id the signature vouches for and never by the
+// body (which a manifest like Mercado Pago's leaves unsigned, so a replay with other whitespace would
+// otherwise be a fresh lookup each time). A notice arriving after its window's lookup was taken is
+// not dropped: it books the next window's lookup, run by a job at the window's start, since the
+// payment may have moved since the last answer (a gateway can send one bare body for successive
+// states). At most two lookups a window per id, and no state change left unasked.
+export const NOTICE_WINDOW_MS = 60_000;
 
-async function rearmNotice(
+async function persistNotice(
   base: PrismaClient,
   route: Pick<ResolvedInboundRoute, "id" | "tenantId">,
-  id: bigint,
-): Promise<boolean> {
-  const { count } = await runScopedOn(base, sysCtx(route.tenantId), (db) =>
-    db.inboundDelivery.updateMany({
-      where: {
-        id,
-        integrationInstanceId: route.id,
-        status: { in: ["PROCESSED", "FAILED"] },
-        processedAt: { lt: new Date(Date.now() - NOTICE_REARM_AFTER_MS) },
-      },
-      data: {
-        status: "PENDING",
-        attempts: 0,
-        claimedAt: null,
-        processedAt: null,
-      },
+  resourceId: string,
+  now = Date.now(),
+): Promise<{ id: bigint; duplicate: boolean; deferred: boolean }> {
+  const win = Math.floor(now / NOTICE_WINDOW_MS);
+  const row = (w: number, payload: Record<string, unknown> = {}) =>
+    persistRow(base, route, {
+      externalId: null,
+      dedupeKey: `notice:${resourceId}:${w}`,
+      payload: { kind: FETCH_BACK_KIND, resourceId, ...payload },
+    });
+  const current = await row(win);
+  if (!current.duplicate) return { ...current, deferred: false };
+  const status = await runScopedOn(base, sysCtx(route.tenantId), (db) =>
+    db.inboundDelivery.findUnique({
+      where: { id: current.id },
+      select: { status: true },
     }),
   );
-  return count > 0;
+  // Not looked up yet: that lookup will see whatever this notice is about.
+  if (status?.status === "PENDING") return { ...current, deferred: false };
+  const runAt = new Date((win + 1) * NOTICE_WINDOW_MS);
+  const next = await row(win + 1, { notBefore: runAt.toISOString() });
+  if (!next.duplicate) {
+    await runScopedOn(base, sysCtx(route.tenantId), (db) =>
+      upsertJobRows(db, {
+        tenantId: route.tenantId,
+        kind: "INBOUND_REDISPATCH",
+        rearm: "once",
+        runAt,
+        rows: [
+          {
+            dedupeKey: redispatchKey(next.id, 0),
+            payload: { deliveryId: String(next.id) },
+          },
+        ],
+      }),
+    );
+  }
+  return { ...next, deferred: true };
 }
 
 export interface ProcessDeps {
@@ -743,7 +766,10 @@ export async function processInboundDelivery(
         if (corr?.recorded && notify) {
           return {
             kind: "nudge",
-            deliverToResolved: false,
+            // A GENERIC conversion (a lookup's paid status) reaches a conversation the bot itself
+            // resolved, like every GENERIC event: the agent closing after sending the charge is the
+            // ordinary case.
+            deliverToResolved: source === "GENERIC",
             threadId: corr.threadId,
             nudge: buildNudge(
               payload,

@@ -125,7 +125,7 @@ export async function redispatchInbound(
   const deliveryId = parseDbId(
     typeof job.payload.deliveryId === "string" ? job.payload.deliveryId : null,
   );
-  // Only the sweep writes this payload, so a malformed one is a bug and not a transient: retrying it
+  // Only the sweep and a deferred lookup (persistNotice) write this payload, so a malformed one is a bug and not a transient: retrying it
   // would change nothing, and failing it is what puts it on the dead-letter line.
   if (deliveryId === null) {
     return { outcome: "fail", error: "inbound redispatch: no delivery id" };

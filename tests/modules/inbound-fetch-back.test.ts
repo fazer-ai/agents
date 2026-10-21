@@ -1,4 +1,11 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import {
+  afterAll,
+  beforeAll,
+  describe,
+  expect,
+  setSystemTime,
+  test,
+} from "bun:test";
 import { createHmac } from "node:crypto";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
@@ -22,10 +29,15 @@ import {
 } from "@/modules/integrations/service";
 import { createToolDefinition } from "@/modules/tool-definitions/service";
 import {
+  NOTICE_WINDOW_MS,
   processInboundDelivery,
   receiveInbound,
 } from "@/modules/webhooks/inbound/service";
-import { signatureCoversId } from "@/modules/webhooks/inbound/signed-message";
+import {
+  parseSignatureConfig,
+  renderSignedMessage,
+  signatureCoversId,
+} from "@/modules/webhooks/inbound/signed-message";
 import { dbProbeFailed } from "@/tests/db-gate";
 
 // A gateway that notifies with an id only, as Mercado Pago does: `POST <url>?data.id=123&type=payment`
@@ -167,6 +179,11 @@ describe("an id the signature covers with fixed boundaries", () => {
       false,
     ],
     ["the id not in the message", sig("{{body}}"), false],
+    [
+      "a separator that drops with an optional group",
+      sig("{{header.x}}[[;{{query.optional}};]]{{query.id}};"),
+      false,
+    ],
   ])("%s", (_, signature, covered) => {
     expect(
       signatureCoversId(
@@ -176,6 +193,22 @@ describe("an id the signature covers with fixed boundaries", () => {
       ),
     ).toBe(covered);
   });
+});
+
+test("a value that runs into the text of the next group is refused, the group between them dropped", () => {
+  const parsed = parseSignatureConfig({
+    message: "[[{{header.x}}]][[{{header.y}}]];{{body}}",
+  });
+  if (!parsed || "problem" in parsed) throw new Error("config");
+  const render = (x: string) =>
+    renderSignedMessage(parsed.groups, {
+      rawBody: "B",
+      getHeader: lookup({ x }),
+      getQuery: lookup({}),
+      parts: new Map(),
+    });
+  expect(render("1")).toBe("1;B");
+  expect(render("1;2")).toBe("ambiguous");
 });
 
 describe("the consult-back config", () => {
@@ -386,28 +419,32 @@ describe.skipIf(!dbUp)("a thin notification answered by a consult-back", () => {
   };
 
   let reqSeq = 0;
-  const notify = async (
-    id: string,
-    action = "payment.updated",
-    token = routeToken,
-  ) => {
+  const signedFor = (id: string) => {
     const ts = String(Math.floor(Date.now() / 1000));
     const requestId = `req-${++reqSeq}`;
     const sig = hmac(
       SECRET,
       `id:${id.toLowerCase()};request-id:${requestId};ts:${ts};`,
     );
-    return receiveInbound({
-      routeToken: token,
-      rawBody: JSON.stringify({ action, type: "payment", data: { id } }),
+    return {
       getHeader: lookup({
         "x-signature": `ts=${ts},v1=${sig}`,
         "x-request-id": requestId,
       }),
       getQuery: lookup({ "data.id": id, type: "payment" }),
+    };
+  };
+  const notify = async (
+    id: string,
+    action = "payment.updated",
+    token = routeToken,
+  ) =>
+    receiveInbound({
+      routeToken: token,
+      rawBody: JSON.stringify({ action, type: "payment", data: { id } }),
+      ...signedFor(id),
       base: appDb,
     });
-  };
   const process_ = (deliveryId: bigint) =>
     processInboundDelivery({
       deliveryId,
@@ -495,6 +532,7 @@ describe.skipIf(!dbUp)("a thin notification answered by a consult-back", () => {
     for (const id of [tenantId, otherTenantId, ...extraTenants]) {
       if (!id) continue;
       for (const table of [
+        "scheduler_jobs",
         "agent_tool_selections",
         "agents",
         "inbound_deliveries",
@@ -544,6 +582,7 @@ describe.skipIf(!dbUp)("a thin notification answered by a consult-back", () => {
     ]);
     expect(nudges.at(-1)).toMatchObject({
       threadId: `${tenantId}:1:101`,
+      deliverToResolved: true,
       nudge: {
         source: "GENERIC",
         status: "approved",
@@ -679,42 +718,64 @@ describe.skipIf(!dbUp)("a thin notification answered by a consult-back", () => {
     expect(seen.length).toBe(before);
   });
 
-  test("the same bytes for a later state of the payment are looked up again, once per window", async () => {
+  test("a notice after its window's lookup books one more for the next window, and the payment's later state is acted on", async () => {
     const ref = await mint(106);
     payments.set("1006", {
       code: 200,
       body: { status: "pending", external_reference: ref },
     });
-    const first = await notify("1006", "payment.updated");
-    await process_(first.deliveryId as bigint);
-    // Within the window the same bytes are a duplicate, and nothing is looked up.
-    const before = seen.length;
-    const soon = await notify("1006", "payment.updated");
-    expect(soon.outcome).toBe("duplicate");
-    expect(seen.length).toBe(before);
-    // The payment is approved and Mercado Pago sends the very same body again.
-    payments.set("1006", {
-      code: 200,
-      body: {
-        status: "approved",
-        external_reference: ref,
-        transaction_amount: 30,
-        currency_id: "BRL",
-      },
-    });
-    await suDb.inboundDelivery.update({
-      where: { id: first.deliveryId as bigint },
-      data: { processedAt: new Date(Date.now() - 2 * 60_000) },
-    });
-    const later = await notify("1006", "payment.updated");
-    expect(later.outcome).toBe("queued");
-    expect(later.deliveryId).toBe(first.deliveryId);
-    await process_(later.deliveryId as bigint);
-    expect(
-      await suDb.conversionEvent.count({
-        where: { tenantId, threadId: `${tenantId}:1:106` },
-      }),
-    ).toBe(1);
+    const start =
+      Math.ceil(Date.now() / NOTICE_WINDOW_MS + 1) * NOTICE_WINDOW_MS;
+    setSystemTime(new Date(start + 1_000));
+    try {
+      const first = await notify("1006", "payment.updated");
+      expect(first.outcome).toBe("queued");
+      await process_(first.deliveryId as bigint);
+      // The payment is approved and the gateway sends a bare notice again within the window.
+      payments.set("1006", {
+        code: 200,
+        body: {
+          status: "approved",
+          external_reference: ref,
+          transaction_amount: 30,
+          currency_id: "BRL",
+        },
+      });
+      const before = seen.length;
+      const again = await notify("1006", "payment.updated");
+      expect(again).toMatchObject({ outcome: "queued", deferred: true });
+      expect(again.deliveryId).not.toBe(first.deliveryId);
+      expect(seen.length).toBe(before);
+      const job = await suDb.schedulerJob.findFirstOrThrow({
+        where: {
+          tenantId,
+          kind: "INBOUND_REDISPATCH",
+          dedupeKey: `inbound-delivery:${again.deliveryId}:0`,
+        },
+        select: { runAt: true },
+      });
+      expect(job.runAt.getTime()).toBe(start + NOTICE_WINDOW_MS);
+      // A replay with other bytes (whitespace) in the same window books nothing more.
+      const replay = await receiveInbound({
+        routeToken,
+        rawBody:
+          ' {"action":"payment.updated","type":"payment","data":{"id":"1006"}} ',
+        ...signedFor("1006"),
+        base: appDb,
+      });
+      expect(replay.outcome).toBe("duplicate");
+      // The job runs at the next window and the approval is acted on.
+      setSystemTime(new Date(start + NOTICE_WINDOW_MS + 1_000));
+      await process_(again.deliveryId as bigint);
+      expect(seen.length).toBe(before + 1);
+      expect(
+        await suDb.conversionEvent.count({
+          where: { tenantId, threadId: `${tenantId}:1:106` },
+        }),
+      ).toBe(1);
+    } finally {
+      setSystemTime();
+    }
   });
 
   test("an agent bundle carries the lookup tool by name, and the import points the lookup at its copy", async () => {

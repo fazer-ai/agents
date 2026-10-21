@@ -251,9 +251,13 @@ export function isHumanHandback(message: BaseMessage): boolean {
 export const UNDELIVERED_REPLY_NOTE =
   "(Contexto do sistema: a resposta às ações acima não chegou ao cliente, porque uma mensagem nova dele chegou antes do envio. O cliente ainda não sabe o resultado dessas ações.)";
 
-export function undeliveredReplyNote(conversationId: number): HumanMessage {
+export function undeliveredReplyNote(
+  conversationId: number,
+  id?: string,
+): HumanMessage {
   return new HumanMessage({
     content: UNDELIVERED_REPLY_NOTE,
+    ...(id !== undefined ? { id } : {}),
     additional_kwargs: {
       [MARKER_KWARG]: "undelivered_reply" satisfies SystemMarker,
       ...conversationStamp(conversationId),

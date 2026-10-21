@@ -247,13 +247,13 @@ export async function undoRefusedTurn(params: {
   // that happens to be named like a native one is never mistaken for the inert one.
   inertTools?: ReadonlySet<string>;
   // The note that takes the removed reply's place when the turn acted before it
-  // (`turnActedBeforeItsReply`). It reuses the first removed id, so the reducer puts it exactly where
-  // the reply stood, ahead of anything appended since. Absent, the reply just goes. Meaningful on the
-  // reactive plan only: the proactive one removes nothing from a turn that acted.
-  undeliveredNote?: BaseMessage;
+  // (`turnActedBeforeItsReply`), built ON the first removed id: the reducer puts it exactly where the
+  // reply stood, and the checkpoint keeps the id a later removal names (an id assigned after
+  // construction never reaches it). Absent, the reply just goes. Reactive plan only: the proactive
+  // one removes nothing from a turn that acted.
+  undeliveredNote?: (id: string) => BaseMessage;
   // What the customer read instead of the removed reply (a template sent in its place). Unlike the
-  // note it stands there whether or not the turn acted first, built ON the first id so the
-  // checkpoint keeps the id a later removal names.
+  // note it stands there whether or not the turn acted first, on the same id.
   replacementText?: string;
   // The DURABLE half of the exclusion, for the one thread key that has a row to hang it on. Both or
   // neither: without them only the process-local check applies, which is all a thread with no
@@ -296,13 +296,14 @@ export async function undoRefusedTurn(params: {
       if (decided.action === "remove") {
         const [first, ...rest] = decided.ids;
         const note =
-          params.replacementText !== undefined
-            ? new AIMessage({ content: params.replacementText, id: first })
-            : params.undeliveredNote !== undefined &&
-                turnActedBeforeItsReply(produced, params.inertTools)
-              ? params.undeliveredNote
-              : null;
-        if (note && first !== undefined) note.id = first;
+          first === undefined
+            ? null
+            : params.replacementText !== undefined
+              ? new AIMessage({ content: params.replacementText, id: first })
+              : params.undeliveredNote !== undefined &&
+                  turnActedBeforeItsReply(produced, params.inertTools)
+                ? params.undeliveredNote(first)
+                : null;
         await graph.updateState(
           threadCfg,
           {

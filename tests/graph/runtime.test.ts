@@ -9211,6 +9211,15 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         ["tool", expect.any(String)],
         ["human", UNDELIVERED_REPLY_NOTE],
       ]);
+      // Stored WITH an id, so a compaction or a second rollback before the next turn can name it.
+      const stored = (
+        (
+          await buildThreadStateGraph(checkpointer).getState({
+            configurable: { thread_id: `${tenantId}:${instanceId}:93160` },
+          })
+        ).values as { messages: BaseMessage[] }
+      ).messages.at(-1);
+      expect(typeof stored?.id).toBe("string");
       // The flow log records it at `info`: the next turn tells the customer, so no alert is owed.
       const conv = await suDb.conversation.findFirstOrThrow({
         where: { tenantId, chatwootConversationId: 93160 },

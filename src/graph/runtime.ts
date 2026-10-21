@@ -2258,7 +2258,10 @@ async function runTurnBody(
         // customer. A takeover hands the conversation to a person who sees the act in
         // Chatwoot, and `stale` was called off by the operator.
         ...(owesUndeliveredNote(outcome)
-          ? { undeliveredNote: undeliveredReplyNote(conversationId) }
+          ? {
+              undeliveredNote: (id: string) =>
+                undeliveredReplyNote(conversationId, id),
+            }
           : {}),
         logPrefix: "turn",
         conversationId,

@@ -312,6 +312,8 @@
     "serviceWindowKind": "{{where}}: not a proactive kind ({{kinds}}).",
     "serviceWindowReminderChoice": "{{where}}: not a template choice ({ name, language, params, … }).",
     "serviceWindowReminderOffset": "{{where}}: the key is a reminder offset in hours.",
+    "serviceWindowTemplateBlankBody": "{{where}}: body parameter {{index}} of template \"{{name}}\" is blank.",
+    "serviceWindowTemplateBlankHeader": "{{where}}: header parameter {{index}} of template \"{{name}}\" is blank.",
     "serviceWindowTemplateBodyCount": "{{where}}: template \"{{name}}\" takes {{want}} body parameter(s), {{got}} configured.",
     "serviceWindowTemplateButtonCount": "{{where}}: template \"{{name}}\" has {{want}} button(s), {{got}} configured.",
     "serviceWindowTemplateButtonNeedsSuffix": "{{where}}: button {{index}} (\"{{text}}\") of template \"{{name}}\" needs the end of its URL.",

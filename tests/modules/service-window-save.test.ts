@@ -214,6 +214,52 @@ describe.skipIf(!dbUp)("service-window templates at save", () => {
     );
   });
 
+  test("with two inboxes holding the same template differently, a choice has to fit both", async () => {
+    const other = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: (
+          await suDb.chatwootInstance.findFirstOrThrow({
+            where: { tenantId },
+            select: { id: true },
+          })
+        ).id,
+        chatwootInboxId: 19,
+        name: "Outra conta",
+        agentId,
+      },
+    });
+    try {
+      const twoInboxes = {
+        makeClient: async () =>
+          ({
+            listTemplateDefinitions: async (inboxId: number) =>
+              [
+                inboxId === 19
+                  ? {
+                      ...TEMPLATES[0],
+                      components: [{ type: "BODY", text: "Oi {{1}}" }],
+                    }
+                  : TEMPLATES[0],
+              ].map((t) => parseTemplateDefinition(t)),
+          }) as unknown as ChatwootClient,
+      };
+      const e = await refusal(
+        assertServiceWindowTemplatesUsable(
+          ctx(),
+          agentId,
+          { serviceWindow: { templates: { followup: ok } } },
+          {},
+          twoInboxes,
+          suDb,
+        ),
+      );
+      expect(e?.translationKey).toBe("errors.serviceWindowTemplateBodyCount");
+    } finally {
+      await suDb.inbox.delete({ where: { id: other.id } });
+    }
+  });
+
   test("a choice the write leaves as it was is not re-judged, and an untouched block reads nothing", async () => {
     const stored = {
       serviceWindow: { templates: { followup: { ...ok, name: "retirado" } } },

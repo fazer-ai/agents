@@ -312,6 +312,8 @@
     "serviceWindowKind": "{{where}}: não é um tipo de envio proativo ({{kinds}}).",
     "serviceWindowReminderChoice": "{{where}}: não é uma escolha de template ({ name, language, params, … }).",
     "serviceWindowReminderOffset": "{{where}}: a chave é a antecedência do lembrete, em horas.",
+    "serviceWindowTemplateBlankBody": "{{where}}: o parâmetro {{index}} do corpo do template \"{{name}}\" está em branco.",
+    "serviceWindowTemplateBlankHeader": "{{where}}: o parâmetro {{index}} do cabeçalho do template \"{{name}}\" está em branco.",
     "serviceWindowTemplateBodyCount": "{{where}}: o template \"{{name}}\" recebe {{want}} parâmetro(s) no corpo, e {{got}} foram configurados.",
     "serviceWindowTemplateButtonCount": "{{where}}: o template \"{{name}}\" tem {{want}} botão(ões), e {{got}} foram configurados.",
     "serviceWindowTemplateButtonNeedsSuffix": "{{where}}: o botão {{index}} (\"{{text}}\") do template \"{{name}}\" precisa do final da URL.",

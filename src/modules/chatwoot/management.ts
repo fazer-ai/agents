@@ -2124,15 +2124,21 @@ export async function listAgentsAndTeams(
 export type ServiceWindowTemplateDto = TemplateDefinition;
 
 // Approved WhatsApp HSM templates available to an agent's inbox(es), read live (admin token) across
-// the agent's bound inboxes, grouped by instance, deduped by name and language. `complete` says every
-// instance answered: an unreachable one contributes nothing, so an absence is not proof when false.
-// Empty for baileys inboxes (no HSM).
+// the agent's bound inboxes, grouped by instance. `templates` is the picker's list, deduped by name
+// and language; `byInbox` keeps each inbox's own, because two accounts can hold the same name with
+// different components and a send uses its conversation's inbox. `complete` says every instance
+// answered: an unreachable one contributes nothing, so an absence is not proof when false. Empty for
+// baileys inboxes (no HSM).
 export async function loadAgentTemplateDefinitions(
   ctx: TenantContext,
   agentId: bigint,
   deps: LoadChatwootClientDeps = {},
   base: PrismaClient = basePrisma,
-): Promise<{ templates: TemplateDefinition[]; complete: boolean }> {
+): Promise<{
+  templates: TemplateDefinition[];
+  byInbox: TemplateDefinition[][];
+  complete: boolean;
+}> {
   if (ctx.tenantId === null) throw new AppError("tenant required", 400);
   const tenantId = ctx.tenantId;
   const inboxes = await runScopedOn(base, ctx, (db) =>
@@ -2141,7 +2147,8 @@ export async function loadAgentTemplateDefinitions(
       select: { chatwootInstanceId: true, chatwootInboxId: true },
     }),
   );
-  if (inboxes.length === 0) return { templates: [], complete: true };
+  if (inboxes.length === 0)
+    return { templates: [], byInbox: [], complete: true };
   const byInstance = new Map<bigint, number[]>();
   for (const ib of inboxes) {
     const list = byInstance.get(ib.chatwootInstanceId) ?? [];
@@ -2149,6 +2156,7 @@ export async function loadAgentTemplateDefinitions(
     byInstance.set(ib.chatwootInstanceId, list);
   }
   const byKey = new Map<string, TemplateDefinition>();
+  const byInbox: TemplateDefinition[][] = [];
   let complete = true;
   for (const [instanceId, inboxIds] of byInstance) {
     try {
@@ -2157,7 +2165,9 @@ export async function loadAgentTemplateDefinitions(
         makeClient: deps.makeClient,
       });
       for (const inboxId of inboxIds) {
-        for (const tpl of await client.listTemplateDefinitions(inboxId)) {
+        const defs = await client.listTemplateDefinitions(inboxId);
+        byInbox.push(defs);
+        for (const tpl of defs) {
           const key = `${tpl.name}\u0000${tpl.language.toLowerCase()}`;
           if (!byKey.has(key)) byKey.set(key, tpl);
         }
@@ -2166,7 +2176,7 @@ export async function loadAgentTemplateDefinitions(
       complete = false;
     }
   }
-  return { templates: [...byKey.values()], complete };
+  return { templates: [...byKey.values()], byInbox, complete };
 }
 
 // The service-window template picker's listing. Best-effort, as above.

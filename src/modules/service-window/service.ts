@@ -397,6 +397,8 @@ export interface TemplateProblem {
     | "serviceWindowTemplateLanguage"
     | "serviceWindowTemplateBodyCount"
     | "serviceWindowTemplateHeaderCount"
+    | "serviceWindowTemplateBlankBody"
+    | "serviceWindowTemplateBlankHeader"
     | "serviceWindowTemplateMediaHeader"
     | "serviceWindowTemplateButtonCount"
     | "serviceWindowTemplateButtonNeedsSuffix"
@@ -437,6 +439,16 @@ export function templateChoiceProblem(
       message: `template "${name}" takes ${bodyWant} body parameter(s), ${choice.params.length} configured`,
     };
   }
+  // Chatwoot drops an empty value before it reaches WhatsApp, so a blank field is a count mismatch
+  // at send time.
+  const blankBody = choice.params.findIndex((v) => v.trim() === "");
+  if (blankBody >= 0) {
+    return {
+      key: "serviceWindowTemplateBlankBody",
+      params: { name, index: blankBody + 1 },
+      message: `template "${name}" body parameter ${blankBody + 1} is blank`,
+    };
+  }
   if (def.header && def.header.format !== "TEXT") {
     const format = def.header.format.toLowerCase();
     return {
@@ -451,6 +463,14 @@ export function templateChoiceProblem(
       key: "serviceWindowTemplateHeaderCount",
       params: { name, want: headerWant, got: choice.headerParams.length },
       message: `template "${name}" takes ${headerWant} header parameter(s), ${choice.headerParams.length} configured`,
+    };
+  }
+  const blankHeader = choice.headerParams.findIndex((v) => v.trim() === "");
+  if (blankHeader >= 0) {
+    return {
+      key: "serviceWindowTemplateBlankHeader",
+      params: { name, index: blankHeader + 1 },
+      message: `template "${name}" header parameter ${blankHeader + 1} is blank`,
     };
   }
   if (choice.buttonParams.length > def.buttons.length) {
@@ -547,7 +567,7 @@ export interface TemplatePayload {
   processedParams: {
     body: Record<string, string>;
     header?: Record<string, string>;
-    buttons?: Array<{ type?: string; parameter?: string }>;
+    buttons?: Array<{ type: string; parameter?: string }>;
   };
 }
 
@@ -619,13 +639,17 @@ export function buildTemplatePayload(
   if (headerParams.length > 0) {
     processedParams.header = keyed(headerParams, def?.header?.text ?? null);
   }
-  // Positional, a blank entry kept as `{}`: Chatwoot numbers a button by its place in this
-  // array, so dropping a static button's slot would hand the next button's suffix to the wrong one.
+  // Positional, a static button's slot kept as `{ type: "static" }`: Chatwoot numbers a button by its
+  // place in this array, so dropping the slot would hand the next button's suffix to the wrong one;
+  // the converter refuses an entry with no `type` (and falls back to legacy body params), and the
+  // processor skips one that is neither `url` nor carries a parameter.
   const lastButton = buttonParams.findLastIndex((p) => p.trim() !== "");
   if (lastButton >= 0) {
     processedParams.buttons = buttonParams
       .filter((_, i) => i <= lastButton)
-      .map((p) => (p.trim() ? { type: "url", parameter: p.trim() } : {}));
+      .map((p) =>
+        p.trim() ? { type: "url", parameter: p.trim() } : { type: "static" },
+      );
   }
   const content = def
     ? renderTemplateText(def, { body: params, header: headerParams })

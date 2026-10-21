@@ -290,8 +290,16 @@ describe("buildTemplatePayload with header and buttons", () => {
     expect(p?.processedParams).toEqual({
       body: { "1": "Maria", "2": "22/10/2026", "3": "14:30" },
       header: { "1": "quinta-feira" },
-      buttons: [{}, { type: "url", parameter: "agenda/centro" }],
+      buttons: [
+        { type: "static" },
+        { type: "url", parameter: "agenda/centro" },
+      ],
     });
+    // Chatwoot's converter reads the payload as enhanced only when every button names a type;
+    // otherwise it falls back to legacy body params and the buttons are lost.
+    expect(p?.processedParams.buttons?.every((b) => Boolean(b.type))).toBe(
+      true,
+    );
   });
 
   test("with the synced definition, content is the text the customer reads", () => {
@@ -363,6 +371,17 @@ describe("templateChoiceProblem", () => {
     );
     expect(key({ buttonParams: ["x", "e"] })).toBe(
       "serviceWindowTemplateButtonTakesNone",
+    );
+  });
+
+  test("a blank parameter is refused: Chatwoot drops it and the count no longer matches", () => {
+    const key = (over: Partial<TemplateChoice>) =>
+      templateChoiceProblem(choice(over), DEFS)?.key;
+    expect(key({ params: ["a", " ", "c"] })).toBe(
+      "serviceWindowTemplateBlankBody",
+    );
+    expect(key({ headerParams: [""] })).toBe(
+      "serviceWindowTemplateBlankHeader",
     );
   });
 

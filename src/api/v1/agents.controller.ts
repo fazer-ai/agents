@@ -92,6 +92,8 @@ import { setUpAgentCalls } from "@/modules/voice-call/setup";
 // translate('errors.serviceWindowReminderOffset', '{{where}}: the key is a reminder offset in hours.')
 // translate('errors.serviceWindowReminderChoice', '{{where}}: not a template choice ({ name, language, params, … }).')
 // translate('errors.serviceWindowAppointmentVar', '{{where}}: {{placeholder}} is an appointment placeholder, and only appointment reminders have an appointment.')
+// translate('errors.serviceWindowTemplateBlankBody', '{{where}}: body parameter {{index}} of template "{{name}}" is blank.')
+// translate('errors.serviceWindowTemplateBlankHeader', '{{where}}: header parameter {{index}} of template "{{name}}" is blank.')
 // translate('errors.serviceWindowTemplateNotFound', '{{where}}: template "{{name}}" is not an approved template of this agent\'s inbox.')
 // translate('errors.serviceWindowTemplateLanguage', '{{where}}: template "{{name}}" has no "{{language}}" version (available: {{available}}).')
 // translate('errors.serviceWindowTemplateBodyCount', '{{where}}: template "{{name}}" takes {{want}} body parameter(s), {{got}} configured.')

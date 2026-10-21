@@ -133,7 +133,7 @@ export async function assertServiceWindowTemplatesUsable(
     (c) => before.get(c.where) !== JSON.stringify(c.choice),
   );
   if (changed.length === 0) return;
-  const { templates, complete } = await loadAgentTemplateDefinitions(
+  const { templates, byInbox, complete } = await loadAgentTemplateDefinitions(
     ctx,
     agentId,
     deps,
@@ -141,7 +141,17 @@ export async function assertServiceWindowTemplatesUsable(
   );
   if (!complete || templates.length === 0) return;
   for (const { where, choice } of changed) {
-    const problem = templateChoiceProblem(choice, templates);
+    // Judged in every inbox that has the template, since a send goes out through its conversation's
+    // inbox; against the union only to say it exists nowhere.
+    const holders = byInbox.filter((defs) =>
+      defs.some((d) => d.name === choice.name),
+    );
+    const problem =
+      holders.length === 0
+        ? templateChoiceProblem(choice, templates)
+        : (holders
+            .map((defs) => templateChoiceProblem(choice, defs))
+            .find((p) => p !== null) ?? null);
     if (problem) {
       throw new AppError(
         `${where}: ${problem.message}`,

@@ -138,7 +138,42 @@ class FakeSheets {
         })),
       });
     }
-    const mode = url.searchParams.get("valueInputOption");
+    if (rest === ":batchUpdate" && method === "POST") {
+      // appendCells: after the last row with data anywhere in the tab, cell N in column N. A
+      // stringValue is stored as text; a formulaValue would be evaluated.
+      const reqs = (body as { requests: Array<Record<string, unknown>> })
+        .requests;
+      for (const req of reqs) {
+        const ac = req.appendCells as
+          | {
+              sheetId: number;
+              fields: string;
+              rows: Array<{ values: Array<Record<string, unknown>> }>;
+            }
+          | undefined;
+        if (ac?.fields !== "userEnteredValue") return this.json(400, {});
+        const tab = this.tabs.find((t) => t.sheetId === ac.sheetId);
+        if (!tab) return this.json(400, {});
+        while (
+          tab.rows.length &&
+          (tab.rows[tab.rows.length - 1] ?? []).every((c) => c === "")
+        )
+          tab.rows.pop();
+        for (const r of ac.rows) {
+          tab.rows.push(
+            r.values.map((c) => {
+              const v = c.userEnteredValue as
+                | { stringValue?: string; formulaValue?: string }
+                | undefined;
+              if (v?.formulaValue !== undefined) return "#EVALUATED";
+              return v?.stringValue ?? "";
+            }),
+          );
+          this.writes++;
+        }
+      }
+      return this.json(200, { replies: [{}] });
+    }
     if (rest === "/values:batchUpdate" && method === "POST") {
       const b = body as {
         valueInputOption: string;
@@ -162,24 +197,6 @@ class FakeSheets {
     const tab = this.byTitle(r.title);
     if (!tab)
       return this.json(400, { error: { message: "Unable to parse range" } });
-    if (values[2] && method === "POST") {
-      // Like Google: the table is found from the range, and the new row starts at the table's first
-      // column, whatever column the range named.
-      const header = tab.rows[0] ?? [];
-      let start = r.col ?? 0;
-      while (start < header.length && !header[start]) start++;
-      const given = ((body as { values: unknown[][] }).values[0] ?? []).map(
-        (v) => this.store(v, mode),
-      );
-      const row = [...Array.from({ length: start }, () => ""), ...given];
-      tab.rows.push(row);
-      this.writes++;
-      const n = tab.rows.length;
-      const letter = String.fromCharCode(65 + start);
-      return this.json(200, {
-        updates: { updatedRange: `'${tab.title}'!${letter}${n}:Z${n}` },
-      });
-    }
     const end = Math.min(r.endRow ?? tab.rows.length, tab.rows.length);
     const slice = tab.rows.slice(r.startRow - 1, end).map((row) => {
       const out = [...row];
@@ -300,12 +317,8 @@ describe("google sheets: append", () => {
         { column: " NOME ", value: "Carla" },
       ],
     });
-    expect(out).toContain("row 5");
+    expect(out).toContain("Added the row");
     expect(fake.tab(0).rows[4]).toEqual(["Carla", "5511988887777", "", ""]);
-    const append = fake.calls.find((c) => c.url.includes(":append"));
-    expect(
-      new URL(append?.url ?? "").searchParams.get("valueInputOption"),
-    ).toBe("RAW");
   });
 
   test("a value that looks like a formula is stored as the text it is", async () => {
@@ -353,15 +366,34 @@ describe("google sheets: append", () => {
     expect(fake.tab(0).rows[2]).toEqual(["", "Bia", "2"]);
   });
 
-  test("a tab title with an exclamation mark and a cell-like tail reports the real row", async () => {
-    const t = leads();
-    t.title = "Leads!Q1";
-    const { fake, tool } = setup(["sheets_append_row"], { tabs: [t] });
-    const out = await tool("sheets_append_row")({
-      values: [{ column: "Nome", value: "Eva" }],
+  test("an unlabeled column A with data does not shift the values off their headers", async () => {
+    const { fake, tool } = setup(["sheets_append_row"], {
+      tabs: [
+        {
+          sheetId: 0,
+          title: "Leads",
+          rows: [
+            ["", "Nome", "Telefone"],
+            ["nota", "Ana", "1"],
+          ],
+        },
+      ],
     });
-    expect(out).toContain("row 5");
-    expect(fake.tab(0).rows[4]?.[0]).toBe("Eva");
+    await tool("sheets_append_row")({
+      values: [{ column: "Nome", value: "Bia" }],
+    });
+    expect(fake.tab(0).rows[2]).toEqual(["", "Bia", ""]);
+  });
+
+  test("the row goes to the configured tab and no other", async () => {
+    const { fake, tool } = setup(["sheets_append_row"], {
+      config: { spreadsheetId: SID, sheetId: 77 },
+    });
+    await tool("sheets_append_row")({
+      values: [{ column: "Serviço", value: "Exame" }],
+    });
+    expect(fake.tab(77).rows[2]).toEqual(["Exame", ""]);
+    expect(fake.tab(0).rows.length).toBe(4);
   });
 
   test("the tab is found by its id, so a renamed tab keeps working", async () => {

@@ -24,6 +24,8 @@ function fakeClient(counter: { labels: number; defs: number }): ChatwootClient {
           model: "conversation_attribute",
           displayType: "list",
           values: ["new", "qualified"],
+          regexPattern: null,
+          regexCue: null,
         },
         {
           key: "plano",
@@ -31,6 +33,8 @@ function fakeClient(counter: { labels: number; defs: number }): ChatwootClient {
           model: "contact_attribute",
           displayType: "list",
           values: ["Free", "Pro"],
+          regexPattern: null,
+          regexCue: null,
         },
       ];
     },
@@ -63,6 +67,8 @@ describe("loadChatwootVocab", () => {
           model: "conversation_attribute",
           displayType: "text",
           values: [],
+          regexPattern: null,
+          regexCue: null,
         },
         {
           key: "b",
@@ -70,6 +76,8 @@ describe("loadChatwootVocab", () => {
           model: "contact_attribute",
           displayType: "text",
           values: [],
+          regexPattern: null,
+          regexCue: null,
         },
       ],
     };

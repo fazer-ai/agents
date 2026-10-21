@@ -106,6 +106,7 @@ export function makeConfig(
     allowedLabels: [],
     outsideAllowedLabels: "refuse",
     labelRemoval: "any",
+    writableAttributes: [],
     toolPreconditions: {},
     httpToolContext: {},
     contactName: null,

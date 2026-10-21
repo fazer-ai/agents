@@ -89,3 +89,40 @@ function readLabelList(
   }
   return out;
 }
+
+// The attributes `set_custom_attribute` may write, as `{ scope, key }`: a key means one field per
+// scope (a contact's `nome` is not the conversation's), so the pair is the entry. Empty or absent: no
+// list, and the tool writes any key as before. No `protected` twin: with a list, every key outside
+// it is already off limits, and without one there is nothing for a guard to narrow.
+export const WRITABLE_ATTRIBUTES_MAX = 100;
+export type WritableAttributeScope = "conversation" | "contact" | "task";
+export interface WritableAttribute {
+  scope: WritableAttributeScope;
+  key: string;
+}
+const WRITABLE_SCOPES = new Set<string>(["conversation", "contact", "task"]);
+
+export function readWritableAttributes(settings: unknown): WritableAttribute[] {
+  const block =
+    settings && typeof settings === "object"
+      ? (settings as Record<string, unknown>).setCustomAttribute
+      : undefined;
+  if (!block || typeof block !== "object" || Array.isArray(block)) return [];
+  const raw = (block as Record<string, unknown>).allowed;
+  if (!Array.isArray(raw)) return [];
+  const out: WritableAttribute[] = [];
+  const seen = new Set<string>();
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const e = entry as Record<string, unknown>;
+    if (typeof e.scope !== "string" || !WRITABLE_SCOPES.has(e.scope)) continue;
+    if (typeof e.key !== "string") continue;
+    const key = e.key.trim();
+    const id = `${e.scope}:${key}`;
+    if (!key || seen.has(id)) continue;
+    seen.add(id);
+    out.push({ scope: e.scope as WritableAttributeScope, key });
+    if (out.length === WRITABLE_ATTRIBUTES_MAX) break;
+  }
+  return out;
+}

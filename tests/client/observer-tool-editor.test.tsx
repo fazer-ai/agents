@@ -152,6 +152,8 @@ function Editor({
               setOutsideAllowedLabels={noop}
               labelRemoval="any"
               setLabelRemoval={noop}
+              writableAttributes={{ conversation: [], contact: [], task: [] }}
+              setWritableAttributes={noop}
               setLabelInstructions={noop}
               updateKanbanTaskInstructions=""
               setUpdateKanbanTaskInstructions={noop}
@@ -372,6 +374,8 @@ function renderToolsTab(observing: boolean, rows: ToolPreconditionRow[] = []) {
               setOutsideAllowedLabels={noop}
               labelRemoval="any"
               setLabelRemoval={noop}
+              writableAttributes={{ conversation: [], contact: [], task: [] }}
+              setWritableAttributes={noop}
               updateKanbanTaskInstructions=""
               setUpdateKanbanTaskInstructions={noop}
               toolPreconditions={rows as never}

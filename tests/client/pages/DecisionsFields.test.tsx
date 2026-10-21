@@ -434,6 +434,36 @@ describe("the decisions engine in the agent editor", () => {
     ).toBe("conversation");
   });
 
+  // The value field is the whole statement of an attribute rule: a `clear` stored over REST or MCP
+  // does not survive an edit of it, or a typed value would be refused as a clear with a value.
+  test("editing an attribute rule's value drops a stored clear", () => {
+    stubApi();
+    const { state } = renderSection({
+      monitoring: {
+        engine: "decisions",
+        decisions: {
+          ...BLOCK,
+          rules: [
+            {
+              when: [{ question: "pede_reembolso", minProbability: 0.7 }],
+              action: {
+                tool: "set_custom_attribute",
+                args: { scope: "contact", value: "", clear: true },
+              },
+            },
+          ],
+        },
+      },
+    });
+    fireEvent.change(screen.getByRole("textbox", { name: /^Value/ }), {
+      target: { value: "Ana" },
+    });
+    const args = state().decisions?.rules[0]?.args ?? {};
+    expect(JSON.stringify(args)).toBe(
+      JSON.stringify({ scope: "contact", value: "Ana" }),
+    );
+  });
+
   // The keystroke that fixes a field must not fold the card it is typed in.
   test("a card a problem opened stays open while its field is being filled", () => {
     stubApi();

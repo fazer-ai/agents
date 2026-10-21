@@ -37,6 +37,7 @@ import {
 import {
   ALLOWED_LABELS_MAX,
   PROTECTED_LABELS_MAX,
+  WRITABLE_ATTRIBUTES_MAX,
 } from "@/modules/agents/tool-guidance";
 import {
   GUARDABLE_TOOL_NAME,
@@ -1211,6 +1212,27 @@ const setLabels = z
     "per-agent configuration for the set_labels native tool that is not a note (the note lives in toolGuidance.set_labels)",
   );
 
+// The `set_custom_attribute` fence: the attributes it may write. The VALUE rules come from the
+// account's Chatwoot definitions, not from here.
+const setCustomAttribute = z
+  .looseObject({
+    allowed: z
+      .array(
+        z.object({
+          scope: z.enum(["conversation", "contact", "task"]),
+          key: z.string().trim().min(1),
+        }),
+      )
+      .max(WRITABLE_ATTRIBUTES_MAX)
+      .describe(
+        `the only attributes set_custom_attribute may write or clear; empty = any key. A key with a Chatwoot definition is also held to it. At most ${WRITABLE_ATTRIBUTES_MAX}`,
+      )
+      .optional(),
+  })
+  .describe(
+    "set_custom_attribute config that is not a note (the note is toolGuidance.set_custom_attribute)",
+  );
+
 const toolGuidance = nativeToolKeys(toolNote().nullable()).describe(
   `per-native-tool guidance appended to that tool's description; null clears one. A key outside the catalog is dropped by the reader, so only the names published here take effect. Each note is refused above ${TOOL_INSTRUCTIONS_MAX} characters, not trimmed. PRECEDENCE: handoff_to_human and kanban_move_card also have a note in their own block (handoff.instructions, kanban.instructions); a non-empty value THERE wins over this map for that tool, so the value here applies only while the grouped one is empty.`,
 );
@@ -1336,6 +1358,7 @@ export const BEHAVIOR_PATCH_SHAPE = {
   kanban: kanban.optional(),
   toolGuidance: toolGuidance.optional(),
   setLabels: setLabels.optional(),
+  setCustomAttribute: setCustomAttribute.optional(),
   toolPreconditions: toolPreconditions.optional(),
   monitoring: monitoring.optional(),
 } satisfies z.ZodRawShape;

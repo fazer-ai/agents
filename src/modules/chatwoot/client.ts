@@ -318,13 +318,17 @@ export type ChatwootMessageType = "outgoing" | "incoming";
 
 // A Chatwoot custom-attribute definition (account-level). `model` is one of conversation_attribute |
 // contact_attribute | task_attribute | company_attribute; `values` is populated only for list types.
-// Surfaced to the set_custom_attribute tool so the agent writes known keys (and known list values).
+// Surfaced to the set_custom_attribute tool so the agent writes known keys (and known list values),
+// and enforced by it (attribute-rules.ts). `regexPattern` is the `/source/flags` string the dashboard
+// stores and `regexCue` the operator's sentence describing it; null when the definition has none.
 export interface CustomAttributeDef {
   key: string;
   displayName: string;
   model: string;
   displayType: string;
   values: string[];
+  regexPattern: string | null;
+  regexCue: string | null;
 }
 
 // A custom_attributes bag as Chatwoot renders it, or {} for anything that is not a plain object.
@@ -1328,7 +1332,7 @@ export class ChatwootClient {
 
   // Account custom-attribute definitions (admin token). Shape confirmed against the
   // chatwoot-pro fork: a bare array of { attribute_key, attribute_display_name, attribute_model,
-  // attribute_display_type, attribute_values }.
+  // attribute_display_type, attribute_values, regex_pattern, regex_cue }.
   async listCustomAttributeDefinitions(): Promise<CustomAttributeDef[]> {
     const res = await this.request(
       this.config.adminToken,
@@ -1356,6 +1360,14 @@ export class ChatwootClient {
         values: Array.isArray(o.attribute_values)
           ? o.attribute_values.filter((v): v is string => typeof v === "string")
           : [],
+        regexPattern:
+          typeof o.regex_pattern === "string" && o.regex_pattern !== ""
+            ? o.regex_pattern
+            : null,
+        regexCue:
+          typeof o.regex_cue === "string" && o.regex_cue.trim() !== ""
+            ? o.regex_cue.trim()
+            : null,
       });
     }
     return out;
@@ -1839,6 +1851,11 @@ export class ChatwootClient {
   // the API calls `id` (the fork serializes `display_id` there), never the internal row id.
   conversationUrl(displayId: number): string {
     return `${this.config.baseUrl.replace(/\/+$/, "")}/app/accounts/${this.config.accountId}/conversations/${displayId}`;
+  }
+
+  // The account's custom-attribute settings page, where an operator edits a definition's pattern.
+  attributesSettingsUrl(): string {
+    return `${this.config.baseUrl.replace(/\/+$/, "")}/app/accounts/${this.config.accountId}/settings/custom-attributes/list`;
   }
 
   async getContact(contactId: number): Promise<ChatwootContact | null> {

@@ -80,6 +80,11 @@ import type {
   ToolCatalog,
   ToolRefusals,
 } from "./types";
+import {
+  hasWritableAttributes,
+  WritableAttributesFields,
+  type WritableAttributesState,
+} from "./WritableAttributesFields";
 
 // Service-logo adapters so a toolpack integration shows its brand mark in the SelectableCard's
 // `icon` slot (which expects a LucideIcon). Module-level → stable identity (no remount per render).
@@ -194,6 +199,9 @@ interface Props {
   // readLabelRemoval.
   labelRemoval: "any" | "allowed";
   setLabelRemoval: (v: "any" | "allowed") => void;
+  // The attributes set_custom_attribute may write (agent.settings.setCustomAttribute.allowed).
+  writableAttributes: WritableAttributesState;
+  setWritableAttributes: (v: WritableAttributesState) => void;
   // Operator-authored guidance for update_kanban_task (when/how to edit the card's fields), appended to
   // its model-facing description. Persisted in agent.settings.toolGuidance.update_kanban_task.
   updateKanbanTaskInstructions: string;
@@ -583,6 +591,8 @@ export function ToolGrantsEditor({
   setOutsideAllowedLabels,
   labelRemoval,
   setLabelRemoval,
+  writableAttributes,
+  setWritableAttributes,
   updateKanbanTaskInstructions,
   setUpdateKanbanTaskInstructions,
   mcpTools,
@@ -2128,7 +2138,10 @@ export function ToolGrantsEditor({
             title={nativeToolMeta(ATTR_TOOL, t).label}
             meta={<ToolTokens tool={{ name: ATTR_TOOL, kind: "native" }} />}
             description={nativeToolMeta(ATTR_TOOL, t).description}
-            configured={!decides && customAttributeInstructions.trim() !== ""}
+            configured={
+              (!decides && customAttributeInstructions.trim() !== "") ||
+              hasWritableAttributes(writableAttributes)
+            }
           >
             {!decides && (
               <FormField
@@ -2159,6 +2172,11 @@ export function ToolGrantsEditor({
                 />
               </FormField>
             )}
+            <WritableAttributesFields
+              agentId={agentId}
+              value={writableAttributes}
+              onChange={setWritableAttributes}
+            />
           </ConfigurableToolCard>
         )}
         {labelEntry && (

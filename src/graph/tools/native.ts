@@ -28,6 +28,12 @@ import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
 import { xmlAttr, xmlEscape } from "@/lib/xml";
 import {
+  type AttributeRefusal,
+  type AttributeRefusalReporter,
+  checkAttributeValue,
+} from "@/modules/chatwoot/attribute-rules";
+import { SCOPE_MODEL } from "@/modules/chatwoot/attributes";
+import {
   ChatwootApiError,
   ChatwootCalledOffError,
   type ChatwootClient,
@@ -407,6 +413,10 @@ export interface ToolCtx {
   // set_labels / set_custom_attribute enumerate KNOWN values in their descriptions instead of
   // letting the model guess. Absent ⇒ the tools fall back to generic descriptions.
   vocab?: ChatwootVocab;
+  // TRUE WHEN TURN PREP TRIED TO READ `vocab` AND FAILED. set_custom_attribute then reads the
+  // definitions itself at call time, and refuses when that read fails too: a missing catalog is not an
+  // attribute without a definition, and treating it as one would accept anything.
+  vocabUnavailable?: boolean;
   // WHAT THE MODEL WAS SHOWN, per scope: GROUNDING, not authority. A removal comes from the model
   // naming the label in `remove`; this lets it ask for the canonical value instead of inventing a
   // synonym, and a scope missing here costs a redundant `add` rather than a deletion. Read at turn
@@ -448,6 +458,12 @@ export interface ToolCtx {
   // WHICH LABELS IT MAY REMOVE, from `settings.setLabels.removal`: `allowed` limits removal to the
   // list above (an empty list removes nothing). Absent ⇒ `any`. See applyLabelDelta.
   labelRemoval?: "any" | "allowed";
+  // THE ATTRIBUTES `set_custom_attribute` MAY WRITE, from `settings.setCustomAttribute.allowed`;
+  // empty or absent ⇒ any key. Each key is also held to its Chatwoot definition (attribute-rules.ts).
+  writableAttributes?: Array<{
+    scope: "conversation" | "contact" | "task";
+    key: string;
+  }>;
   // THE CALLER'S FENCE, asked again by set_labels from inside the conversation's label queue. The
   // graph already asks it at the tool boundary; waiting for that queue is a wait AFTER the ask, and
   // `/reset` clears the episode's labels in this very queue, so a write admitted at the boundary can
@@ -539,6 +555,9 @@ export interface ToolCtx {
   // Threaded beside `onNoEffect` because it is the same kind of fact arriving from the same place:
   // what the call did, told by the handler that knows, rather than parsed out of its sentence.
   onLabelsWritten?: LabelWriteReporter;
+  // Called by `set_custom_attribute` when it refused a write, before anything reached Chatwoot.
+  // prepare.ts binds it to an info `tool` line; the value never travels, only the rule it broke.
+  onAttributeRefused?: AttributeRefusalReporter;
 }
 
 // Assembles a tool's final model-facing description in a fixed order: the static capability text,
@@ -815,10 +834,62 @@ function attributeElements(defs: CustomAttributeDef[]): string {
       d.displayType === "list" && d.values.length > 0
         ? xmlAttr("values", d.values.slice(0, 12).join("|"))
         : "";
-    return `    <attribute${xmlAttr("key", d.key)}${values}/>`;
+    const type = TYPED_ATTRIBUTE_FORMAT[d.displayType]
+      ? xmlAttr("format", TYPED_ATTRIBUTE_FORMAT[d.displayType] ?? "")
+      : "";
+    const cue = d.regexPattern && d.regexCue ? xmlAttr("rule", d.regexCue) : "";
+    return `    <attribute${xmlAttr("key", d.key)}${values}${type}${cue}/>`;
   });
   if (defs.length > CAP) els.push(`    <more count="${defs.length - CAP}"/>`);
   return els.join("\n");
+}
+
+// What a typed definition accepts, as the model is told it up front and again when a value is refused.
+const TYPED_ATTRIBUTE_FORMAT: Record<string, string> = {
+  number: "a number, digits with an optional decimal point (e.g. 1500 or 12.5)",
+  currency:
+    "a number, digits with an optional decimal point (e.g. 1500 or 12.5)",
+  percent:
+    "a number, digits with an optional decimal point (e.g. 1500 or 12.5)",
+  date: "a date as YYYY-MM-DD",
+  checkbox: "true or false",
+  link: "a full URL starting with http:// or https://",
+};
+
+// The sentence a refused attribute write returns to the model: the rule it broke, then what to do.
+// Never the value: the model has it, and the line is read back on the trail.
+function attributeRefusalText(
+  scopeName: string,
+  key: string,
+  rule: AttributeRefusal["rule"],
+  def: CustomAttributeDef | undefined,
+  writable: ReadonlyArray<{ scope: string; key: string }>,
+): string {
+  const what = `the ${scopeName} attribute \`${key}\``;
+  const ask = " Nothing was saved. Ask the customer again instead of guessing.";
+  switch (rule) {
+    case "not_allowed": {
+      const shown = writable
+        .slice(0, 20)
+        .map((w) => `${w.key} (${w.scope})`)
+        .join(", ");
+      return `Not written: this agent may not write ${what}. It may write only: ${shown}.`;
+    }
+    case "clear_with_value":
+      return `Not written: clear=true empties ${what}, so it takes no value. Call again with clear=true and an empty value to clear it, or without clear to set it.`;
+    case "empty":
+      return `Not written: the value for ${what} is empty. To clear it on purpose, call again with clear=true; otherwise ask the customer for it.`;
+    case "list":
+      return `Not written: ${what} only takes one of these options, spelled exactly: ${(def?.values ?? []).slice(0, 20).join(" | ")}.${ask}`;
+    case "pattern":
+      return `Not written: the value does not match the format the operator set for ${what}${def?.regexCue ? `: ${def.regexCue}` : ""}.${ask}`;
+    case "pattern_timeout":
+      return `Not written: the value for ${what} could not be checked against the operator's format in time. Nothing was saved; tell the customer it will be recorded by the team.`;
+    case "definitions_unavailable":
+      return `Not written: the rules for ${what} could not be read from Chatwoot right now. Nothing was saved; try again later in the conversation.`;
+    default:
+      return `Not written: ${what} takes ${TYPED_ATTRIBUTE_FORMAT[def?.displayType ?? ""] ?? "a different value"}.${ask}`;
+  }
 }
 
 // The known attributes per scope as an XML block (containers mirror the `scope` arg). A scope with no
@@ -935,132 +1006,228 @@ const CALLED_OFF_ATTRIBUTE =
 // model writes a KNOWN key instead of inventing one. Contact scope resolves the Chatwoot contact id
 // from our mirror. Every scope merges: the client read-merge-writes, so the other keys are kept.
 function setCustomAttributeTool(ctx: ToolCtx) {
-  const convDefs = attributesForModel(ctx.vocab, "conversation_attribute");
-  const contactDefs = attributesForModel(ctx.vocab, "contact_attribute");
-  const taskDefs = attributesForModel(ctx.vocab, "task_attribute");
+  const writable = ctx.writableAttributes ?? [];
+  const writableHas = (scope: string, key: string) =>
+    writable.some((w) => w.scope === scope && w.key === key);
+  // With a list, the model is shown exactly the keys it may write, each with its definition when the
+  // account has one: a key it can never write is a key it would be refused on, and a listed key with
+  // no definition (or an unreadable catalog) is still one it may write.
+  const shown = (defs: CustomAttributeDef[], scope: string) =>
+    writable.length === 0
+      ? defs
+      : writable
+          .filter((w) => w.scope === scope)
+          .map(
+            (w) =>
+              defs.find((d) => d.key === w.key) ?? {
+                key: w.key,
+                displayName: w.key,
+                model: "",
+                displayType: "",
+                values: [],
+                regexPattern: null,
+                regexCue: null,
+              },
+          );
+  const allConvDefs = attributesForModel(ctx.vocab, "conversation_attribute");
+  const allContactDefs = attributesForModel(ctx.vocab, "contact_attribute");
+  const allTaskDefs = attributesForModel(ctx.vocab, "task_attribute");
+  const convDefs = shown(allConvDefs, "conversation");
+  const contactDefs = shown(allContactDefs, "contact");
+  const taskDefs = shown(allTaskDefs, "task");
+  const defsOf = {
+    conversation: allConvDefs,
+    contact: allContactDefs,
+    task: allTaskDefs,
+  };
   // 'task' scope is only offered when this conversation actually has a linked card (ctx.kanban).
   const taskScope = !!ctx.kanban;
   const scopeSchema = taskScope
     ? z.enum(["conversation", "contact", "task"])
     : z.enum(["conversation", "contact"]);
-  const description = ctx.vocab
+  // CALLS ENTER THE CLIENT'S WRITE QUEUE IN THE ORDER THEY WERE MADE. The checks before a write wait
+  // (a pattern thread, a definitions read, the contact lookup), and two calls on one key (a decisions
+  // rule that sets it and the next that clears it) would otherwise queue in whichever order their
+  // checks finished. Each call waits for the one before it to have queued its write, or to have
+  // returned without one.
+  let turnstile: Promise<void> = Promise.resolve();
+  const listed = !!ctx.vocab || writable.length > 0;
+  const description = listed
     ? `Set a custom attribute on the conversation, the contact${taskScope ? ", or this conversation's kanban card" : ""}. Use \`scope\` to choose; the known keys (and allowed values for list types) per scope are listed in \`<known_attributes>\` below.`
     : "Set a custom attribute on the conversation (scope='conversation', default) or the contact (scope='contact').";
-  const attributesXml = ctx.vocab
+  const attributesXml = listed
     ? knownAttributesXml(convDefs, contactDefs, taskScope ? taskDefs : null)
     : undefined;
   return tool(
     async (
       {
-        key,
-        value,
+        key: rawKey,
+        value: rawValue,
         scope,
+        clear,
       }: {
         key: string;
         value: string;
         scope?: "conversation" | "contact" | "task";
+        clear?: boolean;
       },
       config?: ToolRunnableConfig,
     ) => {
-      const noEffect = () => {
-        ctx.onNoEffect?.("set_custom_attribute");
-        fenceReporterOf(config)?.({ noEffect: true });
+      const before = turnstile;
+      let admit = () => {};
+      turnstile = new Promise<void>((r) => {
+        admit = r;
+      });
+      await before;
+      const admitted = <T>(write: Promise<T>): Promise<T> => {
+        admit();
+        return write;
       };
-      if (scope === "task") {
-        if (!ctx.kanban) {
-          noEffect();
-          return "Could not set the task attribute (this conversation has no linked card).";
-        }
-        try {
-          await ctx.client.setKanbanTaskCustomAttributes(
-            ctx.kanban.taskId,
-            { [key]: value },
-            { stillWanted: ctx.stillWanted },
-          );
-        } catch (e) {
-          if (e instanceof ChatwootCalledOffError) {
-            noEffect();
-            return CALLED_OFF_ATTRIBUTE;
-          }
-          throw e;
-        }
-        // Written: said now, before the mirror, which a deadline can still interrupt.
-        fenceReporterOf(config)?.({ committed: true });
-        await mirrorAttributeWrite(ctx, "task", key, value);
-        return `Task attribute ${key} set.`;
-      }
-      if (scope === "contact") {
-        if (!ctx.base || ctx.tenantId == null || ctx.contactDbId == null) {
-          noEffect();
-          return "Could not set the contact attribute (no contact in scope).";
-        }
-        const tenantId = ctx.tenantId;
-        const contactDbId = ctx.contactDbId;
-        const base = ctx.base;
-        // A failed lookup wrote nothing, and the call says so before it propagates.
-        const contact = await runScopedOn(base, sysCtx(tenantId), (db) =>
-          db.contact.findUnique({
-            where: { id: contactDbId },
-            select: { chatwootContactId: true },
-          }),
-        ).catch((e: unknown) => {
-          fenceReporterOf(config)?.({ noEffect: true });
-          throw e;
-        });
-        if (!contact?.chatwootContactId) {
-          noEffect();
-          return "Could not set the contact attribute (contact not linked to Chatwoot).";
-        }
-        // NOTE: ASKED AGAIN, after the lookup and before the write: the graph's ask happens at
-        // DISPATCH, and this handler waits on a database read after it. A contact attribute outlives
-        // the conversation it was written from, so a value written after a `/reset` (or after the
-        // agent was switched off) is one nothing later corrects.
-        if (ctx.stillWanted && !(await ctx.stillWanted())) {
-          noEffect();
-          return "Could not set the contact attribute (the run was called off while this write waited).";
-        }
-        try {
-          await ctx.client.setContactCustomAttributes(
-            contact.chatwootContactId,
-            { [key]: value },
-            // NOTE: ASKED ONCE MORE, from inside the client's queue this time. The ask above happens
-            // before the call; the write itself waits for a keyed queue and re-reads the bag, and
-            // that wait is as much a wait as this handler's own.
-            { stillWanted: ctx.stillWanted },
-          );
-        } catch (e) {
-          if (e instanceof ChatwootCalledOffError) {
-            noEffect();
-            return CALLED_OFF_ATTRIBUTE;
-          }
-          throw e;
-        }
-        fenceReporterOf(config)?.({ committed: true });
-        await mirrorAttributeWrite(ctx, "contact", key, value);
-        return `Contact attribute ${key} set.`;
-      }
       try {
-        await ctx.client.setConversationCustomAttributes(
-          ctx.conversationId,
-          { [key]: value },
-          // NOTE: The conversation branch has no wait of its own before the call, so this is the ONLY
-          // fence it gets — and it needs one, because `/reset` clears a conversation's attributes
-          // inside exactly the window the queue and the re-read open.
-          {
-            stillWanted: ctx.stillWanted,
-            ...(ctx.writesAlone ? { alone: ctx.writesAlone } : {}),
-          },
-        );
-      } catch (e) {
-        if (e instanceof ChatwootCalledOffError) {
-          noEffect();
-          return CALLED_OFF_ATTRIBUTE;
+        const noEffect = () => {
+          ctx.onNoEffect?.("set_custom_attribute");
+          fenceReporterOf(config)?.({ noEffect: true });
+        };
+        const key = rawKey.trim();
+        const target = scope ?? "conversation";
+        let defs: CustomAttributeDef[] | null = defsOf[target];
+        if (ctx.vocabUnavailable) {
+          defs = await ctx.client
+            .listCustomAttributeDefinitions()
+            .then((all) => all.filter((d) => d.model === SCOPE_MODEL[target]))
+            .catch(() => null);
         }
-        throw e;
+        const def = defs?.find((d) => d.key === key);
+        // Every refusal is decided here, before any lookup or write: a refused value never reaches
+        // Chatwoot or the mirror, so a precondition on the same key keeps reading the previous state.
+        const refuse = (rule: AttributeRefusal["rule"]): string => {
+          noEffect();
+          // Only operator vocabulary goes on the line. A key the model invented is its own text,
+          // and a phone number or a name fits a slug just as well as a field does.
+          const known = def !== undefined || writableHas(target, key);
+          ctx.onAttributeRefused?.({
+            scope: target,
+            rule,
+            ...(known ? { key } : {}),
+          });
+          return attributeRefusalText(target, key, rule, def, writable);
+        };
+        if (writable.length > 0 && !writableHas(target, key))
+          return refuse("not_allowed");
+        if (defs === null) return refuse("definitions_unavailable");
+        let value: string;
+        if (clear) {
+          if (rawValue.trim() !== "") return refuse("clear_with_value");
+          value = "";
+        } else {
+          const checked = await checkAttributeValue(def, rawValue);
+          if (!checked.ok) return refuse(checked.rule);
+          value = checked.value;
+        }
+        if (scope === "task") {
+          if (!ctx.kanban) {
+            noEffect();
+            return "Could not set the task attribute (this conversation has no linked card).";
+          }
+          try {
+            await admitted(
+              ctx.client.setKanbanTaskCustomAttributes(
+                ctx.kanban.taskId,
+                { [key]: value },
+                { stillWanted: ctx.stillWanted },
+              ),
+            );
+          } catch (e) {
+            if (e instanceof ChatwootCalledOffError) {
+              noEffect();
+              return CALLED_OFF_ATTRIBUTE;
+            }
+            throw e;
+          }
+          // Written: said now, before the mirror, which a deadline can still interrupt.
+          fenceReporterOf(config)?.({ committed: true });
+          await mirrorAttributeWrite(ctx, "task", key, value);
+          return `Task attribute ${key} ${clear ? "cleared" : "set"}.`;
+        }
+        if (scope === "contact") {
+          if (!ctx.base || ctx.tenantId == null || ctx.contactDbId == null) {
+            noEffect();
+            return "Could not set the contact attribute (no contact in scope).";
+          }
+          const tenantId = ctx.tenantId;
+          const contactDbId = ctx.contactDbId;
+          const base = ctx.base;
+          // A failed lookup wrote nothing, and the call says so before it propagates.
+          const contact = await runScopedOn(base, sysCtx(tenantId), (db) =>
+            db.contact.findUnique({
+              where: { id: contactDbId },
+              select: { chatwootContactId: true },
+            }),
+          ).catch((e: unknown) => {
+            fenceReporterOf(config)?.({ noEffect: true });
+            throw e;
+          });
+          if (!contact?.chatwootContactId) {
+            noEffect();
+            return "Could not set the contact attribute (contact not linked to Chatwoot).";
+          }
+          // NOTE: ASKED AGAIN, after the lookup and before the write: the graph's ask happens at
+          // DISPATCH, and this handler waits on a database read after it. A contact attribute outlives
+          // the conversation it was written from, so a value written after a `/reset` (or after the
+          // agent was switched off) is one nothing later corrects.
+          if (ctx.stillWanted && !(await ctx.stillWanted())) {
+            noEffect();
+            return "Could not set the contact attribute (the run was called off while this write waited).";
+          }
+          try {
+            await admitted(
+              ctx.client.setContactCustomAttributes(
+                contact.chatwootContactId,
+                { [key]: value },
+                // NOTE: ASKED ONCE MORE, from inside the client's queue this time. The ask above happens
+                // before the call; the write itself waits for a keyed queue and re-reads the bag, and
+                // that wait is as much a wait as this handler's own.
+                { stillWanted: ctx.stillWanted },
+              ),
+            );
+          } catch (e) {
+            if (e instanceof ChatwootCalledOffError) {
+              noEffect();
+              return CALLED_OFF_ATTRIBUTE;
+            }
+            throw e;
+          }
+          fenceReporterOf(config)?.({ committed: true });
+          await mirrorAttributeWrite(ctx, "contact", key, value);
+          return `Contact attribute ${key} ${clear ? "cleared" : "set"}.`;
+        }
+        try {
+          await admitted(
+            ctx.client.setConversationCustomAttributes(
+              ctx.conversationId,
+              { [key]: value },
+              // NOTE: The conversation branch has no wait of its own before the call, so this is the ONLY
+              // fence it gets — and it needs one, because `/reset` clears a conversation's attributes
+              // inside exactly the window the queue and the re-read open.
+              {
+                stillWanted: ctx.stillWanted,
+                ...(ctx.writesAlone ? { alone: ctx.writesAlone } : {}),
+              },
+            ),
+          );
+        } catch (e) {
+          if (e instanceof ChatwootCalledOffError) {
+            noEffect();
+            return CALLED_OFF_ATTRIBUTE;
+          }
+          throw e;
+        }
+        fenceReporterOf(config)?.({ committed: true });
+        await mirrorAttributeWrite(ctx, "conversation", key, value);
+        return `Conversation attribute ${key} ${clear ? "cleared" : "set"}.`;
+      } finally {
+        admit();
       }
-      fenceReporterOf(config)?.({ committed: true });
-      await mirrorAttributeWrite(ctx, "conversation", key, value);
-      return `Conversation attribute ${key} set.`;
     },
     {
       name: "set_custom_attribute",
@@ -1077,6 +1244,12 @@ function setCustomAttributeTool(ctx: ToolCtx) {
           .optional()
           .describe(
             `Where to store it: 'conversation' (default), 'contact'${taskScope ? ", or 'task'" : ""}.`,
+          ),
+        clear: z
+          .boolean()
+          .optional()
+          .describe(
+            "true empties the attribute (pass an empty value). An empty value without it is refused.",
           ),
       }),
     },

@@ -413,10 +413,11 @@ const BARE_SLICES: Record<
   // A server slug and MCP tool names, sanitized to ASCII before they are cut.
   "src/graph/tools/mcp-names.ts": [3, "ascii"],
   "src/graph/tools/mcp.ts": [3, "ascii"],
-  // Six: the fifth is the ceiling on what the model is SHOWN of a scope's labels, applied to the
-  // write report, and the sixth is the same ceiling over the GUARDED list. Both cut arrays of label
-  // titles, so neither cut can land inside one.
-  "src/graph/tools/native.ts": [6, "array"],
+  // Eight: the fifth is the ceiling on what the model is SHOWN of a scope's labels, applied to the
+  // write report, and the sixth is the same ceiling over the GUARDED list. The last two bound what a
+  // refused attribute write names back: the agent's writable attributes and a list's options. All of
+  // them cut arrays, so no cut can land inside an entry.
+  "src/graph/tools/native.ts": [8, "array"],
   // The same ceiling at its source, over the same array of titles (graph/tools/label-view.ts).
   "src/graph/tools/label-view.ts": [1, "array"],
   "src/graph/tools/toolName.ts": [1, "ascii"],

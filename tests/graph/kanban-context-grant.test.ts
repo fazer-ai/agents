@@ -118,6 +118,8 @@ describe.skipIf(!dbUp)("which granted tools resolve the card", () => {
                             model: "task_attribute",
                             displayType: "text",
                             values: [],
+                            regexPattern: null,
+                            regexCue: null,
                           },
                         ]
                       : []

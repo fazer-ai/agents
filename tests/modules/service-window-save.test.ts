@@ -312,6 +312,76 @@ describe.skipIf(!dbUp)("service-window templates at save", () => {
     expect(e?.translationKey).toBe("errors.serviceWindowAppointmentVar");
   });
 
+  test("MCP takes a partial patch of a stored choice, the name coming from what is stored", async () => {
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: { settings: { serviceWindow: { templates: { followup: ok } } } },
+    });
+    try {
+      const r = await agentSettingsSet(
+        {
+          userId: 1n,
+          tenantId,
+          role: "TENANT_ADMIN",
+          scopes: ["mcp:read", "mcp:write"],
+          clientId: "c",
+          jti: "j",
+        },
+        {
+          agent_id: String(agentId),
+          serviceWindow: {
+            templates: {
+              followup: { params: ["{{nome_contato}}", "x", "y", "z"] },
+            },
+          },
+          dry_run: true,
+        },
+        { base: suDb },
+      );
+      expect(r.ok ? "ok" : r.error).toBe("ok");
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { settings: {} },
+      });
+    }
+  });
+
+  test("a stale editor gets the 409 its conflict flow handles before any template is judged", async () => {
+    const e = await refusal(
+      updateAgent(
+        ctx(),
+        agentId,
+        {
+          settings: {
+            serviceWindow: {
+              templates: { followup: { ...ok, name: "nao_existe" } },
+            },
+          },
+        },
+        suDb,
+        { expectedUpdatedAt: new Date(0), chatwoot: deps },
+      ),
+    );
+    expect(e?.statusCode).toBe(409);
+    const fresh = await refusal(
+      updateAgent(
+        ctx(),
+        agentId,
+        {
+          settings: {
+            serviceWindow: {
+              templates: { followup: { ...ok, name: "nao_existe" } },
+            },
+          },
+        },
+        suDb,
+        { chatwoot: deps },
+      ),
+    );
+    expect(fresh?.translationKey).toBe("errors.serviceWindowTemplateNotFound");
+  });
+
   test("an approved document is not a kind: it travels as an attachment", () => {
     expect(() =>
       assertSettingsServiceWindow(

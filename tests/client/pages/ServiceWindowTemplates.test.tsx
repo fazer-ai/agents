@@ -98,6 +98,8 @@ describe("ServiceWindowTemplates", () => {
     expect(text).toContain("Olá, Maria! Dia ");
     expect(text).toContain("às 14:30.");
     expect(text).not.toContain("{{");
+    // The customer sees the buttons too, so the preview shows them.
+    expect(text).toContain("Ver");
     const stored = serviceWindowToStored(last);
     expect(stored.templates.appointment_reminder?.params).toEqual([
       "{{primeiro_nome}}",

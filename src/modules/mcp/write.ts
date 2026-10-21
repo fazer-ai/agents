@@ -25,6 +25,7 @@ import {
 import {
   type BehaviorSettingsPatch,
   mergeBehaviorSettings,
+  mergeBlock,
   readBehaviorSettings,
 } from "@/modules/agents/behavior-settings";
 import { configHealthAfterWrite } from "@/modules/agents/config-health-read";
@@ -681,10 +682,12 @@ export async function agentSettingsSet(
         ?.serviceWindow;
       assertSettingsServiceWindow(
         {
-          serviceWindow: {
-            ...(stored && typeof stored === "object" ? stored : {}),
-            ...patch.serviceWindow,
-          },
+          serviceWindow: mergeBlock(
+            stored && typeof stored === "object"
+              ? (stored as Record<string, unknown>)
+              : {},
+            patch.serviceWindow as Record<string, unknown>,
+          ),
         },
         current.settings,
       );

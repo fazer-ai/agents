@@ -60,6 +60,7 @@ import {
 } from "@/modules/agents/tool-preconditions";
 import { auditMutation } from "@/modules/audit/service";
 import { isOutOfHoursNow, parseSchedule } from "@/modules/business-hours/hours";
+import type { LoadChatwootClientDeps } from "@/modules/chatwoot/instance";
 import { renameAgentBots } from "@/modules/chatwoot/provisioning";
 import { invalidateRouteTokenCache } from "@/modules/chatwoot/route-token-cache";
 import { invalidContactAuthRule } from "@/modules/contact-auth/settings";
@@ -2091,7 +2092,12 @@ export async function updateAgent(
   // `expectedUpdatedAt`: optimistic concurrency, 409 (errors.agentModifiedElsewhere) on a mismatch;
   // omitted, last write wins. `settingsMode: "replace"` says the bag is COMPLETE, so omitted blocks
   // are meant to go; without it, a bag that would drop configured blocks is refused.
-  opts: { expectedUpdatedAt?: Date; settingsMode?: "replace" } = {},
+  // `chatwoot`: how the service window's templates are read (a test passes a stub client).
+  opts: {
+    expectedUpdatedAt?: Date;
+    settingsMode?: "replace";
+    chatwoot?: LoadChatwootClientDeps;
+  } = {},
 ): Promise<AgentDto> {
   const {
     rest,
@@ -2105,15 +2111,32 @@ export async function updateAgent(
   // whose answer the stored value decides, and this one asks only what the write sets or changes.
   if (rest.settings !== undefined) {
     const stored = await runScopedOn(base, ctx, (db) =>
-      db.agent.findUnique({ where: { id }, select: { settings: true } }),
+      db.agent.findUnique({
+        where: { id },
+        select: { settings: true, updatedAt: true },
+      }),
     );
+    // A stale editor is answered with the 409 its conflict flow handles, not with a template error
+    // about configuration another writer may already have repaired. The locked check below still
+    // answers the race that lands after this read.
+    if (
+      stored &&
+      opts.expectedUpdatedAt != null &&
+      stored.updatedAt.getTime() !== opts.expectedUpdatedAt.getTime()
+    ) {
+      throw new AppError(
+        "agent was modified elsewhere",
+        409,
+        "errors.agentModifiedElsewhere",
+      );
+    }
     if (stored) {
       await assertServiceWindowTemplatesUsable(
         ctx,
         id,
         rest.settings,
         stored.settings,
-        {},
+        opts.chatwoot ?? {},
         base,
       );
     }

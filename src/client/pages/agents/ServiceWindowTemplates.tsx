@@ -406,6 +406,19 @@ function TemplateChoiceEditor({
                 {t("editor.svcWindowPreview", "Preview (sample values)")}
               </div>
               {preview}
+              {(def?.buttons.length ?? 0) > 0 && (
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {def?.buttons.map((b, i) => (
+                    <span
+                      // biome-ignore lint/suspicious/noArrayIndexKey: a button IS its position in the template.
+                      key={i}
+                      className="rounded-md border border-border px-2 py-1 text-xs"
+                    >
+                      {b.text}
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </>

@@ -4,6 +4,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import {
   type EditorAgent,
+  editTab,
   lastSavedSettings,
   renderEditor,
   stubEditorApi,
@@ -218,5 +219,82 @@ describe("Behavior writes the sections the operator edited (agents#1304)", () =>
     expect(m.engine).toBe(monitoring.engine);
     expect(m.analysis).toBe(monitoring.analysis);
     expect(m.window).toEqual(monitoring.window);
+  });
+});
+
+// The Tools tab serializes its blocks twice, from the form and from the server's copy, and sends only
+// the ones that differ, the way Behavior does: a block nobody touched goes back as stored.
+describe("Tools writes the blocks the operator edited", () => {
+  const CATALOG = {
+    native: [{ name: "set_labels" }, { name: "private_note" }],
+  };
+  const GRANTED = [
+    { source: "NATIVE", enabledTools: ["set_labels"], knowledgeBaseIds: [] },
+  ];
+
+  async function saveTools(
+    settings: Record<string, unknown>,
+    edit: () => void,
+  ): Promise<Record<string, unknown> | undefined> {
+    const stub = stubEditorApi(
+      { settings },
+      { catalog: CATALOG, grants: GRANTED },
+    );
+    await renderEditor(stub, "tools");
+    edit();
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByText("Tools updated.");
+    return lastSavedSettings(stub);
+  }
+
+  test("a grant change alone writes no settings block", async () => {
+    const after = await saveTools({}, () => editTab("tools"));
+    expect(after ?? {}).toEqual({});
+  });
+
+  test("a grant change keeps every stored block exactly, and adds none", async () => {
+    const stored = {
+      handoff: { instructions: "  chame a equipe  " },
+      setLabels: { protected: ["vip"] },
+      sendImage: { hosts: ["cdn.example.com"], extra: 1 },
+      debounce: { windowSeconds: 15 },
+    };
+    const after = await saveTools(structuredClone(stored), () =>
+      editTab("tools"),
+    );
+    expect(after).toEqual(stored);
+  });
+
+  test("editing the labels off limits writes setLabels and no other block", async () => {
+    const after = await saveTools({ debounce: { windowSeconds: 15 } }, () => {
+      fireEvent.click(
+        screen.getByRole("button", { name: "Settings", expanded: false }),
+      );
+      change(
+        screen.getByRole("textbox", { name: "Labels off limits" }),
+        "vip, financeiro",
+      );
+    });
+    expect(Object.keys(after ?? {}).sort()).toEqual(["debounce", "setLabels"]);
+    const setLabels = after?.setLabels as { protected?: string[] } | undefined;
+    expect(setLabels?.protected).toEqual(["vip", "financeiro"]);
+  });
+
+  test("trimming a stored note is an edit, even though both trim to the same text", async () => {
+    const after = await saveTools(
+      { toolGuidance: { set_labels: "  use vip  " } },
+      () => {
+        fireEvent.click(
+          screen.getByRole("button", { name: "Settings", expanded: false }),
+        );
+        const field = Array.from(document.querySelectorAll("textarea")).find(
+          (el) => el.value === "  use vip  ",
+        );
+        if (!field) throw new Error("the set_labels note is not drawn");
+        change(field, "use vip");
+      },
+    );
+    const guidance = after?.toolGuidance as Record<string, string> | undefined;
+    expect(guidance?.set_labels).toBe("use vip");
   });
 });

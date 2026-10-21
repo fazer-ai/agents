@@ -65,19 +65,25 @@ export function NavGuardProvider({ children }: { children: ReactNode }) {
   );
 
   // A page that turns clean while the confirm is open (its save landed) has nothing left to discard,
-  // so the leave goes ahead. It runs before the guards let go: the Back trap's own cleanup would
-  // otherwise traverse as well, and land one entry past the page.
+  // so the leave goes ahead. It is decided once every registration of the same commit has landed (a
+  // form turning dirty in that commit keeps the confirm), and before the guards let go: the Back
+  // trap's own cleanup would otherwise traverse as well, and land one entry past the page.
+  const settle = useCallback(() => {
+    const asked = pendingRef.current;
+    if (dirtyIds.current.size === 0 && asked) leave(asked);
+    setActive(dirtyIds.current.size > 0);
+  }, [leave]);
+
   const register = useCallback(
     (id: string, dirty: boolean) => {
       const ids = dirtyIds.current;
       if (dirty === ids.has(id)) return;
       if (dirty) ids.add(id);
       else ids.delete(id);
-      const asked = pendingRef.current;
-      if (ids.size === 0 && asked) leave(asked);
-      setActive(ids.size > 0);
+      if (ids.size === 0 && pendingRef.current) queueMicrotask(settle);
+      else setActive(ids.size > 0);
     },
-    [leave],
+    [settle],
   );
 
   // A page that goes away is not a page that turned clean: nothing was saved or discarded, so a

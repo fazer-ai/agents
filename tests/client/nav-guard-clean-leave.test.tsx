@@ -108,16 +108,16 @@ const asking = () =>
 const onList = () => document.body.textContent?.includes("agent list") === true;
 
 describe("a leave asked while the page is dirty", () => {
-  test("goes ahead once the page turns clean, and the confirm closes", () => {
+  test("goes ahead once the page turns clean, and the confirm closes", async () => {
     mount();
     fireEvent.click(screen.getByText("Back to agents"));
     expect(asking()).toBe(true);
-    act(() => setDirty(false));
+    await act(async () => setDirty(false));
     expect(asking()).toBe(false);
     expect(onList()).toBe(true);
   });
 
-  test("stays asked while the page is still dirty", () => {
+  test("stays asked while the page is still dirty", async () => {
     mount();
     fireEvent.click(screen.getByText("Back to agents"));
     act(() => setDirty(true));
@@ -125,29 +125,43 @@ describe("a leave asked while the page is dirty", () => {
     expect(onList()).toBe(false);
   });
 
-  test("stays asked while another form on the page is still dirty", () => {
+  test("stays asked while another form on the page is still dirty", async () => {
     mount();
     act(() => setOtherDirty(true));
     fireEvent.click(screen.getByText("Back to agents"));
-    act(() => setDirty(false));
+    await act(async () => setDirty(false));
     expect(asking()).toBe(true);
     expect(onList()).toBe(false);
   });
 
-  test("an action held by the confirm runs once the page turns clean", () => {
+  test("stays asked when another form turns dirty in the same update", async () => {
+    mount();
+    await act(async () => setOtherDirty(true));
+    await act(async () => setDirty(false));
+    fireEvent.click(screen.getByText("Switch"));
+    // NOTE: the other form is the child, so its effect reports clean before the page reports dirty.
+    await act(async () => {
+      setOtherDirty(false);
+      setDirty(true);
+    });
+    expect(ran).toBe(0);
+    expect(asking()).toBe(true);
+  });
+
+  test("an action held by the confirm runs once the page turns clean", async () => {
     mount();
     fireEvent.click(screen.getByText("Switch"));
     expect(asking()).toBe(true);
     expect(ran).toBe(0);
-    act(() => setDirty(false));
+    await act(async () => setDirty(false));
     expect(ran).toBe(1);
     expect(asking()).toBe(false);
   });
 
-  test("is dropped, not carried out, when the page goes away still dirty", () => {
+  test("is dropped, not carried out, when the page goes away still dirty", async () => {
     mount();
     fireEvent.click(screen.getByText("Switch"));
-    act(() => setShown(false));
+    await act(async () => setShown(false));
     expect(ran).toBe(0);
     expect(asking()).toBe(false);
   });
@@ -155,7 +169,7 @@ describe("a leave asked while the page is dirty", () => {
   // Back pops the guard's sentinel and the trap pushes it again, so the page entry sits one below.
   // Leaving goes past both in ONE traversal: the guard letting go must not traverse as well, or the
   // two would land one entry too far.
-  test("a Back held by the confirm leaves the page in one traversal", () => {
+  test("a Back held by the confirm leaves the page in one traversal", async () => {
     mount();
     act(() => {
       window.dispatchEvent(new PopStateEvent("popstate"));
@@ -164,7 +178,7 @@ describe("a leave asked while the page is dirty", () => {
     const go = spyOn(window.history, "go").mockImplementation(() => {});
     const backs = back.mock.calls.length;
     try {
-      act(() => setDirty(false));
+      await act(async () => setDirty(false));
       expect(go.mock.calls.map((c) => String(c[0]))).toEqual(["-2"]);
       expect(back.mock.calls.length).toBe(backs);
       expect(asking()).toBe(false);
@@ -191,16 +205,16 @@ describe("a link followed from the confirm", () => {
     );
   }
 
-  test("once the page turns clean, takes the sentinel's entry", () => {
+  test("once the page turns clean, takes the sentinel's entry", async () => {
     mountBrowser();
     const entries = window.history.length;
     fireEvent.click(screen.getByText("Back to agents"));
-    act(() => setDirty(false));
+    await act(async () => setDirty(false));
     expect(onList()).toBe(true);
     expect(window.history.length).toBe(entries);
   });
 
-  test("on Discard, takes the sentinel's entry", () => {
+  test("on Discard, takes the sentinel's entry", async () => {
     mountBrowser();
     const entries = window.history.length;
     fireEvent.click(screen.getByText("Back to agents"));

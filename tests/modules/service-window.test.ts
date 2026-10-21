@@ -247,6 +247,12 @@ describe("appointment placeholders", () => {
     expect(v.data_agendamento).toBe("22/10/2026");
   });
 
+  test("a wall clock with no zone is printed as written, whatever the host's zone", () => {
+    const v = appointmentVars(facts("2026-10-22T14:30:00"), "pt_BR");
+    expect(v.hora_agendamento).toBe("14:30");
+    expect(v.data_agendamento).toBe("22/10/2026");
+  });
+
   test("an explicit +00:00 is a wall clock, not UTC", () => {
     const v = appointmentVars(facts("2026-12-22T01:30:00+00:00"), "pt_BR");
     expect(v.data_agendamento).toBe("22/12/2026");

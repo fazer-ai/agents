@@ -269,6 +269,19 @@ export function appointmentVars(
     instant = new Date(`${facts.startISO}T12:00:00Z`);
     timeZone = "UTC";
     hasTime = false;
+  } else if (
+    !/[zZ]$/.test(facts.startISO) &&
+    !STATED_OFFSET.test(facts.startISO)
+  ) {
+    // A wall clock with no zone at all is printed as written, pinned to UTC the way `parseStartMs`
+    // pins it for the scheduler; `Date.parse` would read it in the HOST's zone.
+    const ms = Date.parse(`${facts.startISO}Z`);
+    if (!Number.isFinite(ms)) {
+      for (const k of APPOINTMENT_VARS) out[k] ??= "";
+      return out;
+    }
+    instant = new Date(ms);
+    timeZone = "UTC";
   } else {
     const ms = Date.parse(facts.startISO);
     if (!Number.isFinite(ms)) {

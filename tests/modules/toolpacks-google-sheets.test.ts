@@ -353,6 +353,17 @@ describe("google sheets: append", () => {
     expect(fake.tab(0).rows[2]).toEqual(["", "Bia", "2"]);
   });
 
+  test("a tab title with an exclamation mark and a cell-like tail reports the real row", async () => {
+    const t = leads();
+    t.title = "Leads!Q1";
+    const { fake, tool } = setup(["sheets_append_row"], { tabs: [t] });
+    const out = await tool("sheets_append_row")({
+      values: [{ column: "Nome", value: "Eva" }],
+    });
+    expect(out).toContain("row 5");
+    expect(fake.tab(0).rows[4]?.[0]).toBe("Eva");
+  });
+
   test("the tab is found by its id, so a renamed tab keeps working", async () => {
     const renamed = leads();
     renamed.title = "Leads 2026 (it's new)";

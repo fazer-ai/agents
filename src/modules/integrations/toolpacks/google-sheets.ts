@@ -435,9 +435,12 @@ function buildAppendTool(
           return toolFailure(httpMessage(res.status));
         const updated = (res.json as { updates?: { updatedRange?: unknown } })
           ?.updates?.updatedRange;
+        // The cell part follows the LAST `!`: a tab title may contain one, a cell reference never does.
         const m =
           typeof updated === "string"
-            ? /!\$?([A-Z]+)\$?(\d+)/.exec(updated)
+            ? /^\$?([A-Z]+)\$?(\d+)/.exec(
+                updated.slice(updated.lastIndexOf("!") + 1),
+              )
             : null;
         const at = m?.[2];
         if (m && m[1] !== columnLetter(header.first))

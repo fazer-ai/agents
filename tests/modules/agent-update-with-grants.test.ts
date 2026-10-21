@@ -208,8 +208,9 @@ describe.skipIf(!dbUp)("an agent update that also writes the grants", () => {
     expect(await audit(id, "agent.tools_set")).toBe(1);
   });
 
-  // The token is stamped under the agent row's lock: a write that waited behind another commits a
-  // token newer than the one that writer left, so an editor comparing tokens sees it.
+  // The token is stamped under the agent row's lock and past the token the row holds: a write that
+  // waited behind another commits a token newer than the one that writer left, even one ahead of this
+  // process's clock, so an editor comparing tokens sees it.
   test("a write that waited behind another commits a newer token", async () => {
     const { id } = await seed("Waits");
     let release: () => void = () => {};
@@ -228,7 +229,8 @@ describe.skipIf(!dbUp)("an agent update that also writes the grants", () => {
         locked(me?.pid as number);
         await held;
         const [row] = await tx.$queryRaw<Array<{ updated_at: Date }>>`
-          UPDATE agents SET updated_at = clock_timestamp() WHERE id = ${id}
+          UPDATE agents SET updated_at = clock_timestamp() + interval '1 hour'
+          WHERE id = ${id}
           RETURNING updated_at`;
         other = row?.updated_at as Date;
       },

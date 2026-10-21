@@ -2299,9 +2299,13 @@ export async function updateAgentAndGrants(
         ? { id, updatedAt: opts.expectedUpdatedAt }
         : { id };
     // NOTE: A save that writes only the grants still advances the version token, stamped here, under
-    // the row lock: stamped before it, a write that waited behind another could commit an older token
-    // than the one it waited for.
-    if (grants) updateData.updatedAt = new Date();
+    // the row lock and past the token the row holds: stamped before the lock, or in the same
+    // millisecond, a write that waited behind another could commit a token no newer than the one it
+    // waited for, and an editor comparing tokens would miss it.
+    if (grants) {
+      const held = before?.updated_at.getTime() ?? 0;
+      updateData.updatedAt = new Date(Math.max(Date.now(), held + 1));
+    }
     const res = await db.agent.updateMany({ where, data: updateData });
     if (res.count === 0) {
       if (opts.expectedUpdatedAt != null) {

@@ -1610,8 +1610,9 @@ function AgentEditor() {
   // server advancing the token (and broadcasting) and our markSynced recording it. A genuine
   // concurrent write during a save is still caught by the updatedAt precondition (409 → handleConflict).
   const savingRef = useRef(0);
-  // A "Discard all" confirmed while a write was out, waiting for its answer.
-  const discardPendingRef = useRef(false);
+  // A "Discard all" confirmed while a write was out, waiting for its answer: settles its dialog,
+  // which stays open and busy until then.
+  const discardPendingRef = useRef<(() => void) | null>(null);
   // Whether the editor is still on screen: an answer that lands after the operator left opens no tab,
   // which would bring them back into the editor they left.
   const mountedRef = useRef(true);
@@ -3418,10 +3419,12 @@ function AgentEditor() {
       confirmLabel: t("editor.discardAll", "Discard all"),
       onConfirm: () => {
         // NOTE: A write still out would land on the discarded form and read as an edit made meanwhile,
-        // so the discard waits for its answer; what the bar had left to write then reads as clean.
+        // so the discard waits for its answer, the dialog busy so nothing is edited in between; what the
+        // bar had left to write then reads as clean.
         if (savingRef.current > 0) {
-          discardPendingRef.current = true;
-          return;
+          return new Promise<void>((settle) => {
+            discardPendingRef.current = settle;
+          });
         }
         discardAll();
       },
@@ -4668,9 +4671,11 @@ function AgentEditor() {
   const continueRef = useRef<{ onTab: TabKey | null } | null>(null);
   // Every render, guarded by the refs: a discard confirmed while a write was out runs once it lands.
   useEffect(() => {
-    if (discardPendingRef.current && !anySaving) {
-      discardPendingRef.current = false;
+    const settleDiscard = discardPendingRef.current;
+    if (settleDiscard && !anySaving) {
+      discardPendingRef.current = null;
       discardAll();
+      settleDiscard();
       return;
     }
     const next = continueRef.current;

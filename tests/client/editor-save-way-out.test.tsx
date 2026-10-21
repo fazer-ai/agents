@@ -73,8 +73,19 @@ describe("Discard while a save's request is out", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(patch.sent).toBe(true));
     await confirmDiscard();
+    await act(async () => {});
+    // NOTE: the dialog stays open and busy until the answer, so nothing is edited in between, and a
+    // render of the editor meanwhile (here, the tab bar navigating) does not run the discard early.
+    expect(screen.queryByRole("dialog") === null).toBe(false);
+    const generalTab = [...document.querySelectorAll('[role="tab"]')].find(
+      (el) => el.textContent === "General",
+    );
+    fireEvent.click(generalTab as HTMLElement);
+    await act(async () => {});
+    expect(nameField().value).toBe("Recepção");
     patch.release();
     await settle();
+    expect(screen.queryByRole("dialog") === null).toBe(true);
     expect(stub.agent.name).toBe("Recepção");
     expect(nameField().value).toBe("Recepção");
     expect(discard() === null).toBe(true);

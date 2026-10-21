@@ -191,6 +191,7 @@ export async function renderEditor(
                     path="/agents/:id/:tab"
                     element={<AgentEditorPage />}
                   />
+                  <Route path="/agents" element={<p>Agents list</p>} />
                 </Routes>
               </TooltipPrimitive.Provider>
             </ToastProvider>

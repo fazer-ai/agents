@@ -1610,6 +1610,18 @@ function AgentEditor() {
   // server advancing the token (and broadcasting) and our markSynced recording it. A genuine
   // concurrent write during a save is still caught by the updatedAt precondition (409 → handleConflict).
   const savingRef = useRef(0);
+  // A "Discard all" confirmed while a write was out, waiting for its answer: settles its dialog,
+  // which stays open and busy until then.
+  const discardPendingRef = useRef<(() => void) | null>(null);
+  // Whether the editor is still on screen: an answer that lands after the operator left opens no tab,
+  // which would bring them back into the editor they left.
+  const mountedRef = useRef(true);
+  useEffect(
+    () => () => {
+      mountedRef.current = false;
+    },
+    [],
+  );
   // "Changed elsewhere" banner: set by a realtime agent-config event for a newer version, or by a 409
   // save rejection. `conflictRetry` (when set) re-runs the rejected save, overwriting on purpose.
   const [staleNotice, setStaleNotice] = useState(false);
@@ -3406,21 +3418,33 @@ function AgentEditor() {
       danger: true,
       confirmLabel: t("editor.discardAll", "Discard all"),
       onConfirm: () => {
-        // NOTE: Every section at once, so every refusal goes with them: six holders now, and a discard
-        // that cleared only one would put values back while a mark about them stayed up.
-        for (const owner of REFUSAL_SECTIONS)
-          refusalRef.current[owner]?.clear();
-        setRefusedSave({});
-        const a = syncedAgentRef.current;
-        if (a) {
-          applyAgent(a);
-          syncToolConfig(a);
-          setReview(suggestionReviewToForm(a.settings));
+        // NOTE: A write still out would land on the discarded form and read as an edit made meanwhile,
+        // so the discard waits for its answer, the dialog busy so nothing is edited in between; what the
+        // bar had left to write then reads as clean.
+        if (savingRef.current > 0) {
+          return new Promise<void>((settle) => {
+            discardPendingRef.current = settle;
+          });
         }
-        setGrants(mapGrants(syncedGrantsRef.current));
-        bumpSync();
+        discardAll();
       },
     });
+  }
+
+  // Puts every tab back from the server's copy as it stands now.
+  function discardAll() {
+    // NOTE: Every section at once, so every refusal goes with them: six holders now, and a discard
+    // that cleared only one would put values back while a mark about them stayed up.
+    for (const owner of REFUSAL_SECTIONS) refusalRef.current[owner]?.clear();
+    setRefusedSave({});
+    const a = syncedAgentRef.current;
+    if (a) {
+      applyAgent(a);
+      syncToolConfig(a);
+      setReview(suggestionReviewToForm(a.settings));
+    }
+    setGrants(mapGrants(syncedGrantsRef.current));
+    bumpSync();
   }
 
   // Optimistic-concurrency precondition the save sends (the version we loaded), unless `force` (the
@@ -4645,8 +4669,15 @@ function AgentEditor() {
   const barSaveRef = useRef<BarSave | null>(null);
   // Where the save goes on: after the tab it opened is drawn, or after General's write has landed.
   const continueRef = useRef<{ onTab: TabKey | null } | null>(null);
-  // Every render, guarded by the ref.
+  // Every render, guarded by the refs: a discard confirmed while a write was out runs once it lands.
   useEffect(() => {
+    const settleDiscard = discardPendingRef.current;
+    if (settleDiscard && !anySaving) {
+      discardPendingRef.current = null;
+      discardAll();
+      settleDiscard();
+      return;
+    }
     const next = continueRef.current;
     if (!next || anySaving) return;
     if (next.onTab !== null && next.onTab !== tab) return;
@@ -4896,12 +4927,14 @@ function AgentEditor() {
     void loadHours().then(() => setter(savedId));
   };
 
-  const openTab = (key: TabKey) =>
+  const openTab = (key: TabKey) => {
+    if (!mountedRef.current) return;
     navigate(
       `/agents/${id}/${key}${
         backToConversation ? `?from=${backToConversation}` : ""
       }`,
     );
+  };
 
   // The order follows the work: set the agent up (General, then its kind's own settings), give it
   // tools and knowledge, try it in the Playground, and only then connect it to a channel. Every kind

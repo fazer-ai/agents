@@ -195,6 +195,8 @@ export function forgetToolEffortFloorsForTest(): void {
   toolEffortFloors.clear();
 }
 
+const KEYLESS_API_KEY = "no-key";
+
 export function createChatModel(cfg: ResolvedModelConfig): BaseChatModel {
   const { model, apiKey, temperature } = cfg;
   switch (cfg.provider) {
@@ -217,7 +219,10 @@ export function createChatModel(cfg: ResolvedModelConfig): BaseChatModel {
           // Empty model = "the server's default" (see model-config): send a neutral placeholder so
           // the request is well-formed; llama.cpp-style single-model servers ignore the name.
           model: model.trim() || "default",
-          apiKey,
+          // NOTE: An endpoint that needs no key (`credential: "none"` in model-override.ts) arrives
+          // here with an empty one, which the SDK refuses before any request. A server that ignores
+          // auth ignores the placeholder; one that checks answers 401 where the operator sees it.
+          apiKey: apiKey || KEYLESS_API_KEY,
           temperature: openaiTemperature(model, temperature),
           ...limits(cfg),
           configuration: { baseURL: cfg.baseURL },

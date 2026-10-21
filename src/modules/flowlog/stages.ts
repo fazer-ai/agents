@@ -52,6 +52,9 @@ export const FLOW_STAGES = [
   // other than the agent (an external automation). The agent did not see it, so its next reply can
   // answer as if it was never said. One line per message; the alert is one per agent per window.
   "foreign_send",
+  // A proactive send outside the WhatsApp 24h window that became a private note because its occasion
+  // had no usable template. One line per note; the alert is one per agent per day.
+  "service_window",
   "handoff", // an ownership gate closed: a takeover, or the conversation left the bot
   "memory", // a closed attendance folded into the contact's memory (compaction)
   // A watching agent's verdict on a conversation it does not answer, written as labels by the

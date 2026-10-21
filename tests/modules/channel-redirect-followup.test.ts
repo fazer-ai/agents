@@ -23,6 +23,7 @@ import {
 } from "@/modules/scheduler/service";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { flowLogRows } from "../utils/flowlog";
 
 describe("parseRedirectFollowUpPayload", () => {
   test("valid chat-stage payload", () => {
@@ -1342,6 +1343,65 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
         where: { id: agentId },
         data: { settings: before.settings ?? {} },
       });
+      await suDb.conversation.update({
+        where: { id: entry.id },
+        data: { lastInboundAt: entry.lastInboundAt },
+      });
+      await suDb.inbox.updateMany({
+        where: { tenantId, chatwootInboxId: 110 },
+        data: { channelType: null, provider: null },
+      });
+    }
+  });
+
+  test("outside the window with no template the link is a note, and the note is not silent", async () => {
+    const entry = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: ENTRY_CONV },
+      select: { id: true, lastInboundAt: true },
+    });
+    await suDb.inbox.updateMany({
+      where: { tenantId, chatwootInboxId: 110 },
+      data: { channelType: "Channel::Whatsapp", provider: "whatsapp_cloud" },
+    });
+    await suDb.conversation.update({
+      where: { id: entry.id },
+      data: { lastInboundAt: new Date(Date.now() - 48 * 3_600_000) },
+    });
+    const posted: Array<{ private?: boolean; template_params?: unknown }> = [];
+    const recording = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (
+        String(input).includes("/messages") &&
+        typeof init?.body === "string"
+      ) {
+        posted.push(JSON.parse(init.body));
+      }
+      return httpDouble(input);
+    }) as typeof fetch;
+    try {
+      const job = await claimed("whatsapp");
+      globalThis.fetch = recording;
+      try {
+        await redirectFollowUpHandler(job, appDb, deps());
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+      expect(posted.map((m) => m.private === true)).toEqual([true]);
+      const [line] = await flowLogRows(suDb, {
+        // flowlog-scope: tenant-wide. The follow-up job writes its note line with no conversation of
+        // ours to hang it on, and this is the only test of the file that makes one.
+        where: { tenantId, stage: "service_window" },
+        orderBy: { id: "desc" },
+        take: 1,
+      });
+      expect({ level: line?.level, detail: line?.detail }).toEqual({
+        level: "warn",
+        detail: {
+          agent: String(agentId),
+          kind: "channel_redirect",
+          reason: "no_template",
+        },
+      });
+    } finally {
       await suDb.conversation.update({
         where: { id: entry.id },
         data: { lastInboundAt: entry.lastInboundAt },

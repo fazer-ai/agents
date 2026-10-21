@@ -6720,6 +6720,28 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
   // Outside the window each proactive kind sends its own template, a reminder fills it with
   // its appointment, and a kind with no template of its own (and no default) stays a note.
   describe("a template per proactive kind", () => {
+    // The newest window-note line of the tenant: which kind became a note, and why.
+    const lastWindowNote = async (chatwootConversationId: number) => {
+      const conv = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId },
+        select: { id: true },
+      });
+      const [row] = await flowLogRows(suDb, {
+        where: { tenantId, conversationId: conv.id, stage: "service_window" },
+        orderBy: { id: "desc" },
+        take: 1,
+      });
+      return row ? { level: row.level, detail: row.detail } : null;
+    };
+    const inboxAgent = async () =>
+      String(
+        (
+          await suDb.inbox.findUniqueOrThrow({
+            where: { id: inboxDbId },
+            select: { agentId: true },
+          })
+        ).agentId,
+      );
     const LEMBRETE = {
       name: "lembrete_agendamento",
       language: "pt_BR",
@@ -6873,6 +6895,15 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
           expect(outcome).toBe("noted-window");
           expect(s.payloads).toEqual([]);
           expect(s.notes).toHaveLength(1);
+          // A note instead of a send is not silent: a warn naming the kind, and that none was set.
+          expect(await lastWindowNote(7564)).toEqual({
+            level: "warn",
+            detail: {
+              agent: await inboxAgent(),
+              kind: "followup",
+              reason: "no_template",
+            },
+          });
         },
         settings,
       );
@@ -6903,6 +6934,15 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
           });
           expect(outcome).toBe("noted-window");
           expect(s.payloads).toEqual([]);
+          // A template was there; what it asked for came out empty.
+          expect(await lastWindowNote(7566)).toEqual({
+            level: "warn",
+            detail: {
+              agent: await inboxAgent(),
+              kind: "appointment_reminder",
+              reason: "blank_value",
+            },
+          });
         },
         settings,
       );

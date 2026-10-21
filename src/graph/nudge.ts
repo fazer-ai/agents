@@ -70,6 +70,7 @@ import {
   releaseProactiveReservation,
   reserveProactiveSend,
 } from "@/modules/proactive-limit/service";
+import { emitWindowNote } from "@/modules/service-window/note-alert";
 import {
   type AppointmentFacts,
   buildTemplatePayload,
@@ -3013,7 +3014,8 @@ async function runAgentNudgeBody(
       );
     }
     if (canMessagePre && canMessagePost) {
-      if (sendModeNow() === "template") {
+      const windowMode = sendModeNow();
+      if (windowMode === "template") {
         const payload = buildTemplatePayload(
           cfg.serviceWindowConfig,
           cfg.contactName,
@@ -3048,6 +3050,11 @@ async function runAgentNudgeBody(
         String(conversationId),
         params.nudge.source,
       );
+      emitWindowNote(flow, {
+        agentId: cfg.agentId,
+        kind: templateOccasion?.kind ?? null,
+        reason: windowMode === "template" ? "blank_value" : "no_template",
+      });
       markFollowUp("noted-window");
       await applyPostActions({
         canMessage: canMessagePost,

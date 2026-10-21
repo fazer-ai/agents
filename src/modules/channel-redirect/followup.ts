@@ -30,6 +30,7 @@ import {
   type JobResult,
   registerJobHandler,
 } from "@/modules/scheduler/worker";
+import { emitWindowNote } from "@/modules/service-window/note-alert";
 import {
   buildTemplatePayload,
   type ProactiveSendMode,
@@ -504,6 +505,20 @@ export async function sendWhatsAppFollowUp(
     await client.sendMessage(sibling.chatwootConversationId, text, {
       private: true,
     });
+    emitWindowNote(
+      {
+        tenantId: p.tenantId,
+        turnId: crypto.randomUUID(),
+        source: "inbox",
+        agentId: p.agentId,
+        base: p.base,
+      },
+      {
+        agentId: p.agentId,
+        kind: CHANNEL_REDIRECT_OCCASION.kind,
+        reason: mode === "template" ? "blank_value" : "no_template",
+      },
+    );
     return "sent";
   }
   const sent = await withinLimit(async () => {

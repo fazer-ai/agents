@@ -48,6 +48,8 @@ export function flowStageLabel(stage: string, t: TFunction): string {
       return t("logs.stage.channel_error", "Channel failure");
     case "foreign_send":
       return t("logs.stage.foreign_send", "Message the agent did not send");
+    case "service_window":
+      return t("logs.stage.service_window", "Proactive message became a note");
     case "handoff":
       return t("logs.stage.handoff", "Handoff");
     case "memory":

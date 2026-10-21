@@ -189,6 +189,8 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   "GET /v1/integrations/catalog": { tool: "integration_catalog" },
   "GET /v1/integrations/google/calendars": { none: PICKER },
   "GET /v1/integrations/google/drive-folders": { none: PICKER },
+  "GET /v1/integrations/google/spreadsheets": { none: PICKER },
+  "GET /v1/integrations/google/spreadsheet-tabs": { none: PICKER },
   "GET /v1/integrations/instances": { tool: "integration_list" },
   "GET /v1/integrations/instances/:id": {
     gap: "one integration instance by id",

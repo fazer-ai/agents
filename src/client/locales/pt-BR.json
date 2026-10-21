@@ -3160,6 +3160,11 @@
         "hint": "Encontra um arquivo e manda ele, ou o link, para o cliente.",
         "label": "Google Drive"
       },
+      "GOOGLE_SHEETS": {
+        "description": "Adiciona uma linha, busca linhas e atualiza uma linha encontrada em uma aba de planilha, em uma conta Google conectada. As colunas são identificadas pelos nomes da linha de cabeçalho da aba.",
+        "hint": "Adiciona, busca e atualiza linhas em uma aba de planilha.",
+        "label": "Planilhas Google"
+      },
       "RESEND": {
         "description": "E-mail transacional com uma chave de API do Resend. O agente envia confirmações, lembretes e follow-ups; o remetente é fixado nas configurações abaixo.",
         "hint": "E-mail transacional de um remetente fixo.",
@@ -3265,6 +3270,28 @@
     "saved": "Integração salva.",
     "saveError": "Não foi possível salvar.",
     "sharedNotice": "Esta é uma integração compartilhada. Alterações afetam todos os agentes que a usam.",
+    "sheets": {
+      "columns": "Colunas: {{list}}",
+      "filter": "Filtrar planilhas pelo nome",
+      "fromAccount": "Ou escolha na conta conectada (precisa do escopo Drive (leitura))",
+      "listEmpty": "Nenhuma planilha encontrada nesta conta. Cole a URL de uma planilha compartilhada com ela.",
+      "listError": "Não foi possível listar as planilhas da conta. Cole a URL da planilha.",
+      "load": "Carregar",
+      "needsCredential": "Escolha a credencial Google acima para selecionar a planilha.",
+      "noHeader": "Sem cabeçalho: a linha 1 precisa ter o nome das colunas",
+      "noSpreadsheet": "Nenhuma planilha escolhida",
+      "pasteInvalid": "Isso não é a URL nem o id de uma planilha.",
+      "pasteLabel": "URL ou id da planilha",
+      "pastePlaceholder": "Cole a URL ou o id da planilha",
+      "pickSpreadsheetFirst": "Escolha a planilha primeiro.",
+      "readsWholeTab": "Com a ferramenta de busca liberada, o agente consegue ler todas as linhas desta aba, e o que ele lê pode chegar ao cliente. Deixe em outra aba o que o cliente não pode ver. O que o agente escreve é gravado como texto puro, nunca como fórmula.",
+      "spreadsheet": "Planilha",
+      "tab": "Aba",
+      "tabGone": "A aba salva \"{{title}}\" não existe mais nesta planilha. Escolha uma aba.",
+      "tabHint": "A linha 1 da aba dá nome às colunas; o agente lê e escreve por esses nomes.",
+      "tabsError": "Não foi possível ler as abas da planilha. Confira se a credencial tem o escopo Google Sheets e consegue abrir esta planilha.",
+      "use": "Usar"
+    },
     "subtitle": "Ative integrações prontas que seus agentes podem usar.",
     "tokenHint": "Copie esta URL para as configurações de webhook do provedor. Você pode consultá-la depois editando esta integração.",
     "tokenTitle": "URL do webhook de entrada",
@@ -4367,6 +4394,18 @@
     "resend_send_email": {
       "desc": "Envia um e-mail para o cliente (confirmação, lembrete, follow-up). O remetente vem das configurações da integração.",
       "label": "Enviar e-mail"
+    },
+    "sheets_append_row": {
+      "desc": "Adiciona uma linha no fim da aba da planilha, preenchendo as colunas pelo nome.",
+      "label": "Adicionar linha"
+    },
+    "sheets_find_rows": {
+      "desc": "Lê linhas da aba da planilha: todas, ou as que têm um valor em uma coluna.",
+      "label": "Buscar linhas"
+    },
+    "sheets_update_row": {
+      "desc": "Altera células da linha encontrada por um valor em uma coluna.",
+      "label": "Atualizar linha"
     }
   },
   "tools": {

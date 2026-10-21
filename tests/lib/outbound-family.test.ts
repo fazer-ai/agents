@@ -7,6 +7,7 @@ import { listCredentialDriveFolders } from "@/modules/integrations/google-drive.
 import { asaasToolpack } from "@/modules/integrations/toolpacks/asaas";
 import { googleCalendarToolpack } from "@/modules/integrations/toolpacks/google-calendar";
 import { googleDriveToolpack } from "@/modules/integrations/toolpacks/google-drive";
+import { googleSheetsToolpack } from "@/modules/integrations/toolpacks/google-sheets";
 import type {
   IntegrationSelection,
   ToolpackCtx,
@@ -157,6 +158,22 @@ describe("a stalled body ends the call at its budget", () => {
         (tool as NonNullable<typeof tool>).invoke({ query: "manual" }),
       ),
       /Failed to reach Google Drive/,
+    );
+  });
+
+  test("a Google Sheets read", async () => {
+    const [tool] = googleSheetsToolpack.build(
+      {
+        ...sel("GOOGLE_SHEETS", "sheets_find_rows"),
+        config: { spreadsheetId: "1AbCdEfGhIjKlMnOpQrStUvWxYz", sheetId: 0 },
+      },
+      toolpackCtx(),
+    );
+    expectCut(
+      await settlesOnTheClock(() =>
+        (tool as NonNullable<typeof tool>).invoke({}),
+      ),
+      /Failed to reach Google Sheets/,
     );
   });
 

@@ -13,7 +13,10 @@ import {
   MailCheck,
   QrCode,
   Receipt,
+  Rows3,
   Send,
+  Sheet,
+  TableProperties,
   Wrench,
 } from "lucide-react";
 
@@ -34,6 +37,9 @@ export const TOOLPACK_TOOL_ICONS: Record<string, LucideIcon> = {
   calendar_confirm_appointment: CalendarCheck2,
   drive_find_file: FileSearch,
   drive_send_file: Send,
+  sheets_append_row: Rows3,
+  sheets_find_rows: TableProperties,
+  sheets_update_row: Sheet,
   resend_send_email: Mail,
   resend_email_status: MailCheck,
 };
@@ -205,6 +211,33 @@ export function toolpackToolMeta(name: string, t: TFunction): ToolpackToolMeta {
         description: t(
           "toolpackTools.drive_send_file.desc",
           "Send a Drive file to the customer as an attachment.",
+        ),
+      };
+    case "sheets_append_row":
+      return {
+        icon,
+        label: t("toolpackTools.sheets_append_row.label", "Add row"),
+        description: t(
+          "toolpackTools.sheets_append_row.desc",
+          "Add a row at the end of the spreadsheet tab, filling columns by name.",
+        ),
+      };
+    case "sheets_find_rows":
+      return {
+        icon,
+        label: t("toolpackTools.sheets_find_rows.label", "Find rows"),
+        description: t(
+          "toolpackTools.sheets_find_rows.desc",
+          "Read rows of the spreadsheet tab, all of them or the ones with a value in a column.",
+        ),
+      };
+    case "sheets_update_row":
+      return {
+        icon,
+        label: t("toolpackTools.sheets_update_row.label", "Update row"),
+        description: t(
+          "toolpackTools.sheets_update_row.desc",
+          "Change cells of the row found by a value in a column.",
         ),
       };
     case "resend_send_email":

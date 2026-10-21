@@ -503,6 +503,10 @@ const BARE_SLICES: Record<
   // The refusal a calendar write answers with lists the nearest bookable slots; the cut bounds that
   // LIST, and each entry is a slot object this code built, never received text.
   "src/modules/integrations/toolpacks/calendar-slots.ts": [1, "array"],
+  // The tabs whose header row is read in one batch: a list of tabs, never text.
+  "src/modules/integrations/google-sheets.service.ts": [1, "array"],
+  // The rows a find scans: a list of rows. Cell text is cut through `clipText`.
+  "src/modules/integrations/toolpacks/google-sheets.ts": [1, "array"],
   // Zod issue PATHS, which name our own schema's keys, never the received values.
   "src/modules/integrations/mappers.ts": [1, "ascii"],
   "src/modules/mcp/write-agents.ts": [1, "array"],

@@ -97,6 +97,9 @@ const CalendarLogo = ((p: { className?: string }) => (
 const DriveLogo = ((p: { className?: string }) => (
   <ServiceLogo service="google_drive" className={p.className} />
 )) as unknown as LucideIcon;
+const SheetsLogo = ((p: { className?: string }) => (
+  <ServiceLogo service="google_sheets" className={p.className} />
+)) as unknown as LucideIcon;
 const GoogleLogo = ((p: { className?: string }) => (
   <ServiceLogo service="google" className={p.className} />
 )) as unknown as LucideIcon;
@@ -108,6 +111,8 @@ function integrationIcon(catalogType: string): LucideIcon {
       return CalendarLogo;
     case "GOOGLE_DRIVE":
       return DriveLogo;
+    case "GOOGLE_SHEETS":
+      return SheetsLogo;
     default:
       return catalogType.startsWith("GOOGLE_") ? GoogleLogo : Puzzle;
   }

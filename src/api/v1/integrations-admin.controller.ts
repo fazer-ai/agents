@@ -8,6 +8,10 @@ import type { TenantContext } from "@/lib/tenancy";
 import { listCredentialCalendars } from "@/modules/integrations/google-calendar.service";
 import { listCredentialDriveFolders } from "@/modules/integrations/google-drive.service";
 import {
+  listCredentialSpreadsheets,
+  listSpreadsheetTabs,
+} from "@/modules/integrations/google-sheets.service";
+import {
   createIntegrationInstance,
   deleteIntegrationInstance,
   getIntegrationInstance,
@@ -25,12 +29,17 @@ import { getToolpackToolViews } from "@/modules/integrations/toolpacks";
 // translate('errors.googleCredentialNotConnected', 'This credential is not a connected Google account.')
 // translate('errors.googleCredentialNotFound', 'The credential this integration needs was not found.')
 // translate('errors.googleDriveScopeDenied', "Google Drive denied the request. Reconnect the credential granting the 'Drive (read-only)' or 'Drive (full access)' scope; 'Drive (app files)' cannot list existing folders.")
+// translate('errors.googleSheetsListScopeDenied', "Google Drive denied the spreadsheet list. Reconnect the credential with the 'Drive (read-only)' scope, or paste the spreadsheet's URL instead.")
+// translate('errors.googleSheetsScopeDenied', "Google Sheets denied the request. Reconnect the credential granting the 'Google Sheets' scope, with an account that can open this spreadsheet.")
+// translate('errors.googleSpreadsheetIdInvalid', 'That is not a spreadsheet id. Paste the spreadsheet URL or the id between /d/ and /edit.')
+// translate('errors.googleSpreadsheetNotFound', 'Spreadsheet not found, or the connected Google account cannot open it.')
 // translate('errors.integrationHeaderNameUnusable', 'The "{{field}}" value is not a usable header name: use only letters, digits and !#$%&\'*+-.^_`|~ (no spaces or line breaks).')
 // translate('errors.integrationHttpError', '{{provider}} returned HTTP {{status}}.')
 // translate('errors.integrationInboundAuthRequired', 'This integration makes the agent message customers, so its webhook needs authentication: choose a static header or an HMAC signature.')
 // translate('errors.integrationInstanceNotFound', 'Integration instance not found.')
 // translate('errors.integrationInstructionsUnusable', 'The operator guidance ("{{field}}") must be text of at most 2000 characters, with no character that cannot be stored.')
 // translate('errors.integrationConfigOutOfRange', '"{{field}}" must be between {{min}} and {{max}}.')
+// translate('errors.integrationSheetsConfigInvalid', '"{{field}}" must be the spreadsheet id or the numeric tab id, not a URL or a tab name. Pick the spreadsheet and the tab again in the integration settings.')
 // translate('errors.integrationNoInboundWebhook', 'The {{integration}} integration has no inbound webhook.')
 // translate('errors.invalidCredentialRef', 'The credential reference is not valid.')
 
@@ -122,6 +131,61 @@ export const integrationsAdminController = new Elysia({
         credentialRef: t.String({
           description:
             "Vault reference (vault:<id>) of a connected google_oauth credential.",
+        }),
+      }),
+      response: errors(400, 401, 403, 404, 422),
+    },
+  )
+  .get(
+    "/google/spreadsheets",
+    async ({ tenantContext, query }) => {
+      const ctx = ctxOrThrow(tenantContext);
+      const spreadsheets = await listCredentialSpreadsheets(
+        ctx,
+        query.credentialRef,
+      );
+      return { instance: instanceIdentity, spreadsheets };
+    },
+    {
+      requireRole: "TENANT_ADMIN",
+      detail: doc(
+        "List Google spreadsheets for a credential",
+        "Lists the spreadsheets a connected google_oauth credential can see through Drive (needs a Drive read scope), so the operator can pick the one the Sheets integration works on. Read-only against Google.",
+      ),
+      query: t.Object({
+        credentialRef: t.String({
+          description:
+            "Vault reference (vault:<id>) of a connected google_oauth credential.",
+        }),
+      }),
+      response: errors(400, 401, 403, 404, 422),
+    },
+  )
+  .get(
+    "/google/spreadsheet-tabs",
+    async ({ tenantContext, query }) => {
+      const ctx = ctxOrThrow(tenantContext);
+      const { title, tabs } = await listSpreadsheetTabs(
+        ctx,
+        query.credentialRef,
+        query.spreadsheetId,
+      );
+      return { instance: instanceIdentity, title, tabs };
+    },
+    {
+      requireRole: "TENANT_ADMIN",
+      detail: doc(
+        "List a spreadsheet's tabs for a credential",
+        "Lists the tabs of one spreadsheet, each with its numeric sheetId and the column names in its header row, so the operator can pick the tab the Sheets integration works on. Read-only against Google.",
+      ),
+      query: t.Object({
+        credentialRef: t.String({
+          description:
+            "Vault reference (vault:<id>) of a connected google_oauth credential.",
+        }),
+        spreadsheetId: t.String({
+          description:
+            "The spreadsheet id (the part of its URL between /d/ and /edit).",
         }),
       }),
       response: errors(400, 401, 403, 404, 422),

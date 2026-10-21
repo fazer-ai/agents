@@ -44,6 +44,8 @@ const ALLOWED: Record<string, string> = {
   "src/modules/integrations/google-calendar.service.ts":
     "asks for one specific kind (google_oauth) by name and refuses everything else",
   "src/modules/integrations/google-drive.service.ts": "same as google-calendar",
+  "src/modules/integrations/google-sheets.service.ts":
+    "same as google-calendar",
 };
 
 // Comments are not usage, and a fence that counts them lies in the direction that matters: it lets a

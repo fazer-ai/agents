@@ -40,6 +40,8 @@ export function IntegrationsPanel() {
           "integrations.catalog.GOOGLE_CALENDAR.label",
           "Google Calendar",
         );
+      case "GOOGLE_SHEETS":
+        return t("integrations.catalog.GOOGLE_SHEETS.label", "Google Sheets");
       case "RESEND":
         return t("integrations.catalog.RESEND.label", "Resend");
       default:

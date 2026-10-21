@@ -7,6 +7,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { useState } from "react";
 import { RangeHolds, useRangeHeld } from "@/client/components";
@@ -34,15 +35,27 @@ const LEMBRETE = {
   body: "Olá, {{1}}! Dia {{2}} às {{3}}.",
   footer: null,
   buttons: [{ type: "URL", text: "Ver", url: "https://x.test/{{1}}" }],
+  examples: {
+    header: ["amanhã"],
+    body: ["Gabriel", "22/10", "14:30"],
+    buttons: ["abc-123"],
+  },
 };
 
-function stubTemplates(): void {
+const CODIGO = {
+  ...LEMBRETE,
+  name: "codigo_verificacao",
+  category: "AUTHENTICATION",
+};
+
+function stubTemplates(reminderOffsets: number[] = []): void {
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const url = new URL(String(input), "http://localhost");
     if (url.pathname.includes("service-window-templates")) {
-      return new Response(JSON.stringify({ templates: [LEMBRETE] }), {
-        headers: { "content-type": "application/json" },
-      });
+      return new Response(
+        JSON.stringify({ templates: [LEMBRETE, CODIGO], reminderOffsets }),
+        { headers: { "content-type": "application/json" } },
+      );
     }
     return new Response("{}", {
       headers: { "content-type": "application/json" },
@@ -56,61 +69,184 @@ afterEach(() => {
 });
 
 let last: ServiceWindowForm = SERVICE_WINDOW_FORM_DEFAULTS;
-function Harness() {
-  const [value, setValue] = useState<ServiceWindowForm>(
-    structuredClone(SERVICE_WINDOW_FORM_DEFAULTS),
-  );
+let held = false;
+function Harness({ initial }: { initial?: Partial<ServiceWindowForm> }) {
+  const [value, setValue] = useState<ServiceWindowForm>({
+    ...structuredClone(SERVICE_WINDOW_FORM_DEFAULTS),
+    ...initial,
+  });
   last = value;
   return (
     <ServiceWindowTemplates agentId="1" value={value} onChange={setValue} />
   );
 }
+function HeldProbe() {
+  held = useRangeHeld();
+  return null;
+}
+
+// Radix opens its menus on a primary-button pointerdown, not on click.
+function openMenu(el: HTMLElement): void {
+  fireEvent.pointerDown(el, {
+    button: 0,
+    ctrlKey: false,
+    pointerType: "mouse",
+  });
+}
+
+// Each blank is a chip in the message; clicking it opens what fills it.
+async function fillChip(index: number, pick: string | { text: string }) {
+  const chips = screen.getAllByRole("button", { name: /^\+ choose$/ });
+  fireEvent.click(chips[index] as HTMLElement);
+  const box = await screen.findByRole("dialog", { name: "What goes here" });
+  if (typeof pick === "string") {
+    fireEvent.click(within(box).getByRole("button", { name: pick }));
+  } else {
+    fireEvent.change(within(box).getByLabelText("Or fixed text"), {
+      target: { value: pick.text },
+    });
+  }
+  fireEvent.keyDown(box, { key: "Escape" });
+  await waitFor(() =>
+    expect(
+      screen.queryAllByRole("dialog", { name: "What goes here" }).length,
+    ).toBe(0),
+  );
+}
 
 describe("ServiceWindowTemplates", () => {
-  test("a reminder's own template takes a field per placeholder and previews the filled message", async () => {
-    stubTemplates();
-    render(<Harness />);
-    const own = await screen.findAllByText("Choose a template for this kind");
-    // Kinds render in PROACTIVE_KINDS order; the reminder is the third.
-    fireEvent.click(own[2] as HTMLElement);
-    await waitFor(() =>
-      expect(
-        screen.getAllByRole("combobox", { name: "Template name (HSM)" }).length,
-      ).toBe(2),
+  test("a reminder offset the agent arms is offered by name, and its blanks are filled in place", async () => {
+    stubTemplates([24, 1]);
+    render(
+      <RangeHolds>
+        <Harness />
+        <HeldProbe />
+      </RangeHolds>,
     );
-    const pickers = screen.getAllByRole("combobox", {
+    openMenu(
+      await screen.findByRole("button", {
+        name: "Use another template in a situation",
+      }),
+    );
+    const items = (await screen.findAllByRole("menuitem")).map(
+      (i) => i.textContent ?? "",
+    );
+    expect(items.some((i) => i.startsWith("Reminder 1h before"))).toBe(true);
+    expect(items.some((i) => i.startsWith("Reminder 24h before"))).toBe(true);
+    fireEvent.click(
+      screen
+        .getAllByRole("menuitem")
+        .find((i) =>
+          (i.textContent ?? "").startsWith("Reminder 1h before"),
+        ) as HTMLElement,
+    );
+    const card = await screen.findByTestId("situation-reminder:1");
+    const picker = within(card).getByRole("combobox", {
       name: "Template name (HSM)",
-    });
-    fireEvent.change(pickers[1] as HTMLElement, {
+    }) as HTMLSelectElement;
+    // A one-time-code template is never offered for a proactive message.
+    expect(
+      [...picker.options]
+        .map((o) => o.value)
+        .includes("codigo_verificacao\u0000pt_BR"),
+    ).toBe(false);
+    fireEvent.change(picker, {
       target: { value: "lembrete_agendamento\u0000pt_BR" },
     });
+    // Five blanks (header, three in the body, the button's suffix), and Save waits for all of them.
     await waitFor(() =>
-      expect(screen.queryByText("Body {{2}}")).not.toBeNull(),
+      expect(
+        screen.getAllByRole("button", { name: /^\+ choose$/ }).length,
+      ).toBe(5),
     );
-    const set = (label: string, v: string) =>
-      fireEvent.change(screen.getByLabelText(label), { target: { value: v } });
-    set("Header {{1}}", "{{dia_semana_agendamento}}");
-    set("Body {{1}}", "{{primeiro_nome}}");
-    set("Body {{2}}", "{{data_agendamento}}");
-    set("Body {{3}}", "{{hora_agendamento}}");
-    set('Button "Ver": end of the URL', "{{agenda}}");
-    const preview = await screen.findByTestId("service-window-preview");
-    const text = preview.textContent ?? "";
-    expect(text).toContain("Olá, Maria! Dia ");
-    expect(text).toContain("às 14:30.");
-    expect(text).not.toContain("{{");
-    // The customer sees the buttons too, so the preview shows them.
-    expect(text).toContain("Ver");
+    await waitFor(() => expect(held).toBe(true));
+    await fillChip(0, "Appointment weekday");
+    await fillChip(0, "Contact's first name");
+    await fillChip(0, "Appointment date");
+    await fillChip(0, "Appointment time");
+    await fillChip(0, { text: "abc" });
+    await waitFor(() => expect(held).toBe(false));
     const stored = serviceWindowToStored(last);
-    expect(stored.templates.appointment_reminder?.params).toEqual([
+    expect(stored.reminderTemplates["1"]?.headerParams).toEqual([
+      "{{dia_semana_agendamento}}",
+    ]);
+    expect(stored.reminderTemplates["1"]?.params).toEqual([
       "{{primeiro_nome}}",
       "{{data_agendamento}}",
       "{{hora_agendamento}}",
     ]);
-    expect(stored.templates.appointment_reminder?.buttonParams).toEqual([
-      "{{agenda}}",
-    ]);
-    expect(stored.templateName).toBeNull();
+    expect(stored.reminderTemplates["1"]?.buttonParams).toEqual(["abc"]);
+    fireEvent.click(
+      within(card).getByRole("button", {
+        name: "See it as the customer gets it",
+      }),
+    );
+    const text =
+      within(card).getByTestId("service-window-message").textContent ?? "";
+    expect(text).toContain("Olá, Maria! Dia ");
+    expect(text).toContain("às 14:30.");
+    expect(text).not.toContain("{{");
+  });
+
+  test("a fallback is stored with its variable and only offered for a variable", async () => {
+    stubTemplates();
+    render(
+      <Harness
+        initial={{
+          templates: {
+            followup: {
+              ...SERVICE_WINDOW_FORM_DEFAULTS.def,
+              name: "lembrete_agendamento",
+              params: ["{{primeiro_nome}}", "x", "y"],
+              headerParams: ["z"],
+              buttonParams: ["w"],
+            },
+          },
+        }}
+      />,
+    );
+    const chip = await screen.findByRole("button", {
+      name: "Contact's first name",
+    });
+    fireEvent.click(chip);
+    const box = await screen.findByRole("dialog", { name: "What goes here" });
+    fireEvent.change(within(box).getByLabelText("If this comes empty, use"), {
+      target: { value: "cliente" },
+    });
+    await waitFor(() =>
+      expect(last.templates.followup?.params[0]).toBe(
+        "{{primeiro_nome|cliente}}",
+      ),
+    );
+    // The reminder's facts are not offered outside a reminder.
+    expect(
+      within(box).queryAllByRole("button", { name: "Appointment date" }).length,
+    ).toBe(0);
+  });
+
+  test("a saved offset no booking tool arms anymore says so instead of vanishing", async () => {
+    stubTemplates([24]);
+    render(
+      <Harness
+        initial={{
+          reminderTemplates: [
+            {
+              offset: "2",
+              choice: {
+                ...SERVICE_WINDOW_FORM_DEFAULTS.def,
+                name: "lembrete_agendamento",
+              },
+            },
+          ],
+        }}
+      />,
+    );
+    const card = await screen.findByTestId("situation-reminder:2");
+    await waitFor(() =>
+      expect(card.textContent ?? "").toContain(
+        "No booking tool of this agent sends a reminder 2h before today",
+      ),
+    );
   });
 });
 
@@ -145,38 +281,6 @@ describe("a stored template the inbox no longer has", () => {
     fireEvent.change(picker, { target: { value: "" } });
     await waitFor(() => expect(latest.def.name).toBe(""));
     expect(serviceWindowToStored(latest).templateName).toBeNull();
-  });
-});
-
-describe("two reminder rows for one offset", () => {
-  test("hold Save and say why", async () => {
-    stubTemplates();
-    let held = false;
-    function Probe() {
-      held = useRangeHeld();
-      return null;
-    }
-    const row = {
-      offset: "24",
-      choice: { ...SERVICE_WINDOW_FORM_DEFAULTS.def, name: "x" },
-    };
-    render(
-      <RangeHolds>
-        <ServiceWindowTemplates
-          agentId="1"
-          value={{
-            ...structuredClone(SERVICE_WINDOW_FORM_DEFAULTS),
-            reminderTemplates: [row, { ...row }],
-          }}
-          onChange={() => {}}
-        />
-        <Probe />
-      </RangeHolds>,
-    );
-    await waitFor(() => expect(held).toBe(true));
-    expect(
-      screen.queryAllByText("Another row already has this offset.").length,
-    ).toBe(2);
   });
 });
 

@@ -21,6 +21,7 @@ import {
   type TenantContext,
 } from "@/lib/tenancy";
 import { isMonitoring } from "@/modules/agents/mode";
+import { readAppointmentReminderConfig } from "@/modules/appointments/settings";
 import { redactEndpoint } from "@/modules/audit/projection";
 import { auditMutation } from "@/modules/audit/service";
 import {
@@ -29,6 +30,7 @@ import {
   type WidgetHealthStatus,
 } from "@/modules/channel-redirect/link";
 import type { TemplateDefinition } from "@/modules/service-window/service";
+import { readAppointmentDeclaration } from "@/modules/tool-definitions/appointment";
 import {
   switchOffVoiceRouting,
   syncVoiceInboxes,
@@ -2185,14 +2187,50 @@ export async function listServiceWindowTemplates(
   agentId: bigint,
   deps: LoadChatwootClientDeps = {},
   base: PrismaClient = basePrisma,
-): Promise<{ templates: ServiceWindowTemplateDto[] }> {
-  const { templates } = await loadAgentTemplateDefinitions(
-    ctx,
-    agentId,
-    deps,
-    base,
+): Promise<{
+  templates: ServiceWindowTemplateDto[];
+  reminderOffsets: number[];
+}> {
+  const [{ templates }, reminderOffsets] = await Promise.all([
+    loadAgentTemplateDefinitions(ctx, agentId, deps, base),
+    agentReminderOffsets(ctx, agentId, base),
+  ]);
+  return { templates, reminderOffsets };
+}
+
+// The hours-before every reminder this agent can arm: its Google Calendar integrations' reminder
+// settings and its booking tools' declarations, far to near. The editor offers a template per one of
+// these instead of asking the operator to type a number configured on another screen.
+export async function agentReminderOffsets(
+  ctx: TenantContext,
+  agentId: bigint,
+  base: PrismaClient = basePrisma,
+): Promise<number[]> {
+  const selections = await runScopedOn(base, ctx, (db) =>
+    db.agentToolSelection.findMany({
+      where: { agentId },
+      select: {
+        toolDefinition: { select: { appointment: true } },
+        integrationInstance: {
+          select: { catalogType: true, enabled: true, config: true },
+        },
+      },
+    }),
   );
-  return { templates };
+  const offsets = new Set<number>();
+  for (const sel of selections) {
+    // Only a booking declaration carries offsets; a cancel one reads back without them.
+    const decl = readAppointmentDeclaration(sel.toolDefinition?.appointment);
+    if (decl && "reminderOffsetsHours" in decl) {
+      for (const h of decl.reminderOffsetsHours ?? []) offsets.add(h);
+    }
+    const inst = sel.integrationInstance;
+    if (inst?.enabled && inst.catalogType === "GOOGLE_CALENDAR") {
+      const cfg = readAppointmentReminderConfig(inst.config);
+      if (cfg.enabled) for (const h of cfg.offsetsHours) offsets.add(h);
+    }
+  }
+  return [...offsets].sort((a, b) => b - a);
 }
 
 // The Chatwoot instances an agent's inboxes live on, plus how many distinct ACCOUNTS they

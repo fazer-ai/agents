@@ -313,6 +313,7 @@
     "serviceWindowReminderChoice": "{{where}}: não é uma escolha de template ({ name, language, params, … }).",
     "serviceWindowReminderOffset": "{{where}}: a chave é a antecedência do lembrete, em horas.",
     "serviceWindowReminderOffsetRepeated": "{{where}}: outra chave já nomeia o lembrete de {{hours}} horas antes.",
+    "serviceWindowTemplateAuthentication": "{{where}}: o template \"{{name}}\" é de autenticação (código de verificação) e não serve para mensagens proativas.",
     "serviceWindowTemplateBlankBody": "{{where}}: o parâmetro {{index}} do corpo do template \"{{name}}\" está em branco.",
     "serviceWindowTemplateBlankHeader": "{{where}}: o parâmetro {{index}} do cabeçalho do template \"{{name}}\" está em branco.",
     "serviceWindowTemplateBodyCount": "{{where}}: o template \"{{name}}\" recebe {{want}} parâmetro(s) no corpo, e {{got}} foram configurados.",

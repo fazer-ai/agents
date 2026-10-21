@@ -326,6 +326,9 @@ export interface TemplateDefinition {
   body: string | null;
   footer: string | null;
   buttons: Array<{ type: string; text: string; url: string | null }>;
+  // The sample values Meta approved with the template, one per placeholder in order (a button's is
+  // the end of its URL). The editor shows them next to each field; empty where Meta has none.
+  examples: { header: string[]; body: string[]; buttons: string[] };
 }
 
 const PLACEHOLDER_IN_TEMPLATE = /\{\{\s*([A-Za-z0-9_]+)\s*\}\}/g;
@@ -353,6 +356,11 @@ export function parseTemplateDefinition(
   let body: string | null = null;
   let footer: string | null = null;
   const buttons: TemplateDefinition["buttons"] = [];
+  const examples: TemplateDefinition["examples"] = {
+    header: [],
+    body: [],
+    buttons: [],
+  };
   for (const c of Array.isArray(o.components) ? o.components : []) {
     if (!c || typeof c !== "object") continue;
     const comp = c as Record<string, unknown>;
@@ -362,17 +370,28 @@ export function parseTemplateDefinition(
         format: String(comp.format ?? "TEXT").toUpperCase(),
         text: text(comp.text),
       };
-    } else if (type === "BODY") body = text(comp.text);
-    else if (type === "FOOTER") footer = text(comp.text);
+      examples.header = exampleValues(comp.example, "header_text");
+    } else if (type === "BODY") {
+      body = text(comp.text);
+      examples.body = exampleValues(comp.example, "body_text");
+    } else if (type === "FOOTER") footer = text(comp.text);
     else if (type === "BUTTONS" && Array.isArray(comp.buttons)) {
       for (const b of comp.buttons) {
         if (!b || typeof b !== "object") continue;
         const btn = b as Record<string, unknown>;
+        const url = text(btn.url);
         buttons.push({
           type: String(btn.type ?? "").toUpperCase(),
           text: text(btn.text) ?? "",
-          url: text(btn.url),
+          url,
         });
+        const [sample] = strings(btn.example);
+        const prefix = url?.split("{{")[0] ?? "";
+        examples.buttons.push(
+          sample && url?.includes("{{") && sample.startsWith(prefix)
+            ? sample.slice(prefix.length)
+            : "",
+        );
       }
     }
   }
@@ -388,7 +407,30 @@ export function parseTemplateDefinition(
     body,
     footer,
     buttons,
+    examples,
   };
+}
+
+// Meta's sample values for one component: `{header_text: [..]}`, `{body_text: [[..]]}`, or the
+// NAMED shape `{body_text_named_params: [{param_name, example}]}`.
+function exampleValues(
+  raw: unknown,
+  key: "header_text" | "body_text",
+): string[] {
+  if (!raw || typeof raw !== "object") return [];
+  const o = raw as Record<string, unknown>;
+  const positional = o[key];
+  if (Array.isArray(positional)) {
+    return strings(Array.isArray(positional[0]) ? positional[0] : positional);
+  }
+  const named = o[`${key}_named_params`];
+  return Array.isArray(named)
+    ? named.map((n) =>
+        n && typeof n === "object" && typeof n.example === "string"
+          ? n.example
+          : "",
+      )
+    : [];
 }
 
 export function findTemplateDefinition(
@@ -415,7 +457,8 @@ export interface TemplateProblem {
     | "serviceWindowTemplateMediaHeader"
     | "serviceWindowTemplateButtonCount"
     | "serviceWindowTemplateButtonNeedsSuffix"
-    | "serviceWindowTemplateButtonTakesNone";
+    | "serviceWindowTemplateButtonTakesNone"
+    | "serviceWindowTemplateAuthentication";
   params: Record<string, string | number>;
   message: string;
 }
@@ -442,6 +485,14 @@ export function templateChoiceProblem(
       key: "serviceWindowTemplateLanguage",
       params: { name, language: choice.language, available },
       message: `template "${name}" has no "${choice.language}" version (available: ${available})`,
+    };
+  }
+  // A one-time-code template: WhatsApp sends it only to deliver a code, never as a proactive message.
+  if (def.category.toUpperCase() === "AUTHENTICATION") {
+    return {
+      key: "serviceWindowTemplateAuthentication",
+      params: { name },
+      message: `template "${name}" is an authentication (one-time code) template, which proactive messages cannot use`,
     };
   }
   const bodyWant = templatePlaceholders(def.body).length;
@@ -549,7 +600,7 @@ export function configuredChoices(cfg: ServiceWindowConfig): Array<{
 }
 
 const APPOINTMENT_VAR_PATTERN = new RegExp(
-  `\\{\\{\\s*(${APPOINTMENT_VARS.join("|")})\\s*(?::[^}]*)?\\}\\}`,
+  `\\{\\{\\s*(${APPOINTMENT_VARS.join("|")})\\s*(?:[:|][^}]*)?\\}\\}`,
 );
 
 // An appointment placeholder where no appointment exists: on the default (which every kind sends)
@@ -608,6 +659,21 @@ export function renderTemplateText(
     .join("\n\n");
 }
 
+const WITH_FALLBACK = /\{\{\s*([a-z_]+)\s*\|([^}]*)\}\}/g;
+
+// `{{primeiro_nome|cliente}}`: the variable, or the text after the bar when it renders empty (a
+// contact with no name). Without it an empty value has no payload and the send becomes a note.
+export function withFallbacks(
+  param: string,
+  vars: Record<string, string>,
+): string {
+  return param.replace(WITH_FALLBACK, (m, key: string, fallback: string) => {
+    if (!(key in vars)) return m;
+    const v = vars[key] ?? "";
+    return v.trim() !== "" ? v : fallback.trim();
+  });
+}
+
 // Builds the HSM payload for client.sendTemplate: the occasion's template, its params with the
 // contact's (and on a reminder the appointment's) placeholders filled, keyed the way Chatwoot's
 // `processed_params` reads them (body/header by placeholder, buttons by position). With the synced
@@ -632,7 +698,7 @@ export function buildTemplatePayload(
       : {}),
   };
   const fill = (list: string[]) =>
-    list.map((p) => interpolatePromptVars(p, vars));
+    list.map((p) => interpolatePromptVars(withFallbacks(p, vars), vars));
   const params = fill(choice.params);
   const headerParams = fill(choice.headerParams);
   const buttonParams = fill(choice.buttonParams);

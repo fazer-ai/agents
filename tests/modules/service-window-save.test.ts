@@ -5,6 +5,7 @@ import { encryptJson } from "@/api/lib/crypto";
 import { AppError } from "@/lib/errors";
 import { createAgent, updateAgent } from "@/modules/agents/service";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
+import { agentReminderOffsets } from "@/modules/chatwoot/management";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import { agentSettingsSet } from "@/modules/mcp/write";
 import {
@@ -133,6 +134,9 @@ describe.skipIf(!dbUp)("service-window templates at save", () => {
     if (!dbUp) return;
     for (const table of [
       "audit_events",
+      "agent_tool_selections",
+      "tool_definitions",
+      "integration_instances",
       "inboxes",
       "agents",
       "chatwoot_instances",
@@ -148,6 +152,69 @@ describe.skipIf(!dbUp)("service-window templates at save", () => {
         .catch(() => {});
     }
     await suDb.$disconnect();
+  });
+
+  test("the editor offers the offsets the agent's booking tools and calendars arm, nothing else", async () => {
+    const tool = await suDb.toolDefinition.create({
+      data: {
+        tenantId,
+        name: "agendar",
+        label: "Agendar",
+        urlTemplate: "https://x.test/agendar",
+        appointment: {
+          action: "book",
+          idPath: "id",
+          startPath: "start",
+          reminderOffsetsHours: [24, 1],
+        },
+      },
+    });
+    const calendar = (enabled: boolean, offsetsHours: number[]) =>
+      suDb.integrationInstance.create({
+        data: {
+          tenantId,
+          catalogType: "GOOGLE_CALENDAR",
+          name: `cal-${offsetsHours.join("-")}`,
+          enabled,
+          config: { appointmentReminders: { enabled: true, offsetsHours } },
+        },
+      });
+    const on = await calendar(true, [48, 24]);
+    // A disabled integration arms nothing, so its offset is not offered.
+    const off = await calendar(false, [5]);
+    // A calendar whose reminders are switched off arms nothing either.
+    const silent = await suDb.integrationInstance.create({
+      data: {
+        tenantId,
+        catalogType: "GOOGLE_CALENDAR",
+        name: "cal-silent",
+        config: { appointmentReminders: { enabled: false, offsetsHours: [7] } },
+      },
+    });
+    await suDb.agentToolSelection.createMany({
+      data: [
+        {
+          tenantId,
+          agentId,
+          source: "HTTP",
+          toolDefinitionId: tool.id,
+          knowledgeBaseIds: [],
+          enabledTools: [],
+        },
+        ...[on, off, silent].map((i) => ({
+          tenantId,
+          agentId,
+          source: "INTEGRATION" as const,
+          integrationInstanceId: i.id,
+          knowledgeBaseIds: [],
+          enabledTools: [],
+        })),
+      ],
+    });
+    expect(await agentReminderOffsets(ctx(), agentId, suDb)).toEqual([
+      48, 24, 1,
+    ]);
+    await suDb.agentToolSelection.deleteMany({ where: { agentId } });
   });
 
   const check = (settings: unknown, stored: unknown = {}) =>

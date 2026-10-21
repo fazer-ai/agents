@@ -1,16 +1,27 @@
-import { Plus, Trash2 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import * as PopoverPrimitive from "@radix-ui/react-popover";
+import {
+  ArrowRightLeft,
+  BellRing,
+  CalendarClock,
+  Check,
+  Hourglass,
+  type LucideIcon,
+  Trash2,
+  Webhook,
+} from "lucide-react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Button,
+  Dropdown,
   FormField,
   Input,
-  NumberInput,
   Select,
   useHoldSave,
 } from "@/client/components";
 import { api } from "@/client/lib/api";
-import { REMINDER_OFFSET_RANGE } from "@/modules/integrations/calendar-config-ranges";
+import { cn } from "@/client/lib/utils";
+import { clipText } from "@/lib/text";
 import {
   buildTemplatePayload,
   findTemplateDefinition,
@@ -175,6 +186,219 @@ function sized(list: string[], n: number): string[] {
   return Array.from({ length: n }, (_, i) => list[i] ?? "");
 }
 
+const CONTACT_VARS = ["primeiro_nome", "nome_contato"] as const;
+// The reminder's own facts, by their Portuguese names (the English aliases render the same values).
+const REMINDER_VARS = [
+  "data_agendamento",
+  "hora_agendamento",
+  "dia_semana_agendamento",
+  "agenda",
+] as const;
+type SlotVar = (typeof CONTACT_VARS)[number] | (typeof REMINDER_VARS)[number];
+
+// What one placeholder is filled with: a variable (with the text used when it renders empty), fixed
+// text, or nothing yet. Stored as the string the send interpolates: `{{var}}`, `{{var|reserva}}`, text.
+type SlotSource =
+  | { kind: "var"; key: SlotVar; fallback: string }
+  | { kind: "text"; text: string }
+  | { kind: "empty" };
+
+const SLOT_VAR = /^\{\{\s*([a-z_]+)\s*(?:\|([^}]*))?\}\}$/;
+
+function parseSlot(value: string, offered: readonly SlotVar[]): SlotSource {
+  if (value.trim() === "") return { kind: "empty" };
+  const m = SLOT_VAR.exec(value.trim());
+  const key = m?.[1] as SlotVar | undefined;
+  if (key && offered.includes(key)) {
+    return { kind: "var", key, fallback: m?.[2] ?? "" };
+  }
+  return { kind: "text", text: value };
+}
+
+function slotToString(src: SlotSource): string {
+  if (src.kind === "var") {
+    // A brace would end the placeholder early, so it cannot be part of the fallback.
+    const fallback = src.fallback.replace(/[{}]/g, "");
+    return fallback.trim() ? `{{${src.key}|${fallback}}}` : `{{${src.key}}}`;
+  }
+  return src.kind === "text" ? src.text : "";
+}
+
+// WhatsApp draws `*text*` in bold; the preview does too, instead of showing the asterisks.
+function whatsappBold(text: string) {
+  return text.split(/(\*[^*\n]+\*)/).map((part, i) =>
+    /^\*[^*\n]+\*$/.test(part) ? (
+      // biome-ignore lint/suspicious/noArrayIndexKey: the pieces of one fixed string.
+      <strong key={i}>{part.slice(1, -1)}</strong>
+    ) : (
+      part
+    ),
+  );
+}
+
+function useVarLabel() {
+  const { t } = useTranslation();
+  return (k: SlotVar): string => {
+    switch (k) {
+      case "primeiro_nome":
+        return t("editor.svcWindowVarFirstName", "Contact's first name");
+      case "nome_contato":
+        return t("editor.svcWindowVarFullName", "Contact's full name");
+      case "data_agendamento":
+        return t("editor.svcWindowVarDate", "Appointment date");
+      case "hora_agendamento":
+        return t("editor.svcWindowVarTime", "Appointment time");
+      case "dia_semana_agendamento":
+        return t("editor.svcWindowVarWeekday", "Appointment weekday");
+      case "agenda":
+        return t("editor.svcWindowVarCalendar", "Calendar name");
+    }
+  };
+}
+
+// One blank of the template, drawn where it sits in the message. Clicking it opens what fills it: a
+// contact or appointment fact (with the text used when that comes empty), or fixed text.
+function SlotChip({
+  example,
+  value,
+  onChange,
+  offered,
+}: {
+  example: string;
+  value: string;
+  onChange: (next: string) => void;
+  offered: readonly SlotVar[];
+}) {
+  const { t } = useTranslation();
+  const varLabel = useVarLabel();
+  const [open, setOpen] = useState(false);
+  const src = parseSlot(value, offered);
+  const shown =
+    src.kind === "var"
+      ? varLabel(src.key)
+      : src.kind === "text"
+        ? `"${src.text.length > 28 ? `${clipText(src.text, 28)}…` : src.text}"`
+        : t("editor.svcWindowSlotChoose", "choose");
+  return (
+    <PopoverPrimitive.Root open={open} onOpenChange={setOpen}>
+      <PopoverPrimitive.Trigger asChild>
+        <button
+          type="button"
+          className={cn(
+            "mx-0.5 inline rounded-full px-2 py-0.5 align-baseline font-medium text-xs transition-colors",
+            src.kind === "empty"
+              ? "border border-border-hover border-dashed text-text-muted hover:border-accent hover:text-text-primary"
+              : "bg-accent-soft text-text-primary hover:bg-accent-soft/70",
+          )}
+        >
+          {src.kind === "empty" ? `+ ${shown}` : shown}
+        </button>
+      </PopoverPrimitive.Trigger>
+      <PopoverPrimitive.Portal>
+        <PopoverPrimitive.Content
+          side="bottom"
+          align="start"
+          sideOffset={6}
+          className="z-(--z-popover) flex w-[min(22rem,calc(100vw-2rem))] flex-col gap-3 rounded-lg border border-border bg-bg-secondary p-3 shadow-lg"
+          aria-label={t("editor.svcWindowSlotSource", "What goes here")}
+        >
+          <div className="flex flex-col gap-1">
+            <span className="font-medium text-text-muted text-xs">
+              {t("editor.svcWindowSlotFacts", "Data")}
+            </span>
+            {offered.map((k) => (
+              <button
+                key={k}
+                type="button"
+                className={cn(
+                  "flex items-center justify-between rounded-md px-2 py-1.5 text-left text-sm hover:bg-bg-hover",
+                  src.kind === "var" && src.key === k
+                    ? "text-text-primary"
+                    : "text-text-secondary",
+                )}
+                onClick={() =>
+                  onChange(
+                    slotToString({
+                      kind: "var",
+                      key: k,
+                      fallback: src.kind === "var" ? src.fallback : "",
+                    }),
+                  )
+                }
+              >
+                {varLabel(k)}
+                {src.kind === "var" && src.key === k && (
+                  <Check className="h-4 w-4 text-accent" aria-hidden="true" />
+                )}
+              </button>
+            ))}
+          </div>
+          {src.kind === "var" && (
+            <FormField
+              label={t(
+                "editor.svcWindowSlotFallback",
+                "If this comes empty, use",
+              )}
+              description={t(
+                "editor.svcWindowSlotFallbackHint",
+                "Optional. Without it, when the data is missing (a contact with no name, say), the message becomes a private note.",
+              )}
+            >
+              <Input
+                value={src.fallback}
+                placeholder={t(
+                  "editor.svcWindowSlotFallbackPlaceholder",
+                  "e.g. customer",
+                )}
+                onChange={(e) =>
+                  onChange(slotToString({ ...src, fallback: e.target.value }))
+                }
+              />
+            </FormField>
+          )}
+          <FormField
+            label={t("editor.svcWindowSlotTextValue", "Or fixed text")}
+            description={
+              example
+                ? t(
+                    "editor.svcWindowSlotExample",
+                    "Example approved by Meta: {{example}}",
+                    { example, interpolation: { escapeValue: false } },
+                  )
+                : undefined
+            }
+          >
+            <Input
+              value={src.kind === "text" ? src.text : ""}
+              placeholder={example}
+              onChange={(e) =>
+                onChange(slotToString({ kind: "text", text: e.target.value }))
+              }
+            />
+          </FormField>
+        </PopoverPrimitive.Content>
+      </PopoverPrimitive.Portal>
+    </PopoverPrimitive.Root>
+  );
+}
+
+// A component's text with each blank drawn as its chip, in place.
+function withChips(
+  text: string,
+  chipFor: (key: string, index: number) => ReactNode,
+): ReactNode[] {
+  const keys = templatePlaceholders(text);
+  return text.split(/(\{\{\s*[A-Za-z0-9_]+\s*\}\})/).map((part, i) => {
+    const m = /^\{\{\s*([A-Za-z0-9_]+)\s*\}\}$/.exec(part);
+    if (!m) return whatsappBold(part);
+    const key = m[1] as string;
+    return (
+      // biome-ignore lint/suspicious/noArrayIndexKey: the pieces of one fixed string.
+      <span key={i}>{chipFor(key, keys.indexOf(key))}</span>
+    );
+  });
+}
+
 function TemplateChoiceEditor({
   value,
   onChange,
@@ -189,22 +413,27 @@ function TemplateChoiceEditor({
   kind: ProactiveKind | null;
 }) {
   const { t } = useTranslation();
+  const offered: readonly SlotVar[] =
+    kind === "appointment_reminder"
+      ? [...CONTACT_VARS, ...REMINDER_VARS]
+      : CONTACT_VARS;
+  // A one-time-code template is never a proactive message (the save refuses it), so it is not offered.
+  const usable = templates.filter(
+    (tpl) => tpl.category.toUpperCase() !== "AUTHENTICATION",
+  );
   const def = value.name
-    ? findTemplateDefinition(templates, value.name, value.language)
+    ? findTemplateDefinition(usable, value.name, value.language)
     : undefined;
   const bodyKeys = templatePlaceholders(def?.body ?? null);
   const headerKeys =
     def?.header?.format === "TEXT" ? templatePlaceholders(def.header.text) : [];
-  const dynamicButtons = (def?.buttons ?? []).map(
-    (b) => b.type === "URL" && templatePlaceholders(b.url).length > 0,
-  );
   const pick = (key: string) => {
     if (!key) {
       onChange({ ...EMPTY_CHOICE });
       return;
     }
     const [name, language] = key.split("\u0000") as [string, string];
-    const d = findTemplateDefinition(templates, name, language);
+    const d = findTemplateDefinition(usable, name, language);
     onChange({
       ...value,
       name,
@@ -224,10 +453,35 @@ function TemplateChoiceEditor({
       ),
     });
   };
+  // Hold Save while a field of the chosen template is still unfilled: the save would refuse it.
+  const unfilled =
+    def !== undefined &&
+    [
+      ...value.params,
+      ...value.headerParams,
+      ...def.buttons.flatMap((b, i) =>
+        b.type === "URL" && templatePlaceholders(b.url).length > 0
+          ? [value.buttonParams[i] ?? ""]
+          : [],
+      ),
+    ].some((v) => v.trim() === "");
+  useHoldSave(unfilled);
+  const [showPreview, setShowPreview] = useState(false);
   const preview = useMemo(() => {
     if (!value.name.trim()) return null;
+    // An unfilled field shows as a blank line to fill, so the preview follows the operator's progress.
+    const shown = (list: string[]) =>
+      list.map((v) => (v.trim() === "" ? "___" : v));
     const cfg = readServiceWindowConfig({
-      serviceWindow: { templates: { [kind ?? "followup"]: value } },
+      serviceWindow: {
+        templates: {
+          [kind ?? "followup"]: {
+            ...value,
+            params: shown(value.params),
+            headerParams: shown(value.headerParams),
+          },
+        },
+      },
     });
     const payload = buildTemplatePayload(
       cfg,
@@ -246,44 +500,27 @@ function TemplateChoiceEditor({
               }
             : undefined,
       },
-      templates,
+      usable,
     );
     return payload?.content ?? null;
-  }, [value, kind, templates, t]);
-  const paramHint =
-    kind === "appointment_reminder"
-      ? t("editor.svcWindowParamHintReminder", "Text or variables: {{vars}}.", {
-          vars: "{{primeiro_nome}}, {{nome_contato}}, {{data_agendamento}}, {{hora_agendamento}}, {{dia_semana_agendamento}}, {{agenda}}",
-        })
-      : t("editor.svcWindowParamHint", "Text or variables: {{vars}}.", {
-          vars: "{{primeiro_nome}}, {{nome_contato}}",
-        });
-  const listField = (
-    label: string,
-    keys: string[],
-    list: string[],
-    set: (next: string[]) => void,
-  ) =>
-    keys.map((key, i) => (
-      <FormField key={`${label}-${key}`} label={`${label} {{${key}}}`}>
-        <Input
-          value={list[i] ?? ""}
-          onChange={(e) => {
-            const next = sized(list, keys.length);
-            next[i] = e.target.value;
-            set(next);
-          }}
-        />
-      </FormField>
-    ));
-  // A stored name the inbox no longer has keeps an option of its own, so choosing the empty one
-  // clears it (back to the note) instead of re-selecting what is already selected.
+  }, [value, kind, usable, t]);
+  // A stored name the inbox no longer has (or one that cannot be sent) keeps an option of its own,
+  // so choosing the empty one clears it instead of re-selecting what is already selected.
   const MISSING = "\u0000missing";
+  const unusable = value.name
+    ? findTemplateDefinition(templates, value.name, value.language)
+    : undefined;
   const pickedKey = def
     ? `${def.name}\u0000${def.language}`
     : value.name
       ? MISSING
       : "";
+  const setList =
+    (field: "params" | "headerParams", n: number, i: number) => (v: string) => {
+      const next = sized(value[field], n);
+      next[i] = v;
+      onChange({ ...value, [field]: next });
+    };
   return (
     <div className="flex flex-col gap-3">
       {templates.length > 0 ? (
@@ -299,14 +536,20 @@ function TemplateChoiceEditor({
           </option>
           {pickedKey === MISSING && (
             <option value={MISSING}>
-              {t(
-                "editor.svcWindowTemplateMissing",
-                "{{name}} (not found in the inbox)",
-                { name: value.name },
-              )}
+              {unusable
+                ? t(
+                    "editor.svcWindowTemplateAuth",
+                    "{{name}} (one-time code template, cannot be used)",
+                    { name: value.name },
+                  )
+                : t(
+                    "editor.svcWindowTemplateMissing",
+                    "{{name}} (not found in the inbox)",
+                    { name: value.name },
+                  )}
             </option>
           )}
-          {templates.map((tpl) => (
+          {usable.map((tpl) => (
             <option
               key={`${tpl.name}\u0000${tpl.language}`}
               value={`${tpl.name}\u0000${tpl.language}`}
@@ -339,101 +582,150 @@ function TemplateChoiceEditor({
           )}
         </div>
       )}
-      {value.name.trim() !== "" && (
-        <>
-          {def ? (
-            <div className="grid gap-3 sm:grid-cols-2">
-              {listField(
-                t("editor.svcWindowHeaderParam", "Header"),
-                headerKeys,
-                value.headerParams,
-                (headerParams) => onChange({ ...value, headerParams }),
-              )}
-              {listField(
-                t("editor.svcWindowBodyParam", "Body"),
-                bodyKeys,
-                value.params,
-                (params) => onChange({ ...value, params }),
-              )}
-              {dynamicButtons.map((dynamic, i) =>
-                dynamic ? (
-                  <FormField
-                    // biome-ignore lint/suspicious/noArrayIndexKey: a button IS its position in the template.
-                    key={`button-${i}`}
-                    label={t(
-                      "editor.svcWindowButtonParam",
-                      'Button "{{text}}": end of the URL',
-                      {
-                        text: def.buttons[i]?.text ?? "",
-                      },
-                    )}
-                  >
-                    <Input
-                      value={value.buttonParams[i] ?? ""}
-                      onChange={(e) => {
-                        const next = sized(
-                          value.buttonParams,
-                          def.buttons.length,
-                        );
-                        next[i] = e.target.value;
-                        onChange({ ...value, buttonParams: next });
-                      }}
-                    />
-                  </FormField>
-                ) : null,
-              )}
-            </div>
-          ) : (
-            <FormField
-              label={t("editor.svcWindowParams", "Body params")}
-              description={t(
-                "editor.svcWindowParamsOnePerLine",
-                "One per line, in the template's order.",
-              )}
-            >
-              <textarea
-                className="min-h-16 w-full rounded-md border border-border bg-bg px-3 py-2 text-sm"
-                value={value.params.join("\n")}
-                onChange={(e) =>
-                  onChange({
-                    ...value,
-                    params:
-                      e.target.value === "" ? [] : e.target.value.split("\n"),
-                  })
-                }
-              />
-            </FormField>
-          )}
-          <p className="text-text-muted text-xs">{paramHint}</p>
-          {preview && (
+      {value.name.trim() !== "" &&
+        (def ? (
+          <div className="flex flex-col gap-1.5">
             <div
-              className="whitespace-pre-wrap rounded-md border border-border bg-bg-subtle p-3 text-sm"
-              data-testid="service-window-preview"
+              className="whitespace-pre-wrap rounded-lg border border-border bg-bg-subtle p-3 text-sm leading-6"
+              data-testid="service-window-message"
             >
-              <div className="mb-1 font-medium text-text-muted text-xs">
-                {t("editor.svcWindowPreview", "Preview (sample values)")}
-              </div>
-              {preview}
-              {(def?.buttons.length ?? 0) > 0 && (
-                <div className="mt-2 flex flex-wrap gap-2">
-                  {def?.buttons.map((b, i) => (
-                    <span
+              {showPreview && preview ? (
+                whatsappBold(preview)
+              ) : (
+                <>
+                  {def.header?.format === "TEXT" && def.header.text && (
+                    <div className="font-semibold">
+                      {withChips(def.header.text, (_key, i) => (
+                        <SlotChip
+                          example={def.examples.header[i] ?? ""}
+                          value={value.headerParams[i] ?? ""}
+                          onChange={setList(
+                            "headerParams",
+                            headerKeys.length,
+                            i,
+                          )}
+                          offered={offered}
+                        />
+                      ))}
+                    </div>
+                  )}
+                  {withChips(def.body ?? "", (_key, i) => (
+                    <SlotChip
+                      example={def.examples.body[i] ?? ""}
+                      value={value.params[i] ?? ""}
+                      onChange={setList("params", bodyKeys.length, i)}
+                      offered={offered}
+                    />
+                  ))}
+                  {def.footer && (
+                    <div className="mt-2 text-text-muted text-xs">
+                      {def.footer}
+                    </div>
+                  )}
+                </>
+              )}
+              {def.buttons.length > 0 && (
+                <div className="mt-3 flex flex-col gap-1 border-border border-t pt-2">
+                  {def.buttons.map((b, i) => (
+                    <div
                       // biome-ignore lint/suspicious/noArrayIndexKey: a button IS its position in the template.
                       key={i}
-                      className="rounded-md border border-border px-2 py-1 text-xs"
+                      className="text-center"
                     >
-                      {b.text}
-                    </span>
+                      <div className="font-medium text-accent">{b.text}</div>
+                      {!showPreview &&
+                        b.type === "URL" &&
+                        b.url?.includes("{{") && (
+                          <div className="break-all text-text-muted text-xs">
+                            {b.url.split("{{")[0]}
+                            <SlotChip
+                              example={def.examples.buttons[i] ?? ""}
+                              value={value.buttonParams[i] ?? ""}
+                              onChange={(v) => {
+                                const next = sized(
+                                  value.buttonParams,
+                                  def.buttons.length,
+                                );
+                                next[i] = v;
+                                onChange({ ...value, buttonParams: next });
+                              }}
+                              offered={offered}
+                            />
+                          </div>
+                        )}
+                    </div>
                   ))}
                 </div>
               )}
             </div>
-          )}
-        </>
-      )}
+            <div className="flex items-center justify-between gap-2 text-xs">
+              <span className={unfilled ? "text-warning" : "text-text-muted"}>
+                {unfilled
+                  ? t(
+                      "editor.svcWindowSlotsLeft",
+                      "Click each dashed blank to choose what goes there.",
+                    )
+                  : t(
+                      "editor.svcWindowSlotsDone",
+                      "Click a highlighted item to change it.",
+                    )}
+              </span>
+              {preview && (
+                <button
+                  type="button"
+                  className="shrink-0 text-accent hover:underline"
+                  onClick={() => setShowPreview((v) => !v)}
+                >
+                  {showPreview
+                    ? t("editor.svcWindowBackToEdit", "Back to editing")
+                    : t(
+                        "editor.svcWindowShowPreview",
+                        "See it as the customer gets it",
+                      )}
+                </button>
+              )}
+            </div>
+          </div>
+        ) : (
+          <FormField
+            label={t("editor.svcWindowParams", "Body params")}
+            description={t(
+              "editor.svcWindowParamsOnePerLine",
+              "One per line, in the template's order.",
+            )}
+          >
+            <textarea
+              className="min-h-16 w-full rounded-md border border-border bg-bg px-3 py-2 text-sm"
+              value={value.params.join("\n")}
+              onChange={(e) =>
+                onChange({
+                  ...value,
+                  params:
+                    e.target.value === "" ? [] : e.target.value.split("\n"),
+                })
+              }
+            />
+          </FormField>
+        ))}
     </div>
   );
 }
+
+// One place a template can be chosen besides the default: a kind, or one reminder offset.
+type Situation =
+  | { kind: ProactiveKind }
+  | { kind: "appointment_reminder"; offset: number };
+
+const KIND_ICON: Record<ProactiveKind, LucideIcon> = {
+  followup: Hourglass,
+  snoozed_followup: BellRing,
+  appointment_reminder: CalendarClock,
+  inbound_event: Webhook,
+  channel_redirect: ArrowRightLeft,
+};
+
+const situationKey = (s: Situation) =>
+  "offset" in s ? `reminder:${s.offset}` : s.kind;
 
 export function ServiceWindowTemplates({
   agentId,
@@ -446,6 +738,7 @@ export function ServiceWindowTemplates({
 }) {
   const { t } = useTranslation();
   const [templates, setTemplates] = useState<TemplateDefinition[]>([]);
+  const [agentOffsets, setAgentOffsets] = useState<number[]>([]);
   const [loaded, setLoaded] = useState(false);
   useEffect(() => {
     let cancelled = false;
@@ -454,7 +747,10 @@ export function ServiceWindowTemplates({
         const { data } = await api.api.v1.chatwoot["service-window-templates"]({
           agentId,
         }).get();
-        if (!cancelled && data) setTemplates(data.templates);
+        if (!cancelled && data) {
+          setTemplates(data.templates);
+          setAgentOffsets(data.reminderOffsets);
+        }
       } catch {
         // best-effort: leave the free-text fields as the fallback
       } finally {
@@ -465,39 +761,128 @@ export function ServiceWindowTemplates({
       cancelled = true;
     };
   }, [agentId]);
-  // Two rows for one offset would store one of them and drop the other without a word.
-  const offsetCounts = new Map<number, number>();
-  for (const { offset } of value.reminderTemplates) {
-    const hours = Number(offset);
-    if (offset.trim() !== "" && Number.isFinite(hours)) {
-      offsetCounts.set(hours, (offsetCounts.get(hours) ?? 0) + 1);
-    }
-  }
-  const repeated = (offset: string) =>
-    offset.trim() !== "" && (offsetCounts.get(Number(offset)) ?? 0) > 1;
-  useHoldSave([...offsetCounts.values()].some((n) => n > 1));
-  const kindLabel = (k: ProactiveKind): string => {
+  const configuredOffsets = value.reminderTemplates.map((r) =>
+    Number(r.offset),
+  );
+  // Hold Save while a situation was added and no template chosen for it: it would be dropped.
+  useHoldSave(
+    Object.values(value.templates).some((c) => !c?.name.trim()) ||
+      value.reminderTemplates.some((r) => !r.choice.name.trim()),
+  );
+  const kindTitle = (k: ProactiveKind): string => {
     switch (k) {
       case "followup":
         return t("editor.svcWindowKindFollowup", "Inactivity follow-up");
       case "snoozed_followup":
-        return t("editor.svcWindowKindSnoozed", "Snoozed follow-up");
+        return t(
+          "editor.svcWindowKindSnoozed",
+          "Snoozed conversation reminder",
+        );
       case "appointment_reminder":
         return t("editor.svcWindowKindReminder", "Appointment reminder");
       case "inbound_event":
         return t("editor.svcWindowKindInbound", "Integration event");
       case "channel_redirect":
-        return t("editor.svcWindowKindRedirect", "Channel redirect link");
+        return t(
+          "editor.svcWindowKindRedirect",
+          "Follow-up after a channel switch",
+        );
     }
   };
+  const kindWhen = (k: ProactiveKind): string => {
+    switch (k) {
+      case "followup":
+        return t(
+          "editor.svcWindowWhenFollowup",
+          "When the customer stops replying and the agent picks the conversation back up.",
+        );
+      case "snoozed_followup":
+        return t(
+          "editor.svcWindowWhenSnoozed",
+          "When a person snoozed the conversation and the customer did not reply by then.",
+        );
+      case "appointment_reminder":
+        return t(
+          "editor.svcWindowWhenReminder",
+          "Before an appointment the agent booked, at every reminder lead time.",
+        );
+      case "inbound_event":
+        return t(
+          "editor.svcWindowWhenInbound",
+          "When an integration reports something (an order shipped, say) and the agent tells the customer.",
+        );
+      case "channel_redirect":
+        return t(
+          "editor.svcWindowWhenRedirect",
+          "When the customer was sent from WhatsApp to the website chat and stopped replying there.",
+        );
+    }
+  };
+  const situationTitle = (s: Situation) =>
+    "offset" in s
+      ? t("editor.svcWindowOffsetTitle", "Reminder {{hours}}h before", {
+          hours: s.offset,
+        })
+      : kindTitle(s.kind);
+  const situationWhen = (s: Situation) =>
+    "offset" in s
+      ? agentOffsets.includes(s.offset)
+        ? t(
+            "editor.svcWindowWhenOffset",
+            "Only the reminder sent {{hours}}h before. The other reminders use the appointment reminder's template, or the default.",
+            { hours: s.offset },
+          )
+        : t(
+            "editor.svcWindowOffsetUnused",
+            "No booking tool of this agent sends a reminder {{hours}}h before today, so this template is not used.",
+            { hours: s.offset },
+          )
+      : kindWhen(s.kind);
+  const configured: Situation[] = PROACTIVE_KINDS.flatMap((kind) => [
+    ...(value.templates[kind] ? [{ kind }] : []),
+    ...(kind === "appointment_reminder"
+      ? [...configuredOffsets]
+          .sort((a, b) => b - a)
+          .map((offset) => ({ kind, offset }) as Situation)
+      : []),
+  ]);
+  const available: Situation[] = PROACTIVE_KINDS.flatMap((kind) => [
+    ...(value.templates[kind] ? [] : [{ kind }]),
+    ...(kind === "appointment_reminder"
+      ? agentOffsets
+          .filter((h) => !configuredOffsets.includes(h))
+          .map((offset) => ({ kind, offset }) as Situation)
+      : []),
+  ]);
+  const choiceOf = (s: Situation) =>
+    "offset" in s
+      ? value.reminderTemplates.find((r) => Number(r.offset) === s.offset)
+          ?.choice
+      : value.templates[s.kind];
+  const setChoice = (s: Situation, c: TemplateChoiceForm | null) => {
+    if ("offset" in s) {
+      const rest = value.reminderTemplates.filter(
+        (r) => Number(r.offset) !== s.offset,
+      );
+      onChange({
+        ...value,
+        reminderTemplates: c
+          ? [...rest, { offset: String(s.offset), choice: c }]
+          : rest,
+      });
+      return;
+    }
+    const { [s.kind]: _drop, ...rest } = value.templates;
+    onChange({ ...value, templates: c ? { ...rest, [s.kind]: c } : rest });
+  };
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-6">
       <FormField
         label={t("editor.svcWindowDefaultTemplate", "Default template")}
         group
         description={t(
           "editor.svcWindowDefaultTemplateHint",
-          "Sent outside the window by every kind of proactive message that has no template of its own. Blank: a private note instead.",
+          "Sent outside the window by every proactive message that has no template of its own below. Without one, the message becomes a private note in the conversation.",
         )}
       >
         <TemplateChoiceEditor
@@ -508,161 +893,98 @@ export function ServiceWindowTemplates({
           kind={null}
         />
       </FormField>
-      {PROACTIVE_KINDS.map((kind) => {
-        const own = value.templates[kind];
-        return (
-          <FormField
-            key={kind}
-            label={kindLabel(kind)}
-            group
-            description={
-              own
-                ? undefined
-                : t("editor.svcWindowUsesDefault", "Uses the default template.")
-            }
-          >
-            <div className="flex flex-col gap-3">
-              {own ? (
-                <>
-                  <TemplateChoiceEditor
-                    value={own}
-                    onChange={(c) =>
-                      onChange({
-                        ...value,
-                        templates: { ...value.templates, [kind]: c },
-                      })
-                    }
-                    templates={templates}
-                    loaded={loaded}
-                    kind={kind}
+      <div className="flex flex-col gap-3">
+        <div>
+          <div className="font-medium text-sm">
+            {t(
+              "editor.svcWindowSituationsTitle",
+              "Templates for specific situations",
+            )}
+          </div>
+          <p className="text-text-muted text-xs">
+            {t(
+              "editor.svcWindowSituationsHint",
+              "Optional. Use a different template in one situation; every other one keeps the default.",
+            )}
+          </p>
+        </div>
+        {configured.map((s) => {
+          const choice = choiceOf(s);
+          if (!choice) return null;
+          const Icon = KIND_ICON[s.kind];
+          return (
+            <div
+              key={situationKey(s)}
+              className="flex flex-col gap-3 rounded-lg border border-border p-4"
+              data-testid={`situation-${situationKey(s)}`}
+            >
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex items-start gap-2">
+                  <Icon
+                    className="mt-0.5 h-4 w-4 shrink-0 text-text-muted"
+                    aria-hidden="true"
                   />
                   <div>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => {
-                        const { [kind]: _drop, ...rest } = value.templates;
-                        onChange({ ...value, templates: rest });
-                      }}
-                    >
-                      {t(
-                        "editor.svcWindowUseDefault",
-                        "Use the default instead",
-                      )}
-                    </Button>
-                  </div>
-                </>
-              ) : (
-                <div>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={() =>
-                      onChange({
-                        ...value,
-                        templates: {
-                          ...value.templates,
-                          [kind]: { ...EMPTY_CHOICE },
-                        },
-                      })
-                    }
-                  >
-                    {t(
-                      "editor.svcWindowOwnTemplate",
-                      "Choose a template for this kind",
-                    )}
-                  </Button>
-                </div>
-              )}
-              {kind === "appointment_reminder" && (
-                <div className="flex flex-col gap-3 border-border border-l-2 pl-3">
-                  {value.reminderTemplates.map((row, i) => (
-                    // biome-ignore lint/suspicious/noArrayIndexKey: rows are positional; the offset is editable.
-                    <div key={i} className="flex flex-col gap-2">
-                      <div className="flex items-end gap-2">
-                        <FormField
-                          label={t(
-                            "editor.svcWindowReminderOffset",
-                            "Reminder sent this many hours before",
-                          )}
-                        >
-                          <NumberInput
-                            range={REMINDER_OFFSET_RANGE}
-                            errorMessage={
-                              repeated(row.offset)
-                                ? t(
-                                    "editor.svcWindowOffsetRepeated",
-                                    "Another row already has this offset.",
-                                  )
-                                : undefined
-                            }
-                            value={row.offset}
-                            onChange={(e) => {
-                              const next = [...value.reminderTemplates];
-                              next[i] = { ...row, offset: e.target.value };
-                              onChange({ ...value, reminderTemplates: next });
-                            }}
-                          />
-                        </FormField>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          aria-label={t(
-                            "editor.svcWindowRemoveOffset",
-                            "Remove",
-                          )}
-                          onClick={() =>
-                            onChange({
-                              ...value,
-                              reminderTemplates: value.reminderTemplates.filter(
-                                (_, j) => j !== i,
-                              ),
-                            })
-                          }
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      </div>
-                      <TemplateChoiceEditor
-                        value={row.choice}
-                        onChange={(choice) => {
-                          const next = [...value.reminderTemplates];
-                          next[i] = { ...row, choice };
-                          onChange({ ...value, reminderTemplates: next });
-                        }}
-                        templates={templates}
-                        loaded={loaded}
-                        kind="appointment_reminder"
-                      />
+                    <div className="font-medium text-sm">
+                      {situationTitle(s)}
                     </div>
-                  ))}
-                  <div>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() =>
-                        onChange({
-                          ...value,
-                          reminderTemplates: [
-                            ...value.reminderTemplates,
-                            { offset: "", choice: { ...EMPTY_CHOICE } },
-                          ],
-                        })
-                      }
-                    >
-                      <Plus className="h-4 w-4" />
-                      {t(
-                        "editor.svcWindowAddOffset",
-                        "Another template for one specific reminder",
-                      )}
-                    </Button>
+                    <p className="text-text-muted text-xs">
+                      {situationWhen(s)}
+                    </p>
                   </div>
                 </div>
-              )}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  aria-label={t(
+                    "editor.svcWindowRemoveSituation",
+                    "Remove (back to the default)",
+                  )}
+                  title={t(
+                    "editor.svcWindowRemoveSituation",
+                    "Remove (back to the default)",
+                  )}
+                  onClick={() => setChoice(s, null)}
+                >
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              </div>
+              <TemplateChoiceEditor
+                value={choice}
+                onChange={(c) => setChoice(s, c)}
+                templates={templates}
+                loaded={loaded}
+                kind={s.kind}
+              />
             </div>
-          </FormField>
-        );
-      })}
+          );
+        })}
+        {available.length > 0 && (
+          <div className="max-w-md">
+            <Dropdown
+              value={null}
+              ariaLabel={t(
+                "editor.svcWindowAddSituation",
+                "Use another template in a situation",
+              )}
+              placeholder={`+ ${t(
+                "editor.svcWindowAddSituation",
+                "Use another template in a situation",
+              )}`}
+              items={available.map((s) => ({
+                value: situationKey(s),
+                label: situationTitle(s),
+                icon: KIND_ICON[s.kind],
+                description: situationWhen(s),
+              }))}
+              onChange={(key) => {
+                const s = available.find((x) => situationKey(x) === key);
+                if (s) setChoice(s, { ...EMPTY_CHOICE });
+              }}
+            />
+          </div>
+        )}
+      </div>
     </div>
   );
 }

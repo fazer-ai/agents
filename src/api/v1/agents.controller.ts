@@ -103,6 +103,7 @@ import { setUpAgentCalls } from "@/modules/voice-call/setup";
 // translate('errors.serviceWindowTemplateButtonCount', '{{where}}: template "{{name}}" has {{want}} button(s), {{got}} configured.')
 // translate('errors.serviceWindowTemplateButtonNeedsSuffix', '{{where}}: button {{index}} ("{{text}}") of template "{{name}}" needs the end of its URL.')
 // translate('errors.serviceWindowTemplateButtonTakesNone', '{{where}}: button {{index}} ("{{text}}") of template "{{name}}" takes no parameter.')
+// translate('errors.serviceWindowTemplateAuthentication', '{{where}}: template "{{name}}" is an authentication (one-time code) template, which proactive messages cannot use.')
 // translate('errors.settingsTextTooLong', 'The text in {{field}} is too long: {{len}} characters (limit {{max}}).')
 // translate('errors.invalidSignatureSwitch', '`signature.enabled` must be true or false, not {{got}}. Send the whole signature block to change it.')
 // translate('errors.settingsBlocksDropped', 'This `settings` would delete what this agent has configured under {{blocks}}, because it replaces the whole object. Add what is missing, or pass `settingsMode: "replace"` to say it is complete.')

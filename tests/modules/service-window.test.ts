@@ -12,6 +12,7 @@ import {
   type TemplateChoice,
   type TemplateDefinition,
   templateChoiceProblem,
+  withFallbacks,
 } from "@/modules/service-window/service";
 
 const NOW = new Date("2026-06-06T12:00:00Z");
@@ -465,5 +466,131 @@ describe("misplacedAppointmentVar", () => {
       where: "serviceWindow.templates.followup",
       placeholder: "hora_agendamento",
     });
+  });
+});
+
+describe("a fallback after the bar", () => {
+  const cfg = (param: string) =>
+    readServiceWindowConfig({
+      serviceWindow: { templateName: "reengajamento", templateParams: [param] },
+    });
+
+  test("stands in when the variable renders empty, so the template still goes out", () => {
+    expect(
+      buildTemplatePayload(cfg("{{primeiro_nome|cliente}}"), null)
+        ?.processedParams.body,
+    ).toEqual({ "1": "cliente" });
+    expect(
+      buildTemplatePayload(cfg("{{primeiro_nome|cliente}}"), "Ana Lima")
+        ?.processedParams.body,
+    ).toEqual({ "1": "Ana" });
+  });
+
+  test("without one an empty variable still means no payload, and so the note", () => {
+    expect(buildTemplatePayload(cfg("{{primeiro_nome}}"), null)).toBeNull();
+  });
+
+  test("a variable this send does not know is left for the prompt's own renderer", () => {
+    expect(withFallbacks("{{hora_atual|agora}}", { primeiro_nome: "" })).toBe(
+      "{{hora_atual|agora}}",
+    );
+  });
+
+  test("an appointment fact with a fallback is still an appointment fact outside a reminder", () => {
+    expect(
+      misplacedAppointmentVar(
+        readServiceWindowConfig({
+          serviceWindow: {
+            templates: { followup: { name: "x", params: ["{{agenda|sede}}"] } },
+          },
+        }),
+      ),
+    ).toEqual({
+      where: "serviceWindow.templates.followup",
+      placeholder: "agenda",
+    });
+  });
+});
+
+describe("Meta's approved examples", () => {
+  test("are read per component, a button's as the end of its URL", () => {
+    const def = parseTemplateDefinition({
+      name: "t",
+      components: [
+        {
+          type: "HEADER",
+          format: "TEXT",
+          text: "Oi {{1}}",
+          example: { header_text: ["amanhã"] },
+        },
+        {
+          type: "BODY",
+          text: "{{1}} e {{2}}",
+          example: { body_text: [["Gabriel", "14:30"]] },
+        },
+        {
+          type: "BUTTONS",
+          buttons: [
+            { type: "QUICK_REPLY", text: "Ok" },
+            {
+              type: "URL",
+              text: "Ver",
+              url: "https://x.test/{{1}}",
+              example: ["https://x.test/abc-123"],
+            },
+          ],
+        },
+      ],
+    });
+    expect(def?.examples).toEqual({
+      header: ["amanhã"],
+      body: ["Gabriel", "14:30"],
+      buttons: ["", "abc-123"],
+    });
+  });
+
+  test("a NAMED template's come by name, in order", () => {
+    const def = parseTemplateDefinition({
+      name: "t",
+      parameter_format: "NAMED",
+      components: [
+        {
+          type: "BODY",
+          text: "{{nome}} às {{hora}}",
+          example: {
+            body_text_named_params: [
+              { param_name: "nome", example: "Ana" },
+              { param_name: "hora", example: "9h" },
+            ],
+          },
+        },
+      ],
+    });
+    expect(def?.examples.body).toEqual(["Ana", "9h"]);
+  });
+});
+
+describe("a one-time-code template", () => {
+  test("is refused for a proactive message even when its parameters match", () => {
+    const code = parseTemplateDefinition({
+      name: "codigo",
+      language: "pt_BR",
+      category: "AUTHENTICATION",
+      components: [{ type: "BODY", text: "Seu código é {{1}}" }],
+    });
+    expect(
+      templateChoiceProblem(
+        {
+          name: "codigo",
+          language: "pt_BR",
+          category: "AUTHENTICATION",
+          params: ["1"],
+          headerParams: [],
+          buttonParams: [],
+          content: null,
+        },
+        code ? [code] : [],
+      )?.key,
+    ).toBe("serviceWindowTemplateAuthentication");
   });
 });

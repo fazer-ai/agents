@@ -313,6 +313,7 @@
     "serviceWindowReminderChoice": "{{where}}: not a template choice ({ name, language, params, … }).",
     "serviceWindowReminderOffset": "{{where}}: the key is a reminder offset in hours.",
     "serviceWindowReminderOffsetRepeated": "{{where}}: another key already names the reminder {{hours}} hours before.",
+    "serviceWindowTemplateAuthentication": "{{where}}: template \"{{name}}\" is an authentication (one-time code) template, which proactive messages cannot use.",
     "serviceWindowTemplateBlankBody": "{{where}}: body parameter {{index}} of template \"{{name}}\" is blank.",
     "serviceWindowTemplateBlankHeader": "{{where}}: header parameter {{index}} of template \"{{name}}\" is blank.",
     "serviceWindowTemplateBodyCount": "{{where}}: template \"{{name}}\" takes {{want}} body parameter(s), {{got}} configured.",

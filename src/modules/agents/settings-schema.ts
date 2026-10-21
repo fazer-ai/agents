@@ -431,7 +431,9 @@ const serviceWindow = z.looseObject({
   templateParams: z
     .array(z.string())
     .optional()
-    .describe("positional body params; {{nome_contato}} interpolates"),
+    .describe(
+      "positional body params; {{nome_contato}} interpolates, {{var|text}} when empty",
+    ),
   templateHeaderParams: z.array(z.string()).optional(),
   templateButtonParams: z.array(z.string()).optional(),
   templateContent: z

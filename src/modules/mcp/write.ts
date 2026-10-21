@@ -56,6 +56,10 @@ import { type AuditEntry, recordAudit } from "@/modules/audit/service";
 import type { LoadChatwootClientDeps } from "@/modules/chatwoot/instance";
 import type { ListAccountsDeps } from "@/modules/chatwoot/management";
 import { readDebugModes } from "@/modules/flowlog/debug-mode";
+import {
+  assertServiceWindowTemplatesUsable,
+  assertSettingsServiceWindow,
+} from "@/modules/service-window/save";
 import { getTenantSettings } from "@/modules/tenant-settings/service";
 import { getSecretType } from "@/modules/vault/secret-types";
 import {
@@ -739,6 +743,15 @@ export async function agentSettingsSet(
         ctx,
         nextBag,
         current.settings,
+        base,
+      );
+      assertSettingsServiceWindow(nextBag, current.settings);
+      await assertServiceWindowTemplatesUsable(
+        ctx,
+        agentId,
+        nextBag,
+        current.settings,
+        {},
         base,
       );
       return ok({ dryRun: true, target, diff });

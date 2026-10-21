@@ -433,6 +433,7 @@ function buildNudge(
   return {
     source,
     kind: "agent_nudge",
+    template: { kind: "inbound_event" },
     occasionId: `delivery:${deliveryId}`,
     integrationInstanceId: String(integrationInstanceId),
     status: asString(payload.status) ?? null,

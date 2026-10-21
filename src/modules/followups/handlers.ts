@@ -612,6 +612,7 @@ export function inactivityNudge(params: {
   return {
     source: "followup",
     kind: "inactivity",
+    template: { kind: "followup" },
     summary: `The customer has been inactive for about ${params.idleMin} minutes.`,
     instructions: params.instructions || undefined,
     step: params.step,

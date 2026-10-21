@@ -412,6 +412,10 @@ export async function hasLiveAppointment(
 
 export interface ReminderNudgeArgs {
   isLast: boolean;
+  // Which reminder this is (hours before the start, as armed) and the calendar's own name: the 24h
+  // window's template choice reads both, and nothing renders them to the model.
+  offsetHours?: number;
+  calendarLabel?: string | null;
   askConfirmation: boolean;
   summary: string;
   startISO: string;
@@ -538,6 +542,14 @@ export function reminderNudge(a: ReminderNudgeArgs): AgentNudge {
   return {
     source: "appointment_reminder",
     kind: "reminder",
+    template: {
+      kind: "appointment_reminder",
+      offsetHours: a.offsetHours,
+      appointment: {
+        startISO: a.startISO,
+        calendarLabel: a.calendarLabel ?? null,
+      },
+    },
     summary: `Upcoming appointment "${a.summary}" starting at ${a.startISO}.`,
     refs: {
       event_id: a.eventId,
@@ -760,6 +772,10 @@ export async function appointmentReminderHandler(
     nudge: reminderNudge({
       isLast,
       askConfirmation,
+      offsetHours:
+        typeof p.offsetHours === "number" ? p.offsetHours : undefined,
+      calendarLabel:
+        typeof p.calendarLabel === "string" ? p.calendarLabel : null,
       canOperate: credentialRef !== null,
       provider,
       summary,

@@ -434,6 +434,7 @@ export async function runApprovalOutcome(
     nudge: {
       source: "document_approval",
       kind: "approved",
+      template: { kind: "document_approval" },
       occasionId: String(requestId),
       instructions: `A equipe aprovou o documento "${request.title}" que o cliente pediu nesta conversa. O sistema já anexa o PDF a esta mesma mensagem, então o cliente recebe o arquivo junto com o que você escrever. Escreva uma frase curta, no presente, dizendo que o documento segue em anexo. Não diga que ele será enviado depois, não repita valores nem o conteúdo do documento.`,
     },

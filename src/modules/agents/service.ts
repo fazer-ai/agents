@@ -86,6 +86,10 @@ import {
   getToolpackToolNames,
   getToolpackToolViews,
 } from "@/modules/integrations/toolpacks";
+import {
+  assertServiceWindowTemplatesUsable,
+  assertSettingsServiceWindow,
+} from "@/modules/service-window/save";
 import { isOneOf, SIGNATURE_CHOICES } from "@/modules/signature/domains";
 import { lockToolNames } from "@/modules/tool-definitions/namespace";
 import { requireVaultRefFor } from "@/modules/vault/service";
@@ -2096,6 +2100,24 @@ export async function updateAgent(
     businessHoursId: bhId,
     followUpHoursId: fuhId,
   } = assertAgentUpdatable(patch);
+  // NOTE: Before the transaction, because it reads Chatwoot: a network call does not belong inside
+  // the row lock below. Against the row as read now; the lock's own read only matters to a rule
+  // whose answer the stored value decides, and this one asks only what the write sets or changes.
+  if (rest.settings !== undefined) {
+    const stored = await runScopedOn(base, ctx, (db) =>
+      db.agent.findUnique({ where: { id }, select: { settings: true } }),
+    );
+    if (stored) {
+      await assertServiceWindowTemplatesUsable(
+        ctx,
+        id,
+        rest.settings,
+        stored.settings,
+        {},
+        base,
+      );
+    }
+  }
   const dto = await runScopedOn(base, ctx, async (db) => {
     await assertSchedulesExistOn(db, bhId, fuhId);
     const updateData: Record<string, unknown> = { ...rest };
@@ -2158,6 +2180,7 @@ export async function updateAgent(
     assertSettingsToolPreconditions(rest.settings, before?.settings);
     assertSettingsContactAuthRule(rest.settings, before?.settings);
     assertSettingsContactFields(rest.settings, before?.settings);
+    assertSettingsServiceWindow(rest.settings, before?.settings);
     assertSettingsRetiredLabelKeys(rest.settings);
     keepCallsSystemFields(rest.settings, before?.settings);
     stripRetiredNoteFlagInPlace(rest.settings);

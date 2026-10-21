@@ -28,6 +28,7 @@ import {
   type WidgetHealth,
   type WidgetHealthStatus,
 } from "@/modules/channel-redirect/link";
+import type { TemplateDefinition } from "@/modules/service-window/service";
 import {
   switchOffVoiceRouting,
   syncVoiceInboxes,
@@ -2119,22 +2120,19 @@ export async function listAgentsAndTeams(
   return { agents, teams, accounts };
 }
 
-export interface ServiceWindowTemplateDto {
-  name: string;
-  category: string;
-  language: string;
-}
+// The synced definition, so the editor can count a template's parameters and preview it.
+export type ServiceWindowTemplateDto = TemplateDefinition;
 
-// Approved WhatsApp HSM templates available to an agent's inbox(es), for the service-window template
-// picker. Reads live (admin token) across the agent's bound inboxes, grouped by instance, deduped by
-// name. Best-effort: an unreachable instance contributes nothing. Empty for baileys inboxes (no HSM)
-// — the editor falls back to a free-text field.
-export async function listServiceWindowTemplates(
+// Approved WhatsApp HSM templates available to an agent's inbox(es), read live (admin token) across
+// the agent's bound inboxes, grouped by instance, deduped by name and language. `complete` says every
+// instance answered: an unreachable one contributes nothing, so an absence is not proof when false.
+// Empty for baileys inboxes (no HSM).
+export async function loadAgentTemplateDefinitions(
   ctx: TenantContext,
   agentId: bigint,
   deps: LoadChatwootClientDeps = {},
   base: PrismaClient = basePrisma,
-): Promise<{ templates: ServiceWindowTemplateDto[] }> {
+): Promise<{ templates: TemplateDefinition[]; complete: boolean }> {
   if (ctx.tenantId === null) throw new AppError("tenant required", 400);
   const tenantId = ctx.tenantId;
   const inboxes = await runScopedOn(base, ctx, (db) =>
@@ -2143,14 +2141,15 @@ export async function listServiceWindowTemplates(
       select: { chatwootInstanceId: true, chatwootInboxId: true },
     }),
   );
-  if (inboxes.length === 0) return { templates: [] };
+  if (inboxes.length === 0) return { templates: [], complete: true };
   const byInstance = new Map<bigint, number[]>();
   for (const ib of inboxes) {
     const list = byInstance.get(ib.chatwootInstanceId) ?? [];
     list.push(ib.chatwootInboxId);
     byInstance.set(ib.chatwootInstanceId, list);
   }
-  const byName = new Map<string, ServiceWindowTemplateDto>();
+  const byKey = new Map<string, TemplateDefinition>();
+  let complete = true;
   for (const [instanceId, inboxIds] of byInstance) {
     try {
       const client = await loadChatwootClient(tenantId, instanceId, {
@@ -2158,15 +2157,32 @@ export async function listServiceWindowTemplates(
         makeClient: deps.makeClient,
       });
       for (const inboxId of inboxIds) {
-        for (const tpl of await client.listMessageTemplates(inboxId)) {
-          if (!byName.has(tpl.name)) byName.set(tpl.name, tpl);
+        for (const tpl of await client.listTemplateDefinitions(inboxId)) {
+          const key = `${tpl.name}\u0000${tpl.language.toLowerCase()}`;
+          if (!byKey.has(key)) byKey.set(key, tpl);
         }
       }
     } catch {
-      // best-effort: an unreachable instance contributes no templates
+      complete = false;
     }
   }
-  return { templates: [...byName.values()] };
+  return { templates: [...byKey.values()], complete };
+}
+
+// The service-window template picker's listing. Best-effort, as above.
+export async function listServiceWindowTemplates(
+  ctx: TenantContext,
+  agentId: bigint,
+  deps: LoadChatwootClientDeps = {},
+  base: PrismaClient = basePrisma,
+): Promise<{ templates: ServiceWindowTemplateDto[] }> {
+  const { templates } = await loadAgentTemplateDefinitions(
+    ctx,
+    agentId,
+    deps,
+    base,
+  );
+  return { templates };
 }
 
 // The Chatwoot instances an agent's inboxes live on, plus how many distinct ACCOUNTS they

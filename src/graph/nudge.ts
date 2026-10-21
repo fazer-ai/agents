@@ -71,8 +71,12 @@ import {
   reserveProactiveSend,
 } from "@/modules/proactive-limit/service";
 import {
+  type AppointmentFacts,
   buildTemplatePayload,
+  type ProactiveKind,
   proactiveSendMode,
+  type TemplateDefinition,
+  type TemplateOccasion,
 } from "@/modules/service-window/service";
 import { attachSignature, signatureFor } from "@/modules/signature/service";
 import {
@@ -210,6 +214,33 @@ export interface AgentNudge {
   // nothing else. Recorded on the flow line so the conversation can name the integration that
   // spoke; never rendered to the model.
   integrationInstanceId?: string;
+  // WHICH PROACTIVE SEND this is, for the 24h window's template choice (docs/service-window.md): its
+  // kind, and for a reminder its offset and appointment. Never rendered, like `occasionId`. Absent
+  // sends the agent's default template.
+  template?: NudgeTemplateOccasion;
+}
+
+export interface NudgeTemplateOccasion {
+  kind: ProactiveKind;
+  offsetHours?: number;
+  appointment?: Omit<AppointmentFacts, "fallbackTimezone">;
+}
+
+// The nudge's occasion as the template choice reads it, the agent's zone completing a reminder's
+// appointment (for a start written in UTC, which states no wall clock of its own).
+function templateOccasionOf(
+  nudge: AgentNudge,
+  timezone: string,
+): TemplateOccasion | undefined {
+  const t = nudge.template;
+  if (!t) return undefined;
+  return {
+    kind: t.kind,
+    offsetHours: t.offsetHours,
+    appointment: t.appointment
+      ? { ...t.appointment, fallbackTimezone: timezone }
+      : undefined,
+  };
 }
 
 // WHICH SCHEDULED OCCASION A REFUSAL BELONGS TO. The `over` line is one per occasion, and keying by
@@ -740,6 +771,7 @@ async function runAgentNudgeBody(
   // so the block reaches all three without a second name to keep in sync.
   let cfg: AgentConfig = loaded.cfg;
   const contactInboxId = cfg.contactInboxId;
+  const templateOccasion = templateOccasionOf(params.nudge, cfg.timezone);
 
   // Invoke on the SAME per-contact-inbox memory thread the reactive turn uses
   // (resolveGraphThreadId), NOT params.threadId (per-conversation), which would run the follow-up
@@ -1170,6 +1202,7 @@ async function runAgentNudgeBody(
       loaded.lastInboundAt,
       params.deps?.now?.() ?? new Date(),
       { channelType: loaded.channelType, provider: loaded.provider },
+      templateOccasion,
     ) !== "freeform"
   ) {
     return noteApproved(approved.windowNote, "noted-window");
@@ -1601,6 +1634,7 @@ async function runAgentNudgeBody(
       loaded.lastInboundAt,
       params.deps?.now?.() ?? new Date(),
       { channelType: loaded.channelType, provider: loaded.provider },
+      templateOccasion,
     ) === "note";
   if (cfg.conversationDbId !== null) {
     const verdict = await reserveProactiveSend({
@@ -1948,6 +1982,7 @@ async function runAgentNudgeBody(
       loaded.lastInboundAt,
       params.deps?.now?.() ?? new Date(),
       { channelType: loaded.channelType, provider: loaded.provider },
+      templateOccasion,
     );
 
   // THE SAME SIGNATURE THE REACTIVE TURN APPLIES, through the same function: both sends below
@@ -2952,9 +2987,23 @@ async function runAgentNudgeBody(
     }
     if (canMessagePre && canMessagePost) {
       if (sendModeNow() === "template") {
+        // Best-effort: with the synced definition the dashboard shows the text the customer
+        // reads and a NAMED template is keyed by name; without it the send still goes, positional.
+        let definitions: TemplateDefinition[] = [];
+        if (cfg.chatwootInboxId !== null) {
+          try {
+            definitions = await client.listTemplateDefinitions(
+              cfg.chatwootInboxId,
+            );
+          } catch {
+            definitions = [];
+          }
+        }
         const payload = buildTemplatePayload(
           cfg.serviceWindowConfig,
           cfg.contactName,
+          templateOccasion,
+          definitions,
         );
         if (payload) {
           delivered = true;

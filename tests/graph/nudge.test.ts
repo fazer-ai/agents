@@ -48,6 +48,7 @@ import * as tenancy from "@/lib/tenancy";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { settleFlowEvents } from "@/modules/flowlog/scheduled";
 import { selectClosedPrefix } from "@/modules/memory/cut";
+import { parseTemplateDefinition } from "@/modules/service-window/service";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { withJobHandler } from "@/tests/utils/job-registry";
 import { seedChatwootInstance } from "../utils/chatwoot";
@@ -6714,6 +6715,134 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
       },
       { serviceWindow: { templateName: "reengage" } },
     );
+  });
+
+  // Outside the window each proactive kind sends its own template, a reminder fills it with
+  // its appointment, and a kind with no template of its own (and no default) stays a note.
+  describe("a template per proactive kind", () => {
+    const LEMBRETE = {
+      name: "lembrete_agendamento",
+      language: "pt_BR",
+      category: "UTILITY",
+      status: "APPROVED",
+      components: [
+        { type: "HEADER", format: "TEXT", text: "Sua visita {{1}}" },
+        { type: "BODY", text: "Olá, {{1}}! Dia {{2}} às {{3}}." },
+        {
+          type: "BUTTONS",
+          buttons: [{ type: "URL", text: "Ver", url: "https://x.test/{{1}}" }],
+        },
+      ],
+    };
+    const settings = {
+      serviceWindow: {
+        templates: {
+          appointment_reminder: {
+            name: "lembrete_agendamento",
+            params: [
+              "{{primeiro_nome}}",
+              "{{data_agendamento}}",
+              "{{hora_agendamento}}",
+            ],
+            headerParams: ["{{dia_semana_agendamento}}"],
+            buttonParams: ["{{agenda}}"],
+          },
+        },
+      },
+    };
+    function templateStub() {
+      const s = stub();
+      const payloads: Array<Record<string, unknown>> = [];
+      const client = s.client as unknown as Record<string, unknown>;
+      client.sendTemplate = async (
+        _c: number,
+        payload: Record<string, unknown>,
+      ) => {
+        payloads.push(payload);
+        return {};
+      };
+      client.listTemplateDefinitions = async () =>
+        [LEMBRETE].map((d) => parseTemplateDefinition(d));
+      return { ...s, payloads };
+    }
+    const nudgeDeps = (s: ReturnType<typeof templateStub>) => ({
+      makeModel: (() =>
+        new FakeListChatModel({ responses: ["Lembrete!"] })) as never,
+      makeClient: async () => s.client,
+      checkpointer: new MemorySaver(),
+      persistUsage: async () => {},
+    });
+
+    test("a reminder outside the window sends the reminder's template, filled with its appointment", async () => {
+      await withGuardrails(
+        { enabled: false },
+        async () => {
+          await seedConv(7563, null, new Date(Date.now() - 48 * 3_600_000));
+          const s = templateStub();
+          const outcome = await runAgentNudge({
+            tenantId,
+            threadId: `${tenantId}:${instanceId}:7563`,
+            nudge: {
+              source: "appointment_reminder",
+              kind: "reminder",
+              template: {
+                kind: "appointment_reminder",
+                offsetHours: 24,
+                appointment: {
+                  startISO: "2026-10-23T01:30:00Z",
+                  calendarLabel: "centro",
+                },
+              },
+            },
+            base: appDb,
+            deps: nudgeDeps(s),
+          });
+          expect(outcome).toBe("templated");
+          expect(s.notes).toEqual([]);
+          expect(s.payloads).toHaveLength(1);
+          const p = s.payloads[0] as {
+            name: string;
+            content: string;
+            processedParams: unknown;
+          };
+          expect(p.name).toBe("lembrete_agendamento");
+          // A start in UTC read in the agent's zone (the product default, São Paulo): the evening before.
+          expect(p.processedParams).toEqual({
+            body: { "1": expect.any(String), "2": "22/10/2026", "3": "22:30" },
+            header: { "1": "quinta-feira" },
+            buttons: [{ type: "url", parameter: "centro" }],
+          });
+          expect(p.content).toContain("Dia 22/10/2026 às 22:30.");
+        },
+        settings,
+      );
+    });
+
+    test("a follow-up with no template of its own and no default stays an explained note", async () => {
+      await withGuardrails(
+        { enabled: false },
+        async () => {
+          await seedConv(7564, null, new Date(Date.now() - 48 * 3_600_000));
+          const s = templateStub();
+          const outcome = await runAgentNudge({
+            tenantId,
+            threadId: `${tenantId}:${instanceId}:7564`,
+            nudge: {
+              source: "followup",
+              kind: "inactivity",
+              step: 1,
+              template: { kind: "followup" },
+            },
+            base: appDb,
+            deps: nudgeDeps(s),
+          });
+          expect(outcome).toBe("noted-window");
+          expect(s.payloads).toEqual([]);
+          expect(s.notes).toHaveLength(1);
+        },
+        settings,
+      );
+    });
   });
 
   // The other half of reading the window twice: the first reading still short-circuits, and what it

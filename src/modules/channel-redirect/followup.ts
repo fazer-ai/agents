@@ -35,6 +35,7 @@ import {
   type ProactiveSendMode,
   proactiveSendMode,
   readServiceWindowConfig,
+  type TemplateOccasion,
 } from "@/modules/service-window/service";
 import { episodeOriginQuery, episodeTestActivatedAt } from "./episode";
 import { interpolateLink, resolveRedirectLink } from "./gate";
@@ -45,6 +46,11 @@ import {
   readChannelRedirectConfig,
   redirectDelayMinutes,
 } from "./service";
+
+// The WhatsApp link follow-up as the 24h window's template choice names it (docs/service-window.md).
+const CHANNEL_REDIRECT_OCCASION: TemplateOccasion = {
+  kind: "channel_redirect",
+};
 
 // Cross-channel follow-up for the WhatsApp to chat redirect: one REDIRECT_FOLLOWUP job per widget
 // thread advances on the SAME row through "chat" (a nudge there), "whatsapp" (a FIXED link message on
@@ -427,10 +433,13 @@ export async function sendWhatsAppFollowUp(
   const verdict = p.fence ? await p.fence() : "go";
   if (verdict !== "go") return verdict;
   const sw = readServiceWindowConfig(p.settings);
-  const mode = proactiveSendMode(sw, sibling.lastInboundAt, p.now, {
-    channelType: sibling.channelType,
-    provider: sibling.provider,
-  });
+  const mode = proactiveSendMode(
+    sw,
+    sibling.lastInboundAt,
+    p.now,
+    { channelType: sibling.channelType, provider: sibling.provider },
+    CHANNEL_REDIRECT_OCCASION,
+  );
   let lateVerdict: LadderVerdict = "go";
   const withinLimit = (send: () => Promise<void>) =>
     sendWithinProactiveLimit({
@@ -455,7 +464,7 @@ export async function sendWhatsAppFollowUp(
     return lateVerdict === "retired" ? "retired" : "stood-down";
   };
   if (mode === "template") {
-    const payload = buildTemplatePayload(sw, null);
+    const payload = buildTemplatePayload(sw, null, CHANNEL_REDIRECT_OCCASION);
     if (payload) {
       const sent = await withinLimit(async () => {
         await client.sendTemplate(sibling.chatwootConversationId, payload);

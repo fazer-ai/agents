@@ -9,6 +9,10 @@ import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { redactEndpoint } from "@/modules/audit/projection";
 import type { AdditionalContactField } from "@/modules/chatwoot/contact-fields";
 import {
+  parseTemplateDefinition,
+  type TemplateDefinition,
+} from "@/modules/service-window/service";
+import {
   CHATWOOT_AUTH_HEADER,
   CHATWOOT_PLATFORM_SENT_KEY,
   CHATWOOT_REPLY_BY_OPERATOR_KEY,
@@ -1573,14 +1577,13 @@ export class ChatwootClient {
   }
 
   // WhatsApp Cloud (official) HSM templates of an inbox, read from the inbox detail's
-  // `message_templates` (admin token), returned as { name, category, language } (approved only when a
-  // status is present). NOTE: baileys/zapi inboxes are also `Channel::Whatsapp` but with an unofficial
+  // `message_templates` (admin token), parsed into their definitions (approved only when a status is
+  // present). NOTE: baileys/zapi inboxes are also `Channel::Whatsapp` but with an unofficial
   // `provider` (no 24h window/HSM), so they carry NONE here — the editor then keeps the free-text
-  // field. Shape is the Meta template object; not live-validatable on the baileys demo server
-  // (open-validation, like sendTemplate).
-  async listMessageTemplates(
+  // field. Shape is the Meta template object.
+  async listTemplateDefinitions(
     inboxId: number,
-  ): Promise<Array<{ name: string; category: string; language: string }>> {
+  ): Promise<TemplateDefinition[]> {
     const inbox = (await this.request(
       this.config.adminToken,
       "GET",
@@ -1589,21 +1592,27 @@ export class ChatwootClient {
     const arr = Array.isArray(inbox?.message_templates)
       ? inbox.message_templates
       : [];
-    const out: Array<{ name: string; category: string; language: string }> = [];
+    const out: TemplateDefinition[] = [];
     for (const tpl of arr) {
       if (!tpl || typeof tpl !== "object") continue;
-      const o = tpl as Record<string, unknown>;
-      const name = typeof o.name === "string" ? o.name : "";
-      if (!name) continue;
-      const status = typeof o.status === "string" ? o.status.toLowerCase() : "";
-      if (status && status !== "approved") continue;
-      out.push({
-        name,
-        category: typeof o.category === "string" ? o.category : "",
-        language: typeof o.language === "string" ? o.language : "",
-      });
+      const status = (tpl as Record<string, unknown>).status;
+      if (typeof status === "string" && status.toLowerCase() !== "approved") {
+        continue;
+      }
+      const def = parseTemplateDefinition(tpl);
+      if (def) out.push(def);
     }
     return out;
+  }
+
+  async listMessageTemplates(
+    inboxId: number,
+  ): Promise<Array<{ name: string; category: string; language: string }>> {
+    return (await this.listTemplateDefinitions(inboxId)).map((d) => ({
+      name: d.name,
+      category: d.category,
+      language: d.language,
+    }));
   }
 
   // Agents + teams for the handoff targeting picker. Admin token (neither is in the bot allowlist).

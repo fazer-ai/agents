@@ -268,7 +268,7 @@ const ATOMIC_FIELDS: Record<string, readonly string[]> = {
 // Merge a patch into a stored block key by key, at any depth: a sub-object replaced by a shallow
 // spread would be re-read FILLED WITH DEFAULTS. Two objects merge; anything else, arrays included
 // (a list patch means the new list), replaces.
-function mergeBlock(
+export function mergeBlock(
   before: Record<string, unknown>,
   patch: Record<string, unknown>,
   depth = 1,

@@ -1263,6 +1263,96 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
     }
   };
 
+  // Outside the 24h window the link goes as the channel-redirect template, and a NAMED one is keyed
+  // by its placeholder names, read from the sibling inbox's synced templates.
+  test("outside the window the link is the channel-redirect template, keyed by name", async () => {
+    const before = await suDb.agent.findUniqueOrThrow({
+      where: { id: agentId },
+      select: { settings: true },
+    });
+    const entry = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: ENTRY_CONV },
+      select: { id: true, lastInboundAt: true },
+    });
+    await suDb.inbox.updateMany({
+      where: { tenantId, chatwootInboxId: 110 },
+      data: { channelType: "Channel::Whatsapp", provider: "whatsapp_cloud" },
+    });
+    await suDb.conversation.update({
+      where: { id: entry.id },
+      data: { lastInboundAt: new Date(Date.now() - 48 * 3_600_000) },
+    });
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: {
+        settings: {
+          ...(before.settings as Record<string, unknown>),
+          serviceWindow: {
+            templates: {
+              channel_redirect: {
+                name: "volta_site",
+                params: ["{{nome_contato}}"],
+              },
+            },
+          },
+        },
+      },
+    });
+    const posted: unknown[] = [];
+    const named = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/inboxes/110")) {
+        return Response.json({
+          id: 110,
+          message_templates: [
+            {
+              name: "volta_site",
+              language: "pt_BR",
+              status: "APPROVED",
+              parameter_format: "NAMED",
+              components: [
+                { type: "BODY", text: "Oi {{cliente}}, volte ao site." },
+              ],
+            },
+          ],
+        });
+      }
+      if (url.includes("/messages") && typeof init?.body === "string") {
+        posted.push(JSON.parse(init.body));
+      }
+      return httpDouble(input);
+    }) as typeof fetch;
+    try {
+      const job = await claimed("whatsapp");
+      globalThis.fetch = named;
+      try {
+        await redirectFollowUpHandler(job, appDb, deps());
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+      const sent = posted as Array<{
+        template_params?: { name: string; processed_params: { body: unknown } };
+      }>;
+      expect(sent.map((m) => m.template_params?.name)).toEqual(["volta_site"]);
+      expect(sent[0]?.template_params?.processed_params.body).toEqual({
+        cliente: "Cliente",
+      });
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { settings: before.settings ?? {} },
+      });
+      await suDb.conversation.update({
+        where: { id: entry.id },
+        data: { lastInboundAt: entry.lastInboundAt },
+      });
+      await suDb.inbox.updateMany({
+        where: { tenantId, chatwootInboxId: 110 },
+        data: { channelType: null, provider: null },
+      });
+    }
+  });
+
   test("past the proactive limit the WhatsApp link is not sent", async () => {
     await withProactiveLimitReached(async () => {
       const job = await claimed("whatsapp");

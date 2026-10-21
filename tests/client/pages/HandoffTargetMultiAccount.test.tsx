@@ -17,6 +17,7 @@ import { BehaviorTab } from "@/client/pages/agents/BehaviorTab";
 import { EMPTY_CONTACT_AUTH_RULE_FORM } from "@/client/pages/agents/contactAuthRuleForm";
 import { readOtherInboxesState } from "@/client/pages/agents/OtherInboxesFields";
 import { observationToForm } from "@/client/pages/agents/observationFormState";
+import { SERVICE_WINDOW_FORM_DEFAULTS } from "@/client/pages/agents/ServiceWindowTemplates";
 import { ToolGrantsEditor } from "@/client/pages/agents/ToolGrantsEditor";
 import { readTtsFormState } from "@/client/pages/agents/ttsFormState";
 
@@ -257,14 +258,7 @@ function renderContactAuth(
       contactFields: { context: [], writable: [] },
       setContactFields: () => {},
       setAttributeContext: noop,
-      serviceWindow: {
-        enabled: false,
-        windowHours: "24",
-        templateName: "",
-        templateLanguage: "",
-        templateParams: "",
-        templateContent: "",
-      },
+      serviceWindow: { ...SERVICE_WINDOW_FORM_DEFAULTS, enabled: false },
       setServiceWindow: noop,
       followUp: { enabled: false, steps: [], pauseWhileAppointment: false },
       setFollowUp: noop,

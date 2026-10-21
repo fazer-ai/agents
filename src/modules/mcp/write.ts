@@ -25,6 +25,7 @@ import {
 import {
   type BehaviorSettingsPatch,
   mergeBehaviorSettings,
+  mergeBlock,
   readBehaviorSettings,
 } from "@/modules/agents/behavior-settings";
 import { configHealthAfterWrite } from "@/modules/agents/config-health-read";
@@ -56,6 +57,10 @@ import { type AuditEntry, recordAudit } from "@/modules/audit/service";
 import type { LoadChatwootClientDeps } from "@/modules/chatwoot/instance";
 import type { ListAccountsDeps } from "@/modules/chatwoot/management";
 import { readDebugModes } from "@/modules/flowlog/debug-mode";
+import {
+  assertServiceWindowTemplatesUsable,
+  assertSettingsServiceWindow,
+} from "@/modules/service-window/save";
 import { getTenantSettings } from "@/modules/tenant-settings/service";
 import { getSecretType } from "@/modules/vault/secret-types";
 import {
@@ -669,6 +674,24 @@ export async function agentSettingsSet(
     // does nothing. Asked of the PATCH, the only place the key still exists.
     assertSettingsRetiredLabelKeys(patch);
     assertSettingsRemovedFields(patch);
+    // NOTE: same reason: the service window's reader drops an unknown kind, a bad offset and a
+    // malformed choice, so after the merge `templates.followup: { name: "" }` would remove the
+    // override and answer ok.
+    if (patch.serviceWindow) {
+      const stored = (current.settings as Record<string, unknown> | null)
+        ?.serviceWindow;
+      assertSettingsServiceWindow(
+        {
+          serviceWindow: mergeBlock(
+            stored && typeof stored === "object"
+              ? (stored as Record<string, unknown>)
+              : {},
+            patch.serviceWindow as Record<string, unknown>,
+          ),
+        },
+        current.settings,
+      );
+    }
     assertSettingsProtectedLabels(patch, current.settings);
     // A delay's range follows its unit, which the arguments cannot publish and a patch may name only
     // half of: asked of the raw block before the merge, whose readers would clamp `40` under a stored
@@ -739,6 +762,14 @@ export async function agentSettingsSet(
         ctx,
         nextBag,
         current.settings,
+        base,
+      );
+      await assertServiceWindowTemplatesUsable(
+        ctx,
+        agentId,
+        nextBag,
+        current.settings,
+        {},
         base,
       );
       return ok({ dryRun: true, target, diff });

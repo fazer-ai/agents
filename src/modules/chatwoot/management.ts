@@ -21,6 +21,7 @@ import {
   type TenantContext,
 } from "@/lib/tenancy";
 import { isMonitoring } from "@/modules/agents/mode";
+import { readAppointmentReminderConfig } from "@/modules/appointments/settings";
 import { redactEndpoint } from "@/modules/audit/projection";
 import { auditMutation } from "@/modules/audit/service";
 import {
@@ -28,6 +29,8 @@ import {
   type WidgetHealth,
   type WidgetHealthStatus,
 } from "@/modules/channel-redirect/link";
+import type { TemplateDefinition } from "@/modules/service-window/service";
+import { readAppointmentDeclaration } from "@/modules/tool-definitions/appointment";
 import {
   switchOffVoiceRouting,
   syncVoiceInboxes,
@@ -2119,22 +2122,25 @@ export async function listAgentsAndTeams(
   return { agents, teams, accounts };
 }
 
-export interface ServiceWindowTemplateDto {
-  name: string;
-  category: string;
-  language: string;
-}
+// The synced definition, so the editor can count a template's parameters and preview it.
+export type ServiceWindowTemplateDto = TemplateDefinition;
 
-// Approved WhatsApp HSM templates available to an agent's inbox(es), for the service-window template
-// picker. Reads live (admin token) across the agent's bound inboxes, grouped by instance, deduped by
-// name. Best-effort: an unreachable instance contributes nothing. Empty for baileys inboxes (no HSM)
-// — the editor falls back to a free-text field.
-export async function listServiceWindowTemplates(
+// Approved WhatsApp HSM templates available to an agent's inbox(es), read live (admin token) across
+// the agent's bound inboxes, grouped by instance. `templates` is the picker's list, deduped by name
+// and language; `byInbox` keeps each inbox's own, because two accounts can hold the same name with
+// different components and a send uses its conversation's inbox. `complete` says every instance
+// answered: an unreachable one contributes nothing, so an absence is not proof when false. Empty for
+// baileys inboxes (no HSM).
+export async function loadAgentTemplateDefinitions(
   ctx: TenantContext,
   agentId: bigint,
   deps: LoadChatwootClientDeps = {},
   base: PrismaClient = basePrisma,
-): Promise<{ templates: ServiceWindowTemplateDto[] }> {
+): Promise<{
+  templates: TemplateDefinition[];
+  byInbox: TemplateDefinition[][];
+  complete: boolean;
+}> {
   if (ctx.tenantId === null) throw new AppError("tenant required", 400);
   const tenantId = ctx.tenantId;
   const inboxes = await runScopedOn(base, ctx, (db) =>
@@ -2143,14 +2149,17 @@ export async function listServiceWindowTemplates(
       select: { chatwootInstanceId: true, chatwootInboxId: true },
     }),
   );
-  if (inboxes.length === 0) return { templates: [] };
+  if (inboxes.length === 0)
+    return { templates: [], byInbox: [], complete: true };
   const byInstance = new Map<bigint, number[]>();
   for (const ib of inboxes) {
     const list = byInstance.get(ib.chatwootInstanceId) ?? [];
     list.push(ib.chatwootInboxId);
     byInstance.set(ib.chatwootInstanceId, list);
   }
-  const byName = new Map<string, ServiceWindowTemplateDto>();
+  const byKey = new Map<string, TemplateDefinition>();
+  const byInbox: TemplateDefinition[][] = [];
+  let complete = true;
   for (const [instanceId, inboxIds] of byInstance) {
     try {
       const client = await loadChatwootClient(tenantId, instanceId, {
@@ -2158,15 +2167,70 @@ export async function listServiceWindowTemplates(
         makeClient: deps.makeClient,
       });
       for (const inboxId of inboxIds) {
-        for (const tpl of await client.listMessageTemplates(inboxId)) {
-          if (!byName.has(tpl.name)) byName.set(tpl.name, tpl);
+        const defs = await client.listTemplateDefinitions(inboxId);
+        byInbox.push(defs);
+        for (const tpl of defs) {
+          const key = `${tpl.name}\u0000${tpl.language.toLowerCase()}`;
+          if (!byKey.has(key)) byKey.set(key, tpl);
         }
       }
     } catch {
-      // best-effort: an unreachable instance contributes no templates
+      complete = false;
     }
   }
-  return { templates: [...byName.values()] };
+  return { templates: [...byKey.values()], byInbox, complete };
+}
+
+// The service-window template picker's listing. Best-effort, as above.
+export async function listServiceWindowTemplates(
+  ctx: TenantContext,
+  agentId: bigint,
+  deps: LoadChatwootClientDeps = {},
+  base: PrismaClient = basePrisma,
+): Promise<{
+  templates: ServiceWindowTemplateDto[];
+  reminderOffsets: number[];
+}> {
+  const [{ templates }, reminderOffsets] = await Promise.all([
+    loadAgentTemplateDefinitions(ctx, agentId, deps, base),
+    agentReminderOffsets(ctx, agentId, base),
+  ]);
+  return { templates, reminderOffsets };
+}
+
+// The hours-before every reminder this agent can arm: its Google Calendar integrations' reminder
+// settings and its booking tools' declarations, far to near. The editor offers a template per one of
+// these instead of asking the operator to type a number configured on another screen.
+export async function agentReminderOffsets(
+  ctx: TenantContext,
+  agentId: bigint,
+  base: PrismaClient = basePrisma,
+): Promise<number[]> {
+  const selections = await runScopedOn(base, ctx, (db) =>
+    db.agentToolSelection.findMany({
+      where: { agentId },
+      select: {
+        toolDefinition: { select: { appointment: true } },
+        integrationInstance: {
+          select: { catalogType: true, enabled: true, config: true },
+        },
+      },
+    }),
+  );
+  const offsets = new Set<number>();
+  for (const sel of selections) {
+    // Only a booking declaration carries offsets; a cancel one reads back without them.
+    const decl = readAppointmentDeclaration(sel.toolDefinition?.appointment);
+    if (decl && "reminderOffsetsHours" in decl) {
+      for (const h of decl.reminderOffsetsHours ?? []) offsets.add(h);
+    }
+    const inst = sel.integrationInstance;
+    if (inst?.enabled && inst.catalogType === "GOOGLE_CALENDAR") {
+      const cfg = readAppointmentReminderConfig(inst.config);
+      if (cfg.enabled) for (const h of cfg.offsetsHours) offsets.add(h);
+    }
+  }
+  return [...offsets].sort((a, b) => b - a);
 }
 
 // The Chatwoot instances an agent's inboxes live on, plus how many distinct ACCOUNTS they

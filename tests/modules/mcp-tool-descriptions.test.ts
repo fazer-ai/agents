@@ -112,9 +112,9 @@ const SETTINGS_DESC_CEILING = 2_000;
 // learn by trying, re-measure instead of summing) is in docs/mcp.md, "Full admin surface".
 // Includes `monitoring.engine` and the `decisions` block (questions, rules): they are configured only
 // through REST and MCP until the console has a screen for them, so their shape has to be in
-// tools/list, and `snoozedFollowUp` too (the step shape it shares with `followUp`). Measured at 36_885
-// with the fallbacks, `calls`, one-or-many preconditions, `setLabels.removal` and the writable list.
-const SETTINGS_SCHEMA_CEILING = 36_960;
+// tools/list, and `snoozedFollowUp` too (the step shape it shares with `followUp`). Measured at 37_492
+// with `calls`, `setLabels.removal`, the writable list and the service window's per-kind templates.
+const SETTINGS_SCHEMA_CEILING = 37_560;
 
 describe("MCP tool descriptions", () => {
   test("agent_settings_set stays under its ceiling", async () => {

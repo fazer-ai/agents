@@ -147,6 +147,24 @@ describe("reminderNudge", () => {
     expect(n.summary).toContain("Consulta");
   });
 
+  // The 24h window's template choice reads the reminder's offset and appointment off the
+  // nudge, and nothing in that field reaches the model's fenced data.
+  test("names its template occasion: the kind, the offset and the appointment", () => {
+    const n = reminderNudge({
+      ...args,
+      isLast: false,
+      askConfirmation: false,
+      offsetHours: 24,
+      calendarLabel: "Centro",
+    });
+    expect(n.template).toEqual({
+      kind: "appointment_reminder",
+      offsetHours: 24,
+      appointment: { startISO: args.startISO, calendarLabel: "Centro" },
+    });
+    expect(Object.keys(n.refs ?? {})).not.toContain("calendar_label");
+  });
+
   test("last but confirmation disabled → plain reminder", () => {
     const n = reminderNudge({ ...args, isLast: true, askConfirmation: false });
     expect(n.instructions).not.toContain("calendar_confirm_appointment");

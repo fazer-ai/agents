@@ -156,6 +156,10 @@ import {
 } from "./OtherInboxesFields";
 import type { ObservationState } from "./observationFormState";
 import { Section, SectionNav } from "./SectionNav";
+import {
+  type ServiceWindowForm,
+  ServiceWindowTemplates,
+} from "./ServiceWindowTemplates";
 import { type SignatureSeed, signatureOnToggle } from "./signatureFormState";
 import {
   newSnoozedStep,
@@ -394,14 +398,7 @@ interface AttributeContextState {
   task: string[];
 }
 
-interface ServiceWindowState {
-  enabled: boolean;
-  windowHours: string;
-  templateName: string;
-  templateLanguage: string;
-  templateParams: string;
-  templateContent: string;
-}
+type ServiceWindowState = ServiceWindowForm;
 
 export interface FollowUpStepState {
   delayValue: string;
@@ -541,111 +538,6 @@ function toScheduleOption(h: Hours): ScheduleOption {
 // Service-window HSM template field: a picker populated with the approved templates of the agent's
 // inbox(es) (live from Chatwoot), over a free-text input that stays the source of truth. With no
 // templates (e.g. baileys channels have none) only the input shows, plus a note. Derived Eden type.
-type SwTemplate = NonNullable<
-  Awaited<
-    ReturnType<
-      ReturnType<
-        (typeof api.api.v1.chatwoot)["service-window-templates"]
-      >["get"]
-    >
-  >["data"]
->["templates"][number];
-
-function ServiceWindowTemplateField({
-  agentId,
-  serviceWindow,
-  setServiceWindow,
-}: {
-  agentId: string;
-  serviceWindow: ServiceWindowState;
-  setServiceWindow: React.Dispatch<React.SetStateAction<ServiceWindowState>>;
-}) {
-  const { t } = useTranslation();
-  const [templates, setTemplates] = useState<SwTemplate[]>([]);
-  const [loaded, setLoaded] = useState(false);
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        const { data } = await api.api.v1.chatwoot["service-window-templates"]({
-          agentId,
-        }).get();
-        if (!cancelled && data) setTemplates(data.templates);
-      } catch {
-        // best-effort: leave the free-text field as the fallback
-      } finally {
-        if (!cancelled) setLoaded(true);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [agentId]);
-  return (
-    <FormField
-      label={t("editor.svcWindowTemplate", "Template name (HSM)")}
-      group
-      description={t(
-        "editor.svcWindowTemplateHint",
-        "Approved template sent outside the window. Blank → skip (private note).",
-      )}
-    >
-      <div className="flex flex-col gap-2">
-        {templates.length > 0 && (
-          <Select
-            value={
-              templates.some((x) => x.name === serviceWindow.templateName)
-                ? serviceWindow.templateName
-                : ""
-            }
-            onChange={(e) => {
-              const tpl = templates.find((x) => x.name === e.target.value);
-              if (tpl) {
-                setServiceWindow({
-                  ...serviceWindow,
-                  templateName: tpl.name,
-                  templateLanguage:
-                    tpl.language || serviceWindow.templateLanguage,
-                });
-              }
-            }}
-            aria-label={t("editor.svcWindowTemplate", "Template name (HSM)")}
-          >
-            <option value="">
-              {t(
-                "editor.svcWindowTemplatePick",
-                "Choose an approved template…",
-              )}
-            </option>
-            {templates.map((tpl) => (
-              <option key={tpl.name} value={tpl.name}>
-                {tpl.language ? `${tpl.name} (${tpl.language})` : tpl.name}
-              </option>
-            ))}
-          </Select>
-        )}
-        <Input
-          value={serviceWindow.templateName}
-          onChange={(e) =>
-            setServiceWindow({
-              ...serviceWindow,
-              templateName: e.target.value,
-            })
-          }
-          placeholder="reengajamento"
-        />
-        {loaded && templates.length === 0 && (
-          <span className="text-text-muted text-xs">
-            {t(
-              "editor.svcWindowNoTemplates",
-              "No approved templates found for this agent's inbox. Type a name manually.",
-            )}
-          </span>
-        )}
-      </div>
-    </FormField>
-  );
-}
 
 // TTS voice/model picker backed by the live listing endpoint: OpenAI returns a curated set,
 // ElevenLabs is fetched with the vault credential so the operator picks a real per-account voice by
@@ -4937,48 +4829,12 @@ export function BehaviorTab({
                         }
                       />
                     </FormField>
-                    <ServiceWindowTemplateField
-                      agentId={agentId}
-                      serviceWindow={serviceWindow}
-                      setServiceWindow={setServiceWindow}
-                    />
                   </div>
-                  {serviceWindow.templateName.trim() !== "" && (
-                    <div className="grid gap-4 sm:grid-cols-2">
-                      <FormField
-                        label={t("editor.svcWindowLang", "Template language")}
-                      >
-                        <Input
-                          value={serviceWindow.templateLanguage}
-                          onChange={(e) =>
-                            setServiceWindow({
-                              ...serviceWindow,
-                              templateLanguage: e.target.value,
-                            })
-                          }
-                          placeholder="pt_BR"
-                        />
-                      </FormField>
-                      <FormField
-                        label={t("editor.svcWindowParams", "Body params")}
-                        description={t(
-                          "editor.svcWindowParamsHint",
-                          "Comma-separated; variables like nome_contato / primeiro_nome are interpolated.",
-                        )}
-                      >
-                        <Input
-                          value={serviceWindow.templateParams}
-                          onChange={(e) =>
-                            setServiceWindow({
-                              ...serviceWindow,
-                              templateParams: e.target.value,
-                            })
-                          }
-                          placeholder="{{primeiro_nome}}"
-                        />
-                      </FormField>
-                    </div>
-                  )}
+                  <ServiceWindowTemplates
+                    agentId={agentId}
+                    value={serviceWindow}
+                    onChange={setServiceWindow}
+                  />
                 </>
               )}
             </div>

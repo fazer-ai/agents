@@ -250,6 +250,12 @@ import {
   serializeSendImage,
 } from "./SendImageFields";
 import {
+  SERVICE_WINDOW_FORM_DEFAULTS,
+  type ServiceWindowForm,
+  serviceWindowToForm,
+  serviceWindowToStored,
+} from "./ServiceWindowTemplates";
+import {
   StaleNoticeCard,
   StaleNoticeContext,
   staleNoticeOf,
@@ -650,18 +656,7 @@ function readBehaviorState(a: Agent) {
       maxDelayMs: num(sp.maxDelayMs) || "8000",
     },
     signature: signatureToForm(s),
-    serviceWindow: {
-      enabled: typeof sw.enabled === "boolean" ? sw.enabled : true,
-      windowHours: num(sw.windowHours) || "24",
-      templateName: str(sw.templateName),
-      templateLanguage: str(sw.templateLanguage) || "pt_BR",
-      templateParams: Array.isArray(sw.templateParams)
-        ? (sw.templateParams as unknown[])
-            .filter((x): x is string => typeof x === "string")
-            .join(", ")
-        : "",
-      templateContent: str(sw.templateContent),
-    },
+    serviceWindow: serviceWindowToForm(sw),
     followUp: followUpToForm(s),
     snoozedFollowUp: snoozedFollowUpToForm(s),
     handoff: {
@@ -1180,14 +1175,9 @@ function AgentEditor() {
     structuredClone(GUARDRAILS_DEFAULTS),
   );
   // WhatsApp 24h service window (proactive sends). Mirrors modules/service-window.
-  const [serviceWindow, setServiceWindow] = useState({
-    enabled: true,
-    windowHours: "24",
-    templateName: "",
-    templateLanguage: "pt_BR",
-    templateParams: "",
-    templateContent: "",
-  });
+  const [serviceWindow, setServiceWindow] = useState<ServiceWindowForm>(() =>
+    structuredClone(SERVICE_WINDOW_FORM_DEFAULTS),
+  );
   // Handoff targeting: who receives a handed-off conversation (route | pinned | agent_choice).
   const [handoff, setHandoff] = useState<HandoffUiState>({
     mode: "route",
@@ -2100,18 +2090,9 @@ function AgentEditor() {
         maxDelayMs: Number(split.maxDelayMs) || 8000,
       },
       signature: signatureToStored(signature),
-      serviceWindow: {
-        enabled: serviceWindow.enabled,
-        windowHours: Number(serviceWindow.windowHours) || 24,
-        templateName: serviceWindow.templateName.trim() || null,
-        templateLanguage: serviceWindow.templateLanguage.trim() || "pt_BR",
-        templateCategory: "UTILITY",
-        templateParams: serviceWindow.templateParams
-          .split(",")
-          .map((p) => p.trim())
-          .filter(Boolean),
-        templateContent: serviceWindow.templateContent.trim() || null,
-      },
+      // NOTE: through the pair, for the same reason as `followUp`: this save REPLACES the block, and
+      // the per-kind and per-offset templates have to ride along or a save would drop them.
+      serviceWindow: serviceWindowToStored(serviceWindow),
       followUp: followUpToStored(followUp),
       // NOTE: through the pair, for the same reason as `followUp`: this save REPLACES the block.
       snoozedFollowUp: snoozedFollowUpToStored(snoozedFollowUp),

@@ -390,6 +390,7 @@ export function snoozedNudge(params: {
   return {
     source: "followup",
     kind: "snoozed",
+    template: { kind: "snoozed_followup" },
     // The directive itself is the framing's (renderNudge); the summary carries only the facts.
     framing: "snoozed_reminder",
     summary: `a person asked the customer ${params.idleMin} minutes ago; no reply yet`,

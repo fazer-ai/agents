@@ -60,6 +60,7 @@ import {
 } from "@/modules/agents/tool-preconditions";
 import { auditMutation } from "@/modules/audit/service";
 import { isOutOfHoursNow, parseSchedule } from "@/modules/business-hours/hours";
+import type { LoadChatwootClientDeps } from "@/modules/chatwoot/instance";
 import { renameAgentBots } from "@/modules/chatwoot/provisioning";
 import { invalidateRouteTokenCache } from "@/modules/chatwoot/route-token-cache";
 import { invalidContactAuthRule } from "@/modules/contact-auth/settings";
@@ -86,6 +87,10 @@ import {
   getToolpackToolNames,
   getToolpackToolViews,
 } from "@/modules/integrations/toolpacks";
+import {
+  assertServiceWindowTemplatesUsable,
+  assertSettingsServiceWindow,
+} from "@/modules/service-window/save";
 import { isOneOf, SIGNATURE_CHOICES } from "@/modules/signature/domains";
 import { lockToolNames } from "@/modules/tool-definitions/namespace";
 import { requireVaultRefFor } from "@/modules/vault/service";
@@ -2087,7 +2092,12 @@ export async function updateAgent(
   // `expectedUpdatedAt`: optimistic concurrency, 409 (errors.agentModifiedElsewhere) on a mismatch;
   // omitted, last write wins. `settingsMode: "replace"` says the bag is COMPLETE, so omitted blocks
   // are meant to go; without it, a bag that would drop configured blocks is refused.
-  opts: { expectedUpdatedAt?: Date; settingsMode?: "replace" } = {},
+  // `chatwoot`: how the service window's templates are read (a test passes a stub client).
+  opts: {
+    expectedUpdatedAt?: Date;
+    settingsMode?: "replace";
+    chatwoot?: LoadChatwootClientDeps;
+  } = {},
 ): Promise<AgentDto> {
   const {
     rest,
@@ -2096,6 +2106,41 @@ export async function updateAgent(
     businessHoursId: bhId,
     followUpHoursId: fuhId,
   } = assertAgentUpdatable(patch);
+  // NOTE: Before the transaction, because it reads Chatwoot: a network call does not belong inside
+  // the row lock below. Against the row as read now; the lock's own read only matters to a rule
+  // whose answer the stored value decides, and this one asks only what the write sets or changes.
+  if (rest.settings !== undefined) {
+    const stored = await runScopedOn(base, ctx, (db) =>
+      db.agent.findUnique({
+        where: { id },
+        select: { settings: true, updatedAt: true },
+      }),
+    );
+    // A stale editor is answered with the 409 its conflict flow handles, not with a template error
+    // about configuration another writer may already have repaired. The locked check below still
+    // answers the race that lands after this read.
+    if (
+      stored &&
+      opts.expectedUpdatedAt != null &&
+      stored.updatedAt.getTime() !== opts.expectedUpdatedAt.getTime()
+    ) {
+      throw new AppError(
+        "agent was modified elsewhere",
+        409,
+        "errors.agentModifiedElsewhere",
+      );
+    }
+    if (stored) {
+      await assertServiceWindowTemplatesUsable(
+        ctx,
+        id,
+        rest.settings,
+        stored.settings,
+        opts.chatwoot ?? {},
+        base,
+      );
+    }
+  }
   const dto = await runScopedOn(base, ctx, async (db) => {
     await assertSchedulesExistOn(db, bhId, fuhId);
     const updateData: Record<string, unknown> = { ...rest };
@@ -2158,6 +2203,7 @@ export async function updateAgent(
     assertSettingsToolPreconditions(rest.settings, before?.settings);
     assertSettingsContactAuthRule(rest.settings, before?.settings);
     assertSettingsContactFields(rest.settings, before?.settings);
+    assertSettingsServiceWindow(rest.settings, before?.settings);
     assertSettingsRetiredLabelKeys(rest.settings);
     keepCallsSystemFields(rest.settings, before?.settings);
     stripRetiredNoteFlagInPlace(rest.settings);
@@ -2407,6 +2453,7 @@ export function assertAgentCreatable(input: AgentCreate): {
   assertSettingsToolPreconditions(input.settings, undefined);
   assertSettingsContactAuthRule(input.settings, undefined);
   assertSettingsContactFields(input.settings, undefined);
+  assertSettingsServiceWindow(input.settings, undefined);
   assertSettingsRetiredLabelKeys(input.settings);
   stripRetiredNoteFlagInPlace(input.settings);
   stripDerivedFullDetailInPlace(input.settings);

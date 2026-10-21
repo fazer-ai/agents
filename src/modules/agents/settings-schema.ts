@@ -73,6 +73,7 @@ import {
   OTHER_INBOXES_LIMITS,
   OTHER_INBOXES_MAX_INBOXES,
 } from "@/modules/other-inboxes/settings";
+import { PROACTIVE_KINDS } from "@/modules/service-window/kinds";
 import {
   SIGNATURE_FREQUENCIES,
   SIGNATURE_POSITIONS,
@@ -401,6 +402,22 @@ const signature = z.looseObject({
     .describe("blank = 2 newlines; -- adds a -- line. Chatwoot's own bytes"),
 });
 
+export const templateChoice = z.looseObject({
+  name: z
+    .string()
+    .refine((s) => s.trim() !== "", "blank")
+    .describe("approved HSM name"),
+  language: z.string().optional().describe('default "pt_BR"'),
+  category: z.string().optional().describe('default "UTILITY"'),
+  params: z.array(z.string()).optional().describe("body {{1}}.. in order"),
+  headerParams: z.array(z.string()).optional().describe("text header {{1}}"),
+  buttonParams: z
+    .array(z.string())
+    .optional()
+    .describe("per button: dynamic URL suffix, else empty"),
+  content: z.string().nullable().optional(),
+});
+
 const serviceWindow = z.looseObject({
   enabled: z.boolean().optional(),
   windowHours: ranged(SERVICE_WINDOW_RANGES.windowHours).optional(),
@@ -408,18 +425,34 @@ const serviceWindow = z.looseObject({
     .string()
     .nullable()
     .optional()
-    .describe("approved HSM outside the window; null = a private note"),
+    .describe("default HSM outside the window; null = a note"),
   templateLanguage: z.string().optional().describe('e.g. "pt_BR"'),
   templateCategory: z.string().optional().describe('e.g. "UTILITY"'),
   templateParams: z
     .array(z.string())
     .optional()
-    .describe("positional body params; {contact_name} interpolates"),
+    .describe(
+      "positional body params; {{nome_contato}} interpolates, {{var|text}} when empty",
+    ),
+  templateHeaderParams: z.array(z.string()).optional(),
+  templateButtonParams: z.array(z.string()).optional(),
   templateContent: z
     .string()
     .nullable()
     .optional()
     .describe("dashboard-facing only; the send uses the params"),
+  // NOTE: Both maps validated by `assertSettingsServiceWindow`, where the key is known: a schema per
+  // kind would repeat the choice six times in every MCP listing.
+  templates: z
+    .record(z.string(), z.unknown())
+    .optional()
+    .describe(
+      `${PROACTIVE_KINDS.join("|")} → {name,language,params,headerParams,buttonParams}; reminders add {{data_agendamento}} {{hora_agendamento}} {{dia_semana_agendamento}} {{agenda}}`,
+    ),
+  reminderTemplates: z
+    .record(z.string(), z.unknown())
+    .optional()
+    .describe("offset hours → same"),
 });
 
 const grounding = z.looseObject({

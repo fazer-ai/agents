@@ -35,6 +35,8 @@ import {
   type ProactiveSendMode,
   proactiveSendMode,
   readServiceWindowConfig,
+  type TemplateDefinition,
+  type TemplateOccasion,
 } from "@/modules/service-window/service";
 import { episodeOriginQuery, episodeTestActivatedAt } from "./episode";
 import { interpolateLink, resolveRedirectLink } from "./gate";
@@ -45,6 +47,11 @@ import {
   readChannelRedirectConfig,
   redirectDelayMinutes,
 } from "./service";
+
+// The WhatsApp link follow-up as the 24h window's template choice names it (docs/service-window.md).
+const CHANNEL_REDIRECT_OCCASION: TemplateOccasion = {
+  kind: "channel_redirect",
+};
 
 // Cross-channel follow-up for the WhatsApp to chat redirect: one REDIRECT_FOLLOWUP job per widget
 // thread advances on the SAME row through "chat" (a nudge there), "whatsapp" (a FIXED link message on
@@ -273,6 +280,10 @@ interface WhatsAppSibling {
   lastInboundAt: Date | null;
   channelType: string | null;
   provider: string | null;
+  // The sibling's inbox, whose synced templates key a NAMED template outside the window.
+  chatwootInboxId: number | null;
+  // What `{{nome_contato}}` fills in that template.
+  contactName: string | null;
 }
 
 // Resolve the WhatsApp entry half of a widget conversation's redirect episode: the conversation id to
@@ -331,8 +342,10 @@ async function resolveWhatsAppSibling(
         status: true,
         chatwootStatusAt: true,
         lastInboundAt: true,
-        contact: { select: { chatwootContactId: true } },
-        inbox: { select: { channelType: true, provider: true } },
+        contact: { select: { chatwootContactId: true, name: true } },
+        inbox: {
+          select: { channelType: true, provider: true, chatwootInboxId: true },
+        },
       },
     });
     if (!sibling?.contact?.chatwootContactId) return null;
@@ -344,6 +357,8 @@ async function resolveWhatsAppSibling(
       lastInboundAt: sibling.lastInboundAt,
       channelType: sibling.inbox?.channelType ?? null,
       provider: sibling.inbox?.provider ?? null,
+      chatwootInboxId: sibling.inbox?.chatwootInboxId ?? null,
+      contactName: sibling.contact.name ?? null,
     };
   });
 }
@@ -422,15 +437,30 @@ export async function sendWhatsAppFollowUp(
     base: p.base,
     botToken: bot?.accessToken,
   });
+  const sw = readServiceWindowConfig(p.settings);
+  const mode = proactiveSendMode(
+    sw,
+    sibling.lastInboundAt,
+    p.now,
+    { channelType: sibling.channelType, provider: sibling.provider },
+    CHANNEL_REDIRECT_OCCASION,
+  );
+  // The template's synced definition (a NAMED template is keyed by name), read before the fence
+  // below so nothing stands between that fence and the send. Best-effort, as on the nudge path.
+  let definitions: TemplateDefinition[] = [];
+  if (mode === "template" && sibling.chatwootInboxId !== null) {
+    try {
+      definitions = await client.listTemplateDefinitions(
+        sibling.chatwootInboxId,
+      );
+    } catch {
+      definitions = [];
+    }
+  }
   // The link mint above is an HTTP round trip to Chatwoot, so the answer the caller had is older than
   // this line. Nothing has left yet, which makes this the last free place to stop.
   const verdict = p.fence ? await p.fence() : "go";
   if (verdict !== "go") return verdict;
-  const sw = readServiceWindowConfig(p.settings);
-  const mode = proactiveSendMode(sw, sibling.lastInboundAt, p.now, {
-    channelType: sibling.channelType,
-    provider: sibling.provider,
-  });
   let lateVerdict: LadderVerdict = "go";
   const withinLimit = (send: () => Promise<void>) =>
     sendWithinProactiveLimit({
@@ -455,16 +485,22 @@ export async function sendWhatsAppFollowUp(
     return lateVerdict === "retired" ? "retired" : "stood-down";
   };
   if (mode === "template") {
-    const payload = buildTemplatePayload(sw, null);
+    const payload = buildTemplatePayload(
+      sw,
+      sibling.contactName,
+      CHANNEL_REDIRECT_OCCASION,
+      definitions,
+    );
     if (payload) {
       const sent = await withinLimit(async () => {
         await client.sendTemplate(sibling.chatwootConversationId, payload);
       });
       return outcomeOf(sent);
     }
-    // No template configured → fall through to a private note (never a rejected free-form send).
+    // A template whose values cannot be filled → fall through to the private note (never a rejected
+    // free-form send).
   }
-  if (mode === "note") {
+  if (mode !== "freeform") {
     await client.sendMessage(sibling.chatwootConversationId, text, {
       private: true,
     });

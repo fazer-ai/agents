@@ -1,5 +1,5 @@
 import * as DropdownMenuPrimitive from "@radix-ui/react-dropdown-menu";
-import { Check, ChevronDown } from "lucide-react";
+import { Check, ChevronDown, type LucideIcon } from "lucide-react";
 import { cn } from "@/client/lib/utils";
 
 export interface DropdownItem {
@@ -7,6 +7,8 @@ export interface DropdownItem {
   label: string;
   // Optional second line under the label (e.g. a hint or secondary detail).
   description?: string;
+  // Optional leading icon, for lists whose items are kinds of thing the operator scans by shape.
+  icon?: LucideIcon;
   // Disabled items stay VISIBLE (shaded, not selectable) with `disabledHint` explaining why — so the
   // operator sees the option exists and learns the reason it is unavailable.
   disabled?: boolean;
@@ -85,6 +87,12 @@ export function Dropdown({
                 className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-text-secondary outline-none transition-colors data-[highlighted]:bg-bg-hover data-[highlighted]:text-text-primary"
                 onSelect={() => onChange(item.value)}
               >
+                {item.icon && (
+                  <item.icon
+                    className="h-4 w-4 shrink-0 self-start text-text-muted"
+                    aria-hidden="true"
+                  />
+                )}
                 <div className="flex min-w-0 flex-1 flex-col gap-0.5">
                   <span className="truncate">{item.label}</span>
                   {item.description && (

@@ -125,6 +125,8 @@ export function SheetsConfigEditor({
   const [tabsError, setTabsError] = useState<string | null>(null);
   // The latest tab request wins: a slower answer for a spreadsheet no longer picked is dropped.
   const tabsSeq = useRef(0);
+  // Same for the account's list, which also belongs to ONE credential: switching drops it.
+  const listSeq = useRef(0);
 
   async function loadTabs(id: string) {
     const seq = ++tabsSeq.current;
@@ -154,11 +156,14 @@ export function SheetsConfigEditor({
 
   async function loadList() {
     if (!credentialRef) return;
+    const seq = ++listSeq.current;
     setListLoading(true);
     setListError(null);
     try {
-      setList(await loaders.spreadsheets(credentialRef));
+      const out = await loaders.spreadsheets(credentialRef);
+      if (seq === listSeq.current) setList(out);
     } catch (err) {
+      if (seq !== listSeq.current) return;
       setList(null);
       setListError(
         apiErrorMessage(err) ??
@@ -168,9 +173,18 @@ export function SheetsConfigEditor({
           ),
       );
     } finally {
-      setListLoading(false);
+      if (seq === listSeq.current) setListLoading(false);
     }
   }
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the list is the credential's, so a new credential drops it and any answer still in flight
+  useEffect(() => {
+    listSeq.current++;
+    setList(null);
+    setListError(null);
+    setListLoading(false);
+    setFilter("");
+  }, [credentialRef]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: reloads only when the credential or the spreadsheet changes, not on every config keystroke
   useEffect(() => {

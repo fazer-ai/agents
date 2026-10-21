@@ -136,6 +136,9 @@ function headerKey(name: string): string {
 
 export interface Header {
   names: string[];
+  // The positions of the first and last named header cells: the table Google appends to.
+  first: number;
+  last: number;
   index: Map<string, number>;
   duplicated: Set<string>;
 }
@@ -144,15 +147,19 @@ export function readHeader(row: unknown[] | undefined): Header {
   const names: string[] = [];
   const index = new Map<string, number>();
   const duplicated = new Set<string>();
+  let first = -1;
+  let last = -1;
   (row ?? []).forEach((cell, i) => {
     const name = rawCell(cell).trim();
     if (!name) return;
+    if (first < 0) first = i;
+    last = i;
     const key = headerKey(name);
     if (index.has(key)) duplicated.add(key);
     else index.set(key, i);
     names.push(name);
   });
-  return { names, index, duplicated };
+  return { names, index, duplicated, first, last };
 }
 
 // The header position of a column the model named, or the sentence that tells it why not.
@@ -384,17 +391,19 @@ function buildAppendTool(
         if (header.names.length === 0) return NO_HEADER;
         const placed = placeValues(header, input.values);
         if (typeof placed === "string") return placed;
-        const width = Math.max(...placed.keys()) + 1;
+        // `values:append` starts the new row at the first column of the table it finds, so the
+        // range is the header's own span and the row is laid out from its first column, not from A.
+        const span = `${columnLetter(header.first)}1:${columnLetter(header.last)}1`;
         const row = Array.from(
-          { length: width },
-          (_, i) => placed.get(i) ?? "",
+          { length: header.last - header.first + 1 },
+          (_, i) => placed.get(header.first + i) ?? "",
         );
         const params = new URLSearchParams({
           valueInputOption: "RAW",
           insertDataOption: "INSERT_ROWS",
         });
         const res = await sheetsFetch(
-          `${loc.base}/values/${encodeURIComponent(`${loc.range}!A1`)}:append?${params}`,
+          `${loc.base}/values/${encodeURIComponent(`${loc.range}!${span}`)}:append?${params}`,
           { method: "POST", token: loc.token, body: { values: [row] } },
           ctx,
         );
@@ -402,10 +411,15 @@ function buildAppendTool(
           return toolFailure(httpMessage(res.status));
         const updated = (res.json as { updates?: { updatedRange?: unknown } })
           ?.updates?.updatedRange;
-        const at =
+        const m =
           typeof updated === "string"
-            ? /!\$?[A-Z]+\$?(\d+)/.exec(updated)?.[1]
+            ? /!\$?([A-Z]+)\$?(\d+)/.exec(updated)
             : null;
+        const at = m?.[2];
+        if (m && m[1] !== columnLetter(header.first))
+          return toolFailure(
+            `The row was added at ${m[1]}${at}, but the table's first column is ${columnLetter(header.first)}, so its values may sit under the wrong columns. Ask the operator to check row ${at}.`,
+          );
         return at
           ? `Added the row to the spreadsheet (row ${at}).`
           : "Added the row to the spreadsheet.";

@@ -45,6 +45,14 @@ function parseRange(range: string): {
       endRow: Number(rows[2]),
       col: null,
     };
+  const span = /^([A-Z]+)(\d+):([A-Z]+)(\d+)$/.exec(ref);
+  if (span)
+    return {
+      title,
+      startRow: Number(span[2]),
+      endRow: Number(span[4]),
+      col: colIndex(span[1] as string),
+    };
   const cell = /^([A-Z]+)(\d+)$/.exec(ref);
   if (cell)
     return {
@@ -144,14 +152,21 @@ class FakeSheets {
     if (!tab)
       return this.json(400, { error: { message: "Unable to parse range" } });
     if (values[2] && method === "POST") {
-      const row = ((body as { values: unknown[][] }).values[0] ?? []).map((v) =>
-        this.store(v, mode),
+      // Like Google: the table is found from the range, and the new row starts at the table's first
+      // column, whatever column the range named.
+      const header = tab.rows[0] ?? [];
+      let start = r.col ?? 0;
+      while (start < header.length && !header[start]) start++;
+      const given = ((body as { values: unknown[][] }).values[0] ?? []).map(
+        (v) => this.store(v, mode),
       );
+      const row = [...Array.from({ length: start }, () => ""), ...given];
       tab.rows.push(row);
       this.writes++;
       const n = tab.rows.length;
+      const letter = String.fromCharCode(65 + start);
       return this.json(200, {
-        updates: { updatedRange: `'${tab.title}'!A${n}:Z${n}` },
+        updates: { updatedRange: `'${tab.title}'!${letter}${n}:Z${n}` },
       });
     }
     const end = Math.min(r.endRow ?? tab.rows.length, tab.rows.length);
@@ -275,7 +290,7 @@ describe("google sheets: append", () => {
       ],
     });
     expect(out).toContain("row 5");
-    expect(fake.tab(0).rows[4]).toEqual(["Carla", "5511988887777"]);
+    expect(fake.tab(0).rows[4]).toEqual(["Carla", "5511988887777", "", ""]);
     const append = fake.calls.find((c) => c.url.includes(":append"));
     expect(
       new URL(append?.url ?? "").searchParams.get("valueInputOption"),
@@ -305,6 +320,28 @@ describe("google sheets: append", () => {
     expect(fake.tab(0).rows.length).toBe(4);
   });
 
+  test("a header that starts after column A still gets each value under its own name", async () => {
+    const { fake, tool } = setup(["sheets_append_row"], {
+      tabs: [
+        {
+          sheetId: 0,
+          title: "Leads",
+          rows: [
+            ["", "Nome", "Telefone"],
+            ["", "Ana", "1"],
+          ],
+        },
+      ],
+    });
+    await tool("sheets_append_row")({
+      values: [
+        { column: "Telefone", value: "2" },
+        { column: "Nome", value: "Bia" },
+      ],
+    });
+    expect(fake.tab(0).rows[2]).toEqual(["", "Bia", "2"]);
+  });
+
   test("the tab is found by its id, so a renamed tab keeps working", async () => {
     const renamed = leads();
     renamed.title = "Leads 2026 (it's new)";
@@ -312,7 +349,7 @@ describe("google sheets: append", () => {
     await tool("sheets_append_row")({
       values: [{ column: "Nome", value: "Davi" }],
     });
-    expect(fake.tab(0).rows[4]).toEqual(["Davi"]);
+    expect(fake.tab(0).rows[4]).toEqual(["Davi", "", "", ""]);
   });
 
   test("a tab without a header row is refused before any write", async () => {

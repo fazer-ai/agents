@@ -2,6 +2,7 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -50,15 +51,17 @@ function Harness({
   initial,
   l,
   onCfg,
+  credentialRef = "vault:3",
 }: {
   initial: Record<string, unknown>;
   l: SheetsLoaders;
   onCfg: (c: Record<string, unknown>) => void;
+  credentialRef?: string;
 }) {
   const [cfg, setCfgState] = useState(initial);
   return (
     <SheetsConfigEditor
-      credentialRef="vault:3"
+      credentialRef={credentialRef}
       cfg={cfg}
       setCfg={(patch) =>
         setCfgState((c) => {
@@ -199,6 +202,41 @@ describe("the Sheets settings", () => {
     expect(
       screen.getByRole("textbox", { name: "Spreadsheet URL or id" }),
     ).toBeTruthy();
+  });
+
+  test("another credential drops the list, including an answer still on its way", async () => {
+    let release: (v: Array<{ id: string; name: string }>) => void = () => {};
+    const { l } = loaders({
+      spreadsheets: (ref) =>
+        ref === "vault:3"
+          ? new Promise((res) => {
+              release = res;
+            })
+          : Promise.resolve([]),
+    });
+    const view = render(<Harness initial={{}} l={l} onCfg={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Load" }));
+    view.rerender(
+      <Harness initial={{}} l={l} onCfg={() => {}} credentialRef="vault:4" />,
+    );
+    await act(async () => {
+      release([{ id: SID, name: "Old account sheet" }]);
+      await new Promise((r) => setTimeout(r, 10));
+    });
+    expect(screen.queryByText("Old account sheet")).toBeNull();
+  });
+
+  test("a list already shown goes away when the credential changes", async () => {
+    const { l } = loaders();
+    const view = render(<Harness initial={{}} l={l} onCfg={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Load" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /CRM/ })).toBeTruthy(),
+    );
+    view.rerender(
+      <Harness initial={{}} l={l} onCfg={() => {}} credentialRef="vault:4" />,
+    );
+    expect(screen.queryByRole("button", { name: /CRM/ })).toBeNull();
   });
 
   test("the warning that the agent reads the whole tab is on screen", () => {

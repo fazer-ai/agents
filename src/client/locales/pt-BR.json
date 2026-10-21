@@ -2806,6 +2806,7 @@
       "selectAll": "Selecionar tudo",
       "showConfig": "Configurações"
     },
+    "toolsSettingsNotSaved": "A seleção de ferramentas foi salva, mas as configurações das ferramentas não.",
     "transferWithSummary": "Publicar um resumo privado antes de transferir para um humano",
     "tts": "Respostas em áudio (text-to-speech)",
     "ttsCheckEnforce": "Regenerar",

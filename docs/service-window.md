@@ -20,7 +20,7 @@ WhatsApp only allows free-form business messages within 24h of the customer's la
 
 ## Which template an occasion sends
 
-Every proactive caller names its kind on the nudge (`AgentNudge.template`, never rendered to the model): `followup` (inactivity follow-up), `snoozed_followup`, `appointment_reminder` (with its offset and appointment), `inbound_event`, `document_approval`, and `channel_redirect` (the WhatsApp link follow-up, which sends through `buildTemplatePayload` directly). `resolveTemplateChoice` picks, first match wins: the reminder's own offset in `reminderTemplates`, the kind in `templates`, then the default (`templateName` and its params). A kind with neither becomes the explained note, so an agent can send templates for reminders only and leave the rest as notes.
+Every proactive caller names its kind on the nudge (`AgentNudge.template`, never rendered to the model): `followup` (inactivity follow-up), `snoozed_followup`, `appointment_reminder` (with its offset and appointment), `inbound_event`, and `channel_redirect` (the WhatsApp link follow-up, which sends through `buildTemplatePayload` directly). `resolveTemplateChoice` picks, first match wins: the reminder's own offset in `reminderTemplates`, the kind in `templates`, then the default (`templateName` and its params). A kind with neither becomes the explained note, so an agent can send templates for reminders only and leave the rest as notes. An approved document is not a kind: it travels as an attachment, which outside the window becomes the approval's own note.
 
 ## Configuration
 

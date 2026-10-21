@@ -6818,6 +6818,44 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
       );
     });
 
+    test("an occasion retired while the template's definition is read sends nothing", async () => {
+      await withGuardrails(
+        { enabled: false },
+        async () => {
+          await seedConv(7565, null, new Date(Date.now() - 48 * 3_600_000));
+          const s = templateStub();
+          let retired = false;
+          (
+            s.client as unknown as Record<string, unknown>
+          ).listTemplateDefinitions = async () => {
+            retired = true;
+            return [parseTemplateDefinition(LEMBRETE)];
+          };
+          const outcome = await runAgentNudge({
+            tenantId,
+            threadId: `${tenantId}:${instanceId}:7565`,
+            nudge: {
+              source: "appointment_reminder",
+              kind: "reminder",
+              template: {
+                kind: "appointment_reminder",
+                appointment: {
+                  startISO: "2026-10-23T01:30:00Z",
+                  calendarLabel: "centro",
+                },
+              },
+            },
+            stillWanted: async () => !retired,
+            base: appDb,
+            deps: nudgeDeps(s),
+          });
+          expect(outcome).not.toBe("templated");
+          expect(s.payloads).toEqual([]);
+        },
+        settings,
+      );
+    });
+
     test("a follow-up with no template of its own and no default stays an explained note", async () => {
       await withGuardrails(
         { enabled: false },

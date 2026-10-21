@@ -3,8 +3,10 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { AppError } from "@/lib/errors";
-import { updateAgent } from "@/modules/agents/service";
+import { createAgent, updateAgent } from "@/modules/agents/service";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
+import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
+import { agentSettingsSet } from "@/modules/mcp/write";
 import {
   assertServiceWindowTemplatesUsable,
   assertSettingsServiceWindow,
@@ -259,6 +261,64 @@ describe.skipIf(!dbUp)("service-window templates at save", () => {
       select: { settings: true },
     });
     expect(row.settings).toEqual({});
+  });
+
+  test("MCP refuses a malformed choice before its merge would drop it, in the preview and the apply", async () => {
+    const principal: VerifiedToken = {
+      userId: 1n,
+      tenantId,
+      role: "TENANT_ADMIN",
+      scopes: ["mcp:read", "mcp:write"],
+      clientId: "c",
+      jti: "j",
+    };
+    for (const dry_run of [true, false]) {
+      const r = await agentSettingsSet(
+        principal,
+        {
+          agent_id: String(agentId),
+          serviceWindow: { templates: { followup: { name: "" } } },
+          dry_run,
+        },
+        { base: suDb },
+      );
+      expect(r.ok ? "" : r.error).toContain("serviceWindow.templates.followup");
+    }
+    const row = await suDb.agent.findUniqueOrThrow({
+      where: { id: agentId },
+      select: { settings: true },
+    });
+    expect(row.settings).toEqual({});
+  });
+
+  test("creating an agent applies the same rules", async () => {
+    const e = await refusal(
+      createAgent(
+        ctx(),
+        {
+          name: "Criado com variável de agendamento",
+          systemPrompt: "x",
+          modelConfig: { provider: "openai", model: "gpt-5.4-mini" },
+          settings: {
+            serviceWindow: {
+              templateName: "chatwoot_test",
+              templateParams: ["{{data_agendamento}}", "b", "c", "d"],
+            },
+          },
+        },
+        suDb,
+      ),
+    );
+    expect(e?.translationKey).toBe("errors.serviceWindowAppointmentVar");
+  });
+
+  test("an approved document is not a kind: it travels as an attachment", () => {
+    expect(() =>
+      assertSettingsServiceWindow(
+        { serviceWindow: { templates: { document_approval: ok } } },
+        {},
+      ),
+    ).toThrow(AppError);
   });
 
   test("a kind the product does not have is refused", () => {

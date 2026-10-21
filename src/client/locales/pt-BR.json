@@ -2665,7 +2665,6 @@
     "svcWindowHeaderParam": "Cabeçalho",
     "svcWindowHint": "O WhatsApp só permite mensagens livres dentro de 24h da última mensagem do cliente. Fora desse prazo, mensagens proativas exigem um template aprovado (HSM).",
     "svcWindowHours": "Janela (horas)",
-    "svcWindowKindDocument": "Documento aprovado",
     "svcWindowKindFollowup": "Follow-up de inatividade",
     "svcWindowKindInbound": "Evento de integração",
     "svcWindowKindRedirect": "Link de troca de canal",

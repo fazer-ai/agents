@@ -673,6 +673,22 @@ export async function agentSettingsSet(
     // does nothing. Asked of the PATCH, the only place the key still exists.
     assertSettingsRetiredLabelKeys(patch);
     assertSettingsRemovedFields(patch);
+    // NOTE: same reason: the service window's reader drops an unknown kind, a bad offset and a
+    // malformed choice, so after the merge `templates.followup: { name: "" }` would remove the
+    // override and answer ok.
+    if (patch.serviceWindow) {
+      const stored = (current.settings as Record<string, unknown> | null)
+        ?.serviceWindow;
+      assertSettingsServiceWindow(
+        {
+          serviceWindow: {
+            ...(stored && typeof stored === "object" ? stored : {}),
+            ...patch.serviceWindow,
+          },
+        },
+        current.settings,
+      );
+    }
     assertSettingsProtectedLabels(patch, current.settings);
     // A delay's range follows its unit, which the arguments cannot publish and a patch may name only
     // half of: asked of the raw block before the merge, whose readers would clamp `40` under a stored
@@ -745,7 +761,6 @@ export async function agentSettingsSet(
         current.settings,
         base,
       );
-      assertSettingsServiceWindow(nextBag, current.settings);
       await assertServiceWindowTemplatesUsable(
         ctx,
         agentId,

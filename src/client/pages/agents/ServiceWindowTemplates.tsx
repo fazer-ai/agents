@@ -454,8 +454,6 @@ export function ServiceWindowTemplates({
         return t("editor.svcWindowKindReminder", "Appointment reminder");
       case "inbound_event":
         return t("editor.svcWindowKindInbound", "Integration event");
-      case "document_approval":
-        return t("editor.svcWindowKindDocument", "Approved document");
       case "channel_redirect":
         return t("editor.svcWindowKindRedirect", "Channel redirect link");
     }

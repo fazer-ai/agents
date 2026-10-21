@@ -1,12 +1,13 @@
 // WHICH PROACTIVE SEND this is. Each kind may name its own template; a kind without one uses the
 // agent's default (`templateName` and its params), which is what every kind used before kinds existed.
-// Its own file, free of imports, because the settings schema and the editor read it too.
+// An approved document is not one: it travels as an attachment, which outside the window becomes the
+// approval's own note, never a template. Its own file, free of imports, because the settings schema
+// and the editor read it too.
 export const PROACTIVE_KINDS = [
   "followup",
   "snoozed_followup",
   "appointment_reminder",
   "inbound_event",
-  "document_approval",
   "channel_redirect",
 ] as const;
 export type ProactiveKind = (typeof PROACTIVE_KINDS)[number];

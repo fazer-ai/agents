@@ -2582,7 +2582,6 @@
     "svcWindowHeaderParam": "Header",
     "svcWindowHint": "WhatsApp only allows free-form messages within 24h of the customer's last message. Outside it, proactive messages need an approved template (HSM).",
     "svcWindowHours": "Window (hours)",
-    "svcWindowKindDocument": "Approved document",
     "svcWindowKindFollowup": "Inactivity follow-up",
     "svcWindowKindInbound": "Integration event",
     "svcWindowKindRedirect": "Channel redirect link",

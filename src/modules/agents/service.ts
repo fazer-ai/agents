@@ -2430,6 +2430,7 @@ export function assertAgentCreatable(input: AgentCreate): {
   assertSettingsToolPreconditions(input.settings, undefined);
   assertSettingsContactAuthRule(input.settings, undefined);
   assertSettingsContactFields(input.settings, undefined);
+  assertSettingsServiceWindow(input.settings, undefined);
   assertSettingsRetiredLabelKeys(input.settings);
   stripRetiredNoteFlagInPlace(input.settings);
   stripDerivedFullDetailInPlace(input.settings);

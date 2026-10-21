@@ -2646,6 +2646,20 @@ async function runAgentNudgeBody(
     // and `followUpHandler` would write its watermark back. Before the probe, so a retired run neither
     // spends the round trip nor returns the retry `live-unavailable` asks for. The later asks cover
     // later model calls (the guardrail judge, the screening inside deliverPromisedLine).
+    // The template's synced definition, read BEFORE the fences below and never between them and the
+    // send: with it the dashboard shows the text the customer reads and a NAMED template is keyed by
+    // name, and without it the send still goes, positional. Best-effort.
+    let templateDefinitions: TemplateDefinition[] = [];
+    if (sendModeNow() === "template" && cfg.chatwootInboxId !== null) {
+      try {
+        templateDefinitions = await client.listTemplateDefinitions(
+          cfg.chatwootInboxId,
+        );
+      } catch {
+        templateDefinitions = [];
+      }
+    }
+
     if (!(await stillWanted())) return refused(standDown());
 
     let canMessagePost: boolean;
@@ -2987,23 +3001,11 @@ async function runAgentNudgeBody(
     }
     if (canMessagePre && canMessagePost) {
       if (sendModeNow() === "template") {
-        // Best-effort: with the synced definition the dashboard shows the text the customer
-        // reads and a NAMED template is keyed by name; without it the send still goes, positional.
-        let definitions: TemplateDefinition[] = [];
-        if (cfg.chatwootInboxId !== null) {
-          try {
-            definitions = await client.listTemplateDefinitions(
-              cfg.chatwootInboxId,
-            );
-          } catch {
-            definitions = [];
-          }
-        }
         const payload = buildTemplatePayload(
           cfg.serviceWindowConfig,
           cfg.contactName,
           templateOccasion,
-          definitions,
+          templateDefinitions,
         );
         if (payload) {
           delivered = true;

@@ -382,6 +382,15 @@ describe.skipIf(!dbUp)("service-window templates at save", () => {
     expect(fresh?.translationKey).toBe("errors.serviceWindowTemplateNotFound");
   });
 
+  test("a blank name is a malformed choice, not a removal", () => {
+    expect(() =>
+      assertSettingsServiceWindow(
+        { serviceWindow: { templates: { followup: { name: "   " } } } },
+        {},
+      ),
+    ).toThrow(AppError);
+  });
+
   test("an approved document is not a kind: it travels as an attachment", () => {
     expect(() =>
       assertSettingsServiceWindow(

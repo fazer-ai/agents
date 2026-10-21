@@ -247,6 +247,12 @@ describe("appointment placeholders", () => {
     expect(v.data_agendamento).toBe("22/10/2026");
   });
 
+  test("an explicit +00:00 is a wall clock, not UTC", () => {
+    const v = appointmentVars(facts("2026-12-22T01:30:00+00:00"), "pt_BR");
+    expect(v.data_agendamento).toBe("22/12/2026");
+    expect(v.hora_agendamento).toBe("01:30");
+  });
+
   test("a start in UTC is read in the agent's zone, which can be the previous day", () => {
     const v = appointmentVars(facts("2026-10-23T01:30:00Z"), "pt_BR");
     expect(v.data_agendamento).toBe("22/10/2026");

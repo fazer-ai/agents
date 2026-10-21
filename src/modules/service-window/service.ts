@@ -276,10 +276,12 @@ export function appointmentVars(
       return out;
     }
     const m = STATED_OFFSET.exec(facts.startISO);
-    const offset = m
-      ? (m[1] === "-" ? -1 : 1) * (Number(m[2]) * 60 + Number(m[3]))
-      : null;
-    if (offset !== null && offset !== 0) {
+    // `+00:00` is a wall clock (London in winter); `Z` and `-00:00` (ISO 8601's "unknown") are not.
+    const offset =
+      m && !(m[1] === "-" && m[2] === "00" && m[3] === "00")
+        ? (m[1] === "-" ? -1 : 1) * (Number(m[2]) * 60 + Number(m[3]))
+        : null;
+    if (offset !== null) {
       // NOTE: Shifted to the stated wall clock and printed as UTC: the payload carries an offset, not
       // an IANA zone, and the offset is what the calendar said the customer's hour is.
       instant = new Date(ms + offset * 60_000);

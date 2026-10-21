@@ -403,7 +403,10 @@ const signature = z.looseObject({
 });
 
 export const templateChoice = z.looseObject({
-  name: z.string().min(1).describe("approved HSM name"),
+  name: z
+    .string()
+    .refine((s) => s.trim() !== "", "blank")
+    .describe("approved HSM name"),
   language: z.string().optional().describe('default "pt_BR"'),
   category: z.string().optional().describe('default "UTILITY"'),
   params: z.array(z.string()).optional().describe("body {{1}}.. in order"),

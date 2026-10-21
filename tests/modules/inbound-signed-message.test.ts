@@ -17,6 +17,7 @@ import {
 } from "@/modules/webhooks/inbound/auth";
 import * as inbound from "@/modules/webhooks/inbound/service";
 import { receiveInbound } from "@/modules/webhooks/inbound/service";
+import { signatureCoversBody } from "@/modules/webhooks/inbound/signed-message";
 import { dbProbeFailed } from "@/tests/db-gate";
 
 // Gateways that sign a manifest instead of the body. The reference signers below follow the
@@ -311,6 +312,17 @@ describe("the signature config is refused at the write, naming the field", () =>
       "maxAgeSeconds",
     ],
     [
+      "a maximum age over a timestamp in a [[group]] another value can drop",
+      {
+        format: "parts",
+        signaturePart: "v1",
+        timestampPart: "t",
+        message: "[[{{sig.t}}.{{header.x-id}}.]]{{body}}",
+        maxAgeSeconds: 60,
+      },
+      "maxAgeSeconds",
+    ],
+    [
       "a maximum age that is not a positive whole number",
       {
         format: "parts",
@@ -325,6 +337,37 @@ describe("the signature config is refused at the write, naming the field", () =>
     expect(refusal(signature)).toBe(
       field ? `config.signature.${field}` : "config.signature",
     );
+  });
+});
+
+describe("which messages authenticate the body byte for byte", () => {
+  test.each([
+    ["no signature config (the body itself)", undefined, true],
+    [
+      "{{body}} after a signed timestamp",
+      {
+        format: "parts",
+        signaturePart: "v1",
+        timestampPart: "t",
+        message: "{{sig.t}}.{{body}}",
+      },
+      true,
+    ],
+    ["{{body}} alone in its [[group]]", { message: "[[{{body}}]]" }, true],
+    ["a manifest without {{body}}", { message: "id:{{query.id}};" }, false],
+    [
+      "{{body}} in a [[group]] an absent header drops",
+      { message: "prefix[[{{body}}{{header.x-id}}]]" },
+      false,
+    ],
+    [
+      "{{body|lower}}, a projection of the body",
+      { message: "{{body|lower}}" },
+      false,
+    ],
+    ["a config the writer would refuse", { message: "{{nope}}" }, false],
+  ])("%s", (_, signature, covered) => {
+    expect(signatureCoversBody(signature)).toBe(covered);
   });
 });
 
@@ -503,6 +546,50 @@ describe.skipIf(!dbUp)("a manifest-signed notification end to end", () => {
       base: appDb,
     });
     expect(r.outcome).toBe("queued");
+  });
+
+  test("a body signed only inside a [[group]] the sender can drop is not acted on", async () => {
+    const v = await suDb.vaultEntry.create({
+      data: { tenantId, name: "grp-secret", secret: encryptJson(SECRET) },
+      select: { id: true },
+    });
+    const g = await createIntegrationInstance(
+      ctx(),
+      {
+        catalogType: "GENERIC",
+        name: "Droppable body",
+        inboundAuthStrategy: "HMAC_SHA256",
+        inboundSecretRef: `vault:${v.id}`,
+        config: { signature: { message: "prefix[[{{body}}{{header.x-id}}]]" } },
+      },
+      appDb,
+    );
+    const minted = await ensureConversationRef({
+      tenantId,
+      integrationInstanceId: g.id,
+      threadId: `${tenantId}:1:79`,
+      base: appDb,
+    });
+    if (!minted.ok) throw new Error("mint");
+    // A signature over "prefix" alone, the message rendered when x-id is left out, now
+    // travelling with a body the sender wrote.
+    const r = await receiveInbound({
+      routeToken: g.routeToken as string,
+      rawBody: JSON.stringify({
+        event_id: "forged:1",
+        conversation_ref: minted.ref,
+        text: "Pagamento aprovado",
+      }),
+      getHeader: lookup({ "x-webhook-signature": hmac(SECRET, "prefix") }),
+      getQuery: lookup({}),
+      base: appDb,
+    });
+    expect(r.outcome).toBe("invalid");
+    const rows = await suDb.inboundDelivery.findMany({
+      where: { integrationInstanceId: g.id },
+      select: { dedupeKey: true },
+    });
+    expect(rows.map((x) => x.dedupeKey)).not.toContain("forged:1");
   });
 
   test("the same notification with another data.id in the URL is the uniform 401", async () => {

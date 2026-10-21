@@ -179,10 +179,10 @@ export function parseSignatureConfig(
         problem: "needs a timestamp part to measure the age from",
       };
     }
-    if (!covers(groups, "sig", timestampPart)) {
+    if (!covers(groups, "sig", timestampPart, false)) {
       return {
         field: "maxAgeSeconds",
-        problem: `needs {{sig.${timestampPart}}} in the message: a timestamp the signature does not cover can be replaced`,
+        problem: `needs {{sig.${timestampPart}}} in the message, outside any [[group]] shared with another value: a timestamp the signature does not cover can be replaced`,
       };
     }
     maxAgeSeconds = v;
@@ -190,22 +190,35 @@ export function parseSignatureConfig(
   return { format, signaturePart, timestampPart, maxAgeSeconds, groups };
 }
 
-function covers(groups: Group[], source: Source, name = ""): boolean {
-  return groups.some((g) =>
-    g.pieces.some(
-      (p) => p.kind === "value" && p.source === source && p.name === name,
-    ),
-  );
+// Whether every message this config renders carries that value: it sits in the required part, or
+// alone in its [[group]] (which then drops only when the value itself is absent, and whoever reads
+// the value refuses an absent one). `lossless` also refuses `|lower`, which signs a projection.
+function covers(
+  groups: Group[],
+  source: Source,
+  name: string,
+  lossless: boolean,
+): boolean {
+  return groups.some((g) => {
+    const values = g.pieces.filter((p) => p.kind === "value");
+    return values.some(
+      (p) =>
+        p.source === source &&
+        p.name === name &&
+        !(lossless && p.lower) &&
+        (!g.optional || values.length === 1),
+    );
+  });
 }
 
-// Whether a request this config authenticates also authenticates its BODY. A manifest that signs
-// only an id leaves the body free to be replaced under a captured signature, so whatever acts on the
-// body must not act on it.
+// Whether a request this config authenticates also authenticates its BODY, byte for byte. A
+// manifest that signs only an id, or signs the body only in a group another header can drop, or
+// signs it lowercased, leaves the body free to change under a captured signature.
 export function signatureCoversBody(raw: unknown): boolean {
   const parsed = parseSignatureConfig(raw);
   if (parsed === undefined) return true;
   if (isSignatureConfigProblem(parsed)) return false;
-  return covers(parsed.groups, "body");
+  return covers(parsed.groups, "body", "", true);
 }
 
 export function isSignatureConfigProblem(

@@ -9,6 +9,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { useState } from "react";
+import { RangeHolds, useRangeHeld } from "@/client/components";
 import {
   SERVICE_WINDOW_FORM_DEFAULTS,
   type ServiceWindowForm,
@@ -144,6 +145,38 @@ describe("a stored template the inbox no longer has", () => {
     fireEvent.change(picker, { target: { value: "" } });
     await waitFor(() => expect(latest.def.name).toBe(""));
     expect(serviceWindowToStored(latest).templateName).toBeNull();
+  });
+});
+
+describe("two reminder rows for one offset", () => {
+  test("hold Save and say why", async () => {
+    stubTemplates();
+    let held = false;
+    function Probe() {
+      held = useRangeHeld();
+      return null;
+    }
+    const row = {
+      offset: "24",
+      choice: { ...SERVICE_WINDOW_FORM_DEFAULTS.def, name: "x" },
+    };
+    render(
+      <RangeHolds>
+        <ServiceWindowTemplates
+          agentId="1"
+          value={{
+            ...structuredClone(SERVICE_WINDOW_FORM_DEFAULTS),
+            reminderTemplates: [row, { ...row }],
+          }}
+          onChange={() => {}}
+        />
+        <Probe />
+      </RangeHolds>,
+    );
+    await waitFor(() => expect(held).toBe(true));
+    expect(
+      screen.queryAllByText("Another row already has this offset.").length,
+    ).toBe(2);
   });
 });
 

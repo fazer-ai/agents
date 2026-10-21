@@ -106,6 +106,17 @@ type NumberInputProps = Omit<
   step?: number | "any";
 };
 
+// For a rule the range cannot express (two rows with the same key), held the same way: the nearest
+// <RangeHolds> keeps Save from running while `held` is true.
+export function useHoldSave(held: boolean): void {
+  const id = useId();
+  const holds = useContext(RangeHoldsContext);
+  useEffect(() => {
+    holds?.report(id, held);
+  }, [holds, id, held]);
+  useEffect(() => () => holds?.report(id, false), [holds, id]);
+}
+
 export const NumberInput = forwardRef<HTMLInputElement, NumberInputProps>(
   ({ range, value, optional = false, step, errorMessage, ...props }, ref) => {
     const { t } = useTranslation();

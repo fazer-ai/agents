@@ -2589,6 +2589,7 @@
     "svcWindowKindSnoozed": "Snoozed follow-up",
     "svcWindowLang": "Template language",
     "svcWindowNoTemplates": "No approved templates found for this agent's inbox. Type a name manually.",
+    "svcWindowOffsetRepeated": "Another row already has this offset.",
     "svcWindowOwnTemplate": "Choose a template for this kind",
     "svcWindowParamHint": "Text or variables: {{primeiro_nome}}, {{nome_contato}}.",
     "svcWindowParamHintReminder": "Text or variables: {{primeiro_nome}}, {{nome_contato}}, {{data_agendamento}}, {{hora_agendamento}}, {{dia_semana_agendamento}}, {{agenda}}.",

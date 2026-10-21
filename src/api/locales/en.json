@@ -312,6 +312,7 @@
     "serviceWindowKind": "{{where}}: not a proactive kind ({{kinds}}).",
     "serviceWindowReminderChoice": "{{where}}: not a template choice ({ name, language, params, … }).",
     "serviceWindowReminderOffset": "{{where}}: the key is a reminder offset in hours.",
+    "serviceWindowReminderOffsetRepeated": "{{where}}: another key already names the reminder {{hours}} hours before.",
     "serviceWindowTemplateBlankBody": "{{where}}: body parameter {{index}} of template \"{{name}}\" is blank.",
     "serviceWindowTemplateBlankHeader": "{{where}}: header parameter {{index}} of template \"{{name}}\" is blank.",
     "serviceWindowTemplateBodyCount": "{{where}}: template \"{{name}}\" takes {{want}} body parameter(s), {{got}} configured.",

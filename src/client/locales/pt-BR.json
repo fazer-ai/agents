@@ -2672,6 +2672,7 @@
     "svcWindowKindSnoozed": "Follow-up de conversa adiada",
     "svcWindowLang": "Idioma do template",
     "svcWindowNoTemplates": "Nenhum template aprovado encontrado para a inbox deste agente. Digite um nome manualmente.",
+    "svcWindowOffsetRepeated": "Outra linha já tem esta antecedência.",
     "svcWindowOwnTemplate": "Escolher um template para este tipo",
     "svcWindowParamHint": "Texto ou variáveis: {{vars}}.",
     "svcWindowParamHintReminder": "Texto ou variáveis: {{vars}}.",

@@ -2641,13 +2641,6 @@ async function runAgentNudgeBody(
     // does not reach the conversation we just handed to one. Every OTHER proactive text is decided here.
     const handedOff = handoffAnsweredTheTurn(handoffState);
 
-    // NOTE: answers for the GENERATION, which every path pays for, and sits before the ownership probe
-    // because everything below WRITES to the conversation. Six ends below reach `applyPostActions`, and
-    // three post no message (the promised line, a chosen silence, a suppressed reply), so a check among
-    // the SENDS alone would let a retired follow-up relabel and resolve a conversation /reset cleared,
-    // and `followUpHandler` would write its watermark back. Before the probe, so a retired run neither
-    // spends the round trip nor returns the retry `live-unavailable` asks for. The later asks cover
-    // later model calls (the guardrail judge, the screening inside deliverPromisedLine).
     // The template's synced definition, read BEFORE the fences below and never between them and the
     // send: with it the dashboard shows the text the customer reads and a NAMED template is keyed by
     // name, and without it the send still goes, positional. Best-effort.
@@ -2673,6 +2666,13 @@ async function runAgentNudgeBody(
       }
     }
 
+    // NOTE: answers for the GENERATION, which every path pays for, and sits before the ownership probe
+    // because everything below WRITES to the conversation. Six ends below reach `applyPostActions`, and
+    // three post no message (the promised line, a chosen silence, a suppressed reply), so a check among
+    // the SENDS alone would let a retired follow-up relabel and resolve a conversation /reset cleared,
+    // and `followUpHandler` would write its watermark back. Before the probe, so a retired run neither
+    // spends the round trip nor returns the retry `live-unavailable` asks for. The later asks cover
+    // later model calls (the guardrail judge, the screening inside deliverPromisedLine).
     if (!(await stillWanted())) return refused(standDown());
 
     let canMessagePost: boolean;

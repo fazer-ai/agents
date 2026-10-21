@@ -73,11 +73,23 @@ export function assertSettingsServiceWindow(
   }
   const byOffset = raw?.reminderTemplates;
   if (byOffset && typeof byOffset === "object") {
+    const seen = new Set<number>();
     for (const [offset, value] of Object.entries(
       byOffset as Record<string, unknown>,
     )) {
       const hours = Number(offset);
       const where = `serviceWindow.reminderTemplates.${offset}`;
+      // "24" and "24.0" are one reminder, and the reader would keep only one of them.
+      if (seen.has(hours)) {
+        throw new AppError(
+          `${where}: another key already names the reminder ${hours} hours before`,
+          400,
+          "errors.serviceWindowReminderOffsetRepeated",
+          { where, hours },
+          where,
+        );
+      }
+      seen.add(hours);
       if (!inRange(hours, REMINDER_OFFSET_RANGE)) {
         throw new AppError(
           `${where}: the key is a reminder offset in hours`,

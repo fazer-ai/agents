@@ -56,6 +56,7 @@ export {
   numberProblem,
   RangeHolds,
   RangeHoldsSuspended,
+  useHoldSave,
   useRangeHeld,
 } from "./NumberInput";
 export { OutOfHoursBadge } from "./OutOfHoursBadge";

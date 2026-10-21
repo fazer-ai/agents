@@ -428,6 +428,15 @@ describe.skipIf(!dbUp)("service-window templates at save", () => {
     expect(fresh?.translationKey).toBe("errors.serviceWindowTemplateNotFound");
   });
 
+  test("two keys for one offset are refused, since only one would be kept", () => {
+    expect(() =>
+      assertSettingsServiceWindow(
+        { serviceWindow: { reminderTemplates: { "24": ok, "24.0": ok } } },
+        {},
+      ),
+    ).toThrow(AppError);
+  });
+
   test("a blank name is a malformed choice, not a removal", () => {
     expect(() =>
       assertSettingsServiceWindow(

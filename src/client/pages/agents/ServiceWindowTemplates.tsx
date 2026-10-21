@@ -7,6 +7,7 @@ import {
   Input,
   NumberInput,
   Select,
+  useHoldSave,
 } from "@/client/components";
 import { api } from "@/client/lib/api";
 import { REMINDER_OFFSET_RANGE } from "@/modules/integrations/calendar-config-ranges";
@@ -464,6 +465,17 @@ export function ServiceWindowTemplates({
       cancelled = true;
     };
   }, [agentId]);
+  // Two rows for one offset would store one of them and drop the other without a word.
+  const offsetCounts = new Map<number, number>();
+  for (const { offset } of value.reminderTemplates) {
+    const hours = Number(offset);
+    if (offset.trim() !== "" && Number.isFinite(hours)) {
+      offsetCounts.set(hours, (offsetCounts.get(hours) ?? 0) + 1);
+    }
+  }
+  const repeated = (offset: string) =>
+    offset.trim() !== "" && (offsetCounts.get(Number(offset)) ?? 0) > 1;
+  useHoldSave([...offsetCounts.values()].some((n) => n > 1));
   const kindLabel = (k: ProactiveKind): string => {
     switch (k) {
       case "followup":
@@ -576,6 +588,14 @@ export function ServiceWindowTemplates({
                         >
                           <NumberInput
                             range={REMINDER_OFFSET_RANGE}
+                            errorMessage={
+                              repeated(row.offset)
+                                ? t(
+                                    "editor.svcWindowOffsetRepeated",
+                                    "Another row already has this offset.",
+                                  )
+                                : undefined
+                            }
                             value={row.offset}
                             onChange={(e) => {
                               const next = [...value.reminderTemplates];

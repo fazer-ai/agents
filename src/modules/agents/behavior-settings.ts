@@ -365,7 +365,9 @@ export function mergeBehaviorSettings(
     }
   }
 
-  // Write the normalized blocks back, derived from the key list so a new block cannot miss it.
+  // Write the normalized blocks back, derived from the key list so a new block cannot miss it, and
+  // only the blocks the patch named: one it did not name stays exactly as stored, absent included,
+  // since written through its reader it would carry today's defaults and stop following them.
   // The exceptions are handled after the loop.
   const normalized = readBehaviorSettings(next) as unknown as Record<
     string,
@@ -376,15 +378,19 @@ export function mergeBehaviorSettings(
     "grounding",
     ...TOOL_KEYED_BLOCKS,
   ]);
+  const named = (key: string) =>
+    (patch as Record<string, unknown>)[key] !== undefined;
   for (const key of BEHAVIOR_SETTINGS_KEYS) {
-    if (WRITTEN_BACK_SEPARATELY.has(key)) continue;
+    if (WRITTEN_BACK_SEPARATELY.has(key) || !named(key)) continue;
     next[key] = normalized[key];
   }
   // Through the storable projection, not the read shape: `observability.fullDetail` is DERIVED, and
   // this line is what would persist it.
-  next.observability = storableObservability(
-    normalized.observability as ReturnType<typeof readObservabilityConfig>,
-  );
+  if (named("observability")) {
+    next.observability = storableObservability(
+      normalized.observability as ReturnType<typeof readObservabilityConfig>,
+    );
+  }
   // grounding: only persist when a valid distance is set; otherwise leave whatever was there
   // (a null maxDistance means "no grounding filter" — represent it explicitly when the patch
   // touched grounding so the operator can clear it).

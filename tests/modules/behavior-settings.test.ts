@@ -60,6 +60,35 @@ describe("behavior-settings — the merge stores every block it owns", () => {
 
 // vision is part of the shared behavior surface (so it is settable via the MCP agent_settings_set
 // partial-merge path, like stt/tts). These cover the wiring without a DB.
+// A BLOCK THE PATCH DOES NOT NAME IS STORED EXACTLY AS IT WAS, absent included. Written back through
+// its reader, it would carry today's defaults, which then never follow a later change of a default,
+// and the stored bag would stop telling a chosen value from a default one.
+describe("behavior-settings — the merge leaves every other block alone", () => {
+  for (const key of BEHAVIOR_SETTINGS_KEYS) {
+    test(`a patch on ${key} adds no other block`, () => {
+      const merged = mergeBehaviorSettings({}, { [key]: {} });
+      expect(Object.keys(merged)).toEqual([key]);
+    });
+  }
+
+  test("a stored block the patch does not name keeps its exact bytes", () => {
+    const stored = {
+      limits: { maxToolCalls: 7 },
+      debounce: { windowSeconds: "15", legacy: true },
+      observability: { logToolValues: true },
+      somethingNewer: { kept: 1 },
+    };
+    const before = JSON.stringify(stored);
+    const next = mergeBehaviorSettings(stored, { split: { enabled: true } });
+    expect(JSON.stringify(stored)).toBe(before);
+    for (const key of Object.keys(stored) as (keyof typeof stored)[])
+      expect(next[key]).toEqual(stored[key]);
+    expect(Object.keys(next).sort()).toEqual(
+      [...Object.keys(stored), "split"].sort(),
+    );
+  });
+});
+
 describe("behavior-settings — vision", () => {
   test("vision is an owned key and projects defaults when absent", () => {
     expect(BEHAVIOR_SETTINGS_KEYS).toContain("vision");
@@ -174,16 +203,8 @@ describe("behavior-settings — observability", () => {
       logToolValues: true,
       fullDetailUntil: null,
     });
-    // The limits block is re-read through its typed reader, so it comes back normalized in full:
-    // the untouched tool-call cap plus the history ceiling explicitly at "off", and the silence
-    // retry at its default.
-    expect(next.limits).toEqual({
-      maxToolCalls: 7,
-      maxHistoryTokens: null,
-      retrySilence: true,
-      maxTurnsPerHour: 60,
-      maxProactivePerDay: 10,
-    });
+    // The limits block was not named, so it is stored exactly as it was, defaults left unwritten.
+    expect(next.limits).toEqual({ maxToolCalls: 7 });
   });
 });
 
@@ -311,13 +332,11 @@ describe("behavior-settings — the merge stores what is stored, not what is der
       { observability: { fullDetailUntil: armed } },
       { limits: { maxToolCalls: 7 } },
     );
-    expect(next.observability).toEqual({
-      logToolValues: false,
-      fullDetailUntil: armed,
-    });
+    expect(next.observability).toEqual({ fullDetailUntil: armed });
+    expect(readBehaviorSettings(next).observability.fullDetail).toBe(true);
   });
 
-  test("a window that closed is written back as off", () => {
+  test("a window that closed stays as stored and reads as off", () => {
     const next = mergeBehaviorSettings(
       {
         observability: {
@@ -326,8 +345,7 @@ describe("behavior-settings — the merge stores what is stored, not what is der
       },
       { limits: { maxToolCalls: 7 } },
     );
-    expect(
-      (next.observability as { fullDetailUntil: unknown }).fullDetailUntil,
-    ).toBeNull();
+    expect(next.observability).not.toHaveProperty("fullDetail");
+    expect(readBehaviorSettings(next).observability.fullDetail).toBe(false);
   });
 });

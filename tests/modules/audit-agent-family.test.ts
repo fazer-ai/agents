@@ -592,13 +592,9 @@ describe.skipIf(!dbUp)("the agent family records its own changes", () => {
     expect(got[0]?.actorType).toBe("mcp");
   });
 
-  test("a first settings write also names guardrails, because the reader is not idempotent there", async () => {
-    // Pinning an artifact, not endorsing it. `readGuardrailsConfig` resolves an empty `model` to the
-    // provider default only when the block is PRESENT; absent, it returns `model: ""`. Every
-    // settings write goes through `mergeBehaviorSettings`, which materializes the block, so the
-    // first one moves `guardrails.model` from "" to the default without an operator asking.
-    // Harmless at runtime (an absent block is `enabled: false`), true of the column, and this test
-    // is what fails the day the reader is fixed.
+  test("a first settings write names only the block it changed", async () => {
+    // The merge writes back only the blocks the patch names, so an absent guardrails block, whose
+    // reader resolves `model` differently when present, is not materialized by a write to debounce.
     const agent = await seedAgent({
       settings: { debounce: { enabled: true, windowSeconds: 15 } },
     });
@@ -611,8 +607,7 @@ describe.skipIf(!dbUp)("the agent family records its own changes", () => {
     );
 
     const after = (await rows())[0]?.after as Record<string, unknown>;
-    expect(Object.keys(after).sort()).toEqual(["debounce", "guardrails"]);
-    expect((after.guardrails as Record<string, unknown>).model).not.toBe("");
+    expect(Object.keys(after).sort()).toEqual(["debounce"]);
   });
 
   test("the MCP update tool writes one row, not one per layer", async () => {

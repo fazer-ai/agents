@@ -23,7 +23,9 @@ export function contradictedHandoffs(calls: readonly ToolCall[]): ToolCall[] {
 
 // What the tool node runs instead of the state it was given: the last assistant turn without the
 // handoffs, and their answers, to put next to the results of the calls that ran. Null when the batch
-// carries no contradiction.
+// carries no contradiction, or when every handoff in it already has an answer: `ToolNode` skips a
+// call whose id has one anywhere in the state, and answering it again would hide a repeated batch
+// from the stall check (`repeatsAnsweredCalls`).
 export function setAsideContradictedHandoffs(
   state: typeof MessagesAnnotation.State,
 ): {
@@ -35,7 +37,13 @@ export function setAsideContradictedHandoffs(
   const ai = last as AIMessage;
   const calls = ai.tool_calls ?? [];
   const setAside = contradictedHandoffs(calls);
-  if (setAside.length === 0) return null;
+  const answered = new Set(
+    state.messages
+      .filter((m) => m.getType() === "tool")
+      .map((m) => (m as ToolMessage).tool_call_id),
+  );
+  const unanswered = setAside.filter((c) => !c.id || !answered.has(c.id));
+  if (unanswered.length === 0) return null;
   const view = new AIMessage({
     content: ai.content,
     id: ai.id,
@@ -46,7 +54,7 @@ export function setAsideContradictedHandoffs(
       ...state,
       messages: [...state.messages.filter((m) => m !== last), view],
     },
-    answers: setAside.map(
+    answers: unanswered.map(
       (c) =>
         new ToolMessage({
           content: CONTRADICTED_HANDOFF_RESULT,

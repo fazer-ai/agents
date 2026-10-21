@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { AIMessage, HumanMessage } from "@langchain/core/messages";
+import { AIMessage, HumanMessage, ToolMessage } from "@langchain/core/messages";
 import {
   CONTRADICTED_HANDOFF_RESULT,
   contradictedHandoffs,
@@ -62,6 +62,30 @@ describe("setAsideContradictedHandoffs", () => {
     expect(
       out?.answers.map((m) => [m.tool_call_id, m.content, m.status]),
     ).toEqual([["h", CONTRADICTED_HANDOFF_RESULT, "error"]]);
+  });
+
+  test("does not answer again a handoff a repeated batch already had answered", () => {
+    const batch = [
+      call("handoff_to_human", "h"),
+      call("resolve_conversation", "r"),
+    ];
+    const first = new AIMessage({ content: "", tool_calls: batch });
+    const repeat = new AIMessage({ content: "", tool_calls: batch });
+    const answers = [
+      new ToolMessage({
+        content: "x",
+        tool_call_id: "h",
+        name: "handoff_to_human",
+      }),
+      new ToolMessage({
+        content: "y",
+        tool_call_id: "r",
+        name: "resolve_conversation",
+      }),
+    ];
+    expect(
+      setAsideContradictedHandoffs({ messages: [first, ...answers, repeat] }),
+    ).toBeNull();
   });
 
   test("leaves a batch without the contradiction alone", () => {

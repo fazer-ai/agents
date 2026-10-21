@@ -4300,6 +4300,52 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     });
   }
 
+  test("a repeated handoff-and-close batch still stops as a stall instead of spending the tool budget", async () => {
+    await seedConversation(9985, null);
+    const client = {
+      sendMessage: async () => ({}),
+      toggleStatus: async () => ({}),
+      sendPrivateNote: async () => ({}),
+    } as unknown as ChatwootClient;
+    let bound = 0;
+    class RepeatingModel {
+      async invoke() {
+        return new AIMessage("Tudo bem!");
+      }
+      bindTools(_t: unknown) {
+        return {
+          async invoke() {
+            bound++;
+            return new AIMessage({
+              content: "",
+              tool_calls: [
+                {
+                  name: "handoff_to_human",
+                  args: { customerMessage: "" },
+                  id: "h1",
+                },
+                { name: "resolve_conversation", args: {}, id: "r1" },
+              ],
+            });
+          },
+        };
+      }
+    }
+    await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 9985 }),
+      base: appDb,
+      deps: {
+        makeModel: () => new RepeatingModel() as unknown as BaseChatModel,
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(bound).toBe(2);
+  });
+
   // NOTE: The bound, pinned so it is a decision and not a surprise. The closing line left before
   // this gate and is untouched by it; everything the turn still holds here stops, photo included.
   // Once the mirror reads "not ours", our own transfer and a human who accepted the conversation in

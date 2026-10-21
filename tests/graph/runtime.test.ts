@@ -20,6 +20,7 @@ import { setPublisher, TOPICS } from "@/api/features/realtime/realtime.service";
 import { encryptJson } from "@/api/lib/crypto";
 import logger from "@/api/lib/logger";
 import { contactInboxThreadId } from "@/graph/checkpointer";
+import { CONTRADICTED_HANDOFF_RESULT } from "@/graph/contradicted-handoff";
 import * as graphModule from "@/graph/graph";
 import { SILENCE_RETRY_MARK } from "@/graph/graph";
 import * as inflight from "@/graph/inflight";
@@ -4206,6 +4207,98 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       ["sendMessage-THREW", 9977, "Um humano já te atende."],
     ]);
   });
+
+  for (const [label, handoffArgs] of [
+    ["with no message", { customerMessage: "", reason: "Not applicable" }],
+    [
+      "with the goodbye as its message",
+      {
+        customerMessage: "Tudo bem, obrigada por avisar!",
+        reason: "Paciente recusou; encerrar sem transferir.",
+      },
+    ],
+  ] as const) {
+    test(`a handoff ${label} in the same step as resolve_conversation is not run, and the close and the reply stand`, async () => {
+      const conv = label === "with no message" ? 9983 : 9984;
+      await seedConversation(conv, null);
+      const calls: Array<[string, number, string]> = [];
+      const client = {
+        sendMessage: async (c: number, t: string) => {
+          calls.push(["sendMessage", c, t]);
+          return {};
+        },
+        toggleStatus: async (c: number, status: string) => {
+          calls.push(["toggleStatus", c, status]);
+          return {};
+        },
+        sendPrivateNote: async (c: number, t: string) => {
+          calls.push(["sendPrivateNote", c, t]);
+          return {};
+        },
+      } as unknown as ChatwootClient;
+      const seen: string[] = [];
+      class PhantomHandoffModel {
+        async invoke() {
+          return new AIMessage("Tudo bem, obrigada por avisar!");
+        }
+        bindTools(_t: unknown) {
+          let n = 0;
+          return {
+            async invoke(msgs: Array<{ content: unknown }>) {
+              n++;
+              if (n === 1)
+                return new AIMessage({
+                  content: "",
+                  tool_calls: [
+                    { name: "handoff_to_human", args: handoffArgs, id: "h1" },
+                    { name: "resolve_conversation", args: {}, id: "r1" },
+                  ],
+                });
+              for (const m of msgs) seen.push(String(m.content));
+              return new AIMessage("Tudo bem, obrigada por avisar!");
+            },
+          };
+        }
+      }
+      const outcome = await runAgentTurn({
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        event: incoming({ conversationId: conv }),
+        base: appDb,
+        deps: {
+          makeModel: () =>
+            new PhantomHandoffModel() as unknown as BaseChatModel,
+          makeClient: async () => client,
+          checkpointer: new MemorySaver(),
+        },
+      });
+      expect(outcome).toBe("posted");
+      expect(calls).toEqual([
+        ["sendMessage", conv, "Tudo bem, obrigada por avisar!"],
+        ["toggleStatus", conv, "resolved"],
+      ]);
+      expect(seen).toContain(CONTRADICTED_HANDOFF_RESULT);
+      // The trail says the handoff was set aside, and its handoff stage reads as a close.
+      const rows = await until("the ignored-handoff line", async () => {
+        const r = await flowLogRows(suDb, {
+          where: { tenantId, threadId: `${tenantId}:${instanceId}:${conv}` },
+          select: { stage: true, detail: true },
+        });
+        return r.some(
+          (x) =>
+            (x.detail as Record<string, unknown> | null)?.handoffIgnored ===
+            "resolve_in_same_step",
+        ) && r.some((x) => x.stage === "handoff")
+          ? r
+          : null;
+      });
+      const handoffOutcomes = rows
+        .filter((x) => x.stage === "handoff")
+        .map((x) => (x.detail as Record<string, unknown> | null)?.outcome);
+      expect(handoffOutcomes).toEqual(["resolved"]);
+    });
+  }
 
   // NOTE: The bound, pinned so it is a decision and not a surprise. The closing line left before
   // this gate and is untouched by it; everything the turn still holds here stops, photo included.

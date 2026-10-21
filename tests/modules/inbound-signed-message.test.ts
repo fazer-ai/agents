@@ -238,6 +238,34 @@ describe("a signed message other than the body", () => {
     ).toEqual({ ok: true });
   });
 
+  test("a value that contains the text after it is refused, so a boundary cannot move", () => {
+    const config = {
+      signatureHeader: "x-sig",
+      signature: { message: "{{header.x-t}}.{{body}}" },
+    };
+    // "1.2" + "." + "3" and "1" + "." + "2.3" are the same bytes under the same signature.
+    const sig = hmac(SECRET, "1.2.3");
+    const as = (t: string, body: string) =>
+      verify({ config, body, headers: lookup({ "x-sig": sig, "x-t": t }) });
+    expect(as("1", "2.3")).toEqual({ ok: true });
+    expect(as("1.2", "3")).toEqual({
+      ok: false,
+      reason: "signed_value_ambiguous",
+    });
+    // An overlap is caught too: "xa" before "aa" reads as "x" before "aa" + "a".
+    const overlap = {
+      signatureHeader: "x-sig",
+      signature: { message: "{{header.x-t}}aa{{body}}" },
+    };
+    expect(
+      verify({
+        config: overlap,
+        body: "B",
+        headers: lookup({ "x-sig": hmac(SECRET, "xaaaB"), "x-t": "xa" }),
+      }),
+    ).toEqual({ ok: false, reason: "signed_value_ambiguous" });
+  });
+
   test("a stored signature config the writer would refuse fails closed, never throws", () => {
     for (const signature of [
       "{{body}}",
@@ -270,6 +298,15 @@ describe("the signature config is refused at the write, naming the field", () =>
 
   test("an accepted Mercado Pago config", () => {
     expect(refusal(MP_CONFIG.signature)).toBeNull();
+  });
+
+  test("a toolpack does not take a signed message, whose provider signs as its catalog entry knows", () => {
+    expect(() =>
+      assertIntegrationWritable("ASAAS", {
+        config: { signature: { message: "{{body}}" } },
+        inboundAuthStrategy: "HMAC_SHA256",
+      }),
+    ).toThrow(expect.objectContaining({ field: "config.signature" }));
   });
 
   test.each([
@@ -353,7 +390,7 @@ describe("which messages authenticate the body byte for byte", () => {
       },
       true,
     ],
-    ["{{body}} alone in its [[group]]", { message: "[[{{body}}]]" }, true],
+    ["{{body}} in a [[group]], even alone", { message: "[[{{body}}]]" }, false],
     ["a manifest without {{body}}", { message: "id:{{query.id}};" }, false],
     [
       "{{body}} in a [[group]] an absent header drops",
@@ -366,6 +403,31 @@ describe("which messages authenticate the body byte for byte", () => {
       false,
     ],
     ["a config the writer would refuse", { message: "{{nope}}" }, false],
+    [
+      "a header right before {{body}}, with no text between them",
+      { message: "{{header.x-t}}{{body}}" },
+      false,
+    ],
+    [
+      "{{body}} framed by two headers",
+      { message: "{{header.x-prefix}}{{body}}{{header.x-suffix}}" },
+      false,
+    ],
+    [
+      "{{body}} before the timestamp instead of after it",
+      {
+        format: "parts",
+        signaturePart: "v1",
+        timestampPart: "t",
+        message: "{{body}}.{{sig.t}}",
+      },
+      false,
+    ],
+    [
+      "a droppable [[group]] before {{body}}",
+      { message: "[[{{header.x-a}};]]{{header.x-b}};{{body}}" },
+      false,
+    ],
   ])("%s", (_, signature, covered) => {
     expect(signatureCoversBody(signature)).toBe(covered);
   });
@@ -590,6 +652,40 @@ describe.skipIf(!dbUp)("a manifest-signed notification end to end", () => {
       select: { dedupeKey: true },
     });
     expect(rows.map((x) => x.dedupeKey)).not.toContain("forged:1");
+  });
+
+  test("a toolpack row stored with a manifest-only signature does not act on the body either", async () => {
+    const v = await suDb.vaultEntry.create({
+      data: { tenantId, name: "asaas-secret", secret: encryptJson(SECRET) },
+      select: { id: true },
+    });
+    const created = await createIntegrationInstance(
+      ctx(),
+      {
+        catalogType: "ASAAS",
+        name: "Asaas antigo",
+        inboundAuthStrategy: "HMAC_SHA256",
+        inboundSecretRef: `vault:${v.id}`,
+      },
+      appDb,
+    );
+    // The signature written straight to the row: the writer refuses this shape now, and a row from
+    // before the refusal is what the receptor still has to answer about.
+    await suDb.integrationInstance.update({
+      where: { id: created.id },
+      data: { config: { signature: { message: "{{query.id}}" } } },
+    });
+    const r = await receiveInbound({
+      routeToken: created.routeToken as string,
+      rawBody: JSON.stringify({
+        event: "PAYMENT_RECEIVED",
+        payment: { id: "pay_1", externalReference: "forged", value: 999 },
+      }),
+      getHeader: lookup({ "x-webhook-signature": hmac(SECRET, "evt-1") }),
+      getQuery: lookup({ id: "evt-1" }),
+      base: appDb,
+    });
+    expect(r.outcome).toBe("invalid");
   });
 
   test("the same notification with another data.id in the URL is the uniform 401", async () => {

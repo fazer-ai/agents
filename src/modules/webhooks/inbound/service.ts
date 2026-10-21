@@ -224,15 +224,16 @@ export async function receiveInbound(
     };
   }
 
-  // NOTE: GENERIC acts on the body (the conversation and the text come from it), so a body the
-  // signature does not cover is not acted on, however well the rest of the request is signed.
+  // Every mapper acts on the body (GENERIC takes the conversation and the text from it, a toolpack
+  // its reference and amount), so a body the signature does not authenticate is not acted on,
+  // however well the rest of the request is signed.
   if (
-    route.catalogType === "GENERIC" &&
     route.inboundAuthStrategy === "HMAC_SHA256" &&
     !signatureCoversBody(route.config.signature)
   ) {
     logger.warn(
-      "inbound: GENERIC body not covered by the signed message (instance %s)",
+      "inbound: %s body not covered by the signed message (instance %s)",
+      route.catalogType,
       String(route.id),
     );
     const id = await persistFailed(base, route, params.rawBody, {

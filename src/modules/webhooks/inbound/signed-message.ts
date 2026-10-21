@@ -211,14 +211,28 @@ function covers(
   });
 }
 
-// Whether a request this config authenticates also authenticates its BODY, byte for byte. A
-// manifest that signs only an id, or signs the body only in a group another header can drop, or
-// signs it lowercased, leaves the body free to change under a captured signature.
+// Whether a request this config authenticates also authenticates its BODY, byte for byte and with
+// fixed boundaries. Coverage alone is not enough: with `{{header.a}}{{body}}`, or a [[group]] that
+// can drop, a captured signature still verifies when part of the body moves into a header. So the
+// body is the LAST piece, there is no [[group]], it is not `|lower`ed, and every other value is
+// followed by literal text, which the gate refuses a value to contain (`signed_value_ambiguous`):
+// each value then ends at a fixed point and so does the body.
 export function signatureCoversBody(raw: unknown): boolean {
   const parsed = parseSignatureConfig(raw);
   if (parsed === undefined) return true;
   if (isSignatureConfigProblem(parsed)) return false;
-  return covers(parsed.groups, "body", "", true);
+  if (parsed.groups.length !== 1 || parsed.groups[0]?.optional) return false;
+  const pieces = parsed.groups[0]?.pieces ?? [];
+  const last = pieces.at(-1);
+  if (last?.kind !== "value" || last.source !== "body" || last.lower) {
+    return false;
+  }
+  return pieces.every(
+    (p, i) =>
+      i === pieces.length - 1 ||
+      p.kind === "text" ||
+      (p.source !== "body" && pieces[i + 1]?.kind === "text"),
+  );
 }
 
 export function isSignatureConfigProblem(
@@ -249,11 +263,22 @@ export interface SignedMessageSources {
   parts: Map<string, string[]>;
 }
 
-// The message the sender signed, or null when a value outside every optional group is absent.
+// A value that contains the text right after it lets the sender move the boundary between the two
+// (`1.2` + `.` + body reads the same as `1` + `.` + `2.body`), so the gate refuses it instead of
+// guessing. `(v + text).indexOf(text) < v.length` also catches an overlap (`xa` before `aa`).
+function blursBoundary(value: string, next: Piece | undefined): boolean {
+  return (
+    next?.kind === "text" &&
+    (value + next.text).indexOf(next.text) < value.length
+  );
+}
+
+// The message the sender signed; `missing` when a value outside every optional group is absent,
+// `ambiguous` when a value runs into the text after it.
 export function renderSignedMessage(
   groups: Group[],
   src: SignedMessageSources,
-): string | null {
+): string | "missing" | "ambiguous" {
   const read = (p: Extract<Piece, { kind: "value" }>): string | null => {
     const v =
       p.source === "body"
@@ -270,7 +295,7 @@ export function renderSignedMessage(
   for (const g of groups) {
     let rendered = "";
     let absent = false;
-    for (const p of g.pieces) {
+    for (const [i, p] of g.pieces.entries()) {
       if (p.kind === "text") {
         rendered += p.text;
         continue;
@@ -280,11 +305,14 @@ export function renderSignedMessage(
         absent = true;
         break;
       }
+      if (p.source !== "body" && blursBoundary(v, g.pieces[i + 1])) {
+        return "ambiguous";
+      }
       rendered += v;
     }
     if (absent) {
       if (g.optional) continue;
-      return null;
+      return "missing";
     }
     out += rendered;
   }

@@ -88,6 +88,7 @@ export type InboundAuthFailure =
   | "signature_config_unusable"
   | "signature_part_missing"
   | "signed_value_missing"
+  | "signed_value_ambiguous"
   | "timestamp_unusable"
   | "timestamp_stale"
   | "unsupported_strategy";
@@ -199,7 +200,8 @@ export function verifyInboundAuth(params: {
       getQuery: params.getQuery ?? (() => null),
       parts,
     });
-    if (message === null) return fail("signed_value_missing");
+    if (message === "missing") return fail("signed_value_missing");
+    if (message === "ambiguous") return fail("signed_value_ambiguous");
     const expected = createHmac("sha256", value).update(message).digest("hex");
     return candidates.some((c) => timingEqual(expected, c.toLowerCase()))
       ? { ok: true }

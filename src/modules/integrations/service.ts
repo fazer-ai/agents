@@ -99,17 +99,29 @@ export function assertUsableHeaderNames(config: Record<string, unknown>): void {
 
 // What an HMAC instance signs when it is not the body. Refused whole, naming the field, by the same
 // parser the gate reads it with, so a stored config the gate would fail closed on cannot be written.
-export function assertSignatureConfig(config: Record<string, unknown>): void {
+// A toolpack's provider signs the way its catalog entry knows; the signed message is the generic
+// webhook's, where the operator describes a gateway the catalog does not.
+export function assertSignatureConfig(
+  catalogType: string,
+  config: Record<string, unknown>,
+): void {
   const parsed = parseSignatureConfig(config.signature);
-  if (parsed === undefined || !isSignatureConfigProblem(parsed)) return;
-  const field = parsed.field
-    ? `config.signature.${parsed.field}`
+  if (parsed === undefined) return;
+  const problem =
+    catalogType !== "GENERIC"
+      ? { field: "", problem: "is only for the generic webhook" }
+      : isSignatureConfigProblem(parsed)
+        ? parsed
+        : null;
+  if (!problem) return;
+  const field = problem.field
+    ? `config.signature.${problem.field}`
     : "config.signature";
   throw new AppError(
-    `${field} ${parsed.problem}`,
+    `${field} ${problem.problem}`,
     400,
     "errors.integrationSignatureUnusable",
-    { field, problem: parsed.problem },
+    { field, problem: problem.problem },
     field,
   );
 }
@@ -245,7 +257,7 @@ export function assertIntegrationWritable(
 ): void {
   if (params.config) {
     assertUsableHeaderNames(params.config);
-    assertSignatureConfig(params.config);
+    assertSignatureConfig(catalogType, params.config);
     assertCatalogConfig(catalogType, params.config);
     assertConfigRanges(catalogType, params.config, storedConfig);
     assertSheetsConfig(catalogType, params.config);

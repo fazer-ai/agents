@@ -227,8 +227,8 @@ describe("MCP tool descriptions", () => {
     // ranged, the dashboard and dashboard_source tools (Pro only), tv_rotation and tv_seconds
     // (ranged) on dashboard_update, and the client channel SDK's app tools and audience filter.
     // 74_540 on the Free tree before the SDK. 82_753 with the three dashboard_embed_link tools
-    // (Pro only), 83_985 with one-or-many preconditions, `setLabels.removal` and the writable list.
-    expect(schema).toBeLessThanOrEqual(84_100);
+    // (Pro only), 83_985 with preconditions, `setLabels.removal` and the writable list, 84_599 with per-kind templates.
+    expect(schema).toBeLessThanOrEqual(84_680);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

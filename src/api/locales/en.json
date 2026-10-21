@@ -168,6 +168,7 @@
     "inboxStillExists": "This inbox still exists in Chatwoot. Delete it there first.",
     "instanceChannelNeedsUrl": "This channel has no URL yet: set it before enabling or testing it",
     "integrationConfigOutOfRange": "\"{{field}}\" must be between {{min}} and {{max}}.",
+    "integrationFetchBackUnusable": "The notification lookup cannot be used (\"{{field}}\"): {{problem}}.",
     "integrationHeaderNameUnusable": "The \"{{field}}\" value is not a usable header name: use only letters, digits and !#$%&'*+-.^_`|~ (no spaces or line breaks).",
     "integrationHttpError": "{{provider}} returned HTTP {{status}}.",
     "integrationInboundAuthRequired": "This integration makes the agent message customers, so its webhook needs authentication: choose a static header or an HMAC signature.",

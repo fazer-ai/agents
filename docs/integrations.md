@@ -53,7 +53,7 @@ The writer and the gate parse the config with the same function: a shape the wri
 }
 ```
 
-The manifest does not sign the body, so with this signature alone the instance authenticates Mercado Pago's notifications and acts on none of them. No `maxAgeSeconds` here: Mercado Pago retries an unacknowledged notification every 15 minutes and its docs do not say whether a retry carries a new `ts`, so a window risks refusing a legitimate retry. The manifest covers only the id, so the body (`action`, `type`) proves nothing, and a body that names a conversation or a status must not be trusted from this notification.
+The manifest does not sign the body, so with this signature alone the instance authenticates Mercado Pago's notifications and acts on none of them. What it can act on comes from a lookup of the payment, below ("A notification that carries only an id"). No `maxAgeSeconds` here: Mercado Pago retries an unacknowledged notification every 15 minutes and its docs do not say whether a retry carries a new `ts`, so a window risks refusing a legitimate retry. The manifest covers only the id, so the body (`action`, `type`) proves nothing, and a body that names a conversation or a status must not be trusted from this notification.
 
 Stripe, for comparison: `signatureHeader: "stripe-signature"`, `format: "parts"`, `signaturePart: "v1"`, `timestampPart: "t"`, `message: "{{sig.t}}.{{body}}"`, and a `maxAgeSeconds` (Stripe's docs recommend a tolerance).
 
@@ -103,6 +103,42 @@ The case: the agent schedules something in the operator's system during a conver
 4. **The turn.** `buildNudge` frames the event as `operator_event`: the directive is to pass the text on to the customer faithfully, the text goes inside the fence with each line quoted as `| ` (so no external line starts at column 0), and the instance's `config.instructions` (at most 2000 characters, edited in the integration screen) ride along as operator guidance. `deliverToResolved`: a conversation the bot resolved still counts as the bot's for this event and is written to without reopening. The appointment reminder passes it as well: the agent resolving right after the booking is the ordinary close, and without it a reminder for the customer's own appointment would run note-only, framed as if a person held the conversation. Who resolved it is read from the recorded origin (`Conversation.resolvedBy`: the agent's `resolve_conversation`, the follow-up's abandonment step or the redirect ladder), never from the assignee, because an operator resolving in Chatwoot leaves the AgentBot assigned and records nothing on our side; that close, and one from our console, is a person's. One held by a person, closed by a person, or `open`, gets the text as it arrived in a private note, written without a model call: the note directive lets a model stay silent, and a report dropped that way leaves nothing anywhere. The same note is written wherever a takeover is found later in the run (during the contact-authorization call, during the wait for the thread, by the tool fence, or by the probes after the model call and after the output guardrail), and the model's undelivered words are taken back out of the thread.
 
 Export and import carry it: a bundle names the tool's GENERIC instance by name, exports that instance, and rewires the tool on import (a missing instance is a warning, and the tool refuses to run until one is picked). Known gaps, tracked separately: a nudge's message is not yet recorded as our side speaking (#816), and a delivery that finished with its nudge refused is not re-run (the stranded ones are, see Known limitations).
+
+### A notification that carries only an id (`config.fetchBack`, issue #1609)
+
+Some gateways notify with an id and nothing else: Mercado Pago sends `{"action":"payment.updated","type":"payment","data":{"id":"123"}}` and signs a manifest that does not cover even that body. The instance then takes no event from the notification. With `config.fetchBack` it runs one of the tenant's own HTTP tools with the id and builds the event from the tool's RESPONSE (`src/modules/integrations/fetch-back.ts` parses and maps, `fetch-back-run.ts` runs the tool through `runToolTest`, so the request leaves with every runtime guard: origin pin, `allowedHosts`, the SSRF check on the final URL, the timeout, the response cap, the vault credential).
+
+- `toolId` (a tool of this workspace, enabled, with a field the model would fill named by `idArg`, and rendering no conversation variable, `{{conversation_ref}}` and the context variables included, since the lookup runs outside any conversation), `idFrom` (`query.<name>`, `header.<name>` or `body.<dot.path>`; with `HMAC_SHA256` it must be inside the signed message, the body under the framing rule above), `conversationRefPath` and `statusPath` (dot paths in the response), optional `eventIdPath`, `valuePath`, `currencyPath`, and `statuses`: at most 20 rows of `{status, text?, paid?}`. A `paid` row records a conversion (one per conversation and source, the same rule as Asaas) and wakes the agent unless `notifyOnPayment` is `false`; any other row is an `agent_nudge` and needs a `text`. A status not listed is ignored. The writer refuses each of these by field (`config.fetchBack.<field>`), and the receptor re-reads the tool on every run, so a tool edited after the save fails the delivery instead of rendering an empty variable.
+- **Receive.** The id must match `^[A-Za-z0-9_-]{1,64}$` (nothing that changes the path or the query the tool builds), or the delivery is `FAILED` (`invalid`) and nothing is looked up. The notification is stored as a notice keyed by the id and a hash of the body, so the sender's retries of the same notification are `duplicate`.
+- **Process.** The tool runs once per notice. A 5xx, a 429 or a transport failure throws, and the sweep retries under the attempt cap; any other non-2xx, a clipped answer or one that is not JSON ends the notice `FAILED` with a dead-letter line. The mapped event is persisted as its own delivery with dedupe key `<eventId or id>:<status>`, so `payment.created` and `payment.updated` for the same approved payment are one event and one message.
+- **Who can write.** The conversation is the response's `conversation_ref`, which correlates only on the instance that minted it, exactly like a `GENERIC` body. A forged or replayed notification can only make the operator's own tool read a resource of the operator's own account, and what that resource says is what the provider says.
+
+**Worked example, Mercado Pago.** One `GENERIC` instance per Mercado Pago application, with the signature above and two HTTP tools:
+
+1. *Create the charge* (used by the agent in the conversation): `POST https://api.mercadopago.com/v1/payments` with the access token as a `bearer_token` vault credential, and in the body `external_reference: "{{conversation_ref}}"` (the field takes up to 64 letters, digits, `-` and `_`; a ref is 35 of them) next to `transaction_amount`, `payment_method_id` and `payer.email`. The tool's `conversationRefIntegrationId` is this instance. Mercado Pago also requires an `X-Idempotency-Key` header on this call ([Create payment](https://www.mercadopago.com.br/developers/en/reference/online-payments/checkout-api-payments/create-payment/post)).
+2. *Get the payment* (used only by the lookup): `GET https://api.mercadopago.com/v1/payments/{{payment_id}}`, `allowedHosts: ["api.mercadopago.com"]`, the same credential, and `payment_id` as a field the model would fill. Its answer carries `status`, `external_reference`, `transaction_amount` and `currency_id` ([Get payment](https://www.mercadopago.com.br/developers/en/reference/online-payments/checkout-api-payments/get-payment/get)).
+
+```json
+{
+  "signatureHeader": "x-signature",
+  "signature": { "format": "parts", "signaturePart": "v1", "timestampPart": "ts", "message": "[[id:{{query.data.id|lower}};]][[request-id:{{header.x-request-id}};]]ts:{{sig.ts}};" },
+  "fetchBack": {
+    "toolId": "<id of the get-payment tool>",
+    "idFrom": "query.data.id",
+    "idArg": "payment_id",
+    "conversationRefPath": "external_reference",
+    "statusPath": "status",
+    "valuePath": "transaction_amount",
+    "currencyPath": "currency_id",
+    "statuses": [
+      { "status": "approved", "paid": true, "text": "Pagamento aprovado" },
+      { "status": "rejected", "text": "Pagamento recusado; ofereça outro meio" }
+    ]
+  }
+}
+```
+
+`pending` and `in_process` are left out, so they are ignored until the payment moves. Not confirmed against Mercado Pago itself: whether a Checkout Pro preference's `external_reference` reaches the payment unchanged, and whether a notification sent to a per-payment `notification_url` carries `x-signature`. The integration screen sets all of this up under "Look up each notification with a tool".
 
 ## Google Calendar toolpack — per-customer isolation (`src/modules/integrations/toolpacks/google-calendar.ts`)
 

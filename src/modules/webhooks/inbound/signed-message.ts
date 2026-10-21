@@ -253,6 +253,19 @@ export function signatureCoversBody(raw: unknown): boolean {
   );
 }
 
+// Whether the signed message includes the query parameter or header a consult-back reads its id
+// from. `|lower` is accepted here: the id only picks which resource the operator's own tool reads,
+// and a case variant either names nothing or a resource whose answer the provider signs for.
+export function signatureCoversId(
+  raw: unknown,
+  source: "header" | "query",
+  name: string,
+): boolean {
+  const parsed = parseSignatureConfig(raw);
+  if (parsed === undefined || isSignatureConfigProblem(parsed)) return false;
+  return covers(parsed.groups, source, name, false);
+}
+
 export function isSignatureConfigProblem(
   v: SignatureConfig | SignatureConfigProblem,
 ): v is SignatureConfigProblem {

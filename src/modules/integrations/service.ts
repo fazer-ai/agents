@@ -7,7 +7,12 @@ import { decryptJson, encryptJson } from "@/api/lib/crypto";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { AppError, NotFoundError } from "@/lib/errors";
-import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
+import {
+  asSuperAdminOn,
+  runScopedOn,
+  type ScopedDb,
+  type TenantContext,
+} from "@/lib/tenancy";
 import { unstorableProblem } from "@/lib/text";
 import {
   markUndisclosed,
@@ -24,10 +29,14 @@ import {
 import {
   isSignatureConfigProblem,
   parseSignatureConfig,
+  signatureCoversBody,
+  signatureCoversId,
 } from "@/modules/webhooks/inbound/signed-message";
 import { ensureInboundSweep } from "@/modules/webhooks/inbound/sweep";
 import { calendarConfigRangeProblem } from "./calendar-config-ranges";
 import { CATALOG, getCatalogEntry } from "./catalog";
+import { isFetchBackProblem, parseFetchBackConfig } from "./fetch-back";
+import { fetchBackToolProblem } from "./fetch-back-run";
 import { SPREADSHEET_ID_PATTERN } from "./toolpacks/google-sheets";
 import type { CatalogEntry } from "./types";
 
@@ -95,6 +104,70 @@ export function assertUsableHeaderNames(config: Record<string, unknown>): void {
       `config.${key}`,
     );
   }
+}
+
+function fetchBackRefusal(field: string, problem: string): AppError {
+  const path = field ? `config.fetchBack.${field}` : "config.fetchBack";
+  return new AppError(
+    `${path} ${problem}`,
+    400,
+    "errors.integrationFetchBackUnusable",
+    { field: path, problem },
+    path,
+  );
+}
+
+// A GENERIC instance's consult-back, as far as the body can tell: the shape, and that the id it
+// looks up is one the instance's authentication vouches for (an HMAC message that does not sign
+// where the id comes from would let a captured signature look up any id).
+export function assertFetchBackConfig(
+  catalogType: string,
+  config: Record<string, unknown>,
+  strategy: InboundAuthStrategy | undefined,
+): void {
+  const parsed = parseFetchBackConfig(config.fetchBack);
+  if (parsed === undefined) return;
+  if (catalogType !== "GENERIC") {
+    throw fetchBackRefusal("", "is only for the generic webhook");
+  }
+  if (isFetchBackProblem(parsed)) {
+    throw fetchBackRefusal(parsed.field, parsed.problem);
+  }
+  const { source, name } = parsed.idFrom;
+  if (
+    strategy === "HMAC_SHA256" &&
+    !(source === "body"
+      ? signatureCoversBody(config.signature)
+      : signatureCoversId(config.signature, source, name))
+  ) {
+    throw fetchBackRefusal(
+      "idFrom",
+      `reads ${source}.${name}, which the signed message does not cover`,
+    );
+  }
+}
+
+// The tool half, which needs the tenant's rows: it exists here, is enabled, takes the id in a field
+// the model would fill, and renders nothing that only a conversation has.
+export async function assertFetchBackTool(
+  db: ScopedDb,
+  config: Record<string, unknown>,
+): Promise<void> {
+  const parsed = parseFetchBackConfig(config.fetchBack);
+  if (parsed === undefined || isFetchBackProblem(parsed)) return;
+  const tool = await db.toolDefinition.findUnique({
+    where: { id: parsed.toolId },
+    select: {
+      enabled: true,
+      urlTemplate: true,
+      headers: true,
+      query: true,
+      body: true,
+      inputSchema: true,
+    },
+  });
+  const problem = fetchBackToolProblem(tool, parsed.idArg);
+  if (problem) throw fetchBackRefusal("toolId", problem);
 }
 
 // What an HMAC instance signs when it is not the body. Refused whole, naming the field, by the same
@@ -254,6 +327,8 @@ export function assertIntegrationWritable(
   // The row's config on update, so a number stored before the range check existed is not refused
   // when the same value is sent back.
   storedConfig?: Record<string, unknown>,
+  // The row's strategy on update, which the consult-back is checked against when the patch keeps it.
+  storedStrategy?: InboundAuthStrategy,
 ): void {
   if (params.config) {
     assertUsableHeaderNames(params.config);
@@ -262,10 +337,17 @@ export function assertIntegrationWritable(
     assertConfigRanges(catalogType, params.config, storedConfig);
     assertSheetsConfig(catalogType, params.config);
   }
-  assertInboundAuthAllowed(
-    getCatalogEntry(catalogType),
-    params.inboundAuthStrategy,
-  );
+  const entry = getCatalogEntry(catalogType);
+  assertInboundAuthAllowed(entry, params.inboundAuthStrategy);
+  if (params.config || params.inboundAuthStrategy) {
+    assertFetchBackConfig(
+      catalogType,
+      params.config ?? storedConfig ?? {},
+      params.inboundAuthStrategy ??
+        storedStrategy ??
+        (entry?.requiresInboundAuth ? entry.defaultInboundAuth : "NONE"),
+    );
+  }
 }
 
 // A create also stores what it was not sent: no config is stored as `{}`, which a Sheets instance
@@ -351,6 +433,7 @@ export async function createIntegrationInstance(
       minted && params.inboundSecretRef
         ? await requireVaultRef(db, params.inboundSecretRef, "inboundSecretRef")
         : null;
+    await assertFetchBackTool(db, params.config ?? {});
     const row = await db.integrationInstance.create({
       data: {
         tenantId,
@@ -554,7 +637,9 @@ export async function updateIntegrationInstance(
       current.catalogType,
       params,
       (current.config ?? {}) as Record<string, unknown>,
+      current.inboundAuthStrategy,
     );
+    if (params.config) await assertFetchBackTool(db, params.config);
     const credentialRef = params.credentialRef
       ? await requireVaultRef(db, params.credentialRef, "credentialRef")
       : null;

@@ -1,6 +1,7 @@
 import type { InboundAuthStrategy } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import { AppError } from "@/lib/errors";
+import { runScopedOn } from "@/lib/tenancy";
 import { sendAlertChannelTest } from "@/modules/flowlog/channel-test";
 import {
   assertAlertChannelWritable,
@@ -12,6 +13,7 @@ import {
 } from "@/modules/flowlog/channels";
 import { isKnownCatalogType } from "@/modules/integrations/catalog";
 import {
+  assertFetchBackTool,
   assertIntegrationCreatable,
   assertIntegrationWritable,
   createIntegrationInstance,
@@ -610,6 +612,10 @@ export async function integrationCreate(
         | InboundAuthStrategy
         | undefined,
     });
+    if (args.config) {
+      const config = args.config;
+      await runScopedOn(base, ctx, (db) => assertFetchBackTool(db, config));
+    }
     if (args.dry_run !== false) {
       return ok({
         dryRun: true,
@@ -725,7 +731,16 @@ export async function integrationUpdate(
       afterProj[k] = patch[k];
     }
     const target = `integration:${id}`;
-    assertIntegrationWritable(current.catalogType, patch, current.config);
+    assertIntegrationWritable(
+      current.catalogType,
+      patch,
+      current.config,
+      current.inboundAuthStrategy as InboundAuthStrategy,
+    );
+    if (patch.config) {
+      const config = patch.config;
+      await runScopedOn(base, ctx, (db) => assertFetchBackTool(db, config));
+    }
     if (args.dry_run !== false) {
       return ok({
         dryRun: true,

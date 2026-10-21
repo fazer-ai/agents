@@ -168,6 +168,7 @@
     "inboxStillExists": "Esta caixa de entrada ainda existe no Chatwoot. Exclua-a lá primeiro.",
     "instanceChannelNeedsUrl": "Este canal ainda não tem URL: defina a URL antes de ativar ou testar o canal",
     "integrationConfigOutOfRange": "\"{{field}}\" precisa estar entre {{min}} e {{max}}.",
+    "integrationFetchBackUnusable": "A consulta por ferramenta não pode ser usada (\"{{field}}\"): {{problem}}.",
     "integrationHeaderNameUnusable": "O valor de \"{{field}}\" não é um nome de header utilizável: use apenas letras, dígitos e !#$%&'*+-.^_`|~ (sem espaços nem quebras de linha).",
     "integrationHttpError": "{{provider}} respondeu HTTP {{status}}.",
     "integrationInboundAuthRequired": "Esta integração faz o agente escrever para clientes, então o webhook dela precisa de autenticação: escolha um header estático ou uma assinatura HMAC.",

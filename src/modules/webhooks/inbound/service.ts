@@ -13,6 +13,13 @@ import {
   CONVERSATION_REF_KIND,
   correlateConversationRef,
 } from "@/modules/integrations/conversation-ref";
+import {
+  isFetchBackProblem,
+  mapFetchedResource,
+  noticeResourceId,
+  parseFetchBackConfig,
+} from "@/modules/integrations/fetch-back";
+import { runFetchBack } from "@/modules/integrations/fetch-back-run";
 import { getMapper } from "@/modules/integrations/mappers";
 import {
   type ResolvedInboundRoute,
@@ -46,6 +53,10 @@ const MAX_PROCESS_ATTEMPTS = 5;
 // running past it would deliver beside its own retry. The spare minute lets the abort land and the
 // row be marked, as the scheduler's jobDeadlineMs does under the same window.
 export const DISPATCH_DEADLINE_MS = 4 * 60_000;
+
+// The stored payload kind of a GENERIC consult-back notice: not an event, the id an event is built
+// from once the provider answers. Never leaves this module.
+const FETCH_BACK_KIND = "fetch_back";
 
 // WHAT "NO LONGER RUNNING" MEANS for a PROCESSING row. Two readers ask it and must not disagree: the
 // claim below, which may take such a row, and the inbound sweep (./sweep.ts), which arms a re-dispatch
@@ -204,6 +215,54 @@ export async function receiveInbound(
     parsed = JSON.parse(params.rawBody);
   } catch {
     throw new AppError("invalid JSON body", 400);
+  }
+
+  // A GENERIC instance with a consult-back takes the gateway's own thin notification: it is stored
+  // as a notice naming one resource id, and the event is built later from the provider's answer
+  // about that id (processInboundDelivery), so nothing here correlates or maps.
+  const fetchBack =
+    route.catalogType === "GENERIC"
+      ? parseFetchBackConfig(route.config.fetchBack)
+      : undefined;
+  if (fetchBack !== undefined) {
+    const resourceId = isFetchBackProblem(fetchBack)
+      ? null
+      : noticeResourceId(fetchBack, {
+          parsedBody: parsed,
+          getHeader: params.getHeader,
+          getQuery: params.getQuery ?? (() => null),
+        });
+    if (resourceId === null) {
+      const issues = isFetchBackProblem(fetchBack)
+        ? `config.fetchBack.${fetchBack.field}`.replace(/\.$/, "")
+        : "fetch-back id";
+      logger.warn(
+        "inbound: GENERIC notice names no usable resource id (instance %s): %s",
+        String(route.id),
+        issues,
+      );
+      const id = await persistFailed(base, route, params.rawBody, {
+        reason: "invalid",
+        issues,
+      });
+      return {
+        ack: true,
+        deliveryId: id,
+        tenantId: route.tenantId,
+        outcome: "invalid",
+      };
+    }
+    const { id, duplicate } = await persistRow(base, route, {
+      externalId: null,
+      dedupeKey: `notice:${resourceId}:${createHash("sha256").update(params.rawBody).digest("hex")}`,
+      payload: { kind: FETCH_BACK_KIND, resourceId },
+    });
+    return {
+      ack: true,
+      deliveryId: id,
+      tenantId: route.tenantId,
+      outcome: duplicate ? "duplicate" : "queued",
+    };
   }
 
   const mapper = getMapper(route.catalogType);
@@ -413,12 +472,28 @@ async function persistFailed(
 // not repairable, and the caller has already turned those away.
 async function persistInbound(
   base: PrismaClient,
-  route: ResolvedInboundRoute,
+  route: Pick<ResolvedInboundRoute, "id" | "tenantId">,
   n: NormalizedInboundEvent,
 ): Promise<{ id: bigint; duplicate: boolean }> {
-  const payload = makeStorableDeep(toStoredPayload(n));
+  return persistRow(base, route, {
+    externalId: n.externalId,
+    dedupeKey: n.dedupeKey,
+    payload: toStoredPayload(n),
+  });
+}
+
+async function persistRow(
+  base: PrismaClient,
+  route: Pick<ResolvedInboundRoute, "id" | "tenantId">,
+  n: {
+    externalId: string | null;
+    dedupeKey: string;
+    payload: Record<string, unknown>;
+  },
+): Promise<{ id: bigint; duplicate: boolean }> {
+  const payload = makeStorableDeep(n.payload);
   try {
-    const row = await runScopedOn(base, sysCtx(route.tenantId), (db) =>
+    const created = await runScopedOn(base, sysCtx(route.tenantId), (db) =>
       db.inboundDelivery.create({
         data: {
           tenantId: route.tenantId,
@@ -431,7 +506,7 @@ async function persistInbound(
         select: { id: true },
       }),
     );
-    return { id: row.id, duplicate: false };
+    return { id: created.id, duplicate: false };
   } catch (err) {
     if (!isUniqueViolation(err)) throw err;
     const existing = await runScopedOn(base, sysCtx(route.tenantId), (db) =>
@@ -448,6 +523,8 @@ async function persistInbound(
 export interface ProcessDeps {
   // Injectable for tests; defaults to the real LangGraph nudge runtime.
   runNudge?: typeof runAgentNudge;
+  // Injectable for tests; defaults to running the instance's HTTP tool.
+  runFetchBack?: typeof runFetchBack;
   runtime?: RuntimeDeps;
 }
 
@@ -503,6 +580,12 @@ function buildNudge(
 type ProcessPlan =
   | { kind: "skip" }
   | { kind: "done" }
+  | {
+      kind: "fetch";
+      resourceId: string;
+      integrationInstanceId: bigint;
+      instanceConfig: Record<string, unknown>;
+    }
   | {
       kind: "nudge";
       threadId: string;
@@ -599,6 +682,18 @@ export async function processInboundDelivery(
           data: { status: "PROCESSED", processedAt: new Date() },
         });
 
+      if ((kind as string) === FETCH_BACK_KIND) {
+        const resourceId = asString(payload.resourceId);
+        if (resourceId) {
+          return {
+            kind: "fetch",
+            resourceId,
+            integrationInstanceId: delivery.integrationInstanceId,
+            instanceConfig,
+          };
+        }
+      }
+
       if (kind === "conversion") {
         const corr = await dispatchConversion(
           db,
@@ -606,6 +701,7 @@ export async function processInboundDelivery(
           delivery.externalId,
           source,
           payload,
+          delivery.integrationInstanceId,
         );
         // Notify the customer that the payment went through, when the integration opts in (default
         // ON) AND the conversion was FRESHLY recorded. The ConversionEvent is the durable
@@ -707,6 +803,9 @@ export async function processInboundDelivery(
 
   if (plan.kind === "skip") return "skipped";
   if (plan.kind === "done") return "processed";
+  if (plan.kind === "fetch") {
+    return await consultBack(params, base, plan);
+  }
 
   // Phase B: agent_nudge network turn outside the tx, then mark PROCESSED. BEST-EFFORT: the
   // outcome is not consulted, since the durable barrier is the ConversionEvent from Phase A. A
@@ -740,6 +839,85 @@ export async function processInboundDelivery(
   return "processed";
 }
 
+// Phase B of a consult-back notice: run the instance's tool for the id, map the provider's answer,
+// and hand the resulting event to this same function as its own delivery. The event row's dedupe
+// key (`<id>:<status>` by default) is what collapses `payment.created`/`payment.updated` and the
+// sender's retries into one event, so a notice that maps to an event already recorded ends here. A
+// failure the same id may answer later (network, 5xx) throws, leaving the claim for the sweep's
+// re-dispatch under the attempt cap; one that would answer the same ends FAILED with its reason.
+async function consultBack(
+  params: ProcessParams,
+  base: PrismaClient,
+  plan: Extract<ProcessPlan, { kind: "fetch" }>,
+): Promise<"processed" | "skipped"> {
+  const finish = (status: "PROCESSED" | "FAILED") =>
+    runScopedOn(base, sysCtx(params.tenantId), (db) =>
+      db.inboundDelivery.update({
+        where: { id: params.deliveryId },
+        data: { status, processedAt: new Date() },
+      }),
+    );
+  const fail = async (reason: string) => {
+    logger.warn(
+      { deliveryId: String(params.deliveryId), reason },
+      "inbound: consult-back could not build an event",
+    );
+    await finish("FAILED");
+    emitDeadLetter({
+      tenantId: params.tenantId,
+      unit: "inbound_delivery",
+      level: "error",
+      error: `inbound consult-back failed: ${reason}`,
+      detail: {
+        deliveryId: String(params.deliveryId),
+        integrationInstanceId: String(plan.integrationInstanceId),
+        catalogType: "GENERIC",
+        reason: "fetch-back",
+      },
+      base,
+    });
+    return "processed" as const;
+  };
+  const cfg = parseFetchBackConfig(plan.instanceConfig.fetchBack);
+  if (cfg === undefined || isFetchBackProblem(cfg)) {
+    return await fail("the instance no longer has a usable consult-back");
+  }
+  const fetched = await (params.deps?.runFetchBack ?? runFetchBack)({
+    base,
+    tenantId: params.tenantId,
+    toolId: cfg.toolId,
+    idArg: cfg.idArg,
+    resourceId: plan.resourceId,
+  });
+  if (!fetched.ok) {
+    if (fetched.retry) {
+      throw new Error(
+        `inbound consult-back will be retried: ${fetched.reason}`,
+      );
+    }
+    return await fail(fetched.reason);
+  }
+  const mapped = mapFetchedResource(cfg, plan.resourceId, fetched.response);
+  if (!mapped.ok) {
+    if (mapped.reason === "unhandled") {
+      await finish("PROCESSED");
+      return "processed";
+    }
+    return await fail(
+      `the provider's answer has no ${mapped.detail ?? "usable fields"}`,
+    );
+  }
+  const badIdentity =
+    identityProblem(mapped.event.dedupeKey, "dedupeKey") ??
+    identityProblem(mapped.event.externalId, "externalId");
+  if (badIdentity) return await fail(badIdentity);
+  const route = { id: plan.integrationInstanceId, tenantId: params.tenantId };
+  const event = await persistInbound(base, route, mapped.event);
+  await finish("PROCESSED");
+  if (event.duplicate) return "processed";
+  return await processInboundDelivery({ ...params, deliveryId: event.id });
+}
+
 // Correlate externalId → thread via the ref created at outbound time, then record the
 // conversion idempotently (ON CONFLICT DO NOTHING keeps the surrounding tx alive). An
 // uncorrelated or duplicate conversion is dropped with a log, never invented. Returns the
@@ -752,12 +930,22 @@ async function dispatchConversion(
   externalId: string | null,
   source: string,
   payload: Record<string, unknown>,
+  integrationInstanceId: bigint,
 ): Promise<{ threadId: string; recorded: boolean } | null> {
   if (!externalId) {
     logger.info("inbound conversion without externalId; dropping");
     return null;
   }
-  const refThreadId = await toolpackRefThread(db, tenantId, externalId);
+  // A GENERIC conversion (built by a consult-back) correlates like every GENERIC event: only on a
+  // ref this instance minted.
+  const refThreadId =
+    source === "GENERIC"
+      ? await correlateConversationRef(db, {
+          tenantId,
+          integrationInstanceId,
+          ref: externalId,
+        })
+      : await toolpackRefThread(db, tenantId, externalId);
   if (!refThreadId) {
     logger.info(
       "inbound conversion uncorrelated (source=%s); dropping",

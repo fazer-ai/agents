@@ -3255,6 +3255,28 @@
       "production": "Produção (cobranças reais)",
       "sandbox": "Sandbox (teste)"
     },
+    "fetchBack": {
+      "addStatus": "Adicionar status",
+      "conversationRefPath": "Campo da resposta com a referência",
+      "currencyPath": "Campo da resposta com a moeda",
+      "enabled": "Consultar cada notificação com uma ferramenta",
+      "enabledHelp": "Alguns gateways (o Mercado Pago, por exemplo) avisam só com um id. Com isto ligado, o webhook roda uma das suas ferramentas HTTP com esse id e lê o que aconteceu na resposta da ferramenta, nunca na notificação.\n\nA conversa vem da referência que a sua ferramenta de cobrança enviou com {{ref}}, e só vale uma referência criada por esta integração.",
+      "eventIdPath": "Campo da resposta com o id do evento",
+      "idArg": "Campo da ferramenta que recebe o id",
+      "idArgNone": "Escolha uma ferramenta antes",
+      "idFrom": "De onde vem o id",
+      "idFromHint": "query.<nome>, header.<nome> ou body.<caminho>.",
+      "optional": "Opcional.",
+      "paid": "Pagamento",
+      "status": "Status",
+      "statuses": "Status que geram ação",
+      "statusesHint": "Qualquer outro status é ignorado. Um pagamento registra uma venda.",
+      "statusPath": "Campo da resposta com o status",
+      "text": "O que o agente recebe",
+      "tool": "Ferramenta de consulta",
+      "toolPick": "Escolha uma ferramenta",
+      "valuePath": "Campo da resposta com o valor"
+    },
     "googleScopeHint": "Conecte uma conta Google com o escopo certo (Agenda, Drive ou Sheets). Se uma ferramenta retornar erro de permissão, reconecte a credencial adicionando esse escopo.",
     "inboundAuth": "Autenticação de entrada",
     "inboundAuthStrategy": {

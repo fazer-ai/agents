@@ -51,6 +51,12 @@ import {
   REMINDER_OFFSET_RANGE,
 } from "@/modules/integrations/calendar-config-ranges";
 import {
+  FetchBackFields,
+  type FetchBackTool,
+  fetchBackFields,
+  fetchBackFieldValues,
+} from "./FetchBackFields";
+import {
   InboundSignatureFields,
   SIGNATURE_FIELDS,
   signatureFieldValues,
@@ -667,7 +673,11 @@ const withoutCredential = (fields: readonly string[]) =>
 // What a refusal is matched against: the body, plus the signature's nested config keys under the
 // names the server refuses them by.
 function refusalViewOf(form: Form) {
-  return { ...currentOf(form), ...signatureFieldValues(form.config) };
+  return {
+    ...currentOf(form),
+    ...signatureFieldValues(form.config),
+    ...fetchBackFieldValues(form.config),
+  };
 }
 
 // The body, from the form. ONE function, because it is also what a refusal is matched against.
@@ -780,10 +790,13 @@ export function IntegrationEditModal({
         ? [
             ...withoutCredential(openFields),
             ...(showsSignature ? SIGNATURE_FIELDS : []),
+            ...fetchBackFields(form.config),
           ]
         : openFields
       : [],
   );
+  // The workspace's HTTP tools, for a generic webhook's lookup tool; null while loading.
+  const [httpTools, setHttpTools] = useState<FetchBackTool[] | null>(null);
   const [saving, setSaving] = useState(false);
   const [loadingForm, setLoadingForm] = useState(false);
   const [loadError, setLoadError] = useState(false);
@@ -902,6 +915,19 @@ export function IntegrationEditModal({
     setFolderLoaded(false);
     setFolderFilter("");
     void loadHours();
+    setHttpTools(null);
+    void (async () => {
+      const { data } = await api.api.v1.tools.get();
+      setHttpTools(
+        (data?.tools ?? []).map((x) => ({
+          id: String(x.id),
+          label: x.label,
+          name: x.name,
+          enabled: x.enabled,
+          inputSchema: (x.inputSchema ?? {}) as Record<string, unknown>,
+        })),
+      );
+    })();
     const payloadId = modal.payload?.id;
     formBaseline.current = "";
     setLoadingForm(true);
@@ -1043,7 +1069,11 @@ export function IntegrationEditModal({
       const toast = refusal.capture(
         e,
         t("integrations.saveError", "Could not save."),
-        { ...sent, ...signatureFieldValues(sent.config) },
+        {
+          ...sent,
+          ...signatureFieldValues(sent.config),
+          ...fetchBackFieldValues(sent.config),
+        },
         refusalViewOf(formRef.current),
       );
       if (toast) showToast(toast, "error");
@@ -2238,6 +2268,14 @@ export function IntegrationEditModal({
                     cfg={cfg}
                     setCfg={setCfg}
                     refusal={refusal}
+                  />
+                )}
+                {isGeneric && (
+                  <FetchBackFields
+                    cfg={cfg}
+                    setCfg={setCfg}
+                    refusal={refusal}
+                    tools={httpTools}
                   />
                 )}
               </div>

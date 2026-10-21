@@ -38,7 +38,7 @@ Habilite o agente **mantendo o test mode** (como ele foi importado). Habilitar l
 ```jsonc
 agent_update {
   "agent_id": "<id>", "enabled": true,
-  "model_config": { "provider":"openai", "model":"gpt-5.4-mini", "temperature":0.3, "credentialRef":"<nome da vault entry>" }
+  "model_config": { "provider":"openai", "model":"gpt-6-luna", "temperature":0.7, "credentialRef":"<nome da vault entry>" }
 }
 ```
 

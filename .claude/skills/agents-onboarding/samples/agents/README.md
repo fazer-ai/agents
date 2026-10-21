@@ -14,7 +14,7 @@ O export **não carrega segredos**: cada credencial é referenciada por **nome**
 num tenant novo, os refs não resolvem automaticamente: crie entradas no vault com os mesmos nomes (ou
 re-aponte via `PATCH /v1/agents/:id`). Os nomes neste sample são genéricos de propósito:
 
-- `OpenAI`: modelo (`gpt-5.4-mini`) + STT + visão.
+- `OpenAI`: modelo (`gpt-6-luna`) + STT (`gpt-4o-transcribe`) + visão (`gpt-4o`, o padrão do servidor).
 - `ElevenLabs`: TTS.
 - `Google OAuth2`: integrações Google Calendar + Drive.
 - `Asaas`: integração de cobrança.

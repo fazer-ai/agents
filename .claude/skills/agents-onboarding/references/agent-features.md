@@ -26,7 +26,7 @@ MCP `agent_settings_set` (dry-run por padrão; `credentialRef` aceita o **nome**
 ```jsonc
 agent_settings_set {
   "agent_id": "<id>",
-  "stt": { "enabled": true, "provider": "openai", "model": "whisper-1", "language": "pt", "credentialRef": "<nome no vault>" },
+  "stt": { "enabled": true, "provider": "openai", "model": "gpt-4o-transcribe", "language": "pt", "credentialRef": "<nome no vault>" },
   "tts": { "mode": "mirror", "provider": "openai", "model": "tts-1", "voice": "alloy", "credentialRef": "<nome no vault>" }
 }   // dry_run:false pra aplicar
 ```

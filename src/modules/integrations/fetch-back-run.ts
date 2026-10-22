@@ -18,7 +18,7 @@ import {
 } from "@/modules/tool-definitions/test-run";
 
 export type FetchBackOutcome =
-  | { ok: true; status: number; response: unknown }
+  | { ok: true; status: number; response: unknown; tool: string }
   // `retry`: the provider or the network failed, and the same id may answer later. Otherwise the
   // tool or its answer cannot be used as configured, and a retry would answer the same.
   | { ok: false; retry: boolean; reason: string; refusedMethod?: string };
@@ -217,6 +217,7 @@ export async function runFetchBack(params: {
       ok: true,
       status: result.status,
       response: JSON.parse(result.raw),
+      tool: tool.name,
     };
   } catch {
     return {

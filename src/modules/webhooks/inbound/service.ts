@@ -18,10 +18,12 @@ import {
   correlateConversationRef,
 } from "@/modules/integrations/conversation-ref";
 import {
+  type FetchBackConfig,
   isFetchBackProblem,
   mapFetchedResource,
   noticeResourceId,
   parseFetchBackConfig,
+  readPath,
 } from "@/modules/integrations/fetch-back";
 import { runFetchBack } from "@/modules/integrations/fetch-back-run";
 import { getMapper } from "@/modules/integrations/mappers";
@@ -1197,7 +1199,7 @@ async function consultBack(
         : {}),
     });
   } else {
-    note({ stage: "fetch_back", ok: true });
+    note({ stage: "fetch_back", ok: true, detail: { ...looked.call } });
   }
   if (looked.kind === "unusable") return await fail(looked.reason);
   if (looked.kind === "fetch_failed") {
@@ -1269,7 +1271,7 @@ export async function lookUpNotice(params: {
       reason: string;
       refusedMethod?: string;
     }
-  | { kind: "mapped"; result: MapResult }
+  | { kind: "mapped"; result: MapResult; call: LookupCall }
 > {
   const cfg = parseFetchBackConfig(params.instanceConfig.fetchBack);
   if (cfg === undefined || isFetchBackProblem(cfg)) {
@@ -1304,7 +1306,45 @@ export async function lookUpNotice(params: {
       params.keyId ?? params.resourceId,
       fetched.response,
     ),
+    call: lookupCall(cfg, params.resourceId, fetched),
   };
+}
+
+// What a lookup did, for a test reception's `fetch_back` stage: the tool, the id it was handed, the
+// provider's HTTP status, and the response fields the mapping read (only the configured paths, and
+// only scalar values: an object or a list there is named, not copied).
+export interface LookupCall {
+  tool: string;
+  id: string;
+  httpStatus: number;
+  read: Record<string, unknown>;
+}
+
+function lookupCall(
+  cfg: FetchBackConfig,
+  id: string,
+  fetched: { status: number; response: unknown; tool: string },
+): LookupCall {
+  const read: Record<string, unknown> = {};
+  for (const path of [
+    cfg.conversationRefPath,
+    cfg.statusPath,
+    cfg.eventIdPath,
+    cfg.valuePath,
+    cfg.currencyPath,
+  ]) {
+    if (!path) continue;
+    const v = readPath(fetched.response, path);
+    read[path] =
+      v === undefined
+        ? null
+        : v === null || ["string", "number", "boolean"].includes(typeof v)
+          ? v
+          : Array.isArray(v)
+            ? "[list]"
+            : "[object]";
+  }
+  return { tool: fetched.tool, id, httpStatus: fetched.status, read };
 }
 
 // Correlate externalId → thread via the ref created at outbound time, then record the

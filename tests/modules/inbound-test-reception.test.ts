@@ -276,6 +276,18 @@ describe.skipIf(!dbUp)("test reception", () => {
       recordedAs: "PENDING",
       dryRun: true,
     });
+    // The call the lookup made: the tool, the id handed to it, the provider's status, and the
+    // response fields the mapping read.
+    expect(r.stages[3]?.detail).toEqual({
+      tool: "consultar_pagamento",
+      id: "1001",
+      httpStatus: 200,
+      read: {
+        external_reference: refApproved,
+        status: "approved",
+        transaction_amount: 99.9,
+      },
+    });
     expect(r.stages[4]?.detail).toMatchObject({
       kind: "conversion",
       externalId: refApproved,
@@ -323,9 +335,16 @@ describe.skipIf(!dbUp)("test reception", () => {
     expect(ok.stages.map((s) => s.stage)).toEqual([
       "signature",
       "mapping",
+      "fetch_back",
       "correlation",
       "record",
     ]);
+    // An instance without a lookup says so instead of leaving the stage out.
+    expect(ok.stages[2]).toEqual({
+      stage: "fetch_back",
+      ok: true,
+      detail: { configured: false },
+    });
     // No template: the gate signed the raw body, and that is what the stage shows.
     expect(ok.stages[0]?.detail).toMatchObject({
       strategy: "HMAC_SHA256",
@@ -394,6 +413,7 @@ describe.skipIf(!dbUp)("test reception", () => {
     expect(r.stages.map((s) => [s.stage, s.ok])).toEqual([
       ["signature", true],
       ["mapping", true],
+      ["fetch_back", true],
       ["record", true],
       ["correlation", false],
     ]);

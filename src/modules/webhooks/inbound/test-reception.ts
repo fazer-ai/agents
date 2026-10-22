@@ -190,7 +190,7 @@ async function explainPlanned(
         ? "would-retry"
         : "invalid";
     }
-    stages.push({ stage: "fetch_back", ok: true });
+    stages.push({ stage: "fetch_back", ok: true, detail: { ...looked.call } });
     if (!looked.result.ok) {
       stages.push({
         stage: "mapping",
@@ -308,6 +308,21 @@ export async function testReception(
   const getQuery = (n: string) => search.get(n);
   const probe: InboundProbe = { dryRun, stages: [] };
   const done = (outcome: string): TestReceptionResult => {
+    // The lookup is one of the stages the operator reads even when the instance has none: said, not
+    // left out, right after the event was read.
+    if (
+      route.config.fetchBack === undefined &&
+      !probe.stages.some((s) => s.stage === "fetch_back")
+    ) {
+      const at = probe.stages.findIndex((s) => s.stage === "mapping");
+      if (at >= 0 && probe.stages[at]?.ok) {
+        probe.stages.splice(at + 1, 0, {
+          stage: "fetch_back",
+          ok: true,
+          detail: { configured: false },
+        });
+      }
+    }
     const sig = probe.stages.find((s) => s.stage === "signature");
     if (sig) {
       sig.detail = signatureView(route, input.body, getHeader, getQuery);

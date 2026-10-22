@@ -162,6 +162,7 @@ async function explainPlanned(
       tenantId: route.tenantId,
       instanceConfig: route.config,
       resourceId: planned.resourceId,
+      keyId: planned.keyId,
       run,
       // The simulation calls the lookup tool for real, so only one that reads: a tool that POSTs,
       // PUTs, PATCHes or DELETEs could change the provider, which the dry run promises not to.

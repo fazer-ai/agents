@@ -194,7 +194,7 @@ export interface InboundProbe {
   dryRun: boolean;
   stages: InboundStage[];
   planned?:
-    | { kind: "notice"; resourceId: string }
+    | { kind: "notice"; resourceId: string; keyId: string }
     | { kind: "event"; event: NormalizedInboundEvent };
 }
 
@@ -375,14 +375,6 @@ export async function receiveOnRoute(
         outcome: "invalid",
       };
     }
-    note({ stage: "mapping", ok: true, detail: { lookup: resourceId } });
-    if (probe) probe.planned = { kind: "notice", resourceId };
-    note({
-      stage: "record",
-      ok: true,
-      detail: { recordedAs: "PENDING", dryRun: dry },
-    });
-    if (dry) return { ack: true, tenantId: route.tenantId, outcome: "queued" };
     // The throttle counts what the signature vouches for: under `|lower`, `ABC` and `abc` are one
     // signed id and one lookup a window, whichever spelling arrived first.
     const lowered =
@@ -394,12 +386,16 @@ export async function receiveOnRoute(
         fetchBack.idFrom.source,
         fetchBack.idFrom.name,
       );
-    const notice = await persistNotice(
-      base,
-      route,
-      resourceId,
-      lowered ? resourceId.toLowerCase() : resourceId,
-    );
+    const keyId = lowered ? resourceId.toLowerCase() : resourceId;
+    note({ stage: "mapping", ok: true, detail: { lookup: resourceId } });
+    if (probe) probe.planned = { kind: "notice", resourceId, keyId };
+    note({
+      stage: "record",
+      ok: true,
+      detail: { recordedAs: "PENDING", dryRun: dry },
+    });
+    if (dry) return { ack: true, tenantId: route.tenantId, outcome: "queued" };
+    const notice = await persistNotice(base, route, resourceId, keyId);
     return {
       ack: true,
       deliveryId: notice.id,

@@ -9,6 +9,7 @@ import {
   type FetchBackTool,
   fetchBackFields,
   fetchBackFieldValues,
+  idFieldsOf,
 } from "@/client/pages/resources/FetchBackFields";
 import { parseFetchBackConfig } from "@/modules/integrations/fetch-back";
 
@@ -202,4 +203,20 @@ test("a lookup imported with malformed status rows still opens, so it can be rep
     ).toBeTruthy();
     cleanup();
   }
+});
+
+test("a legacy tool stored as JSON Schema offers its properties as id fields, not `properties` and `required`", () => {
+  expect(
+    idFieldsOf({
+      id: "9",
+      label: "Legado",
+      name: "legado",
+      enabled: true,
+      inputSchema: {
+        type: "object",
+        properties: { payment_id: { type: "string" } },
+        required: ["payment_id"],
+      },
+    }),
+  ).toEqual(["payment_id"]);
 });

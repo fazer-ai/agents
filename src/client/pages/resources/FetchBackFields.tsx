@@ -9,6 +9,7 @@ import {
 } from "@/client/components";
 import type { FieldRefusal } from "@/client/hooks/useFieldRefusal";
 import { FETCH_BACK_STATUSES_MAX } from "@/modules/integrations/fetch-back";
+import { normalizeToolShapes } from "@/modules/tool-definitions/normalize";
 
 // The generic webhook's consult-back (`config.fetchBack`, read by
 // src/modules/integrations/fetch-back.ts): a notification that carries only an id is answered by
@@ -101,7 +102,12 @@ export function fetchBackFieldValues(
 // The fields of a tool the model would fill: the only ones the id can travel in.
 export function idFieldsOf(tool: FetchBackTool | undefined): string[] {
   if (!tool) return [];
-  return Object.entries(tool.inputSchema ?? {})
+  // Normalized as the server reads it: a legacy tool stored as JSON Schema lists its properties,
+  // not `properties` and `required`.
+  const schema = normalizeToolShapes({
+    inputSchema: (tool.inputSchema ?? {}) as Record<string, unknown>,
+  }).shapes.inputSchema;
+  return Object.entries((schema ?? {}) as Record<string, unknown>)
     .filter(
       ([, v]) =>
         v &&

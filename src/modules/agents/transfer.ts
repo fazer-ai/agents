@@ -1642,13 +1642,17 @@ async function remapConfigFetchBackToolNameToId(
   const fb = config.fetchBack;
   if (!fb || typeof fb !== "object" || Array.isArray(fb)) return config;
   const { toolName, toolId: _, ...rest } = fb as Record<string, unknown>;
-  const tool =
+  // Resolved as the HTTP-tool import resolved it (the model-facing name), so a legacy row the import
+  // reused under another spelling is the one the lookup points at.
+  const match =
     typeof toolName === "string"
-      ? await db.toolDefinition.findFirst({
-          where: { name: renamedHttpTools.get(toolName) ?? toolName },
-          select: { id: true },
-        })
+      ? await toolUnderModelName(
+          db,
+          renamedHttpTools.get(toolName) ?? toolName,
+          "http",
+        )
       : null;
+  const tool = match?.kind === "one" ? { id: match.id } : null;
   if (!tool) {
     warnings.push({
       code: "integrationLookupToolNotFound",

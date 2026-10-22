@@ -312,11 +312,15 @@ export function signedLowered(
 ): boolean {
   const parsed = parseSignatureConfig(raw);
   if (parsed === undefined || isSignatureConfigProblem(parsed)) return false;
-  return parsed.groups.some((g) =>
-    g.pieces.some(
-      (p) =>
-        p.kind === "value" && p.source === source && p.name === name && p.lower,
+  // Only when EVERY place it is signed lowercases it: `{{query.id}};{{query.id|lower}};` also signs
+  // the original case, so `ABC` and `abc` are two resources there and must not share a key.
+  const signed = parsed.groups.flatMap((g) =>
+    g.pieces.filter(
+      (p) => p.kind === "value" && p.source === source && p.name === name,
     ),
+  );
+  return (
+    signed.length > 0 && signed.every((p) => p.kind === "value" && p.lower)
   );
 }
 

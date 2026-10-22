@@ -37,6 +37,7 @@ import {
   parseSignatureConfig,
   renderSignedMessage,
   signatureCoversId,
+  signedLowered,
 } from "@/modules/webhooks/inbound/signed-message";
 import { dbProbeFailed } from "@/tests/db-gate";
 
@@ -204,6 +205,18 @@ describe("an id the signature covers with fixed boundaries", () => {
       ),
     ).toBe(covered);
   });
+});
+
+test("an id counts as lowercased only when every place the message signs it lowercases it", () => {
+  const sig = (message: string) => ({ format: "hex", message });
+  expect(signedLowered(sig("id:{{query.id|lower}};"), "query", "id")).toBe(
+    true,
+  );
+  // The original case is signed too, so `ABC` and `abc` are two resources.
+  expect(
+    signedLowered(sig("{{query.id}};{{query.id|lower}};"), "query", "id"),
+  ).toBe(false);
+  expect(signedLowered(sig("id:{{query.id}};"), "query", "id")).toBe(false);
 });
 
 test("a value that runs into the text of the next group is refused, the group between them dropped", () => {
@@ -835,49 +848,59 @@ describe.skipIf(!dbUp)("a thin notification answered by a consult-back", () => {
     }
   });
 
+  // The agent that grants the charge tool, exported with its components: the bundle the import
+  // tests read. Built once, by whichever of them runs first.
+  let bundle: Promise<Awaited<ReturnType<typeof exportAgent>>> | undefined;
+  const exportBundle = () => {
+    bundle ??= (async () => {
+      const charge = await createToolDefinition(
+        ctx(),
+        {
+          name: "criar_cobranca",
+          label: "Criar cobrança",
+          method: "POST",
+          urlTemplate: "https://8.8.8.8/v1/payments",
+          allowedHosts: ["8.8.8.8"],
+          body: {
+            mode: "kv",
+            rows: [
+              { key: "external_reference", value: "{{conversation_ref}}" },
+            ],
+          },
+          conversationRefIntegrationId: String(instanceId),
+        } as never,
+        appDb,
+      );
+      const agent = await suDb.agent.create({
+        data: {
+          tenantId,
+          name: "Cobrança",
+          systemPrompt: "x",
+          modelConfig: { provider: "openai", model: "gpt-4o-mini" },
+          settings: {},
+        },
+      });
+      await suDb.agentToolSelection.create({
+        data: {
+          tenantId,
+          agentId: agent.id,
+          source: "HTTP",
+          toolDefinitionId: BigInt(charge.id),
+          enabledTools: [],
+          knowledgeBaseIds: [],
+        },
+      });
+      return exportAgent(ctx(), agent.id, appDb, { includeComponents: true });
+    })();
+    return bundle;
+  };
+
   test("an agent bundle carries the lookup tool by name, and the import points the lookup at its copy", async () => {
     const dst = await suDb.tenant.create({
       data: { name: "FETCHBACK-DST", slug: `fetchback-d-${process.pid}` },
     });
     extraTenants.push(dst.id);
-    const charge = await createToolDefinition(
-      ctx(),
-      {
-        name: "criar_cobranca",
-        label: "Criar cobrança",
-        method: "POST",
-        urlTemplate: "https://8.8.8.8/v1/payments",
-        allowedHosts: ["8.8.8.8"],
-        body: {
-          mode: "kv",
-          rows: [{ key: "external_reference", value: "{{conversation_ref}}" }],
-        },
-        conversationRefIntegrationId: String(instanceId),
-      } as never,
-      appDb,
-    );
-    const agent = await suDb.agent.create({
-      data: {
-        tenantId,
-        name: "Cobrança",
-        systemPrompt: "x",
-        modelConfig: { provider: "openai", model: "gpt-4o-mini" },
-        settings: {},
-      },
-    });
-    await suDb.agentToolSelection.create({
-      data: {
-        tenantId,
-        agentId: agent.id,
-        source: "HTTP",
-        toolDefinitionId: BigInt(charge.id),
-        enabledTools: [],
-        knowledgeBaseIds: [],
-      },
-    });
-    const exp = await exportAgent(ctx(), agent.id, appDb, {
-      includeComponents: true,
-    });
+    const exp = await exportBundle();
     const inst = exp.components?.integrations.find(
       (i) => i.catalogType === "GENERIC" && i.name === "Mercado Pago",
     );
@@ -911,6 +934,41 @@ describe.skipIf(!dbUp)("a thin notification answered by a consult-back", () => {
       select: { toolDefinitionId: true },
     });
     expect(grants.map((g) => g.toolDefinitionId)).not.toContain(copy.id);
+  });
+
+  test("the import points the lookup at a legacy tool it reused under another spelling", async () => {
+    const exp = await exportBundle();
+    const dst = await suDb.tenant.create({
+      data: { name: "FETCHBACK-LEGACY", slug: `fetchback-l-${process.pid}` },
+    });
+    extraTenants.push(dst.id);
+    // A row written before names were normalized: the model sees it as `consultar_pagamento`.
+    const legacy = await suDb.toolDefinition.create({
+      data: {
+        tenantId: dst.id,
+        name: "Consultar_Pagamento",
+        label: "Consultar pagamento",
+        method: "GET",
+        urlTemplate: "https://8.8.8.8/v1/payments/{{payment_id}}",
+        allowedHosts: ["8.8.8.8"],
+        inputSchema: { payment_id: { type: "string", required: true } },
+      },
+    });
+    const { warnings } = await importAgent(ctx(dst.id), exp, appDb);
+    expect(
+      await suDb.toolDefinition.count({
+        where: { tenantId: dst.id, name: { equals: "consultar_pagamento" } },
+      }),
+    ).toBe(0);
+    const dstInst = await suDb.integrationInstance.findFirstOrThrow({
+      where: { tenantId: dst.id, catalogType: "GENERIC", name: "Mercado Pago" },
+    });
+    expect(
+      (dstInst.config as { fetchBack: Record<string, unknown> }).fetchBack,
+    ).toMatchObject({ toolId: String(legacy.id) });
+    expect(
+      warnings.some((w) => w.code === "integrationLookupToolNotFound"),
+    ).toBe(false);
   });
 
   describe("the save refuses a consult-back that cannot work or would leak", () => {

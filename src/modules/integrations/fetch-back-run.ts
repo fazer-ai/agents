@@ -91,13 +91,22 @@ export function fetchBackToolProblem(
   if (type !== undefined && type !== "string") {
     return `names a tool whose field "${idArg}" is not text`;
   }
+  // A field the URL renders counts as required whatever its flag: the call refuses to build a URL
+  // with a placeholder left empty (src/graph/tools/http.ts), so the lookup would never run.
+  const inUrl = new Set(
+    [
+      ...String(shapes.urlTemplate ?? "").matchAll(
+        /\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g,
+      ),
+    ].map((m) => m[1] as string),
+  );
   const others = Object.entries(schema as Record<string, unknown>).filter(
     ([k, v]) =>
       k !== idArg &&
       v !== null &&
       typeof v === "object" &&
       (v as Record<string, unknown>).source !== "fixed" &&
-      (v as Record<string, unknown>).required === true,
+      ((v as Record<string, unknown>).required === true || inUrl.has(k)),
   );
   if (others.length) {
     return `names a tool that also requires ${others.map(([k]) => `"${k}"`).join(", ")}, which a lookup cannot fill`;

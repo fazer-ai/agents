@@ -141,6 +141,17 @@ describe("which tools can serve a consult-back", () => {
       /also requires "store"/,
     ],
     [
+      "an optional field the URL renders, which the call cannot build without",
+      tool({
+        urlTemplate: "https://8.8.8.8/stores/{{store}}/payments/{{payment_id}}",
+        inputSchema: {
+          payment_id: { type: "string", required: true },
+          store: { type: "string" },
+        },
+      }),
+      /also requires "store"/,
+    ],
+    [
       "another field that is optional, or fixed",
       tool({
         inputSchema: {
@@ -205,9 +216,22 @@ describe("an id the signature covers with fixed boundaries", () => {
       ),
     ).toBe(covered);
   });
+
+  test("a header named in another case than the lookup names it is the same header", () => {
+    expect(
+      signatureCoversId(
+        sig("{{header.X-Payment-ID}};"),
+        "header",
+        "x-payment-id",
+      ),
+    ).toBe(true);
+    expect(
+      signedLowered(sig("{{header.X-Payment-ID}};"), "header", "x-payment-id"),
+    ).toBe(false);
+  });
 });
 
-test("an id counts as lowercased only when every place the message signs it lowercases it", () => {
+test("an id counts as lowercased unless an occurrence every message carries signs its original case", () => {
   const sig = (message: string) => ({ format: "hex", message });
   expect(signedLowered(sig("id:{{query.id|lower}};"), "query", "id")).toBe(
     true,
@@ -217,6 +241,15 @@ test("an id counts as lowercased only when every place the message signs it lowe
     signedLowered(sig("{{query.id}};{{query.id|lower}};"), "query", "id"),
   ).toBe(false);
   expect(signedLowered(sig("id:{{query.id}};"), "query", "id")).toBe(false);
+  // The original case rides with another value, so a message without that value signs only the
+  // lowercased id.
+  expect(
+    signedLowered(
+      sig("{{query.id|lower}};[[{{query.id}}:{{header.extra}};]]"),
+      "query",
+      "id",
+    ),
+  ).toBe(true);
 });
 
 test("a value that runs into the text of the next group is refused, the group between them dropped", () => {

@@ -231,6 +231,42 @@ function timestampAnchored(groups: Group[], name: string): boolean {
   return startAnchored || endAnchored;
 }
 
+// Whether a piece reads that value. Header names are case-insensitive (the gate reads them so), so
+// `{{header.X-Payment-ID}}` and `header.x-payment-id` name one value; query parameters are not.
+function isValue(
+  p: Piece,
+  source: Source,
+  name: string,
+): p is Extract<Piece, { kind: "value" }> {
+  return (
+    p.kind === "value" &&
+    p.source === source &&
+    (source === "header"
+      ? p.name.toLowerCase() === name.toLowerCase()
+      : p.name === name)
+  );
+}
+
+// Whether every message this config renders carries that value: it sits in the required part, or
+// alone in its [[group]] (which then drops only when the value itself is absent, and whoever reads
+// the value refuses an absent one). `lossless` also refuses `|lower`, which signs a projection.
+function covers(
+  groups: Group[],
+  source: Source,
+  name: string,
+  lossless: boolean,
+): boolean {
+  return groups.some((g) => {
+    const values = g.pieces.filter((p) => p.kind === "value");
+    return values.some(
+      (p) =>
+        isValue(p, source, name) &&
+        !(lossless && p.lower) &&
+        (!g.optional || values.length === 1),
+    );
+  });
+}
+
 // Whether a request this config authenticates also authenticates its BODY, byte for byte and with
 // fixed boundaries. Coverage alone is not enough: with `{{header.a}}{{body}}`, or a [[group]] that
 // can drop, a captured signature still verifies when part of the body moves into a header. So the
@@ -271,9 +307,7 @@ export function signatureCoversId(
   // signs `ABC;DEF;` for id DEF after x ABC, and for id ABC before y DEF). With only required
   // pieces before it, the id starts at one fixed point of every message.
   const home = parsed.groups.findIndex((g) =>
-    g.pieces.some(
-      (p) => p.kind === "value" && p.source === source && p.name === name,
-    ),
+    g.pieces.some((p) => isValue(p, source, name)),
   );
   if (parsed.groups.slice(0, home).some((g) => g.optional)) return false;
   // Fixed boundaries, as for the body: literal text (or the end of the message) after the id and
@@ -286,9 +320,7 @@ export function signatureCoversId(
     const pieces = parsed.groups.flatMap((g) =>
       !g.optional || mask & (1 << bit++) ? g.pieces : [],
     );
-    const at = pieces.findIndex(
-      (p) => p.kind === "value" && p.source === source && p.name === name,
-    );
+    const at = pieces.findIndex((p) => isValue(p, source, name));
     if (at < 0) continue;
     // The body before the id is refused outright: the gate never boundary-checks the body (its
     // bytes are the signed thing), so `{{body}}0{{query.id}}` signs `1`+`01` and `10`+`1` alike.
@@ -312,16 +344,20 @@ export function signedLowered(
 ): boolean {
   const parsed = parseSignatureConfig(raw);
   if (parsed === undefined || isSignatureConfigProblem(parsed)) return false;
-  // Only when EVERY place it is signed lowercases it: `{{query.id}};{{query.id|lower}};` also signs
-  // the original case, so `ABC` and `abc` are two resources there and must not share a key.
-  const signed = parsed.groups.flatMap((g) =>
-    g.pieces.filter(
-      (p) => p.kind === "value" && p.source === source && p.name === name,
-    ),
-  );
-  return (
-    signed.length > 0 && signed.every((p) => p.kind === "value" && p.lower)
-  );
+  // The original case is authenticated only by an occurrence every message carries: in the required
+  // part, or alone in its [[group]]. One that rides in a group with another value drops with it
+  // (`{{query.id|lower}};[[{{query.id}}:{{header.extra}};]]` without `extra` signs `ABC` and `abc`
+  // alike), and two spellings that can carry one signature must share a key.
+  const signed = parsed.groups.flatMap((g) => {
+    const values = g.pieces.filter((p) => p.kind === "value");
+    return g.pieces
+      .filter((p) => isValue(p, source, name))
+      .map((p) => ({
+        lower: p.kind === "value" && p.lower,
+        always: !g.optional || values.length === 1,
+      }));
+  });
+  return signed.length > 0 && !signed.some((o) => !o.lower && o.always);
 }
 
 export function isSignatureConfigProblem(

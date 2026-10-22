@@ -30,7 +30,7 @@ import { listConversations } from "@/modules/conversations/service";
 import { NEXT_NUMBER_RANGE } from "@/modules/documents/numbering";
 import { APPROVAL_TTL_HOURS } from "@/modules/documents/templates";
 import { EXPERIMENT_WEIGHT_RANGE } from "@/modules/experiments/service";
-import { FLOW_LEVELS, FLOW_STAGES } from "@/modules/flowlog/stages";
+import { FLOW_LEVELS, SELECTABLE_STAGES } from "@/modules/flowlog/stages";
 import { mcpHeadersArg } from "@/modules/mcp-connections/headers";
 import {
   runPlaygroundAudioTurn,
@@ -1288,7 +1288,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           // NOTE: derived from the vocabulary, never listed here: a hand copy had drifted to 8 of the
           // 11 stages while `logs_stages` (mcp/read.ts) advertised all 11, so a caller filtering by a
           // stage this very server had just told it about was refused.
-          stage: z.enum(FLOW_STAGES).optional(),
+          stage: z.enum(SELECTABLE_STAGES).optional(),
           agent_id: z.string().optional(),
           conversation_id: z.string().optional(),
           turn_id: z.string().optional(),
@@ -1335,7 +1335,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           // NOTE: derived from the vocabulary, never listed here: a hand copy had drifted to 8 of the
           // 11 stages while `logs_stages` (mcp/read.ts) advertised all 11, so a caller filtering by a
           // stage this very server had just told it about was refused.
-          stage: z.enum(FLOW_STAGES).optional(),
+          stage: z.enum(SELECTABLE_STAGES).optional(),
           agent_id: z.string().optional(),
           conversation_id: z.string().optional(),
           turn_id: z.string().optional(),
@@ -2530,7 +2530,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "alert_channel_create",
       {
         description:
-          "Create a flow-log alert channel (discord or generic webhook). url_ref is a vault entry NAME holding the FULL token-bearing destination URL (resolved server-side; never passed raw). secret_ref optionally holds an HMAC signing secret (vault NAME). min_level is info/warn/error; stages restrict which flow stages alert; exclude_agent_ids never alert here (still logged). Previews and creates NOTHING unless dry_run is false.",
+          "Create a flow-log alert channel (discord or generic webhook). url_ref is a vault entry NAME holding the FULL token-bearing destination URL (resolved server-side; never passed raw). secret_ref optionally holds an HMAC signing secret (vault NAME). min_level is info/warn/error; stages restrict which flow stages alert (`guardrail` is the guardrail trips that acted, `guardrail_observed` the ones the observe action only recorded); exclude_agent_ids never alert here (still logged). Previews and creates NOTHING unless dry_run is false.",
         inputSchema: {
           name: z.string(),
           type: z.enum(["discord", "webhook"]),

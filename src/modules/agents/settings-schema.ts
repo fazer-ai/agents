@@ -973,7 +973,7 @@ const outputChecks = z.looseObject({
 });
 
 const ACTION_DESC =
-  "on a violation: template = send templateMessage verbatim; generated = guardrails writes a safe reply; silent = send nothing; handoff = send handoffMessage and give the conversation to the team";
+  "on a violation: template = send templateMessage verbatim; generated = guardrails writes a safe reply; silent = send nothing; handoff = send handoffMessage and give the conversation to the team; observe = only record the trip (Logs line marked observed, trace, alerts on the guardrail_observed stage) and let the turn go on as if the check passed";
 
 const directionCommon = {
   enabled: z.boolean().optional(),

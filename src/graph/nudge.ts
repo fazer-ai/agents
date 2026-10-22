@@ -2040,6 +2040,7 @@ async function runAgentNudgeBody(
       // Same sink as this turn's own callbacks (see the buildCallbacks call above).
       persistUsage: params.deps?.persistUsage,
       langfuseCfg: cfg.langfuseCfg,
+      logValues: cfg.logToolValues,
       proactive: true,
     })("output", text);
 

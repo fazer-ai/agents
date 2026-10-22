@@ -27,7 +27,7 @@ import { apiErrorMessage } from "@/client/lib/apiError";
 import { flowStageLabel } from "@/client/lib/flowLabels";
 import { cn, formatDate } from "@/client/lib/utils";
 import { isValidHttpUrl } from "@/client/lib/validation";
-import { FLOW_STAGES } from "@/modules/flowlog/stages";
+import { SELECTABLE_STAGES } from "@/modules/flowlog/stages";
 
 // Alert channel manager (external sinks for execution-flow warnings/errors). Lives on the Webhooks
 // page (operationally adjacent). The token-bearing URL never comes back from the API — when editing,
@@ -116,7 +116,9 @@ function AlertChannelModal({
     // pre-checks exactly that subset. The operator then narrows from "everything" instead of an empty
     // set that silently meant "all".
     setStages(
-      new Set(ch?.stages && ch.stages.length > 0 ? ch.stages : FLOW_STAGES),
+      new Set(
+        ch?.stages && ch.stages.length > 0 ? ch.stages : SELECTABLE_STAGES,
+      ),
     );
     // Loaded, not blanked: the save below sends `secretRef` unconditionally and the service reads a
     // null there as "clear it", so a blank field here unsigns the channel on a save that meant to
@@ -154,9 +156,9 @@ function AlertChannelModal({
     ? [...excluded].filter((id) => !agentOptions.some((a) => a.id === id))
     : [];
 
-  const allStagesChecked = stages.size === FLOW_STAGES.length;
+  const allStagesChecked = stages.size === SELECTABLE_STAGES.length;
   const toggleAllStages = () =>
-    setStages(allStagesChecked ? new Set() : new Set(FLOW_STAGES));
+    setStages(allStagesChecked ? new Set() : new Set(SELECTABLE_STAGES));
 
   const urlInvalid = url.trim().length > 0 && !isValidHttpUrl(url);
   // Creating needs a URL; editing keeps the existing one when left blank. At least one stage must be
@@ -393,7 +395,7 @@ function AlertChannelModal({
             </button>
           </legend>
           <div className="flex flex-wrap gap-1.5">
-            {FLOW_STAGES.map((s) => {
+            {SELECTABLE_STAGES.map((s) => {
               const checked = stages.has(s);
               return (
                 <button

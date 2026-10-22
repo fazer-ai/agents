@@ -223,6 +223,7 @@ const FLOWLOG_READERS: Record<string, number> = {
   // (one) and a one-step ladder re-run wrote (none); each case empties this file's tenant first.
   "tests/modules/followup-sweep-later-step.test.ts": 2,
   "tests/modules/guardrail-health.test.ts": 1,
+  "tests/modules/guardrail-observe.test.ts": 1,
   "tests/modules/guardrail-on-failure.test.ts": 1,
   "tests/modules/guardrail-unchecked-line.test.ts": 1,
   // NOTE: One reader answering both directions on the same query: the line that names a colleague's reply

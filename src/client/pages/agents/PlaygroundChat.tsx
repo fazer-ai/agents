@@ -1364,6 +1364,16 @@ export function guardrailTraceLabel(
       "playground.trace.externalReplace",
       "replaced by the endpoint's text",
     );
+  if (entry.outcome === "observed")
+    return entry.direction === "input"
+      ? t(
+          "playground.trace.guardrailObservedInput",
+          "would have tripped; only recorded, the message reached the agent",
+        )
+      : t(
+          "playground.trace.guardrailObserved",
+          "would have tripped; only recorded, the reply went out as written",
+        );
   if (entry.external?.decision === "block")
     return entry.outcome === "suppressed"
       ? t(
@@ -1457,7 +1467,10 @@ export function TraceRow({ entry }: { entry: TraceEntry }) {
       <div className="flex flex-col gap-0.5">
         <span
           className={cn("flex items-center gap-1 font-medium", {
-            "text-warning": tripped || entry.outcome === "unavailable",
+            "text-warning":
+              tripped ||
+              entry.outcome === "unavailable" ||
+              entry.outcome === "observed",
             "text-text-secondary": entry.outcome === "clean",
           })}
         >

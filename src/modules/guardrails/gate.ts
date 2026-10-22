@@ -13,6 +13,7 @@ import {
   type UsagePersist,
   usageAttribution,
 } from "@/graph/usage";
+import { scrubbedClip } from "@/lib/redact";
 import { clipText } from "@/lib/text";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { literalForChatwoot } from "@/modules/chatwoot/liquid";
@@ -105,7 +106,9 @@ export type GuardrailGate = (
 // caller that branched on it would be branching on model-written prose.
 export interface GuardrailReport {
   direction: "input" | "output";
-  outcome: Exclude<GuardrailDecision["kind"], "not-run">;
+  // `observed` is a trip under the `observe` action: the caller was told `clean` and went on, and
+  // this is the only place the verdict is said.
+  outcome: Exclude<GuardrailDecision["kind"], "not-run"> | "observed";
   // As CARRIED OUT, and only on a trip. See the note on `effectiveAction` below.
   action?: GuardrailAction;
   // Model-written, and only on a trip.
@@ -257,6 +260,10 @@ export interface GuardrailGateParams {
   // asked to score relevance against silence has only wrong answers available. So the gate drops the
   // check itself, structurally, the same way the input direction drops the replacement.
   customerMessage?: string;
+  // `observability.logToolValues`: an observed trip's rationale, model text that may quote the customer,
+  // reaches the flow line only with it on. An observed trip posts no note, so the line is the one
+  // place an operator can read why it tripped.
+  logValues?: boolean;
   // The thread the agent answers from, as it stood BEFORE this turn, for the input direction's context
   // window. Read only when the window is on and a screening runs; absent screens the message alone.
   inputContext?: () => Promise<readonly BaseMessage[]>;
@@ -273,6 +280,10 @@ export interface GuardrailGateParams {
   // `onFailure` says: there is no customer message waiting, and a hand-over would open a case nobody asked for.
   proactive?: true;
 }
+
+// An observed trip's rationale on its flow line: bounded like the trace's, since the line is kept as
+// long as the Logs are.
+const OBSERVED_RATIONALE_MAX = 2000;
 
 export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
   const gr = p.cfg;
@@ -389,6 +400,34 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
     const dir = gr[direction];
     // A classifier hands no replacement in, so its `generated` lands on the template below.
     const action = dir.action;
+    // Recorded and nothing else: the caller reads `clean` and sends the subject, and no note is posted
+    // (the sink posts only for the outcomes that acted).
+    if (action === "observe") {
+      emitFlowEvent(p.flow, {
+        stage: "guardrail",
+        status: "ok",
+        level: "warn",
+        detail: {
+          direction,
+          action,
+          ...logged,
+          ...(extra.rationale
+            ? p.logValues
+              ? {
+                  rationale: scrubbedClip(
+                    extra.rationale,
+                    OBSERVED_RATIONALE_MAX,
+                  ),
+                }
+              : { rationaleChars: extra.rationale.length }
+            : {}),
+        },
+      });
+      return {
+        d: { kind: "clean" },
+        r: { direction, outcome: "observed", action, categories, ...extra },
+      };
+    }
     // The turn trail and the operator note report what the guardrail DID, not what it was
     // configured to do. `generated` with no replacement in hand sends the template — when the model
     // returns none, and on the input direction every time (see ./analyze.ts) — and an operator
@@ -678,8 +717,11 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
 
   return async (direction, subject) => {
     const screened = await screen(direction, subject);
+    // A direction set to only record does not hold either: holding is acting.
     const { d, r } =
-      holds && screened.d.kind === "unavailable"
+      holds &&
+      screened.d.kind === "unavailable" &&
+      gr[direction].action !== "observe"
         ? held(direction, subject, screened.r)
         : screened;
     // The one announcement point. `not-run` is the only outcome with no report, and it is the only

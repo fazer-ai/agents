@@ -60,7 +60,7 @@ import { listAlertChannels } from "@/modules/flowlog/channels";
 import { exportExecutionLogs } from "@/modules/flowlog/export";
 import { listExecutionLogs } from "@/modules/flowlog/read";
 import { parseIsoInstant } from "@/modules/flowlog/settings";
-import { FLOW_LEVELS, FLOW_STAGES } from "@/modules/flowlog/stages";
+import { FLOW_LEVELS, SELECTABLE_STAGES } from "@/modules/flowlog/stages";
 import {
   listCatalog,
   listIntegrationInstances,
@@ -807,7 +807,7 @@ export async function alertStageList(
 ): Promise<WriteResult> {
   const ctx = readGate(principal);
   if ("ok" in ctx) return ctx;
-  return ok({ stages: [...FLOW_STAGES], levels: [...FLOW_LEVELS] });
+  return ok({ stages: [...SELECTABLE_STAGES], levels: [...FLOW_LEVELS] });
 }
 
 // ── business hours ──

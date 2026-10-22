@@ -14,7 +14,7 @@ import {
   listAlertChannels,
   updateAlertChannel,
 } from "@/modules/flowlog/channels";
-import { FLOW_STAGES } from "@/modules/flowlog/stages";
+import { SELECTABLE_STAGES } from "@/modules/flowlog/stages";
 
 // Alert channel CRUD (external sinks for execution-flow warnings/errors). TENANT_ADMIN; RLS-scoped.
 // The token-bearing `url` goes IN on write and comes back only as a masked preview.
@@ -36,14 +36,18 @@ export const alertChannelsController = new Elysia({
   tags: ["Logs"],
 })
   .use(tenancyPlugin)
-  .get("/stages", () => ({ instance: instanceIdentity, stages: FLOW_STAGES }), {
-    requireRole: "TENANT_ADMIN",
-    detail: doc(
-      "List flow stages",
-      "Returns the closed execution-flow stage vocabulary that an alert channel can filter on.",
-    ),
-    response: errors(401, 403),
-  })
+  .get(
+    "/stages",
+    () => ({ instance: instanceIdentity, stages: SELECTABLE_STAGES }),
+    {
+      requireRole: "TENANT_ADMIN",
+      detail: doc(
+        "List flow stages",
+        "Returns the closed execution-flow stage vocabulary that an alert channel can filter on.",
+      ),
+      response: errors(401, 403),
+    },
+  )
   .get(
     "/",
     async ({ tenantContext }) => ({

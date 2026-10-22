@@ -355,8 +355,11 @@ export function buildExternalCheck(
     const latencyMs = Math.max(0, now() - started);
     let d: GuardrailDecision;
     let r: GuardrailReport;
+    // A reply set to only record goes out whatever the endpoint answered, and a failure does not hold
+    // it either: holding is acting.
+    const observing = out.action === "observe";
     if (!answer.ok) {
-      const held = gr.onFailure === "hold";
+      const held = gr.onFailure === "hold" && !observing;
       emitFlowEvent(p.flow, {
         stage: "guardrail",
         status: "error",
@@ -396,9 +399,11 @@ export function buildExternalCheck(
         latencyMs,
         ...(answer.reason ? { reason: answer.reason } : {}),
       };
-      // `generated` has no judge that wrote a replacement here, so it sends the template.
+      // `generated` has no judge that wrote a replacement here, so it sends the template. Under
+      // `observe` a replacement is recorded the same way a block is, and neither is applied.
       const action =
-        answer.decision === "block"
+        answer.decision === "block" ||
+        (observing && answer.decision === "replace")
           ? out.action === "generated"
             ? "template"
             : out.action
@@ -423,6 +428,14 @@ export function buildExternalCheck(
       if (answer.decision === "allow") {
         d = { kind: "clean" };
         r = { direction: "output", outcome: "clean", external };
+      } else if (observing) {
+        d = { kind: "clean" };
+        r = {
+          direction: "output",
+          outcome: "observed",
+          action: "observe",
+          external,
+        };
       } else if (answer.decision === "replace") {
         // The endpoint's text, escaped for Chatwoot like a model's: it is not a template the
         // operator wrote in this console, and it may echo what the customer typed.

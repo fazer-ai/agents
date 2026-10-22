@@ -1252,6 +1252,7 @@ async function runTurnBody(
     announce: chatwootNoteSink(client, conversationId),
     flow,
     systemPrompt: loaded.systemPrompt,
+    logValues: loaded.logToolValues,
     // NOTE: The raw inbound text, never a system marker the customer did not write.
     customerMessage: text,
     // NOTE: Read when the input screening runs, before this turn's invoke writes the burst into the

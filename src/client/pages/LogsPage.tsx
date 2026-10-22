@@ -30,13 +30,18 @@ import {
   flowStageLabel,
   guardrailClassifierLabel,
   guardrailExternalLabel,
+  guardrailObservedLabel,
   guardrailUncheckedLabel,
   toolResultSizeLabel,
 } from "@/client/lib/flowLabels";
 import { type LogGroupTitle, logGroupTitle } from "@/client/lib/logGroupTitle";
 import { cn, formatDateTime } from "@/client/lib/utils";
 import { CLIENT_AUDIENCES } from "@/graph/usage-sources";
-import { FLOW_LEVELS, FLOW_STAGES } from "@/modules/flowlog/stages";
+import {
+  FLOW_LEVELS,
+  SELECTABLE_STAGES,
+  selectorOf,
+} from "@/modules/flowlog/stages";
 import { LogsExportModal } from "./LogsExportModal";
 
 // Execution-flow log viewer (TENANT_ADMIN). Rows are grouped by turn into collapsible cards;
@@ -158,7 +163,12 @@ function StageRow({ row }: { row: LogItem }) {
         // Spacer so rows without a detail toggle stay aligned with the ones that have it.
         <span className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
       )}
-      <Badge variant="secondary">{flowStageLabel(row.stage, t)}</Badge>
+      <Badge variant="secondary">
+        {flowStageLabel(
+          selectorOf(row.stage, row.detail as Record<string, unknown> | null),
+          t,
+        )}
+      </Badge>
       {row.level !== "info" && <LevelPill level={row.level} />}
       {row.status && (
         <span className="text-text-muted text-xs">{row.status}</span>
@@ -177,10 +187,13 @@ function StageRow({ row }: { row: LogItem }) {
   // Outside the toggle on purpose: whether the message went on unchecked is the row's headline, not
   // a detail to expand.
   const external = guardrailExternalLabel(row.stage, rowDetail, t);
+  const observed = guardrailObservedLabel(row.stage, rowDetail, t);
   const uncheckedLine = unchecked ? (
     <p className="mt-1 pl-5.5 text-warning text-xs">
       {classifier ? `${unchecked} · ${classifier}` : unchecked}
     </p>
+  ) : observed ? (
+    <p className="mt-1 pl-5.5 text-warning text-xs">{observed}</p>
   ) : (
     external && (
       <p
@@ -613,7 +626,7 @@ export function LogsPage() {
           aria-label={t("logs.filterStage", "Stage")}
         >
           <option value="">{t("logs.allStages", "All stages")}</option>
-          {FLOW_STAGES.map((s) => (
+          {SELECTABLE_STAGES.map((s) => (
             <option key={s} value={s}>
               {flowStageLabel(s, t)}
             </option>

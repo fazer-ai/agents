@@ -348,6 +348,45 @@ describe.skipIf(!dbUp)("an observed screening", () => {
     ]);
   });
 
+  // The bug it catches: an endpoint that cannot answer holding a reply on a direction set to only
+  // record. Holding is acting, so the failure passes unchecked there, as the built-in check's does.
+  test("an external failure under hold lets an observed reply out", async () => {
+    const f = flow();
+    const check = buildExternalCheck({
+      cfg: cfg({
+        onFailure: "hold",
+        external: {
+          ...GUARDRAILS_DEFAULTS.external,
+          url: "https://example.invalid/check",
+        },
+      }),
+      ctx: {
+        tenantId,
+        agentId: 2n,
+        conversationId: 3n,
+        chatwootConversationId: 4,
+        turnId: f.turnId,
+        customerMessage: "oi",
+      },
+      secret: null,
+      flow: f,
+      deps: {
+        assertSafe: async (u) => new URL(u),
+        fetchImpl: (async () =>
+          new Response("down", { status: 503 })) as unknown as typeof fetch,
+      },
+    });
+    const d = await check?.({
+      text: "RESPOSTA",
+      attachments: [],
+      model: "primary",
+      toolCalls: [],
+    });
+    expect(d?.kind).not.toBe("handed-off");
+    const got = await lines(f.turnId);
+    expect(got.map((l) => l.detail.unchecked)).toEqual([true]);
+  });
+
   // The bug it catches: an observed trip paging a channel that asked for acted trips only, or the
   // channel that asked for observed trips missing it. The delivery's stage stays `guardrail`.
   test("alert channels select observed and acted trips apart", async () => {

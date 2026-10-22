@@ -10,7 +10,9 @@
 # src/modules/split/service.ts, where this picks 97, most of them the sweeps.
 #
 # What no test file imports runs everything: the preloads, bunfig.toml, the dependencies and the
-# Prisma schema change every test file at once.
+# Prisma schema change every test file at once. That run uses parallel workers: one process holding
+# every test file grows past 8 GB, and each worker holds only its share. CI shards
+# instead, for the reason in .github/workflows/test.yml, but the hook only runs on a developer machine.
 set -e
 
 staged=${TEST_STAGED_FILES:-$(git diff --cached --name-only --no-renames --diff-filter=ACMD)}
@@ -18,9 +20,10 @@ staged=${TEST_STAGED_FILES:-$(git diff --cached --name-only --no-renames --diff-
 
 full=$(printf '%s\n' "$staged" | grep -E '^(tests/(setup|dom-setup|db-gate|db-name)\.ts|bunfig\.toml|package\.json|bun\.lock|tsconfig\.json|prisma/)' || true)
 if [ -n "$full" ]; then
-  echo "[test-staged] $(printf '%s' "$full" | head -1) changes every test file: running the whole suite"
+  run="bun test --parallel"
+  echo "[test-staged] $(printf '%s' "$full" | head -1) changes every test file: running the whole suite ($run)"
   [ -n "$TEST_STAGED_LIST" ] && exit 0
-  exec bun test
+  exec $run
 fi
 
 picked=""

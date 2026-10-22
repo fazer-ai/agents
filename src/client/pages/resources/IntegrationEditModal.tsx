@@ -2291,6 +2291,7 @@ export function IntegrationEditModal({
                       <TestReceptionPanel
                         run={apiRunTest(String(editId))}
                         onRunningChange={setTesting}
+                        disabled={saving}
                       />
                     </div>
                   </details>

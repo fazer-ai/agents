@@ -10,6 +10,10 @@ import { AppError, NotFoundError, UnauthorizedError } from "@/lib/errors";
 import { trackWork } from "@/lib/shutdown";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { correlateConversationRef } from "@/modules/integrations/conversation-ref";
+import {
+  isFetchBackProblem,
+  parseFetchBackConfig,
+} from "@/modules/integrations/fetch-back";
 import type { runFetchBack } from "@/modules/integrations/fetch-back-run";
 import type { ResolvedInboundRoute } from "@/modules/integrations/service";
 import type { NormalizedInboundEvent } from "@/modules/integrations/types";
@@ -153,6 +157,27 @@ async function explainPlanned(
 ): Promise<string> {
   let event: NormalizedInboundEvent;
   if (planned.kind === "notice") {
+    // The simulation calls the lookup tool for real, so it only calls one that reads: a tool that
+    // POSTs, PUTs, PATCHes or DELETEs could change the provider, which the dry run promises not to.
+    const cfg = parseFetchBackConfig(route.config.fetchBack);
+    if (cfg !== undefined && !isFetchBackProblem(cfg)) {
+      const tool = await runScopedOn(base, ctx, (db) =>
+        db.toolDefinition.findUnique({
+          where: { id: cfg.toolId },
+          select: { method: true },
+        }),
+      );
+      const method = (tool?.method ?? "GET").toUpperCase();
+      if (method !== "GET" && method !== "HEAD") {
+        stages.push({
+          stage: "fetch_back",
+          ok: false,
+          reason: "not-simulated",
+          detail: { method },
+        });
+        return "not-simulated";
+      }
+    }
     const looked = await lookUpNotice({
       base,
       tenantId: route.tenantId,

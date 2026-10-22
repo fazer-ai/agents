@@ -104,3 +104,21 @@ test("the editor hears while a test is out, so it can hold its close and save", 
   finish({ dryRun: true, outcome: "queued", stages: [] });
   await waitFor(() => expect(seen).toEqual([true, false]));
 });
+
+test("no test starts while the editor saves", () => {
+  render(
+    <ToastProvider>
+      <TestReceptionPanel
+        run={async () => ({ dryRun: true, outcome: "queued", stages: [] })}
+        disabled
+      />
+    </ToastProvider>,
+  );
+  fireEvent.change(screen.getByLabelText("Notification body"), {
+    target: { value: "{}" },
+  });
+  expect(
+    (screen.getByRole("button", { name: "Run test" }) as HTMLButtonElement)
+      .disabled,
+  ).toBe(true);
+});

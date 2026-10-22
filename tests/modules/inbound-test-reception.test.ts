@@ -570,6 +570,43 @@ describe.skipIf(!dbUp)("test reception", () => {
     });
   });
 
+  test("the dry run does not call a lookup tool that could change the provider", async () => {
+    const fb = (
+      await suDb.integrationInstance.findUniqueOrThrow({
+        where: { id: mpId },
+        select: { config: true },
+      })
+    ).config as { fetchBack: { toolId: string } };
+    const toolId = BigInt(fb.fetchBack.toolId);
+    await suDb.toolDefinition.update({
+      where: { id: toolId },
+      data: { method: "POST" },
+    });
+    try {
+      const before = seen.length;
+      const r = await testReception(
+        ctx(),
+        mpId,
+        mpNotice("1001"),
+        appDb,
+        deps(),
+      );
+      expect(r.outcome).toBe("not-simulated");
+      expect(r.stages.at(-1)).toMatchObject({
+        stage: "fetch_back",
+        ok: false,
+        reason: "not-simulated",
+        detail: { method: "POST" },
+      });
+      expect(seen.length).toBe(before);
+    } finally {
+      await suDb.toolDefinition.update({
+        where: { id: toolId },
+        data: { method: "GET" },
+      });
+    }
+  });
+
   test("a disabled instance can be tested dry, not delivered", async () => {
     await updateIntegrationInstance(
       ctx(),

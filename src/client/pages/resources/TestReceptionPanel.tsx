@@ -67,8 +67,11 @@ function detailLines(detail: Record<string, unknown> | undefined): string[] {
 export function TestReceptionPanel({
   run,
   onRunningChange,
+  disabled = false,
 }: {
   run: RunTest;
+  // The editor is saving: a test started now would be unmounted by the close that follows the save.
+  disabled?: boolean;
   // The editor holds its close and save while a test is out (docs/modals.md, async flows): a real
   // test delivers, and closing would lose its result without stopping it.
   onRunningChange?: (running: boolean) => void;
@@ -173,7 +176,7 @@ export function TestReceptionPanel({
       <Button
         variant="secondary"
         className="self-start"
-        disabled={running || !body.trim()}
+        disabled={disabled || running || !body.trim()}
         onClick={() => void submit()}
       >
         {t("integrations.test.run", "Run test")}

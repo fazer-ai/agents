@@ -323,6 +323,11 @@ describe.skipIf(!dbUp)("test reception", () => {
       "correlation",
       "record",
     ]);
+    // No template: the gate signed the raw body, and that is what the stage shows.
+    expect(ok.stages[0]?.detail).toMatchObject({
+      strategy: "HMAC_SHA256",
+      signedMessage: body(refGeneric),
+    });
     expect(ok.stages[1]?.detail).toMatchObject({
       kind: "agent_nudge",
       dedupeKey: "evt-1",

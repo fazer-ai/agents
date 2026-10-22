@@ -94,6 +94,11 @@ async function routeOf(
   return { ...row, config: (row.config ?? {}) as Record<string, unknown> };
 }
 
+const shown = (message: string) =>
+  message.length > SHOWN_MESSAGE_MAX_CHARS
+    ? `${message.substring(0, SHOWN_MESSAGE_MAX_CHARS)}…`
+    : message;
+
 // What the gate read, for the operator: never the secret, and the signed message only as text the
 // operator pasted (it signs with the secret, it does not contain it).
 function signatureView(
@@ -114,7 +119,8 @@ function signatureView(
   };
   if (strategy !== "HMAC_SHA256") return view;
   const sig = parseSignatureConfig(cfg.signature);
-  if (sig === undefined) return { ...view, signedMessage: "{{body}}" };
+  // No template: the gate signs the raw body, so that is what it shows.
+  if (sig === undefined) return { ...view, signedMessage: shown(rawBody) };
   if (isSignatureConfigProblem(sig)) return view;
   const parts =
     sig.format === "parts"
@@ -133,10 +139,7 @@ function signatureView(
     ...(message === "missing" || message === "ambiguous"
       ? {}
       : {
-          signedMessage:
-            message.length > SHOWN_MESSAGE_MAX_CHARS
-              ? `${message.substring(0, SHOWN_MESSAGE_MAX_CHARS)}…`
-              : message,
+          signedMessage: shown(message),
         }),
   };
 }

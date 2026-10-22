@@ -15,18 +15,15 @@ import { apiErrorMessage } from "@/client/lib/apiError";
 // "Test reception": a sample notification pasted here runs through the SAVED instance on the server
 // (src/modules/webhooks/inbound/test-reception.ts), and each stage comes back with its verdict.
 
-export interface TestStage {
-  stage: string;
-  ok: boolean;
-  reason?: string;
-  detail?: Record<string, unknown>;
-}
-
-export interface TestResult {
-  dryRun: boolean;
-  outcome: string;
-  stages: TestStage[];
-}
+// Derived from the endpoint (docs/eden-treaty.md), so a change to the server's answer fails here.
+type TestCall = ReturnType<
+  ReturnType<typeof api.api.v1.integrations.instances>["test-reception"]["post"]
+>;
+export type TestResult = Pick<
+  NonNullable<Awaited<TestCall>["data"]>,
+  "dryRun" | "outcome" | "stages"
+>;
+export type TestStage = TestResult["stages"][number];
 
 // `Name: value` per line, as a request's headers are usually copied from a provider's log. A line
 // without a colon is ignored rather than sent with an empty name. A name repeated (in any case) is
@@ -64,7 +61,7 @@ export function apiRunTest(instanceId: string): RunTest {
       .instances({ id: instanceId })
       ["test-reception"].post(input);
     if (error || !data) throw error ?? new Error("no result");
-    return data as unknown as TestResult;
+    return data;
   };
 }
 

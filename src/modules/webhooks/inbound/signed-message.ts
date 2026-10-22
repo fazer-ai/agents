@@ -245,26 +245,6 @@ function isValue(
   );
 }
 
-// Whether every message this config renders carries that value: it sits in the required part, or
-// alone in its [[group]] (which then drops only when the value itself is absent, and whoever reads
-// the value refuses an absent one). `lossless` also refuses `|lower`, which signs a projection.
-function covers(
-  groups: Group[],
-  source: Source,
-  name: string,
-  lossless: boolean,
-): boolean {
-  return groups.some((g) => {
-    const values = g.pieces.filter((p) => p.kind === "value");
-    return values.some(
-      (p) =>
-        isValue(p, source, name) &&
-        !(lossless && p.lower) &&
-        (!g.optional || values.length === 1),
-    );
-  });
-}
-
 // Whether a request this config authenticates also authenticates its BODY, byte for byte and with
 // fixed boundaries. Coverage alone is not enough: with `{{header.a}}{{body}}`, or a [[group]] that
 // can drop, a captured signature still verifies when part of the body moves into a header. So the

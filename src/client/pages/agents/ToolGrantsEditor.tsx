@@ -2217,7 +2217,7 @@ export function ToolGrantsEditor({
                   maxLength={TOOL_INSTRUCTIONS_MAX}
                   placeholder={t(
                     "editor.labelInstructionsPlaceholder",
-                    'e.g. The conversation carries exactly one of "cancelamento", "compra-de-ingresso" or "outros": to swap it, name the old one in remove and the new one in add, in the same call. Do not name a label you are not changing.',
+                    'e.g. The conversation carries exactly one of "category-a", "category-b" or "other": to swap it, name the old one in remove and the new one in add, in the same call. Do not name a label you are not changing.',
                   )}
                 />
                 <FieldSize
@@ -2259,7 +2259,7 @@ export function ToolGrantsEditor({
                 }
                 placeholder={t(
                   "editor.allowedLabelsPlaceholder",
-                  "e.g. cancelamento, compra-de-ingresso, outros",
+                  "e.g. category-a, category-b, other",
                 )}
               />
             </FormField>

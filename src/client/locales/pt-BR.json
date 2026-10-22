@@ -1475,7 +1475,7 @@
   "editor": {
     "allowedLabels": "Etiquetas que pode acrescentar",
     "allowedLabelsHint": "Opcional, separadas por vírgula. As únicas etiquetas que este agente pode acrescentar. Vazio: qualquer etiqueta, e uma que a conta não tem é criada.",
-    "allowedLabelsPlaceholder": "ex.: cancelamento, compra-de-ingresso, outros",
+    "allowedLabelsPlaceholder": "ex.: categoria-a, categoria-b, outros",
     "allowedLabelsTooMany": "Etiquetas que pode acrescentar aceita no máximo {{max}} etiquetas.",
     "always": "Sempre ativo",
     "attributeContext": "Dados no contexto",
@@ -2388,7 +2388,7 @@
     },
     "labelInstructions": "Orientação de uso",
     "labelInstructionsHint": "Opcional. Quais etiquetas a conversa, o contato ou o card devem carregar, e quando. A IA já vê as que estão valendo; escreva aqui as suas regras, inclusive quais delas se excluem.",
-    "labelInstructionsPlaceholder": "ex.: a conversa carrega exatamente uma entre \"cancelamento\", \"compra-de-ingresso\" e \"outros\": para trocar, nomeie a antiga em remove e a nova em add, na mesma chamada. Não nomeie etiqueta que você não está mudando.",
+    "labelInstructionsPlaceholder": "ex.: a conversa carrega exatamente uma entre \"categoria-a\", \"categoria-b\" e \"outros\": para trocar, nomeie a antiga em remove e a nova em add, na mesma chamada. Não nomeie etiqueta que você não está mudando.",
     "labelRemoval": "Etiquetas que pode remover",
     "labelRemovalAllowed": "Só as que pode acrescentar",
     "labelRemovalAny": "Qualquer etiqueta, menos as fora do alcance",
@@ -4622,7 +4622,7 @@
     },
     "cta": "Fazer upgrade",
     "dashboards": {
-      "description": "Monte os seus próprios dashboards (conversas por evento, etiqueta ou desfecho, custo de IA por modelo) e compartilhe cada um pelo endereço. Faça upgrade para o Pro para criá-los."
+      "description": "Monte os seus próprios dashboards (conversas por atributo, etiqueta ou desfecho, custo de IA por modelo) e compartilhe cada um pelo endereço. Faça upgrade para o Pro para criá-los."
     },
     "dismiss": "Agora não",
     "multiTenant": {

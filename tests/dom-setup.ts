@@ -1,3 +1,4 @@
+import { expect } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 
 // Preloaded BEFORE ./setup.ts (`preload` in bunfig.toml): `@testing-library/dom` builds `screen` at
@@ -29,6 +30,130 @@ __nativeBunGlobals.BunAbortController = AbortController;
 __nativeBunGlobals.BunAbortSignal = AbortSignal;
 
 GlobalRegistrator.register();
+
+// A failing assertion pretty-prints what it received, and a happy-dom node reaches its document and
+// the window, so one failing `expect(dialog).toBeNull()` builds a message of hundreds of millions of
+// characters and blocks for seconds, on every `waitFor` attempt. A node prints as one line that
+// still says which node it is; the window is the global object, so it gets its own.
+const shown = (text: string, max = 60) =>
+  text.length > max ? `${text.slice(0, max)}…` : text;
+function nodeLine(node: Node): string {
+  if (node instanceof Element) {
+    const attributes = [...node.attributes]
+      .slice(0, 8)
+      .map((a) => ` ${a.name}="${shown(a.value)}"`);
+    const more = node.attributes.length > 8 ? " …" : "";
+    return `<${node.localName}${attributes.join("")}${more}>`;
+  }
+  if (node.nodeType === Node.TEXT_NODE)
+    return `#text ${JSON.stringify(shown(node.textContent ?? ""))}`;
+  if (node.nodeType === Node.COMMENT_NODE)
+    return `<!--${shown(node.textContent ?? "")}-->`;
+  return node.nodeName || node.constructor.name;
+}
+Object.defineProperty(Node.prototype, Bun.inspect.custom, {
+  value(this: Node) {
+    return nodeLine(this);
+  },
+});
+Object.defineProperty(globalThis, Bun.inspect.custom, {
+  value: () => "[window]",
+});
+
+// toEqual builds its diff from the node's own fields, not from the form above. The override takes
+// the verdict from `this.equals`, the same equality, on the original values. Only a failure message
+// calls the native matcher, and with a node in a plain object, array or class instance on either
+// side, it diffs a copy in which each node is a stand-in holding its one-line form. toStrictEqual
+// and toMatchObject stay native: Bun exposes no equality for them, and a substitute could turn a
+// real failure green.
+class DomNode {
+  constructor(readonly node: string) {}
+}
+function isPlain(value: object): boolean {
+  return (
+    Array.isArray(value) ||
+    Object.prototype.toString.call(value) === "[object Object]"
+  );
+}
+function holdsNode(value: unknown, seen = new Set<unknown>()): boolean {
+  if (value instanceof Node || value === globalThis) return true;
+  if (typeof value !== "object" || value === null || seen.has(value)) {
+    return false;
+  }
+  if (!isPlain(value)) return false;
+  seen.add(value);
+  return Reflect.ownKeys(value).some((key) => {
+    const d = Object.getOwnPropertyDescriptor(value, key);
+    return d?.enumerable && "value" in d && holdsNode(d.value, seen);
+  });
+}
+function standIns(value: unknown, made: Map<unknown, unknown>): unknown {
+  if (value instanceof Node || value === globalThis) {
+    let standIn = made.get(value);
+    if (!standIn) {
+      standIn = new DomNode(Bun.inspect(value));
+      made.set(value, standIn);
+    }
+    return standIn;
+  }
+  if (typeof value !== "object" || value === null || !isPlain(value)) {
+    return value;
+  }
+  const done = made.get(value);
+  if (done) return done;
+  const copy = Array.isArray(value)
+    ? []
+    : Object.create(Object.getPrototypeOf(value));
+  made.set(value, copy);
+  for (const key of Reflect.ownKeys(value)) {
+    const d = Object.getOwnPropertyDescriptor(value, key) as PropertyDescriptor;
+    if ("value" in d) d.value = standIns(d.value, made);
+    Object.defineProperty(copy, key, d);
+  }
+  return copy;
+}
+const nativeToEqual = (
+  expect(null) as unknown as {
+    toEqual: (this: unknown, expected: unknown) => void;
+  }
+).toEqual;
+/** The native diff for a failed toEqual, without its header line. */
+function toEqualDiff(received: unknown, expected: unknown, not: boolean) {
+  try {
+    nativeToEqual.call(not ? expect(received).not : expect(received), expected);
+    return null;
+  } catch (error) {
+    const message = Bun.stripANSI(error instanceof Error ? error.message : "");
+    if (!message.startsWith("expect(received)")) throw error;
+    return message.replace(/^expect\(received\)[^\n]*\n\n/, "");
+  }
+}
+expect.extend({
+  toEqual(
+    this: { isNot: boolean; equals: (a: unknown, b: unknown) => boolean },
+    received: unknown,
+    expected: unknown,
+  ) {
+    return {
+      pass: this.equals(received, expected),
+      message: () => {
+        if (!holdsNode(received) && !holdsNode(expected)) {
+          return toEqualDiff(received, expected, this.isNot) ?? "";
+        }
+        const made = new Map<unknown, unknown>();
+        const shown = toEqualDiff(
+          standIns(received, made),
+          standIns(expected, made),
+          this.isNot,
+        );
+        return (
+          shown ??
+          `Expected: ${this.isNot ? "not " : ""}${Bun.inspect(expected)}\nReceived: ${Bun.inspect(received)}`
+        );
+      },
+    };
+  },
+});
 
 // A page that subscribes to the tenant's realtime events opens a socket on render. happy-dom's
 // WebSocket dials through `ws`, and a refused connection emits an `error` nobody listens to, which

@@ -122,10 +122,12 @@ describe("sound samples", () => {
     expect(
       within(menu).queryByRole("menuitemcheckbox", { name: /Silence/ }),
     ).toBeNull();
-    // Neither field offers a Listen button while nothing is chosen.
+    // Background has nothing chosen and offers no Listen button; lookups start on Typing, which does.
     expect(
-      screen.queryByRole("button", { name: /Play a sample/, hidden: true }),
-    ).toBeNull();
+      screen
+        .queryAllByRole("button", { name: /Play a sample/, hidden: true })
+        .map((b) => b.getAttribute("aria-label")),
+    ).toEqual(["Play a sample of Typing"]);
   });
 
   test("the chosen preset plays beside the field, and pressing again stops it", async () => {

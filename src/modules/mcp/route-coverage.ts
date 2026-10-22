@@ -198,6 +198,9 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   "POST /v1/integrations/instances": { tool: "integration_create" },
   "PATCH /v1/integrations/instances/:id": { tool: "integration_update" },
   "POST /v1/integrations/instances/:id/route-token": { none: SECRET },
+  "POST /v1/integrations/instances/:id/test-reception": {
+    gap: "test an inbound notification against a saved integration, stage by stage",
+  },
   "DELETE /v1/integrations/instances/:id": { tool: "integration_delete" },
   "POST /v1/integrations/inbound/:routeToken": { none: INBOUND },
   "GET /v1/knowledge/bases": { tool: "knowledge_list" },

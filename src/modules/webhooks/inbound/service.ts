@@ -261,7 +261,7 @@ export async function receiveOnRoute(
     note({
       stage: "record",
       ok: true,
-      detail: { status: "FAILED", dryRun: dry },
+      detail: { recordedAs: "FAILED", dryRun: dry },
     });
     return dry
       ? undefined
@@ -271,7 +271,7 @@ export async function receiveOnRoute(
     note({
       stage: "record",
       ok: true,
-      detail: { status: "PENDING", dryRun: dry },
+      detail: { recordedAs: "PENDING", dryRun: dry },
     });
     return dry
       ? { id: undefined, duplicate: false }
@@ -380,7 +380,7 @@ export async function receiveOnRoute(
     note({
       stage: "record",
       ok: true,
-      detail: { status: "PENDING", dryRun: dry },
+      detail: { recordedAs: "PENDING", dryRun: dry },
     });
     if (dry) return { ack: true, tenantId: route.tenantId, outcome: "queued" };
     // The throttle counts what the signature vouches for: under `|lower`, `ABC` and `abc` are one

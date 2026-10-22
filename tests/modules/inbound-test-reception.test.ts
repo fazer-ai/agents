@@ -272,7 +272,10 @@ describe.skipIf(!dbUp)("test reception", () => {
       /^id:1001;request-id:req-1;ts:\d+;$/,
     );
     expect(r.stages[1]?.detail).toEqual({ lookup: "1001" });
-    expect(r.stages[2]?.detail).toEqual({ status: "PENDING", dryRun: true });
+    expect(r.stages[2]?.detail).toEqual({
+      recordedAs: "PENDING",
+      dryRun: true,
+    });
     expect(r.stages[4]?.detail).toMatchObject({
       kind: "conversion",
       externalId: refApproved,
@@ -370,7 +373,7 @@ describe.skipIf(!dbUp)("test reception", () => {
     expect(r.stages.at(-1)).toEqual({
       stage: "record",
       ok: true,
-      detail: { status: "FAILED", dryRun: true },
+      detail: { recordedAs: "FAILED", dryRun: true },
     });
   });
 

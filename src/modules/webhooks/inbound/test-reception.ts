@@ -88,7 +88,7 @@ async function routeOf(
   );
   if (!row) {
     throw new NotFoundError(
-      "Integration instance not found",
+      "integration instance not found",
       "errors.integrationInstanceNotFound",
     );
   }

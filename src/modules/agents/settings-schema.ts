@@ -1005,10 +1005,18 @@ const guardrailInput = z.looseObject({
   checks: inputChecks.optional(),
   // NOTE: Input analysis never generates a replacement reply (prompts.ts reads this only for `output`).
   generationPrompt: z.never().optional(),
+  contextMessages: ranged(GUARDRAIL_RANGES.contextMessages)
+    .optional()
+    .describe(
+      "earlier messages read as context, never judged; 0 = the message alone; new agents start at 4",
+    ),
 });
 
 const guardrailOutput = z.looseObject({
   ...directionCommon,
+  // NOTE: Refused rather than ignored: the reply is judged on its own, and a loose object would take
+  // the field as a silent no-op.
+  contextMessages: z.never().optional(),
   action: oneOf(GUARDRAIL_ACTIONS).optional().describe(ACTION_DESC),
   checks: outputChecks.optional(),
   generationPrompt: z

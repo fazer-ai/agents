@@ -1,4 +1,6 @@
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
+import type { BaseMessage } from "@langchain/core/messages";
+import logger from "@/api/lib/logger";
 import { verdictAskMode } from "@/graph/model-config";
 import { createChatModel } from "@/graph/models";
 import {
@@ -21,6 +23,7 @@ import {
   type GuardrailScore,
   guardrailAsks,
 } from "./classify";
+import { type GuardrailContextMessage, guardrailContext } from "./context";
 import type { ExternalReport } from "./external";
 import { loggableCategories } from "./log-categories";
 import { judgesAnything } from "./prompts";
@@ -254,6 +257,9 @@ export interface GuardrailGateParams {
   // asked to score relevance against silence has only wrong answers available. So the gate drops the
   // check itself, structurally, the same way the input direction drops the replacement.
   customerMessage?: string;
+  // The thread the agent answers from, as it stood BEFORE this turn, for the input direction's context
+  // window. Read only when the window is on and a screening runs; absent screens the message alone.
+  inputContext?: () => Promise<readonly BaseMessage[]>;
   makeModel?: typeof createChatModel;
   // Overrides the ledger sink. Tests inject; production takes the default, which writes the row.
   persistUsage?: UsagePersist;
@@ -430,6 +436,7 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
     direction: "input" | "output",
     subject: string,
     checks: GuardrailsConfig["input"]["checks"],
+    context: readonly GuardrailContextMessage[],
   ): Promise<{ d: GuardrailDecision; r: GuardrailReport | null }> => {
     const params = {
       direction,
@@ -439,6 +446,7 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
       customPolicy: gr.customPolicy,
       systemPrompt: direction === "output" ? p.systemPrompt : undefined,
       customerMessage: p.customerMessage,
+      context,
     };
     // Nothing to ask (competitor mentions with no names) is the same answer with or without a key:
     // checked first, so a missing credential cannot turn an empty screening into a failed one,
@@ -527,6 +535,23 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
     );
   };
 
+  // The window's messages, or none: a thread that cannot be read leaves the message to be judged alone,
+  // which is what the screening did before the window existed, rather than leaving it unjudged.
+  const loadContext = async (
+    limit: number,
+  ): Promise<GuardrailContextMessage[]> => {
+    if (limit <= 0 || !p.inputContext) return [];
+    try {
+      return guardrailContext(await p.inputContext(), limit);
+    } catch (err) {
+      logger.warn(
+        { err },
+        "guardrails: could not read the conversation for context; screening the message alone",
+      );
+      return [];
+    }
+  };
+
   // The screening itself. It returns the report alongside the decision so the ANNOUNCEMENT has a
   // single call site (below), instead of one per outcome: an outcome added later would otherwise
   // reach the operator on whichever paths someone remembered.
@@ -551,8 +576,10 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
     if (!judgesAnything({ direction, checks, customPolicy: gr.customPolicy })) {
       return { d: { kind: "not-run" }, r: null };
     }
+    const context =
+      direction === "input" ? await loadContext(gr.input.contextMessages) : [];
     if (gr.classifier === "decisions")
-      return screenByClassifier(direction, subject, checks);
+      return screenByClassifier(direction, subject, checks, context);
     const model = resolveModel(direction);
     if (!model)
       return {
@@ -575,6 +602,7 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
         customerMessage: p.customerMessage,
         generationPrompt:
           dir.action === "generated" ? dir.generationPrompt : undefined,
+        context,
       },
       // NOTE: constrained where the endpoint implements it, asked for in the prompt elsewhere. The
       // provider decides, not the model id: one adapter serves OpenAI and whatever `openai-compatible`

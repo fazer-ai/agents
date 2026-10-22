@@ -12,6 +12,7 @@ import config from "@/config";
 import type { TenantContext } from "@/lib/tenancy";
 import { createAgent } from "@/modules/agents/service";
 import { exportAgent, importAgent } from "@/modules/agents/transfer";
+import { readGuardrailsConfig } from "@/modules/guardrails/settings";
 import { dbProbeFailed } from "@/tests/db-gate";
 
 // An agent created while the server runs in development logs tool values from birth, so a fresh
@@ -104,6 +105,32 @@ describe.skipIf(!dbUp)("the tool-values switch an agent is born with", () => {
       appDb,
     );
     expect((await storedObservability(a.id))?.logToolValues).toBe(false);
+  });
+
+  // An agent created from scratch reads two exchanges as context on the input check;
+  // one that says otherwise keeps what it says.
+  test("created from scratch, its input check reads 4 messages of context", async () => {
+    config.env = "production";
+    const stored = async (id: string | bigint) =>
+      readGuardrailsConfig(
+        (
+          await suDb.agent.findFirstOrThrow({
+            where: { id: BigInt(id) },
+            select: { settings: true },
+          })
+        ).settings,
+      ).input.contextMessages;
+    const plain = await createAgent(ctx(), { name: "ctx-new" }, appDb);
+    expect(await stored(plain.id)).toBe(4);
+    const zero = await createAgent(
+      ctx(),
+      {
+        name: "ctx-zero",
+        settings: { guardrails: { input: { contextMessages: 0 } } },
+      },
+      appDb,
+    );
+    expect(await stored(zero.id)).toBe(0);
   });
 
   test("created in production, it does not", async () => {

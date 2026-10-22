@@ -114,7 +114,7 @@ const SETTINGS_DESC_CEILING = 2_000;
 // through REST and MCP until the console has a screen for them, so their shape has to be in
 // tools/list, and `snoozedFollowUp` too (the step shape it shares with `followUp`). Measured at 37_492
 // with `calls`, `setLabels.removal`, the writable list and the service window's per-kind templates.
-const SETTINGS_SCHEMA_CEILING = 37_560;
+const SETTINGS_SCHEMA_CEILING = 37_770;
 
 describe("MCP tool descriptions", () => {
   test("agent_settings_set stays under its ceiling", async () => {
@@ -228,7 +228,7 @@ describe("MCP tool descriptions", () => {
     // (ranged) on dashboard_update, and the client channel SDK's app tools and audience filter.
     // 74_540 on the Free tree before the SDK. 82_753 with the three dashboard_embed_link tools
     // (Pro only), 83_985 with preconditions, `setLabels.removal` and the writable list, 84_599 with per-kind templates.
-    expect(schema).toBeLessThanOrEqual(84_680);
+    expect(schema).toBeLessThanOrEqual(84_910);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

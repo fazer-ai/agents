@@ -114,6 +114,8 @@ export const MONITORING_RANGES = {
 // A guardrail check's probability; at or above it the check trips.
 export const GUARDRAIL_RANGES = {
   threshold: numberRange(0, 1),
+  // Earlier messages the input check reads beside the customer's; 0 judges the message alone.
+  contextMessages: intRange(0, 20),
 } as const;
 
 // A knowledge hit's cosine distance; 0 would drop every hit, and nothing is farther than 2.

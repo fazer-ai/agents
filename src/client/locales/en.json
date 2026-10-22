@@ -2116,6 +2116,9 @@
       "classifierDecisionsHint": "A classification API answers one yes/no question per check. Faster, but it gives only numbers and writes no reply.",
       "competitors": "Competitors",
       "competitorsHint": "One per line. Used by the competitor-mentions check.",
+      "contextMessages": "Conversation context",
+      "contextMessagesHelp": "A short reply such as “yes, the VIP one, how?” can read as something else on its own. With the question it answers beside it, its meaning is plain.\n\nThe earlier messages are context only: they never trip a check themselves, and a message a check stopped is not among them.\n\nEach message read adds a little to the cost of every screening. Agents created before this setting existed start at 0, which is how they were screened until then.",
+      "contextMessagesHint": "How many earlier messages the check reads to understand the customer's message. Only the customer's message is judged. 0 reads it alone. 0-20.",
       "contract": {
         "allow": "the reply goes out as written.",
         "block": "the reply does not go out and the Output section's “On violation” setting runs: a template message is sent, nothing is sent, or the conversation goes to the team with its message to the customer. A guardrails-generated message falls back to the template, since no model writes one here.",

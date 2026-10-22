@@ -1,6 +1,8 @@
 import { MODEL_PROVIDERS, type ModelConfig } from "@/graph/model-config";
 import { PROVIDER_DEFAULT_MODEL } from "@/graph/model-defaults";
+import { clampToRange } from "@/lib/number-range";
 import { clipText } from "@/lib/text";
+import { GUARDRAIL_RANGES } from "@/modules/agents/number-ranges";
 import {
   CUSTOM_POLICY_MAX,
   GENERATION_PROMPT_MAX,
@@ -102,6 +104,17 @@ export interface GuardrailDirectionConfig {
   handoffMessage: string;
 }
 
+// The customer side also reads the conversation: a short reply ("sim, o vip, como?") is ambiguous on
+// its own and plain after the question it answers.
+export interface GuardrailInputConfig extends GuardrailDirectionConfig {
+  // How many earlier messages travel beside the customer's as context, never judged themselves. 0 is
+  // the message alone, which is what an agent saved before this setting existed keeps.
+  contextMessages: number;
+}
+
+// What a NEW agent is born with (modules/agents/creation-defaults.ts): two exchanges.
+export const NEW_AGENT_CONTEXT_MESSAGES = 4;
+
 export interface GuardrailsConfig {
   enabled: boolean;
   // Who judges. The chat model's fields below stay stored while a decisions provider is chosen, so
@@ -119,7 +132,7 @@ export interface GuardrailsConfig {
   competitors: string[];
   // Free-text extra policy appended to every analysis prompt.
   customPolicy: string;
-  input: GuardrailDirectionConfig;
+  input: GuardrailInputConfig;
   output: GuardrailDirectionConfig;
   onFailure: GuardrailFailureMode;
   external: GuardrailExternalConfig;
@@ -173,6 +186,7 @@ export const GUARDRAILS_DEFAULTS: GuardrailsConfig = {
     templateMessage: DEFAULT_TEMPLATE,
     generationPrompt: "",
     handoffMessage: DEFAULT_HANDOFF_MESSAGE,
+    contextMessages: 0,
   },
   output: {
     enabled: true,
@@ -274,6 +288,18 @@ function readDirection(
   };
 }
 
+function readInput(v: unknown): GuardrailInputConfig {
+  const b = v && typeof v === "object" ? (v as Record<string, unknown>) : {};
+  return {
+    ...readDirection(v, GUARDRAILS_DEFAULTS.input),
+    contextMessages: clampToRange(
+      b.contextMessages,
+      GUARDRAIL_RANGES.contextMessages,
+      GUARDRAILS_DEFAULTS.input.contextMessages,
+    ),
+  };
+}
+
 // The competitor list as the check receives it, which is also what the editor counts.
 export function readCompetitors(v: unknown): string[] {
   if (!Array.isArray(v)) return [];
@@ -350,7 +376,7 @@ export function readGuardrailsConfig(settings: unknown): GuardrailsConfig {
     baseURL: str(bag.baseURL),
     competitors: readCompetitors(bag.competitors),
     customPolicy: clipText(str(bag.customPolicy) ?? "", CUSTOM_POLICY_MAX),
-    input: readDirection(bag.input, GUARDRAILS_DEFAULTS.input),
+    input: readInput(bag.input),
     output: readDirection(bag.output, GUARDRAILS_DEFAULTS.output),
     onFailure: bag.onFailure === "hold" ? "hold" : "pass",
     external: readExternal(bag.external),

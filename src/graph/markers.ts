@@ -27,6 +27,11 @@ function hasMarker(message: BaseMessage, marker: SystemMarker): boolean {
   return message.additional_kwargs?.[MARKER_KWARG] === marker;
 }
 
+// Whether the message is one of the system's own, whichever marker it carries.
+export function isSystemMarker(message: BaseMessage): boolean {
+  return typeof message.additional_kwargs?.[MARKER_KWARG] === "string";
+}
+
 // Which attendance a message belongs to, stamped on the message itself; this is what the cut reads,
 // not the divider. A divider is one message someone must decide to write, place right and keep (an
 // earlier-started invoke erases it on save, and the marker row advances independently of it), and a
@@ -186,6 +191,12 @@ export function nudgeMessage(
       ...conversationStamp(conversationId),
     },
   });
+}
+
+// The playground's simulated follow-up carries the same marker, unstamped: a session belongs to no
+// conversation, and without the marker its directive would read as something the customer wrote.
+export function playgroundNudgeMarker(): Record<string, unknown> {
+  return { [MARKER_KWARG]: "nudge" satisfies SystemMarker };
 }
 
 // A message a HUMAN AGENT sent the customer while the bot was silent. It rides as a HumanMessage (a

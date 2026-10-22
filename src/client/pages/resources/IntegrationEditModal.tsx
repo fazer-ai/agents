@@ -50,12 +50,12 @@ import {
   CALENDAR_CONFIG_RANGES,
   REMINDER_OFFSET_RANGE,
 } from "@/modules/integrations/calendar-config-ranges";
-import { SheetsConfigEditor } from "./SheetsConfigEditor";
 import {
   InboundSignatureFields,
   SIGNATURE_FIELDS,
   signatureFieldValues,
 } from "./InboundSignatureFields";
+import { SheetsConfigEditor } from "./SheetsConfigEditor";
 
 type CatalogData = Awaited<
   ReturnType<typeof api.api.v1.integrations.catalog.get>

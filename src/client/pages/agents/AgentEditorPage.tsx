@@ -238,6 +238,7 @@ import {
 } from "./observationFormState";
 import { PlaygroundFab } from "./PlaygroundFab";
 import { PlaygroundTab } from "./PlaygroundTab";
+import { playgroundModelMissing } from "./playgroundReadiness";
 import { promptCacheToStored } from "./promptCacheFormState";
 import {
   type ResolveConversationState,
@@ -3262,14 +3263,8 @@ function AgentEditor() {
 
   // Playground readiness: the playground tests the LIVE draft (prompt/model/settings sent as a
   // non-persisted override), so the hard requirements are read from the CURRENT model form, not the
-  // saved snapshot. baseURL is intentionally not checked — it can come from the credential at
-  // runtime; a genuinely missing one still surfaces as a reply error bubble.
-  const playgroundMissing: string[] = [];
-  if (!model.provider) playgroundMissing.push("provider");
-  // NOTE: openai-compatible runs without a model name (the server's default model).
-  if (!model.model.trim() && model.provider !== "openai-compatible")
-    playgroundMissing.push("model");
-  if (!model.credentialRef) playgroundMissing.push("credential");
+  // saved snapshot.
+  const playgroundMissing = playgroundModelMissing(model);
   const toolsDirty = dirty.tools || dirty.knowledge;
 
   // Per-capability playground readiness (from the LIVE behavior form, like playgroundMissing is from

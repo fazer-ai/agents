@@ -145,6 +145,24 @@ describe("the tab list", () => {
       ).toBe(true);
   });
 
+  test("a failed header read is an error, not tabs without a header row", async () => {
+    const { fetchImpl } = routed((u) =>
+      u.pathname.endsWith("values:batchGet")
+        ? [503, {}]
+        : [
+            200,
+            {
+              properties: { title: "CRM" },
+              sheets: [{ properties: { sheetId: 0, title: "Leads" } }],
+            },
+          ],
+    );
+    const err = await refusal(
+      listSpreadsheetTabs(ctx, "vault:3", SID, noBase, deps(fetchImpl)),
+    );
+    expect(err.translationKey).toBe("errors.integrationHttpError");
+  });
+
   test("an id that is not an id is refused before the credential or any request", async () => {
     const { urls, fetchImpl } = routed(() => [200, {}]);
     let resolved = 0;

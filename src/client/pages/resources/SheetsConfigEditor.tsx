@@ -13,7 +13,7 @@ import { cn } from "@/client/lib/utils";
 // renames), with the names kept beside them only for display.
 
 type Spreadsheet = { id: string; name: string };
-type Tab = { sheetId: number; title: string; columns: string[] };
+type Tab = { sheetId: number; title: string; columns: string[] | null };
 
 export type SheetsLoaders = {
   spreadsheets: (credentialRef: string) => Promise<Spreadsheet[]>;
@@ -395,14 +395,16 @@ export function SheetsConfigEditor({
                 }
                 title={tab.title}
                 detail={
-                  tab.columns.length
-                    ? t("integrations.sheets.columns", "Columns: {{list}}", {
-                        list: tab.columns.join(", "),
-                      })
-                    : t(
-                        "integrations.sheets.noHeader",
-                        "No header row: row 1 must name the columns",
-                      )
+                  tab.columns === null
+                    ? undefined
+                    : tab.columns.length
+                      ? t("integrations.sheets.columns", "Columns: {{list}}", {
+                          list: tab.columns.join(", "),
+                        })
+                      : t(
+                          "integrations.sheets.noHeader",
+                          "No header row: row 1 must name the columns",
+                        )
                 }
               />
             ))}

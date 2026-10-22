@@ -39,7 +39,8 @@ export interface SpreadsheetListItem {
 export interface SpreadsheetTab {
   sheetId: number;
   title: string;
-  columns: string[];
+  // Null when the header was not read (past MAX_TABS_WITH_HEADER), which is not "no header row".
+  columns: string[] | null;
 }
 
 export interface SheetsListDeps {
@@ -208,7 +209,7 @@ export async function listSpreadsheetTabs(
   for (const s of Array.isArray(m.sheets) ? m.sheets : []) {
     const p = (s as { properties?: Record<string, unknown> })?.properties;
     if (typeof p?.sheetId !== "number" || typeof p.title !== "string") continue;
-    tabs.push({ sheetId: p.sheetId, title: p.title, columns: [] });
+    tabs.push({ sheetId: p.sheetId, title: p.title, columns: null });
   }
   const withHeader = tabs.slice(0, MAX_TABS_WITH_HEADER);
   if (withHeader.length) {
@@ -222,13 +223,20 @@ export async function listSpreadsheetTabs(
     );
     const ranges = (heads.json as { valueRanges?: unknown } | null)
       ?.valueRanges;
-    if (heads.status >= 200 && heads.status < 300 && Array.isArray(ranges)) {
-      withHeader.forEach((t, i) => {
-        const values = (ranges[i] as { values?: unknown } | undefined)?.values;
-        const row = Array.isArray(values) ? values[0] : undefined;
-        t.columns = readHeader(Array.isArray(row) ? row : []).names;
-      });
+    // A failed header read is an error, not a spreadsheet whose tabs all lack a header row.
+    if (heads.status < 200 || heads.status >= 300 || !Array.isArray(ranges)) {
+      throw new AppError(
+        `Google Sheets returned HTTP ${heads.status} reading the header rows.`,
+        502,
+        "errors.integrationHttpError",
+        { provider: "Google Sheets", status: heads.status },
+      );
     }
+    withHeader.forEach((t, i) => {
+      const values = (ranges[i] as { values?: unknown } | undefined)?.values;
+      const row = Array.isArray(values) ? values[0] : undefined;
+      t.columns = readHeader(Array.isArray(row) ? row : []).names;
+    });
   }
   return {
     title: typeof m.properties?.title === "string" ? m.properties.title : "",

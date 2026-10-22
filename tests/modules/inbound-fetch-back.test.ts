@@ -208,6 +208,11 @@ describe("an id the signature covers with fixed boundaries", () => {
       false,
     ],
     [
+      "a separator after the id that drops with an optional group",
+      sig("{{query.id}}[[a{{header.x}}]]"),
+      false,
+    ],
+    [
       "optional groups only after the id",
       sig("{{query.id}};[[{{header.y}};]]"),
       true,
@@ -251,6 +256,14 @@ test("an id counts as lowercased unless an occurrence every message carries sign
   expect(
     signedLowered(
       sig("{{query.id|lower}};[[{{query.id}}:{{header.extra}};]]"),
+      "query",
+      "id",
+    ),
+  ).toBe(true);
+  // The original case is always there, but its boundaries move with x and y.
+  expect(
+    signedLowered(
+      sig("{{query.id|lower}};{{header.x}}{{query.id}}{{header.y}}"),
       "query",
       "id",
     ),

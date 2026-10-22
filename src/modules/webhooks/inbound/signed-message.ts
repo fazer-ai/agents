@@ -25,8 +25,6 @@ export interface SignatureConfig {
 
 export const SIGNATURE_MESSAGE_MAX_CHARS = 1000;
 export const SIGNATURE_MAX_AGE_SECONDS_MAX = 7 * 24 * 3600;
-// The id check walks every subset of optional groups; past this many it refuses instead.
-const ID_FRAMING_GROUPS_MAX = 8;
 const PART_KEY = /^[A-Za-z0-9_-]{1,32}$/;
 const QUERY_NAME = /^[A-Za-z0-9._~\-[\]]{1,128}$/;
 const VALUE = /^(body|header|query|sig)(?:\.([^|]+))?(?:\|(lower))?$/;
@@ -291,9 +289,43 @@ export function signatureCoversBody(raw: unknown): boolean {
   );
 }
 
+// The occurrences of the id whose bytes every signed message pins down: walking the message from
+// its start, only through groups present whenever the id is (the required part, or a [[group]]
+// whose only value is the id), every value before it followed by literal text in its own group
+// (which the gate refuses a value to contain, `signed_value_ambiguous`), never `{{body}}` before it
+// (whose bytes the gate does not boundary-check), and the occurrence itself followed by literal
+// text in its own group, or the last piece of the message. Anything looser lets two ids render the
+// same bytes: a separator that drops with a group (`{{query.id}}[[a{{header.x}}]]` signs `XaY` for
+// id X with x Y and for id XaY), a group that drops before the id, two values run together.
+function pinnedOccurrences(
+  groups: Group[],
+  source: Source,
+  name: string,
+): { lower: boolean }[] {
+  const pinned: { lower: boolean }[] = [];
+  for (const [gi, g] of groups.entries()) {
+    const values = g.pieces.filter((p) => p.kind === "value");
+    const always =
+      !g.optional ||
+      (values.length === 1 && values.every((p) => isValue(p, source, name)));
+    if (!always) break;
+    for (const [i, p] of g.pieces.entries()) {
+      if (p.kind !== "value") continue;
+      const next = g.pieces[i + 1];
+      if (isValue(p, source, name)) {
+        const last = i === g.pieces.length - 1 && gi === groups.length - 1;
+        if (next?.kind === "text" || last) pinned.push({ lower: p.lower });
+      }
+      if (p.source === "body" || next?.kind !== "text") return pinned;
+    }
+  }
+  return pinned;
+}
+
 // Whether the signed message includes the query parameter or header a consult-back reads its id
-// from. `|lower` is accepted here: the id only picks which resource the operator's own tool reads,
-// and a case variant either names nothing or a resource whose answer the provider signs for.
+// from, with its bytes pinned down (above). `|lower` is accepted here: the id only picks which
+// resource the operator's own tool reads, and a case variant either names nothing or a resource
+// whose answer the provider signs for.
 export function signatureCoversId(
   raw: unknown,
   source: "header" | "query",
@@ -301,52 +333,13 @@ export function signatureCoversId(
 ): boolean {
   const parsed = parseSignatureConfig(raw);
   if (parsed === undefined || isSignatureConfigProblem(parsed)) return false;
-  if (!covers(parsed.groups, source, name, false)) return false;
-  // No [[group]] before the id: framing each layout on its own is not enough, since two layouts can
-  // render the same bytes with the id in different places (`[[{{header.x}};]]{{query.id}};[[{{header.y}};]]`
-  // signs `ABC;DEF;` for id DEF after x ABC, and for id ABC before y DEF). With only required
-  // pieces before it, the id starts at one fixed point of every message.
-  const home = parsed.groups.findIndex((g) =>
-    g.pieces.some((p) => isValue(p, source, name)),
-  );
-  if (parsed.groups.slice(0, home).some((g) => g.optional)) return false;
-  // And that first occurrence is one every message carries: a group that holds another value can
-  // drop while a later occurrence still renders, and the bytes it left then read as another id
-  // (`[[pre{{query.id}};{{header.x}};]]{{query.id}};…` signs `preA;B;A;` for id A and for id preA).
-  const anchor = parsed.groups[home];
-  if (
-    anchor?.optional &&
-    anchor.pieces.filter((p) => p.kind === "value").length !== 1
-  ) {
-    return false;
-  }
-  // Fixed boundaries, as for the body: literal text (or the end of the message) after the id and
-  // after every value before it, which the gate refuses a value to contain. Asked of every message
-  // the template can render, since a dropped [[group]] takes its separators with it.
-  const optional = parsed.groups.filter((g) => g.optional).length;
-  if (optional > ID_FRAMING_GROUPS_MAX) return false;
-  for (let mask = 0; mask < 2 ** optional; mask++) {
-    let bit = 0;
-    const pieces = parsed.groups.flatMap((g) =>
-      !g.optional || mask & (1 << bit++) ? g.pieces : [],
-    );
-    const at = pieces.findIndex((p) => isValue(p, source, name));
-    if (at < 0) continue;
-    // The body before the id is refused outright: the gate never boundary-checks the body (its
-    // bytes are the signed thing), so `{{body}}0{{query.id}}` signs `1`+`01` and `10`+`1` alike.
-    const framed = pieces.every(
-      (p, i) =>
-        i > at ||
-        p.kind === "text" ||
-        (p.source !== "body" && pieces[i + 1]?.kind !== "value"),
-    );
-    if (!framed) return false;
-  }
-  return true;
+  return pinnedOccurrences(parsed.groups, source, name).length > 0;
 }
 
 // Whether the signature vouches for this value only lowercased (`|lower`): two spellings that differ
-// in case then carry the same signature, so whatever counts them as distinct must not.
+// in case then carry the same signature, so whatever counts them as distinct must not. The original
+// case counts as signed only through a pinned occurrence: one that can drop, or whose boundaries can
+// move (`{{query.id|lower}};{{header.x}}{{query.id}}{{header.y}}`), signs `ABC` and `abc` alike.
 export function signedLowered(
   raw: unknown,
   source: "header" | "query",
@@ -354,20 +347,8 @@ export function signedLowered(
 ): boolean {
   const parsed = parseSignatureConfig(raw);
   if (parsed === undefined || isSignatureConfigProblem(parsed)) return false;
-  // The original case is authenticated only by an occurrence every message carries: in the required
-  // part, or alone in its [[group]]. One that rides in a group with another value drops with it
-  // (`{{query.id|lower}};[[{{query.id}}:{{header.extra}};]]` without `extra` signs `ABC` and `abc`
-  // alike), and two spellings that can carry one signature must share a key.
-  const signed = parsed.groups.flatMap((g) => {
-    const values = g.pieces.filter((p) => p.kind === "value");
-    return g.pieces
-      .filter((p) => isValue(p, source, name))
-      .map((p) => ({
-        lower: p.kind === "value" && p.lower,
-        always: !g.optional || values.length === 1,
-      }));
-  });
-  return signed.length > 0 && !signed.some((o) => !o.lower && o.always);
+  const pinned = pinnedOccurrences(parsed.groups, source, name);
+  return pinned.length > 0 && pinned.every((o) => o.lower);
 }
 
 export function isSignatureConfigProblem(

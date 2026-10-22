@@ -30,6 +30,35 @@ __nativeBunGlobals.BunAbortSignal = AbortSignal;
 
 GlobalRegistrator.register();
 
+// A failing assertion pretty-prints what it received, and a happy-dom node reaches its document and
+// the window, so one failing `expect(dialog).toBeNull()` builds a message of hundreds of millions of
+// characters and blocks for seconds, on every `waitFor` attempt. A node prints as one line that
+// still says which node it is; the window is the global object, so it gets its own.
+const shown = (text: string, max = 60) =>
+  text.length > max ? `${text.slice(0, max)}…` : text;
+function nodeLine(node: Node): string {
+  if (node instanceof Element) {
+    const attributes = [...node.attributes]
+      .slice(0, 8)
+      .map((a) => ` ${a.name}="${shown(a.value)}"`);
+    const more = node.attributes.length > 8 ? " …" : "";
+    return `<${node.localName}${attributes.join("")}${more}>`;
+  }
+  if (node.nodeType === Node.TEXT_NODE)
+    return `#text ${JSON.stringify(shown(node.textContent ?? ""))}`;
+  if (node.nodeType === Node.COMMENT_NODE)
+    return `<!--${shown(node.textContent ?? "")}-->`;
+  return node.nodeName;
+}
+Object.defineProperty(Node.prototype, Bun.inspect.custom, {
+  value(this: Node) {
+    return nodeLine(this);
+  },
+});
+Object.defineProperty(globalThis, Bun.inspect.custom, {
+  value: () => "[window]",
+});
+
 // A page that subscribes to the tenant's realtime events opens a socket on render. happy-dom's
 // WebSocket dials through `ws`, and a refused connection emits an `error` nobody listens to, which
 // surfaces as an unhandled error inside whichever test happens to be running when it lands. No DOM

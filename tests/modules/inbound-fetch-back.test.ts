@@ -203,6 +203,11 @@ describe("an id the signature covers with fixed boundaries", () => {
       false,
     ],
     [
+      "the first id in a group that can drop with another value, a later one still signed",
+      sig("[[pre{{query.id}};{{header.x}};]]{{query.id}};[[{{header.y}}]]"),
+      false,
+    ],
+    [
       "optional groups only after the id",
       sig("{{query.id}};[[{{header.y}};]]"),
       true,

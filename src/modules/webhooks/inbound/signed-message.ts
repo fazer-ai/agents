@@ -310,6 +310,16 @@ export function signatureCoversId(
     g.pieces.some((p) => isValue(p, source, name)),
   );
   if (parsed.groups.slice(0, home).some((g) => g.optional)) return false;
+  // And that first occurrence is one every message carries: a group that holds another value can
+  // drop while a later occurrence still renders, and the bytes it left then read as another id
+  // (`[[pre{{query.id}};{{header.x}};]]{{query.id}};…` signs `preA;B;A;` for id A and for id preA).
+  const anchor = parsed.groups[home];
+  if (
+    anchor?.optional &&
+    anchor.pieces.filter((p) => p.kind === "value").length !== 1
+  ) {
+    return false;
+  }
   // Fixed boundaries, as for the body: literal text (or the end of the message) after the id and
   // after every value before it, which the gate refuses a value to contain. Asked of every message
   // the template can render, since a dropped [[group]] takes its separators with it.

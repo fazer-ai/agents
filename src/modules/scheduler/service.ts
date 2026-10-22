@@ -945,7 +945,8 @@ export function claimSql(
       LEFT JOIN inflight f ON f.tenant_id = j.tenant_id
     ),
     due AS MATERIALIZED (
-      SELECT s.id FROM scheduler_jobs s JOIN ranked r ON r.ranked_id = s.id
+      SELECT s.id, r.share AS k1, r.ranked_run_at AS k2, r.ranked_id AS k3
+      FROM scheduler_jobs s JOIN ranked r ON r.ranked_id = s.id
       WHERE status = 'PENDING' ${dueClause} AND ${kindFilter}
         ${tenantClause} ${excludeClause}
       ORDER BY r.share, r.ranked_run_at, r.ranked_id
@@ -963,7 +964,8 @@ export function claimSql(
         ${tenantClause} ${excludeClause}
     ),
     due AS MATERIALIZED (
-      SELECT s.id FROM scheduler_jobs s JOIN ranked r ON r.ranked_id = s.id
+      SELECT s.id, r.ranked_rank AS k1, r.ranked_created_at AS k2, r.ranked_id AS k3
+      FROM scheduler_jobs s JOIN ranked r ON r.ranked_id = s.id
       WHERE status = 'PENDING' ${dueClause} AND ${kindFilter}
         ${tenantClause} ${excludeClause}
         AND (r.ranked_spends = 0 OR r.spent <= ${order.spendCap})
@@ -973,24 +975,34 @@ export function claimSql(
     )`
       : Prisma.sql`
     due AS MATERIALIZED (
-      SELECT id FROM scheduler_jobs
+      SELECT id, ${order ? order.rank : Prisma.sql`0`} AS k1, ${order ? Prisma.sql`created_at` : Prisma.sql`run_at`} AS k2, id AS k3
+      FROM scheduler_jobs
       WHERE status = 'PENDING' ${dueClause} AND ${kindFilter}
         ${tenantClause} ${excludeClause}
-      ORDER BY ${order ? Prisma.sql`${order.rank}, created_at, id` : Prisma.sql`run_at`}
+      ORDER BY k1, k2, k3
       FOR UPDATE SKIP LOCKED
       LIMIT ${lim}
     )`;
+  // The UPDATE returns rows in the order its join produces them, not the order `due` chose (a hash
+  // join probed by a sequential scan hands them back in heap order), and callers run them in the
+  // order they come back. So `due` carries its sort key and the claimed rows are sorted by it again.
   return Prisma.sql`
-    WITH ${due}
-    UPDATE scheduler_jobs
-    SET status = 'CLAIMED', claim_seq = claim_seq + 1, claimed_at = ${now}, run_started_at = ${now}, updated_at = now()
-    FROM due
-    WHERE scheduler_jobs.id = due.id
-    RETURNING scheduler_jobs.id, scheduler_jobs.tenant_id AS "tenantId",
-              scheduler_jobs.kind, scheduler_jobs.payload,
-              scheduler_jobs.payload_secret AS "payloadSecret",
-              scheduler_jobs.dedupe_key AS "dedupeKey",
-              scheduler_jobs.attempts, scheduler_jobs.claim_seq AS "claimSeq"`;
+    WITH ${due},
+    claimed AS (
+      UPDATE scheduler_jobs
+      SET status = 'CLAIMED', claim_seq = claim_seq + 1, claimed_at = ${now}, run_started_at = ${now}, updated_at = now()
+      FROM due
+      WHERE scheduler_jobs.id = due.id
+      RETURNING scheduler_jobs.id, scheduler_jobs.tenant_id AS "tenantId",
+                scheduler_jobs.kind, scheduler_jobs.payload,
+                scheduler_jobs.payload_secret AS "payloadSecret",
+                scheduler_jobs.dedupe_key AS "dedupeKey",
+                scheduler_jobs.attempts, scheduler_jobs.claim_seq AS "claimSeq",
+                due.k1, due.k2, due.k3
+    )
+    SELECT id, "tenantId", kind, payload, "payloadSecret", "dedupeKey", attempts, "claimSeq"
+    FROM claimed
+    ORDER BY k1, k2, k3`;
 }
 
 // Claims up to `limit` due jobs across ALL tenants matching `kindFilter` (FOR UPDATE SKIP LOCKED so
@@ -1242,7 +1254,7 @@ export function claimPendingByKeyPrefix(
 
 // The same claim, of DUE rows only: the barrier runs a fallback whose time has come, and leaves one
 // still waiting for the append it stands in for. With `rank`, the rows taken are the due ones lowest
-// on it (ties to the older row) instead of the earliest `run_at`; the returned array is in no order.
+// on it (ties to the older row) instead of the earliest `run_at`, and come back in that order.
 export function claimDueByKeyPrefix(
   kind: SchedulerJobKind,
   prefix: string,

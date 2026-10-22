@@ -169,6 +169,24 @@ function anexosNaoLidos(
   return `<anexos-nao-lidos quantidade="${total}">estes arquivos chegaram, mas o conteúdo não foi lido:\n${linhas.join("\n")}\n</anexos-nao-lidos>`;
 }
 
+// A WhatsApp location pin: surfaced as attributes (mirroring the reaction marker) so the model reads
+// the coordinates and forwards them as ordinary tool arguments. A pin with neither coordinates nor
+// title never gets here (location is null) and falls through to the generic marker. The title is
+// provider/user text inside a quoted pseudo-attribute: a double quote in it would read as closing
+// the attribute early; swap for single quotes (no full XML escaping, per this file's convention).
+function locationMarker(
+  location: NonNullable<RenderableMessage["location"]>,
+): string {
+  const coords =
+    location.latitude !== null && location.longitude !== null
+      ? ` latitude="${location.latitude}" longitude="${location.longitude}"`
+      : "";
+  const title = location.title
+    ? ` titulo="${location.title.replace(/"/g, "'")}"`
+    : "";
+  return `<localização${coords}${title}>`;
+}
+
 export function renderInboundMessage(
   m: RenderableMessage,
   ctx: {
@@ -227,11 +245,22 @@ export function renderInboundMessage(
   let pediuReenvio = false;
   if (types.has("audio")) {
     const tr = cleanTranscription(m.transcribedText ?? text);
-    body = tr
+    const audio = tr
       ? `<mensagem-de-audio>${tr}</mensagem-de-audio>`
       : observer
         ? "<mensagem de áudio não audível>"
         : "<mensagem de áudio não audível; peça que o cliente reenvie por texto>";
+    // NOTE: the audio does not decide the body alone: what vision read and a pin sent with it ride
+    // beside it, as they would without the audio ("olha o print" needs the print). Not through
+    // `withText`, since the customer's text already stood in for the transcription above.
+    body = [
+      audio,
+      imageDescription ? `<imagem>${imageDescription}</imagem>` : "",
+      extractedText ? `<documento>${extractedText}</documento>` : "",
+      m.location ? locationMarker(m.location) : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
   } else if (imageDescription || extractedText) {
     // Vision extracted the content, so the agent "sees" it. BOTH blocks when both exist, or a
     // message with a photo AND a PDF loses the document without a trace. One `withText` call, so the
@@ -256,21 +285,7 @@ export function renderInboundMessage(
     );
     pediuReenvio = true;
   } else if (m.location) {
-    // A WhatsApp location pin: surfaced as attributes (mirroring the reaction marker) so the
-    // model reads the coordinates and forwards them as ordinary tool arguments. A pin with neither
-    // coordinates nor title never gets here (location is null) and falls through to the generic
-    // marker below.
-    const coords =
-      m.location.latitude !== null && m.location.longitude !== null
-        ? ` latitude="${m.location.latitude}" longitude="${m.location.longitude}"`
-        : "";
-    // The title is provider/user text inside a quoted pseudo-attribute: a double quote in it
-    // would read as closing the attribute early; swap for single quotes (no full XML escaping, per
-    // this file's marker convention).
-    const title = m.location.title
-      ? ` titulo="${m.location.title.replace(/"/g, "'")}"`
-      : "";
-    body = withText(`<localização${coords}${title}>`);
+    body = withText(locationMarker(m.location));
   } else if (text) {
     body = text;
   } else if (types.size > 0) {

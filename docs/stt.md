@@ -63,7 +63,7 @@ Measured live in 2026-10 against the OpenAI API, on synthetic voice notes (pt-BR
 `renderInboundMessage` turns one message into agent-facing text, shared by the direct path (`runAgentTurn`) and the debounce flush so both behave identically:
 
 - **text** → as-is.
-- **audio** → `<mensagem-de-audio>{transcription}</mensagem-de-audio>`, or a "não audível; peça texto" marker when transcription is empty/failed.
+- **audio** → `<mensagem-de-audio>{transcription}</mensagem-de-audio>`, or a "não audível; peça texto" marker when transcription is empty/failed. **What vision read and a pin sent with the audio ride beside it**, one per line after the audio: `<imagem>`, `<documento>`, `<localização>`. The audio branch used to decide the body alone, so a voice note saying "olha o print" reached the model without the print (issue #1629). The customer's text is not repeated beside them, since it already stood in for the transcription.
 - **image/document with a vision extraction** → `<imagem>{description}</imagem>` / `<documento>{text}</documento>` (from `image_description` / `extracted_text`, meta or in-process overlay). **Both blocks when a message carries both**: it used to be an `else if`, so a photo plus a PDF rendered the photo and the document vanished without a trace (issue #691).
 - **image without an extraction** (vision off/failed) → marker asking the customer to send text/audio.
 - **location** (a WhatsApp pin) → `<localização latitude="…" longitude="…" titulo="…">` — coordinates + place title from the attachment (`coordinates_lat`/`coordinates_long`/`fallback_title`); the model forwards them as ordinary tool args. `(0,0)` is the column default, treated as "no coordinates"; a pin with neither coordinates nor title falls back to the generic marker.

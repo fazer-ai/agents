@@ -2,6 +2,14 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import type { InboundAuthStrategy } from "@/../generated/prisma/client";
 import { getCatalogEntry } from "@/modules/integrations/catalog";
 import type { VaultRefResolution } from "@/modules/vault/service";
+import { isUsableHeaderName } from "./header-name";
+import {
+  isSignatureConfigProblem,
+  parseSignatureConfig,
+  parseSignatureParts,
+  renderSignedMessage,
+  timestampMs,
+} from "./signed-message";
 
 // Per-instance inbound auth, verified AFTER the route token has resolved the tenant (so the
 // secret read is tenant-scoped and a bad signature for a real token still fails uniformly).
@@ -14,6 +22,9 @@ export const DEFAULT_SIGNATURE_HEADER = "x-webhook-signature";
 export interface InboundAuthConfig {
   authHeader?: string;
   signatureHeader?: string;
+  // What HMAC_SHA256 signs when it is not the raw body (./signed-message.ts). Unparsed here: the
+  // gate parses it and fails closed on a shape the writer would refuse.
+  signature?: unknown;
 }
 
 // Which header carries the credential for this instance. Precedence, most specific first: the
@@ -23,7 +34,8 @@ export interface InboundAuthConfig {
 export function resolveInboundAuthConfig(
   catalogType: string,
   config: Record<string, unknown>,
-): Required<InboundAuthConfig> {
+): Required<Omit<InboundAuthConfig, "signature">> &
+  Pick<InboundAuthConfig, "signature"> {
   const entry = getCatalogEntry(catalogType);
   // A string is the operator's answer, `""` included: dropping it would send the gate the
   // DEFAULT name, the one thing its refusal exists to prevent. Usability is the gate's call. A
@@ -37,17 +49,16 @@ export function resolveInboundAuthConfig(
       DEFAULT_STATIC_HEADER,
     signatureHeader:
       override(config.signatureHeader) ?? DEFAULT_SIGNATURE_HEADER,
+    signature: config.signature,
   };
 }
 
-// A header NAME, by RFC 7230's `token`: the alphabet `Headers.get` accepts. The name is operator
-// text, and `request.headers.get` THROWS outside this alphabet: a 500 there would be an oracle that
-// the route token is live, where every other refusal answers 401. The write refuses it too
-// (integrations/service.ts), but rows already written carry whatever they carry.
-const HEADER_NAME = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+export { isUsableHeaderName };
 
-export function isUsableHeaderName(name: string): boolean {
-  return HEADER_NAME.test(name);
+function stripSha256(provided: string): string {
+  return provided.startsWith("sha256=")
+    ? provided.slice("sha256=".length)
+    : provided;
 }
 
 function timingEqual(a: string, b: string): boolean {
@@ -74,6 +85,12 @@ export type InboundAuthFailure =
   | "header_name_unusable"
   | "header_missing"
   | "credential_mismatch"
+  | "signature_config_unusable"
+  | "signature_part_missing"
+  | "signed_value_missing"
+  | "signed_value_ambiguous"
+  | "timestamp_unusable"
+  | "timestamp_stale"
   | "unsupported_strategy";
 
 export type InboundAuthOutcome =
@@ -110,13 +127,17 @@ function readSecret(
 }
 
 // `getHeader` is case-insensitive in callers (Headers.get); strategy NONE always passes.
-// HMAC material is the raw body; an optional `sha256=` prefix is stripped before compare.
+// HMAC material is the raw body unless `config.signature` says otherwise; an optional `sha256=`
+// prefix is stripped before compare.
 export function verifyInboundAuth(params: {
   strategy: InboundAuthStrategy;
   secret: InboundSecretResolution;
   rawBody: string;
   getHeader: (name: string) => string | null;
+  // The webhook URL's query string. Absent ⇒ every parameter is absent.
+  getQuery?: (name: string) => string | null;
   config?: InboundAuthConfig;
+  now?: number;
 }): InboundAuthOutcome {
   const { strategy, secret, rawBody, getHeader, config } = params;
 
@@ -145,11 +166,44 @@ export function verifyInboundAuth(params: {
     if (!isUsableHeaderName(headerName)) return fail("header_name_unusable");
     const provided = getHeader(headerName);
     if (provided === null) return fail("header_missing");
-    const expected = createHmac("sha256", value).update(rawBody).digest("hex");
-    const stripped = provided.startsWith("sha256=")
-      ? provided.slice("sha256=".length)
-      : provided;
-    return timingEqual(expected, stripped)
+    const signature = parseSignatureConfig(config?.signature);
+    if (signature === undefined) {
+      const expected = createHmac("sha256", value)
+        .update(rawBody)
+        .digest("hex");
+      return timingEqual(expected, stripSha256(provided))
+        ? { ok: true }
+        : fail("credential_mismatch");
+    }
+    if (isSignatureConfigProblem(signature)) {
+      return fail("signature_config_unusable");
+    }
+    const parts =
+      signature.format === "parts"
+        ? parseSignatureParts(provided)
+        : new Map<string, string[]>();
+    const candidates =
+      signature.format === "parts"
+        ? (parts.get(signature.signaturePart as string) ?? [])
+        : [stripSha256(provided)];
+    if (!candidates.length) return fail("signature_part_missing");
+    if (signature.maxAgeSeconds !== null) {
+      const raw = parts.get(signature.timestampPart as string)?.[0];
+      const at = raw === undefined ? null : timestampMs(raw);
+      if (at === null) return fail("timestamp_unusable");
+      const age = Math.abs((params.now ?? Date.now()) - at);
+      if (age > signature.maxAgeSeconds * 1000) return fail("timestamp_stale");
+    }
+    const message = renderSignedMessage(signature.groups, {
+      rawBody,
+      getHeader,
+      getQuery: params.getQuery ?? (() => null),
+      parts,
+    });
+    if (message === "missing") return fail("signed_value_missing");
+    if (message === "ambiguous") return fail("signed_value_ambiguous");
+    const expected = createHmac("sha256", value).update(message).digest("hex");
+    return candidates.some((c) => timingEqual(expected, c.toLowerCase()))
       ? { ok: true }
       : fail("credential_mismatch");
   }

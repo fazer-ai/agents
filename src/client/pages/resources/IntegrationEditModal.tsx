@@ -50,6 +50,11 @@ import {
   CALENDAR_CONFIG_RANGES,
   REMINDER_OFFSET_RANGE,
 } from "@/modules/integrations/calendar-config-ranges";
+import {
+  InboundSignatureFields,
+  SIGNATURE_FIELDS,
+  signatureFieldValues,
+} from "./InboundSignatureFields";
 import { SheetsConfigEditor } from "./SheetsConfigEditor";
 
 type CatalogData = Awaited<
@@ -659,6 +664,12 @@ const INTEGRATION_INBOUND_FIELDS = [
 const withoutCredential = (fields: readonly string[]) =>
   fields.filter((f) => f !== "credentialRef");
 
+// What a refusal is matched against: the body, plus the signature's nested config keys under the
+// names the server refuses them by.
+function refusalViewOf(form: Form) {
+  return { ...currentOf(form), ...signatureFieldValues(form.config) };
+}
+
 // The body, from the form. ONE function, because it is also what a refusal is matched against.
 function currentOf(form: Form) {
   return {
@@ -757,6 +768,8 @@ export function IntegrationEditModal({
   const formRef = useRef(form);
   formRef.current = form;
   const isGeneric = form.catalogType === "GENERIC";
+  const showsSignature =
+    isGeneric && form.inboundAuthStrategy === "HMAC_SHA256";
   const openFields =
     form.inboundAuthStrategy !== "NONE"
       ? INTEGRATION_INBOUND_FIELDS
@@ -764,7 +777,10 @@ export function IntegrationEditModal({
   const refusal = useFieldRefusal(
     modal.isOpen
       ? isGeneric
-        ? withoutCredential(openFields)
+        ? [
+            ...withoutCredential(openFields),
+            ...(showsSignature ? SIGNATURE_FIELDS : []),
+          ]
         : openFields
       : [],
   );
@@ -1027,8 +1043,8 @@ export function IntegrationEditModal({
       const toast = refusal.capture(
         e,
         t("integrations.saveError", "Could not save."),
-        sent,
-        currentOf(formRef.current),
+        { ...sent, ...signatureFieldValues(sent.config) },
+        refusalViewOf(formRef.current),
       );
       if (toast) showToast(toast, "error");
     } finally {
@@ -2217,6 +2233,13 @@ export function IntegrationEditModal({
                     </FormField>
                   )}
                 </div>
+                {showsSignature && (
+                  <InboundSignatureFields
+                    cfg={cfg}
+                    setCfg={setCfg}
+                    refusal={refusal}
+                  />
+                )}
               </div>
             )}
 

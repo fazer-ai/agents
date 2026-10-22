@@ -29,6 +29,7 @@ import {
   resolveInboundAuthConfig,
   verifyInboundAuth,
 } from "./auth";
+import { signatureCoversBody } from "./signed-message";
 
 // Generic inbound receptor. Resolve tenant by route token → verify the per-instance auth
 // strategy (tenant-scoped secret) → normalize via the integration's pure mapper → persist an
@@ -151,6 +152,9 @@ export interface ReceiveParams {
   routeToken: string;
   rawBody: string;
   getHeader: (name: string) => string | null;
+  // The webhook URL's query string, which a signed message may cover (Mercado Pago signs the
+  // `data.id` it carries).
+  getQuery?: (name: string) => string | null;
   base?: PrismaClient;
   // Injectable for tests; defaults to the app logger. The refusal reason is the observable effect
   // of a 401 here (the response is uniform by design), so a test that cannot read it is testing a
@@ -186,6 +190,7 @@ export async function receiveInbound(
     secret,
     rawBody: params.rawBody,
     getHeader: params.getHeader,
+    getQuery: params.getQuery,
     config: resolveInboundAuthConfig(route.catalogType, route.config),
   });
   if (!auth.ok) {
@@ -216,6 +221,40 @@ export async function receiveInbound(
       deliveryId: id,
       tenantId: route.tenantId,
       outcome: "no-mapper",
+    };
+  }
+
+  // Every mapper acts on the body (GENERIC takes the conversation and the text from it, a toolpack
+  // its reference and amount), so a body the signature does not authenticate is not acted on,
+  // however well the rest of the request is signed.
+  if (
+    route.inboundAuthStrategy === "HMAC_SHA256" &&
+    !signatureCoversBody(route.config.signature)
+  ) {
+    logger.warn(
+      "inbound: %s body not covered by the signed message (instance %s)",
+      route.catalogType,
+      String(route.id),
+    );
+    // One row per instance and signature setting: the refusal depends on the setting, so every
+    // request it refuses is the same problem, whatever unsigned body it carries.
+    const id = await persistFailed(
+      base,
+      route,
+      params.rawBody,
+      {
+        reason: "invalid",
+        issues: "body not covered by the signed message",
+      },
+      `uncovered-body:${createHash("sha256")
+        .update(JSON.stringify(route.config.signature ?? null))
+        .digest("hex")}`,
+    );
+    return {
+      ack: true,
+      deliveryId: id,
+      tenantId: route.tenantId,
+      outcome: "invalid",
     };
   }
 
@@ -307,8 +346,14 @@ async function persistFailed(
   route: ResolvedInboundRoute,
   rawBody: string,
   payload: Record<string, unknown>,
+  // A refusal decided by the configuration alone, not by the body, dedupes on what decided it: keyed
+  // on the body, a sender varying an unsigned body would file one FAILED row and one dead-letter per
+  // variation of the same signed notification.
+  dedupeKeyOverride?: string,
 ): Promise<bigint> {
-  const dedupeKey = `raw:${createHash("sha256").update(rawBody).digest("hex")}`;
+  const dedupeKey =
+    dedupeKeyOverride ??
+    `raw:${createHash("sha256").update(rawBody).digest("hex")}`;
   const create = () =>
     runScopedOn(base, sysCtx(route.tenantId), (db) =>
       db.inboundDelivery.create({

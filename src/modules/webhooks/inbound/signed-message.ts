@@ -1,0 +1,344 @@
+// What an HMAC_SHA256 instance signs when it is not the raw body (`config.signature`): a template
+// over a CLOSED set of sources ({{body}}, {{header.x}}, {{query.x}}, {{sig.x}}, `|lower`, and `[[…]]`
+// for a piece dropped when a value inside it is absent), so nothing here evaluates operator text.
+// The writer (integrations/service.ts) and the gate (./auth.ts) both read the config through
+// `parseSignatureConfig`, so a row the writer would refuse fails closed at the read. The grammar
+// and a worked Mercado Pago example are in docs/integrations.md ("The signed message").
+
+import { isUsableHeaderName } from "./header-name";
+
+export type SignatureFormat = "hex" | "parts";
+
+type Source = "body" | "header" | "query" | "sig";
+type Piece =
+  | { kind: "text"; text: string }
+  | { kind: "value"; source: Source; name: string; lower: boolean };
+type Group = { optional: boolean; pieces: Piece[] };
+
+export interface SignatureConfig {
+  format: SignatureFormat;
+  signaturePart: string | null;
+  timestampPart: string | null;
+  maxAgeSeconds: number | null;
+  groups: Group[];
+}
+
+export const SIGNATURE_MESSAGE_MAX_CHARS = 1000;
+export const SIGNATURE_MAX_AGE_SECONDS_MAX = 7 * 24 * 3600;
+const PART_KEY = /^[A-Za-z0-9_-]{1,32}$/;
+const QUERY_NAME = /^[A-Za-z0-9._~\-[\]]{1,128}$/;
+const VALUE = /^(body|header|query|sig)(?:\.([^|]+))?(?:\|(lower))?$/;
+
+export type SignatureConfigProblem = { field: string; problem: string };
+
+function parseMessage(
+  message: string,
+  format: SignatureFormat,
+): Group[] | SignatureConfigProblem {
+  const bad = (problem: string): SignatureConfigProblem => ({
+    field: "message",
+    problem,
+  });
+  const groups: Group[] = [];
+  let current: Group = { optional: false, pieces: [] };
+  let text = "";
+  const flushText = () => {
+    if (text) current.pieces.push({ kind: "text", text });
+    text = "";
+  };
+  const closeGroup = () => {
+    flushText();
+    if (current.pieces.length) groups.push(current);
+  };
+  let i = 0;
+  while (i < message.length) {
+    if (message.startsWith("[[", i)) {
+      if (current.optional) return bad("an optional [[group]] cannot nest");
+      closeGroup();
+      current = { optional: true, pieces: [] };
+      i += 2;
+    } else if (message.startsWith("]]", i)) {
+      if (!current.optional) return bad("a ]] closes no [[group]]");
+      closeGroup();
+      current = { optional: false, pieces: [] };
+      i += 2;
+    } else if (message.startsWith("{{", i)) {
+      const end = message.indexOf("}}", i + 2);
+      if (end < 0) return bad("a {{placeholder}} is not closed");
+      const inner = message.slice(i + 2, end).trim();
+      const m = VALUE.exec(inner);
+      if (!m) return bad(`{{${inner}}} is not a known placeholder`);
+      const source = m[1] as Source;
+      const name = m[2] ?? "";
+      if (source === "body" ? name !== "" : name === "") {
+        return bad(`{{${inner}}} is not a known placeholder`);
+      }
+      if (source === "header" && !isUsableHeaderName(name)) {
+        return bad(`{{${inner}}} does not name a usable header`);
+      }
+      if (source === "query" && !QUERY_NAME.test(name)) {
+        return bad(`{{${inner}}} does not name a usable query parameter`);
+      }
+      if (source === "sig") {
+        if (format !== "parts") {
+          return bad(
+            `{{${inner}}} reads a signature part, which only the "parts" format has`,
+          );
+        }
+        if (!PART_KEY.test(name)) {
+          return bad(`{{${inner}}} does not name a usable signature part`);
+        }
+      }
+      flushText();
+      current.pieces.push({
+        kind: "value",
+        source,
+        name,
+        lower: m[3] === "lower",
+      });
+      i = end + 2;
+    } else {
+      text += message[i];
+      i += 1;
+    }
+  }
+  if (current.optional) return bad("an optional [[group]] is not closed");
+  closeGroup();
+  if (!groups.length) return bad("the message is empty");
+  return groups;
+}
+
+// `undefined` is "this instance signs the body", the behavior every instance had before the key
+// existed. Anything present is either fully usable or a problem naming the field.
+export function parseSignatureConfig(
+  raw: unknown,
+): SignatureConfig | SignatureConfigProblem | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    return { field: "", problem: "must be an object" };
+  }
+  const s = raw as Record<string, unknown>;
+  const format = s.format ?? "hex";
+  if (format !== "hex" && format !== "parts") {
+    return { field: "format", problem: 'must be "hex" or "parts"' };
+  }
+  const part = (key: "signaturePart" | "timestampPart") => {
+    const v = s[key];
+    if (v === undefined || v === null || v === "") return null;
+    return typeof v === "string" && PART_KEY.test(v) ? v : false;
+  };
+  const signaturePart = part("signaturePart");
+  const timestampPart = part("timestampPart");
+  if (signaturePart === false) {
+    return { field: "signaturePart", problem: "is not a usable part name" };
+  }
+  if (timestampPart === false) {
+    return { field: "timestampPart", problem: "is not a usable part name" };
+  }
+  if (format === "parts" && signaturePart === null) {
+    return {
+      field: "signaturePart",
+      problem: 'is required with the "parts" format',
+    };
+  }
+  if (format === "hex" && timestampPart !== null) {
+    return {
+      field: "timestampPart",
+      problem: 'only the "parts" format has a timestamp part',
+    };
+  }
+  const message = s.message ?? "{{body}}";
+  if (typeof message !== "string") {
+    return { field: "message", problem: "must be a string" };
+  }
+  if (message.length > SIGNATURE_MESSAGE_MAX_CHARS) {
+    return {
+      field: "message",
+      problem: `is over ${SIGNATURE_MESSAGE_MAX_CHARS} characters`,
+    };
+  }
+  const groups = parseMessage(message, format);
+  if (!Array.isArray(groups)) return groups;
+  let maxAgeSeconds: number | null = null;
+  if (s.maxAgeSeconds !== undefined && s.maxAgeSeconds !== null) {
+    const v = s.maxAgeSeconds;
+    if (
+      typeof v !== "number" ||
+      !Number.isInteger(v) ||
+      v < 1 ||
+      v > SIGNATURE_MAX_AGE_SECONDS_MAX
+    ) {
+      return {
+        field: "maxAgeSeconds",
+        problem: `must be a whole number between 1 and ${SIGNATURE_MAX_AGE_SECONDS_MAX}`,
+      };
+    }
+    if (timestampPart === null) {
+      return {
+        field: "maxAgeSeconds",
+        problem: "needs a timestamp part to measure the age from",
+      };
+    }
+    if (!timestampAnchored(groups, timestampPart)) {
+      return {
+        field: "maxAgeSeconds",
+        problem: `needs {{sig.${timestampPart}}} once in the message, outside any [[group]], as its first or last value and next to fixed text that is not a digit: a timestamp the signature does not pin down can be swapped`,
+      };
+    }
+    maxAgeSeconds = v;
+  }
+  return { format, signaturePart, timestampPart, maxAgeSeconds, groups };
+}
+
+// Whether the signed message pins the timestamp down, so the signature that covers it cannot be
+// reused with another one. Coverage alone is not enough: in `{{header.a}}{{sig.t}}{{header.b}}`
+// the digits can move between the timestamp and its neighbours and still render the same message.
+// The timestamp is all digits (the age check refuses anything else), so it is fixed when it sits
+// at one end of the values, with only required fixed text between it and that end, and fixed text
+// that is not a digit on its other side: the digit run then has exactly one place to start and end.
+function timestampAnchored(groups: Group[], name: string): boolean {
+  const flat = groups.flatMap((g) =>
+    g.pieces.map((piece) => ({ piece, optional: g.optional })),
+  );
+  const at = flat.flatMap((f, i) =>
+    f.piece.kind === "value" &&
+    f.piece.source === "sig" &&
+    f.piece.name === name
+      ? [i]
+      : [],
+  );
+  if (at.length !== 1) return false;
+  const i = at[0] as number;
+  if (flat[i]?.optional) return false;
+  const fixedText = (f: (typeof flat)[number] | undefined) =>
+    f !== undefined && !f.optional && f.piece.kind === "text";
+  const nonDigitEdge = (
+    f: (typeof flat)[number] | undefined,
+    edge: "first" | "last",
+  ) => {
+    if (f === undefined) return true;
+    if (!fixedText(f) || f.piece.kind !== "text") return false;
+    return (edge === "first" ? /^\D/u : /\D$/u).test(f.piece.text);
+  };
+  const before = flat.filter((_, j) => j < i);
+  const after = flat.filter((_, j) => j > i);
+  const startAnchored =
+    before.every(fixedText) && nonDigitEdge(flat[i + 1], "first");
+  const endAnchored =
+    after.every(fixedText) && nonDigitEdge(flat[i - 1], "last");
+  return startAnchored || endAnchored;
+}
+
+// Whether a request this config authenticates also authenticates its BODY, byte for byte and with
+// fixed boundaries. Coverage alone is not enough: with `{{header.a}}{{body}}`, or a [[group]] that
+// can drop, a captured signature still verifies when part of the body moves into a header. So the
+// body is the LAST piece, there is no [[group]], it is not `|lower`ed, and every other value is
+// followed by literal text, which the gate refuses a value to contain (`signed_value_ambiguous`):
+// each value then ends at a fixed point and so does the body.
+export function signatureCoversBody(raw: unknown): boolean {
+  const parsed = parseSignatureConfig(raw);
+  if (parsed === undefined) return true;
+  if (isSignatureConfigProblem(parsed)) return false;
+  if (parsed.groups.length !== 1 || parsed.groups[0]?.optional) return false;
+  const pieces = parsed.groups[0]?.pieces ?? [];
+  const last = pieces.at(-1);
+  if (last?.kind !== "value" || last.source !== "body" || last.lower) {
+    return false;
+  }
+  return pieces.every(
+    (p, i) =>
+      i === pieces.length - 1 ||
+      p.kind === "text" ||
+      (p.source !== "body" && pieces[i + 1]?.kind === "text"),
+  );
+}
+
+export function isSignatureConfigProblem(
+  v: SignatureConfig | SignatureConfigProblem,
+): v is SignatureConfigProblem {
+  return "problem" in v;
+}
+
+// `ts=1704908010,v1=abc` → { ts: ["1704908010"], v1: ["abc"] }. A key may repeat (Stripe sends one
+// `v1` per active secret during a rotation), so every value is kept.
+export function parseSignatureParts(header: string): Map<string, string[]> {
+  const parts = new Map<string, string[]>();
+  for (const item of header.split(",")) {
+    const eq = item.indexOf("=");
+    if (eq <= 0) continue;
+    const key = item.slice(0, eq).trim();
+    const value = item.slice(eq + 1).trim();
+    if (!key || !value) continue;
+    parts.set(key, [...(parts.get(key) ?? []), value]);
+  }
+  return parts;
+}
+
+export interface SignedMessageSources {
+  rawBody: string;
+  getHeader: (name: string) => string | null;
+  getQuery: (name: string) => string | null;
+  parts: Map<string, string[]>;
+}
+
+// A value that contains the text right after it lets the sender move the boundary between the two
+// (`1.2` + `.` + body reads the same as `1` + `.` + `2.body`), so the gate refuses it instead of
+// guessing. `(v + text).indexOf(text) < v.length` also catches an overlap (`xa` before `aa`).
+function blursBoundary(value: string, next: Piece | undefined): boolean {
+  return (
+    next?.kind === "text" &&
+    (value + next.text).indexOf(next.text) < value.length
+  );
+}
+
+// The message the sender signed; `missing` when a value outside every optional group is absent,
+// `ambiguous` when a value runs into the text after it.
+export function renderSignedMessage(
+  groups: Group[],
+  src: SignedMessageSources,
+): string | "missing" | "ambiguous" {
+  const read = (p: Extract<Piece, { kind: "value" }>): string | null => {
+    const v =
+      p.source === "body"
+        ? src.rawBody
+        : p.source === "header"
+          ? src.getHeader(p.name)
+          : p.source === "query"
+            ? src.getQuery(p.name)
+            : (src.parts.get(p.name)?.[0] ?? null);
+    if (v === null) return null;
+    return p.lower ? v.toLowerCase() : v;
+  };
+  let out = "";
+  for (const g of groups) {
+    // Every value of the group first: an absent one drops an optional group whole, so whether the
+    // group is rendered at all is settled before any of its boundaries is judged.
+    const values = g.pieces.map((p) => (p.kind === "value" ? read(p) : null));
+    if (g.pieces.some((p, i) => p.kind === "value" && values[i] === null)) {
+      if (g.optional) continue;
+      return "missing";
+    }
+    let rendered = "";
+    for (const [i, p] of g.pieces.entries()) {
+      if (p.kind === "text") {
+        rendered += p.text;
+        continue;
+      }
+      const v = values[i] as string;
+      if (p.source !== "body" && blursBoundary(v, g.pieces[i + 1])) {
+        return "ambiguous";
+      }
+      rendered += v;
+    }
+    out += rendered;
+  }
+  return out;
+}
+
+// A provider timestamp in seconds or milliseconds (Mercado Pago's own examples use both), as epoch
+// milliseconds; null when it is not a plain integer.
+export function timestampMs(value: string): number | null {
+  if (!/^\d{1,16}$/.test(value)) return null;
+  const n = Number(value);
+  return n >= 1e12 ? n : n * 1000;
+}

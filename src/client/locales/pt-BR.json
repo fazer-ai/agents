@@ -3297,6 +3297,21 @@
       "tabsError": "Não foi possível ler as abas da planilha. Confira se a credencial tem o escopo Google Sheets e consegue abrir esta planilha.",
       "use": "Usar"
     },
+    "signature": {
+      "format": "Formato da assinatura",
+      "formatHex": "O header inteiro (hex, prefixo sha256= opcional)",
+      "formatParts": "Partes chave=valor (ex.: ts=…,v1=…)",
+      "header": "Header da assinatura",
+      "headerHint": "O header da requisição que traz a assinatura.",
+      "maxAge": "Recusar avisos mais antigos que (segundos)",
+      "maxAgeHint": "Opcional. Deixe vazio quando o provedor reenvia com o horário original.",
+      "message": "Mensagem assinada",
+      "messageHelp": "O que o remetente assina, escrito com marcadores: {{body}} é o corpo bruto, {{header}} um header da requisição, {{query}} um parâmetro da URL do webhook e {{sig}} uma parte do header da assinatura.\n\nAcrescente {{lower}} para passar um valor para minúsculas. Envolva um trecho em {{group}} para que ele saia inteiro quando faltar um valor dentro dele.\n\nA documentação do próprio provedor diz o que ele assina.",
+      "messageHint": "Vazio equivale a {{body}}, o corpo bruto.",
+      "signaturePart": "Parte com a assinatura",
+      "timestampPart": "Parte com o horário",
+      "timestampPartHint": "Opcional. Necessária para recusar avisos antigos."
+    },
     "subtitle": "Ative integrações prontas que seus agentes podem usar.",
     "tokenHint": "Copie esta URL para as configurações de webhook do provedor. Você pode consultá-la depois editando esta integração.",
     "tokenTitle": "URL do webhook de entrada",

@@ -21,6 +21,10 @@ import {
   generateRouteToken,
   hashRouteToken,
 } from "@/modules/webhooks/inbound/route-token";
+import {
+  isSignatureConfigProblem,
+  parseSignatureConfig,
+} from "@/modules/webhooks/inbound/signed-message";
 import { ensureInboundSweep } from "@/modules/webhooks/inbound/sweep";
 import { calendarConfigRangeProblem } from "./calendar-config-ranges";
 import { CATALOG, getCatalogEntry } from "./catalog";
@@ -91,6 +95,35 @@ export function assertUsableHeaderNames(config: Record<string, unknown>): void {
       `config.${key}`,
     );
   }
+}
+
+// What an HMAC instance signs when it is not the body. Refused whole, naming the field, by the same
+// parser the gate reads it with, so a stored config the gate would fail closed on cannot be written.
+// A toolpack's provider signs the way its catalog entry knows; the signed message is the generic
+// webhook's, where the operator describes a gateway the catalog does not.
+export function assertSignatureConfig(
+  catalogType: string,
+  config: Record<string, unknown>,
+): void {
+  const parsed = parseSignatureConfig(config.signature);
+  if (parsed === undefined) return;
+  const problem =
+    catalogType !== "GENERIC"
+      ? { field: "", problem: "is only for the generic webhook" }
+      : isSignatureConfigProblem(parsed)
+        ? parsed
+        : null;
+  if (!problem) return;
+  const field = problem.field
+    ? `config.signature.${problem.field}`
+    : "config.signature";
+  throw new AppError(
+    `${field} ${problem.problem}`,
+    400,
+    "errors.integrationSignatureUnusable",
+    { field, problem: problem.problem },
+    field,
+  );
 }
 
 // The operator's guidance for a GENERIC instance's events: trusted text that reaches the model
@@ -224,6 +257,7 @@ export function assertIntegrationWritable(
 ): void {
   if (params.config) {
     assertUsableHeaderNames(params.config);
+    assertSignatureConfig(catalogType, params.config);
     assertCatalogConfig(catalogType, params.config);
     assertConfigRanges(catalogType, params.config, storedConfig);
     assertSheetsConfig(catalogType, params.config);

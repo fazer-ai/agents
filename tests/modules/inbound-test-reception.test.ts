@@ -599,12 +599,41 @@ describe.skipIf(!dbUp)("test reception", () => {
         detail: { method: "POST" },
       });
       expect(seen.length).toBe(before);
+      // Refused on the row the call itself loads, not on an earlier read of it.
+      expect(
+        await run({
+          base: appDb,
+          tenantId,
+          toolId,
+          idArg: "payment_id",
+          resourceId: "1001",
+          readOnly: true,
+        }),
+      ).toMatchObject({ ok: false, refusedMethod: "POST" });
+      expect(seen.length).toBe(before);
     } finally {
       await suDb.toolDefinition.update({
         where: { id: toolId },
         data: { method: "GET" },
       });
     }
+  });
+
+  test("a header pasted twice in different case is one header, as the webhook route reads it", async () => {
+    const r = await testReception(
+      ctx(),
+      asaasId,
+      {
+        body: JSON.stringify({
+          event: "PAYMENT_RECEIVED",
+          payment: { id: "pay_3", value: 10, externalReference: "x" },
+        }),
+        headers: { "asaas-access-token": "bad", "Asaas-Access-Token": SECRET },
+      },
+      appDb,
+      deps(),
+    );
+    expect(r.outcome).toBe("unauthorized");
   });
 
   test("a disabled instance can be tested dry, not delivered", async () => {

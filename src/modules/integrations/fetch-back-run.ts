@@ -21,7 +21,7 @@ export type FetchBackOutcome =
   | { ok: true; status: number; response: unknown }
   // `retry`: the provider or the network failed, and the same id may answer later. Otherwise the
   // tool or its answer cannot be used as configured, and a retry would answer the same.
-  | { ok: false; retry: boolean; reason: string };
+  | { ok: false; retry: boolean; reason: string; refusedMethod?: string };
 
 const CONVERSATION_VARS = new Set<string>([
   ...CONTEXT_VAR_NAMES,
@@ -135,6 +135,9 @@ export async function runFetchBack(params: {
   resourceId: string;
   // The delivery's deadline, handed to the request itself so it stops with the claim.
   signal?: AbortSignal;
+  // A dry run (test reception): only a tool whose method reads is called. Checked on the row this
+  // call loads and runs, so an edit between a caller's check and the call cannot slip a write in.
+  readOnly?: boolean;
   deps?: ToolTestDeps;
 }): Promise<FetchBackOutcome> {
   const ctx: TenantContext = {
@@ -146,6 +149,15 @@ export async function runFetchBack(params: {
   const problem = fetchBackToolProblem(tool, params.idArg);
   if (problem || !tool) {
     return { ok: false, retry: false, reason: `the consult-back ${problem}` };
+  }
+  const method = tool.method.toUpperCase();
+  if (params.readOnly && method !== "GET" && method !== "HEAD") {
+    return {
+      ok: false,
+      retry: false,
+      reason: `the lookup tool uses ${method}, which a dry run does not call`,
+      refusedMethod: method,
+    };
   }
   let result: Awaited<ReturnType<typeof runToolTest>>;
   try {

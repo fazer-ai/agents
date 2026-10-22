@@ -1264,9 +1264,15 @@ export async function lookUpNotice(params: {
   run?: typeof runFetchBack;
   // The delivery's deadline, handed to the request itself.
   signal?: AbortSignal;
+  readOnly?: boolean;
 }): Promise<
   | { kind: "unusable"; reason: string }
-  | { kind: "fetch_failed"; retry: boolean; reason: string }
+  | {
+      kind: "fetch_failed";
+      retry: boolean;
+      reason: string;
+      refusedMethod?: string;
+    }
   | { kind: "mapped"; result: MapResult }
 > {
   const cfg = parseFetchBackConfig(params.instanceConfig.fetchBack);
@@ -1283,12 +1289,16 @@ export async function lookUpNotice(params: {
     idArg: cfg.idArg,
     resourceId: params.resourceId,
     ...(params.signal ? { signal: params.signal } : {}),
+    ...(params.readOnly ? { readOnly: true } : {}),
   });
   if (!fetched.ok) {
     return {
       kind: "fetch_failed",
       retry: fetched.retry,
       reason: fetched.reason,
+      ...(fetched.refusedMethod
+        ? { refusedMethod: fetched.refusedMethod }
+        : {}),
     };
   }
   return {

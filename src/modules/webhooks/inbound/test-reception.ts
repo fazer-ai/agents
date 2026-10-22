@@ -10,10 +10,6 @@ import { AppError, NotFoundError, UnauthorizedError } from "@/lib/errors";
 import { trackWork } from "@/lib/shutdown";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { correlateConversationRef } from "@/modules/integrations/conversation-ref";
-import {
-  isFetchBackProblem,
-  parseFetchBackConfig,
-} from "@/modules/integrations/fetch-back";
 import type { runFetchBack } from "@/modules/integrations/fetch-back-run";
 import type { ResolvedInboundRoute } from "@/modules/integrations/service";
 import type { NormalizedInboundEvent } from "@/modules/integrations/types";
@@ -157,34 +153,25 @@ async function explainPlanned(
 ): Promise<string> {
   let event: NormalizedInboundEvent;
   if (planned.kind === "notice") {
-    // The simulation calls the lookup tool for real, so it only calls one that reads: a tool that
-    // POSTs, PUTs, PATCHes or DELETEs could change the provider, which the dry run promises not to.
-    const cfg = parseFetchBackConfig(route.config.fetchBack);
-    if (cfg !== undefined && !isFetchBackProblem(cfg)) {
-      const tool = await runScopedOn(base, ctx, (db) =>
-        db.toolDefinition.findUnique({
-          where: { id: cfg.toolId },
-          select: { method: true },
-        }),
-      );
-      const method = (tool?.method ?? "GET").toUpperCase();
-      if (method !== "GET" && method !== "HEAD") {
-        stages.push({
-          stage: "fetch_back",
-          ok: false,
-          reason: "not-simulated",
-          detail: { method },
-        });
-        return "not-simulated";
-      }
-    }
     const looked = await lookUpNotice({
       base,
       tenantId: route.tenantId,
       instanceConfig: route.config,
       resourceId: planned.resourceId,
       run,
+      // The simulation calls the lookup tool for real, so only one that reads: a tool that POSTs,
+      // PUTs, PATCHes or DELETEs could change the provider, which the dry run promises not to.
+      readOnly: true,
     });
+    if (looked.kind === "fetch_failed" && looked.refusedMethod) {
+      stages.push({
+        stage: "fetch_back",
+        ok: false,
+        reason: "not-simulated",
+        detail: { method: looked.refusedMethod },
+      });
+      return "not-simulated";
+    }
     if (looked.kind !== "mapped") {
       stages.push({
         stage: "fetch_back",
@@ -279,11 +266,23 @@ export async function testReception(
       { limit: TEST_RECEPTION_PER_MINUTE },
     );
   }
-  const headers = new Map(
-    Object.entries(input.headers ?? {}).map(([k, v]) => [k.toLowerCase(), v]),
-  );
+  // Read as the webhook route reads a request (Fetch `Headers`): a name repeated in another case is
+  // one header whose values join with ", ", not the last spelling winning.
+  const headers = new Headers();
+  for (const [k, v] of Object.entries(input.headers ?? {})) {
+    try {
+      headers.append(k, v);
+    } catch {
+      throw new AppError(
+        `"${k}" is not a usable header name`,
+        400,
+        "errors.integrationHeaderNameUnusable",
+        { field: k },
+      );
+    }
+  }
   const search = new URLSearchParams((input.query ?? "").replace(/^\?/, ""));
-  const getHeader = (n: string) => headers.get(n.toLowerCase()) ?? null;
+  const getHeader = (n: string) => headers.get(n);
   const getQuery = (n: string) => search.get(n);
   const probe: InboundProbe = { dryRun, stages: [] };
   const done = (outcome: string): TestReceptionResult => {

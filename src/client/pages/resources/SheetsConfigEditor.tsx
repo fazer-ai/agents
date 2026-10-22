@@ -44,7 +44,9 @@ const apiLoaders: SheetsLoaders = {
 // The id out of a pasted spreadsheet URL, or the text itself when it already is an id.
 export function spreadsheetIdFrom(input: string): string | null {
   const s = input.trim();
-  const fromUrl = /\/spreadsheets\/d\/([A-Za-z0-9_-]+)/.exec(s)?.[1];
+  const fromUrl = /\/spreadsheets\/(?:u\/\d+\/)?d\/([A-Za-z0-9_-]+)/.exec(
+    s,
+  )?.[1];
   const id = fromUrl ?? s;
   return /^[A-Za-z0-9_-]{10,200}$/.test(id) ? id : null;
 }

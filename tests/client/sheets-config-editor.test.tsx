@@ -82,6 +82,11 @@ describe("the id out of what the operator pastes", () => {
         `https://docs.google.com/spreadsheets/d/${SID}/edit#gid=0`,
       ),
     ).toBe(SID);
+    expect(
+      spreadsheetIdFrom(
+        `https://docs.google.com/spreadsheets/u/1/d/${SID}/edit?gid=0`,
+      ),
+    ).toBe(SID);
     expect(spreadsheetIdFrom(`  ${SID} `)).toBe(SID);
     expect(spreadsheetIdFrom("Leads")).toBeNull();
     expect(spreadsheetIdFrom("https://example.com/x")).toBeNull();

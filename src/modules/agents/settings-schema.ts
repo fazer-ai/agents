@@ -973,7 +973,7 @@ const outputChecks = z.looseObject({
 });
 
 const ACTION_DESC =
-  "on a violation: template = send templateMessage verbatim; generated = guardrails writes a safe reply; silent = send nothing; handoff = send handoffMessage and hand over to the team; observe = only log it";
+  "on a violation: template = send templateMessage; generated = guardrails writes a safe reply; silent = send nothing; handoff = send handoffMessage and hand over to the team; observe = only log it";
 
 const directionCommon = {
   enabled: z.boolean().optional(),

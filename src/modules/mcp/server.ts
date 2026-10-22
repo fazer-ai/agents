@@ -2530,7 +2530,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "alert_channel_create",
       {
         description:
-          "Create a flow-log alert channel (discord or generic webhook). url_ref is a vault entry NAME holding the FULL token-bearing destination URL (resolved server-side; never passed raw). secret_ref optionally holds an HMAC signing secret (vault NAME). min_level is info/warn/error; stages restrict which flow stages alert (`guardrail` is the guardrail trips that acted, `guardrail_observed` the ones the observe action only recorded); exclude_agent_ids never alert here (still logged). Previews and creates NOTHING unless dry_run is false.",
+          "Create a flow-log alert channel (discord or generic webhook). url_ref is a vault entry NAME holding the FULL token-bearing destination URL (resolved server-side; never passed raw). secret_ref optionally holds an HMAC signing secret (vault NAME). min_level is info/warn/error; stages restrict which flow stages alert; exclude_agent_ids never alert here (still logged). Previews and creates NOTHING unless dry_run is false.",
         inputSchema: {
           name: z.string(),
           type: z.enum(["discord", "webhook"]),

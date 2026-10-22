@@ -491,8 +491,6 @@ const BARE_SLICES: Record<
   // The reminder's window, the newest messages kept off an ARRAY of rows, twice: once to render,
   // once to pick what to read.
   "src/modules/followups/snoozed.ts": [2, "array"],
-  // The thread up to a turn's last message, an ARRAY of messages, for the reply that turn recovered.
-  "src/modules/guardrails/context.ts": [1, "array"],
   // `parseIsoInstant`: the date half of an ISO instant, to check a calendar `Date.parse` would
   // silently normalise (February 30 to March 2). Position 10 is the format's own boundary, and the
   // string already matched an ASCII-only pattern.

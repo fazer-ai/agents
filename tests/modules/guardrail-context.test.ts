@@ -133,46 +133,28 @@ describe("guardrailContext", () => {
     ]);
   });
 
-  test("a reply written beside a tool call is the reply when the turn ends empty", () => {
-    const turn = (callName: string) => [
+  test("text beside a tool call stays out even when the turn ends empty", () => {
+    const thread = [
       new HumanMessage("C1 quero trocar"),
       new AIMessage({
         content: "A1 pista ou vip?",
-        tool_calls: [{ id: "t1", name: callName, args: {} }],
-      }),
-      new ToolMessage({ content: "ok", tool_call_id: "t1" }),
-      new AIMessage(""),
-    ];
-    const read = (thread: BaseMessage[], recoversReplies: boolean) =>
-      guardrailContext(thread, 4, { recoversReplies }).map((c) => c.text);
-    expect([
-      read(turn("set_labels"), true),
-      read(turn("skip_reply"), true),
-      read(turn("set_labels"), false),
-    ]).toEqual([
-      ["C1 quero trocar", "A1 pista ou vip?"],
-      ["C1 quero trocar"],
-      ["C1 quero trocar"],
-    ]);
-  });
-
-  test("a nudge delivers its last message only, and one written before the marker is no one's words", () => {
-    const nudgeTurn = [
-      nudgeMessage("NUDGE retome o contato", 7),
-      new AIMessage({
-        content: "A1 ainda quer o ingresso?",
         tool_calls: [{ id: "t1", name: "set_labels", args: {} }],
       }),
       new ToolMessage({ content: "ok", tool_call_id: "t1" }),
       new AIMessage(""),
     ];
+    expect(guardrailContext(thread, 4).map((c) => c.text)).toEqual([
+      "C1 quero trocar",
+    ]);
+  });
+
+  test("a follow-up directive written before the marker is no one's words", () => {
     const legacy = new HumanMessage(
       `Situação ${DATA_FENCE} dados ${DATA_FENCE} faça um follow-up`,
     );
-    expect([
-      guardrailContext(nudgeTurn, 4, { recoversReplies: true }),
+    expect(
       guardrailContext([legacy, new AIMessage("A2 oi de novo")], 4),
-    ]).toEqual([[], [{ role: "assistant", text: "A2 oi de novo" }]]);
+    ).toEqual([{ role: "assistant", text: "A2 oi de novo" }]);
   });
 
   test("a turn cut short after a tool call answered nobody", () => {
@@ -499,16 +481,11 @@ describe("the gate's context", () => {
     },
   });
 
-  function gate(
-    contextMessages: number,
-    load: () => Promise<BaseMessage[]>,
-    recoversReplies?: boolean,
-  ) {
+  function gate(contextMessages: number, load: () => Promise<BaseMessage[]>) {
     const rec = recordingModel();
     let loads = 0;
     const g = buildGuardrailGate({
       cfg: cfg(contextMessages),
-      ...(recoversReplies !== undefined ? { recoversReplies } : {}),
       apiKey: "k",
       flow,
       makeModel: (() => rec.model) as never,
@@ -530,26 +507,6 @@ describe("the gate's context", () => {
     expect(ctx).toMatch(/A3 mais/);
     expect(ctx).not.toMatch(/A2 pista/);
     expect(rec.calls[0]?.texts[2]).toBe("sim camarote o como");
-  });
-
-  test("the path says whether a reply written beside a tool call went out", async () => {
-    const thread = async () => [
-      new HumanMessage("C1 quero trocar"),
-      new AIMessage({
-        content: "A1 pista ou vip?",
-        tool_calls: [{ id: "t1", name: "set_labels", args: {} }],
-      }),
-      new ToolMessage({ content: "ok", tool_call_id: "t1" }),
-      new AIMessage(""),
-    ];
-    const inbox = gate(4, thread, true);
-    const playground = gate(4, thread);
-    await inbox.g("input", "vip");
-    await playground.g("input", "vip");
-    expect([
-      inbox.rec.calls[0]?.texts[1]?.includes("A1 pista ou vip?"),
-      playground.rec.calls[0]?.texts[1]?.includes("A1 pista ou vip?"),
-    ]).toEqual([true, false]);
   });
 
   test("a window of 0 never reads the thread", async () => {

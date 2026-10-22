@@ -1,5 +1,4 @@
 import type { AIMessage, BaseMessage } from "@langchain/core/messages";
-import { replyWrittenThisTurn } from "@/graph/graph";
 import {
   CONVERSATION_DIVIDER,
   HUMAN_AGENT_NOTE,
@@ -52,57 +51,10 @@ function isNudge(m: BaseMessage): boolean {
   );
 }
 
-// The assistant messages the customer actually read. A turn is answered only when it ends on an
-// assistant message that calls nothing, and that message's text is what went out. When it is empty,
-// the reactive turn of an inbox or a client channel delivers the text written earlier in the turn
-// (`replyWrittenThisTurn`), so `recovers` says the thread is one of those; a nudge and the playground
-// deliver the last message only. A turn cut short after a tool call answered nobody, and text beside
-// a call is otherwise the agent thinking between rounds.
-function deliveredReplies(
-  messages: readonly BaseMessage[],
-  recovers: boolean,
-): Set<number> {
-  const out = new Set<number>();
-  let end = messages.length - 1;
-  while (end >= 0) {
-    if (messages[end]?.getType() === "human") {
-      end--;
-      continue;
-    }
-    let start = end;
-    while (start > 0 && messages[start - 1]?.getType() !== "human") start--;
-    const last = messages[end];
-    if (
-      last?.getType() === "ai" &&
-      ((last as AIMessage).tool_calls?.length ?? 0) === 0
-    ) {
-      const opener = messages[start - 1];
-      if (contentToText(last.content).trim()) out.add(end);
-      else if (
-        recovers &&
-        !(opener && isNudge(opener)) &&
-        replyWrittenThisTurn(messages.slice(0, end + 1))
-      ) {
-        for (let i = end - 1; i >= start; i--) {
-          const m = messages[i];
-          if (m?.getType() === "ai" && contentToText(m.content).trim()) {
-            out.add(i);
-            break;
-          }
-        }
-      }
-    }
-    end = start - 1;
-  }
-  return out;
-}
-
 export function guardrailContext(
   messages: readonly BaseMessage[],
   limit: number,
-  opts: { recoversReplies?: boolean } = {},
 ): GuardrailContextMessage[] {
-  const delivered = deliveredReplies(messages, opts.recoversReplies ?? false);
   const out: GuardrailContextMessage[] = [];
   for (let i = messages.length - 1; i >= 0 && out.length < limit; i--) {
     const m = messages[i];
@@ -123,7 +75,11 @@ export function guardrailContext(
       continue;
     }
     if (isSystemMarker(m) || isNudge(m) || !text) continue;
-    if (type === "ai" && !delivered.has(i)) continue;
+    // NOTE: only a message that calls nothing is a reply. Text beside a call is the agent thinking
+    // between rounds, or a reply the runtime recovers only under conditions the thread does not
+    // record, so it stays out rather than putting words the customer may never have read in context.
+    if (type === "ai" && ((m as AIMessage).tool_calls?.length ?? 0) > 0)
+      continue;
     if (type === "human") out.push({ role: "customer", text });
     else if (type === "ai") out.push({ role: "assistant", text });
   }

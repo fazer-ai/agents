@@ -260,9 +260,6 @@ export interface GuardrailGateParams {
   // The thread the agent answers from, as it stood BEFORE this turn, for the input direction's context
   // window. Read only when the window is on and a screening runs; absent screens the message alone.
   inputContext?: () => Promise<readonly BaseMessage[]>;
-  // Whether this path posts the text written beside a tool call when the turn ends empty (the inbox's
-  // reactive turn and the client channel do; the playground does not), so the window reads it as said.
-  recoversReplies?: boolean;
   makeModel?: typeof createChatModel;
   // Overrides the ledger sink. Tests inject; production takes the default, which writes the row.
   persistUsage?: UsagePersist;
@@ -545,9 +542,7 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
   ): Promise<GuardrailContextMessage[]> => {
     if (limit <= 0 || !p.inputContext) return [];
     try {
-      return guardrailContext(await p.inputContext(), limit, {
-        recoversReplies: p.recoversReplies ?? false,
-      });
+      return guardrailContext(await p.inputContext(), limit);
     } catch (err) {
       logger.warn(
         { err },

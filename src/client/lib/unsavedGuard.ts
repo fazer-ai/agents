@@ -200,6 +200,15 @@ function hasSentinel(): boolean {
   return !!s && s[SENTINEL_KEY] === true;
 }
 
+// Work waiting for the trap to let go of the page (`afterTrapRelease`).
+let afterRelease: Array<() => void> = [];
+
+function flushAfterRelease() {
+  const waiting = afterRelease;
+  afterRelease = [];
+  for (const run of waiting) run();
+}
+
 function onPopState() {
   if (cleanupInFlight()) {
     // Our own cleanup pop, not the user's Back. A guard that armed while it was on the way pushed no
@@ -207,6 +216,7 @@ function onPopState() {
     cleanupAt = null;
     if (blockers.length > 0) window.history.pushState(sentinelState(), "");
     else listen(false);
+    flushAfterRelease();
     return;
   }
   if (blockers.length === 0) return;
@@ -242,7 +252,25 @@ function disarm() {
     window.history.back();
   } else {
     listen(false);
+    flushAfterRelease();
   }
+}
+
+// Run `run` once the trap has let go of the page: after its cleanup pop, when it has one to make. A
+// navigation started before that pop would race it, and the pop can cancel a full reload. Bounded
+// like the pop itself, so a trap that never lets go does not hold the work forever.
+export function afterTrapRelease(run: () => void) {
+  if (!isBrowser || (!armed && !cleanupInFlight())) {
+    run();
+    return;
+  }
+  afterRelease.push(run);
+  setTimeout(() => {
+    const i = afterRelease.indexOf(run);
+    if (i < 0) return;
+    afterRelease.splice(i, 1);
+    run();
+  }, CLEANUP_POP_MS);
 }
 
 // Register a Back-button blocker. While at least one is registered, the Back
@@ -260,6 +288,12 @@ export function pushBackBlocker(onBack: BackBlocker): () => void {
     if (i >= 0) blockers.splice(i, 1);
     if (blockers.length === 0) disarm();
   };
+}
+
+// Whether the trap's sentinel is the current history entry. A page that leaves by a link while it is
+// navigates in its place, so Back from the destination returns to the page once.
+export function sentinelOnTop(): boolean {
+  return isBrowser && hasSentinel();
 }
 
 // Honor a Back press that a PAGE guard confirmed (the user chose "discard").

@@ -135,6 +135,10 @@ function renderAdminRouteAt(search: string) {
 
 const shows = (s: string) => document.body.textContent?.includes(s) === true;
 
+// The real location, put back after each test: the stub below would otherwise outlive this file and
+// leave every later file in the same process with a location that has no URL.
+const realLocation = Object.getOwnPropertyDescriptor(window, "location");
+
 describe("TenantDeepLink", () => {
   beforeEach(() => {
     seenSearch = "";
@@ -161,6 +165,7 @@ describe("TenantDeepLink", () => {
   afterEach(() => {
     jest.useRealTimers();
     cleanup();
+    if (realLocation) Object.defineProperty(window, "location", realLocation);
     sessionStorage.removeItem(KEY);
     localStorage.removeItem(KEY);
   });

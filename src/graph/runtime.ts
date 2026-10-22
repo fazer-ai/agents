@@ -1267,6 +1267,7 @@ async function runTurnBody(
         )?.messages ?? [],
         conversationId,
       ),
+    recoversReplies: true,
     makeModel: params.deps?.makeModel,
     // NOTE: The same usage sink as the turn's own callbacks.
     persistUsage: params.deps?.persistUsage,

@@ -5,10 +5,12 @@ import {
   HUMAN_AGENT_NOTE,
   isConversationDivider,
   isHumanAgentTurn,
+  isNudgeTurn,
   isSystemMarker,
   lastStampedConversationId,
 } from "@/graph/markers";
 import { contentToText } from "@/graph/message-text";
+import { DATA_FENCE } from "@/graph/nudge";
 import { clipText } from "@/lib/text";
 import { selectClosedPrefix } from "@/modules/memory/cut";
 
@@ -41,11 +43,25 @@ export function openAttendance(
 // Per message, so one pasted document cannot crowd out the question the window is there to carry.
 export const CONTEXT_MESSAGE_MAX = 1000;
 
+// A proactive nudge, or the playground's simulated follow-up. DATA_FENCE catches the ones written
+// before the marker, as the summarizer does: renderNudge always embeds it.
+function isNudge(m: BaseMessage): boolean {
+  return (
+    isNudgeTurn(m) ||
+    (m.getType() === "human" && contentToText(m.content).includes(DATA_FENCE))
+  );
+}
+
 // The assistant messages the customer actually read. A turn is answered only when it ends on an
-// assistant message that calls nothing: that message when it has text, otherwise the text the runtime
-// recovers from earlier in the turn (`replyWrittenThisTurn`). A turn cut short after a tool call
-// answered nobody, and text beside a call is otherwise the agent thinking between rounds.
-function deliveredReplies(messages: readonly BaseMessage[]): Set<number> {
+// assistant message that calls nothing, and that message's text is what went out. When it is empty,
+// the reactive turn of an inbox or a client channel delivers the text written earlier in the turn
+// (`replyWrittenThisTurn`), so `recovers` says the thread is one of those; a nudge and the playground
+// deliver the last message only. A turn cut short after a tool call answered nobody, and text beside
+// a call is otherwise the agent thinking between rounds.
+function deliveredReplies(
+  messages: readonly BaseMessage[],
+  recovers: boolean,
+): Set<number> {
   const out = new Set<number>();
   let end = messages.length - 1;
   while (end >= 0) {
@@ -60,8 +76,13 @@ function deliveredReplies(messages: readonly BaseMessage[]): Set<number> {
       last?.getType() === "ai" &&
       ((last as AIMessage).tool_calls?.length ?? 0) === 0
     ) {
+      const opener = messages[start - 1];
       if (contentToText(last.content).trim()) out.add(end);
-      else if (replyWrittenThisTurn(messages.slice(0, end + 1))) {
+      else if (
+        recovers &&
+        !(opener && isNudge(opener)) &&
+        replyWrittenThisTurn(messages.slice(0, end + 1))
+      ) {
         for (let i = end - 1; i >= start; i--) {
           const m = messages[i];
           if (m?.getType() === "ai" && contentToText(m.content).trim()) {
@@ -79,8 +100,9 @@ function deliveredReplies(messages: readonly BaseMessage[]): Set<number> {
 export function guardrailContext(
   messages: readonly BaseMessage[],
   limit: number,
+  opts: { recoversReplies?: boolean } = {},
 ): GuardrailContextMessage[] {
-  const delivered = deliveredReplies(messages);
+  const delivered = deliveredReplies(messages, opts.recoversReplies ?? false);
   const out: GuardrailContextMessage[] = [];
   for (let i = messages.length - 1; i >= 0 && out.length < limit; i--) {
     const m = messages[i];
@@ -100,7 +122,7 @@ export function guardrailContext(
       if (text) out.push({ role: "attendant", text });
       continue;
     }
-    if (isSystemMarker(m) || !text) continue;
+    if (isSystemMarker(m) || isNudge(m) || !text) continue;
     if (type === "ai" && !delivered.has(i)) continue;
     if (type === "human") out.push({ role: "customer", text });
     else if (type === "ai") out.push({ role: "assistant", text });

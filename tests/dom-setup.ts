@@ -61,81 +61,88 @@ Object.defineProperty(globalThis, Bun.inspect.custom, {
 });
 
 // toEqual, toStrictEqual and toMatchObject build their diff from the node's own fields, not from the
-// form above. With a node on either side they compare and report here, in that form; otherwise the
-// native matcher answers as before. `this.equals` has no strict mode, so toStrictEqual adds the
-// shape check below: the same keys, undefined ones included, and the same prototype.
-function holdsNode(value: unknown, seen = new Set<unknown>()): boolean {
-  if (value instanceof Node || value === globalThis) return true;
-  if (typeof value !== "object" || value === null || seen.has(value)) {
-    return false;
-  }
-  const proto = Object.getPrototypeOf(value);
-  if (!Array.isArray(value) && proto !== Object.prototype && proto !== null) {
-    return false;
-  }
-  seen.add(value);
-  return Object.values(value).some((v) => holdsNode(v, seen));
+// form above. When a node sits in a plain object or array on either side, each node is swapped for a
+// stand-in with its one-line form and a hash of its markup (one node, one stand-in, on both sides),
+// and the native matcher compares those, so equality and the diff stay the native ones. A node
+// inside a Set, a Map or an asymmetric matcher is left as is.
+class DomNode {
+  constructor(
+    readonly node: string,
+    readonly markup: string,
+  ) {}
 }
-function sameShape(received: unknown, expected: unknown): boolean {
-  if (
-    typeof received !== "object" ||
-    typeof expected !== "object" ||
-    received === null ||
-    expected === null ||
-    received instanceof Node
-  ) {
-    return true;
-  }
-  if (Object.getPrototypeOf(received) !== Object.getPrototypeOf(expected)) {
-    return false;
-  }
-  const keys = Object.keys(expected);
+function isPlain(value: object): boolean {
   return (
-    Object.keys(received).length === keys.length &&
-    keys.every(
-      (key) =>
-        Object.hasOwn(received, key) &&
-        sameShape(
-          (received as Record<string, unknown>)[key],
-          (expected as Record<string, unknown>)[key],
-        ),
-    )
+    Array.isArray(value) ||
+    Object.prototype.toString.call(value) === "[object Object]"
   );
 }
-function isSubset(
-  equals: (a: unknown, b: unknown) => boolean,
-  received: unknown,
-  expected: unknown,
-): boolean {
-  if (Array.isArray(expected)) {
-    return (
-      Array.isArray(received) &&
-      received.length === expected.length &&
-      expected.every((e, i) => isSubset(equals, received[i], e))
-    );
-  }
-  const plain =
-    typeof expected === "object" &&
-    expected !== null &&
-    Object.getPrototypeOf(expected) === Object.prototype &&
-    !("asymmetricMatch" in expected);
-  if (!plain) return equals(received, expected);
-  if (typeof received !== "object" || received === null) return false;
-  return Object.entries(expected).every(
-    ([key, e]) =>
-      key in received &&
-      isSubset(equals, (received as Record<string, unknown>)[key], e),
+function isAsymmetric(value: object): boolean {
+  return (
+    Object.prototype.toString.call(value).startsWith("[object Expect") ||
+    typeof (value as { asymmetricMatch?: unknown }).asymmetricMatch ===
+      "function"
   );
+}
+function enumerableValues(value: object): unknown[] {
+  return Object.values(Object.getOwnPropertyDescriptors(value))
+    .filter((d) => d.enumerable && "value" in d)
+    .map((d) => d.value);
+}
+/** "node" when a stand-in would help, "asymmetric" when one would break the match, else "none". */
+function scan(
+  value: unknown,
+  seen = new Set<unknown>(),
+): "node" | "asymmetric" | "none" {
+  if (value instanceof Node || value === globalThis) return "node";
+  if (typeof value !== "object" || value === null || seen.has(value))
+    return "none";
+  if (isAsymmetric(value)) return "asymmetric";
+  if (!isPlain(value)) return "none";
+  seen.add(value);
+  let found: "node" | "none" = "none";
+  for (const v of enumerableValues(value)) {
+    const inner = scan(v, seen);
+    if (inner === "asymmetric") return inner;
+    if (inner === "node") found = inner;
+  }
+  return found;
+}
+function standIns(value: unknown, made: Map<unknown, unknown>): unknown {
+  if (value instanceof Node || value === globalThis) {
+    let standIn = made.get(value);
+    if (!standIn) {
+      const markup =
+        value instanceof Element
+          ? value.outerHTML
+          : value === globalThis
+            ? ""
+            : ((value as Node).textContent ?? "");
+      standIn = new DomNode(Bun.inspect(value), Bun.hash(markup).toString(36));
+      made.set(value, standIn);
+    }
+    return standIn;
+  }
+  if (typeof value !== "object" || value === null || !isPlain(value))
+    return value;
+  const done = made.get(value);
+  if (done) return done;
+  const copy = Array.isArray(value)
+    ? []
+    : Object.create(Object.getPrototypeOf(value));
+  made.set(value, copy);
+  for (const key of Reflect.ownKeys(value)) {
+    const d = Object.getOwnPropertyDescriptor(value, key) as PropertyDescriptor;
+    if ("value" in d) d.value = standIns(d.value, made);
+    Object.defineProperty(copy, key, d);
+  }
+  return copy;
 }
 type NativeMatcher = (this: unknown, expected: unknown) => void;
 const nativeMatchers = expect(null) as unknown as Record<string, NativeMatcher>;
 function nodeAwareMatcher(name: "toEqual" | "toStrictEqual" | "toMatchObject") {
   const native = nativeMatchers[name] as NativeMatcher;
-  const nativeFailure = (
-    received: unknown,
-    expected: unknown,
-    not: boolean,
-  ) => {
+  const failureOf = (received: unknown, expected: unknown, not: boolean) => {
     try {
       native.call(not ? expect(received).not : expect(received), expected);
       return null;
@@ -146,49 +153,34 @@ function nodeAwareMatcher(name: "toEqual" | "toStrictEqual" | "toMatchObject") {
       );
     }
   };
-  const matcher = function (
-    this: { isNot: boolean; equals: (a: unknown, b: unknown) => boolean },
-    received: unknown,
-    expected: unknown,
-  ) {
-    if (!holdsNode(received) && !holdsNode(expected)) {
-      const failure = nativeFailure(received, expected, false);
-      return {
-        pass: failure === null,
-        message: () => failure ?? nativeFailure(received, expected, true) ?? "",
-      };
+  return (received: unknown, expected: unknown) => {
+    const sides = [scan(received), scan(expected)];
+    if (sides.includes("node") && !sides.includes("asymmetric")) {
+      const made = new Map<unknown, unknown>();
+      received = standIns(received, made);
+      expected = standIns(expected, made);
     }
-    const equals = (a: unknown, b: unknown) => this.equals(a, b);
-    let pass =
-      name === "toMatchObject"
-        ? isSubset(equals, received, expected)
-        : equals(received, expected);
-    if (pass && name === "toStrictEqual") {
-      pass = sameShape(received, expected);
-    }
+    const failure = failureOf(received, expected, false);
     return {
-      pass,
-      message: () =>
-        `Expected: ${this.isNot ? "not " : ""}${Bun.inspect(expected)}\nReceived: ${Bun.inspect(received)}`,
+      pass: failure === null,
+      message: () => failure ?? failureOf(received, expected, true) ?? "",
     };
   };
-  return matcher;
 }
 const nodeAware = {
   toEqual: nodeAwareMatcher("toEqual"),
   toStrictEqual: nodeAwareMatcher("toStrictEqual"),
   toMatchObject: nodeAwareMatcher("toMatchObject"),
 };
-type MatcherThis = ThisParameterType<(typeof nodeAware)["toEqual"]>;
 expect.extend({
-  toEqual(this: MatcherThis, received: unknown, expected: unknown) {
-    return nodeAware.toEqual.call(this, received, expected);
+  toEqual(received: unknown, expected: unknown) {
+    return nodeAware.toEqual(received, expected);
   },
-  toStrictEqual(this: MatcherThis, received: unknown, expected: unknown) {
-    return nodeAware.toStrictEqual.call(this, received, expected);
+  toStrictEqual(received: unknown, expected: unknown) {
+    return nodeAware.toStrictEqual(received, expected);
   },
-  toMatchObject(this: MatcherThis, received: unknown, expected: unknown) {
-    return nodeAware.toMatchObject.call(this, received, expected);
+  toMatchObject(received: unknown, expected: unknown) {
+    return nodeAware.toMatchObject(received, expected);
   },
 });
 

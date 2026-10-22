@@ -102,10 +102,10 @@ test("toEqual, toStrictEqual and toMatchObject report a node in its short form",
     const { message, ms } = failureOf(assertion);
     expect(message.length).toBeLessThan(2000);
     expect(ms).toBeLessThan(500);
-    expect(message).toContain('<div role="dialog" id="confirm-delete"');
+    expect(message).toContain("confirm-delete");
   }
   expect(failureOf(() => expect(dialog).not.toEqual(dialog)).message).toContain(
-    "Expected: not <div",
+    "confirm-delete",
   );
 });
 
@@ -160,4 +160,40 @@ test("a fragment names its kind", () => {
     expect(document.createDocumentFragment()).toBeNull(),
   );
   expect(message).toContain("DocumentFragment");
+});
+
+test("a node inside a cycle, an asymmetric matcher, a Set or under a symbol keeps native semantics", () => {
+  const dialog = pageWithDialog();
+  expect(window).toStrictEqual(window);
+  const cyclic: Record<string, unknown> = { open: dialog };
+  cyclic.self = cyclic;
+  expect(cyclic).toStrictEqual(cyclic);
+  expect({ open: dialog }).toStrictEqual(
+    expect.objectContaining({ open: dialog }),
+  );
+  expect({ wrap: { open: dialog } }).toEqual({
+    wrap: expect.objectContaining({ open: dialog }),
+  });
+  expect({ open: dialog, n: 1 }).toEqual({
+    open: dialog,
+    n: expect.any(Number),
+  });
+  expect({ open: dialog, s: new Set([{ a: undefined }]) }).not.toStrictEqual({
+    open: dialog,
+    s: new Set([{}]),
+  });
+  const key = Symbol("k");
+  expect({ open: dialog, [key]: 1 }).not.toMatchObject({
+    open: dialog,
+    [key]: 2,
+  });
+  expect({ open: dialog, [key]: 1 }).toMatchObject({ open: dialog, [key]: 1 });
+});
+
+test("two nodes are equal when their markup is", () => {
+  const a = document.createElement("p");
+  const b = document.createElement("p");
+  expect([a]).toEqual([b]);
+  b.textContent = "changed";
+  expect([a]).not.toEqual([b]);
 });

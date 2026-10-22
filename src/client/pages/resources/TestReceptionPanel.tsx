@@ -64,7 +64,15 @@ function detailLines(detail: Record<string, unknown> | undefined): string[] {
   );
 }
 
-export function TestReceptionPanel({ run }: { run: RunTest }) {
+export function TestReceptionPanel({
+  run,
+  onRunningChange,
+}: {
+  run: RunTest;
+  // The editor holds its close and save while a test is out (docs/modals.md, async flows): a real
+  // test delivers, and closing would lose its result without stopping it.
+  onRunningChange?: (running: boolean) => void;
+}) {
   const { t } = useTranslation();
   const { showToast } = useToast();
   const [body, setBody] = useState("");
@@ -80,11 +88,13 @@ export function TestReceptionPanel({ run }: { run: RunTest }) {
     fetch_back: t("integrations.test.stageFetchBack", "Lookup"),
     correlation: t("integrations.test.stageCorrelation", "Conversation"),
     record: t("integrations.test.stageRecord", "Record"),
+    agent: t("integrations.test.stageAgent", "Agent turn"),
     delivery: t("integrations.test.stageDelivery", "Delivery"),
   };
 
   async function submit() {
     setRunning(true);
+    onRunningChange?.(true);
     try {
       setResult(
         await run({
@@ -102,6 +112,7 @@ export function TestReceptionPanel({ run }: { run: RunTest }) {
       );
     } finally {
       setRunning(false);
+      onRunningChange?.(false);
     }
   }
 

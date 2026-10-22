@@ -799,6 +799,7 @@ export function IntegrationEditModal({
   // The workspace's HTTP tools, for a generic webhook's lookup tool; null while loading.
   const [httpTools, setHttpTools] = useState<FetchBackTool[] | null>(null);
   const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
   const [loadingForm, setLoadingForm] = useState(false);
   const [loadError, setLoadError] = useState(false);
   // Google Calendar: the calendars the connected credential can see (picker source).
@@ -1231,6 +1232,7 @@ export function IntegrationEditModal({
         modal={modal}
         size="lg"
         unsavedChanges={isDirty}
+        busy={saving || testing}
         title={
           editId
             ? t("integrations.editTitle", "Edit integration")
@@ -1238,11 +1240,12 @@ export function IntegrationEditModal({
         }
         footer={
           <div className="flex justify-end gap-2">
-            <ModalCancelButton disabled={saving} />
+            <ModalCancelButton disabled={saving || testing} />
             <Button
               onClick={save}
               loading={saving}
               disabled={
+                testing ||
                 loadingForm ||
                 loadError ||
                 !form.name.trim() ||
@@ -2285,7 +2288,10 @@ export function IntegrationEditModal({
                       {t("integrations.test.title", "Test reception")}
                     </summary>
                     <div className="mt-3">
-                      <TestReceptionPanel run={apiRunTest(String(editId))} />
+                      <TestReceptionPanel
+                        run={apiRunTest(String(editId))}
+                        onRunningChange={setTesting}
+                      />
                     </div>
                   </details>
                 )}

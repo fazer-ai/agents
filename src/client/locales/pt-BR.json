@@ -3349,6 +3349,7 @@
       "queryHint": "O que vem depois do ? na URL do webhook.",
       "result": "Resultado do teste",
       "run": "Testar",
+      "stageAgent": "Turno do agente",
       "stageCorrelation": "Conversa",
       "stageDelivery": "Entrega",
       "stageFetchBack": "Consulta",

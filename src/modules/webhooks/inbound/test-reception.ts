@@ -355,14 +355,16 @@ export async function testReception(
   return done(
     stopped?.stage === "fetch_back" && stopped.detail?.retried === true
       ? "retrying"
-      : stopped?.stage === "correlation"
-        ? "uncorrelated"
-        : stopped?.reason === "unhandled"
-          ? "ignored"
-          : stopped
-            ? "invalid"
-            : delivered && !delivered.ok
-              ? "failed"
-              : received.outcome,
+      : stopped?.stage === "agent"
+        ? "agent-failed"
+        : stopped?.stage === "correlation"
+          ? "uncorrelated"
+          : stopped?.reason === "unhandled"
+            ? "ignored"
+            : stopped
+              ? "invalid"
+              : delivered && !delivered.ok
+                ? "failed"
+                : received.outcome,
   );
 }

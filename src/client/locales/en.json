@@ -3262,6 +3262,7 @@
       "queryHint": "What comes after the ? in the webhook URL.",
       "result": "Test result",
       "run": "Run test",
+      "stageAgent": "Agent turn",
       "stageCorrelation": "Conversation",
       "stageDelivery": "Delivery",
       "stageFetchBack": "Lookup",

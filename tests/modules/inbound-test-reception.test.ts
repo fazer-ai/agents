@@ -418,8 +418,81 @@ describe.skipIf(!dbUp)("test reception", () => {
       }),
     ).toBe(1);
     expect(nudges.length).toBe(n + 1);
+    expect(r.stages.find((s) => s.stage === "agent")).toMatchObject({
+      ok: true,
+      detail: { outcome: "messaged" },
+    });
     // Registered with the shutdown drain, as the webhook route's dispatch is.
     expect(tracked.at(-1)).toBe(1);
+  });
+
+  test("a real test reports an agent turn that reached no one, though the row ends PROCESSED", async () => {
+    // A conversation of its own per case, so each sale is the first one recorded there.
+    const refFor = async (n: number) => {
+      const r = await ensureConversationRef({
+        tenantId,
+        integrationInstanceId: mpId,
+        threadId: `${tenantId}:1:${n}`,
+        base: appDb,
+      });
+      if (!r.ok) throw new Error("mint");
+      return r.ref;
+    };
+    payments.set("1006", {
+      code: 200,
+      body: {
+        status: "approved",
+        external_reference: await refFor(503),
+        transaction_amount: 10,
+      },
+    });
+    const thrown = await testReception(
+      ctx(),
+      mpId,
+      { ...mpNotice("1006"), dryRun: false },
+      appDb,
+      {
+        ...deps(),
+        process: {
+          runNudge: async () => {
+            throw new Error("model down");
+          },
+        } as never,
+      },
+    );
+    expect(thrown.stages.find((s) => s.stage === "agent")).toMatchObject({
+      ok: false,
+      reason: "model down",
+    });
+    expect(thrown.stages.at(-1)).toMatchObject({
+      stage: "delivery",
+      detail: { status: "PROCESSED" },
+    });
+    expect(thrown.outcome).toBe("agent-failed");
+
+    payments.set("1007", {
+      code: 200,
+      body: {
+        status: "approved",
+        external_reference: await refFor(504),
+        transaction_amount: 11,
+      },
+    });
+    const stale = await testReception(
+      ctx(),
+      mpId,
+      { ...mpNotice("1007"), dryRun: false },
+      appDb,
+      {
+        ...deps(),
+        process: { runNudge: async () => "stale" as const } as never,
+      },
+    );
+    expect(stale.stages.find((s) => s.stage === "agent")).toMatchObject({
+      ok: false,
+      reason: "stale",
+    });
+    expect(stale.outcome).toBe("agent-failed");
   });
 
   test("a real test whose processing fails, or whose lookup will be retried, does not answer queued", async () => {

@@ -83,3 +83,24 @@ test("the pasted notification goes to the server as typed, simulated by default,
   await waitFor(() => expect(calls.length).toBe(2));
   expect(calls[1]?.dryRun).toBe(false);
 });
+
+test("the editor hears while a test is out, so it can hold its close and save", async () => {
+  const seen: boolean[] = [];
+  let finish: (r: TestResult) => void = () => {};
+  const run: RunTest = () =>
+    new Promise<TestResult>((resolve) => {
+      finish = resolve;
+    });
+  render(
+    <ToastProvider>
+      <TestReceptionPanel run={run} onRunningChange={(r) => seen.push(r)} />
+    </ToastProvider>,
+  );
+  fireEvent.change(screen.getByLabelText("Notification body"), {
+    target: { value: "{}" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Run test" }));
+  expect(seen).toEqual([true]);
+  finish({ dryRun: true, outcome: "queued", stages: [] });
+  await waitFor(() => expect(seen).toEqual([true, false]));
+});

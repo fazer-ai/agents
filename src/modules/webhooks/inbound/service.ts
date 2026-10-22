@@ -2,7 +2,11 @@ import { createHash } from "node:crypto";
 import type { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
-import { type AgentNudge, runAgentNudge } from "@/graph/nudge";
+import {
+  type AgentNudge,
+  type RunAgentNudgeOutcome,
+  runAgentNudge,
+} from "@/graph/nudge";
 import type { RuntimeDeps } from "@/graph/runtime";
 import { AppError, UnauthorizedError } from "@/lib/errors";
 import { isUniqueViolation } from "@/lib/pg-error";
@@ -178,6 +182,7 @@ export type InboundStageName =
   | "fetch_back"
   | "correlation"
   | "record"
+  | "agent"
   | "delivery";
 export interface InboundStage {
   stage: InboundStageName;
@@ -751,6 +756,19 @@ async function persistNotice(
   return { ...next, deferred: true };
 }
 
+// How a nudge turn can end having done what it was for: a message, a template, a note to the person
+// holding the conversation, or the agent deciding to say nothing (`silent`) or to wait (`deferred`).
+// The rest reached no one: the conversation is not the bot's, Chatwoot or the agent is unavailable,
+// the month's spend ceiling, no conversation or no agent.
+const NUDGE_REACHED: ReadonlySet<RunAgentNudgeOutcome> = new Set([
+  "messaged",
+  "templated",
+  "noted",
+  "noted-window",
+  "silent",
+  "deferred",
+]);
+
 export interface ProcessDeps {
   // Injectable for tests; defaults to the real LangGraph nudge runtime.
   runNudge?: typeof runAgentNudge;
@@ -1074,7 +1092,7 @@ export async function processInboundDelivery(
   // Armed from here, right after the claim committed, which is the instant the stale window started.
   const signal = params.signal ?? AbortSignal.timeout(DISPATCH_DEADLINE_MS);
   try {
-    await runNudge({
+    const outcome = await runNudge({
       tenantId: params.tenantId,
       threadId: plan.threadId,
       nudge: plan.nudge,
@@ -1083,11 +1101,23 @@ export async function processInboundDelivery(
       deps: params.deps?.runtime,
       signal,
     });
+    // A test reception reads how the turn ended, which the row does not record (it ends PROCESSED
+    // either way): a turn that reached no one is not a green run.
+    params.stages?.push(
+      NUDGE_REACHED.has(outcome)
+        ? { stage: "agent", ok: true, detail: { outcome } }
+        : { stage: "agent", ok: false, reason: outcome },
+    );
   } catch (err) {
     logger.warn(
       { err, threadId: plan.threadId },
       "agentNudge dispatch failed; marking delivery processed anyway",
     );
+    params.stages?.push({
+      stage: "agent",
+      ok: false,
+      reason: err instanceof Error ? err.message : String(err),
+    });
   }
   await runScopedOn(base, sysCtx(params.tenantId), (db) =>
     db.inboundDelivery.update({

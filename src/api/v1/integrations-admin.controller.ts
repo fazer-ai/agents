@@ -404,14 +404,19 @@ export const integrationsAdminController = new Elysia({
   // nothing, the provider lookup included only as the read it is.
   .post(
     "/instances/:id/test-reception",
-    async ({ tenantContext, params, body }) => ({
-      instance: instanceIdentity,
-      ...(await testReception(
-        ctxOrThrow(tenantContext),
-        requireDbId(params.id),
-        body,
-      )),
-    }),
+    async ({ tenantContext, params, body, request, server }) => {
+      // A real test runs the lookup and the agent turn inline, which can outlast the server's idle
+      // timeout (the webhook route's dispatch allows minutes); the operator waits for its stages.
+      server?.timeout(request, 0);
+      return {
+        instance: instanceIdentity,
+        ...(await testReception(
+          ctxOrThrow(tenantContext),
+          requireDbId(params.id),
+          body,
+        )),
+      };
+    },
     {
       requireRole: "TENANT_ADMIN",
       detail: doc(

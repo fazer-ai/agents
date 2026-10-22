@@ -225,3 +225,9 @@ test("an error thrown while comparing is not read as a verdict", () => {
     expect<unknown>({ open: document.body, boom }).toEqual({}),
   ).toThrow("boom");
 });
+
+test("toEqual counts as one assertion", () => {
+  expect.assertions(2);
+  expect({ a: 1 }).toEqual({ a: 1 });
+  expect([document.body]).toEqual([document.body]);
+});

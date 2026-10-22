@@ -60,11 +60,12 @@ Object.defineProperty(globalThis, Bun.inspect.custom, {
   value: () => "[window]",
 });
 
-// toEqual builds its diff from the node's own fields, not from the form above. With a node in a
-// plain object, array or class instance on either side, the verdict comes from `this.equals`, the
-// same equality, on the original values, and the failure message from the native diff of a copy in
-// which each node is a stand-in holding its one-line form. toStrictEqual and toMatchObject stay
-// native: Bun exposes no equality for them, and a substitute could turn a real failure green.
+// toEqual builds its diff from the node's own fields, not from the form above. The override takes
+// the verdict from `this.equals`, the same equality, on the original values. Only a failure message
+// calls the native matcher, and with a node in a plain object, array or class instance on either
+// side, it diffs a copy in which each node is a stand-in holding its one-line form. toStrictEqual
+// and toMatchObject stay native: Bun exposes no equality for them, and a substitute could turn a
+// real failure green.
 class DomNode {
   constructor(readonly node: string) {}
 }
@@ -116,12 +117,13 @@ const nativeToEqual = (
     toEqual: (this: unknown, expected: unknown) => void;
   }
 ).toEqual;
-function toEqualFailure(received: unknown, expected: unknown, not: boolean) {
+/** The native diff for a failed toEqual, without its header line. */
+function toEqualDiff(received: unknown, expected: unknown, not: boolean) {
   try {
     nativeToEqual.call(not ? expect(received).not : expect(received), expected);
     return null;
   } catch (error) {
-    const message = error instanceof Error ? error.message : "";
+    const message = Bun.stripANSI(error instanceof Error ? error.message : "");
     if (!message.startsWith("expect(received)")) throw error;
     return message.replace(/^expect\(received\)[^\n]*\n\n/, "");
   }
@@ -132,20 +134,14 @@ expect.extend({
     received: unknown,
     expected: unknown,
   ) {
-    if (!holdsNode(received) && !holdsNode(expected)) {
-      const failure = toEqualFailure(received, expected, false);
-      return {
-        pass: failure === null,
-        message: () =>
-          failure ?? toEqualFailure(received, expected, true) ?? "",
-      };
-    }
-    const pass = this.equals(received, expected);
     return {
-      pass,
+      pass: this.equals(received, expected),
       message: () => {
+        if (!holdsNode(received) && !holdsNode(expected)) {
+          return toEqualDiff(received, expected, this.isNot) ?? "";
+        }
         const made = new Map<unknown, unknown>();
-        const shown = toEqualFailure(
+        const shown = toEqualDiff(
           standIns(received, made),
           standIns(expected, made),
           this.isNot,

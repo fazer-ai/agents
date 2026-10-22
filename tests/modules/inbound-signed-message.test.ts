@@ -266,6 +266,22 @@ describe("a signed message other than the body", () => {
     ).toEqual({ ok: false, reason: "signed_value_ambiguous" });
   });
 
+  test("an optional group with a member absent drops whole, before any boundary inside it is judged", () => {
+    const config = {
+      signatureHeader: "x-sig",
+      signature: { message: "[[{{header.x-a}};{{header.x-b}}]]{{body}}" },
+    };
+    // x-a would blur its boundary ("a;b" before ";"), but x-b is absent, so the group is not
+    // rendered at all and the signature over the body alone is the one that counts.
+    expect(
+      verify({
+        config,
+        body: BODY,
+        headers: lookup({ "x-sig": hmac(SECRET, BODY), "x-a": "a;b" }),
+      }),
+    ).toEqual({ ok: true });
+  });
+
   test("a stored signature config the writer would refuse fails closed, never throws", () => {
     for (const signature of [
       "{{body}}",

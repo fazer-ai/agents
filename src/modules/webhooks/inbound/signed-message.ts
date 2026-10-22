@@ -311,26 +311,24 @@ export function renderSignedMessage(
   };
   let out = "";
   for (const g of groups) {
+    // Every value of the group first: an absent one drops an optional group whole, so whether the
+    // group is rendered at all is settled before any of its boundaries is judged.
+    const values = g.pieces.map((p) => (p.kind === "value" ? read(p) : null));
+    if (g.pieces.some((p, i) => p.kind === "value" && values[i] === null)) {
+      if (g.optional) continue;
+      return "missing";
+    }
     let rendered = "";
-    let absent = false;
     for (const [i, p] of g.pieces.entries()) {
       if (p.kind === "text") {
         rendered += p.text;
         continue;
       }
-      const v = read(p);
-      if (v === null) {
-        absent = true;
-        break;
-      }
+      const v = values[i] as string;
       if (p.source !== "body" && blursBoundary(v, g.pieces[i + 1])) {
         return "ambiguous";
       }
       rendered += v;
-    }
-    if (absent) {
-      if (g.optional) continue;
-      return "missing";
     }
     out += rendered;
   }

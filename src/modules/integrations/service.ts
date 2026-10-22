@@ -293,6 +293,8 @@ export async function createIntegrationInstance(
     throw new AppError(`unknown catalogType: ${params.catalogType}`, 400);
   }
   assertIntegrationWritable(entry.catalogType, params);
+  // A create with no config at all stores `{}`, which a Sheets instance cannot work with either.
+  if (!params.config) assertSheetsConfig(entry.catalogType, {});
   // Only inbound-capable catalog entries mint a route token; the rest get no inbound surface.
   const minted = entry.supportsInbound ? generateRouteToken() : null;
   const tenantId = ctx.tenantId as bigint;

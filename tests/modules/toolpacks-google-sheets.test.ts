@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import { getCatalogEntry } from "@/modules/integrations/catalog";
-import { assertIntegrationWritable } from "@/modules/integrations/service";
+import {
+  assertIntegrationWritable,
+  createIntegrationInstance,
+} from "@/modules/integrations/service";
 import {
   getToolpackToolNames,
   getToolpackToolViews,
@@ -801,6 +804,30 @@ describe("google sheets: an answer past the read cap", () => {
 });
 
 describe("google sheets: the config a write may store", () => {
+  test("a create that sends no config at all is refused before anything is stored", async () => {
+    // A client that is never reached: the refusal has to come before the row is written.
+    const untouchable = new Proxy(
+      {},
+      {
+        get() {
+          throw new Error("the database was reached");
+        },
+      },
+    ) as unknown as PrismaClient;
+    const err = await createIntegrationInstance(
+      { tenantId: 1n, userId: null, role: "TENANT_ADMIN" },
+      { catalogType: "GOOGLE_SHEETS", name: "Leads" },
+      untouchable,
+    ).then(
+      () => null,
+      (e: { field?: string; translationKey?: string }) =>
+        `${e.field} ${e.translationKey}`,
+    );
+    expect(err).toBe(
+      "config.spreadsheetId errors.integrationSheetsConfigMissing",
+    );
+  });
+
   test("a spreadsheet URL in the id field is refused naming the field", () => {
     expect(() =>
       assertIntegrationWritable("GOOGLE_SHEETS", {
@@ -856,5 +883,4 @@ describe("google sheets: the config a write may store", () => {
       );
     }
   });
-
 });

@@ -687,6 +687,22 @@ describe.skipIf(!dbUp)("test reception", () => {
     }
   });
 
+  test("an outbound-only integration has no webhook to test", async () => {
+    const cal = await suDb.integrationInstance.create({
+      data: { tenantId, catalogType: "GOOGLE_CALENDAR", name: "Agenda" },
+    });
+    const before = await counts();
+    for (const dryRun of [true, false]) {
+      await expect(
+        testReception(ctx(), cal.id, { body: "{}", dryRun }, appDb, deps()),
+      ).rejects.toMatchObject({
+        statusCode: 400,
+        translationKey: "errors.integrationNoInboundWebhook",
+      });
+    }
+    expect(await counts()).toEqual(before);
+  });
+
   test("a disabled instance can be tested dry, not delivered", async () => {
     await updateIntegrationInstance(
       ctx(),

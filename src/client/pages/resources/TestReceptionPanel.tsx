@@ -103,6 +103,9 @@ export function TestReceptionPanel({
   };
 
   async function submit() {
+    // The answer on screen is always the latest request's: a run that fails leaves none, not the
+    // previous one looking like its result.
+    setResult(null);
     setRunning(true);
     onRunningChange?.(true);
     try {

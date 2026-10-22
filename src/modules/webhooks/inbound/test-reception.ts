@@ -9,6 +9,7 @@ import basePrisma from "@/api/lib/prisma";
 import { AppError, NotFoundError, UnauthorizedError } from "@/lib/errors";
 import { trackWork } from "@/lib/shutdown";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { getCatalogEntry } from "@/modules/integrations/catalog";
 import { correlateConversationRef } from "@/modules/integrations/conversation-ref";
 import type { runFetchBack } from "@/modules/integrations/fetch-back-run";
 import type { ResolvedInboundRoute } from "@/modules/integrations/service";
@@ -253,6 +254,15 @@ export async function testReception(
   if (ctx.tenantId === null) throw new AppError("tenant required", 400);
   const scoped = { ...ctx, tenantId: ctx.tenantId };
   const route = await routeOf(base, scoped, instanceId);
+  // Outbound-only entries (Calendar, Drive) have no webhook: nothing to receive, nothing to test.
+  if (!getCatalogEntry(route.catalogType)?.supportsInbound) {
+    throw new AppError(
+      `integration ${route.catalogType} has no inbound webhook`,
+      400,
+      "errors.integrationNoInboundWebhook",
+      { integration: route.catalogType },
+    );
+  }
   const dryRun = input.dryRun !== false;
   if (!dryRun && !route.enabled) {
     throw new AppError(

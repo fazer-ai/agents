@@ -130,3 +130,29 @@ test("no test starts while the editor saves", () => {
       .disabled,
   ).toBe(true);
 });
+
+test("a run that fails clears the previous result instead of leaving it as its own", async () => {
+  let fail = false;
+  const run: RunTest = async () => {
+    if (fail) throw new Error("409");
+    return {
+      dryRun: true,
+      outcome: "queued",
+      stages: [{ stage: "signature", ok: true, reason: "earlier-run" }],
+    };
+  };
+  render(
+    <ToastProvider>
+      <TestReceptionPanel run={run} />
+    </ToastProvider>,
+  );
+  fireEvent.change(screen.getByLabelText("Notification body"), {
+    target: { value: "{}" },
+  });
+  const button = screen.getByRole("button", { name: "Run test" });
+  fireEvent.click(button);
+  await waitFor(() => expect(screen.getByText("earlier-run")).toBeTruthy());
+  fail = true;
+  fireEvent.click(button);
+  await waitFor(() => expect(screen.queryByText("earlier-run")).toBeNull());
+});

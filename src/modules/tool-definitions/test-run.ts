@@ -108,6 +108,9 @@ export interface ToolTestDeps {
   // fails cannot otherwise be produced without waiting or breaking a database.
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
+  // The caller's deadline (an inbound lookup's delivery window): aborting it cancels the request,
+  // not only the wait for it.
+  signal?: AbortSignal;
   resolveCredentialImpl?: (ref: string) => Promise<string | null>;
 }
 
@@ -249,9 +252,12 @@ export async function runToolTest(
   // so each throw is sorted to a status. AppError is kept as sent (the definition's own refusals are
   // 400, SsrfError included; the credential read is 500). A timeout is 504. Anything else (DNS, TLS,
   // a body the provider broke) is 502, not 400: the definition may be fine.
+  // An HTTP tool, no model: there is no usage to record, so only the caller's deadline rides along
+  // (biome-plugins/require-usage-sink.grit guards model calls).
+  const callConfig = deps.signal ? { signal: deps.signal } : undefined;
   let out: unknown;
   try {
-    out = await tool.invoke(input.args ?? {});
+    out = await tool.invoke(input.args ?? {}, callConfig);
   } catch (err) {
     if (err instanceof AppError) throw err;
     if (err instanceof ToolInputParsingException) {

@@ -7,6 +7,7 @@
 // tool (./fetch-back-run.ts) and the writer checks the tool (./service.ts). docs/integrations.md.
 
 import { parseDbId } from "@/lib/db-id";
+import { unstorableProblem } from "@/lib/text";
 import { GENERIC_TEXT_MAX_CHARS, type MapResult } from "./types";
 
 export const FETCH_BACK_STATUSES_MAX = 20;
@@ -131,6 +132,10 @@ export function parseFetchBackConfig(
         problem: "is required (at most 64 characters)",
       };
     }
+    // Free text the config row stores as JSONB, which refuses NUL and lone surrogates: refused here
+    // by field instead of a 500 at the write.
+    const badStatus = unstorableProblem(status, "the status");
+    if (badStatus) return { field: `${field}.status`, problem: badStatus };
     if (seen.has(status)) {
       return {
         field: `${field}.status`,
@@ -139,6 +144,8 @@ export function parseFetchBackConfig(
     }
     seen.add(status);
     const text = str(row.text);
+    const badText = text === null ? null : unstorableProblem(text, "the text");
+    if (badText) return { field: `${field}.text`, problem: badText };
     if (text !== null && text.length > GENERIC_TEXT_MAX_CHARS) {
       return {
         field: `${field}.text`,

@@ -992,6 +992,7 @@ async function consultBack(
         toolId: cfg.toolId,
         idArg: cfg.idArg,
         resourceId: plan.resourceId,
+        signal: deadline,
       })
         .then(resolve, reject)
         .finally(() => deadline.removeEventListener("abort", stop));

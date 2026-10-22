@@ -288,6 +288,23 @@ test("a value that runs into the text of the next group is refused, the group be
 });
 
 describe("the consult-back config", () => {
+  test("a status or a text JSONB cannot store is refused by field, not at the write", () => {
+    expect(
+      parseFetchBackConfig(
+        fetchBackOf(7, {
+          statuses: [{ status: "approved", paid: true, text: "pago\u0000" }],
+        }),
+      ),
+    ).toMatchObject({ field: "statuses.0.text" });
+    expect(
+      parseFetchBackConfig(
+        fetchBackOf(7, {
+          statuses: [{ status: "ok\ud800", paid: true, text: "pago" }],
+        }),
+      ),
+    ).toMatchObject({ field: "statuses.0.status" });
+  });
+
   test("a paid status needs its text too: with a person holding the conversation it is the note", () => {
     expect(
       parseFetchBackConfig(
@@ -804,6 +821,30 @@ describe.skipIf(!dbUp)("a thin notification answered by a consult-back", () => {
     ).toBe(0);
   });
 
+  test("the deadline reaches the request itself: aborting it ends the call, not only the wait", async () => {
+    const deadline = new AbortController();
+    let started = false;
+    const hanging = ((_url: string, init: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        started = true;
+        init.signal?.addEventListener("abort", () =>
+          reject(new Error("the request was cancelled")),
+        );
+      })) as unknown as typeof fetch;
+    const call = runFetchBack({
+      base: appDb,
+      tenantId,
+      toolId,
+      idArg: "payment_id",
+      resourceId: "1001",
+      signal: deadline.signal,
+      deps: { fetchImpl: hanging },
+    });
+    await until("the request to leave", () => started);
+    deadline.abort();
+    expect(await call).toMatchObject({ ok: false });
+  });
+
   test("a lookup past the delivery's deadline leaves the claim for the sweep and records nothing", async () => {
     const ref = await mint(131);
     payments.set("1031", {
@@ -813,8 +854,10 @@ describe.skipIf(!dbUp)("a thin notification answered by a consult-back", () => {
     const r = await notify("1031");
     // The lookup answers only when released, and the deadline passes while it is out.
     let release: (() => void) | undefined;
+    let handed: AbortSignal | undefined;
     const slow = (p: Parameters<typeof runFetchBack>[0]) =>
       new Promise<Awaited<ReturnType<typeof runFetchBack>>>((resolve) => {
+        handed = p.signal;
         release = () => resolve(runFetchBack({ ...p, deps: { fetchImpl } }));
       });
     const deadline = new AbortController();
@@ -827,6 +870,8 @@ describe.skipIf(!dbUp)("a thin notification answered by a consult-back", () => {
     });
     await until("the lookup to start", () => release);
     deadline.abort();
+    // The request itself was handed the deadline, so it stops with the claim.
+    expect(handed?.aborted).toBe(true);
     // The provider answers after the deadline: nothing it says may be written.
     release?.();
     await expect(run).rejects.toThrow(/deadline/);

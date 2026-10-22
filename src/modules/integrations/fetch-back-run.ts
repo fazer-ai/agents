@@ -133,6 +133,8 @@ export async function runFetchBack(params: {
   toolId: bigint;
   idArg: string;
   resourceId: string;
+  // The delivery's deadline, handed to the request itself so it stops with the claim.
+  signal?: AbortSignal;
   deps?: ToolTestDeps;
 }): Promise<FetchBackOutcome> {
   const ctx: TenantContext = {
@@ -167,7 +169,7 @@ export async function runFetchBack(params: {
         args: { [params.idArg]: params.resourceId },
       },
       params.base,
-      params.deps,
+      params.signal ? { ...params.deps, signal: params.signal } : params.deps,
     );
   } catch (err) {
     const status = err instanceof AppError ? err.statusCode : 502;

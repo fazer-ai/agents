@@ -2,7 +2,7 @@ import type { StructuredToolInterface } from "@langchain/core/tools";
 import { z } from "zod";
 import logger from "@/api/lib/logger";
 import { failableTool, ToolFailure, toolFailure } from "@/graph/tools/failure";
-import { fetchBounded } from "@/lib/outbound";
+import { fetchBoundedBytes } from "@/lib/outbound";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { clipText } from "@/lib/text";
 import {
@@ -23,7 +23,9 @@ import {
 
 const SHEETS_ORIGIN = "https://sheets.googleapis.com/v4/spreadsheets";
 const TIMEOUT_MS = 12_000;
-const MAX_RESPONSE_CHARS = 1_000_000;
+// Bytes read from one answer; past it the read stops and the answer is refused, never parsed from a
+// prefix.
+const MAX_RESPONSE_BYTES = 1_000_000;
 // Data rows a find scans. One more is requested than is used, which is how a longer tab is told
 // apart from one that ends exactly here.
 const MAX_SCAN_ROWS = 2_000;
@@ -74,7 +76,7 @@ async function sheetsFetch(
 ): Promise<SheetsResponse> {
   const assertSafe = ctx.assertSafe ?? assertSafeOutboundUrl;
   await assertSafe(url);
-  const { res, body } = await fetchBounded(
+  const { res, body } = await fetchBoundedBytes(
     url,
     {
       method: init.method,
@@ -88,15 +90,15 @@ async function sheetsFetch(
     },
     {
       timeoutMs: TIMEOUT_MS,
-      cap: MAX_RESPONSE_CHARS,
+      maxBytes: MAX_RESPONSE_BYTES,
       fetchImpl: ctx.fetchImpl ?? fetch,
     },
   );
-  const truncated = body.chars > body.text.length;
+  const truncated = body?.tooLarge === true;
   let json: unknown = null;
-  if (!truncated) {
+  if (body && !truncated) {
     try {
-      json = JSON.parse(body.text);
+      json = JSON.parse(new TextDecoder().decode(body.bytes));
     } catch {
       // NOTE: a non-JSON body stays null; the caller reports the status.
     }

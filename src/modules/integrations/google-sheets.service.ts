@@ -1,7 +1,7 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import { AppError, NotFoundError } from "@/lib/errors";
-import { fetchBounded } from "@/lib/outbound";
+import { fetchBoundedBytes } from "@/lib/outbound";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { ensureFreshGoogleAccessToken } from "@/modules/vault/google-oauth";
@@ -26,7 +26,8 @@ const DRIVE_SPREADSHEET_LIST_URL = `https://www.googleapis.com/drive/v3/files?${
 ).toString()}`;
 const SHEETS_ORIGIN = "https://sheets.googleapis.com/v4/spreadsheets";
 const TIMEOUT_MS = 12_000;
-const MAX_RESPONSE_CHARS = 400_000;
+// Bytes read from one answer; the read stops past it and the answer parses to nothing.
+const MAX_RESPONSE_BYTES = 400_000;
 // Tabs whose header is read in the one batchGet; a spreadsheet with more lists the rest without
 // columns.
 const MAX_TABS_WITH_HEADER = 50;
@@ -92,7 +93,7 @@ async function getJson(
   deps: SheetsListDeps,
 ): Promise<{ status: number; json: unknown }> {
   await (deps.assertSafe ?? assertSafeOutboundUrl)(url);
-  const { res, body } = await fetchBounded(
+  const { res, body } = await fetchBoundedBytes(
     url,
     {
       method: "GET",
@@ -101,13 +102,16 @@ async function getJson(
     },
     {
       timeoutMs: TIMEOUT_MS,
-      cap: MAX_RESPONSE_CHARS,
+      maxBytes: MAX_RESPONSE_BYTES,
       fetchImpl: deps.fetchImpl ?? fetch,
     },
   );
   let json: unknown = null;
   try {
-    json = JSON.parse(body.text);
+    json =
+      body && !body.tooLarge
+        ? JSON.parse(new TextDecoder().decode(body.bytes))
+        : null;
   } catch {
     // NOTE: non-JSON (or a capped body) is handled by the caller through the status and a null.
   }

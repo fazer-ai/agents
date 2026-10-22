@@ -775,6 +775,31 @@ describe("google sheets: what reaches Google", () => {
   });
 });
 
+describe("google sheets: an answer past the read cap", () => {
+  test("is refused, and the rest of it is never pulled", async () => {
+    const fake = new FakeSheets(SID, [leads()]);
+    let pulled = 0;
+    const chunk = new Uint8Array(64 * 1024).fill(32);
+    const huge = (async (input: string | URL | Request, init?: RequestInit) => {
+      if (!String(input).includes("/values/")) return fake.fetch(input, init);
+      return new Response(
+        new ReadableStream({
+          pull(c) {
+            if (pulled >= 20 * 1024 * 1024) return c.close();
+            pulled += chunk.byteLength;
+            c.enqueue(chunk);
+          },
+        }),
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch;
+    const { tool } = setup(["sheets_find_rows"], { ctx: { fetchImpl: huge } });
+    const out = await tool("sheets_find_rows")({});
+    expect(out.toLowerCase()).toContain("too large");
+    expect(pulled).toBeLessThan(2 * 1024 * 1024);
+  });
+});
+
 describe("google sheets: the config a write may store", () => {
   test("a spreadsheet URL in the id field is refused naming the field", () => {
     expect(() =>

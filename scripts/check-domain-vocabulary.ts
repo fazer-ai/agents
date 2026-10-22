@@ -2,7 +2,8 @@
 // `compra-de-ingresso` tells an operator in any other business that the console was built for ticket
 // sales. The leak came from one install's operations (its label names, its custom attributes) into
 // the catalogs, the docs and the comments, so the check reads the raw text of all three, comments
-// and `t()` fallbacks included. Run by `bun run lint`.
+// and `t()` fallbacks included. Run by `bun run lint` and swept by
+// tests/scripts/check-domain-vocabulary.test.ts.
 // Run: bun scripts/check-domain-vocabulary.ts
 import { type Dirent, readdirSync, readFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
@@ -57,9 +58,9 @@ export function sweptFiles(root: string): string[] {
   ];
 }
 
-if (import.meta.main) {
-  const root = resolve(import.meta.dir, "..");
-  const hits = sweptFiles(root).flatMap((path) => {
+/** Every hit in the tree under `root`, named relative to it. */
+export function treeHits(root: string): string[] {
+  return sweptFiles(root).flatMap((path) => {
     let text: string;
     try {
       text = readFileSync(path, "utf8");
@@ -68,6 +69,10 @@ if (import.meta.main) {
     }
     return vocabularyHits(relative(root, path), text);
   });
+}
+
+if (import.meta.main) {
+  const hits = treeHits(resolve(import.meta.dir, ".."));
   for (const hit of hits) console.error(hit);
   if (hits.length > 0) {
     console.error(

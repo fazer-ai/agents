@@ -1,5 +1,26 @@
 import { describe, expect, test } from "bun:test";
-import { vocabularyHits } from "@/../scripts/check-domain-vocabulary";
+import { resolve } from "node:path";
+import {
+  sweptFiles,
+  treeHits,
+  vocabularyHits,
+} from "@/../scripts/check-domain-vocabulary";
+
+const ROOT = resolve(import.meta.dir, "..", "..");
+
+describe("the tree", () => {
+  test("the sweep reads the catalogs, the docs and the source", () => {
+    const files = sweptFiles(ROOT);
+    expect(files.some((path) => /locales\/en\.json$/.test(path))).toBe(true);
+    expect(files.some((path) => /locales\/pt-BR\.json$/.test(path))).toBe(true);
+    expect(files.some((path) => /\/docs\/[^/]+\.md$/.test(path))).toBe(true);
+    expect(files.some((path) => /\.tsx$/.test(path))).toBe(true);
+  });
+
+  test("no catalog, doc or source file uses one business's vocabulary as an example", () => {
+    expect(treeHits(ROOT)).toEqual([]);
+  });
+});
 
 describe("vocabularyHits", () => {
   test.each([

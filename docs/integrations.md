@@ -139,7 +139,17 @@ Some gateways notify with an id and nothing else: Mercado Pago sends `{"action":
 }
 ```
 
-`pending` and `in_process` are left out, so they are ignored until the payment moves. Not confirmed against Mercado Pago itself: whether a Checkout Pro preference's `external_reference` reaches the payment unchanged, and whether a notification sent to a per-payment `notification_url` carries `x-signature`. The integration screen sets all of this up under "Look up each notification with a tool".
+`pending` and `in_process` are left out, so they are ignored until the payment moves. The integration screen sets all of this up under "Look up each notification with a tool".
+
+Confirmed against Mercado Pago on 2026-10-22, with the test credentials of a real application, a Checkout Pro preference created by an HTTP tool (`POST https://api.mercadopago.com/checkout/preferences`) and a card payment by a test buyer:
+
+- The preference's `external_reference` reaches the payment unchanged (a `cr_…` ref of 35 characters), so the lookup above correlates a Checkout Pro payment to its conversation.
+- The notification arrives at `<webhook URL>?data.id=<payment id>&type=payment` with `x-signature: ts=<seconds>,v1=<hex>` and `x-request-id`, and the manifest above (`id:<id>;request-id:<x-request-id>;ts:<ts>;`) reproduces `v1`.
+- The secret that signs is the one of the application that OWNS the access token used to charge. The panel's test credentials belong to a mirror application of the test seller (another application number), so the secret shown on the application where the webhook URL was set validates the panel's "Simulate notification" and refuses every real notification (`credential_mismatch`); the test seller's own application shows the secret that validates them. In production the two are the same application.
+- A payment collected by a test seller has `live_mode: true` and is notified only at the production URL; the test URL receives only the simulator.
+- `payment.created` and `payment.updated` for the same approved payment became one event (`<payment id>:approved`) and one message.
+
+Not confirmed: whether a notification sent to a per-payment `notification_url` carries `x-signature`.
 
 ### Test reception (issue #1610)
 

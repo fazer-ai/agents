@@ -174,6 +174,7 @@
     "integrationInstructionsUnusable": "A orientação do operador (\"{{field}}\") precisa ser texto de no máximo 2000 caracteres, sem caractere que não pode ser armazenado.",
     "integrationNoInboundWebhook": "A integração {{integration}} não tem webhook de entrada.",
     "integrationSheetsConfigInvalid": "\"{{field}}\" precisa ser o id da planilha ou o id numérico da aba, não uma URL nem o nome da aba. Escolha a planilha e a aba de novo nas configurações da integração.",
+    "integrationSheetsConfigMissing": "\"{{field}}\" está faltando. Escolha a planilha e a aba nas configurações da integração.",
     "internalError": "Algo deu errado",
     "invalidAgentExport": "Este arquivo não é uma exportação de agente válida.",
     "invalidApprovalLinkTemplate": "O link da aprovação precisa ser um endereço completo, começando com https:// ou http://, com {id} onde entra o número do pedido.",

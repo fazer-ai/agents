@@ -3197,6 +3197,7 @@
       "pasteLabel": "Spreadsheet URL or id",
       "pastePlaceholder": "Paste the spreadsheet's URL or id",
       "pickSpreadsheetFirst": "Choose the spreadsheet first.",
+      "pickToSave": "Choose the spreadsheet and the tab to save.",
       "readsWholeTab": "With the find tool granted, the agent can read every row of this tab, and what it reads can reach the customer. Keep data a customer must not see in another tab. Values the agent writes are stored as plain text, never as formulas.",
       "spreadsheet": "Spreadsheet",
       "tab": "Tab",

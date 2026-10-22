@@ -819,16 +819,42 @@ describe("google sheets: the config a write may store", () => {
     ).toThrow(/sheetId/);
   });
 
-  test("an id and a tab id, or a config not yet filled, are accepted", () => {
+  test("an id and a tab id are accepted", () => {
     expect(() =>
       assertIntegrationWritable("GOOGLE_SHEETS", {
         config: { spreadsheetId: SID, sheetId: 0, sheetTitle: "Leads" },
       }),
     ).not.toThrow();
-    expect(() =>
-      assertIntegrationWritable("GOOGLE_SHEETS", {
-        config: { spreadsheetId: "", sheetId: null },
-      }),
-    ).not.toThrow();
   });
+
+  test("a config without the spreadsheet or the tab is refused as missing, naming the field", () => {
+    const refusal = (config: Record<string, unknown>) => {
+      try {
+        assertIntegrationWritable("GOOGLE_SHEETS", { config });
+      } catch (e) {
+        const err = e as { field?: string; translationKey?: string };
+        return `${err.field} ${err.translationKey}`;
+      }
+      return "accepted";
+    };
+    for (const config of [
+      { spreadsheetId: "", sheetId: 777 },
+      { spreadsheetId: "  ", sheetId: 777 },
+      { sheetId: 777 },
+      { spreadsheetId: null, sheetId: 777 },
+    ]) {
+      expect(refusal(config)).toBe(
+        "config.spreadsheetId errors.integrationSheetsConfigMissing",
+      );
+    }
+    for (const config of [
+      { spreadsheetId: SID, sheetId: null },
+      { spreadsheetId: SID },
+    ]) {
+      expect(refusal(config)).toBe(
+        "config.sheetId errors.integrationSheetsConfigMissing",
+      );
+    }
+  });
+
 });

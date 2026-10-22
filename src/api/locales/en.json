@@ -174,6 +174,7 @@
     "integrationInstructionsUnusable": "The operator guidance (\"{{field}}\") must be text of at most 2000 characters, with no character that cannot be stored.",
     "integrationNoInboundWebhook": "The {{integration}} integration has no inbound webhook.",
     "integrationSheetsConfigInvalid": "\"{{field}}\" must be the spreadsheet id or the numeric tab id, not a URL or a tab name. Pick the spreadsheet and the tab again in the integration settings.",
+    "integrationSheetsConfigMissing": "\"{{field}}\" is missing. Choose the spreadsheet and the tab in the integration settings.",
     "internalError": "Something went wrong",
     "invalidAgentExport": "This file is not a valid agent export.",
     "invalidApprovalLinkTemplate": "The approval link must be a full address starting with https:// or http://, with {id} where the request's id goes.",

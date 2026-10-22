@@ -3284,6 +3284,7 @@
       "pasteLabel": "URL ou id da planilha",
       "pastePlaceholder": "Cole a URL ou o id da planilha",
       "pickSpreadsheetFirst": "Escolha a planilha primeiro.",
+      "pickToSave": "Escolha a planilha e a aba para salvar.",
       "readsWholeTab": "Com a ferramenta de busca liberada, o agente consegue ler todas as linhas desta aba, e o que ele lê pode chegar ao cliente. Deixe em outra aba o que o cliente não pode ver. O que o agente escreve é gravado como texto puro, nunca como fórmula.",
       "spreadsheet": "Planilha",
       "tab": "Aba",

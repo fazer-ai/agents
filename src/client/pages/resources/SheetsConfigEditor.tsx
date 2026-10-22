@@ -1,7 +1,13 @@
 import { AlertTriangle, RefreshCw } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Button, FormField, Input, Skeleton } from "@/client/components";
+import {
+  Button,
+  FormField,
+  Input,
+  Skeleton,
+  useHoldSave,
+} from "@/client/components";
 import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
 import { cn } from "@/client/lib/utils";
@@ -115,6 +121,9 @@ export function SheetsConfigEditor({
     typeof cfg.spreadsheetName === "string" ? cfg.spreadsheetName : "";
   const sheetId = typeof cfg.sheetId === "number" ? cfg.sheetId : null;
   const sheetTitle = typeof cfg.sheetTitle === "string" ? cfg.sheetTitle : "";
+  // The server refuses an instance without both, so the modal's Save waits for them.
+  const unpicked = !spreadsheetId.trim() || sheetId === null;
+  useHoldSave(unpicked);
 
   const [pasted, setPasted] = useState("");
   const [pasteInvalid, setPasteInvalid] = useState(false);
@@ -411,6 +420,15 @@ export function SheetsConfigEditor({
           </div>
         )}
       </FormField>
+
+      {unpicked && (
+        <p className="text-text-muted text-xs" data-testid="sheets-unpicked">
+          {t(
+            "integrations.sheets.pickToSave",
+            "Choose the spreadsheet and the tab to save.",
+          )}
+        </p>
+      )}
 
       <div className="flex items-start gap-2 rounded-lg border border-warning bg-warning-soft px-3 py-2 text-text-primary text-xs">
         <AlertTriangle

@@ -10,6 +10,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { useState } from "react";
+import { RangeHolds } from "@/client/components";
 import {
   SheetsConfigEditor,
   type SheetsLoaders,
@@ -284,6 +285,29 @@ describe("the Sheets settings", () => {
       <Harness initial={{}} l={l} onCfg={() => {}} credentialRef="vault:4" />,
     );
     expect(screen.queryByRole("button", { name: /CRM/ })).toBeNull();
+  });
+
+  test("the modal's Save waits until both the spreadsheet and the tab are picked", async () => {
+    const { l } = loaders();
+    const held: boolean[] = [];
+    render(
+      <RangeHolds onHeldChange={(h) => held.push(h)}>
+        <Harness initial={{}} l={l} onCfg={() => {}} />
+      </RangeHolds>,
+    );
+    expect(held.at(-1)).toBe(true);
+    fireEvent.change(
+      screen.getByRole("textbox", { name: "Spreadsheet URL or id" }),
+      { target: { value: SID } },
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Use" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /Leads/ })).toBeTruthy(),
+    );
+    expect(held.at(-1)).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: /Leads/ }));
+    expect(held.at(-1)).toBe(false);
+    expect(screen.queryByTestId("sheets-unpicked")).toBeNull();
   });
 
   test("the warning that the agent reads the whole tab is on screen", () => {

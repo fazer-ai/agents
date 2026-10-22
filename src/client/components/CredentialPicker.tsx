@@ -204,14 +204,14 @@ export function CredentialPicker({
   // pick no longer fits, drop to the first compatible credential — or clear it — so the field never
   // stays stuck on a stale, incompatible selection. Gated on a types CHANGE (tracked below) so a
   // deliberate cross-type pick via "show all" is never yanked back, and a deleted/unresolved cred is
-  // surfaced rather than silently swapped.
-  const prevTypesRef = useRef<string | null>(null);
+  // surfaced rather than silently swapped. The baseline is the types the picker mounted with, not the
+  // ones it first saw loaded: a switch made while the vault was loading is still a switch.
+  const prevTypesRef = useRef((compatibleTypes ?? []).join(","));
   // biome-ignore lint/correctness/useExhaustiveDependencies: isCompatible derives from compatibleTypes (tracked via key)
   useEffect(() => {
     if (!loaded) return;
     const key = (compatibleTypes ?? []).join(",");
-    const changed =
-      prevTypesRef.current !== null && prevTypesRef.current !== key;
+    const changed = prevTypesRef.current !== key;
     prevTypesRef.current = key;
     if (!changed || !hasFilter || !selectedIncompatible) return;
     const firstCompatible = entries.filter(isCompatible).sort(byKindRank)[0];

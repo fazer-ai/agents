@@ -240,3 +240,95 @@ describe("CredentialPicker with a saved ref the vault has not answered for", () 
     await waitFor(() => expect(NONE.test(triggerText())).toBe(true));
   });
 });
+
+// A provider switch made while the vault is still loading is the same switch as one made after it:
+// the selection it leaves behind cannot depend on which of the two the network answered first.
+describe("CredentialPicker when the provider changes", () => {
+  const compatEntry: FakeEntry = {
+    id: "7",
+    name: "oc-main",
+    kind: "openai-compatible",
+    baseUrl: null,
+    paramName: null,
+    status: "active",
+  };
+  const routerEntry: FakeEntry = {
+    id: "8",
+    name: "or-main",
+    kind: "openrouter",
+    baseUrl: null,
+    paramName: null,
+    status: "active",
+  };
+
+  function gateVault() {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const stubbed = globalThis.fetch;
+    globalThis.fetch = (async (
+      input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.includes("/api/v1/vault")) await gate;
+      return stubbed(input, init);
+    }) as typeof fetch;
+    return () => release();
+  }
+
+  function mount(value: string, types: string[]) {
+    const picks: string[] = [];
+    const view = (t: string[]) => (
+      <CredentialPicker
+        value={value}
+        onChange={(v) => picks.push(v)}
+        compatibleTypes={t}
+        ariaLabel="key"
+      />
+    );
+    const { rerender } = render(view(types));
+    return { picks, switchTo: (t: string[]) => rerender(view(t)) };
+  }
+
+  beforeEach(() => {
+    vaultEntries = [compatEntry, routerEntry];
+  });
+
+  test("a switch before the vault answers picks the new provider's credential", async () => {
+    const release = gateVault();
+    const { picks, switchTo } = mount("vault:7", ["openai-compatible"]);
+    switchTo(["openrouter"]);
+    release();
+    await waitFor(() => expect(picks.join(",")).toBe("vault:8"));
+  });
+
+  test("a switch after the vault answers picks the same one", async () => {
+    const { picks, switchTo } = mount("vault:7", ["openai-compatible"]);
+    await waitFor(() =>
+      expect(screen.queryAllByText("oc-main").length > 0).toBe(true),
+    );
+    switchTo(["openrouter"]);
+    await waitFor(() => expect(picks.join(",")).toBe("vault:8"));
+  });
+
+  test("a cross-type pick is kept when the provider never switches", async () => {
+    const { picks } = mount("vault:8", ["openai-compatible"]);
+    await waitFor(() =>
+      expect(screen.queryAllByText("or-main").length > 0).toBe(true),
+    );
+    expect(picks.join(",")).toBe("");
+  });
+
+  test("a selection that still fits is kept when the switch happens while loading", async () => {
+    const release = gateVault();
+    const { picks, switchTo } = mount("vault:8", ["openai-compatible"]);
+    switchTo(["openrouter"]);
+    release();
+    await waitFor(() =>
+      expect(screen.queryAllByText("or-main").length > 0).toBe(true),
+    );
+    expect(picks.join(",")).toBe("");
+  });
+});

@@ -235,6 +235,20 @@ export function assertIntegrationWritable(
   );
 }
 
+// A create also stores what it was not sent: no config is stored as `{}`, which a Sheets instance
+// cannot work with either. An update without a config keeps the stored one, so it stays on
+// assertIntegrationWritable alone.
+export function assertIntegrationCreatable(
+  catalogType: string,
+  params: {
+    config?: Record<string, unknown>;
+    inboundAuthStrategy?: InboundAuthStrategy;
+  },
+): void {
+  assertIntegrationWritable(catalogType, params);
+  if (!params.config) assertSheetsConfig(catalogType, {});
+}
+
 // What the audit row carries: identity, policy and shape are PROJECTED, the rest is in
 // `UNDISCLOSED` and compared without being carried. `routeToken` and `routeTokenHash` are in
 // neither: the token is the inbound credential, and its change has its own action
@@ -292,9 +306,7 @@ export async function createIntegrationInstance(
   if (!entry) {
     throw new AppError(`unknown catalogType: ${params.catalogType}`, 400);
   }
-  assertIntegrationWritable(entry.catalogType, params);
-  // A create with no config at all stores `{}`, which a Sheets instance cannot work with either.
-  if (!params.config) assertSheetsConfig(entry.catalogType, {});
+  assertIntegrationCreatable(entry.catalogType, params);
   // Only inbound-capable catalog entries mint a route token; the rest get no inbound surface.
   const minted = entry.supportsInbound ? generateRouteToken() : null;
   const tenantId = ctx.tenantId as bigint;

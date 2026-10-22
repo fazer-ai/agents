@@ -12,6 +12,7 @@ import {
 } from "@/modules/flowlog/channels";
 import { isKnownCatalogType } from "@/modules/integrations/catalog";
 import {
+  assertIntegrationCreatable,
   assertIntegrationWritable,
   createIntegrationInstance,
   deleteIntegrationInstance,
@@ -603,7 +604,7 @@ export async function integrationCreate(
   try {
     // NOTE: before the preview, not only before the write: `dry_run` defaults to true, so the
     // preview is the operator's FIRST answer and must refuse what the apply refuses.
-    assertIntegrationWritable(args.catalog_type, {
+    assertIntegrationCreatable(args.catalog_type, {
       config: args.config,
       inboundAuthStrategy: args.inbound_auth_strategy as
         | InboundAuthStrategy

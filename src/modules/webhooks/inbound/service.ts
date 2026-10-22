@@ -976,13 +976,27 @@ async function consultBack(
   if (cfg === undefined || isFetchBackProblem(cfg)) {
     return await fail("the instance no longer has a usable consult-back");
   }
-  const fetched = await (params.deps?.runFetchBack ?? runFetchBack)({
-    base,
-    tenantId: params.tenantId,
-    toolId: cfg.toolId,
-    idArg: cfg.idArg,
-    resourceId: plan.resourceId,
-  });
+  // Bounded by the delivery's deadline, as the nudge is: the scheduler's job signal, or the route's
+  // window from the claim. A lookup past it leaves the claim for the sweep instead of writing an
+  // event after the stale window opened, or handing its turn a signal already aborted.
+  const deadline = params.signal ?? AbortSignal.timeout(DISPATCH_DEADLINE_MS);
+  const fetched = await new Promise<Awaited<ReturnType<typeof runFetchBack>>>(
+    (resolve, reject) => {
+      const stop = () =>
+        reject(new Error("inbound consult-back passed the delivery deadline"));
+      if (deadline.aborted) return stop();
+      deadline.addEventListener("abort", stop, { once: true });
+      (params.deps?.runFetchBack ?? runFetchBack)({
+        base,
+        tenantId: params.tenantId,
+        toolId: cfg.toolId,
+        idArg: cfg.idArg,
+        resourceId: plan.resourceId,
+      })
+        .then(resolve, reject)
+        .finally(() => deadline.removeEventListener("abort", stop));
+    },
+  );
   if (!fetched.ok) {
     if (fetched.retry) {
       throw new Error(
@@ -1005,6 +1019,9 @@ async function consultBack(
     identityProblem(mapped.event.dedupeKey, "dedupeKey") ??
     identityProblem(mapped.event.externalId, "externalId");
   if (badIdentity) return await fail(badIdentity);
+  if (deadline.aborted) {
+    throw new Error("inbound consult-back passed the delivery deadline");
+  }
   const route = { id: plan.integrationInstanceId, tenantId: params.tenantId };
   const event = await persistInbound(base, route, mapped.event);
   await finish("PROCESSED");

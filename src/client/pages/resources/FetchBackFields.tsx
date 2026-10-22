@@ -183,7 +183,25 @@ export function FetchBackFields({
       <SwitchField
         checked={f !== null}
         onCheckedChange={(on) =>
-          setCfg({ fetchBack: on ? { ...STARTER } : undefined })
+          setCfg({
+            fetchBack: on
+              ? {
+                  ...STARTER,
+                  // Every status needs its text (it is what reaches the conversation), so the
+                  // starter's comes filled for the operator to adjust.
+                  statuses: [
+                    {
+                      status: "approved",
+                      paid: true,
+                      text: t(
+                        "integrations.fetchBack.starterApprovedText",
+                        "Payment approved",
+                      ),
+                    },
+                  ],
+                }
+              : undefined,
+          })
         }
         label={t(
           "integrations.fetchBack.enabled",
@@ -301,7 +319,7 @@ export function FetchBackFields({
             label={t("integrations.fetchBack.statuses", "Statuses to act on")}
             description={t(
               "integrations.fetchBack.statusesHint",
-              "Any other status is ignored. A payment records a sale.",
+              "Any other status is ignored. A payment records a sale. Each status needs the text the agent is told.",
             )}
             error={errorAt("config.fetchBack.statuses")}
             group

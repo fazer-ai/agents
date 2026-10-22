@@ -287,6 +287,14 @@ test("a value that runs into the text of the next group is refused, the group be
 });
 
 describe("the consult-back config", () => {
+  test("a paid status needs its text too: with a person holding the conversation it is the note", () => {
+    expect(
+      parseFetchBackConfig(
+        fetchBackOf(7, { statuses: [{ status: "approved", paid: true }] }),
+      ),
+    ).toMatchObject({ field: "statuses.0.text" });
+  });
+
   test("a Mercado Pago config reads back whole", () => {
     expect(parsed(fetchBackOf(7))).toMatchObject({
       toolId: 7n,
@@ -441,8 +449,8 @@ describe("the consult-back config", () => {
         fetchBackOf(7, {
           eventIdPath: "charge.id",
           statuses: [
-            { status: "c", paid: true },
-            { status: "b:c", paid: true },
+            { status: "c", paid: true, text: "pago" },
+            { status: "b:c", paid: true, text: "pago" },
           ],
         }),
       );
@@ -785,6 +793,40 @@ describe.skipIf(!dbUp)("a thin notification answered by a consult-back", () => {
         where: { tenantId, threadId: `${tenantId}:1:103` },
       }),
     ).toBe(0);
+  });
+
+  test("a lookup past the delivery's deadline leaves the claim for the sweep and records nothing", async () => {
+    const ref = await mint(131);
+    payments.set("1031", {
+      code: 200,
+      body: { id: 1031, status: "approved", external_reference: ref },
+    });
+    const r = await notify("1031");
+    const slow = (p: Parameters<typeof runFetchBack>[0]) =>
+      new Promise<Awaited<ReturnType<typeof runFetchBack>>>((resolve) =>
+        setTimeout(
+          () => resolve(runFetchBack({ ...p, deps: { fetchImpl } })),
+          200,
+        ),
+      );
+    await expect(
+      processInboundDelivery({
+        deliveryId: r.deliveryId as bigint,
+        tenantId,
+        base: appDb,
+        signal: AbortSignal.timeout(20),
+        deps: { ...deps, runFetchBack: slow } as never,
+      }),
+    ).rejects.toThrow(/deadline/);
+    await new Promise((done) => setTimeout(done, 250));
+    expect(
+      await suDb.conversionEvent.count({
+        where: { tenantId, threadId: `${tenantId}:1:131` },
+      }),
+    ).toBe(0);
+    expect((await rows()).find((x) => x.id === r.deliveryId)?.status).toBe(
+      "PROCESSING",
+    );
   });
 
   test("a provider error the same id may answer later is retried, one it would answer the same is FAILED", async () => {

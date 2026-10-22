@@ -146,10 +146,13 @@ export function parseFetchBackConfig(
       };
     }
     const paid = row.paid === true;
-    if (text === null && !paid) {
+    // Required for a payment too: the event reaches the conversation as the operator's text, and
+    // with a person holding it an empty text leaves no note at all, as a GENERIC body without
+    // `text` is refused for the same reason.
+    if (text === null) {
       return {
         field: `${field}.text`,
-        problem: "is required for a status that is not a payment",
+        problem: "is required: it is what reaches the conversation",
       };
     }
     statuses.push({ status, text, paid });

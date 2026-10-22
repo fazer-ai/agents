@@ -169,7 +169,10 @@ test("a refusal about one status row lands under that row", () => {
       idArg: "payment_id",
       conversationRefPath: "external_reference",
       statusPath: "status",
-      statuses: [{ status: "approved", paid: true }, { status: "in_process" }],
+      statuses: [
+        { status: "approved", paid: true, text: "Pago" },
+        { status: "in_process" },
+      ],
     },
   };
   expect(fetchBackFields(cfg)).toContain("config.fetchBack.statuses.1.text");
@@ -178,12 +181,12 @@ test("a refusal about one status row lands under that row", () => {
     ...noRefusal,
     at: (field, value) =>
       field === "config.fetchBack.statuses.1.text" && value === values[field]
-        ? "is required for a status that is not a payment"
+        ? "is required: it is what reaches the conversation"
         : null,
   };
   render(<Harness initial={cfg} refusal={refusal} out={{}} />);
   expect(
-    screen.getByText("is required for a status that is not a payment"),
+    screen.getByText("is required: it is what reaches the conversation"),
   ).toBeTruthy();
   expect(parseFetchBackConfig(cfg.fetchBack)).toMatchObject({
     field: "statuses.1.text",
@@ -219,4 +222,14 @@ test("a legacy tool stored as JSON Schema offers its properties as id fields, no
       },
     }),
   ).toEqual(["payment_id"]);
+});
+
+test("switching the lookup on starts from a paid status whose text is already filled", () => {
+  const out: { cfg?: Record<string, unknown> } = {};
+  render(<Harness initial={{}} out={out} />);
+  fireEvent.click(screen.getByRole("switch"));
+  const fb = out.cfg?.fetchBack as { statuses?: unknown[] } | undefined;
+  expect(fb?.statuses).toEqual([
+    { status: "approved", paid: true, text: "Payment approved" },
+  ]);
 });

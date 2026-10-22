@@ -951,6 +951,36 @@ describe.skipIf(!dbUp)("a thin notification answered by a consult-back", () => {
     expect(variant.deliveryId).toBe(first.deliveryId);
   });
 
+  test("a case variant of a lowercased id in a later window is the same event, not a second nudge", async () => {
+    const ref = await mint(107);
+    const answer = {
+      code: 200,
+      body: { status: "rejected", external_reference: ref },
+    };
+    // The provider reads ids case-insensitively here, as a lowercased manifest suggests.
+    payments.set("ORDY1", answer);
+    payments.set("ordY1", answer);
+    const start =
+      Math.ceil(Date.now() / NOTICE_WINDOW_MS + 1) * NOTICE_WINDOW_MS;
+    setSystemTime(new Date(start + 1_000));
+    try {
+      const n = nudges.length;
+      const first = await notify("ORDY1");
+      await process_(first.deliveryId as bigint);
+      expect(nudges.length).toBe(n + 1);
+      setSystemTime(new Date(start + NOTICE_WINDOW_MS + 1_000));
+      const variant = await notify("ordY1");
+      expect(variant.outcome).toBe("queued");
+      await process_(variant.deliveryId as bigint);
+      expect(nudges.length).toBe(n + 1);
+      expect(
+        (await rows()).filter((x) => x.dedupeKey === "ordy1:rejected").length,
+      ).toBe(1);
+    } finally {
+      setSystemTime();
+    }
+  });
+
   test("an id that is not a plain id is refused before anything is looked up", async () => {
     const before = seen.length;
     const r = await notify("..%2F1");

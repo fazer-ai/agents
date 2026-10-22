@@ -578,7 +578,9 @@ async function persistNotice(
     persistRow(base, route, {
       externalId: null,
       dedupeKey: `notice:${keyId}:${w}`,
-      payload: { kind: FETCH_BACK_KIND, resourceId, ...payload },
+      // `keyId` too: the id as the signature vouches for it (lowercased under `|lower`), which the
+      // event key falls back to, so a case variant in a later window is the same event.
+      payload: { kind: FETCH_BACK_KIND, resourceId, keyId, ...payload },
     });
   const current = await row(win);
   if (!current.duplicate) return { ...current, deferred: false };
@@ -674,6 +676,7 @@ type ProcessPlan =
   | {
       kind: "fetch";
       resourceId: string;
+      keyId: string;
       integrationInstanceId: bigint;
       instanceConfig: Record<string, unknown>;
     }
@@ -779,6 +782,7 @@ export async function processInboundDelivery(
           return {
             kind: "fetch",
             resourceId,
+            keyId: asString(payload.keyId) ?? resourceId,
             integrationInstanceId: delivery.integrationInstanceId,
             instanceConfig,
           };
@@ -1006,7 +1010,7 @@ async function consultBack(
     }
     return await fail(fetched.reason);
   }
-  const mapped = mapFetchedResource(cfg, plan.resourceId, fetched.response);
+  const mapped = mapFetchedResource(cfg, plan.keyId, fetched.response);
   if (!mapped.ok) {
     if (mapped.reason === "unhandled") {
       await finish("PROCESSED");

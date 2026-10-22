@@ -39,6 +39,7 @@ import {
   pendingClientCalls,
   withServerCallsOnly,
 } from "./client-tools";
+import { setAsideContradictedHandoffs } from "./contradicted-handoff";
 import {
   calledOffToolResult,
   droppedCallCount,
@@ -122,6 +123,9 @@ export interface BuildAgentGraphParams {
   // `repairDanglingToolCalls`), with how many. Once per repair: the repaired message is written back
   // to the thread, so no later round or turn finds the same calls again.
   onDanglingToolCalls?: (info: { calls: number }) => void;
+  // Fired when a batch's handoff was answered without running because the same batch closes the
+  // conversation (./contradicted-handoff.ts), with how many.
+  onContradictedHandoff?: (info: { calls: number }) => void;
   // The turn's own "is this still wanted", asked at the tool boundary. The runtime asks it at every
   // seam it owns, but a tool call happens INSIDE the invoke, so without it a `/reset` landing mid-call
   // is reported done while this graph's tools write an attribute, a label and a kanban card back onto
@@ -659,6 +663,7 @@ export function buildAgentGraph({
   historyDates,
   onHistoryTrim,
   onDanglingToolCalls,
+  onContradictedHandoff,
   stillWanted,
   noReplyChannel,
   spokenNotice,
@@ -1103,8 +1108,14 @@ export function buildAgentGraph({
         if (refused) return refused;
         const serverView = withServerCallsOnly(state, clientNames);
         if (!serverView) return { messages: [] };
+        const contradicted = setAsideContradictedHandoffs(serverView);
+        if (!contradicted)
+          // biome-ignore lint/style/noNonNullAssertion: hasTools is what built it.
+          return await toolNode!.invoke(serverView);
+        onContradictedHandoff?.({ calls: contradicted.answers.length });
         // biome-ignore lint/style/noNonNullAssertion: hasTools is what built it.
-        return await toolNode!.invoke(serverView);
+        const ran = await toolNode!.invoke(contradicted.view);
+        return { messages: [...contradicted.answers, ...ran.messages] };
       })
       // NOTE: built on every graph so the edges type-check, and unreachable without client tools:
       // with an empty set no call is ever pending for it.

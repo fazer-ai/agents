@@ -2259,6 +2259,8 @@ export interface GraphBuildDeps {
   // Fired when a round took tool calls no result ever answered out of the thread. See
   // BuildAgentGraphParams.onDanglingToolCalls.
   onDanglingToolCalls?: (info: { calls: number }) => void;
+  // See BuildAgentGraphParams.onContradictedHandoff.
+  onContradictedHandoff?: (info: { calls: number }) => void;
   // Forwarded to the graph: this caller's turn has no reply channel, so the tool budget's wrap-up
   // must not tell the model to answer a customer. The observation tick passes it.
   noReplyChannel?: boolean;
@@ -2411,6 +2413,7 @@ export async function buildModelAndGraph(
     historyDates: cfg.historyDates ? { timezone: cfg.timezone } : null,
     onHistoryTrim: deps.onHistoryTrim,
     onDanglingToolCalls: deps.onDanglingToolCalls,
+    onContradictedHandoff: deps.onContradictedHandoff,
     noReplyChannel: deps.noReplyChannel,
     spokenNotice: deps.spokenNotice,
     standingNotices: deps.standingNotices,

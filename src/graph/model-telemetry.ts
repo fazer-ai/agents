@@ -23,6 +23,7 @@ export function modelTelemetry(
   | "onModelFallbackFailed"
   | "onModelFallbackUnavailable"
   | "onDanglingToolCalls"
+  | "onContradictedHandoff"
   | "onHistoryTrim"
 > {
   return {
@@ -82,6 +83,16 @@ export function modelTelemetry(
         level: "info",
         status: "ok",
         detail: { reason: "repaired_dangling_tool_call", calls },
+      }),
+    // The model asked to close and to hand over in one step; the close ran and the handoff did not.
+    // Info: the turn answers and closes as the model meant, and the line is what explains a handoff
+    // that appears in the model's calls and nowhere in Chatwoot.
+    onContradictedHandoff: ({ calls }) =>
+      emitFlowEvent(flow, {
+        stage: "generate",
+        level: "info",
+        status: "ok",
+        detail: { handoffIgnored: "resolve_in_same_step", calls },
       }),
     // Info, not warn: a working history ceiling trims on nearly every turn of a long thread and
     // warn pages. Counts only, never a fragment of what was dropped.

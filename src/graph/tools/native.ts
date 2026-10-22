@@ -111,6 +111,7 @@ import {
   OBSERVER_NATIVES,
   PLAYGROUND_NATIVES,
 } from "./channel-natives";
+import { customerLine } from "./customer-line";
 import { modelVisibleLabels, SHOWN_LABELS_MAX } from "./label-view";
 
 // Native Chatwoot tools the agent can call mid-turn, all over the bot token. Each is bound to a
@@ -701,7 +702,7 @@ function handoffTool(ctx: ToolCtx) {
         // BOTH fields come from THIS invocation, so a second successful call cannot leave the first
         // one's promise standing next to its own silence: the turn would then be holding a line to
         // deliver and a declaration not to, and whichever the runtime asked about first would win.
-        const spoken = customerMessage?.trim() ?? "";
+        const spoken = customerLine(customerMessage);
         ctx.handoffState.customerMessage = spoken || null;
         ctx.handoffState.lineByOperator = false;
         ctx.handoffState.declinedToSpeak = speaks && !spoken;
@@ -770,7 +771,7 @@ function handoffTool(ctx: ToolCtx) {
       // text (the duplicate-reply guard), which does not depend on this sentence.
       const silenceNote = !speaks
         ? " This turn does not answer the customer, so nothing is sent to them."
-        : customerMessage?.trim()
+        : customerLine(customerMessage)
           ? " The message you wrote will be delivered to the customer; do not repeat it."
           : " No message will be sent to the customer, as you indicated.";
       return `${HANDOFF_DONE_PREFIX} (status set to open).${assigned}${silenceNote}`;
@@ -3075,7 +3076,8 @@ function openCaseInInboxTool(ctx: ToolCtx) {
         originConversationId: ctx.conversationId,
         originContactId: cic.contactId,
         reason: reason.trim(),
-        customerMessage: (asksMessage && customer_message?.trim()) || null,
+        customerMessage:
+          (asksMessage && customerLine(customer_message)) || null,
         email: email?.trim() || null,
         labels: (labels ?? [])
           .map((l) => l.trim().toLowerCase())
@@ -3261,7 +3263,7 @@ function openCaseInInboxTool(ctx: ToolCtx) {
         // which is what happens to the model's next reply here. Without a line a person still sees
         // the conversation; the customer just reads nothing.
         if (ctx.handoffState) {
-          const line = handoff_message?.trim() ?? "";
+          const line = customerLine(handoff_message);
           ctx.handoffState.customerMessage = line || null;
           ctx.handoffState.lineByOperator = false;
           // NOTE: No line is a SILENT transfer, said so as `handoff_to_human` says it: otherwise the model's
@@ -3269,7 +3271,7 @@ function openCaseInInboxTool(ctx: ToolCtx) {
           ctx.handoffState.declinedToSpeak = !line;
           ctx.handoffState.completed = true;
         }
-        fallback = handoff_message?.trim()
+        fallback = customerLine(handoff_message)
           ? ` ${OPEN_CASE_HANDED_MARK} instead, with a note saying why. Your handoff_message will be delivered to the customer; do not repeat it.`
           : ` ${OPEN_CASE_HANDED_MARK} instead, with a note saying why. No message will reach the customer here.`;
       } catch (e) {
@@ -3490,7 +3492,7 @@ function detachedOpenCaseTool(
       recipientEmail: contact.email,
       detachedOrigin: detached.origin,
       reason: reason.trim(),
-      customerMessage: (asksMessage && customer_message?.trim()) || null,
+      customerMessage: (asksMessage && customerLine(customer_message)) || null,
       email: null,
       labels: (labels ?? [])
         .map((l) => l.trim().toLowerCase())

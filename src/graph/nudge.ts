@@ -1917,6 +1917,13 @@ async function runAgentNudgeBody(
         status: "ok",
         detail: { reason: "repaired_dangling_tool_call", calls },
       }),
+    onContradictedHandoff: ({ calls }) =>
+      emitFlowEvent(flow, {
+        stage: "generate",
+        level: "info",
+        status: "ok",
+        detail: { handoffIgnored: "resolve_in_same_step", calls },
+      }),
     // The proactive turn runs on the SAME thread as the reactive one, so it is subject to the same
     // ceiling and has to leave the same trace. INFO for the reason given in runtime.ts.
     onHistoryTrim: ({ kept, dropped, tokens }) =>

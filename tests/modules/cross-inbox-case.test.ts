@@ -2958,6 +2958,39 @@ describe("the tool", () => {
     });
   });
 
+  test("a failed opening whose line is only a placeholder is a silent transfer", async () => {
+    const f = fakeChatwoot({ failOn: new Set(["createConversation"]) });
+    const handoffState: {
+      customerMessage: string | null;
+      completed: boolean;
+      declinedToSpeak?: boolean;
+    } = { customerMessage: null, completed: false };
+    const { t } = toolFor(f, { handoffState });
+    const out = String(await t.invoke({ reason: "x", handoff_message: "N/A" }));
+    expect(handoffState).toMatchObject({
+      customerMessage: null,
+      completed: true,
+      declinedToSpeak: true,
+    });
+    expect(out).toContain("No message will reach the customer");
+  });
+
+  test("an opening whose customer_message is only a placeholder sends no public text", async () => {
+    const f = fakeChatwoot();
+    const screened: string[] = [];
+    const { t } = toolFor(f, {
+      screenCustomerText: async (text: string) => {
+        screened.push(text);
+        return "send" as const;
+      },
+    });
+    await t.invoke({ reason: "x", customer_message: "EMPTY" });
+    expect(screened).toEqual([]);
+    expect(f.calls.some((c) => JSON.stringify(c.args).includes("EMPTY"))).toBe(
+      false,
+    );
+  });
+
   test("the model is told when the opening stayed a note, and when there was nowhere to move the case", async () => {
     const closed = toolFor(fakeChatwoot({ canReply: false }));
     expect(

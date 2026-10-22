@@ -209,10 +209,12 @@ function columnList(names: string[]): string {
   const shown: string[] = [];
   let used = 0;
   for (const name of names) {
-    const one =
+    // Quoted as JSON, so a header cell holding a tab or a comma reads as the single column it is.
+    const one = JSON.stringify(
       name.length > MAX_LISTED_COLUMN_CHARS
         ? `${clipText(name, MAX_LISTED_COLUMN_CHARS)}…`
-        : name;
+        : name,
+    );
     if (shown.length && used + one.length + 2 > MAX_COLUMN_LIST_CHARS) break;
     shown.push(one);
     used += one.length + 2;
@@ -339,6 +341,17 @@ function pastTheScan(loc: Located, dataRowsRead: number): boolean {
 
 const NO_HEADER =
   "This tab has no header row. Row 1 must name the columns before the agent can use it.";
+
+// A write tool's refusal says outright that nothing was written: told only that a column does not
+// exist, a model has answered the customer that their contact was recorded.
+const NOTHING_WRITTEN =
+  "Nothing was written to the spreadsheet; do not tell the customer it was recorded.";
+const NOTHING_CHANGED =
+  "Nothing was changed in the spreadsheet; do not tell the customer it was updated.";
+
+function refusedWrite(reason: string, outcome: string): string {
+  return `${reason} ${outcome}`;
+}
 
 const CELL_VALUE = z
   .string()
@@ -482,9 +495,11 @@ function buildAppendTool(
         const read = await readRows(loc, 0, ctx);
         if (read instanceof ToolFailure) return read;
         const header = readHeader(read.rows[0]);
-        if (header.names.length === 0) return NO_HEADER;
+        if (header.names.length === 0)
+          return refusedWrite(NO_HEADER, NOTHING_WRITTEN);
         const placed = placeValues(header, input.values);
-        if (typeof placed === "string") return placed;
+        if (typeof placed === "string")
+          return refusedWrite(placed, NOTHING_WRITTEN);
         // `appendCells` addresses the tab by id and writes from column A after the last row with data
         // anywhere in it, atomically on Google's side, so cell N is always column N. `values:append`
         // instead starts at the first column of a table it detects, which an unlabeled column can move.
@@ -631,11 +646,13 @@ function buildUpdateTool(
         const read = await readRows(loc, MAX_SCAN_ROWS + 1, ctx);
         if (read instanceof ToolFailure) return read;
         const header = readHeader(read.rows[0]);
-        if (header.names.length === 0) return NO_HEADER;
+        if (header.names.length === 0)
+          return refusedWrite(NO_HEADER, NOTHING_CHANGED);
         const key = locateColumn(header, input.column);
-        if (typeof key === "string") return key;
+        if (typeof key === "string") return refusedWrite(key, NOTHING_CHANGED);
         const placed = placeValues(header, input.values);
-        if (typeof placed === "string") return placed;
+        if (typeof placed === "string")
+          return refusedWrite(placed, NOTHING_CHANGED);
         const incomplete = pastTheScan(loc, read.rows.length - 1);
         const data = read.rows.slice(1, MAX_SCAN_ROWS + 1);
         const hits: number[] = [];
@@ -644,17 +661,17 @@ function buildUpdateTool(
         });
         if (hits.length === 0)
           return incomplete
-            ? `No row among the first ${MAX_SCAN_ROWS} of the tab has "${input.value}" in the column "${input.column}", and the rows after them are not searched. Nothing was changed.`
-            : `No row has "${input.value}" in the column "${input.column}". Nothing was changed.`;
+            ? `No row among the first ${MAX_SCAN_ROWS} of the tab has "${input.value}" in the column "${input.column}", and the rows after them are not searched. ${NOTHING_CHANGED}`
+            : `No row has "${input.value}" in the column "${input.column}". ${NOTHING_CHANGED}`;
         if (incomplete && input.row === undefined)
-          return `The tab has more than ${MAX_SCAN_ROWS} rows and only the first ${MAX_SCAN_ROWS} are searched, so a match there may not be the only one. Rows found: ${hits.join(", ")}. Call again with the row number of the one to change. Nothing was changed.`;
+          return `The tab has more than ${MAX_SCAN_ROWS} rows and only the first ${MAX_SCAN_ROWS} are searched, so a match there may not be the only one. Rows found: ${hits.join(", ")}. Call again with the row number of the one to change. ${NOTHING_CHANGED}`;
         let target: number;
         if (input.row !== undefined) {
           if (!hits.includes(input.row))
-            return `Row ${input.row} does not have "${input.value}" in the column "${input.column}" (the rows that do: ${hits.join(", ")}). Nothing was changed.`;
+            return `Row ${input.row} does not have "${input.value}" in the column "${input.column}" (the rows that do: ${hits.join(", ")}). ${NOTHING_CHANGED}`;
           target = input.row;
         } else if (hits.length > 1) {
-          return `Several rows have "${input.value}" in the column "${input.column}": rows ${hits.join(", ")}. Call again with the row number of the one to change. Nothing was changed.`;
+          return `Several rows have "${input.value}" in the column "${input.column}": rows ${hits.join(", ")}. Call again with the row number of the one to change. ${NOTHING_CHANGED}`;
         } else {
           target = hits[0] as number;
         }

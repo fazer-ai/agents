@@ -362,8 +362,32 @@ describe("google sheets: append", () => {
     });
     expect(out).toContain('no column "Email"');
     expect(out).toContain("Coluna 1 ");
-    expect(out).toMatch(/and \d+ more\.$/);
+    expect(out).toMatch(/and \d+ more\. Nothing was written/);
     expect(out.length).toBeLessThan(2_500);
+    expect(fake.writes).toBe(0);
+  });
+
+  test("a refused write says nothing was written and that the customer must not hear it was", async () => {
+    const { fake, tool } = setup(["sheets_append_row"]);
+    const out = await tool("sheets_append_row")({
+      values: [{ column: "Email", value: "c@x.com" }],
+    });
+    expect(out).toContain("Nothing was written to the spreadsheet");
+    expect(out).toContain("do not tell the customer it was recorded");
+    expect(fake.writes).toBe(0);
+  });
+
+  test("a header typed into one cell with tabs is listed as that one quoted column, tabs visible", async () => {
+    const { fake, tool } = setup(["sheets_append_row"], {
+      tabs: [
+        { sheetId: 0, title: "Leads", rows: [["nome\ttelefone\tstatus"]] },
+      ],
+    });
+    const out = await tool("sheets_append_row")({
+      values: [{ column: "nome", value: "Rafael" }],
+    });
+    expect(out).toContain('The columns are: "nome\\ttelefone\\tstatus".');
+    expect(out).not.toContain("\t");
     expect(fake.writes).toBe(0);
   });
 
@@ -638,12 +662,24 @@ describe("google sheets: update", () => {
 
   test("an unknown column to write is refused before anything is written", async () => {
     const { fake, tool } = setup(["sheets_update_row"]);
-    await tool("sheets_update_row")({
+    const out = await tool("sheets_update_row")({
       column: "Nome",
       value: "Bruno",
       values: [{ column: "Cidade", value: "x" }],
     });
+    expect(out).toContain("Nothing was changed in the spreadsheet");
+    expect(out).toContain("do not tell the customer it was updated");
     expect(fake.writes).toBe(0);
+  });
+
+  test("a read refusal does not claim anything about writing", async () => {
+    const { tool } = setup(["sheets_find_rows"]);
+    const out = await tool("sheets_find_rows")({
+      column: "Cidade",
+      value: "x",
+    });
+    expect(out).toContain('no column "Cidade"');
+    expect(out).not.toContain("Nothing was");
   });
 });
 

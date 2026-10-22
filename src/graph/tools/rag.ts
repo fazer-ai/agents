@@ -18,7 +18,7 @@ export { RAG_TOOL_NAMES, type RagToolName } from "./catalog";
 export interface RagToolCtx {
   tenantId: bigint;
   base: PrismaClient;
-  // Scope of the search/suggestion; empty ⇒ all of the tenant's knowledge bases (RLS-scoped).
+  // Scope of the search/suggestion; empty ⇒ no base (the search finds nothing, the suggestion is refused).
   knowledgeBaseIds: bigint[];
   // Name + description of the selected bases, listed in the search_knowledge tool description so the
   // agent can reason about what is searchable. By default one tool searches across ALL of them; the
@@ -36,6 +36,11 @@ export interface RagToolCtx {
 // directive (see prompt.ts) instructs the model to NOT fabricate and to offer a human on this.
 const NO_GROUNDED_INFO =
   "No relevant information was found in the knowledge base for this query. Do not invent an answer: tell the customer you don't have that information and, if appropriate, offer to connect them with a human agent.";
+
+// Returned when the grant names no base: `searchKnowledge` reads no scope as every base of the tenant,
+// so it is not asked at all.
+const NO_BASE_FOR_SEARCH =
+  "No knowledge base is configured for search. Do not invent an answer: tell the customer you don't have that information and, if appropriate, offer to connect them with a human agent.";
 
 // search_knowledge description: a base instruction plus, when known, the selected bases (name —
 // description) so the model can judge whether the question is answerable from them. Each entry is
@@ -133,18 +138,17 @@ export function passageWithSource(
 
 // Resolve which base ids a search call targets. A valid knowledge_base pick scopes to EVERY base
 // with that name (KnowledgeBase.name is not unique per tenant, so nothing is silently excluded);
-// an unknown/unset pick falls back to all selected bases (empty ⇒ undefined ⇒ all of the tenant's
-// bases, RLS-scoped).
+// an unknown/unset pick falls back to all selected bases, and an empty grant to none.
 export function resolveSearchScope(
   pick: string | undefined,
   named: { id: bigint; name: string }[],
   fallback: bigint[],
-): bigint[] | undefined {
+): bigint[] {
   if (pick) {
     const ids = named.filter((k) => k.name === pick).map((k) => k.id);
     if (ids.length) return ids;
   }
-  return fallback.length ? fallback : undefined;
+  return fallback;
 }
 
 // Resolve the SINGLE base a suggestion targets (a suggestion lands in exactly one base). A valid pick
@@ -197,6 +201,9 @@ function searchTool(ctx: RagToolCtx) {
     }) => {
       // How many times the query embedding had to be asked again, for the tool line: a
       // slow search is then attributed to the provider on the line itself, not guessed at.
+      if (ctx.knowledgeBaseIds.length === 0) {
+        return [NO_BASE_FOR_SEARCH, { sources: [] }] as const;
+      }
       let retries = 0;
       const hits = await searchKnowledge({
         onEmbeddingRetry: () => {

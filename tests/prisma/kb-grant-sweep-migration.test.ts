@@ -12,8 +12,7 @@ import { dbProbeFailed } from "@/tests/db-gate";
 
 // Runs the actual migration file over grants holding ids no base answers to: a deleted base's, and
 // another tenant's. Those leave, the rest keep their order, a grant naming only live bases is not
-// rewritten, and a grant whose every id dangles is removed rather than emptied (an empty list searches
-// every base of the tenant). A grant already empty is left alone.
+// rewritten, and a grant whose every id dangles is removed rather than emptied. A grant already empty is left alone.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;

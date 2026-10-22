@@ -16,8 +16,8 @@ import { waitUntilBlocked } from "@/tests/utils/pg-waits";
 
 // A RAG grant names its bases in an array, which no foreign key covers. Deleting a base takes it out of
 // every grant that names it, as the cascade does for every other grant target, so the agent's set can
-// still be written back as it is stored; a grant left with no base is removed, since an empty list
-// searches every base of the tenant.
+// still be written back as it is stored; a grant left with no base is removed rather than kept
+// searching nothing.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -105,7 +105,7 @@ describe.skipIf(!dbUp)("deleting a knowledge base an agent uses", () => {
     const other = await agentWith("Not X", [y]);
     await deleteKnowledgeBase({ ctx: ctx(), id: x, base: appDb });
     expect(await ragOf(first)).toEqual([String(z), String(y)]);
-    // NOTE: An empty list searches every base, so the grant whose only base this was goes instead.
+    // NOTE: The grant whose only base this was goes instead of staying empty.
     expect(await ragOf(second)).toBeUndefined();
     expect(await ragOf(other)).toEqual([String(y)]);
   });
@@ -120,7 +120,7 @@ describe.skipIf(!dbUp)("deleting a knowledge base an agent uses", () => {
   });
 
   // Two deletes of a grant's last two bases: the second decides on the row the first left, after its
-  // lock, so the grant ends removed rather than empty (an empty list searches every base).
+  // lock, so the grant ends removed rather than empty (an empty one would search nothing).
   test("deleting a grant's last two bases at once leaves no grant, not an empty one", async () => {
     const [x, y] = [await base("Last X"), await base("Last Y")];
     const agent = await agentWith("Both last", [x, y]);

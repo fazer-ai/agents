@@ -6,11 +6,7 @@ import type {
 import { decryptJson, encryptJson } from "@/api/lib/crypto";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
-import {
-  AppError,
-  type ErrorTranslationKey,
-  NotFoundError,
-} from "@/lib/errors";
+import { AppError, NotFoundError } from "@/lib/errors";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { unstorableProblem } from "@/lib/text";
 import {
@@ -155,42 +151,45 @@ function assertSheetsConfig(
   config: Record<string, unknown>,
 ): void {
   if (catalogType !== "GOOGLE_SHEETS") return;
-  const id = config.spreadsheetId;
-  const sheetId = config.sheetId;
+  const missing = (field: string, why: string) =>
+    new AppError(
+      `${field} ${why}`,
+      422,
+      "errors.integrationSheetsConfigMissing",
+      { field },
+      field,
+    );
+  const invalid = (field: string, why: string) =>
+    new AppError(
+      `${field} ${why}`,
+      422,
+      "errors.integrationSheetsConfigInvalid",
+      { field },
+      field,
+    );
   const blank = (v: unknown) =>
     v === undefined || v === null || (typeof v === "string" && !v.trim());
-  const problem: [string, string, ErrorTranslationKey] | null = blank(id)
-    ? [
-        "config.spreadsheetId",
-        "is required: choose the spreadsheet",
-        "errors.integrationSheetsConfigMissing",
-      ]
-    : !(typeof id === "string" && SPREADSHEET_ID_PATTERN.test(id.trim()))
-      ? [
-          "config.spreadsheetId",
-          "must be the spreadsheet id (the part of its URL between /d/ and /edit), not the URL",
-          "errors.integrationSheetsConfigInvalid",
-        ]
-      : blank(sheetId)
-        ? [
-            "config.sheetId",
-            "is required: choose the tab",
-            "errors.integrationSheetsConfigMissing",
-          ]
-        : !(
-              typeof sheetId === "number" &&
-              Number.isInteger(sheetId) &&
-              sheetId >= 0
-            )
-          ? [
-              "config.sheetId",
-              "must be the tab's numeric id (the gid in its URL), not its name",
-              "errors.integrationSheetsConfigInvalid",
-            ]
-          : null;
-  if (!problem) return;
-  const [field, why, key] = problem;
-  throw new AppError(`${field} ${why}`, 422, key, { field }, field);
+  const id = config.spreadsheetId;
+  const sheetId = config.sheetId;
+  if (blank(id))
+    throw missing(
+      "config.spreadsheetId",
+      "is required: choose the spreadsheet",
+    );
+  if (!(typeof id === "string" && SPREADSHEET_ID_PATTERN.test(id.trim())))
+    throw invalid(
+      "config.spreadsheetId",
+      "must be the spreadsheet id (the part of its URL between /d/ and /edit), not the URL",
+    );
+  if (blank(sheetId))
+    throw missing("config.sheetId", "is required: choose the tab");
+  if (
+    !(typeof sheetId === "number" && Number.isInteger(sheetId) && sheetId >= 0)
+  )
+    throw invalid(
+      "config.sheetId",
+      "must be the tab's numeric id (the gid in its URL), not its name",
+    );
 }
 
 // An inbound route that makes the agent message a customer cannot be left open (GENERIC). Checked

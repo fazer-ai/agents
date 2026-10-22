@@ -88,4 +88,12 @@ describe("test-staged", () => {
       "changes every test file: running the whole suite",
     );
   });
+
+  // One process holding every test file outgrows a developer machine's memory; each worker holds
+  // only its share.
+  test("the whole suite runs in parallel workers", () => {
+    expect(select(["prisma/schema.prisma"])).toContain(
+      "running the whole suite (bun test --parallel)",
+    );
+  });
 });

@@ -1200,9 +1200,9 @@ export async function deleteKnowledgeBase(params: {
       : 0;
     // A RAG grant names its bases in an array no foreign key covers, so the cascade every other
     // grant target gets is done here: an id left behind makes the agent's set refused on its next write.
-    // An empty list searches EVERY base of the tenant, so a grant this leaves empty goes, as a cascaded
-    // grant row does. Deciding that from the UPDATE's own result, on the row it now holds locked, is what
-    // makes two deletes of a grant's last two bases end with no grant rather than an empty one.
+    // A grant this leaves empty goes, as a cascaded grant row does, rather than staying on the agent
+    // searching nothing. Deciding that from the UPDATE's own result, on the row it now holds locked, is
+    // what makes two deletes of a grant's last two bases end with no grant rather than an empty one.
     const touched = await db.$queryRaw<Array<{ id: bigint; left: number }>>`
       UPDATE agent_tool_selections
          SET knowledge_base_ids = array_remove(knowledge_base_ids, ${params.id})

@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import type { z } from "zod";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import {
@@ -6,6 +6,7 @@ import {
   resolveSearchScope,
   resolveSuggestTarget,
 } from "@/graph/tools/rag";
+import * as ragService from "@/modules/rag/service";
 
 // The search_knowledge tool description must surface the selected bases (name — description) so the
 // agent knows what it can look up; with no bases it falls back to the generic instruction. With >= 2
@@ -143,9 +144,25 @@ describe("resolveSearchScope", () => {
     ]);
   });
 
-  test("empty fallback resolves to undefined (all tenant bases, RLS-scoped)", () => {
-    expect(resolveSearchScope(undefined, named, [])).toBeUndefined();
-    expect(resolveSearchScope("Nope", named, [])).toBeUndefined();
+  test("an empty grant scopes the search to no base", () => {
+    expect(resolveSearchScope(undefined, named, [])).toEqual([]);
+    expect(resolveSearchScope("Nope", named, [])).toEqual([]);
+  });
+});
+
+// A grant with search on and no base selected grants no base: the tool answers as the suggestion tool
+// does, without asking the search, which reads no scope as every base of the tenant.
+describe("search_knowledge with no base granted", () => {
+  test("answers that no base is configured and never searches", async () => {
+    const searched = spyOn(ragService, "searchKnowledge");
+    try {
+      const search = searchToolOf({ ...ctxBase, knowledgeBaseIds: [] });
+      const out = await search.invoke({ query: "senha" });
+      expect(String(out)).toContain("No knowledge base is configured");
+      expect(searched).not.toHaveBeenCalled();
+    } finally {
+      searched.mockRestore();
+    }
   });
 });
 

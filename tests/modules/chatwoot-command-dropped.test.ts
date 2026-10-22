@@ -282,6 +282,7 @@ describe.skipIf(!dbUp)("a control command that did not run says so", () => {
       select: { id: true },
     });
     const route = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: { tenantId, stage: "route", conversationId: conv.id },
     });
     expect(route).toHaveLength(1);

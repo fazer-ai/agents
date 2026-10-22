@@ -106,6 +106,7 @@ async function pollToolRows(
 ): Promise<ToolRow[]> {
   const read = (): Promise<ToolRow[]> =>
     flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: {
         tenantId,
         stage: "tool",

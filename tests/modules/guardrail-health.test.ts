@@ -329,6 +329,7 @@ describe.skipIf(!dbUp)("readGuardrailHealth", () => {
     // flowlog-scope: seeded — reads the row this test inserted above with `create`, awaited. No
     // emit in the path, so neither the scope nor the wait obligation applies.
     const newer = await flowLogRow(suDb, {
+      orderBy: { id: "asc" },
       where: { tenantId: tenantA, turnId: "g6" },
       select: { id: true },
     });

@@ -545,6 +545,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     // Searched rather than taken by order: a turn writes several `generate` lines, and "the last
     // one" is whichever the stage happened to end on.
     const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: { tenantId, conversationId: conv.id, stage: "generate" },
       select: { level: true, detail: true },
     });
@@ -738,6 +739,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       where: { tenantId, chatwootConversationId: 9456 },
     });
     const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: { tenantId, conversationId: conv.id, stage: "generate" },
       select: { detail: true },
     });
@@ -779,6 +781,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       where: { tenantId, chatwootConversationId: 9455 },
     });
     const rows455 = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: { tenantId, conversationId: conv455.id, stage: "generate" },
       select: { detail: true },
     });
@@ -843,6 +846,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       where: { tenantId, chatwootConversationId: 9459 },
     });
     const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: { tenantId, conversationId: conv.id, stage: "generate" },
       select: { detail: true },
     });
@@ -880,6 +884,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     let retryLogged = false;
     await until("the retry line", async () => {
       const rows = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: {
           tenantId,
           stage: "generate",
@@ -1199,6 +1204,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     let handoff: unknown = null;
     await until("the handoff line", async () => {
       const rows = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: {
           tenantId,
           stage: "handoff",
@@ -2043,6 +2049,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     let resolvedLogged = false;
     await until("the resolved handoff line", async () => {
       const rows = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: {
           tenantId,
           stage: "handoff",
@@ -2418,6 +2425,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       let held: Array<{ level: string; status: string | null }> = [];
       await until("the held label line", async () => {
         const rows = await flowLogRows(suDb, {
+          orderBy: { id: "asc" },
           where: {
             tenantId,
             stage: "tool",
@@ -2521,6 +2529,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       });
       // Lido com a fila AINDA ocupada: o que estiver lá só existe se foi escrito dentro do turno.
       const decisao = await flowLogRow(suDb, {
+        orderBy: { id: "asc" },
         where: {
           tenantId,
           conversationId: conv.id,
@@ -2620,6 +2629,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     // The line's turn is the turn the activity trail and the Langfuse trace name: the same id the
     // ExecutionLog carries for each of the two turns.
     const logged = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: { tenantId, conversationId: conv.id },
       select: { turnId: true },
     });
@@ -2650,6 +2660,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         where: { tenantId, chatwootConversationId: chatwootConvId },
       });
       const rows = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: { tenantId, conversationId: conv.id, stage: "generate" },
         select: { detail: true, turnId: true },
       });
@@ -2818,6 +2829,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     // linhas `tool`, e a ordem em que chegam à tabela não é a das chamadas (cada escrita é disparada
     // sem espera), então "a primeira linha tool" seria qualquer uma das duas.
     const decisao = await flowLogRow(suDb, {
+      orderBy: { id: "asc" },
       where: {
         tenantId,
         conversationId: conv.id,
@@ -2847,6 +2859,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     // num turno de verdade. A linha é procurada, nunca tomada por ordem: um turno escreve várias
     // linhas `generate`, e "a última" é aquela em que a etapa por acaso terminou.
     const geradas = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: { tenantId, conversationId: conv.id, stage: "generate" },
       select: { id: true, detail: true },
     });
@@ -2858,6 +2871,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     );
     expect(doFato).toHaveLength(1);
     const linhaDaDecisao = await flowLogRow(suDb, {
+      orderBy: { id: "asc" },
       where: { tenantId, conversationId: conv.id, stage: "tool" },
       select: { id: true, detail: true },
     });
@@ -3594,6 +3608,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       where: { tenantId, chatwootConversationId: 9728 },
     });
     const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: { tenantId, conversationId: conv.id, stage: "generate" },
       select: { detail: true },
     });
@@ -4282,6 +4297,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       // The trail says the handoff was set aside, and its handoff stage reads as a close.
       const rows = await until("the ignored-handoff line", async () => {
         const r = await flowLogRows(suDb, {
+          orderBy: { id: "asc" },
           where: { tenantId, threadId: `${tenantId}:${instanceId}:${conv}` },
           select: { stage: true, detail: true },
         });
@@ -4551,6 +4567,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       const lines = async () =>
         (
           await flowLogRows(suDb, {
+            orderBy: { id: "asc" },
             where: {
               tenantId,
               stage: "tool",
@@ -4609,6 +4626,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     // exactly the one nobody can find afterwards. Fire-and-forget, so poll briefly.
     const warned = await until("the silence warning", async () => {
       const rows = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: {
           tenantId,
           stage: "generate",
@@ -4651,6 +4669,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
 
     // And no warning: there is nothing unexplained about this turn.
     const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: {
         tenantId,
         stage: "generate",
@@ -4714,6 +4733,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
 
     // And nobody is paged, because nothing here is unexplained.
     const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: {
         tenantId,
         stage: "generate",
@@ -4765,6 +4785,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
 
     const warned = await until("the silence warning", async () => {
       const rows = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: {
           tenantId,
           stage: "generate",
@@ -4791,6 +4812,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
   // close waits for "your final reply", and a model that already wrote it reads that as done.
   async function recoveredLine(threadConv: number) {
     const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: {
         tenantId,
         stage: "generate",
@@ -4806,6 +4828,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
   }
   async function unexplainedWarned(threadConv: number) {
     const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: {
         tenantId,
         stage: "generate",
@@ -4963,6 +4986,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     });
     expect(outcome).toBe("posted");
     const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: {
         tenantId,
         stage: "generate",
@@ -5001,6 +5025,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(outcome).toBe("taken-over");
     expect(calls.filter(([op]) => op === "sendMessage")).toEqual([]);
     const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: { tenantId, threadId: `${tenantId}:${instanceId}:98871` },
       select: { stage: true, detail: true },
     });
@@ -5054,6 +5079,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
   // both without making anyone answer a thank-you.
   async function silenceRetryLine(threadConv: number) {
     const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: {
         tenantId,
         stage: "generate",
@@ -5068,6 +5094,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
   }
   async function unexplainedDetail(threadConv: number) {
     const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: {
         tenantId,
         stage: "generate",
@@ -5730,6 +5757,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(calls).toEqual([]);
     // And the trail says the gate closed, from the read that refused.
     const closedLines = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: {
         tenantId,
         stage: "handoff",
@@ -6318,6 +6346,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       where: { tenantId, chatwootConversationId: conv },
     });
     const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: { tenantId, conversationId: c.id, stage: "tts" },
     });
     return rows.map(({ level, status, detail }) => ({ level, status, detail }));
@@ -6493,7 +6522,10 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     const c = await suDb.conversation.findFirstOrThrow({
       where: { tenantId, chatwootConversationId: conv },
     });
-    return flowLogRows(suDb, { where: { tenantId, conversationId: c.id } });
+    return flowLogRows(suDb, {
+      orderBy: { id: "asc" },
+      where: { tenantId, conversationId: c.id },
+    });
   }
 
   test("an agent without the new keys reads the same prompt and tools on an audio turn (#859)", async () => {
@@ -7341,6 +7373,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       let named = false;
       await until("the send_orcamento line", async () => {
         const flow = await flowLogRows(suDb, {
+          orderBy: { id: "asc" },
           where: {
             tenantId,
             stage: "tool",
@@ -7443,6 +7476,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       let skipLogged = false;
       await until("the skipped revocation line", async () => {
         const flow = await flowLogRows(suDb, {
+          orderBy: { id: "asc" },
           where: {
             tenantId,
             stage: "tool",
@@ -7728,6 +7762,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       let unknown: typeof flow = [];
       await until("the revocation_unknown line", async () => {
         flow = await flowLogRows(suDb, {
+          orderBy: { id: "asc" },
           where: {
             tenantId,
             stage: "tool",
@@ -7890,6 +7925,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
 
     // And nothing is reported: there is nothing unexplained about a turn that delivered.
     const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: {
         tenantId,
         stage: "generate",
@@ -9116,6 +9152,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         where: { tenantId, chatwootConversationId: 93151 },
       });
       const generated = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: {
           tenantId,
           conversationId: conv.id,
@@ -9187,6 +9224,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         where: { tenantId, chatwootConversationId: 93155 },
       });
       const generated = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: { tenantId, conversationId: conv.id, stage: "generate" },
         select: { detail: true },
       });
@@ -9335,6 +9373,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         where: { tenantId, chatwootConversationId: 93153 },
       });
       const generated = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: {
           tenantId,
           conversationId: conv.id,
@@ -9427,6 +9466,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         where: { tenantId, chatwootConversationId: 93160 },
       });
       const lines = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: {
           tenantId,
           conversationId: conv.id,
@@ -9545,6 +9585,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         where: { tenantId, chatwootConversationId: 93157 },
       });
       const generated = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: {
           tenantId,
           conversationId: conv.id,
@@ -9610,6 +9651,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         where: { tenantId, chatwootConversationId: 93156 },
       });
       const generated = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: { tenantId, conversationId: conv.id, stage: "generate" },
         select: { detail: true },
       });
@@ -10213,6 +10255,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       // Every line the turn scheduled has landed, so a missing one was never written.
       await settleFlowEvents();
       const rows = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: {
           tenantId: gTenantId,
           stage: "generate",

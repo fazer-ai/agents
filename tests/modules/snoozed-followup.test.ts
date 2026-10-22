@@ -932,6 +932,7 @@ describe.skipIf(!dbUp)("snoozed ladder: the handler", () => {
     expect(s.sent).toEqual([REPLY]);
     const hit = await until("the reminder's generate line", async () => {
       const rows = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: { tenantId, stage: "generate", threadId: threadOf(2043) },
         select: { detail: true },
       });

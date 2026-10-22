@@ -320,6 +320,7 @@ describe.skipIf(!dbUp)("the per-conversation turn limit", () => {
     expect(row?.turnLimitTripMark).toBe(1_700_000_000.5);
 
     const lines = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: { tenantId, stage: "turn_limit", conversationId: convDbId },
     });
     expect(lines).toHaveLength(1);

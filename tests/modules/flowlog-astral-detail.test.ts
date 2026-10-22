@@ -43,6 +43,7 @@ let tenantId = 0n;
 async function rowFor(turnId: string): Promise<unknown | null> {
   for (let i = 0; i < 100; i++) {
     const row = await flowLogRow(suDb, {
+      orderBy: { id: "asc" },
       where: { tenantId, turnId },
     });
     if (row) return row.detail;

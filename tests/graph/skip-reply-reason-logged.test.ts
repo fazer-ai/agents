@@ -64,6 +64,7 @@ async function run(
   );
   logger.handleToolEnd(output, "run-1");
   const rows = await flowLogRows(suDb, {
+    orderBy: { id: "asc" },
     where: { tenantId, turnId, stage: "tool" },
     select: { detail: true },
   });

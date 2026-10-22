@@ -483,6 +483,7 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     expect(ledger?.status).toBe("PROCESSED");
     expect(
       await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: { tenantId, stage: "handoff", conversationId: conv?.id },
       }),
     ).toEqual([]);
@@ -506,6 +507,7 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     // The closed-gate trail is about a bot that would have answered; a watcher leaves none.
     expect(
       await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: { tenantId, stage: "handoff", conversationId: conv?.id },
       }),
     ).toEqual([]);
@@ -2038,6 +2040,7 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     expect(await deliveryStatus(delivery.id)).toBe("PROCESSING");
     const conv = await row(26);
     const lines = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: { tenantId, stage: "memory", conversationId: conv?.id },
     });
     expect(lines.length).toBe(1);
@@ -2098,6 +2101,7 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     expect(await ingestArmedAnywhereFor(messageId)).toBe(false);
     const convRow = await row(convId);
     const lines = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: { tenantId, stage: "memory", conversationId: convRow?.id },
     });
     expect(lines.length).toBe(1);

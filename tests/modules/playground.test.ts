@@ -631,6 +631,7 @@ describe.skipIf(!dbUp)("playground", () => {
         expect(r.ttsMediaId).toBeUndefined();
         expect(spoken).toEqual([]);
         const lines = await flowLogRows(suDb, {
+          orderBy: { id: "asc" },
           where: { tenantId, threadId: r.threadId },
         });
         expect(

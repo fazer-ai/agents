@@ -415,6 +415,7 @@ async function resolvedBy(convId: number) {
 async function closeLines(convDbId: bigint, expectSome = true) {
   for (let i = 0; i < (expectSome ? 100 : 1); i++) {
     const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: { conversationId: convDbId },
     });
     const mine = rows

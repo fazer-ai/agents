@@ -125,6 +125,7 @@ async function turnRows(convId: number, stages: readonly string[]) {
   const threadId = `${tenantId}:${instanceId}:${convId}`;
   for (let i = 0; i < 200; i++) {
     const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: { tenantId, threadId },
       select: { stage: true, detail: true, errorMessage: true },
     });

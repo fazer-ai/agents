@@ -1380,6 +1380,7 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
         appDb,
       );
       const lines = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: { tenantId, threadId, stage: "generate" },
         select: {
           level: true,
@@ -1803,6 +1804,7 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
       });
       const line = (
         await flowLogRows(suDb, {
+          orderBy: { id: "asc" },
           where: { tenantId, conversationId: convRow.id, stage: "delivery" },
         })
       ).find(
@@ -2481,6 +2483,7 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
     onToggle = async () => {
       linesAtToggle = (
         await flowLogRows(suDb, {
+          orderBy: { id: "asc" },
           where: { tenantId, conversationId: convRow.id, stage: "delivery" },
         })
       ).filter(
@@ -2493,6 +2496,7 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
     expect(
       (
         await flowLogRows(suDb, {
+          orderBy: { id: "asc" },
           where: { tenantId, conversationId: convRow.id, stage: "delivery" },
         })
       ).filter(

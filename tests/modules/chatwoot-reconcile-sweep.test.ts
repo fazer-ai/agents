@@ -1864,6 +1864,7 @@ describe.skipIf(!dbUp)("reconciling from Chatwoot", () => {
     // flowlog-scope: tenant-wide. The subject is how many lines the pass wrote, and the warn line
     // names no conversation; the tenant is this file's and every case clears it first.
     const lines = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: { tenantId, stage: "delivery", createdAt: { gte: before } },
       select: { level: true, detail: true, errorMessage: true },
     });

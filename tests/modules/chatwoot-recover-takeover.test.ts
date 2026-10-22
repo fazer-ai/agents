@@ -764,6 +764,7 @@ describe.skipIf(!dbUp)("recovering a takeover a process death lost", () => {
     let rows: Array<{ detail: unknown }> = [];
     while (Date.now() < deadline) {
       rows = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: { tenantId, conversationId: conv.id, stage: "handoff" },
         select: { detail: true },
       });

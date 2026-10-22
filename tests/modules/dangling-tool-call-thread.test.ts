@@ -132,6 +132,7 @@ function jobFor(convId: number): ClaimedJob {
 
 async function repairLines(conversationId: bigint) {
   const rows = await flowLogRows(suDb, {
+    orderBy: { id: "asc" },
     where: { tenantId, conversationId, stage: "memory" },
     select: { level: true, detail: true },
   });

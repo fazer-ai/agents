@@ -339,6 +339,7 @@ async function correctionLine(convId: number) {
   const conversationId = await convRowId(convId);
   const lines = await until("the correction line", async () => {
     const found = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: { tenantId, conversationId, stage: "delivery" },
       select: { level: true, detail: true },
     });
@@ -3684,6 +3685,7 @@ describe.skipIf(!dbUp)("debounce", () => {
     // a second time.
     await settleFlowEvents();
     const row = await flowLogRow(suDb, {
+      orderBy: { id: "asc" },
       where: { tenantId, threadId: threadOf(convId), stage: "debounce" },
       select: { detail: true },
     });
@@ -6509,6 +6511,7 @@ describe.skipIf(!dbUp)("debounce", () => {
       ).rejects.toThrow();
       expect(sent).toEqual([]);
       const rows = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: {
           tenantId,
           threadId: threadOf(conv),
@@ -7560,6 +7563,7 @@ describe.skipIf(!dbUp)("debounce", () => {
       // ...and no refusal line, because nothing was refused.
       await settleFlowEvents();
       const rows = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         // Scoped to this flush's own thread, not to the tenant: the fixture is shared with the
         // refusals above, and a tenant-wide read would be asserting about their rows too.
         where: { tenantId, threadId: threadOf(914), stage: "spend_ceiling" },
@@ -7635,6 +7639,7 @@ describe.skipIf(!dbUp)("debounce", () => {
       // absence of is proved by the refusals in the sibling tests above.
       await settleFlowEvents();
       const rows = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         // This flush's own thread, not the tenant: the fixture is shared with those refusals.
         where: { tenantId, threadId: threadOf(913), stage: "spend_ceiling" },
         select: { level: true },
@@ -7687,6 +7692,7 @@ describe.skipIf(!dbUp)("debounce", () => {
 
       await settleFlowEvents();
       const rows = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: { tenantId, threadId: threadOf(916), stage: "spend_ceiling" },
         select: { level: true },
       });
@@ -7739,6 +7745,7 @@ describe.skipIf(!dbUp)("debounce", () => {
       // ...and no refusal line, because nothing was refused.
       await settleFlowEvents();
       const rows = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: { tenantId, threadId: threadOf(915), stage: "spend_ceiling" },
         select: { level: true },
       });

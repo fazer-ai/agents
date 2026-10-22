@@ -62,6 +62,7 @@ async function rodar(
   );
   logger.handleToolEnd({ content: "ok" }, "run-1");
   const rows = await flowLogRows(suDb, {
+    orderBy: { id: "asc" },
     where: { tenantId, turnId, stage: "tool" },
     select: { detail: true },
   });
@@ -143,6 +144,7 @@ describe.skipIf(!dbUp)(
       entregou = true; // a companheira terminou enquanto o skip_reply rodava
       logger.handleToolEnd({ content: "ok" }, "run-2");
       const rows = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: { tenantId, turnId, stage: "tool" },
         select: { detail: true },
       });

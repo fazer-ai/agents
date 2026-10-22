@@ -140,6 +140,7 @@ describe.skipIf(!dbUp)("a failed playground turn (issue #841)", () => {
     expect(body.turnId).toBe(err.turnId);
 
     const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: { tenantId, turnId: err.turnId as string, stage: "generate" },
       select: { level: true, status: true, source: true, errorMessage: true },
     });

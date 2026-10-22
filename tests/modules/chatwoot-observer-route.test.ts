@@ -457,6 +457,7 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
     ).toBe("PROCESSING");
     expect(
       await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: { tenantId, stage: "handoff", conversationId: conv?.id },
       }),
     ).toEqual([]);
@@ -4138,6 +4139,7 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
         select: { id: true },
       });
       const lines = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: {
           tenantId,
           conversationId: conv.id,

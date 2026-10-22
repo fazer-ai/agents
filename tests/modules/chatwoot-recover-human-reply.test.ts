@@ -1300,6 +1300,7 @@ describe.skipIf(!dbUp)(
         select: { id: true },
       });
       const linhas = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: { tenantId, conversationId: conv.id, stage: "memory" },
         select: { level: true, detail: true },
       });

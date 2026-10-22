@@ -384,6 +384,7 @@ describe.skipIf(!dbUp)("the spend ceiling on the playground and vision", () => {
     expect(s.providerCalls).toEqual([]);
     await settleFlowEvents();
     const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: { turnId },
       select: { stage: true, detail: true },
     });
@@ -429,6 +430,7 @@ describe.skipIf(!dbUp)("the spend ceiling on the playground and vision", () => {
     expect(s.providerCalls).toEqual([]);
     await settleFlowEvents();
     const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: { turnId },
       select: { stage: true, detail: true },
     });
@@ -532,6 +534,7 @@ describe.skipIf(!dbUp)("the spend ceiling on the playground and vision", () => {
     // rather than a poll: polling for the absence would only spend the timeout before answering.
     await settleFlowEvents();
     const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: { turnId },
       select: { stage: true, status: true, detail: true },
     });
@@ -587,6 +590,7 @@ describe.skipIf(!dbUp)("the spend ceiling on the playground and vision", () => {
     expect(s.providerCalls.length).toBe(1);
     await settleFlowEvents();
     const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: { turnId, stage: "spend_ceiling" },
       select: { level: true, status: true, detail: true },
     });

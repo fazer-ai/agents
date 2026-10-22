@@ -70,6 +70,7 @@ type LogRow = {
 async function pollToolRows(turnId: string, count: number): Promise<LogRow[]> {
   return until(`${count} tool row(s)`, async () => {
     const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: { tenantId, turnId, stage: "tool" },
       select: {
         level: true,

@@ -407,6 +407,7 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
       async () =>
         (
           await flowLogRow(suDb, {
+            orderBy: { id: "asc" },
             // flowlog-scope: agent — every test here shares the tenant but owns its agent, which is
             // what fences this read (the note above says which neighbour it would otherwise take).
             where: {

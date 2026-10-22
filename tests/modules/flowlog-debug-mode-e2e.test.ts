@@ -126,6 +126,7 @@ async function generateRow(convId: number) {
   const threadId = `${tenantId}:${instanceId}:${convId}`;
   for (let i = 0; i < 200; i++) {
     const row = await flowLogRow(suDb, {
+      orderBy: { id: "asc" },
       where: { tenantId, threadId, stage: "generate" },
       select: { detail: true },
     });
@@ -283,6 +284,7 @@ describe.skipIf(!dbUp)("the log debug mode, on a real turn", () => {
     let row: { detail: unknown } | null = null;
     for (let i = 0; i < 200 && row === null; i++) {
       row = await flowLogRow(suDb, {
+        orderBy: { id: "asc" },
         where: { tenantId, turnId },
         select: { detail: true },
       });

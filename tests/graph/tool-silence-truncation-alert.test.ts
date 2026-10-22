@@ -613,7 +613,10 @@ describe.skipIf(!dbUp)("the switch, stored and read back", () => {
     );
     await tools.find((t) => t.name === "quieto")?.invoke({});
     await tools.find((t) => t.name === "alto")?.invoke({});
-    const rows = await flowLogRows(suDb, { where: { tenantId, turnId } });
+    const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
+      where: { tenantId, turnId },
+    });
     const byTool = Object.fromEntries(
       rows.map((r) => [(r.detail as { tool: string }).tool, r]),
     );

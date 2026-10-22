@@ -112,6 +112,7 @@ const flowOf = (): FlowContext => ({
 // The turn's `tts` lines, primary first: written fire-and-forget, so read in the order they mean.
 async function ttsLines(f: FlowContext) {
   const rows = await flowLogRows(suDb, {
+    orderBy: { id: "asc" },
     where: { tenantId, turnId: f.turnId, stage: "tts" },
   });
   const fallback = (r: (typeof rows)[number]) =>

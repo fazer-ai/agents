@@ -347,6 +347,7 @@ function audioPageWith(
 // instead of polling for an arrival. Scoped by conversation, or it answers with a neighbour's row.
 async function deliveryLines(convDbId: bigint) {
   return flowLogRows(suDb, {
+    orderBy: { id: "asc" },
     where: { tenantId, stage: "delivery", conversationId: convDbId },
     select: { level: true, source: true, agentId: true, detail: true },
   });
@@ -2333,6 +2334,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     // NOTE: the path really ran (the `no_agent` line is here), and no `recovered` line beside it.
     expect(await deliveryLines(conv.id)).toEqual([]);
     const noAgent = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: { tenantId, stage: "route", conversationId: conv.id },
       select: { detail: true },
     });
@@ -6626,6 +6628,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       // flowlog-scope: tenant-wide. The line has no turn of its own to read by; it names its delivery,
       // whose id is this test's alone, and the subject is how many lines that delivery got.
       const lines = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: {
           tenantId,
           stage: "delivery",
@@ -6740,6 +6743,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
           await announceUnanswered(tenantId, rowId, appDb);
         // flowlog-scope: tenant-wide. The lines name their ledger rows, whose ids are this test's alone.
         const lines = await flowLogRows(suDb, {
+          orderBy: { id: "asc" },
           where: {
             tenantId,
             stage: "delivery",
@@ -7242,6 +7246,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
         );
         // flowlog-scope: tenant-wide. The line names its ledger row, whose id is this test's alone.
         const lines = await flowLogRows(suDb, {
+          orderBy: { id: "asc" },
           where: {
             tenantId,
             stage: "delivery",
@@ -7449,6 +7454,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       // flowlog-scope: tenant-wide. The line has no turn of its own to read by; it names its delivery,
       // whose id is this test's alone, and the subject is how many lines that delivery got.
       const lines = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: {
           tenantId,
           stage: "delivery",
@@ -7551,6 +7557,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
         ).toEqual([["error", "unanswered"]]);
         // flowlog-scope: tenant-wide. The dead letter names its job, whose id is this test's alone.
         const deaths = await flowLogRows(suDb, {
+          orderBy: { id: "asc" },
           where: {
             tenantId,
             stage: "dead_letter",

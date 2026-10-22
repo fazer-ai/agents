@@ -283,6 +283,7 @@ describe.skipIf(!dbUp)(
       expect(rows).toHaveLength(1);
       expect(rows[0]?.conversationId).toBe(conversationId);
       const lines = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: {
           tenantId,
           conversationId,

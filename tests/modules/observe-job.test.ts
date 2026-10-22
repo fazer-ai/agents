@@ -3955,6 +3955,7 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     const retries = await until("the observer's retry line", async () => {
       const lines = (
         await flowLogRows(suDb, {
+          orderBy: { id: "asc" },
           where: { conversationId: convRowId, stage: "generate" },
           select: { level: true, detail: true },
         })

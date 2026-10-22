@@ -2018,6 +2018,7 @@ describe.skipIf(!dbUp)("the ingestion job defers to a turn in flight", () => {
     expect((await fallbackHandler(job, appDb)).outcome).toBe("done");
     const undecidable = (
       await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         // flowlog-scope: tenant-wide. The line names the message in its detail.
         where: { tenantId, stage: "memory" },
       })

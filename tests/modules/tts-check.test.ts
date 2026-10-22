@@ -272,6 +272,7 @@ const flowOf = (): FlowContext => ({
 // few milliseconds apart can land in either order.
 async function checkLines(f: FlowContext) {
   const rows = await flowLogRows(suDb, {
+    orderBy: { id: "asc" },
     where: { tenantId, turnId: f.turnId, stage: "tts_check" },
   });
   const attempt = (r: (typeof rows)[number]) =>
@@ -507,6 +508,7 @@ describe.skipIf(!dbUp)("tts audio check", () => {
     ]);
     // Each synthesis line says which attempt it was.
     const synths = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: { tenantId, turnId: f.turnId, stage: "tts" },
     });
     // NOTE: sorted, because the lines are written fire-and-forget and land in whatever order the
@@ -662,6 +664,7 @@ describe.skipIf(!dbUp)("tts audio check", () => {
       flow: f,
     });
     const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: { tenantId, turnId: f.turnId },
     });
     expect(rows.length).toBeGreaterThan(0);

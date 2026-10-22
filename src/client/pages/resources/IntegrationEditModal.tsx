@@ -768,7 +768,7 @@ export function IntegrationEditModal({
   // again. When it is null the STATUS says why: "absent" (nothing was ever stored — an instance
   // older than this feature) vs "unreadable" (a blob the key can no longer decrypt). Both are fixed
   // by rotating, but pointing at the wrong cause sends the operator hunting in the wrong place.
-  const [routeToken, setRouteToken] = useState<string | null>(null);
+  const [inboundUrl, setInboundUrl] = useState<string | null>(null);
   const [routeTokenStatus, setRouteTokenStatus] = useState<
     "present" | "absent" | "unreadable"
   >("absent");
@@ -945,7 +945,7 @@ export function IntegrationEditModal({
               setCatalog(list);
               return list;
             })();
-        setRouteToken(null);
+        setInboundUrl(null);
         setRouteTokenStatus("absent");
         if (!payloadId) {
           const first = catList[0];
@@ -984,7 +984,7 @@ export function IntegrationEditModal({
           inboundSecretRef: inst.inboundSecretRef ?? "",
         };
         setForm(next);
-        setRouteToken(inst.routeToken);
+        setInboundUrl(inst.inboundUrl);
         setRouteTokenStatus(inst.routeTokenStatus);
         formBaseline.current = JSON.stringify(next);
         loadedConfig.current = next.config;
@@ -1059,10 +1059,8 @@ export function IntegrationEditModal({
         onSaved?.({ id: data.id, name: form.name.trim() }, true);
         // Reveal the inbound webhook URL ONCE (the route token is never returned again). Only
         // inbound-capable toolpacks (Asaas) mint a token; the rest return null → no reveal.
-        if (data.routeToken) {
-          tokenModal.open({
-            url: `${window.location.origin}/api/v1/integrations/inbound/${data.routeToken}`,
-          });
+        if (data.inboundUrl) {
+          tokenModal.open({ url: data.inboundUrl });
         }
       }
     } catch (e) {
@@ -1092,12 +1090,9 @@ export function IntegrationEditModal({
     }
   }
 
-  const inboundUrl = (token: string) =>
-    `${window.location.origin}/api/v1/integrations/inbound/${token}`;
-
   function copyInboundUrl() {
-    if (!routeToken) return;
-    void navigator.clipboard?.writeText(inboundUrl(routeToken));
+    if (!inboundUrl) return;
+    void navigator.clipboard?.writeText(inboundUrl);
     showToast(t("common.copied", "Copied"), "success");
   }
 
@@ -1120,8 +1115,8 @@ export function IntegrationEditModal({
             .instances({ id: editId })
             ["route-token"].post();
           if (error || !data) throw error ?? new Error("no data");
-          setRouteToken(data.routeToken);
-          tokenModal.open({ url: inboundUrl(data.routeToken) });
+          setInboundUrl(data.inboundUrl);
+          tokenModal.open({ url: data.inboundUrl });
         } catch (e) {
           showToast(
             apiErrorMessage(e) ||
@@ -2132,7 +2127,7 @@ export function IntegrationEditModal({
                     label={t("integrations.webhook.url", "Webhook URL")}
                     group
                     description={
-                      routeToken
+                      inboundUrl
                         ? t(
                             "integrations.webhook.urlHint",
                             "Paste this into the provider's panel.",
@@ -2149,11 +2144,11 @@ export function IntegrationEditModal({
                     }
                   >
                     <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                      {routeToken && (
+                      {inboundUrl && (
                         <>
                           <Input
                             readOnly
-                            value={inboundUrl(routeToken)}
+                            value={inboundUrl}
                             onFocus={(e) => e.currentTarget.select()}
                             aria-label={t(
                               "integrations.webhook.url",

@@ -1,6 +1,7 @@
 import { Elysia, t } from "elysia";
 import { doc, errors } from "@/api/lib/openapi";
 import { tenancyPlugin } from "@/api/middlewares/tenancy";
+import config from "@/config";
 import { requireDbId } from "@/lib/db-id";
 import { ForbiddenError, TenantTargetRequiredError } from "@/lib/errors";
 import { instanceIdentity } from "@/lib/instance";
@@ -11,6 +12,7 @@ import {
   listCredentialSpreadsheets,
   listSpreadsheetTabs,
 } from "@/modules/integrations/google-sheets.service";
+import { integrationInboundUrl } from "@/modules/integrations/inbound-url";
 import {
   createIntegrationInstance,
   deleteIntegrationInstance,
@@ -26,6 +28,13 @@ import {
   TEST_RECEPTION_PER_MINUTE,
   testReception,
 } from "@/modules/webhooks/inbound/test-reception";
+
+// The inbound URL to show next to a route token, from PUBLIC_URL (see inbound-url.ts).
+function inboundUrlOf(routeToken: string | null): string | null {
+  return routeToken
+    ? integrationInboundUrl(config.publicUrl, routeToken)
+    : null;
+}
 
 // The error catalog this controller's routes answer with (`bun i18n:extract` reads these lines).
 // One key per fact, never one generic key per HTTP class: a registered key wins over
@@ -223,19 +232,23 @@ export const integrationsAdminController = new Elysia({
       // NOTE: no-store: this is the ONE read that returns the decrypted routeToken, and nothing
       // global sets the header. Keeps the webhook URL out of the browser's disk cache.
       set.headers["cache-control"] = "no-store";
+      const integration = await getIntegrationInstance(
+        ctxOrThrow(tenantContext),
+        requireDbId(params.id),
+      );
       return {
         instance: instanceIdentity,
-        integration: await getIntegrationInstance(
-          ctxOrThrow(tenantContext),
-          requireDbId(params.id),
-        ),
+        integration: {
+          ...integration,
+          inboundUrl: inboundUrlOf(integration.routeToken),
+        },
       };
     },
     {
       requireRole: "TENANT_ADMIN",
       detail: doc(
         "Get integration instance",
-        "Fetches a single integration instance by id, including its inbound routeToken (null when the entry has no inbound surface, or when the instance predates token storage — rotate to mint a readable one).",
+        "Fetches a single integration instance by id, including its inbound routeToken and inboundUrl, the full webhook URL built from PUBLIC_URL (both null when the entry has no inbound surface, or when the instance predates token storage — rotate to mint a readable one).",
       ),
       params: t.Object({
         id: t.String({
@@ -265,13 +278,14 @@ export const integrationsAdminController = new Elysia({
         id: String(created.id),
         // NOTE: pasted into the upstream provider; also readable later via GET /instances/:id.
         routeToken: created.routeToken,
+        inboundUrl: inboundUrlOf(created.routeToken),
       };
     },
     {
       requireRole: "TENANT_ADMIN",
       detail: doc(
         "Create integration instance",
-        "Creates an integration instance and returns its id plus the opaque routeToken for the inbound webhook URL. The token stays readable afterwards via GET /instances/:id.",
+        "Creates an integration instance and returns its id plus the opaque routeToken and inboundUrl, the full inbound webhook URL built from PUBLIC_URL. The token stays readable afterwards via GET /instances/:id.",
       ),
       body: t.Object({
         catalogType: t.String({
@@ -378,18 +392,22 @@ export const integrationsAdminController = new Elysia({
   // a hash only, and a URL that leaked.
   .post(
     "/instances/:id/route-token",
-    async ({ tenantContext, params }) => ({
-      instance: instanceIdentity,
-      ...(await rotateIntegrationRouteToken(
+    async ({ tenantContext, params }) => {
+      const { routeToken } = await rotateIntegrationRouteToken(
         ctxOrThrow(tenantContext),
         requireDbId(params.id),
-      )),
-    }),
+      );
+      return {
+        instance: instanceIdentity,
+        routeToken,
+        inboundUrl: integrationInboundUrl(config.publicUrl, routeToken),
+      };
+    },
     {
       requireRole: "TENANT_ADMIN",
       detail: doc(
         "Rotate inbound route token",
-        "Mints a new inbound webhook token for the instance and returns it. The previous URL stops working immediately, so the provider's dashboard must be updated.",
+        "Mints a new inbound webhook token for the instance and returns it with inboundUrl, the full webhook URL built from PUBLIC_URL. The previous URL stops working immediately, so the provider's dashboard must be updated.",
       ),
       params: t.Object({
         id: t.String({

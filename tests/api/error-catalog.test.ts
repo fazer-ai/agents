@@ -95,6 +95,7 @@ const CLIENT_IDENTICAL_BY_DESIGN: readonly string[] = [
   "integrations.catalog.ASAAS.label",
   "integrations.catalog.GOOGLE_CALENDAR.label",
   "integrations.catalog.GOOGLE_DRIVE.label",
+  "integrations.catalog.GOOGLE_SHEETS.label",
   "integrations.catalog.RESEND.label",
   "mcp.admin.clientNamePlaceholder",
   "nav.dashboards",
@@ -921,7 +922,7 @@ describe("both languages answer, and answer differently", () => {
       CLIENT_IDENTICAL_BY_DESIGN,
       // A brand name reads the same in both languages, like every `vault.secretType.*` waived above.
       // Plus the Dashboards feature's name, in the menu and on its page, in both editions.
-      hasProOnlyKeys ? 112 : 110,
+      hasProOnlyKeys ? 113 : 111,
     );
     // NOTE: the same in every edition, since the list is empty in every tree.
     expectWaiverLedger("SAY_LESS_GRANDFATHERED", SAY_LESS_GRANDFATHERED, 0);

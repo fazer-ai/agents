@@ -36,6 +36,7 @@ export { HighlightedTemplateField } from "./HighlightedTemplateField";
 export { InboxRow, type InboxRowStatus } from "./InboxRow";
 export { Input } from "./Input";
 export { Layout } from "./Layout";
+export { LinkifiedText } from "./LinkifiedText";
 export { Logo } from "./Logo";
 export { Markdown } from "./Markdown";
 export { MediaAudio } from "./MediaAudio";

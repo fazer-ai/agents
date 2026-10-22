@@ -375,7 +375,8 @@ function rowMatches(
 }
 
 function asObject(header: Header, row: unknown[]): Record<string, string> {
-  const out: Record<string, string> = {};
+  // Null prototype: a header named `__proto__` is an own key like any other, not the prototype setter.
+  const out: Record<string, string> = Object.create(null);
   for (const name of header.names) {
     const i = header.index.get(headerKey(name));
     if (i === undefined || header.duplicated.has(headerKey(name))) continue;

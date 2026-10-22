@@ -478,6 +478,23 @@ describe("google sheets: find", () => {
     ]);
   });
 
+  test("a column named __proto__ comes back with its value", async () => {
+    const { tool } = setup(["sheets_find_rows"], {
+      tabs: [
+        {
+          sheetId: 0,
+          title: "Leads",
+          rows: [
+            ["Nome", "__proto__"],
+            ["Ana", "valor"],
+          ],
+        },
+      ],
+    });
+    const out = await tool("sheets_find_rows")({});
+    expect(out).toContain('"__proto__":"valor"');
+  });
+
   test("contains matches part of the cell", async () => {
     const { tool } = setup(["sheets_find_rows"]);
     const out = parse(

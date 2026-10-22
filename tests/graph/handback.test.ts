@@ -6,6 +6,7 @@ import {
   humanAgentMessage,
   humanHandbackMessage,
   memoryHeadMessage,
+  undeliveredProactiveNote,
 } from "@/graph/markers";
 import { HANDOFF_DONE_PREFIX } from "@/graph/tools/catalog";
 
@@ -93,6 +94,26 @@ describe("does the turn owe a hand-back note", () => {
         humanAgentMessage(42, "Oi, aqui é a Ana."),
       ]),
     ).toBe(true);
+  });
+
+  // A proactive draft noted because a person held the conversation tells the model a person holds it;
+  // handed back without a word, the next turn still needs the note. A window note says no such thing.
+  test("a proactive draft noted while a person held the conversation owes one", () => {
+    expect(
+      owesHandbackNote([
+        new HumanMessage("oi"),
+        undeliveredProactiveNote(42, "n1", "held", "Seu pagamento caiu."),
+      ]),
+    ).toBe(true);
+  });
+
+  test("a proactive draft noted for the closed window owes nothing", () => {
+    expect(
+      owesHandbackNote([
+        new HumanMessage("oi"),
+        undeliveredProactiveNote(42, "n1", "window", "Lembrete de amanhã."),
+      ]),
+    ).toBe(false);
   });
 
   // IDEMPOTENT WITH NO BOOKKEEPING, which is the whole reason this reads backwards: the note sitting

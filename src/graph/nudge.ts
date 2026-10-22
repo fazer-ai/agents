@@ -1,4 +1,4 @@
-import type { BaseMessage } from "@langchain/core/messages";
+import { AIMessage, type BaseMessage } from "@langchain/core/messages";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
@@ -106,6 +106,8 @@ import {
   humanHandbackMessage,
   nudgeMessage,
   turnWasCalledOff,
+  type UndeliveredProactiveReason,
+  undeliveredProactiveNote,
 } from "./markers";
 import { nudgeOrigin } from "./nudge-origin";
 import { type OwnershipVerdict, withOwnershipFence } from "./ownership-fence";
@@ -2614,33 +2616,49 @@ async function runAgentNudgeBody(
     }
   };
 
-  // A TEMPLATE SENT IN THE DRAFT'S PLACE: the customer read the template, so the thread holds that
-  // text where the draft stood, and the next turn builds on what was said. Same reactive plan as the
-  // silence take-back: the turn's acts and their results stay, only the unsent sentence changes.
-  const rememberTemplateSent = async (sent: string): Promise<void> => {
+  // WHAT STANDS IN THE DRAFT'S PLACE when the draft itself never reached the customer: the template
+  // they read instead, or a note that it became a private note. Either way the next turn builds on
+  // what was said. Same reactive plan as the silence take-back: the turn's acts and their results
+  // stay, only the unsent sentence changes.
+  const replaceDraft = async (
+    replacement: (id: string) => BaseMessage,
+    what: string,
+  ): Promise<void> => {
     const plan = await undoRefusedTurn({
       checkpointer,
       graphThreadId,
       produced: result.messages,
       kind: "reactive",
-      replacementText: sent,
+      replacement,
       owner: graphOwner,
       base,
     }).catch((err) => {
       logger.warn(
         { err, conversationId: String(conversationId) },
-        "agentNudge: could not put the sent template in the draft's place",
+        "agentNudge: could not put the %s in the draft's place",
+        what,
       );
       return null;
     });
     if (plan && plan.action !== "remove") {
       logger.warn(
-        "agentNudge left the unsent draft in place of the template: conv=%s reason=%s",
+        "agentNudge left the unsent draft in place of the %s: conv=%s reason=%s",
+        what,
         String(conversationId),
         plan.reason,
       );
     }
   };
+  const rememberTemplateSent = (sent: string) =>
+    replaceDraft((id) => new AIMessage({ content: sent, id }), "template");
+  const rememberDraftNoted = (
+    reason: UndeliveredProactiveReason,
+    draft: string,
+  ) =>
+    replaceDraft(
+      (id) => undeliveredProactiveNote(conversationId, id, reason, draft),
+      "undelivered note",
+    );
 
   // The post-generation stretch. Every end says whether the generated pair reached the customer:
   // `refused` is rolled back by the single caller below, after the claims above were released, and
@@ -3081,6 +3099,7 @@ async function runAgentNudgeBody(
         conversationId,
         `${OUTSIDE_WINDOW_NOTE_PREFIX}${literalForChatwoot(reply)}`,
       );
+      await rememberDraftNoted("window", reply);
       logger.info(
         "agentNudge noted (outside 24h window, no template): conv=%s source=%s",
         String(conversationId),
@@ -3100,6 +3119,7 @@ async function runAgentNudgeBody(
     }
     delivered = true;
     await client.sendPrivateNote(conversationId, literalForChatwoot(reply));
+    await rememberDraftNoted("held", reply);
     logger.info(
       "agentNudge noted: conv=%s source=%s",
       String(conversationId),

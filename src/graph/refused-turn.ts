@@ -1,5 +1,5 @@
 import {
-  AIMessage,
+  type AIMessage,
   type BaseMessage,
   RemoveMessage,
 } from "@langchain/core/messages";
@@ -252,9 +252,9 @@ export async function undoRefusedTurn(params: {
   // construction never reaches it). Absent, the reply just goes. Reactive plan only: the proactive
   // one removes nothing from a turn that acted.
   undeliveredNote?: (id: string) => BaseMessage;
-  // What the customer read instead of the removed reply (a template sent in its place). Unlike the
-  // note it stands there whether or not the turn acted first, on the same id.
-  replacementText?: string;
+  // What stands in the removed reply's place whatever the turn did before it: the template the
+  // customer read instead, or the note that the draft never reached them. Built on the same id.
+  replacement?: (id: string) => BaseMessage;
   // The DURABLE half of the exclusion, for the one thread key that has a row to hang it on. Both or
   // neither: without them only the process-local check applies, which is all a thread with no
   // contact inbox can have.
@@ -298,8 +298,8 @@ export async function undoRefusedTurn(params: {
         const note =
           first === undefined
             ? null
-            : params.replacementText !== undefined
-              ? new AIMessage({ content: params.replacementText, id: first })
+            : params.replacement !== undefined
+              ? params.replacement(first)
               : params.undeliveredNote !== undefined &&
                   turnActedBeforeItsReply(produced, params.inertTools)
                 ? params.undeliveredNote(first)

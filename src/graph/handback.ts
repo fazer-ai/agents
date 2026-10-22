@@ -1,6 +1,7 @@
 import type { BaseMessage } from "@langchain/core/messages";
 import {
   endedInHumanAttendance,
+  isHeldProactiveNote,
   isHumanAgentTurn,
   isHumanHandback,
 } from "./markers";
@@ -26,6 +27,9 @@ export function owesHandbackNote(messages: BaseMessage[]): boolean {
     if (m === undefined) continue;
     if (isHumanHandback(m)) return false;
     if (isHumanAgentTurn(m)) return true;
+    // NOTE: a proactive draft that became a note because a person held the conversation tells the
+    // model a person holds it, which keeps a quiet-in-attendance agent quiet just the same.
+    if (isHeldProactiveNote(m)) return true;
     if (handoffSucceeded(m)) return true;
     if (openCaseHandedOver(m)) return true;
     if (skipHandedOver(m)) return true;

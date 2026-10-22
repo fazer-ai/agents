@@ -18,6 +18,7 @@ import {
   MEMORY_HEAD_OPEN,
   memoryHeadMessage,
   nudgeMessage,
+  undeliveredProactiveNote,
   undeliveredReplyNote,
 } from "@/graph/markers";
 import { DATA_FENCE, renderNudge } from "@/graph/nudge";
@@ -165,6 +166,23 @@ describe("renderTranscript", () => {
     const t = renderTranscript([
       new HumanMessage("pode ser terça"),
       undeliveredReplyNote(42),
+      new HumanMessage("e o endereço?"),
+    ]);
+    expect(t).toBe(
+      ["cliente: pode ser terça", "cliente: e o endereço?"].join("\n"),
+    );
+  });
+
+  // The note a proactive draft leaves when it became a private note is the same kind of system fact.
+  test("the undelivered proactive note is dropped, not attributed to anybody", () => {
+    const t = renderTranscript([
+      new HumanMessage("pode ser terça"),
+      undeliveredProactiveNote(
+        42,
+        "n1",
+        "window",
+        "Lembrete da consulta amanhã.",
+      ),
       new HumanMessage("e o endereço?"),
     ]);
     expect(t).toBe(

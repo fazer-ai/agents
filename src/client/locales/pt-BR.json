@@ -2166,7 +2166,7 @@
       "actionHandoff": "Encaminhar a conversa para a equipe",
       "actionHint": "O que fazer quando uma checagem dispara.",
       "actionObserve": "Só registrar (a conversa não é alterada)",
-      "actionObserveHint": "Só registra o disparo nos Logs, com as categorias (e a justificativa quando \"Registrar os valores enviados às ferramentas\" está ligado, em Comportamento). A mensagem e a resposta seguem como se a checagem tivesse passado: nada é substituído, nenhuma nota é postada e nada vai para a equipe. Use para medir uma política no tráfego real antes de deixá-la agir.",
+      "actionObserveHint": "Só registra o disparo nos Logs; a conversa segue como se a checagem tivesse passado. A justificativa só é registrada com \"Registrar os valores enviados às ferramentas\" ligado, em Comportamento.",
       "actionSilent": "Não enviar nada (deixar o cliente sem resposta)",
       "actionTemplate": "Responder com mensagem template",
       "checkAdherence": "Aderência às instruções do agente",

@@ -22,7 +22,7 @@ import { clearFlowLog, flowLogRows } from "../utils/flowlog";
 import { outboundUrl } from "../utils/outbound";
 import { guardrailModel } from "../utils/scripted-models";
 
-// The `observe` action (issue #1640): the check runs and its verdict is recorded, and the
+// The `observe` action: the check runs and its verdict is recorded, and the
 // conversation goes on as if it had passed. What it must never do is what the other four actions
 // exist to do: replace, suppress, hand over, or post a note.
 

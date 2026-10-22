@@ -2099,7 +2099,7 @@
       "actionHandoff": "Hand the conversation to the team",
       "actionHint": "What to do when a check trips.",
       "actionObserve": "Only record it (the conversation is not changed)",
-      "actionObserveHint": "Only records the trip in the Logs, with the categories (and the rationale when \"Log the values sent to tools\" is on, in Behavior). The message and the reply go on as if the check had passed: nothing is replaced, no note is posted and nothing is handed over. Use it to measure a policy on real traffic before letting it act.",
+      "actionObserveHint": "Only records the trip in the Logs; the conversation goes on as if the check had passed. The rationale is logged only with \"Log the values sent to tools\" on, in Behavior.",
       "actionSilent": "Send nothing (leave the customer without a reply)",
       "actionTemplate": "Reply with a template message",
       "checkAdherence": "Adherence to the agent's instructions",

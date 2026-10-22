@@ -395,7 +395,7 @@ export function GuardrailsTab({
                 d.action === "observe"
                   ? t(
                       "editor.guardrails.actionObserveHint",
-                      'Only records the trip in the Logs, with the categories (and the rationale when "Log the values sent to tools" is on, in Behavior). The message and the reply go on as if the check had passed: nothing is replaced, no note is posted and nothing is handed over. Use it to measure a policy on real traffic before letting it act.',
+                      'Only records the trip in the Logs; the conversation goes on as if the check had passed. The rationale is logged only with "Log the values sent to tools" on, in Behavior.',
                     )
                   : t(
                       "editor.guardrails.actionHint",

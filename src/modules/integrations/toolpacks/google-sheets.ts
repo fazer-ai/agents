@@ -194,7 +194,7 @@ async function locateTab(
   if (sheetId === null) return toolFailure(NO_TAB);
   const base = `${SHEETS_ORIGIN}/${encodeURIComponent(spreadsheetId)}`;
   const meta = await sheetsFetch(
-    `${base}?${new URLSearchParams({ fields: "sheets.properties(sheetId,title,gridProperties.rowCount)" })}`,
+    `${base}?${new URLSearchParams({ fields: "sheets.properties(sheetId,title,sheetType,gridProperties.rowCount)" })}`,
     { method: "GET", token },
     ctx,
   );
@@ -207,6 +207,10 @@ async function locateTab(
   if (!tab || typeof tab.title !== "string")
     return toolFailure(
       "The tab configured for this integration no longer exists in the spreadsheet. The operator has to pick the tab again in the integration's settings.",
+    );
+  if (tab.sheetType !== undefined && tab.sheetType !== "GRID")
+    return toolFailure(
+      "The tab configured for this integration is a chart sheet, which has no rows. The operator has to pick a tab with a table in the integration's settings.",
     );
   const grid = (tab.gridProperties as { rowCount?: unknown } | undefined)
     ?.rowCount;

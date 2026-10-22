@@ -22,6 +22,7 @@ type Tab = {
   title: string;
   rows: string[][];
   gridRows?: number;
+  sheetType?: string;
 };
 
 const ORIGIN = "https://sheets.googleapis.com/v4/spreadsheets";
@@ -131,6 +132,7 @@ class FakeSheets {
           properties: {
             sheetId: t.sheetId,
             title: t.title,
+            sheetType: t.sheetType ?? "GRID",
             gridProperties: {
               rowCount: t.gridRows ?? Math.max(t.rows.length, 1000),
             },
@@ -727,6 +729,22 @@ describe("google sheets: what reaches Google", () => {
     });
     expect(out.toLowerCase()).toContain("tab");
     expect(gone.fake.writes).toBe(0);
+  });
+
+  test("a chart sheet configured as the tab is refused before any read or write", async () => {
+    const chart: Tab = {
+      sheetId: 0,
+      title: "Leads",
+      rows: [],
+      sheetType: "OBJECT",
+    };
+    const { fake, tool } = setup(["sheets_append_row"], { tabs: [chart] });
+    const out = await tool("sheets_append_row")({
+      values: [{ column: "Nome", value: "x" }],
+    });
+    expect(out.toLowerCase()).toContain("chart");
+    expect(fake.calls.filter((c) => c.url.includes("/values")).length).toBe(0);
+    expect(fake.writes).toBe(0);
   });
 
   test("a tab longer than what is read says the search did not cover it", async () => {

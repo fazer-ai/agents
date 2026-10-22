@@ -176,7 +176,7 @@ export async function listSpreadsheetTabs(
   const token = await credentialToken(ctx, credentialRef, base, deps);
   const root = `${SHEETS_ORIGIN}/${encodeURIComponent(id)}`;
   const meta = await getJson(
-    `${root}?${new URLSearchParams({ fields: "properties.title,sheets.properties(sheetId,title)" })}`,
+    `${root}?${new URLSearchParams({ fields: "properties.title,sheets.properties(sheetId,title,sheetType)" })}`,
     token,
     deps,
   );
@@ -209,6 +209,8 @@ export async function listSpreadsheetTabs(
   for (const s of Array.isArray(m.sheets) ? m.sheets : []) {
     const p = (s as { properties?: Record<string, unknown> })?.properties;
     if (typeof p?.sheetId !== "number" || typeof p.title !== "string") continue;
+    // A chart sheet (`OBJECT`) has no rows to hold a table, and its range fails the whole header batch.
+    if (p.sheetType !== undefined && p.sheetType !== "GRID") continue;
     tabs.push({ sheetId: p.sheetId, title: p.title, columns: null });
   }
   const withHeader = tabs.slice(0, MAX_TABS_WITH_HEADER);

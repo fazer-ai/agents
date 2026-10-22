@@ -145,6 +145,44 @@ describe("the tab list", () => {
       ).toBe(true);
   });
 
+  test("a chart sheet is neither offered nor put in the header batch", async () => {
+    const { urls, fetchImpl } = routed((u) =>
+      u.pathname.endsWith("values:batchGet")
+        ? [200, { valueRanges: [{ values: [["Nome"]] }] }]
+        : [
+            200,
+            {
+              properties: { title: "CRM" },
+              sheets: [
+                {
+                  properties: {
+                    sheetId: 5,
+                    title: "Gráfico",
+                    sheetType: "OBJECT",
+                  },
+                },
+                {
+                  properties: { sheetId: 0, title: "Leads", sheetType: "GRID" },
+                },
+              ],
+            },
+          ],
+    );
+    const out = await listSpreadsheetTabs(
+      ctx,
+      "vault:3",
+      SID,
+      noBase,
+      deps(fetchImpl),
+    );
+    expect(out.tabs).toEqual([
+      { sheetId: 0, title: "Leads", columns: ["Nome"] },
+    ]);
+    expect(new URL(urls[1] as string).searchParams.getAll("ranges")).toEqual([
+      "'Leads'!1:1",
+    ]);
+  });
+
   test("a failed header read is an error, not tabs without a header row", async () => {
     const { fetchImpl } = routed((u) =>
       u.pathname.endsWith("values:batchGet")

@@ -236,10 +236,20 @@ export async function receiveInbound(
       route.catalogType,
       String(route.id),
     );
-    const id = await persistFailed(base, route, params.rawBody, {
-      reason: "invalid",
-      issues: "body not covered by the signed message",
-    });
+    // One row per instance and signature setting: the refusal depends on the setting, so every
+    // request it refuses is the same problem, whatever unsigned body it carries.
+    const id = await persistFailed(
+      base,
+      route,
+      params.rawBody,
+      {
+        reason: "invalid",
+        issues: "body not covered by the signed message",
+      },
+      `uncovered-body:${createHash("sha256")
+        .update(JSON.stringify(route.config.signature ?? null))
+        .digest("hex")}`,
+    );
     return {
       ack: true,
       deliveryId: id,
@@ -336,8 +346,14 @@ async function persistFailed(
   route: ResolvedInboundRoute,
   rawBody: string,
   payload: Record<string, unknown>,
+  // A refusal decided by the configuration alone, not by the body, dedupes on what decided it: keyed
+  // on the body, a sender varying an unsigned body would file one FAILED row and one dead-letter per
+  // variation of the same signed notification.
+  dedupeKeyOverride?: string,
 ): Promise<bigint> {
-  const dedupeKey = `raw:${createHash("sha256").update(rawBody).digest("hex")}`;
+  const dedupeKey =
+    dedupeKeyOverride ??
+    `raw:${createHash("sha256").update(rawBody).digest("hex")}`;
   const create = () =>
     runScopedOn(base, sysCtx(route.tenantId), (db) =>
       db.inboundDelivery.create({

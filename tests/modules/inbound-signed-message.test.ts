@@ -541,13 +541,13 @@ describe.skipIf(!dbUp)("a manifest-signed notification end to end", () => {
       ),
       spyOn(inbound, "processInboundDelivery").mockResolvedValue("skipped"),
     ];
-    const res = await integrationsController
-      .handle(
+    const send = (b: string) =>
+      integrationsController.handle(
         new Request(
           `http://localhost/v1/integrations/inbound/${routeToken}?data.id=123456&type=payment`,
           {
             method: "POST",
-            body,
+            body: b,
             headers: {
               "content-type": "application/json",
               "x-signature": `ts=${ts},v1=${sig}`,
@@ -555,21 +555,40 @@ describe.skipIf(!dbUp)("a manifest-signed notification end to end", () => {
             },
           },
         ),
-      )
-      .finally(() => {
+      );
+    // The same signed notification replayed with another unsigned body: still one problem, so
+    // still one FAILED row (keyed on the body, each variation filed its own row and dead-letter).
+    const replayed = JSON.stringify({
+      event_id: "pay-1:approved",
+      conversation_ref: minted.ref,
+      text: "Outro corpo, mesma assinatura",
+    });
+    const [res, replay] = await (async () => {
+      try {
+        return [await send(body), await send(replayed)];
+      } finally {
         for (const s of spies) s.mockRestore();
-      });
+      }
+    })();
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ack: true, outcome: "invalid" });
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toEqual({ ack: true, outcome: "invalid" });
     const rows = await suDb.inboundDelivery.findMany({
       where: { integrationInstanceId: instanceId },
       select: { dedupeKey: true, status: true, payload: true },
     });
     expect(rows.filter((r) => r.dedupeKey === "pay-1:approved")).toEqual([]);
-    expect(rows.map((r) => [r.status, r.payload])).toContainEqual([
-      "FAILED",
-      { reason: "invalid", issues: "body not covered by the signed message" },
-    ]);
+    expect(
+      rows.filter(
+        (r) =>
+          r.status === "FAILED" &&
+          Bun.deepEquals(r.payload, {
+            reason: "invalid",
+            issues: "body not covered by the signed message",
+          }),
+      ),
+    ).toHaveLength(1);
   });
 
   test("a message that covers the body and a query parameter queues the event", async () => {

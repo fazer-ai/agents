@@ -15,39 +15,75 @@ function msg(over: Partial<RenderableMessage> = {}): RenderableMessage {
   return { text: "", attachmentTypes: ["audio"], ...over };
 }
 
-// O que o áudio engole. O ramo de áudio do renderizador é um `if/else if`, então um áudio na
-// mensagem decide o corpo sozinho: uma extração de documento, uma descrição de imagem ou um pin de
-// localização ao lado dele NÃO chegam ao texto que o agente lê. Um portão que contasse a extração e
-// a descrição como "palavras a guardar" mandaria para a ingestão um corpo que é só o placeholder.
-// Que o áudio engula essas três é um DEFEITO do renderizador, não uma regra que se queira: está
-// preso aqui como está para que mudá-lo seja uma decisão com um teste vermelho na frente.
-describe("o ramo de áudio do renderizador tem precedência sobre o resto", () => {
-  const engolidos: Array<[string, RenderableMessage]> = [
-    [
-      "a extração de um documento ao lado",
-      msg({ extractedText: "boleto vencido em 10/09" }),
-    ],
-    [
-      "a descrição de uma imagem ao lado",
-      msg({ imageDescription: "print de uma tela de erro" }),
-    ],
-    [
-      "um pin de localização ao lado",
-      msg({ location: { latitude: -23.5, longitude: -46.6, title: null } }),
-    ],
-  ];
-  for (const [nome, m] of engolidos) {
-    test(`${nome} não chega ao corpo`, () => {
-      const corpo = renderInboundMessage(m);
-      expect(corpo).toContain(PLACEHOLDER);
-      expect(corpo.replace(PLACEHOLDER, "").trim()).toBe("");
-    });
-  }
+// O áudio não decide o corpo sozinho. A transcrição (ou o aviso de áudio inaudível) vem primeiro, e
+// ao lado dela cada bloco que a visão produziu e o pin de localização, como numa mensagem sem áudio:
+// o cliente que manda "olha o print" junto com o print precisa que o agente veja o print.
+describe("o áudio leva ao lado o que a visão leu", () => {
+  const AUDIO =
+    "<mensagem-de-audio>o ingresso não chegou, olha o print</mensagem-de-audio>";
+  const comTranscricao = (over: Partial<RenderableMessage>) =>
+    msg({ transcribedText: "o ingresso não chegou, olha o print", ...over });
 
-  // E o que SOBREVIVE ao lado do áudio, que é o outro lado do mesmo fato.
-  test("o content faz as vezes da transcrição", () => {
-    expect(renderInboundMessage(msg({ text: "e o meu pedido?" }))).toContain(
-      "e o meu pedido?",
+  test("a descrição de uma imagem ao lado chega ao corpo", () => {
+    expect(
+      renderInboundMessage(
+        comTranscricao({
+          attachmentTypes: ["audio", "image"],
+          imageDescription: "print de um e-mail de compra sem o ingresso",
+        }),
+      ),
+    ).toBe(
+      `${AUDIO}\n<imagem>print de um e-mail de compra sem o ingresso</imagem>`,
+    );
+  });
+
+  test("a extração de um documento ao lado chega ao corpo", () => {
+    expect(
+      renderInboundMessage(
+        comTranscricao({
+          attachmentTypes: ["audio", "file"],
+          extractedText: "boleto vencido em 10/09",
+        }),
+      ),
+    ).toBe(`${AUDIO}\n<documento>boleto vencido em 10/09</documento>`);
+  });
+
+  test("um pin de localização ao lado chega ao corpo", () => {
+    expect(
+      renderInboundMessage(
+        comTranscricao({
+          location: { latitude: -23.5, longitude: -46.6, title: null },
+        }),
+      ),
+    ).toBe(`${AUDIO}\n<localização latitude="-23.5" longitude="-46.6">`);
+  });
+
+  test("um áudio inaudível não esconde a imagem que veio com ele", () => {
+    const corpo = renderInboundMessage(
+      msg({
+        attachmentTypes: ["audio", "image"],
+        imageDescription: "print de uma tela de erro",
+      }),
+    );
+    expect(corpo).toBe(
+      `${PLACEHOLDER}\n<imagem>print de uma tela de erro</imagem>`,
+    );
+  });
+
+  test("só o áudio continua só o áudio", () => {
+    expect(renderInboundMessage(comTranscricao({}))).toBe(AUDIO);
+  });
+
+  test("o content faz as vezes da transcrição e não se repete ao lado da imagem", () => {
+    const corpo = renderInboundMessage(
+      msg({
+        text: "e o meu pedido?",
+        attachmentTypes: ["audio", "image"],
+        imageDescription: "foto da caixa",
+      }),
+    );
+    expect(corpo).toBe(
+      "<mensagem-de-audio>e o meu pedido?</mensagem-de-audio>\n<imagem>foto da caixa</imagem>",
     );
   });
 

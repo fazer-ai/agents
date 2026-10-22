@@ -1,4 +1,5 @@
-import type { AIMessage, BaseMessage } from "@langchain/core/messages";
+import type { BaseMessage } from "@langchain/core/messages";
+import { replyWrittenThisTurn } from "@/graph/graph";
 import {
   CONVERSATION_DIVIDER,
   HUMAN_AGENT_NOTE,
@@ -40,10 +41,35 @@ export function openAttendance(
 // Per message, so one pasted document cannot crowd out the question the window is there to carry.
 export const CONTEXT_MESSAGE_MAX = 1000;
 
+// The assistant messages the customer actually read: per turn, the last one when it has text, and
+// otherwise the text the runtime recovers from earlier in the turn (`replyWrittenThisTurn`). Text an
+// assistant message carries beside a tool call is otherwise the agent thinking between rounds.
+function deliveredReplies(messages: readonly BaseMessage[]): Set<number> {
+  const out = new Set<number>();
+  for (let end = messages.length - 1; end >= 0; end--) {
+    const last = messages[end];
+    if (last?.getType() !== "ai") continue;
+    if (contentToText(last.content).trim()) out.add(end);
+    else if (replyWrittenThisTurn(messages.slice(0, end + 1))) {
+      for (let i = end - 1; i >= 0; i--) {
+        const m = messages[i];
+        if (m?.getType() === "ai" && contentToText(m.content).trim()) {
+          out.add(i);
+          break;
+        }
+      }
+    }
+    // NOTE: the rest of this turn, back to its customer message, is not what the customer read.
+    while (end > 0 && messages[end - 1]?.getType() !== "human") end--;
+  }
+  return out;
+}
+
 export function guardrailContext(
   messages: readonly BaseMessage[],
   limit: number,
 ): GuardrailContextMessage[] {
+  const delivered = deliveredReplies(messages);
   const out: GuardrailContextMessage[] = [];
   for (let i = messages.length - 1; i >= 0 && out.length < limit; i--) {
     const m = messages[i];
@@ -64,9 +90,7 @@ export function guardrailContext(
       continue;
     }
     if (isSystemMarker(m) || !text) continue;
-    // NOTE: text beside a tool call is the agent thinking aloud between rounds, not a reply it sent.
-    if (type === "ai" && ((m as AIMessage).tool_calls?.length ?? 0) > 0)
-      continue;
+    if (type === "ai" && !delivered.has(i)) continue;
     if (type === "human") out.push({ role: "customer", text });
     else if (type === "ai") out.push({ role: "assistant", text });
   }

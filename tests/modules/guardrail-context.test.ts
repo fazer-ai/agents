@@ -131,6 +131,22 @@ describe("guardrailContext", () => {
       { role: "assistant", text: "A1 tem sim" },
     ]);
   });
+
+  test("a reply written beside a tool call is the reply when the turn ends empty", () => {
+    const turn = (callName: string) => [
+      new HumanMessage("C1 quero trocar"),
+      new AIMessage({
+        content: "A1 pista ou vip?",
+        tool_calls: [{ id: "t1", name: callName, args: {} }],
+      }),
+      new ToolMessage({ content: "ok", tool_call_id: "t1" }),
+      new AIMessage(""),
+    ];
+    expect([
+      guardrailContext(turn("set_labels"), 4).map((c) => c.text),
+      guardrailContext(turn("skip_reply"), 4).map((c) => c.text),
+    ]).toEqual([["C1 quero trocar", "A1 pista ou vip?"], ["C1 quero trocar"]]);
+  });
 });
 
 describe("openAttendance", () => {

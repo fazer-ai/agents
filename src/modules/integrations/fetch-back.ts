@@ -239,6 +239,21 @@ export function mapFetchedResource(
   const eventId =
     (cfg.eventIdPath ? scalar(readPath(response, cfg.eventIdPath)) : null) ??
     resourceId;
+  // Each half encoded, so a `:` inside one cannot pass for the separator (`a:b`+`c` and `a`+`b:c`);
+  // a plain id and status read as before, `123:approved`. A lone surrogate cannot be encoded (nor
+  // stored), so it is an answer this config cannot use, not a failure to retry.
+  let dedupeKey: string;
+  try {
+    dedupeKey = `${encodeURIComponent(eventId)}:${encodeURIComponent(status as string)}`;
+  } catch {
+    return {
+      ok: false,
+      reason: "invalid",
+      detail: cfg.eventIdPath
+        ? `${cfg.eventIdPath}, ${cfg.statusPath}`
+        : cfg.statusPath,
+    };
+  }
   const value = cfg.valuePath ? readPath(response, cfg.valuePath) : undefined;
   const currency = cfg.currencyPath
     ? scalar(readPath(response, cfg.currencyPath))
@@ -248,9 +263,7 @@ export function mapFetchedResource(
     event: {
       kind: rule.paid ? "conversion" : "agent_nudge",
       externalId: ref as string,
-      // Each half encoded, so a `:` inside one cannot pass for the separator (`a:b`+`c` and
-      // `a`+`b:c`); a plain id and status read as before, `123:approved`.
-      dedupeKey: `${encodeURIComponent(eventId)}:${encodeURIComponent(status as string)}`,
+      dedupeKey,
       status: status as string,
       ...(rule.text ? { text: rule.text } : {}),
       ...(rule.paid && typeof value === "number" && Number.isFinite(value)

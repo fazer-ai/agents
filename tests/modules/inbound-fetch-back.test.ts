@@ -464,6 +464,14 @@ describe("the consult-back config", () => {
         return r.ok ? r.event.dedupeKey : null;
       };
       expect(key("a:b", "c")).toBeString();
+      // A lone surrogate cannot be encoded: an answer this config cannot use, not a crash to retry.
+      expect(
+        mapFetchedResource(withEvent, "n", {
+          charge: { id: "\ud800" },
+          status: "c",
+          external_reference: "r",
+        }),
+      ).toMatchObject({ ok: false, reason: "invalid" });
       expect(key("a:b", "c")).not.toBe(key("a", "b:c"));
     });
   });

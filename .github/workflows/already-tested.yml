@@ -1,0 +1,102 @@
+# Did a pull request already pass this exact tree?
+#
+# A squash merge of a PR that was up to date with main lands a commit whose tree is the tree the PR
+# run tested minutes earlier, and running lint, the type check and four test shards again on it
+# measures nothing new (79 suite runs on main in two days, 20-21/10/2026). The PR run tests the merge
+# ref (head plus base at that moment), not the head, so the evidence is that commit's tree:
+# mark-tested.yml, which starts only once the work passed and runs none of the PR's code, reads it
+# from the API and uploads an empty artifact named after the workflow and the tree. A push to main
+# skips only when it finds one for its own tree that a finished, green PR run of THE SAME WORKFLOW
+# uploaded after the work ended (the script says why each check is there).
+#
+# Ported from fazer-ai/sinete-app#72 and fazer-ai/bunfire#383. One reusable file instead of three
+# copies because test.yml, lint.yml and build-check.yml each prove their own work: each gets its own
+# marker (`tested-<workflow>-<tree>`), so lint passing never vouches for the tests.
+#
+# It fails open: any API error, or a push with no `head_commit`, leaves `skip` empty and the work
+# runs, and `continue-on-error` keeps that error from painting main red on its own. Equal trees are
+# equal content, the workflow files included, so main skips only what was tested byte for byte;
+# merging a PR that is behind main makes another tree and runs everything.
+name: Already tested
+
+on:
+  workflow_call:
+    inputs:
+      workflow:
+        description: 'the caller, without the extension (test, lint, build-check)'
+        required: true
+        type: string
+      suites:
+        description: 'prefix of the name of every job whose success the marker vouches for'
+        required: true
+        type: string
+    outputs:
+      skip:
+        description: 'true when a green pull request run of the caller tested this exact tree'
+        value: ${{ jobs.look.outputs.skip }}
+
+jobs:
+  look:
+    name: look
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      skip: ${{ steps.look.outputs.skip }}
+    steps:
+      - name: Look for a passing pull request run of this exact tree
+        id: look
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TREE: ${{ github.event.head_commit.tree_id }}
+          SHA: ${{ github.sha }}
+          WORKFLOW: ${{ inputs.workflow }}
+          SUITES: ${{ inputs.suites }}
+        run: |
+          set -euo pipefail
+          if [ -z "$TREE" ]; then
+            echo "push with no head_commit: the work runs"
+            exit 0
+          fi
+          # NOTE: the name alone proves nothing: any run can upload any name, and an artifact exists
+          # from the moment it is uploaded, before its run ends. The artifact is only the index. A
+          # candidate counts when it comes from a completed, successful pull_request run of THIS
+          # workflow whose work jobs concluded success; when the run's own `mark <tree>` job, with
+          # the tree we look for in its NAME, did too (a job name is written by the workflow
+          # definition, so PR code holding the runner's artifact credentials can forge an artifact
+          # but not that); when the artifact was created after every work job finished; and when the
+          # three workflow files involved at that run's PR head are byte for byte the ones on main
+          # now, so a branch that rewrote them to upload a marker for someone else's tree does not
+          # count. The run executed the merge ref's files, not the head's: exploiting that gap means
+          # first merging a workflow that uploads without testing, and whoever can merge that can
+          # already switch CI off.
+          files=".github/workflows/$WORKFLOW.yml .github/workflows/already-tested.yml .github/workflows/mark-tested.yml"
+          candidates=$(gh api "repos/$REPO/actions/artifacts?name=tested-$WORKFLOW-$TREE&per_page=100" --jq '.artifacts[] | select(.expired == false) | "\(.workflow_run.id) \(.created_at)"')
+          while read -r run created; do
+            [ -n "$run" ] || continue
+            head=$(gh api "repos/$REPO/actions/runs/$run" --jq "select(.path == \".github/workflows/$WORKFLOW.yml\" and .event == \"pull_request\" and .status == \"completed\" and .conclusion == \"success\") | .head_sha")
+            [ -n "$head" ] || continue
+            same=true
+            for f in $files; do
+              mine=$(gh api "repos/$REPO/contents/$f?ref=$SHA" --jq .sha)
+              theirs=$(gh api "repos/$REPO/contents/$f?ref=$head" --jq .sha 2>/dev/null || echo missing)
+              [ "$mine" = "$theirs" ] || same=false
+            done
+            [ "$same" = true ] || continue
+            suites=$(gh api "repos/$REPO/actions/runs/$run/jobs?per_page=100" | jq -r --arg created "$created" --arg prefix "$SUITES" --arg tree "$TREE" '
+              .jobs
+              | map(select(.name | startswith($prefix))) as $work
+              | map(select(.name == "mark-tested / mark " + $tree)) as $mark
+              | ($work | length) > 0 and ($mark | length) > 0
+                and all($work[], $mark[]; .status == "completed" and .conclusion == "success")
+                and all($work[]; (.completed_at | type) == "string" and $created > .completed_at)')
+            if [ "$suites" = true ]; then
+              echo "tree $TREE already passed $WORKFLOW in run $run"
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done <<< "$candidates"
+          echo "tree $TREE has no passing pull request run of $WORKFLOW: the work runs"

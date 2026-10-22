@@ -27,14 +27,37 @@ jobs:
     if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && !(github.repository == 'fazer-ai/agents-pro' && github.event_name == 'push')
     uses: ./.github/workflows/changed-code.yml
 
+  # A squash merge lands the tree this workflow already passed on the PR, and running lint again
+  # on it measures nothing new (already-tested.yml says how the PR's run is found and why it can be
+  # trusted). Only on the master, the one repo whose pushes to main come from merged PRs: agents-pro
+  # and the public agents receive mirror pushes that no PR run of their own tested, so there `skip`
+  # stays empty and nothing changes. It needs `changes` so that a docs-only push, which runs nothing
+  # anyway, does not pay for the lookup either.
+  already-tested:
+    needs: changes
+    if: >-
+      github.event_name == 'push'
+      && github.repository == 'fazer-ai/agents-master'
+      && needs.changes.outputs.code == 'true'
+    uses: ./.github/workflows/already-tested.yml
+    with:
+      workflow: lint
+      suites: 'lint-run'
+    permissions:
+      actions: read
+      contents: read
+
   lint-run:
     # agents-pro only ever receives mirror pushes of a tree this master already tested, and the
     # stripped Pro tree is lint + build-checked by `check:editions` before it is mirrored, so this
     # job is skipped there on push (see test.yml). agents (public, free) keeps running on push.
     # No CI while the PR is a draft: the autonomous loop opens its PRs as drafts and marks them ready
     # once the review loop is clean, so the suite runs on the final HEAD, not on every fix push.
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
+    needs: [changes, already-tested]
+    if: >-
+      !cancelled()
+      && needs.changes.outputs.code == 'true'
+      && needs.already-tested.outputs.skip != 'true'
     # Only the two private copies (this master, agents-pro) run on Blacksmith: $0.004/min against
     # GitHub's $0.006, and the same shard finishes ~30% sooner (measured 10/2026). The public agents
     # repo, and any fork of it, keeps GitHub's runners, free for public repos and always available.
@@ -68,6 +91,22 @@ jobs:
 
       - name: Run Biome Linter
         run: bun run lint
+
+  # Evidence for `already-tested`, once lint passed (mark-tested.yml: a job of its own, no checkout,
+  # no PR code). `!cancelled()` because a skip propagates through `needs` transitively:
+  # `already-tested`, skipped on every pull request, would otherwise skip this job too.
+  mark-tested:
+    needs: [lint-run]
+    if: >-
+      !cancelled()
+      && github.event_name == 'pull_request'
+      && github.repository == 'fazer-ai/agents-master'
+      && needs.lint-run.result == 'success'
+    uses: ./.github/workflows/mark-tested.yml
+    with:
+      workflow: lint
+    permissions:
+      contents: read
 
   # WHY A SEPARATE JOB HOLDS THE REQUIRED NAME. A job skipped by its own `if` reports the conclusion
   # `skipped`, and whether a required context accepts that is a GitHub behaviour this repo has never

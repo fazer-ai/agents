@@ -1,0 +1,67 @@
+# Evidence for already-tested.yml: the tree of the commit this run tested, under a name a later push
+# to main with the same tree can find (`tested-<workflow>-<tree>`).
+#
+# Called from a job of its own, after the work passed, so none of the PR's code runs before or beside
+# it (a suite step could otherwise rewrite the tree or upload a name of its own), and with NO
+# checkout: the tree comes from the API for `github.sha`, the merge commit the suites checked out.
+# `continue-on-error` on the job: a failed marker only costs main one more run of the work, so it
+# must not paint the PR red.
+name: Mark tested
+
+on:
+  workflow_call:
+    inputs:
+      workflow:
+        description: 'the caller, without the extension (test, lint, build-check)'
+        required: true
+        type: string
+
+jobs:
+  # The tree goes into the NAME of the job that follows, and that is the evidence: a job name is
+  # written by this workflow definition when the job starts, so nothing running inside the PR's
+  # suites can forge one, whereas the artifact below is only an index that anything holding the
+  # runner's artifact credentials could upload after the suites ended.
+  # already-tested.yml accepts a candidate only when this run's `mark <tree>` job, with the tree it
+  # is looking for in its name, concluded success.
+  tree:
+    name: tree
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: read
+    outputs:
+      tree: ${{ steps.read.outputs.tree }}
+    steps:
+      - name: Read the tree of the tested commit
+        id: read
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          tree=$(gh api "repos/$REPO/git/commits/$SHA" --jq .tree.sha)
+          printf '%s' "$tree" | grep -Eq '^[0-9a-f]{40}$'
+          echo "tree=$tree" >> "$GITHUB_OUTPUT"
+
+  mark:
+    name: mark ${{ needs.tree.outputs.tree }}
+    needs: tree
+    if: needs.tree.outputs.tree != ''
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - name: Write the marker
+        env:
+          SHA: ${{ github.sha }}
+        run: echo "$SHA" > tested-commit
+
+      - name: Upload the tested-tree marker
+        uses: actions/upload-artifact@v7
+        with:
+          name: tested-${{ inputs.workflow }}-${{ needs.tree.outputs.tree }}
+          path: tested-commit
+          retention-days: 7
+          overwrite: true

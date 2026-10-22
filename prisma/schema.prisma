@@ -2186,7 +2186,9 @@ model IntegrationInstance {
 // upstream tool is not auto-granted). NATIVE is the one permissive default: empty
 // enabledTools — or no row — means ALL native conversation-scoped tools. enabledTools is the
 // sub-tool allowlist (NATIVE/RAG/MCP/INTEGRATION); knowledgeBaseIds scopes RAG (empty = all
-// tenant KBs). Partial unique indexes (in the migration) cap NATIVE/RAG at one row per agent.
+// tenant KBs). No FK covers that array: deleting a base removes its id here, and the whole RAG row
+// when it was the only one (deleteKnowledgeBase). Partial unique indexes (in the migration) cap
+// NATIVE/RAG at one row per agent.
 model AgentToolSelection {
   id                    BigInt          @id @default(autoincrement())
   tenantId              BigInt          @map("tenant_id")

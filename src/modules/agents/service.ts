@@ -3517,9 +3517,16 @@ async function assertGrantTargetsExist(
       throw new NotFoundError("code tool not found", "errors.codeToolNotFound");
     },
   );
+  // `FOR KEY SHARE`, the lock an FK's referencing insert takes: no foreign key covers the array, so
+  // without it a delete of the base could commit between this read and the grant's write, and its sweep
+  // of the grants would miss the id this write stores.
   await assertAllPresent(
     kbIds,
-    (ids) => db.knowledgeBase.count({ where: { id: { in: ids } } }),
+    async (ids) =>
+      (
+        await db.$queryRaw<Array<{ id: bigint }>>`
+          SELECT id FROM knowledge_bases WHERE id = ANY(${ids}) FOR KEY SHARE`
+      ).length,
     () => {
       throw new NotFoundError(
         "knowledge base not found",

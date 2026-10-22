@@ -121,10 +121,9 @@ function toEqualFailure(received: unknown, expected: unknown, not: boolean) {
     nativeToEqual.call(not ? expect(received).not : expect(received), expected);
     return null;
   } catch (error) {
-    return (error as Error).message.replace(
-      /^expect\(received\)[^\n]*\n\n/,
-      "",
-    );
+    const message = error instanceof Error ? error.message : "";
+    if (!message.startsWith("expect(received)")) throw error;
+    return message.replace(/^expect\(received\)[^\n]*\n\n/, "");
   }
 }
 expect.extend({

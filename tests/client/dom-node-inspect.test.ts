@@ -213,3 +213,15 @@ test("toEqual decides on the nodes themselves, not on their markup", () => {
   const keyed = failureOf(() => expect<unknown>({ [key]: a }).toEqual(null));
   expect(keyed.message.length).toBeLessThan(2000);
 });
+
+test("an error thrown while comparing is not read as a verdict", () => {
+  const boom = {
+    get x(): number {
+      throw new Error("boom");
+    },
+  };
+  expect(() => expect(boom).not.toEqual({ x: 1 })).toThrow("boom");
+  expect(() =>
+    expect<unknown>({ open: document.body, boom }).toEqual({}),
+  ).toThrow("boom");
+});

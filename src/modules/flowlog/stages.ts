@@ -83,6 +83,11 @@ export function isFlowStage(s: string): s is FlowStage {
   return (FLOW_STAGES as readonly string[]).includes(s);
 }
 
+// A `guardrail` line whose trip was only recorded (the `observe` action), as a selector: an alert
+// channel's stage list and the Logs stage filter name it to pick those lines apart from the trips that
+// acted. Not a stage of its own: the line is written as `guardrail`, where every trip is.
+export const GUARDRAIL_OBSERVED = "guardrail_observed";
+
 // The buses that can reach a terminal failure. Closed, because the `dead_letter` line is only
 // legible if `unit` comes from a vocabulary and not from whatever each call site felt like writing —
 // and because ALERT_DELIVERY is compared against by name in ./alerts.ts, where a typo would silently

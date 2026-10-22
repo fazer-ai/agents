@@ -90,3 +90,74 @@ test("a value that only looks like a node keeps its usual form", () => {
   );
   expect(message).toContain("plain-object");
 });
+
+test("toEqual, toStrictEqual and toMatchObject report a node in its short form", () => {
+  const dialog = pageWithDialog();
+  for (const assertion of [
+    () => expect<unknown>(dialog).toEqual(null),
+    () => expect<unknown>(dialog).toStrictEqual(null),
+    () => expect({ open: dialog }).toMatchObject({ open: null }),
+    () => expect([dialog]).toEqual([]),
+  ]) {
+    const { message, ms } = failureOf(assertion);
+    expect(message.length).toBeLessThan(2000);
+    expect(ms).toBeLessThan(500);
+    expect(message).toContain('<div role="dialog" id="confirm-delete"');
+  }
+  expect(failureOf(() => expect(dialog).not.toEqual(dialog)).message).toContain(
+    "Expected: not <div",
+  );
+});
+
+test("the node-aware matchers keep their equality", () => {
+  const dialog = pageWithDialog();
+  expect(dialog).toEqual(dialog);
+  expect([dialog]).toStrictEqual([dialog]);
+  expect({ open: dialog, rows: 2000 }).toMatchObject({ open: dialog });
+  expect({ open: dialog }).toMatchObject({ open: expect.any(HTMLElement) });
+  expect({ open: dialog }).not.toMatchObject({ open: dialog, rows: 1 });
+  expect(dialog).not.toEqual(document.createElement("div"));
+  failureOf(() => expect([dialog]).toMatchObject([dialog, dialog]));
+});
+
+test("values without a node keep the native diff", () => {
+  const { message } = failureOf(() => expect({ a: 1 }).toEqual({ a: 2 }));
+  expect(message).toContain("- Expected  - 1");
+  const strict = failureOf(() =>
+    expect<unknown>({ a: undefined }).toStrictEqual({}),
+  );
+  expect(strict.message).toContain("toStrictEqual");
+  expect(
+    failureOf(() => expect({ a: 1 }).not.toEqual({ a: 1 })).message,
+  ).toContain("Expected: not {");
+  expect({ a: 1, b: 2 }).toMatchObject({ a: 1 });
+});
+
+test("a key the received value lacks fails toMatchObject with or without a node", () => {
+  const dialog = pageWithDialog();
+  expect({ a: 1 }).not.toMatchObject({ a: 1, extra: undefined });
+  expect({ open: dialog }).not.toMatchObject({
+    open: dialog,
+    extra: undefined,
+  });
+  expect([dialog, dialog]).not.toMatchObject([dialog]);
+  expect({ open: dialog, extra: undefined }).not.toStrictEqual({
+    open: dialog,
+  });
+});
+
+test("toStrictEqual with a node tells a class instance from a plain object", () => {
+  const dialog = pageWithDialog();
+  class Box {
+    constructor(readonly open: HTMLElement) {}
+  }
+  expect(new Box(dialog)).toEqual({ open: dialog });
+  expect(new Box(dialog)).not.toStrictEqual({ open: dialog });
+});
+
+test("a fragment names its kind", () => {
+  const { message } = failureOf(() =>
+    expect(document.createDocumentFragment()).toBeNull(),
+  );
+  expect(message).toContain("DocumentFragment");
+});

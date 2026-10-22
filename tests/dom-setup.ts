@@ -1,3 +1,4 @@
+import { expect } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 
 // Preloaded BEFORE ./setup.ts (`preload` in bunfig.toml): `@testing-library/dom` builds `screen` at
@@ -48,7 +49,7 @@ function nodeLine(node: Node): string {
     return `#text ${JSON.stringify(shown(node.textContent ?? ""))}`;
   if (node.nodeType === Node.COMMENT_NODE)
     return `<!--${shown(node.textContent ?? "")}-->`;
-  return node.nodeName;
+  return node.nodeName || node.constructor.name;
 }
 Object.defineProperty(Node.prototype, Bun.inspect.custom, {
   value(this: Node) {
@@ -57,6 +58,138 @@ Object.defineProperty(Node.prototype, Bun.inspect.custom, {
 });
 Object.defineProperty(globalThis, Bun.inspect.custom, {
   value: () => "[window]",
+});
+
+// toEqual, toStrictEqual and toMatchObject build their diff from the node's own fields, not from the
+// form above. With a node on either side they compare and report here, in that form; otherwise the
+// native matcher answers as before. `this.equals` has no strict mode, so toStrictEqual adds the
+// shape check below: the same keys, undefined ones included, and the same prototype.
+function holdsNode(value: unknown, seen = new Set<unknown>()): boolean {
+  if (value instanceof Node || value === globalThis) return true;
+  if (typeof value !== "object" || value === null || seen.has(value)) {
+    return false;
+  }
+  const proto = Object.getPrototypeOf(value);
+  if (!Array.isArray(value) && proto !== Object.prototype && proto !== null) {
+    return false;
+  }
+  seen.add(value);
+  return Object.values(value).some((v) => holdsNode(v, seen));
+}
+function sameShape(received: unknown, expected: unknown): boolean {
+  if (
+    typeof received !== "object" ||
+    typeof expected !== "object" ||
+    received === null ||
+    expected === null ||
+    received instanceof Node
+  ) {
+    return true;
+  }
+  if (Object.getPrototypeOf(received) !== Object.getPrototypeOf(expected)) {
+    return false;
+  }
+  const keys = Object.keys(expected);
+  return (
+    Object.keys(received).length === keys.length &&
+    keys.every(
+      (key) =>
+        Object.hasOwn(received, key) &&
+        sameShape(
+          (received as Record<string, unknown>)[key],
+          (expected as Record<string, unknown>)[key],
+        ),
+    )
+  );
+}
+function isSubset(
+  equals: (a: unknown, b: unknown) => boolean,
+  received: unknown,
+  expected: unknown,
+): boolean {
+  if (Array.isArray(expected)) {
+    return (
+      Array.isArray(received) &&
+      received.length === expected.length &&
+      expected.every((e, i) => isSubset(equals, received[i], e))
+    );
+  }
+  const plain =
+    typeof expected === "object" &&
+    expected !== null &&
+    Object.getPrototypeOf(expected) === Object.prototype &&
+    !("asymmetricMatch" in expected);
+  if (!plain) return equals(received, expected);
+  if (typeof received !== "object" || received === null) return false;
+  return Object.entries(expected).every(
+    ([key, e]) =>
+      key in received &&
+      isSubset(equals, (received as Record<string, unknown>)[key], e),
+  );
+}
+type NativeMatcher = (this: unknown, expected: unknown) => void;
+const nativeMatchers = expect(null) as unknown as Record<string, NativeMatcher>;
+function nodeAwareMatcher(name: "toEqual" | "toStrictEqual" | "toMatchObject") {
+  const native = nativeMatchers[name] as NativeMatcher;
+  const nativeFailure = (
+    received: unknown,
+    expected: unknown,
+    not: boolean,
+  ) => {
+    try {
+      native.call(not ? expect(received).not : expect(received), expected);
+      return null;
+    } catch (error) {
+      return (error as Error).message.replace(
+        /^expect\(received\)[^\n]*\n\n/,
+        "",
+      );
+    }
+  };
+  const matcher = function (
+    this: { isNot: boolean; equals: (a: unknown, b: unknown) => boolean },
+    received: unknown,
+    expected: unknown,
+  ) {
+    if (!holdsNode(received) && !holdsNode(expected)) {
+      const failure = nativeFailure(received, expected, false);
+      return {
+        pass: failure === null,
+        message: () => failure ?? nativeFailure(received, expected, true) ?? "",
+      };
+    }
+    const equals = (a: unknown, b: unknown) => this.equals(a, b);
+    let pass =
+      name === "toMatchObject"
+        ? isSubset(equals, received, expected)
+        : equals(received, expected);
+    if (pass && name === "toStrictEqual") {
+      pass = sameShape(received, expected);
+    }
+    return {
+      pass,
+      message: () =>
+        `Expected: ${this.isNot ? "not " : ""}${Bun.inspect(expected)}\nReceived: ${Bun.inspect(received)}`,
+    };
+  };
+  return matcher;
+}
+const nodeAware = {
+  toEqual: nodeAwareMatcher("toEqual"),
+  toStrictEqual: nodeAwareMatcher("toStrictEqual"),
+  toMatchObject: nodeAwareMatcher("toMatchObject"),
+};
+type MatcherThis = ThisParameterType<(typeof nodeAware)["toEqual"]>;
+expect.extend({
+  toEqual(this: MatcherThis, received: unknown, expected: unknown) {
+    return nodeAware.toEqual.call(this, received, expected);
+  },
+  toStrictEqual(this: MatcherThis, received: unknown, expected: unknown) {
+    return nodeAware.toStrictEqual.call(this, received, expected);
+  },
+  toMatchObject(this: MatcherThis, received: unknown, expected: unknown) {
+    return nodeAware.toMatchObject.call(this, received, expected);
+  },
 });
 
 // A page that subscribes to the tenant's realtime events opens a socket on render. happy-dom's

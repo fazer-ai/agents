@@ -40,6 +40,7 @@ import {
   signedLowered,
 } from "@/modules/webhooks/inbound/signed-message";
 import { dbProbeFailed } from "@/tests/db-gate";
+import { until } from "@/tests/utils/poll";
 
 // A gateway that notifies with an id only, as Mercado Pago does: `POST <url>?data.id=123&type=payment`
 // with `{"action":"payment.updated","type":"payment","data":{"id":"123"}}`, signed over a manifest
@@ -802,23 +803,25 @@ describe.skipIf(!dbUp)("a thin notification answered by a consult-back", () => {
       body: { id: 1031, status: "approved", external_reference: ref },
     });
     const r = await notify("1031");
+    // The lookup answers only when released, and the deadline passes while it is out.
+    let release: (() => void) | undefined;
     const slow = (p: Parameters<typeof runFetchBack>[0]) =>
-      new Promise<Awaited<ReturnType<typeof runFetchBack>>>((resolve) =>
-        setTimeout(
-          () => resolve(runFetchBack({ ...p, deps: { fetchImpl } })),
-          200,
-        ),
-      );
-    await expect(
-      processInboundDelivery({
-        deliveryId: r.deliveryId as bigint,
-        tenantId,
-        base: appDb,
-        signal: AbortSignal.timeout(20),
-        deps: { ...deps, runFetchBack: slow } as never,
-      }),
-    ).rejects.toThrow(/deadline/);
-    await new Promise((done) => setTimeout(done, 250));
+      new Promise<Awaited<ReturnType<typeof runFetchBack>>>((resolve) => {
+        release = () => resolve(runFetchBack({ ...p, deps: { fetchImpl } }));
+      });
+    const deadline = new AbortController();
+    const run = processInboundDelivery({
+      deliveryId: r.deliveryId as bigint,
+      tenantId,
+      base: appDb,
+      signal: deadline.signal,
+      deps: { ...deps, runFetchBack: slow } as never,
+    });
+    await until("the lookup to start", () => release);
+    deadline.abort();
+    // The provider answers after the deadline: nothing it says may be written.
+    release?.();
+    await expect(run).rejects.toThrow(/deadline/);
     expect(
       await suDb.conversionEvent.count({
         where: { tenantId, threadId: `${tenantId}:1:131` },

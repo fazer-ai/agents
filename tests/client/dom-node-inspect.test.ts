@@ -91,12 +91,10 @@ test("a value that only looks like a node keeps its usual form", () => {
   expect(message).toContain("plain-object");
 });
 
-test("toEqual, toStrictEqual and toMatchObject report a node in its short form", () => {
+test("toEqual reports a node in its short form", () => {
   const dialog = pageWithDialog();
   for (const assertion of [
     () => expect<unknown>(dialog).toEqual(null),
-    () => expect<unknown>(dialog).toStrictEqual(null),
-    () => expect({ open: dialog }).toMatchObject({ open: null }),
     () => expect([dialog]).toEqual([]),
   ]) {
     const { message, ms } = failureOf(assertion);
@@ -104,12 +102,12 @@ test("toEqual, toStrictEqual and toMatchObject report a node in its short form",
     expect(ms).toBeLessThan(500);
     expect(message).toContain("confirm-delete");
   }
-  expect(failureOf(() => expect(dialog).not.toEqual(dialog)).message).toContain(
-    "confirm-delete",
-  );
+  const negated = failureOf(() => expect(dialog).not.toEqual(dialog));
+  expect(negated.message).toContain("Expected: not DomNode");
+  expect(negated.message).toContain("confirm-delete");
 });
 
-test("the node-aware matchers keep their equality", () => {
+test("the matchers keep their equality around nodes", () => {
   const dialog = pageWithDialog();
   expect(dialog).toEqual(dialog);
   expect([dialog]).toStrictEqual([dialog]);
@@ -117,7 +115,6 @@ test("the node-aware matchers keep their equality", () => {
   expect({ open: dialog }).toMatchObject({ open: expect.any(HTMLElement) });
   expect({ open: dialog }).not.toMatchObject({ open: dialog, rows: 1 });
   expect(dialog).not.toEqual(document.createElement("div"));
-  failureOf(() => expect([dialog]).toMatchObject([dialog, dialog]));
 });
 
 test("values without a node keep the native diff", () => {
@@ -153,6 +150,8 @@ test("toStrictEqual with a node tells a class instance from a plain object", () 
   }
   expect(new Box(dialog)).toEqual({ open: dialog });
   expect(new Box(dialog)).not.toStrictEqual({ open: dialog });
+  const boxed = failureOf(() => expect<unknown>(new Box(dialog)).toEqual(null));
+  expect(boxed.message.length).toBeLessThan(2000);
 });
 
 test("a fragment names its kind", () => {
@@ -190,10 +189,27 @@ test("a node inside a cycle, an asymmetric matcher, a Set or under a symbol keep
   expect({ open: dialog, [key]: 1 }).toMatchObject({ open: dialog, [key]: 1 });
 });
 
-test("two nodes are equal when their markup is", () => {
+test("two separate nodes with the same content are equal", () => {
   const a = document.createElement("p");
   const b = document.createElement("p");
   expect([a]).toEqual([b]);
   b.textContent = "changed";
   expect([a]).not.toEqual([b]);
+});
+
+test("toEqual decides on the nodes themselves, not on their markup", () => {
+  const a = document.createElement("input");
+  const b = document.createElement("input");
+  a.value = "typed";
+  expect(a).not.toEqual(b);
+  const { message, ms } = failureOf(() => expect([a]).toEqual([b]));
+  expect(message.length).toBeLessThan(2000);
+  expect(ms).toBeLessThan(500);
+  const key = Symbol("k");
+  expect({ open: a, [key]: a }).toEqual({
+    open: a,
+    [key]: expect.any(HTMLElement),
+  });
+  const keyed = failureOf(() => expect<unknown>({ [key]: a }).toEqual(null));
+  expect(keyed.message.length).toBeLessThan(2000);
 });

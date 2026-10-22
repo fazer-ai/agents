@@ -60,16 +60,13 @@ Object.defineProperty(globalThis, Bun.inspect.custom, {
   value: () => "[window]",
 });
 
-// toEqual, toStrictEqual and toMatchObject build their diff from the node's own fields, not from the
-// form above. When a node sits in a plain object or array on either side, each node is swapped for a
-// stand-in with its one-line form and a hash of its markup (one node, one stand-in, on both sides),
-// and the native matcher compares those, so equality and the diff stay the native ones. A node
-// inside a Set, a Map or an asymmetric matcher is left as is.
+// toEqual builds its diff from the node's own fields, not from the form above. With a node in a
+// plain object, array or class instance on either side, the verdict comes from `this.equals`, the
+// same equality, on the original values, and the failure message from the native diff of a copy in
+// which each node is a stand-in holding its one-line form. toStrictEqual and toMatchObject stay
+// native: Bun exposes no equality for them, and a substitute could turn a real failure green.
 class DomNode {
-  constructor(
-    readonly node: string,
-    readonly markup: string,
-  ) {}
+  constructor(readonly node: string) {}
 }
 function isPlain(value: object): boolean {
   return (
@@ -77,54 +74,30 @@ function isPlain(value: object): boolean {
     Object.prototype.toString.call(value) === "[object Object]"
   );
 }
-function isAsymmetric(value: object): boolean {
-  return (
-    Object.prototype.toString.call(value).startsWith("[object Expect") ||
-    typeof (value as { asymmetricMatch?: unknown }).asymmetricMatch ===
-      "function"
-  );
-}
-function enumerableValues(value: object): unknown[] {
-  return Object.values(Object.getOwnPropertyDescriptors(value))
-    .filter((d) => d.enumerable && "value" in d)
-    .map((d) => d.value);
-}
-/** "node" when a stand-in would help, "asymmetric" when one would break the match, else "none". */
-function scan(
-  value: unknown,
-  seen = new Set<unknown>(),
-): "node" | "asymmetric" | "none" {
-  if (value instanceof Node || value === globalThis) return "node";
-  if (typeof value !== "object" || value === null || seen.has(value))
-    return "none";
-  if (isAsymmetric(value)) return "asymmetric";
-  if (!isPlain(value)) return "none";
-  seen.add(value);
-  let found: "node" | "none" = "none";
-  for (const v of enumerableValues(value)) {
-    const inner = scan(v, seen);
-    if (inner === "asymmetric") return inner;
-    if (inner === "node") found = inner;
+function holdsNode(value: unknown, seen = new Set<unknown>()): boolean {
+  if (value instanceof Node || value === globalThis) return true;
+  if (typeof value !== "object" || value === null || seen.has(value)) {
+    return false;
   }
-  return found;
+  if (!isPlain(value)) return false;
+  seen.add(value);
+  return Reflect.ownKeys(value).some((key) => {
+    const d = Object.getOwnPropertyDescriptor(value, key);
+    return d?.enumerable && "value" in d && holdsNode(d.value, seen);
+  });
 }
 function standIns(value: unknown, made: Map<unknown, unknown>): unknown {
   if (value instanceof Node || value === globalThis) {
     let standIn = made.get(value);
     if (!standIn) {
-      const markup =
-        value instanceof Element
-          ? value.outerHTML
-          : value === globalThis
-            ? ""
-            : ((value as Node).textContent ?? "");
-      standIn = new DomNode(Bun.inspect(value), Bun.hash(markup).toString(36));
+      standIn = new DomNode(Bun.inspect(value));
       made.set(value, standIn);
     }
     return standIn;
   }
-  if (typeof value !== "object" || value === null || !isPlain(value))
+  if (typeof value !== "object" || value === null || !isPlain(value)) {
     return value;
+  }
   const done = made.get(value);
   if (done) return done;
   const copy = Array.isArray(value)
@@ -138,49 +111,52 @@ function standIns(value: unknown, made: Map<unknown, unknown>): unknown {
   }
   return copy;
 }
-type NativeMatcher = (this: unknown, expected: unknown) => void;
-const nativeMatchers = expect(null) as unknown as Record<string, NativeMatcher>;
-function nodeAwareMatcher(name: "toEqual" | "toStrictEqual" | "toMatchObject") {
-  const native = nativeMatchers[name] as NativeMatcher;
-  const failureOf = (received: unknown, expected: unknown, not: boolean) => {
-    try {
-      native.call(not ? expect(received).not : expect(received), expected);
-      return null;
-    } catch (error) {
-      return (error as Error).message.replace(
-        /^expect\(received\)[^\n]*\n\n/,
-        "",
-      );
-    }
-  };
-  return (received: unknown, expected: unknown) => {
-    const sides = [scan(received), scan(expected)];
-    if (sides.includes("node") && !sides.includes("asymmetric")) {
-      const made = new Map<unknown, unknown>();
-      received = standIns(received, made);
-      expected = standIns(expected, made);
-    }
-    const failure = failureOf(received, expected, false);
-    return {
-      pass: failure === null,
-      message: () => failure ?? failureOf(received, expected, true) ?? "",
-    };
-  };
+const nativeToEqual = (
+  expect(null) as unknown as {
+    toEqual: (this: unknown, expected: unknown) => void;
+  }
+).toEqual;
+function toEqualFailure(received: unknown, expected: unknown, not: boolean) {
+  try {
+    nativeToEqual.call(not ? expect(received).not : expect(received), expected);
+    return null;
+  } catch (error) {
+    return (error as Error).message.replace(
+      /^expect\(received\)[^\n]*\n\n/,
+      "",
+    );
+  }
 }
-const nodeAware = {
-  toEqual: nodeAwareMatcher("toEqual"),
-  toStrictEqual: nodeAwareMatcher("toStrictEqual"),
-  toMatchObject: nodeAwareMatcher("toMatchObject"),
-};
 expect.extend({
-  toEqual(received: unknown, expected: unknown) {
-    return nodeAware.toEqual(received, expected);
-  },
-  toStrictEqual(received: unknown, expected: unknown) {
-    return nodeAware.toStrictEqual(received, expected);
-  },
-  toMatchObject(received: unknown, expected: unknown) {
-    return nodeAware.toMatchObject(received, expected);
+  toEqual(
+    this: { isNot: boolean; equals: (a: unknown, b: unknown) => boolean },
+    received: unknown,
+    expected: unknown,
+  ) {
+    if (!holdsNode(received) && !holdsNode(expected)) {
+      const failure = toEqualFailure(received, expected, false);
+      return {
+        pass: failure === null,
+        message: () =>
+          failure ?? toEqualFailure(received, expected, true) ?? "",
+      };
+    }
+    const pass = this.equals(received, expected);
+    return {
+      pass,
+      message: () => {
+        const made = new Map<unknown, unknown>();
+        const shown = toEqualFailure(
+          standIns(received, made),
+          standIns(expected, made),
+          this.isNot,
+        );
+        return (
+          shown ??
+          `Expected: ${this.isNot ? "not " : ""}${Bun.inspect(expected)}\nReceived: ${Bun.inspect(received)}`
+        );
+      },
+    };
   },
 });
 

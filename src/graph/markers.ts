@@ -289,6 +289,7 @@ export const UNDELIVERED_PROACTIVE_NOTE_HEAD =
   "(Contexto do sistema: esta mensagem proativa não chegou ao cliente";
 
 export type UndeliveredProactiveReason = "window" | "held";
+const UNDELIVERED_REASON_KWARG = "fazerUndeliveredReason";
 
 export function undeliveredProactiveNote(
   conversationId: number,
@@ -305,6 +306,7 @@ export function undeliveredProactiveNote(
     id,
     additional_kwargs: {
       [MARKER_KWARG]: "undelivered_proactive" satisfies SystemMarker,
+      [UNDELIVERED_REASON_KWARG]: reason,
       ...conversationStamp(conversationId),
     },
   });
@@ -312,6 +314,15 @@ export function undeliveredProactiveNote(
 
 export function isUndeliveredProactiveNote(message: BaseMessage): boolean {
   return hasMarker(message, "undelivered_proactive");
+}
+
+// The note says a person holds the conversation, which is the evidence `owesHandbackNote` reads:
+// when the person hands it back without writing, the next turn still needs the hand-back note.
+export function isHeldProactiveNote(message: BaseMessage): boolean {
+  return (
+    isUndeliveredProactiveNote(message) &&
+    message.additional_kwargs?.[UNDELIVERED_REASON_KWARG] === "held"
+  );
 }
 
 export function isConversationDivider(message: BaseMessage): boolean {

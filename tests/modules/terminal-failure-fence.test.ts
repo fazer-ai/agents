@@ -90,6 +90,8 @@ const CENSUS: Record<string, string> = {
     "an authenticated payload the receptor cannot process (#356)",
   "src/modules/webhooks/inbound/service.ts:processInboundDelivery":
     "an inbound delivery past its processing budget (#356)",
+  "src/modules/webhooks/inbound/service.ts:consultBack":
+    "a notice whose lookup cannot build an event; announced in the same function with emitDeadLetter (#1609)",
   "src/modules/rag/documents.ts:runIngestJobForTenant":
     "a document that will never be indexed; the second line is the same fact broadcast live (#356)",
   // Writes DEAD together with the recovery it owes, in one transaction, and leaves the line to its

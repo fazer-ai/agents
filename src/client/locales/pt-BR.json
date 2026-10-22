@@ -2165,6 +2165,8 @@
       "actionGeneratedUnavailable": "{{action}} (indisponível com uma API de classificação)",
       "actionHandoff": "Encaminhar a conversa para a equipe",
       "actionHint": "O que fazer quando uma checagem dispara.",
+      "actionObserve": "Só registrar (a conversa não é alterada)",
+      "actionObserveHint": "Só registra o disparo nos Logs; a conversa segue como se a checagem tivesse passado. A justificativa só é registrada com \"Registrar os valores enviados às ferramentas\" ligado, em Comportamento.",
       "actionSilent": "Não enviar nada (deixar o cliente sem resposta)",
       "actionTemplate": "Responder com mensagem template",
       "checkAdherence": "Aderência às instruções do agente",
@@ -3542,16 +3544,26 @@
     "guardrailExternal": {
       "allow": "A verificação externa liberou a resposta",
       "block": "A verificação externa bloqueou a resposta ({{action}})",
+      "blockObserved": "A verificação externa teria bloqueado a resposta; só registrado, a resposta saiu como foi escrita",
       "failedHeld": "A verificação externa não conseguiu decidir ({{cause}}), então a resposta foi segurada e a passagem para a equipe foi pedida",
       "failedPassed": "A verificação externa não conseguiu decidir ({{cause}}), então a resposta foi liberada sem checagem",
       "latency": "levou {{ms}} ms",
       "reason": "motivo: {{reason}}",
+      "reasonHidden": "o endpoint deu um motivo ({{chars}} caracteres), mostrado aqui só com \"Registrar os valores enviados às ferramentas\" ligado",
       "reasonKept": "o endpoint deu um motivo ({{chars}} caracteres), guardado na nota da conversa",
-      "replace": "A verificação externa trocou a resposta pelo texto dela"
+      "replace": "A verificação externa trocou a resposta pelo texto dela",
+      "replaceObserved": "A verificação externa teria trocado a resposta; só registrado, a resposta saiu como foi escrita"
     },
     "guardrailHeld": {
       "input": "A checagem falhou, então a mensagem do cliente foi segurada e a passagem para a equipe foi pedida",
       "output": "A checagem falhou, então a resposta foi segurada e a passagem para a equipe foi pedida"
+    },
+    "guardrailObserved": {
+      "categories": "categorias: {{categories}}",
+      "input": "A mensagem do cliente disparou a checagem; só registrado, o turno seguiu como se ela tivesse passado",
+      "output": "A resposta disparou a checagem; só registrado, ela saiu como foi escrita",
+      "rationale": "justificativa: {{rationale}}",
+      "rationaleHidden": "o modelo deu uma justificativa ({{chars}} caracteres), mostrada aqui só com \"Registrar os valores enviados às ferramentas\" ligado"
     },
     "guardrailUnchecked": {
       "input": "A checagem falhou, e a mensagem do cliente foi liberada sem checagem",
@@ -3591,6 +3603,7 @@
       "foreign_send": "Mensagem que o agente não enviou",
       "generate": "Geração",
       "guardrail": "Verificação de guardrails",
+      "guardrail_observed": "Verificação de guardrails (só observada)",
       "handoff": "Transferência",
       "memory": "Memória",
       "normalize": "Reescrita para fala",
@@ -4004,6 +4017,8 @@
       "externalCause": "falha: {{cause}}",
       "externalCheck": "Verificação externa na resposta",
       "externalLatency": "levou {{ms}} ms",
+      "externalObservedBlock": "o endpoint teria bloqueado; só registrado, a resposta saiu como foi escrita",
+      "externalObservedReplace": "o endpoint teria trocado a resposta; só registrado, ela saiu como foi escrita",
       "externalReason": "motivo: {{reason}}",
       "externalReplace": "trocada pelo texto do endpoint",
       "guardrailClean": "aprovado",
@@ -4011,6 +4026,8 @@
       "guardrailHeldInput": "não pôde ser checada, então a mensagem foi segurada e o caso iria para a equipe",
       "guardrailHeldOutput": "não pôde ser checada, então a resposta foi segurada e o caso iria para a equipe",
       "guardrailInput": "Guardrail na mensagem",
+      "guardrailObserved": "teria disparado; só registrado, a resposta saiu como foi escrita",
+      "guardrailObservedInput": "teria disparado; só registrado, a mensagem chegou ao agente",
       "guardrailOutput": "Guardrail na resposta",
       "guardrailReplaced": "substituída pela resposta configurada",
       "guardrailReplacedGenerated": "substituída por uma resposta escrita pelo guardrail",

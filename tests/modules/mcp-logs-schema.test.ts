@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { FLOW_LEVELS, FLOW_STAGES } from "@/modules/flowlog/stages";
+import { FLOW_LEVELS, SELECTABLE_STAGES } from "@/modules/flowlog/stages";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import { buildMcpServer } from "@/modules/mcp/server";
 
@@ -41,7 +41,7 @@ describe("MCP log tools filter vocabulary", () => {
         { enum?: string[] }
       >;
       expect(`${name}:${[...(props.stage?.enum ?? [])].sort().join(",")}`).toBe(
-        `${name}:${[...FLOW_STAGES].sort().join(",")}`,
+        `${name}:${[...SELECTABLE_STAGES].sort().join(",")}`,
       );
       expect(`${name}:${[...(props.level?.enum ?? [])].sort().join(",")}`).toBe(
         `${name}:${[...FLOW_LEVELS].sort().join(",")}`,

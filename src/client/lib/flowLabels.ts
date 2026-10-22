@@ -34,6 +34,11 @@ export function flowStageLabel(stage: string, t: TFunction): string {
       return t("logs.stage.generate", "Generation");
     case "guardrail":
       return t("logs.stage.guardrail", "Guardrail check");
+    case "guardrail_observed":
+      return t(
+        "logs.stage.guardrail_observed",
+        "Guardrail check (observed only)",
+      );
     case "tool":
       return t("logs.stage.tool", "Tool call");
     case "normalize":
@@ -181,6 +186,17 @@ export function guardrailExternalLabel(
       "logs.guardrailExternal.allow",
       "The external check allowed the reply",
     );
+  } else if (detail.action === "observe") {
+    head =
+      detail.decision === "replace"
+        ? t(
+            "logs.guardrailExternal.replaceObserved",
+            "The external check would have replaced the reply; only recorded, the reply went out as written",
+          )
+        : t(
+            "logs.guardrailExternal.blockObserved",
+            "The external check would have blocked the reply; only recorded, the reply went out as written",
+          );
   } else if (detail.decision === "replace") {
     head = t(
       "logs.guardrailExternal.replace",
@@ -205,11 +221,70 @@ export function guardrailExternalLabel(
           defaultValue: "reason: {{reason}}",
           reason,
         })
-      : typeof detail.reasonChars === "number"
-        ? t("logs.guardrailExternal.reasonKept", {
+      : typeof detail.reasonChars === "number" && detail.action === "observe"
+        ? t("logs.guardrailExternal.reasonHidden", {
             defaultValue:
-              "a reason was given ({{chars}} characters), kept in the conversation's note",
+              'a reason was given ({{chars}} characters), shown here only when "Log the values sent to tools" is on',
             chars: detail.reasonChars,
+          })
+        : typeof detail.reasonChars === "number"
+          ? t("logs.guardrailExternal.reasonKept", {
+              defaultValue:
+                "a reason was given ({{chars}} characters), kept in the conversation's note",
+              chars: detail.reasonChars,
+            })
+          : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+// A trip the `observe` action only recorded (the model checks; the external check's lines read through
+// `guardrailExternalLabel`), as the row's headline: that the conversation was left alone, which
+// categories tripped and why. Null for any other line.
+export function guardrailObservedLabel(
+  stage: string,
+  detail: Record<string, unknown> | null,
+  t: TFunction,
+): string | null {
+  if (
+    stage !== "guardrail" ||
+    !detail ||
+    detail.action !== "observe" ||
+    detail.check === "external"
+  )
+    return null;
+  const categories = Array.isArray(detail.categories)
+    ? detail.categories.filter((c): c is string => typeof c === "string")
+    : [];
+  const head =
+    detail.direction === "input"
+      ? t(
+          "logs.guardrailObserved.input",
+          "The customer's message tripped the check; only recorded, the turn went on as if it had passed",
+        )
+      : t(
+          "logs.guardrailObserved.output",
+          "The reply tripped the check; only recorded, it went out as written",
+        );
+  return [
+    head,
+    categories.length
+      ? t("logs.guardrailObserved.categories", {
+          defaultValue: "categories: {{categories}}",
+          categories: categories.join(", "),
+        })
+      : null,
+    typeof detail.rationale === "string"
+      ? t("logs.guardrailObserved.rationale", {
+          defaultValue: "rationale: {{rationale}}",
+          rationale: detail.rationale,
+        })
+      : typeof detail.rationaleChars === "number"
+        ? t("logs.guardrailObserved.rationaleHidden", {
+            defaultValue:
+              'a rationale was given ({{chars}} characters), shown here only when "Log the values sent to tools" is on',
+            chars: detail.rationaleChars,
           })
         : null,
   ]

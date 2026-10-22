@@ -76,6 +76,7 @@ const ACTIONS: GuardrailAction[] = [
   "generated",
   "silent",
   "handoff",
+  "observe",
 ];
 
 // A threshold field. Its text is the tab's draft for that check, shared by every field drawing the
@@ -276,10 +277,15 @@ export function GuardrailsTab({
               "editor.guardrails.actionHandoff",
               "Hand the conversation to the team",
             )
-          : t(
-              "editor.guardrails.actionSilent",
-              "Send nothing (leave the customer without a reply)",
-            );
+          : a === "observe"
+            ? t(
+                "editor.guardrails.actionObserve",
+                "Only record it (the conversation is not changed)",
+              )
+            : t(
+                "editor.guardrails.actionSilent",
+                "Send nothing (leave the customer without a reply)",
+              );
 
   // A check's switch, and beside it the check's threshold when a classification API judges and the
   // check is on in this direction. The threshold belongs to the check, not to the direction: a check
@@ -385,10 +391,17 @@ export function GuardrailsTab({
           <>
             <FormField
               label={t("editor.guardrails.action", "On violation")}
-              description={t(
-                "editor.guardrails.actionHint",
-                "What to do when a check trips.",
-              )}
+              description={
+                d.action === "observe"
+                  ? t(
+                      "editor.guardrails.actionObserveHint",
+                      'Only records the trip in the Logs; the conversation goes on as if the check had passed. The rationale is logged only with "Log the values sent to tools" on, in Behavior.',
+                    )
+                  : t(
+                      "editor.guardrails.actionHint",
+                      "What to do when a check trips.",
+                    )
+              }
             >
               <Select
                 value={d.action}
@@ -419,7 +432,8 @@ export function GuardrailsTab({
             {/* The hand-over's own sentence. Not the template: that one is a refusal, and this says
                 a person will continue. Empty is a choice, so the box may be left blank on purpose.
                 Shown under hold too, where a check that cannot run sends it. */}
-            {(d.action === "handoff" || g.onFailure === "hold") && (
+            {(d.action === "handoff" ||
+              (g.onFailure === "hold" && d.action !== "observe")) && (
               <FormField
                 label={t(
                   "editor.guardrails.handoffMessage",
@@ -445,48 +459,50 @@ export function GuardrailsTab({
                 />
               </FormField>
             )}
-            {d.action !== "silent" && d.action !== "handoff" && (
-              <FormField
-                label={t("editor.guardrails.template", "Template message")}
-                error={
-                  dir === "input"
-                    ? refusals.inputTemplateMessage
-                    : refusals.outputTemplateMessage
-                }
-                // The two directions say different KINDS of thing about the same box, so they take
-                // different homes. Outbound is one sentence about when this text is used, which is
-                // what the operator needs to fill the field: inline. Inbound is why the field can
-                // never be anything else, read once: behind the `?`. It matters here more than
-                // elsewhere that the inbound text is not inline, because this field renders an
-                // `error` in the same slot, so a refusal would erase the explanation of the rule
-                // it just enforced.
-                description={
-                  d.action === "generated" && dir === "output"
-                    ? t(
-                        "editor.guardrails.templateFallbackHint",
-                        "Sent whenever no replacement gets written: when the model returns none, and always when the relevance check is the one that tripped, since there is no reply to rewrite.",
-                      )
-                    : undefined
-                }
-                help={
-                  d.action === "generated" && dir === "input"
-                    ? t(
-                        "editor.guardrails.templateInboundHelp",
-                        "On customer messages, this text is ALWAYS what gets sent.\n\nThere is no reply to rewrite: the text under review is the customer's own message.\n\nThis was measured: a message telling it to state a price and a partnership produced exactly that, word for word, in all 16 runs.",
-                      )
-                    : undefined
-                }
-              >
-                <Textarea
-                  value={d.templateMessage}
-                  onChange={(e) =>
-                    setDir(dir, { templateMessage: e.target.value })
+            {d.action !== "silent" &&
+              d.action !== "handoff" &&
+              d.action !== "observe" && (
+                <FormField
+                  label={t("editor.guardrails.template", "Template message")}
+                  error={
+                    dir === "input"
+                      ? refusals.inputTemplateMessage
+                      : refusals.outputTemplateMessage
                   }
-                  rows={2}
-                  maxLength={TEMPLATE_MESSAGE_MAX}
-                />
-              </FormField>
-            )}
+                  // The two directions say different KINDS of thing about the same box, so they take
+                  // different homes. Outbound is one sentence about when this text is used, which is
+                  // what the operator needs to fill the field: inline. Inbound is why the field can
+                  // never be anything else, read once: behind the `?`. It matters here more than
+                  // elsewhere that the inbound text is not inline, because this field renders an
+                  // `error` in the same slot, so a refusal would erase the explanation of the rule
+                  // it just enforced.
+                  description={
+                    d.action === "generated" && dir === "output"
+                      ? t(
+                          "editor.guardrails.templateFallbackHint",
+                          "Sent whenever no replacement gets written: when the model returns none, and always when the relevance check is the one that tripped, since there is no reply to rewrite.",
+                        )
+                      : undefined
+                  }
+                  help={
+                    d.action === "generated" && dir === "input"
+                      ? t(
+                          "editor.guardrails.templateInboundHelp",
+                          "On customer messages, this text is ALWAYS what gets sent.\n\nThere is no reply to rewrite: the text under review is the customer's own message.\n\nThis was measured: a message telling it to state a price and a partnership produced exactly that, word for word, in all 16 runs.",
+                        )
+                      : undefined
+                  }
+                >
+                  <Textarea
+                    value={d.templateMessage}
+                    onChange={(e) =>
+                      setDir(dir, { templateMessage: e.target.value })
+                    }
+                    rows={2}
+                    maxLength={TEMPLATE_MESSAGE_MAX}
+                  />
+                </FormField>
+              )}
             {/* Output only. On the customer's message nothing is ever composed, so this field
                 would steer nothing — and a control that visibly does nothing is worse than one that
                 is not offered. The template hint above says why, where the operator is looking. */}

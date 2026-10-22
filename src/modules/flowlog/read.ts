@@ -3,6 +3,7 @@ import basePrisma from "@/api/lib/prisma";
 import type { ClientAudience } from "@/graph/usage-sources";
 import { assertUsableCount } from "@/lib/query-param";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { GUARDRAIL_OBSERVED } from "./stages";
 
 // Read surface for the execution-flow log (the Logs page). RLS-scoped to the active tenant. KEYSET
 // pagination by id desc (the table is high-write; offset pagination degrades): pass the last id
@@ -98,10 +99,20 @@ export function buildLogWhere(
   const createdAt: Prisma.DateTimeFilter = {};
   if (opts.since) createdAt.gte = opts.since;
   if (opts.until) createdAt.lte = opts.until;
+  const observed = opts.stage === GUARDRAIL_OBSERVED;
+  const and: Prisma.ExecutionLogWhereInput[] = [
+    // An audience is client traffic of that kind, whatever the source says: ANDed, so a source
+    // other than "client" with an audience matches nothing rather than being replaced.
+    ...(opts.audience
+      ? [{ source: "client", anonymous: opts.audience === "anonymous" }]
+      : []),
+    // The observed guardrail trips: `guardrail` lines whose action only recorded (./stages.ts).
+    ...(observed ? [{ detail: { path: ["action"], equals: "observe" } }] : []),
+  ];
   return {
     ...(opts.since || opts.until ? { createdAt } : {}),
     ...(opts.level ? { level: opts.level } : {}),
-    ...(opts.stage ? { stage: opts.stage } : {}),
+    ...(opts.stage ? { stage: observed ? "guardrail" : opts.stage } : {}),
     ...(opts.agentId !== undefined ? { agentId: opts.agentId } : {}),
     ...(opts.inboxId !== undefined
       ? {
@@ -121,13 +132,7 @@ export function buildLogWhere(
     ...(opts.turnId ? { turnId: opts.turnId } : {}),
     // source: default to real traffic; "all" lifts the filter entirely.
     ...(opts.source === "all" ? {} : { source: opts.source ?? "inbox" }),
-    // An audience is client traffic of that kind, whatever the source says: ANDed, so a source
-    // other than "client" with an audience matches nothing rather than being replaced.
-    ...(opts.audience
-      ? {
-          AND: [{ source: "client", anonymous: opts.audience === "anonymous" }],
-        }
-      : {}),
+    ...(and.length > 0 ? { AND: and } : {}),
     ...(opts.search
       ? { errorMessage: { contains: opts.search, mode: "insensitive" } }
       : {}),
@@ -175,6 +180,8 @@ export async function inboxLogLineIds(
   const audience = opts.audience ?? null;
   const tool = opts.tool ?? null;
   const noTool = Boolean(opts.noTool && !opts.tool);
+  const observed = opts.stage === GUARDRAIL_OBSERVED;
+  const stage = observed ? "guardrail" : (opts.stage ?? null);
   const rows = await db.$queryRaw<{ id: bigint }[]>(Prisma.sql`
     SELECT l.id
       FROM execution_logs l
@@ -184,7 +191,8 @@ export async function inboxLogLineIds(
        AND (${since}::timestamptz IS NULL OR l.created_at >= ${since})
        AND (${until}::timestamptz IS NULL OR l.created_at <= ${until})
        AND (${opts.level ?? null}::text IS NULL OR l.level = ${opts.level ?? null})
-       AND (${opts.stage ?? null}::text IS NULL OR l.stage = ${opts.stage ?? null})
+       AND (${stage}::text IS NULL OR l.stage = ${stage})
+       AND (NOT ${observed} OR l.detail->>'action' = 'observe')
        AND (${opts.agentId ?? null}::bigint IS NULL OR l.agent_id = ${opts.agentId ?? null})
        AND (${tool}::text IS NULL OR l.detail->>'tool' = ${tool})
        AND (NOT ${noTool} OR l.detail->>'tool' IS NULL)

@@ -16,7 +16,7 @@ import {
   signingStateFor,
   vaultRefStates,
 } from "@/modules/vault/service";
-import { FLOW_LEVELS, FLOW_STAGES } from "./stages";
+import { FLOW_LEVELS, SELECTABLE_STAGES } from "./stages";
 
 // CRUD for AlertChannel (external alert sinks for execution-flow warnings/errors). Mirrors the
 // webhook-subscription service: ctx-based, RLS-fenced, the controller is a thin projection. The
@@ -189,7 +189,7 @@ function urlMoved(before: string, after: string): boolean {
 }
 
 function assertStages(stages: string[]): string[] {
-  const allowed = new Set<string>(FLOW_STAGES);
+  const allowed = new Set<string>(SELECTABLE_STAGES);
   const seen = new Set<string>();
   const out: string[] = [];
   for (const s of stages) {

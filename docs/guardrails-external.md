@@ -57,8 +57,8 @@ A 2xx with a JSON body that echoes `candidateId`:
 | `decision` | effect |
 | --- | --- |
 | `allow` | delivered as usual |
-| `replace` | `text` (non-empty, at most 4096 characters) is delivered instead, through split, audio and signature, escaped for Chatwoot like model text, and not screened again |
-| `block` | not delivered; `output.action` fires: `template` sends `templateMessage`, `silent` sends nothing, `handoff` hands the conversation to the team with `handoffMessage`, and `generated` sends the template, since no judge wrote a replacement. `reason` (optional, clipped to 500 characters) goes to the note and the log line |
+| `replace` | `text` (non-empty, at most 4096 characters) is delivered instead, through split, audio and signature, escaped for Chatwoot like model text, and not screened again. Under `output.action: observe` the replacement is only recorded and the model's reply goes out |
+| `block` | not delivered; `output.action` fires: `template` sends `templateMessage`, `silent` sends nothing, `handoff` hands the conversation to the team with `handoffMessage`, and `generated` sends the template, since no judge wrote a replacement. Under `observe` nothing fires: the block is recorded on the log line and the reply goes out (`docs/logs.md`). `reason` (optional, clipped to 500 characters) goes to the note and the log line |
 
 ## Failure
 

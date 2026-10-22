@@ -1356,6 +1356,27 @@ export function guardrailTraceLabel(
     "direction" | "outcome" | "action" | "held" | "external"
   >,
 ): string {
+  // Only recorded: whatever the judge or the endpoint decided, nothing it decided was carried out.
+  if (entry.outcome === "observed")
+    return entry.external
+      ? entry.external.decision === "replace"
+        ? t(
+            "playground.trace.externalObservedReplace",
+            "the endpoint would have replaced it; only recorded, the reply went out as written",
+          )
+        : t(
+            "playground.trace.externalObservedBlock",
+            "the endpoint would have blocked it; only recorded, the reply went out as written",
+          )
+      : entry.direction === "input"
+        ? t(
+            "playground.trace.guardrailObservedInput",
+            "would have tripped; only recorded, the message reached the agent",
+          )
+        : t(
+            "playground.trace.guardrailObserved",
+            "would have tripped; only recorded, the reply went out as written",
+          );
   // The operator's endpoint answered (or failed): say what it decided, not what a judge found.
   if (entry.external?.decision === "allow")
     return t("playground.trace.externalAllow", "allowed by the endpoint");
@@ -1457,7 +1478,10 @@ export function TraceRow({ entry }: { entry: TraceEntry }) {
       <div className="flex flex-col gap-0.5">
         <span
           className={cn("flex items-center gap-1 font-medium", {
-            "text-warning": tripped || entry.outcome === "unavailable",
+            "text-warning":
+              tripped ||
+              entry.outcome === "unavailable" ||
+              entry.outcome === "observed",
             "text-text-secondary": entry.outcome === "clean",
           })}
         >
@@ -1498,13 +1522,15 @@ export function TraceRow({ entry }: { entry: TraceEntry }) {
               .join(" · ")}
           </p>
         )}
-        {tripped && !entry.scores && !entry.external && (
-          <pre className="overflow-x-auto whitespace-pre-wrap rounded bg-bg-tertiary px-2 py-1 text-text-muted">
-            {[entry.categories?.join(", "), entry.rationale]
-              .filter(Boolean)
-              .join(" — ")}
-          </pre>
-        )}
+        {(tripped || entry.outcome === "observed") &&
+          !entry.scores &&
+          !entry.external && (
+            <pre className="overflow-x-auto whitespace-pre-wrap rounded bg-bg-tertiary px-2 py-1 text-text-muted">
+              {[entry.categories?.join(", "), entry.rationale]
+                .filter(Boolean)
+                .join(" — ")}
+            </pre>
+          )}
         {/* A classification API's screening (guardrails.classifier = decisions): every question with
             what it answered and the threshold it was held to, clean screenings included, since
             "approved at 0.12 against 0.8" is what tells whether a threshold is right. */}

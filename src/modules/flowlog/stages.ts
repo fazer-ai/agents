@@ -83,6 +83,32 @@ export function isFlowStage(s: string): s is FlowStage {
   return (FLOW_STAGES as readonly string[]).includes(s);
 }
 
+// A `guardrail` line whose trip was only recorded (the `observe` action), as a selector: an alert
+// channel's stage list and the Logs stage filter name it to pick those lines apart from the trips that
+// acted. Not a stage of its own: the line is written as `guardrail`, where every trip is.
+export const GUARDRAIL_OBSERVED = "guardrail_observed";
+
+// What an alert channel's stage list and the Logs stage filter may name: every stage, plus the
+// observed guardrail trips. In a channel's list `guardrail` means the trips that ACTED, so a channel
+// that pages on guardrail trips today keeps paging on exactly those; the Logs filter for `guardrail`
+// still lists every line stored at that stage, observed ones included.
+export const SELECTABLE_STAGES = [...FLOW_STAGES, GUARDRAIL_OBSERVED] as const;
+export type SelectableStage = (typeof SELECTABLE_STAGES)[number];
+
+export function isSelectableStage(s: string): s is SelectableStage {
+  return (SELECTABLE_STAGES as readonly string[]).includes(s);
+}
+
+// The selector a line answers to: its stage, except an observed guardrail trip.
+export function selectorOf(
+  stage: string,
+  detail: Record<string, unknown> | null | undefined,
+): string {
+  return stage === "guardrail" && detail?.action === "observe"
+    ? GUARDRAIL_OBSERVED
+    : stage;
+}
+
 // The buses that can reach a terminal failure. Closed, because the `dead_letter` line is only
 // legible if `unit` comes from a vocabulary and not from whatever each call site felt like writing —
 // and because ALERT_DELIVERY is compared against by name in ./alerts.ts, where a typo would silently

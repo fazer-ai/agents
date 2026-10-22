@@ -1042,6 +1042,7 @@ async function runPlaygroundTurnOnce(
         },
         flow,
         systemPrompt: loaded.systemPrompt,
+        logValues: loaded.logToolValues,
         customerMessage: text,
         inputContext: async () => {
           const st = await graph.getState({
@@ -1635,6 +1636,7 @@ async function runPlaygroundFollowupOnce(
         },
         flow,
         systemPrompt: loaded.systemPrompt,
+        logValues: loaded.logToolValues,
         makeModel: params.deps?.makeModel,
         langfuseCfg: loaded.langfuseCfg,
         proactive: true,

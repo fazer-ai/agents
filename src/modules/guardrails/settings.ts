@@ -18,15 +18,24 @@ import {
 // dedicated LLM "guardrails agent" (its OWN selectable chat model, separate from the main agent's)
 // analyzes the customer message (input) and/or the agent reply (output) against a set of standard
 // checks; on a violation the configured PER-DIRECTION action fires (template reply / a guardrails-
-// generated safe reply / stay silent / hand the conversation to the team). This reader is the single source of defaults + clamping, so a
+// generated safe reply / stay silent / hand the conversation to the team / only record the verdict). This reader is the single source of defaults + clamping, so a
 // malformed value never breaks the webhook. Surfaced in the agent editor. Off by default.
 
-export type GuardrailAction = "template" | "generated" | "silent" | "handoff";
+// `observe` runs the check and records the verdict, and the conversation goes on as if it had passed:
+// nothing is replaced, suppressed or handed over, and no note is posted. It is how an operator measures
+// a policy on real traffic before letting it act.
+export type GuardrailAction =
+  | "template"
+  | "generated"
+  | "silent"
+  | "handoff"
+  | "observe";
 export const GUARDRAIL_ACTIONS: readonly GuardrailAction[] = [
   "template",
   "generated",
   "silent",
   "handoff",
+  "observe",
 ];
 
 // Who judges a screening. `chat` is the guardrails agent's own chat model writing a verdict with a
@@ -91,7 +100,7 @@ export interface GuardrailDirectionConfig {
   enabled: boolean;
   checks: GuardrailChecks;
   // What to do on a violation: send `templateMessage` verbatim, send a guardrails-generated safe
-  // reply, or stay silent (send nothing). Default "template".
+  // reply, stay silent (send nothing), hand over to the team, or only record it. Default "template".
   action: GuardrailAction;
   // The static reply used when action === "template".
   templateMessage: string;

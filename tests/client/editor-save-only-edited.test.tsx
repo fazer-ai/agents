@@ -220,6 +220,28 @@ describe("Behavior writes the sections the operator edited (agents#1304)", () =>
     expect(m.analysis).toBe(monitoring.analysis);
     expect(m.window).toEqual(monitoring.window);
   });
+
+  // Behavior's timing and the decision setup share the `monitoring` block, and one write carries
+  // both: the setup goes over the timing this same write carries, not over the stored one.
+  test("a watcher's burst window and its questions edited together both go out", async () => {
+    const stub = stubEditorApi({
+      mode: "monitoring",
+      settings: { monitoring },
+    });
+    await renderEditor(stub, "behavior");
+    change(field(/^Burst window \(seconds\)/), "50");
+    fireEvent.click(screen.getByRole("tab", { name: /^Questions and rules/ }));
+    await screen.findByRole("tab", {
+      name: /^Questions and rules/,
+      selected: true,
+    });
+    editTab("decisions");
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByText("Agent saved.");
+    const m = lastSavedSettings(stub)?.monitoring as Record<string, unknown>;
+    expect((m.debounce as Record<string, unknown>).windowSeconds).toBe(50);
+    expect(m.decisions).not.toEqual(monitoring.decisions);
+  });
 });
 
 // The Tools tab serializes its blocks twice, from the form and from the server's copy, and sends only
@@ -243,7 +265,7 @@ describe("Tools writes the blocks the operator edited", () => {
     await renderEditor(stub, "tools");
     edit();
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    await screen.findByText("Tools updated.");
+    await screen.findByText("Agent saved.");
     return lastSavedSettings(stub);
   }
 

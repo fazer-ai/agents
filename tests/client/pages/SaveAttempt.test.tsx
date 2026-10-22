@@ -4,7 +4,6 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { cleanup, render } from "@testing-library/react";
 import {
   focusableIn,
-  generalSaveRequests,
   revealFirstProblem,
   setupSaveBlocked,
 } from "@/client/pages/agents/saveAttempt";
@@ -168,17 +167,5 @@ describe("the control a linked section focuses", () => {
     expect(focusableIn(card)?.dataset.mark).toBe("card");
     expect(focusableIn(box)?.dataset.mark).toBe("inner");
     expect(focusableIn(null)).toBeNull();
-  });
-});
-
-// Enabling an agent and changing its rules is one write: apart, the agent could run the previous
-// rules between the two, or stay enabled when the second fails.
-describe("the requests General's Save makes", () => {
-  test("the identity rides with the setup whenever the setup changed", () => {
-    expect(generalSaveRequests(true, true)).toEqual(["identity+setup"]);
-    expect(generalSaveRequests(false, true)).toEqual(["setup"]);
-    expect(generalSaveRequests(true, false)).toEqual(["identity"]);
-    // Nothing edited, nothing written (agents#1365).
-    expect(generalSaveRequests(false, false)).toEqual([]);
   });
 });

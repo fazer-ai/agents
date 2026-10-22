@@ -107,25 +107,6 @@ describe("Discard while a save's request is out", () => {
     expect(nameField().value).toBe("Atendente");
     expect(discard() === null).toBe(true);
   });
-
-  test("what the save had left to write is not sent", async () => {
-    const stub = stubEditorApi({ name: "Atendente" });
-    const patch = holdFirstPatch(stub);
-    await renderEditor(stub, "general");
-    fireEvent.change(nameField(), { target: { value: "Recepção" } });
-    fireEvent.click(screen.getByRole("tab", { name: "Guardrails" }));
-    fireEvent.click(
-      await screen.findByRole("switch", { name: /Enable guardrails/ }),
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    await waitFor(() => expect(patch.sent).toBe(true));
-    await confirmDiscard();
-    patch.release();
-    await settle();
-    expect(stub.writes.filter((w) => w.method === "PATCH").length).toBe(1);
-    expect(stub.agent.settings).toEqual({});
-    expect(discard() === null).toBe(true);
-  });
 });
 
 describe("Leaving the editor while a save's request is out", () => {
@@ -149,7 +130,6 @@ describe("Leaving the editor while a save's request is out", () => {
       patch.release();
       await settle();
       expect(screen.queryByText("Agents list")).not.toBeNull();
-      // NOTE: the Guardrails write after General's is the save's, and it ended with the editor.
       expect(stub.writes.filter((w) => w.method === "PATCH").length).toBe(1);
     });
   }

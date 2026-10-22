@@ -137,6 +137,6 @@ describe("save and export with an enabled gate that decides nothing", () => {
     await waitFor(() =>
       expect(stub.requests.some((r) => r.endsWith("/export"))).toBe(true),
     );
-    expect(stub.writes.filter((w) => w.method === "PATCH")).toHaveLength(2);
+    expect(stub.writes.filter((w) => w.method === "PATCH")).toHaveLength(1);
   });
 });

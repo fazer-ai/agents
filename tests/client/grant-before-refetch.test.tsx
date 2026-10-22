@@ -128,14 +128,12 @@ const catalogReads = (stub: EditorStub) =>
 async function savedGrants(stub: EditorStub): Promise<unknown[]> {
   await act(async () => {});
   fireEvent.click(screen.getByRole("button", { name: "Save" }));
-  const put = await waitFor(() => {
-    const w = stub.writes.find(
-      (x) => x.method === "PUT" && x.path.endsWith("/tool-selections"),
-    );
-    if (!w) throw new Error("no PUT yet");
+  const write = await waitFor(() => {
+    const w = stub.writes.find((x) => "grants" in x.body);
+    if (!w) throw new Error("no write of the grants yet");
     return w;
   });
-  return put.body.grants as unknown[];
+  return write.body.grants as unknown[];
 }
 
 describe("a component created from the Tools tab", () => {

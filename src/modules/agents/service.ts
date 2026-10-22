@@ -2003,8 +2003,12 @@ export type AgentUpdate = z.infer<typeof agentUpdateSchema>;
 
 // Everything `updateAgent` decides about its PATCH before any database is involved, shared with the
 // MCP preview so it asks what the apply asks. The two schedule ids come back parsed, so the caller
-// cannot disagree about which row was asked for.
-export function assertAgentUpdatable(patch: AgentUpdate): {
+// cannot disagree about which row was asked for. `withGrants`: the write also replaces the grant
+// set, which is something to update on its own.
+export function assertAgentUpdatable(
+  patch: AgentUpdate,
+  withGrants = false,
+): {
   data: AgentUpdate;
   rest: Omit<AgentUpdate, "businessHoursId" | "followUpHoursId">;
   hasBh: boolean;
@@ -2018,7 +2022,7 @@ export function assertAgentUpdatable(patch: AgentUpdate): {
   const { businessHoursId, followUpHoursId, ...rest } = data;
   const hasBh = businessHoursId !== undefined;
   const hasFuh = followUpHoursId !== undefined;
-  if (Object.keys(rest).length === 0 && !hasBh && !hasFuh) {
+  if (Object.keys(rest).length === 0 && !hasBh && !hasFuh && !withGrants) {
     throw new AppError(
       "no updatable fields provided",
       400,
@@ -2084,6 +2088,12 @@ export async function assertAgentNotAnsweringCalls(
   if (answering > 0) throw answersCallsRefusal();
 }
 
+type AgentUpdateOpts = {
+  expectedUpdatedAt?: Date;
+  settingsMode?: "replace";
+  chatwoot?: LoadChatwootClientDeps;
+};
+
 export async function updateAgent(
   ctx: TenantContext,
   id: bigint,
@@ -2093,19 +2103,31 @@ export async function updateAgent(
   // omitted, last write wins. `settingsMode: "replace"` says the bag is COMPLETE, so omitted blocks
   // are meant to go; without it, a bag that would drop configured blocks is refused.
   // `chatwoot`: how the service window's templates are read (a test passes a stub client).
-  opts: {
-    expectedUpdatedAt?: Date;
-    settingsMode?: "replace";
-    chatwoot?: LoadChatwootClientDeps;
-  } = {},
+  opts: AgentUpdateOpts = {},
 ): Promise<AgentDto> {
+  return (await updateAgentAndGrants(ctx, id, patch, null, base, opts)).agent;
+}
+
+// The agent's fields and, when `input` is given, its whole grant set, in ONE transaction under one
+// `expectedUpdatedAt`: either both are written or neither is. The editor's Save goes through here,
+// so a refusal of any part leaves nothing half saved.
+export async function updateAgentAndGrants(
+  ctx: TenantContext,
+  id: bigint,
+  patch: AgentUpdate,
+  input: ToolGrantInput[] | null,
+  base: PrismaClient = basePrisma,
+  opts: AgentUpdateOpts = {},
+): Promise<{ agent: AgentDto; toolSelection: ToolSelectionView | null }> {
+  const grants = input ? normalizeGrants(input) : null;
+  const tenantId = grants ? requireTenant(ctx) : null;
   const {
     rest,
     hasBh,
     hasFuh,
     businessHoursId: bhId,
     followUpHoursId: fuhId,
-  } = assertAgentUpdatable(patch);
+  } = assertAgentUpdatable(patch, grants !== null);
   // NOTE: Before the transaction, because it reads Chatwoot: a network call does not belong inside
   // the row lock below. Against the row as read now; the lock's own read only matters to a rule
   // whose answer the stored value decides, and this one asks only what the write sets or changes.
@@ -2141,7 +2163,9 @@ export async function updateAgent(
       );
     }
   }
-  const dto = await runScopedOn(base, ctx, async (db) => {
+  const written = runScopedOn(base, ctx, async (db) => {
+    // NOTE: The NAMESPACE lock before the agent row, the order `replaceAgentToolSelections` takes.
+    if (grants) await lockToolNames(db);
     await assertSchedulesExistOn(db, bhId, fuhId);
     const updateData: Record<string, unknown> = { ...rest };
     if (hasBh) updateData.businessHoursId = bhId;
@@ -2274,6 +2298,14 @@ export async function updateAgent(
       opts.expectedUpdatedAt != null
         ? { id, updatedAt: opts.expectedUpdatedAt }
         : { id };
+    // NOTE: A save that writes only the grants still advances the version token, stamped here, under
+    // the row lock and past the token the row holds: stamped before the lock, or in the same
+    // millisecond, a write that waited behind another could commit a token no newer than the one it
+    // waited for, and an editor comparing tokens would miss it.
+    if (grants) {
+      const held = before?.updated_at.getTime() ?? 0;
+      updateData.updatedAt = new Date(Math.max(Date.now(), held + 1));
+    }
     const res = await db.agent.updateMany({ where, data: updateData });
     if (res.count === 0) {
       if (opts.expectedUpdatedAt != null) {
@@ -2291,6 +2323,10 @@ export async function updateAgent(
       }
       throw new NotFoundError("agent not found");
     }
+    const view =
+      grants && tenantId !== null
+        ? await writeGrantSet(db, ctx, tenantId, id, grants)
+        : null;
     const row = await db.agent.findUniqueOrThrow({
       where: { id },
       select: AGENT_SELECT,
@@ -2310,8 +2346,11 @@ export async function updateAgent(
         });
       }
     }
-    return applied;
+    return { applied, view };
   });
+  const { applied: dto, view } = await (grants
+    ? written.catch(grantWriteFailed(ctx, grants, base))
+    : written);
   // Arm the sweep if settings were updated and follow-up is now enabled (idempotent).
   if (rest.settings !== undefined && ctx.tenantId !== null) {
     if (wantsFollowUpSweep(dto.settings))
@@ -2339,7 +2378,7 @@ export async function updateAgent(
       updatedAt: dto.updatedAt.toISOString(),
     });
   }
-  return dto;
+  return { agent: dto, toolSelection: view };
 }
 
 // modelConfig may be {} (unconfigured — the agent simply won't run until set); any non-empty value
@@ -3587,6 +3626,66 @@ export async function assertAgentToolGrantsResolvable(
   await runScopedOn(base, ctx, (db) => assertGrantTargetsExist(db, grants));
 }
 
+// The grant set replaced inside a transaction that already holds the tool-name lock and the agent
+// row, and has already advanced the agent's `updatedAt`, so the view answers the new token.
+async function writeGrantSet(
+  db: ScopedDb,
+  ctx: TenantContext,
+  tenantId: bigint,
+  agentId: bigint,
+  grants: NormalizedGrant[],
+): Promise<ToolSelectionView> {
+  await assertGrantTargetsExist(db, grants);
+  // The set as it stands, read before the delete-and-recreate replaces it. Same shape the view
+  // returns, so the row's two halves are comparable.
+  const grantsBefore = await readGrantSet(db, agentId);
+  await db.agentToolSelection.deleteMany({ where: { agentId } });
+  if (grants.length > 0) {
+    await db.agentToolSelection.createMany({
+      data: grants.map((g) => ({
+        tenantId,
+        agentId,
+        source: g.source,
+        toolDefinitionId: g.toolDefinitionId,
+        mcpServerConnectionId: g.mcpServerConnectionId,
+        integrationInstanceId: g.integrationInstanceId,
+        documentTemplateId: g.documentTemplateId,
+        codeToolDefinitionId: g.codeToolDefinitionId,
+        knowledgeBaseIds: g.knowledgeBaseIds,
+        enabledTools: g.enabledTools,
+      })),
+    });
+  }
+  const next = await buildToolSelectionView(db, agentId);
+  // Same rule the update path follows: the trail records changes, and the editor resubmits the
+  // whole set on every save that writes it.
+  if (grantSetChanged(grantsBefore, next.grants)) {
+    await auditMutation(db, ctx, {
+      action: "agent.tools_set",
+      target: `agent:${agentId}`,
+      before: auditSafe({ grants: grantsBefore }),
+      after: auditSafe({ grants: next.grants }),
+    });
+  }
+  return next;
+}
+
+// A target deleted between the existence check and the insert fails the foreign key: the same event
+// as "no such tool", so the check is re-asked in a fresh read to name it. If it finds everything,
+// the original error stands.
+function grantWriteFailed(
+  ctx: TenantContext,
+  grants: NormalizedGrant[],
+  base: PrismaClient,
+) {
+  return async (err: unknown): Promise<never> => {
+    if (isForeignKeyViolation(err)) {
+      await runScopedOn(base, ctx, (db) => assertGrantTargetsExist(db, grants));
+    }
+    throw err;
+  };
+}
+
 export async function replaceAgentToolSelections(
   ctx: TenantContext,
   agentId: bigint,
@@ -3622,56 +3721,15 @@ export async function replaceAgentToolSelections(
       );
     }
 
-    await assertGrantTargetsExist(db, grants);
-
-    // The set as it stands, read before the delete-and-recreate replaces it. Same shape the view
-    // returns, so the row's two halves are comparable.
-    const grantsBefore = await readGrantSet(db, agentId);
-    await db.agentToolSelection.deleteMany({ where: { agentId } });
-    if (grants.length > 0) {
-      await db.agentToolSelection.createMany({
-        data: grants.map((g) => ({
-          tenantId,
-          agentId,
-          source: g.source,
-          toolDefinitionId: g.toolDefinitionId,
-          mcpServerConnectionId: g.mcpServerConnectionId,
-          integrationInstanceId: g.integrationInstanceId,
-          documentTemplateId: g.documentTemplateId,
-          codeToolDefinitionId: g.codeToolDefinitionId,
-          knowledgeBaseIds: g.knowledgeBaseIds,
-          enabledTools: g.enabledTools,
-        })),
-      });
-    }
     // Bump the agent's version token so a grants-only change still advances updatedAt — that single
-    // token then covers the whole editor (general/behavior via PATCH, tools/knowledge via this path),
-    // so an optimistic-concurrency precondition on either save catches a change made through the other.
+    // token then covers the whole editor, so an optimistic-concurrency precondition on any save
+    // catches a change made through another path.
     await db.agent.update({
       where: { id: agentId },
       data: { updatedAt: new Date() },
     });
-    const next = await buildToolSelectionView(db, agentId);
-    // Same rule the update path follows: the trail records changes, and the editor resubmits the
-    // whole set on every save of the Tools tab.
-    if (grantSetChanged(grantsBefore, next.grants)) {
-      await auditMutation(db, ctx, {
-        action: "agent.tools_set",
-        target: `agent:${agentId}`,
-        before: auditSafe({ grants: grantsBefore }),
-        after: auditSafe({ grants: next.grants }),
-      });
-    }
-    return next;
-  }).catch(async (err: unknown) => {
-    // NOTE: A target deleted between the existence check and the insert fails the foreign key: the
-    // same event as "no such tool", so the check is re-asked in a fresh read to name it. If it finds
-    // everything, the original error stands.
-    if (isForeignKeyViolation(err)) {
-      await runScopedOn(base, ctx, (db) => assertGrantTargetsExist(db, grants));
-    }
-    throw err;
-  });
+    return writeGrantSet(db, ctx, tenantId, agentId, grants);
+  }).catch(grantWriteFailed(ctx, grants, base));
   // Heads-up for any open editor (other tab / another operator) — best-effort, metadata-only.
   if (ctx.tenantId !== null && view.agentUpdatedAt) {
     broadcastAgentConfigEvent(ctx.tenantId, {

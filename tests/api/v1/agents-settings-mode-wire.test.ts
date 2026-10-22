@@ -40,18 +40,19 @@ setupPrismaMock();
 
 const service = await import("@/modules/agents/service");
 // A COPY taken before the mock is installed: Bun updates the imported namespace in place, so a
-// wrapper that called `service.updateAgent` by name would call itself.
+// wrapper that called `service.updateAgentAndGrants` by name would call itself.
 const real = { ...service };
 mock.module("@/modules/agents/service", () => ({
   ...real,
-  updateAgent: mock(
+  updateAgentAndGrants: mock(
     async (
       ctx: TenantContext,
       id: bigint,
-      patch: Parameters<typeof service.updateAgent>[2],
+      patch: Parameters<typeof service.updateAgentAndGrants>[2],
+      grants: Parameters<typeof service.updateAgentAndGrants>[3],
       _base: unknown,
-      opts: Parameters<typeof service.updateAgent>[4],
-    ) => real.updateAgent(ctx, id, patch, app, opts),
+      opts: Parameters<typeof service.updateAgentAndGrants>[5],
+    ) => real.updateAgentAndGrants(ctx, id, patch, grants, app, opts),
   ),
 }));
 
@@ -197,7 +198,7 @@ describe.skipIf(!dbUp)("a partial settings bag over the wire", () => {
       data: { settings: STORED },
     });
     const updates = (
-      service.updateAgent as unknown as { mock: { calls: unknown[] } }
+      service.updateAgentAndGrants as unknown as { mock: { calls: unknown[] } }
     ).mock.calls;
     const before = updates.length;
     // A complete bag, which the service would accept, so only the schema can refuse it.

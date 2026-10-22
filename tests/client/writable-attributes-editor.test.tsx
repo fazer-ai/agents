@@ -143,7 +143,7 @@ describe("the attributes set_custom_attribute may write", () => {
     });
   });
 
-  test("an over-ceiling list is refused before the grants PUT, a stored one is not", async () => {
+  test("an over-ceiling list is refused before the write, a stored one is not", async () => {
     const stored = Array.from(
       { length: WRITABLE_ATTRIBUTES_MAX + 2 },
       (_, i) => ({ scope: "conversation", key: `k${i}` }),
@@ -158,8 +158,8 @@ describe("the attributes set_custom_attribute may write", () => {
     // Saved as stored, the list is not this save's to refuse.
     editTab("tools");
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    await screen.findByText("Tools updated.");
-    expect(s.writes.map((w) => w.method).join(",")).toBe("PUT,PATCH");
+    await screen.findByText("Agent saved.");
+    expect(s.writes.map((w) => w.method).join(",")).toBe("PATCH");
 
     const picker = screen.getByRole("button", {
       name: "Attributes it may write: Conversation",
@@ -173,6 +173,6 @@ describe("the attributes set_custom_attribute may write", () => {
     await screen.findByText(
       `Attributes it may write takes at most ${WRITABLE_ATTRIBUTES_MAX} attributes across the three scopes.`,
     );
-    expect(s.writes.map((w) => w.method).join(",")).toBe("PUT,PATCH");
+    expect(s.writes.map((w) => w.method).join(",")).toBe("PATCH");
   });
 });

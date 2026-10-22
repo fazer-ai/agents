@@ -34,8 +34,6 @@ const json = (body: unknown, status = 200) =>
 
 const isAgent = (stub: EditorStub, path: string) =>
   path === `/api/v1/agents/${stub.agent.id}`;
-const isGrants = (stub: EditorStub, path: string) =>
-  path === `/api/v1/agents/${stub.agent.id}/tool-selections`;
 
 // Answers the next PATCH of the agent with this refusal, once; every later one goes through.
 function refuseNextPatch(stub: EditorStub, body: Record<string, unknown>) {
@@ -351,7 +349,7 @@ describe("the Tools save checks before it writes anything", () => {
           },
         });
       }
-      if (method === "PUT" && isGrants(stub, path) && conflict) {
+      if (method === "PATCH" && isAgent(stub, path) && conflict) {
         conflict = false;
         return json({ error: "conflict" }, 409);
       }
@@ -366,11 +364,11 @@ describe("the Tools save checks before it writes anything", () => {
     await screen.findByText(
       "The text in toolGuidance.handoff_to_human is too long: 1600 characters (limit 1500).",
     );
-    // The conflicted PUT is the only write: nothing was persisted on the way to the refusal.
-    expect(stub.writes.map((w) => w.method)).toEqual(["PUT"]);
+    // The conflicted PATCH is the only write: nothing was persisted on the way to the refusal.
+    expect(stub.writes.map((w) => w.method)).toEqual(["PATCH"]);
   });
 
-  test("an over-ceiling list of protected labels is refused before the grants PUT, a stored one is not", async () => {
+  test("an over-ceiling list of protected labels is refused before the write, a stored one is not", async () => {
     const stored = labels(PROTECTED_LABELS_MAX + 2);
     const stub = stubEditorApi(
       { settings: { setLabels: { protected: stored } } },
@@ -381,8 +379,8 @@ describe("the Tools save checks before it writes anything", () => {
     // Saved as stored, the legacy list is not this save's to refuse.
     editTab("tools");
     save("Save");
-    await screen.findByText("Tools updated.");
-    expect(stub.writes.map((w) => w.method)).toEqual(["PUT", "PATCH"]);
+    await screen.findByText("Agent saved.");
+    expect(stub.writes.map((w) => w.method)).toEqual(["PATCH"]);
 
     fireEvent.click(
       screen.getByRole("button", { name: "Settings", expanded: false }),
@@ -395,31 +393,29 @@ describe("the Tools save checks before it writes anything", () => {
     await screen.findByText(
       `Labels off limits takes at most ${PROTECTED_LABELS_MAX} labels.`,
     );
-    expect(stub.writes.map((w) => w.method)).toEqual(["PUT", "PATCH"]);
+    expect(stub.writes.map((w) => w.method)).toEqual(["PATCH"]);
   });
 });
 
 describe("every save that writes the agent shows what the server said", () => {
-  for (const [tab, button, path] of [
-    ["general", "Save", "agent"],
-    ["behavior", "Save", "agent"],
-    ["tools", "Save", "grants"],
-    ["knowledge", "Save", "grants"],
-    ["guardrails", "Save", "agent"],
-    ["channelRedirect", "Save", "agent"],
+  for (const tab of [
+    "general",
+    "behavior",
+    "tools",
+    "knowledge",
+    "guardrails",
+    "channelRedirect",
   ] as const) {
     test(`${tab}: the server's sentence, and the fallback when nothing answered`, async () => {
       const stub = stubEditorApi({}, { catalog: NATIVE_CATALOG });
       await renderEditor(stub, tab);
       editTab(tab);
-      const writes = (p: string) =>
-        path === "agent" ? isAgent(stub, p) : isGrants(stub, p);
       stub.override = (method, p) => {
-        if (method !== "GET" && writes(p)) {
+        if (method !== "GET" && isAgent(stub, p)) {
           return json({ error: "Refused by the server." }, 422);
         }
       };
-      save(button);
+      save();
       await waitFor(() =>
         expect(bannerRows()).toEqual(["Refused by the server."]),
       );
@@ -427,15 +423,12 @@ describe("every save that writes the agent shows what the server said", () => {
       expect(onScreen("Refused by the server.")).toBe(1);
 
       stub.override = (method, p) => {
-        if (method !== "GET" && writes(p)) throw new TypeError("offline");
+        if (method !== "GET" && isAgent(stub, p))
+          throw new TypeError("offline");
       };
-      save(button);
+      save();
       await waitFor(() =>
-        expect(bannerRows()).toEqual([
-          path === "agent"
-            ? "Could not save the agent."
-            : "Could not update tools.",
-        ]),
+        expect(bannerRows()).toEqual(["Could not save the agent."]),
       );
     });
   }
@@ -479,6 +472,12 @@ describe("every save that writes the agent shows what the server said", () => {
     await waitFor(() =>
       expect(bannerRows()).toEqual(["Could not save the agent."]),
     );
+
+    // The save that goes through answers it.
+    stub.override = undefined;
+    save();
+    await screen.findByText("Agent saved.");
+    await waitFor(() => expect(bannerRows()).toEqual([]));
   });
 
   test("the Redirect save is settled by its own success", async () => {

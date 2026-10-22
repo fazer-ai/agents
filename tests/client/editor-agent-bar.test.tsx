@@ -8,7 +8,6 @@ import {
 } from "@testing-library/react";
 import { invalidateVault } from "@/client/lib/vaultCache";
 import { nativeToolAnchor } from "@/client/pages/agents/editorTabs";
-import { focusableIn } from "@/client/pages/agents/saveAttempt";
 import {
   editTab,
   NATIVE_CATALOG,
@@ -149,9 +148,9 @@ describe("the editor's bar covers the whole agent", () => {
     expect(save().disabled).toBe(false);
   });
 
-  // The Tools write replaces the shared grant set when it lands. A Knowledge edit made while it was out
-  // is newer than what it wrote, so it stays on screen, and unsaved.
-  test("a Knowledge edit made while the Tools write is out survives it", async () => {
+  // The save replaces the shared grant set when it lands. A Knowledge edit made while it was out is
+  // newer than what it wrote, so it stays on screen, and unsaved.
+  test("a Knowledge edit made while the save is out survives it", async () => {
     const stub = stubEditorApi(
       { name: "Atendente" },
       {
@@ -172,7 +171,7 @@ describe("the editor's bar covers the whole agent", () => {
       input: RequestInfo | URL,
       init?: RequestInit,
     ) => {
-      if ((init?.method ?? "GET") === "PUT" && !putSent) {
+      if ((init?.method ?? "GET") === "PATCH" && !putSent) {
         putSent = true;
         await held;
       }
@@ -188,7 +187,7 @@ describe("the editor's bar covers the whole agent", () => {
     await waitFor(() => expect(putSent).toBe(true));
     fireEvent.click(retrieval());
     release();
-    await screen.findByText("Tools updated.");
+    await screen.findByText("Agent saved.");
     expect(retrieval().getAttribute("aria-checked")).not.toBe(before);
     expect(
       screen
@@ -355,16 +354,67 @@ describe("the editor's bar covers the whole agent", () => {
     fireEvent.click(save());
     await waitFor(
       () =>
-        expect(stub.writes.filter((w) => w.method === "PATCH").length).toBe(2),
+        expect(stub.writes.filter((w) => w.method === "PATCH").length).toBe(1),
       { timeout: 5_000 },
     );
     expect(screen.queryByText(/Fix the Behavior tab/)).toBeNull();
     await screen.findByRole("tab", { name: "General", selected: true });
   });
 
-  // The save writes what was edited when Save was pressed. A General edit made while its write is out
-  // stays pending: the second phase writes the rest, not General again.
-  test("a General edit made while its write is out is not written by the rest of the save", async () => {
+  // The save went to Behavior to judge it again, then sent its write; the operator who moves to Tools
+  // while it is out stays there, though the save would have taken them back from Behavior.
+  test("a tab chosen while the write is out is kept after a recheck trip", async () => {
+    const stub = stubEditorApi({
+      name: "Atendente",
+      modelConfig: { provider: "openai", model: "gpt-4o-mini" },
+      settings: {
+        modelFallback: {
+          provider: "openai-compatible",
+          model: "m",
+          baseURL: null,
+        },
+      },
+    });
+    await renderEditor(stub, "behavior");
+    editTab("behavior");
+    await waitFor(() => expect(save().disabled).toBe(true));
+    await goTo("General");
+    fireEvent.change(screen.getByLabelText("Provider"), {
+      target: { value: "openai-compatible" },
+    });
+    fireEvent.change(await screen.findByLabelText("Base URL"), {
+      target: { value: "https://llm.example.com/v1" },
+    });
+    const served = globalThis.fetch;
+    let release: () => void = () => {};
+    const held = new Promise<void>((r) => {
+      release = r;
+    });
+    let patchSent = false;
+    globalThis.fetch = (async (
+      input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      if ((init?.method ?? "GET") === "PATCH" && !patchSent) {
+        patchSent = true;
+        await held;
+      }
+      return served(input, init);
+    }) as typeof fetch;
+    fireEvent.click(save());
+    await waitFor(() => expect(patchSent).toBe(true), { timeout: 5_000 });
+    await goTo("Tools");
+    release();
+    await screen.findByText("Agent saved.");
+    for (let i = 0; i < 5; i++) await act(async () => {});
+    expect(
+      screen.getByRole("tab", { name: "Tools" }).getAttribute("aria-selected"),
+    ).toBe("true");
+  });
+
+  // The save writes what was edited when Save was pressed. A General edit made while it is out stays
+  // pending, on screen, and the answer does not overwrite it.
+  test("a General edit made while the save is out stays pending", async () => {
     const stub = stubEditorApi(
       { name: "Atendente" },
       { catalog: NATIVE_CATALOG },
@@ -393,146 +443,13 @@ describe("the editor's bar covers the whole agent", () => {
     await waitFor(() => expect(patchSent).toBe(true));
     fireEvent.change(nameField(), { target: { value: "Outro nome" } });
     release();
-    await screen.findByText("Tools updated.");
+    await screen.findByText("Agent saved.");
     const names = stub.writes
       .filter((w) => w.method === "PATCH" && "name" in w.body)
       .map((w) => w.body.name);
     expect(names).toEqual(["Atendente (editado)"]);
     expect(nameField().value).toBe("Outro nome");
     expect(save().disabled).toBe(false);
-  });
-
-  // Discard all while a write is out discards what is still waiting: the save reads each section
-  // again before writing it, so Guardrails, discarded during Behavior's write, is not sent.
-  test("a section discarded while an earlier write is out is not sent", async () => {
-    const stub = stubEditorApi({ name: "Atendente" });
-    const served = globalThis.fetch;
-    let release: () => void = () => {};
-    const held = new Promise<void>((r) => {
-      release = r;
-    });
-    let patchSent = false;
-    globalThis.fetch = (async (
-      input: RequestInfo | URL,
-      init?: RequestInit,
-    ) => {
-      if ((init?.method ?? "GET") === "PATCH" && !patchSent) {
-        patchSent = true;
-        await held;
-      }
-      return served(input, init);
-    }) as typeof fetch;
-    await renderEditor(stub, "behavior");
-    editTab("behavior");
-    await goTo("Guardrails");
-    editTab("guardrails");
-    fireEvent.click(save());
-    await waitFor(() => expect(patchSent).toBe(true));
-    fireEvent.click(discard() as HTMLElement);
-    fireEvent.click(await screen.findByRole("button", { name: "Discard all" }));
-    release();
-    await waitFor(() => expect(discard()).toBeNull());
-    // The continuation runs on the renders after the write lands: let them run.
-    for (let i = 0; i < 5; i++) await act(async () => {});
-    const patches = stub.writes.filter((w) => w.method === "PATCH");
-    expect(patches.length).toBe(1);
-    expect(
-      (patches[0]?.body.settings as { guardrails?: unknown } | undefined)
-        ?.guardrails,
-    ).toBeUndefined();
-  });
-
-  // Each section is judged again right before its write: the reviewer switched to a provider with no
-  // address while Behavior's write was out holds the Knowledge write, and the save says so.
-  test("a section edited into a hold while an earlier write is out is not sent", async () => {
-    const stub = stubEditorApi(
-      { name: "Atendente" },
-      { catalog: { native: [{ name: "open_case_in_inbox" }] } },
-    );
-    const served = globalThis.fetch;
-    let release: () => void = () => {};
-    const held = new Promise<void>((r) => {
-      release = r;
-    });
-    let patchSent = false;
-    globalThis.fetch = (async (
-      input: RequestInfo | URL,
-      init?: RequestInit,
-    ) => {
-      if ((init?.method ?? "GET") === "PATCH" && !patchSent) {
-        patchSent = true;
-        await held;
-      }
-      return served(input, init);
-    }) as typeof fetch;
-    await renderEditor(stub, "behavior");
-    editTab("behavior");
-    await goTo("Knowledge");
-    const reviewer = () => {
-      const select = document
-        .getElementById("kb-review")
-        ?.querySelector("select");
-      if (!select) throw new Error("the reviewer's provider is not drawn");
-      return select;
-    };
-    fireEvent.change(reviewer(), { target: { value: "anthropic" } });
-    await waitFor(() => expect(save().disabled).toBe(false));
-    fireEvent.click(save());
-    await waitFor(() => expect(patchSent).toBe(true));
-    fireEvent.change(reviewer(), { target: { value: "openai-compatible" } });
-    release();
-    await screen.findByText(/Fix the Knowledge tab before saving/);
-    expect(stub.writes.filter((w) => w.method === "PATCH").length).toBe(1);
-    expect(stub.writes.some((w) => w.method === "PUT")).toBe(false);
-  });
-
-  // The grants are one list two tabs edit. A Tools toggle made while the Tools write is out is not
-  // written by the Knowledge write that follows (it sends the tools as stored) and stays pending.
-  test("a Tools edit made while the Tools write is out is not written by the Knowledge write", async () => {
-    const stub = stubEditorApi(
-      { name: "Atendente" },
-      { catalog: NATIVE_CATALOG },
-    );
-    const served = globalThis.fetch;
-    let release: () => void = () => {};
-    const held = new Promise<void>((r) => {
-      release = r;
-    });
-    let putSent = false;
-    globalThis.fetch = (async (
-      input: RequestInfo | URL,
-      init?: RequestInit,
-    ) => {
-      if ((init?.method ?? "GET") === "PUT" && !putSent) {
-        putSent = true;
-        await held;
-      }
-      return served(input, init);
-    }) as typeof fetch;
-    await renderEditor(stub, "knowledge");
-    editTab("knowledge");
-    await goTo("Tools");
-    editTab("tools");
-    fireEvent.click(save());
-    await waitFor(() => expect(putSent).toBe(true));
-    const card = document.getElementById(nativeToolAnchor("set_labels"));
-    if (!card) throw new Error("the set_labels card is not drawn");
-    fireEvent.click(focusableIn(card) ?? card);
-    release();
-    await waitFor(
-      () =>
-        expect(stub.writes.filter((w) => w.method === "PUT").length).toBe(2),
-      { timeout: 5_000 },
-    );
-    const tools = (body: Record<string, unknown>) =>
-      JSON.stringify(
-        (body.grants as { source: string; enabledTools?: string[] }[])
-          .filter((g) => g.source !== "RAG")
-          .map((g) => [g.source, [...(g.enabledTools ?? [])].sort()]),
-      );
-    const [first, second] = stub.writes.filter((w) => w.method === "PUT");
-    expect(tools(second?.body ?? {})).toBe(tools(first?.body ?? {}));
-    await waitFor(() => expect(save().disabled).toBe(false));
   });
 
   // The vault answers on its own clock. Its answer, arriving after Behavior was left, makes the
@@ -609,58 +526,6 @@ describe("the editor's bar covers the whole agent", () => {
     expect(nameField().value).toBe("Atendente (editado)");
   });
 
-  // Once General is written, the rest judge against what it wrote: a provider switched on General
-  // while its write is out stays a pending edit and does not hold Behavior's write.
-  test("a General edit made during its write does not hold the sections after it", async () => {
-    const stub = stubEditorApi({
-      name: "Atendente",
-      modelConfig: {
-        provider: "openai-compatible",
-        model: "m",
-        baseURL: "https://llm.example.com/v1",
-      },
-      settings: {
-        modelFallback: {
-          provider: "openai-compatible",
-          model: "m",
-          baseURL: null,
-        },
-      },
-    });
-    const served = globalThis.fetch;
-    let release: () => void = () => {};
-    const held = new Promise<void>((r) => {
-      release = r;
-    });
-    let patchSent = false;
-    globalThis.fetch = (async (
-      input: RequestInfo | URL,
-      init?: RequestInit,
-    ) => {
-      if ((init?.method ?? "GET") === "PATCH" && !patchSent) {
-        patchSent = true;
-        await held;
-      }
-      return served(input, init);
-    }) as typeof fetch;
-    await renderEditor(stub, "behavior");
-    editTab("behavior");
-    await goTo("General");
-    editTab("general");
-    fireEvent.click(save());
-    await waitFor(() => expect(patchSent).toBe(true));
-    fireEvent.change(screen.getByLabelText("Provider"), {
-      target: { value: "openai" },
-    });
-    release();
-    await waitFor(
-      () =>
-        expect(stub.writes.filter((w) => w.method === "PATCH").length).toBe(2),
-      { timeout: 5_000 },
-    );
-    expect(screen.queryByText(/Fix the Behavior tab/)).toBeNull();
-  });
-
   // The Tools save's own checks hold no button on its tab, so the bar runs them before anything is
   // written: too many protected labels keep General's edit from going out too.
   test("a Tools check that fails keeps the whole save back", async () => {
@@ -688,62 +553,8 @@ describe("the editor's bar covers the whole agent", () => {
     ).toEqual([]);
   });
 
-  // A save that does not write General judges against the stored model: a provider switched on
-  // General while it runs does not hold the Knowledge reviewer that inherits the stored endpoint.
-  test("a General edit made during a save that does not write General holds nothing", async () => {
-    const stub = stubEditorApi(
-      {
-        name: "Atendente",
-        modelConfig: {
-          provider: "openai-compatible",
-          model: "m",
-          baseURL: "https://llm.example.com/v1",
-        },
-      },
-      { catalog: NATIVE_CATALOG },
-    );
-    const served = globalThis.fetch;
-    let release: () => void = () => {};
-    const held = new Promise<void>((r) => {
-      release = r;
-    });
-    let putSent = false;
-    globalThis.fetch = (async (
-      input: RequestInfo | URL,
-      init?: RequestInit,
-    ) => {
-      if ((init?.method ?? "GET") === "PUT" && !putSent) {
-        putSent = true;
-        await held;
-      }
-      return served(input, init);
-    }) as typeof fetch;
-    await renderEditor(stub, "knowledge");
-    const reviewer = document
-      .getElementById("kb-review")
-      ?.querySelector("select");
-    if (!reviewer) throw new Error("the reviewer's provider is not drawn");
-    fireEvent.change(reviewer, { target: { value: "openai-compatible" } });
-    await waitFor(() => expect(save().disabled).toBe(false));
-    await goTo("Tools");
-    editTab("tools");
-    fireEvent.click(save());
-    await waitFor(() => expect(putSent).toBe(true));
-    await goTo("General");
-    fireEvent.change(screen.getByLabelText("Provider"), {
-      target: { value: "openai" },
-    });
-    release();
-    await waitFor(
-      () =>
-        expect(stub.writes.filter((w) => w.method === "PUT").length).toBe(2),
-      { timeout: 5_000 },
-    );
-    expect(screen.queryByText(/Fix the Knowledge tab/)).toBeNull();
-  });
-
   // The save goes back to where Save was pressed only from a tab it opened itself: an operator who
-  // moved to General while the Tools write was out stays on General.
+  // moved to General while the save was out stays on General.
   test("a tab the operator moved to during the save is where the save leaves them", async () => {
     const stub = stubEditorApi(
       { name: "Atendente" },
@@ -759,7 +570,7 @@ describe("the editor's bar covers the whole agent", () => {
       input: RequestInfo | URL,
       init?: RequestInit,
     ) => {
-      if ((init?.method ?? "GET") === "PUT" && !putSent) {
+      if ((init?.method ?? "GET") === "PATCH" && !putSent) {
         putSent = true;
         await held;
       }
@@ -771,53 +582,7 @@ describe("the editor's bar covers the whole agent", () => {
     await waitFor(() => expect(putSent).toBe(true));
     await goTo("General");
     release();
-    await screen.findByText("Tools updated.");
-    for (let i = 0; i < 5; i++) await act(async () => {});
-    expect(
-      screen
-        .getByRole("tab", { name: "General" })
-        .getAttribute("aria-selected"),
-    ).toBe("true");
-  });
-
-  // A recheck the save makes after the operator moved does not erase where they went: switched to
-  // Monitoring on General during the Tools write, Knowledge is judged again, and the save ends back
-  // on General, not on Tools where Save was pressed.
-  test("a recheck after the operator moved still leaves them where they went", async () => {
-    const stub = stubEditorApi(
-      { name: "Atendente" },
-      { catalog: NATIVE_CATALOG },
-    );
-    const served = globalThis.fetch;
-    let release: () => void = () => {};
-    const held = new Promise<void>((r) => {
-      release = r;
-    });
-    let putSent = false;
-    globalThis.fetch = (async (
-      input: RequestInfo | URL,
-      init?: RequestInit,
-    ) => {
-      if ((init?.method ?? "GET") === "PUT" && !putSent) {
-        putSent = true;
-        await held;
-      }
-      return served(input, init);
-    }) as typeof fetch;
-    await renderEditor(stub, "knowledge");
-    editTab("knowledge");
-    await goTo("Tools");
-    editTab("tools");
-    fireEvent.click(save());
-    await waitFor(() => expect(putSent).toBe(true));
-    await goTo("General");
-    fireEvent.click(screen.getByRole("radio", { name: /^Monitoring/ }));
-    release();
-    await waitFor(
-      () =>
-        expect(stub.writes.filter((w) => w.method === "PUT").length).toBe(2),
-      { timeout: 5_000 },
-    );
+    await screen.findByText("Agent saved.");
     for (let i = 0; i < 5; i++) await act(async () => {});
     expect(
       screen

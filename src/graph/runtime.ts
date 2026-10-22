@@ -64,6 +64,7 @@ import {
   withFlowStage,
 } from "@/modules/flowlog/service";
 import { ourSideHasSpoken } from "@/modules/followups/eligibility";
+import { openAttendance } from "@/modules/guardrails/context";
 import {
   buildExternalCheck,
   type ExternalCallDeps,
@@ -1256,13 +1257,16 @@ async function runTurnBody(
     // NOTE: Read when the input screening runs, before this turn's invoke writes the burst into the
     // thread, so the window holds only what came before it.
     inputContext: async () =>
-      (
+      openAttendance(
         (
-          await buildThreadStateGraph(
-            params.deps?.checkpointer ?? (await getCheckpointer()),
-          ).getState({ configurable: { thread_id: graphThreadId } })
-        ).values as { messages?: BaseMessage[] } | undefined
-      )?.messages ?? [],
+          (
+            await buildThreadStateGraph(
+              params.deps?.checkpointer ?? (await getCheckpointer()),
+            ).getState({ configurable: { thread_id: graphThreadId } })
+          ).values as { messages?: BaseMessage[] } | undefined
+        )?.messages ?? [],
+        conversationId,
+      ),
     makeModel: params.deps?.makeModel,
     // NOTE: The same usage sink as the turn's own callbacks.
     persistUsage: params.deps?.persistUsage,

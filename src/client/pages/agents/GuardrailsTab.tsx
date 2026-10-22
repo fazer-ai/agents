@@ -213,19 +213,29 @@ export function GuardrailsTab({
   };
   const leaveThreshold = (key: GuardrailThresholdKey) =>
     setThresholdDrafts(({ [key]: _left, ...rest }) => rest);
-  // The context window as typed. A whole number in range goes to the form at once; anything else stays
-  // only here, where the field shows it out of range and holds Save, until it is fixed or discarded.
-  const [contextDraft, setContextDraft] = useState<string | null>(null);
-  const contextValid = (raw: string) =>
-    raw.trim() !== "" && inRange(Number(raw), GUARDRAIL_RANGES.contextMessages);
+  // The context window as typed, when it is not a whole number in range: the form keeps its last valid
+  // value and the field shows the text out of range. The draft belongs to the input block it was typed
+  // over, so any other change to that block (a discard, a reload, another field) shows the form again.
+  const [contextDraft, setContextDraft] = useState<{
+    raw: string;
+    over: GuardrailsConfig["input"];
+  } | null>(null);
   const typeContext = (raw: string) => {
-    setContextDraft(raw);
-    if (contextValid(raw))
+    if (
+      raw.trim() !== "" &&
+      inRange(Number(raw), GUARDRAIL_RANGES.contextMessages)
+    ) {
+      setContextDraft(null);
       setG((s) => ({
         ...s,
         input: { ...s.input, contextMessages: Number(raw) },
       }));
+    } else setContextDraft({ raw, over: g.input });
   };
+  const contextText =
+    contextDraft && contextDraft.over === g.input
+      ? contextDraft.raw
+      : String(g.input.contextMessages);
   const checkLabel = (k: keyof GuardrailChecks) =>
     ({
       toxicity: t("editor.guardrails.checkToxicity", "Toxicity / abuse"),
@@ -363,13 +373,8 @@ export function GuardrailsTab({
           >
             <NumberInput
               range={GUARDRAIL_RANGES.contextMessages}
-              value={contextDraft ?? String(g.input.contextMessages)}
+              value={contextText}
               onChange={(e) => typeContext(e.target.value)}
-              onBlur={() =>
-                setContextDraft((d) =>
-                  d !== null && contextValid(d) ? null : d,
-                )
-              }
               data-testid="gr-context-messages"
             />
           </FormField>
@@ -925,10 +930,7 @@ export function GuardrailsTab({
         dirty={dirty}
         saving={saving}
         onSave={onSave}
-        onDiscard={() => {
-          setContextDraft(null);
-          onDiscard();
-        }}
+        onDiscard={onDiscard}
       />
     </div>
   );

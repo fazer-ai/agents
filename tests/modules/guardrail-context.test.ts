@@ -8,6 +8,7 @@ import {
 } from "@langchain/core/messages";
 import {
   conversationDividerMessage,
+  conversationStamp,
   humanAgentMessage,
   humanHandbackMessage,
   memoryHeadMessage,
@@ -20,7 +21,7 @@ import {
 import { BEHAVIOR_PATCH_SHAPE } from "@/modules/agents/settings-schema";
 import { analyzeGuardrail } from "@/modules/guardrails/analyze";
 import { guardrailAsks } from "@/modules/guardrails/classify";
-import { guardrailContext } from "@/modules/guardrails/context";
+import { guardrailContext, openAttendance } from "@/modules/guardrails/context";
 import { buildGuardrailGate } from "@/modules/guardrails/gate";
 import {
   GUARDRAILS_DEFAULTS,
@@ -110,6 +111,56 @@ describe("guardrailContext", () => {
   test("a long message is clipped", () => {
     const [m] = guardrailContext([new HumanMessage("x".repeat(5000))], 1);
     expect(m?.text.length).toBeLessThan(5000);
+  });
+
+  test("text the agent wrote beside a tool call is not a reply", () => {
+    const context = guardrailContext(
+      [
+        new HumanMessage("C1 tem ingresso?"),
+        new AIMessage({
+          content: "vou procurar o evento",
+          tool_calls: [{ id: "t1", name: "buscar", args: {} }],
+        }),
+        new ToolMessage({ content: "achou", tool_call_id: "t1" }),
+        new AIMessage("A1 tem sim"),
+      ],
+      4,
+    );
+    expect(context).toEqual([
+      { role: "customer", text: "C1 tem ingresso?" },
+      { role: "assistant", text: "A1 tem sim" },
+    ]);
+  });
+});
+
+describe("openAttendance", () => {
+  const said = (text: string, conversationId: number) =>
+    new HumanMessage({
+      content: text,
+      additional_kwargs: conversationStamp(conversationId),
+    });
+
+  test("the conversation's own run, without the attendance before it, divider or not", () => {
+    const thread = [
+      said("C1 antigo", 7),
+      new AIMessage("A1 antigo"),
+      said("C2 novo", 8),
+      new AIMessage("A2 novo"),
+    ];
+    expect(
+      guardrailContext(openAttendance(thread, 8), 4).map((c) => c.text),
+    ).toEqual(["C2 novo", "A2 novo"]);
+  });
+
+  test("a conversation the thread has not reached yet has nothing of it", () => {
+    expect(
+      openAttendance([said("C1 antigo", 7), new AIMessage("A1 antigo")], 8),
+    ).toEqual([]);
+  });
+
+  test("a thread with no stamps is read whole", () => {
+    const thread = [new HumanMessage("C1"), new AIMessage("A1")];
+    expect(openAttendance(thread, 8)).toEqual(thread);
   });
 });
 

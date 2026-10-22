@@ -13,7 +13,7 @@ import {
   loadDetachedConfig,
 } from "@/graph/detached-turn";
 import { lastAssistantText, recursionLimitFor } from "@/graph/graph";
-import { sentAtStamp } from "@/graph/markers";
+import { playgroundNudgeMarker, sentAtStamp } from "@/graph/markers";
 import type { FallbackFailedInfo, ModelRetryInfo } from "@/graph/model-limit";
 import type { ResolvedModelConfig } from "@/graph/models";
 import { type AgentNudge, renderNudge } from "@/graph/nudge";
@@ -1574,6 +1574,7 @@ async function runPlaygroundFollowupOnce(
             // NOTE: the turn's id, as on a user turn: a reopened session finds the follow-up's
             // usage through it.
             id: turnId,
+            additional_kwargs: playgroundNudgeMarker(),
           }),
         ],
       },

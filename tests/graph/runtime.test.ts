@@ -10023,6 +10023,88 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       expect(second[2]).toBe("C2 sim o vip como");
     });
 
+    test("a new conversation of the same contact starts with no context from the one before", async () => {
+      await setGuardrails({
+        enabled: true,
+        provider: "openai",
+        model: GUARD_MODEL,
+        credentialRef: gVaultRef,
+        input: {
+          enabled: true,
+          action: "template",
+          templateMessage: "TEMPLATE-IN",
+          checks: {
+            toxicity: false,
+            unsafeContent: true,
+            competitorMentions: false,
+          },
+          contextMessages: 4,
+        },
+        output: { enabled: false },
+      });
+      const contact = await suDb.contact.create({
+        data: {
+          tenantId: gTenantId,
+          chatwootInstanceId: gInstanceId,
+          chatwootContactId: 89484,
+          name: "C",
+        },
+        select: { id: true },
+      });
+      for (const convId of [9484, 9485])
+        await suDb.conversation.create({
+          data: {
+            tenantId: gTenantId,
+            chatwootInstanceId: gInstanceId,
+            chatwootConversationId: convId,
+            contactInboxId: 9484,
+            contactId: contact.id,
+            status: "pending",
+            threadId: `${gTenantId}:${gInstanceId}:${convId}`,
+            lastEventAt: new Date(),
+          },
+        });
+      const judged: string[][] = [];
+      const checkpointer = new MemorySaver();
+      const run = (conversationId: number, id: number, content: string) =>
+        runAgentTurn({
+          tenantId: gTenantId,
+          instanceId: gInstanceId,
+          agentBotId: G_BOT,
+          event: incoming({
+            conversationId,
+            inboxId: G_INBOX,
+            contactInboxId: 9484,
+            message: { id, content, messageType: "incoming", private: false },
+          }),
+          base: appDb,
+          deps: {
+            makeModel: (cfg: ResolvedModelConfig): BaseChatModel =>
+              cfg.model === GUARD_MODEL
+                ? guardrailModel(async (msgs) => {
+                    judged.push(msgs.map((m) => String(m.content)));
+                    return {
+                      content: JSON.stringify({
+                        violated: false,
+                        categories: [],
+                        rationale: "",
+                        suggestedReply: null,
+                      }),
+                    };
+                  })
+                : new FakeListChatModel({ responses: [REPLY] }),
+            makeClient: guardStub([], []),
+            checkpointer,
+          },
+        });
+      expect(await run(9484, 94841, "C1 da conversa antiga")).toBe("posted");
+      expect(await run(9485, 94851, "C2 da conversa nova")).toBe("posted");
+      expect(judged[1]?.join("\n")).not.toMatch(/conversa antiga/);
+      expect(await run(9485, 94852, "C3 da conversa nova")).toBe("posted");
+      expect(judged[2]?.[1]).toMatch(/customer: C2 da conversa nova/);
+      expect(judged[2]?.[1]).not.toMatch(/conversa antiga/);
+    });
+
     // The reply the output check sends instead of the model's keeps the escape only when a model wrote
     // it: the operator's template keeps Chatwoot's Liquid, a generated reply is escaped.
     for (const [convId, action, expected] of [

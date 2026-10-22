@@ -193,6 +193,12 @@ export function nudgeMessage(
   });
 }
 
+// The playground's simulated follow-up carries the same marker, unstamped: a session belongs to no
+// conversation, and without the marker its directive would read as something the customer wrote.
+export function playgroundNudgeMarker(): Record<string, unknown> {
+  return { [MARKER_KWARG]: "nudge" satisfies SystemMarker };
+}
+
 // A message a HUMAN AGENT sent the customer while the bot was silent. It rides as a HumanMessage (a
 // system role is dropped before the model call), so this note is what keeps the model and the
 // summarizer from reading the operator's words as the CONTACT's. The note is a short constant with no

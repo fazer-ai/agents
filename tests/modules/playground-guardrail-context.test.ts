@@ -5,7 +5,10 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import type { TenantContext } from "@/lib/tenancy";
-import { runPlaygroundTurn } from "@/modules/playground/service";
+import {
+  runPlaygroundFollowup,
+  runPlaygroundTurn,
+} from "@/modules/playground/service";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { guardrailModel } from "../utils/scripted-models";
 
@@ -196,6 +199,23 @@ describe.skipIf(!dbUp)("playground guardrail context", () => {
     const third = m.judged[2] ?? [];
     expect(third.join("\n")).not.toMatch(/BAD/);
     expect(third[1]).toMatch(/customer: C1 horário\?/);
+  });
+
+  test("a simulated follow-up's directive is not read as something the customer said", async () => {
+    const m = models(["R1 claro"]);
+    const cp = new MemorySaver();
+    const first = await turn(agentWindow, m, cp, "C1 horário?");
+    await runPlaygroundFollowup({
+      ctx: ctx(tenantId),
+      agentId: agentWindow,
+      threadId: first.threadId,
+      base: appDb,
+      deps: { makeModel: m.make, checkpointer: cp },
+    });
+    await turn(agentWindow, m, cp, "C2 sim", first.threadId);
+    const context = m.judged.at(-1)?.[1] ?? "";
+    expect(context).toMatch(/customer: C1 horário\?/);
+    expect(context.match(/customer:/g)).toHaveLength(1);
   });
 
   test("with the window at 0 the judge reads the message alone", async () => {

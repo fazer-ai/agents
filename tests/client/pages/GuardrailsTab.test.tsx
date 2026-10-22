@@ -455,3 +455,73 @@ describe("GuardrailsTab thresholds beside their checks", () => {
     ).toBe(0);
   });
 });
+
+// The conversation-context field keeps what was typed out of range on screen, and the form keeps its
+// last valid number. A discard from the editor's own bar resets the form without passing through the
+// tab, and the field must show the form again, not the text typed before it.
+describe("GuardrailsTab conversation context", () => {
+  let previousFetch: typeof globalThis.fetch;
+  beforeAll(() => {
+    previousFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ entries: [] }), {
+        headers: { "content-type": "application/json" },
+      })) as unknown as typeof globalThis.fetch;
+  });
+  afterEach(() => cleanup());
+  afterAll(() => {
+    globalThis.fetch = previousFetch;
+  });
+
+  let saved: GuardrailsConfig | null = null;
+  function Stateful({ initial }: { initial: GuardrailsConfig }) {
+    const [g, setG] = useState(initial);
+    saved = g;
+    return (
+      <>
+        <button type="button" onClick={() => setG(structuredClone(initial))}>
+          reset-from-outside
+        </button>
+        <GuardrailsTab
+          guardrails={g}
+          setGuardrails={setG as never}
+          refusals={NO_REFUSALS}
+          dirty={false}
+          saving={false}
+          onSave={() => {}}
+          onDiscard={() => {}}
+        />
+      </>
+    );
+  }
+  function mount() {
+    const c: GuardrailsConfig = {
+      ...structuredClone(GUARDRAILS_DEFAULTS),
+      enabled: true,
+    };
+    c.input = { ...c.input, enabled: true, contextMessages: 4 };
+    render(<Stateful initial={c} />);
+  }
+  const field = () =>
+    document.querySelector<HTMLInputElement>(
+      '[data-testid="gr-context-messages"]',
+    );
+
+  test("a number in range goes to the form; one out of range stays on screen only", () => {
+    mount();
+    fireEvent.change(field() as HTMLInputElement, { target: { value: "6" } });
+    const valid = [field()?.value, saved?.input.contextMessages];
+    fireEvent.change(field() as HTMLInputElement, { target: { value: "25" } });
+    expect([valid, [field()?.value, saved?.input.contextMessages]]).toEqual([
+      ["6", 6],
+      ["25", 6],
+    ]);
+  });
+
+  test("a reset that does not pass through the tab shows the form's value again", () => {
+    mount();
+    fireEvent.change(field() as HTMLInputElement, { target: { value: "25" } });
+    fireEvent.click(screen.getByText("reset-from-outside"));
+    expect([field()?.value, saved?.input.contextMessages]).toEqual(["4", 4]);
+  });
+});

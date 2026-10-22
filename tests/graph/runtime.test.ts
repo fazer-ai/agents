@@ -9959,6 +9959,70 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       expect(attachments).toEqual([]);
     });
 
+    // The input check reads the conversation's thread as context (issue #1624): the second message is
+    // judged after the first one and the agent's reply to it, and is the only text judged.
+    test("the input check reads the earlier turns of the conversation as context", async () => {
+      await setGuardrails({
+        enabled: true,
+        provider: "openai",
+        model: GUARD_MODEL,
+        credentialRef: gVaultRef,
+        input: {
+          enabled: true,
+          action: "template",
+          templateMessage: "TEMPLATE-IN",
+          checks: {
+            toxicity: false,
+            unsafeContent: true,
+            competitorMentions: false,
+          },
+          contextMessages: 4,
+        },
+        output: { enabled: false },
+      });
+      await seedConv(9483);
+      const judged: string[][] = [];
+      const checkpointer = new MemorySaver();
+      const run = (id: number, content: string) =>
+        runAgentTurn({
+          tenantId: gTenantId,
+          instanceId: gInstanceId,
+          agentBotId: G_BOT,
+          event: incoming({
+            conversationId: 9483,
+            inboxId: G_INBOX,
+            message: { id, content, messageType: "incoming", private: false },
+          }),
+          base: appDb,
+          deps: {
+            makeModel: (cfg: ResolvedModelConfig): BaseChatModel =>
+              cfg.model === GUARD_MODEL
+                ? guardrailModel(async (msgs) => {
+                    judged.push(msgs.map((m) => String(m.content)));
+                    return {
+                      content: JSON.stringify({
+                        violated: false,
+                        categories: [],
+                        rationale: "",
+                        suggestedReply: null,
+                      }),
+                    };
+                  })
+                : new FakeListChatModel({ responses: [REPLY] }),
+            makeClient: guardStub([], []),
+            checkpointer,
+          },
+        });
+      expect(await run(94831, "C1 quero ingresso")).toBe("posted");
+      expect(judged[0]).toHaveLength(2);
+      expect(await run(94832, "C2 sim o vip como")).toBe("posted");
+      const second = judged[1] ?? [];
+      expect(second).toHaveLength(3);
+      expect(second[1]).toMatch(/customer: C1 quero ingresso/);
+      expect(second[1]).toContain(`assistant: ${REPLY}`);
+      expect(second[2]).toBe("C2 sim o vip como");
+    });
+
     // The reply the output check sends instead of the model's keeps the escape only when a model wrote
     // it: the operator's template keeps Chatwoot's Liquid, a generated reply is escaped.
     for (const [convId, action, expected] of [

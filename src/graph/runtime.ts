@@ -1253,6 +1253,16 @@ async function runTurnBody(
     systemPrompt: loaded.systemPrompt,
     // NOTE: The raw inbound text, never a system marker the customer did not write.
     customerMessage: text,
+    // NOTE: Read when the input screening runs, before this turn's invoke writes the burst into the
+    // thread, so the window holds only what came before it.
+    inputContext: async () =>
+      (
+        (
+          await buildThreadStateGraph(
+            params.deps?.checkpointer ?? (await getCheckpointer()),
+          ).getState({ configurable: { thread_id: graphThreadId } })
+        ).values as { messages?: BaseMessage[] } | undefined
+      )?.messages ?? [],
     makeModel: params.deps?.makeModel,
     // NOTE: The same usage sink as the turn's own callbacks.
     persistUsage: params.deps?.persistUsage,

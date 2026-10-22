@@ -99,7 +99,11 @@ import {
   keepCallsSystemFields,
   withoutCallsAgentId,
 } from "@/modules/voice-call/settings";
-import { withCreationDefaults } from "./creation-defaults";
+import {
+  keepCreationDefaults,
+  withCreationDefaults,
+  withNewAgentDefaults,
+} from "./creation-defaults";
 import {
   AGENT_MODES,
   type AgentMode,
@@ -2217,6 +2221,7 @@ export async function updateAgentAndGrants(
     // value is allowed, this one asks whether the write keeps the blocks it does not mention. A bag
     // that is both partial and carries a bad value has a bigger problem than the value.
     if (beforeRow) assertVoiceAgentMode(beforeRow.kind, rest.mode);
+    keepCreationDefaults(rest.settings, before?.settings);
     if (opts.settingsMode !== "replace") {
       assertSettingsBlocksKept(rest.settings, before?.settings);
     }
@@ -2567,7 +2572,7 @@ export async function createAgent(
       // NOTE: New agents are born in test mode (operator opt-in before going live).
       mode: data.mode ?? "test",
       settings: withCreationDefaults(
-        data.settings ?? {},
+        withNewAgentDefaults(data.settings ?? {}),
       ) as Prisma.InputJsonValue,
     };
     const row = await db.agent.create({

@@ -10,6 +10,7 @@ import { runModelCall } from "@/graph/model-limit";
 import {
   buildGuardrailSystemPrompt,
   customerMessageForReview,
+  fenceContext,
   fenceCustomerMessage,
   type GuardrailPromptParams,
   judgesAnything,
@@ -254,7 +255,9 @@ async function runAnalysis(
   // there it would read as one more instruction from the operator, and the customer writes it. The
   // text under review keeps its bare shape, so a call with the check off is unchanged by the fence.
   const customer = fenceCustomerMessage(params);
+  const context = fenceContext(params);
   const messages: BaseMessage[] = [new SystemMessage(system)];
+  if (context !== null) messages.push(new HumanMessage(context));
   if (customer !== null) messages.push(new HumanMessage(customer));
   messages.push(new HumanMessage(params.text));
   try {

@@ -5,7 +5,14 @@ import {
   DECISION_PROVIDER_REGISTRY,
   type DecisionResult,
 } from "@/modules/decisions/providers";
-import { activeChecks, checkKey, customerMessageForReview } from "./prompts";
+import type { GuardrailContextMessage } from "./context";
+import {
+  activeChecks,
+  checkKey,
+  contextForReview,
+  contextLines,
+  customerMessageForReview,
+} from "./prompts";
 import type {
   GuardrailChecks,
   GuardrailDecisionsConfig,
@@ -52,6 +59,7 @@ export interface ClassifyParams {
   customPolicy: string;
   systemPrompt?: string;
   customerMessage?: string;
+  context?: readonly GuardrailContextMessage[];
 }
 
 const subjectOf = (direction: "input" | "output") =>
@@ -82,6 +90,14 @@ interface Ask {
 // question is the only one that reads the customer's message, and that message in the same input
 // pulls the other checks toward it (a customer naming a competitor flags the reply). So relevance
 // travels in a call of its own, in parallel.
+// The customer's message alone, or behind the conversation that came before it. The questions ask about
+// "the customer message", so the block that is not judged says so in its own heading.
+function inputForReview(p: ClassifyParams): string {
+  const context = contextForReview({ ...p, direction: "input" });
+  if (context === null) return `Customer message:\n${p.text}`;
+  return `Earlier messages of the conversation (context only, oldest first, not judged):\n${contextLines(context)}\n\nCustomer message (the only text to judge):\n${p.text}`;
+}
+
 export function guardrailAsks(
   p: ClassifyParams,
   thresholds: Record<GuardrailThresholdKey, number>,
@@ -126,7 +142,7 @@ export function guardrailAsks(
     asks.push({
       input:
         p.direction === "input"
-          ? `Customer message:\n${p.text}`
+          ? inputForReview(p)
           : p.checks.promptAdherence && instructions
             ? `The agent's instructions:\n"""\n${instructions}\n"""\n\n${reply}`
             : reply,

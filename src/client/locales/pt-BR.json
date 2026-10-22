@@ -2183,6 +2183,9 @@
       "classifierDecisionsHint": "Uma API de classificação responde uma pergunta de sim ou não por checagem. É mais rápida, mas devolve só números e não escreve resposta.",
       "competitors": "Concorrentes",
       "competitorsHint": "Um por linha. Usado pela checagem de menção a concorrentes.",
+      "contextMessages": "Contexto da conversa",
+      "contextMessagesHelp": "Uma resposta curta como “sim, o VIP, como?” pode parecer outra coisa sozinha. Ao lado da pergunta que ela responde, o sentido fica claro.\n\nAs mensagens anteriores são só contexto: nunca disparam uma checagem por si mesmas, e uma mensagem barrada por uma checagem não entra entre elas.\n\nCada mensagem lida aumenta um pouco o custo de cada checagem. Agentes criados antes desta configuração começam em 0, que é como eram checados até então.",
+      "contextMessagesHint": "Quantas mensagens anteriores a checagem lê para entender a mensagem do cliente. Só a mensagem do cliente é julgada. Com 0, ela é lida sozinha. De 0 a 20.",
       "contract": {
         "allow": "a resposta sai como foi escrita.",
         "block": "a resposta não sai e vale o “Ao violar” da seção Saída: envia a mensagem template, não envia nada, ou passa a conversa para a equipe com a mensagem ao cliente. A mensagem gerada pelo guardrails vira a template, porque aqui nenhum modelo escreve a substituta.",

@@ -31,10 +31,10 @@ function raw(stored: unknown, read: string, max: number): string {
   return typeof stored === "string" && stored.length > max ? stored : read;
 }
 
-function direction(
+function direction<D extends GuardrailDirectionConfig>(
   stored: unknown,
-  read: GuardrailDirectionConfig,
-): GuardrailDirectionConfig {
+  read: D,
+): D {
   const bag =
     stored && typeof stored === "object"
       ? (stored as Record<string, unknown>)

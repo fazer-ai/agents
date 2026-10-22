@@ -1043,6 +1043,14 @@ async function runPlaygroundTurnOnce(
         flow,
         systemPrompt: loaded.systemPrompt,
         customerMessage: text,
+        inputContext: async () => {
+          const st = await graph.getState({
+            configurable: { thread_id: threadId },
+          });
+          const msgs = (st?.values as { messages?: unknown } | undefined)
+            ?.messages;
+          return Array.isArray(msgs) ? (msgs as BaseMessage[]) : [];
+        },
         makeModel: params.deps?.makeModel,
         langfuseCfg: loaded.langfuseCfg,
       })

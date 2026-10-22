@@ -21,6 +21,7 @@ import { credentialCompat } from "@/client/lib/credentialCompat";
 import { providerLabel } from "@/client/lib/providerLabels";
 import { MODEL_PROVIDERS } from "@/graph/model-config";
 import { PROVIDER_DEFAULT_MODEL } from "@/graph/model-defaults";
+import { inRange } from "@/lib/number-range";
 import { GUARDRAIL_RANGES } from "@/modules/agents/number-ranges";
 import {
   CUSTOM_POLICY_MAX,
@@ -212,6 +213,19 @@ export function GuardrailsTab({
   };
   const leaveThreshold = (key: GuardrailThresholdKey) =>
     setThresholdDrafts(({ [key]: _left, ...rest }) => rest);
+  // The context window as typed. A whole number in range goes to the form at once; anything else stays
+  // only here, where the field shows it out of range and holds Save, until it is fixed or discarded.
+  const [contextDraft, setContextDraft] = useState<string | null>(null);
+  const contextValid = (raw: string) =>
+    raw.trim() !== "" && inRange(Number(raw), GUARDRAIL_RANGES.contextMessages);
+  const typeContext = (raw: string) => {
+    setContextDraft(raw);
+    if (contextValid(raw))
+      setG((s) => ({
+        ...s,
+        input: { ...s.input, contextMessages: Number(raw) },
+      }));
+  };
   const checkLabel = (k: keyof GuardrailChecks) =>
     ({
       toxicity: t("editor.guardrails.checkToxicity", "Toxicity / abuse"),
@@ -330,6 +344,34 @@ export function GuardrailsTab({
                 </>
               )}
             </div>
+          </FormField>
+        )}
+        {dir === "input" && d.enabled && (
+          <FormField
+            label={t(
+              "editor.guardrails.contextMessages",
+              "Conversation context",
+            )}
+            description={t(
+              "editor.guardrails.contextMessagesHint",
+              "How many earlier messages the check reads to understand the customer's message. Only the customer's message is judged. 0 reads it alone. 0-20.",
+            )}
+            help={t(
+              "editor.guardrails.contextMessagesHelp",
+              "A short reply such as “yes, the VIP one, how?” can read as something else on its own. With the question it answers beside it, its meaning is plain.\n\nThe earlier messages are context only: they never trip a check themselves, and a message a check stopped is not among them.\n\nEach message read adds a little to the cost of every screening. Agents created before this setting existed start at 0, which is how they were screened until then.",
+            )}
+          >
+            <NumberInput
+              range={GUARDRAIL_RANGES.contextMessages}
+              value={contextDraft ?? String(g.input.contextMessages)}
+              onChange={(e) => typeContext(e.target.value)}
+              onBlur={() =>
+                setContextDraft((d) =>
+                  d !== null && contextValid(d) ? null : d,
+                )
+              }
+              data-testid="gr-context-messages"
+            />
           </FormField>
         )}
         {/* The action and its messages are also what the external check's block and a held failure
@@ -883,7 +925,10 @@ export function GuardrailsTab({
         dirty={dirty}
         saving={saving}
         onSave={onSave}
-        onDiscard={onDiscard}
+        onDiscard={() => {
+          setContextDraft(null);
+          onDiscard();
+        }}
       />
     </div>
   );

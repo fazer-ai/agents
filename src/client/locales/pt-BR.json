@@ -3168,7 +3168,7 @@
       "GOOGLE_SHEETS": {
         "description": "Adiciona uma linha, busca linhas e atualiza uma linha encontrada em uma aba de planilha, em uma conta Google conectada. As colunas são identificadas pelos nomes da linha de cabeçalho da aba.",
         "hint": "Adiciona, busca e atualiza linhas em uma aba de planilha.",
-        "label": "Planilhas Google"
+        "label": "Google Sheets"
       },
       "RESEND": {
         "description": "E-mail transacional com uma chave de API do Resend. O agente envia confirmações, lembretes e follow-ups; o remetente é fixado nas configurações abaixo.",

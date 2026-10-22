@@ -5,6 +5,7 @@ import {
   Button,
   FormField,
   Input,
+  LinkifiedText,
   Skeleton,
   useHoldSave,
 } from "@/client/components";
@@ -318,7 +319,11 @@ export function SheetsConfigEditor({
                 : t("integrations.sheets.load", "Load")}
             </Button>
           </div>
-          {listError && <p className="text-error text-xs">{listError}</p>}
+          {listError && (
+            <p className="text-error text-xs">
+              <LinkifiedText text={listError} />
+            </p>
+          )}
           {list && list.length === 0 && (
             <p className="text-text-muted text-xs">
               {t(
@@ -374,7 +379,9 @@ export function SheetsConfigEditor({
           <Skeleton className="h-20 w-full" />
         ) : tabsError ? (
           <div className="flex flex-col items-start gap-2">
-            <p className="text-error text-xs">{tabsError}</p>
+            <p className="text-error text-xs">
+              <LinkifiedText text={tabsError} />
+            </p>
             <Button
               variant="secondary"
               size="sm"

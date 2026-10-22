@@ -210,6 +210,29 @@ describe("the Sheets settings", () => {
     ).toBeTruthy();
   });
 
+  test("an address in the server's sentence is a link, so the operator opens the console page without copying it", async () => {
+    const url =
+      "https://console.developers.google.com/apis/api/sheets.googleapis.com/overview?project=123";
+    const { l } = loaders({
+      tabs: async () => {
+        throw {
+          status: 502,
+          value: {
+            error: `The Google Sheets API is turned off. Enable it in that project and try again: ${url}.`,
+          },
+        };
+      },
+    });
+    render(<Harness initial={{ spreadsheetId: SID }} l={l} onCfg={() => {}} />);
+    const link = await waitFor(() => screen.getByRole("link", { name: url }));
+    expect(link.getAttribute("href")).toBe(url);
+    expect(link.getAttribute("target")).toBe("_blank");
+    expect(link.getAttribute("rel")).toBe("noopener noreferrer");
+    expect(link.parentElement?.textContent).toBe(
+      `The Google Sheets API is turned off. Enable it in that project and try again: ${url}.`,
+    );
+  });
+
   test("another credential drops the list, including an answer still on its way", async () => {
     let release: (v: Array<{ id: string; name: string }>) => void = () => {};
     const { l } = loaders({

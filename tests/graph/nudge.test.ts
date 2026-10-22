@@ -26,6 +26,7 @@ import {
   isConversationDivider,
   isNudgeTurn,
   stampedConversationId,
+  UNDELIVERED_PROACTIVE_NOTE_HEAD,
 } from "@/graph/markers";
 import {
   type ApprovedDocumentDelivery,
@@ -6948,8 +6949,9 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
               warn.mock.calls.some(
                 (c) =>
                   c[0] ===
-                    "agentNudge left the unsent draft in place of the template: conv=%s reason=%s" &&
-                  c[2] === "another-invoke-is-reading",
+                    "agentNudge left the unsent draft in place of the %s: conv=%s reason=%s" &&
+                  c[1] === "template" &&
+                  c[3] === "another-invoke-is-reading",
               ),
             ).toBe(true);
           } finally {
@@ -7065,6 +7067,83 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
           });
           expect(outcome).not.toBe("templated");
           expect(s.payloads).toEqual([]);
+        },
+        settings,
+      );
+    });
+
+    // What the thread holds after a turn whose words became a note: the system note in the draft's
+    // place, never the draft as the agent's line.
+    const draftLeftAsSaid = (left: Array<[string, string]>) =>
+      left.some(([type, text]) => type === "ai" && text.includes("Lembrete!"));
+
+    test("a draft that became a note outside the window stays in memory as undelivered, not as said", async () => {
+      await withGuardrails(
+        { enabled: false },
+        async () => {
+          await seedConv(7591, null, new Date(Date.now() - 48 * 3_600_000));
+          const s = templateStub();
+          const saver = new MemorySaver();
+          const threadId = `${tenantId}:${instanceId}:7591`;
+          const outcome = await runAgentNudge({
+            tenantId,
+            threadId,
+            nudge: {
+              source: "followup",
+              kind: "inactivity",
+              step: 1,
+              template: { kind: "followup" },
+            },
+            base: appDb,
+            deps: nudgeDeps(s, saver),
+          });
+          expect(outcome).toBe("noted-window");
+          expect(s.notes).toHaveLength(1);
+          const left = await turnLeftIn(saver, threadId);
+          expect(draftLeftAsSaid(left)).toBe(false);
+          const [type, text] = left.at(-1) ?? [];
+          expect(type).toBe("human");
+          expect(text).toContain(UNDELIVERED_PROACTIVE_NOTE_HEAD);
+          expect(text).toContain("Lembrete!");
+        },
+        settings,
+      );
+    });
+
+    test("a draft that became a note because a person holds the conversation stays in memory as undelivered", async () => {
+      await withGuardrails(
+        { enabled: false },
+        async () => {
+          await seedConv(7592, null, new Date());
+          await suDb.conversation.updateMany({
+            where: {
+              tenantId,
+              chatwootInstanceId: instanceId,
+              chatwootConversationId: 7592,
+            },
+            data: { status: "open", assigneeType: "User", assigneeId: 5 },
+          });
+          const s = templateStub();
+          const saver = new MemorySaver();
+          const threadId = `${tenantId}:${instanceId}:7592`;
+          const outcome = await runAgentNudge({
+            tenantId,
+            threadId,
+            nudge: {
+              source: "GENERIC",
+              kind: "agent_nudge",
+              text: "Pagamento confirmado.",
+            },
+            base: appDb,
+            deps: nudgeDeps(s, saver),
+          });
+          expect(outcome).toBe("noted");
+          const left = await turnLeftIn(saver, threadId);
+          expect(draftLeftAsSaid(left)).toBe(false);
+          const [type, text] = left.at(-1) ?? [];
+          expect(type).toBe("human");
+          expect(text).toContain(UNDELIVERED_PROACTIVE_NOTE_HEAD);
+          expect(text).toContain("Lembrete!");
         },
         settings,
       );

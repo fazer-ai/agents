@@ -13,6 +13,7 @@ import {
   isHumanHandback,
   isMemoryHead,
   isNudgeTurn,
+  isUndeliveredProactiveNote,
   isUndeliveredReplyNote,
 } from "@/graph/markers";
 import { contentToText } from "@/graph/message-text";
@@ -141,7 +142,7 @@ export function renderTranscript(
     // note by exact match.
     if (isHumanHandback(m)) continue;
     // NOTE: the undelivered-reply note is the same kind of system fact, for the live model only.
-    if (isUndeliveredReplyNote(m)) continue;
+    if (isUndeliveredReplyNote(m) || isUndeliveredProactiveNote(m)) continue;
     if (isHumanAgentTurn(m)) {
       if (text.startsWith(HUMAN_AGENT_NOTE)) {
         text = text.slice(HUMAN_AGENT_NOTE.length).trim();

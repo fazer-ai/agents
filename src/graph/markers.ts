@@ -21,6 +21,7 @@ type SystemMarker =
   | "human_agent"
   | "human_handback"
   | "undelivered_reply"
+  | "undelivered_proactive"
   | "called_off";
 
 function hasMarker(message: BaseMessage, marker: SystemMarker): boolean {
@@ -278,6 +279,39 @@ export function undeliveredReplyNote(
 
 export function isUndeliveredReplyNote(message: BaseMessage): boolean {
   return hasMarker(message, "undelivered_reply");
+}
+
+// What stands where a proactive turn's draft was, when the draft became a private note instead of
+// a message: outside the 24h window with no usable template, or with a person holding the
+// conversation. The customer never read it, and the next turn must not build on it as said; the
+// draft rides along so the intent is not lost.
+export const UNDELIVERED_PROACTIVE_NOTE_HEAD =
+  "(Contexto do sistema: esta mensagem proativa não chegou ao cliente";
+
+export type UndeliveredProactiveReason = "window" | "held";
+
+export function undeliveredProactiveNote(
+  conversationId: number,
+  id: string,
+  reason: UndeliveredProactiveReason,
+  draft: string,
+): HumanMessage {
+  const why =
+    reason === "window"
+      ? "a janela de 24h do WhatsApp estava fechada e não havia template para enviar"
+      : "uma pessoa da equipe está com a conversa";
+  return new HumanMessage({
+    content: `${UNDELIVERED_PROACTIVE_NOTE_HEAD}, porque ${why}; ficou como nota interna para a equipe. O cliente não a leu. O que ela diria: "${draft}")`,
+    id,
+    additional_kwargs: {
+      [MARKER_KWARG]: "undelivered_proactive" satisfies SystemMarker,
+      ...conversationStamp(conversationId),
+    },
+  });
+}
+
+export function isUndeliveredProactiveNote(message: BaseMessage): boolean {
+  return hasMarker(message, "undelivered_proactive");
 }
 
 export function isConversationDivider(message: BaseMessage): boolean {

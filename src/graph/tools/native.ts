@@ -1539,7 +1539,7 @@ class LabelBatch {
 // on the suggestion for task scope. The delta: docs/graph.md, "`set_labels`: the model names the delta".
 function setLabelsTool(ctx: ToolCtx) {
   // The account's vocabulary is offered whole: the guard is enforced on the way in, and a
-  // whole list is what stops an agent inventing `duvidas-evento` because the canonical value was
+  // whole list is what stops an agent inventing `duvidas-gerais` because the canonical value was
   // out of its sight.
   const labelsXml = existingLabelsXml(ctx.vocab?.labels ?? []);
   // 'task' scope is only offered when this conversation actually has a linked card (ctx.kanban).

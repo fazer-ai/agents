@@ -19,7 +19,7 @@
     "comments:ledger": "bun scripts/comment-ledger.ts",
     "test:coverage": "bun test --coverage",
     "test-watch": "bun test --watch",
-    "lint": "bun biome check --error-on-warnings",
+    "lint": "bun biome check --error-on-warnings && bun scripts/check-domain-vocabulary.ts",
     "format": "bun biome check --write",
     "build-check": "bunx tsc --noEmit",
     "build-check:worker": "bunx tsc --noEmit -p workers/cdn/tsconfig.json",

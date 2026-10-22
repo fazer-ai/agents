@@ -23,7 +23,7 @@ export type ProFeature =
 // dynamic lookup below.
 // t('upgrade.multiTenant.description', 'The Free edition runs a single tenant. Upgrade to Pro to create and manage multiple tenants.')
 // t('upgrade.branding.description', 'White-label branding (name, colors, logo, favicon) is a Pro feature. Upgrade to Pro to customize the app identity.')
-// t('upgrade.dashboards.description', 'Build your own dashboards (conversations by event, label or outcome, AI cost by model) and share each one by its address. Upgrade to Pro to create them.')
+// t('upgrade.dashboards.description', 'Build your own dashboards (conversations by attribute, label or outcome, AI cost by model) and share each one by its address. Upgrade to Pro to create them.')
 // t('upgrade.clientChannel.description', 'Put this agent on your own web application with a script tag: it answers your signed-in users, guides them through your pages and can run the tools your app declares. Upgrade to Pro to embed it.')
 const FEATURE_DESCRIPTION_KEY: Record<ProFeature, string> = {
   multiTenant: "upgrade.multiTenant.description",

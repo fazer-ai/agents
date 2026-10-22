@@ -25,7 +25,7 @@ export function DashboardsRoutes() {
         title={t("dashboards.proTitle", "Dashboards are a Pro feature")}
         description={t(
           "upgrade.dashboards.description",
-          "Build your own dashboards (conversations by event, label or outcome, AI cost by model) and share each one by its address. Upgrade to Pro to create them.",
+          "Build your own dashboards (conversations by attribute, label or outcome, AI cost by model) and share each one by its address. Upgrade to Pro to create them.",
         )}
         action={<ProGate feature="dashboards" size="md" />}
       />

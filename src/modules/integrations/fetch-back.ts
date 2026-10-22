@@ -186,10 +186,12 @@ export function readPath(root: unknown, path: string): unknown {
   return cur;
 }
 
+// A JSON number past 2^53 already arrived rounded (`9007199254740993` parses as `…992`), so it names
+// another resource: only safe integers are taken, and anything else is absent.
 const scalar = (v: unknown): string | null =>
   typeof v === "string" && v !== ""
     ? v
-    : typeof v === "number" && Number.isFinite(v)
+    : typeof v === "number" && Number.isSafeInteger(v)
       ? String(v)
       : null;
 
@@ -243,7 +245,9 @@ export function mapFetchedResource(
     event: {
       kind: rule.paid ? "conversion" : "agent_nudge",
       externalId: ref as string,
-      dedupeKey: `${eventId}:${status}`,
+      // Each half encoded, so a `:` inside one cannot pass for the separator (`a:b`+`c` and
+      // `a`+`b:c`); a plain id and status read as before, `123:approved`.
+      dedupeKey: `${encodeURIComponent(eventId)}:${encodeURIComponent(status as string)}`,
       status: status as string,
       ...(rule.text ? { text: rule.text } : {}),
       ...(rule.paid && typeof value === "number" && Number.isFinite(value)

@@ -362,6 +362,14 @@ describe("the consult-back config", () => {
         getQuery: lookup({}),
       }),
     ).toBe("42");
+    // Past 2^53 the parsed number is already another id.
+    expect(
+      noticeResourceId(body, {
+        parsedBody: JSON.parse('{"data":{"id":9007199254740993}}'),
+        getHeader: lookup({}),
+        getQuery: lookup({}),
+      }),
+    ).toBeNull();
   });
 
   describe("the provider's answer, mapped", () => {
@@ -427,6 +435,27 @@ describe("the consult-back config", () => {
         external_reference: "r",
       });
       expect(r.ok && r.event.dedupeKey).toBe("ch_9:rejected");
+    });
+    test("an event id and a status that hold a colon cannot pass for another pair", () => {
+      const withEvent = parsed(
+        fetchBackOf(7, {
+          eventIdPath: "charge.id",
+          statuses: [
+            { status: "c", paid: true },
+            { status: "b:c", paid: true },
+          ],
+        }),
+      );
+      const key = (id: string, status: string) => {
+        const r = mapFetchedResource(withEvent, "n", {
+          charge: { id },
+          status,
+          external_reference: "r",
+        });
+        return r.ok ? r.event.dedupeKey : null;
+      };
+      expect(key("a:b", "c")).toBeString();
+      expect(key("a:b", "c")).not.toBe(key("a", "b:c"));
     });
   });
 });

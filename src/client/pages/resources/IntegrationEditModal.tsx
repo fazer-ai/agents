@@ -50,6 +50,7 @@ import {
   CALENDAR_CONFIG_RANGES,
   REMINDER_OFFSET_RANGE,
 } from "@/modules/integrations/calendar-config-ranges";
+import { SheetsConfigEditor } from "./SheetsConfigEditor";
 
 type CatalogData = Awaited<
   ReturnType<typeof api.api.v1.integrations.catalog.get>
@@ -69,6 +70,8 @@ function catalogLabelOf(
       return t("integrations.catalog.GOOGLE_CALENDAR.label", "Google Calendar");
     case "GOOGLE_DRIVE":
       return t("integrations.catalog.GOOGLE_DRIVE.label", "Google Drive");
+    case "GOOGLE_SHEETS":
+      return t("integrations.catalog.GOOGLE_SHEETS.label", "Google Sheets");
     case "RESEND":
       return t("integrations.catalog.RESEND.label", "Resend");
     default:
@@ -102,6 +105,11 @@ function catalogHintOf(
       return t(
         "integrations.catalog.GOOGLE_DRIVE.hint",
         "Finds a file and sends it, or its link, to the customer.",
+      );
+    case "GOOGLE_SHEETS":
+      return t(
+        "integrations.catalog.GOOGLE_SHEETS.hint",
+        "Adds, finds and updates rows in one spreadsheet tab.",
       );
     case "RESEND":
       return t(
@@ -164,6 +172,8 @@ function serviceFor(catalogType: string): string {
       return "google_calendar";
     case "GOOGLE_DRIVE":
       return "google_drive";
+    case "GOOGLE_SHEETS":
+      return "google_sheets";
     case "RESEND":
       return "resend";
     default:
@@ -230,6 +240,13 @@ function defaultConfig(catalogType: string): Record<string, unknown> {
       };
     case "GOOGLE_DRIVE":
       return { folderId: "", folderName: "" };
+    case "GOOGLE_SHEETS":
+      return {
+        spreadsheetId: "",
+        spreadsheetName: "",
+        sheetId: null,
+        sheetTitle: "",
+      };
     case "RESEND":
       return { from: "", replyTo: "" };
     default:
@@ -692,6 +709,11 @@ export function IntegrationEditModal({
           "integrations.catalog.GOOGLE_DRIVE.description",
           "Find a file, get its link, or send it to the customer over a connected Google account.",
         );
+      case "GOOGLE_SHEETS":
+        return t(
+          "integrations.catalog.GOOGLE_SHEETS.description",
+          "Add a row, find rows and update a found row in one tab of a spreadsheet, over a connected Google account. Columns are addressed by the names in the tab's header row.",
+        );
       case "RESEND":
         return t(
           "integrations.catalog.RESEND.description",
@@ -1075,8 +1097,10 @@ export function IntegrationEditModal({
   const compat = credentialCompat.catalog(form.catalogType);
   const needsGoogle = compat[0] === "google_oauth";
   const cfg = form.config;
+  // Functional: the Sheets editor applies a fetched spreadsheet title after an await, and a merge
+  // into the render's `form` would put back whatever the operator typed meanwhile.
   const setCfg = (patch: Record<string, unknown>) =>
-    setForm({ ...form, config: { ...form.config, ...patch } });
+    setForm((f) => ({ ...f, config: { ...f.config, ...patch } }));
   const calendarIds = Array.isArray(cfg.calendarIds)
     ? (cfg.calendarIds as string[])
     : [];
@@ -1273,7 +1297,7 @@ export function IntegrationEditModal({
                   <p className="mt-1.5 text-text-muted text-xs">
                     {t(
                       "integrations.googleScopeHint",
-                      "Connect a Google account with the right scope (Calendar or Drive). If a tool returns a permission error, reconnect the credential adding that scope.",
+                      "Connect a Google account with the right scope (Calendar, Drive or Sheets). If a tool returns a permission error, reconnect the credential adding that scope.",
                     )}
                   </p>
                 )}
@@ -1974,6 +1998,14 @@ export function IntegrationEditModal({
                   </p>
                 )}
               </FormField>
+            )}
+
+            {form.catalogType === "GOOGLE_SHEETS" && (
+              <SheetsConfigEditor
+                credentialRef={form.credentialRef}
+                cfg={cfg}
+                setCfg={setCfg}
+              />
             )}
 
             {/* ── Tools this integration exposes (read-only) ── */}

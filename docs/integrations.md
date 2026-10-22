@@ -11,7 +11,7 @@ A catalog entry is data, one of four `kind`s:
 - `NATIVE` — a source module. Only when justified (Chatwoot; deep-domain integrations).
 - `WEBHOOK` — inbound only, no tools of its own: `GENERIC`, the operator's own system speaking back into a conversation (below). It is not offered as a grantable integration in the agent's tool selection, because there is nothing to grant.
 
-`IntegrationInstance.catalogType` is a plain `String` validated against this in-code registry (`isKnownCatalogType`), **not** a DB enum — a new integration needs no enum migration. Seeded entries: `GENERIC`, `ASAAS`, `GOOGLE_CALENDAR`. An entry may exist before its mapper ships; until then inbound for it fails closed (durable `FAILED` record + log).
+`IntegrationInstance.catalogType` is a plain `String` validated against this in-code registry (`isKnownCatalogType`), **not** a DB enum — a new integration needs no enum migration. Seeded entries: `GENERIC`, `ASAAS`, `GOOGLE_CALENDAR`, `GOOGLE_DRIVE`, `GOOGLE_SHEETS`, `RESEND`. An entry may exist before its mapper ships; until then inbound for it fails closed (durable `FAILED` record + log).
 
 ## Generic inbound receptor (`src/modules/webhooks/inbound/`)
 
@@ -135,6 +135,20 @@ halves of the identity are both bound outside the model.
 
 The credential reaches only the `Authorization` header, never the URL, the body, the model-visible
 return or the log.
+
+## Google Sheets toolpack: one tab, columns by name (`src/modules/integrations/toolpacks/google-sheets.ts`)
+
+Three tools, each granted on its own: `sheets_append_row`, `sheets_find_rows`, `sheets_update_row`. An agent that only captures leads gets the append and nothing that reads.
+
+- **Where.** The spreadsheet (`config.spreadsheetId`) and the tab (`config.sheetId`, the tab's numeric id, the `gid` of its URL) live in the instance config, never in a tool argument, so no prompt reaches another tab or another spreadsheet the credential can open. The tab is resolved to its CURRENT title on every call (`spreadsheets.get`, `sheets.properties`), which is what keeps a renamed tab working; a deleted one is reported and nothing is written. `spreadsheetName` and `sheetTitle` are display copies for the editor. The write refuses a missing spreadsheet or tab, a URL in `spreadsheetId` and a name in `sheetId` (`assertSheetsConfig`, 422 naming the field), the editor holds Save until both are picked, and the pack never puts an id that fails `SPREADSHEET_ID_PATTERN` into a URL.
+- **Columns by header.** Row 1 names the columns, compared trimmed and case-insensitively. The model sends `{column, value}` pairs; an unknown name is refused with the real ones listed, a name that appears twice in the header is refused as ambiguous, and a tab with no header row refuses everything. A column inserted in the sheet therefore never shifts values into the wrong place.
+- **Values are written as text**: `stringValue` cells on append, `valueInputOption=RAW` on update. Under `USER_ENTERED` a customer's `=IMPORTXML(...)` would become a formula in the operator's sheet; RAW stores the characters. The cost is that numbers and dates the agent writes are text cells, which the operator formats if they need arithmetic.
+- **Append** uses `spreadsheets.batchUpdate` with `appendCells` on the tab's `sheetId`: Google writes the row after the last row with data anywhere in the tab, atomically (two conversations appending at once get two rows), and cell N lands in column N. `values:append` is not used because it starts the row at the first column of a table it detects, which an unlabeled column with data, or a header starting at column B, can move off the header's positions. The reply says the row was added, without a row number, since `appendCells` does not return one.
+- **Find** reads at most 2,000 data rows and says `incomplete` when rows past them may hold data: when the read returned more than the window, or when the tab's grid (`gridProperties.rowCount`, read with the title) is taller than it, since Google drops trailing blank rows from a values read and blank rows ending the window would otherwise hide data below them. **Update** applies the same test and, when it holds, requires the `row` argument under a 1,000,000-byte read cap (the read stops there, it does not pull the rest); a tab past the cap is refused rather than parsed from a prefix. Matching is `equals` (default) or `contains`, case-insensitive. Results are paged (`limit` up to 50, `offset`/`nextOffset`) and cut to 30,000 characters of JSON.
+- **Update** locates the row by `column` = `value` in the same read. No match, or several without a `row` that is one of them, changes nothing and says which rows matched. Only the named cells are written (`values:batchUpdate`, one A1 cell each).
+- **What the agent can read, the customer can be told.** There is no per-customer isolation like the Calendar stamp: a tab is operator data, read in full by `sheets_find_rows`. The editor says this next to the tab picker.
+
+The editor (`SheetsConfigEditor.tsx`) picks the spreadsheet from `GET /v1/integrations/google/spreadsheets` (Drive `files.list` filtered to spreadsheets, so it needs a Drive read scope, and a 403 says so) or from a pasted URL or id, then the tab from `GET /v1/integrations/google/spreadsheet-tabs`, which returns each tab's `sheetId`, title and header columns. Both are pickers with no MCP tool, like the Calendar and Drive lists; over MCP the config is written with `integration_update`, whose description names the keys.
 
 ## Positioning: an external CRM is a bridge, never a second funnel
 

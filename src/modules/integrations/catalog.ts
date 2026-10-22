@@ -48,6 +48,15 @@ export const CATALOG: ReadonlyArray<CatalogEntry> = [
     defaultInboundAuth: "NONE",
   },
   {
+    catalogType: "GOOGLE_SHEETS",
+    label: "Google Sheets",
+    kind: "TOOLPACK",
+    description:
+      "Spreadsheets. Outbound toolpack (append a row, find rows, update a found row) over a Google OAuth credential, on one spreadsheet tab bound to the instance config.",
+    supportsInbound: false,
+    defaultInboundAuth: "NONE",
+  },
+  {
     catalogType: "RESEND",
     label: "Resend",
     kind: "TOOLPACK",

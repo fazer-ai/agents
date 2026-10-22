@@ -3075,6 +3075,11 @@
         "hint": "Finds a file and sends it, or its link, to the customer.",
         "label": "Google Drive"
       },
+      "GOOGLE_SHEETS": {
+        "description": "Add a row, find rows and update a found row in one tab of a spreadsheet, over a connected Google account. Columns are addressed by the names in the tab's header row.",
+        "hint": "Adds, finds and updates rows in one spreadsheet tab.",
+        "label": "Google Sheets"
+      },
       "RESEND": {
         "description": "Transactional email over a Resend API key. The agent sends confirmations, reminders and follow-ups; the sender address is fixed in the settings below.",
         "hint": "Transactional email from a fixed sender address.",
@@ -3161,7 +3166,7 @@
       "production": "Production (real charges)",
       "sandbox": "Sandbox (test)"
     },
-    "googleScopeHint": "Connect a Google account with the right scope (Calendar or Drive). If a tool returns a permission error, reconnect the credential adding that scope.",
+    "googleScopeHint": "Connect a Google account with the right scope (Calendar, Drive or Sheets). If a tool returns a permission error, reconnect the credential adding that scope.",
     "inboundAuth": "Inbound auth",
     "inboundAuthStrategy": {
       "HMAC_SHA256": "HMAC SHA-256",
@@ -3180,6 +3185,29 @@
     "saved": "Integration saved.",
     "saveError": "Could not save.",
     "sharedNotice": "This is a shared integration. Changes affect every agent that uses it.",
+    "sheets": {
+      "columns": "Columns: {{list}}",
+      "filter": "Filter spreadsheets by name",
+      "fromAccount": "Or choose from the connected account (needs the Drive read-only scope)",
+      "listEmpty": "No spreadsheets found in this account. Paste the URL of one shared with it.",
+      "listError": "Could not list the account's spreadsheets. Paste the spreadsheet's URL instead.",
+      "load": "Load",
+      "needsCredential": "Choose the Google credential above to pick the spreadsheet.",
+      "noHeader": "No header row: row 1 must name the columns",
+      "noSpreadsheet": "No spreadsheet chosen",
+      "pasteInvalid": "That is not a spreadsheet URL or id.",
+      "pasteLabel": "Spreadsheet URL or id",
+      "pastePlaceholder": "Paste the spreadsheet's URL or id",
+      "pickSpreadsheetFirst": "Choose the spreadsheet first.",
+      "pickToSave": "Choose the spreadsheet and the tab to save.",
+      "readsWholeTab": "With the find tool granted, the agent can read every row of this tab, and what it reads can reach the customer. Keep data a customer must not see in another tab. Values the agent writes are stored as plain text, never as formulas.",
+      "spreadsheet": "Spreadsheet",
+      "tab": "Tab",
+      "tabGone": "The saved tab \"{{title}}\" is no longer in this spreadsheet. Choose a tab.",
+      "tabHint": "Row 1 of the tab names the columns; the agent reads and writes by those names.",
+      "tabsError": "Could not read the spreadsheet's tabs. Check that the credential has the Google Sheets scope and can open this spreadsheet.",
+      "use": "Use"
+    },
     "subtitle": "Activate ready-made integrations your agents can use.",
     "tokenHint": "Copy this URL into the provider's webhook settings. You can read it again later by editing this integration.",
     "tokenTitle": "Inbound webhook URL",
@@ -4251,6 +4279,18 @@
     "resend_send_email": {
       "desc": "Send an email to the customer (confirmation, reminder, follow-up). The sender address comes from the integration settings.",
       "label": "Send email"
+    },
+    "sheets_append_row": {
+      "desc": "Add a row at the end of the spreadsheet tab, filling columns by name.",
+      "label": "Add row"
+    },
+    "sheets_find_rows": {
+      "desc": "Read rows of the spreadsheet tab, all of them or the ones with a value in a column.",
+      "label": "Find rows"
+    },
+    "sheets_update_row": {
+      "desc": "Change cells of the row found by a value in a column.",
+      "label": "Update row"
     }
   },
   "tools": {

@@ -63,6 +63,15 @@ describe("MCP webhooks/alerts/integrations gate (no DB)", () => {
     if (!r.ok) expect(r.error).toContain("config.authHeader");
   });
 
+  test("integration_create's dry run refuses a Sheets integration sent with no config", async () => {
+    const r = await integrationCreate(principal({}), {
+      catalog_type: "GOOGLE_SHEETS",
+      name: "sheets-dry",
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("config.spreadsheetId");
+  });
+
   test("integration_create with unknown catalog_type → error", async () => {
     const r = await integrationCreate(principal({}), {
       catalog_type: "__nope__",

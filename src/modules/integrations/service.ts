@@ -24,6 +24,7 @@ import {
 import { ensureInboundSweep } from "@/modules/webhooks/inbound/sweep";
 import { calendarConfigRangeProblem } from "./calendar-config-ranges";
 import { CATALOG, getCatalogEntry } from "./catalog";
+import { SPREADSHEET_ID_PATTERN } from "./toolpacks/google-sheets";
 import type { CatalogEntry } from "./types";
 
 // Integration instances: the per-tenant activation of a catalog entry. Creation mints the opaque
@@ -142,6 +143,55 @@ function assertConfigRanges(
   );
 }
 
+// The Sheets pack reads the spreadsheet and tab from the config, so a value it could never use is
+// refused at the write instead of stored and failing on every call. An instance without both has
+// nothing to work on, so a missing one is refused too.
+function assertSheetsConfig(
+  catalogType: string,
+  config: Record<string, unknown>,
+): void {
+  if (catalogType !== "GOOGLE_SHEETS") return;
+  const missing = (field: string, why: string) =>
+    new AppError(
+      `${field} ${why}`,
+      422,
+      "errors.integrationSheetsConfigMissing",
+      { field },
+      field,
+    );
+  const invalid = (field: string, why: string) =>
+    new AppError(
+      `${field} ${why}`,
+      422,
+      "errors.integrationSheetsConfigInvalid",
+      { field },
+      field,
+    );
+  const blank = (v: unknown) =>
+    v === undefined || v === null || (typeof v === "string" && !v.trim());
+  const id = config.spreadsheetId;
+  const sheetId = config.sheetId;
+  if (blank(id))
+    throw missing(
+      "config.spreadsheetId",
+      "is required: choose the spreadsheet",
+    );
+  if (!(typeof id === "string" && SPREADSHEET_ID_PATTERN.test(id.trim())))
+    throw invalid(
+      "config.spreadsheetId",
+      "must be the spreadsheet id (the part of its URL between /d/ and /edit), not the URL",
+    );
+  if (blank(sheetId))
+    throw missing("config.sheetId", "is required: choose the tab");
+  if (
+    !(typeof sheetId === "number" && Number.isInteger(sheetId) && sheetId >= 0)
+  )
+    throw invalid(
+      "config.sheetId",
+      "must be the tab's numeric id (the gid in its URL), not its name",
+    );
+}
+
 // An inbound route that makes the agent message a customer cannot be left open (GENERIC). Checked
 // on create AND update, since a later PATCH to NONE opens the same door.
 function assertInboundAuthAllowed(
@@ -176,11 +226,26 @@ export function assertIntegrationWritable(
     assertUsableHeaderNames(params.config);
     assertCatalogConfig(catalogType, params.config);
     assertConfigRanges(catalogType, params.config, storedConfig);
+    assertSheetsConfig(catalogType, params.config);
   }
   assertInboundAuthAllowed(
     getCatalogEntry(catalogType),
     params.inboundAuthStrategy,
   );
+}
+
+// A create also stores what it was not sent: no config is stored as `{}`, which a Sheets instance
+// cannot work with either. An update without a config keeps the stored one, so it stays on
+// assertIntegrationWritable alone.
+export function assertIntegrationCreatable(
+  catalogType: string,
+  params: {
+    config?: Record<string, unknown>;
+    inboundAuthStrategy?: InboundAuthStrategy;
+  },
+): void {
+  assertIntegrationWritable(catalogType, params);
+  if (!params.config) assertSheetsConfig(catalogType, {});
 }
 
 // What the audit row carries: identity, policy and shape are PROJECTED, the rest is in
@@ -240,7 +305,7 @@ export async function createIntegrationInstance(
   if (!entry) {
     throw new AppError(`unknown catalogType: ${params.catalogType}`, 400);
   }
-  assertIntegrationWritable(entry.catalogType, params);
+  assertIntegrationCreatable(entry.catalogType, params);
   // Only inbound-capable catalog entries mint a route token; the rest get no inbound surface.
   const minted = entry.supportsInbound ? generateRouteToken() : null;
   const tenantId = ctx.tenantId as bigint;

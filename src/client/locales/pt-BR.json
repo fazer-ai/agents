@@ -4017,6 +4017,8 @@
       "externalCause": "falha: {{cause}}",
       "externalCheck": "Verificação externa na resposta",
       "externalLatency": "levou {{ms}} ms",
+      "externalObservedBlock": "o endpoint teria bloqueado; só registrado, a resposta saiu como foi escrita",
+      "externalObservedReplace": "o endpoint teria trocado a resposta; só registrado, ela saiu como foi escrita",
       "externalReason": "motivo: {{reason}}",
       "externalReplace": "trocada pelo texto do endpoint",
       "guardrailClean": "aprovado",

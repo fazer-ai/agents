@@ -275,18 +275,25 @@ describe.skipIf(!dbUp)("an observed screening", () => {
 
   // The bug it catches: `hold` handing the conversation over when the judge fails on a direction the
   // operator set to only record.
+  // The line is the operator's record of it: a `held` line there would send them looking for a
+  // hand-over that never happened.
   test("under hold, a screening that cannot judge on an observed direction still passes", async () => {
+    const f = flow();
     const gate = buildGuardrailGate({
       langfuseCfg: null,
       cfg: cfg({ onFailure: "hold" }),
       apiKey: "k",
-      flow: flow(),
+      flow: f,
       makeModel: failingChat,
     });
     expect(await gate("input", CUSTOMER)).toEqual({
       kind: "unavailable",
       modelRan: true,
     });
+    const got = await lines(f.turnId);
+    expect(got.map((l) => [l.detail.unchecked, l.detail.held ?? null])).toEqual(
+      [[true, null]],
+    );
   });
 
   // The bug it catches: the decisions classifier reaching the shared trip code by another path that

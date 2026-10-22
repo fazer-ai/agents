@@ -3913,6 +3913,8 @@
       "externalCause": "failure: {{cause}}",
       "externalCheck": "External check on the reply",
       "externalLatency": "took {{ms}} ms",
+      "externalObservedBlock": "the endpoint would have blocked it; only recorded, the reply went out as written",
+      "externalObservedReplace": "the endpoint would have replaced it; only recorded, the reply went out as written",
       "externalReason": "reason: {{reason}}",
       "externalReplace": "replaced by the endpoint's text",
       "guardrailClean": "approved",

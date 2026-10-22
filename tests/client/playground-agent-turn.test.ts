@@ -387,6 +387,37 @@ describe("guardrailTraceLabel", () => {
     // `action` is absent on a report that predates it being recorded. The configured reply is the
     // safe half of the pair: it describes what an operator can go and read.
     {
+      name: "observed on the message",
+      entry: { direction: "input", outcome: "observed", action: "observe" },
+      says: "only recorded, the message reached the agent",
+    },
+    {
+      name: "observed on the reply",
+      entry: { direction: "output", outcome: "observed", action: "observe" },
+      says: "only recorded, the reply went out as written",
+    },
+    // The endpoint's own decision is what it would have done; under observe none of it happened.
+    {
+      name: "external replace, observed",
+      entry: {
+        direction: "output",
+        outcome: "observed",
+        action: "observe",
+        external: { decision: "replace", latencyMs: 5 },
+      },
+      says: "would have replaced it; only recorded",
+    },
+    {
+      name: "external block, observed",
+      entry: {
+        direction: "output",
+        outcome: "observed",
+        action: "observe",
+        external: { decision: "block", latencyMs: 5 },
+      },
+      says: "would have blocked it; only recorded",
+    },
+    {
       name: "replaced with no action recorded",
       entry: { direction: "output", outcome: "replaced" },
       says: "the configured reply",

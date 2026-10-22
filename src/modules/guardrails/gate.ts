@@ -319,12 +319,18 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
   // Spread into the detail of a line for a screening that could not judge. `classifier` names the
   // judge that failed, and `unchecked` says whether the message continued anyway: true whenever the
   // gate fails open, false only when another check that did answer still tripped (`judgedPartly`).
+  // A direction set to only record does not hold either: holding is acting.
   const holds = gr.onFailure === "hold" && !p.proactive;
-  const couldNotJudge = holds
-    ? { classifier: gr.classifier, unchecked: false, held: true }
-    : { classifier: gr.classifier, unchecked: true };
-  const judgedPartly = (violated: boolean) =>
-    violated ? { classifier: gr.classifier, unchecked: false } : couldNotJudge;
+  const holdsOn = (direction: "input" | "output") =>
+    holds && gr[direction].action !== "observe";
+  const couldNotJudge = (direction: "input" | "output") =>
+    holdsOn(direction)
+      ? { classifier: gr.classifier, unchecked: false, held: true }
+      : { classifier: gr.classifier, unchecked: true };
+  const judgedPartly = (direction: "input" | "output", violated: boolean) =>
+    violated
+      ? { classifier: gr.classifier, unchecked: false }
+      : couldNotJudge(direction);
   // Built on FIRST CALL, not here, and never twice: a gate is constructed for every turn and every
   // follow-up, while a direction that is switched off never reaches the model. `createChatModel`
   // throws synchronously on a configuration it cannot satisfy (an `openai-compatible` provider with
@@ -377,7 +383,11 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
         stage: "guardrail",
         status: "error",
         level: "warn",
-        detail: { direction, outcome: buildFailure.outcome, ...couldNotJudge },
+        detail: {
+          direction,
+          outcome: buildFailure.outcome,
+          ...couldNotJudge(direction),
+        },
         errorMessage: buildFailure.message,
       });
     }
@@ -500,7 +510,7 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
         detail: {
           direction,
           outcome: "credential_not_found",
-          ...couldNotJudge,
+          ...couldNotJudge(direction),
         },
       });
       return {
@@ -541,7 +551,7 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
           direction,
           outcome: "analysis_failed",
           ...logged,
-          ...judgedPartly(verdict.violated),
+          ...judgedPartly(direction, verdict.violated),
         },
         errorMessage: verdict.error,
       });
@@ -660,7 +670,7 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
         detail: {
           direction,
           outcome: "analysis_failed",
-          ...judgedPartly(verdict.violated),
+          ...judgedPartly(direction, verdict.violated),
         },
         errorMessage: verdict.error,
       });
@@ -717,11 +727,8 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
 
   return async (direction, subject) => {
     const screened = await screen(direction, subject);
-    // A direction set to only record does not hold either: holding is acting.
     const { d, r } =
-      holds &&
-      screened.d.kind === "unavailable" &&
-      gr[direction].action !== "observe"
+      holdsOn(direction) && screened.d.kind === "unavailable"
         ? held(direction, subject, screened.r)
         : screened;
     // The one announcement point. `not-run` is the only outcome with no report, and it is the only

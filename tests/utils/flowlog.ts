@@ -16,6 +16,13 @@ export async function clearFlowLog(
   await db.executionLog.deleteMany({ where });
 }
 
+// The order a reader asks for is REQUIRED: with no ORDER BY, Postgres returns rows in whatever order
+// the plan reads them, and a sequential or bitmap scan reads heap order, which an update of an earlier
+// line moves behind a later one. `{ id: "asc" }` is the order the lines were written in.
+type Ordered<T extends { orderBy?: unknown }> = T & {
+  orderBy: NonNullable<T["orderBy"]>;
+};
+
 // READING `execution_logs` IN A TEST, WITHOUT ANSWERING BEFORE THE ROW LANDS: the WAIT obligation,
 // the third of three named in tests/modules/flowlog-reader-scope.test.ts, checkable because the wait
 // has ONE SPELLING. A settle rather than a poll: a poll answers PRESENCE but not ABSENCE, where it
@@ -24,15 +31,16 @@ export async function clearFlowLog(
 // purpose: the SCOPE guard reads the `where` keys off the call site, and swallowing them blinds it.
 export async function flowLogRows(
   db: PrismaClient,
-  args: Prisma.ExecutionLogFindManyArgs,
+  args: Ordered<Prisma.ExecutionLogFindManyArgs>,
 ) {
   await settleFlowEvents();
   return db.executionLog.findMany(args);
 }
 
+// The order is required here too: where several lines match, `findFirst` with none returns any.
 export async function flowLogRow(
   db: PrismaClient,
-  args: Prisma.ExecutionLogFindFirstArgs,
+  args: Ordered<Prisma.ExecutionLogFindFirstArgs>,
 ) {
   await settleFlowEvents();
   return db.executionLog.findFirst(args);

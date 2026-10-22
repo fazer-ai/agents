@@ -216,6 +216,7 @@ describe.skipIf(!dbUp)(
         },
       });
       const rows = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: { turnId, stage: "vision" },
         select: { level: true, status: true, detail: true },
       });

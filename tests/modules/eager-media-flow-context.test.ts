@@ -275,6 +275,7 @@ describe.skipIf(!dbUp)("the eager-media flow context", () => {
     for (let i = 0; i < 200 && !row; i++) {
       row =
         (await flowLogRow(suDb, {
+          orderBy: { id: "asc" },
           where: { tenantId, threadId, stage: "stt" },
           select: { conversationId: true, agentId: true, inboxId: true },
         })) ?? undefined;
@@ -361,6 +362,7 @@ describe.skipIf(!dbUp)("the eager-media flow context", () => {
     for (let i = 0; i < 200 && !row; i++) {
       row =
         (await flowLogRow(suDb, {
+          orderBy: { id: "asc" },
           where: { tenantId, threadId, stage: "stt" },
           select: { conversationId: true, agentId: true, inboxId: true },
         })) ?? undefined;
@@ -481,6 +483,7 @@ describe.skipIf(!dbUp)("the eager-media flow context", () => {
     for (let i = 0; i < 200 && !row; i++) {
       row =
         (await flowLogRow(suDb, {
+          orderBy: { id: "asc" },
           where: { tenantId, threadId, stage: "stt" },
           select: { agentId: true, inboxId: true },
         })) ?? undefined;
@@ -619,6 +622,7 @@ describe.skipIf(!dbUp)("the eager-media flow context", () => {
     // The delivery awaited its eager media, and `flowLogRow` settles every tracked write first.
     expect(
       await flowLogRow(suDb, {
+        orderBy: { id: "asc" },
         where: { tenantId, threadId, stage: "stt" },
         select: { agentId: true },
       }),
@@ -771,6 +775,7 @@ describe.skipIf(!dbUp)("the eager-media flow context", () => {
     // The delivery awaited its eager media, and `flowLogRow` settles every tracked write first.
     expect(
       await flowLogRow(suDb, {
+        orderBy: { id: "asc" },
         where: { tenantId, threadId, stage: "stt" },
         select: { agentId: true },
       }),
@@ -852,6 +857,7 @@ describe.skipIf(!dbUp)("the eager-media flow context", () => {
     for (let i = 0; i < 200 && !row; i++) {
       row =
         (await flowLogRow(suDb, {
+          orderBy: { id: "asc" },
           where: { tenantId, threadId, stage: "stt" },
           select: { conversationId: true, agentId: true, inboxId: true },
         })) ?? undefined;

@@ -705,6 +705,7 @@ describe.skipIf(!dbUp)("vision retry", () => {
     expect(whole.text).toBe("Documento completo.");
 
     const cutRows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: { tenantId, turnId: cutTurn, stage: "vision" },
       select: { detail: true, status: true, errorMessage: true },
     });
@@ -716,6 +717,7 @@ describe.skipIf(!dbUp)("vision retry", () => {
     expect(JSON.stringify(cutRows[0])).not.toContain("APRO");
 
     const wholeRows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: { tenantId, turnId: wholeTurn, stage: "vision" },
       select: { detail: true },
     });
@@ -753,6 +755,7 @@ describe.skipIf(!dbUp)("vision retry", () => {
   // attempt, since the attempt did fail.
   async function visionLines(turnId: string) {
     const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: { tenantId, turnId, stage: "vision" },
       select: { level: true, status: true, detail: true },
     });
@@ -857,6 +860,7 @@ describe.skipIf(!dbUp)("vision retry", () => {
       }),
     ).rejects.toThrow("vision gemini failed with 503");
     const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: { tenantId, turnId, stage: "vision" },
       select: { level: true, detail: true },
     });
@@ -931,6 +935,7 @@ describe.skipIf(!dbUp)("vision retry", () => {
         () => "unread",
       );
       const rows = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: { tenantId, turnId, stage: "vision" },
         select: { level: true },
       });

@@ -498,6 +498,7 @@ describe.skipIf(!dbUp)(
       const m = await mirror(9004);
       expect([m.status, m.chatwootStatusAt]).toEqual(["pending", V1]);
       const lines = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: { tenantId, conversationId: cid, stage: "delivery" },
         select: { detail: true },
       });

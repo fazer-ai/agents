@@ -427,6 +427,7 @@ describe.skipIf(!dbUp)("rate alerts", () => {
     }
     // `flowLogRows` waits for the writes `withFlowStage` does not, and the rate is counted on each.
     const lines = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: { tenantId, turnId: { in: turns }, stage: "generate" },
       select: { detail: true },
     });

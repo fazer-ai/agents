@@ -1181,6 +1181,7 @@ describe.skipIf(!dbUp)("reengage", () => {
       expect(sent).toEqual([]);
       await settleFlowEvents();
       const rows = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: {
           tenantId,
           threadId: `${tenantId}:${instanceId}:923`,
@@ -1217,6 +1218,7 @@ describe.skipIf(!dbUp)("reengage", () => {
       // ...and no refusal on the record, because nothing was refused.
       await settleFlowEvents();
       const rows = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: {
           tenantId,
           threadId: `${tenantId}:${instanceId}:922`,
@@ -1497,6 +1499,7 @@ describe.skipIf(!dbUp)("reengage", () => {
       expect(res.outcome).toBe("busy");
       await settleFlowEvents();
       const rows = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: {
           tenantId,
           threadId: `${tenantId}:${instanceId}:${CONV}`,

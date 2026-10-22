@@ -310,6 +310,7 @@ async function gateLines(convId: number) {
   });
   if (!conv) return [];
   return flowLogRows(suDb, {
+    orderBy: { id: "asc" },
     where: { tenantId, conversationId: conv.id, stage: "contact_auth" },
     select: { detail: true, agentId: true },
   });
@@ -1617,6 +1618,7 @@ describe.skipIf(!dbUp)("the contact gate's rule on the observer path", () => {
       select: { id: true },
     });
     const skipped = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: { tenantId, conversationId: conv?.id, stage: "observe" },
       select: { detail: true },
     });

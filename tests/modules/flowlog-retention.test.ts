@@ -97,6 +97,7 @@ describe.skipIf(!dbUp)("flowlog retention", () => {
     // flowlog-scope: tenant-wide — the assertion is WHICH rows survived the sweep, so it has to
     // read the tenant exhaustively; a scoped read could not say that old1/old2 are gone.
     const remaining = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: { tenantId },
       select: { turnId: true },
     });

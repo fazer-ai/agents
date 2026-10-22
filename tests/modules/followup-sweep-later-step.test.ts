@@ -408,6 +408,7 @@ describe.skipIf(!dbUp)(
       expect(s.sent).toHaveLength(0);
       expect((await rowOf(CONV_CARIMBADA)).status).toBe("DONE");
       const lines = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         // flowlog-scope: tenant-wide — o tenant é deste arquivo e o caso esvazia o log antes; o
         // sujeito é QUANTAS linhas a perda escreveu.
         where: { tenantId, stage: "dead_letter" },
@@ -459,6 +460,7 @@ describe.skipIf(!dbUp)(
         expect((await rowOf(CONV_UM_PASSO)).status).toBe("DONE");
         expect(await claimOwn(CONV_UM_PASSO)).toHaveLength(0);
         const lines = await flowLogRows(suDb, {
+          orderBy: { id: "asc" },
           // flowlog-scope: tenant-wide — o tenant é deste arquivo e o caso esvazia o log antes; o
           // sujeito é QUANTAS linhas um fim de sequência de propósito escreveu.
           where: { tenantId, stage: "dead_letter" },

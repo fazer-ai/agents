@@ -426,6 +426,7 @@ describe.skipIf(!dbUp)("an image over Anthropic's dimension limit", () => {
     expect(calls).toBe(0);
     expect(out).toEqual({ unread: "too_large" });
     const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: { turnId, stage: "vision" },
       select: { level: true, status: true, detail: true },
     });
@@ -520,6 +521,7 @@ describe.skipIf(!dbUp)("an image over Anthropic's dimension limit", () => {
     expect(await run()).toEqual({ kind: "unsupported", text: "" });
     expect(calls).toBe(0);
     const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: { turnId, stage: "vision" },
       select: { level: true, status: true, detail: true },
     });

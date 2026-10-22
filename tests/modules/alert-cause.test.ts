@@ -250,6 +250,7 @@ describe.skipIf(!dbUp)("cause alerts through the ledger", () => {
       }),
     ).rejects.toThrow();
     const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: { tenantId, turnId: ctx.turnId },
       select: { detail: true },
     });
@@ -318,6 +319,7 @@ describe.skipIf(!dbUp)("cause alerts through the ledger", () => {
       ).catch(() => {});
       expect(failures).toEqual(withLine ? [`HTTP ${status}`] : []);
       const rows = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: { tenantId, turnId: ctx.turnId, stage: "generate" },
         select: { detail: true },
       });

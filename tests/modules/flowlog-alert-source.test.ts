@@ -105,6 +105,7 @@ describe.skipIf(!dbUp)("which sources page an alert channel", () => {
       [STAGE_OF.inbox, STAGE_OF.client].sort(),
     );
     const logged = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: {
         tenantId,
         turnId: {

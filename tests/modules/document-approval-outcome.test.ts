@@ -1547,6 +1547,7 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
         expect(named(rec.calls, "sendFileAttachment")).toHaveLength(0);
       }
       const refusals = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: { tenantId, conversationId: conv.id, stage: "spend_ceiling" },
       });
       expect(refusals).toHaveLength(2);
@@ -1891,6 +1892,7 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
     expectPageLink(notes[0]?.[2], requestId);
     expect(named(rec.calls, "sendMessage")).toHaveLength(0);
     const line = await flowLogRow(suDb, {
+      orderBy: { id: "asc" },
       where: {
         tenantId,
         conversationId,
@@ -1927,6 +1929,7 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
     expect(outcome).toBe("no-agent");
     expect(outcomeNotes(rec.calls)).toHaveLength(0);
     const line = await flowLogRow(suDb, {
+      orderBy: { id: "asc" },
       where: {
         tenantId,
         conversationId,

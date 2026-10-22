@@ -1146,6 +1146,7 @@ describe.skipIf(!dbUp)("memory compaction", () => {
     // Those differ exactly on a retry, which is when an operator most needs the line to be right.
     await waitForFlowLines(threadId, 1);
     const trail = await flowLogRow(suDb, {
+      orderBy: { id: "asc" },
       where: { tenantId, stage: "memory", threadId },
     });
     expect(JSON.stringify(trail?.detail ?? {})).toContain(
@@ -1964,6 +1965,7 @@ describe.skipIf(!dbUp)("memory compaction", () => {
 
     await waitForFlowLines(threadId, 1);
     const row = await flowLogRow(suDb, {
+      orderBy: { id: "asc" },
       where: { tenantId, stage: "memory", threadId },
     });
     expect(row).not.toBeNull();

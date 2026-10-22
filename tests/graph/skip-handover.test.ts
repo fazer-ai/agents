@@ -671,6 +671,7 @@ describe.skipIf(!dbUp)("a silence a person has to see", () => {
         select: { id: true },
       });
       const lines = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: { conversationId: conv.id, stage: "handoff" },
       });
       expect(lines.map((l) => l.detail)).toEqual([

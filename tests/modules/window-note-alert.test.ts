@@ -140,6 +140,7 @@ describe.skipIf(!dbUp)("window notes on the tenant's alert channels", () => {
     await note(agentA);
     await note(agentB);
     const lines = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       // flowlog-scope: tenant-wide. The subject is HOW MANY lines the notes wrote, on this file's own
       // tenant, so a turn-scoped read would pass with one missing.
       where: { tenantId, stage: "service_window" },

@@ -460,6 +460,7 @@ describe.skipIf(!dbUp)("the WhatsApp read receipt of a turn", () => {
       where: { tenantId, chatwootConversationId: convId },
     });
     const lines = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: { tenantId, conversationId: conv.id, stage: "generate" },
       select: { detail: true },
     });

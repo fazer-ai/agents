@@ -175,6 +175,7 @@ describe.skipIf(!dbUp)("alert channel excluded agents (issue #843)", () => {
     expect(await deliveries(ops.id)).toBe(0);
     expect(await deliveries(lab.id)).toBe(1);
     const logged = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: { tenantId: tenantA, turnId: "ex-battery" },
       select: { agentId: true, level: true },
     });

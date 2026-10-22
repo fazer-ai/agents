@@ -299,6 +299,7 @@ describe.skipIf(!dbUp)("flowlog", () => {
     let row: { level: string; status: string | null } | null = null;
     for (let i = 0; i < 100 && !row; i++) {
       row = await flowLogRow(suDb, {
+        orderBy: { id: "asc" },
         where: { tenantId: tenantA, turnId: "b8-warn", stage: "tts" },
         select: { level: true, status: true },
       });

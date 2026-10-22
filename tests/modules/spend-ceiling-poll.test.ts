@@ -282,6 +282,7 @@ describe.skipIf(!dbUp)("the spend ceiling poll", () => {
     // The operator hears about it ONCE per window, not once per poll.
     // flowlog-scope: tenant-wide (the file clears each tenant's rows before every case)
     const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: { tenantId: tenantB, stage: "spend_ceiling" },
     });
     expect(rows).toHaveLength(1);
@@ -292,6 +293,7 @@ describe.skipIf(!dbUp)("the spend ceiling poll", () => {
     expect(
       // flowlog-scope: tenant-wide (the file clears each tenant's rows before every case)
       await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: { tenantId: tenantB, stage: "spend_ceiling" },
       }),
     ).toHaveLength(1);
@@ -353,6 +355,7 @@ describe.skipIf(!dbUp)("the spend ceiling poll", () => {
     expect(
       // flowlog-scope: tenant-wide (the file clears each tenant's rows before every case)
       await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: { tenantId: tenantB, stage: "spend_ceiling" },
       }),
     ).toHaveLength(0);

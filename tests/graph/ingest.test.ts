@@ -255,6 +255,7 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
     ).toBe("skipped");
 
     const linhas = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: { tenantId, conversationId: conv.id, stage: "memory" },
       select: { level: true, detail: true },
     });
@@ -304,6 +305,7 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
     expect(
       (
         await flowLogRows(suDb, {
+          orderBy: { id: "asc" },
           where: { tenantId, conversationId: conv.id, stage: "memory" },
           select: { detail: true },
         })

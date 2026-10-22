@@ -297,6 +297,7 @@ describe.skipIf(!dbUp)("tts", () => {
     let row: { level: string; status: string | null } | null = null;
     for (let i = 0; i < 100 && !row; i++) {
       row = await flowLogRow(suDb, {
+        orderBy: { id: "asc" },
         where: { tenantId, turnId: "tts-skip-novoice", stage: "tts" },
         select: { level: true, status: true },
       });
@@ -355,6 +356,7 @@ describe.skipIf(!dbUp)("tts", () => {
     } | null = null;
     for (let i = 0; i < 100 && !row; i++) {
       row = await flowLogRow(suDb, {
+        orderBy: { id: "asc" },
         where: { tenantId, turnId: "tts-fail-400", stage: "tts" },
         select: {
           level: true,

@@ -444,6 +444,7 @@ describe.skipIf(!dbUp)(
       expect(modelo.calls).toBe(0);
       // E o portão escreve a linha do vocabulário compartilhado, para o operador que filtra por ela.
       const rows = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: {
           tenantId,
           stage: "handoff",
@@ -711,6 +712,7 @@ describe.skipIf(!dbUp)(
       // Pelo superusuário: o papel de runtime tem RLS e uma leitura sem contexto de tenant
       // devolve zero linhas em silêncio, que é a armadilha do CLAUDE.md.
       const rows = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: { tenantId, threadId: `${tenantId}:${instanceId}:8903` },
       });
       const aviso = rows.filter((r) => {

@@ -122,6 +122,7 @@ describe.skipIf(!dbUp)("the allowed list reaches set_labels", () => {
       outsideAllowed: 1,
     });
     const rows = await flowLogRows(su as PrismaClient, {
+      orderBy: { id: "asc" },
       where: { tenantId, turnId },
     });
     expect(rows.map((r) => r.detail)).toEqual([
@@ -191,6 +192,7 @@ describe.skipIf(!dbUp)("the allowed list reaches set_labels", () => {
     report({ scope: "contact", rule: "pattern", key: "nome" });
     report({ scope: "conversation", rule: "not_allowed" });
     const rows = await flowLogRows(su as PrismaClient, {
+      orderBy: { id: "asc" },
       where: { tenantId, turnId },
     });
     expect(

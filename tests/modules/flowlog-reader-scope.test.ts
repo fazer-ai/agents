@@ -152,6 +152,8 @@ const FLOWLOG_READERS: Record<string, number> = {
   "tests/graph/history-ceiling-turn.test.ts": 1,
   "tests/graph/ingest-job.test.ts": 1,
   "tests/graph/ingest.test.ts": 2,
+  // NOTE: Type checks only: the function holding these reads is never called.
+  "tests/utils/flowlog-order-type.test.ts": 4,
   "tests/graph/label-allowed-wiring.test.ts": 2,
   // NOTE: A turn a gate stopped writes no closing line, which only a read can show.
   "tests/graph/nudge.test.ts": 8,

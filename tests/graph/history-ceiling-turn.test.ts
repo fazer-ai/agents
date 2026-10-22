@@ -121,6 +121,7 @@ async function setCeiling(maxHistoryTokens: number | null) {
 // would be a claim about its neighbour and would depend on declaration order.
 async function generateLines(convId: number) {
   return flowLogRows(suDb, {
+    orderBy: { id: "asc" },
     where: {
       tenantId,
       stage: "generate",

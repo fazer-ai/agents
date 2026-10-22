@@ -226,6 +226,7 @@ describe.skipIf(!dbUp)("the turn's toolset", () => {
     const code = tools.find((t) => t.name === "relatorio");
     await code?.invoke({});
     const rows = await flowLogRows(su as PrismaClient, {
+      orderBy: { id: "asc" },
       where: { tenantId, turnId },
     });
     expect(rows).toHaveLength(1);

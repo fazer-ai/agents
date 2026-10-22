@@ -598,6 +598,7 @@ describe.skipIf(!dbUp)(
       convRowId: bigint,
     ): Promise<{ reason: unknown; level: string }[]> {
       const rows = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: { tenantId, conversationId: convRowId, stage: "memory" },
         select: { level: true, detail: true },
       });

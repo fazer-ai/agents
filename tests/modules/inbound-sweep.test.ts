@@ -342,6 +342,7 @@ describe.skipIf(!dbUp)("inbound sweep (issue #817)", () => {
       (await sweepStrandedInbound({ tenantId: tenantA, base: appDb })).armed,
     ).toBe(0);
     const lines = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       // flowlog-scope: tenant-wide — "announced once" is about every line the tenant got, and this
       // tenant belongs to this file alone; a filter by delivery id would hide a second line for it.
       where: { tenantId: tenantA, stage: "dead_letter" },

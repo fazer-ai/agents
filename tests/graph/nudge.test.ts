@@ -481,6 +481,7 @@ function stub() {
 async function closingLine(convId: number): Promise<Record<string, unknown>> {
   for (let i = 0; i < 100; i++) {
     const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: {
         tenantId,
         stage: "generate",
@@ -866,6 +867,7 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
   // infers "Follow-up" from the source nor guesses the bubble by time.
   async function originLine(convId: number) {
     const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: {
         tenantId,
         stage: "generate",
@@ -2068,6 +2070,7 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
       // so the dashboard counts this silence with the rest.
       await settleFlowEvents();
       const toolLines = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: {
           tenantId,
           stage: "tool",
@@ -2120,6 +2123,7 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     expect(modelCalls).toBe(0);
     await settleFlowEvents();
     const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: {
         tenantId,
         stage: "generate",
@@ -4364,6 +4368,7 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     // `outcome`/`step` are values several of them write, so a poll filtered by tenant alone can
     // exit on a neighbour's row and report a trail this turn never left.
     const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: {
         tenantId,
         stage: "generate",
@@ -4542,6 +4547,7 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     // And the trail carries no `messaged` line for this step. Checked after the run returned, so
     // there is no write left in flight: markFollowUp is called synchronously or not at all.
     const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: {
         tenantId,
         stage: "generate",
@@ -7766,6 +7772,7 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     expect(outcome).toBe("messaged");
     // emitFlowEvent is fire-and-forget; `flowLogRows` settles the scheduled writes before it reads.
     const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: {
         tenantId,
         stage: "generate",

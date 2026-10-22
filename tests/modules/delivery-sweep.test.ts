@@ -203,6 +203,7 @@ async function deliveryLines(convDbId: bigint, waitMs = POLL_DEADLINE_MS) {
   const started = Date.now();
   while (true) {
     const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: { tenantId, stage: "delivery", conversationId: convDbId },
       select: {
         level: true,
@@ -230,6 +231,7 @@ async function correctionLine(convId: number) {
     select: { id: true },
   });
   const lines = await flowLogRows(suDb, {
+    orderBy: { id: "asc" },
     where: { tenantId, conversationId: conv.id, stage: "delivery" },
     select: { detail: true, agentId: true, inboxId: true },
   });
@@ -247,6 +249,7 @@ async function correctionOutcome(convId: number) {
   });
   const lines = await until("the correction line", async () => {
     const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: { tenantId, conversationId: conv.id, stage: "delivery" },
       select: { detail: true },
     });
@@ -269,6 +272,7 @@ async function deliveryLinesFor(convId: number, awaitCount = 0) {
   const count = async () =>
     (
       await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: { tenantId, conversationId: conv.id, stage: "delivery" },
         select: { detail: true },
       })
@@ -287,6 +291,7 @@ async function deliveryLinesFor(convId: number, awaitCount = 0) {
 // scope by, so it is found by its absence. Read settled, so one read answers presence and absence.
 async function unscopedDeliveryLines() {
   return flowLogRows(suDb, {
+    orderBy: { id: "asc" },
     where: { tenantId, stage: "delivery", conversationId: null },
     select: { level: true, detail: true },
   });
@@ -827,6 +832,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     // flowlog-scope: tenant-wide. A strand with no conversation has no turn or thread to read by;
     // the sweep runs alone in this test, and what it wrote since `sweptAt` is its line.
     const lines = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: { tenantId, stage: "delivery", createdAt: { gte: sweptAt } },
       select: { level: true, detail: true },
     });
@@ -3404,6 +3410,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     // And the measurement, taken with no wait of its own.
     expect(
       await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: { tenantId, stage: "delivery", conversationId: owedRow.id },
         select: { level: true },
       }),

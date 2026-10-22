@@ -118,6 +118,7 @@ async function seedConversation(convId: number) {
 async function waitForLog(convChatwootId: number, stage: string) {
   for (let i = 0; i < 100; i++) {
     const row = await flowLogRow(suDb, {
+      orderBy: { id: "asc" },
       where: {
         tenantId,
         stage,

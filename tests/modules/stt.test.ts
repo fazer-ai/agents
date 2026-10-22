@@ -281,6 +281,7 @@ describe.skipIf(!dbUp)("stt", () => {
     // The lost write-back is observable on the flow log (stt stage, warn, step write_back).
     const warned = await until("the write_back warn", async () => {
       const logs = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: { tenantId, turnId, stage: "stt", level: "warn" },
         select: { detail: true },
       });
@@ -419,6 +420,7 @@ describe.skipIf(!dbUp)("stt", () => {
     expect(meta).toEqual([]);
     const rows = await until("the stt line", async () => {
       const found = (await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: { tenantId, turnId, stage: "stt" },
         select: { status: true, detail: true },
       })) as Array<{ status: string; detail: unknown }>;
@@ -468,6 +470,7 @@ describe.skipIf(!dbUp)("stt", () => {
     for (const turnId of turnIds) {
       const rows = await until("the playground stt line", async () => {
         const found = (await flowLogRows(suDb, {
+          orderBy: { id: "asc" },
           where: { tenantId, turnId, stage: "stt", source: "playground" },
           select: { detail: true },
         })) as Array<{ detail: unknown }>;
@@ -513,6 +516,7 @@ describe.skipIf(!dbUp)("stt", () => {
     });
     const rows = await until("the client stt line", async () => {
       const found = (await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: { tenantId, turnId, stage: "stt", source: "client" },
         select: { agentId: true, anonymous: true, status: true },
       })) as Array<{

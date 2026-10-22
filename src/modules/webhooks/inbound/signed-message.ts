@@ -179,10 +179,10 @@ export function parseSignatureConfig(
         problem: "needs a timestamp part to measure the age from",
       };
     }
-    if (!covers(groups, "sig", timestampPart, false)) {
+    if (!timestampAnchored(groups, timestampPart)) {
       return {
         field: "maxAgeSeconds",
-        problem: `needs {{sig.${timestampPart}}} in the message, outside any [[group]] shared with another value: a timestamp the signature does not cover can be replaced`,
+        problem: `needs {{sig.${timestampPart}}} once in the message, outside any [[group]], as its first or last value and next to fixed text that is not a digit: a timestamp the signature does not pin down can be swapped`,
       };
     }
     maxAgeSeconds = v;
@@ -190,25 +190,43 @@ export function parseSignatureConfig(
   return { format, signaturePart, timestampPart, maxAgeSeconds, groups };
 }
 
-// Whether every message this config renders carries that value: it sits in the required part, or
-// alone in its [[group]] (which then drops only when the value itself is absent, and whoever reads
-// the value refuses an absent one). `lossless` also refuses `|lower`, which signs a projection.
-function covers(
-  groups: Group[],
-  source: Source,
-  name: string,
-  lossless: boolean,
-): boolean {
-  return groups.some((g) => {
-    const values = g.pieces.filter((p) => p.kind === "value");
-    return values.some(
-      (p) =>
-        p.source === source &&
-        p.name === name &&
-        !(lossless && p.lower) &&
-        (!g.optional || values.length === 1),
-    );
-  });
+// Whether the signed message pins the timestamp down, so the signature that covers it cannot be
+// reused with another one. Coverage alone is not enough: in `{{header.a}}{{sig.t}}{{header.b}}`
+// the digits can move between the timestamp and its neighbours and still render the same message.
+// The timestamp is all digits (the age check refuses anything else), so it is fixed when it sits
+// at one end of the values, with only required fixed text between it and that end, and fixed text
+// that is not a digit on its other side: the digit run then has exactly one place to start and end.
+function timestampAnchored(groups: Group[], name: string): boolean {
+  const flat = groups.flatMap((g) =>
+    g.pieces.map((piece) => ({ piece, optional: g.optional })),
+  );
+  const at = flat.flatMap((f, i) =>
+    f.piece.kind === "value" &&
+    f.piece.source === "sig" &&
+    f.piece.name === name
+      ? [i]
+      : [],
+  );
+  if (at.length !== 1) return false;
+  const i = at[0] as number;
+  if (flat[i]?.optional) return false;
+  const fixedText = (f: (typeof flat)[number] | undefined) =>
+    f !== undefined && !f.optional && f.piece.kind === "text";
+  const nonDigitEdge = (
+    f: (typeof flat)[number] | undefined,
+    edge: "first" | "last",
+  ) => {
+    if (f === undefined) return true;
+    if (!fixedText(f) || f.piece.kind !== "text") return false;
+    return (edge === "first" ? /^\D/u : /\D$/u).test(f.piece.text);
+  };
+  const before = flat.filter((_, j) => j < i);
+  const after = flat.filter((_, j) => j > i);
+  const startAnchored =
+    before.every(fixedText) && nonDigitEdge(flat[i + 1], "first");
+  const endAnchored =
+    after.every(fixedText) && nonDigitEdge(flat[i - 1], "last");
+  return startAnchored || endAnchored;
 }
 
 // Whether a request this config authenticates also authenticates its BODY, byte for byte and with

@@ -360,6 +360,50 @@ describe("the signature config is refused at the write, naming the field", () =>
       "maxAgeSeconds",
     ],
     [
+      "a maximum age over a timestamp between two values, whose digits can move into them",
+      {
+        format: "parts",
+        signaturePart: "v1",
+        timestampPart: "t",
+        message: "{{header.a}}{{sig.t}}{{header.b}}",
+        maxAgeSeconds: 60,
+      },
+      "maxAgeSeconds",
+    ],
+    [
+      "a maximum age over a timestamp with values on both sides, even behind fixed text",
+      {
+        format: "parts",
+        signaturePart: "v1",
+        timestampPart: "t",
+        message: "{{header.a}}.{{sig.t}}.{{body}}",
+        maxAgeSeconds: 60,
+      },
+      "maxAgeSeconds",
+    ],
+    [
+      "a maximum age over a timestamp whose fixed neighbour ends in a digit",
+      {
+        format: "parts",
+        signaturePart: "v1",
+        timestampPart: "t",
+        message: "{{body}}v1{{sig.t}}",
+        maxAgeSeconds: 60,
+      },
+      "maxAgeSeconds",
+    ],
+    [
+      "a maximum age over a timestamp signed twice",
+      {
+        format: "parts",
+        signaturePart: "v1",
+        timestampPart: "t",
+        message: "{{sig.t}}.{{body}}.{{sig.t}}",
+        maxAgeSeconds: 60,
+      },
+      "maxAgeSeconds",
+    ],
+    [
       "a maximum age that is not a positive whole number",
       {
         format: "parts",
@@ -374,6 +418,21 @@ describe("the signature config is refused at the write, naming the field", () =>
     expect(refusal(signature)).toBe(
       field ? `config.signature.${field}` : "config.signature",
     );
+  });
+
+  test.each([
+    ["at the start, before fixed text", "{{sig.t}}.{{body}}"],
+    ["at the end, after fixed text", "{{body}};ts:{{sig.t}};"],
+  ])("a maximum age over a timestamp pinned %s is accepted", (_, message) => {
+    expect(
+      refusal({
+        format: "parts",
+        signaturePart: "v1",
+        timestampPart: "t",
+        message,
+        maxAgeSeconds: 60,
+      }),
+    ).toBeNull();
   });
 });
 

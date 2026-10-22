@@ -3164,7 +3164,7 @@
       "production": "Production (real charges)",
       "sandbox": "Sandbox (test)"
     },
-    "googleScopeHint": "Connect a Google account with the right scope (Calendar or Drive). If a tool returns a permission error, reconnect the credential adding that scope.",
+    "googleScopeHint": "Connect a Google account with the right scope (Calendar, Drive or Sheets). If a tool returns a permission error, reconnect the credential adding that scope.",
     "inboundAuth": "Inbound auth",
     "inboundAuthStrategy": {
       "HMAC_SHA256": "HMAC SHA-256",

@@ -1297,7 +1297,7 @@ export function IntegrationEditModal({
                   <p className="mt-1.5 text-text-muted text-xs">
                     {t(
                       "integrations.googleScopeHint",
-                      "Connect a Google account with the right scope (Calendar or Drive). If a tool returns a permission error, reconnect the credential adding that scope.",
+                      "Connect a Google account with the right scope (Calendar, Drive or Sheets). If a tool returns a permission error, reconnect the credential adding that scope.",
                     )}
                   </p>
                 )}

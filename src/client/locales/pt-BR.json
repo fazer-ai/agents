@@ -3251,7 +3251,7 @@
       "production": "Produção (cobranças reais)",
       "sandbox": "Sandbox (teste)"
     },
-    "googleScopeHint": "Conecte uma conta Google com o escopo certo (Agenda ou Drive). Se uma ferramenta retornar erro de permissão, reconecte a credencial adicionando esse escopo.",
+    "googleScopeHint": "Conecte uma conta Google com o escopo certo (Agenda, Drive ou Sheets). Se uma ferramenta retornar erro de permissão, reconecte a credencial adicionando esse escopo.",
     "inboundAuth": "Autenticação de entrada",
     "inboundAuthStrategy": {
       "HMAC_SHA256": "HMAC SHA-256",

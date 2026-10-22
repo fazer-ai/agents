@@ -147,6 +147,21 @@ describe("guardrailContext", () => {
       guardrailContext(turn("skip_reply"), 4).map((c) => c.text),
     ]).toEqual([["C1 quero trocar", "A1 pista ou vip?"], ["C1 quero trocar"]]);
   });
+
+  test("a turn cut short after a tool call answered nobody", () => {
+    const context = guardrailContext(
+      [
+        new HumanMessage("C1 tem meia?"),
+        new AIMessage({
+          content: "A1 vou consultar a tabela",
+          tool_calls: [{ id: "t1", name: "buscar", args: {} }],
+        }),
+        new ToolMessage({ content: "tabela", tool_call_id: "t1" }),
+      ],
+      4,
+    );
+    expect(context.map((c) => c.text)).toEqual(["C1 tem meia?"]);
+  });
 });
 
 describe("openAttendance", () => {

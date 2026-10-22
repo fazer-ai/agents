@@ -282,7 +282,15 @@ export async function testReception(
     }
   }
   const search = new URLSearchParams((input.query ?? "").replace(/^\?/, ""));
-  const getHeader = (n: string) => headers.get(n);
+  // A saved header name the receptor refuses (`header_name_unusable`) must not throw here: the
+  // stages are how the operator finds it.
+  const getHeader = (n: string) => {
+    try {
+      return headers.get(n);
+    } catch {
+      return null;
+    }
+  };
   const getQuery = (n: string) => search.get(n);
   const probe: InboundProbe = { dryRun, stages: [] };
   const done = (outcome: string): TestReceptionResult => {

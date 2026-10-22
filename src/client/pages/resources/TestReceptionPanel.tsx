@@ -29,14 +29,24 @@ export interface TestResult {
 }
 
 // `Name: value` per line, as a request's headers are usually copied from a provider's log. A line
-// without a colon is ignored rather than sent with an empty name.
+// without a colon is ignored rather than sent with an empty name. A name repeated (in any case) is
+// one header whose values join with ", ", as the webhook route's Fetch `Headers` read it.
 export function parseHeaderLines(text: string): Record<string, string> {
   const out: Record<string, string> = {};
+  const spelled = new Map<string, string>();
   for (const line of text.split(/\r?\n/)) {
     const at = line.indexOf(":");
     if (at <= 0) continue;
     const name = line.substring(0, at).trim();
-    if (name) out[name] = line.substring(at + 1).trim();
+    if (!name) continue;
+    const value = line.substring(at + 1).trim();
+    const first = spelled.get(name.toLowerCase());
+    if (first === undefined) {
+      spelled.set(name.toLowerCase(), name);
+      out[name] = value;
+    } else {
+      out[first] = `${out[first]}, ${value}`;
+    }
   }
   return out;
 }

@@ -636,6 +636,52 @@ describe.skipIf(!dbUp)("test reception", () => {
     expect(r.outcome).toBe("unauthorized");
   });
 
+  test("a saved header name the receptor refuses comes back as a stage, not a crash", async () => {
+    const inst = await suDb.integrationInstance.findUniqueOrThrow({
+      where: { id: asaasId },
+      select: { config: true },
+    });
+    await suDb.integrationInstance.update({
+      where: { id: asaasId },
+      data: {
+        config: {
+          ...(inst.config as Record<string, unknown>),
+          authHeader: "x tok",
+        },
+      },
+    });
+    // As Bun's and Node's Fetch `Headers` do outside this test environment, whose DOM shim reads an
+    // invalid name as absent.
+    const realGet = Headers.prototype.get;
+    Headers.prototype.get = function (this: Headers, n: string) {
+      if (!/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(n)) {
+        throw new TypeError(`Invalid header name: '${n}'`);
+      }
+      return realGet.call(this, n);
+    };
+    try {
+      const r = await testReception(
+        ctx(),
+        asaasId,
+        { body: "{}", headers: { "asaas-access-token": SECRET } },
+        appDb,
+        deps(),
+      );
+      expect(r.outcome).toBe("unauthorized");
+      expect(r.stages[0]).toMatchObject({
+        stage: "signature",
+        ok: false,
+        reason: "header_name_unusable",
+      });
+    } finally {
+      Headers.prototype.get = realGet;
+      await suDb.integrationInstance.update({
+        where: { id: asaasId },
+        data: { config: inst.config as never },
+      });
+    }
+  });
+
   test("a disabled instance can be tested dry, not delivered", async () => {
     await updateIntegrationInstance(
       ctx(),

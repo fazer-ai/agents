@@ -26,6 +26,14 @@ test("headers pasted as Name: value lines become a map, and a line without a nam
   ).toEqual({ "x-signature": "ts=1,v1=ab:cd", "X-Request-Id": "req-1" });
 });
 
+test("a header pasted twice is one header with both values, as the webhook reads it", () => {
+  expect(
+    parseHeaderLines(
+      "asaas-access-token: bad\nAsaas-Access-Token: good\nasaas-access-token: third",
+    ),
+  ).toEqual({ "asaas-access-token": "bad, good, third" });
+});
+
 test("the pasted notification goes to the server as typed, simulated by default, and each stage comes back with its verdict", async () => {
   const calls: Parameters<RunTest>[0][] = [];
   const answer: TestResult = {

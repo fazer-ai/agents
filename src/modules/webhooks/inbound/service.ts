@@ -2,7 +2,11 @@ import { createHash } from "node:crypto";
 import type { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
-import { type AgentNudge, runAgentNudge } from "@/graph/nudge";
+import {
+  type AgentNudge,
+  type RunAgentNudgeOutcome,
+  runAgentNudge,
+} from "@/graph/nudge";
 import type { RuntimeDeps } from "@/graph/runtime";
 import { AppError, UnauthorizedError } from "@/lib/errors";
 import { isUniqueViolation } from "@/lib/pg-error";
@@ -14,10 +18,12 @@ import {
   correlateConversationRef,
 } from "@/modules/integrations/conversation-ref";
 import {
+  type FetchBackConfig,
   isFetchBackProblem,
   mapFetchedResource,
   noticeResourceId,
   parseFetchBackConfig,
+  readPath,
 } from "@/modules/integrations/fetch-back";
 import { runFetchBack } from "@/modules/integrations/fetch-back-run";
 import { getMapper } from "@/modules/integrations/mappers";
@@ -27,6 +33,7 @@ import {
 } from "@/modules/integrations/service";
 import type {
   InboundEventKind,
+  MapResult,
   NormalizedInboundEvent,
 } from "@/modules/integrations/types";
 import { upsertJobRows } from "@/modules/scheduler/service";
@@ -85,7 +92,7 @@ const MAX_IDENTITY_CHARS = 512;
 // The two things an identity field must be for the row to exist: storable, and short enough for the
 // index that enforces idempotency on it. Same verdict shape as `unstorableProblem`, whose message
 // this passes through, because the caller does the same thing with either answer.
-function identityProblem(value: string, what: string): string | null {
+export function identityProblem(value: string, what: string): string | null {
   if (value.length > MAX_IDENTITY_CHARS) {
     return `${what} is ${value.length} characters, over the ${MAX_IDENTITY_CHARS} an identity field may hold.`;
   }
@@ -168,6 +175,44 @@ export interface ReceiveResult {
   deferred?: true;
 }
 
+// What a test reception (./test-reception.ts) reads off the real path: each stage the delivery
+// passed or stopped at, in order. With `dryRun` nothing is written; `planned` then says what would
+// have been queued, for the caller to carry on without a row.
+export type InboundStageName =
+  | "signature"
+  | "mapping"
+  | "fetch_back"
+  | "correlation"
+  | "record"
+  | "agent"
+  | "delivery";
+export interface InboundStage {
+  stage: InboundStageName;
+  ok: boolean;
+  reason?: string;
+  detail?: Record<string, unknown>;
+}
+export interface InboundProbe {
+  dryRun: boolean;
+  stages: InboundStage[];
+  planned?:
+    | { kind: "notice"; resourceId: string; keyId: string }
+    | { kind: "event"; event: NormalizedInboundEvent };
+}
+
+// The fields of a mapped event an operator needs to read a test result, and nothing of the body.
+export function eventView(e: NormalizedInboundEvent): Record<string, unknown> {
+  return {
+    kind: e.kind,
+    externalId: e.externalId,
+    dedupeKey: e.dedupeKey,
+    ...(e.status !== undefined ? { status: e.status } : {}),
+    ...(e.text !== undefined ? { text: e.text } : {}),
+    ...(e.value !== undefined ? { value: e.value } : {}),
+    ...(e.currency !== undefined ? { currency: e.currency } : {}),
+  };
+}
+
 export interface ReceiveParams {
   routeToken: string;
   rawBody: string;
@@ -180,6 +225,7 @@ export interface ReceiveParams {
   // of a 401 here (the response is uniform by design), so a test that cannot read it is testing a
   // proxy for the fix rather than the fix.
   deps?: { logger?: InboundLogger };
+  probe?: InboundProbe;
 }
 
 export async function receiveInbound(
@@ -194,6 +240,45 @@ export async function receiveInbound(
     logRejection(log, route ? "route_disabled" : "route_unknown", route);
     throw new UnauthorizedError();
   }
+  return receiveOnRoute(route, params);
+}
+
+// Everything after the route is known: the receptor's own path, and the one a test reception runs
+// (which resolves the route by id, for its own tenant, instead of by token).
+export async function receiveOnRoute(
+  route: ResolvedInboundRoute,
+  params: Omit<ReceiveParams, "routeToken">,
+): Promise<ReceiveResult> {
+  const base = params.base ?? basePrisma;
+  const log = params.deps?.logger ?? logger;
+  const probe = params.probe;
+  const note = (stage: InboundStage) => {
+    probe?.stages.push(stage);
+  };
+  const dry = probe?.dryRun === true;
+  const recordFailed = async (
+    payload: Record<string, unknown>,
+    dedupeKeyOverride?: string,
+  ) => {
+    note({
+      stage: "record",
+      ok: true,
+      detail: { recordedAs: "FAILED", dryRun: dry },
+    });
+    return dry
+      ? undefined
+      : persistFailed(base, route, params.rawBody, payload, dedupeKeyOverride);
+  };
+  const recordRow = async (row: Parameters<typeof persistRow>[2]) => {
+    note({
+      stage: "record",
+      ok: true,
+      detail: { recordedAs: "PENDING", dryRun: dry },
+    });
+    return dry
+      ? { id: undefined, duplicate: false }
+      : persistRow(base, route, row);
+  };
 
   // The vault's three-state answer, not a value: "no such entry" and "never filled" are different
   // problems with different fixes, and collapsing them (as tryResolveVaultSecret does, correctly,
@@ -213,6 +298,11 @@ export async function receiveInbound(
     getQuery: params.getQuery,
     config: resolveInboundAuthConfig(route.catalogType, route.config),
   });
+  note(
+    auth.ok
+      ? { stage: "signature", ok: true }
+      : { stage: "signature", ok: false, reason: auth.reason },
+  );
   if (!auth.ok) {
     logRejection(log, auth.reason, route);
     throw new UnauthorizedError();
@@ -223,6 +313,7 @@ export async function receiveInbound(
   try {
     parsed = JSON.parse(params.rawBody);
   } catch {
+    note({ stage: "mapping", ok: false, reason: "invalid JSON body" });
     throw new AppError("invalid JSON body", 400);
   }
 
@@ -266,13 +357,16 @@ export async function receiveInbound(
         String(route.id),
         issues,
       );
+      note({
+        stage: "mapping",
+        ok: false,
+        reason: "invalid",
+        detail: { issues },
+      });
       // Decided by the setting (an unusable lookup, an id the signature does not cover) or by an id
       // the request lacks, never by the body, which a manifest does not sign: one row per setting
       // and problem, however the replayed body varies.
-      const id = await persistFailed(
-        base,
-        route,
-        params.rawBody,
+      const id = await recordFailed(
         { reason: "invalid", issues },
         settingKey(`fetch-back-refused:${issues}`, route),
       );
@@ -294,12 +388,16 @@ export async function receiveInbound(
         fetchBack.idFrom.source,
         fetchBack.idFrom.name,
       );
-    const notice = await persistNotice(
-      base,
-      route,
-      resourceId,
-      lowered ? resourceId.toLowerCase() : resourceId,
-    );
+    const keyId = lowered ? resourceId.toLowerCase() : resourceId;
+    note({ stage: "mapping", ok: true, detail: { lookup: resourceId } });
+    if (probe) probe.planned = { kind: "notice", resourceId, keyId };
+    note({
+      stage: "record",
+      ok: true,
+      detail: { recordedAs: "PENDING", dryRun: dry },
+    });
+    if (dry) return { ack: true, tenantId: route.tenantId, outcome: "queued" };
+    const notice = await persistNotice(base, route, resourceId, keyId);
     return {
       ack: true,
       deliveryId: notice.id,
@@ -316,9 +414,8 @@ export async function receiveInbound(
       route.catalogType,
       String(route.id),
     );
-    const id = await persistFailed(base, route, params.rawBody, {
-      reason: "no-mapper",
-    });
+    note({ stage: "mapping", ok: false, reason: "no-mapper" });
+    const id = await recordFailed({ reason: "no-mapper" });
     return {
       ack: true,
       deliveryId: id,
@@ -339,12 +436,15 @@ export async function receiveInbound(
       route.catalogType,
       String(route.id),
     );
+    note({
+      stage: "mapping",
+      ok: false,
+      reason: "invalid",
+      detail: { issues: "body not covered by the signed message" },
+    });
     // One row per instance and signature setting: the refusal depends on the setting, so every
     // request it refuses is the same problem, whatever unsigned body it carries.
-    const id = await persistFailed(
-      base,
-      route,
-      params.rawBody,
+    const id = await recordFailed(
       {
         reason: "invalid",
         issues: "body not covered by the signed message",
@@ -364,14 +464,23 @@ export async function receiveInbound(
     // Deliberately-unhandled lifecycle events stay silent; schema drift must never be —
     // warn (ids/paths only, NEVER the body) + a durable FAILED record, the same fail-closed
     // mold as no-mapper. Without this, a dropped real payment is indistinguishable from noise.
-    if (result.reason === "unhandled") return { ack: true, outcome: "ignored" };
+    if (result.reason === "unhandled") {
+      note({ stage: "mapping", ok: false, reason: "unhandled" });
+      return { ack: true, outcome: "ignored" };
+    }
     logger.warn(
       "inbound: %s payload failed the mapper schema (instance %s): %s",
       route.catalogType,
       String(route.id),
       result.detail ?? "unknown",
     );
-    const id = await persistFailed(base, route, params.rawBody, {
+    note({
+      stage: "mapping",
+      ok: false,
+      reason: "invalid",
+      ...(result.detail ? { detail: { issues: result.detail } } : {}),
+    });
+    const id = await recordFailed({
       reason: "invalid",
       ...(result.detail ? { issues: result.detail } : {}),
     });
@@ -397,7 +506,13 @@ export async function receiveInbound(
       String(route.id),
       badIdentity,
     );
-    const failedId = await persistFailed(base, route, params.rawBody, {
+    note({
+      stage: "mapping",
+      ok: false,
+      reason: "unstorable-identity",
+      detail: { issues: badIdentity },
+    });
+    const failedId = await recordFailed({
       reason: "unstorable-identity",
       issues: badIdentity,
     });
@@ -408,6 +523,8 @@ export async function receiveInbound(
       outcome: "invalid",
     };
   }
+
+  note({ stage: "mapping", ok: true, detail: eventView(result.event) });
 
   // NOTE: A GENERIC delivery is correlated BEFORE the ack, so the sender learns a dead handle
   // from the response instead of from silence. Only the ref's existence is decided here; dispatch
@@ -420,6 +537,11 @@ export async function receiveInbound(
         ref: result.event.externalId,
       }),
     );
+    note(
+      threadId
+        ? { stage: "correlation", ok: true, detail: { conversation: threadId } }
+        : { stage: "correlation", ok: false, reason: "uncorrelated" },
+    );
     if (!threadId) {
       logger.info(
         "inbound: GENERIC delivery uncorrelated (instance %s)",
@@ -429,7 +551,12 @@ export async function receiveInbound(
     }
   }
 
-  const { id, duplicate } = await persistInbound(base, route, result.event);
+  if (probe) probe.planned = { kind: "event", event: result.event };
+  const { id, duplicate } = await recordRow({
+    externalId: result.event.externalId,
+    dedupeKey: result.event.dedupeKey,
+    payload: toStoredPayload(result.event),
+  });
   return {
     ack: true,
     deliveryId: id,
@@ -627,6 +754,19 @@ async function persistNotice(
   return { ...next, deferred: true };
 }
 
+// How a nudge turn can end having done what it was for: a message, a template, a note to the person
+// holding the conversation, or the agent deciding to say nothing (`silent`) or to wait (`deferred`).
+// The rest reached no one: the conversation is not the bot's, Chatwoot or the agent is unavailable,
+// the month's spend ceiling, no conversation or no agent.
+const NUDGE_REACHED: ReadonlySet<RunAgentNudgeOutcome> = new Set([
+  "messaged",
+  "templated",
+  "noted",
+  "noted-window",
+  "silent",
+  "deferred",
+]);
+
 export interface ProcessDeps {
   // Injectable for tests; defaults to the real LangGraph nudge runtime.
   runNudge?: typeof runAgentNudge;
@@ -644,6 +784,8 @@ export interface ProcessParams {
   // Handed to the nudge turn so a run past its deadline stops instead of finishing
   // beside the retry the sweep may arm once the claim goes stale. The route passes none.
   signal?: AbortSignal;
+  // A test reception's stages (./test-reception.ts): what processing found, recorded as it goes.
+  stages?: InboundStage[];
 }
 
 function buildNudge(
@@ -812,6 +954,18 @@ export async function processInboundDelivery(
           payload,
           delivery.integrationInstanceId,
         );
+        params.stages?.push(
+          corr
+            ? {
+                stage: "correlation",
+                ok: true,
+                detail: {
+                  conversation: corr.threadId,
+                  recorded: corr.recorded,
+                },
+              }
+            : { stage: "correlation", ok: false, reason: "uncorrelated" },
+        );
         // Notify the customer that the payment went through, when the integration opts in (default
         // ON) AND the conversion was FRESHLY recorded. The ConversionEvent is the durable
         // idempotency barrier; the nudge is best-effort (Phase B, with an assignee re-check). A
@@ -855,6 +1009,15 @@ export async function processInboundDelivery(
                 ref: delivery.externalId,
               })
             : await toolpackRefThread(db, params.tenantId, delivery.externalId);
+        params.stages?.push(
+          threadId
+            ? {
+                stage: "correlation",
+                ok: true,
+                detail: { conversation: threadId },
+              }
+            : { stage: "correlation", ok: false, reason: "uncorrelated" },
+        );
         if (!threadId) {
           logger.info(
             "inbound agent_nudge uncorrelated (source=%s); dropping",
@@ -927,7 +1090,7 @@ export async function processInboundDelivery(
   // Armed from here, right after the claim committed, which is the instant the stale window started.
   const signal = params.signal ?? AbortSignal.timeout(DISPATCH_DEADLINE_MS);
   try {
-    await runNudge({
+    const outcome = await runNudge({
       tenantId: params.tenantId,
       threadId: plan.threadId,
       nudge: plan.nudge,
@@ -936,11 +1099,23 @@ export async function processInboundDelivery(
       deps: params.deps?.runtime,
       signal,
     });
+    // A test reception reads how the turn ended, which the row does not record (it ends PROCESSED
+    // either way): a turn that reached no one is not a green run.
+    params.stages?.push(
+      NUDGE_REACHED.has(outcome)
+        ? { stage: "agent", ok: true, detail: { outcome } }
+        : { stage: "agent", ok: false, reason: outcome },
+    );
   } catch (err) {
     logger.warn(
       { err, threadId: plan.threadId },
       "agentNudge dispatch failed; marking delivery processed anyway",
     );
+    params.stages?.push({
+      stage: "agent",
+      ok: false,
+      reason: err instanceof Error ? err.message : String(err),
+    });
   }
   await runScopedOn(base, sysCtx(params.tenantId), (db) =>
     db.inboundDelivery.update({
@@ -990,41 +1165,71 @@ async function consultBack(
     });
     return "processed" as const;
   };
-  const cfg = parseFetchBackConfig(plan.instanceConfig.fetchBack);
-  if (cfg === undefined || isFetchBackProblem(cfg)) {
-    return await fail("the instance no longer has a usable consult-back");
-  }
   // Bounded by the delivery's deadline, as the nudge is: the scheduler's job signal, or the route's
   // window from the claim. A lookup past it leaves the claim for the sweep instead of writing an
   // event after the stale window opened, or handing its turn a signal already aborted.
   const deadline = params.signal ?? AbortSignal.timeout(DISPATCH_DEADLINE_MS);
-  const fetched = await new Promise<Awaited<ReturnType<typeof runFetchBack>>>(
+  const looked = await new Promise<Awaited<ReturnType<typeof lookUpNotice>>>(
     (resolve, reject) => {
       const stop = () =>
         reject(new Error("inbound consult-back passed the delivery deadline"));
       if (deadline.aborted) return stop();
       deadline.addEventListener("abort", stop, { once: true });
-      (params.deps?.runFetchBack ?? runFetchBack)({
+      lookUpNotice({
         base,
         tenantId: params.tenantId,
-        toolId: cfg.toolId,
-        idArg: cfg.idArg,
+        instanceConfig: plan.instanceConfig,
         resourceId: plan.resourceId,
+        keyId: plan.keyId,
+        run: params.deps?.runFetchBack,
         signal: deadline,
       })
         .then(resolve, reject)
         .finally(() => deadline.removeEventListener("abort", stop));
     },
   );
-  if (!fetched.ok) {
-    if (fetched.retry) {
-      throw new Error(
-        `inbound consult-back will be retried: ${fetched.reason}`,
-      );
-    }
-    return await fail(fetched.reason);
+  const note = (stage: InboundStage) => params.stages?.push(stage);
+  if (looked.kind !== "mapped") {
+    note({
+      stage: "fetch_back",
+      ok: false,
+      reason: looked.reason,
+      ...(looked.kind === "fetch_failed"
+        ? { detail: { retried: looked.retry } }
+        : {}),
+    });
+  } else {
+    note({ stage: "fetch_back", ok: true, detail: { ...looked.call } });
   }
-  const mapped = mapFetchedResource(cfg, plan.keyId, fetched.response);
+  if (looked.kind === "unusable") return await fail(looked.reason);
+  if (looked.kind === "fetch_failed") {
+    if (looked.retry) {
+      throw new Error(`inbound consult-back will be retried: ${looked.reason}`);
+    }
+    return await fail(looked.reason);
+  }
+  const mapped = looked.result;
+  const badIdentity = mapped.ok
+    ? (identityProblem(mapped.event.dedupeKey, "dedupeKey") ??
+      identityProblem(mapped.event.externalId, "externalId"))
+    : null;
+  note(
+    !mapped.ok
+      ? {
+          stage: "mapping",
+          ok: false,
+          reason: mapped.reason,
+          ...(mapped.detail ? { detail: { missing: mapped.detail } } : {}),
+        }
+      : badIdentity
+        ? {
+            stage: "mapping",
+            ok: false,
+            reason: "unstorable-identity",
+            detail: { issues: badIdentity },
+          }
+        : { stage: "mapping", ok: true, detail: eventView(mapped.event) },
+  );
   if (!mapped.ok) {
     if (mapped.reason === "unhandled") {
       await finish("PROCESSED");
@@ -1034,9 +1239,6 @@ async function consultBack(
       `the provider's answer has no ${mapped.detail ?? "usable fields"}`,
     );
   }
-  const badIdentity =
-    identityProblem(mapped.event.dedupeKey, "dedupeKey") ??
-    identityProblem(mapped.event.externalId, "externalId");
   if (badIdentity) return await fail(badIdentity);
   if (deadline.aborted) {
     throw new Error("inbound consult-back passed the delivery deadline");
@@ -1046,6 +1248,103 @@ async function consultBack(
   await finish("PROCESSED");
   if (event.duplicate) return "processed";
   return await processInboundDelivery({ ...params, deliveryId: event.id });
+}
+
+// One consult-back: the instance's tool run for the id and its answer mapped. Shared by the delivery
+// (consultBack) and a test reception, so what the test shows is what a delivery does.
+export async function lookUpNotice(params: {
+  base: PrismaClient;
+  tenantId: bigint;
+  instanceConfig: Record<string, unknown>;
+  resourceId: string;
+  // The id as the signature vouches for it (the notice's key), which the event key falls back to.
+  keyId?: string;
+  run?: typeof runFetchBack;
+  // The delivery's deadline, handed to the request itself.
+  signal?: AbortSignal;
+  readOnly?: boolean;
+}): Promise<
+  | { kind: "unusable"; reason: string }
+  | {
+      kind: "fetch_failed";
+      retry: boolean;
+      reason: string;
+      refusedMethod?: string;
+    }
+  | { kind: "mapped"; result: MapResult; call: LookupCall }
+> {
+  const cfg = parseFetchBackConfig(params.instanceConfig.fetchBack);
+  if (cfg === undefined || isFetchBackProblem(cfg)) {
+    return {
+      kind: "unusable",
+      reason: "the instance no longer has a usable consult-back",
+    };
+  }
+  const fetched = await (params.run ?? runFetchBack)({
+    base: params.base,
+    tenantId: params.tenantId,
+    toolId: cfg.toolId,
+    idArg: cfg.idArg,
+    resourceId: params.resourceId,
+    ...(params.signal ? { signal: params.signal } : {}),
+    ...(params.readOnly ? { readOnly: true } : {}),
+  });
+  if (!fetched.ok) {
+    return {
+      kind: "fetch_failed",
+      retry: fetched.retry,
+      reason: fetched.reason,
+      ...(fetched.refusedMethod
+        ? { refusedMethod: fetched.refusedMethod }
+        : {}),
+    };
+  }
+  return {
+    kind: "mapped",
+    result: mapFetchedResource(
+      cfg,
+      params.keyId ?? params.resourceId,
+      fetched.response,
+    ),
+    call: lookupCall(cfg, params.resourceId, fetched),
+  };
+}
+
+// What a lookup did, for a test reception's `fetch_back` stage: the tool, the id it was handed, the
+// provider's HTTP status, and the response fields the mapping read (only the configured paths, and
+// only scalar values: an object or a list there is named, not copied).
+export interface LookupCall {
+  tool: string;
+  id: string;
+  httpStatus: number;
+  read: Record<string, unknown>;
+}
+
+function lookupCall(
+  cfg: FetchBackConfig,
+  id: string,
+  fetched: { status: number; response: unknown; tool: string },
+): LookupCall {
+  const read: Record<string, unknown> = {};
+  for (const path of [
+    cfg.conversationRefPath,
+    cfg.statusPath,
+    cfg.eventIdPath,
+    cfg.valuePath,
+    cfg.currencyPath,
+  ]) {
+    if (!path) continue;
+    const v = readPath(fetched.response, path);
+    read[path] =
+      v === undefined
+        ? null
+        : v === null || ["string", "number", "boolean"].includes(typeof v)
+          ? v
+          : Array.isArray(v)
+            ? "[list]"
+            : "[object]";
+  }
+  return { tool: fetched.tool, id, httpStatus: fetched.status, read };
 }
 
 // Correlate externalId → thread via the ref created at outbound time, then record the
@@ -1114,7 +1413,7 @@ async function dispatchConversion(
 // Resend email id). A `conversation_ref` is NOT one of them: it is a handle minted for one GENERIC
 // instance, and a payment carrying it as its reference must not credit a conversion (and nudge the
 // customer) through a door it was never handed to.
-async function toolpackRefThread(
+export async function toolpackRefThread(
   db: ScopedDb,
   tenantId: bigint,
   externalId: string,

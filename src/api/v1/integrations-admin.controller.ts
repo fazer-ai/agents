@@ -21,6 +21,11 @@ import {
   updateIntegrationInstance,
 } from "@/modules/integrations/service";
 import { getToolpackToolViews } from "@/modules/integrations/toolpacks";
+import {
+  TEST_BODY_MAX_CHARS,
+  TEST_RECEPTION_PER_MINUTE,
+  testReception,
+} from "@/modules/webhooks/inbound/test-reception";
 
 // The error catalog this controller's routes answer with (`bun i18n:extract` reads these lines).
 // One key per fact, never one generic key per HTTP class: a registered key wins over
@@ -40,6 +45,8 @@ import { getToolpackToolViews } from "@/modules/integrations/toolpacks";
 // translate('errors.integrationInstanceNotFound', 'Integration instance not found.')
 // translate('errors.integrationInstructionsUnusable', 'The operator guidance ("{{field}}") must be text of at most 2000 characters, with no character that cannot be stored.')
 // translate('errors.integrationFetchBackUnusable', 'The notification lookup cannot be used ("{{field}}"): {{problem}}.')
+// translate('errors.integrationTestReceptionDisabled', 'The integration is disabled, so a real delivery would be refused: enable it, or test with the dry run.')
+// translate('errors.integrationTestReceptionRateLimited', 'At most {{limit}} test receptions a minute. Wait a moment and try again.')
 // translate('errors.integrationSignatureUnusable', 'The signature setting "{{field}}" cannot be used: {{problem}}.')
 // translate('errors.integrationConfigOutOfRange', '"{{field}}" must be between {{min}} and {{max}}.')
 // translate('errors.integrationSheetsConfigInvalid', '"{{field}}" must be the spreadsheet id or the numeric tab id, not a URL or a tab name. Pick the spreadsheet and the tab again in the integration settings.')
@@ -391,6 +398,65 @@ export const integrationsAdminController = new Elysia({
         }),
       }),
       response: errors(400, 401, 403, 404),
+    },
+  )
+  // A POST because the non-dry run writes like a real delivery; the dry run (the default) writes
+  // nothing, the provider lookup included only as the read it is.
+  .post(
+    "/instances/:id/test-reception",
+    async ({ tenantContext, params, body, request, server }) => {
+      // A real test runs the lookup and the agent turn inline, which can outlast the server's idle
+      // timeout (the webhook route's dispatch allows minutes); the operator waits for its stages.
+      server?.timeout(request, 0);
+      return {
+        instance: instanceIdentity,
+        ...(await testReception(
+          ctxOrThrow(tenantContext),
+          requireDbId(params.id),
+          body,
+        )),
+      };
+    },
+    {
+      requireRole: "TENANT_ADMIN",
+      detail: doc(
+        "Test inbound reception",
+        `Runs a pasted sample notification (raw body, optional headers and query string) through this instance's inbound path and returns each stage: signature (header read, signed message, verdict in the receptor's reason vocabulary), mapping, the lookup tool when the instance has one, correlation, and what would be recorded. \`dryRun\` (default true) writes nothing; false delivers the event as a real notification would. Never returns the secret. At most ${TEST_RECEPTION_PER_MINUTE} a minute per workspace.`,
+      ),
+      params: t.Object({
+        id: t.String({
+          description:
+            "Integration instance id (BigInt serialized as a string).",
+        }),
+      }),
+      body: t.Object({
+        body: t.String({
+          maxLength: TEST_BODY_MAX_CHARS,
+          description:
+            "The notification's raw body, exactly as the provider sends it.",
+        }),
+        headers: t.Optional(
+          t.Record(
+            t.String({ maxLength: 128 }),
+            t.String({ maxLength: 8192 }),
+            {
+              maxProperties: 50,
+              description: "Request headers, by name.",
+            },
+          ),
+        ),
+        query: t.Optional(
+          t.String({
+            maxLength: 8192,
+            description:
+              "The webhook URL's query string, e.g. data.id=123&type=payment.",
+          }),
+        ),
+        dryRun: t.Optional(
+          t.Boolean({ description: "Default true: nothing is written." }),
+        ),
+      }),
+      response: errors(400, 401, 403, 404, 409, 422, 429),
     },
   )
   .delete(

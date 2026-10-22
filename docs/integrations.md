@@ -139,7 +139,30 @@ Some gateways notify with an id and nothing else: Mercado Pago sends `{"action":
 }
 ```
 
-`pending` and `in_process` are left out, so they are ignored until the payment moves. Not confirmed against Mercado Pago itself: whether a Checkout Pro preference's `external_reference` reaches the payment unchanged, and whether a notification sent to a per-payment `notification_url` carries `x-signature`. The integration screen sets all of this up under "Look up each notification with a tool".
+`pending` and `in_process` are left out, so they are ignored until the payment moves. The integration screen sets all of this up under "Look up each notification with a tool".
+
+Confirmed against Mercado Pago on 2026-10-22, with the test credentials of a real application, a Checkout Pro preference created by an HTTP tool (`POST https://api.mercadopago.com/checkout/preferences`) and a card payment by a test buyer:
+
+- The preference's `external_reference` reaches the payment unchanged (a `cr_…` ref of 35 characters), so the lookup above correlates a Checkout Pro payment to its conversation.
+- The notification arrives at `<webhook URL>?data.id=<payment id>&type=payment` with `x-signature: ts=<seconds>,v1=<hex>` and `x-request-id`, and the manifest above (`id:<id>;request-id:<x-request-id>;ts:<ts>;`) reproduces `v1`.
+- The secret that signs is the one of the application that OWNS the access token used to charge. The panel's test credentials belong to a mirror application of the test seller (another application number), so the secret shown on the application where the webhook URL was set validates the panel's "Simulate notification" and refuses every real notification (`credential_mismatch`); the test seller's own application shows the secret that validates them. In production the two are the same application.
+- A payment collected by a test seller has `live_mode: true` and is notified only at the production URL; the test URL receives only the simulator.
+- `payment.created` and `payment.updated` for the same approved payment became one event (`<payment id>:approved`) and one message.
+
+Not confirmed: whether a notification sent to a per-payment `notification_url` carries `x-signature`.
+
+### Test reception (issue #1610)
+
+The integration editor's "Test reception" (`POST /v1/integrations/instances/:id/test-reception`, `TENANT_ADMIN`, `src/modules/webhooks/inbound/test-reception.ts`) takes a pasted notification (raw body, optional headers and query string) and runs it through the SAVED instance on the receptor's own code (`receiveOnRoute`, the path a delivery takes after its route token resolves), returning each stage in order with `ok`, the receptor's reason and a detail:
+
+- `signature`: the strategy, the header read and whether it was there, the parts found, the signed message as rendered, and the verdict in the receptor's vocabulary (`credential_mismatch`, `signed_value_missing`...). The secret is never in the answer: the message is what gets signed, not the key.
+- `mapping`: the mapped event (kind, reference, dedupe key, status, text, amount) or why it was refused; for a lookup instance, the id it would look up, and then a second `mapping` for the provider's answer.
+- `fetch_back`: the call the lookup made (the tool, the id handed to it, the provider's HTTP status, and the response fields the mapping read: the configured paths, scalar values only), or why it failed; on an instance without a lookup, `{configured: false}` instead of a missing stage.
+- `correlation`: the conversation the reference names, or `uncorrelated`.
+- `record`: what would be (or was) recorded (`recordedAs`), `PENDING` or `FAILED`.
+- `delivery` (only without the dry run): how processing ended. Without the dry run, processing records its own stages too (the lookup, the provider's answer, the correlation under its claim), and an event processing drops (a reference that names no conversation) turns the outcome into `uncorrelated` instead of the `queued` the receptor answered; a lookup the provider will answer later gives `retrying` (the row stays for the sweep's re-dispatch), and processing that fails on its own gives `failed`. The agent turn is its own stage (`agent`): the row ends `PROCESSED` whatever the turn did, so a turn that threw or reached no one (`stale`, `live-unavailable`, `agent-unavailable`, `over-ceiling`, `no-conversation`, `no-agent`) shows there and answers `agent-failed`. The run is registered with the shutdown drain, as the webhook route's dispatch is, and the request is exempt from the server's idle timeout, since the lookup and the turn run inline. While a test is out the editor holds its close and its save.
+
+`dryRun` defaults to true and writes nothing: no delivery row, no conversion, no message; the lookup still calls the provider (through the same tool and guards), but only when the tool's method reads (`GET` or `HEAD`), checked on the row the call loads and runs: a tool that could change the provider stops the simulation at the lookup (`not-simulated`), to be tested without the dry run. Pasted headers are read as the webhook route reads a request (Fetch `Headers`), so a name repeated (in any case, in the editor's lines too) is one header whose values join with `, `. A saved header name the receptor refuses comes back as the `signature` stage's `header_name_unusable`, never a 500. The correlation is a read. Without the dry run the notification is delivered as a real one would be, processed inline, and the instance must be enabled (409 otherwise). An outbound-only integration (Calendar, Drive) has no webhook and is refused (400, `errors.integrationNoInboundWebhook`), dry or not. At most 10 tests a minute per workspace (per process), since each one can call the provider with the operator's credential; past that, 429.
 
 ## Google Calendar toolpack — per-customer isolation (`src/modules/integrations/toolpacks/google-calendar.ts`)
 

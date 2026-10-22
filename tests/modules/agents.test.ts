@@ -1132,6 +1132,7 @@ describe.skipIf(!dbUp)("agents create/clone/delete/tool-selections", () => {
       followUp: { enabled: true, steps: [{ afterMinutes: 60 }] },
     };
     await updateAgent(ctx(tenantC), id, { settings: full }, appDb);
+    const stored = (await suDb.agent.findUnique({ where: { id } }))?.settings;
 
     expect(
       updateAgent(
@@ -1144,7 +1145,8 @@ describe.skipIf(!dbUp)("agents create/clone/delete/tool-selections", () => {
 
     // The refusal is the whole point only if nothing was written: read the RAW column, not the DTO.
     const row = await suDb.agent.findUnique({ where: { id } });
-    expect(row?.settings).toEqual(full);
+    expect(row?.settings).toEqual(stored);
+    expect(row?.settings).toMatchObject(full);
   });
 
   test("the caller that means replacement says so once, and gets the old behaviour", async () => {

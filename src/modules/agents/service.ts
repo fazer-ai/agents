@@ -2221,8 +2221,9 @@ export async function updateAgentAndGrants(
     // value is allowed, this one asks whether the write keeps the blocks it does not mention. A bag
     // that is both partial and carries a bad value has a bigger problem than the value.
     if (beforeRow) assertVoiceAgentMode(beforeRow.kind, rest.mode);
-    keepCreationDefaults(rest.settings, before?.settings);
+    // NOTE: a declared replace writes exactly the bag it carries, the creation default included.
     if (opts.settingsMode !== "replace") {
+      keepCreationDefaults(rest.settings, before?.settings);
       assertSettingsBlocksKept(rest.settings, before?.settings);
     }
     assertSettingsTextSizes(rest.settings, before?.settings);

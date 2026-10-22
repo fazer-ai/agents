@@ -76,7 +76,7 @@ function models(replies: string[]) {
   return { make, judged };
 }
 
-describe.skipIf(!dbUp)("playground guardrail context (issue #1624)", () => {
+describe.skipIf(!dbUp)("playground guardrail context", () => {
   beforeAll(async () => {
     const t = await suDb.tenant.create({
       data: { name: "PGC", slug: `pgc-${process.pid}` },

@@ -9959,7 +9959,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       expect(attachments).toEqual([]);
     });
 
-    // The input check reads the conversation's thread as context (issue #1624): the second message is
+    // The input check reads the conversation's thread as context: the second message is
     // judged after the first one and the agent's reply to it, and is the only text judged.
     test("the input check reads the earlier turns of the conversation as context", async () => {
       await setGuardrails({

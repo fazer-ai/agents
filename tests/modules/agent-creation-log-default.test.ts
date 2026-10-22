@@ -107,7 +107,7 @@ describe.skipIf(!dbUp)("the tool-values switch an agent is born with", () => {
     expect((await storedObservability(a.id))?.logToolValues).toBe(false);
   });
 
-  // Issue #1624: an agent created from scratch reads two exchanges as context on the input check;
+  // An agent created from scratch reads two exchanges as context on the input check;
   // one that says otherwise keeps what it says.
   test("created from scratch, its input check reads 4 messages of context", async () => {
     config.env = "production";

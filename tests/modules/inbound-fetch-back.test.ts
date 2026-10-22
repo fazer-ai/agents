@@ -942,6 +942,58 @@ describe.skipIf(!dbUp)("a thin notification answered by a consult-back", () => {
     expect(seen.length).toBe(before);
   });
 
+  test("a refused lookup files one row per setting, however a replayed notice varies its unsigned body", async () => {
+    const g = await createIntegrationInstance(
+      ctx(),
+      {
+        catalogType: "GENERIC",
+        name: "Id fora da assinatura",
+        inboundAuthStrategy: "HMAC_SHA256",
+        inboundSecretRef: (
+          await suDb.integrationInstance.findUniqueOrThrow({
+            where: { id: instanceId },
+            select: { inboundSecretRef: true },
+          })
+        ).inboundSecretRef as string,
+        config: {
+          signatureHeader: "x-signature",
+          signature: MP_SIGNATURE,
+          fetchBack: fetchBackOf(toolId),
+        },
+      },
+      appDb,
+    );
+    // Past the writer, like an import: the lookup reads an id the manifest does not sign.
+    await suDb.integrationInstance.update({
+      where: { id: g.id },
+      data: {
+        config: {
+          signatureHeader: "x-signature",
+          signature: MP_SIGNATURE,
+          fetchBack: fetchBackOf(toolId, { idFrom: "query.type" }),
+        },
+      },
+    });
+    // One captured notification, replayed with bodies the manifest does not sign.
+    const signed = signedFor("3003");
+    const send = (rawBody: string) =>
+      receiveInbound({
+        routeToken: g.routeToken as string,
+        rawBody,
+        ...signed,
+        base: appDb,
+      });
+    const a = await send('{"data":{"id":"3003"}}');
+    const b = await send('{ "data": { "id": "3003" } }');
+    expect(a.outcome).toBe("invalid");
+    expect(b.outcome).toBe("invalid");
+    expect(b.deliveryId).toBe(a.deliveryId as bigint);
+    const failed = await suDb.inboundDelivery.count({
+      where: { integrationInstanceId: g.id, status: "FAILED" },
+    });
+    expect(failed).toBe(1);
+  });
+
   test("two spellings of an id the signature lowercases are one lookup a window", async () => {
     const first = await notify("ORDX1");
     expect(first.outcome).toBe("queued");

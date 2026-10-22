@@ -266,10 +266,16 @@ export async function receiveInbound(
         String(route.id),
         issues,
       );
-      const id = await persistFailed(base, route, params.rawBody, {
-        reason: "invalid",
-        issues,
-      });
+      // Decided by the setting (an unusable lookup, an id the signature does not cover) or by an id
+      // the request lacks, never by the body, which a manifest does not sign: one row per setting
+      // and problem, however the replayed body varies.
+      const id = await persistFailed(
+        base,
+        route,
+        params.rawBody,
+        { reason: "invalid", issues },
+        settingKey(`fetch-back-refused:${issues}`, route),
+      );
       return {
         ack: true,
         deliveryId: id,
@@ -343,9 +349,7 @@ export async function receiveInbound(
         reason: "invalid",
         issues: "body not covered by the signed message",
       },
-      `uncovered-body:${createHash("sha256")
-        .update(JSON.stringify(route.config.signature ?? null))
-        .digest("hex")}`,
+      settingKey("uncovered-body", route),
     );
     return {
       ack: true,
@@ -438,6 +442,16 @@ export async function receiveInbound(
 // registered, or the mapper's schema rejected it). `payload` is a small diagnostic object we
 // build ({ reason, issues? }) — NEVER the raw body, which is PII-bearing. dedupeKey is a body
 // digest so retries collapse; FAILED is terminal (the process claim never picks it up).
+// The dedupe key of a refusal the instance's setting decides, not the body: a digest of the
+// signature and lookup settings, so a changed setting files its own row once.
+function settingKey(problem: string, route: ResolvedInboundRoute): string {
+  const setting = JSON.stringify([
+    route.config.signature ?? null,
+    route.config.fetchBack ?? null,
+  ]);
+  return `${problem}:${createHash("sha256").update(setting).digest("hex")}`;
+}
+
 async function persistFailed(
   base: PrismaClient,
   route: ResolvedInboundRoute,

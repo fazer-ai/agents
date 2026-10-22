@@ -327,8 +327,10 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
     holdsOn(direction)
       ? { classifier: gr.classifier, unchecked: false, held: true }
       : { classifier: gr.classifier, unchecked: true };
+  // A trip stops the message only on a direction that acts: an observed one lets it through, so a
+  // partial failure there went on unchecked like any other.
   const judgedPartly = (direction: "input" | "output", violated: boolean) =>
-    violated
+    violated && gr[direction].action !== "observe"
       ? { classifier: gr.classifier, unchecked: false }
       : couldNotJudge(direction);
   // Built on FIRST CALL, not here, and never twice: a gate is constructed for every turn and every

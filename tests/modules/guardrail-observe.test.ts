@@ -134,6 +134,20 @@ const trippingDecisions = (async (_url: string, init: RequestInit) => {
   );
 }) as unknown as typeof fetch;
 
+// One question trips and every other one goes unanswered: a screening that failed in part.
+const partlyTrippingDecisions = (async (_url: string, init: RequestInit) => {
+  const body = JSON.parse(String(init.body)) as { questions: object };
+  const [first] = Object.keys(body.questions);
+  return new Response(
+    JSON.stringify({
+      model: "jev-1",
+      answers: first ? { [first]: { type: "noul", noul: 0.99 } } : {},
+      usage: { input_tokens: 1 },
+    }),
+    { status: 200 },
+  );
+}) as unknown as typeof fetch;
+
 describe("configuring it", () => {
   // The bug it catches: a reader that does not know the action falling back to `template`, which
   // would turn "only record" into "replace the message" for every agent that chose it.
@@ -310,6 +324,30 @@ describe.skipIf(!dbUp)("an observed screening", () => {
     expect(await gate("output", CUSTOMER)).toEqual({ kind: "clean" });
     const got = await lines(f.turnId);
     expect(got.map((l) => l.detail.action)).toEqual(["observe"]);
+  });
+
+  // The bug it catches: a screening that failed in part while another check tripped, on a direction
+  // that only records, written as `unchecked: false` (the trip stopped it) when the message went on.
+  test("a partial failure on an observed direction says the message went on unchecked", async () => {
+    const f = flow();
+    const gate = buildGuardrailGate({
+      langfuseCfg: null,
+      cfg: cfg({
+        classifier: "decisions",
+        output: {
+          ...cfg().output,
+          checks: { ...CHECKS, toxicity: true },
+        },
+      }),
+      apiKey: "k",
+      flow: f,
+      decisionFetch: partlyTrippingDecisions,
+    });
+    expect(await gate("output", CUSTOMER)).toEqual({ kind: "clean" });
+    const failed = (await lines(f.turnId)).filter(
+      (l) => l.detail.outcome === "analysis_failed",
+    );
+    expect(failed.map((l) => l.detail.unchecked)).toEqual([true]);
   });
 
   // The bug it catches: the operator's external endpoint blocking a reply on a direction set to only

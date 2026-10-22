@@ -39,6 +39,7 @@ import { getToolpackToolViews } from "@/modules/integrations/toolpacks";
 // translate('errors.integrationInboundAuthRequired', 'This integration makes the agent message customers, so its webhook needs authentication: choose a static header or an HMAC signature.')
 // translate('errors.integrationInstanceNotFound', 'Integration instance not found.')
 // translate('errors.integrationInstructionsUnusable', 'The operator guidance ("{{field}}") must be text of at most 2000 characters, with no character that cannot be stored.')
+// translate('errors.integrationFetchBackUnusable', 'The notification lookup cannot be used ("{{field}}"): {{problem}}.')
 // translate('errors.integrationSignatureUnusable', 'The signature setting "{{field}}" cannot be used: {{problem}}.')
 // translate('errors.integrationConfigOutOfRange', '"{{field}}" must be between {{min}} and {{max}}.')
 // translate('errors.integrationSheetsConfigInvalid', '"{{field}}" must be the spreadsheet id or the numeric tab id, not a URL or a tab name. Pick the spreadsheet and the tab again in the integration settings.')

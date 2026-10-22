@@ -13,6 +13,13 @@ import {
   CONVERSATION_REF_KIND,
   correlateConversationRef,
 } from "@/modules/integrations/conversation-ref";
+import {
+  isFetchBackProblem,
+  mapFetchedResource,
+  noticeResourceId,
+  parseFetchBackConfig,
+} from "@/modules/integrations/fetch-back";
+import { runFetchBack } from "@/modules/integrations/fetch-back-run";
 import { getMapper } from "@/modules/integrations/mappers";
 import {
   type ResolvedInboundRoute,
@@ -22,6 +29,7 @@ import type {
   InboundEventKind,
   NormalizedInboundEvent,
 } from "@/modules/integrations/types";
+import { upsertJobRows } from "@/modules/scheduler/service";
 import { resolveVaultRefState } from "@/modules/vault/service";
 import {
   type InboundAuthFailure,
@@ -29,7 +37,12 @@ import {
   resolveInboundAuthConfig,
   verifyInboundAuth,
 } from "./auth";
-import { signatureCoversBody } from "./signed-message";
+import {
+  signatureCoversBody,
+  signatureCoversId,
+  signedLowered,
+} from "./signed-message";
+import { redispatchKey } from "./sweep";
 
 // Generic inbound receptor. Resolve tenant by route token → verify the per-instance auth
 // strategy (tenant-scoped secret) → normalize via the integration's pure mapper → persist an
@@ -46,6 +59,10 @@ const MAX_PROCESS_ATTEMPTS = 5;
 // running past it would deliver beside its own retry. The spare minute lets the abort land and the
 // row be marked, as the scheduler's jobDeadlineMs does under the same window.
 export const DISPATCH_DEADLINE_MS = 4 * 60_000;
+
+// The stored payload kind of a GENERIC consult-back notice: not an event, the id an event is built
+// from once the provider answers. Never leaves this module.
+const FETCH_BACK_KIND = "fetch_back";
 
 // WHAT "NO LONGER RUNNING" MEANS for a PROCESSING row. Two readers ask it and must not disagree: the
 // claim below, which may take such a row, and the inbound sweep (./sweep.ts), which arms a re-dispatch
@@ -146,6 +163,9 @@ export interface ReceiveResult {
     // to the sender NOW, because nothing will ever act on it and the sender is the only party that
     // can stop: a periodic job keeps firing at a dead handle otherwise. Nothing is persisted.
     | "uncorrelated";
+  // A lookup booked for the next window (persistNotice): the job at that window runs it, so the
+  // receptor does not dispatch it now.
+  deferred?: true;
 }
 
 export interface ReceiveParams {
@@ -206,6 +226,89 @@ export async function receiveInbound(
     throw new AppError("invalid JSON body", 400);
   }
 
+  // A GENERIC instance with a consult-back takes the gateway's own thin notification: it is stored
+  // as a notice naming one resource id, and the event is built later from the provider's answer
+  // about that id (processInboundDelivery), so nothing here correlates or maps.
+  const fetchBack =
+    route.catalogType === "GENERIC"
+      ? parseFetchBackConfig(route.config.fetchBack)
+      : undefined;
+  if (fetchBack !== undefined) {
+    const resourceId = isFetchBackProblem(fetchBack)
+      ? null
+      : noticeResourceId(fetchBack, {
+          parsedBody: parsed,
+          getHeader: params.getHeader,
+          getQuery: params.getQuery ?? (() => null),
+        });
+    // The writer refuses an id the signature does not vouch for, and this says it again: a row that
+    // reached the table some other way (an import, a strategy changed later) must not look up an id
+    // anyone can choose.
+    const idUnsigned =
+      resourceId !== null &&
+      !isFetchBackProblem(fetchBack) &&
+      route.inboundAuthStrategy === "HMAC_SHA256" &&
+      !(fetchBack.idFrom.source === "body"
+        ? signatureCoversBody(route.config.signature)
+        : signatureCoversId(
+            route.config.signature,
+            fetchBack.idFrom.source,
+            fetchBack.idFrom.name,
+          ));
+    if (resourceId === null || idUnsigned) {
+      const issues = idUnsigned
+        ? "fetch-back id not covered by the signed message"
+        : isFetchBackProblem(fetchBack)
+          ? `config.fetchBack.${fetchBack.field}`.replace(/\.$/, "")
+          : "fetch-back id";
+      logger.warn(
+        "inbound: GENERIC notice names no usable resource id (instance %s): %s",
+        String(route.id),
+        issues,
+      );
+      // Decided by the setting (an unusable lookup, an id the signature does not cover) or by an id
+      // the request lacks, never by the body, which a manifest does not sign: one row per setting
+      // and problem, however the replayed body varies.
+      const id = await persistFailed(
+        base,
+        route,
+        params.rawBody,
+        { reason: "invalid", issues },
+        settingKey(`fetch-back-refused:${issues}`, route),
+      );
+      return {
+        ack: true,
+        deliveryId: id,
+        tenantId: route.tenantId,
+        outcome: "invalid",
+      };
+    }
+    // The throttle counts what the signature vouches for: under `|lower`, `ABC` and `abc` are one
+    // signed id and one lookup a window, whichever spelling arrived first.
+    const lowered =
+      !isFetchBackProblem(fetchBack) &&
+      route.inboundAuthStrategy === "HMAC_SHA256" &&
+      fetchBack.idFrom.source !== "body" &&
+      signedLowered(
+        route.config.signature,
+        fetchBack.idFrom.source,
+        fetchBack.idFrom.name,
+      );
+    const notice = await persistNotice(
+      base,
+      route,
+      resourceId,
+      lowered ? resourceId.toLowerCase() : resourceId,
+    );
+    return {
+      ack: true,
+      deliveryId: notice.id,
+      tenantId: route.tenantId,
+      outcome: notice.duplicate ? "duplicate" : "queued",
+      ...(notice.deferred ? { deferred: true } : {}),
+    };
+  }
+
   const mapper = getMapper(route.catalogType);
   if (!mapper) {
     logger.error(
@@ -246,9 +349,7 @@ export async function receiveInbound(
         reason: "invalid",
         issues: "body not covered by the signed message",
       },
-      `uncovered-body:${createHash("sha256")
-        .update(JSON.stringify(route.config.signature ?? null))
-        .digest("hex")}`,
+      settingKey("uncovered-body", route),
     );
     return {
       ack: true,
@@ -341,6 +442,16 @@ export async function receiveInbound(
 // registered, or the mapper's schema rejected it). `payload` is a small diagnostic object we
 // build ({ reason, issues? }) — NEVER the raw body, which is PII-bearing. dedupeKey is a body
 // digest so retries collapse; FAILED is terminal (the process claim never picks it up).
+// The dedupe key of a refusal the instance's setting decides, not the body: a digest of the
+// signature and lookup settings, so a changed setting files its own row once.
+function settingKey(problem: string, route: ResolvedInboundRoute): string {
+  const setting = JSON.stringify([
+    route.config.signature ?? null,
+    route.config.fetchBack ?? null,
+  ]);
+  return `${problem}:${createHash("sha256").update(setting).digest("hex")}`;
+}
+
 async function persistFailed(
   base: PrismaClient,
   route: ResolvedInboundRoute,
@@ -413,12 +524,28 @@ async function persistFailed(
 // not repairable, and the caller has already turned those away.
 async function persistInbound(
   base: PrismaClient,
-  route: ResolvedInboundRoute,
+  route: Pick<ResolvedInboundRoute, "id" | "tenantId">,
   n: NormalizedInboundEvent,
 ): Promise<{ id: bigint; duplicate: boolean }> {
-  const payload = makeStorableDeep(toStoredPayload(n));
+  return persistRow(base, route, {
+    externalId: n.externalId,
+    dedupeKey: n.dedupeKey,
+    payload: toStoredPayload(n),
+  });
+}
+
+async function persistRow(
+  base: PrismaClient,
+  route: Pick<ResolvedInboundRoute, "id" | "tenantId">,
+  n: {
+    externalId: string | null;
+    dedupeKey: string;
+    payload: Record<string, unknown>;
+  },
+): Promise<{ id: bigint; duplicate: boolean }> {
+  const payload = makeStorableDeep(n.payload);
   try {
-    const row = await runScopedOn(base, sysCtx(route.tenantId), (db) =>
+    const created = await runScopedOn(base, sysCtx(route.tenantId), (db) =>
       db.inboundDelivery.create({
         data: {
           tenantId: route.tenantId,
@@ -431,7 +558,7 @@ async function persistInbound(
         select: { id: true },
       }),
     );
-    return { id: row.id, duplicate: false };
+    return { id: created.id, duplicate: false };
   } catch (err) {
     if (!isUniqueViolation(err)) throw err;
     const existing = await runScopedOn(base, sysCtx(route.tenantId), (db) =>
@@ -445,9 +572,66 @@ async function persistInbound(
   }
 }
 
+// One lookup per resource per window, keyed by the id the signature vouches for and never by the
+// body (which a manifest like Mercado Pago's leaves unsigned, so a replay with other whitespace would
+// otherwise be a fresh lookup each time). A notice arriving after its window's lookup was taken is
+// not dropped: it books the next window's lookup, run by a job at the window's start, since the
+// payment may have moved since the last answer (a gateway can send one bare body for successive
+// states). At most two lookups a window per id, and no state change left unasked.
+export const NOTICE_WINDOW_MS = 60_000;
+
+async function persistNotice(
+  base: PrismaClient,
+  route: Pick<ResolvedInboundRoute, "id" | "tenantId">,
+  resourceId: string,
+  keyId: string,
+  now = Date.now(),
+): Promise<{ id: bigint; duplicate: boolean; deferred: boolean }> {
+  const win = Math.floor(now / NOTICE_WINDOW_MS);
+  const row = (w: number, payload: Record<string, unknown> = {}) =>
+    persistRow(base, route, {
+      externalId: null,
+      dedupeKey: `notice:${keyId}:${w}`,
+      // `keyId` too: the id as the signature vouches for it (lowercased under `|lower`), which the
+      // event key falls back to, so a case variant in a later window is the same event.
+      payload: { kind: FETCH_BACK_KIND, resourceId, keyId, ...payload },
+    });
+  const current = await row(win);
+  if (!current.duplicate) return { ...current, deferred: false };
+  const status = await runScopedOn(base, sysCtx(route.tenantId), (db) =>
+    db.inboundDelivery.findUnique({
+      where: { id: current.id },
+      select: { status: true },
+    }),
+  );
+  // Not looked up yet: that lookup will see whatever this notice is about.
+  if (status?.status === "PENDING") return { ...current, deferred: false };
+  const runAt = new Date((win + 1) * NOTICE_WINDOW_MS);
+  const next = await row(win + 1, { notBefore: runAt.toISOString() });
+  if (!next.duplicate) {
+    await runScopedOn(base, sysCtx(route.tenantId), (db) =>
+      upsertJobRows(db, {
+        tenantId: route.tenantId,
+        kind: "INBOUND_REDISPATCH",
+        rearm: "once",
+        runAt,
+        rows: [
+          {
+            dedupeKey: redispatchKey(next.id, 0),
+            payload: { deliveryId: String(next.id) },
+          },
+        ],
+      }),
+    );
+  }
+  return { ...next, deferred: true };
+}
+
 export interface ProcessDeps {
   // Injectable for tests; defaults to the real LangGraph nudge runtime.
   runNudge?: typeof runAgentNudge;
+  // Injectable for tests; defaults to running the instance's HTTP tool.
+  runFetchBack?: typeof runFetchBack;
   runtime?: RuntimeDeps;
 }
 
@@ -503,6 +687,13 @@ function buildNudge(
 type ProcessPlan =
   | { kind: "skip" }
   | { kind: "done" }
+  | {
+      kind: "fetch";
+      resourceId: string;
+      keyId: string;
+      integrationInstanceId: bigint;
+      instanceConfig: Record<string, unknown>;
+    }
   | {
       kind: "nudge";
       threadId: string;
@@ -599,6 +790,19 @@ export async function processInboundDelivery(
           data: { status: "PROCESSED", processedAt: new Date() },
         });
 
+      if ((kind as string) === FETCH_BACK_KIND) {
+        const resourceId = asString(payload.resourceId);
+        if (resourceId) {
+          return {
+            kind: "fetch",
+            resourceId,
+            keyId: asString(payload.keyId) ?? resourceId,
+            integrationInstanceId: delivery.integrationInstanceId,
+            instanceConfig,
+          };
+        }
+      }
+
       if (kind === "conversion") {
         const corr = await dispatchConversion(
           db,
@@ -606,6 +810,7 @@ export async function processInboundDelivery(
           delivery.externalId,
           source,
           payload,
+          delivery.integrationInstanceId,
         );
         // Notify the customer that the payment went through, when the integration opts in (default
         // ON) AND the conversion was FRESHLY recorded. The ConversionEvent is the durable
@@ -616,7 +821,10 @@ export async function processInboundDelivery(
         if (corr?.recorded && notify) {
           return {
             kind: "nudge",
-            deliverToResolved: false,
+            // A GENERIC conversion (a lookup's paid status) reaches a conversation the bot itself
+            // resolved, like every GENERIC event: the agent closing after sending the charge is the
+            // ordinary case.
+            deliverToResolved: source === "GENERIC",
             threadId: corr.threadId,
             nudge: buildNudge(
               payload,
@@ -707,6 +915,9 @@ export async function processInboundDelivery(
 
   if (plan.kind === "skip") return "skipped";
   if (plan.kind === "done") return "processed";
+  if (plan.kind === "fetch") {
+    return await consultBack(params, base, plan);
+  }
 
   // Phase B: agent_nudge network turn outside the tx, then mark PROCESSED. BEST-EFFORT: the
   // outcome is not consulted, since the durable barrier is the ConversionEvent from Phase A. A
@@ -740,6 +951,103 @@ export async function processInboundDelivery(
   return "processed";
 }
 
+// Phase B of a consult-back notice: run the instance's tool for the id, map the provider's answer,
+// and hand the resulting event to this same function as its own delivery. The event row's dedupe
+// key (`<id>:<status>` by default) is what collapses `payment.created`/`payment.updated` and the
+// sender's retries into one event, so a notice that maps to an event already recorded ends here. A
+// failure the same id may answer later (network, 5xx) throws, leaving the claim for the sweep's
+// re-dispatch under the attempt cap; one that would answer the same ends FAILED with its reason.
+async function consultBack(
+  params: ProcessParams,
+  base: PrismaClient,
+  plan: Extract<ProcessPlan, { kind: "fetch" }>,
+): Promise<"processed" | "skipped"> {
+  const finish = (status: "PROCESSED" | "FAILED") =>
+    runScopedOn(base, sysCtx(params.tenantId), (db) =>
+      db.inboundDelivery.update({
+        where: { id: params.deliveryId },
+        data: { status, processedAt: new Date() },
+      }),
+    );
+  const fail = async (reason: string) => {
+    logger.warn(
+      { deliveryId: String(params.deliveryId), reason },
+      "inbound: consult-back could not build an event",
+    );
+    await finish("FAILED");
+    emitDeadLetter({
+      tenantId: params.tenantId,
+      unit: "inbound_delivery",
+      level: "error",
+      error: `inbound consult-back failed: ${reason}`,
+      detail: {
+        deliveryId: String(params.deliveryId),
+        integrationInstanceId: String(plan.integrationInstanceId),
+        catalogType: "GENERIC",
+        reason: "fetch-back",
+      },
+      base,
+    });
+    return "processed" as const;
+  };
+  const cfg = parseFetchBackConfig(plan.instanceConfig.fetchBack);
+  if (cfg === undefined || isFetchBackProblem(cfg)) {
+    return await fail("the instance no longer has a usable consult-back");
+  }
+  // Bounded by the delivery's deadline, as the nudge is: the scheduler's job signal, or the route's
+  // window from the claim. A lookup past it leaves the claim for the sweep instead of writing an
+  // event after the stale window opened, or handing its turn a signal already aborted.
+  const deadline = params.signal ?? AbortSignal.timeout(DISPATCH_DEADLINE_MS);
+  const fetched = await new Promise<Awaited<ReturnType<typeof runFetchBack>>>(
+    (resolve, reject) => {
+      const stop = () =>
+        reject(new Error("inbound consult-back passed the delivery deadline"));
+      if (deadline.aborted) return stop();
+      deadline.addEventListener("abort", stop, { once: true });
+      (params.deps?.runFetchBack ?? runFetchBack)({
+        base,
+        tenantId: params.tenantId,
+        toolId: cfg.toolId,
+        idArg: cfg.idArg,
+        resourceId: plan.resourceId,
+        signal: deadline,
+      })
+        .then(resolve, reject)
+        .finally(() => deadline.removeEventListener("abort", stop));
+    },
+  );
+  if (!fetched.ok) {
+    if (fetched.retry) {
+      throw new Error(
+        `inbound consult-back will be retried: ${fetched.reason}`,
+      );
+    }
+    return await fail(fetched.reason);
+  }
+  const mapped = mapFetchedResource(cfg, plan.keyId, fetched.response);
+  if (!mapped.ok) {
+    if (mapped.reason === "unhandled") {
+      await finish("PROCESSED");
+      return "processed";
+    }
+    return await fail(
+      `the provider's answer has no ${mapped.detail ?? "usable fields"}`,
+    );
+  }
+  const badIdentity =
+    identityProblem(mapped.event.dedupeKey, "dedupeKey") ??
+    identityProblem(mapped.event.externalId, "externalId");
+  if (badIdentity) return await fail(badIdentity);
+  if (deadline.aborted) {
+    throw new Error("inbound consult-back passed the delivery deadline");
+  }
+  const route = { id: plan.integrationInstanceId, tenantId: params.tenantId };
+  const event = await persistInbound(base, route, mapped.event);
+  await finish("PROCESSED");
+  if (event.duplicate) return "processed";
+  return await processInboundDelivery({ ...params, deliveryId: event.id });
+}
+
 // Correlate externalId → thread via the ref created at outbound time, then record the
 // conversion idempotently (ON CONFLICT DO NOTHING keeps the surrounding tx alive). An
 // uncorrelated or duplicate conversion is dropped with a log, never invented. Returns the
@@ -752,12 +1060,22 @@ async function dispatchConversion(
   externalId: string | null,
   source: string,
   payload: Record<string, unknown>,
+  integrationInstanceId: bigint,
 ): Promise<{ threadId: string; recorded: boolean } | null> {
   if (!externalId) {
     logger.info("inbound conversion without externalId; dropping");
     return null;
   }
-  const refThreadId = await toolpackRefThread(db, tenantId, externalId);
+  // A GENERIC conversion (built by a consult-back) correlates like every GENERIC event: only on a
+  // ref this instance minted.
+  const refThreadId =
+    source === "GENERIC"
+      ? await correlateConversationRef(db, {
+          tenantId,
+          integrationInstanceId,
+          ref: externalId,
+        })
+      : await toolpackRefThread(db, tenantId, externalId);
   if (!refThreadId) {
     logger.info(
       "inbound conversion uncorrelated (source=%s); dropping",

@@ -825,6 +825,19 @@ export async function exportAgent(
       const integrationNameById = new Map(
         integrationRows.map((r) => [r.id.toString(), r.name]),
       );
+      // A GENERIC instance's lookup tool travels too: nothing grants it to the agent, and the config
+      // names it by an id that means nothing at the destination (it is carried by name instead).
+      const lookupIds = integrationRows.flatMap((r) => {
+        const id = configFetchBackToolId(r.config);
+        return id === null || httpIds.includes(id) ? [] : [id];
+      });
+      const lookupRows = lookupIds.length
+        ? await db.toolDefinition.findMany({ where: { id: { in: lookupIds } } })
+        : [];
+      const exportedHttpRows = [...httpRows, ...lookupRows];
+      const toolNameById = new Map(
+        exportedHttpRows.map((r) => [r.id.toString(), r.name]),
+      );
       // KB document source text (opt-in, ?documents=true). Grouped by KB id; only the text travels.
       const withDocs = opts.includeDocuments === true;
       const docRows =
@@ -892,7 +905,7 @@ export async function exportAgent(
       // of a destination-invalid id (import resolves it back — see remapConfigBusinessHoursNameToId).
       const bhNameById = new Map(bhRows.map((r) => [r.id.toString(), r.name]));
       componentsRaw = {
-        httpTools: httpRows.map((r) => ({
+        httpTools: exportedHttpRows.map((r) => ({
           name: r.name,
           label: r.label,
           description: r.description,
@@ -946,9 +959,12 @@ export async function exportAgent(
         integrations: integrationRows.map((r) => ({
           catalogType: r.catalogType,
           name: r.name,
-          config: remapConfigBusinessHoursIdToName(
-            (r.config ?? {}) as Record<string, unknown>,
-            bhNameById,
+          config: remapConfigFetchBackToolIdToName(
+            remapConfigBusinessHoursIdToName(
+              (r.config ?? {}) as Record<string, unknown>,
+              bhNameById,
+            ),
+            toolNameById,
           ),
           credentialRef: r.credentialRef,
         })),
@@ -1589,6 +1605,70 @@ export function remapConfigBusinessHoursIdToName(
   if (id === null) return config;
   const name = bhNameById.get(id.toString());
   return name ? { ...config, businessHoursId: name } : config;
+}
+
+function configFetchBackToolId(config: unknown): bigint | null {
+  const fb =
+    config && typeof config === "object"
+      ? (config as Record<string, unknown>).fetchBack
+      : undefined;
+  if (!fb || typeof fb !== "object" || Array.isArray(fb)) return null;
+  const id = (fb as Record<string, unknown>).toolId;
+  return typeof id === "string" ? parseDbId(id) : null;
+}
+
+// A GENERIC lookup's tool by NAME in a bundle (`fetchBack.toolName`), the way the schedule above
+// travels; import resolves it back to the local id of the tool the bundle created or reused.
+export function remapConfigFetchBackToolIdToName(
+  config: Record<string, unknown>,
+  toolNameById: Map<string, string>,
+): Record<string, unknown> {
+  const id = configFetchBackToolId(config);
+  if (id === null) return config;
+  const { toolId: _, ...rest } = config.fetchBack as Record<string, unknown>;
+  const name = toolNameById.get(id.toString());
+  return { ...config, fetchBack: name ? { ...rest, toolName: name } : rest };
+}
+
+// An unresolved name leaves the lookup without a tool, which the receptor answers as an unusable
+// lookup (the delivery is recorded `invalid`), never a tool that happens to carry the old id here.
+async function remapConfigFetchBackToolNameToId(
+  db: ScopedDb,
+  config: Record<string, unknown>,
+  renamedHttpTools: Map<string, string>,
+  integration: string,
+  warnings: ImportWarning[],
+): Promise<Record<string, unknown>> {
+  const fb = config.fetchBack;
+  if (!fb || typeof fb !== "object" || Array.isArray(fb)) return config;
+  const { toolName, toolId: _, ...rest } = fb as Record<string, unknown>;
+  // Resolved as the HTTP-tool import resolved it (the model-facing name), so a legacy row the import
+  // reused under another spelling is the one the lookup points at.
+  const match =
+    typeof toolName === "string"
+      ? await toolUnderModelName(
+          db,
+          renamedHttpTools.get(toolName) ?? toolName,
+          "http",
+        )
+      : null;
+  const tool = match?.kind === "one" ? { id: match.id } : null;
+  if (!tool) {
+    warnings.push({
+      code: "integrationLookupToolNotFound",
+      params: {
+        integration,
+        tool: typeof toolName === "string" ? toolName : "",
+      },
+      target: {
+        kind: "integration",
+        catalogType: "GENERIC",
+        name: integration,
+      },
+    });
+    return { ...config, fetchBack: rest };
+  }
+  return { ...config, fetchBack: { ...rest, toolId: String(tool.id) } };
 }
 
 async function remapConfigBusinessHoursNameToId(
@@ -2459,9 +2539,15 @@ async function createMissingComponents(
     // a reuse. The pre-check path never emitted it (it `continue`s first), and the race path is the
     // same outcome reached later.
     const configWarnings: ImportWarning[] = [];
-    const config = await remapConfigBusinessHoursNameToId(
+    const config = await remapConfigFetchBackToolNameToId(
       db,
-      i.config as Record<string, unknown>,
+      await remapConfigBusinessHoursNameToId(
+        db,
+        i.config as Record<string, unknown>,
+        configWarnings,
+      ),
+      renamedHttpTools,
+      i.name,
       configWarnings,
     );
     // `createMany({ skipDuplicates })` for the same reason as the loops above, on
